@@ -7857,7 +7857,11 @@ impl<'a> Sema<'a> {
     /// 3. `foo.rue` (simple file module)
     /// 4. `_foo.rue` with `foo/` directory (directory module)
     /// 5. (Future) Dependency from rue.toml
-    fn resolve_import_path(&self, import_path: &str, span: Span) -> CompileResult<String> {
+    pub(crate) fn resolve_import_path(
+        &self,
+        import_path: &str,
+        span: Span,
+    ) -> CompileResult<String> {
         use std::path::Path;
 
         // Phase 0: Check for standard library import

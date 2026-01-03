@@ -837,8 +837,9 @@ impl<'a> Sema<'a> {
     /// pub const strings = @import("utils/strings.rue");
     /// ```
     ///
-    /// For now, we store the constant info but don't fully evaluate it.
-    /// The type will be determined when the init expression is analyzed.
+    /// When the initializer is an `@import(...)`, we evaluate it at compile time
+    /// to resolve the module and register it in the module registry. This enables
+    /// subsequent member access via `const_name.function()` syntax.
     fn collect_const_declaration(
         &mut self,
         name: Spur,
@@ -870,24 +871,130 @@ impl<'a> Sema<'a> {
             ));
         }
 
-        // For now, store with Type::Error as a placeholder - the actual type will be determined
-        // when the init expression is analyzed during module population phase.
-        // This is Phase 2 of the module system where we'll walk the init expression
-        // to determine if it's an @import (making it Type::Module).
-        //
-        // Note: Type::Error here is a placeholder indicating "not yet resolved".
-        // This is fine because const types are determined lazily when the module
-        // is populated with re-exports.
+        // Evaluate the initializer at compile time to determine the constant type.
+        // Currently we only handle @import(...) - other constant expressions will
+        // be supported as part of the broader comptime feature (ADR-0025).
+        let const_type = self.evaluate_const_init(init, span)?;
+
         self.constants.insert(
             name,
             ConstInfo {
                 is_pub,
-                ty: Type::Error,
+                ty: const_type,
                 init,
                 span,
             },
         );
 
         Ok(())
+    }
+
+    /// Evaluate a constant initializer at compile time.
+    ///
+    /// Currently handles:
+    /// - `@import("path")` - Returns Type::Module
+    /// - Integer literals - Returns the integer type
+    ///
+    /// Future extensions (ADR-0025 comptime) will support:
+    /// - Arithmetic on constants
+    /// - comptime blocks
+    /// - comptime function calls
+    fn evaluate_const_init(&mut self, init: InstRef, span: Span) -> CompileResult<Type> {
+        let init_inst = self.rir.get(init);
+
+        match &init_inst.data {
+            // @import("path") evaluates to Type::Module at compile time
+            InstData::Intrinsic {
+                name,
+                args_start,
+                args_len,
+            } => {
+                if *name == self.known.import {
+                    // Require module_types preview feature
+                    self.require_preview(
+                        PreviewFeature::ModuleTypes,
+                        "const = @import(...)",
+                        span,
+                    )?;
+
+                    // Validate exactly one argument
+                    if *args_len != 1 {
+                        return Err(CompileError::new(
+                            ErrorKind::IntrinsicWrongArgCount {
+                                name: "import".to_string(),
+                                expected: 1,
+                                found: *args_len as usize,
+                            },
+                            span,
+                        ));
+                    }
+
+                    // Get the string literal argument
+                    let arg_refs = self.rir.get_inst_refs(*args_start, *args_len);
+                    let arg_inst = self.rir.get(arg_refs[0]);
+                    let import_path = match &arg_inst.data {
+                        InstData::StringConst(path_spur) => {
+                            self.interner.resolve(path_spur).to_string()
+                        }
+                        _ => {
+                            return Err(CompileError::new(
+                                ErrorKind::ImportRequiresStringLiteral,
+                                arg_inst.span,
+                            ));
+                        }
+                    };
+
+                    // Resolve the import path to an absolute file path
+                    let resolved_path = self.resolve_import_path(&import_path, span)?;
+
+                    // Register the module in the registry
+                    let (module_id, _is_new) = self
+                        .module_registry
+                        .get_or_create(import_path, resolved_path);
+
+                    Ok(Type::Module(module_id))
+                } else {
+                    // For other intrinsics in const context, we don't support them yet
+                    let intrinsic_name = self.interner.resolve(name).to_string();
+                    Err(CompileError::new(
+                        ErrorKind::ConstExprNotSupported {
+                            expr_kind: format!("@{} intrinsic", intrinsic_name),
+                        },
+                        span,
+                    ))
+                }
+            }
+
+            // Integer literals evaluate to i32 (the default integer type)
+            // Note: RIR doesn't distinguish between integer types at this level;
+            // type inference happens later. For now, we treat all integer consts as i32.
+            InstData::IntConst(_) => Ok(Type::I32),
+
+            // Boolean literals
+            InstData::BoolConst(_) => Ok(Type::Bool),
+
+            // Unit literal
+            InstData::UnitConst => Ok(Type::Unit),
+
+            // String literals
+            InstData::StringConst(_) => {
+                // String constants would need the String type
+                // For now, we don't support them in const context
+                Err(CompileError::new(
+                    ErrorKind::ConstExprNotSupported {
+                        expr_kind: "string literals".to_string(),
+                    },
+                    span,
+                ))
+            }
+
+            // Other expressions are not yet supported in const context
+            _ => Err(CompileError::new(
+                ErrorKind::ConstExprNotSupported {
+                    expr_kind: "this expression".to_string(),
+                },
+                span,
+            )),
+        }
     }
 }
