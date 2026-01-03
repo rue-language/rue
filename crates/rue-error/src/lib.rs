@@ -143,6 +143,7 @@ impl ErrorCode {
     pub const MODULE_NOT_FOUND: Self = Self(704);
     pub const STD_LIB_NOT_FOUND: Self = Self(705);
     pub const PRIVATE_MEMBER_ACCESS: Self = Self(706);
+    pub const UNKNOWN_MODULE_MEMBER: Self = Self(707);
 
     // ========================================================================
     // Literal/operator errors (E0800-E0899)
@@ -966,6 +967,11 @@ pub enum ErrorKind {
     StdLibNotFound,
     #[error("{item_kind} `{name}` is private")]
     PrivateMemberAccess { item_kind: String, name: String },
+    #[error("module `{module_name}` has no member `{member_name}`")]
+    UnknownModuleMember {
+        module_name: String,
+        member_name: String,
+    },
 
     // Literal errors
     #[error("literal value {value} is out of range for type '{ty}'")]
@@ -1104,6 +1110,7 @@ impl ErrorKind {
             ErrorKind::ModuleNotFound { .. } => ErrorCode::MODULE_NOT_FOUND,
             ErrorKind::StdLibNotFound => ErrorCode::STD_LIB_NOT_FOUND,
             ErrorKind::PrivateMemberAccess { .. } => ErrorCode::PRIVATE_MEMBER_ACCESS,
+            ErrorKind::UnknownModuleMember { .. } => ErrorCode::UNKNOWN_MODULE_MEMBER,
 
             // Literal/operator errors (E0800-E0899)
             ErrorKind::LiteralOutOfRange { .. } => ErrorCode::LITERAL_OUT_OF_RANGE,

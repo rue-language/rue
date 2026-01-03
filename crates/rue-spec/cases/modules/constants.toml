@@ -48,6 +48,7 @@ exit_code = 0
 [[case]]
 name = "const_import_syntax"
 description = "Const with @import syntax parses correctly"
+# TODO: Needs const x = @import(...) to be evaluated at compile time
 preview = "module_types"
 source = """
 const math = @import("nonexistent");
@@ -59,6 +60,7 @@ error_contains = "module 'nonexistent' not found"
 [[case]]
 name = "pub_const_import_syntax"
 description = "Pub const with @import syntax parses correctly"
+# TODO: Needs const x = @import(...) to be evaluated at compile time
 preview = "module_types"
 source = """
 pub const math = @import("nonexistent");

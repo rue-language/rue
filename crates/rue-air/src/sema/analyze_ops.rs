@@ -1622,6 +1622,12 @@ impl<'a> Sema<'a> {
         let base_result = self.analyze_inst_for_projection(air, base, ctx)?;
         let base_type = base_result.ty;
 
+        // Handle module member access: module.StructName or module.EnumName
+        // This returns a comptime type that can be used to construct values
+        if let Some(module_id) = base_type.as_module() {
+            return self.analyze_module_type_member_access(air, module_id, field, span);
+        }
+
         let struct_id = match base_type.as_struct() {
             Some(id) => id,
             None => {
@@ -1716,6 +1722,129 @@ impl<'a> Sema<'a> {
         // This is one of the larger handlers that we'll keep in the main file
         // for now and refactor in a future pass
         self.analyze_field_set_impl(air, base, field, value, span, ctx)
+    }
+
+    /// Analyze module type member access: `module.StructName` or `module.EnumName`.
+    ///
+    /// When accessing a struct or enum through a module, we return a comptime type
+    /// that can be used to construct values. For example:
+    ///
+    /// ```rue
+    /// let utils = @import("utils");
+    /// let Point = utils.Point;        // Returns Type::Struct as a comptime type
+    /// let p = Point { x: 1, y: 2 };   // Uses the type to construct a value
+    /// ```
+    ///
+    /// This enables the pattern of importing types through modules and using them
+    /// for struct initialization or enum variant access.
+    fn analyze_module_type_member_access(
+        &mut self,
+        air: &mut Air,
+        module_id: crate::types::ModuleId,
+        member_name: Spur,
+        span: Span,
+    ) -> CompileResult<AnalysisResult> {
+        let member_name_str = self.interner.resolve(&member_name).to_string();
+
+        // Get the module definition to find its file path
+        let module_def = self.module_registry.get_def(module_id);
+        let module_file_path = module_def.file_path.clone();
+
+        // Get the accessing file's directory for visibility check
+        let accessing_file_path = self.get_source_path(span).map(|s| s.to_string());
+
+        // First, try to find a struct with this name that belongs to the module's file
+        if let Some(&struct_id) = self.structs.get(&member_name) {
+            let struct_def = self.type_pool.struct_def(struct_id);
+
+            // Check if this struct was defined in the module's file
+            if let Some(struct_file_path) = self.get_file_path(struct_def.file_id) {
+                if struct_file_path == module_file_path {
+                    // Check visibility: pub structs are visible to all, private only to same directory
+                    if !struct_def.is_pub {
+                        // Check if accessing from same directory
+                        let same_dir = match &accessing_file_path {
+                            Some(accessing) => {
+                                let accessing_dir = std::path::Path::new(accessing).parent();
+                                let module_dir = std::path::Path::new(&module_file_path).parent();
+                                accessing_dir == module_dir
+                            }
+                            None => true, // Be permissive if we can't determine the path
+                        };
+
+                        if !same_dir {
+                            return Err(CompileError::new(
+                                ErrorKind::PrivateMemberAccess {
+                                    item_kind: "struct".to_string(),
+                                    name: member_name_str,
+                                },
+                                span,
+                            ));
+                        }
+                    }
+
+                    // Return a TypeConst instruction with the struct type
+                    let struct_type = Type::Struct(struct_id);
+                    let air_ref = air.add_inst(AirInst {
+                        data: AirInstData::TypeConst(struct_type),
+                        ty: Type::ComptimeType,
+                        span,
+                    });
+                    return Ok(AnalysisResult::new(air_ref, Type::ComptimeType));
+                }
+            }
+        }
+
+        // Next, try to find an enum with this name that belongs to the module's file
+        if let Some(&enum_id) = self.enums.get(&member_name) {
+            let enum_def = self.type_pool.enum_def(enum_id);
+
+            // Check if this enum was defined in the module's file
+            if let Some(enum_file_path) = self.get_file_path(enum_def.file_id) {
+                if enum_file_path == module_file_path {
+                    // Check visibility: pub enums are visible to all, private only to same directory
+                    if !enum_def.is_pub {
+                        // Check if accessing from same directory
+                        let same_dir = match &accessing_file_path {
+                            Some(accessing) => {
+                                let accessing_dir = std::path::Path::new(accessing).parent();
+                                let module_dir = std::path::Path::new(&module_file_path).parent();
+                                accessing_dir == module_dir
+                            }
+                            None => true, // Be permissive if we can't determine the path
+                        };
+
+                        if !same_dir {
+                            return Err(CompileError::new(
+                                ErrorKind::PrivateMemberAccess {
+                                    item_kind: "enum".to_string(),
+                                    name: member_name_str,
+                                },
+                                span,
+                            ));
+                        }
+                    }
+
+                    // Return a TypeConst instruction with the enum type
+                    let enum_type = Type::Enum(enum_id);
+                    let air_ref = air.add_inst(AirInst {
+                        data: AirInstData::TypeConst(enum_type),
+                        ty: Type::ComptimeType,
+                        span,
+                    });
+                    return Ok(AnalysisResult::new(air_ref, Type::ComptimeType));
+                }
+            }
+        }
+
+        // Member not found in the module
+        Err(CompileError::new(
+            ErrorKind::UnknownModuleMember {
+                module_name: module_def.import_path.clone(),
+                member_name: member_name_str,
+            },
+            span,
+        ))
     }
 
     // ========================================================================
