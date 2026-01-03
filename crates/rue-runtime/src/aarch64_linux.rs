@@ -42,6 +42,9 @@ const SYS_MMAP: u64 = 222;
 /// Linux aarch64 syscall number for munmap (from asm-generic/unistd.h).
 const SYS_MUNMAP: u64 = 215;
 
+/// Linux aarch64 syscall number for getrandom (from asm-generic/unistd.h).
+const SYS_GETRANDOM: u64 = 278;
+
 /// Standard input file descriptor.
 pub const STDIN: u64 = 0;
 
@@ -371,6 +374,54 @@ pub fn exit(status: i32) -> ! {
     }
 }
 
+/// Fill a buffer with random bytes from the kernel entropy pool.
+///
+/// This is a wrapper around the Linux `getrandom(2)` syscall.
+///
+/// # Arguments
+///
+/// * `buf` - Pointer to the buffer to fill with random bytes
+/// * `len` - Number of random bytes to generate
+///
+/// # Returns
+///
+/// On success, returns the number of random bytes written (should equal `len`).
+/// On error, returns a negative value representing `-errno`.
+///
+/// # Safety
+///
+/// The caller must ensure:
+/// - `buf` points to a valid, writable memory region of at least `len` bytes
+/// - The memory region remains valid for the duration of the syscall
+///
+/// # Flags
+///
+/// This function uses `flags = 0`, which means:
+/// - Block if the entropy pool is not initialized (early boot only)
+/// - Use the main entropy pool (suitable for all non-cryptographic uses)
+pub fn getrandom(buf: *mut u8, len: usize) -> i64 {
+    let result: i64;
+
+    // SAFETY: Making the getrandom(2) syscall is safe because:
+    // - The syscall interface is stable (available since Linux 3.17)
+    // - We pass arguments in the correct registers per AArch64 Linux ABI
+    // - The kernel validates buf and len; invalid values return errors
+    // - flags=0 is the safest mode (blocks until initialized)
+    // - Syscall number goes in x8, args in x0-x2, result in x0
+    // - The caller is responsible for ensuring buf points to writable memory
+    unsafe {
+        asm!(
+            "svc #0",
+            in("x8") SYS_GETRANDOM,
+            inlateout("x0") buf => result,
+            in("x1") len,
+            in("x2") 0u64,  // flags: 0 (block if not initialized)
+        );
+    }
+
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -516,5 +567,31 @@ mod tests {
         // Zero-size mmap should fail (returns EINVAL on Linux)
         let ptr = mmap(0);
         assert!(ptr.is_null());
+    }
+
+    #[test]
+    fn test_getrandom_basic() {
+        // Get 4 random bytes
+        let mut buf = [0u8; 4];
+        let result = getrandom(buf.as_mut_ptr(), 4);
+        assert_eq!(result, 4);
+        // We can't test the actual values (they're random), but we can verify
+        // the syscall succeeded
+    }
+
+    #[test]
+    fn test_getrandom_larger() {
+        // Get 32 random bytes
+        let mut buf = [0u8; 32];
+        let result = getrandom(buf.as_mut_ptr(), 32);
+        assert_eq!(result, 32);
+    }
+
+    #[test]
+    fn test_getrandom_zero_size() {
+        // Zero-size request should succeed and return 0
+        let mut buf = [0u8; 4];
+        let result = getrandom(buf.as_mut_ptr(), 0);
+        assert_eq!(result, 0);
     }
 }

@@ -195,16 +195,16 @@ The return type of `@random_u64` is `u64`.
   - Add preview-gated spec tests (non-deterministic, so test compilation only)
   - Add `Random` to `PreviewFeature` enum
 
-- [ ] **Phase 2: Parser and Sema** - rue-ub3z
+- [x] **Phase 2: Parser and Sema** - rue-ub3z
   - Add `RandomU32` and `RandomU64` to intrinsic parsing
   - Add type checking (returns u32/u64, takes no args)
   - Add preview feature gate check
   - Add CFG lowering for random intrinsics
 
-- [ ] **Phase 3: Runtime implementation** - rue-5852
+- [x] **Phase 3: Runtime implementation** - rue-5852
   - Implement `__rue_random_u32` for x86-64 Linux
   - Implement `__rue_random_u64` for x86-64 Linux
-  - Implement for aarch64 macOS
+  - Implement for aarch64 macOS (using getentropy from libSystem)
   - Implement for aarch64 Linux
   - Handle error cases (no entropy source)
 

@@ -2658,3 +2658,86 @@ mod parse_tests {
         assert_eq!(result, u32::MAX);
     }
 }
+
+// ============================================================================
+// Random Number Generation Intrinsics
+// ============================================================================
+//
+// These intrinsics provide cryptographically-secure random numbers using
+// platform-specific entropy sources:
+// - Linux (x86-64 and aarch64): getrandom(2) syscall
+// - macOS (aarch64): getentropy(2) via libSystem
+//
+// See ADR-0027 for design rationale.
+
+/// Generate a random unsigned 32-bit integer.
+///
+/// # ABI
+///
+/// ```text
+/// extern "C" fn __rue_random_u32() -> u32
+/// ```
+///
+/// No arguments. Returns a random u32 value.
+///
+/// # Behavior
+///
+/// Each call returns a non-deterministic value from the platform's
+/// cryptographically-secure entropy source. The returned values have
+/// uniform distribution across the full u32 range (0 to 4,294,967,295).
+///
+/// # Panics
+///
+/// Panics if the platform entropy source is unavailable or fails to
+/// generate random bytes. This should be extremely rare on modern systems.
+define_for_all_platforms! {
+    pub extern "C" fn __rue_random_u32() -> u32 {
+        let mut bytes = [0u8; 4];
+        let result = platform::getrandom(bytes.as_mut_ptr(), 4);
+        if result < 0 {
+            platform::write_stderr(b"error: random number generation failed\n");
+            platform::exit(101);
+        }
+        if result != 4 {
+            platform::write_stderr(b"error: incomplete random data\n");
+            platform::exit(101);
+        }
+        u32::from_ne_bytes(bytes)
+    }
+}
+
+/// Generate a random unsigned 64-bit integer.
+///
+/// # ABI
+///
+/// ```text
+/// extern "C" fn __rue_random_u64() -> u64
+/// ```
+///
+/// No arguments. Returns a random u64 value.
+///
+/// # Behavior
+///
+/// Each call returns a non-deterministic value from the platform's
+/// cryptographically-secure entropy source. The returned values have
+/// uniform distribution across the full u64 range (0 to 18,446,744,073,709,551,615).
+///
+/// # Panics
+///
+/// Panics if the platform entropy source is unavailable or fails to
+/// generate random bytes. This should be extremely rare on modern systems.
+define_for_all_platforms! {
+    pub extern "C" fn __rue_random_u64() -> u64 {
+        let mut bytes = [0u8; 8];
+        let result = platform::getrandom(bytes.as_mut_ptr(), 8);
+        if result < 0 {
+            platform::write_stderr(b"error: random number generation failed\n");
+            platform::exit(101);
+        }
+        if result != 8 {
+            platform::write_stderr(b"error: incomplete random data\n");
+            platform::exit(101);
+        }
+        u64::from_ne_bytes(bytes)
+    }
+}
