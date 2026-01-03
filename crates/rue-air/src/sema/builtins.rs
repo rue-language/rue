@@ -36,6 +36,7 @@ impl<'a> Sema<'a> {
                 .collect();
 
             // Create the synthetic struct definition
+            // Built-in types are always public and have no source file
             let struct_def = StructDef {
                 name: builtin.name.to_string(),
                 fields,
@@ -44,6 +45,8 @@ impl<'a> Sema<'a> {
                 is_linear: false, // Built-in types are not linear
                 destructor: builtin.drop_fn.map(|s| s.to_string()),
                 is_builtin: true,
+                is_pub: true,                      // Built-in types are always public
+                file_id: rue_span::FileId::new(0), // Synthetic, no source file
             };
 
             // Register in type pool and get pool-based StructId

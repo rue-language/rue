@@ -1023,7 +1023,8 @@ where
         choice((method_call_suffix, field_suffix, index_suffix)).repeated(),
         |base, suffix| match suffix {
             Suffix::Field(field) => {
-                let span = Span::new(base.span().start, field.span.end);
+                // Extend the base span to include the field, preserving file_id
+                let span = base.span().extend_to(field.span.end);
                 Expr::Field(FieldExpr {
                     base: Box::new(base),
                     field,
@@ -1031,7 +1032,8 @@ where
                 })
             }
             Suffix::MethodCall(method, args, end) => {
-                let span = Span::new(base.span().start, end);
+                // Extend the base span to the end of the call, preserving file_id
+                let span = base.span().extend_to(end);
                 Expr::MethodCall(MethodCallExpr {
                     receiver: Box::new(base),
                     method,
@@ -1040,7 +1042,8 @@ where
                 })
             }
             Suffix::Index(index, end) => {
-                let span = Span::new(base.span().start, end);
+                // Extend the base span to the end of the index, preserving file_id
+                let span = base.span().extend_to(end);
                 Expr::Index(IndexExpr {
                     base: Box::new(base),
                     index: Box::new(index),

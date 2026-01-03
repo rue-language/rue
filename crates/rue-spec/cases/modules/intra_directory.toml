@@ -1,0 +1,235 @@
+[section]
+id = "modules.intra_directory"
+name = "Intra-Directory Visibility"
+description = "Files within the same directory can access each other's non-pub items. Per ADR-0026, pub only affects cross-directory visibility."
+
+# =============================================================================
+# Intra-Directory Access (Same Directory)
+# =============================================================================
+# Files in the same directory can access private (non-pub) items from each other.
+
+[[case]]
+name = "same_dir_access_private_fn"
+preview = "modules"
+preview_should_pass = true
+description = "Files in same directory can access private functions"
+source = """
+fn main() -> i32 {
+    let utils = @import("utils");
+    utils.internal_helper()
+}
+"""
+aux_files = { "utils.rue" = """
+// Private function - no pub keyword
+fn internal_helper() -> i32 {
+    42
+}
+""" }
+pass_aux_files = true
+exit_code = 42
+
+[[case]]
+name = "same_dir_access_pub_fn"
+preview = "modules"
+preview_should_pass = true
+description = "Files in same directory can access public functions"
+source = """
+fn main() -> i32 {
+    let utils = @import("utils");
+    utils.public_helper()
+}
+"""
+aux_files = { "utils.rue" = """
+pub fn public_helper() -> i32 {
+    42
+}
+""" }
+pass_aux_files = true
+exit_code = 42
+
+[[case]]
+name = "same_dir_access_private_struct"
+preview = "modules"
+description = "Files in same directory can access private structs"
+source = """
+fn main() -> i32 {
+    let utils = @import("utils");
+    let p = utils.InternalPoint { x: 20, y: 22 };
+    p.x + p.y
+}
+"""
+aux_files = { "utils.rue" = """
+// Private struct - no pub keyword
+struct InternalPoint { x: i32, y: i32 }
+""" }
+pass_aux_files = true
+exit_code = 42
+
+[[case]]
+name = "same_dir_access_private_enum"
+preview = "modules"
+description = "Files in same directory can access private enums"
+source = """
+fn main() -> i32 {
+    let utils = @import("utils");
+    let s = utils.InternalStatus::Active;
+    match s {
+        utils.InternalStatus::Active => 42,
+        utils.InternalStatus::Inactive => 0,
+    }
+}
+"""
+aux_files = { "utils.rue" = """
+// Private enum - no pub keyword
+enum InternalStatus { Active, Inactive }
+""" }
+pass_aux_files = true
+exit_code = 42
+
+# =============================================================================
+# Cross-Directory Access (Different Directories)
+# =============================================================================
+# Files in different directories can only access pub items.
+
+[[case]]
+name = "cross_dir_access_pub_fn"
+preview = "modules"
+preview_should_pass = true
+description = "Files in different directories can access public functions"
+source = """
+fn main() -> i32 {
+    let utils = @import("subdir/utils");
+    utils.public_fn()
+}
+"""
+aux_files = { "subdir/utils.rue" = """
+pub fn public_fn() -> i32 {
+    42
+}
+""" }
+pass_aux_files = true
+exit_code = 42
+
+[[case]]
+name = "cross_dir_access_private_fn_error"
+preview = "modules"
+preview_should_pass = true
+description = "Files in different directories cannot access private functions"
+source = """
+fn main() -> i32 {
+    let utils = @import("subdir/utils");
+    utils.private_fn()
+}
+"""
+aux_files = { "subdir/utils.rue" = """
+fn private_fn() -> i32 {
+    42
+}
+""" }
+pass_aux_files = true
+compile_fail = true
+error_contains = "private"
+
+[[case]]
+name = "cross_dir_access_pub_struct"
+preview = "modules"
+description = "Files in different directories can access public structs"
+source = """
+fn main() -> i32 {
+    let utils = @import("subdir/utils");
+    let p = utils.PublicPoint { x: 10, y: 32 };
+    p.x + p.y
+}
+"""
+aux_files = { "subdir/utils.rue" = """
+pub struct PublicPoint { x: i32, y: i32 }
+""" }
+pass_aux_files = true
+exit_code = 42
+
+[[case]]
+name = "cross_dir_access_private_struct_error"
+preview = "modules"
+description = "Files in different directories cannot access private structs"
+source = """
+fn main() -> i32 {
+    let utils = @import("subdir/utils");
+    let p = utils.PrivatePoint { x: 10, y: 32 };
+    p.x + p.y
+}
+"""
+aux_files = { "subdir/utils.rue" = """
+struct PrivatePoint { x: i32, y: i32 }
+""" }
+pass_aux_files = true
+compile_fail = true
+error_contains = "private"
+
+[[case]]
+name = "cross_dir_access_pub_enum"
+preview = "modules"
+description = "Files in different directories can access public enums"
+source = """
+fn main() -> i32 {
+    let utils = @import("subdir/utils");
+    let s = utils.PublicStatus::On;
+    match s {
+        utils.PublicStatus::On => 42,
+        utils.PublicStatus::Off => 0,
+    }
+}
+"""
+aux_files = { "subdir/utils.rue" = """
+pub enum PublicStatus { On, Off }
+""" }
+pass_aux_files = true
+exit_code = 42
+
+[[case]]
+name = "cross_dir_access_private_enum_error"
+preview = "modules"
+description = "Files in different directories cannot access private enums"
+source = """
+fn main() -> i32 {
+    let utils = @import("subdir/utils");
+    let s = utils.PrivateStatus::On;
+    0
+}
+"""
+aux_files = { "subdir/utils.rue" = """
+enum PrivateStatus { On, Off }
+""" }
+pass_aux_files = true
+compile_fail = true
+error_contains = "private"
+
+# =============================================================================
+# Nested Submodule Access
+# =============================================================================
+# Tests for the _foo.rue + foo/ directory module pattern.
+
+[[case]]
+name = "directory_module_intra_access"
+preview = "modules"
+description = "Files within a directory module can access each other's private items"
+source = """
+fn main() -> i32 {
+    let utils = @import("utils");
+    utils.format()
+}
+"""
+aux_files = { "_utils.rue" = """
+// Re-export the strings module functions
+const strings = @import("utils/strings");
+
+pub fn format() -> i32 {
+    strings.internal_format()
+}
+""", "utils/strings.rue" = """
+// Private function - accessible from _utils.rue since same directory module
+fn internal_format() -> i32 {
+    42
+}
+""" }
+pass_aux_files = true
+exit_code = 42

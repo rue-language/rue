@@ -196,6 +196,8 @@ impl<'a> Sema<'a> {
                     let enum_def = EnumDef {
                         name: enum_name,
                         variants: variant_names,
+                        is_pub: *is_pub,
+                        file_id: inst.span.file_id,
                     };
 
                     // Register in type pool and get pool-based EnumId
@@ -269,6 +271,8 @@ impl<'a> Sema<'a> {
                         is_linear: *is_linear,
                         destructor: None,  // Filled in during resolve_declarations
                         is_builtin: false, // User-defined struct
+                        is_pub: *is_pub,
+                        file_id: inst.span.file_id,
                     };
 
                     // Register in type pool and get pool-based StructId
@@ -445,6 +449,7 @@ impl<'a> Sema<'a> {
                         *return_type,
                         *body,
                         inst.span,
+                        *is_pub,
                     )?;
                 }
 
@@ -713,6 +718,7 @@ impl<'a> Sema<'a> {
         return_type_sym: Spur,
         body: InstRef,
         span: Span,
+        is_pub: bool,
     ) -> CompileResult<()> {
         let params = self.rir.get_params(params_start, params_len);
 
@@ -774,6 +780,8 @@ impl<'a> Sema<'a> {
                 body,
                 span,
                 is_generic,
+                is_pub,
+                file_id: span.file_id,
             },
         );
         Ok(())

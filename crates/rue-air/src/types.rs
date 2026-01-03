@@ -290,6 +290,10 @@ pub struct StructDef {
     /// Built-in types behave like regular structs but have runtime implementations
     /// for their methods rather than generated code.
     pub is_builtin: bool,
+    /// Whether this struct is public (visible outside its directory)
+    pub is_pub: bool,
+    /// File ID this struct was declared in (for visibility checking)
+    pub file_id: rue_span::FileId,
 }
 
 /// A field in a struct definition.
@@ -320,6 +324,10 @@ pub struct EnumDef {
     pub name: String,
     /// Variant names in declaration order
     pub variants: Vec<String>,
+    /// Whether this enum is public (visible outside its directory)
+    pub is_pub: bool,
+    /// File ID this enum was declared in (for visibility checking)
+    pub file_id: rue_span::FileId,
 }
 
 impl EnumDef {
@@ -1152,6 +1160,8 @@ mod tests {
             is_linear: false,
             destructor: None,
             is_builtin: false,
+            is_pub: false,
+            file_id: rue_span::FileId::DEFAULT,
         };
 
         let (idx, field) = def.find_field("x").unwrap();
@@ -1176,6 +1186,8 @@ mod tests {
             is_linear: false,
             destructor: None,
             is_builtin: false,
+            is_pub: false,
+            file_id: rue_span::FileId::DEFAULT,
         };
         assert_eq!(empty.field_count(), 0);
 
@@ -1200,6 +1212,8 @@ mod tests {
             is_linear: false,
             destructor: None,
             is_builtin: false,
+            is_pub: false,
+            file_id: rue_span::FileId::DEFAULT,
         };
         assert_eq!(with_fields.field_count(), 3);
     }
@@ -1211,12 +1225,16 @@ mod tests {
         let empty = EnumDef {
             name: "Empty".to_string(),
             variants: vec![],
+            is_pub: false,
+            file_id: rue_span::FileId::DEFAULT,
         };
         assert_eq!(empty.variant_count(), 0);
 
         let color = EnumDef {
             name: "Color".to_string(),
             variants: vec!["Red".to_string(), "Green".to_string(), "Blue".to_string()],
+            is_pub: false,
+            file_id: rue_span::FileId::DEFAULT,
         };
         assert_eq!(color.variant_count(), 3);
     }
@@ -1226,6 +1244,8 @@ mod tests {
         let color = EnumDef {
             name: "Color".to_string(),
             variants: vec!["Red".to_string(), "Green".to_string(), "Blue".to_string()],
+            is_pub: false,
+            file_id: rue_span::FileId::DEFAULT,
         };
 
         assert_eq!(color.find_variant("Red"), Some(0));
@@ -1239,6 +1259,8 @@ mod tests {
         let empty = EnumDef {
             name: "Empty".to_string(),
             variants: vec![],
+            is_pub: false,
+            file_id: rue_span::FileId::DEFAULT,
         };
         assert_eq!(empty.discriminant_type(), Type::Never);
     }
@@ -1249,12 +1271,16 @@ mod tests {
         let small = EnumDef {
             name: "Small".to_string(),
             variants: vec!["A".to_string()],
+            is_pub: false,
+            file_id: rue_span::FileId::DEFAULT,
         };
         assert_eq!(small.discriminant_type(), Type::U8);
 
         let max_u8 = EnumDef {
             name: "MaxU8".to_string(),
             variants: (0..256).map(|i| format!("V{}", i)).collect(),
+            is_pub: false,
+            file_id: rue_span::FileId::DEFAULT,
         };
         assert_eq!(max_u8.discriminant_type(), Type::U8);
     }
@@ -1265,6 +1291,8 @@ mod tests {
         let medium = EnumDef {
             name: "Medium".to_string(),
             variants: (0..257).map(|i| format!("V{}", i)).collect(),
+            is_pub: false,
+            file_id: rue_span::FileId::DEFAULT,
         };
         assert_eq!(medium.discriminant_type(), Type::U16);
     }

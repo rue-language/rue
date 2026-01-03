@@ -980,6 +980,8 @@ mod tests {
             is_linear: false,
             destructor: None,
             is_builtin: false,
+            is_pub: false,
+            file_id: rue_span::FileId::DEFAULT,
         };
 
         let (struct_id, is_new) = pool.register_struct(name, def.clone());
@@ -1003,6 +1005,8 @@ mod tests {
         let def = EnumDef {
             name: "Color".to_string(),
             variants: vec!["Red".to_string(), "Green".to_string(), "Blue".to_string()],
+            is_pub: false,
+            file_id: rue_span::FileId::DEFAULT,
         };
 
         let (enum_id, is_new) = pool.register_enum(name, def.clone());
@@ -1057,6 +1061,8 @@ mod tests {
             is_linear: false,
             destructor: None,
             is_builtin: false,
+            is_pub: false,
+            file_id: rue_span::FileId::DEFAULT,
         };
 
         let (struct_id, _) = pool.register_struct(name, def);
@@ -1076,6 +1082,8 @@ mod tests {
         let def = EnumDef {
             name: "Status".to_string(),
             variants: vec!["Active".to_string(), "Inactive".to_string()],
+            is_pub: false,
+            file_id: rue_span::FileId::DEFAULT,
         };
 
         let (enum_id, _) = pool.register_enum(name, def);
@@ -1113,6 +1121,8 @@ mod tests {
             is_linear: false,
             destructor: None,
             is_builtin: false,
+            is_pub: false,
+            file_id: rue_span::FileId::DEFAULT,
         };
         let (struct_id, _) = pool.register_struct(struct_name, struct_def);
         let struct_ty = pool.struct_id_to_interned(struct_id);
@@ -1147,6 +1157,8 @@ mod tests {
             is_linear: false,
             destructor: None,
             is_builtin: false,
+            is_pub: false,
+            file_id: rue_span::FileId::DEFAULT,
         };
         let (struct_id, _) = pool.register_struct(struct_name, struct_def);
         let struct_ty = pool.struct_id_to_interned(struct_id);
@@ -1155,6 +1167,8 @@ mod tests {
         let enum_def = EnumDef {
             name: "Color".to_string(),
             variants: vec!["Red".to_string()],
+            is_pub: false,
+            file_id: rue_span::FileId::DEFAULT,
         };
         let (enum_id, _) = pool.register_enum(enum_name, enum_def);
         let enum_ty = pool.enum_id_to_interned(enum_id);
@@ -1194,6 +1208,8 @@ mod tests {
             is_linear: false,
             destructor: None,
             is_builtin: false,
+            is_pub: false,
+            file_id: rue_span::FileId::DEFAULT,
         };
         let (struct_id, _) = pool.register_struct(name, def.clone());
 
@@ -1224,6 +1240,8 @@ mod tests {
         let def = EnumDef {
             name: "Status".to_string(),
             variants: vec!["A".to_string(), "B".to_string()],
+            is_pub: false,
+            file_id: rue_span::FileId::DEFAULT,
         };
         let (enum_id, _) = pool.register_enum(name, def.clone());
 
@@ -1265,6 +1283,8 @@ mod tests {
             is_linear: false,
             destructor: None,
             is_builtin: false,
+            is_pub: false,
+            file_id: rue_span::FileId::DEFAULT,
         };
         let (struct_id, _) = pool.register_struct(name, def);
         let struct_ty = pool.struct_id_to_interned(struct_id);
@@ -1296,6 +1316,8 @@ mod tests {
             is_linear: false,
             destructor: None,
             is_builtin: false,
+            is_pub: false,
+            file_id: rue_span::FileId::DEFAULT,
         };
         pool.register_struct(s1, def.clone());
         pool.register_struct(
@@ -1311,6 +1333,8 @@ mod tests {
             EnumDef {
                 name: "E1".to_string(),
                 variants: vec![],
+                is_pub: false,
+                file_id: rue_span::FileId::DEFAULT,
             },
         );
 
@@ -1449,6 +1473,8 @@ mod tests {
                             is_linear: false,
                             destructor: None,
                             is_builtin: false,
+                            is_pub: false,
+                            file_id: rue_span::FileId::DEFAULT,
                         };
                         pool.register_struct(name, def);
                     }

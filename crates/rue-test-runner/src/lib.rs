@@ -159,6 +159,11 @@ pub struct Case {
     /// Example: `{ "math.rue" = "pub fn add(a: i32, b: i32) -> i32 { a + b }" }`
     #[serde(default)]
     pub aux_files: HashMap<String, String>,
+    /// If true, pass aux_files to the compiler on the command line (multi-file compilation).
+    /// If false (default), aux_files are just written to disk for @import to find.
+    /// Use this when tests need to call functions from imported modules.
+    #[serde(default)]
+    pub pass_aux_files: bool,
 }
 
 /// A test file containing a section and its cases.
@@ -257,6 +262,7 @@ pub fn expand_case(case: Case) -> Vec<Case> {
                 opt_level: case.opt_level,
                 timeout_ms: case.timeout_ms,
                 aux_files: case.aux_files.clone(),
+                pass_aux_files: case.pass_aux_files,
 
                 // Clear params on expanded case
                 params: vec![],
@@ -680,9 +686,18 @@ pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
     }
 
     // Compile with rue
-    let compile_output = build_command(rue_binary)
-        .arg(&source_path)
-        .arg(&output_path)
+    // By default, aux_files are just written to disk for @import to find.
+    // When pass_aux_files is true, they're passed on the command line for
+    // multi-file compilation (needed when tests call functions from imported modules).
+    let mut compile_cmd = build_command(rue_binary);
+    compile_cmd.arg(&source_path);
+    if case.pass_aux_files {
+        for aux_path in &aux_paths {
+            compile_cmd.arg(aux_path);
+        }
+    }
+    compile_cmd.arg("-o").arg(&output_path);
+    let compile_output = compile_cmd
         .output()
         .map_err(|e| format!("Failed to run rue compiler: {}", e))?;
 
@@ -980,6 +995,7 @@ mod tests {
             stderr_contains: None,
             params: vec![],
             aux_files: HashMap::new(),
+            pass_aux_files: false,
         };
 
         let expanded = expand_case(case);
@@ -1028,6 +1044,7 @@ mod tests {
             stderr_contains: None,
             params: vec![ParamSet { values: param1 }, ParamSet { values: param2 }],
             aux_files: HashMap::new(),
+            pass_aux_files: false,
         };
 
         let expanded = expand_case(case);
@@ -1084,6 +1101,7 @@ mod tests {
             stderr_contains: None,
             params: vec![ParamSet { values: params }],
             aux_files: HashMap::new(),
+            pass_aux_files: false,
         };
 
         let expanded = expand_case(case);
@@ -1132,6 +1150,7 @@ mod tests {
             stderr_contains: None,
             params: vec![ParamSet { values: params }],
             aux_files: HashMap::new(),
+            pass_aux_files: false,
         };
 
         let expanded = expand_case(case);

@@ -100,6 +100,18 @@ impl Span {
         }
     }
 
+    /// Extend this span to a new end position, preserving the file ID.
+    ///
+    /// Creates a span from `self.start` to `end` with the same file ID.
+    #[inline]
+    pub const fn extend_to(&self, end: u32) -> Self {
+        Self {
+            file_id: self.file_id,
+            start: self.start,
+            end,
+        }
+    }
+
     /// Get the start byte offset.
     #[inline]
     pub const fn start(&self) -> u32 {

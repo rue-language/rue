@@ -198,6 +198,10 @@ pub struct FunctionInfo {
     pub span: rue_span::Span,
     /// Whether this function has any comptime type parameters
     pub is_generic: bool,
+    /// Whether this function is public (visible outside its directory)
+    pub is_pub: bool,
+    /// File ID this function was declared in (for visibility checking)
+    pub file_id: rue_span::FileId,
 }
 
 /// Information about a method in an impl block.
@@ -313,6 +317,47 @@ impl<'a> Sema<'a> {
     /// Looks up the file path using the span's file_id.
     pub(crate) fn get_source_path(&self, span: rue_span::Span) -> Option<&str> {
         self.file_paths.get(&span.file_id).map(|s| s.as_str())
+    }
+
+    /// Get the file path for a given FileId.
+    pub(crate) fn get_file_path(&self, file_id: FileId) -> Option<&str> {
+        self.file_paths.get(&file_id).map(|s| s.as_str())
+    }
+
+    /// Check if the accessing file can see a private item from the target file.
+    ///
+    /// Visibility rules (per ADR-0026):
+    /// - `pub` items are always accessible
+    /// - Private items are accessible if the files are in the same directory
+    ///
+    /// Returns true if the item is accessible.
+    pub(crate) fn is_accessible(
+        &self,
+        accessing_file_id: FileId,
+        target_file_id: FileId,
+        is_pub: bool,
+    ) -> bool {
+        // Public items are always accessible
+        if is_pub {
+            return true;
+        }
+
+        // Get paths for both files
+        let accessing_path = self.get_file_path(accessing_file_id);
+        let target_path = self.get_file_path(target_file_id);
+
+        // If we can't determine the paths, be permissive (for single-file mode or tests)
+        match (accessing_path, target_path) {
+            (Some(acc), Some(tgt)) => {
+                use std::path::Path;
+                let acc_dir = Path::new(acc).parent();
+                let tgt_dir = Path::new(tgt).parent();
+                // Same directory means accessible
+                acc_dir == tgt_dir
+            }
+            // If either path is unknown, allow access (e.g., synthetic types, single-file mode)
+            _ => true,
+        }
     }
 
     /// Perform semantic analysis on the RIR.
@@ -526,6 +571,8 @@ impl<'a> Sema<'a> {
             is_linear: false,
             destructor: None,
             is_builtin: false,
+            is_pub: false,                     // Anonymous structs are private
+            file_id: rue_span::FileId::new(0), // Anonymous, no source file
         };
 
         let (struct_id, _) = self.type_pool.register_struct(name_spur, struct_def);

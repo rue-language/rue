@@ -4325,7 +4325,9 @@ fn analyze_method_call_ctx(
 /// namespace at the source level.
 ///
 /// This function looks up the function by name in the global function table and
-/// generates a direct call to it.
+/// generates a direct call to it. Visibility is checked based on directory:
+/// - `pub` functions are always accessible
+/// - Private functions are only accessible from the same directory
 fn analyze_module_member_call_ctx(
     ctx: &SemaContext<'_>,
     air: &mut Air,
@@ -4340,6 +4342,19 @@ fn analyze_module_member_call_ctx(
     let fn_info = ctx
         .get_function(function_name)
         .ok_or_compile_error(ErrorKind::UndefinedFunction(fn_name_str.clone()), span)?;
+
+    // Check visibility: private functions are only accessible from the same directory
+    let accessing_file_id = span.file_id;
+    let target_file_id = fn_info.file_id;
+    if !ctx.is_accessible(accessing_file_id, target_file_id, fn_info.is_pub) {
+        return Err(CompileError::new(
+            ErrorKind::PrivateMemberAccess {
+                item_kind: "function".to_string(),
+                name: fn_name_str,
+            },
+            span,
+        ));
+    }
 
     let args = ctx.rir.get_call_args(args_start, args_len);
 
@@ -6619,6 +6634,19 @@ impl<'a> Sema<'a> {
             .get(&function_name)
             .ok_or_compile_error(ErrorKind::UndefinedFunction(fn_name_str.clone()), span)?
             .clone();
+
+        // Check visibility: private functions are only accessible from the same directory
+        let accessing_file_id = span.file_id;
+        let target_file_id = fn_info.file_id;
+        if !self.is_accessible(accessing_file_id, target_file_id, fn_info.is_pub) {
+            return Err(CompileError::new(
+                ErrorKind::PrivateMemberAccess {
+                    item_kind: "function".to_string(),
+                    name: fn_name_str,
+                },
+                span,
+            ));
+        }
 
         let args = self.rir.get_call_args(args_start, args_len);
 

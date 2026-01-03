@@ -324,6 +324,47 @@ impl<'a> SemaContext<'a> {
         self.source_file_path.as_deref()
     }
 
+    /// Get the file path for a given FileId.
+    pub fn get_file_path(&self, file_id: rue_span::FileId) -> Option<&str> {
+        self.file_paths.get(&file_id).map(|s| s.as_str())
+    }
+
+    /// Check if the accessing file can see a private item from the target file.
+    ///
+    /// Visibility rules (per ADR-0026):
+    /// - `pub` items are always accessible
+    /// - Private items are accessible if the files are in the same directory
+    ///
+    /// Returns true if the item is accessible.
+    pub fn is_accessible(
+        &self,
+        accessing_file_id: rue_span::FileId,
+        target_file_id: rue_span::FileId,
+        is_pub: bool,
+    ) -> bool {
+        // Public items are always accessible
+        if is_pub {
+            return true;
+        }
+
+        // Get paths for both files
+        let accessing_path = self.get_file_path(accessing_file_id);
+        let target_path = self.get_file_path(target_file_id);
+
+        // If we can't determine the paths, be permissive (for single-file mode or tests)
+        match (accessing_path, target_path) {
+            (Some(acc), Some(tgt)) => {
+                use std::path::Path;
+                let acc_dir = Path::new(acc).parent();
+                let tgt_dir = Path::new(tgt).parent();
+                // Same directory means accessible
+                acc_dir == tgt_dir
+            }
+            // If either path is unknown, allow access (e.g., synthetic types, single-file mode)
+            _ => true,
+        }
+    }
+
     /// Get a human-readable name for a type.
     pub fn format_type_name(&self, ty: Type) -> String {
         match ty.kind() {
