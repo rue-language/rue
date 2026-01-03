@@ -156,7 +156,7 @@ pub enum TypeKind {
 /// The u32 value uses a tag-based encoding:
 /// - Primitives (0-12): I8=0, I16=1, I32=2, I64=3, U8=4, U16=5, U32=6, U64=7,
 ///   Bool=8, Unit=9, Error=10, Never=11, ComptimeType=12
-/// - Composites: low byte is tag (100=Struct, 101=Enum, 102=Array, 103=Module),
+/// - Composites: low byte is tag (TAG_STRUCT, TAG_ENUM, TAG_ARRAY, TAG_MODULE),
 ///   high 24 bits are the ID
 ///
 /// # Usage
@@ -213,6 +213,14 @@ impl std::fmt::Debug for Type {
     }
 }
 
+// Composite type tag constants
+// These are used in the low byte of the u32 encoding to identify composite types.
+// The high 24 bits contain the ID (StructId, EnumId, ArrayTypeId, or ModuleId).
+const TAG_STRUCT: u32 = 100;
+const TAG_ENUM: u32 = 101;
+const TAG_ARRAY: u32 = 102;
+const TAG_MODULE: u32 = 103;
+
 // Primitive type constants
 impl Type {
     /// 8-bit signed integer
@@ -248,25 +256,25 @@ impl Type {
     /// Create a struct type from a StructId.
     #[inline]
     pub const fn Struct(id: StructId) -> Type {
-        Type(100 | ((id.0 as u32) << 8))
+        Type(TAG_STRUCT | ((id.0 as u32) << 8))
     }
 
     /// Create an enum type from an EnumId.
     #[inline]
     pub const fn Enum(id: EnumId) -> Type {
-        Type(101 | ((id.0 as u32) << 8))
+        Type(TAG_ENUM | ((id.0 as u32) << 8))
     }
 
     /// Create an array type from an ArrayTypeId.
     #[inline]
     pub const fn Array(id: ArrayTypeId) -> Type {
-        Type(102 | ((id.0 as u32) << 8))
+        Type(TAG_ARRAY | ((id.0 as u32) << 8))
     }
 
     /// Create a module type from a ModuleId.
     #[inline]
     pub const fn Module(id: ModuleId) -> Type {
-        Type(103 | ((id.0 as u32) << 8))
+        Type(TAG_MODULE | ((id.0 as u32) << 8))
     }
 }
 
@@ -422,10 +430,10 @@ impl Type {
             10 => TypeKind::Error,
             11 => TypeKind::Never,
             12 => TypeKind::ComptimeType,
-            100 => TypeKind::Struct(StructId(self.0 >> 8)),
-            101 => TypeKind::Enum(EnumId(self.0 >> 8)),
-            102 => TypeKind::Array(ArrayTypeId(self.0 >> 8)),
-            103 => TypeKind::Module(ModuleId(self.0 >> 8)),
+            TAG_STRUCT => TypeKind::Struct(StructId(self.0 >> 8)),
+            TAG_ENUM => TypeKind::Enum(EnumId(self.0 >> 8)),
+            TAG_ARRAY => TypeKind::Array(ArrayTypeId(self.0 >> 8)),
+            TAG_MODULE => TypeKind::Module(ModuleId(self.0 >> 8)),
             _ => panic!("invalid Type encoding: {}", self.0),
         }
     }
@@ -483,7 +491,7 @@ impl Type {
     /// Check if this is a struct type.
     #[inline]
     pub fn is_struct(&self) -> bool {
-        (self.0 & 0xFF) == 100
+        (self.0 & 0xFF) == TAG_STRUCT
     }
 
     /// Get the struct ID if this is a struct type.
@@ -499,7 +507,7 @@ impl Type {
     /// Check if this is an array type.
     #[inline]
     pub fn is_array(&self) -> bool {
-        (self.0 & 0xFF) == 102
+        (self.0 & 0xFF) == TAG_ARRAY
     }
 
     /// Get the array type ID if this is an array type.
@@ -515,7 +523,7 @@ impl Type {
     /// Check if this is an enum type.
     #[inline]
     pub fn is_enum(&self) -> bool {
-        (self.0 & 0xFF) == 101
+        (self.0 & 0xFF) == TAG_ENUM
     }
 
     /// Get the enum ID if this is an enum type.
@@ -531,7 +539,7 @@ impl Type {
     /// Check if this is a module type.
     #[inline]
     pub fn is_module(&self) -> bool {
-        (self.0 & 0xFF) == 103
+        (self.0 & 0xFF) == TAG_MODULE
     }
 
     /// Get the module ID if this is a module type.
@@ -575,13 +583,13 @@ impl Type {
             // Error, Never, ComptimeType are Copy for convenience
             10..=12 => true,
             // Enum types are Copy (they're small discriminant values)
-            101 => true,
+            TAG_ENUM => true,
             // Module types are Copy (they're just compile-time namespace references)
-            103 => true,
+            TAG_MODULE => true,
             // Struct types are move types by default
-            100 => false,
+            TAG_STRUCT => false,
             // Arrays may be Copy if element type is Copy (need ArrayTypeDef to check)
-            102 => false,
+            TAG_ARRAY => false,
             _ => false,
         }
     }
