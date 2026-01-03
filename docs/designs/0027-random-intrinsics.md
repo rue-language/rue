@@ -1,13 +1,13 @@
 ---
 id: 0027
 title: Random Number Intrinsics
-status: accepted
+status: implemented
 tags: [intrinsics, runtime, semantics]
 feature-flag: random
 created: 2026-01-02
 accepted: 2026-01-02
-implemented:
-spec-sections: []
+implemented: 2026-01-02
+spec-sections: [4.13]
 superseded-by:
 ---
 
@@ -15,7 +15,7 @@ superseded-by:
 
 ## Status
 
-Accepted
+Implemented (2026-01-02)
 
 ## Summary
 

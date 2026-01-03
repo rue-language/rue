@@ -926,7 +926,6 @@ exit_code = 254
 [[case]]
 name = "random_u32_returns_u32"
 spec = ["4.13:55", "4.13:57"]
-preview = "random"
 source = """
 fn takes_u32(x: u32) -> i32 { 0 }
 fn main() -> i32 {
@@ -940,7 +939,6 @@ exit_code = 0
 [[case]]
 name = "random_u32_no_args"
 spec = ["4.13:56"]
-preview = "random"
 source = """
 fn main() -> i32 {
     // Verify @random_u32 takes no arguments
@@ -953,7 +951,6 @@ exit_code = 0
 [[case]]
 name = "random_u32_wrong_arg_count_one"
 spec = ["4.13:4", "4.13:56"]
-preview = "random"
 source = """
 fn main() -> i32 {
     let r: u32 = @random_u32(42);
@@ -966,7 +963,6 @@ error_contains = "argument"
 [[case]]
 name = "random_u32_wrong_arg_count_two"
 spec = ["4.13:4", "4.13:56"]
-preview = "random"
 source = """
 fn main() -> i32 {
     let r: u32 = @random_u32(1, 2);
@@ -979,7 +975,6 @@ error_contains = "argument"
 [[case]]
 name = "random_u32_in_range_expression"
 spec = ["4.13:55", "4.13:58"]
-preview = "random"
 source = """
 fn main() -> i32 {
     // Verify we can use @random_u32 in expressions
@@ -992,7 +987,6 @@ exit_code = 0
 [[case]]
 name = "random_u32_multiple_calls"
 spec = ["4.13:58"]
-preview = "random"
 source = """
 fn main() -> i32 {
     // Multiple calls should compile successfully
@@ -1011,7 +1005,6 @@ exit_code = 0
 [[case]]
 name = "random_u32_entropy_failure_behavior"
 spec = ["4.13:59"]
-preview = "random"
 source = """
 fn main() -> i32 {
     // If the platform entropy source fails, this would panic.
@@ -1029,7 +1022,6 @@ exit_code = 0
 [[case]]
 name = "random_u64_returns_u64"
 spec = ["4.13:62", "4.13:64"]
-preview = "random"
 source = """
 fn takes_u64(x: u64) -> i32 { 0 }
 fn main() -> i32 {
@@ -1043,7 +1035,6 @@ exit_code = 0
 [[case]]
 name = "random_u64_no_args"
 spec = ["4.13:63"]
-preview = "random"
 source = """
 fn main() -> i32 {
     // Verify @random_u64 takes no arguments
@@ -1056,7 +1047,6 @@ exit_code = 0
 [[case]]
 name = "random_u64_wrong_arg_count_one"
 spec = ["4.13:4", "4.13:63"]
-preview = "random"
 source = """
 fn main() -> i32 {
     let r: u64 = @random_u64(42);
@@ -1069,7 +1059,6 @@ error_contains = "argument"
 [[case]]
 name = "random_u64_wrong_arg_count_two"
 spec = ["4.13:4", "4.13:63"]
-preview = "random"
 source = """
 fn main() -> i32 {
     let r: u64 = @random_u64(1, 2);
@@ -1082,7 +1071,6 @@ error_contains = "argument"
 [[case]]
 name = "random_u64_multiple_calls"
 spec = ["4.13:62"]
-preview = "random"
 source = """
 fn main() -> i32 {
     // Multiple calls should compile successfully

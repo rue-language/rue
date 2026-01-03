@@ -626,6 +626,12 @@ impl<'a> ConstraintGenerator<'a> {
                         self.generate(*arg_ref, ctx);
                     }
                     InferType::Concrete(Type::U64)
+                } else if intrinsic_name == "random_u32" {
+                    // @random_u32: no arguments, returns u32
+                    InferType::Concrete(Type::U32)
+                } else if intrinsic_name == "random_u64" {
+                    // @random_u64: no arguments, returns u64
+                    InferType::Concrete(Type::U64)
                 } else {
                     // Generate constraints for arguments (they need to be processed)
                     for arg_ref in args.iter() {

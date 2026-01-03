@@ -5003,6 +5003,52 @@ fn analyze_intrinsic_ctx(
             span,
         });
         Ok(AnalysisResult::new(air_ref, Type::Module(module_id)))
+    } else if name == known.random_u32 {
+        // @random_u32() - takes no arguments, returns u32
+        if !args.is_empty() {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicWrongArgCount {
+                    name: "random_u32".to_string(),
+                    expected: 0,
+                    found: args.len(),
+                },
+                span,
+            ));
+        }
+
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::Intrinsic {
+                name,
+                args_start: 0,
+                args_len: 0,
+            },
+            ty: Type::U32,
+            span,
+        });
+        Ok(AnalysisResult::new(air_ref, Type::U32))
+    } else if name == known.random_u64 {
+        // @random_u64() - takes no arguments, returns u64
+        if !args.is_empty() {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicWrongArgCount {
+                    name: "random_u64".to_string(),
+                    expected: 0,
+                    found: args.len(),
+                },
+                span,
+            ));
+        }
+
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::Intrinsic {
+                name,
+                args_start: 0,
+                args_len: 0,
+            },
+            ty: Type::U64,
+            span,
+        });
+        Ok(AnalysisResult::new(air_ref, Type::U64))
     } else {
         // Unknown intrinsic - resolve name for error message
         let intrinsic_name = ctx.interner.resolve(&name);
@@ -7215,9 +7261,6 @@ impl<'a> Sema<'a> {
         args: &[RirCallArg],
         span: Span,
     ) -> CompileResult<AnalysisResult> {
-        // Requires the random preview feature
-        self.require_preview(PreviewFeature::Random, "@random_u32() intrinsic", span)?;
-
         // @random_u32() - takes no arguments, returns u32
         if !args.is_empty() {
             return Err(CompileError::new(
@@ -7251,9 +7294,6 @@ impl<'a> Sema<'a> {
         args: &[RirCallArg],
         span: Span,
     ) -> CompileResult<AnalysisResult> {
-        // Requires the random preview feature
-        self.require_preview(PreviewFeature::Random, "@random_u64() intrinsic", span)?;
-
         // @random_u64() - takes no arguments, returns u64
         if !args.is_empty() {
             return Err(CompileError::new(

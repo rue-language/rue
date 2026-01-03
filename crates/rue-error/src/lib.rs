@@ -253,9 +253,6 @@ pub enum PreviewFeature {
     /// Module system with @import and pub visibility.
     /// See ADR-0026 for the full design.
     Modules,
-    /// Random number intrinsics (@random_u32, @random_u64).
-    /// See ADR-0027 for the full design.
-    Random,
 }
 
 /// Error returned when parsing a preview feature name fails.
@@ -278,7 +275,6 @@ impl PreviewFeature {
             PreviewFeature::TestInfra => "test_infra",
             PreviewFeature::AffineMvs => "affine_mvs",
             PreviewFeature::Modules => "modules",
-            PreviewFeature::Random => "random",
         }
     }
 
@@ -289,7 +285,6 @@ impl PreviewFeature {
             PreviewFeature::TestInfra => "ADR-0005",
             PreviewFeature::AffineMvs => "ADR-0008",
             PreviewFeature::Modules => "ADR-0026",
-            PreviewFeature::Random => "ADR-0027",
         }
     }
 
@@ -299,7 +294,6 @@ impl PreviewFeature {
             PreviewFeature::TestInfra,
             PreviewFeature::AffineMvs,
             PreviewFeature::Modules,
-            PreviewFeature::Random,
         ]
     }
 
@@ -325,7 +319,6 @@ impl std::str::FromStr for PreviewFeature {
             "test_infra" => Ok(PreviewFeature::TestInfra),
             "affine_mvs" => Ok(PreviewFeature::AffineMvs),
             "modules" => Ok(PreviewFeature::Modules),
-            "random" => Ok(PreviewFeature::Random),
             _ => Err(ParsePreviewFeatureError(s.to_string())),
         }
     }
@@ -1817,7 +1810,7 @@ mod tests {
     #[test]
     fn test_preview_feature_all_names() {
         let names = PreviewFeature::all_names();
-        assert_eq!(names, "test_infra, affine_mvs, modules, random");
+        assert_eq!(names, "test_infra, affine_mvs, modules");
     }
 
     // ========================================================================
