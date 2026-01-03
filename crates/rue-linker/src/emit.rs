@@ -12,12 +12,12 @@ use crate::constants::{
     ELFDATA2LSB, ET_REL, EV_CURRENT, LC_BUILD_VERSION, LC_SEGMENT_64, LC_SYMTAB,
     MACHO64_BUILD_VERSION_CMD_SIZE, MACHO64_HEADER_SIZE, MACHO64_NLIST_SIZE, MACHO64_RELOC_SIZE,
     MACHO64_SECTION_SIZE, MACHO64_SEGMENT_CMD_SIZE, MACHO64_SYMTAB_CMD_SIZE, MH_MAGIC_64,
-    MH_OBJECT, N_EXT, N_SECT, N_UNDF, PLATFORM_MACOS, R_AARCH64_ABS64, R_AARCH64_ADD_ABS_LO12_NC,
-    R_AARCH64_ADR_PREL_PG_HI21, R_AARCH64_CALL26, R_AARCH64_JUMP26, R_X86_64_32, R_X86_64_32S,
-    R_X86_64_64, R_X86_64_GOTPCREL, R_X86_64_GOTPCRELX, R_X86_64_PC32, R_X86_64_PLT32,
-    R_X86_64_REX_GOTPCRELX, S_ATTR_PURE_INSTRUCTIONS, S_ATTR_SOME_INSTRUCTIONS, SHF_ALLOC,
-    SHF_EXECINSTR, SHF_INFO_LINK, SHT_PROGBITS, SHT_RELA, SHT_STRTAB, SHT_SYMTAB, STB_GLOBAL,
-    STB_LOCAL, STT_FUNC, STT_NOTYPE, STT_SECTION, elf_st_info,
+    MH_OBJECT, N_EXT, N_PEXT, N_SECT, N_UNDF, PLATFORM_MACOS, R_AARCH64_ABS64,
+    R_AARCH64_ADD_ABS_LO12_NC, R_AARCH64_ADR_PREL_PG_HI21, R_AARCH64_CALL26, R_AARCH64_JUMP26,
+    R_X86_64_32, R_X86_64_32S, R_X86_64_64, R_X86_64_GOTPCREL, R_X86_64_GOTPCRELX, R_X86_64_PC32,
+    R_X86_64_PLT32, R_X86_64_REX_GOTPCRELX, S_ATTR_PURE_INSTRUCTIONS, S_ATTR_SOME_INSTRUCTIONS,
+    SHF_ALLOC, SHF_EXECINSTR, SHF_INFO_LINK, SHT_PROGBITS, SHT_RELA, SHT_STRTAB, SHT_SYMTAB,
+    STB_GLOBAL, STB_LOCAL, STT_FUNC, STT_NOTYPE, STT_SECTION, elf_st_info,
 };
 
 /// ELF section layout with explicit indices.
@@ -600,11 +600,12 @@ impl ObjectBuilder {
         strtab.extend_from_slice(macho_name.as_bytes());
         strtab.push(0);
 
-        // String constant symbols (local symbols for rodata)
+        // String constant symbols (private external, for rodata)
+        // Include function name in symbol to avoid collisions when linking multiple object files
         let mut string_name_offsets: Vec<usize> = Vec::new();
         for (i, _) in self.strings.iter().enumerate() {
             string_name_offsets.push(strtab.len());
-            let sym_name = format!("___rue_string_{}", i); // With underscore prefix
+            let sym_name = format!("__{}.str{}", self.name, i);
             strtab.extend_from_slice(sym_name.as_bytes());
             strtab.push(0);
         }
@@ -636,10 +637,11 @@ impl ObjectBuilder {
         );
 
         // In Mach-O, local symbols come first, then external symbols
-        // Local symbols: string constants (non-external)
-        // External symbols: function + undefined externals
-        let num_local_syms = self.strings.len(); // string constants only
-        let num_extern_syms = 1 + extern_symbols.len(); // function + external refs
+        // All our symbols are external (N_EXT set) because ARM64_RELOC_PAGE21/PAGEOFF12
+        // relocations with r_extern=1 require external target symbols.
+        // Symbol order: string constants, function, undefined externals
+        let num_local_syms = 0; // No local symbols - all are external
+        let num_extern_syms = self.strings.len() + 1 + extern_symbols.len(); // strings + function + external refs
         let num_syms = num_local_syms + num_extern_syms;
 
         // String table follows symbol table
@@ -787,16 +789,18 @@ impl ObjectBuilder {
                 (string_id as u32, true)
             } else {
                 // External symbol (function or undefined external)
+                // Symbol table layout: string symbols (0..N-1), function (N), undefined externals (N+1..)
+                let num_string_syms = self.strings.len();
                 // First check if it's the function itself
                 if reloc.symbol == self.name {
-                    // Function symbol is the first external symbol
-                    (num_local_syms as u32, true)
+                    // Function symbol is after string symbols
+                    (num_string_syms as u32, true)
                 } else {
                     // Undefined external symbol
                     let macho_sym = format!("_{}", reloc.symbol);
                     let sym_idx = extern_symbols.iter().position(|s| s == &macho_sym).unwrap();
-                    // External symbols start after local symbols, function is first external
-                    (num_local_syms as u32 + 1 + sym_idx as u32, true)
+                    // Undefined externals start after string symbols and function
+                    (num_string_syms as u32 + 1 + sym_idx as u32, true)
                 }
             };
 
@@ -832,13 +836,17 @@ impl ObjectBuilder {
         // n_desc: 2 bytes
         // n_value: 8 bytes
 
-        // Mach-O requires local symbols first, then external symbols
+        // All symbols are external (N_EXT set) for ARM64 relocation compatibility.
+        // Symbol table order: string constants, function, undefined externals.
 
-        // Local symbols: String constant symbols (non-external, defined in rodata section)
+        // String constant symbols (private external, defined in rodata section)
+        // Note: We mark these as N_PEXT | N_EXT because ARM64_RELOC_PAGE21/PAGEOFF12
+        // relocations with r_extern=1 require the target symbol to be external.
+        // N_PEXT makes them private (not exported), avoiding duplicate symbol errors
+        // when linking multiple object files that each have their own string constants.
         for (i, _) in self.strings.iter().enumerate() {
             macho.extend_from_slice(&(string_name_offsets[i] as u32).to_le_bytes()); // n_strx
-            // String symbols are private/local - just N_SECT without N_EXT
-            macho.push(N_SECT); // n_type: defined in section (not external)
+            macho.push(N_PEXT | N_EXT | N_SECT); // n_type: private external, defined in section
             if has_rodata {
                 macho.push(2); // n_sect: section 2 (__rodata)
             } else {

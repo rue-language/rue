@@ -244,6 +244,8 @@ pub const PLATFORM_MACOS: u32 = 1;
 
 /// N_EXT: External symbol
 pub const N_EXT: u8 = 0x01;
+/// N_PEXT: Private external symbol (visible for linking but not exported)
+pub const N_PEXT: u8 = 0x10;
 /// N_SECT: Symbol defined in section
 pub const N_SECT: u8 = 0x0E;
 /// N_UNDF: Undefined symbol
