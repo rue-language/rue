@@ -86,8 +86,9 @@ impl<'a> Sema<'a> {
                     MethodSig {
                         struct_type: info.struct_type,
                         has_self: info.has_self,
-                        param_types: info
-                            .param_types
+                        param_types: self
+                            .param_arena
+                            .types(info.params)
                             .iter()
                             .map(|t| self.type_to_infer_type(*t))
                             .collect(),
@@ -598,10 +599,10 @@ impl<'a> Sema<'a> {
 
                 // Validate: must be a method (has self), not associated function
                 if !method_info.has_self {
+                    let param_types = self.param_arena.types(method_info.params);
                     let found_signature = format!(
                         "fn handle({}) -> {}",
-                        method_info
-                            .param_types
+                        param_types
                             .iter()
                             .map(|t| self.format_type_name(*t))
                             .collect::<Vec<_>>()
@@ -618,21 +619,17 @@ impl<'a> Sema<'a> {
                 }
 
                 // Validate: should take no extra parameters (just self)
-                if !method_info.param_types.is_empty() {
+                let param_types = self.param_arena.types(method_info.params);
+                if !param_types.is_empty() {
+                    let param_names = self.param_arena.names(method_info.params);
                     let params = std::iter::once(format!("self: {}", struct_name))
-                        .chain(
-                            method_info
-                                .param_types
-                                .iter()
-                                .zip(&method_info.param_names)
-                                .map(|(ty, name)| {
-                                    format!(
-                                        "{}: {}",
-                                        self.interner.resolve(name),
-                                        self.format_type_name(*ty)
-                                    )
-                                }),
-                        )
+                        .chain(param_types.iter().zip(param_names).map(|(ty, name)| {
+                            format!(
+                                "{}: {}",
+                                self.interner.resolve(name),
+                                self.format_type_name(*ty)
+                            )
+                        }))
                         .collect::<Vec<_>>()
                         .join(", ");
                     let found_signature = format!(
@@ -847,13 +844,17 @@ impl<'a> Sema<'a> {
                     .collect::<CompileResult<Vec<_>>>()?;
                 let ret_type = self.resolve_type(*return_type, method_inst.span)?;
 
+                // Allocate method parameters in the arena
+                let param_range = self
+                    .param_arena
+                    .alloc_method(param_names.into_iter(), param_types.into_iter());
+
                 self.methods.insert(
                     key,
                     MethodInfo {
                         struct_type,
                         has_self: *has_self,
-                        param_names,
-                        param_types,
+                        params: param_range,
                         return_type: ret_type,
                         body: *body,
                         span: method_inst.span,

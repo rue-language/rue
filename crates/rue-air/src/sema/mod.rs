@@ -204,16 +204,16 @@ pub struct FunctionInfo {
 }
 
 /// Information about a method in an impl block.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct MethodInfo {
     /// The struct type this method belongs to
     pub struct_type: Type,
     /// Whether this is a method (has self) or associated function (no self)
     pub has_self: bool,
-    /// Parameter names (excluding self if present)
-    pub param_names: Vec<Spur>,
-    /// Parameter types (excluding self if present)
-    pub param_types: Vec<Type>,
+    /// Parameter data (names, types, modes, comptime flags) stored in arena.
+    /// Access via `arena.names(params)`, `arena.types(params)`, etc.
+    /// Note: This excludes `self` if present - only explicit parameters.
+    pub params: ParamRange,
     /// Return type
     pub return_type: Type,
     /// The RIR instruction ref for the method body
@@ -517,8 +517,9 @@ impl<'a> Sema<'a> {
                     MethodSig {
                         struct_type: info.struct_type,
                         has_self: info.has_self,
-                        param_types: info
-                            .param_types
+                        param_types: self
+                            .param_arena
+                            .types(info.params)
                             .iter()
                             .map(|t| self.type_to_infer_type(*t))
                             .collect(),

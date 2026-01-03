@@ -6573,11 +6573,12 @@ impl<'a> Sema<'a> {
             ));
         }
 
-        // Check argument count (method_info.param_types excludes self)
-        if args.len() != method_info.param_types.len() {
+        // Check argument count (method_info.params excludes self)
+        let method_param_types = self.param_arena.types(method_info.params);
+        if args.len() != method_param_types.len() {
             return Err(CompileError::new(
                 ErrorKind::WrongArgumentCount {
-                    expected: method_info.param_types.len(),
+                    expected: method_param_types.len(),
                     found: args.len(),
                 },
                 span,
@@ -6784,10 +6785,11 @@ impl<'a> Sema<'a> {
         }
 
         // Check argument count
-        if args.len() != method_info.param_types.len() {
+        let method_param_types = self.param_arena.types(method_info.params);
+        if args.len() != method_param_types.len() {
             return Err(CompileError::new(
                 ErrorKind::WrongArgumentCount {
-                    expected: method_info.param_types.len(),
+                    expected: method_param_types.len(),
                     found: args.len(),
                 },
                 span,
