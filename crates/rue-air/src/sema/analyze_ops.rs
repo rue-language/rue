@@ -2054,10 +2054,16 @@ impl<'a> Sema<'a> {
             .get(&name)
             .ok_or_compile_error(ErrorKind::UndefinedFunction(fn_name_str.clone()), span)?;
 
+        // Get parameter data from the arena
+        let param_types = self.param_arena.types(fn_info.params);
+        let param_modes = self.param_arena.modes(fn_info.params);
+        let param_comptime = self.param_arena.comptime(fn_info.params);
+        let param_names = self.param_arena.names(fn_info.params);
+
         let args = self.rir.get_call_args(args_start, args_len);
         // Check argument count
-        if args.len() != fn_info.param_types.len() {
-            let expected = fn_info.param_types.len();
+        if args.len() != param_types.len() {
+            let expected = param_types.len();
             let found = args.len();
             return Err(CompileError::new(
                 ErrorKind::WrongArgumentCount { expected, found },
@@ -2070,7 +2076,7 @@ impl<'a> Sema<'a> {
 
         // Check that call-site argument modes match function parameter modes
         // Do this before the mutable borrow in analyze_call_args, accessing fn_info directly
-        for (i, (arg, expected_mode)) in args.iter().zip(fn_info.param_modes.iter()).enumerate() {
+        for (i, (arg, expected_mode)) in args.iter().zip(param_modes.iter()).enumerate() {
             match expected_mode {
                 RirParamMode::Inout => {
                     if arg.mode != RirArgMode::Inout {
@@ -2098,9 +2104,9 @@ impl<'a> Sema<'a> {
 
         // Extract info before any mutable borrow
         let is_generic = fn_info.is_generic;
-        let param_types = fn_info.param_types.clone();
-        let param_comptime = fn_info.param_comptime.clone();
-        let param_names = fn_info.param_names.clone();
+        let param_types = param_types.to_vec();
+        let param_comptime = param_comptime.to_vec();
+        let param_names = param_names.to_vec();
         let return_type_sym = fn_info.return_type_sym;
         let base_return_type = fn_info.return_type;
         let fn_body = fn_info.body;

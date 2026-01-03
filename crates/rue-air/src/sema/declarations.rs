@@ -45,16 +45,17 @@ impl<'a> Sema<'a> {
                 (
                     *name,
                     FunctionSig {
-                        param_types: info
-                            .param_types
+                        param_types: self
+                            .param_arena
+                            .types(info.params)
                             .iter()
                             .map(|t| self.type_to_infer_type(*t))
                             .collect(),
                         return_type: self.type_to_infer_type(info.return_type),
                         is_generic: info.is_generic,
-                        param_modes: info.param_modes.clone(),
-                        param_comptime: info.param_comptime.clone(),
-                        param_names: info.param_names.clone(),
+                        param_modes: self.param_arena.modes(info.params).to_vec(),
+                        param_comptime: self.param_arena.comptime(info.params).to_vec(),
+                        param_names: self.param_arena.names(info.params).to_vec(),
                         return_type_sym: info.return_type_sym,
                     },
                 )
@@ -768,13 +769,18 @@ impl<'a> Sema<'a> {
             self.resolve_type(return_type_sym, span)?
         };
 
+        // Allocate parameter data in the arena
+        let params_range = self.param_arena.alloc(
+            param_names.into_iter(),
+            param_types.into_iter(),
+            param_modes.into_iter(),
+            param_comptime.into_iter(),
+        );
+
         self.functions.insert(
             name,
             FunctionInfo {
-                param_names,
-                param_types,
-                param_modes,
-                param_comptime,
+                params: params_range,
                 return_type: ret_type,
                 return_type_sym,
                 body,

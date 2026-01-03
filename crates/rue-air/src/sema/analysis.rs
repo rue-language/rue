@@ -3971,10 +3971,16 @@ fn analyze_call_ctx(
         .get_function(name)
         .ok_or_compile_error(ErrorKind::UndefinedFunction(fn_name_str.clone()), span)?;
 
+    // Get parameter data from the arena
+    let param_types = ctx.param_arena.types(fn_info.params);
+    let param_modes = ctx.param_arena.modes(fn_info.params);
+    let param_comptime = ctx.param_arena.comptime(fn_info.params);
+    let param_names = ctx.param_arena.names(fn_info.params);
+
     let args = ctx.rir.get_call_args(args_start, args_len);
     // Check argument count
-    if args.len() != fn_info.param_types.len() {
-        let expected = fn_info.param_types.len();
+    if args.len() != param_types.len() {
+        let expected = param_types.len();
         let found = args.len();
         return Err(CompileError::new(
             ErrorKind::WrongArgumentCount { expected, found },
@@ -3986,7 +3992,7 @@ fn analyze_call_ctx(
     check_exclusive_access_ctx(ctx, &args, span)?;
 
     // Check that call-site argument modes match function parameter modes
-    for (i, (arg, expected_mode)) in args.iter().zip(fn_info.param_modes.iter()).enumerate() {
+    for (i, (arg, expected_mode)) in args.iter().zip(param_modes.iter()).enumerate() {
         match expected_mode {
             RirParamMode::Inout => {
                 if arg.mode != RirArgMode::Inout {
@@ -4011,14 +4017,14 @@ fn analyze_call_ctx(
     }
 
     // Check that comptime parameters receive compile-time constant values
-    let has_comptime_params = fn_info.param_comptime.iter().any(|&c| c);
+    let has_comptime_params = param_comptime.iter().any(|&c| c);
     if has_comptime_params {
         // Validate each comptime parameter receives a compile-time constant
-        for (i, (&is_comptime, arg)) in fn_info.param_comptime.iter().zip(args.iter()).enumerate() {
+        for (i, (&is_comptime, arg)) in param_comptime.iter().zip(args.iter()).enumerate() {
             if is_comptime {
                 // Try to evaluate the argument at compile time
                 if try_evaluate_const_in_rir(ctx.rir, arg.value).is_none() {
-                    let param_name = ctx.interner.resolve(&fn_info.param_names[i]).to_string();
+                    let param_name = ctx.interner.resolve(&param_names[i]).to_string();
                     return Err(CompileError::new(
                         ErrorKind::ComptimeArgNotConst {
                             param_name: param_name.clone(),
@@ -4036,8 +4042,8 @@ fn analyze_call_ctx(
 
     // Extract info before mutable borrow
     let is_generic = fn_info.is_generic;
-    let param_modes = fn_info.param_modes.clone();
-    let param_names = fn_info.param_names.clone();
+    let param_modes = param_modes.to_vec();
+    let param_names = param_names.to_vec();
     let return_type_sym = fn_info.return_type_sym;
     let base_return_type = fn_info.return_type;
 
@@ -4356,11 +4362,15 @@ fn analyze_module_member_call_ctx(
         ));
     }
 
+    // Get parameter data from the arena
+    let param_types = ctx.param_arena.types(fn_info.params);
+    let param_modes = ctx.param_arena.modes(fn_info.params);
+
     let args = ctx.rir.get_call_args(args_start, args_len);
 
     // Check argument count
-    if args.len() != fn_info.param_types.len() {
-        let expected = fn_info.param_types.len();
+    if args.len() != param_types.len() {
+        let expected = param_types.len();
         let found = args.len();
         return Err(CompileError::new(
             ErrorKind::WrongArgumentCount { expected, found },
@@ -4372,7 +4382,7 @@ fn analyze_module_member_call_ctx(
     check_exclusive_access_ctx(ctx, &args, span)?;
 
     // Check that call-site argument modes match function parameter modes
-    for (i, (arg, expected_mode)) in args.iter().zip(fn_info.param_modes.iter()).enumerate() {
+    for (i, (arg, expected_mode)) in args.iter().zip(param_modes.iter()).enumerate() {
         match expected_mode {
             RirParamMode::Inout => {
                 if arg.mode != RirArgMode::Inout {
@@ -6648,11 +6658,15 @@ impl<'a> Sema<'a> {
             ));
         }
 
+        // Get parameter data from the arena
+        let param_types = self.param_arena.types(fn_info.params);
+        let param_modes = self.param_arena.modes(fn_info.params);
+
         let args = self.rir.get_call_args(args_start, args_len);
 
         // Check argument count
-        if args.len() != fn_info.param_types.len() {
-            let expected = fn_info.param_types.len();
+        if args.len() != param_types.len() {
+            let expected = param_types.len();
             let found = args.len();
             return Err(CompileError::new(
                 ErrorKind::WrongArgumentCount { expected, found },
@@ -6661,7 +6675,7 @@ impl<'a> Sema<'a> {
         }
 
         // Check that call-site argument modes match function parameter modes
-        for (i, (arg, expected_mode)) in args.iter().zip(fn_info.param_modes.iter()).enumerate() {
+        for (i, (arg, expected_mode)) in args.iter().zip(param_modes.iter()).enumerate() {
             match expected_mode {
                 RirParamMode::Inout => {
                     if arg.mode != RirArgMode::Inout {

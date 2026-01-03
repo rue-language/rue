@@ -37,6 +37,7 @@ use rue_rir::Rir;
 
 use crate::inference::{FunctionSig, InferType, MethodSig};
 use crate::intern_pool::TypeInternPool;
+use crate::param_arena::ParamArena;
 // Import FunctionInfo, MethodInfo, and KnownSymbols from sema module to avoid duplication.
 // FunctionInfo and MethodInfo are the canonical definitions; we re-export them for convenience.
 pub use crate::sema::{FunctionInfo, KnownSymbols, MethodInfo};
@@ -174,6 +175,7 @@ pub struct InferenceContext {
 /// - Type intern pool (thread-safe, allows concurrent array interning)
 /// - Pre-computed inference context (immutable)
 /// - Built-in type IDs (immutable)
+/// - Parameter arena for function/method parameter data (immutable after declaration gathering)
 ///
 /// # Thread Safety
 ///
@@ -182,6 +184,7 @@ pub struct InferenceContext {
 /// - The type intern pool uses `RwLock` for thread-safe mutations
 /// - References to RIR and interner are shared immutably
 /// - References to functions/methods HashMaps are immutable after declaration gathering
+/// - Reference to param_arena is immutable after declaration gathering
 /// - ThreadedRodeo is designed to be thread-safe
 #[derive(Debug)]
 pub struct SemaContext<'a> {
@@ -221,6 +224,9 @@ pub struct SemaContext<'a> {
     /// Maps FileId to source file paths (multi-file mode).
     /// Used for resolving relative imports when multiple files are compiled.
     pub file_paths: HashMap<rue_span::FileId, String>,
+    /// Reference to the parameter arena for accessing function/method parameter data.
+    /// Use `param_arena.types(fn_info.params)` to get parameter types, etc.
+    pub param_arena: &'a ParamArena,
 }
 
 // SAFETY: SemaContext is Send + Sync because:

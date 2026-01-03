@@ -185,13 +185,19 @@ fn create_specialized_function(
 ) -> CompileResult<AnalyzedFunction> {
     let specialized_name_str = interner.resolve(&specialized_name).to_string();
 
+    // Get parameter data from the arena
+    let param_names = sema.param_arena.names(base_info.params);
+    let param_types = sema.param_arena.types(base_info.params);
+    let param_modes = sema.param_arena.modes(base_info.params);
+    let param_comptime = sema.param_arena.comptime(base_info.params);
+
     // Build the type substitution map: comptime param name -> concrete Type
     let mut type_subst: HashMap<Spur, Type> = HashMap::new();
     let mut type_arg_idx = 0;
-    for (i, is_comptime) in base_info.param_comptime.iter().enumerate() {
+    for (i, is_comptime) in param_comptime.iter().enumerate() {
         if *is_comptime {
             if type_arg_idx < key.type_args.len() {
-                type_subst.insert(base_info.param_names[i], key.type_args[type_arg_idx]);
+                type_subst.insert(param_names[i], key.type_args[type_arg_idx]);
                 type_arg_idx += 1;
             }
         }
@@ -211,12 +217,11 @@ fn create_specialized_function(
     // Build the specialized parameter list by:
     // 1. Filtering out comptime parameters (they're erased at runtime)
     // 2. Substituting type parameters in non-comptime parameter types
-    let specialized_params: Vec<(Spur, Type, RirParamMode)> = base_info
-        .param_names
+    let specialized_params: Vec<(Spur, Type, RirParamMode)> = param_names
         .iter()
-        .zip(base_info.param_types.iter())
-        .zip(base_info.param_modes.iter())
-        .zip(base_info.param_comptime.iter())
+        .zip(param_types.iter())
+        .zip(param_modes.iter())
+        .zip(param_comptime.iter())
         .filter(|(((_, _), _), is_comptime)| !*is_comptime)
         .map(|(((name, ty), mode), _)| {
             // If the type is ComptimeType, look it up in the substitution map

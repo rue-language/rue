@@ -38,6 +38,7 @@ use rue_rir::Rir;
 use rue_span::FileId;
 
 use crate::intern_pool::TypeInternPool;
+use crate::param_arena::{ParamArena, ParamRange};
 use crate::sema_context::{InferenceContext as SemaContextInferenceContext, SemaContext};
 use crate::types::{ArrayTypeId, EnumDef, EnumId, StructDef, StructField, StructId, Type};
 
@@ -94,6 +95,8 @@ pub struct GatherOutput<'a> {
     pub builtin_string_id: Option<StructId>,
     /// Type intern pool (ADR-0024 Phase 1).
     pub type_pool: TypeInternPool,
+    /// Arena storage for function/method parameter data.
+    pub param_arena: ParamArena,
 }
 
 impl<'a> GatherOutput<'a> {
@@ -116,6 +119,7 @@ impl<'a> GatherOutput<'a> {
             type_pool: self.type_pool,
             module_registry: crate::sema_context::ModuleRegistry::new(),
             file_paths: HashMap::new(),
+            param_arena: self.param_arena,
         }
     }
 }
@@ -178,16 +182,11 @@ pub struct InferenceContext {
 }
 
 /// Information about a function.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct FunctionInfo {
-    /// Parameter names (in order) - needed for generic function specialization
-    pub param_names: Vec<Spur>,
-    /// Parameter types (in order)
-    pub param_types: Vec<Type>,
-    /// Parameter modes (in order)
-    pub param_modes: Vec<rue_rir::RirParamMode>,
-    /// Whether each parameter is comptime (in order)
-    pub param_comptime: Vec<bool>,
+    /// Parameter data (names, types, modes, comptime flags) stored in arena.
+    /// Access via `arena.names(params)`, `arena.types(params)`, etc.
+    pub params: ParamRange,
     /// Return type
     pub return_type: Type,
     /// The return type symbol (before resolution) - needed for generic function specialization
@@ -278,6 +277,9 @@ pub struct Sema<'a> {
     /// Maps FileId to source file paths (for module resolution).
     /// Used to resolve relative imports when compiling multiple files.
     pub(crate) file_paths: HashMap<FileId, String>,
+    /// Arena storage for function/method parameter data.
+    /// FunctionInfo and MethodInfo store ParamRange handles into this arena.
+    pub(crate) param_arena: ParamArena,
 }
 
 impl<'a> Sema<'a> {
@@ -301,6 +303,7 @@ impl<'a> Sema<'a> {
             type_pool: TypeInternPool::new(),
             module_registry: crate::sema_context::ModuleRegistry::new(),
             file_paths: HashMap::new(),
+            param_arena: ParamArena::new(),
         }
     }
 
@@ -457,6 +460,7 @@ impl<'a> Sema<'a> {
             module_registry: crate::sema_context::ModuleRegistry::new(),
             source_file_path: None, // Will be set when analyzing specific files
             file_paths: self.file_paths.clone(), // Copy file paths for module resolution
+            param_arena: &self.param_arena,
         }
     }
 
@@ -472,16 +476,17 @@ impl<'a> Sema<'a> {
                 (
                     *name,
                     FunctionSig {
-                        param_types: info
-                            .param_types
+                        param_types: self
+                            .param_arena
+                            .types(info.params)
                             .iter()
                             .map(|t| self.type_to_infer_type(*t))
                             .collect(),
                         return_type: self.type_to_infer_type(info.return_type),
                         is_generic: info.is_generic,
-                        param_modes: info.param_modes.clone(),
-                        param_comptime: info.param_comptime.clone(),
-                        param_names: info.param_names.clone(),
+                        param_modes: self.param_arena.modes(info.params).to_vec(),
+                        param_comptime: self.param_arena.comptime(info.params).to_vec(),
+                        param_names: self.param_arena.names(info.params).to_vec(),
                         return_type_sym: info.return_type_sym,
                     },
                 )
