@@ -859,3 +859,29 @@ code {
   --chart-grid: var(--color-border-dark);
   --chart-axis: var(--color-muted-dark);
 }
+
+/* ========================================
+   Preview Feature Notice
+   ======================================== */
+
+.preview-notice {
+  border: 1px solid var(--color-accent);
+  border-left-width: 4px;
+  border-radius: 0.5rem;
+  padding: 1rem;
+  margin: 1.5rem 0;
+  background-color: color-mix(in oklch, var(--color-accent) 10%, var(--color-surface));
+}
+
+.dark .preview-notice {
+  border-color: var(--color-accent-dark);
+  background-color: color-mix(in oklch, var(--color-accent-dark) 10%, var(--color-surface-dark));
+}
+
+.preview-notice strong {
+  color: var(--color-accent);
+}
+
+.dark .preview-notice strong {
+  color: var(--color-accent-dark);
+}

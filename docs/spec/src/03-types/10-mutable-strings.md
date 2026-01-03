@@ -8,7 +8,7 @@ template = "spec/page.html"
 
 This section describes the mutable string capabilities, building on the core `String` type from section 3.7.
 
-> **Preview Feature**: Mutable strings are a preview feature requiring `--preview mutable_strings`. See ADR-0014 for the design.
+{{ preview_feature(feature="mutable_strings", adr="ADR-0014") }}
 
 ## String Representation
 
