@@ -58,6 +58,10 @@ pub struct KnownSymbols {
     pub test_preview_gate: Spur,
     /// The `import` builtin symbol.
     pub import: Spur,
+    /// The `random_u32` intrinsic symbol.
+    pub random_u32: Spur,
+    /// The `random_u64` intrinsic symbol.
+    pub random_u64: Spur,
 
     // Type intrinsics
     /// The `size_of` type intrinsic symbol.
@@ -93,6 +97,8 @@ impl KnownSymbols {
             parse_u64: interner.get_or_intern_static("parse_u64"),
             test_preview_gate: interner.get_or_intern_static("test_preview_gate"),
             import: interner.get_or_intern_static("import"),
+            random_u32: interner.get_or_intern_static("random_u32"),
+            random_u64: interner.get_or_intern_static("random_u64"),
 
             // Type intrinsics
             size_of: interner.get_or_intern_static("size_of"),
@@ -149,6 +155,8 @@ mod tests {
             "test_preview_gate"
         );
         assert_eq!(interner.resolve(&known.import), "import");
+        assert_eq!(interner.resolve(&known.random_u32), "random_u32");
+        assert_eq!(interner.resolve(&known.random_u64), "random_u64");
         assert_eq!(interner.resolve(&known.size_of), "size_of");
         assert_eq!(interner.resolve(&known.align_of), "align_of");
         assert_eq!(interner.resolve(&known.string_type), "String");

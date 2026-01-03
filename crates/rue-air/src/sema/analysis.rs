@@ -6780,6 +6780,10 @@ impl<'a> Sema<'a> {
             self.analyze_assert_intrinsic(air, &args, span, ctx)
         } else if name == known.import {
             self.analyze_import_intrinsic(air, &args, span)
+        } else if name == known.random_u32 {
+            self.analyze_random_u32_intrinsic(air, name, &args, span)
+        } else if name == known.random_u64 {
+            self.analyze_random_u64_intrinsic(air, name, &args, span)
         } else {
             // Unknown intrinsic - resolve name for error message
             let intrinsic_name_str = self.interner.resolve(&name);
@@ -7201,6 +7205,78 @@ impl<'a> Sema<'a> {
             span,
         });
         Ok(AnalysisResult::new(air_ref, return_type))
+    }
+
+    /// Analyze @random_u32 intrinsic.
+    fn analyze_random_u32_intrinsic(
+        &mut self,
+        air: &mut Air,
+        name: Spur,
+        args: &[RirCallArg],
+        span: Span,
+    ) -> CompileResult<AnalysisResult> {
+        // Requires the random preview feature
+        self.require_preview(PreviewFeature::Random, "@random_u32() intrinsic", span)?;
+
+        // @random_u32() - takes no arguments, returns u32
+        if !args.is_empty() {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicWrongArgCount {
+                    name: "random_u32".to_string(),
+                    expected: 0,
+                    found: args.len(),
+                },
+                span,
+            ));
+        }
+
+        // Create the intrinsic instruction that returns u32
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::Intrinsic {
+                name,
+                args_start: 0, // No args
+                args_len: 0,
+            },
+            ty: Type::U32,
+            span,
+        });
+        Ok(AnalysisResult::new(air_ref, Type::U32))
+    }
+
+    /// Analyze @random_u64 intrinsic.
+    fn analyze_random_u64_intrinsic(
+        &mut self,
+        air: &mut Air,
+        name: Spur,
+        args: &[RirCallArg],
+        span: Span,
+    ) -> CompileResult<AnalysisResult> {
+        // Requires the random preview feature
+        self.require_preview(PreviewFeature::Random, "@random_u64() intrinsic", span)?;
+
+        // @random_u64() - takes no arguments, returns u64
+        if !args.is_empty() {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicWrongArgCount {
+                    name: "random_u64".to_string(),
+                    expected: 0,
+                    found: args.len(),
+                },
+                span,
+            ));
+        }
+
+        // Create the intrinsic instruction that returns u64
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::Intrinsic {
+                name,
+                args_start: 0, // No args
+                args_len: 0,
+            },
+            ty: Type::U64,
+            span,
+        });
+        Ok(AnalysisResult::new(air_ref, Type::U64))
     }
 
     /// Analyze @import intrinsic.
