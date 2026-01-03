@@ -215,9 +215,12 @@ pub struct SemaContext<'a> {
     /// Thread-safe module registry.
     /// Supports concurrent lookups and insertions during parallel analysis.
     pub module_registry: ModuleRegistry,
-    /// Path to the current source file being compiled.
-    /// Used for resolving relative imports.
+    /// Path to the current source file being compiled (single-file mode).
+    /// Used for resolving relative imports when only one file is compiled.
     pub source_file_path: Option<String>,
+    /// Maps FileId to source file paths (multi-file mode).
+    /// Used for resolving relative imports when multiple files are compiled.
+    pub file_paths: HashMap<rue_span::FileId, String>,
 }
 
 // SAFETY: SemaContext is Send + Sync because:
@@ -306,6 +309,19 @@ impl<'a> SemaContext<'a> {
     /// Update a module definition with populated declarations.
     pub fn update_module_def(&self, id: ModuleId, def: ModuleDef) {
         self.module_registry.update_def(id, def);
+    }
+
+    /// Get the source file path for a span.
+    ///
+    /// Looks up the file path using the span's file_id. Falls back to
+    /// `source_file_path` for single-file compilation mode.
+    pub fn get_source_path(&self, span: rue_span::Span) -> Option<&str> {
+        // First, try the file_paths map (multi-file mode)
+        if let Some(path) = self.file_paths.get(&span.file_id) {
+            return Some(path.as_str());
+        }
+        // Fall back to source_file_path (single-file mode)
+        self.source_file_path.as_deref()
     }
 
     /// Get a human-readable name for a type.

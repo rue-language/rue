@@ -7259,8 +7259,11 @@ impl<'a> Sema<'a> {
         };
 
         // Resolve the import path relative to the current source file
-        // For now, we just use the import_path as-is since module resolution is simple
-        let resolved_path = import_path.clone();
+        // Resolution order (per ADR-0026):
+        // 1. foo.rue (simple file module)
+        // 2. _foo.rue with foo/ directory (directory module)
+        // 3. (Future) Dependency from rue.toml
+        let resolved_path = self.resolve_import_path(&import_path, span)?;
 
         // Get or create the module in the registry
         // The module will be populated lazily when member access is performed
@@ -7277,6 +7280,92 @@ impl<'a> Sema<'a> {
             span,
         });
         Ok(AnalysisResult::new(air_ref, Type::Module(module_id)))
+    }
+
+    /// Resolve an import path to an absolute file path.
+    ///
+    /// Resolution order (per ADR-0026):
+    /// 1. `foo.rue` (simple file module) - if import path already ends in .rue
+    /// 2. `foo.rue` (simple file module) - try adding .rue extension
+    /// 3. `_foo.rue` with `foo/` directory (directory module)
+    /// 4. (Future) Dependency from rue.toml
+    fn resolve_import_path(&self, import_path: &str, span: Span) -> CompileResult<String> {
+        use std::path::Path;
+
+        // Phase 1: Check if the import path matches an already-loaded file
+        // This handles unit tests and multi-file compilation where all files are pre-loaded
+        for (_file_id, path) in &self.file_paths {
+            // Check for exact match
+            if path == import_path {
+                return Ok(path.clone());
+            }
+            // Check if the file path ends with the import path (handles relative imports)
+            if path.ends_with(import_path) {
+                return Ok(path.clone());
+            }
+            // For imports like "math" or "math.rue", check if the file is named accordingly
+            let import_base = import_path.strip_suffix(".rue").unwrap_or(import_path);
+            let file_name = Path::new(path).file_stem().and_then(|s| s.to_str());
+            if let Some(name) = file_name {
+                if name == import_base {
+                    return Ok(path.clone());
+                }
+            }
+        }
+
+        // Phase 2: Try to find the file on disk (for directory modules and actual file imports)
+        // Get the directory of the current source file
+        let source_path = self.get_source_path(span);
+        let source_dir = source_path
+            .and_then(|p| Path::new(p).parent())
+            .unwrap_or(Path::new("."));
+
+        let mut candidates = Vec::new();
+
+        // Strip .rue extension if present for base name calculation
+        let base_name = import_path.strip_suffix(".rue").unwrap_or(import_path);
+
+        // Resolution order:
+        // 1. Try foo.rue (simple file module)
+        let file_candidate = source_dir.join(format!("{}.rue", base_name));
+        candidates.push(file_candidate.display().to_string());
+        if file_candidate.exists() {
+            return Ok(file_candidate.to_string_lossy().to_string());
+        }
+
+        // 2. If the path already ends in .rue, also try it directly
+        if import_path.ends_with(".rue") {
+            let candidate = source_dir.join(import_path);
+            if !candidates.contains(&candidate.display().to_string()) {
+                candidates.push(candidate.display().to_string());
+            }
+            if candidate.exists() {
+                return Ok(candidate.to_string_lossy().to_string());
+            }
+        }
+
+        // 3. Try _foo.rue + foo/ directory (directory module)
+        let dir_module_root = source_dir.join(format!("_{}.rue", base_name));
+        let dir_path = source_dir.join(base_name);
+        candidates.push(format!("{} + {}/", dir_module_root.display(), base_name));
+        if dir_module_root.exists() && dir_path.is_dir() {
+            return Ok(dir_module_root.to_string_lossy().to_string());
+        }
+
+        // 3b. Also try just _foo.rue without requiring foo/ directory
+        // (This allows directory modules where all submodules are re-exported)
+        if dir_module_root.exists() {
+            return Ok(dir_module_root.to_string_lossy().to_string());
+        }
+
+        // Module not found - report error with candidates tried
+        Err(CompileError::new(
+            ErrorKind::ModuleNotFound {
+                path: import_path.to_string(),
+                candidates,
+            },
+            span,
+        ))
     }
 
     // Note: The old analyze_inst body from here onwards is now handled by the

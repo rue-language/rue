@@ -35,6 +35,7 @@ use std::collections::HashMap;
 use lasso::{Spur, ThreadedRodeo};
 use rue_error::{CompileErrors, MultiErrorResult, PreviewFeatures};
 use rue_rir::Rir;
+use rue_span::FileId;
 
 use crate::intern_pool::TypeInternPool;
 use crate::sema_context::{InferenceContext as SemaContextInferenceContext, SemaContext};
@@ -114,6 +115,7 @@ impl<'a> GatherOutput<'a> {
             known: KnownSymbols::new(self.interner),
             type_pool: self.type_pool,
             module_registry: crate::sema_context::ModuleRegistry::new(),
+            file_paths: HashMap::new(),
         }
     }
 }
@@ -246,6 +248,9 @@ pub struct Sema<'a> {
     pub(crate) type_pool: TypeInternPool,
     /// Module registry for tracking imported modules (Phase 1 modules).
     pub(crate) module_registry: crate::sema_context::ModuleRegistry,
+    /// Maps FileId to source file paths (for module resolution).
+    /// Used to resolve relative imports when compiling multiple files.
+    pub(crate) file_paths: HashMap<FileId, String>,
 }
 
 impl<'a> Sema<'a> {
@@ -267,7 +272,23 @@ impl<'a> Sema<'a> {
             known: KnownSymbols::new(interner),
             type_pool: TypeInternPool::new(),
             module_registry: crate::sema_context::ModuleRegistry::new(),
+            file_paths: HashMap::new(),
         }
+    }
+
+    /// Set file paths for module resolution in multi-file compilation.
+    ///
+    /// This maps FileIds to their corresponding source file paths,
+    /// enabling relative import resolution during @import.
+    pub fn set_file_paths(&mut self, file_paths: HashMap<FileId, String>) {
+        self.file_paths = file_paths;
+    }
+
+    /// Get the source file path for a span.
+    ///
+    /// Looks up the file path using the span's file_id.
+    pub(crate) fn get_source_path(&self, span: rue_span::Span) -> Option<&str> {
+        self.file_paths.get(&span.file_id).map(|s| s.as_str())
     }
 
     /// Perform semantic analysis on the RIR.
@@ -426,6 +447,7 @@ impl<'a> Sema<'a> {
             type_pool: self.type_pool.clone(),
             module_registry: crate::sema_context::ModuleRegistry::new(),
             source_file_path: None, // Will be set when analyzing specific files
+            file_paths: self.file_paths.clone(), // Copy file paths for module resolution
         }
     }
 

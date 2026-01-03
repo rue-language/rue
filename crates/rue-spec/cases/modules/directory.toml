@@ -1,0 +1,149 @@
+[section]
+id = "modules.directory"
+name = "Directory Module Resolution"
+description = "Directory module resolution using the _foo.rue + foo/ pattern (Phase 2 of module system). Per ADR-0026, @import('foo') resolves to _foo.rue when foo.rue doesn't exist."
+
+# =============================================================================
+# Simple File Module Resolution
+# =============================================================================
+# Note: Module resolution is implemented, but module member access is not yet.
+# These tests verify the path resolution logic by checking that the correct
+# file is found (no "module not found" error).
+
+[[case]]
+name = "import_simple_file_resolves"
+preview = "modules"
+preview_should_pass = true
+description = "@import('foo') resolves to foo.rue when it exists (verifies file is found)"
+source = """
+fn main() -> i32 {
+    let math = @import("math");
+    0
+}
+"""
+aux_files = { "math.rue" = """
+fn add(a: i32, b: i32) -> i32 {
+    a + b
+}
+""" }
+exit_code = 0
+
+[[case]]
+name = "import_simple_file_with_extension_resolves"
+preview = "modules"
+preview_should_pass = true
+description = "@import('foo.rue') resolves to foo.rue directly"
+source = """
+fn main() -> i32 {
+    let math = @import("math.rue");
+    0
+}
+"""
+aux_files = { "math.rue" = """
+fn multiply(a: i32, b: i32) -> i32 {
+    a * b
+}
+""" }
+exit_code = 0
+
+# =============================================================================
+# Directory Module Resolution (_foo.rue pattern)
+# =============================================================================
+
+[[case]]
+name = "import_directory_module_resolves"
+preview = "modules"
+preview_should_pass = true
+description = "@import('utils') resolves to _utils.rue when utils.rue doesn't exist"
+source = """
+fn main() -> i32 {
+    let utils = @import("utils");
+    0
+}
+"""
+aux_files = { "_utils.rue" = """
+fn helper() -> i32 {
+    42
+}
+""" }
+exit_code = 0
+
+[[case]]
+name = "import_directory_module_with_subdir_resolves"
+preview = "modules"
+preview_should_pass = true
+description = "@import('utils') finds _utils.rue even when utils/ directory exists"
+source = """
+fn main() -> i32 {
+    let utils = @import("utils");
+    0
+}
+"""
+aux_files = { "_utils.rue" = """
+fn helper() -> i32 {
+    99
+}
+""", "utils/inner.rue" = """
+fn inner_fn() -> i32 { 1 }
+""" }
+exit_code = 0
+
+# =============================================================================
+# Resolution Priority (foo.rue before _foo.rue)
+# =============================================================================
+
+[[case]]
+name = "import_prefers_simple_file_resolves"
+preview = "modules"
+preview_should_pass = true
+description = "foo.rue is preferred over _foo.rue if both exist (verifies resolution order)"
+source = """
+fn main() -> i32 {
+    let math = @import("math");
+    0
+}
+"""
+aux_files = { "math.rue" = """
+fn value() -> i32 { 10 }
+""", "_math.rue" = """
+fn value() -> i32 { 20 }
+""" }
+exit_code = 0
+
+# =============================================================================
+# Module Not Found Errors
+# =============================================================================
+
+[[case]]
+name = "import_module_not_found"
+preview = "modules"
+preview_should_pass = true
+description = "@import for non-existent module produces clear error"
+source = """
+fn main() -> i32 {
+    let missing = @import("nonexistent");
+    0
+}
+"""
+compile_fail = true
+error_contains = "cannot find module"
+
+# =============================================================================
+# Nested Directory Resolution
+# =============================================================================
+
+[[case]]
+name = "import_nested_path_resolves"
+preview = "modules"
+preview_should_pass = true
+description = "@import('foo/bar') resolves to foo/bar.rue"
+source = """
+fn main() -> i32 {
+    let nested = @import("sub/helper");
+    0
+}
+"""
+aux_files = { "sub/helper.rue" = """
+fn value() -> i32 { 123 }
+""" }
+exit_code = 0

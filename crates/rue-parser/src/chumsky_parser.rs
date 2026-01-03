@@ -19,7 +19,7 @@ use chumsky::prelude::*;
 use lasso::{Spur, ThreadedRodeo};
 use rue_error::{CompileError, CompileErrors, ErrorKind, MultiErrorResult};
 use rue_lexer::TokenKind;
-use rue_span::Span;
+use rue_span::{FileId, Span};
 use std::borrow::Cow;
 
 use chumsky::extra::SimpleState;
@@ -56,9 +56,29 @@ impl PrimitiveTypeSpurs {
     }
 }
 
-/// Type alias for parser extras that carries primitive type symbols as state.
+/// Parser state containing primitive type symbols and file ID.
+///
+/// This struct holds mutable state needed during parsing:
+/// - Pre-interned primitive type symbols for efficient lookup
+/// - The FileId for the current file being parsed (for multi-file compilation)
+#[derive(Clone, Copy)]
+pub struct ParserState {
+    /// Pre-interned primitive type symbols.
+    pub syms: PrimitiveTypeSpurs,
+    /// The file ID for spans in this file.
+    pub file_id: FileId,
+}
+
+impl ParserState {
+    /// Create a new parser state with the given symbols and file ID.
+    pub fn new(syms: PrimitiveTypeSpurs, file_id: FileId) -> Self {
+        Self { syms, file_id }
+    }
+}
+
+/// Type alias for parser extras that carries parser state.
 /// This replaces the previous thread-local approach with compile-time safe state passing.
-type ParserExtras<'src> = extra::Full<Rich<'src, TokenKind>, SimpleState<PrimitiveTypeSpurs>, ()>;
+type ParserExtras<'src> = extra::Full<Rich<'src, TokenKind>, SimpleState<ParserState>, ()>;
 
 /// Convert a `usize` offset to `u32`, asserting it fits in debug builds.
 ///
@@ -76,14 +96,31 @@ fn offset_to_u32(offset: usize) -> u32 {
     offset as u32
 }
 
-/// Convert chumsky SimpleSpan to rue_span::Span.
+/// Convert chumsky SimpleSpan to rue_span::Span with a specific file ID.
 ///
 /// # Panics
 ///
 /// In debug builds, panics if `span.start` or `span.end` exceeds `u32::MAX`.
 /// This would only happen for source files larger than 4GB.
+fn to_rue_span_with_file(span: SimpleSpan, file_id: FileId) -> Span {
+    Span::with_file(file_id, offset_to_u32(span.start), offset_to_u32(span.end))
+}
+
+/// Convert chumsky SimpleSpan to rue_span::Span using the default file ID.
+/// Only used for error conversion where we don't have access to the parser state.
 fn to_rue_span(span: SimpleSpan) -> Span {
     Span::new(offset_to_u32(span.start), offset_to_u32(span.end))
+}
+
+/// Extract a Span with file ID from the parser extra.
+/// This is the primary way to create spans during parsing.
+#[inline]
+fn span_from_extra<'src, I>(e: &mut MapExtra<'src, '_, I, ParserExtras<'src>>) -> Span
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    let file_id = e.state().0.file_id;
+    to_rue_span_with_file(e.span(), file_id)
 }
 
 /// Parser that produces Ident from identifier tokens
@@ -94,7 +131,7 @@ where
     select! {
         TokenKind::Ident(name) = e => Ident {
             name,
-            span: to_rue_span(e.span()),
+            span: span_from_extra(e),
         },
     }
 }
@@ -110,74 +147,74 @@ where
     // Type annotation on closure parameter is needed to help Rust infer the Extra type
     let i8_parser =
         just(TokenKind::I8).map_with(|_, e: &mut MapExtra<'src, '_, I, ParserExtras<'src>>| {
-            let syms = e.state().0;
+            let syms = e.state().0.syms;
             TypeExpr::Named(Ident {
                 name: syms.i8,
-                span: to_rue_span(e.span()),
+                span: span_from_extra(e),
             })
         });
     let i16_parser =
         just(TokenKind::I16).map_with(|_, e: &mut MapExtra<'src, '_, I, ParserExtras<'src>>| {
-            let syms = e.state().0;
+            let syms = e.state().0.syms;
             TypeExpr::Named(Ident {
                 name: syms.i16,
-                span: to_rue_span(e.span()),
+                span: span_from_extra(e),
             })
         });
     let i32_parser =
         just(TokenKind::I32).map_with(|_, e: &mut MapExtra<'src, '_, I, ParserExtras<'src>>| {
-            let syms = e.state().0;
+            let syms = e.state().0.syms;
             TypeExpr::Named(Ident {
                 name: syms.i32,
-                span: to_rue_span(e.span()),
+                span: span_from_extra(e),
             })
         });
     let i64_parser =
         just(TokenKind::I64).map_with(|_, e: &mut MapExtra<'src, '_, I, ParserExtras<'src>>| {
-            let syms = e.state().0;
+            let syms = e.state().0.syms;
             TypeExpr::Named(Ident {
                 name: syms.i64,
-                span: to_rue_span(e.span()),
+                span: span_from_extra(e),
             })
         });
     let u8_parser =
         just(TokenKind::U8).map_with(|_, e: &mut MapExtra<'src, '_, I, ParserExtras<'src>>| {
-            let syms = e.state().0;
+            let syms = e.state().0.syms;
             TypeExpr::Named(Ident {
                 name: syms.u8,
-                span: to_rue_span(e.span()),
+                span: span_from_extra(e),
             })
         });
     let u16_parser =
         just(TokenKind::U16).map_with(|_, e: &mut MapExtra<'src, '_, I, ParserExtras<'src>>| {
-            let syms = e.state().0;
+            let syms = e.state().0.syms;
             TypeExpr::Named(Ident {
                 name: syms.u16,
-                span: to_rue_span(e.span()),
+                span: span_from_extra(e),
             })
         });
     let u32_parser =
         just(TokenKind::U32).map_with(|_, e: &mut MapExtra<'src, '_, I, ParserExtras<'src>>| {
-            let syms = e.state().0;
+            let syms = e.state().0.syms;
             TypeExpr::Named(Ident {
                 name: syms.u32,
-                span: to_rue_span(e.span()),
+                span: span_from_extra(e),
             })
         });
     let u64_parser =
         just(TokenKind::U64).map_with(|_, e: &mut MapExtra<'src, '_, I, ParserExtras<'src>>| {
-            let syms = e.state().0;
+            let syms = e.state().0.syms;
             TypeExpr::Named(Ident {
                 name: syms.u64,
-                span: to_rue_span(e.span()),
+                span: span_from_extra(e),
             })
         });
     let bool_parser =
         just(TokenKind::Bool).map_with(|_, e: &mut MapExtra<'src, '_, I, ParserExtras<'src>>| {
-            let syms = e.state().0;
+            let syms = e.state().0.syms;
             TypeExpr::Named(Ident {
                 name: syms.bool,
-                span: to_rue_span(e.span()),
+                span: span_from_extra(e),
             })
         });
 
@@ -203,11 +240,10 @@ where
         // Unit type: ()
         let unit_type = just(TokenKind::LParen)
             .then(just(TokenKind::RParen))
-            .map_with(|_, e| TypeExpr::Unit(to_rue_span(e.span())));
+            .map_with(|_, e| TypeExpr::Unit(span_from_extra(e)));
 
         // Never type: !
-        let never_type =
-            just(TokenKind::Bang).map_with(|_, e| TypeExpr::Never(to_rue_span(e.span())));
+        let never_type = just(TokenKind::Bang).map_with(|_, e| TypeExpr::Never(span_from_extra(e)));
 
         // Array type: [T; N]
         let array_type = just(TokenKind::LBracket)
@@ -220,7 +256,7 @@ where
             .map_with(|(element, length), e| TypeExpr::Array {
                 element: Box::new(element),
                 length,
-                span: to_rue_span(e.span()),
+                span: span_from_extra(e),
             });
 
         // Anonymous struct type: struct { field: Type, ... }
@@ -231,7 +267,7 @@ where
             .map_with(|(name, field_ty), e| AnonStructField {
                 name,
                 ty: field_ty,
-                span: to_rue_span(e.span()),
+                span: span_from_extra(e),
             });
 
         let anon_struct_type = just(TokenKind::Struct)
@@ -245,7 +281,7 @@ where
             .then_ignore(just(TokenKind::RBrace))
             .map_with(|fields, e| TypeExpr::AnonymousStruct {
                 fields,
-                span: to_rue_span(e.span()),
+                span: span_from_extra(e),
             });
 
         // Named type: user-defined types like MyStruct
@@ -290,7 +326,7 @@ where
             mode: mode.unwrap_or(ParamMode::Normal),
             name,
             ty,
-            span: to_rue_span(e.span()),
+            span: span_from_extra(e),
         })
 }
 
@@ -305,7 +341,7 @@ where
         .map_with(|(name, ty), e| FieldDecl {
             name,
             ty,
-            span: to_rue_span(e.span()),
+            span: span_from_extra(e),
         })
 }
 
@@ -349,7 +385,7 @@ where
         .map_with(|(name, args), e| Directive {
             name,
             args: args.unwrap_or_default(),
-            span: to_rue_span(e.span()),
+            span: span_from_extra(e),
         })
 }
 
@@ -391,7 +427,7 @@ where
         .map_with(|(mode, expr), e| CallArg {
             mode: mode.unwrap_or(ArgMode::Normal),
             expr,
-            span: to_rue_span(e.span()),
+            span: span_from_extra(e),
         })
 }
 
@@ -430,7 +466,7 @@ where
         .map_with(|(name, value), e| FieldInit {
             name,
             value: Box::new(value),
-            span: to_rue_span(e.span()),
+            span: span_from_extra(e),
         })
 }
 
@@ -635,13 +671,13 @@ where
 {
     // Wildcard pattern: _
     let wildcard =
-        just(TokenKind::Underscore).map_with(|_, e| Pattern::Wildcard(to_rue_span(e.span())));
+        just(TokenKind::Underscore).map_with(|_, e| Pattern::Wildcard(span_from_extra(e)));
 
     // Integer literal pattern (positive or zero)
     let int_pat = select! {
         TokenKind::Int(n) = e => Pattern::Int(IntLit {
             value: n,
-            span: to_rue_span(e.span()),
+            span: span_from_extra(e),
         }),
     };
 
@@ -651,7 +687,7 @@ where
         .map_with(|(_, n), e| {
             Pattern::NegInt(NegIntLit {
                 value: n,
-                span: to_rue_span(e.span()),
+                span: span_from_extra(e),
             })
         });
 
@@ -659,14 +695,14 @@ where
     let bool_true = select! {
         TokenKind::True = e => Pattern::Bool(BoolLit {
             value: true,
-            span: to_rue_span(e.span()),
+            span: span_from_extra(e),
         }),
     };
 
     let bool_false = select! {
         TokenKind::False = e => Pattern::Bool(BoolLit {
             value: false,
-            span: to_rue_span(e.span()),
+            span: span_from_extra(e),
         }),
     };
 
@@ -678,7 +714,7 @@ where
             Pattern::Path(PathPattern {
                 type_name,
                 variant,
-                span: to_rue_span(e.span()),
+                span: span_from_extra(e),
             })
         });
 
@@ -705,7 +741,7 @@ where
         .map_with(|(pattern, body), e| MatchArm {
             pattern,
             body: Box::new(body),
-            span: to_rue_span(e.span()),
+            span: span_from_extra(e),
         })
 }
 
@@ -718,7 +754,7 @@ where
     let int_lit = select! {
         TokenKind::Int(n) = e => Expr::Int(IntLit {
             value: n,
-            span: to_rue_span(e.span()),
+            span: span_from_extra(e),
         }),
     };
 
@@ -726,7 +762,7 @@ where
     let string_lit = select! {
         TokenKind::String(s) = e => Expr::String(StringLit {
             value: s,
-            span: to_rue_span(e.span()),
+            span: span_from_extra(e),
         }),
     };
 
@@ -734,14 +770,14 @@ where
     let bool_true = select! {
         TokenKind::True = e => Expr::Bool(BoolLit {
             value: true,
-            span: to_rue_span(e.span()),
+            span: span_from_extra(e),
         }),
     };
 
     let bool_false = select! {
         TokenKind::False = e => Expr::Bool(BoolLit {
             value: false,
-            span: to_rue_span(e.span()),
+            span: span_from_extra(e),
         }),
     };
 
@@ -750,7 +786,7 @@ where
         .then(just(TokenKind::RParen))
         .map_with(|_, e| {
             Expr::Unit(UnitLit {
-                span: to_rue_span(e.span()),
+                span: span_from_extra(e),
             })
         });
 
@@ -766,12 +802,12 @@ where
 {
     // Break
     let break_expr = select! {
-        TokenKind::Break = e => Expr::Break(BreakExpr { span: to_rue_span(e.span()) }),
+        TokenKind::Break = e => Expr::Break(BreakExpr { span: span_from_extra(e) }),
     };
 
     // Continue
     let continue_expr = select! {
-        TokenKind::Continue = e => Expr::Continue(ContinueExpr { span: to_rue_span(e.span()) }),
+        TokenKind::Continue = e => Expr::Continue(ContinueExpr { span: span_from_extra(e) }),
     };
 
     // Return expression: return <expr>? (expression is optional for unit-returning functions)
@@ -780,7 +816,7 @@ where
         .map_with(|value, e| {
             Expr::Return(ReturnExpr {
                 value: value.map(Box::new),
-                span: to_rue_span(e.span()),
+                span: span_from_extra(e),
             })
         });
 
@@ -794,7 +830,7 @@ where
                     .ignore_then(choice((
                         // else if: wrap the nested if in a synthetic block
                         if_expr_rec.map_with(|nested_if, e| {
-                            let span = to_rue_span(e.span());
+                            let span = span_from_extra(e);
                             BlockExpr {
                                 statements: Vec::new(),
                                 expr: Box::new(nested_if),
@@ -811,7 +847,7 @@ where
                     cond: Box::new(cond),
                     then_block,
                     else_block,
-                    span: to_rue_span(e.span()),
+                    span: span_from_extra(e),
                 })
             })
     })
@@ -825,7 +861,7 @@ where
             Expr::While(WhileExpr {
                 cond: Box::new(cond),
                 body,
-                span: to_rue_span(e.span()),
+                span: span_from_extra(e),
             })
         })
         .boxed();
@@ -836,7 +872,7 @@ where
         .map_with(|body, e| {
             Expr::Loop(LoopExpr {
                 body,
-                span: to_rue_span(e.span()),
+                span: span_from_extra(e),
             })
         })
         .boxed();
@@ -855,7 +891,7 @@ where
             Expr::Match(MatchExpr {
                 scrutinee: Box::new(scrutinee),
                 arms,
-                span: to_rue_span(e.span()),
+                span: span_from_extra(e),
             })
         })
         .boxed();
@@ -919,23 +955,23 @@ where
             IdentSuffix::Call(args) => Expr::Call(CallExpr {
                 name,
                 args,
-                span: to_rue_span(e.span()),
+                span: span_from_extra(e),
             }),
             IdentSuffix::StructLit(fields) => Expr::StructLit(StructLitExpr {
                 name,
                 fields,
-                span: to_rue_span(e.span()),
+                span: span_from_extra(e),
             }),
             IdentSuffix::PathCall(function, args) => Expr::AssocFnCall(AssocFnCallExpr {
                 type_name: name,
                 function,
                 args,
-                span: to_rue_span(e.span()),
+                span: span_from_extra(e),
             }),
             IdentSuffix::Path(variant) => Expr::Path(PathExpr {
                 type_name: name,
                 variant,
-                span: to_rue_span(e.span()),
+                span: span_from_extra(e),
             }),
             IdentSuffix::None => Expr::Ident(name),
         })
@@ -1024,7 +1060,7 @@ where
 {
     // Self expression (in method bodies)
     let self_expr = select! {
-        TokenKind::SelfValue = e => Expr::SelfExpr(SelfExpr { span: to_rue_span(e.span()) }),
+        TokenKind::SelfValue = e => Expr::SelfExpr(SelfExpr { span: span_from_extra(e) }),
     };
 
     // Parenthesized expression
@@ -1034,7 +1070,7 @@ where
         .map_with(|inner, e| {
             Expr::Paren(ParenExpr {
                 inner: Box::new(inner),
-                span: to_rue_span(e.span()),
+                span: span_from_extra(e),
             })
         });
 
@@ -1047,7 +1083,7 @@ where
         .map_with(|inner_expr, e| {
             Expr::Comptime(ComptimeBlockExpr {
                 expr: Box::new(inner_expr),
-                span: to_rue_span(e.span()),
+                span: span_from_extra(e),
             })
         });
 
@@ -1058,11 +1094,11 @@ where
         // Unit type: ()
         let unit_type = just(TokenKind::LParen)
             .then(just(TokenKind::RParen))
-            .map_with(|_, e| IntrinsicArg::Type(TypeExpr::Unit(to_rue_span(e.span()))));
+            .map_with(|_, e| IntrinsicArg::Type(TypeExpr::Unit(span_from_extra(e))));
 
         // Never type: !
         let never_type = just(TokenKind::Bang)
-            .map_with(|_, e| IntrinsicArg::Type(TypeExpr::Never(to_rue_span(e.span()))));
+            .map_with(|_, e| IntrinsicArg::Type(TypeExpr::Never(span_from_extra(e))));
 
         // Array type: [T; N]
         let array_type = just(TokenKind::LBracket)
@@ -1076,7 +1112,7 @@ where
                 IntrinsicArg::Type(TypeExpr::Array {
                     element: Box::new(element),
                     length,
-                    span: to_rue_span(e.span()),
+                    span: span_from_extra(e),
                 })
             });
 
@@ -1105,13 +1141,13 @@ where
             Expr::IntrinsicCall(IntrinsicCallExpr {
                 name,
                 args,
-                span: to_rue_span(e.span()),
+                span: span_from_extra(e),
             })
         });
 
     // @import(args) - lexer tokenizes @import as a single token with interned "import" Spur
     let import_call = select! {
-        TokenKind::AtImport(import_spur) = e => (import_spur, to_rue_span(e.span())),
+        TokenKind::AtImport(import_spur) = e => (import_spur, span_from_extra(e)),
     }
     .then(
         intrinsic_arg
@@ -1127,7 +1163,7 @@ where
                 span: import_span,
             },
             args,
-            span: to_rue_span(e.span()),
+            span: span_from_extra(e),
         })
     });
 
@@ -1140,7 +1176,7 @@ where
         .map_with(|elements, e| {
             Expr::ArrayLit(ArrayLitExpr {
                 elements,
-                span: to_rue_span(e.span()),
+                span: span_from_extra(e),
             })
         });
 
@@ -1149,7 +1185,7 @@ where
     let type_lit_expr = primitive_type_parser().map_with(|type_expr, e| {
         Expr::TypeLit(TypeLitExpr {
             type_expr,
-            span: to_rue_span(e.span()),
+            span: span_from_extra(e),
         })
     });
 
@@ -1162,7 +1198,7 @@ where
         .map_with(|(name, field_ty), e| AnonStructField {
             name,
             ty: field_ty,
-            span: to_rue_span(e.span()),
+            span: span_from_extra(e),
         });
 
     let anon_struct_type_expr = just(TokenKind::Struct)
@@ -1175,7 +1211,7 @@ where
         )
         .then_ignore(just(TokenKind::RBrace))
         .map_with(|fields, e| {
-            let span = to_rue_span(e.span());
+            let span = span_from_extra(e);
             Expr::TypeLit(TypeLitExpr {
                 type_expr: TypeExpr::AnonymousStruct { fields, span },
                 span,
@@ -1233,7 +1269,7 @@ where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
     let wildcard =
-        just(TokenKind::Underscore).map_with(|_, e| LetPattern::Wildcard(to_rue_span(e.span())));
+        just(TokenKind::Underscore).map_with(|_, e| LetPattern::Wildcard(span_from_extra(e)));
     let ident = ident_parser().map(LetPattern::Ident);
     ident.or(wildcard)
 }
@@ -1259,7 +1295,7 @@ where
                 pattern,
                 ty,
                 init: Box::new(init),
-                span: to_rue_span(e.span()),
+                span: span_from_extra(e),
             })
         })
 }
@@ -1367,7 +1403,7 @@ where
             Statement::Assign(AssignStatement {
                 target,
                 value: Box::new(value),
-                span: to_rue_span(e.span()),
+                span: span_from_extra(e),
             })
         })
 }
@@ -1572,7 +1608,7 @@ where
         .collect::<Vec<_>>()
         .delimited_by(just(TokenKind::LBrace), just(TokenKind::RBrace))
         .map_with(|items, e| {
-            let span = to_rue_span(e.span());
+            let span = span_from_extra(e);
             let (statements, final_expr) = process_block_items(items, span);
             BlockExpr {
                 statements,
@@ -1594,7 +1630,7 @@ where
         .collect::<Vec<_>>()
         .delimited_by(just(TokenKind::LBrace), just(TokenKind::RBrace))
         .map_with(|items, e| {
-            let span = to_rue_span(e.span());
+            let span = span_from_extra(e);
             let (statements, final_expr) = process_block_items(items, span);
             Expr::Block(BlockExpr {
                 statements,
@@ -1634,7 +1670,7 @@ where
                 params,
                 return_type,
                 body,
-                span: to_rue_span(e.span()),
+                span: span_from_extra(e),
             },
         )
 }
@@ -1665,7 +1701,7 @@ where
                 is_linear: is_linear.is_some(),
                 name,
                 fields,
-                span: to_rue_span(e.span()),
+                span: span_from_extra(e),
             },
         )
 }
@@ -1677,7 +1713,7 @@ where
 {
     ident_parser().map_with(|name, e| EnumVariant {
         name,
-        span: to_rue_span(e.span()),
+        span: span_from_extra(e),
     })
 }
 
@@ -1714,7 +1750,7 @@ where
             visibility,
             name,
             variants,
-            span: to_rue_span(e.span()),
+            span: span_from_extra(e),
         })
 }
 
@@ -1728,7 +1764,7 @@ where
 
     // Parse optional self parameter
     let self_param = just(TokenKind::SelfValue).map_with(|_, e| SelfParam {
-        span: to_rue_span(e.span()),
+        span: span_from_extra(e),
     });
 
     // Parse self followed by optional regular params
@@ -1763,7 +1799,7 @@ where
                 params,
                 return_type,
                 body,
-                span: to_rue_span(e.span()),
+                span: span_from_extra(e),
             },
         )
 }
@@ -1784,7 +1820,7 @@ where
         .map_with(|(type_name, methods), e| ImplBlock {
             type_name,
             methods,
-            span: to_rue_span(e.span()),
+            span: span_from_extra(e),
         })
 }
 
@@ -1797,7 +1833,7 @@ where
 
     // Parse self parameter
     let self_param = just(TokenKind::SelfValue).map_with(|_, e| SelfParam {
-        span: to_rue_span(e.span()),
+        span: span_from_extra(e),
     });
 
     just(TokenKind::Drop)
@@ -1809,7 +1845,7 @@ where
             type_name,
             self_param,
             body,
-            span: to_rue_span(e.span()),
+            span: span_from_extra(e),
         })
 }
 
@@ -1906,12 +1942,19 @@ pub struct ChumskyParser {
     tokens: Vec<(TokenKind, SimpleSpan)>,
     source_len: usize,
     interner: ThreadedRodeo,
+    /// File ID for spans in this file.
+    file_id: FileId,
 }
 
 impl ChumskyParser {
     /// Create a new parser from tokens and an interner produced by the lexer.
     pub fn new(tokens: Vec<rue_lexer::Token>, interner: ThreadedRodeo) -> Self {
         let source_len = tokens.last().map(|t| t.span.end as usize).unwrap_or(0);
+        // Extract file_id from the first token (all tokens in a file have the same file_id)
+        let file_id = tokens
+            .first()
+            .map(|t| t.span.file_id)
+            .unwrap_or(FileId::DEFAULT);
 
         let spanned_tokens: Vec<(TokenKind, SimpleSpan)> = tokens
             .into_iter()
@@ -1927,6 +1970,7 @@ impl ChumskyParser {
             tokens: spanned_tokens,
             source_len,
             interner,
+            file_id,
         }
     }
 
@@ -1934,9 +1978,10 @@ impl ChumskyParser {
     ///
     /// Returns all parse errors if parsing fails, not just the first one.
     pub fn parse(mut self) -> MultiErrorResult<(Ast, ThreadedRodeo)> {
-        // Pre-intern primitive type symbols for use as parser state
+        // Pre-intern primitive type symbols and create parser state with file ID
         let syms = PrimitiveTypeSpurs::new(&mut self.interner);
-        let mut state = SimpleState(syms);
+        let parser_state = ParserState::new(syms, self.file_id);
+        let mut state = SimpleState(parser_state);
 
         // Create a stream from the token iterator
         let token_iter = self.tokens.iter().cloned();

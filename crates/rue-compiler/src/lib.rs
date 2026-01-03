@@ -325,6 +325,8 @@ pub struct ValidatedProgram {
     pub rir: Rir,
     /// Merged interner containing all symbols from all files.
     pub interner: ThreadedRodeo,
+    /// Maps FileId to source file path (for module resolution).
+    pub file_paths: std::collections::HashMap<FileId, String>,
 }
 
 /// Information about a symbol definition for duplicate detection.
@@ -542,6 +544,13 @@ pub fn validate_and_generate_rir_parallel(
     )
     .entered();
 
+    // Step 0: Build file_id -> path mapping for module resolution
+    let file_paths: HashMap<FileId, String> = program
+        .files
+        .iter()
+        .map(|f| (f.file_id, f.path.clone()))
+        .collect();
+
     // Step 1: Validate symbols for duplicates (same logic as merge_symbols)
     let mut functions: HashMap<String, SymbolDef> = HashMap::new();
     let mut structs: HashMap<String, SymbolDef> = HashMap::new();
@@ -684,7 +693,11 @@ pub fn validate_and_generate_rir_parallel(
 
     info!(instruction_count = rir.len(), "RIR generation complete");
 
-    Ok(ValidatedProgram { rir, interner })
+    Ok(ValidatedProgram {
+        rir,
+        interner,
+        file_paths,
+    })
 }
 
 /// Which linker to use for the final linking phase.
@@ -988,10 +1001,31 @@ pub fn compile_frontend_from_rir_with_options(
     opt_level: OptLevel,
     preview_features: &PreviewFeatures,
 ) -> MultiErrorResult<CompileStateFromRir> {
+    compile_frontend_from_rir_with_file_paths(
+        rir,
+        interner,
+        opt_level,
+        preview_features,
+        std::collections::HashMap::new(),
+    )
+}
+
+/// Compile frontend from RIR with file paths for module resolution.
+///
+/// This is the full version that accepts file_id -> path mapping for
+/// multi-file compilation with module imports.
+pub fn compile_frontend_from_rir_with_file_paths(
+    rir: Rir,
+    interner: ThreadedRodeo,
+    opt_level: OptLevel,
+    preview_features: &PreviewFeatures,
+    file_paths: std::collections::HashMap<FileId, String>,
+) -> MultiErrorResult<CompileStateFromRir> {
     // Semantic analysis (RIR to AIR)
     let sema_output = {
         let _span = info_span!("sema").entered();
-        let sema = Sema::new(&rir, &interner, preview_features.clone());
+        let mut sema = Sema::new(&rir, &interner, preview_features.clone());
+        sema.set_file_paths(file_paths);
         let output = sema.analyze_all()?;
         info!(
             function_count = output.functions.len(),
@@ -1180,12 +1214,13 @@ pub fn compile_multi_file_with_options(
     // This is faster than the sequential path for multi-file projects
     let validated = validate_and_generate_rir_parallel(parsed)?;
 
-    // Compile from the merged RIR
-    let state = compile_frontend_from_rir_with_options(
+    // Compile from the merged RIR (with file paths for module resolution)
+    let state = compile_frontend_from_rir_with_file_paths(
         validated.rir,
         validated.interner,
         options.opt_level,
         &options.preview_features,
+        validated.file_paths,
     )?;
 
     // Check for main function

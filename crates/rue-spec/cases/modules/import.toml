@@ -8,20 +8,20 @@ description = "The @import builtin for importing modules (Phase 1 of module syst
 # =============================================================================
 
 # These tests verify that @import is correctly gated behind the modules preview
-# feature and accepts valid syntax. Actual module resolution is not yet implemented,
-# so these tests only verify the placeholder behavior (returns Unit).
+# feature and accepts valid syntax. Module resolution is implemented per ADR-0026.
 
 [[case]]
 name = "import_basic_syntax"
 preview = "modules"
 preview_should_pass = true
-description = "@import with string argument is accepted (returns Unit placeholder)"
+description = "@import with string argument is accepted"
 source = """
 fn main() -> i32 {
-    let m = @import("foo.rue");
+    let m = @import("foo");
     0
 }
 """
+aux_files = { "foo.rue" = "fn f() -> i32 { 1 }" }
 exit_code = 0
 
 [[case]]
@@ -31,10 +31,11 @@ preview_should_pass = true
 description = "@import can be used in a const binding (typical pattern)"
 source = """
 fn main() -> i32 {
-    let math = @import("math.rue");
+    let math = @import("math");
     0
 }
 """
+aux_files = { "math.rue" = "fn add(a: i32, b: i32) -> i32 { a + b }" }
 exit_code = 0
 
 [[case]]
@@ -44,11 +45,12 @@ preview_should_pass = true
 description = "Multiple @import calls in same file"
 source = """
 fn main() -> i32 {
-    let a = @import("a.rue");
-    let b = @import("b.rue");
+    let a = @import("a");
+    let b = @import("b");
     0
 }
 """
+aux_files = { "a.rue" = "fn a_fn() -> i32 { 1 }", "b.rue" = "fn b_fn() -> i32 { 2 }" }
 exit_code = 0
 
 [[case]]
@@ -58,10 +60,11 @@ preview_should_pass = true
 description = "@import with nested path"
 source = """
 fn main() -> i32 {
-    let utils = @import("utils/strings.rue");
+    let utils = @import("utils/strings");
     0
 }
 """
+aux_files = { "utils/strings.rue" = "fn format(x: i32) -> i32 { x }" }
 exit_code = 0
 
 # =============================================================================
