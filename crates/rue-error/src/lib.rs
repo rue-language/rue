@@ -261,6 +261,9 @@ pub enum PreviewFeature {
     /// Allows method definitions inside anonymous struct type expressions.
     /// See ADR-0029 for the full design.
     AnonStructMethods,
+    /// Unchecked code and raw pointers.
+    /// See ADR-0028 for the full design.
+    UncheckedCode,
 }
 
 /// Error returned when parsing a preview feature name fails.
@@ -284,6 +287,7 @@ impl PreviewFeature {
             PreviewFeature::AffineMvs => "affine_mvs",
             PreviewFeature::ModuleTypes => "module_types",
             PreviewFeature::AnonStructMethods => "anon_struct_methods",
+            PreviewFeature::UncheckedCode => "unchecked_code",
         }
     }
 
@@ -295,6 +299,7 @@ impl PreviewFeature {
             PreviewFeature::AffineMvs => "ADR-0008",
             PreviewFeature::ModuleTypes => "ADR-0026",
             PreviewFeature::AnonStructMethods => "ADR-0029",
+            PreviewFeature::UncheckedCode => "ADR-0028",
         }
     }
 
@@ -305,6 +310,7 @@ impl PreviewFeature {
             PreviewFeature::AffineMvs,
             PreviewFeature::ModuleTypes,
             PreviewFeature::AnonStructMethods,
+            PreviewFeature::UncheckedCode,
         ]
     }
 
@@ -331,6 +337,7 @@ impl std::str::FromStr for PreviewFeature {
             "affine_mvs" => Ok(PreviewFeature::AffineMvs),
             "module_types" => Ok(PreviewFeature::ModuleTypes),
             "anon_struct_methods" => Ok(PreviewFeature::AnonStructMethods),
+            "unchecked_code" => Ok(PreviewFeature::UncheckedCode),
             _ => Err(ParsePreviewFeatureError(s.to_string())),
         }
     }
@@ -1842,7 +1849,7 @@ mod tests {
         let names = PreviewFeature::all_names();
         assert_eq!(
             names,
-            "test_infra, affine_mvs, module_types, anon_struct_methods"
+            "test_infra, affine_mvs, module_types, anon_struct_methods, unchecked_code"
         );
     }
 

@@ -107,6 +107,20 @@ impl<'a> AstGen<'a> {
                 s.push_str(" }");
                 self.interner.get_or_intern(&s)
             }
+            TypeExpr::PointerConst { pointee, .. } => {
+                // ptr const T
+                let pointee_sym = self.intern_type(pointee);
+                let pointee_name = self.interner.resolve(&pointee_sym);
+                let s = format!("ptr const {}", pointee_name);
+                self.interner.get_or_intern(&s)
+            }
+            TypeExpr::PointerMut { pointee, .. } => {
+                // ptr mut T
+                let pointee_sym = self.intern_type(pointee);
+                let pointee_name = self.interner.resolve(&pointee_sym);
+                let s = format!("ptr mut {}", pointee_name);
+                self.interner.get_or_intern(&s)
+            }
         }
     }
 
@@ -249,11 +263,13 @@ impl<'a> AstGen<'a> {
         // Emit methods as FnDecl instructions with has_self flag.
         // Sema uses has_self to add the implicit self parameter for methods.
         // Methods don't have their own visibility - they're accessible if the type is accessible.
+        // Methods cannot be marked unchecked (that's a function-level modifier).
         let decl = self.rir.add_inst(Inst {
             data: InstData::FnDecl {
                 directives_start,
                 directives_len,
                 is_pub: false,
+                is_unchecked: false,
                 name,
                 params_start,
                 params_len,
@@ -355,6 +371,7 @@ impl<'a> AstGen<'a> {
                 directives_start,
                 directives_len,
                 is_pub: func.visibility == Visibility::Public,
+                is_unchecked: func.is_unchecked,
                 name,
                 params_start,
                 params_len,
@@ -704,6 +721,15 @@ impl<'a> AstGen<'a> {
                     span: comptime_block.span,
                 })
             }
+            Expr::Checked(checked_block) => {
+                // Generate the inner expression, wrapped in a Checked instruction
+                // Unchecked operations are only allowed inside checked blocks
+                let inner_expr = self.gen_expr(&checked_block.expr);
+                self.rir.add_inst(Inst {
+                    data: InstData::Checked { expr: inner_expr },
+                    span: checked_block.span,
+                })
+            }
             Expr::TypeLit(type_lit) => {
                 // Generate a type constant instruction for type-as-value expressions
                 match &type_lit.type_expr {
@@ -727,7 +753,7 @@ impl<'a> AstGen<'a> {
                         })
                     }
                     _ => {
-                        // For named types, unit, never, and arrays, generate TypeConst
+                        // For named types, unit, never, arrays, and pointers, generate TypeConst
                         let type_name = match &type_lit.type_expr {
                             TypeExpr::Named(ident) => ident.name,
                             TypeExpr::Unit(_) => self.interner.get_or_intern_static("()"),
@@ -739,6 +765,10 @@ impl<'a> AstGen<'a> {
                             }
                             TypeExpr::AnonymousStruct { .. } => {
                                 unreachable!("handled above")
+                            }
+                            TypeExpr::PointerConst { .. } | TypeExpr::PointerMut { .. } => {
+                                // Pointer types as values - use intern_type to get representation
+                                self.intern_type(&type_lit.type_expr)
                             }
                         };
                         self.rir.add_inst(Inst {

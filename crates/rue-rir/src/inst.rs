@@ -964,6 +964,7 @@ impl Rir {
                 directives_start,
                 directives_len,
                 is_pub,
+                is_unchecked,
                 name,
                 params_start,
                 params_len,
@@ -974,6 +975,7 @@ impl Rir {
                 directives_start: *directives_start + extra_offset,
                 directives_len: *directives_len,
                 is_pub: *is_pub,
+                is_unchecked: *is_unchecked,
                 name: *name,
                 params_start: *params_start + extra_offset,
                 params_len: *params_len,
@@ -1128,6 +1130,9 @@ impl Rir {
                 body: renumber(*body),
             },
             InstData::Comptime { expr } => InstData::Comptime {
+                expr: renumber(*expr),
+            },
+            InstData::Checked { expr } => InstData::Checked {
                 expr: renumber(*expr),
             },
             InstData::TypeConst { type_name } => InstData::TypeConst {
@@ -1317,6 +1322,7 @@ impl Rir {
                 | InstData::TypeIntrinsic { .. }
                 | InstData::DropFnDecl { .. }
                 | InstData::Comptime { .. }
+                | InstData::Checked { .. }
                 | InstData::TypeConst { .. }
                 | InstData::AnonStructType { .. } => {}
             }
@@ -1439,6 +1445,8 @@ pub enum InstData {
         directives_len: u32,
         /// Whether this function is public (requires --preview modules)
         is_pub: bool,
+        /// Whether this function is marked `unchecked` (can only be called from checked blocks)
+        is_unchecked: bool,
         name: Spur,
         /// Index into extra data where params start
         params_start: u32,
@@ -1712,6 +1720,14 @@ pub enum InstData {
         expr: InstRef,
     },
 
+    /// Checked block expression: checked { expr }
+    /// Unchecked operations (raw pointer manipulation, calling unchecked functions)
+    /// are only allowed inside checked blocks.
+    Checked {
+        /// The expression inside the checked block
+        expr: InstRef,
+    },
+
     /// Type constant: a type used as a value expression (e.g., `i32` in `identity(i32, 42)`)
     /// The type_name is the symbol for the type (e.g., "i32", "bool").
     TypeConst {
@@ -1867,6 +1883,7 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     directives_start: _,
                     directives_len: _,
                     is_pub,
+                    is_unchecked,
                     name,
                     params_start,
                     params_len,
@@ -1875,6 +1892,7 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     has_self,
                 } => {
                     let pub_str = if *is_pub { "pub " } else { "" };
+                    let unchecked_str = if *is_unchecked { "unchecked " } else { "" };
                     let name_str = self.interner.resolve(&*name);
                     let ret_str = self.interner.resolve(&*return_type);
                     let self_str = if *has_self { "self, " } else { "" };
@@ -1898,8 +1916,9 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                         .collect();
                     writeln!(
                         out,
-                        "{}fn {}({}{}) -> {} {{",
+                        "{}{}fn {}({}{}) -> {} {{",
                         pub_str,
+                        unchecked_str,
                         name_str,
                         self_str,
                         params_str.join(", "),
@@ -2186,6 +2205,11 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                 // Comptime block
                 InstData::Comptime { expr } => {
                     writeln!(out, "comptime {{ {} }}", expr).unwrap();
+                }
+
+                // Checked block
+                InstData::Checked { expr } => {
+                    writeln!(out, "checked {{ {} }}", expr).unwrap();
                 }
 
                 // Type constant
@@ -2706,6 +2730,7 @@ mod tests {
                 directives_start,
                 directives_len,
                 is_pub: false,
+                is_unchecked: false,
                 name,
                 params_start,
                 params_len,
@@ -2740,6 +2765,7 @@ mod tests {
                 directives_start,
                 directives_len,
                 is_pub: false,
+                is_unchecked: false,
                 name,
                 params_start,
                 params_len,
@@ -2799,6 +2825,7 @@ mod tests {
                 directives_start,
                 directives_len,
                 is_pub: false,
+                is_unchecked: false,
                 name,
                 params_start,
                 params_len,
@@ -3375,6 +3402,7 @@ mod tests {
                 directives_start,
                 directives_len,
                 is_pub: false,
+                is_unchecked: false,
                 name: method_name,
                 params_start,
                 params_len,
@@ -3957,6 +3985,7 @@ mod tests {
                 directives_start: dirs_start,
                 directives_len: dirs_len,
                 is_pub: false,
+                is_unchecked: false,
                 name: main_name,
                 params_start,
                 params_len,
@@ -3982,6 +4011,7 @@ mod tests {
                 directives_start: dirs_start2,
                 directives_len: dirs_len2,
                 is_pub: false,
+                is_unchecked: false,
                 name: helper_name,
                 params_start: params_start2,
                 params_len: params_len2,

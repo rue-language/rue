@@ -2048,6 +2048,10 @@ fn analyze_inst_with_context(
                 inst.span,
             ))
         }
+
+        // Checked block: evaluate the inner expression
+        // The actual checking of unchecked operations happens in Phase 2
+        InstData::Checked { expr } => analyze_inst_with_context(ctx, air, *expr, analysis_ctx),
     }
 }
 
@@ -6460,6 +6464,10 @@ impl<'a> Sema<'a> {
                 });
                 Ok(AnalysisResult::new(air_ref, Type::ComptimeType))
             }
+
+            // Checked block: evaluate the inner expression
+            // The actual checking of unchecked operations happens in Phase 2
+            InstData::Checked { expr } => self.analyze_inst(air, *expr, ctx),
         }
     }
 

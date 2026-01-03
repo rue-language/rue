@@ -1058,6 +1058,14 @@ impl<'a> ConstraintGenerator<'a> {
                 InferType::Var(var)
             }
 
+            // Checked block: for type inference purposes, the type is the type of the inner expression
+            // The actual checking of unchecked operations happens in sema
+            InstData::Checked { expr } => {
+                // Generate constraints for the inner expression
+                let inner_info = self.generate(*expr, ctx);
+                inner_info.ty
+            }
+
             // Type constant: a type used as a value (e.g., `i32` in `identity(i32, 42)`)
             // This has the special ComptimeType type which indicates it's a type value.
             InstData::TypeConst { .. } => InferType::Concrete(Type::ComptimeType),

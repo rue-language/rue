@@ -5,13 +5,14 @@
 
 use crate::ast::{
     AnonStructField, ArgMode, ArrayLitExpr, AssignStatement, AssignTarget, AssocFnCallExpr, Ast,
-    BinaryExpr, BinaryOp, BlockExpr, BoolLit, BreakExpr, CallArg, CallExpr, ComptimeBlockExpr,
-    ConstDecl, ContinueExpr, Directive, DirectiveArg, Directives, DropFn, EnumDecl, EnumVariant,
-    Expr, FieldDecl, FieldExpr, FieldInit, Function, Ident, IfExpr, ImplBlock, IndexExpr, IntLit,
-    IntrinsicArg, IntrinsicCallExpr, Item, LetPattern, LetStatement, LoopExpr, MatchArm, MatchExpr,
-    Method, MethodCallExpr, NegIntLit, Param, ParamMode, ParenExpr, PathExpr, PathPattern, Pattern,
-    ReturnExpr, SelfExpr, SelfParam, Statement, StringLit, StructDecl, StructLitExpr, TypeExpr,
-    TypeLitExpr, UnaryExpr, UnaryOp, UnitLit, Visibility, WhileExpr,
+    BinaryExpr, BinaryOp, BlockExpr, BoolLit, BreakExpr, CallArg, CallExpr, CheckedBlockExpr,
+    ComptimeBlockExpr, ConstDecl, ContinueExpr, Directive, DirectiveArg, Directives, DropFn,
+    EnumDecl, EnumVariant, Expr, FieldDecl, FieldExpr, FieldInit, Function, Ident, IfExpr,
+    ImplBlock, IndexExpr, IntLit, IntrinsicArg, IntrinsicCallExpr, Item, LetPattern, LetStatement,
+    LoopExpr, MatchArm, MatchExpr, Method, MethodCallExpr, NegIntLit, Param, ParamMode, ParenExpr,
+    PathExpr, PathPattern, Pattern, ReturnExpr, SelfExpr, SelfParam, Statement, StringLit,
+    StructDecl, StructLitExpr, TypeExpr, TypeLitExpr, UnaryExpr, UnaryOp, UnitLit, Visibility,
+    WhileExpr,
 };
 use chumsky::input::{Input as ChumskyInput, MapExtra, Stream, ValueInput};
 use chumsky::pratt::{infix, left, prefix};
@@ -288,6 +289,23 @@ where
                 span: span_from_extra(e),
             });
 
+        // Pointer type: ptr const T or ptr mut T
+        let ptr_const_type = just(TokenKind::Ptr)
+            .ignore_then(just(TokenKind::Const))
+            .ignore_then(ty.clone())
+            .map_with(|pointee, e| TypeExpr::PointerConst {
+                pointee: Box::new(pointee),
+                span: span_from_extra(e),
+            });
+
+        let ptr_mut_type = just(TokenKind::Ptr)
+            .ignore_then(just(TokenKind::Mut))
+            .ignore_then(ty.clone())
+            .map_with(|pointee, e| TypeExpr::PointerMut {
+                pointee: Box::new(pointee),
+                span: span_from_extra(e),
+            });
+
         // Named type: user-defined types like MyStruct
         let named_type = ident_parser().map(TypeExpr::Named);
 
@@ -305,6 +323,8 @@ where
             never_type,
             array_type,
             anon_struct_type,
+            ptr_const_type,
+            ptr_mut_type,
             primitive_type_parser(),
             self_type,
             named_type,
@@ -1282,6 +1302,17 @@ where
             })
         });
 
+    // Checked block expression: checked { expr }
+    // Unchecked operations are only allowed inside checked blocks
+    let checked_expr = just(TokenKind::Checked)
+        .ignore_then(block_parser(expr.clone()))
+        .map_with(|inner_expr, e| {
+            Expr::Checked(CheckedBlockExpr {
+                expr: Box::new(inner_expr),
+                span: span_from_extra(e),
+            })
+        });
+
     // Intrinsic argument: can be either a type or an expression
     // We parse as type only for unambiguous type syntax (primitives, (), !, [T;N])
     // Bare identifiers are parsed as expressions since they could be variables
@@ -1453,7 +1484,7 @@ where
     // so () is parsed as unit, not empty parens
     // Note: self_expr must come before call_and_access_parser since self is a keyword
     // Note: self_type_expr must come before call_and_access_parser since Self is a keyword
-    // Note: comptime_expr must come before block_expr since comptime starts with a keyword
+    // Note: comptime_expr and checked_expr must come before block_expr since they start with keywords
     // Note: type_lit_expr must come before call_and_access_parser since type names are keywords
     // Note: anon_struct_type_expr must come before call_and_access_parser since struct is a keyword
     let primary = choice((
@@ -1468,6 +1499,7 @@ where
         call_and_access_parser(expr.clone()),
         paren_expr,
         comptime_expr,
+        checked_expr,
         block_expr,
     ));
 
@@ -1872,7 +1904,7 @@ where
         })
 }
 
-/// Parser for function definitions: [@directive]* fn name(params) -> Type { body }
+/// Parser for function definitions: [@directive]* [pub] [unchecked] fn name(params) -> Type { body }
 fn function_parser<'src, I>() -> impl Parser<'src, I, Function, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
@@ -1890,14 +1922,17 @@ where
 
     directives_parser()
         .then(visibility)
+        .then(just(TokenKind::Unchecked).or_not())
         .then(just(TokenKind::Fn).ignore_then(ident_parser()))
         .then(params_parser().delimited_by(just(TokenKind::LParen), just(TokenKind::RParen)))
         .then(just(TokenKind::Arrow).ignore_then(type_parser()).or_not())
         .then(block_parser(expr))
         .map_with(
-            |(((((directives, visibility), name), params), return_type), body), e| Function {
+            |((((((directives, visibility), is_unchecked), name), params), return_type), body),
+             e| Function {
                 directives,
                 visibility,
+                is_unchecked: is_unchecked.is_some(),
                 name,
                 params,
                 return_type,

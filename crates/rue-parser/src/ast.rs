@@ -217,6 +217,8 @@ pub struct Function {
     pub directives: Directives,
     /// Visibility of this function
     pub visibility: Visibility,
+    /// Whether this function is marked `unchecked` (can only be called from checked blocks)
+    pub is_unchecked: bool,
     /// Function name
     pub name: Ident,
     /// Function parameters
@@ -295,6 +297,10 @@ pub enum TypeExpr {
         methods: Vec<Method>,
         span: Span,
     },
+    /// Raw pointer to immutable data: ptr const T
+    PointerConst { pointee: Box<TypeExpr>, span: Span },
+    /// Raw pointer to mutable data: ptr mut T
+    PointerMut { pointee: Box<TypeExpr>, span: Span },
 }
 
 /// A field in an anonymous struct type expression.
@@ -317,6 +323,8 @@ impl TypeExpr {
             TypeExpr::Never(span) => *span,
             TypeExpr::Array { span, .. } => *span,
             TypeExpr::AnonymousStruct { span, .. } => *span,
+            TypeExpr::PointerConst { span, .. } => *span,
+            TypeExpr::PointerMut { span, .. } => *span,
         }
     }
 }
@@ -348,6 +356,8 @@ impl fmt::Display for TypeExpr {
                 }
                 write!(f, " }}")
             }
+            TypeExpr::PointerConst { pointee, .. } => write!(f, "ptr const {}", pointee),
+            TypeExpr::PointerMut { pointee, .. } => write!(f, "ptr mut {}", pointee),
         }
     }
 }
@@ -415,6 +425,8 @@ pub enum Expr {
     SelfExpr(SelfExpr),
     /// Comptime block expression (e.g., `comptime { 1 + 2 }`)
     Comptime(ComptimeBlockExpr),
+    /// Checked block expression (e.g., `checked { @ptr_read(p) }`)
+    Checked(CheckedBlockExpr),
     /// Type literal expression (e.g., `i32` used as a value in generic function calls)
     TypeLit(TypeLitExpr),
 }
@@ -863,6 +875,16 @@ pub struct ComptimeBlockExpr {
     pub span: Span,
 }
 
+/// A checked block expression (e.g., `checked { @ptr_read(p) }`).
+/// Unchecked operations (raw pointer manipulation, calling unchecked functions)
+/// are only allowed inside checked blocks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckedBlockExpr {
+    /// The expression inside the checked block
+    pub expr: Box<Expr>,
+    pub span: Span,
+}
+
 /// A type literal expression (e.g., `i32` used as a value).
 /// This represents a type used as a value in expression context, typically
 /// as an argument to a generic function with comptime parameters.
@@ -904,6 +926,7 @@ impl Expr {
             Expr::AssocFnCall(assoc_fn_call) => assoc_fn_call.span,
             Expr::SelfExpr(self_expr) => self_expr.span,
             Expr::Comptime(comptime_expr) => comptime_expr.span,
+            Expr::Checked(checked_expr) => checked_expr.span,
             Expr::TypeLit(type_lit) => type_lit.span,
         }
     }
@@ -1055,6 +1078,9 @@ fn fmt_call_arg(f: &mut fmt::Formatter<'_>, arg: &CallArg, level: usize) -> fmt:
 
 fn fmt_function(f: &mut fmt::Formatter<'_>, func: &Function, level: usize) -> fmt::Result {
     indent(f, level)?;
+    if func.is_unchecked {
+        write!(f, "unchecked ")?;
+    }
     write!(f, "Function sym:{}", func.name.name.into_usize())?;
     if !func.params.is_empty() {
         write!(f, "(")?;
@@ -1243,6 +1269,10 @@ fn fmt_expr(f: &mut fmt::Formatter<'_>, expr: &Expr, level: usize) -> fmt::Resul
         Expr::Comptime(comptime) => {
             writeln!(f, "Comptime")?;
             fmt_expr(f, &comptime.expr, level + 1)
+        }
+        Expr::Checked(checked) => {
+            writeln!(f, "Checked")?;
+            fmt_expr(f, &checked.expr, level + 1)
         }
         Expr::TypeLit(type_lit) => {
             writeln!(f, "TypeLit({})", type_lit.type_expr)

@@ -44,6 +44,9 @@ pub enum TokenKind {
     Comptime,  // comptime (compile-time evaluation)
     Pub,       // pub visibility modifier (module system)
     Const,     // const declaration (module system re-exports)
+    Checked,   // checked { } block for unchecked operations
+    Unchecked, // unchecked fn modifier
+    Ptr,       // ptr const T / ptr mut T pointer types
 
     // Type keywords
     I8,
@@ -141,6 +144,9 @@ impl TokenKind {
             TokenKind::Comptime => "'comptime'",
             TokenKind::Pub => "'pub'",
             TokenKind::Const => "'const'",
+            TokenKind::Checked => "'checked'",
+            TokenKind::Unchecked => "'unchecked'",
+            TokenKind::Ptr => "'ptr'",
             TokenKind::I8 => "type 'i8'",
             TokenKind::I16 => "type 'i16'",
             TokenKind::I32 => "type 'i32'",
@@ -240,6 +246,9 @@ impl std::fmt::Display for TokenKind {
             TokenKind::Comptime => write!(f, "COMPTIME"),
             TokenKind::Pub => write!(f, "PUB"),
             TokenKind::Const => write!(f, "CONST"),
+            TokenKind::Checked => write!(f, "CHECKED"),
+            TokenKind::Unchecked => write!(f, "UNCHECKED"),
+            TokenKind::Ptr => write!(f, "PTR"),
             TokenKind::I8 => write!(f, "TYPE(i8)"),
             TokenKind::I16 => write!(f, "TYPE(i16)"),
             TokenKind::I32 => write!(f, "TYPE(i32)"),

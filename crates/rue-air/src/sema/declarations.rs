@@ -410,6 +410,7 @@ impl<'a> Sema<'a> {
 
                 InstData::FnDecl {
                     is_pub,
+                    is_unchecked,
                     name,
                     params_start,
                     params_len,
@@ -417,6 +418,14 @@ impl<'a> Sema<'a> {
                     body,
                     ..
                 } => {
+                    // Unchecked functions require preview feature
+                    if *is_unchecked {
+                        self.require_preview(
+                            PreviewFeature::UncheckedCode,
+                            "unchecked functions",
+                            inst.span,
+                        )?;
+                    }
                     self.collect_function_signature(
                         *name,
                         *params_start,
