@@ -17,7 +17,7 @@
 //! The main entry points are:
 //! - [`Sema::new`] - Create a new semantic analyzer
 //! - [`Sema::analyze_all`] - Perform full semantic analysis
-//! - [`Sema::gather_declarations`] - Gather declarations for incremental analysis
+//! - [`Sema::analyze_all_bodies`] - Analyze function bodies after declarations
 
 mod airgen;
 mod analysis;
@@ -55,25 +55,22 @@ use crate::types::{ArrayTypeId, EnumDef, EnumId, StructDef, StructField, StructI
 /// The separation of declaration gathering from body analysis enables:
 /// 1. **Parallel type checking** - Each function can be analyzed independently
 /// 2. **Clearer architecture** - Separation of concerns
-/// 3. **Foundation for incremental** - Can cache TypeContext across compilations
+/// 3. **Foundation for incremental** - Can cache SemaContext across compilations
 /// 4. **Better error recovery** - One function's error doesn't block others
 ///
 /// # Usage
 ///
 /// ```ignore
-/// // Phase 1: Gather declarations (sequential)
+/// // Option A: Simple path - all-in-one analysis
 /// let sema = Sema::new(rir, interner, preview);
-/// let (type_ctx, gather_output) = sema.gather_declarations()?;
+/// let output = sema.analyze_all()?;
 ///
-/// // Phase 2: Analyze function bodies
-/// // Option A: Sequential (current)
-/// let sema = gather_output.into_sema();
-/// let output = sema.analyze_all_bodies()?;
-///
-/// // Option B: Parallel (future)
-/// // let results: Vec<_> = functions.par_iter()
-/// //     .map(|f| analyze_function_body(&type_ctx, &gather_output, f))
-/// //     .collect();
+/// // Option B: Parallel path (work in progress)
+/// // Build SemaContext and analyze in parallel
+/// let ctx = sema.build_sema_context();
+/// let results: Vec<_> = functions.par_iter()
+///     .map(|f| analyze_function_body(&ctx, f))
+///     .collect();
 /// ```
 #[derive(Debug)]
 pub struct GatherOutput<'a> {
@@ -331,7 +328,7 @@ impl<'a> Sema<'a> {
         // This must happen first so builtins are registered when resolving types.
         self.inject_builtin_types();
 
-        // Two-phase declaration gathering (see gather_declarations for details):
+        // Two-phase declaration gathering:
         // Phase 1: Register type names
         // Phase 2: Resolve all declarations
         // These are critical and must succeed before we can analyze functions
@@ -344,8 +341,9 @@ impl<'a> Sema<'a> {
 
     /// Analyze all function bodies, assuming declarations are already collected.
     ///
-    /// This is Phase 2 of semantic analysis. It assumes that `gather_declarations`
-    /// has already been called (or that this Sema was created from `GatherOutput::into_sema`).
+    /// This is Phase 2 of semantic analysis. It assumes that declaration gathering
+    /// has already been performed (either by `analyze_all()` internally, or manually
+    /// via `inject_builtin_types()`, `register_type_names()`, and `resolve_declarations()`).
     ///
     /// # Architecture
     ///
@@ -356,78 +354,16 @@ impl<'a> Sema<'a> {
     /// # Example
     ///
     /// ```ignore
-    /// // Phase 1: Gather declarations
-    /// let sema = Sema::new(rir, interner, preview);
-    /// let (type_ctx, gather_output) = sema.gather_declarations()?;
-    ///
-    /// // Phase 2: Analyze function bodies
-    /// let sema = gather_output.into_sema();
+    /// // Manual phase approach (for testing or custom pipelines):
+    /// let mut sema = Sema::new(rir, interner, preview);
+    /// sema.inject_builtin_types();
+    /// sema.register_type_names()?;
+    /// sema.resolve_declarations()?;
     /// let output = sema.analyze_all_bodies()?;
     /// ```
     pub fn analyze_all_bodies(self) -> MultiErrorResult<SemaOutput> {
         // Delegate to the analysis module
         analysis::analyze_all_function_bodies(self)
-    }
-
-    /// Gather all declarations from the RIR and build a TypeContext.
-    ///
-    /// This is Phase 1 of semantic analysis. It collects:
-    /// - Enum definitions
-    /// - Struct definitions
-    /// - Function signatures
-    /// - Method signatures
-    ///
-    /// The returned `TypeContext` is immutable and can be shared across
-    /// threads for parallel function body analysis.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// // Phase 1: Gather declarations (sequential)
-    /// let sema = Sema::new(rir, interner, preview);
-    /// let (type_ctx, sema) = sema.gather_declarations()?;
-    ///
-    /// // Phase 2: Analyze function bodies (can be parallel)
-    /// for fn_ref in rir.function_refs() {
-    ///     let result = analyze_function_body(&type_ctx, ...)?;
-    /// }
-    /// ```
-    pub fn gather_declarations(
-        mut self,
-    ) -> rue_error::CompileResult<(crate::type_context::TypeContext, GatherOutput<'a>)> {
-        // Three-phase approach for correctness and performance:
-        //
-        // Phase 0: Inject built-in types (synthetic structs like String)
-        // These must be registered before user code to enable collision detection.
-        //
-        // Phase 1: Register all type names (enum and struct IDs)
-        // This allows types to reference each other in any order.
-        //
-        // Phase 2: Resolve all declarations in a single pass
-        // Now that all type names are known, we can resolve field types,
-        // validate @copy structs, and collect functions/methods together.
-        self.inject_builtin_types();
-        self.register_type_names()?;
-        self.resolve_declarations()?;
-
-        // Build the immutable type context
-        let type_ctx = self.build_type_context();
-
-        // Package up the remaining Sema state needed for function analysis
-        let output = GatherOutput {
-            rir: self.rir,
-            interner: self.interner,
-            structs: self.structs,
-            enums: self.enums,
-            functions: self.functions,
-            methods: self.methods,
-            constants: self.constants,
-            preview_features: self.preview_features,
-            builtin_string_id: self.builtin_string_id,
-            type_pool: self.type_pool,
-        };
-
-        Ok((type_ctx, output))
     }
 
     /// Build a SemaContext from the current Sema state.

@@ -19,7 +19,6 @@ mod scope;
 mod sema;
 mod sema_context;
 pub mod specialize;
-mod type_context;
 mod types;
 
 pub use analysis_state::{AnalysisStateRemapping, FunctionAnalysisState, MergedAnalysisState};
@@ -43,7 +42,6 @@ pub use sema::{AnalyzedFunction, FunctionInfo, GatherOutput, MethodInfo, Sema, S
 pub use sema_context::{
     InferenceContext as SemaContextInferenceContext, ModuleRegistry, SemaContext,
 };
-pub use type_context::{FunctionSignature, MethodSignature, TypeContext};
 pub use types::{
     ArrayTypeId, EnumDef, EnumId, ModuleDef, ModuleId, StructDef, StructField, StructId, Type,
     TypeKind, parse_array_type_syntax,

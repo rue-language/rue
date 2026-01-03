@@ -21,55 +21,9 @@ use rue_span::Span;
 
 use super::{ConstInfo, FunctionInfo, InferenceContext, MethodInfo, Sema};
 use crate::inference::{FunctionSig, MethodSig};
-use crate::type_context::{FunctionSignature, MethodSignature, TypeContext};
 use crate::types::{EnumDef, EnumId, StructDef, StructField, StructId, Type};
 
 impl<'a> Sema<'a> {
-    pub fn build_type_context(&self) -> TypeContext {
-        // Build function signatures
-        let func_sigs: HashMap<Spur, FunctionSignature> = self
-            .functions
-            .iter()
-            .map(|(name, info)| {
-                (
-                    *name,
-                    FunctionSignature {
-                        param_types: info.param_types.clone(),
-                        param_modes: info.param_modes.clone(),
-                        return_type: info.return_type,
-                    },
-                )
-            })
-            .collect();
-
-        // Build method signatures
-        let method_sigs: HashMap<(Spur, Spur), MethodSignature> = self
-            .methods
-            .iter()
-            .map(|((type_name, method_name), info)| {
-                let struct_id = *self.structs.get(type_name).expect("method type must exist");
-                (
-                    (*type_name, *method_name),
-                    MethodSignature {
-                        struct_id,
-                        struct_type: info.struct_type,
-                        has_self: info.has_self,
-                        param_names: info.param_names.clone(),
-                        param_types: info.param_types.clone(),
-                        return_type: info.return_type,
-                    },
-                )
-            })
-            .collect();
-
-        TypeContext {
-            func_sigs,
-            method_sigs,
-            struct_by_name: self.structs.clone(),
-            enum_by_name: self.enums.clone(),
-            type_pool: self.type_pool.clone(),
-        }
-    }
     /// Build an `InferenceContext` from the collected type information.
     ///
     /// This should be called after the collection phase and builds the
