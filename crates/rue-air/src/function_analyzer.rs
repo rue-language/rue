@@ -252,6 +252,23 @@ impl<'a, 'ctx> FunctionAnalyzer<'a, 'ctx> {
                 // Get or create the array type
                 let array_type_id = self.get_or_create_array_type(element_ty, length);
                 Ok(Type::Array(array_type_id))
+            } else if let Some((pointee_type, mutability)) =
+                crate::types::parse_pointer_type_syntax(type_name)
+            {
+                // Resolve the pointee type first
+                let pointee_sym = self.ctx.interner.get_or_intern(&pointee_type);
+                let pointee_ty = self.resolve_type(pointee_sym, span)?;
+                // Create the pointer type
+                match mutability {
+                    crate::types::PtrMutability::Const => {
+                        let ptr_id = self.ctx.get_or_create_ptr_const_type(pointee_ty);
+                        Ok(Type::PtrConst(ptr_id))
+                    }
+                    crate::types::PtrMutability::Mut => {
+                        let ptr_id = self.ctx.get_or_create_ptr_mut_type(pointee_ty);
+                        Ok(Type::PtrMut(ptr_id))
+                    }
+                }
             } else {
                 Err(CompileError::new(
                     ErrorKind::UnknownType(type_name.to_string()),

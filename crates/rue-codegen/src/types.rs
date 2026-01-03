@@ -208,6 +208,16 @@ fn type_name(ty: Type, type_pool: &TypeInternPool) -> String {
             let elem_name = type_name(element_type, type_pool);
             format!("array_{}_{}", elem_name, length)
         }
+        TypeKind::PtrConst(ptr_id) => {
+            let pointee_type = type_pool.get_ptr_pointee(ptr_id);
+            let pointee_name = type_name(pointee_type, type_pool);
+            format!("ptr_const_{}", pointee_name)
+        }
+        TypeKind::PtrMut(ptr_id) => {
+            let pointee_type = type_pool.get_ptr_pointee(ptr_id);
+            let pointee_name = type_name(pointee_type, type_pool);
+            format!("ptr_mut_{}", pointee_name)
+        }
         // Module types should never reach codegen (compile-time only)
         TypeKind::Module(_) => "module".to_string(),
     }

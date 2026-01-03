@@ -70,6 +70,9 @@ fn type_needs_drop(ty: Type, type_pool: &TypeInternPool) -> bool {
             type_needs_drop(element_type, type_pool)
         }
 
+        // Pointer types don't need drop (they're just addresses)
+        TypeKind::PtrConst(_) | TypeKind::PtrMut(_) => false,
+
         // Module types don't need drop (compile-time only)
         TypeKind::Module(_) => false,
     }
@@ -112,6 +115,9 @@ fn type_slot_count(ty: Type, type_pool: &TypeInternPool) -> u32 {
             let (element_type, length) = type_pool.array_def(array_id);
             type_slot_count(element_type, type_pool) * length as u32
         }
+
+        // Pointer types use 1 slot (they're 64-bit addresses)
+        TypeKind::PtrConst(_) | TypeKind::PtrMut(_) => 1,
 
         // Module types don't take ABI slots (compile-time only)
         TypeKind::Module(_) => 0,
@@ -425,6 +431,16 @@ fn type_name(ty: Type, type_pool: &TypeInternPool) -> String {
             let (element_type, length) = type_pool.array_def(array_id);
             let elem_name = type_name(element_type, type_pool);
             format!("array_{}_{}", elem_name, length)
+        }
+        TypeKind::PtrConst(ptr_id) => {
+            let pointee_type = type_pool.get_ptr_pointee(ptr_id);
+            let pointee_name = type_name(pointee_type, type_pool);
+            format!("ptr_const_{}", pointee_name)
+        }
+        TypeKind::PtrMut(ptr_id) => {
+            let pointee_type = type_pool.get_ptr_pointee(ptr_id);
+            let pointee_name = type_name(pointee_type, type_pool);
+            format!("ptr_mut_{}", pointee_name)
         }
         // Module types should never reach drop glue (compile-time only)
         TypeKind::Module(_) => "module".to_string(),

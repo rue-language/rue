@@ -40,7 +40,7 @@ use std::sync::RwLock;
 
 use lasso::Spur;
 
-use crate::types::{ArrayTypeId, EnumDef, EnumId, StructDef, StructId, Type, TypeKind};
+use crate::types::{ArrayTypeId, EnumDef, EnumId, PtrTypeId, StructDef, StructId, Type, TypeKind};
 
 /// Interned type index - 32 bits, Copy, cheap comparison.
 ///
@@ -159,7 +159,7 @@ impl std::fmt::Debug for InternedType {
 /// # Type Categories
 ///
 /// - **Struct** and **Enum** are nominal types: identity comes from the name
-/// - **Array** is a structural type: identity comes from element type + length
+/// - **Array** and **Pointer** are structural types: identity comes from element type
 #[derive(Debug, Clone)]
 pub enum TypeData {
     /// User-defined struct (nominal type).
@@ -177,6 +177,16 @@ pub enum TypeData {
     /// Arrays with the same element type and length are the same type,
     /// regardless of where they were defined.
     Array { element: InternedType, len: u64 },
+
+    /// Raw pointer to immutable data: `ptr const T` (structural type).
+    ///
+    /// Const pointers with the same pointee type are the same type.
+    PtrConst { pointee: InternedType },
+
+    /// Raw pointer to mutable data: `ptr mut T` (structural type).
+    ///
+    /// Mut pointers with the same pointee type are the same type.
+    PtrMut { pointee: InternedType },
 }
 
 /// Data for a struct type in the intern pool.
@@ -256,6 +266,12 @@ struct TypeInternPoolInner {
 
     /// Nominal type lookup: name -> InternedType for enums.
     enum_by_name: HashMap<Spur, InternedType>,
+
+    /// Structural type deduplication: pointee -> InternedType for ptr const.
+    ptr_const_map: HashMap<InternedType, InternedType>,
+
+    /// Structural type deduplication: pointee -> InternedType for ptr mut.
+    ptr_mut_map: HashMap<InternedType, InternedType>,
 }
 
 impl TypeInternPool {
@@ -267,6 +283,8 @@ impl TypeInternPool {
                 array_map: HashMap::new(),
                 struct_by_name: HashMap::new(),
                 enum_by_name: HashMap::new(),
+                ptr_const_map: HashMap::new(),
+                ptr_mut_map: HashMap::new(),
             }),
         }
     }
@@ -379,6 +397,76 @@ impl TypeInternPool {
 
         inner.types.push(TypeData::Array { element, len });
         inner.array_map.insert(key, interned);
+
+        interned
+    }
+
+    /// Intern a const pointer type: `ptr const T` (structural - deduplicated by pointee).
+    ///
+    /// Returns the canonical `InternedType` for const pointers to this pointee type.
+    /// If an identical pointer type already exists, returns the existing type.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the lock is poisoned.
+    pub fn intern_ptr_const(&self, pointee: InternedType) -> InternedType {
+        // Fast path: check with read lock
+        {
+            let inner = self.inner.read().expect("TypeInternPool lock poisoned");
+            if let Some(&existing) = inner.ptr_const_map.get(&pointee) {
+                return existing;
+            }
+        }
+
+        // Slow path: acquire write lock
+        let mut inner = self.inner.write().expect("TypeInternPool lock poisoned");
+
+        // Double-check after acquiring write lock
+        if let Some(&existing) = inner.ptr_const_map.get(&pointee) {
+            return existing;
+        }
+
+        // Create new pointer type
+        let pool_index = inner.types.len() as u32;
+        let interned = InternedType::from_pool_index(pool_index);
+
+        inner.types.push(TypeData::PtrConst { pointee });
+        inner.ptr_const_map.insert(pointee, interned);
+
+        interned
+    }
+
+    /// Intern a mutable pointer type: `ptr mut T` (structural - deduplicated by pointee).
+    ///
+    /// Returns the canonical `InternedType` for mutable pointers to this pointee type.
+    /// If an identical pointer type already exists, returns the existing type.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the lock is poisoned.
+    pub fn intern_ptr_mut(&self, pointee: InternedType) -> InternedType {
+        // Fast path: check with read lock
+        {
+            let inner = self.inner.read().expect("TypeInternPool lock poisoned");
+            if let Some(&existing) = inner.ptr_mut_map.get(&pointee) {
+                return existing;
+            }
+        }
+
+        // Slow path: acquire write lock
+        let mut inner = self.inner.write().expect("TypeInternPool lock poisoned");
+
+        // Double-check after acquiring write lock
+        if let Some(&existing) = inner.ptr_mut_map.get(&pointee) {
+            return existing;
+        }
+
+        // Create new pointer type
+        let pool_index = inner.types.len() as u32;
+        let interned = InternedType::from_pool_index(pool_index);
+
+        inner.types.push(TypeData::PtrMut { pointee });
+        inner.ptr_mut_map.insert(pointee, interned);
 
         interned
     }
@@ -642,6 +730,61 @@ impl TypeInternPool {
         ))
     }
 
+    /// Intern a const pointer type from a Type pointee.
+    ///
+    /// This is a helper method that converts the Type to InternedType
+    /// and then interns the pointer.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the pointee type contains a struct/enum that isn't in the pool.
+    pub fn intern_ptr_const_from_type(&self, pointee_type: Type) -> PtrTypeId {
+        let pointee_interned = Self::type_to_interned_recursive(pointee_type);
+        let ptr_interned = self.intern_ptr_const(pointee_interned);
+        PtrTypeId::from_pool_index(
+            ptr_interned
+                .pool_index()
+                .expect("pointer must have pool index"),
+        )
+    }
+
+    /// Intern a mutable pointer type from a Type pointee.
+    ///
+    /// This is a helper method that converts the Type to InternedType
+    /// and then interns the pointer.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the pointee type contains a struct/enum that isn't in the pool.
+    pub fn intern_ptr_mut_from_type(&self, pointee_type: Type) -> PtrTypeId {
+        let pointee_interned = Self::type_to_interned_recursive(pointee_type);
+        let ptr_interned = self.intern_ptr_mut(pointee_interned);
+        PtrTypeId::from_pool_index(
+            ptr_interned
+                .pool_index()
+                .expect("pointer must have pool index"),
+        )
+    }
+
+    /// Get the pointee type for a pointer type.
+    ///
+    /// # Panics
+    ///
+    /// Panics if ptr_id is not a valid pointer type in the pool.
+    pub fn get_ptr_pointee(&self, ptr_id: PtrTypeId) -> Type {
+        let inner = self.inner.read().expect("TypeInternPool lock poisoned");
+        let pool_index = ptr_id.pool_index() as usize;
+        match &inner.types[pool_index] {
+            TypeData::PtrConst { pointee } | TypeData::PtrMut { pointee } => {
+                Self::interned_to_type_recursive(*pointee, &inner)
+            }
+            other => panic!(
+                "Expected pointer at pool index {}, got {:?}",
+                pool_index, other
+            ),
+        }
+    }
+
     /// Convert InternedType to Type recursively (handles composite types).
     ///
     /// This is used to convert array element types from InternedType back to Type.
@@ -669,6 +812,8 @@ impl TypeInternPool {
             TypeData::Struct(_) => Type::Struct(StructId::from_pool_index(pool_index)),
             TypeData::Enum(_) => Type::Enum(EnumId::from_pool_index(pool_index)),
             TypeData::Array { .. } => Type::Array(ArrayTypeId::from_pool_index(pool_index)),
+            TypeData::PtrConst { .. } => Type::PtrConst(PtrTypeId::from_pool_index(pool_index)),
+            TypeData::PtrMut { .. } => Type::PtrMut(PtrTypeId::from_pool_index(pool_index)),
         }
     }
 
@@ -693,6 +838,8 @@ impl TypeInternPool {
             TypeKind::Struct(id) => InternedType::from_pool_index(id.pool_index()),
             TypeKind::Enum(id) => InternedType::from_pool_index(id.pool_index()),
             TypeKind::Array(id) => InternedType::from_pool_index(id.pool_index()),
+            TypeKind::PtrConst(id) => InternedType::from_pool_index(id.pool_index()),
+            TypeKind::PtrMut(id) => InternedType::from_pool_index(id.pool_index()),
             TypeKind::Module(_) => panic!("Cannot intern module types"),
             TypeKind::ComptimeType => panic!("Cannot intern comptime types"),
         }
@@ -778,6 +925,9 @@ impl TypeInternPool {
                 TypeData::Struct(_) => struct_count += 1,
                 TypeData::Enum(_) => enum_count += 1,
                 TypeData::Array { .. } => array_count += 1,
+                TypeData::PtrConst { .. } | TypeData::PtrMut { .. } => {
+                    // Pointer types counted separately if needed
+                }
             }
         }
 
@@ -817,12 +967,15 @@ impl TypeInternPool {
             TypeKind::Unit => Some(InternedType::UNIT),
             TypeKind::Never => Some(InternedType::NEVER),
             TypeKind::Error => Some(InternedType::ERROR),
-            // Struct, enum, array, and module require pool lookup by ID - we need the name
+            // Struct, enum, array, pointer, and module require pool lookup by ID - we need the name
             // to find the interned type. This conversion is not straightforward
             // without additional context. Return None to indicate we can't convert.
-            TypeKind::Struct(_) | TypeKind::Enum(_) | TypeKind::Array(_) | TypeKind::Module(_) => {
-                None
-            }
+            TypeKind::Struct(_)
+            | TypeKind::Enum(_)
+            | TypeKind::Array(_)
+            | TypeKind::PtrConst(_)
+            | TypeKind::PtrMut(_)
+            | TypeKind::Module(_) => None,
             // ComptimeType is a comptime-only type, cannot be interned for runtime
             TypeKind::ComptimeType => None,
         }
@@ -874,6 +1027,8 @@ impl Clone for TypeInternPool {
                 array_map: inner.array_map.clone(),
                 struct_by_name: inner.struct_by_name.clone(),
                 enum_by_name: inner.enum_by_name.clone(),
+                ptr_const_map: inner.ptr_const_map.clone(),
+                ptr_mut_map: inner.ptr_mut_map.clone(),
             }),
         }
     }

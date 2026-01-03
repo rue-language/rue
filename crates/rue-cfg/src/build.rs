@@ -1759,6 +1759,9 @@ impl<'a> CfgBuilder<'a> {
                 self.type_needs_drop(element_type)
             }
 
+            // Pointer types don't need drop (they're just addresses)
+            TypeKind::PtrConst(_) | TypeKind::PtrMut(_) => false,
+
             // Module types don't need drop (compile-time only)
             TypeKind::Module(_) => false,
         }

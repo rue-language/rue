@@ -321,8 +321,8 @@ Outside `checked` blocks, all of Rue's safety guarantees still hold.
 
 ## Implementation Phases
 
-- [ ] **Phase 1: Parser support** (rue-7qxm) - Add `checked` block syntax, `unchecked` function modifier, `ptr const`/`ptr mut` types
-- [ ] **Phase 2: Type system** (rue-pb4z) - Pointer types in sema, checked block tracking
+- [x] **Phase 1: Parser support** (rue-7qxm) - Add `checked` block syntax, `unchecked` function modifier, `ptr const`/`ptr mut` types
+- [x] **Phase 2: Type system** (rue-pb4z) - Pointer types in sema, checked block tracking
 - [ ] **Phase 3: Pointer intrinsics** (rue-u9a4) - `@ptr_read`, `@ptr_write`, `@ptr_offset`, `@raw`, `@raw_mut`, etc.
 - [ ] **Phase 4: Syscall intrinsic** (rue-pwyw) - `@syscall` for direct OS calls
 - [ ] **Phase 5: Codegen** (rue-bk7s) - Generate correct code for pointer operations

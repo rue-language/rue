@@ -303,6 +303,21 @@ impl<'a> SemaContext<'a> {
         self.type_pool.intern_array_from_type(element_type, length)
     }
 
+    /// Get or create a const pointer type. Thread-safe.
+    pub fn get_or_create_ptr_const_type(&self, pointee_type: Type) -> crate::types::PtrTypeId {
+        self.type_pool.intern_ptr_const_from_type(pointee_type)
+    }
+
+    /// Get or create a mutable pointer type. Thread-safe.
+    pub fn get_or_create_ptr_mut_type(&self, pointee_type: Type) -> crate::types::PtrTypeId {
+        self.type_pool.intern_ptr_mut_from_type(pointee_type)
+    }
+
+    /// Get the pointee type for a pointer type.
+    pub fn get_ptr_pointee(&self, ptr_id: crate::types::PtrTypeId) -> Type {
+        self.type_pool.get_ptr_pointee(ptr_id)
+    }
+
     /// Look up a module by import path.
     pub fn get_module(&self, import_path: &str) -> Option<ModuleId> {
         self.module_registry.get(import_path)
@@ -429,6 +444,14 @@ impl<'a> SemaContext<'a> {
                 let (element_type, length) = self.type_pool.array_def(array_id);
                 format!("[{}; {}]", self.format_type_name(element_type), length)
             }
+            TypeKind::PtrConst(ptr_id) => {
+                let pointee_type = self.type_pool.get_ptr_pointee(ptr_id);
+                format!("ptr const {}", self.format_type_name(pointee_type))
+            }
+            TypeKind::PtrMut(ptr_id) => {
+                let pointee_type = self.type_pool.get_ptr_pointee(ptr_id);
+                format!("ptr mut {}", self.format_type_name(pointee_type))
+            }
             TypeKind::Module(_) => "<module>".to_string(),
             TypeKind::ComptimeType => "type".to_string(),
         }
@@ -462,6 +485,8 @@ impl<'a> SemaContext<'a> {
                 let (element_type, _length) = self.type_pool.array_def(array_id);
                 self.is_type_copy(element_type)
             }
+            // Pointer types are Copy (they're just addresses)
+            TypeKind::PtrConst(_) | TypeKind::PtrMut(_) => true,
             // Module types are Copy (they're just compile-time namespace references)
             TypeKind::Module(_) => true,
         }
@@ -496,6 +521,8 @@ impl<'a> SemaContext<'a> {
                 let element_slots = self.abi_slot_count(element_type);
                 element_slots * length as u32
             }
+            // Pointer types take 1 slot (they're 64-bit addresses)
+            TypeKind::PtrConst(_) | TypeKind::PtrMut(_) => 1,
             // Module types don't take ABI slots (they're compile-time only)
             TypeKind::Module(_) => 0,
         }
