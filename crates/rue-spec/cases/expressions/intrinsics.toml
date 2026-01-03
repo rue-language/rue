@@ -918,3 +918,178 @@ fn main() -> i32 {
 }
 """
 exit_code = 254
+
+# =============================================================================
+# @random_u32 Intrinsic
+# =============================================================================
+
+[[case]]
+name = "random_u32_returns_u32"
+spec = ["4.13:55", "4.13:57"]
+preview = "random"
+source = """
+fn takes_u32(x: u32) -> i32 { 0 }
+fn main() -> i32 {
+    // Type checking: @random_u32 returns u32
+    let r: u32 = @random_u32();
+    takes_u32(@random_u32())
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "random_u32_no_args"
+spec = ["4.13:56"]
+preview = "random"
+source = """
+fn main() -> i32 {
+    // Verify @random_u32 takes no arguments
+    let r: u32 = @random_u32();
+    0
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "random_u32_wrong_arg_count_one"
+spec = ["4.13:4", "4.13:56"]
+preview = "random"
+source = """
+fn main() -> i32 {
+    let r: u32 = @random_u32(42);
+    0
+}
+"""
+compile_fail = true
+error_contains = "argument"
+
+[[case]]
+name = "random_u32_wrong_arg_count_two"
+spec = ["4.13:4", "4.13:56"]
+preview = "random"
+source = """
+fn main() -> i32 {
+    let r: u32 = @random_u32(1, 2);
+    0
+}
+"""
+compile_fail = true
+error_contains = "argument"
+
+[[case]]
+name = "random_u32_in_range_expression"
+spec = ["4.13:55", "4.13:58"]
+preview = "random"
+source = """
+fn main() -> i32 {
+    // Verify we can use @random_u32 in expressions
+    let secret: u32 = (@random_u32() % 100) + 1;
+    0
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "random_u32_multiple_calls"
+spec = ["4.13:58"]
+preview = "random"
+source = """
+fn main() -> i32 {
+    // Multiple calls should compile successfully
+    let r1: u32 = @random_u32();
+    let r2: u32 = @random_u32();
+    let r3: u32 = @random_u32();
+    0
+}
+"""
+exit_code = 0
+
+# Note: 4.13:59 specifies that entropy source failure causes a runtime panic.
+# This is documented behavior but cannot be reliably tested in portable
+# environments (similar to 4.13:40 for I/O errors). The test below documents
+# the expected behavior without actually triggering the condition.
+[[case]]
+name = "random_u32_entropy_failure_behavior"
+spec = ["4.13:59"]
+preview = "random"
+source = """
+fn main() -> i32 {
+    // If the platform entropy source fails, this would panic.
+    // In practice, entropy sources on modern systems are reliable.
+    let r: u32 = @random_u32();
+    0
+}
+"""
+exit_code = 0
+
+# =============================================================================
+# @random_u64 Intrinsic
+# =============================================================================
+
+[[case]]
+name = "random_u64_returns_u64"
+spec = ["4.13:62", "4.13:64"]
+preview = "random"
+source = """
+fn takes_u64(x: u64) -> i32 { 0 }
+fn main() -> i32 {
+    // Type checking: @random_u64 returns u64
+    let r: u64 = @random_u64();
+    takes_u64(@random_u64())
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "random_u64_no_args"
+spec = ["4.13:63"]
+preview = "random"
+source = """
+fn main() -> i32 {
+    // Verify @random_u64 takes no arguments
+    let r: u64 = @random_u64();
+    0
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "random_u64_wrong_arg_count_one"
+spec = ["4.13:4", "4.13:63"]
+preview = "random"
+source = """
+fn main() -> i32 {
+    let r: u64 = @random_u64(42);
+    0
+}
+"""
+compile_fail = true
+error_contains = "argument"
+
+[[case]]
+name = "random_u64_wrong_arg_count_two"
+spec = ["4.13:4", "4.13:63"]
+preview = "random"
+source = """
+fn main() -> i32 {
+    let r: u64 = @random_u64(1, 2);
+    0
+}
+"""
+compile_fail = true
+error_contains = "argument"
+
+[[case]]
+name = "random_u64_multiple_calls"
+spec = ["4.13:62"]
+preview = "random"
+source = """
+fn main() -> i32 {
+    // Multiple calls should compile successfully
+    let r1: u64 = @random_u64();
+    let r2: u64 = @random_u64();
+    let r3: u64 = @random_u64();
+    0
+}
+"""
+exit_code = 0

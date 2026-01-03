@@ -372,3 +372,88 @@ fn main() -> i32 {
     @intCast(n)
 }
 ```
+
+## `@random_u32`
+
+{{ rule(id="4.13:55", cat="normative") }}
+
+The `@random_u32` intrinsic generates a random unsigned 32-bit integer.
+
+{{ rule(id="4.13:56", cat="normative") }}
+
+`@random_u32` accepts no arguments.
+
+{{ rule(id="4.13:57", cat="normative") }}
+
+The return type of `@random_u32` is `u32`.
+
+{{ rule(id="4.13:58", cat="dynamic-semantics") }}
+
+Each call to `@random_u32` returns a non-deterministic value using a platform-provided cryptographically-secure entropy source.
+
+{{ rule(id="4.13:59", cat="dynamic-semantics") }}
+
+If the platform entropy source is unavailable or fails, a runtime panic occurs.
+
+{{ rule(id="4.13:60") }}
+
+```rue
+fn main() -> i32 {
+    let secret: u32 = (@random_u32() % 100) + 1;  // Random number 1-100
+    @dbg(secret);
+    0
+}
+```
+
+{{ rule(id="4.13:61") }}
+
+Using `@random_u32` in a guessing game:
+
+```rue
+fn main() -> i32 {
+    let secret: u32 = (@random_u32() % 100) + 1;  // 1-100
+    @dbg("Guess the number between 1 and 100!");
+
+    let mut guesses = 0;
+    loop {
+        let input = @read_line();
+        let guess = @parse_u32(input);
+        guesses = guesses + 1;
+
+        if guess < secret {
+            @dbg("Too low!");
+        } else if guess > secret {
+            @dbg("Too high!");
+        } else {
+            @dbg("You got it!");
+            break;
+        }
+    }
+
+    @intCast(guesses)
+}
+```
+
+## `@random_u64`
+
+{{ rule(id="4.13:62", cat="normative") }}
+
+The `@random_u64` intrinsic behaves identically to `@random_u32` but returns a random unsigned 64-bit integer.
+
+{{ rule(id="4.13:63", cat="normative") }}
+
+`@random_u64` accepts no arguments.
+
+{{ rule(id="4.13:64", cat="normative") }}
+
+The return type of `@random_u64` is `u64`.
+
+{{ rule(id="4.13:65") }}
+
+```rue
+fn main() -> i32 {
+    let large_random = @random_u64();
+    @dbg(large_random);
+    0
+}
+```

@@ -190,7 +190,7 @@ The return type of `@random_u64` is `u64`.
 
 ## Implementation Phases
 
-- [ ] **Phase 1: Spec and tests** - rue-ddko
+- [x] **Phase 1: Spec and tests** - rue-ddko
   - Add spec documentation for `@random_u32` and `@random_u64`
   - Add preview-gated spec tests (non-deterministic, so test compilation only)
   - Add `Random` to `PreviewFeature` enum
