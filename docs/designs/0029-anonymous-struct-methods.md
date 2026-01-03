@@ -202,13 +202,14 @@ This is handled naturally by monomorphization - each specialization captures con
 
 Epic: rue-nj40
 
-### Phase 1: Parser & AST (rue-nj40.1)
+### Phase 1: Parser & AST (rue-nj40.1) ✅
 
-- [ ] Add `methods: Vec<Function>` to `TypeExpr::AnonymousStruct` in AST
-- [ ] Update Chumsky parser to accept `fn` inside `struct { ... }`
-- [ ] Add `Self` as a special type name in anonymous struct context
-- [ ] Add preview gate `anon_struct_methods`
-- [ ] Unit tests for parsing
+- [x] Add `methods: Vec<Method>` to `TypeExpr::AnonymousStruct` in AST
+- [x] Update Chumsky parser to accept `fn` inside `struct { ... }`
+- [x] Add `Self` as a special type name in anonymous struct context
+- [x] Add `SelfType` token to lexer and `Self { ... }` struct literal expression
+- [x] Add preview gate `anon_struct_methods`
+- [x] Unit tests for parsing
 
 **Deliverable**: Parser accepts `struct { x: i32, fn get(self) -> i32 { self.x } }` syntax.
 

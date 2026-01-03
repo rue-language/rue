@@ -24,7 +24,7 @@ use std::borrow::Cow;
 
 use chumsky::extra::SimpleState;
 
-/// Pre-interned symbols for primitive type names.
+/// Pre-interned symbols for primitive type names and special keywords.
 /// These are interned once when the parser is created and reused for all parsing.
 #[derive(Clone, Copy)]
 pub struct PrimitiveTypeSpurs {
@@ -37,6 +37,8 @@ pub struct PrimitiveTypeSpurs {
     pub u32: Spur,
     pub u64: Spur,
     pub bool: Spur,
+    /// Self type keyword - used in methods to refer to the containing struct type
+    pub self_type: Spur,
 }
 
 impl PrimitiveTypeSpurs {
@@ -52,6 +54,7 @@ impl PrimitiveTypeSpurs {
             u32: interner.get_or_intern("u32"),
             u64: interner.get_or_intern("u64"),
             bool: interner.get_or_intern("bool"),
+            self_type: interner.get_or_intern("Self"),
         }
     }
 }
@@ -281,11 +284,21 @@ where
             .then_ignore(just(TokenKind::RBrace))
             .map_with(|fields, e| TypeExpr::AnonymousStruct {
                 fields,
+                methods: vec![],
                 span: span_from_extra(e),
             });
 
         // Named type: user-defined types like MyStruct
         let named_type = ident_parser().map(TypeExpr::Named);
+
+        // Self type: Self keyword used in methods to refer to the containing struct
+        let self_type = just(TokenKind::SelfType).map_with(|_, e| {
+            let span = span_from_extra(e);
+            TypeExpr::Named(Ident {
+                name: e.state().syms.self_type,
+                span,
+            })
+        });
 
         choice((
             unit_type,
@@ -293,6 +306,7 @@ where
             array_type,
             anon_struct_type,
             primitive_type_parser(),
+            self_type,
             named_type,
         ))
     })
@@ -1370,9 +1384,11 @@ where
         })
     });
 
-    // Anonymous struct type as expression: struct { field: Type, ... }
+    // Anonymous struct type as expression: struct { field: Type, ... fn method(...) { ... } ... }
     // This enables comptime type construction like:
     //   fn Pair(comptime T: type) -> type { struct { first: T, second: T } }
+    // With methods (Zig-style):
+    //   fn Vec(comptime T: type) -> type { struct { ptr: u64, fn push(self, item: T) { ... } } }
     let anon_struct_field = ident_parser()
         .then_ignore(just(TokenKind::Colon))
         .then(type_parser())
@@ -1382,19 +1398,52 @@ where
             span: span_from_extra(e),
         });
 
+    // Parse method for anonymous struct using inline method parsing
+    // Methods inside anonymous structs follow the same syntax as impl block methods
+    let anon_struct_method = anon_struct_method_parser(expr.clone());
+
     let anon_struct_type_expr = just(TokenKind::Struct)
         .ignore_then(just(TokenKind::LBrace))
         .ignore_then(
+            // Parse fields first (comma-separated, trailing comma allowed)
             anon_struct_field
                 .separated_by(just(TokenKind::Comma))
                 .allow_trailing()
                 .collect::<Vec<_>>(),
         )
+        .then(
+            // Then parse methods (not comma-separated, each ends with })
+            anon_struct_method.repeated().collect::<Vec<_>>(),
+        )
         .then_ignore(just(TokenKind::RBrace))
-        .map_with(|fields, e| {
+        .map_with(|(fields, methods), e| {
             let span = span_from_extra(e);
             Expr::TypeLit(TypeLitExpr {
-                type_expr: TypeExpr::AnonymousStruct { fields, span },
+                type_expr: TypeExpr::AnonymousStruct {
+                    fields,
+                    methods,
+                    span,
+                },
+                span,
+            })
+        });
+
+    // Self type expression: Self { field: value } (struct literal with Self as type)
+    // This enables constructing instances of anonymous struct types from methods
+    let self_type_expr = just(TokenKind::SelfType)
+        .ignore_then(
+            field_inits_parser(expr.clone())
+                .delimited_by(just(TokenKind::LBrace), just(TokenKind::RBrace)),
+        )
+        .map_with(|fields, e| {
+            let span = span_from_extra(e);
+            Expr::StructLit(StructLitExpr {
+                base: None,
+                name: Ident {
+                    name: e.state().syms.self_type,
+                    span,
+                },
+                fields,
                 span,
             })
         });
@@ -1403,6 +1452,7 @@ where
     // Note: literal_parser() includes unit_lit which must come before paren_expr
     // so () is parsed as unit, not empty parens
     // Note: self_expr must come before call_and_access_parser since self is a keyword
+    // Note: self_type_expr must come before call_and_access_parser since Self is a keyword
     // Note: comptime_expr must come before block_expr since comptime starts with a keyword
     // Note: type_lit_expr must come before call_and_access_parser since type names are keywords
     // Note: anon_struct_type_expr must come before call_and_access_parser since struct is a keyword
@@ -1410,6 +1460,7 @@ where
         literal_parser(),
         control_flow_parser(expr.clone()),
         self_expr,
+        self_type_expr,
         any_intrinsic_call,
         array_lit,
         anon_struct_type_expr,
@@ -1942,7 +1993,28 @@ where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
     let expr = expr_parser();
+    method_parser_with_expr(expr)
+}
 
+/// Parser for method definitions inside anonymous structs.
+/// Takes an expression parser as a parameter to avoid creating a new one.
+fn anon_struct_method_parser<'src, I>(
+    expr: impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone + 'src,
+) -> impl Parser<'src, I, Method, ParserExtras<'src>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    method_parser_with_expr(expr)
+}
+
+/// Shared implementation for method parsing.
+/// Takes an expression parser to allow reuse from different contexts.
+fn method_parser_with_expr<'src, I>(
+    expr: impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone + 'src,
+) -> impl Parser<'src, I, Method, ParserExtras<'src>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
     // Parse optional self parameter
     let self_param = just(TokenKind::SelfValue).map_with(|_, e| SelfParam {
         span: span_from_extra(e),
@@ -3247,6 +3319,254 @@ mod tests {
                 assert_eq!(result.get(lit.name.name), "Point");
             }
             _ => panic!("expected StructLit, got {:?}", result.expr),
+        }
+    }
+
+    // ==================== Anonymous Struct Method Parsing Tests ====================
+
+    #[test]
+    fn test_anon_struct_with_fields_only() {
+        // Anonymous struct with only fields (no methods)
+        let result = parse("fn make_type() -> type { struct { x: i32, y: i32 } }").unwrap();
+        match &result.ast.items[0] {
+            Item::Function(f) => {
+                assert_eq!(result.get(f.name.name), "make_type");
+                match &f.body {
+                    Expr::Block(block) => match block.expr.as_ref() {
+                        Expr::TypeLit(type_lit) => match &type_lit.type_expr {
+                            TypeExpr::AnonymousStruct {
+                                fields, methods, ..
+                            } => {
+                                assert_eq!(fields.len(), 2);
+                                assert_eq!(result.get(fields[0].name.name), "x");
+                                assert_eq!(result.get(fields[1].name.name), "y");
+                                assert!(methods.is_empty());
+                            }
+                            _ => panic!("expected AnonymousStruct"),
+                        },
+                        _ => panic!("expected TypeLit"),
+                    },
+                    _ => panic!("expected Block"),
+                }
+            }
+            _ => panic!("expected Function"),
+        }
+    }
+
+    #[test]
+    fn test_anon_struct_with_method() {
+        // Anonymous struct with a single method
+        let result =
+            parse("fn make_type() -> type { struct { x: i32, fn get_x(self) -> i32 { self.x } } }")
+                .unwrap();
+        match &result.ast.items[0] {
+            Item::Function(f) => match &f.body {
+                Expr::Block(block) => match block.expr.as_ref() {
+                    Expr::TypeLit(type_lit) => match &type_lit.type_expr {
+                        TypeExpr::AnonymousStruct {
+                            fields, methods, ..
+                        } => {
+                            assert_eq!(fields.len(), 1);
+                            assert_eq!(result.get(fields[0].name.name), "x");
+                            assert_eq!(methods.len(), 1);
+                            assert_eq!(result.get(methods[0].name.name), "get_x");
+                            assert!(
+                                methods[0].receiver.is_some(),
+                                "method should have self receiver"
+                            );
+                        }
+                        _ => panic!("expected AnonymousStruct"),
+                    },
+                    _ => panic!("expected TypeLit"),
+                },
+                _ => panic!("expected Block"),
+            },
+            _ => panic!("expected Function"),
+        }
+    }
+
+    #[test]
+    fn test_anon_struct_with_associated_function() {
+        // Anonymous struct with an associated function (no self)
+        let result = parse(
+            "fn make_type() -> type { struct { x: i32, fn new() -> Self { Self { x: 0 } } } }",
+        )
+        .unwrap();
+        match &result.ast.items[0] {
+            Item::Function(f) => match &f.body {
+                Expr::Block(block) => match block.expr.as_ref() {
+                    Expr::TypeLit(type_lit) => match &type_lit.type_expr {
+                        TypeExpr::AnonymousStruct {
+                            fields, methods, ..
+                        } => {
+                            assert_eq!(fields.len(), 1);
+                            assert_eq!(methods.len(), 1);
+                            assert_eq!(result.get(methods[0].name.name), "new");
+                            assert!(
+                                methods[0].receiver.is_none(),
+                                "associated function should not have self"
+                            );
+                            // Check return type is Self
+                            match &methods[0].return_type {
+                                Some(TypeExpr::Named(ident)) => {
+                                    assert_eq!(result.get(ident.name), "Self");
+                                }
+                                _ => panic!("expected Self return type"),
+                            }
+                        }
+                        _ => panic!("expected AnonymousStruct"),
+                    },
+                    _ => panic!("expected TypeLit"),
+                },
+                _ => panic!("expected Block"),
+            },
+            _ => panic!("expected Function"),
+        }
+    }
+
+    #[test]
+    fn test_anon_struct_with_multiple_methods() {
+        // Anonymous struct with multiple methods
+        let result = parse(
+            r#"
+            fn make_type() -> type {
+                struct {
+                    value: i32,
+                    fn get(self) -> i32 { self.value }
+                    fn set(self, v: i32) -> Self { Self { value: v } }
+                }
+            }
+        "#,
+        )
+        .unwrap();
+        match &result.ast.items[0] {
+            Item::Function(f) => match &f.body {
+                Expr::Block(block) => match block.expr.as_ref() {
+                    Expr::TypeLit(type_lit) => match &type_lit.type_expr {
+                        TypeExpr::AnonymousStruct {
+                            fields, methods, ..
+                        } => {
+                            assert_eq!(fields.len(), 1);
+                            assert_eq!(result.get(fields[0].name.name), "value");
+                            assert_eq!(methods.len(), 2);
+                            assert_eq!(result.get(methods[0].name.name), "get");
+                            assert_eq!(result.get(methods[1].name.name), "set");
+                            // Check set has a parameter
+                            assert_eq!(methods[1].params.len(), 1);
+                            assert_eq!(result.get(methods[1].params[0].name.name), "v");
+                        }
+                        _ => panic!("expected AnonymousStruct"),
+                    },
+                    _ => panic!("expected TypeLit"),
+                },
+                _ => panic!("expected Block"),
+            },
+            _ => panic!("expected Function"),
+        }
+    }
+
+    #[test]
+    fn test_anon_struct_methods_only() {
+        // Anonymous struct with only methods (no fields)
+        let result =
+            parse("fn make_type() -> type { struct { fn new() -> Self { Self { } } } }").unwrap();
+        match &result.ast.items[0] {
+            Item::Function(f) => match &f.body {
+                Expr::Block(block) => match block.expr.as_ref() {
+                    Expr::TypeLit(type_lit) => match &type_lit.type_expr {
+                        TypeExpr::AnonymousStruct {
+                            fields, methods, ..
+                        } => {
+                            assert!(fields.is_empty());
+                            assert_eq!(methods.len(), 1);
+                            assert_eq!(result.get(methods[0].name.name), "new");
+                        }
+                        _ => panic!("expected AnonymousStruct"),
+                    },
+                    _ => panic!("expected TypeLit"),
+                },
+                _ => panic!("expected Block"),
+            },
+            _ => panic!("expected Function"),
+        }
+    }
+
+    #[test]
+    fn test_self_type_in_return() {
+        // Test Self as return type
+        let result =
+            parse("fn make_type() -> type { struct { x: i32, fn clone(self) -> Self { self } } }")
+                .unwrap();
+        match &result.ast.items[0] {
+            Item::Function(f) => match &f.body {
+                Expr::Block(block) => match block.expr.as_ref() {
+                    Expr::TypeLit(type_lit) => match &type_lit.type_expr {
+                        TypeExpr::AnonymousStruct { methods, .. } => {
+                            match &methods[0].return_type {
+                                Some(TypeExpr::Named(ident)) => {
+                                    assert_eq!(result.get(ident.name), "Self");
+                                }
+                                _ => panic!("expected Self return type"),
+                            }
+                        }
+                        _ => panic!("expected AnonymousStruct"),
+                    },
+                    _ => panic!("expected TypeLit"),
+                },
+                _ => panic!("expected Block"),
+            },
+            _ => panic!("expected Function"),
+        }
+    }
+
+    #[test]
+    fn test_self_type_in_param() {
+        // Test Self as parameter type
+        let result = parse(
+            "fn make_type() -> type { struct { fn combine(self, other: Self) -> Self { self } } }",
+        )
+        .unwrap();
+        match &result.ast.items[0] {
+            Item::Function(f) => match &f.body {
+                Expr::Block(block) => match block.expr.as_ref() {
+                    Expr::TypeLit(type_lit) => match &type_lit.type_expr {
+                        TypeExpr::AnonymousStruct { methods, .. } => {
+                            // Check parameter type is Self
+                            let param = &methods[0].params[0];
+                            match &param.ty {
+                                TypeExpr::Named(ident) => {
+                                    assert_eq!(result.get(ident.name), "Self");
+                                }
+                                _ => panic!("expected Self param type"),
+                            }
+                        }
+                        _ => panic!("expected AnonymousStruct"),
+                    },
+                    _ => panic!("expected TypeLit"),
+                },
+                _ => panic!("expected Block"),
+            },
+            _ => panic!("expected Function"),
+        }
+    }
+
+    #[test]
+    fn test_self_type_standalone() {
+        // Test Self as a standalone type (e.g., in impl block context)
+        // This just tests lexing/parsing of Self as a type keyword
+        let result =
+            parse("struct Foo { x: i32 } impl Foo { fn clone(self) -> Self { self } }").unwrap();
+        match &result.ast.items[1] {
+            Item::Impl(impl_block) => {
+                let method = &impl_block.methods[0];
+                match &method.return_type {
+                    Some(TypeExpr::Named(ident)) => {
+                        assert_eq!(result.get(ident.name), "Self");
+                    }
+                    _ => panic!("expected Self return type"),
+                }
+            }
+            _ => panic!("expected Impl"),
         }
     }
 }

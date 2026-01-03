@@ -1271,7 +1271,17 @@ impl<'a> Sema<'a> {
             return Ok(AnalysisResult::new(air_ref, Type::ComptimeType));
         }
 
-        // Not a parameter, local, or type - undefined variable
+        // Check if this is a module-level constant (e.g., `const utils = @import("utils")`)
+        // Constants are stored in self.constants and their initializers need to be analyzed
+        // on first access to determine their type (lazy evaluation per ADR-0026).
+        if let Some(const_info) = self.constants.get(&name).cloned() {
+            // Analyze the constant's initializer to get the actual type
+            // This is where @import expressions get resolved into Type::Module
+            let init_result = self.analyze_inst(air, const_info.init, ctx)?;
+            return Ok(init_result);
+        }
+
+        // Not a parameter, local, type, or constant - undefined variable
         Err(CompileError::new(
             ErrorKind::UndefinedVariable(name_str.to_string()),
             span,

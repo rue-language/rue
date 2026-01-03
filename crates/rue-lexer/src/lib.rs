@@ -40,6 +40,7 @@ pub enum TokenKind {
     Drop,
     Linear,    // linear struct modifier
     SelfValue, // self (value, not type)
+    SelfType,  // Self (type, not value) - used in methods to refer to the struct type
     Comptime,  // comptime (compile-time evaluation)
     Pub,       // pub visibility modifier (module system)
     Const,     // const declaration (module system re-exports)
@@ -136,6 +137,7 @@ impl TokenKind {
             TokenKind::Drop => "'drop'",
             TokenKind::Linear => "'linear'",
             TokenKind::SelfValue => "'self'",
+            TokenKind::SelfType => "'Self'",
             TokenKind::Comptime => "'comptime'",
             TokenKind::Pub => "'pub'",
             TokenKind::Const => "'const'",
@@ -234,6 +236,7 @@ impl std::fmt::Display for TokenKind {
             TokenKind::Drop => write!(f, "DROP"),
             TokenKind::Linear => write!(f, "LINEAR"),
             TokenKind::SelfValue => write!(f, "SELF"),
+            TokenKind::SelfType => write!(f, "SELFTYPE"),
             TokenKind::Comptime => write!(f, "COMPTIME"),
             TokenKind::Pub => write!(f, "PUB"),
             TokenKind::Const => write!(f, "CONST"),

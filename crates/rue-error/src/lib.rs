@@ -257,6 +257,10 @@ pub enum PreviewFeature {
     /// Module type access (e.g., `module.StructName`, `module.EnumName::Variant`).
     /// Part of the module system (ADR-0026) - accessing types through modules.
     ModuleTypes,
+    /// Anonymous struct methods (Zig-style).
+    /// Allows method definitions inside anonymous struct type expressions.
+    /// See ADR-0029 for the full design.
+    AnonStructMethods,
 }
 
 /// Error returned when parsing a preview feature name fails.
@@ -279,6 +283,7 @@ impl PreviewFeature {
             PreviewFeature::TestInfra => "test_infra",
             PreviewFeature::AffineMvs => "affine_mvs",
             PreviewFeature::ModuleTypes => "module_types",
+            PreviewFeature::AnonStructMethods => "anon_struct_methods",
         }
     }
 
@@ -289,6 +294,7 @@ impl PreviewFeature {
             PreviewFeature::TestInfra => "ADR-0005",
             PreviewFeature::AffineMvs => "ADR-0008",
             PreviewFeature::ModuleTypes => "ADR-0026",
+            PreviewFeature::AnonStructMethods => "ADR-0029",
         }
     }
 
@@ -298,6 +304,7 @@ impl PreviewFeature {
             PreviewFeature::TestInfra,
             PreviewFeature::AffineMvs,
             PreviewFeature::ModuleTypes,
+            PreviewFeature::AnonStructMethods,
         ]
     }
 
@@ -323,6 +330,7 @@ impl std::str::FromStr for PreviewFeature {
             "test_infra" => Ok(PreviewFeature::TestInfra),
             "affine_mvs" => Ok(PreviewFeature::AffineMvs),
             "module_types" => Ok(PreviewFeature::ModuleTypes),
+            "anon_struct_methods" => Ok(PreviewFeature::AnonStructMethods),
             _ => Err(ParsePreviewFeatureError(s.to_string())),
         }
     }
@@ -1832,7 +1840,10 @@ mod tests {
     #[test]
     fn test_preview_feature_all_names() {
         let names = PreviewFeature::all_names();
-        assert_eq!(names, "test_infra, affine_mvs, module_types");
+        assert_eq!(
+            names,
+            "test_infra, affine_mvs, module_types, anon_struct_methods"
+        );
     }
 
     // ========================================================================

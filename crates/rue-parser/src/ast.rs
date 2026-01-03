@@ -285,11 +285,14 @@ pub enum TypeExpr {
         length: u64,
         span: Span,
     },
-    /// Anonymous struct type: struct { field: Type, ... }
+    /// Anonymous struct type: struct { field: Type, fn method(...) { ... }, ... }
     /// Used in comptime type construction (e.g., `fn Pair(comptime T: type) -> type { struct { first: T, second: T } }`)
+    /// Methods can be included inside the struct definition (Zig-style).
     AnonymousStruct {
         /// Field declarations (name and type)
         fields: Vec<AnonStructField>,
+        /// Method definitions inside the anonymous struct
+        methods: Vec<Method>,
         span: Span,
     },
 }
@@ -327,13 +330,21 @@ impl fmt::Display for TypeExpr {
             TypeExpr::Array {
                 element, length, ..
             } => write!(f, "[{}; {}]", element, length),
-            TypeExpr::AnonymousStruct { fields, .. } => {
+            TypeExpr::AnonymousStruct {
+                fields, methods, ..
+            } => {
                 write!(f, "struct {{ ")?;
                 for (i, field) in fields.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
                     write!(f, "sym:{}: {}", field.name.name.into_usize(), field.ty)?;
+                }
+                for (i, method) in methods.iter().enumerate() {
+                    if !fields.is_empty() || i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "fn sym:{}", method.name.name.into_usize())?;
                 }
                 write!(f, " }}")
             }
