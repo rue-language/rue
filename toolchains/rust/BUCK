@@ -53,6 +53,12 @@ _OPT_FLAGS = select({
     "root//constraints:release": ["-Copt-level=3", "-Clto=thin"],
 })
 
+# macOS linker flags to work around Xcode linker bugs
+# The new ld-prime linker in Xcode 15+ has a bug where it crashes on very long
+# symbol names (ld: Assertion failed: name.size() <= maxLength).
+# Using -ld_classic forces the older, more stable linker.
+_MACOS_LINKER_FLAGS = ["-Clink-arg=-ld_classic"]
+
 # Hermetic toolchain for Linux x86_64
 hermetic_rust_toolchain(
     name = "hermetic-linux-x86_64",
@@ -79,7 +85,7 @@ hermetic_rust_toolchain(
     distribution = ":rust-macos-aarch64",
     target_triple = "aarch64-apple-darwin",
     default_edition = "2024",
-    rustc_flags = _OPT_FLAGS,
+    rustc_flags = _OPT_FLAGS + _MACOS_LINKER_FLAGS,
     visibility = ["PUBLIC"],
 )
 
@@ -89,7 +95,7 @@ hermetic_rust_toolchain(
     distribution = ":rust-macos-x86_64",
     target_triple = "x86_64-apple-darwin",
     default_edition = "2024",
-    rustc_flags = _OPT_FLAGS,
+    rustc_flags = _OPT_FLAGS + _MACOS_LINKER_FLAGS,
     visibility = ["PUBLIC"],
 )
 

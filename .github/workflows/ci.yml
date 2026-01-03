@@ -41,6 +41,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Select Xcode 16.2
+        if: runner.os == 'macOS'
+        run: sudo xcode-select -s /Applications/Xcode_16.2.app
+
       - name: Install dotslash
         uses: facebook/install-dotslash@latest
 

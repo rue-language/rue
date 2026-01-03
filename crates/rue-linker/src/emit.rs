@@ -542,16 +542,7 @@ impl ObjectBuilder {
     fn build_macho(self) -> Vec<u8> {
         let mut macho = Vec::new();
 
-        // Determine number of sections (1 for __text, +1 if we have strings for __rodata)
-        let has_rodata = !self.strings.is_empty();
-        let num_sections = if has_rodata { 2 } else { 1 };
-        let segment_cmd_total = MACHO64_SEGMENT_CMD_SIZE + (MACHO64_SECTION_SIZE * num_sections);
-        // Three load commands: LC_SEGMENT_64, LC_BUILD_VERSION, LC_SYMTAB
-        let load_commands_size =
-            segment_cmd_total + MACHO64_BUILD_VERSION_CMD_SIZE + MACHO64_SYMTAB_CMD_SIZE;
-        let header_and_commands = MACHO64_HEADER_SIZE + load_commands_size;
-
-        // Build rodata content (string constants)
+        // Build rodata content (string constants) - do this first to determine if we need rodata section
         let mut rodata = Vec::new();
         let mut string_offsets = Vec::new();
         for s in &self.strings {
@@ -559,6 +550,18 @@ impl ObjectBuilder {
             rodata.extend_from_slice(s.as_bytes());
             // No null terminator - Rue strings are length-prefixed
         }
+
+        // Determine number of sections (1 for __text, +1 if we have non-empty rodata)
+        // IMPORTANT: Check rodata.is_empty(), not self.strings.is_empty()
+        // Empty strings ("") have no bytes, so rodata would be empty even with strings present.
+        // Creating a zero-size rodata section with symbols pointing into it causes linker errors.
+        let has_rodata = !rodata.is_empty();
+        let num_sections = if has_rodata { 2 } else { 1 };
+        let segment_cmd_total = MACHO64_SEGMENT_CMD_SIZE + (MACHO64_SECTION_SIZE * num_sections);
+        // Three load commands: LC_SEGMENT_64, LC_BUILD_VERSION, LC_SYMTAB
+        let load_commands_size =
+            segment_cmd_total + MACHO64_BUILD_VERSION_CMD_SIZE + MACHO64_SYMTAB_CMD_SIZE;
+        let header_and_commands = MACHO64_HEADER_SIZE + load_commands_size;
 
         // Align section data to 4 bytes (required for ARM64)
         let text_offset = align_up(header_and_commands, 4);
@@ -579,11 +582,33 @@ impl ObjectBuilder {
             align_up(text_offset + text_size, 4)
         };
 
-        // Collect text section relocations
+        // Collect text section relocations, filtering out relocations for empty strings.
         // Note: All relocations (including string constant refs) are in the text section
         // because they're PC-relative loads from code. The rodata section contains only
         // raw string data with no relocations.
-        let text_relocs: Vec<&CodeRelocation> = self.relocations.iter().collect();
+        // IMPORTANT: Filter out relocations for empty strings since they have no symbol.
+        let text_relocs: Vec<&CodeRelocation> = self
+            .relocations
+            .iter()
+            .filter(|reloc| {
+                if reloc.symbol.starts_with(".rodata.str") {
+                    // Check if this string is empty
+                    if let Ok(string_id) = reloc
+                        .symbol
+                        .strip_prefix(".rodata.str")
+                        .unwrap()
+                        .parse::<usize>()
+                    {
+                        // Keep relocation only if string is non-empty
+                        !self.strings.get(string_id).map_or(true, |s| s.is_empty())
+                    } else {
+                        true // Keep if we can't parse (shouldn't happen)
+                    }
+                } else {
+                    true // Keep non-string relocations
+                }
+            })
+            .collect();
         let num_text_relocs = text_relocs.len();
 
         // On macOS, all external C symbols get a leading underscore prefix.
@@ -602,12 +627,24 @@ impl ObjectBuilder {
 
         // String constant symbols (private external, for rodata)
         // Include function name in symbol to avoid collisions when linking multiple object files
+        // IMPORTANT: Only create symbols for non-empty strings that have actual rodata content.
+        // Empty strings have no bytes in rodata, so creating symbols for them would point
+        // to invalid offsets or a non-existent rodata section.
         let mut string_name_offsets: Vec<usize> = Vec::new();
-        for (i, _) in self.strings.iter().enumerate() {
-            string_name_offsets.push(strtab.len());
-            let sym_name = format!("__{}.str{}", self.name, i);
-            strtab.extend_from_slice(sym_name.as_bytes());
-            strtab.push(0);
+        let mut string_sym_indices: Vec<Option<usize>> = Vec::new(); // Maps string index to symbol index
+        let mut num_string_syms = 0usize;
+        for (i, s) in self.strings.iter().enumerate() {
+            if s.is_empty() {
+                // Empty string - no symbol needed (would point to invalid location)
+                string_sym_indices.push(None);
+            } else {
+                string_sym_indices.push(Some(num_string_syms));
+                string_name_offsets.push(strtab.len());
+                let sym_name = format!("__{}.str{}", self.name, i);
+                strtab.extend_from_slice(sym_name.as_bytes());
+                strtab.push(0);
+                num_string_syms += 1;
+            }
         }
 
         // External symbol names (for relocations)
@@ -639,9 +676,12 @@ impl ObjectBuilder {
         // In Mach-O, local symbols come first, then external symbols
         // All our symbols are external (N_EXT set) because ARM64_RELOC_PAGE21/PAGEOFF12
         // relocations with r_extern=1 require external target symbols.
-        // Symbol order: string constants, function, undefined externals
+        // Symbol order: function, string constants (non-empty only), undefined externals
+        // IMPORTANT: Function must be first (index 0) because macOS linker rejects
+        // r_symbolnum=0 in relocations as invalid. By putting function first,
+        // string symbols start at index 1+.
         let num_local_syms = 0; // No local symbols - all are external
-        let num_extern_syms = self.strings.len() + 1 + extern_symbols.len(); // strings + function + external refs
+        let num_extern_syms = 1 + num_string_syms + extern_symbols.len(); // function + non-empty strings + external refs
         let num_syms = num_local_syms + num_extern_syms;
 
         // String table follows symbol table
@@ -777,30 +817,32 @@ impl ObjectBuilder {
         // r_type: 4-bit relocation type
         for reloc in &text_relocs {
             // Look up the symbol
+            // Symbol table layout: function (0), non-empty string symbols (1..N), undefined externals (N+1..)
             let (sym_num, is_extern) = if reloc.symbol.starts_with(".rodata.str") {
-                // String symbol - local symbol (indices 0, 1, 2...)
+                // String symbol (already filtered to exclude empty strings)
                 let string_id: usize = reloc
                     .symbol
                     .strip_prefix(".rodata.str")
                     .unwrap()
                     .parse()
                     .unwrap();
-                // String symbols are at the beginning of the symbol table
-                (string_id as u32, true)
+                // Look up the symbol index for this string
+                let sym_idx = string_sym_indices[string_id]
+                    .expect("empty string relocations should have been filtered out");
+                // Non-empty string: symbol index is 1 + sym_idx (function is at 0)
+                (1 + sym_idx as u32, true)
             } else {
                 // External symbol (function or undefined external)
-                // Symbol table layout: string symbols (0..N-1), function (N), undefined externals (N+1..)
-                let num_string_syms = self.strings.len();
                 // First check if it's the function itself
                 if reloc.symbol == self.name {
-                    // Function symbol is after string symbols
-                    (num_string_syms as u32, true)
+                    // Function symbol is at index 0
+                    (0_u32, true)
                 } else {
                     // Undefined external symbol
                     let macho_sym = format!("_{}", reloc.symbol);
                     let sym_idx = extern_symbols.iter().position(|s| s == &macho_sym).unwrap();
-                    // Undefined externals start after string symbols and function
-                    (num_string_syms as u32 + 1 + sym_idx as u32, true)
+                    // Undefined externals start after function and non-empty string symbols
+                    (1 + num_string_syms as u32 + sym_idx as u32, true)
                 }
             };
 
@@ -837,15 +879,30 @@ impl ObjectBuilder {
         // n_value: 8 bytes
 
         // All symbols are external (N_EXT set) for ARM64 relocation compatibility.
-        // Symbol table order: string constants, function, undefined externals.
+        // Symbol table order: function, string constants, undefined externals.
+        // IMPORTANT: Function must be at index 0 so that string symbols start at
+        // index 1+. macOS linker rejects r_symbolnum=0 in relocations as invalid.
 
-        // String constant symbols (private external, defined in rodata section)
+        // Symbol 0: External symbol for the function itself
+        macho.extend_from_slice(&(func_name_offset as u32).to_le_bytes()); // n_strx
+        macho.push(N_EXT | N_SECT); // n_type: external, defined in section
+        macho.push(1); // n_sect: section 1 (__text)
+        macho.extend_from_slice(&0_u16.to_le_bytes()); // n_desc
+        macho.extend_from_slice(&0_u64.to_le_bytes()); // n_value (offset in section)
+
+        // Symbols 1..N: String constant symbols (private external, defined in rodata section)
         // Note: We mark these as N_PEXT | N_EXT because ARM64_RELOC_PAGE21/PAGEOFF12
         // relocations with r_extern=1 require the target symbol to be external.
         // N_PEXT makes them private (not exported), avoiding duplicate symbol errors
         // when linking multiple object files that each have their own string constants.
-        for (i, _) in self.strings.iter().enumerate() {
-            macho.extend_from_slice(&(string_name_offsets[i] as u32).to_le_bytes()); // n_strx
+        // IMPORTANT: Only emit symbols for non-empty strings (ones that have actual content).
+        let mut sym_name_idx = 0;
+        for (i, s) in self.strings.iter().enumerate() {
+            if s.is_empty() {
+                // Skip empty strings - they have no symbol
+                continue;
+            }
+            macho.extend_from_slice(&(string_name_offsets[sym_name_idx] as u32).to_le_bytes()); // n_strx
             macho.push(N_PEXT | N_EXT | N_SECT); // n_type: private external, defined in section
             if has_rodata {
                 macho.push(2); // n_sect: section 2 (__rodata)
@@ -856,18 +913,10 @@ impl ObjectBuilder {
             // n_value is the VM address: rodata section starts at text_size
             let vm_addr = (text_size + string_offsets[i]) as u64;
             macho.extend_from_slice(&vm_addr.to_le_bytes());
+            sym_name_idx += 1;
         }
 
-        // External symbols start here
-
-        // External symbol: the function itself
-        macho.extend_from_slice(&(func_name_offset as u32).to_le_bytes()); // n_strx
-        macho.push(N_EXT | N_SECT); // n_type: external, defined in section
-        macho.push(1); // n_sect: section 1 (__text)
-        macho.extend_from_slice(&0_u16.to_le_bytes()); // n_desc
-        macho.extend_from_slice(&0_u64.to_le_bytes()); // n_value (offset in section)
-
-        // External symbols (undefined)
+        // Symbols N+1..: External symbols (undefined)
         for (i, _sym) in extern_symbols.iter().enumerate() {
             macho.extend_from_slice(&(extern_name_offsets[i] as u32).to_le_bytes()); // n_strx
             macho.push(N_EXT | N_UNDF); // n_type: external, undefined
