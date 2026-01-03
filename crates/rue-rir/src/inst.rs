@@ -109,8 +109,10 @@ pub enum RirPattern {
     Int(i64, Span),
     /// Boolean literal pattern
     Bool(bool, Span),
-    /// Path pattern for enum variants (e.g., Color::Red)
+    /// Path pattern for enum variants (e.g., `Color::Red` or `module.Color::Red`)
     Path {
+        /// Optional module reference for qualified paths (e.g., the `module` in `module.Color::Red`)
+        module: Option<InstRef>,
         /// The enum type name
         type_name: Spur,
         /// The variant name
@@ -157,7 +159,8 @@ pub enum PatternKind {
     Int = 1,
     /// Bool pattern: [kind, span_start, span_len, value]
     Bool = 2,
-    /// Path pattern: [kind, span_start, span_len, type_name, variant]
+    /// Path pattern: [kind, span_start, span_len, module, type_name, variant]
+    /// module is u32::MAX for None, otherwise an InstRef
     Path = 3,
 }
 
@@ -165,7 +168,7 @@ pub enum PatternKind {
 const PATTERN_WILDCARD_SIZE: u32 = 4; // kind, span_start, span_len, body
 const PATTERN_INT_SIZE: u32 = 6; // kind, span_start, span_len, value_lo, value_hi, body
 const PATTERN_BOOL_SIZE: u32 = 5; // kind, span_start, span_len, value, body
-const PATTERN_PATH_SIZE: u32 = 6; // kind, span_start, span_len, type_name, variant, body
+const PATTERN_PATH_SIZE: u32 = 7; // kind, span_start, span_len, module, type_name, variant, body
 
 /// Stored representation of struct field initializer.
 /// Layout: [field_name: u32, value: u32] = 2 u32s per field
@@ -492,6 +495,7 @@ impl Rir {
                     self.extra.push(body.as_u32());
                 }
                 RirPattern::Path {
+                    module,
                     type_name,
                     variant,
                     span,
@@ -499,6 +503,8 @@ impl Rir {
                     self.extra.push(PatternKind::Path as u32);
                     self.extra.push(span.start());
                     self.extra.push(span.len());
+                    // Store module as u32::MAX for None, otherwise the InstRef
+                    self.extra.push(module.map_or(u32::MAX, |r| r.as_u32()));
                     self.extra.push(type_name.into_usize() as u32);
                     self.extra.push(variant.into_usize() as u32);
                     self.extra.push(body.as_u32());
@@ -548,11 +554,19 @@ impl Rir {
                     let span_start = self.extra[pos + 1];
                     let span_len = self.extra[pos + 2];
                     let span = Span::new(span_start, span_start + span_len);
-                    let type_name = Spur::try_from_usize(self.extra[pos + 3] as usize).unwrap();
-                    let variant = Spur::try_from_usize(self.extra[pos + 4] as usize).unwrap();
-                    let body = InstRef::from_raw(self.extra[pos + 5]);
+                    // Decode module: u32::MAX means None
+                    let module_raw = self.extra[pos + 3];
+                    let module = if module_raw == u32::MAX {
+                        None
+                    } else {
+                        Some(InstRef::from_raw(module_raw))
+                    };
+                    let type_name = Spur::try_from_usize(self.extra[pos + 4] as usize).unwrap();
+                    let variant = Spur::try_from_usize(self.extra[pos + 5] as usize).unwrap();
+                    let body = InstRef::from_raw(self.extra[pos + 6]);
                     arms.push((
                         RirPattern::Path {
+                            module,
                             type_name,
                             variant,
                             span,
@@ -1758,10 +1772,19 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
             RirPattern::Int(n, _) => n.to_string(),
             RirPattern::Bool(b, _) => b.to_string(),
             RirPattern::Path {
-                type_name, variant, ..
+                module,
+                type_name,
+                variant,
+                ..
             } => {
+                let prefix = if let Some(module_ref) = module {
+                    format!("%{}..", module_ref.as_u32())
+                } else {
+                    String::new()
+                };
                 format!(
-                    "{}::{}",
+                    "{}{}::{}",
+                    prefix,
                     self.interner.resolve(&*type_name),
                     self.interner.resolve(&*variant)
                 )
@@ -2307,6 +2330,7 @@ mod tests {
         let variant = interner.get_or_intern("Red");
 
         let pattern = RirPattern::Path {
+            module: None,
             type_name,
             variant,
             span,
@@ -3674,6 +3698,7 @@ mod tests {
         let (arms_start, arms_len) = rir.add_match_arms(&[
             (
                 RirPattern::Path {
+                    module: None,
                     type_name: color,
                     variant: red,
                     span: Span::new(0, 10),
@@ -3682,6 +3707,7 @@ mod tests {
             ),
             (
                 RirPattern::Path {
+                    module: None,
                     type_name: color,
                     variant: green,
                     span: Span::new(0, 12),

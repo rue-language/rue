@@ -706,12 +706,61 @@ where
         }),
     };
 
-    // Path pattern: Enum::Variant
-    let path_pat = ident_parser()
+    // Simple path pattern: Enum::Variant (no module prefix)
+    let simple_path_pat = ident_parser()
         .then_ignore(just(TokenKind::ColonColon))
         .then(ident_parser())
+        // Negative lookahead to ensure we're not at the start of a qualified path
+        // (i.e., ensure there's no `.` before this pattern that would make it
+        // part of a module.Enum::Variant pattern)
         .map_with(|(type_name, variant), e| {
             Pattern::Path(PathPattern {
+                base: None,
+                type_name,
+                variant,
+                span: span_from_extra(e),
+            })
+        });
+
+    // Qualified path pattern: module.Enum::Variant or module.sub.Enum::Variant
+    // Parses: ident ("." ident)+ "::" ident
+    // where the part before "::" is module.Type and after is Variant
+    let qualified_path_pat = ident_parser()
+        .then(
+            just(TokenKind::Dot)
+                .ignore_then(ident_parser())
+                .repeated()
+                .at_least(1)
+                .collect::<Vec<_>>(),
+        )
+        .then_ignore(just(TokenKind::ColonColon))
+        .then(ident_parser())
+        .map_with(|((first, mut rest), variant), e| {
+            // first is the first module identifier
+            // rest contains all subsequent identifiers up to and including type_name
+            // The last element of rest is the type_name
+            let type_name = rest.pop().expect("at_least(1) guarantees non-empty");
+
+            // Build the base expression: first.rest[0].rest[1]...
+            let base_expr = if rest.is_empty() {
+                // Just `module.Type::Variant` - base is single ident
+                Expr::Ident(first.clone())
+            } else {
+                // `a.b.c.Type::Variant` - build field access chain
+                let mut base = Expr::Ident(first.clone());
+                for field in rest {
+                    let span = base.span().extend_to(field.span.end);
+                    base = Expr::Field(FieldExpr {
+                        base: Box::new(base),
+                        field,
+                        span,
+                    });
+                }
+                base
+            };
+
+            Pattern::Path(PathPattern {
+                base: Some(Box::new(base_expr)),
                 type_name,
                 variant,
                 span: span_from_extra(e),
@@ -724,7 +773,9 @@ where
         int_pat,
         bool_true,
         bool_false,
-        path_pat,
+        // Try qualified path first (has more structure), then simple path
+        qualified_path_pat,
+        simple_path_pat,
     ))
 }
 

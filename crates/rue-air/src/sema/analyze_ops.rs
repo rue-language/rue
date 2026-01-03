@@ -699,17 +699,28 @@ impl<'a> Sema<'a> {
                     }
                 }
                 RirPattern::Path {
-                    type_name, variant, ..
+                    module,
+                    type_name,
+                    variant,
+                    ..
                 } => {
-                    // Look up the enum type
-                    let enum_id = self.enums.get(type_name).ok_or_compile_error(
-                        ErrorKind::UnknownEnumType(self.interner.resolve(&*type_name).to_string()),
-                        pattern_span,
-                    )?;
-                    let enum_def = self.type_pool.enum_def(*enum_id);
+                    // Look up the enum type, potentially through a module
+                    let enum_id = if let Some(module_ref) = module {
+                        // Qualified access: module.EnumName::Variant
+                        self.resolve_enum_through_module(*module_ref, *type_name, pattern_span)?
+                    } else {
+                        // Unqualified access: EnumName::Variant
+                        *self.enums.get(type_name).ok_or_compile_error(
+                            ErrorKind::UnknownEnumType(
+                                self.interner.resolve(&*type_name).to_string(),
+                            ),
+                            pattern_span,
+                        )?
+                    };
+                    let enum_def = self.type_pool.enum_def(enum_id);
 
                     // Check that scrutinee type matches the pattern's enum type
-                    if scrutinee_type != Type::Enum(*enum_id) {
+                    if scrutinee_type != Type::Enum(enum_id) {
                         return Err(CompileError::new(
                             ErrorKind::TypeMismatch {
                                 expected: scrutinee_type.name().to_string(),
@@ -730,7 +741,7 @@ impl<'a> Sema<'a> {
                     )?;
 
                     covered_variants.insert(variant_index as u32);
-                    pattern_enum_id = Some(*enum_id);
+                    pattern_enum_id = Some(enum_id);
                 }
             }
 
@@ -771,18 +782,25 @@ impl<'a> Sema<'a> {
                 RirPattern::Int(n, _) => AirPattern::Int(*n),
                 RirPattern::Bool(b, _) => AirPattern::Bool(*b),
                 RirPattern::Path {
-                    type_name, variant, ..
+                    module,
+                    type_name,
+                    variant,
+                    ..
                 } => {
                     let type_name_str = self.interner.resolve(&*type_name).to_string();
-                    let enum_id = *self.enums.get(type_name).ok_or_else(|| {
-                        CompileError::new(
-                            ErrorKind::InternalError(format!(
-                                "enum type '{}' not found during pattern conversion",
-                                type_name_str
-                            )),
-                            pattern_span,
-                        )
-                    })?;
+                    let enum_id = if let Some(module_ref) = module {
+                        self.resolve_enum_through_module(*module_ref, *type_name, pattern_span)?
+                    } else {
+                        *self.enums.get(type_name).ok_or_else(|| {
+                            CompileError::new(
+                                ErrorKind::InternalError(format!(
+                                    "enum type '{}' not found during pattern conversion",
+                                    type_name_str
+                                )),
+                                pattern_span,
+                            )
+                        })?
+                    };
                     let enum_def = self.type_pool.enum_def(enum_id);
                     let variant_name = self.interner.resolve(&*variant);
                     let variant_index = enum_def.find_variant(variant_name).ok_or_else(|| {

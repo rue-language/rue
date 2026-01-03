@@ -3095,13 +3095,20 @@ fn analyze_match_ctx(
                 }
             }
             RirPattern::Path {
-                type_name, variant, ..
+                module,
+                type_name,
+                variant,
+                ..
             } => {
-                // Look up the enum type
-                let enum_id = ctx.get_enum(*type_name).ok_or_compile_error(
-                    ErrorKind::UnknownEnumType(ctx.interner.resolve(&*type_name).to_string()),
-                    pattern_span,
-                )?;
+                // Look up the enum type, potentially through a module
+                let enum_id = if let Some(module_ref) = module {
+                    ctx.resolve_enum_through_module(*module_ref, *type_name, pattern_span)?
+                } else {
+                    ctx.get_enum(*type_name).ok_or_compile_error(
+                        ErrorKind::UnknownEnumType(ctx.interner.resolve(&*type_name).to_string()),
+                        pattern_span,
+                    )?
+                };
                 let enum_def = ctx.get_enum_def(enum_id);
 
                 // Check that scrutinee type matches the pattern's enum type
@@ -3188,18 +3195,25 @@ fn analyze_match_ctx(
             RirPattern::Int(n, _) => AirPattern::Int(*n),
             RirPattern::Bool(b, _) => AirPattern::Bool(*b),
             RirPattern::Path {
-                type_name, variant, ..
+                module,
+                type_name,
+                variant,
+                ..
             } => {
                 let type_name_str = ctx.interner.resolve(&*type_name).to_string();
-                let enum_id = ctx.get_enum(*type_name).ok_or_else(|| {
-                    CompileError::new(
-                        ErrorKind::InternalError(format!(
-                            "enum type '{}' not found during pattern conversion",
-                            type_name_str
-                        )),
-                        pattern_span,
-                    )
-                })?;
+                let enum_id = if let Some(module_ref) = module {
+                    ctx.resolve_enum_through_module(*module_ref, *type_name, pattern_span)?
+                } else {
+                    ctx.get_enum(*type_name).ok_or_else(|| {
+                        CompileError::new(
+                            ErrorKind::InternalError(format!(
+                                "enum type '{}' not found during pattern conversion",
+                                type_name_str
+                            )),
+                            pattern_span,
+                        )
+                    })?
+                };
                 let enum_def = ctx.get_enum_def(enum_id);
                 let variant_name = ctx.interner.resolve(&*variant);
                 let variant_index = enum_def.find_variant(variant_name).ok_or_else(|| {

@@ -759,7 +759,10 @@ impl<'a> AstGen<'a> {
             Pattern::NegInt(lit) => RirPattern::Int((lit.value as i64).wrapping_neg(), lit.span),
             Pattern::Bool(lit) => RirPattern::Bool(lit.value, lit.span),
             Pattern::Path(path) => {
+                // If there's a base expression (module reference), generate it first
+                let module = path.base.as_ref().map(|base| self.gen_expr(base));
                 RirPattern::Path {
+                    module,
                     type_name: path.type_name.name, // Already a Spur
                     variant: path.variant.name,     // Already a Spur
                     span: path.span,

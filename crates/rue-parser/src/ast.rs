@@ -554,9 +554,11 @@ pub struct NegIntLit {
     pub span: Span,
 }
 
-/// A path pattern (e.g., `Color::Red` for enum variant matching).
+/// A path pattern (e.g., `Color::Red` or `module.Color::Red` for enum variant matching).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PathPattern {
+    /// Optional module/namespace prefix (e.g., `utils` in `utils.Color::Red`)
+    pub base: Option<Box<Expr>>,
     /// The type name (e.g., `Color`)
     pub type_name: Ident,
     /// The variant name (e.g., `Red`)
