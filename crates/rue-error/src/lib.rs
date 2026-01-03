@@ -141,7 +141,8 @@ impl ErrorCode {
     pub const INTRINSIC_TYPE_MISMATCH: Self = Self(702);
     pub const IMPORT_REQUIRES_STRING_LITERAL: Self = Self(703);
     pub const MODULE_NOT_FOUND: Self = Self(704);
-    pub const PRIVATE_MEMBER_ACCESS: Self = Self(705);
+    pub const STD_LIB_NOT_FOUND: Self = Self(705);
+    pub const PRIVATE_MEMBER_ACCESS: Self = Self(706);
 
     // ========================================================================
     // Literal/operator errors (E0800-E0899)
@@ -961,6 +962,8 @@ pub enum ErrorKind {
         /// Candidates that were tried (for error message)
         candidates: Vec<String>,
     },
+    #[error("standard library not found")]
+    StdLibNotFound,
     #[error("{item_kind} `{name}` is private")]
     PrivateMemberAccess { item_kind: String, name: String },
 
@@ -1099,6 +1102,7 @@ impl ErrorKind {
             ErrorKind::IntrinsicTypeMismatch(_) => ErrorCode::INTRINSIC_TYPE_MISMATCH,
             ErrorKind::ImportRequiresStringLiteral => ErrorCode::IMPORT_REQUIRES_STRING_LITERAL,
             ErrorKind::ModuleNotFound { .. } => ErrorCode::MODULE_NOT_FOUND,
+            ErrorKind::StdLibNotFound => ErrorCode::STD_LIB_NOT_FOUND,
             ErrorKind::PrivateMemberAccess { .. } => ErrorCode::PRIVATE_MEMBER_ACCESS,
 
             // Literal/operator errors (E0800-E0899)

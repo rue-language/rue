@@ -1,0 +1,10 @@
+// Rue Standard Library
+//
+// This is the root module for the Rue standard library.
+// Import with: const std = @import("std");
+//
+// The standard library provides common utilities organized into submodules:
+// - std.math: Mathematical functions
+
+// Re-export the math module
+pub const math = @import("math.rue");

@@ -1,0 +1,29 @@
+// Standard library: math module
+//
+// Provides basic mathematical utilities.
+
+/// Returns the absolute value of an integer.
+pub fn abs(x: i32) -> i32 {
+    if x < 0 { -x } else { x }
+}
+
+/// Returns the minimum of two values.
+pub fn min(a: i32, b: i32) -> i32 {
+    if a < b { a } else { b }
+}
+
+/// Returns the maximum of two values.
+pub fn max(a: i32, b: i32) -> i32 {
+    if a > b { a } else { b }
+}
+
+/// Clamps a value to be within the given range [lo, hi].
+pub fn clamp(x: i32, lo: i32, hi: i32) -> i32 {
+    if x < lo {
+        lo
+    } else if x > hi {
+        hi
+    } else {
+        x
+    }
+}

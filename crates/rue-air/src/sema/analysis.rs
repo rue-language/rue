@@ -7842,12 +7842,19 @@ impl<'a> Sema<'a> {
     /// Resolve an import path to an absolute file path.
     ///
     /// Resolution order (per ADR-0026):
-    /// 1. `foo.rue` (simple file module) - if import path already ends in .rue
-    /// 2. `foo.rue` (simple file module) - try adding .rue extension
-    /// 3. `_foo.rue` with `foo/` directory (directory module)
-    /// 4. (Future) Dependency from rue.toml
+    /// 1. Standard library: `@import("std")` resolves to the bundled std library
+    /// 2. Pre-loaded files (multi-file compilation)
+    /// 3. `foo.rue` (simple file module)
+    /// 4. `_foo.rue` with `foo/` directory (directory module)
+    /// 5. (Future) Dependency from rue.toml
     fn resolve_import_path(&self, import_path: &str, span: Span) -> CompileResult<String> {
         use std::path::Path;
+
+        // Phase 0: Check for standard library import
+        // @import("std") resolves to the compiler's bundled standard library
+        if import_path == "std" {
+            return self.resolve_std_import(span);
+        }
 
         // Phase 1: Check if the import path matches an already-loaded file
         // This handles unit tests and multi-file compilation where all files are pre-loaded
@@ -7923,6 +7930,55 @@ impl<'a> Sema<'a> {
             },
             span,
         ))
+    }
+
+    /// Resolve the standard library import.
+    ///
+    /// The standard library is located using the following resolution order:
+    /// 1. `RUE_STD_PATH` environment variable (if set)
+    /// 2. `std/` directory relative to the source file
+    /// 3. Known installation paths
+    ///
+    /// Returns the path to `_std.rue`, the standard library root module.
+    fn resolve_std_import(&self, span: Span) -> CompileResult<String> {
+        use std::path::Path;
+
+        // Check if we have a pre-loaded std library in file_paths
+        for (_file_id, path) in &self.file_paths {
+            // Check for _std.rue
+            if path.ends_with("_std.rue") || path.ends_with("std/_std.rue") {
+                return Ok(path.clone());
+            }
+        }
+
+        // 1. Check RUE_STD_PATH environment variable
+        if let Ok(std_path) = std::env::var("RUE_STD_PATH") {
+            let std_root = Path::new(&std_path).join("_std.rue");
+            if std_root.exists() {
+                return Ok(std_root.to_string_lossy().to_string());
+            }
+        }
+
+        // 2. Look for std/ relative to the source file
+        if let Some(source_path) = self.get_source_path(span) {
+            let source_dir = Path::new(source_path).parent().unwrap_or(Path::new("."));
+
+            // Try std/_std.rue relative to source
+            let std_root = source_dir.join("std").join("_std.rue");
+            if std_root.exists() {
+                return Ok(std_root.to_string_lossy().to_string());
+            }
+        }
+
+        // Note: We intentionally do NOT check the current working directory
+        // because it's unreliable and may find the wrong std library.
+        // Users should either:
+        // 1. Set RUE_STD_PATH environment variable
+        // 2. Have std/ in the same directory as their source files
+        // 3. Use aux_files in tests to provide std
+
+        // Standard library not found
+        Err(CompileError::new(ErrorKind::StdLibNotFound, span))
     }
 
     // Note: The old analyze_inst body from here onwards is now handled by the

@@ -1,0 +1,67 @@
+[section]
+id = "modules.stdlib"
+name = "Standard Library Imports"
+description = "Resolution and usage of @import(\"std\") for the standard library (Phase 4 of module system)."
+
+# =============================================================================
+# @import("std") Resolution
+# =============================================================================
+
+[[case]]
+name = "import_std_resolves"
+preview = "modules"
+preview_should_pass = true
+description = "@import(\"std\") resolves to the standard library root when std/ exists"
+source = """
+fn main() -> i32 {
+    let std = @import("std");
+    0
+}
+"""
+aux_files = { "std/_std.rue" = """
+// Minimal std library for testing
+pub fn test_fn() -> i32 { 42 }
+""" }
+exit_code = 0
+
+[[case]]
+name = "import_std_not_found_error"
+preview = "modules"
+preview_should_pass = true
+description = "@import(\"std\") produces a clear error when stdlib is not found"
+source = """
+fn main() -> i32 {
+    let std = @import("std");
+    0
+}
+"""
+compile_fail = true
+error_contains = "standard library not found"
+# This test runs without RUE_STD_PATH and without std/ in the test directory
+# so it should fail to find the standard library
+
+# =============================================================================
+# Standard Library Submodule Access
+# =============================================================================
+# Note: These tests require module member access to be fully implemented.
+# For now, they verify that the std library can be found and parsed.
+
+[[case]]
+name = "import_std_with_submodule"
+preview = "modules"
+preview_should_pass = true
+description = "std library with submodules can be imported"
+source = """
+fn main() -> i32 {
+    let std = @import("std");
+    0
+}
+"""
+aux_files = { "std/_std.rue" = """
+pub const math = @import("math.rue");
+""", "std/math.rue" = """
+pub fn abs(x: i32) -> i32 {
+    if x < 0 { -x } else { x }
+}
+""" }
+exit_code = 0
