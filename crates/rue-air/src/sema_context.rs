@@ -570,6 +570,74 @@ impl<'a> SemaContext<'a> {
             )))
         }
     }
+
+    // ========================================================================
+    // Module-qualified type resolution
+    // ========================================================================
+
+    /// Resolve a struct type through a module reference.
+    ///
+    /// Used for qualified struct literals like `module.StructName { ... }`.
+    /// The `module_ref` is an InstRef pointing to the result of an @import.
+    pub fn resolve_struct_through_module(
+        &self,
+        module_ref: rue_rir::InstRef,
+        type_name: lasso::Spur,
+        span: rue_span::Span,
+    ) -> rue_error::CompileResult<StructId> {
+        use rue_error::{CompileError, ErrorKind};
+
+        // Get the module type from the inst - we need to look up the AIR result
+        // For now, use a simplified approach: look up the type name in the global scope
+        // but require it to be exported from the module.
+        //
+        // A full implementation would:
+        // 1. Resolve module_ref to get the ModuleId
+        // 2. Look up the struct in that module's exports
+        //
+        // For now, we just look it up globally (works for single module imports)
+        let type_name_str = self.interner.resolve(&type_name);
+
+        // Try to find the struct globally
+        self.get_struct(type_name).ok_or_else(|| {
+            CompileError::new(
+                ErrorKind::UnknownType(format!(
+                    "{} (through module %{})",
+                    type_name_str,
+                    module_ref.as_u32()
+                )),
+                span,
+            )
+        })
+    }
+
+    /// Resolve an enum type through a module reference.
+    ///
+    /// Used for qualified enum paths like `module.EnumName::Variant`.
+    /// The `module_ref` is an InstRef pointing to the result of an @import.
+    pub fn resolve_enum_through_module(
+        &self,
+        module_ref: rue_rir::InstRef,
+        type_name: lasso::Spur,
+        span: rue_span::Span,
+    ) -> rue_error::CompileResult<EnumId> {
+        use rue_error::{CompileError, ErrorKind};
+
+        // Same simplified approach as resolve_struct_through_module
+        let type_name_str = self.interner.resolve(&type_name);
+
+        // Try to find the enum globally
+        self.get_enum(type_name).ok_or_else(|| {
+            CompileError::new(
+                ErrorKind::UnknownEnumType(format!(
+                    "{} (through module %{})",
+                    type_name_str,
+                    module_ref.as_u32()
+                )),
+                span,
+            )
+        })
+    }
 }
 
 #[cfg(test)]

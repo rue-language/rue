@@ -1,7 +1,7 @@
 [section]
 id = "modules.directory"
 name = "Directory Module Resolution"
-description = "Directory module resolution using the _foo.rue + foo/ pattern (Phase 2 of module system). Per ADR-0026, @import('foo') resolves to _foo.rue when foo.rue doesn't exist."
+description = "Directory module resolution using the _foo.rue + foo/ pattern. Per ADR-0026, @import('foo') resolves to _foo.rue when foo.rue doesn't exist."
 
 # =============================================================================
 # Simple File Module Resolution
@@ -12,8 +12,6 @@ description = "Directory module resolution using the _foo.rue + foo/ pattern (Ph
 
 [[case]]
 name = "import_simple_file_resolves"
-preview = "modules"
-preview_should_pass = true
 description = "@import('foo') resolves to foo.rue when it exists (verifies file is found)"
 source = """
 fn main() -> i32 {
@@ -30,8 +28,6 @@ exit_code = 0
 
 [[case]]
 name = "import_simple_file_with_extension_resolves"
-preview = "modules"
-preview_should_pass = true
 description = "@import('foo.rue') resolves to foo.rue directly"
 source = """
 fn main() -> i32 {
@@ -52,8 +48,6 @@ exit_code = 0
 
 [[case]]
 name = "import_directory_module_resolves"
-preview = "modules"
-preview_should_pass = true
 description = "@import('utils') resolves to _utils.rue when utils.rue doesn't exist"
 source = """
 fn main() -> i32 {
@@ -70,8 +64,6 @@ exit_code = 0
 
 [[case]]
 name = "import_directory_module_with_subdir_resolves"
-preview = "modules"
-preview_should_pass = true
 description = "@import('utils') finds _utils.rue even when utils/ directory exists"
 source = """
 fn main() -> i32 {
@@ -94,8 +86,6 @@ exit_code = 0
 
 [[case]]
 name = "import_prefers_simple_file_resolves"
-preview = "modules"
-preview_should_pass = true
 description = "foo.rue is preferred over _foo.rue if both exist (verifies resolution order)"
 source = """
 fn main() -> i32 {
@@ -116,8 +106,6 @@ exit_code = 0
 
 [[case]]
 name = "import_module_not_found"
-preview = "modules"
-preview_should_pass = true
 description = "@import for non-existent module produces clear error"
 source = """
 fn main() -> i32 {
@@ -134,8 +122,6 @@ error_contains = "cannot find module"
 
 [[case]]
 name = "import_nested_path_resolves"
-preview = "modules"
-preview_should_pass = true
 description = "@import('foo/bar') resolves to foo/bar.rue"
 source = """
 fn main() -> i32 {

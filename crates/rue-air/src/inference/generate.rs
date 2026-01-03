@@ -812,6 +812,7 @@ impl<'a> ConstraintGenerator<'a> {
                 type_name,
                 fields_start,
                 fields_len,
+                ..
             } => {
                 if let Some(&struct_ty) = self.structs.get(type_name) {
                     let fields = self.rir.get_field_inits(*fields_start, *fields_len);
@@ -848,10 +849,7 @@ impl<'a> ConstraintGenerator<'a> {
             }
 
             // Enum variant
-            InstData::EnumVariant {
-                type_name,
-                variant: _,
-            } => {
+            InstData::EnumVariant { type_name, .. } => {
                 if let Some(&enum_ty) = self.enums.get(type_name) {
                     InferType::Concrete(enum_ty)
                 } else {

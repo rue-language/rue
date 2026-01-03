@@ -277,12 +277,12 @@ type FunctionResult = Result<(AnalyzedFunction, Vec<CompileWarning>, Vec<String>
 /// 3. Process with `par_iter` using `analyze_function_job`
 /// 4. Merge with `merge_function_results`
 pub(crate) fn analyze_all_function_bodies(mut sema: Sema<'_>) -> MultiErrorResult<SemaOutput> {
-    // Check if lazy analysis is enabled (Phase 3 of module system, ADR-0026)
-    // When modules preview feature is enabled, we only analyze functions reachable from main()
-    if sema.preview_features.contains(&PreviewFeature::Modules) {
+    // Use lazy analysis when imports are present (multi-file compilation)
+    // This ensures only reachable code is analyzed, per ADR-0026
+    if sema.has_imports() {
         analyze_function_bodies_lazy(&mut sema)
     } else {
-        // Use eager analysis path (current behavior)
+        // Use eager analysis for single-file compilation (backwards compatibility)
         analyze_all_function_bodies_sequential(&mut sema)
     }
 }
@@ -1796,12 +1796,14 @@ fn analyze_inst_with_context(
         }
 
         InstData::StructInit {
+            module,
             type_name,
             fields_start,
             fields_len,
         } => analyze_struct_init_ctx(
             ctx,
             air,
+            *module,
             *type_name,
             *fields_start,
             *fields_len,
@@ -1850,9 +1852,11 @@ fn analyze_inst_with_context(
             Ok(AnalysisResult::new(air_ref, Type::Unit))
         }
 
-        InstData::EnumVariant { type_name, variant } => {
-            analyze_enum_variant_ctx(ctx, air, *type_name, *variant, inst.span)
-        }
+        InstData::EnumVariant {
+            module,
+            type_name,
+            variant,
+        } => analyze_enum_variant_ctx(ctx, air, *module, *type_name, *variant, inst.span),
 
         // Call operations
         InstData::Call {
@@ -3261,6 +3265,7 @@ fn analyze_match_ctx(
 fn analyze_struct_init_ctx(
     ctx: &SemaContext<'_>,
     air: &mut Air,
+    module: Option<InstRef>,
     type_name: Spur,
     fields_start: u32,
     fields_len: u32,
@@ -3270,11 +3275,17 @@ fn analyze_struct_init_ctx(
     use rue_error::MissingFieldsError;
 
     let field_inits = ctx.rir.get_field_inits(fields_start, fields_len);
-    // Look up the struct type
+
+    // Look up the struct type, potentially through a module
     let type_name_str = ctx.interner.resolve(&type_name);
-    let struct_id = ctx
-        .get_struct(type_name)
-        .ok_or_compile_error(ErrorKind::UnknownType(type_name_str.to_string()), span)?;
+    let struct_id = if let Some(module_ref) = module {
+        // Qualified access: module.StructName { ... }
+        ctx.resolve_struct_through_module(module_ref, type_name, span)?
+    } else {
+        // Unqualified access: StructName { ... }
+        ctx.get_struct(type_name)
+            .ok_or_compile_error(ErrorKind::UnknownType(type_name_str.to_string()), span)?
+    };
 
     let struct_def = ctx.get_struct_def(struct_id);
     let struct_type = Type::Struct(struct_id);
@@ -4223,15 +4234,22 @@ fn analyze_index_set_ctx(
 fn analyze_enum_variant_ctx(
     ctx: &SemaContext<'_>,
     air: &mut Air,
+    module: Option<InstRef>,
     type_name: Spur,
     variant: Spur,
     span: Span,
 ) -> CompileResult<AnalysisResult> {
-    // Look up the enum type
-    let enum_id = ctx.get_enum(type_name).ok_or_compile_error(
-        ErrorKind::UnknownEnumType(ctx.interner.resolve(&type_name).to_string()),
-        span,
-    )?;
+    // Look up the enum type, potentially through a module
+    let enum_id = if let Some(module_ref) = module {
+        // Qualified access: module.EnumName::Variant
+        ctx.resolve_enum_through_module(module_ref, type_name, span)?
+    } else {
+        // Unqualified access: EnumName::Variant
+        ctx.get_enum(type_name).ok_or_compile_error(
+            ErrorKind::UnknownEnumType(ctx.interner.resolve(&type_name).to_string()),
+            span,
+        )?
+    };
     let enum_def = ctx.get_enum_def(enum_id);
 
     // Find the variant index
@@ -5269,9 +5287,6 @@ fn analyze_intrinsic_ctx(
         });
         Ok(AnalysisResult::new(air_ref, Type::Unit))
     } else if name == known.import {
-        // @import requires the modules preview feature
-        ctx.require_preview(rue_error::PreviewFeature::Modules, "@import builtin", span)?;
-
         // @import takes exactly one string literal argument
         if args.len() != 1 {
             return Err(CompileError::new(
@@ -7770,25 +7785,6 @@ impl<'a> Sema<'a> {
         args: &[RirCallArg],
         span: Span,
     ) -> CompileResult<AnalysisResult> {
-        // @import requires the modules preview feature
-        if !self
-            .preview_features
-            .contains(&rue_error::PreviewFeature::Modules)
-        {
-            return Err(CompileError::new(
-                ErrorKind::PreviewFeatureRequired {
-                    feature: rue_error::PreviewFeature::Modules,
-                    what: "@import builtin".to_string(),
-                },
-                span,
-            )
-            .with_help(format!(
-                "use `--preview {}` to enable this feature ({})",
-                rue_error::PreviewFeature::Modules.name(),
-                rue_error::PreviewFeature::Modules.adr()
-            )));
-        }
-
         // @import takes exactly one argument
         if args.len() != 1 {
             return Err(CompileError::new(

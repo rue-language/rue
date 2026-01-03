@@ -327,6 +327,15 @@ impl<'a> Sema<'a> {
         self.file_paths.get(&file_id).map(|s| s.as_str())
     }
 
+    /// Check if the compilation involves imports (multi-file compilation).
+    ///
+    /// When imports are present, lazy analysis is used to only analyze
+    /// functions reachable from main(). For single-file compilation,
+    /// eager analysis is used for backwards compatibility.
+    pub(crate) fn has_imports(&self) -> bool {
+        !self.module_registry.is_empty()
+    }
+
     /// Check if the accessing file can see a private item from the target file.
     ///
     /// Visibility rules (per ADR-0026):

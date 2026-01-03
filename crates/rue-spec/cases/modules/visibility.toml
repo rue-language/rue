@@ -1,7 +1,7 @@
 [section]
 id = "modules.visibility"
 name = "Visibility"
-description = "Pub visibility modifier for functions, structs, and enums (Phase 1 of module system). Spec chapter pending ADR-0026 finalization."
+description = "Pub visibility modifier for functions, structs, and enums."
 
 # =============================================================================
 # Public Functions
@@ -9,9 +9,7 @@ description = "Pub visibility modifier for functions, structs, and enums (Phase 
 
 [[case]]
 name = "pub_fn_basic"
-preview = "modules"
-preview_should_pass = true
-description = "Basic pub function declaration is allowed with preview flag"
+description = "Basic pub function declaration"
 source = """
 pub fn helper() -> i32 { 42 }
 fn main() -> i32 { helper() }
@@ -20,8 +18,6 @@ exit_code = 42
 
 [[case]]
 name = "pub_fn_with_params"
-preview = "modules"
-preview_should_pass = true
 description = "Pub function with parameters"
 source = """
 pub fn add(a: i32, b: i32) -> i32 { a + b }
@@ -29,25 +25,13 @@ fn main() -> i32 { add(20, 22) }
 """
 exit_code = 42
 
-[[case]]
-name = "pub_fn_without_preview_error"
-description = "Pub function without preview flag gives helpful error"
-source = """
-pub fn helper() -> i32 { 42 }
-fn main() -> i32 { helper() }
-"""
-compile_fail = true
-error_contains = "preview"
-
 # =============================================================================
 # Public Structs
 # =============================================================================
 
 [[case]]
 name = "pub_struct_basic"
-preview = "modules"
-preview_should_pass = true
-description = "Basic pub struct declaration is allowed with preview flag"
+description = "Basic pub struct declaration"
 source = """
 pub struct Point { x: i32, y: i32 }
 fn main() -> i32 {
@@ -57,25 +41,13 @@ fn main() -> i32 {
 """
 exit_code = 42
 
-[[case]]
-name = "pub_struct_without_preview_error"
-description = "Pub struct without preview flag gives helpful error"
-source = """
-pub struct Point { x: i32, y: i32 }
-fn main() -> i32 { 0 }
-"""
-compile_fail = true
-error_contains = "preview"
-
 # =============================================================================
 # Public Enums
 # =============================================================================
 
 [[case]]
 name = "pub_enum_basic"
-preview = "modules"
-preview_should_pass = true
-description = "Basic pub enum declaration is allowed with preview flag"
+description = "Basic pub enum declaration"
 source = """
 pub enum Color { Red, Green, Blue }
 fn main() -> i32 {
@@ -89,24 +61,12 @@ fn main() -> i32 {
 """
 exit_code = 42
 
-[[case]]
-name = "pub_enum_without_preview_error"
-description = "Pub enum without preview flag gives helpful error"
-source = """
-pub enum Status { Active, Inactive }
-fn main() -> i32 { 0 }
-"""
-compile_fail = true
-error_contains = "preview"
-
 # =============================================================================
 # Mixed Visibility
 # =============================================================================
 
 [[case]]
 name = "mixed_pub_and_private"
-preview = "modules"
-preview_should_pass = true
 description = "Mix of public and private declarations"
 source = """
 pub fn public_fn() -> i32 { 10 }

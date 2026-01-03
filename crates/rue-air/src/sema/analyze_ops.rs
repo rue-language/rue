@@ -1415,6 +1415,7 @@ impl<'a> Sema<'a> {
                 type_name,
                 fields_start,
                 fields_len,
+                ..
             } => self.analyze_struct_init(
                 air,
                 *type_name,
@@ -1934,7 +1935,9 @@ impl<'a> Sema<'a> {
                 Ok(AnalysisResult::new(air_ref, Type::Unit))
             }
 
-            InstData::EnumVariant { type_name, variant } => {
+            InstData::EnumVariant {
+                type_name, variant, ..
+            } => {
                 // Look up the enum type
                 let enum_id = self.enums.get(type_name).ok_or_compile_error(
                     ErrorKind::UnknownEnumType(self.interner.resolve(&*type_name).to_string()),

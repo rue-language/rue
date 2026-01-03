@@ -958,17 +958,20 @@ where
                 span: span_from_extra(e),
             }),
             IdentSuffix::StructLit(fields) => Expr::StructLit(StructLitExpr {
+                base: None, // No module prefix for simple `StructName { ... }`
                 name,
                 fields,
                 span: span_from_extra(e),
             }),
             IdentSuffix::PathCall(function, args) => Expr::AssocFnCall(AssocFnCallExpr {
+                base: None, // No module prefix for simple `Type::function()`
                 type_name: name,
                 function,
                 args,
                 span: span_from_extra(e),
             }),
             IdentSuffix::Path(variant) => Expr::Path(PathExpr {
+                base: None, // No module prefix for simple `Enum::Variant`
                 type_name: name,
                 variant,
                 span: span_from_extra(e),
@@ -977,20 +980,30 @@ where
         })
 }
 
-/// Suffix for field access (.field), method call (.method(args)), or indexing ([expr])
+/// Suffix for field access (.field), method call (.method(args)), indexing ([expr]),
+/// qualified struct literals (.Type { ... }), and qualified paths (.Enum::Variant)
 #[derive(Clone)]
+#[allow(dead_code)] // QualifiedStructLit reserved for future use (grammar ambiguity)
 enum Suffix {
+    /// Simple field access: .field
     Field(Ident),
     /// Method call with method name, arguments, and closing paren position
     MethodCall(Ident, Vec<CallArg>, u32),
     /// Index expression with the inner expression and closing bracket position
     Index(Expr, u32),
+    /// Qualified struct literal: .StructName { fields }
+    /// NOTE: Not yet wired up due to grammar ambiguity with field access + block
+    QualifiedStructLit(Ident, Vec<FieldInit>, u32),
+    /// Qualified path (enum variant): .EnumName::Variant
+    QualifiedPath(Ident, Ident, u32),
+    /// Qualified associated function call: .TypeName::function(args)
+    QualifiedAssocFnCall(Ident, Ident, Vec<CallArg>, u32),
 }
 
 /// Wraps a primary expression parser with field access, method call, and indexing suffixes
 fn with_suffix_parser<'src, I>(
-    primary: impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone,
-    expr: impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone,
+    primary: impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone + 'src,
+    expr: impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone + 'src,
 ) -> impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
@@ -1006,21 +1019,75 @@ where
             Suffix::MethodCall(method, args, offset_to_u32(e.span().end))
         });
 
-    // Field access: .ident (but NOT followed by ()
+    // Qualified struct literal: .StructName { field: value, ... }
+    // We need to distinguish between:
+    //   - `module.Point { x: 1 }` - qualified struct literal
+    //   - `obj.field { 1 }` - field access followed by a block expression
+    //
+    // The key difference is that struct literals have `{ ident: value, ... }` while
+    // block expressions have `{ expr }`. We use a lookahead to require that `{` is
+    // followed by `ident :` to confirm it's a struct literal.
+    //
+    // NOTE: Qualified struct literal (e.g., `module.Point { x: 1 }`) is not yet supported.
+    // The syntax is ambiguous with field access followed by block (e.g., `obj.field { expr }`).
+    // For now, use a local binding: `let Point = module.Point; Point { x: 1 }`
+
+    // Qualified associated function call: .TypeName::function(args)
+    let qualified_assoc_fn_suffix = just(TokenKind::Dot)
+        .ignore_then(ident_parser())
+        .then_ignore(just(TokenKind::ColonColon))
+        .then(ident_parser())
+        .then(
+            call_args_parser(expr.clone())
+                .delimited_by(just(TokenKind::LParen), just(TokenKind::RParen)),
+        )
+        .map_with(|((type_name, function), args), e| {
+            Suffix::QualifiedAssocFnCall(type_name, function, args, offset_to_u32(e.span().end))
+        });
+
+    // Qualified path (enum variant): .EnumName::Variant
+    // We capture the end position from the variant ident before the negative lookahead
+    let qualified_path_suffix = just(TokenKind::Dot)
+        .ignore_then(ident_parser())
+        .then_ignore(just(TokenKind::ColonColon))
+        .then(ident_parser())
+        .map(|(type_name, variant)| {
+            let end = variant.span.end;
+            (type_name, variant, end)
+        })
+        .then_ignore(none_of([TokenKind::LParen]).rewind())
+        .map(|(type_name, variant, end)| Suffix::QualifiedPath(type_name, variant, end));
+
+    // Field access: .ident (but NOT followed by '(' or '::')
+    // Note: We don't exclude '{' because qualified struct literal syntax is not supported.
     let field_suffix = just(TokenKind::Dot)
         .ignore_then(ident_parser())
-        .then_ignore(none_of([TokenKind::LParen]).rewind())
+        .then_ignore(none_of([TokenKind::LParen, TokenKind::ColonColon]).rewind())
         .map(Suffix::Field);
 
     let index_suffix = expr
         .delimited_by(just(TokenKind::LBracket), just(TokenKind::RBracket))
         .map_with(|index, e| Suffix::Index(index, offset_to_u32(e.span().end)));
 
-    // Field access, method call, and indexing suffix: .field, .method(), or [expr]
-    // Method call must come before field access to catch .method(args) before .field
-    // Handles chains like a.b.c or a[0][1] or a[0].field or a.method().field
+    // Order matters: more specific patterns must come before less specific ones
+    // - qualified_assoc_fn_suffix before qualified_path_suffix (both have ::)
+    // - method_call_suffix before field_suffix (both start with .ident)
+    // - qualified_path_suffix before field_suffix (both start with .ident)
+    // Note: qualified_struct_lit_suffix is disabled (can't disambiguate from field + block)
+    //
+    // NOTE: .boxed() is required here to shorten the monomorphized type name.
+    // Without it, macOS's ld64 linker fails with "symbol name too long" because
+    // the 5-way choice creates extremely long generic type names.
     primary.foldl(
-        choice((method_call_suffix, field_suffix, index_suffix)).repeated(),
+        choice((
+            method_call_suffix,
+            qualified_assoc_fn_suffix,
+            qualified_path_suffix,
+            field_suffix,
+            index_suffix,
+        ))
+        .boxed()
+        .repeated(),
         |base, suffix| match suffix {
             Suffix::Field(field) => {
                 // Extend the base span to include the field, preserving file_id
@@ -1047,6 +1114,37 @@ where
                 Expr::Index(IndexExpr {
                     base: Box::new(base),
                     index: Box::new(index),
+                    span,
+                })
+            }
+            Suffix::QualifiedStructLit(name, fields, end) => {
+                // module.StructName { ... } → StructLitExpr with base
+                let span = base.span().extend_to(end);
+                Expr::StructLit(StructLitExpr {
+                    base: Some(Box::new(base)),
+                    name,
+                    fields,
+                    span,
+                })
+            }
+            Suffix::QualifiedPath(type_name, variant, end) => {
+                // module.EnumName::Variant → PathExpr with base
+                let span = base.span().extend_to(end);
+                Expr::Path(PathExpr {
+                    base: Some(Box::new(base)),
+                    type_name,
+                    variant,
+                    span,
+                })
+            }
+            Suffix::QualifiedAssocFnCall(type_name, function, args, end) => {
+                // module.TypeName::function(args) → AssocFnCallExpr with base
+                let span = base.span().extend_to(end);
+                Expr::AssocFnCall(AssocFnCallExpr {
+                    base: Some(Box::new(base)),
+                    type_name,
+                    function,
+                    args,
                     span,
                 })
             }

@@ -140,15 +140,6 @@ impl<'a> Sema<'a> {
                     variants_start,
                     variants_len,
                 } => {
-                    // pub visibility requires preview feature
-                    if *is_pub {
-                        self.require_preview(
-                            PreviewFeature::Modules,
-                            "pub visibility modifier",
-                            inst.span,
-                        )?;
-                    }
-
                     let enum_name = self.interner.resolve(&*name).to_string();
 
                     // Check for collision with built-in type names
@@ -216,15 +207,6 @@ impl<'a> Sema<'a> {
                     name,
                     ..
                 } => {
-                    // pub visibility requires preview feature
-                    if *is_pub {
-                        self.require_preview(
-                            PreviewFeature::Modules,
-                            "pub visibility modifier",
-                            inst.span,
-                        )?;
-                    }
-
                     let struct_name = self.interner.resolve(&*name).to_string();
 
                     // Check for collision with built-in type names
@@ -435,15 +417,6 @@ impl<'a> Sema<'a> {
                     body,
                     ..
                 } => {
-                    // pub visibility requires preview feature
-                    if *is_pub {
-                        self.require_preview(
-                            PreviewFeature::Modules,
-                            "pub visibility modifier",
-                            inst.span,
-                        )?;
-                    }
-
                     self.collect_function_signature(
                         *name,
                         *params_start,
@@ -466,15 +439,6 @@ impl<'a> Sema<'a> {
                 InstData::ConstDecl {
                     is_pub, name, init, ..
                 } => {
-                    // pub const requires preview feature
-                    if *is_pub {
-                        self.require_preview(
-                            PreviewFeature::Modules,
-                            "pub const declaration",
-                            inst.span,
-                        )?;
-                    }
-
                     self.collect_const_declaration(*name, *is_pub, *init, inst.span)?;
                 }
 

@@ -1,19 +1,17 @@
 [section]
 id = "modules.import"
 name = "Import Expressions"
-description = "The @import builtin for importing modules (Phase 1 of module system). Spec chapter pending ADR-0026 finalization."
+description = "The @import builtin for importing modules."
 
 # =============================================================================
 # @import Syntax Verification
 # =============================================================================
 
-# These tests verify that @import is correctly gated behind the modules preview
-# feature and accepts valid syntax. Module resolution is implemented per ADR-0026.
+# These tests verify that @import accepts valid syntax and resolves modules
+# correctly per ADR-0026.
 
 [[case]]
 name = "import_basic_syntax"
-preview = "modules"
-preview_should_pass = true
 description = "@import with string argument is accepted"
 source = """
 fn main() -> i32 {
@@ -26,8 +24,6 @@ exit_code = 0
 
 [[case]]
 name = "import_used_in_const"
-preview = "modules"
-preview_should_pass = true
 description = "@import can be used in a const binding (typical pattern)"
 source = """
 fn main() -> i32 {
@@ -40,8 +36,6 @@ exit_code = 0
 
 [[case]]
 name = "import_multiple_files"
-preview = "modules"
-preview_should_pass = true
 description = "Multiple @import calls in same file"
 source = """
 fn main() -> i32 {
@@ -55,8 +49,6 @@ exit_code = 0
 
 [[case]]
 name = "import_nested_path"
-preview = "modules"
-preview_should_pass = true
 description = "@import with nested path"
 source = """
 fn main() -> i32 {
@@ -68,29 +60,11 @@ aux_files = { "utils/strings.rue" = "fn format(x: i32) -> i32 { x }" }
 exit_code = 0
 
 # =============================================================================
-# Preview Feature Gate Tests
-# =============================================================================
-
-[[case]]
-name = "import_requires_preview"
-description = "@import without --preview modules should fail"
-source = """
-fn main() -> i32 {
-    let m = @import("foo.rue");
-    0
-}
-"""
-compile_fail = true
-error_contains = "requires preview feature"
-
-# =============================================================================
 # @import Argument Validation Errors
 # =============================================================================
 
 [[case]]
 name = "import_no_args_error"
-preview = "modules"
-preview_should_pass = true
 description = "@import with no arguments is an error"
 source = """
 fn main() -> i32 {
@@ -103,8 +77,6 @@ error_contains = "expects 1 argument"
 
 [[case]]
 name = "import_integer_arg_error"
-preview = "modules"
-preview_should_pass = true
 description = "@import with integer argument should fail"
 source = """
 fn main() -> i32 {
@@ -117,8 +89,6 @@ error_contains = "requires a string literal"
 
 [[case]]
 name = "import_multiple_args_error"
-preview = "modules"
-preview_should_pass = true
 description = "@import with multiple arguments should fail"
 source = """
 fn main() -> i32 {

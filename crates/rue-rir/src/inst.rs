@@ -789,7 +789,12 @@ impl Rir {
                 index: *index,
                 name: *name,
             },
-            InstData::EnumVariant { type_name, variant } => InstData::EnumVariant {
+            InstData::EnumVariant {
+                module,
+                type_name,
+                variant,
+            } => InstData::EnumVariant {
+                module: module.map(renumber),
                 type_name: *type_name,
                 variant: *variant,
             },
@@ -1021,10 +1026,12 @@ impl Rir {
                 fields_len: *fields_len,
             },
             InstData::StructInit {
+                module,
                 type_name,
                 fields_start,
                 fields_len,
             } => InstData::StructInit {
+                module: module.map(renumber),
                 type_name: *type_name,
                 fields_start: *fields_start + extra_offset,
                 fields_len: *fields_len,
@@ -1556,6 +1563,9 @@ pub enum InstData {
     /// Struct literal: creates a new struct instance
     /// Fields are stored in the extra array using add_field_inits/get_field_inits.
     StructInit {
+        /// Optional module reference (for qualified struct literals like `module.Point { ... }`)
+        /// If Some, the struct is looked up in the module's exports.
+        module: Option<InstRef>,
         /// Struct type name
         type_name: Spur,
         /// Index into extra data where fields start
@@ -1598,6 +1608,9 @@ pub enum InstData {
 
     /// Enum variant: creates a value of an enum type
     EnumVariant {
+        /// Optional module reference (for qualified paths like `module.Color::Red`)
+        /// If Some, the enum is looked up in the module's exports.
+        module: Option<InstRef>,
         /// Enum type name
         type_name: Spur,
         /// Variant name
@@ -1997,10 +2010,12 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     .unwrap();
                 }
                 InstData::StructInit {
+                    module,
                     type_name,
                     fields_start,
                     fields_len,
                 } => {
+                    let module_str = module.map(|m| format!("{}.", m)).unwrap_or_default();
                     let type_str = self.interner.resolve(&*type_name);
                     let fields = self.rir.get_field_inits(*fields_start, *fields_len);
                     let fields_str: Vec<String> = fields
@@ -2011,7 +2026,8 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                         .collect();
                     writeln!(
                         out,
-                        "struct_init {} {{ {} }}",
+                        "struct_init {}{} {{ {} }}",
+                        module_str,
                         type_str,
                         fields_str.join(", ")
                     )
@@ -2054,10 +2070,16 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     )
                     .unwrap();
                 }
-                InstData::EnumVariant { type_name, variant } => {
+                InstData::EnumVariant {
+                    module,
+                    type_name,
+                    variant,
+                } => {
+                    let module_str = module.map(|m| format!("{}.", m)).unwrap_or_default();
                     writeln!(
                         out,
-                        "enum_variant {}::{}",
+                        "enum_variant {}{}::{}",
+                        module_str,
                         self.interner.resolve(&*type_name),
                         self.interner.resolve(&*variant)
                     )
@@ -3127,6 +3149,7 @@ mod tests {
 
         rir.add_inst(Inst {
             data: InstData::StructInit {
+                module: None,
                 type_name,
                 fields_start,
                 fields_len,
@@ -3215,7 +3238,11 @@ mod tests {
         let variant = interner.get_or_intern("Red");
 
         rir.add_inst(Inst {
-            data: InstData::EnumVariant { type_name, variant },
+            data: InstData::EnumVariant {
+                module: None,
+                type_name,
+                variant,
+            },
             span: Span::new(0, 10),
         });
 

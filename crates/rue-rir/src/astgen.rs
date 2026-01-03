@@ -523,6 +523,12 @@ impl<'a> AstGen<'a> {
                 })
             }
             Expr::StructLit(struct_lit) => {
+                // Generate module reference if this is a qualified struct literal
+                let module = struct_lit
+                    .base
+                    .as_ref()
+                    .map(|base_expr| self.gen_expr(base_expr));
+
                 let fields: Vec<_> = struct_lit
                     .fields
                     .iter()
@@ -535,6 +541,7 @@ impl<'a> AstGen<'a> {
 
                 self.rir.add_inst(Inst {
                     data: InstData::StructInit {
+                        module,
                         type_name: struct_lit.name.name, // Already a Spur
                         fields_start,
                         fields_len,
@@ -628,8 +635,15 @@ impl<'a> AstGen<'a> {
                 })
             }
             Expr::Path(path_expr) => {
+                // Generate module reference if this is a qualified path
+                let module = path_expr
+                    .base
+                    .as_ref()
+                    .map(|base_expr| self.gen_expr(base_expr));
+
                 self.rir.add_inst(Inst {
                     data: InstData::EnumVariant {
+                        module,
                         type_name: path_expr.type_name.name, // Already a Spur
                         variant: path_expr.variant.name,     // Already a Spur
                     },
@@ -1585,7 +1599,9 @@ mod tests {
 
         let (_, inst) = enum_variant.unwrap();
         match &inst.data {
-            InstData::EnumVariant { type_name, variant } => {
+            InstData::EnumVariant {
+                type_name, variant, ..
+            } => {
                 assert_eq!(interner.resolve(&*type_name), "Color");
                 assert_eq!(interner.resolve(&*variant), "Red");
             }

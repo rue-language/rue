@@ -642,9 +642,11 @@ pub struct IntrinsicCallExpr {
     pub span: Span,
 }
 
-/// A struct literal expression (e.g., `Point { x: 1, y: 2 }`).
+/// A struct literal expression (e.g., `Point { x: 1, y: 2 }` or `module.Point { x: 1, y: 2 }`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StructLitExpr {
+    /// Optional module/namespace prefix (e.g., `utils` in `utils.Point { ... }`)
+    pub base: Option<Box<Expr>>,
     /// Struct type name
     pub name: Ident,
     /// Field initializers
@@ -702,9 +704,11 @@ pub struct IndexExpr {
     pub span: Span,
 }
 
-/// A path expression (e.g., `Color::Red` for enum variant).
+/// A path expression (e.g., `Color::Red` or `module.Color::Red` for enum variant).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PathExpr {
+    /// Optional module/namespace prefix (e.g., `utils` in `utils.Color::Red`)
+    pub base: Option<Box<Expr>>,
     /// The type name (e.g., `Color`)
     pub type_name: Ident,
     /// The variant name (e.g., `Red`)
@@ -712,9 +716,11 @@ pub struct PathExpr {
     pub span: Span,
 }
 
-/// An associated function call expression (e.g., `Point::origin()`).
+/// An associated function call expression (e.g., `Point::origin()` or `module.Point::origin()`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AssocFnCallExpr {
+    /// Optional module/namespace prefix (e.g., `utils` in `utils.Point::origin()`)
+    pub base: Option<Box<Expr>>,
     /// The type name (e.g., `Point`)
     pub type_name: Ident,
     /// The function name (e.g., `origin`)

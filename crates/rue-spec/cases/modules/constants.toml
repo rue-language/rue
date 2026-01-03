@@ -1,7 +1,7 @@
 [section]
 id = "modules.constants"
 name = "Constants"
-description = "Constant declarations for module re-exports (Phase 2 of module system). Spec chapter pending ADR-0026 finalization."
+description = "Constant declarations for module re-exports."
 
 # =============================================================================
 # Basic Const Declarations
@@ -9,8 +9,6 @@ description = "Constant declarations for module re-exports (Phase 2 of module sy
 
 [[case]]
 name = "const_basic_integer"
-preview = "modules"
-preview_should_pass = true
 description = "Basic const declaration with integer value"
 source = """
 const VALUE: i32 = 42;
@@ -20,8 +18,6 @@ exit_code = 0
 
 [[case]]
 name = "const_without_type"
-preview = "modules"
-preview_should_pass = true
 description = "Const declaration without explicit type annotation"
 source = """
 const VALUE = 42;
@@ -35,24 +31,12 @@ exit_code = 0
 
 [[case]]
 name = "pub_const_basic"
-preview = "modules"
-preview_should_pass = true
-description = "Public const declaration is allowed with preview flag"
+description = "Public const declaration"
 source = """
 pub const VALUE: i32 = 42;
 fn main() -> i32 { 0 }
 """
 exit_code = 0
-
-[[case]]
-name = "pub_const_without_preview_error"
-description = "Pub const without preview flag gives helpful error"
-source = """
-pub const VALUE: i32 = 42;
-fn main() -> i32 { 0 }
-"""
-compile_fail = true
-error_contains = "preview"
 
 # =============================================================================
 # Const with Import (Module Re-exports)
@@ -63,8 +47,8 @@ error_contains = "preview"
 
 [[case]]
 name = "const_import_syntax"
-preview = "modules"
 description = "Const with @import syntax parses correctly"
+preview = "module_types"
 source = """
 const math = @import("nonexistent");
 fn main() -> i32 { 0 }
@@ -74,8 +58,8 @@ error_contains = "module 'nonexistent' not found"
 
 [[case]]
 name = "pub_const_import_syntax"
-preview = "modules"
 description = "Pub const with @import syntax parses correctly"
+preview = "module_types"
 source = """
 pub const math = @import("nonexistent");
 fn main() -> i32 { 0 }
@@ -89,7 +73,6 @@ error_contains = "module 'nonexistent' not found"
 
 [[case]]
 name = "duplicate_const_error"
-preview = "modules"
 description = "Duplicate const declarations cause error"
 source = """
 const X: i32 = 1;
@@ -101,7 +84,6 @@ error_contains = "duplicate"
 
 [[case]]
 name = "const_function_conflict"
-preview = "modules"
 description = "Const with same name as function causes error"
 source = """
 fn foo() -> i32 { 42 }

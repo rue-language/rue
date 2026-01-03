@@ -253,9 +253,9 @@ pub enum PreviewFeature {
     /// Affine types and mutable value semantics.
     /// See ADR-0008 for the full design.
     AffineMvs,
-    /// Module system with @import and pub visibility.
-    /// See ADR-0026 for the full design.
-    Modules,
+    /// Module type access (e.g., `module.StructName`, `module.EnumName::Variant`).
+    /// Part of the module system (ADR-0026) - accessing types through modules.
+    ModuleTypes,
 }
 
 /// Error returned when parsing a preview feature name fails.
@@ -277,7 +277,7 @@ impl PreviewFeature {
         match *self {
             PreviewFeature::TestInfra => "test_infra",
             PreviewFeature::AffineMvs => "affine_mvs",
-            PreviewFeature::Modules => "modules",
+            PreviewFeature::ModuleTypes => "module_types",
         }
     }
 
@@ -287,7 +287,7 @@ impl PreviewFeature {
         match *self {
             PreviewFeature::TestInfra => "ADR-0005",
             PreviewFeature::AffineMvs => "ADR-0008",
-            PreviewFeature::Modules => "ADR-0026",
+            PreviewFeature::ModuleTypes => "ADR-0026",
         }
     }
 
@@ -296,7 +296,7 @@ impl PreviewFeature {
         &[
             PreviewFeature::TestInfra,
             PreviewFeature::AffineMvs,
-            PreviewFeature::Modules,
+            PreviewFeature::ModuleTypes,
         ]
     }
 
@@ -321,7 +321,7 @@ impl std::str::FromStr for PreviewFeature {
         match s {
             "test_infra" => Ok(PreviewFeature::TestInfra),
             "affine_mvs" => Ok(PreviewFeature::AffineMvs),
-            "modules" => Ok(PreviewFeature::Modules),
+            "module_types" => Ok(PreviewFeature::ModuleTypes),
             _ => Err(ParsePreviewFeatureError(s.to_string())),
         }
     }
@@ -1825,7 +1825,7 @@ mod tests {
     #[test]
     fn test_preview_feature_all_names() {
         let names = PreviewFeature::all_names();
-        assert_eq!(names, "test_infra, affine_mvs, modules");
+        assert_eq!(names, "test_infra, affine_mvs, module_types");
     }
 
     // ========================================================================

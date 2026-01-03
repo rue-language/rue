@@ -2116,10 +2116,11 @@ mod tests {
     fn test_multiple_errors_collected() {
         // Test that errors from multiple functions are collected together
         // Use examples that both result in type mismatch errors
+        // Note: Functions must be called from main() to be analyzed (lazy analysis)
         let source = r#"
             fn foo() -> i32 { true }
             fn bar() -> i32 { false }
-            fn main() -> i32 { 0 }
+            fn main() -> i32 { foo() + bar() }
         "#;
         let result = compile_frontend(source);
         let errors = match result {
@@ -2147,10 +2148,11 @@ mod tests {
     #[test]
     fn test_multiple_errors_display() {
         // Use examples that both result in type mismatch errors
+        // Note: Functions must be called from main() to be analyzed (lazy analysis)
         let source = r#"
             fn foo() -> i32 { true }
             fn bar() -> i32 { false }
-            fn main() -> i32 { 0 }
+            fn main() -> i32 { foo() + bar() }
         "#;
         let errors = match compile_frontend(source) {
             Ok(_) => panic!("expected error, got success"),
@@ -2599,9 +2601,7 @@ mod tests {
                 FileId::new(2),
             ),
         ];
-        let mut options = CompileOptions::default();
-        options.preview_features.insert(PreviewFeature::Modules);
-        let result = compile_multi_file_with_options(&sources, &options);
+        let result = compile_multi_file_with_options(&sources, &CompileOptions::default());
         assert!(
             result.is_ok(),
             "module member access should compile: {:?}",
@@ -2630,9 +2630,7 @@ mod tests {
                 FileId::new(2),
             ),
         ];
-        let mut options = CompileOptions::default();
-        options.preview_features.insert(PreviewFeature::Modules);
-        let result = compile_multi_file_with_options(&sources, &options);
+        let result = compile_multi_file_with_options(&sources, &CompileOptions::default());
         assert!(
             result.is_ok(),
             "module with multiple functions should compile: {:?}",
@@ -2658,9 +2656,7 @@ mod tests {
                 FileId::new(2),
             ),
         ];
-        let mut options = CompileOptions::default();
-        options.preview_features.insert(PreviewFeature::Modules);
-        let result = compile_multi_file_with_options(&sources, &options);
+        let result = compile_multi_file_with_options(&sources, &CompileOptions::default());
         assert!(
             result.is_err(),
             "undefined module function should fail to compile"
