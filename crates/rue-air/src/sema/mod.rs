@@ -340,7 +340,11 @@ impl<'a> Sema<'a> {
     ///
     /// Visibility rules (per ADR-0026):
     /// - `pub` items are always accessible
-    /// - Private items are accessible if the files are in the same directory
+    /// - Private items are accessible if the files are in the same directory module
+    ///
+    /// Directory module membership includes:
+    /// - Files directly in the directory (e.g., `utils/strings.rue` is in `utils`)
+    /// - Facade files for the directory (e.g., `_utils.rue` is in `utils` module)
     ///
     /// Returns true if the item is accessible.
     pub(crate) fn is_accessible(
@@ -362,13 +366,38 @@ impl<'a> Sema<'a> {
         match (accessing_path, target_path) {
             (Some(acc), Some(tgt)) => {
                 use std::path::Path;
-                let acc_dir = Path::new(acc).parent();
-                let tgt_dir = Path::new(tgt).parent();
-                // Same directory means accessible
-                acc_dir == tgt_dir
+
+                // Get the "module identity" for each file.
+                // For a regular file like `utils/strings.rue`, the module is `utils/`
+                // For a facade file like `_utils.rue`, the module is `utils/` (the directory it represents)
+                let acc_module = Self::get_module_identity(Path::new(acc));
+                let tgt_module = Self::get_module_identity(Path::new(tgt));
+
+                acc_module == tgt_module
             }
             // If either path is unknown, allow access (e.g., synthetic types, single-file mode)
             _ => true,
+        }
+    }
+
+    /// Get the module identity for a file path.
+    ///
+    /// - For regular files: returns the parent directory
+    /// - For facade files (`_foo.rue`): returns the corresponding directory (`foo/`)
+    ///
+    /// This allows facade files to be treated as part of their corresponding directory module.
+    fn get_module_identity(path: &std::path::Path) -> Option<std::path::PathBuf> {
+        let parent = path.parent()?;
+        let file_stem = path.file_stem()?.to_str()?;
+
+        // Check if this is a facade file (starts with underscore)
+        if file_stem.starts_with('_') {
+            // Facade file: _utils.rue -> parent/utils
+            let module_name = &file_stem[1..]; // Strip the leading underscore
+            Some(parent.join(module_name))
+        } else {
+            // Regular file: the module is just the parent directory
+            Some(parent.to_path_buf())
         }
     }
 
@@ -391,6 +420,11 @@ impl<'a> Sema<'a> {
         // These are critical and must succeed before we can analyze functions
         self.register_type_names().map_err(CompileErrors::from)?;
         self.resolve_declarations().map_err(CompileErrors::from)?;
+
+        // Phase 2.5: Evaluate const initializers (e.g., const x = @import(...))
+        // This determines the types of constants before function body analysis.
+        self.evaluate_const_initializers()
+            .map_err(CompileErrors::from)?;
 
         // Delegate to the analysis module for function body analysis
         analysis::analyze_all_function_bodies(self)
@@ -457,10 +491,11 @@ impl<'a> Sema<'a> {
             interner: self.interner,
             structs: self.structs.clone(),
             enums: self.enums.clone(),
-            // Pass references to functions/methods instead of cloning.
+            // Pass references to functions/methods/constants instead of cloning.
             // This is safe because after declaration gathering, these HashMaps are immutable.
             functions: &self.functions,
             methods: &self.methods,
+            constants: &self.constants,
             preview_features: self.preview_features.clone(),
             builtin_string_id: self.builtin_string_id,
             inference_ctx,
@@ -637,6 +672,170 @@ impl<'a> Sema<'a> {
                 span,
             )
         })
+    }
+
+    /// Evaluate const initializers to determine their types.
+    ///
+    /// This is Phase 2.5 of semantic analysis, called after declaration gathering
+    /// but before function body analysis. It handles:
+    ///
+    /// - `const x = @import("module")` - evaluates to Type::Module
+    /// - Other const initializers are left with placeholder types for now
+    ///
+    /// This enables module re-exports where a const holds an imported module
+    /// that can be accessed via dot notation.
+    pub fn evaluate_const_initializers(&mut self) -> rue_error::CompileResult<()> {
+        use rue_error::{CompileError, ErrorKind};
+
+        // Collect const names to iterate (avoid borrowing issues)
+        let const_names: Vec<lasso::Spur> = self.constants.keys().copied().collect();
+
+        for name in const_names {
+            let const_info = self.constants.get(&name).unwrap();
+            let init_ref = const_info.init;
+            let span = const_info.span;
+
+            // Check if the init expression is an @import intrinsic
+            let inst = self.rir.get(init_ref);
+            if let rue_rir::InstData::Intrinsic {
+                name: intrinsic_name,
+                args_start,
+                args_len,
+            } = &inst.data
+            {
+                let intrinsic_name_str = self.interner.resolve(intrinsic_name);
+                if intrinsic_name_str == "import" {
+                    // This is an @import - evaluate it at compile time
+                    let result = self.evaluate_import_intrinsic(*args_start, *args_len, span)?;
+
+                    // Update the const type to the module type
+                    if let Some(const_info_mut) = self.constants.get_mut(&name) {
+                        const_info_mut.ty = result;
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Evaluate an @import intrinsic call at compile time.
+    ///
+    /// This is used during const initializer evaluation to resolve module imports.
+    fn evaluate_import_intrinsic(
+        &mut self,
+        args_start: u32,
+        args_len: u32,
+        span: rue_span::Span,
+    ) -> rue_error::CompileResult<Type> {
+        use rue_error::{CompileError, ErrorKind};
+
+        // @import takes exactly one argument
+        if args_len != 1 {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicWrongArgCount {
+                    name: "import".to_string(),
+                    expected: 1,
+                    found: args_len as usize,
+                },
+                span,
+            ));
+        }
+
+        // Get the argument from extra data (intrinsics use inst_refs, not call_args)
+        let arg_refs = self.rir.get_inst_refs(args_start, args_len);
+        let arg_inst = self.rir.get(arg_refs[0]);
+
+        // The argument must be a string literal
+        let import_path = match &arg_inst.data {
+            rue_rir::InstData::StringConst(path_spur) => {
+                self.interner.resolve(path_spur).to_string()
+            }
+            _ => {
+                return Err(CompileError::new(
+                    ErrorKind::ImportRequiresStringLiteral,
+                    arg_inst.span,
+                ));
+            }
+        };
+
+        // Resolve the import path
+        let resolved_path = self.resolve_import_path_for_const(&import_path, span)?;
+
+        // Register the module
+        let (module_id, _is_new) = self
+            .module_registry
+            .get_or_create(import_path, resolved_path);
+
+        Ok(Type::Module(module_id))
+    }
+
+    /// Resolve an import path for const evaluation.
+    ///
+    /// This is a simplified version of `resolve_import_path` that works
+    /// during the const evaluation phase before full analysis.
+    fn resolve_import_path_for_const(
+        &self,
+        import_path: &str,
+        span: rue_span::Span,
+    ) -> rue_error::CompileResult<String> {
+        use rue_error::{CompileError, ErrorKind};
+        use std::path::Path;
+
+        // Check for standard library import
+        if import_path == "std" {
+            // For now, std is not supported during const eval
+            return Err(CompileError::new(
+                ErrorKind::ModuleNotFound {
+                    path: import_path.to_string(),
+                    candidates: vec![],
+                },
+                span,
+            ));
+        }
+
+        // Check if the import path matches an already-loaded file
+        let import_base = import_path.strip_suffix(".rue").unwrap_or(import_path);
+        let import_with_rue = format!("{}.rue", import_base);
+
+        for (_file_id, file_path) in &self.file_paths {
+            // Check for exact match
+            if file_path == import_path {
+                return Ok(file_path.clone());
+            }
+
+            // Check if file path ends with import_path.rue (e.g., "utils/strings" matches ".../utils/strings.rue")
+            if file_path.ends_with(&import_with_rue) {
+                return Ok(file_path.clone());
+            }
+
+            // Check if the file path ends with the import path (e.g., "utils/strings.rue" matches)
+            if file_path.ends_with(import_path) {
+                return Ok(file_path.clone());
+            }
+
+            // For imports like "math" or "math.rue", check if the file is named accordingly
+            let file_name = Path::new(file_path).file_stem().and_then(|s| s.to_str());
+            if let Some(name) = file_name {
+                if name == import_base {
+                    return Ok(file_path.clone());
+                }
+                // Also check for _foo.rue (directory module entry point)
+                if name == format!("_{}", import_base) {
+                    return Ok(file_path.clone());
+                }
+            }
+        }
+
+        // Module not found - collect candidates for error message
+        let candidates: Vec<String> = self.file_paths.values().map(|p| p.clone()).collect();
+        Err(CompileError::new(
+            ErrorKind::ModuleNotFound {
+                path: import_path.to_string(),
+                candidates,
+            },
+            span,
+        ))
     }
 }
 

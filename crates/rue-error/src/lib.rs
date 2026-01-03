@@ -104,6 +104,7 @@ impl ErrorCode {
     pub const DUPLICATE_DESTRUCTOR: Self = Self(416);
     pub const DESTRUCTOR_UNKNOWN_TYPE: Self = Self(417);
     pub const DUPLICATE_CONSTANT: Self = Self(418);
+    pub const CONST_EXPR_NOT_SUPPORTED: Self = Self(434);
     pub const DUPLICATE_VARIANT: Self = Self(419);
     pub const UNKNOWN_VARIANT: Self = Self(420);
     pub const UNKNOWN_ENUM_TYPE: Self = Self(421);
@@ -883,6 +884,9 @@ pub enum ErrorKind {
     /// Duplicate constant declaration
     #[error("duplicate {kind} '{name}'")]
     DuplicateConstant { name: String, kind: String },
+    /// Expression not supported in const context
+    #[error("{expr_kind} is not supported in const context")]
+    ConstExprNotSupported { expr_kind: String },
 
     // Enum errors
     #[error("duplicate variant '{variant_name}' in enum '{enum_name}'")]
@@ -1078,6 +1082,7 @@ impl ErrorKind {
             ErrorKind::DuplicateDestructor { .. } => ErrorCode::DUPLICATE_DESTRUCTOR,
             ErrorKind::DestructorUnknownType { .. } => ErrorCode::DESTRUCTOR_UNKNOWN_TYPE,
             ErrorKind::DuplicateConstant { .. } => ErrorCode::DUPLICATE_CONSTANT,
+            ErrorKind::ConstExprNotSupported { .. } => ErrorCode::CONST_EXPR_NOT_SUPPORTED,
             ErrorKind::DuplicateVariant { .. } => ErrorCode::DUPLICATE_VARIANT,
             ErrorKind::UnknownVariant { .. } => ErrorCode::UNKNOWN_VARIANT,
             ErrorKind::UnknownEnumType(_) => ErrorCode::UNKNOWN_ENUM_TYPE,

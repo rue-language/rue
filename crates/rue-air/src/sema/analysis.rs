@@ -2438,6 +2438,51 @@ fn analyze_var_ref_ctx(
         return Ok(AnalysisResult::new(air_ref, Type::ComptimeType));
     }
 
+    // Check if it's a constant (e.g., `const VALUE = 42` or `const math = @import("math")`)
+    if let Some(const_info) = ctx.get_constant(name) {
+        let ty = const_info.ty;
+        // For module constants, produce a TypeConst with the module type.
+        // This allows field access on the module (e.g., `math.add(1, 2)`)
+        if matches!(ty.kind(), TypeKind::Module(_)) {
+            let air_ref = air.add_inst(AirInst {
+                data: AirInstData::TypeConst(ty),
+                ty,
+                span,
+            });
+            return Ok(AnalysisResult::new(air_ref, ty));
+        }
+        // For regular constants (e.g., `const VALUE = 42`), we need to inline the value.
+        // We read the RIR instruction directly since type inference hasn't run on const
+        // initializers in the declaration phase.
+        let init_inst = ctx.rir.get(const_info.init);
+        match &init_inst.data {
+            InstData::IntConst(value) => {
+                let air_ref = air.add_inst(AirInst {
+                    data: AirInstData::Const(*value),
+                    ty,
+                    span,
+                });
+                return Ok(AnalysisResult::new(air_ref, ty));
+            }
+            InstData::BoolConst(value) => {
+                let air_ref = air.add_inst(AirInst {
+                    data: AirInstData::BoolConst(*value),
+                    ty: Type::Bool,
+                    span,
+                });
+                return Ok(AnalysisResult::new(air_ref, Type::Bool));
+            }
+            _ => {
+                // For other expressions, we'd need to run full analysis on the init
+                // For now, this path shouldn't be reached for supported const types
+                return Err(CompileError::new(
+                    ErrorKind::InternalError("unsupported const expression type".to_string()),
+                    span,
+                ));
+            }
+        }
+    }
+
     // Look up the variable in locals
     let name_str = ctx.interner.resolve(&name);
     let local = analysis_ctx
@@ -7857,7 +7902,11 @@ impl<'a> Sema<'a> {
     /// 3. `foo.rue` (simple file module)
     /// 4. `_foo.rue` with `foo/` directory (directory module)
     /// 5. (Future) Dependency from rue.toml
-    fn resolve_import_path(&self, import_path: &str, span: Span) -> CompileResult<String> {
+    pub(crate) fn resolve_import_path(
+        &self,
+        import_path: &str,
+        span: Span,
+    ) -> CompileResult<String> {
         use std::path::Path;
 
         // Phase 0: Check for standard library import

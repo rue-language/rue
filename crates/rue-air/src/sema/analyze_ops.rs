@@ -1259,6 +1259,48 @@ impl<'a> Sema<'a> {
             return Ok(AnalysisResult::new(air_ref, Type::ComptimeType));
         }
 
+        // Check if it's a constant (e.g., `const VALUE = 42` or `const math = @import("math")`)
+        if let Some(const_info) = self.constants.get(&name).cloned() {
+            let ty = const_info.ty;
+            // For module constants, produce a TypeConst with the module type.
+            // This allows field access on the module (e.g., `math.add(1, 2)`)
+            if matches!(ty.kind(), TypeKind::Module(_)) {
+                let air_ref = air.add_inst(AirInst {
+                    data: AirInstData::TypeConst(ty),
+                    ty,
+                    span,
+                });
+                return Ok(AnalysisResult::new(air_ref, ty));
+            }
+            // For regular constants (e.g., `const VALUE = 42`), we need to inline the value.
+            // We read the RIR instruction directly since type inference hasn't run on const
+            // initializers in the declaration phase.
+            let init_inst = self.rir.get(const_info.init);
+            match &init_inst.data {
+                rue_rir::InstData::IntConst(value) => {
+                    let air_ref = air.add_inst(AirInst {
+                        data: AirInstData::Const(*value),
+                        ty,
+                        span,
+                    });
+                    return Ok(AnalysisResult::new(air_ref, ty));
+                }
+                rue_rir::InstData::BoolConst(value) => {
+                    let air_ref = air.add_inst(AirInst {
+                        data: AirInstData::BoolConst(*value),
+                        ty: Type::Bool,
+                        span,
+                    });
+                    return Ok(AnalysisResult::new(air_ref, Type::Bool));
+                }
+                _ => {
+                    // For complex expressions, fall back to analyzing the init expression
+                    // This may fail for expressions that need type inference context
+                    return self.analyze_inst(air, const_info.init, ctx);
+                }
+            }
+        }
+
         // Check if this is a type name (for comptime type parameters)
         // Try to resolve it as a type - if successful, emit a TypeConst instruction
         if let Ok(resolved_type) = self.resolve_type(name, span) {

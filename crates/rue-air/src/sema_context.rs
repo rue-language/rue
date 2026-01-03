@@ -227,6 +227,9 @@ pub struct SemaContext<'a> {
     /// Reference to the parameter arena for accessing function/method parameter data.
     /// Use `param_arena.types(fn_info.params)` to get parameter types, etc.
     pub param_arena: &'a ParamArena,
+    /// Constant lookup: reference to Sema's constant map (immutable after declaration gathering).
+    /// Used for looking up const declarations like `const x = @import("...")`.
+    pub constants: &'a HashMap<Spur, crate::sema::ConstInfo>,
 }
 
 // SAFETY: SemaContext is Send + Sync because:
@@ -276,6 +279,11 @@ impl<'a> SemaContext<'a> {
     /// Look up a method by type and method name.
     pub fn get_method(&self, type_name: Spur, method_name: Spur) -> Option<&MethodInfo> {
         self.methods.get(&(type_name, method_name))
+    }
+
+    /// Look up a constant by name.
+    pub fn get_constant(&self, name: Spur) -> Option<&crate::sema::ConstInfo> {
+        self.constants.get(&name)
     }
 
     /// Get an array type definition by ID.
@@ -339,7 +347,11 @@ impl<'a> SemaContext<'a> {
     ///
     /// Visibility rules (per ADR-0026):
     /// - `pub` items are always accessible
-    /// - Private items are accessible if the files are in the same directory
+    /// - Private items are accessible if the files are in the same directory module
+    ///
+    /// Directory module membership includes:
+    /// - Files directly in the directory (e.g., `utils/strings.rue` is in `utils`)
+    /// - Facade files for the directory (e.g., `_utils.rue` is in `utils` module)
     ///
     /// Returns true if the item is accessible.
     pub fn is_accessible(
@@ -361,13 +373,38 @@ impl<'a> SemaContext<'a> {
         match (accessing_path, target_path) {
             (Some(acc), Some(tgt)) => {
                 use std::path::Path;
-                let acc_dir = Path::new(acc).parent();
-                let tgt_dir = Path::new(tgt).parent();
-                // Same directory means accessible
-                acc_dir == tgt_dir
+
+                // Get the "module identity" for each file.
+                // For a regular file like `utils/strings.rue`, the module is `utils/`
+                // For a facade file like `_utils.rue`, the module is `utils/` (the directory it represents)
+                let acc_module = Self::get_module_identity(Path::new(acc));
+                let tgt_module = Self::get_module_identity(Path::new(tgt));
+
+                acc_module == tgt_module
             }
             // If either path is unknown, allow access (e.g., synthetic types, single-file mode)
             _ => true,
+        }
+    }
+
+    /// Get the module identity for a file path.
+    ///
+    /// - For regular files: returns the parent directory
+    /// - For facade files (`_foo.rue`): returns the corresponding directory (`foo/`)
+    ///
+    /// This allows facade files to be treated as part of their corresponding directory module.
+    fn get_module_identity(path: &std::path::Path) -> Option<std::path::PathBuf> {
+        let parent = path.parent()?;
+        let file_stem = path.file_stem()?.to_str()?;
+
+        // Check if this is a facade file (starts with underscore)
+        if file_stem.starts_with('_') {
+            // Facade file: _utils.rue -> parent/utils
+            let module_name = &file_stem[1..]; // Strip the leading underscore
+            Some(parent.join(module_name))
+        } else {
+            // Regular file: the module is just the parent directory
+            Some(parent.to_path_buf())
         }
     }
 

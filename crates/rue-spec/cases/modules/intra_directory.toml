@@ -206,8 +206,8 @@ error_contains = "private"
 [[case]]
 name = "directory_module_intra_access"
 description = "Files within a directory module can access each other's private items"
-# TODO: Needs const x = @import(...) to work (compile-time evaluation)
 preview = "module_types"
+preview_should_pass = true
 source = """
 fn main() -> i32 {
     let utils = @import("utils");
