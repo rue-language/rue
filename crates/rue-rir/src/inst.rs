@@ -1141,9 +1141,13 @@ impl Rir {
             InstData::AnonStructType {
                 fields_start,
                 fields_len,
+                methods_start,
+                methods_len,
             } => InstData::AnonStructType {
-                fields_start: *fields_start,
+                fields_start: *fields_start + extra_offset,
                 fields_len: *fields_len,
+                methods_start: *methods_start + extra_offset,
+                methods_len: *methods_len,
             },
         };
 
@@ -1204,6 +1208,18 @@ impl Rir {
 
                 // Impl decl - contains InstRef array for methods
                 InstData::ImplDecl {
+                    methods_start,
+                    methods_len,
+                    ..
+                } => {
+                    let start = (*methods_start + extra_offset) as usize;
+                    for i in 0..*methods_len as usize {
+                        extra[start + i] += inst_offset;
+                    }
+                }
+
+                // Anonymous struct type - contains InstRef array for methods
+                InstData::AnonStructType {
                     methods_start,
                     methods_len,
                     ..
@@ -1736,13 +1752,18 @@ pub enum InstData {
     },
 
     /// Anonymous struct type: a struct type used as a value expression
-    /// (e.g., `struct { first: T, second: T }` in comptime type construction)
+    /// (e.g., `struct { first: T, second: T, fn method(self) -> T { ... } }` in comptime type construction)
     /// Fields are stored in the extra array using add_field_decls/get_field_decls.
+    /// Methods are stored as InstRefs to FnDecl instructions in the extra array.
     AnonStructType {
         /// Index into extra data where fields start
         fields_start: u32,
         /// Number of fields
         fields_len: u32,
+        /// Index into extra data where method InstRefs start
+        methods_start: u32,
+        /// Number of methods (InstRefs to FnDecl instructions)
+        methods_len: u32,
     },
 }
 
@@ -2222,6 +2243,8 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                 InstData::AnonStructType {
                     fields_start,
                     fields_len,
+                    methods_start,
+                    methods_len,
                 } => {
                     write!(out, "struct {{ ").unwrap();
                     let fields = self.rir.get_field_decls(*fields_start, *fields_len);
@@ -2232,6 +2255,17 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                         let name_str = self.interner.resolve(name);
                         let ty_str = self.interner.resolve(ty);
                         write!(out, "{}: {}", name_str, ty_str).unwrap();
+                    }
+                    if *methods_len > 0 {
+                        let methods = self.rir.get_inst_refs(*methods_start, *methods_len);
+                        let mut need_sep = !fields.is_empty();
+                        for method in methods {
+                            if need_sep {
+                                write!(out, ", ").unwrap();
+                            }
+                            write!(out, "fn {}", method).unwrap();
+                            need_sep = true;
+                        }
                     }
                     writeln!(out, " }}").unwrap();
                 }

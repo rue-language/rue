@@ -733,8 +733,10 @@ impl<'a> AstGen<'a> {
             Expr::TypeLit(type_lit) => {
                 // Generate a type constant instruction for type-as-value expressions
                 match &type_lit.type_expr {
-                    TypeExpr::AnonymousStruct { fields, .. } => {
-                        // Generate an anonymous struct type instruction
+                    TypeExpr::AnonymousStruct {
+                        fields, methods, ..
+                    } => {
+                        // Generate an anonymous struct type instruction with methods
                         let field_decls: Vec<(Spur, Spur)> = fields
                             .iter()
                             .map(|f| {
@@ -744,10 +746,19 @@ impl<'a> AstGen<'a> {
                             })
                             .collect();
                         let (fields_start, fields_len) = self.rir.add_field_decls(&field_decls);
+
+                        // Generate each method inside the anonymous struct
+                        // (reusing gen_method, which generates FnDecl instructions)
+                        let method_refs: Vec<InstRef> =
+                            methods.iter().map(|m| self.gen_method(m)).collect();
+                        let (methods_start, methods_len) = self.rir.add_inst_refs(&method_refs);
+
                         self.rir.add_inst(Inst {
                             data: InstData::AnonStructType {
                                 fields_start,
                                 fields_len,
+                                methods_start,
+                                methods_len,
                             },
                             span: type_lit.span,
                         })
@@ -1919,5 +1930,135 @@ mod tests {
                 i
             );
         }
+    }
+
+    #[test]
+    fn test_anon_struct_with_methods() {
+        // Test that anonymous structs with methods generate AnonStructType with method references
+        let source = r#"
+            fn MakePoint(comptime T: type) -> type {
+                struct {
+                    x: T,
+                    y: T,
+
+                    fn get_x(self) -> T { self.x }
+                    fn origin() -> Self { Self { x: 0, y: 0 } }
+                }
+            }
+            fn main() -> i32 { 0 }
+        "#;
+        let (rir, interner) = gen_rir(source);
+
+        // Find the AnonStructType instruction
+        let anon_struct = rir
+            .iter()
+            .find(|(_, inst)| matches!(inst.data, InstData::AnonStructType { .. }));
+        assert!(
+            anon_struct.is_some(),
+            "Expected to find AnonStructType instruction"
+        );
+
+        let (_, inst) = anon_struct.unwrap();
+        match &inst.data {
+            InstData::AnonStructType {
+                fields_start,
+                fields_len,
+                methods_start,
+                methods_len,
+            } => {
+                // Should have 2 fields (x and y)
+                let fields = rir.get_field_decls(*fields_start, *fields_len);
+                assert_eq!(fields.len(), 2);
+                assert_eq!(interner.resolve(&fields[0].0), "x");
+                assert_eq!(interner.resolve(&fields[1].0), "y");
+
+                // Should have 2 methods (get_x and origin)
+                assert_eq!(*methods_len, 2);
+                let methods = rir.get_inst_refs(*methods_start, *methods_len);
+                assert_eq!(methods.len(), 2);
+
+                // Verify each method is a FnDecl
+                for method_ref in methods {
+                    let method_inst = rir.get(method_ref);
+                    match &method_inst.data {
+                        InstData::FnDecl { name, has_self, .. } => {
+                            let name_str = interner.resolve(name);
+                            // get_x has self, origin doesn't
+                            if name_str == "get_x" {
+                                assert!(*has_self, "get_x should have self parameter");
+                            } else if name_str == "origin" {
+                                assert!(!*has_self, "origin should not have self parameter");
+                            }
+                        }
+                        _ => panic!("Expected FnDecl for method"),
+                    }
+                }
+            }
+            _ => panic!("Expected AnonStructType"),
+        }
+    }
+
+    #[test]
+    fn test_anon_struct_without_methods() {
+        // Test that anonymous structs without methods have zero methods_len
+        let source = r#"
+            fn MakePair(comptime T: type) -> type {
+                struct { first: T, second: T }
+            }
+            fn main() -> i32 { 0 }
+        "#;
+        let (rir, _interner) = gen_rir(source);
+
+        // Find the AnonStructType instruction
+        let anon_struct = rir
+            .iter()
+            .find(|(_, inst)| matches!(inst.data, InstData::AnonStructType { .. }));
+        assert!(
+            anon_struct.is_some(),
+            "Expected to find AnonStructType instruction"
+        );
+
+        let (_, inst) = anon_struct.unwrap();
+        match &inst.data {
+            InstData::AnonStructType { methods_len, .. } => {
+                assert_eq!(*methods_len, 0, "Expected no methods");
+            }
+            _ => panic!("Expected AnonStructType"),
+        }
+    }
+
+    #[test]
+    fn test_anon_struct_method_function_spans() {
+        // Test that methods inside anonymous structs are tracked in function_spans
+        let source = r#"
+            fn Container(comptime T: type) -> type {
+                struct {
+                    value: T,
+                    fn get(self) -> T { self.value }
+                    fn set(self, v: T) -> Self { Self { value: v } }
+                }
+            }
+            fn main() -> i32 { 0 }
+        "#;
+        let (rir, interner) = gen_rir(source);
+
+        // Should have 4 functions: Container, get, set, main
+        assert_eq!(
+            rir.function_count(),
+            4,
+            "Expected 4 functions (Container, get, set, main)"
+        );
+
+        // Check that all methods are findable by name
+        let get_sym = interner.get_or_intern("get");
+        let set_sym = interner.get_or_intern("set");
+        assert!(
+            rir.find_function(get_sym).is_some(),
+            "Should find 'get' method"
+        );
+        assert!(
+            rir.find_function(set_sym).is_some(),
+            "Should find 'set' method"
+        );
     }
 }

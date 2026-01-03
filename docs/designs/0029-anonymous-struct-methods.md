@@ -213,12 +213,12 @@ Epic: rue-nj40
 
 **Deliverable**: Parser accepts `struct { x: i32, fn get(self) -> i32 { self.x } }` syntax.
 
-### Phase 2: RIR Generation (rue-nj40.2)
+### Phase 2: RIR Generation (rue-nj40.2) ✅
 
-- [ ] Extend `InstData::AnonStructType` to include method references
-- [ ] Store anonymous struct methods in RIR extra data
-- [ ] Generate RIR for methods inside anonymous structs
-- [ ] Handle `Self` type reference in RIR
+- [x] Extend `InstData::AnonStructType` to include method references
+- [x] Store anonymous struct methods in RIR extra data
+- [x] Generate RIR for methods inside anonymous structs
+- [x] Handle `Self` type reference in RIR
 
 **Deliverable**: RIR correctly represents anonymous structs with methods.
 

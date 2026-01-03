@@ -6475,10 +6475,12 @@ impl<'a> Sema<'a> {
             }
 
             // Anonymous struct type: a struct type constructed at comptime
-            // (e.g., `struct { first: T, second: T }` in a comptime function)
+            // (e.g., `struct { first: T, second: T, fn method(self) -> T { ... } }` in a comptime function)
             InstData::AnonStructType {
                 fields_start,
                 fields_len,
+                methods_start: _,
+                methods_len: _,
             } => {
                 // Get the field declarations from the RIR
                 let field_decls = self.rir.get_field_decls(*fields_start, *fields_len);
@@ -6500,7 +6502,10 @@ impl<'a> Sema<'a> {
                 }
 
                 // Check if an equivalent anonymous struct already exists (structural equality)
+                // TODO (Phase 3): Include method signatures in structural equality
                 let struct_ty = self.find_or_create_anon_struct(&struct_fields);
+
+                // TODO (Phase 3): Register methods for this anonymous struct using methods_start/methods_len
 
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::TypeConst(struct_ty),
@@ -8371,6 +8376,8 @@ impl<'a> Sema<'a> {
             InstData::AnonStructType {
                 fields_start,
                 fields_len,
+                methods_start: _,
+                methods_len: _,
             } => {
                 // Get the field declarations from the RIR
                 let field_decls = self.rir.get_field_decls(*fields_start, *fields_len);
@@ -8389,6 +8396,7 @@ impl<'a> Sema<'a> {
                 }
 
                 // Find or create the anonymous struct type
+                // TODO (Phase 3): Include method signatures in structural equality and register methods
                 let struct_ty = self.find_or_create_anon_struct(&struct_fields);
                 Some(ConstValue::Type(struct_ty))
             }
@@ -8713,6 +8721,8 @@ impl<'a> Sema<'a> {
             InstData::AnonStructType {
                 fields_start,
                 fields_len,
+                methods_start: _,
+                methods_len: _,
             } => {
                 let field_decls = self.rir.get_field_decls(*fields_start, *fields_len);
 
@@ -8728,6 +8738,7 @@ impl<'a> Sema<'a> {
                     });
                 }
 
+                // TODO (Phase 3): Include method signatures in structural equality and register methods with substitution
                 let struct_ty = self.find_or_create_anon_struct(&struct_fields);
                 Some(ConstValue::Type(struct_ty))
             }
