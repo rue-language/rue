@@ -6,7 +6,7 @@
         <h1 class="text-5xl md:text-6xl font-bold mb-4">{{ section.title }}</h1>
         <p class="text-xl md:text-2xl text-muted mb-8">{{ section.extra.tagline }}</p>
         <div class="flex flex-col sm:flex-row gap-4 justify-center">
-            <a href="{{ get_url(path='getting-started') }}" class="btn-primary">Get Started</a>
+            <a href="{{ get_url(path='tutorial') }}" class="btn-primary">Get Started</a>
 <!-- Hardcoded path: spec is a static mdbook, not Zola content -->
             <a href="/spec/" class="btn-secondary">Read the Spec</a>
         </div>
@@ -24,9 +24,41 @@
     </div>
 </section>
 
+<section class="py-16 bg-surface">
+    <div class="max-w-4xl mx-auto px-6">
+        <h2 class="text-2xl font-semibold text-center mb-8">What is Rue?</h2>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+            <div>
+                <h3 class="text-lg font-semibold mb-3">The Question</h3>
+                <p class="text-muted text-sm leading-relaxed mb-4">
+                    Rust proved memory safety without garbage collection is possible.
+                    But its learning curve is steep. Can we find an easier path to the same destination?
+                </p>
+                <p class="text-muted text-sm leading-relaxed">
+                    We don't know yet. Rue is an early-stage research project exploring
+                    that question. It's not ready for real projects, but you can follow along
+                    as we figure it out.
+                </p>
+            </div>
+            <div>
+                <h3 class="text-lg font-semibold mb-3">The Experiment</h3>
+                <p class="text-muted text-sm leading-relaxed mb-4">
+                    Rue is also an experiment in human-AI collaboration. The language is designed
+                    by <a href="https://steveklabnik.com" class="text-accent hover:underline">Steve Klabnik</a>
+                    and implemented primarily by Claude, an AI assistant.
+                </p>
+                <p class="text-muted text-sm leading-relaxed">
+                    Read <a href="{{ get_url(path='blog/week-one') }}" class="text-accent hover:underline">the story</a>
+                    of how we went from zero to a working compiler in two weeks.
+                </p>
+            </div>
+        </div>
+    </div>
+</section>
+
 <section class="py-16">
     <div class="max-w-3xl mx-auto px-6">
-        <h2 class="text-2xl font-semibold text-center mb-8">Hello, Rue</h2>
+        <h2 class="text-2xl font-semibold text-center mb-8">See It In Action</h2>
         <div class="prose">
             {{ section.content | safe }}
         </div>

@@ -1,0 +1,20 @@
+{
+  "platforms": [
+    {
+      "id": "aarch64-linux",
+      "name": "Linux ARM64",
+      "has_data": false
+    },
+    {
+      "id": "aarch64-macos",
+      "name": "macOS ARM64",
+      "has_data": false
+    },
+    {
+      "id": "x86-64-linux",
+      "name": "Linux x86-64",
+      "has_data": false
+    }
+  ],
+  "default_platform": "aarch64-linux"
+}

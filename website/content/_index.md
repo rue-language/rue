@@ -3,23 +3,22 @@ title = "Rue"
 template = "index.html"
 
 [extra]
-tagline = "Higher level than Rust, lower level than Go"
+tagline = "Exploring memory safety that's easier to use"
 
 [[extra.features]]
-title = "Memory Safe"
-description = "No garbage collector, no manual memory management. A work in progress, though."
+title = "Early Stage"
+description = "Rue is a research project, not ready for real use. We're still building the basics. Expect bugs, missing features, and breaking changes."
 
 [[extra.features]]
-title = "Simple Syntax"
-description = "Familiar syntax inspired by various programming languages. If you know one, you'll feel at home with Rue."
+title = "Familiar Syntax"
+description = "If you know Rust, Go, or C, you'll feel at home. Rue aims for a gentle learning curve without sacrificing clarity."
 
 [[extra.features]]
-title = "Fast Compilation"
-description = "Direct compilation to native code."
+title = "Native Compilation"
+description = "Compiles to x86-64 and ARM64 machine code. No VM, no interpreter, no garbage collector."
 +++
 
-```rust
-// It's a classic for a reason
+```rue
 fn fib(n: i32) -> i32 {
     if n <= 1 {
         n
@@ -29,14 +28,12 @@ fn fib(n: i32) -> i32 {
 }
 
 fn main() -> i32 {
-    // Print the first 20 Fibonacci numbers
+    // Print the first 10 Fibonacci numbers
     let mut i = 0;
-    while i < 20 {
+    while i < 10 {
         @dbg(fib(i));
         i = i + 1;
     }
-
-    // Return fib(10) = 55
-    fib(10)
+    0
 }
 ```
