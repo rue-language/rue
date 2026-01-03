@@ -983,7 +983,6 @@ where
 /// Suffix for field access (.field), method call (.method(args)), indexing ([expr]),
 /// qualified struct literals (.Type { ... }), and qualified paths (.Enum::Variant)
 #[derive(Clone)]
-#[allow(dead_code)] // QualifiedStructLit reserved for future use (grammar ambiguity)
 enum Suffix {
     /// Simple field access: .field
     Field(Ident),
@@ -1026,11 +1025,39 @@ where
     //
     // The key difference is that struct literals have `{ ident: value, ... }` while
     // block expressions have `{ expr }`. We use a lookahead to require that `{` is
-    // followed by `ident :` to confirm it's a struct literal.
+    // followed by `}` (empty struct) or `ident :` (non-empty struct) to confirm it's
+    // a struct literal, not field access followed by a block.
     //
-    // NOTE: Qualified struct literal (e.g., `module.Point { x: 1 }`) is not yet supported.
-    // The syntax is ambiguous with field access followed by block (e.g., `obj.field { expr }`).
-    // For now, use a local binding: `let Point = module.Point; Point { x: 1 }`
+    // Lookahead check: succeeds (without consuming) if `{ }` or `{ ident : `
+    let struct_lit_lookahead = just(TokenKind::LBrace)
+        .then(
+            choice((
+                // Empty struct: { }
+                just(TokenKind::RBrace).ignored(),
+                // Non-empty struct: { ident : ...
+                select! { TokenKind::Ident(_) => () }
+                    .then_ignore(just(TokenKind::Colon))
+                    .ignored(),
+            ))
+            // We're just checking the pattern exists, not consuming
+            .rewind(),
+        )
+        .rewind();
+
+    // NOTE: .boxed() is required here to shorten the monomorphized type name.
+    // The lookahead creates deeply nested generics that exceed macOS linker limits.
+    let qualified_struct_lit_suffix = just(TokenKind::Dot)
+        .ignore_then(ident_parser())
+        // Use lookahead to confirm this is a struct literal, not field + block
+        .then_ignore(struct_lit_lookahead)
+        .then(
+            field_inits_parser(expr.clone())
+                .delimited_by(just(TokenKind::LBrace), just(TokenKind::RBrace)),
+        )
+        .map_with(|(name, fields), e| {
+            Suffix::QualifiedStructLit(name, fields, offset_to_u32(e.span().end))
+        })
+        .boxed();
 
     // Qualified associated function call: .TypeName::function(args)
     let qualified_assoc_fn_suffix = just(TokenKind::Dot)
@@ -1058,8 +1085,9 @@ where
         .then_ignore(none_of([TokenKind::LParen]).rewind())
         .map(|(type_name, variant, end)| Suffix::QualifiedPath(type_name, variant, end));
 
-    // Field access: .ident (but NOT followed by '(' or '::')
-    // Note: We don't exclude '{' because qualified struct literal syntax is not supported.
+    // Field access: .ident (but NOT followed by '(', '::', or struct literal pattern)
+    // The qualified_struct_lit_suffix is tried first and uses lookahead, so field_suffix
+    // only matches when we're certain it's field access, not a qualified struct literal.
     let field_suffix = just(TokenKind::Dot)
         .ignore_then(ident_parser())
         .then_ignore(none_of([TokenKind::LParen, TokenKind::ColonColon]).rewind())
@@ -1072,16 +1100,17 @@ where
     // Order matters: more specific patterns must come before less specific ones
     // - qualified_assoc_fn_suffix before qualified_path_suffix (both have ::)
     // - method_call_suffix before field_suffix (both start with .ident)
+    // - qualified_struct_lit_suffix before field_suffix (uses lookahead for { ident: } pattern)
     // - qualified_path_suffix before field_suffix (both start with .ident)
-    // Note: qualified_struct_lit_suffix is disabled (can't disambiguate from field + block)
     //
     // NOTE: .boxed() is required here to shorten the monomorphized type name.
     // Without it, macOS's ld64 linker fails with "symbol name too long" because
-    // the 5-way choice creates extremely long generic type names.
+    // the 6-way choice creates extremely long generic type names.
     primary.foldl(
         choice((
             method_call_suffix,
             qualified_assoc_fn_suffix,
+            qualified_struct_lit_suffix,
             qualified_path_suffix,
             field_suffix,
             index_suffix,
@@ -3056,5 +3085,117 @@ mod tests {
 
         let compile_errors = CompileErrors::from(errors);
         assert_eq!(compile_errors.len(), 2, "Expected 2 errors to be preserved");
+    }
+
+    // ==================== Qualified Struct Literal Tests ====================
+
+    #[test]
+    fn test_qualified_struct_literal() {
+        // module.Point { x: 1, y: 2 } should parse as a qualified struct literal
+        let result = parse_expr("mod.Point { x: 1, y: 2 }").unwrap();
+        match &result.expr {
+            Expr::StructLit(lit) => {
+                // Verify it has a base (the module)
+                assert!(
+                    lit.base.is_some(),
+                    "qualified struct literal should have a base"
+                );
+                match lit.base.as_ref().unwrap().as_ref() {
+                    Expr::Ident(ident) => assert_eq!(result.get(ident.name), "mod"),
+                    _ => panic!("base should be Ident, got {:?}", lit.base),
+                }
+                // Verify struct name
+                assert_eq!(result.get(lit.name.name), "Point");
+                // Verify fields
+                assert_eq!(lit.fields.len(), 2);
+                assert_eq!(result.get(lit.fields[0].name.name), "x");
+                assert_eq!(result.get(lit.fields[1].name.name), "y");
+            }
+            _ => panic!("expected StructLit, got {:?}", result.expr),
+        }
+    }
+
+    #[test]
+    fn test_qualified_struct_literal_empty() {
+        // module.Empty {} should parse as a qualified struct literal with no fields
+        let result = parse_expr("mod.Empty {}").unwrap();
+        match &result.expr {
+            Expr::StructLit(lit) => {
+                assert!(
+                    lit.base.is_some(),
+                    "qualified struct literal should have a base"
+                );
+                assert_eq!(result.get(lit.name.name), "Empty");
+                assert_eq!(lit.fields.len(), 0);
+            }
+            _ => panic!("expected StructLit, got {:?}", result.expr),
+        }
+    }
+
+    #[test]
+    fn test_field_access_then_block() {
+        // obj.field; { 1 } should parse as field access (discarded) followed by block expression
+        // Note: obj.field { 1 } (without semicolon) is a syntax error because there's no
+        // operator between the field access and the block.
+        let result = parse("fn main() -> i32 { x.field; { 1 } }").unwrap();
+        match &result.ast.items[0] {
+            Item::Function(f) => match &f.body {
+                Expr::Block(block) => {
+                    // The block should have a statement (field access discarded) and
+                    // a final expression (the inner block returning 1)
+                    assert_eq!(block.statements.len(), 1);
+                    match &block.statements[0] {
+                        Statement::Expr(Expr::Field(field)) => {
+                            assert_eq!(result.get(field.field.name), "field");
+                        }
+                        _ => panic!("expected Field statement, got {:?}", block.statements[0]),
+                    }
+                    match block.expr.as_ref() {
+                        Expr::Block(inner) => match inner.expr.as_ref() {
+                            Expr::Int(lit) => assert_eq!(lit.value, 1),
+                            _ => panic!("expected Int, got {:?}", inner.expr),
+                        },
+                        _ => panic!("expected Block, got {:?}", block.expr),
+                    }
+                }
+                _ => panic!("expected Block"),
+            },
+            _ => panic!("expected Function"),
+        }
+    }
+
+    #[test]
+    fn test_field_access_block_without_semicolon_is_error() {
+        // obj.field { 1 } without semicolon is a syntax error - it's not a struct literal
+        // (because { 1 } doesn't match the { ident: } pattern) and it's not valid syntax.
+        let result = parse("fn main() -> i32 { x.field { 1 } }");
+        assert!(
+            result.is_err(),
+            "field + block without semicolon should be syntax error"
+        );
+    }
+
+    #[test]
+    fn test_chained_qualified_struct_literal() {
+        // a.b.Point { x: 1 } - nested field access then struct literal
+        let result = parse_expr("a.b.Point { x: 1 }").unwrap();
+        match &result.expr {
+            Expr::StructLit(lit) => {
+                // Should have a base that's a.b
+                assert!(lit.base.is_some());
+                match lit.base.as_ref().unwrap().as_ref() {
+                    Expr::Field(field) => {
+                        assert_eq!(result.get(field.field.name), "b");
+                        match field.base.as_ref() {
+                            Expr::Ident(ident) => assert_eq!(result.get(ident.name), "a"),
+                            _ => panic!("inner base should be Ident"),
+                        }
+                    }
+                    _ => panic!("base should be Field, got {:?}", lit.base),
+                }
+                assert_eq!(result.get(lit.name.name), "Point");
+            }
+            _ => panic!("expected StructLit, got {:?}", result.expr),
+        }
     }
 }
