@@ -152,8 +152,6 @@ I'd be lying if I said everything went smoothly.
 
 **The module system is half-done.** We designed ADR-0026 (the module system), implemented `pub` visibility modifiers, added `@import` to the lexer, built single-file and directory module resolution... and then ran into scope. Real modules need visibility enforcement, hierarchical imports, cycle detection. It's a "Phase 1 shipped, Phases 2-5 waiting" situation.
 
-**Hindley-Milner inference exists but is disabled.** We built a complete HM type inference engine—constraint generation, unification, the works—and then discovered that integrating it with everything else (comptime, affine types, methods) was more work than expected. It's there. It passes tests in isolation. But it's not the default path yet.
-
 These aren't failures exactly. They're the natural state of a project that's moving fast and hasn't decided to stop yet.
 
 ## By The Numbers
@@ -194,7 +192,6 @@ Looking at the open issues (we use a tool called `bd` for tracking), there's a c
 
 1. **Finish the module system.** Visibility enforcement and proper import resolution.
 2. **Stabilize affine types.** Some edge cases remain in branch tracking.
-3. **Enable HM inference by default.** It's built; it just needs integration work.
 
 Further out, there's a longer list: trait system, closures, generics beyond comptime, iterators, a standard library. Normal language things.
 
