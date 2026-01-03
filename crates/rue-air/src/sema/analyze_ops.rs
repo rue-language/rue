@@ -2054,6 +2054,9 @@ impl<'a> Sema<'a> {
             .get(&name)
             .ok_or_compile_error(ErrorKind::UndefinedFunction(fn_name_str.clone()), span)?;
 
+        // Track this function as referenced (for lazy analysis)
+        ctx.referenced_functions.insert(name);
+
         // Get parameter data from the arena
         let param_types = self.param_arena.types(fn_info.params);
         let param_modes = self.param_arena.modes(fn_info.params);

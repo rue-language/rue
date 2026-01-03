@@ -197,6 +197,13 @@ pub(crate) struct AnalysisContext<'a> {
     /// `make_point() -> type`), this map stores the resolved type so it can be used
     /// as a type annotation (e.g., `let p: P = ...`).
     pub comptime_type_vars: HashMap<Spur, Type>,
+    /// Functions referenced during analysis of this function.
+    /// Used for lazy semantic analysis (Phase 3 of module system) to track
+    /// which functions need to be analyzed. Each entry is a function name symbol.
+    pub referenced_functions: HashSet<Spur>,
+    /// Methods referenced during analysis of this function.
+    /// Each entry is (struct_name, method_name) matching the key format in methods map.
+    pub referenced_methods: HashSet<(Spur, Spur)>,
 }
 
 // Import InstRef for use in resolved_types

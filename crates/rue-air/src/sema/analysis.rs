@@ -277,8 +277,14 @@ type FunctionResult = Result<(AnalyzedFunction, Vec<CompileWarning>, Vec<String>
 /// 3. Process with `par_iter` using `analyze_function_job`
 /// 4. Merge with `merge_function_results`
 pub(crate) fn analyze_all_function_bodies(mut sema: Sema<'_>) -> MultiErrorResult<SemaOutput> {
-    // Use sequential analysis path
-    analyze_all_function_bodies_sequential(&mut sema)
+    // Check if lazy analysis is enabled (Phase 3 of module system, ADR-0026)
+    // When modules preview feature is enabled, we only analyze functions reachable from main()
+    if sema.preview_features.contains(&PreviewFeature::Modules) {
+        analyze_function_bodies_lazy(&mut sema)
+    } else {
+        // Use eager analysis path (current behavior)
+        analyze_all_function_bodies_sequential(&mut sema)
+    }
 }
 
 /// Sequential analysis path (current implementation).
@@ -341,7 +347,7 @@ fn analyze_all_function_bodies_sequential(sema: &mut Sema<'_>) -> MultiErrorResu
                 *body,
                 inst.span,
             ) {
-                Ok((analyzed, warnings, local_strings)) => {
+                Ok((analyzed, warnings, local_strings, _ref_fns, _ref_meths)) => {
                     functions_with_strings.push((analyzed, local_strings));
                     all_warnings.extend(warnings);
                 }
@@ -406,7 +412,7 @@ fn analyze_all_function_bodies_sequential(sema: &mut Sema<'_>) -> MultiErrorResu
                         struct_type,
                         *has_self,
                     ) {
-                        Ok((analyzed, warnings, local_strings)) => {
+                        Ok((analyzed, warnings, local_strings, _ref_fns, _ref_meths)) => {
                             functions_with_strings.push((analyzed, local_strings));
                             all_warnings.extend(warnings);
                         }
@@ -444,7 +450,301 @@ fn analyze_all_function_bodies_sequential(sema: &mut Sema<'_>) -> MultiErrorResu
                 inst.span,
                 struct_type,
             ) {
-                Ok((analyzed, warnings, local_strings)) => {
+                Ok((analyzed, warnings, local_strings, _ref_fns, _ref_meths)) => {
+                    functions_with_strings.push((analyzed, local_strings));
+                    all_warnings.extend(warnings);
+                }
+                Err(e) => errors.push(e),
+            }
+        }
+    }
+
+    // Merge strings from all functions into a global table with deduplication.
+    let mut global_string_table: HashMap<String, u32> = HashMap::new();
+    let mut global_strings: Vec<String> = Vec::new();
+
+    let mut functions: Vec<AnalyzedFunction> = Vec::new();
+    for (mut analyzed, local_strings) in functions_with_strings {
+        if !local_strings.is_empty() {
+            let local_to_global: Vec<u32> = local_strings
+                .into_iter()
+                .map(|s| {
+                    *global_string_table.entry(s.clone()).or_insert_with(|| {
+                        let id = global_strings.len() as u32;
+                        global_strings.push(s);
+                        id
+                    })
+                })
+                .collect();
+
+            analyzed
+                .air
+                .remap_string_ids(|local_id| local_to_global[local_id as usize]);
+        }
+        functions.push(analyzed);
+    }
+
+    all_warnings.sort_by_key(|w| w.span().map(|s| s.start));
+
+    let mut output = SemaOutput {
+        functions,
+        strings: global_strings,
+        warnings: all_warnings,
+        type_pool: sema.type_pool.clone(),
+    };
+
+    // Run specialization pass to rewrite CallGeneric instructions to Call
+    // and create specialized function bodies
+    if let Err(e) = crate::specialize::specialize(&mut output, sema, &infer_ctx, sema.interner) {
+        errors.push(e);
+    }
+
+    errors.into_result_with(output)
+}
+
+/// Lazy analysis path (Phase 3 of module system, ADR-0026).
+///
+/// This implements "lazy semantic analysis" where only functions reachable from
+/// the entry point (main) are analyzed. Unreferenced code is not analyzed,
+/// not codegen'd, and errors in unreferenced code are not reported.
+///
+/// This is the same trade-off Zig makes for faster builds and smaller binaries.
+fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOutput> {
+    // Build inference context once
+    let infer_ctx = sema.build_inference_context();
+
+    // Find main() function - this is the entry point for lazy analysis
+    let main_sym = match sema.interner.get("main") {
+        Some(sym) if sema.functions.contains_key(&sym) => sym,
+        _ => {
+            // No main function found - this is an error
+            return Err(CompileErrors::from(CompileError::without_span(
+                ErrorKind::NoMainFunction,
+            )));
+        }
+    };
+
+    // Work queue: functions/methods to analyze
+    // Start with main()
+    let mut pending_functions: Vec<Spur> = vec![main_sym];
+    let mut analyzed_functions: HashSet<Spur> = HashSet::new();
+    let mut pending_methods: Vec<(Spur, Spur)> = Vec::new();
+    let mut analyzed_methods: HashSet<(Spur, Spur)> = HashSet::new();
+
+    // Collect results
+    let mut functions_with_strings: Vec<(AnalyzedFunction, Vec<String>)> = Vec::new();
+    let mut errors = CompileErrors::new();
+    let mut all_warnings = Vec::new();
+
+    // Collect method refs from impl blocks (for later lookup)
+    let mut method_refs: HashSet<InstRef> = HashSet::new();
+    for (_, inst) in sema.rir.iter() {
+        if let InstData::ImplDecl {
+            methods_start,
+            methods_len,
+            ..
+        } = &inst.data
+        {
+            let methods = sema.rir.get_inst_refs(*methods_start, *methods_len);
+            for method_ref in methods {
+                method_refs.insert(method_ref);
+            }
+        }
+    }
+
+    // Process work queue until empty
+    while !pending_functions.is_empty() || !pending_methods.is_empty() {
+        // Process pending functions
+        while let Some(fn_name) = pending_functions.pop() {
+            if analyzed_functions.contains(&fn_name) {
+                continue;
+            }
+            analyzed_functions.insert(fn_name);
+
+            // Look up the function info
+            let fn_info = match sema.functions.get(&fn_name) {
+                Some(info) => *info,
+                None => continue, // Should not happen, but be defensive
+            };
+
+            // Skip generic functions - they're analyzed during specialization
+            if fn_info.is_generic {
+                continue;
+            }
+
+            let fn_name_str = sema.interner.resolve(&fn_name).to_string();
+
+            // Find the function declaration in RIR to get params
+            let mut found = false;
+            for (inst_ref, inst) in sema.rir.iter() {
+                if let InstData::FnDecl {
+                    name,
+                    params_start,
+                    params_len,
+                    return_type,
+                    body,
+                    ..
+                } = &inst.data
+                {
+                    if *name == fn_name && !method_refs.contains(&inst_ref) {
+                        found = true;
+                        let params = sema.rir.get_params(*params_start, *params_len);
+
+                        match sema.analyze_single_function(
+                            &infer_ctx,
+                            &fn_name_str,
+                            *return_type,
+                            &params,
+                            *body,
+                            inst.span,
+                        ) {
+                            Ok((
+                                analyzed,
+                                warnings,
+                                local_strings,
+                                referenced_fns,
+                                referenced_meths,
+                            )) => {
+                                functions_with_strings.push((analyzed, local_strings));
+                                all_warnings.extend(warnings);
+
+                                // Add newly referenced functions to the work queue
+                                for ref_fn in referenced_fns {
+                                    if !analyzed_functions.contains(&ref_fn) {
+                                        pending_functions.push(ref_fn);
+                                    }
+                                }
+                                for ref_meth in referenced_meths {
+                                    if !analyzed_methods.contains(&ref_meth) {
+                                        pending_methods.push(ref_meth);
+                                    }
+                                }
+                            }
+                            Err(e) => errors.push(e),
+                        }
+                        break;
+                    }
+                }
+            }
+
+            if !found {
+                // This could be a builtin or otherwise non-existent function
+                // Just skip it
+            }
+        }
+
+        // Process pending methods
+        while let Some((type_name, method_name)) = pending_methods.pop() {
+            if analyzed_methods.contains(&(type_name, method_name)) {
+                continue;
+            }
+            analyzed_methods.insert((type_name, method_name));
+
+            // Look up the method info
+            let method_info = match sema.methods.get(&(type_name, method_name)) {
+                Some(info) => *info,
+                None => continue,
+            };
+
+            let type_name_str = sema.interner.resolve(&type_name).to_string();
+            let method_name_str = sema.interner.resolve(&method_name).to_string();
+
+            // Find the method in impl blocks
+            for (_, inst) in sema.rir.iter() {
+                if let InstData::ImplDecl {
+                    type_name: impl_type_name,
+                    methods_start,
+                    methods_len,
+                } = &inst.data
+                {
+                    if *impl_type_name != type_name {
+                        continue;
+                    }
+
+                    let methods = sema.rir.get_inst_refs(*methods_start, *methods_len);
+                    for method_ref in methods {
+                        let method_inst = sema.rir.get(method_ref);
+                        if let InstData::FnDecl {
+                            name: m_name,
+                            params_start,
+                            params_len,
+                            return_type,
+                            body,
+                            has_self,
+                            ..
+                        } = &method_inst.data
+                        {
+                            if *m_name != method_name {
+                                continue;
+                            }
+
+                            let params = sema.rir.get_params(*params_start, *params_len);
+                            let full_name = if *has_self {
+                                format!("{}.{}", type_name_str, method_name_str)
+                            } else {
+                                format!("{}::{}", type_name_str, method_name_str)
+                            };
+
+                            match sema.analyze_method_function(
+                                &infer_ctx,
+                                &full_name,
+                                *return_type,
+                                &params,
+                                *body,
+                                method_inst.span,
+                                method_info.struct_type,
+                                *has_self,
+                            ) {
+                                Ok((
+                                    analyzed,
+                                    warnings,
+                                    local_strings,
+                                    referenced_fns,
+                                    referenced_meths,
+                                )) => {
+                                    functions_with_strings.push((analyzed, local_strings));
+                                    all_warnings.extend(warnings);
+
+                                    for ref_fn in referenced_fns {
+                                        if !analyzed_functions.contains(&ref_fn) {
+                                            pending_functions.push(ref_fn);
+                                        }
+                                    }
+                                    for ref_meth in referenced_meths {
+                                        if !analyzed_methods.contains(&ref_meth) {
+                                            pending_methods.push(ref_meth);
+                                        }
+                                    }
+                                }
+                                Err(e) => errors.push(e),
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Also analyze destructors for any structs whose types we've used
+    // (This is necessary because drop is implicitly called)
+    for (_, inst) in sema.rir.iter() {
+        if let InstData::DropFnDecl { type_name, body } = &inst.data {
+            let type_name_str = sema.interner.resolve(&*type_name).to_string();
+            let struct_id = match sema.structs.get(type_name) {
+                Some(id) => *id,
+                None => continue,
+            };
+            let struct_type = Type::Struct(struct_id);
+            let full_name = format!("{}.__drop", type_name_str);
+
+            match sema.analyze_destructor_function(
+                &infer_ctx,
+                &full_name,
+                *body,
+                inst.span,
+                struct_type,
+            ) {
+                Ok((analyzed, warnings, local_strings, _, _)) => {
                     functions_with_strings.push((analyzed, local_strings));
                     all_warnings.extend(warnings);
                 }
@@ -873,6 +1173,8 @@ fn analyze_function_with_context(
         local_string_table: HashMap::new(),
         local_strings: Vec::new(),
         comptime_type_vars: HashMap::new(),
+        referenced_functions: HashSet::new(),
+        referenced_methods: HashSet::new(),
     };
 
     // Analyze the body expression
@@ -3971,6 +4273,9 @@ fn analyze_call_ctx(
         .get_function(name)
         .ok_or_compile_error(ErrorKind::UndefinedFunction(fn_name_str.clone()), span)?;
 
+    // Track this function as referenced (for lazy analysis)
+    analysis_ctx.referenced_functions.insert(name);
+
     // Get parameter data from the arena
     let param_types = ctx.param_arena.types(fn_info.params);
     let param_modes = ctx.param_arena.modes(fn_info.params);
@@ -4286,6 +4591,9 @@ fn analyze_method_call_ctx(
         span,
     )?;
 
+    // Track this method as referenced (for lazy analysis)
+    analysis_ctx.referenced_methods.insert((type_name, method));
+
     // Analyze arguments
     let args = ctx.rir.get_call_args(args_start, args_len);
     let air_args = analyze_call_args_ctx(ctx, air, &args, analysis_ctx)?;
@@ -4348,6 +4656,9 @@ fn analyze_module_member_call_ctx(
     let fn_info = ctx
         .get_function(function_name)
         .ok_or_compile_error(ErrorKind::UndefinedFunction(fn_name_str.clone()), span)?;
+
+    // Track this function as referenced (for lazy analysis)
+    analysis_ctx.referenced_functions.insert(function_name);
 
     // Check visibility: private functions are only accessible from the same directory
     let accessing_file_id = span.file_id;
@@ -5166,7 +5477,13 @@ impl<'a> Sema<'a> {
         params: &[rue_rir::RirParam],
         body: InstRef,
         span: Span,
-    ) -> CompileResult<(AnalyzedFunction, Vec<CompileWarning>, Vec<String>)> {
+    ) -> CompileResult<(
+        AnalyzedFunction,
+        Vec<CompileWarning>,
+        Vec<String>,
+        HashSet<Spur>,
+        HashSet<(Spur, Spur)>,
+    )> {
         let ret_type = self.resolve_type(return_type, span)?;
 
         // Resolve parameter types and modes
@@ -5178,8 +5495,16 @@ impl<'a> Sema<'a> {
             })
             .collect::<CompileResult<Vec<_>>>()?;
 
-        let (air, num_locals, num_param_slots, param_modes, warnings, local_strings) =
-            self.analyze_function(infer_ctx, ret_type, &param_info, body)?;
+        let (
+            air,
+            num_locals,
+            num_param_slots,
+            param_modes,
+            warnings,
+            local_strings,
+            ref_fns,
+            ref_meths,
+        ) = self.analyze_function(infer_ctx, ret_type, &param_info, body)?;
 
         Ok((
             AnalyzedFunction {
@@ -5191,6 +5516,8 @@ impl<'a> Sema<'a> {
             },
             warnings,
             local_strings,
+            ref_fns,
+            ref_meths,
         ))
     }
 
@@ -5209,7 +5536,13 @@ impl<'a> Sema<'a> {
         span: Span,
         struct_type: Type,
         has_self: bool,
-    ) -> CompileResult<(AnalyzedFunction, Vec<CompileWarning>, Vec<String>)> {
+    ) -> CompileResult<(
+        AnalyzedFunction,
+        Vec<CompileWarning>,
+        Vec<String>,
+        HashSet<Spur>,
+        HashSet<(Spur, Spur)>,
+    )> {
         let ret_type = self.resolve_type(return_type, span)?;
 
         // Build parameter list, adding self as first parameter for methods
@@ -5227,8 +5560,16 @@ impl<'a> Sema<'a> {
             param_info.push((p.name, ty, p.mode));
         }
 
-        let (air, num_locals, num_param_slots, param_modes, warnings, local_strings) =
-            self.analyze_function(infer_ctx, ret_type, &param_info, body)?;
+        let (
+            air,
+            num_locals,
+            num_param_slots,
+            param_modes,
+            warnings,
+            local_strings,
+            ref_fns,
+            ref_meths,
+        ) = self.analyze_function(infer_ctx, ret_type, &param_info, body)?;
 
         Ok((
             AnalyzedFunction {
@@ -5240,6 +5581,8 @@ impl<'a> Sema<'a> {
             },
             warnings,
             local_strings,
+            ref_fns,
+            ref_meths,
         ))
     }
 
@@ -5255,14 +5598,28 @@ impl<'a> Sema<'a> {
         body: InstRef,
         _span: Span,
         struct_type: Type,
-    ) -> CompileResult<(AnalyzedFunction, Vec<CompileWarning>, Vec<String>)> {
+    ) -> CompileResult<(
+        AnalyzedFunction,
+        Vec<CompileWarning>,
+        Vec<String>,
+        HashSet<Spur>,
+        HashSet<(Spur, Spur)>,
+    )> {
         // Destructors take self parameter and return unit
         let self_sym = self.interner.get_or_intern("self");
         let param_info: Vec<(Spur, Type, RirParamMode)> =
             vec![(self_sym, struct_type, RirParamMode::Normal)];
 
-        let (air, num_locals, num_param_slots, param_modes, warnings, local_strings) =
-            self.analyze_function(infer_ctx, Type::Unit, &param_info, body)?;
+        let (
+            air,
+            num_locals,
+            num_param_slots,
+            param_modes,
+            warnings,
+            local_strings,
+            ref_fns,
+            ref_meths,
+        ) = self.analyze_function(infer_ctx, Type::Unit, &param_info, body)?;
 
         Ok((
             AnalyzedFunction {
@@ -5274,6 +5631,8 @@ impl<'a> Sema<'a> {
             },
             warnings,
             local_strings,
+            ref_fns,
+            ref_meths,
         ))
     }
     /// Analyze a single function, producing AIR.
@@ -5289,7 +5648,16 @@ impl<'a> Sema<'a> {
         return_type: Type,
         params: &[(Spur, Type, RirParamMode)], // (name, type, mode)
         body: InstRef,
-    ) -> CompileResult<(Air, u32, u32, Vec<bool>, Vec<CompileWarning>, Vec<String>)> {
+    ) -> CompileResult<(
+        Air,
+        u32,
+        u32,
+        Vec<bool>,
+        Vec<CompileWarning>,
+        Vec<String>,
+        HashSet<Spur>,
+        HashSet<(Spur, Spur)>,
+    )> {
         self.analyze_function_internal(infer_ctx, return_type, params, body, None)
     }
 
@@ -5305,7 +5673,16 @@ impl<'a> Sema<'a> {
         params: &[(Spur, Type, RirParamMode)],
         body: InstRef,
         type_subst: Option<&std::collections::HashMap<Spur, Type>>,
-    ) -> CompileResult<(Air, u32, u32, Vec<bool>, Vec<CompileWarning>, Vec<String>)> {
+    ) -> CompileResult<(
+        Air,
+        u32,
+        u32,
+        Vec<bool>,
+        Vec<CompileWarning>,
+        Vec<String>,
+        HashSet<Spur>,
+        HashSet<(Spur, Spur)>,
+    )> {
         let mut air = Air::new(return_type);
         let mut param_map: HashMap<Spur, ParamInfo> = HashMap::new();
         let mut param_modes: Vec<bool> = Vec::new();
@@ -5365,6 +5742,8 @@ impl<'a> Sema<'a> {
             local_string_table: HashMap::new(),
             local_strings: Vec::new(),
             comptime_type_vars,
+            referenced_functions: HashSet::new(),
+            referenced_methods: HashSet::new(),
         };
 
         // ======================================================================
@@ -5389,6 +5768,8 @@ impl<'a> Sema<'a> {
             param_modes,
             ctx.warnings,
             ctx.local_strings,
+            ctx.referenced_functions,
+            ctx.referenced_methods,
         ))
     }
 
@@ -5407,7 +5788,16 @@ impl<'a> Sema<'a> {
         params: &[(Spur, Type, RirParamMode)],
         body: InstRef,
         type_subst: &std::collections::HashMap<Spur, Type>,
-    ) -> CompileResult<(Air, u32, u32, Vec<bool>, Vec<CompileWarning>, Vec<String>)> {
+    ) -> CompileResult<(
+        Air,
+        u32,
+        u32,
+        Vec<bool>,
+        Vec<CompileWarning>,
+        Vec<String>,
+        HashSet<Spur>,
+        HashSet<(Spur, Spur)>,
+    )> {
         // For specialized functions, we need to populate comptime_type_vars with the
         // type substitutions so that references to type parameters (like `P { ... }`)
         // can be resolved in the function body.
@@ -6646,6 +7036,9 @@ impl<'a> Sema<'a> {
             .ok_or_compile_error(ErrorKind::UndefinedFunction(fn_name_str.clone()), span)?
             .clone();
 
+        // Track this function as referenced (for lazy analysis)
+        ctx.referenced_functions.insert(function_name);
+
         // Check visibility: private functions are only accessible from the same directory
         let accessing_file_id = span.file_id;
         let target_file_id = fn_info.file_id;
@@ -6772,6 +7165,9 @@ impl<'a> Sema<'a> {
             },
             span,
         )?;
+
+        // Track this associated function/method as referenced (for lazy analysis)
+        ctx.referenced_methods.insert(method_key);
 
         // Check that this is an associated function (no self), not a method
         if method_info.has_self {

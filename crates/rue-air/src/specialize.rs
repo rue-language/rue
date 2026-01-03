@@ -242,14 +242,22 @@ fn create_specialized_function(
         .collect();
 
     // Now analyze the function body with the specialized types
-    let (air, num_locals, num_param_slots, param_modes, _warnings, _local_strings) = sema
-        .analyze_specialized_function(
-            infer_ctx,
-            return_type,
-            &specialized_params,
-            base_info.body,
-            &type_subst,
-        )?;
+    let (
+        air,
+        num_locals,
+        num_param_slots,
+        param_modes,
+        _warnings,
+        _local_strings,
+        _ref_fns,
+        _ref_meths,
+    ) = sema.analyze_specialized_function(
+        infer_ctx,
+        return_type,
+        &specialized_params,
+        base_info.body,
+        &type_subst,
+    )?;
 
     Ok(AnalyzedFunction {
         name: specialized_name_str,
