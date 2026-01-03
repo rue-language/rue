@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 250" class="benchmark-chart">
+  <style>
+    .chart-bg { fill: var(--chart-bg, #ffffff); }
+    .chart-text { fill: var(--chart-text, #6b7280); font-family: system-ui, sans-serif; }
+    .chart-title { fill: var(--chart-title, #1a1a1a); font-family: system-ui, sans-serif; font-weight: 600; }
+    .chart-line { stroke: var(--chart-binary, #f59e0b); fill: none; stroke-width: 2; }
+    .chart-point { fill: var(--chart-binary, #f59e0b); }
+    .chart-grid { stroke: var(--chart-grid, #e5e7eb); stroke-width: 1; }
+    .chart-axis { stroke: var(--chart-axis, #9ca3af); stroke-width: 1; }
+    @media (prefers-color-scheme: dark) {
+      .chart-bg { fill: #1a1a1a; }
+      .chart-text { fill: #9ca3af; }
+      .chart-title { fill: #f0f0f0; }
+      .chart-grid { stroke: #2e2e2e; }
+      .chart-axis { stroke: #4b5563; }
+    }
+  </style>
+  <rect class="chart-bg" width="800" height="250" rx="8"/>
+  <text class="chart-title" x="400.0" y="25" text-anchor="middle" font-size="16">Binary Size Over Recent Commits (Linux x86-64)</text>
+  <line class="chart-grid" x1="70" y1="40.0" x2="770" y2="40.0"/>
+  <text class="chart-text" x="60" y="44.0" text-anchor="end" font-size="11">127.6KB</text>
+  <line class="chart-grid" x1="70" y1="77.5" x2="770" y2="77.5"/>
+  <text class="chart-text" x="60" y="81.5" text-anchor="end" font-size="11">95.7KB</text>
+  <line class="chart-grid" x1="70" y1="115.0" x2="770" y2="115.0"/>
+  <text class="chart-text" x="60" y="119.0" text-anchor="end" font-size="11">63.8KB</text>
+  <line class="chart-grid" x1="70" y1="152.5" x2="770" y2="152.5"/>
+  <text class="chart-text" x="60" y="156.5" text-anchor="end" font-size="11">31.9KB</text>
+  <line class="chart-grid" x1="70" y1="190.0" x2="770" y2="190.0"/>
+  <text class="chart-text" x="60" y="194.0" text-anchor="end" font-size="11">0.0KB</text>
+  <line class="chart-axis" x1="70" y1="40" x2="70" y2="190"/>
+  <line class="chart-axis" x1="70" y1="190" x2="770" y2="190"/>
+  <circle class="chart-point" cx="420.0" cy="53.636363636363654" r="4"/>
+  <text class="chart-text" x="420.0" y="205" text-anchor="end" font-size="10" transform="rotate(-45 420.0 205)">ea72413</text>
+</svg>

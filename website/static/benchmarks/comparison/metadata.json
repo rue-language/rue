@@ -1,0 +1,13 @@
+{
+  "platforms": [
+    {
+      "id": "x86-64-linux",
+      "name": "Linux x86-64",
+      "color": "#4f6ddb",
+      "run_count": 1,
+      "latest_commit": "ea72413",
+      "has_data": true
+    }
+  ],
+  "default_platform": "x86-64-linux"
+}

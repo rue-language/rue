@@ -13,7 +13,9 @@
     {
       "id": "x86-64-linux",
       "name": "Linux x86-64",
-      "has_data": false
+      "has_data": true,
+      "run_count": 1,
+      "latest_commit": "ea72413"
     }
   ],
   "default_platform": "aarch64-linux"

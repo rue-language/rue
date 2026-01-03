@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 350" class="benchmark-chart">
+  <style>
+    .chart-bg { fill: var(--chart-bg, #ffffff); }
+    .chart-text { fill: var(--chart-text, #6b7280); font-family: system-ui, sans-serif; }
+    .chart-title { fill: var(--chart-title, #1a1a1a); font-family: system-ui, sans-serif; font-weight: 600; }
+    .chart-grid { stroke: var(--chart-grid, #e5e7eb); stroke-width: 1; }
+    .chart-axis { stroke: var(--chart-axis, #9ca3af); stroke-width: 1; }
+    @media (prefers-color-scheme: dark) {
+      .chart-bg { fill: #1a1a1a; }
+      .chart-text { fill: #9ca3af; }
+      .chart-title { fill: #f0f0f0; }
+      .chart-grid { stroke: #2e2e2e; }
+      .chart-axis { stroke: #4b5563; }
+    }
+  </style>
+  <rect class="chart-bg" width="800" height="350" rx="8"/>
+  <text class="chart-title" x="400.0" y="25" text-anchor="middle" font-size="16">Compilation Time by Pass - large_structs (Linux x86-64)</text>
+  <text class="chart-text" x="400.0" y="42" text-anchor="middle" font-size="11">(commit: ea72413)</text>
+  <rect x="70" y="160.0" width="125.14077337430354" height="40" fill="#06b6d4" rx="2"/>
+  <text x="132.57038668715177" y="184.0" text-anchor="middle" font-size="10" fill="white">35.0ms</text>
+  <rect x="195.14077337430354" y="160.0" width="382.5618717953464" height="40" fill="#f59e0b" rx="2"/>
+  <text x="386.42170927197674" y="184.0" text-anchor="middle" font-size="10" fill="white">106.9ms</text>
+  <rect x="577.7026451696499" y="160.0" width="72.29735483035003" height="40" fill="#ef4444" rx="2"/>
+  <text x="613.851322584825" y="184.0" text-anchor="middle" font-size="10" fill="white">20.2ms</text>
+  <rect x="670" y="70" width="12" height="12" fill="#4f6ddb" rx="2"/>
+  <text class="chart-text" x="688" y="80" font-size="11">lexer (0%)</text>
+  <rect x="670" y="92" width="12" height="12" fill="#7c9dff" rx="2"/>
+  <text class="chart-text" x="688" y="102" font-size="11">parser (0%)</text>
+  <rect x="670" y="114" width="12" height="12" fill="#3b82f6" rx="2"/>
+  <text class="chart-text" x="688" y="124" font-size="11">astgen (0%)</text>
+  <rect x="670" y="136" width="12" height="12" fill="#06b6d4" rx="2"/>
+  <text class="chart-text" x="688" y="146" font-size="11">sema (22%)</text>
+  <rect x="670" y="158" width="12" height="12" fill="#10b981" rx="2"/>
+  <text class="chart-text" x="688" y="168" font-size="11">cfg (0%)</text>
+  <rect x="670" y="180" width="12" height="12" fill="#f59e0b" rx="2"/>
+  <text class="chart-text" x="688" y="190" font-size="11">codegen (66%)</text>
+  <rect x="670" y="202" width="12" height="12" fill="#ef4444" rx="2"/>
+  <text class="chart-text" x="688" y="212" font-size="11">linker (12%)</text>
+  <text class="chart-text" x="70" y="225.0" font-size="12">Total: 162.1ms</text>
+</svg>
