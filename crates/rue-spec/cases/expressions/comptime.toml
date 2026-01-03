@@ -4,7 +4,7 @@
 
 [section]
 id = "expressions.comptime"
-spec_chapter = "4.13"
+spec_chapter = "4.14"
 name = "Compile-Time Execution"
 description = "Comptime blocks evaluate expressions at compile time."
 
@@ -14,7 +14,7 @@ description = "Comptime blocks evaluate expressions at compile time."
 
 [[case]]
 name = "comptime_integer_literal"
-spec = ["4.13:2"]
+spec = ["4.14:1", "4.14:2"]
 source = """
 fn main() -> i32 {
     comptime { 42 }
@@ -24,7 +24,7 @@ exit_code = 42
 
 [[case]]
 name = "comptime_addition"
-spec = ["4.13:2"]
+spec = ["4.14:2"]
 source = """
 fn main() -> i32 {
     comptime { 1 + 2 + 3 }
@@ -34,7 +34,7 @@ exit_code = 6
 
 [[case]]
 name = "comptime_complex_arithmetic"
-spec = ["4.13:2"]
+spec = ["4.14:2"]
 source = """
 fn main() -> i32 {
     comptime { 1 + 2 * 3 }
@@ -44,7 +44,7 @@ exit_code = 7
 
 [[case]]
 name = "comptime_subtraction"
-spec = ["4.13:2"]
+spec = ["4.14:2"]
 source = """
 fn main() -> i32 {
     comptime { 10 - 3 }
@@ -54,7 +54,7 @@ exit_code = 7
 
 [[case]]
 name = "comptime_multiplication"
-spec = ["4.13:2"]
+spec = ["4.14:2"]
 source = """
 fn main() -> i32 {
     comptime { 6 * 7 }
@@ -64,7 +64,7 @@ exit_code = 42
 
 [[case]]
 name = "comptime_division"
-spec = ["4.13:2"]
+spec = ["4.14:2"]
 source = """
 fn main() -> i32 {
     comptime { 84 / 2 }
@@ -74,7 +74,7 @@ exit_code = 42
 
 [[case]]
 name = "comptime_modulo"
-spec = ["4.13:2"]
+spec = ["4.14:2"]
 source = """
 fn main() -> i32 {
     comptime { 47 % 5 }
@@ -84,7 +84,7 @@ exit_code = 2
 
 [[case]]
 name = "comptime_boolean_true"
-spec = ["4.13:2"]
+spec = ["4.14:2"]
 source = """
 fn main() -> i32 {
     if comptime { true } { 42 } else { 0 }
@@ -94,7 +94,7 @@ exit_code = 42
 
 [[case]]
 name = "comptime_boolean_false"
-spec = ["4.13:2"]
+spec = ["4.14:2"]
 source = """
 fn main() -> i32 {
     if comptime { false } { 0 } else { 42 }
@@ -104,7 +104,7 @@ exit_code = 42
 
 [[case]]
 name = "comptime_comparison"
-spec = ["4.13:2"]
+spec = ["4.14:2"]
 source = """
 fn main() -> i32 {
     if comptime { 10 > 5 } { 42 } else { 0 }
@@ -114,7 +114,7 @@ exit_code = 42
 
 [[case]]
 name = "comptime_equality"
-spec = ["4.13:2"]
+spec = ["4.14:2"]
 source = """
 fn main() -> i32 {
     if comptime { 5 == 5 } { 42 } else { 0 }
@@ -124,7 +124,7 @@ exit_code = 42
 
 [[case]]
 name = "comptime_logical_and"
-spec = ["4.13:2"]
+spec = ["4.14:2"]
 source = """
 fn main() -> i32 {
     if comptime { true && true } { 42 } else { 0 }
@@ -134,7 +134,7 @@ exit_code = 42
 
 [[case]]
 name = "comptime_logical_or"
-spec = ["4.13:2"]
+spec = ["4.14:2"]
 source = """
 fn main() -> i32 {
     if comptime { false || true } { 42 } else { 0 }
@@ -144,7 +144,7 @@ exit_code = 42
 
 [[case]]
 name = "comptime_bitwise_and"
-spec = ["4.13:2"]
+spec = ["4.14:2"]
 source = """
 fn main() -> i32 {
     comptime { 255 & 15 }
@@ -154,7 +154,7 @@ exit_code = 15
 
 [[case]]
 name = "comptime_bitwise_or"
-spec = ["4.13:2"]
+spec = ["4.14:2"]
 source = """
 fn main() -> i32 {
     comptime { 240 | 15 }
@@ -164,7 +164,7 @@ exit_code = 255
 
 [[case]]
 name = "comptime_in_let_binding"
-spec = ["4.13:3"]
+spec = ["4.14:3"]
 source = """
 fn main() -> i32 {
     let x: i32 = comptime { 21 * 2 };
@@ -179,7 +179,7 @@ exit_code = 42
 
 [[case]]
 name = "comptime_cannot_use_runtime_variable"
-spec = ["4.13:4"]
+spec = ["4.14:4"]
 source = """
 fn main() -> i32 {
     let x = 10;
@@ -191,7 +191,7 @@ error_contains = "cannot be known at compile time"
 
 [[case]]
 name = "comptime_cannot_call_function"
-spec = ["4.13:4"]
+spec = ["4.14:4"]
 source = """
 fn add(a: i32, b: i32) -> i32 { a + b }
 fn main() -> i32 {
@@ -207,7 +207,7 @@ error_contains = "cannot be known at compile time"
 
 [[case]]
 name = "comptime_param_basic"
-spec = ["4.13:5"]
+spec = ["4.14:5"]
 source = """
 fn multiply(comptime n: i32, value: i32) -> i32 {
     n * value
@@ -220,7 +220,7 @@ exit_code = 42
 
 [[case]]
 name = "comptime_param_with_literal"
-spec = ["4.13:5"]
+spec = ["4.14:5"]
 source = """
 fn add_constant(comptime c: i32, x: i32) -> i32 {
     c + x
@@ -233,7 +233,7 @@ exit_code = 42
 
 [[case]]
 name = "comptime_param_multiple"
-spec = ["4.13:5"]
+spec = ["4.14:5"]
 source = """
 fn compute(comptime a: i32, comptime b: i32, x: i32) -> i32 {
     a * b + x
@@ -246,7 +246,7 @@ exit_code = 42
 
 [[case]]
 name = "comptime_param_runtime_arg_error"
-spec = ["4.13:6"]
+spec = ["4.14:6"]
 source = """
 fn double(comptime n: i32) -> i32 { n * 2 }
 fn main() -> i32 {
@@ -259,7 +259,7 @@ error_contains = "comptime parameter requires a compile-time known value"
 
 [[case]]
 name = "comptime_param_function_call_arg_error"
-spec = ["4.13:6"]
+spec = ["4.14:6"]
 source = """
 fn get_value() -> i32 { 5 }
 fn scale(comptime factor: i32, value: i32) -> i32 { factor * value }
@@ -272,7 +272,7 @@ error_contains = "comptime parameter requires a compile-time known value"
 
 [[case]]
 name = "comptime_param_comptime_expr_ok"
-spec = ["4.13:5"]
+spec = ["4.14:5"]
 source = """
 fn triple(comptime n: i32) -> i32 { n * 3 }
 fn main() -> i32 {
@@ -283,7 +283,7 @@ exit_code = 42
 
 [[case]]
 name = "comptime_param_mixed_with_normal"
-spec = ["4.13:5"]
+spec = ["4.14:5"]
 source = """
 fn offset(x: i32, comptime delta: i32, y: i32) -> i32 {
     x + delta + y
@@ -305,7 +305,7 @@ exit_code = 42
 
 [[case]]
 name = "type_as_type_name_can_be_resolved"
-spec = ["4.13:5"]
+spec = ["4.14:5"]
 description = "The keyword 'type' can be used as a type annotation"
 source = """
 // Simple test: `type` as a type name is parsed correctly
@@ -320,7 +320,7 @@ exit_code = 42
 
 [[case]]
 name = "generic_function_with_i32"
-spec = ["4.13:5"]
+spec = ["4.14:5"]
 description = "Generic identity function specialized for i32"
 source = """
 fn identity(comptime T: type, x: T) -> T {
@@ -334,7 +334,7 @@ exit_code = 42
 
 [[case]]
 name = "generic_function_with_bool"
-spec = ["4.13:5"]
+spec = ["4.14:5"]
 description = "Generic identity function specialized for bool"
 source = """
 fn identity(comptime T: type, x: T) -> T {
@@ -348,7 +348,7 @@ exit_code = 42
 
 [[case]]
 name = "generic_max_function"
-spec = ["4.13:5"]
+spec = ["4.14:5"]
 description = "The ADR example: generic max function"
 source = """
 fn max(comptime T: type, a: T, b: T) -> T {
@@ -362,7 +362,7 @@ exit_code = 20
 
 [[case]]
 name = "generic_function_multiple_calls_same_type"
-spec = ["4.13:5"]
+spec = ["4.14:5"]
 description = "Multiple calls to generic function with same type reuse specialization"
 source = """
 fn identity(comptime T: type, x: T) -> T {
@@ -378,7 +378,7 @@ exit_code = 42
 
 [[case]]
 name = "generic_function_multiple_types"
-spec = ["4.13:5"]
+spec = ["4.14:5"]
 description = "Generic function called with different types creates separate specializations"
 source = """
 fn identity(comptime T: type, x: T) -> T {
@@ -394,7 +394,7 @@ exit_code = 42
 
 [[case]]
 name = "type_parameter_in_arithmetic"
-spec = ["4.13:5"]
+spec = ["4.14:5"]
 description = "Type parameter used with arithmetic operators"
 source = """
 fn add_one(comptime T: type, x: T) -> T {
@@ -408,7 +408,7 @@ exit_code = 42
 
 [[case]]
 name = "type_value_cannot_escape_comptime"
-spec = ["4.13:6"]
+spec = ["4.14:6"]
 description = "Type values cannot exist at runtime"
 source = """
 fn main() -> i32 {
@@ -432,7 +432,7 @@ error_contains = "type values cannot exist at runtime"
 
 [[case]]
 name = "anon_struct_basic"
-spec = ["4.13:7"]
+spec = ["4.14:7"]
 description = "Basic anonymous struct type syntax"
 source = """
 fn make_point() -> type {
@@ -448,7 +448,7 @@ exit_code = 42
 
 [[case]]
 name = "anon_struct_single_field"
-spec = ["4.13:7"]
+spec = ["4.14:7"]
 description = "Anonymous struct with single field"
 source = """
 fn wrapper() -> type {
@@ -464,7 +464,7 @@ exit_code = 42
 
 [[case]]
 name = "anon_struct_generic_pair"
-spec = ["4.13:7"]
+spec = ["4.14:7"]
 description = "Generic Pair type constructor - ADR deliverable example"
 source = """
 fn Pair(comptime T: type) -> type {
@@ -480,7 +480,7 @@ exit_code = 42
 
 [[case]]
 name = "anon_struct_structural_equality"
-spec = ["4.13:8"]
+spec = ["4.14:8"]
 description = "Two anonymous structs with same fields are structurally equal"
 source = """
 fn make_point1() -> type {
@@ -502,7 +502,7 @@ exit_code = 30
 
 [[case]]
 name = "anon_struct_different_fields_different_types"
-spec = ["4.13:8"]
+spec = ["4.14:8"]
 description = "Anonymous structs with different fields are different types"
 source = """
 fn make_xy() -> type {
@@ -523,7 +523,7 @@ exit_code = 42
 
 [[case]]
 name = "anon_struct_different_field_types"
-spec = ["4.13:8"]
+spec = ["4.14:8"]
 description = "Anonymous structs with different field types are different types"
 source = """
 fn make_i32_pair() -> type {
@@ -544,7 +544,7 @@ exit_code = 42
 
 [[case]]
 name = "anon_struct_nested"
-spec = ["4.13:7"]
+spec = ["4.14:7"]
 description = "Anonymous struct containing another struct type"
 source = """
 fn Point() -> type {
@@ -566,7 +566,7 @@ exit_code = 42
 
 [[case]]
 name = "anon_struct_empty_error"
-spec = ["4.13:9"]
+spec = ["4.14:9"]
 description = "Empty anonymous struct is not allowed"
 source = """
 fn empty() -> type {
@@ -581,7 +581,7 @@ error_contains = "empty struct"
 
 [[case]]
 name = "anon_struct_specialization_caching"
-spec = ["4.13:7"]
+spec = ["4.14:7"]
 description = "Multiple calls with same type reuse the same anonymous struct"
 source = """
 fn Wrapper(comptime T: type) -> type {
@@ -600,7 +600,7 @@ exit_code = 42
 
 [[case]]
 name = "anon_struct_method_like_function"
-spec = ["4.13:7"]
+spec = ["4.14:7"]
 description = "Using anonymous struct with a function that takes it"
 source = """
 fn Point() -> type {
