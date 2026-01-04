@@ -9,15 +9,16 @@ use rue_target::Target;
 use crate::constants::{
     ARM64_RELOC_BRANCH26, ARM64_RELOC_PAGE21, ARM64_RELOC_PAGEOFF12, ARM64_RELOC_UNSIGNED,
     CPU_SUBTYPE_ARM64_ALL, CPU_TYPE_ARM64, ELF_MAGIC, ELF64_EHDR_SIZE, ELF64_SHDR_SIZE,
-    ELF64_SYM_SIZE, ELFCLASS64, ELFDATA2LSB, ET_REL, EV_CURRENT, LC_BUILD_VERSION, LC_SEGMENT_64,
-    LC_SYMTAB, MACHO64_BUILD_VERSION_CMD_SIZE, MACHO64_HEADER_SIZE, MACHO64_NLIST_SIZE,
-    MACHO64_RELOC_SIZE, MACHO64_SECTION_SIZE, MACHO64_SEGMENT_CMD_SIZE, MACHO64_SYMTAB_CMD_SIZE,
-    MH_MAGIC_64, MH_OBJECT, N_EXT, N_PEXT, N_SECT, N_UNDF, PLATFORM_MACOS, R_AARCH64_ABS64,
-    R_AARCH64_ADD_ABS_LO12_NC, R_AARCH64_ADR_PREL_PG_HI21, R_AARCH64_CALL26, R_AARCH64_JUMP26,
-    R_X86_64_32, R_X86_64_32S, R_X86_64_64, R_X86_64_GOTPCREL, R_X86_64_GOTPCRELX, R_X86_64_PC32,
-    R_X86_64_PLT32, R_X86_64_REX_GOTPCRELX, S_ATTR_PURE_INSTRUCTIONS, S_ATTR_SOME_INSTRUCTIONS,
-    SHF_ALLOC, SHF_EXECINSTR, SHF_INFO_LINK, SHT_PROGBITS, SHT_RELA, SHT_STRTAB, SHT_SYMTAB,
-    STB_GLOBAL, STB_LOCAL, STT_FUNC, STT_NOTYPE, STT_SECTION, elf_st_info,
+    ELF64_SYM_SIZE, ELFCLASS64, ELFDATA2LSB, ET_REL, EV_CURRENT, LC_BUILD_VERSION, LC_DYSYMTAB,
+    LC_SEGMENT_64, LC_SYMTAB, MACHO64_BUILD_VERSION_CMD_SIZE, MACHO64_DYSYMTAB_CMD_SIZE,
+    MACHO64_HEADER_SIZE, MACHO64_NLIST_SIZE, MACHO64_RELOC_SIZE, MACHO64_SECTION_SIZE,
+    MACHO64_SEGMENT_CMD_SIZE, MACHO64_SYMTAB_CMD_SIZE, MH_MAGIC_64, MH_OBJECT, N_EXT, N_PEXT,
+    N_SECT, N_UNDF, PLATFORM_MACOS, R_AARCH64_ABS64, R_AARCH64_ADD_ABS_LO12_NC,
+    R_AARCH64_ADR_PREL_PG_HI21, R_AARCH64_CALL26, R_AARCH64_JUMP26, R_X86_64_32, R_X86_64_32S,
+    R_X86_64_64, R_X86_64_GOTPCREL, R_X86_64_GOTPCRELX, R_X86_64_PC32, R_X86_64_PLT32,
+    R_X86_64_REX_GOTPCRELX, S_ATTR_PURE_INSTRUCTIONS, S_ATTR_SOME_INSTRUCTIONS, SHF_ALLOC,
+    SHF_EXECINSTR, SHF_INFO_LINK, SHT_PROGBITS, SHT_RELA, SHT_STRTAB, SHT_SYMTAB, STB_GLOBAL,
+    STB_LOCAL, STT_FUNC, STT_NOTYPE, STT_SECTION, elf_st_info,
 };
 
 /// ELF section layout with explicit indices.
@@ -558,9 +559,11 @@ impl ObjectBuilder {
         let has_rodata = !rodata.is_empty();
         let num_sections = if has_rodata { 2 } else { 1 };
         let segment_cmd_total = MACHO64_SEGMENT_CMD_SIZE + (MACHO64_SECTION_SIZE * num_sections);
-        // Three load commands: LC_SEGMENT_64, LC_BUILD_VERSION, LC_SYMTAB
-        let load_commands_size =
-            segment_cmd_total + MACHO64_BUILD_VERSION_CMD_SIZE + MACHO64_SYMTAB_CMD_SIZE;
+        // Four load commands: LC_SEGMENT_64, LC_BUILD_VERSION, LC_SYMTAB, LC_DYSYMTAB
+        let load_commands_size = segment_cmd_total
+            + MACHO64_BUILD_VERSION_CMD_SIZE
+            + MACHO64_SYMTAB_CMD_SIZE
+            + MACHO64_DYSYMTAB_CMD_SIZE;
         let header_and_commands = MACHO64_HEADER_SIZE + load_commands_size;
 
         // Align section data to 4 bytes (required for ARM64)
@@ -693,7 +696,7 @@ impl ObjectBuilder {
         macho.extend_from_slice(&CPU_TYPE_ARM64.to_le_bytes()); // cputype
         macho.extend_from_slice(&CPU_SUBTYPE_ARM64_ALL.to_le_bytes()); // cpusubtype
         macho.extend_from_slice(&MH_OBJECT.to_le_bytes()); // filetype
-        macho.extend_from_slice(&3_u32.to_le_bytes()); // ncmds (LC_SEGMENT_64 + LC_BUILD_VERSION + LC_SYMTAB)
+        macho.extend_from_slice(&4_u32.to_le_bytes()); // ncmds (LC_SEGMENT_64 + LC_BUILD_VERSION + LC_SYMTAB + LC_DYSYMTAB)
         macho.extend_from_slice(&(load_commands_size as u32).to_le_bytes()); // sizeofcmds
         macho.extend_from_slice(&0_u32.to_le_bytes()); // flags
         macho.extend_from_slice(&0_u32.to_le_bytes()); // reserved (64-bit padding)
@@ -786,6 +789,35 @@ impl ObjectBuilder {
         macho.extend_from_slice(&(num_syms as u32).to_le_bytes()); // nsyms
         macho.extend_from_slice(&(strtab_offset as u32).to_le_bytes()); // stroff
         macho.extend_from_slice(&(strtab_size as u32).to_le_bytes()); // strsize
+
+        // === LC_DYSYMTAB ===
+        // Symbol table organization:
+        //   - Local symbols: 0 (we have none - all are N_EXT)
+        //   - External defined symbols: function + string constants
+        //   - Undefined symbols: external references
+        let num_extdef = 1 + num_string_syms; // function + string symbols
+        let num_undef = extern_symbols.len();
+
+        macho.extend_from_slice(&LC_DYSYMTAB.to_le_bytes()); // cmd
+        macho.extend_from_slice(&(MACHO64_DYSYMTAB_CMD_SIZE as u32).to_le_bytes()); // cmdsize
+        macho.extend_from_slice(&0_u32.to_le_bytes()); // ilocalsym: index to local symbols
+        macho.extend_from_slice(&0_u32.to_le_bytes()); // nlocalsym: number of local symbols
+        macho.extend_from_slice(&0_u32.to_le_bytes()); // iextdefsym: index to external defined symbols
+        macho.extend_from_slice(&(num_extdef as u32).to_le_bytes()); // nextdefsym: number of external defined
+        macho.extend_from_slice(&(num_extdef as u32).to_le_bytes()); // iundefsym: index to undefined symbols
+        macho.extend_from_slice(&(num_undef as u32).to_le_bytes()); // nundefsym: number of undefined symbols
+        macho.extend_from_slice(&0_u32.to_le_bytes()); // tocoff: file offset to table of contents
+        macho.extend_from_slice(&0_u32.to_le_bytes()); // ntoc: number of entries in TOC
+        macho.extend_from_slice(&0_u32.to_le_bytes()); // modtaboff: file offset to module table
+        macho.extend_from_slice(&0_u32.to_le_bytes()); // nmodtab: number of module table entries
+        macho.extend_from_slice(&0_u32.to_le_bytes()); // extrefsymoff: offset to referenced symbol table
+        macho.extend_from_slice(&0_u32.to_le_bytes()); // nextrefsyms: number of referenced symbol entries
+        macho.extend_from_slice(&0_u32.to_le_bytes()); // indirectsymoff: file offset to indirect symbol table
+        macho.extend_from_slice(&0_u32.to_le_bytes()); // nindirectsyms: number of indirect symbol entries
+        macho.extend_from_slice(&0_u32.to_le_bytes()); // extreloff: offset to external relocation entries
+        macho.extend_from_slice(&0_u32.to_le_bytes()); // nextrel: number of external relocation entries
+        macho.extend_from_slice(&0_u32.to_le_bytes()); // locreloff: offset to local relocation entries
+        macho.extend_from_slice(&0_u32.to_le_bytes()); // nlocrel: number of local relocation entries
 
         // === Section Data ===
         // Pad to text offset

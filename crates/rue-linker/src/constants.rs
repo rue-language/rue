@@ -227,6 +227,8 @@ pub const LC_SEGMENT_64: u32 = 0x19;
 pub const LC_SYMTAB: u32 = 0x2;
 /// LC_BUILD_VERSION: Build version load command
 pub const LC_BUILD_VERSION: u32 = 0x32;
+/// LC_DYSYMTAB: Dynamic symbol table load command
+pub const LC_DYSYMTAB: u32 = 0xb;
 
 // Mach-O section flags
 
@@ -278,6 +280,8 @@ pub const MACHO64_BUILD_VERSION_CMD_SIZE: usize = 24;
 pub const MACHO64_NLIST_SIZE: usize = 16;
 /// Size of Mach-O relocation_info entry
 pub const MACHO64_RELOC_SIZE: usize = 8;
+/// Size of Mach-O dysymtab_command
+pub const MACHO64_DYSYMTAB_CMD_SIZE: usize = 80;
 
 #[cfg(test)]
 mod tests {
