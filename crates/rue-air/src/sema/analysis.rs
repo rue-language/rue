@@ -297,10 +297,10 @@ fn analyze_all_function_bodies_sequential(sema: &mut Sema<'_>) -> MultiErrorResu
     let mut errors = CompileErrors::new();
     let mut all_warnings = Vec::new();
 
-    // Collect method refs from impl blocks
+    // Collect method refs from struct declarations to skip them when analyzing regular functions
     let mut method_refs: HashSet<InstRef> = HashSet::new();
     for (_, inst) in sema.rir.iter() {
-        if let InstData::ImplDecl {
+        if let InstData::StructDecl {
             methods_start,
             methods_len,
             ..
@@ -356,12 +356,13 @@ fn analyze_all_function_bodies_sequential(sema: &mut Sema<'_>) -> MultiErrorResu
         }
     }
 
-    // Analyze method bodies from impl blocks
+    // Analyze method bodies from struct declarations
     for (_, inst) in sema.rir.iter() {
-        if let InstData::ImplDecl {
-            type_name,
+        if let InstData::StructDecl {
+            name: type_name,
             methods_start,
             methods_len,
+            ..
         } = &inst.data
         {
             let type_name_str = sema.interner.resolve(&*type_name).to_string();
@@ -370,7 +371,7 @@ fn analyze_all_function_bodies_sequential(sema: &mut Sema<'_>) -> MultiErrorResu
                 None => {
                     errors.push(CompileError::new(
                         ErrorKind::InternalError(format!(
-                            "impl block for undefined type '{}' survived validation",
+                            "struct '{}' not found in struct map during method analysis",
                             type_name_str
                         )),
                         inst.span,
@@ -459,6 +460,95 @@ fn analyze_all_function_bodies_sequential(sema: &mut Sema<'_>) -> MultiErrorResu
         }
     }
 
+    // Analyze methods for anonymous structs.
+    // These are registered during comptime evaluation of function bodies, so they
+    // aren't in any named StructDecl. We use a fixed-point loop since analyzing one
+    // method may create new anonymous struct types with their own methods.
+    let mut analyzed_anon_methods: HashSet<(StructId, Spur)> = HashSet::new();
+    loop {
+        // Collect anonymous struct methods that haven't been analyzed yet
+        let pending_anon_methods: Vec<(StructId, Spur, MethodInfo)> = sema
+            .methods
+            .iter()
+            .filter_map(|((struct_id, method_name), method_info)| {
+                // Check if this is an anonymous struct
+                let struct_def = sema.type_pool.struct_def(*struct_id);
+                if struct_def.name.starts_with("__anon_struct_")
+                    && !analyzed_anon_methods.contains(&(*struct_id, *method_name))
+                {
+                    Some((*struct_id, *method_name, *method_info))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if pending_anon_methods.is_empty() {
+            break;
+        }
+
+        for (struct_id, method_name, method_info) in pending_anon_methods {
+            analyzed_anon_methods.insert((struct_id, method_name));
+
+            let struct_def = sema.type_pool.struct_def(struct_id);
+            let type_name_str = struct_def.name.clone();
+            let method_name_str = sema.interner.resolve(&method_name).to_string();
+
+            let full_name = if method_info.has_self {
+                format!("{}.{}", type_name_str, method_name_str)
+            } else {
+                format!("{}::{}", type_name_str, method_name_str)
+            };
+
+            // Build param_info from MethodInfo's ParamRange
+            let param_names = sema.param_arena.names(method_info.params);
+            let param_types = sema.param_arena.types(method_info.params);
+            let param_modes = sema.param_arena.modes(method_info.params);
+
+            let mut param_info: Vec<(Spur, Type, RirParamMode)> = Vec::new();
+
+            if method_info.has_self {
+                // Add self parameter (Normal mode - passed by value)
+                let self_sym = sema.interner.get_or_intern("self");
+                param_info.push((self_sym, method_info.struct_type, RirParamMode::Normal));
+            }
+
+            // Add regular parameters (convert from arena slices)
+            for i in 0..param_names.len() {
+                param_info.push((param_names[i], param_types[i], param_modes[i]));
+            }
+
+            match sema.analyze_function(
+                &infer_ctx,
+                method_info.return_type,
+                &param_info,
+                method_info.body,
+            ) {
+                Ok((
+                    air,
+                    num_locals,
+                    num_param_slots,
+                    param_modes_result,
+                    warnings,
+                    local_strings,
+                    _ref_fns,
+                    _ref_meths,
+                )) => {
+                    let analyzed = AnalyzedFunction {
+                        name: full_name,
+                        air,
+                        num_locals,
+                        num_param_slots,
+                        param_modes: param_modes_result,
+                    };
+                    functions_with_strings.push((analyzed, local_strings));
+                    all_warnings.extend(warnings);
+                }
+                Err(e) => errors.push(e),
+            }
+        }
+    }
+
     // Merge strings from all functions into a global table with deduplication.
     let mut global_string_table: HashMap<String, u32> = HashMap::new();
     let mut global_strings: Vec<String> = Vec::new();
@@ -536,10 +626,10 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
     let mut errors = CompileErrors::new();
     let mut all_warnings = Vec::new();
 
-    // Collect method refs from impl blocks (for later lookup)
+    // Collect method refs from struct declarations (for later lookup)
     let mut method_refs: HashSet<InstRef> = HashSet::new();
     for (_, inst) in sema.rir.iter() {
-        if let InstData::ImplDecl {
+        if let InstData::StructDecl {
             methods_start,
             methods_len,
             ..
@@ -652,15 +742,84 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
             let type_name_sym = sema.interner.get_or_intern(&type_name_str);
             let method_name_str = sema.interner.resolve(&method_name).to_string();
 
-            // Find the method in impl blocks
+            // For anonymous structs, use the MethodInfo directly since there's no named StructDecl
+            if type_name_str.starts_with("__anon_struct_") {
+                let full_name = if method_info.has_self {
+                    format!("{}.{}", type_name_str, method_name_str)
+                } else {
+                    format!("{}::{}", type_name_str, method_name_str)
+                };
+
+                // Build param_info from MethodInfo's ParamRange
+                let param_names = sema.param_arena.names(method_info.params);
+                let param_types = sema.param_arena.types(method_info.params);
+                let param_modes = sema.param_arena.modes(method_info.params);
+
+                let mut param_info: Vec<(Spur, Type, RirParamMode)> = Vec::new();
+
+                if method_info.has_self {
+                    // Add self parameter (Normal mode - passed by value)
+                    let self_sym = sema.interner.get_or_intern("self");
+                    param_info.push((self_sym, method_info.struct_type, RirParamMode::Normal));
+                }
+
+                // Add regular parameters (convert from arena slices)
+                for i in 0..param_names.len() {
+                    param_info.push((param_names[i], param_types[i], param_modes[i]));
+                }
+
+                match sema.analyze_function(
+                    &infer_ctx,
+                    method_info.return_type,
+                    &param_info,
+                    method_info.body,
+                ) {
+                    Ok((
+                        air,
+                        num_locals,
+                        num_param_slots,
+                        param_modes_result,
+                        warnings,
+                        local_strings,
+                        referenced_fns,
+                        referenced_meths,
+                    )) => {
+                        let analyzed = AnalyzedFunction {
+                            name: full_name,
+                            air,
+                            num_locals,
+                            num_param_slots,
+                            param_modes: param_modes_result,
+                        };
+                        functions_with_strings.push((analyzed, local_strings));
+                        all_warnings.extend(warnings);
+
+                        for ref_fn in referenced_fns {
+                            if !analyzed_functions.contains(&ref_fn) {
+                                pending_functions.push(ref_fn);
+                            }
+                        }
+                        for ref_meth in referenced_meths {
+                            if !analyzed_methods.contains(&ref_meth) {
+                                pending_methods.push(ref_meth);
+                            }
+                        }
+                    }
+                    Err(e) => errors.push(e),
+                }
+                continue;
+            }
+
+            // Find the method in struct declarations (for named structs)
             for (_, inst) in sema.rir.iter() {
-                if let InstData::ImplDecl {
-                    type_name: impl_type_name,
+                if let InstData::StructDecl {
+                    name: struct_name,
                     methods_start,
                     methods_len,
+                    ..
                 } = &inst.data
                 {
-                    if *impl_type_name != type_name_sym {
+                    if *struct_name != type_name_sym {
                         continue;
                     }
 
@@ -826,10 +985,10 @@ fn analyze_all_function_bodies_parallel(sema: Sema<'_>) -> MultiErrorResult<Sema
 fn collect_function_jobs(ctx: &SemaContext<'_>) -> Vec<FunctionJob> {
     let mut jobs = Vec::new();
 
-    // Collect method refs from impl blocks to skip them in the regular function pass
+    // Collect method refs from struct declarations to skip them in the regular function pass
     let mut method_refs: HashSet<InstRef> = HashSet::new();
     for (_, inst) in ctx.rir.iter() {
-        if let InstData::ImplDecl {
+        if let InstData::StructDecl {
             methods_start,
             methods_len,
             ..
@@ -877,12 +1036,13 @@ fn collect_function_jobs(ctx: &SemaContext<'_>) -> Vec<FunctionJob> {
         }
     }
 
-    // Collect methods from impl blocks
+    // Collect methods from struct declarations
     for (_, inst) in ctx.rir.iter() {
-        if let InstData::ImplDecl {
-            type_name,
+        if let InstData::StructDecl {
+            name: type_name,
             methods_start,
             methods_len,
+            ..
         } = &inst.data
         {
             let type_name_str = ctx.interner.resolve(&*type_name).to_string();
@@ -1941,7 +2101,7 @@ fn analyze_inst_with_context(
         }
 
         // Declaration no-ops (produce Unit in expression context)
-        InstData::ImplDecl { .. } | InstData::DropFnDecl { .. } | InstData::ConstDecl { .. } => {
+        InstData::DropFnDecl { .. } | InstData::ConstDecl { .. } => {
             // These are processed during collection phase, just return Unit
             let air_ref = air.add_inst(AirInst {
                 data: AirInstData::UnitConst,
@@ -6278,7 +6438,7 @@ impl<'a> Sema<'a> {
     /// - **Enums**: EnumDecl, EnumVariant
     /// - **Calls**: Call, MethodCall, AssocFnCall
     /// - **Intrinsics**: Intrinsic, TypeIntrinsic
-    /// - **Declarations**: ImplDecl, DropFnDecl, FnDecl
+    /// - **Declarations**: DropFnDecl, FnDecl
     pub(crate) fn analyze_inst(
         &mut self,
         air: &mut Air,
@@ -6401,10 +6561,9 @@ impl<'a> Sema<'a> {
             }
 
             // Declaration no-ops (produce Unit in expression context)
-            InstData::ImplDecl { .. }
-            | InstData::DropFnDecl { .. }
-            | InstData::FnDecl { .. }
-            | InstData::ConstDecl { .. } => self.analyze_decl_noop(air, inst_ref, ctx),
+            InstData::DropFnDecl { .. } | InstData::FnDecl { .. } | InstData::ConstDecl { .. } => {
+                self.analyze_decl_noop(air, inst_ref, ctx)
+            }
 
             // Comptime block expression
             InstData::Comptime { expr } => {

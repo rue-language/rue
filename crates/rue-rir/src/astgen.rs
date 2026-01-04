@@ -11,8 +11,8 @@ const TYPE_INTRINSICS: &[&str] = &["size_of", "align_of"];
 use rue_parser::ast::{ConstDecl, DropFn};
 use rue_parser::{
     ArgMode, AssignTarget, Ast, BinaryOp, CallArg, Directive, DirectiveArg, EnumDecl, Expr,
-    Function, ImplBlock, IntrinsicArg, Item, LetPattern, Method, ParamMode, Pattern, Statement,
-    StructDecl, TypeExpr, UnaryOp, ast::Visibility,
+    Function, IntrinsicArg, Item, LetPattern, Method, ParamMode, Pattern, Statement, StructDecl,
+    TypeExpr, UnaryOp, ast::Visibility,
 };
 
 use crate::inst::{
@@ -58,11 +58,6 @@ impl<'a> AstGen<'a> {
             }
             Item::Enum(enum_decl) => {
                 self.gen_enum(enum_decl);
-            }
-            Item::Impl(impl_block) => {
-                // Impl blocks are handled in Phase 2 (RIR Generation)
-                // For now, store them for later processing by sema
-                self.gen_impl_block(impl_block);
             }
             Item::DropFn(drop_fn) => {
                 self.gen_drop_fn(drop_fn);
@@ -139,6 +134,14 @@ impl<'a> AstGen<'a> {
             .collect();
         let (fields_start, fields_len) = self.rir.add_field_decls(&fields);
 
+        // Generate each method defined inline in the struct
+        let methods: Vec<_> = struct_decl
+            .methods
+            .iter()
+            .map(|m| self.gen_method(m))
+            .collect();
+        let (methods_start, methods_len) = self.rir.add_inst_refs(&methods);
+
         self.rir.add_inst(Inst {
             data: InstData::StructDecl {
                 directives_start,
@@ -148,6 +151,8 @@ impl<'a> AstGen<'a> {
                 name,
                 fields_start,
                 fields_len,
+                methods_start,
+                methods_len,
             },
             span: struct_decl.span,
         })
@@ -190,27 +195,6 @@ impl<'a> AstGen<'a> {
                 init,
             },
             span: const_decl.span,
-        })
-    }
-
-    fn gen_impl_block(&mut self, impl_block: &ImplBlock) -> InstRef {
-        let type_name = impl_block.type_name.name; // Already a Spur
-
-        // Generate each method in the impl block
-        let methods: Vec<_> = impl_block
-            .methods
-            .iter()
-            .map(|m| self.gen_method(m))
-            .collect();
-        let (methods_start, methods_len) = self.rir.add_inst_refs(&methods);
-
-        self.rir.add_inst(Inst {
-            data: InstData::ImplDecl {
-                type_name,
-                methods_start,
-                methods_len,
-            },
-            span: impl_block.span,
         })
     }
 
@@ -1208,12 +1192,13 @@ mod tests {
         }
     }
 
-    // Impl block tests
+    // Struct with methods tests
     #[test]
-    fn test_gen_impl_block() {
+    fn test_gen_struct_with_method() {
         let source = r#"
-            struct Point { x: i32, y: i32 }
-            impl Point {
+            struct Point {
+                x: i32,
+                y: i32,
                 fn get_x(self) -> i32 {
                     self.x
                 }
@@ -1222,20 +1207,21 @@ mod tests {
         "#;
         let (rir, interner) = gen_rir(source);
 
-        // Find the ImplDecl instruction
-        let impl_decl = rir
+        // Find the StructDecl instruction
+        let struct_decl = rir
             .iter()
-            .find(|(_, inst)| matches!(inst.data, InstData::ImplDecl { .. }));
-        assert!(impl_decl.is_some(), "Expected ImplDecl instruction");
+            .find(|(_, inst)| matches!(inst.data, InstData::StructDecl { .. }));
+        assert!(struct_decl.is_some(), "Expected StructDecl instruction");
 
-        let (_, inst) = impl_decl.unwrap();
+        let (_, inst) = struct_decl.unwrap();
         match &inst.data {
-            InstData::ImplDecl {
-                type_name,
+            InstData::StructDecl {
+                name,
                 methods_start,
                 methods_len,
+                ..
             } => {
-                assert_eq!(interner.resolve(&*type_name), "Point");
+                assert_eq!(interner.resolve(&*name), "Point");
                 let methods = rir.get_inst_refs(*methods_start, *methods_len);
                 assert_eq!(methods.len(), 1);
 
@@ -1249,15 +1235,16 @@ mod tests {
                     _ => panic!("expected FnDecl"),
                 }
             }
-            _ => panic!("expected ImplDecl"),
+            _ => panic!("expected StructDecl"),
         }
     }
 
     #[test]
-    fn test_gen_impl_block_with_multiple_methods() {
+    fn test_gen_struct_with_multiple_methods() {
         let source = r#"
-            struct Point { x: i32, y: i32 }
-            impl Point {
+            struct Point {
+                x: i32,
+                y: i32,
                 fn get_x(self) -> i32 { self.x }
                 fn get_y(self) -> i32 { self.y }
                 fn origin() -> Point { Point { x: 0, y: 0 } }
@@ -1266,14 +1253,14 @@ mod tests {
         "#;
         let (rir, interner) = gen_rir(source);
 
-        let impl_decl = rir
+        let struct_decl = rir
             .iter()
-            .find(|(_, inst)| matches!(inst.data, InstData::ImplDecl { .. }));
-        assert!(impl_decl.is_some());
+            .find(|(_, inst)| matches!(inst.data, InstData::StructDecl { .. }));
+        assert!(struct_decl.is_some());
 
-        let (_, inst) = impl_decl.unwrap();
+        let (_, inst) = struct_decl.unwrap();
         match &inst.data {
-            InstData::ImplDecl {
+            InstData::StructDecl {
                 methods_start,
                 methods_len,
                 ..
@@ -1297,15 +1284,15 @@ mod tests {
                     }
                 }
             }
-            _ => panic!("expected ImplDecl"),
+            _ => panic!("expected StructDecl"),
         }
     }
 
     #[test]
     fn test_gen_method_call() {
         let source = r#"
-            struct Point { x: i32 }
-            impl Point {
+            struct Point {
+                x: i32,
                 fn get_x(self) -> i32 { self.x }
             }
             fn main() -> i32 {
@@ -1340,8 +1327,9 @@ mod tests {
     #[test]
     fn test_gen_assoc_fn_call() {
         let source = r#"
-            struct Point { x: i32, y: i32 }
-            impl Point {
+            struct Point {
+                x: i32,
+                y: i32,
                 fn origin() -> Point { Point { x: 0, y: 0 } }
             }
             fn main() -> i32 {
@@ -1584,8 +1572,8 @@ mod tests {
     #[test]
     fn test_gen_self_expr() {
         let source = r#"
-            struct Point { x: i32 }
-            impl Point {
+            struct Point {
+                x: i32,
                 fn get_x(self) -> i32 { self.x }
             }
             fn main() -> i32 { 0 }
@@ -1656,23 +1644,23 @@ mod tests {
     #[test]
     fn test_gen_method_with_params() {
         let source = r#"
-            struct Counter { value: i32 }
-            impl Counter {
+            struct Counter {
+                value: i32,
                 fn add(self, amount: i32) -> i32 { self.value + amount }
             }
             fn main() -> i32 { 0 }
         "#;
         let (rir, interner) = gen_rir(source);
 
-        // Find the method FnDecl
-        let impl_decl = rir
+        // Find the struct declaration
+        let struct_decl = rir
             .iter()
-            .find(|(_, inst)| matches!(inst.data, InstData::ImplDecl { .. }));
-        assert!(impl_decl.is_some());
+            .find(|(_, inst)| matches!(inst.data, InstData::StructDecl { .. }));
+        assert!(struct_decl.is_some());
 
-        let (_, inst) = impl_decl.unwrap();
+        let (_, inst) = struct_decl.unwrap();
         match &inst.data {
-            InstData::ImplDecl {
+            InstData::StructDecl {
                 methods_start,
                 methods_len,
                 ..
@@ -1697,7 +1685,7 @@ mod tests {
                     _ => panic!("expected FnDecl"),
                 }
             }
-            _ => panic!("expected ImplDecl"),
+            _ => panic!("expected StructDecl"),
         }
     }
 
@@ -1705,8 +1693,9 @@ mod tests {
     #[test]
     fn test_printer_integration() {
         let source = r#"
-            struct Point { x: i32, y: i32 }
-            impl Point {
+            struct Point {
+                x: i32,
+                y: i32,
                 fn origin() -> Point { Point { x: 0, y: 0 } }
             }
             fn main() -> i32 {
@@ -1721,7 +1710,7 @@ mod tests {
 
         // Check key elements are present in the output
         assert!(output.contains("struct Point"));
-        assert!(output.contains("impl Point"));
+        assert!(output.contains("methods: ["));
         assert!(output.contains("fn origin"));
         assert!(output.contains("fn main"));
         assert!(output.contains("struct_init Point"));
@@ -1784,8 +1773,8 @@ mod tests {
     #[test]
     fn test_function_spans_with_methods() {
         let source = r#"
-            struct Point { x: i32 }
-            impl Point {
+            struct Point {
+                x: i32,
                 fn get_x(self) -> i32 { self.x }
                 fn origin() -> Point { Point { x: 0 } }
             }

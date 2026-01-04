@@ -942,7 +942,6 @@ impl<'a> ConstraintGenerator<'a> {
             InstData::FnDecl { .. }
             | InstData::StructDecl { .. }
             | InstData::EnumDecl { .. }
-            | InstData::ImplDecl { .. }
             | InstData::DropFnDecl { .. }
             | InstData::ConstDecl { .. } => InferType::Concrete(Type::Unit),
 

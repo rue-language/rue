@@ -36,7 +36,6 @@ pub enum TokenKind {
     False,
     Struct,
     Enum,
-    Impl,
     Drop,
     Linear,    // linear struct modifier
     SelfValue, // self (value, not type)
@@ -136,7 +135,6 @@ impl TokenKind {
             TokenKind::False => "'false'",
             TokenKind::Struct => "'struct'",
             TokenKind::Enum => "'enum'",
-            TokenKind::Impl => "'impl'",
             TokenKind::Drop => "'drop'",
             TokenKind::Linear => "'linear'",
             TokenKind::SelfValue => "'self'",
@@ -238,7 +236,6 @@ impl std::fmt::Display for TokenKind {
             TokenKind::False => write!(f, "FALSE"),
             TokenKind::Struct => write!(f, "STRUCT"),
             TokenKind::Enum => write!(f, "ENUM"),
-            TokenKind::Impl => write!(f, "IMPL"),
             TokenKind::Drop => write!(f, "DROP"),
             TokenKind::Linear => write!(f, "LINEAR"),
             TokenKind::SelfValue => write!(f, "SELF"),

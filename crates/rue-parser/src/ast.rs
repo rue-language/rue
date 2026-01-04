@@ -67,7 +67,6 @@ pub enum Item {
     Function(Function),
     Struct(StructDecl),
     Enum(EnumDecl),
-    Impl(ImplBlock),
     DropFn(DropFn),
     /// Constant declaration (e.g., `const math = @import("math");`)
     Const(ConstDecl),
@@ -99,6 +98,20 @@ pub struct ConstDecl {
 }
 
 /// A struct declaration.
+///
+/// Structs can contain both fields and methods. Methods are defined inline
+/// within the struct block, not in separate impl blocks.
+///
+/// ```rue
+/// struct Point {
+///     x: i32,
+///     y: i32,
+///
+///     fn distance(self) -> i32 {
+///         self.x + self.y
+///     }
+/// }
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StructDecl {
     /// Directives applied to this struct (e.g., @copy)
@@ -111,6 +124,8 @@ pub struct StructDecl {
     pub name: Ident,
     /// Struct fields
     pub fields: Vec<FieldDecl>,
+    /// Methods defined on this struct
+    pub methods: Vec<Method>,
     /// Span covering the entire struct declaration
     pub span: Span,
 }
@@ -145,17 +160,6 @@ pub struct EnumVariant {
     /// Variant name
     pub name: Ident,
     /// Span covering the variant
-    pub span: Span,
-}
-
-/// An impl block containing methods for a type.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ImplBlock {
-    /// The type this impl block is for
-    pub type_name: Ident,
-    /// Methods in this impl block
-    pub methods: Vec<Method>,
-    /// Span covering the entire impl block
     pub span: Span,
 }
 
@@ -941,7 +945,6 @@ impl fmt::Display for Ast {
                 Item::Function(func) => fmt_function(f, func, 0)?,
                 Item::Struct(s) => fmt_struct(f, s, 0)?,
                 Item::Enum(e) => fmt_enum(f, e, 0)?,
-                Item::Impl(impl_block) => fmt_impl_block(f, impl_block, 0)?,
                 Item::DropFn(drop_fn) => fmt_drop_fn(f, drop_fn, 0)?,
                 Item::Const(c) => fmt_const(f, c, 0)?,
             }
@@ -975,6 +978,9 @@ fn fmt_struct(f: &mut fmt::Formatter<'_>, s: &StructDecl, level: usize) -> fmt::
             field.ty
         )?;
     }
+    for method in &s.methods {
+        fmt_method(f, method, level + 1)?;
+    }
     Ok(())
 }
 
@@ -1002,15 +1008,6 @@ fn fmt_const(f: &mut fmt::Formatter<'_>, c: &ConstDecl, level: usize) -> fmt::Re
     }
     writeln!(f)?;
     fmt_expr(f, &c.init, level + 1)?;
-    Ok(())
-}
-
-fn fmt_impl_block(f: &mut fmt::Formatter<'_>, impl_block: &ImplBlock, level: usize) -> fmt::Result {
-    indent(f, level)?;
-    writeln!(f, "Impl sym:{}", impl_block.type_name.name.into_usize())?;
-    for method in &impl_block.methods {
-        fmt_method(f, method, level + 1)?;
-    }
     Ok(())
 }
 

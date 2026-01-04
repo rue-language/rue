@@ -1,40 +1,43 @@
 +++
-title = "Impl Blocks"
+title = "Methods"
 weight = 4
 template = "spec/page.html"
 +++
 
-# Impl Blocks
+# Methods
 
 {{ rule(id="6.4:1", cat="normative") }}
 
-An impl block associates methods and functions with a struct type.
+Methods are functions defined inside a struct block that can be called on instances of that struct.
 
 {{ rule(id="6.4:2", cat="syntax") }}
 
 ```ebnf
-impl_block = "impl" IDENT "{" { method_def } "}" ;
-method_def = "fn" IDENT "(" [ method_params ] ")" [ "->" type ] block ;
+struct_def = [ directives ] [ "pub" ] "struct" IDENT "{" [ field_list ] [ method_list ] "}" ;
+field_list = field_def { "," field_def } [ "," ] ;
+method_list = method_def { method_def } ;
+method_def = [ directives ] "fn" IDENT "(" [ method_params ] ")" [ "->" type ] block ;
 method_params = method_param { "," method_param } [ "," ] ;
 method_param = "self" | ( IDENT ":" type ) ;
 ```
 
-## Methods
+## Method Definition
 
 {{ rule(id="6.4:3", cat="normative") }}
 
-A method is a function defined inside an impl block that takes `self` as its first parameter.
+A method is a function defined inside a struct block that takes `self` as its first parameter.
 
 {{ rule(id="6.4:4", cat="normative") }}
 
-The `self` parameter represents the receiver value and has the type of the impl block's target struct.
+The `self` parameter represents the receiver value and has the type of the enclosing struct.
 
 {{ rule(id="6.4:5", cat="example") }}
 
 ```rue
-struct Point { x: i32, y: i32 }
+struct Point {
+    x: i32,
+    y: i32,
 
-impl Point {
     fn get_x(self) -> i32 {
         self.x
     }
@@ -63,9 +66,10 @@ Methods **MAY** have additional parameters after `self`.
 {{ rule(id="6.4:9", cat="example") }}
 
 ```rue
-struct Point { x: i32, y: i32 }
+struct Point {
+    x: i32,
+    y: i32,
 
-impl Point {
     fn add(self, dx: i32, dy: i32) -> Point {
         Point { x: self.x + dx, y: self.y + dy }
     }
@@ -87,9 +91,9 @@ When a method returns the same struct type, method calls **MAY** be chained.
 {{ rule(id="6.4:11", cat="example") }}
 
 ```rue
-struct Counter { value: i32 }
+struct Counter {
+    value: i32,
 
-impl Counter {
     fn inc(self) -> Counter {
         Counter { value: self.value + 1 }
     }
@@ -105,7 +109,7 @@ fn main() -> i32 {
 
 {{ rule(id="6.4:12", cat="normative") }}
 
-A function in an impl block that does not take `self` as its first parameter is an associated function.
+A function in a struct block that does not take `self` as its first parameter is an associated function.
 
 {{ rule(id="6.4:13", cat="normative") }}
 
@@ -114,9 +118,10 @@ Associated functions are called using path notation: `Type::function(args)`.
 {{ rule(id="6.4:14", cat="example") }}
 
 ```rue
-struct Point { x: i32, y: i32 }
+struct Point {
+    x: i32,
+    y: i32,
 
-impl Point {
     fn origin() -> Point {
         Point { x: 0, y: 0 }
     }
@@ -128,26 +133,25 @@ fn main() -> i32 {
 }
 ```
 
-## Multiple Impl Blocks
+## Multiple Methods
 
 {{ rule(id="6.4:15", cat="normative") }}
 
-Multiple impl blocks for the same struct type are allowed.
+A struct may have multiple methods defined in its block.
 
 {{ rule(id="6.4:16", cat="legality-rule") }}
 
-Method names **MUST** be unique across all impl blocks for a given struct type.
+Method names **MUST** be unique within a struct definition.
 
 {{ rule(id="6.4:17", cat="example") }}
 
 ```rue
-struct Point { x: i32, y: i32 }
+struct Point {
+    x: i32,
+    y: i32,
 
-impl Point {
     fn get_x(self) -> i32 { self.x }
-}
 
-impl Point {
     fn get_y(self) -> i32 { self.y }
 }
 
@@ -157,18 +161,7 @@ fn main() -> i32 {
 }
 ```
 
-## Impl Block Ordering
-
-{{ rule(id="6.4:18", cat="informative") }}
-
-An impl block may appear before or after the struct definition it implements.
-Forward references are resolved during semantic analysis.
-
 ## Error Conditions
-
-{{ rule(id="6.4:19", cat="legality-rule") }}
-
-An impl block for an undefined struct type is a compile-time error.
 
 {{ rule(id="6.4:20", cat="legality-rule") }}
 

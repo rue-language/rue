@@ -12,7 +12,7 @@
 //! - [`analyze_enum_ops`] - EnumDecl, EnumVariant
 //! - [`analyze_call_ops`] - Call, MethodCall, AssocFnCall
 //! - [`analyze_intrinsic_ops`] - Intrinsic, TypeIntrinsic
-//! - [`analyze_decl_noop`] - ImplDecl, DropFnDecl (declarations that produce Unit)
+//! - [`analyze_decl_noop`] - DropFnDecl (declarations that produce Unit)
 //!
 //! Binary operations (arithmetic, comparison, logical, bitwise) are handled
 //! by existing helper methods in `analysis.rs`:
@@ -2630,12 +2630,12 @@ impl<'a> Sema<'a> {
     }
 
     // ========================================================================
-    // Declaration no-ops: ImplDecl, DropFnDecl, FnDecl
+    // Declaration no-ops: DropFnDecl, FnDecl
     // ========================================================================
 
     /// Analyze a declaration that produces Unit in expression context.
     ///
-    /// Handles: ImplDecl, DropFnDecl
+    /// Handles: DropFnDecl
     pub(crate) fn analyze_decl_noop(
         &mut self,
         air: &mut Air,
@@ -2645,7 +2645,7 @@ impl<'a> Sema<'a> {
         let inst = self.rir.get(inst_ref);
 
         match &inst.data {
-            InstData::ImplDecl { .. } | InstData::DropFnDecl { .. } => {
+            InstData::DropFnDecl { .. } => {
                 // These are processed during collection phase, just return Unit
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::UnitConst,

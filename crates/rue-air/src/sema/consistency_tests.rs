@@ -82,7 +82,6 @@ mod tests {
         "IndexGet",
         "IndexSet",
         // Methods
-        "ImplDecl",
         "MethodCall",
         "AssocFnCall",
         "DropFnDecl",

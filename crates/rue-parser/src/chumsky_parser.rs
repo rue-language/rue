@@ -8,11 +8,10 @@ use crate::ast::{
     BinaryExpr, BinaryOp, BlockExpr, BoolLit, BreakExpr, CallArg, CallExpr, CheckedBlockExpr,
     ComptimeBlockExpr, ConstDecl, ContinueExpr, Directive, DirectiveArg, Directives, DropFn,
     EnumDecl, EnumVariant, Expr, FieldDecl, FieldExpr, FieldInit, Function, Ident, IfExpr,
-    ImplBlock, IndexExpr, IntLit, IntrinsicArg, IntrinsicCallExpr, Item, LetPattern, LetStatement,
-    LoopExpr, MatchArm, MatchExpr, Method, MethodCallExpr, NegIntLit, Param, ParamMode, ParenExpr,
-    PathExpr, PathPattern, Pattern, ReturnExpr, SelfExpr, SelfParam, Statement, StringLit,
-    StructDecl, StructLitExpr, TypeExpr, TypeLitExpr, UnaryExpr, UnaryOp, UnitLit, Visibility,
-    WhileExpr,
+    IndexExpr, IntLit, IntrinsicArg, IntrinsicCallExpr, Item, LetPattern, LetStatement, LoopExpr,
+    MatchArm, MatchExpr, Method, MethodCallExpr, NegIntLit, Param, ParamMode, ParenExpr, PathExpr,
+    PathPattern, Pattern, ReturnExpr, SelfExpr, SelfParam, Statement, StringLit, StructDecl,
+    StructLitExpr, TypeExpr, TypeLitExpr, UnaryExpr, UnaryOp, UnitLit, Visibility, WhileExpr,
 };
 use chumsky::input::{Input as ChumskyInput, MapExtra, Stream, ValueInput};
 use chumsky::pratt::{infix, left, prefix};
@@ -1942,7 +1941,10 @@ where
         )
 }
 
-/// Parser for struct definitions: [@directive]* [pub] [linear] struct Name { field: Type, ... }
+/// Parser for struct definitions with inline methods:
+/// [@directive]* [pub] [linear] struct Name { field: Type, ... fn method(self) { ... } }
+///
+/// Fields come first (comma-separated), then methods (no separators needed).
 fn struct_parser<'src, I>() -> impl Parser<'src, I, StructDecl, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
@@ -1956,18 +1958,25 @@ where
         }
     });
 
+    // Parse the struct body: fields followed by methods
+    // Fields are comma-separated, methods are not
+    let struct_body = field_decls_parser()
+        .then(method_parser().repeated().collect::<Vec<_>>())
+        .map(|(fields, methods)| (fields, methods));
+
     directives_parser()
         .then(visibility)
         .then(just(TokenKind::Linear).or_not())
         .then(just(TokenKind::Struct).ignore_then(ident_parser()))
-        .then(field_decls_parser().delimited_by(just(TokenKind::LBrace), just(TokenKind::RBrace)))
+        .then(struct_body.delimited_by(just(TokenKind::LBrace), just(TokenKind::RBrace)))
         .map_with(
-            |((((directives, visibility), is_linear), name), fields), e| StructDecl {
+            |((((directives, visibility), is_linear), name), (fields, methods)), e| StructDecl {
                 directives,
                 visibility,
                 is_linear: is_linear.is_some(),
                 name,
                 fields,
+                methods,
                 span: span_from_extra(e),
             },
         )
@@ -2092,26 +2101,6 @@ where
         )
 }
 
-/// Parser for impl blocks: impl Type { fn... }
-fn impl_parser<'src, I>() -> impl Parser<'src, I, ImplBlock, ParserExtras<'src>> + Clone
-where
-    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
-{
-    just(TokenKind::Impl)
-        .ignore_then(ident_parser())
-        .then(
-            method_parser()
-                .repeated()
-                .collect::<Vec<_>>()
-                .delimited_by(just(TokenKind::LBrace), just(TokenKind::RBrace)),
-        )
-        .map_with(|(type_name, methods), e| ImplBlock {
-            type_name,
-            methods,
-            span: span_from_extra(e),
-        })
-}
-
 /// Parser for drop fn declarations: drop fn TypeName(self) { body }
 fn drop_fn_parser<'src, I>() -> impl Parser<'src, I, DropFn, ParserExtras<'src>> + Clone
 where
@@ -2180,7 +2169,7 @@ where
         )
 }
 
-/// Parser for top-level items (functions, structs, enums, impl blocks, drop fns, and consts)
+/// Parser for top-level items (functions, structs, enums, drop fns, and consts)
 fn item_parser<'src, I>() -> impl Parser<'src, I, Item, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
@@ -2189,7 +2178,6 @@ where
         function_parser().map(Item::Function),
         struct_parser().map(Item::Struct),
         enum_parser().map(Item::Enum),
-        impl_parser().map(Item::Impl),
         drop_fn_parser().map(Item::DropFn),
         const_parser().map(Item::Const),
     ))
@@ -2387,7 +2375,6 @@ mod tests {
             },
             Item::Struct(_) => panic!("parse_expr helper should only be used with functions"),
             Item::Enum(_) => panic!("parse_expr helper should only be used with functions"),
-            Item::Impl(_) => panic!("parse_expr helper should only be used with functions"),
             Item::DropFn(_) => panic!("parse_expr helper should only be used with functions"),
             Item::Const(_) => panic!("parse_expr helper should only be used with functions"),
         };
@@ -2416,7 +2403,6 @@ mod tests {
             }
             Item::Struct(_) => panic!("expected Function"),
             Item::Enum(_) => panic!("expected Function"),
-            Item::Impl(_) => panic!("expected Function"),
             Item::DropFn(_) => panic!("expected Function"),
             Item::Const(_) => panic!("expected Function"),
         }
@@ -2486,7 +2472,6 @@ mod tests {
             },
             Item::Struct(_) => panic!("expected Function"),
             Item::Enum(_) => panic!("expected Function"),
-            Item::Impl(_) => panic!("expected Function"),
             Item::DropFn(_) => panic!("expected Function"),
             Item::Const(_) => panic!("expected Function"),
         }
@@ -2527,118 +2512,100 @@ mod tests {
         assert_eq!(result.ast.items.len(), 1);
     }
 
-    // ==================== Impl Block and Method Parsing Tests ====================
+    // ==================== Struct Method Parsing Tests ====================
 
     #[test]
-    fn test_impl_block_empty() {
-        let result = parse("struct Point { x: i32, y: i32 } impl Point {}").unwrap();
-        assert_eq!(result.ast.items.len(), 2);
-        match &result.ast.items[1] {
-            Item::Impl(impl_block) => {
-                assert_eq!(result.get(impl_block.type_name.name), "Point");
-                assert!(impl_block.methods.is_empty());
-            }
-            _ => panic!("expected Impl"),
-        }
-    }
-
-    #[test]
-    fn test_impl_block_single_method() {
-        let result =
-            parse("struct Point { x: i32 } impl Point { fn get_x(self) -> i32 { self.x } }")
-                .unwrap();
-        assert_eq!(result.ast.items.len(), 2);
-        match &result.ast.items[1] {
-            Item::Impl(impl_block) => {
-                assert_eq!(result.get(impl_block.type_name.name), "Point");
-                assert_eq!(impl_block.methods.len(), 1);
-                let method = &impl_block.methods[0];
+    fn test_struct_with_single_method() {
+        let result = parse("struct Point { x: i32, fn get_x(self) -> i32 { self.x } }").unwrap();
+        assert_eq!(result.ast.items.len(), 1);
+        match &result.ast.items[0] {
+            Item::Struct(struct_decl) => {
+                assert_eq!(result.get(struct_decl.name.name), "Point");
+                assert_eq!(struct_decl.methods.len(), 1);
+                let method = &struct_decl.methods[0];
                 assert_eq!(result.get(method.name.name), "get_x");
                 assert!(method.receiver.is_some()); // has self
                 assert!(method.params.is_empty()); // no additional params
             }
-            _ => panic!("expected Impl"),
+            _ => panic!("expected Struct"),
         }
     }
 
     #[test]
-    fn test_impl_block_method_with_params() {
-        let result = parse(
-            "struct Point { x: i32 } impl Point { fn add(self, n: i32) -> i32 { self.x + n } }",
-        )
-        .unwrap();
-        assert_eq!(result.ast.items.len(), 2);
-        match &result.ast.items[1] {
-            Item::Impl(impl_block) => {
-                let method = &impl_block.methods[0];
+    fn test_struct_method_with_params() {
+        let result =
+            parse("struct Point { x: i32, fn add(self, n: i32) -> i32 { self.x + n } }").unwrap();
+        assert_eq!(result.ast.items.len(), 1);
+        match &result.ast.items[0] {
+            Item::Struct(struct_decl) => {
+                let method = &struct_decl.methods[0];
                 assert_eq!(result.get(method.name.name), "add");
                 assert!(method.receiver.is_some());
                 assert_eq!(method.params.len(), 1);
                 assert_eq!(result.get(method.params[0].name.name), "n");
             }
-            _ => panic!("expected Impl"),
+            _ => panic!("expected Struct"),
         }
     }
 
     #[test]
-    fn test_impl_block_associated_function() {
+    fn test_struct_associated_function() {
         // Associated function (no self)
         let result = parse(
-            "struct Point { x: i32, y: i32 } impl Point { fn new(x: i32, y: i32) -> Point { Point { x: x, y: y } } }",
+            "struct Point { x: i32, y: i32, fn new(x: i32, y: i32) -> Point { Point { x: x, y: y } } }",
         )
         .unwrap();
-        assert_eq!(result.ast.items.len(), 2);
-        match &result.ast.items[1] {
-            Item::Impl(impl_block) => {
-                let method = &impl_block.methods[0];
+        assert_eq!(result.ast.items.len(), 1);
+        match &result.ast.items[0] {
+            Item::Struct(struct_decl) => {
+                let method = &struct_decl.methods[0];
                 assert_eq!(result.get(method.name.name), "new");
                 assert!(method.receiver.is_none()); // no self
                 assert_eq!(method.params.len(), 2);
             }
-            _ => panic!("expected Impl"),
+            _ => panic!("expected Struct"),
         }
     }
 
     #[test]
-    fn test_impl_block_multiple_methods() {
+    fn test_struct_multiple_methods() {
         let result = parse(
-            "struct Counter { value: i32 }
-             impl Counter {
+            "struct Counter {
+                 value: i32,
                  fn new() -> Counter { Counter { value: 0 } }
                  fn get(self) -> i32 { self.value }
                  fn increment(self) -> i32 { self.value + 1 }
              }",
         )
         .unwrap();
-        assert_eq!(result.ast.items.len(), 2);
-        match &result.ast.items[1] {
-            Item::Impl(impl_block) => {
-                assert_eq!(impl_block.methods.len(), 3);
+        assert_eq!(result.ast.items.len(), 1);
+        match &result.ast.items[0] {
+            Item::Struct(struct_decl) => {
+                assert_eq!(struct_decl.methods.len(), 3);
                 // First is associated function (no self)
-                assert!(impl_block.methods[0].receiver.is_none());
-                assert_eq!(result.get(impl_block.methods[0].name.name), "new");
+                assert!(struct_decl.methods[0].receiver.is_none());
+                assert_eq!(result.get(struct_decl.methods[0].name.name), "new");
                 // Second is method (has self)
-                assert!(impl_block.methods[1].receiver.is_some());
-                assert_eq!(result.get(impl_block.methods[1].name.name), "get");
+                assert!(struct_decl.methods[1].receiver.is_some());
+                assert_eq!(result.get(struct_decl.methods[1].name.name), "get");
                 // Third is method (has self)
-                assert!(impl_block.methods[2].receiver.is_some());
-                assert_eq!(result.get(impl_block.methods[2].name.name), "increment");
+                assert!(struct_decl.methods[2].receiver.is_some());
+                assert_eq!(result.get(struct_decl.methods[2].name.name), "increment");
             }
-            _ => panic!("expected Impl"),
+            _ => panic!("expected Struct"),
         }
     }
 
     #[test]
-    fn test_impl_method_with_directive() {
-        let result =
-            parse("struct Foo {} impl Foo { @inline fn bar(self) -> i32 { 42 } }").unwrap();
-        match &result.ast.items[1] {
-            Item::Impl(impl_block) => {
-                let method = &impl_block.methods[0];
+    fn test_struct_method_with_directive() {
+        let result = parse("struct Foo { @inline fn bar(self) -> i32 { 42 } }").unwrap();
+        match &result.ast.items[0] {
+            Item::Struct(struct_decl) => {
+                let method = &struct_decl.methods[0];
                 assert_eq!(method.directives.len(), 1);
                 assert_eq!(result.get(method.directives[0].name.name), "inline");
             }
-            _ => panic!("expected Impl"),
+            _ => panic!("expected Struct"),
         }
     }
 
@@ -3587,13 +3554,12 @@ mod tests {
 
     #[test]
     fn test_self_type_standalone() {
-        // Test Self as a standalone type (e.g., in impl block context)
+        // Test Self as a standalone type (e.g., in struct method context)
         // This just tests lexing/parsing of Self as a type keyword
-        let result =
-            parse("struct Foo { x: i32 } impl Foo { fn clone(self) -> Self { self } }").unwrap();
-        match &result.ast.items[1] {
-            Item::Impl(impl_block) => {
-                let method = &impl_block.methods[0];
+        let result = parse("struct Foo { x: i32, fn clone(self) -> Self { self } }").unwrap();
+        match &result.ast.items[0] {
+            Item::Struct(struct_decl) => {
+                let method = &struct_decl.methods[0];
                 match &method.return_type {
                     Some(TypeExpr::Named(ident)) => {
                         assert_eq!(result.get(ident.name), "Self");
@@ -3601,7 +3567,7 @@ mod tests {
                     _ => panic!("expected Self return type"),
                 }
             }
-            _ => panic!("expected Impl"),
+            _ => panic!("expected Struct"),
         }
     }
 }

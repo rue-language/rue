@@ -1019,9 +1019,9 @@ spec = ["3.8:40", "3.8:42", "3.8:44", "3.8:45"]
 description = "@handle struct with valid .handle() method"
 source = """
 @handle
-struct Counter { count: i32 }
+struct Counter {
+    count: i32,
 
-impl Counter {
     fn handle(self) -> Counter {
         Counter { count: self.count }
     }
@@ -1041,9 +1041,9 @@ spec = ["3.8:40", "3.8:45"]
 description = "@handle struct can be explicitly duplicated via .handle()"
 source = """
 @handle
-struct Value { n: i32 }
+struct Value {
+    n: i32,
 
-impl Value {
     fn handle(self) -> Value {
         Value { n: self.n }
     }
@@ -1076,9 +1076,9 @@ spec = ["3.8:43"]
 description = "@handle method with wrong return type is an error"
 source = """
 @handle
-struct BadReturn { value: i32 }
+struct BadReturn {
+    value: i32,
 
-impl BadReturn {
     fn handle(self) -> i32 {
         self.value
     }
@@ -1095,9 +1095,9 @@ spec = ["3.8:43"]
 description = "@handle method with extra parameters is an error"
 source = """
 @handle
-struct ExtraParam { value: i32 }
+struct ExtraParam {
+    value: i32,
 
-impl ExtraParam {
     fn handle(self, extra: i32) -> ExtraParam {
         ExtraParam { value: self.value + extra }
     }
@@ -1114,9 +1114,9 @@ spec = ["3.8:43"]
 description = "@handle method without self is an error"
 source = """
 @handle
-struct NoSelf { value: i32 }
+struct NoSelf {
+    value: i32,
 
-impl NoSelf {
     fn handle() -> NoSelf {
         NoSelf { value: 0 }
     }
@@ -1134,9 +1134,9 @@ preview = "affine_mvs"
 description = "Linear struct can be marked @handle"
 source = """
 @handle
-linear struct Transaction { id: i32 }
+linear struct Transaction {
+    id: i32,
 
-impl Transaction {
     fn handle(self) -> Transaction {
         Transaction { id: self.id }
     }
@@ -1158,9 +1158,9 @@ spec = ["3.8:41"]
 description = "@handle directive appears before struct definition"
 source = """
 @handle
-struct Data { value: i32 }
+struct Data {
+    value: i32,
 
-impl Data {
     fn handle(self) -> Data {
         Data { value: self.value }
     }

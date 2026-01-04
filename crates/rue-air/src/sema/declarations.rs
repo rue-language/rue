@@ -394,6 +394,8 @@ impl<'a> Sema<'a> {
                     directives_start,
                     directives_len,
                     name,
+                    methods_start,
+                    methods_len,
                     ..
                 } => {
                     self.validate_copy_struct(
@@ -402,6 +404,8 @@ impl<'a> Sema<'a> {
                         *name,
                         inst.span,
                     )?;
+                    // Collect methods defined inline in the struct
+                    self.collect_struct_methods(*name, *methods_start, *methods_len, inst.span)?;
                 }
 
                 InstData::DropFnDecl { type_name, .. } => {
@@ -435,14 +439,6 @@ impl<'a> Sema<'a> {
                         inst.span,
                         *is_pub,
                     )?;
-                }
-
-                InstData::ImplDecl {
-                    type_name,
-                    methods_start,
-                    methods_len,
-                } => {
-                    self.collect_impl_methods(*type_name, *methods_start, *methods_len, inst.span)?;
                 }
 
                 InstData::ConstDecl {
@@ -763,8 +759,8 @@ impl<'a> Sema<'a> {
         Ok(())
     }
 
-    /// Collect method definitions from an impl block.
-    fn collect_impl_methods(
+    /// Collect methods defined inline in a struct.
+    fn collect_struct_methods(
         &mut self,
         type_name: Spur,
         methods_start: u32,

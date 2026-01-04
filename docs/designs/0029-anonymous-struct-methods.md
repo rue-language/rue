@@ -222,22 +222,28 @@ Epic: rue-nj40
 
 **Deliverable**: RIR correctly represents anonymous structs with methods.
 
-### Phase 3: Semantic Analysis (rue-nj40.3)
+### Phase 3: Semantic Analysis (rue-nj40.3) 🔶
 
-- [ ] Change method lookup key from `(Spur, Spur)` to `(StructId, Spur)`
-- [ ] Register methods when creating anonymous struct types
-- [ ] Resolve `Self` to the anonymous struct's `StructId`
+- [x] Change method lookup key from `(Spur, Spur)` to `(StructId, Spur)`
+- [x] Register methods when creating anonymous struct types
+- [x] Resolve `Self` to the anonymous struct's `StructId` (in signatures only)
 - [ ] Update structural equality to include method signatures
 - [ ] Handle comptime parameter capture in method bodies
+- [ ] Analyze method bodies with `self` in scope
+- [ ] Resolve `Self` in method body expressions
+
+**Status**: Partial - method registration works but method body analysis is incomplete. See rue-xo14 for remaining work.
 
 **Deliverable**: `v.push(42)` compiles when `v` is an anonymous struct type with a `push` method.
 
-### Phase 4: Specification & Tests (rue-nj40.4)
+### Phase 4: Specification & Tests (rue-nj40.4) ✅
 
-- [ ] Add spec section for anonymous struct methods
-- [ ] Add comprehensive spec tests
-- [ ] Add UI tests for error messages
-- [ ] Traceability coverage for all spec paragraphs
+- [x] Add spec section for anonymous struct methods (4.14:10-15)
+- [x] Add comprehensive spec tests (17 tests, preview-gated)
+- [x] Add UI tests for error messages (2 tests)
+- [x] Traceability coverage for all spec paragraphs (100% normative)
+
+**Note**: Tests are in place but preview tests fail because Phase 3 is incomplete.
 
 **Deliverable**: Full test coverage and specification documentation.
 

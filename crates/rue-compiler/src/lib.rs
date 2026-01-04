@@ -488,9 +488,8 @@ pub fn merge_symbols(program: ParsedProgram) -> MultiErrorResult<MergedProgram> 
                         );
                     }
                 }
-                Item::Impl(_) | Item::DropFn(_) | Item::Const(_) => {
-                    // Impl blocks, drop fns, and const declarations are validated in Sema, not here.
-                    // They can have multiple impl blocks for the same type (with different methods).
+                Item::DropFn(_) | Item::Const(_) => {
+                    // Drop fns and const declarations are validated in Sema, not here.
                     // Const declarations are checked for duplicates in the declarations phase.
                 }
             }
@@ -653,7 +652,7 @@ pub fn validate_and_generate_rir_parallel(
                         );
                     }
                 }
-                Item::Impl(_) | Item::DropFn(_) | Item::Const(_) => {
+                Item::DropFn(_) | Item::Const(_) => {
                     // Validated in Sema
                 }
             }
@@ -2336,19 +2335,19 @@ mod tests {
     }
 
     #[test]
-    fn test_merge_symbols_with_impl_blocks() {
-        // Impl blocks for the same type from different files should be allowed
+    fn test_merge_symbols_with_struct_methods() {
+        // Structs with inline methods from different files should be allowed
         let sources = vec![
             SourceFile::new(
                 "a.rue",
-                "struct Point { x: i32 } impl Point { fn get_x(self) -> i32 { self.x } } fn main() -> i32 { 0 }",
+                "struct Point { x: i32, fn get_x(self) -> i32 { self.x } } fn main() -> i32 { 0 }",
                 FileId::new(1),
             ),
             SourceFile::new("b.rue", "fn helper() -> i32 { 42 }", FileId::new(2)),
         ];
         let parsed = parse_all_files(&sources).unwrap();
         let result = merge_symbols(parsed);
-        assert!(result.is_ok(), "impl blocks should not cause conflicts");
+        assert!(result.is_ok(), "struct methods should not cause conflicts");
     }
 
     // ========================================================================

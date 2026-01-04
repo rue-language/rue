@@ -944,3 +944,81 @@ fn main() -> i32 {
 }
 """
 exit_code = 43
+
+[[case]]
+name = "anon_struct_swap_method"
+spec = ["4.14:11"]
+preview = "anon_struct_methods"
+description = "Swap method from spec example"
+source = """
+fn Pair(comptime T: type) -> type {
+    struct {
+        first: T,
+        second: T,
+
+        fn swap(self) -> Self {
+            Self { first: self.second, second: self.first }
+        }
+    }
+}
+fn main() -> i32 {
+    let P = Pair(i32);
+    let p: P = P { first: 10, second: 32 };
+    let swapped = p.swap();
+    swapped.first
+}
+"""
+exit_code = 32
+
+[[case]]
+name = "anon_struct_different_method_return_type_different_types"
+spec = ["4.14:15"]
+preview = "anon_struct_methods"
+description = "Different method return types mean different struct types"
+source = """
+fn A() -> type {
+    struct {
+        x: i32,
+        fn get(self) -> i32 { self.x }
+    }
+}
+fn C() -> type {
+    struct {
+        x: i32,
+        fn get(self) -> i64 { self.x as i64 }
+    }
+}
+fn main() -> i32 {
+    let TA = A();
+    let TC = C();
+    let a: TA = TA { x: 42 };
+    let c: TC = TC { x: 43 };
+    a.get()
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "anon_struct_no_method_vs_with_method_different_types"
+spec = ["4.14:15"]
+preview = "anon_struct_methods"
+description = "Struct with method is different from struct without method"
+source = """
+fn WithMethod() -> type {
+    struct {
+        x: i32,
+        fn get(self) -> i32 { self.x }
+    }
+}
+fn WithoutMethod() -> type {
+    struct { x: i32 }
+}
+fn main() -> i32 {
+    let WM = WithMethod();
+    let WO = WithoutMethod();
+    let wm: WM = WM { x: 42 };
+    let wo: WO = WO { x: 10 };
+    wm.get()
+}
+"""
+exit_code = 42

@@ -1032,6 +1032,8 @@ impl Rir {
                 name,
                 fields_start,
                 fields_len,
+                methods_start,
+                methods_len,
             } => InstData::StructDecl {
                 directives_start: *directives_start + extra_offset,
                 directives_len: *directives_len,
@@ -1040,6 +1042,8 @@ impl Rir {
                 name: *name,
                 fields_start: *fields_start + extra_offset,
                 fields_len: *fields_len,
+                methods_start: *methods_start + extra_offset,
+                methods_len: *methods_len,
             },
             InstData::StructInit {
                 module,
@@ -1094,15 +1098,6 @@ impl Rir {
             },
 
             // Method operations
-            InstData::ImplDecl {
-                type_name,
-                methods_start,
-                methods_len,
-            } => InstData::ImplDecl {
-                type_name: *type_name,
-                methods_start: *methods_start + extra_offset,
-                methods_len: *methods_len,
-            },
             InstData::MethodCall {
                 receiver,
                 method,
@@ -1206,8 +1201,8 @@ impl Rir {
                     }
                 }
 
-                // Impl decl - contains InstRef array for methods
-                InstData::ImplDecl {
+                // Struct decl - contains InstRef array for methods
+                InstData::StructDecl {
                     methods_start,
                     methods_len,
                     ..
@@ -1579,7 +1574,7 @@ pub enum InstData {
 
     // Struct operations
     /// Struct type declaration
-    /// Directives and fields are stored in the extra array.
+    /// Directives, fields, and methods are stored in the extra array.
     StructDecl {
         /// Index into extra data where directives start
         directives_start: u32,
@@ -1595,6 +1590,10 @@ pub enum InstData {
         fields_start: u32,
         /// Number of fields
         fields_len: u32,
+        /// Index into extra data where method refs start
+        methods_start: u32,
+        /// Number of methods
+        methods_len: u32,
     },
 
     /// Struct literal: creates a new struct instance
@@ -1683,17 +1682,6 @@ pub enum InstData {
     },
 
     // Method operations
-    /// Impl block declaration
-    /// Methods are stored in the extra array using add_inst_refs/get_inst_refs.
-    ImplDecl {
-        /// Type name this impl block is for
-        type_name: Spur,
-        /// Index into extra data where method refs start
-        methods_start: u32,
-        /// Number of methods
-        methods_len: u32,
-    },
-
     /// Method call: receiver.method(args)
     /// Args are stored in the extra array using add_call_args/get_call_args.
     MethodCall {
@@ -2035,6 +2023,8 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     name,
                     fields_start,
                     fields_len,
+                    methods_start,
+                    methods_len,
                 } => {
                     let pub_str = if *is_pub { "pub " } else { "" };
                     let name_str = self.interner.resolve(&*name);
@@ -2060,14 +2050,23 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                             .collect();
                         format!("{} ", dir_names.join(" "))
                     };
+                    let methods = self.rir.get_inst_refs(*methods_start, *methods_len);
+                    let methods_str = if methods.is_empty() {
+                        String::new()
+                    } else {
+                        let method_refs: Vec<String> =
+                            methods.iter().map(|m| format!("{}", m)).collect();
+                        format!(" methods: [{}]", method_refs.join(", "))
+                    };
                     writeln!(
                         out,
-                        "{}{}{}struct {} {{ {} }}",
+                        "{}{}{}struct {} {{ {} }}{}",
                         directives_str,
                         pub_str,
                         linear_str,
                         name_str,
-                        fields_str.join(", ")
+                        fields_str.join(", "),
+                        methods_str
                     )
                     .unwrap();
                 }
@@ -2166,17 +2165,6 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                 }
 
                 // Methods
-                InstData::ImplDecl {
-                    type_name,
-                    methods_start,
-                    methods_len,
-                } => {
-                    let type_str = self.interner.resolve(&*type_name);
-                    let methods = self.rir.get_inst_refs(*methods_start, *methods_len);
-                    let methods_str: Vec<String> =
-                        methods.iter().map(|m| format!("{}", m)).collect();
-                    writeln!(out, "impl {} {{ {} }}", type_str, methods_str.join(", ")).unwrap();
-                }
                 InstData::MethodCall {
                     receiver,
                     method,
@@ -3160,6 +3148,7 @@ mod tests {
         let (directives_start, directives_len) = rir.add_directives(&[]);
         let (fields_start, fields_len) =
             rir.add_field_decls(&[(x_name, i32_type), (y_name, i32_type)]);
+        let (methods_start, methods_len) = rir.add_inst_refs(&[]);
 
         rir.add_inst(Inst {
             data: InstData::StructDecl {
@@ -3170,6 +3159,8 @@ mod tests {
                 name,
                 fields_start,
                 fields_len,
+                methods_start,
+                methods_len,
             },
             span: Span::new(0, 30),
         });
@@ -3193,6 +3184,7 @@ mod tests {
             span: Span::new(0, 5),
         }]);
         let (fields_start, fields_len) = rir.add_field_decls(&[(x_name, i32_type)]);
+        let (methods_start, methods_len) = rir.add_inst_refs(&[]);
 
         rir.add_inst(Inst {
             data: InstData::StructDecl {
@@ -3203,6 +3195,8 @@ mod tests {
                 name,
                 fields_start,
                 fields_len,
+                methods_start,
+                methods_len,
             },
             span: Span::new(0, 30),
         });
@@ -3413,9 +3407,9 @@ mod tests {
         assert!(output.contains("index_set %0[%1] = %2"));
     }
 
-    // Impl block tests
+    // Struct with methods tests
     #[test]
-    fn test_printer_impl_decl() {
+    fn test_printer_struct_decl_with_methods() {
         let (mut rir, mut interner) = create_printer_test_rir();
 
         // Create a method first
@@ -3445,13 +3439,22 @@ mod tests {
             span: Span::new(0, 30),
         });
 
-        let type_name = interner.get_or_intern("Point");
+        let struct_name = interner.get_or_intern("Point");
+        let x_field = interner.get_or_intern("x");
+        let i32_type = interner.get_or_intern("i32");
 
+        let (fields_start, fields_len) = rir.add_field_decls(&[(x_field, i32_type)]);
         let (methods_start, methods_len) = rir.add_inst_refs(&[method_ref]);
 
         rir.add_inst(Inst {
-            data: InstData::ImplDecl {
-                type_name,
+            data: InstData::StructDecl {
+                directives_start,
+                directives_len,
+                is_pub: false,
+                is_linear: false,
+                name: struct_name,
+                fields_start,
+                fields_len,
                 methods_start,
                 methods_len,
             },
@@ -3460,7 +3463,7 @@ mod tests {
 
         let printer = RirPrinter::new(&rir, &interner);
         let output = printer.to_string();
-        assert!(output.contains("impl Point { %1 }"));
+        assert!(output.contains("struct Point { x: i32 } methods: [%1]"));
     }
 
     #[test]

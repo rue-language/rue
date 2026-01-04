@@ -1,0 +1,106 @@
+[section]
+id = "diagnostics.anon-struct-methods"
+name = "Anonymous Struct Method Errors"
+description = "Tests for error messages related to anonymous struct methods."
+
+# =============================================================================
+# Preview Feature Errors
+# =============================================================================
+
+[[case]]
+name = "preview_required_error_message"
+source = """
+fn Counter() -> type {
+    struct {
+        value: i32,
+        fn get(self) -> i32 { self.value }
+    }
+}
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = "preview"
+
+# =============================================================================
+# Duplicate Method Errors
+# =============================================================================
+
+[[case]]
+name = "duplicate_method_error_quality"
+preview = "anon_struct_methods"
+source = """
+fn Counter() -> type {
+    struct {
+        value: i32,
+        fn get(self) -> i32 { self.value }
+        fn get(self) -> i32 { 0 }
+    }
+}
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = "duplicate"
+
+# =============================================================================
+# Method Lookup Errors (Currently Broken - Phase 3 Implementation Incomplete)
+# =============================================================================
+# The following tests are commented out because they depend on method body
+# analysis working correctly. They will be uncommented when the anon_struct_methods
+# feature is complete (methods bodies are analyzed with proper self/Self scope).
+#
+# [[case]]
+# name = "undefined_method_on_anon_struct"
+# preview = "anon_struct_methods"
+# source = """
+# fn Counter() -> type {
+#     struct {
+#         value: i32,
+#         fn get(self) -> i32 { self.value }
+#     }
+# }
+# fn main() -> i32 {
+#     let C = Counter();
+#     let c: C = C { value: 42 };
+#     c.undefined_method()
+# }
+# """
+# compile_fail = true
+# error_contains = "undefined"
+#
+# [[case]]
+# name = "assoc_fn_called_as_method_on_anon_struct"
+# preview = "anon_struct_methods"
+# source = """
+# fn Point() -> type {
+#     struct {
+#         x: i32, y: i32,
+#         fn origin() -> Self { Self { x: 0, y: 0 } }
+#     }
+# }
+# fn main() -> i32 {
+#     let P = Point();
+#     let p: P = P { x: 1, y: 2 };
+#     let q = p.origin();
+#     q.x
+# }
+# """
+# compile_fail = true
+# error_contains = "associated function"
+#
+# [[case]]
+# name = "method_called_as_assoc_fn_on_anon_struct"
+# preview = "anon_struct_methods"
+# source = """
+# fn Counter() -> type {
+#     struct {
+#         value: i32,
+#         fn get(self) -> i32 { self.value }
+#     }
+# }
+# fn main() -> i32 {
+#     let C = Counter();
+#     C::get()
+# }
+# """
+# compile_fail = true
+# error_contains = "method"
