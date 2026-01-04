@@ -143,6 +143,22 @@ impl Target {
         matches!(self, Target::X86_64Linux | Target::Aarch64Linux)
     }
 
+    /// Returns the minimum macOS version for this target, encoded for Mach-O.
+    ///
+    /// The version is encoded as `0x00XXYYPP` where XX is major, YY is minor, PP is patch.
+    /// For example, macOS 11.0.0 (Big Sur) is encoded as `0x000B0000`.
+    ///
+    /// Returns `None` for non-macOS targets.
+    ///
+    /// Note: macOS 11.0 (Big Sur) was the first version to support Apple Silicon (ARM64),
+    /// which is why it's the minimum for `Aarch64Macos`.
+    pub fn macos_min_version(&self) -> Option<u32> {
+        match self {
+            Target::Aarch64Macos => Some(0x000B0000), // 11.0.0 (Big Sur)
+            Target::X86_64Linux | Target::Aarch64Linux => None,
+        }
+    }
+
     /// Returns all supported targets.
     pub fn all() -> &'static [Target] {
         &[
@@ -362,6 +378,15 @@ mod tests {
         assert_eq!(Target::X86_64Linux.page_size(), 0x1000);
         assert_eq!(Target::Aarch64Linux.page_size(), 0x1000);
         assert_eq!(Target::Aarch64Macos.page_size(), 0x4000);
+    }
+
+    #[test]
+    fn test_macos_min_version() {
+        // Linux targets return None
+        assert_eq!(Target::X86_64Linux.macos_min_version(), None);
+        assert_eq!(Target::Aarch64Linux.macos_min_version(), None);
+        // macOS returns the encoded version (11.0.0 = 0x000B0000 for Big Sur)
+        assert_eq!(Target::Aarch64Macos.macos_min_version(), Some(0x000B0000));
     }
 
     #[test]

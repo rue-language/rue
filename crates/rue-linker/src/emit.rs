@@ -773,10 +773,10 @@ impl ObjectBuilder {
         macho.extend_from_slice(&LC_BUILD_VERSION.to_le_bytes()); // cmd
         macho.extend_from_slice(&(MACHO64_BUILD_VERSION_CMD_SIZE as u32).to_le_bytes()); // cmdsize
         macho.extend_from_slice(&PLATFORM_MACOS.to_le_bytes()); // platform
-        // minos: macOS 11.0.0 (Big Sur) - encoded as major.minor.patch in nibbles
-        // 11.0.0 = 0x000B0000
-        macho.extend_from_slice(&0x000B0000_u32.to_le_bytes()); // minos (11.0.0)
-        macho.extend_from_slice(&0x000B0000_u32.to_le_bytes()); // sdk (11.0.0)
+        // minos/sdk: macOS minimum version (encoded as 0x00XXYYPP for major.minor.patch)
+        let macos_version = self.target.macos_min_version().unwrap_or(0x000B0000);
+        macho.extend_from_slice(&macos_version.to_le_bytes()); // minos
+        macho.extend_from_slice(&macos_version.to_le_bytes()); // sdk
         macho.extend_from_slice(&0_u32.to_le_bytes()); // ntools
 
         // === LC_SYMTAB ===
