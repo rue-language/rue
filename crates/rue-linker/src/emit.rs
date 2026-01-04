@@ -617,8 +617,8 @@ impl ObjectBuilder {
         let macho_name = format!("_{}", self.name);
 
         // Build string table
-        // Format: starts with a space for empty string, then null-terminated strings
-        let mut strtab = vec![0x20, 0x00]; // Start with " \0" (space + null)
+        // Format: starts with null byte (index 0 = empty string), then null-terminated strings
+        let mut strtab = vec![0u8]; // Start with null byte (same as ELF)
 
         // The function symbol name (with underscore prefix for macOS)
         let func_name_offset = strtab.len();
