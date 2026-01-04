@@ -30,7 +30,7 @@ use super::context::{
     AnalysisContext, AnalysisResult, BuiltinMethodContext, ConstValue, FieldPath, ParamInfo,
     ReceiverInfo, StringReceiverStorage,
 };
-use super::{AnalyzedFunction, InferenceContext, Sema, SemaOutput};
+use super::{AnalyzedFunction, InferenceContext, MethodInfo, Sema, SemaOutput};
 // Note: FunctionAnalyzer types available for future parallel merging
 #[allow(unused_imports)]
 use crate::function_analyzer::{FunctionAnalyzerOutput, MergedFunctionOutput};
@@ -528,8 +528,8 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
     // Start with main()
     let mut pending_functions: Vec<Spur> = vec![main_sym];
     let mut analyzed_functions: HashSet<Spur> = HashSet::new();
-    let mut pending_methods: Vec<(Spur, Spur)> = Vec::new();
-    let mut analyzed_methods: HashSet<(Spur, Spur)> = HashSet::new();
+    let mut pending_methods: Vec<(StructId, Spur)> = Vec::new();
+    let mut analyzed_methods: HashSet<(StructId, Spur)> = HashSet::new();
 
     // Collect results
     let mut functions_with_strings: Vec<(AnalyzedFunction, Vec<String>)> = Vec::new();
@@ -634,19 +634,22 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
         }
 
         // Process pending methods
-        while let Some((type_name, method_name)) = pending_methods.pop() {
-            if analyzed_methods.contains(&(type_name, method_name)) {
+        while let Some((struct_id, method_name)) = pending_methods.pop() {
+            if analyzed_methods.contains(&(struct_id, method_name)) {
                 continue;
             }
-            analyzed_methods.insert((type_name, method_name));
+            analyzed_methods.insert((struct_id, method_name));
 
             // Look up the method info
-            let method_info = match sema.methods.get(&(type_name, method_name)) {
+            let method_info = match sema.methods.get(&(struct_id, method_name)) {
                 Some(info) => *info,
                 None => continue,
             };
 
-            let type_name_str = sema.interner.resolve(&type_name).to_string();
+            // Get the struct definition to find its name for impl block lookup
+            let struct_def = sema.type_pool.struct_def(struct_id);
+            let type_name_str = struct_def.name.clone();
+            let type_name_sym = sema.interner.get_or_intern(&type_name_str);
             let method_name_str = sema.interner.resolve(&method_name).to_string();
 
             // Find the method in impl blocks
@@ -657,7 +660,7 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
                     methods_len,
                 } = &inst.data
                 {
-                    if *impl_type_name != type_name {
+                    if *impl_type_name != type_name_sym {
                         continue;
                     }
 
@@ -4640,12 +4643,9 @@ fn analyze_method_call_ctx(
         );
     }
 
-    // Get the type name for method lookup
-    let type_name = match receiver_type.kind() {
-        TypeKind::Struct(struct_id) => {
-            let struct_def = ctx.get_struct_def(struct_id);
-            ctx.interner.get_or_intern(&struct_def.name)
-        }
+    // Get the struct_id for method lookup
+    let struct_id = match receiver_type.kind() {
+        TypeKind::Struct(struct_id) => struct_id,
         _ => {
             let method_name = ctx.interner.resolve(&method);
             return Err(CompileError::new(
@@ -4656,6 +4656,11 @@ fn analyze_method_call_ctx(
                 span,
             ));
         }
+    };
+    // Get type name for error messages
+    let type_name = {
+        let struct_def = ctx.get_struct_def(struct_id);
+        ctx.interner.get_or_intern(&struct_def.name)
     };
 
     // Check if this is a builtin type with builtin methods
@@ -4680,8 +4685,8 @@ fn analyze_method_call_ctx(
         }
     }
 
-    // Look up the method in user-defined methods
-    let method_info = ctx.get_method(type_name, method).ok_or_compile_error(
+    // Look up the method in user-defined methods using StructId
+    let method_info = ctx.get_method(struct_id, method).ok_or_compile_error(
         ErrorKind::UndefinedMethod {
             type_name: ctx.interner.resolve(&type_name).to_string(),
             method_name: ctx.interner.resolve(&method).to_string(),
@@ -4690,7 +4695,7 @@ fn analyze_method_call_ctx(
     )?;
 
     // Track this method as referenced (for lazy analysis)
-    analysis_ctx.referenced_methods.insert((type_name, method));
+    analysis_ctx.referenced_methods.insert((struct_id, method));
 
     // Analyze arguments
     let args = ctx.rir.get_call_args(args_start, args_len);
@@ -5067,28 +5072,32 @@ fn analyze_assoc_fn_call_ctx(
     span: Span,
     analysis_ctx: &mut AnalysisContext,
 ) -> CompileResult<AnalysisResult> {
+    // Get the struct_id for method lookup
+    let struct_id = ctx.get_struct(type_name).ok_or_compile_error(
+        ErrorKind::UnknownType(ctx.interner.resolve(&type_name).to_string()),
+        span,
+    )?;
+
     // Check if this is a builtin type with builtin associated functions
-    if let Some(struct_id) = ctx.get_struct(type_name) {
-        if let Some(builtin_def) = ctx.get_builtin_type_def(struct_id) {
-            let fn_name = ctx.interner.resolve(&function);
-            if let Some(assoc_fn) = builtin_def.find_associated_fn(fn_name) {
-                // Handle builtin associated function
-                return analyze_builtin_assoc_fn_ctx(
-                    ctx,
-                    air,
-                    struct_id,
-                    assoc_fn,
-                    args_start,
-                    args_len,
-                    span,
-                    analysis_ctx,
-                );
-            }
+    if let Some(builtin_def) = ctx.get_builtin_type_def(struct_id) {
+        let fn_name = ctx.interner.resolve(&function);
+        if let Some(assoc_fn) = builtin_def.find_associated_fn(fn_name) {
+            // Handle builtin associated function
+            return analyze_builtin_assoc_fn_ctx(
+                ctx,
+                air,
+                struct_id,
+                assoc_fn,
+                args_start,
+                args_len,
+                span,
+                analysis_ctx,
+            );
         }
     }
 
-    // Look up user-defined associated function
-    let method_info = ctx.get_method(type_name, function).ok_or_compile_error(
+    // Look up user-defined associated function using StructId
+    let method_info = ctx.get_method(struct_id, function).ok_or_compile_error(
         ErrorKind::UndefinedMethod {
             type_name: ctx.interner.resolve(&type_name).to_string(),
             method_name: ctx.interner.resolve(&function).to_string(),
@@ -5577,7 +5586,7 @@ impl<'a> Sema<'a> {
         Vec<CompileWarning>,
         Vec<String>,
         HashSet<Spur>,
-        HashSet<(Spur, Spur)>,
+        HashSet<(StructId, Spur)>,
     )> {
         let ret_type = self.resolve_type(return_type, span)?;
 
@@ -5636,7 +5645,7 @@ impl<'a> Sema<'a> {
         Vec<CompileWarning>,
         Vec<String>,
         HashSet<Spur>,
-        HashSet<(Spur, Spur)>,
+        HashSet<(StructId, Spur)>,
     )> {
         let ret_type = self.resolve_type(return_type, span)?;
 
@@ -5698,7 +5707,7 @@ impl<'a> Sema<'a> {
         Vec<CompileWarning>,
         Vec<String>,
         HashSet<Spur>,
-        HashSet<(Spur, Spur)>,
+        HashSet<(StructId, Spur)>,
     )> {
         // Destructors take self parameter and return unit
         let self_sym = self.interner.get_or_intern("self");
@@ -5751,7 +5760,7 @@ impl<'a> Sema<'a> {
         Vec<CompileWarning>,
         Vec<String>,
         HashSet<Spur>,
-        HashSet<(Spur, Spur)>,
+        HashSet<(StructId, Spur)>,
     )> {
         self.analyze_function_internal(infer_ctx, return_type, params, body, None)
     }
@@ -5776,7 +5785,7 @@ impl<'a> Sema<'a> {
         Vec<CompileWarning>,
         Vec<String>,
         HashSet<Spur>,
-        HashSet<(Spur, Spur)>,
+        HashSet<(StructId, Spur)>,
     )> {
         let mut air = Air::new(return_type);
         let mut param_map: HashMap<Spur, ParamInfo> = HashMap::new();
@@ -5891,7 +5900,7 @@ impl<'a> Sema<'a> {
         Vec<CompileWarning>,
         Vec<String>,
         HashSet<Spur>,
-        HashSet<(Spur, Spur)>,
+        HashSet<(StructId, Spur)>,
     )> {
         // For specialized functions, we need to populate comptime_type_vars with the
         // type substitutions so that references to type parameters (like `P { ... }`)
@@ -6492,18 +6501,18 @@ impl<'a> Sema<'a> {
             }
 
             // Anonymous struct type: a struct type constructed at comptime
-            // (e.g., `struct { first: T, second: T, fn method(self) -> T { ... } }` in a comptime function)
+            // (e.g., `struct { first: T, second: T, fn get(self) -> T { ... } }` in a comptime function)
             InstData::AnonStructType {
                 fields_start,
                 fields_len,
-                methods_start: _,
-                methods_len: _,
+                methods_start,
+                methods_len,
             } => {
                 // Get the field declarations from the RIR
                 let field_decls = self.rir.get_field_decls(*fields_start, *fields_len);
 
-                // Empty structs are not allowed
-                if field_decls.is_empty() {
+                // Empty structs are not allowed (unless they have methods)
+                if field_decls.is_empty() && *methods_len == 0 {
                     return Err(CompileError::new(ErrorKind::EmptyStruct, inst.span));
                 }
 
@@ -6519,10 +6528,27 @@ impl<'a> Sema<'a> {
                 }
 
                 // Check if an equivalent anonymous struct already exists (structural equality)
-                // TODO (Phase 3): Include method signatures in structural equality
                 let struct_ty = self.find_or_create_anon_struct(&struct_fields);
 
-                // TODO (Phase 3): Register methods for this anonymous struct using methods_start/methods_len
+                // Register methods for this anonymous struct
+                if *methods_len > 0 {
+                    // Anonymous struct methods require preview feature
+                    self.require_preview(
+                        PreviewFeature::AnonStructMethods,
+                        "anonymous struct methods",
+                        inst.span,
+                    )?;
+                    let struct_id = struct_ty
+                        .as_struct()
+                        .expect("anon struct should have StructId");
+                    self.register_anon_struct_methods(
+                        struct_id,
+                        struct_ty,
+                        *methods_start,
+                        *methods_len,
+                        inst.span,
+                    )?;
+                }
 
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::TypeConst(struct_ty),
@@ -7039,15 +7065,12 @@ impl<'a> Sema<'a> {
             return self.analyze_builtin_method(air, ctx, &method_ctx, receiver_info, &args);
         }
 
-        // Look up the struct name by its ID
+        // Look up the struct name by its ID (for error messages)
         let struct_def = self.type_pool.struct_def(struct_id);
         let struct_name_str = struct_def.name.clone();
 
-        // Find the struct name symbol for method lookup
-        let struct_name_sym = self.interner.get_or_intern(&struct_name_str);
-
-        // Look up the method
-        let method_key = (struct_name_sym, method);
+        // Look up the method using StructId directly
+        let method_key = (struct_id, method);
         let method_info = self.methods.get(&method_key).ok_or_compile_error(
             ErrorKind::UndefinedMethod {
                 type_name: struct_name_str.clone(),
@@ -7260,8 +7283,8 @@ impl<'a> Sema<'a> {
             );
         }
 
-        // Look up the function
-        let method_key = (type_name, function);
+        // Look up the function using StructId
+        let method_key = (struct_id, function);
         let method_info = self.methods.get(&method_key).ok_or_compile_error(
             ErrorKind::UndefinedAssocFn {
                 type_name: type_name_str.clone(),
@@ -8413,7 +8436,6 @@ impl<'a> Sema<'a> {
                 }
 
                 // Find or create the anonymous struct type
-                // TODO (Phase 3): Include method signatures in structural equality and register methods
                 let struct_ty = self.find_or_create_anon_struct(&struct_fields);
                 Some(ConstValue::Type(struct_ty))
             }
@@ -8755,7 +8777,6 @@ impl<'a> Sema<'a> {
                     });
                 }
 
-                // TODO (Phase 3): Include method signatures in structural equality and register methods with substitution
                 let struct_ty = self.find_or_create_anon_struct(&struct_fields);
                 Some(ConstValue::Type(struct_ty))
             }
@@ -9473,5 +9494,103 @@ impl<'a> Sema<'a> {
             });
         }
         Ok(air_args)
+    }
+
+    /// Register methods from an anonymous struct type.
+    ///
+    /// This is called when an anonymous struct with methods is encountered during
+    /// comptime evaluation. The methods are registered with the anonymous struct's
+    /// StructId as the key, enabling method lookup via the standard method resolution
+    /// mechanism.
+    ///
+    /// Note: Self type in method signatures is resolved to the anonymous struct's
+    /// StructId during parameter type resolution.
+    fn register_anon_struct_methods(
+        &mut self,
+        struct_id: StructId,
+        struct_type: Type,
+        methods_start: u32,
+        methods_len: u32,
+        span: Span,
+    ) -> CompileResult<()> {
+        let method_refs = self.rir.get_inst_refs(methods_start, methods_len);
+
+        for method_ref in method_refs {
+            let method_inst = self.rir.get(method_ref);
+            if let InstData::FnDecl {
+                name: method_name,
+                params_start,
+                params_len,
+                return_type,
+                body,
+                has_self,
+                ..
+            } = &method_inst.data
+            {
+                let key = (struct_id, *method_name);
+
+                // Check for duplicate methods
+                if self.methods.contains_key(&key) {
+                    let struct_def = self.type_pool.struct_def(struct_id);
+                    let method_name_str = self.interner.resolve(method_name).to_string();
+                    return Err(CompileError::new(
+                        ErrorKind::DuplicateMethod {
+                            type_name: struct_def.name.clone(),
+                            method_name: method_name_str,
+                        },
+                        method_inst.span,
+                    ));
+                }
+
+                // Resolve parameter types (Self -> this anonymous struct's type)
+                let params = self.rir.get_params(*params_start, *params_len);
+                let param_names: Vec<Spur> = params.iter().map(|p| p.name).collect();
+                let param_types: Vec<Type> = params
+                    .iter()
+                    .map(|p| {
+                        // Resolve type, with Self mapping to this struct
+                        self.resolve_type_with_self(p.ty, struct_type, method_inst.span)
+                    })
+                    .collect::<CompileResult<Vec<_>>>()?;
+                let ret_type =
+                    self.resolve_type_with_self(*return_type, struct_type, method_inst.span)?;
+
+                // Allocate method parameters in the arena
+                let param_range = self
+                    .param_arena
+                    .alloc_method(param_names.into_iter(), param_types.into_iter());
+
+                self.methods.insert(
+                    key,
+                    MethodInfo {
+                        struct_type,
+                        has_self: *has_self,
+                        params: param_range,
+                        return_type: ret_type,
+                        body: *body,
+                        span: method_inst.span,
+                    },
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Resolve a type symbol, with special handling for Self.
+    ///
+    /// If the type symbol is "Self", it resolves to the provided self_type.
+    /// Otherwise, it delegates to the standard resolve_type method.
+    fn resolve_type_with_self(
+        &mut self,
+        type_sym: Spur,
+        self_type: Type,
+        span: Span,
+    ) -> CompileResult<Type> {
+        let type_str = self.interner.resolve(&type_sym);
+        if type_str == "Self" {
+            Ok(self_type)
+        } else {
+            self.resolve_type(type_sym, span)
+        }
     }
 }

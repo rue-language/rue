@@ -158,8 +158,8 @@ pub struct InferenceContext {
     pub struct_types: HashMap<Spur, Type>,
     /// Enum types: name -> Type::Enum(id).
     pub enum_types: HashMap<Spur, Type>,
-    /// Method signatures with InferType: (struct_name, method_name) -> MethodSig.
-    pub method_sigs: HashMap<(Spur, Spur), MethodSig>,
+    /// Method signatures with InferType: (struct_id, method_name) -> MethodSig.
+    pub method_sigs: HashMap<(StructId, Spur), MethodSig>,
 }
 
 /// Context for semantic analysis, designed for parallel function analysis.
@@ -199,7 +199,8 @@ pub struct SemaContext<'a> {
     /// Function lookup: reference to Sema's function map (immutable after declaration gathering).
     pub functions: &'a HashMap<Spur, FunctionInfo>,
     /// Method lookup: reference to Sema's method map (immutable after declaration gathering).
-    pub methods: &'a HashMap<(Spur, Spur), MethodInfo>,
+    /// Uses (StructId, method_name) key to support anonymous struct methods.
+    pub methods: &'a HashMap<(StructId, Spur), MethodInfo>,
     /// Enabled preview features.
     pub preview_features: PreviewFeatures,
     /// StructId of the synthetic String type.
@@ -276,9 +277,9 @@ impl<'a> SemaContext<'a> {
         self.functions.get(&name)
     }
 
-    /// Look up a method by type and method name.
-    pub fn get_method(&self, type_name: Spur, method_name: Spur) -> Option<&MethodInfo> {
-        self.methods.get(&(type_name, method_name))
+    /// Look up a method by struct ID and method name.
+    pub fn get_method(&self, struct_id: StructId, method_name: Spur) -> Option<&MethodInfo> {
+        self.methods.get(&(struct_id, method_name))
     }
 
     /// Look up a constant by name.

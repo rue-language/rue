@@ -77,12 +77,12 @@ impl<'a> Sema<'a> {
             .collect();
 
         // Build method signatures with InferType for constraint generation
-        let method_sigs: HashMap<(Spur, Spur), MethodSig> = self
+        let method_sigs: HashMap<(StructId, Spur), MethodSig> = self
             .methods
             .iter()
-            .map(|((type_name, method_name), info)| {
+            .map(|((struct_id, method_name), info)| {
                 (
-                    (*type_name, *method_name),
+                    (*struct_id, *method_name),
                     MethodSig {
                         struct_type: info.struct_type,
                         has_self: info.has_self,
@@ -547,10 +547,10 @@ impl<'a> Sema<'a> {
                 })?;
                 let struct_type = Type::Struct(struct_id);
 
-                // Look for a .handle() method
+                // Look for a .handle() method using StructId
                 let handle_sym = self.interner.get("handle");
                 let method_key = match handle_sym {
-                    Some(sym) => (*name, sym),
+                    Some(sym) => (struct_id, sym),
                     None => {
                         // "handle" not interned means no .handle() method exists
                         return Err(CompileError::new(
@@ -796,7 +796,8 @@ impl<'a> Sema<'a> {
                 ..
             } = &method_inst.data
             {
-                let key = (type_name, *method_name);
+                // Use StructId in key to support anonymous struct methods
+                let key = (struct_id, *method_name);
                 if self.methods.contains_key(&key) {
                     let type_name_str = self.interner.resolve(&type_name).to_string();
                     let method_name_str = self.interner.resolve(&*method_name).to_string();

@@ -85,8 +85,8 @@ pub struct GatherOutput<'a> {
     pub enums: HashMap<Spur, EnumId>,
     /// Function lookup: maps function name to info.
     pub functions: HashMap<Spur, FunctionInfo>,
-    /// Method lookup: maps (struct_name, method_name) to info.
-    pub methods: HashMap<(Spur, Spur), MethodInfo>,
+    /// Method lookup: maps (struct_id, method_name) to info.
+    pub methods: HashMap<(StructId, Spur), MethodInfo>,
     /// Constant lookup: maps const name to info.
     pub constants: HashMap<Spur, ConstInfo>,
     /// Enabled preview features.
@@ -177,8 +177,8 @@ pub struct InferenceContext {
     pub struct_types: HashMap<Spur, Type>,
     /// Enum types: name -> Type::Enum(id).
     pub enum_types: HashMap<Spur, Type>,
-    /// Method signatures with InferType: (struct_name, method_name) -> MethodSig.
-    pub method_sigs: HashMap<(Spur, Spur), crate::inference::MethodSig>,
+    /// Method signatures with InferType: (struct_id, method_name) -> MethodSig.
+    pub method_sigs: HashMap<(StructId, Spur), crate::inference::MethodSig>,
 }
 
 /// Information about a function.
@@ -252,10 +252,12 @@ pub struct Sema<'a> {
     pub(crate) structs: HashMap<Spur, StructId>,
     /// Enum table: maps enum name symbols to their EnumId
     pub(crate) enums: HashMap<Spur, EnumId>,
-    /// Method table: maps (struct_name, method_name) to method info
+    /// Method table: maps (struct_id, method_name) to method info
     /// Used for resolving method calls (receiver.method()) and associated
     /// function calls (Type::function())
-    pub(crate) methods: HashMap<(Spur, Spur), MethodInfo>,
+    /// Using StructId as key enables method lookup for anonymous structs
+    /// which don't have stable name symbols.
+    pub(crate) methods: HashMap<(StructId, Spur), MethodInfo>,
     /// Constant table: maps const name symbol to const info
     /// Used for module re-exports: `pub const strings = @import("utils/strings");`
     pub(crate) constants: HashMap<Spur, ConstInfo>,
@@ -552,12 +554,12 @@ impl<'a> Sema<'a> {
             .collect();
 
         // Build method signatures with InferType for constraint generation
-        let method_sigs: HashMap<(Spur, Spur), MethodSig> = self
+        let method_sigs: HashMap<(StructId, Spur), MethodSig> = self
             .methods
             .iter()
-            .map(|((type_name, method_name), info)| {
+            .map(|((struct_id, method_name), info)| {
                 (
-                    (*type_name, *method_name),
+                    (*struct_id, *method_name),
                     MethodSig {
                         struct_type: info.struct_type,
                         has_self: info.has_self,

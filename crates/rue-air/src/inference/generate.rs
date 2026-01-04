@@ -10,7 +10,7 @@ use super::constraint::Constraint;
 use super::types::{InferType, TypeVarAllocator, TypeVarId};
 use crate::Type;
 use crate::scope::ScopedContext;
-use crate::types::parse_array_type_syntax;
+use crate::types::{StructId, parse_array_type_syntax};
 use lasso::{Spur, ThreadedRodeo};
 use rue_rir::{InstData, InstRef, Rir};
 use rue_span::Span;
@@ -160,8 +160,8 @@ pub struct ConstraintGenerator<'a> {
     structs: &'a HashMap<Spur, Type>,
     /// Enum types (name -> Type::Enum(id)).
     enums: &'a HashMap<Spur, Type>,
-    /// Method signatures: (struct_name, method_name) -> MethodSig
-    methods: &'a HashMap<(Spur, Spur), MethodSig>,
+    /// Method signatures: (struct_id, method_name) -> MethodSig
+    methods: &'a HashMap<(StructId, Spur), MethodSig>,
     /// Type variables allocated for integer literals.
     /// These start as unbound and need to be defaulted to i32 if unconstrained.
     int_literal_vars: Vec<TypeVarId>,
@@ -175,7 +175,7 @@ impl<'a> ConstraintGenerator<'a> {
         functions: &'a HashMap<Spur, FunctionSig>,
         structs: &'a HashMap<Spur, Type>,
         enums: &'a HashMap<Spur, Type>,
-        methods: &'a HashMap<(Spur, Spur), MethodSig>,
+        methods: &'a HashMap<(StructId, Spur), MethodSig>,
     ) -> Self {
         Self {
             rir,
@@ -956,38 +956,23 @@ impl<'a> ConstraintGenerator<'a> {
                 // for the arguments and return a type variable (actual error is in sema)
                 let result_type = if let InferType::Concrete(ty) = &receiver_info.ty {
                     if let Some(struct_id) = ty.as_struct() {
-                        // Find the struct name symbol
-                        let struct_name = self
-                            .structs
-                            .iter()
-                            .find(|(_, t)| t.as_struct() == Some(struct_id))
-                            .map(|(name, _)| *name);
-
-                        if let Some(struct_name) = struct_name {
-                            let method_key = (struct_name, *method);
-                            if let Some(method_sig) = self.methods.get(&method_key) {
-                                // Generate constraints for arguments
-                                for (arg, param_type) in
-                                    args.iter().zip(method_sig.param_types.iter())
-                                {
-                                    let arg_info = self.generate(arg.value, ctx);
-                                    self.add_constraint(Constraint::equal(
-                                        arg_info.ty,
-                                        param_type.clone(),
-                                        arg_info.span,
-                                    ));
-                                }
-                                method_sig.return_type.clone()
-                            } else {
-                                // Method not found - sema will report the error
-                                // Still generate arg types to catch errors in arguments
-                                for arg in args.iter() {
-                                    self.generate(arg.value, ctx);
-                                }
-                                InferType::Concrete(Type::Error)
+                        // Use StructId directly for method lookup
+                        let method_key = (struct_id, *method);
+                        if let Some(method_sig) = self.methods.get(&method_key) {
+                            // Generate constraints for arguments
+                            for (arg, param_type) in args.iter().zip(method_sig.param_types.iter())
+                            {
+                                let arg_info = self.generate(arg.value, ctx);
+                                self.add_constraint(Constraint::equal(
+                                    arg_info.ty,
+                                    param_type.clone(),
+                                    arg_info.span,
+                                ));
                             }
+                            method_sig.return_type.clone()
                         } else {
-                            // Couldn't find struct name - shouldn't happen but handle gracefully
+                            // Method not found - sema will report the error
+                            // Still generate arg types to catch errors in arguments
                             for arg in args.iter() {
                                 self.generate(arg.value, ctx);
                             }
@@ -1019,26 +1004,37 @@ impl<'a> ConstraintGenerator<'a> {
                 args_len,
             } => {
                 let args = self.rir.get_call_args(*args_start, *args_len);
-                let method_key = (*type_name, *function);
-                if let Some(method_sig) = self.methods.get(&method_key) {
-                    // Generate constraints for arguments
-                    for (arg, param_type) in args.iter().zip(method_sig.param_types.iter()) {
-                        let arg_info = self.generate(arg.value, ctx);
-                        self.add_constraint(Constraint::equal(
-                            arg_info.ty,
-                            param_type.clone(),
-                            arg_info.span,
-                        ));
+                // Get struct ID from type name for method lookup
+                let struct_id = self.structs.get(type_name).and_then(|ty| ty.as_struct());
+                let result_type = if let Some(struct_id) = struct_id {
+                    let method_key = (struct_id, *function);
+                    if let Some(method_sig) = self.methods.get(&method_key) {
+                        // Generate constraints for arguments
+                        for (arg, param_type) in args.iter().zip(method_sig.param_types.iter()) {
+                            let arg_info = self.generate(arg.value, ctx);
+                            self.add_constraint(Constraint::equal(
+                                arg_info.ty,
+                                param_type.clone(),
+                                arg_info.span,
+                            ));
+                        }
+                        method_sig.return_type.clone()
+                    } else {
+                        // Method not found - sema will report the error
+                        // Still generate arg types to catch errors in arguments
+                        for arg in args.iter() {
+                            self.generate(arg.value, ctx);
+                        }
+                        InferType::Concrete(Type::Error)
                     }
-                    method_sig.return_type.clone()
                 } else {
-                    // Method not found - sema will report the error
-                    // Still generate arg types to catch errors in arguments
+                    // Type not found - sema will report the error
                     for arg in args.iter() {
                         self.generate(arg.value, ctx);
                     }
                     InferType::Concrete(Type::Error)
-                }
+                };
+                result_type
             }
 
             // Comptime block: the type depends on whether evaluation succeeds at compile time.
@@ -1193,7 +1189,7 @@ mod tests {
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
-        let methods: HashMap<(Spur, Spur), MethodSig> = HashMap::new();
+        let methods: HashMap<(StructId, Spur), MethodSig> = HashMap::new();
 
         // Add an integer constant to RIR
         let inst_ref = rir.add_inst(rue_rir::Inst {
@@ -1222,7 +1218,7 @@ mod tests {
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
-        let methods: HashMap<(Spur, Spur), MethodSig> = HashMap::new();
+        let methods: HashMap<(StructId, Spur), MethodSig> = HashMap::new();
 
         let inst_ref = rir.add_inst(rue_rir::Inst {
             data: InstData::BoolConst(true),
@@ -1246,7 +1242,7 @@ mod tests {
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
-        let methods: HashMap<(Spur, Spur), MethodSig> = HashMap::new();
+        let methods: HashMap<(StructId, Spur), MethodSig> = HashMap::new();
 
         // Create: 1 + 2
         let lhs = rir.add_inst(rue_rir::Inst {
@@ -1286,7 +1282,7 @@ mod tests {
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
-        let methods: HashMap<(Spur, Spur), MethodSig> = HashMap::new();
+        let methods: HashMap<(StructId, Spur), MethodSig> = HashMap::new();
 
         // Create: 1 < 2
         let lhs = rir.add_inst(rue_rir::Inst {
@@ -1321,7 +1317,7 @@ mod tests {
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
-        let methods: HashMap<(Spur, Spur), MethodSig> = HashMap::new();
+        let methods: HashMap<(StructId, Spur), MethodSig> = HashMap::new();
 
         // Create: true && false
         let lhs = rir.add_inst(rue_rir::Inst {
@@ -1356,7 +1352,7 @@ mod tests {
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
-        let methods: HashMap<(Spur, Spur), MethodSig> = HashMap::new();
+        let methods: HashMap<(StructId, Spur), MethodSig> = HashMap::new();
 
         // Create: -42
         let operand = rir.add_inst(rue_rir::Inst {
@@ -1392,7 +1388,7 @@ mod tests {
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
-        let methods: HashMap<(Spur, Spur), MethodSig> = HashMap::new();
+        let methods: HashMap<(StructId, Spur), MethodSig> = HashMap::new();
 
         // Create: return 42
         let value = rir.add_inst(rue_rir::Inst {
@@ -1423,7 +1419,7 @@ mod tests {
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
-        let methods: HashMap<(Spur, Spur), MethodSig> = HashMap::new();
+        let methods: HashMap<(StructId, Spur), MethodSig> = HashMap::new();
 
         // Create: if true { 1 } else { 2 }
         let cond = rir.add_inst(rue_rir::Inst {
@@ -1466,7 +1462,7 @@ mod tests {
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
-        let methods: HashMap<(Spur, Spur), MethodSig> = HashMap::new();
+        let methods: HashMap<(StructId, Spur), MethodSig> = HashMap::new();
 
         // Create: while true { 0 }
         let cond = rir.add_inst(rue_rir::Inst {
@@ -1577,7 +1573,7 @@ mod tests {
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
-        let methods: HashMap<(Spur, Spur), MethodSig> = HashMap::new();
+        let methods: HashMap<(StructId, Spur), MethodSig> = HashMap::new();
 
         // Create: loop { 0 }
         let body = rir.add_inst(rue_rir::Inst {
@@ -1608,7 +1604,7 @@ mod tests {
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
-        let methods: HashMap<(Spur, Spur), MethodSig> = HashMap::new();
+        let methods: HashMap<(StructId, Spur), MethodSig> = HashMap::new();
 
         let break_inst = rir.add_inst(rue_rir::Inst {
             data: InstData::Break,
@@ -1633,7 +1629,7 @@ mod tests {
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
-        let methods: HashMap<(Spur, Spur), MethodSig> = HashMap::new();
+        let methods: HashMap<(StructId, Spur), MethodSig> = HashMap::new();
 
         // Create: arr[0]
         let base = rir.add_inst(rue_rir::Inst {
@@ -1672,7 +1668,7 @@ mod tests {
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
-        let methods: HashMap<(Spur, Spur), MethodSig> = HashMap::new();
+        let methods: HashMap<(StructId, Spur), MethodSig> = HashMap::new();
 
         // Create: arr[0] = 42
         let base = rir.add_inst(rue_rir::Inst {
@@ -1715,7 +1711,7 @@ mod tests {
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
-        let methods: HashMap<(Spur, Spur), MethodSig> = HashMap::new();
+        let methods: HashMap<(StructId, Spur), MethodSig> = HashMap::new();
 
         // Create: { } (empty block)
         let block = rir.add_inst(rue_rir::Inst {
@@ -1744,7 +1740,7 @@ mod tests {
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
-        let methods: HashMap<(Spur, Spur), MethodSig> = HashMap::new();
+        let methods: HashMap<(StructId, Spur), MethodSig> = HashMap::new();
 
         // Create: !42 (bitwise NOT)
         let operand = rir.add_inst(rue_rir::Inst {
@@ -1779,7 +1775,7 @@ mod tests {
         let mut functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
-        let methods: HashMap<(Spur, Spur), MethodSig> = HashMap::new();
+        let methods: HashMap<(StructId, Spur), MethodSig> = HashMap::new();
 
         // Register a function that takes 2 parameters
         let func_name = interner.get_or_intern("foo");
@@ -1831,7 +1827,7 @@ mod tests {
         let functions = HashMap::new(); // Empty - no functions registered
         let structs = HashMap::new();
         let enums = HashMap::new();
-        let methods: HashMap<(Spur, Spur), MethodSig> = HashMap::new();
+        let methods: HashMap<(StructId, Spur), MethodSig> = HashMap::new();
 
         // Create a call to an unknown function
         let unknown_func = interner.get_or_intern("unknown");
@@ -1871,7 +1867,7 @@ mod tests {
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
-        let methods: HashMap<(Spur, Spur), MethodSig> = HashMap::new();
+        let methods: HashMap<(StructId, Spur), MethodSig> = HashMap::new();
 
         // Create: match x { 1 => 10, 2 => 20, _ => 30 }
         let scrutinee = rir.add_inst(rue_rir::Inst {

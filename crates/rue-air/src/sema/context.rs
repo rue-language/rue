@@ -202,8 +202,8 @@ pub(crate) struct AnalysisContext<'a> {
     /// which functions need to be analyzed. Each entry is a function name symbol.
     pub referenced_functions: HashSet<Spur>,
     /// Methods referenced during analysis of this function.
-    /// Each entry is (struct_name, method_name) matching the key format in methods map.
-    pub referenced_methods: HashSet<(Spur, Spur)>,
+    /// Each entry is (struct_id, method_name) matching the key format in methods map.
+    pub referenced_methods: HashSet<(StructId, Spur)>,
 }
 
 // Import InstRef for use in resolved_types

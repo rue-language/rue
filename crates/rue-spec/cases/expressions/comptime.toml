@@ -618,3 +618,329 @@ fn main() -> i32 {
 }
 """
 exit_code = 42
+
+# =============================================================================
+# Phase 5: Anonymous Struct Methods (ADR-0029)
+# =============================================================================
+# Tests for method definitions inside anonymous struct types.
+# These tests verify that:
+# 1. Methods can be defined inside anonymous struct types
+# 2. Self type resolves to the anonymous struct type
+# 3. Associated functions (no self) work correctly
+# 4. Comptime parameter capture in methods works
+
+[[case]]
+name = "anon_struct_method_basic"
+spec = ["4.14:10"]
+preview = "anon_struct_methods"
+description = "Basic method definition in anonymous struct"
+source = """
+fn Counter() -> type {
+    struct {
+        value: i32,
+
+        fn get(self) -> i32 {
+            self.value
+        }
+    }
+}
+fn main() -> i32 {
+    let C = Counter();
+    let c: C = C { value: 42 };
+    c.get()
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "anon_struct_method_self_return"
+spec = ["4.14:10", "4.14:11"]
+preview = "anon_struct_methods"
+description = "Method returning Self type"
+source = """
+fn Counter() -> type {
+    struct {
+        value: i32,
+
+        fn increment(self) -> Self {
+            Self { value: self.value + 1 }
+        }
+    }
+}
+fn main() -> i32 {
+    let C = Counter();
+    let c: C = C { value: 41 };
+    let c2 = c.increment();
+    c2.value
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "anon_struct_method_chain"
+spec = ["4.14:10", "4.14:11"]
+preview = "anon_struct_methods"
+description = "Chaining multiple method calls"
+source = """
+fn Counter() -> type {
+    struct {
+        value: i32,
+
+        fn increment(self) -> Self {
+            Self { value: self.value + 1 }
+        }
+
+        fn get(self) -> i32 {
+            self.value
+        }
+    }
+}
+fn main() -> i32 {
+    let C = Counter();
+    let c: C = C { value: 0 };
+    c.increment().increment().increment().get()
+}
+"""
+exit_code = 3
+
+[[case]]
+name = "anon_struct_method_with_params"
+spec = ["4.14:10"]
+preview = "anon_struct_methods"
+description = "Method with additional parameters"
+source = """
+fn Counter() -> type {
+    struct {
+        value: i32,
+
+        fn add(self, n: i32) -> Self {
+            Self { value: self.value + n }
+        }
+
+        fn get(self) -> i32 {
+            self.value
+        }
+    }
+}
+fn main() -> i32 {
+    let C = Counter();
+    let c: C = C { value: 0 };
+    c.add(42).get()
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "anon_struct_self_type_annotation"
+spec = ["4.14:11"]
+preview = "anon_struct_methods"
+description = "Self used in parameter type annotation"
+source = """
+fn Pair() -> type {
+    struct {
+        first: i32,
+        second: i32,
+
+        fn combine(self, other: Self) -> Self {
+            Self { first: self.first + other.first, second: self.second + other.second }
+        }
+    }
+}
+fn main() -> i32 {
+    let P = Pair();
+    let p1: P = P { first: 10, second: 20 };
+    let p2: P = P { first: 5, second: 7 };
+    let sum = p1.combine(p2);
+    sum.first + sum.second
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "anon_struct_generic_method"
+spec = ["4.14:10", "4.14:12"]
+preview = "anon_struct_methods"
+description = "Method using captured comptime type parameter"
+source = """
+fn Wrapper(comptime T: type) -> type {
+    struct {
+        value: T,
+
+        fn get(self) -> T {
+            self.value
+        }
+    }
+}
+fn main() -> i32 {
+    let W = Wrapper(i32);
+    let w: W = W { value: 42 };
+    w.get()
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "anon_struct_comptime_param_capture"
+spec = ["4.14:12"]
+preview = "anon_struct_methods"
+description = "Method accessing comptime parameter from enclosing function"
+source = """
+fn FixedBuffer(comptime N: i32) -> type {
+    struct {
+        len: i32,
+
+        fn capacity(self) -> i32 {
+            N
+        }
+    }
+}
+fn main() -> i32 {
+    let B = FixedBuffer(42);
+    let b: B = B { len: 0 };
+    b.capacity()
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "anon_struct_associated_fn"
+spec = ["4.14:13"]
+preview = "anon_struct_methods"
+description = "Associated function (no self parameter)"
+source = """
+fn Point() -> type {
+    struct {
+        x: i32,
+        y: i32,
+
+        fn origin() -> Self {
+            Self { x: 0, y: 0 }
+        }
+    }
+}
+fn main() -> i32 {
+    let P = Point();
+    let p = P::origin();
+    p.x + p.y
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "anon_struct_associated_fn_with_params"
+spec = ["4.14:13"]
+preview = "anon_struct_methods"
+description = "Associated function with parameters"
+source = """
+fn Point() -> type {
+    struct {
+        x: i32,
+        y: i32,
+
+        fn new(x: i32, y: i32) -> Self {
+            Self { x: x, y: y }
+        }
+    }
+}
+fn main() -> i32 {
+    let P = Point();
+    let p = P::new(20, 22);
+    p.x + p.y
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "anon_struct_duplicate_method_error"
+spec = ["4.14:14"]
+preview = "anon_struct_methods"
+description = "Error on duplicate method names"
+source = """
+fn Bad() -> type {
+    struct {
+        x: i32,
+
+        fn get(self) -> i32 {
+            self.x
+        }
+
+        fn get(self) -> i32 {
+            0
+        }
+    }
+}
+fn main() -> i32 {
+    0
+}
+"""
+compile_fail = true
+error_contains = "duplicate method"
+
+[[case]]
+name = "anon_struct_preview_required"
+spec = ["4.14:10"]
+description = "Anonymous struct methods require preview feature"
+source = """
+fn Counter() -> type {
+    struct {
+        value: i32,
+
+        fn get(self) -> i32 {
+            self.value
+        }
+    }
+}
+fn main() -> i32 {
+    0
+}
+"""
+compile_fail = true
+error_contains = "preview feature"
+
+[[case]]
+name = "anon_struct_empty_with_method_ok"
+spec = ["4.14:9", "4.14:10"]
+preview = "anon_struct_methods"
+description = "Anonymous struct with only methods (no fields) is allowed"
+source = """
+fn StaticUtils() -> type {
+    struct {
+        fn constant() -> i32 {
+            42
+        }
+    }
+}
+fn main() -> i32 {
+    let U = StaticUtils();
+    U::constant()
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "anon_struct_structural_equality_with_methods"
+spec = ["4.14:15"]
+preview = "anon_struct_methods"
+description = "Structural equality includes method signatures"
+source = """
+fn A() -> type {
+    struct {
+        x: i32,
+        fn get(self) -> i32 { self.x }
+    }
+}
+fn B() -> type {
+    struct {
+        x: i32,
+        fn get(self) -> i32 { self.x + 1 }
+    }
+}
+fn main() -> i32 {
+    let TA = A();
+    let TB = B();
+    let a: TA = TA { x: 42 };
+    let b: TB = a;
+    b.get()
+}
+"""
+exit_code = 43

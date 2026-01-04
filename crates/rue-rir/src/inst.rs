@@ -1339,8 +1339,7 @@ impl Rir {
                 | InstData::DropFnDecl { .. }
                 | InstData::Comptime { .. }
                 | InstData::Checked { .. }
-                | InstData::TypeConst { .. }
-                | InstData::AnonStructType { .. } => {}
+                | InstData::TypeConst { .. } => {}
             }
         }
     }
@@ -2256,16 +2255,15 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                         let ty_str = self.interner.resolve(ty);
                         write!(out, "{}: {}", name_str, ty_str).unwrap();
                     }
+                    // Print methods if any
                     if *methods_len > 0 {
                         let methods = self.rir.get_inst_refs(*methods_start, *methods_len);
-                        let mut need_sep = !fields.is_empty();
-                        for method in methods {
-                            if need_sep {
-                                write!(out, ", ").unwrap();
-                            }
-                            write!(out, "fn {}", method).unwrap();
-                            need_sep = true;
+                        let methods_str: Vec<String> =
+                            methods.iter().map(|m| format!("{}", m)).collect();
+                        if !fields.is_empty() {
+                            write!(out, ", ").unwrap();
                         }
+                        write!(out, "methods: [{}]", methods_str.join(", ")).unwrap();
                     }
                     writeln!(out, " }}").unwrap();
                 }

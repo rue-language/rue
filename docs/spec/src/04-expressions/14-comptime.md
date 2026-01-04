@@ -171,10 +171,128 @@ Anonymous structs with different field names or different field types are differ
 
 {{ rule(id="4.14:9", cat="legality-rule") }}
 
-It is a compile-time error to define an anonymous struct type with no fields.
+It is a compile-time error to define an anonymous struct type with no fields and no methods.
 
 ```rue
 fn empty() -> type {
     struct { }  // ERROR: empty struct
+}
+```
+
+## Anonymous Struct Methods
+
+{{ rule(id="4.14:10", cat="normative") }}
+
+An anonymous struct type can include method definitions using the following syntax:
+
+```ebnf
+anon_struct_type = "struct" "{" [ struct_field { "," struct_field } ] [ method_def { method_def } ] "}" ;
+method_def = "fn" IDENT "(" [ param { "," param } ] ")" [ "->" type ] block ;
+```
+
+Methods defined inside an anonymous struct type become methods on that struct type:
+
+```rue
+fn Counter() -> type {
+    struct {
+        value: i32,
+
+        fn increment(self) -> Self {
+            Self { value: self.value + 1 }
+        }
+
+        fn get(self) -> i32 {
+            self.value
+        }
+    }
+}
+
+fn main() -> i32 {
+    let C = Counter();
+    let c: C = C { value: 0 };
+    let c2 = c.increment();
+    c2.get()
+}
+```
+
+{{ rule(id="4.14:11", cat="normative") }}
+
+Inside an anonymous struct's method definitions, `Self` refers to the anonymous struct type being defined. `Self` can be used as a type annotation, in struct literal expressions, and as a return type.
+
+```rue
+fn Pair(comptime T: type) -> type {
+    struct {
+        first: T,
+        second: T,
+
+        fn swap(self) -> Self {
+            Self { first: self.second, second: self.first }
+        }
+    }
+}
+```
+
+{{ rule(id="4.14:12", cat="normative") }}
+
+Methods inside anonymous structs can access comptime parameters from the enclosing function:
+
+```rue
+fn Array(comptime T: type, comptime N: i32) -> type {
+    struct {
+        len: i32,
+
+        fn capacity(self) -> i32 {
+            N  // Captured from enclosing comptime context
+        }
+    }
+}
+```
+
+{{ rule(id="4.14:13", cat="normative") }}
+
+Functions defined without a `self` parameter are associated functions, called using the `Type::function()` syntax:
+
+```rue
+fn Point() -> type {
+    struct {
+        x: i32,
+        y: i32,
+
+        fn origin() -> Self {
+            Self { x: 0, y: 0 }
+        }
+    }
+}
+
+fn main() -> i32 {
+    let P = Point();
+    let p = P::origin();
+    p.x
+}
+```
+
+{{ rule(id="4.14:14", cat="legality-rule") }}
+
+It is a compile-time error to define two methods with the same name in an anonymous struct type.
+
+{{ rule(id="4.14:15", cat="normative") }}
+
+Two anonymous struct types are structurally equal if and only if they have:
+1. The same field names in the same order with the same types, AND
+2. The same method names with the same parameter types and return types
+
+Method bodies do not affect structural equality—only signatures matter.
+
+```rue
+fn A() -> type {
+    struct { x: i32, fn get(self) -> i32 { self.x } }
+}
+
+fn B() -> type {
+    struct { x: i32, fn get(self) -> i32 { self.x + 1 } }  // Same type as A()
+}
+
+fn C() -> type {
+    struct { x: i32, fn get(self) -> i64 { self.x as i64 } }  // Different type (i64 vs i32)
 }
 ```
