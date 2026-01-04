@@ -253,6 +253,8 @@ pub const N_UNDF: u8 = 0x00;
 
 // ARM64 relocation types (Mach-O)
 
+/// ARM64_RELOC_UNSIGNED: 64-bit absolute address
+pub const ARM64_RELOC_UNSIGNED: u32 = 0;
 /// ARM64_RELOC_BRANCH26: Branch instruction
 pub const ARM64_RELOC_BRANCH26: u32 = 2;
 /// ARM64_RELOC_PAGE21: ADRP instruction
