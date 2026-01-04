@@ -69,6 +69,22 @@ pub struct KnownSymbols {
     /// The `align_of` type intrinsic symbol.
     pub align_of: Spur,
 
+    // Pointer intrinsics (require unchecked block)
+    /// The `ptr_read` intrinsic symbol - reads value through pointer.
+    pub ptr_read: Spur,
+    /// The `ptr_write` intrinsic symbol - writes value through pointer.
+    pub ptr_write: Spur,
+    /// The `ptr_offset` intrinsic symbol - pointer arithmetic.
+    pub ptr_offset: Spur,
+    /// The `ptr_to_int` intrinsic symbol - converts pointer to usize.
+    pub ptr_to_int: Spur,
+    /// The `int_to_ptr` intrinsic symbol - converts usize to pointer.
+    pub int_to_ptr: Spur,
+    /// The `addr_of` intrinsic symbol - takes address of lvalue.
+    pub addr_of: Spur,
+    /// The `addr_of_mut` intrinsic symbol - takes mutable address of lvalue.
+    pub addr_of_mut: Spur,
+
     // Builtin type names
     /// The `String` type name symbol.
     pub string_type: Spur,
@@ -103,6 +119,15 @@ impl KnownSymbols {
             // Type intrinsics
             size_of: interner.get_or_intern_static("size_of"),
             align_of: interner.get_or_intern_static("align_of"),
+
+            // Pointer intrinsics
+            ptr_read: interner.get_or_intern_static("ptr_read"),
+            ptr_write: interner.get_or_intern_static("ptr_write"),
+            ptr_offset: interner.get_or_intern_static("ptr_offset"),
+            ptr_to_int: interner.get_or_intern_static("ptr_to_int"),
+            int_to_ptr: interner.get_or_intern_static("int_to_ptr"),
+            addr_of: interner.get_or_intern_static("addr_of"),
+            addr_of_mut: interner.get_or_intern_static("addr_of_mut"),
 
             // Builtin type names
             string_type: interner.get_or_intern_static("String"),
@@ -159,6 +184,13 @@ mod tests {
         assert_eq!(interner.resolve(&known.random_u64), "random_u64");
         assert_eq!(interner.resolve(&known.size_of), "size_of");
         assert_eq!(interner.resolve(&known.align_of), "align_of");
+        assert_eq!(interner.resolve(&known.ptr_read), "ptr_read");
+        assert_eq!(interner.resolve(&known.ptr_write), "ptr_write");
+        assert_eq!(interner.resolve(&known.ptr_offset), "ptr_offset");
+        assert_eq!(interner.resolve(&known.ptr_to_int), "ptr_to_int");
+        assert_eq!(interner.resolve(&known.int_to_ptr), "int_to_ptr");
+        assert_eq!(interner.resolve(&known.addr_of), "addr_of");
+        assert_eq!(interner.resolve(&known.addr_of_mut), "addr_of_mut");
         assert_eq!(interner.resolve(&known.string_type), "String");
         assert_eq!(interner.resolve(&known.main_fn), "main");
     }

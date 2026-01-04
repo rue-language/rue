@@ -1107,23 +1107,18 @@ fn resolve_type_from_ctx(ctx: &SemaContext<'_>, type_sym: Spur, span: Span) -> C
                     span,
                 ))
             }
-        } else if let Some((pointee_type, mutability)) =
-            crate::types::parse_pointer_type_syntax(type_name)
-        {
-            // Resolve the pointee type first
-            let pointee_sym = ctx.interner.get_or_intern(&pointee_type);
+        } else if let Some(pointee_type_str) = type_name.strip_prefix("ptr const ") {
+            // Pointer type syntax: ptr const T
+            let pointee_sym = ctx.interner.get_or_intern(pointee_type_str);
             let pointee_ty = resolve_type_from_ctx(ctx, pointee_sym, span)?;
-            // Create the pointer type
-            match mutability {
-                crate::types::PtrMutability::Const => {
-                    let ptr_id = ctx.get_or_create_ptr_const_type(pointee_ty);
-                    Ok(Type::PtrConst(ptr_id))
-                }
-                crate::types::PtrMutability::Mut => {
-                    let ptr_id = ctx.get_or_create_ptr_mut_type(pointee_ty);
-                    Ok(Type::PtrMut(ptr_id))
-                }
-            }
+            let ptr_type_id = ctx.type_pool.intern_ptr_const_from_type(pointee_ty);
+            Ok(Type::PtrConst(ptr_type_id))
+        } else if let Some(pointee_type_str) = type_name.strip_prefix("ptr mut ") {
+            // Pointer type syntax: ptr mut T
+            let pointee_sym = ctx.interner.get_or_intern(pointee_type_str);
+            let pointee_ty = resolve_type_from_ctx(ctx, pointee_sym, span)?;
+            let ptr_type_id = ctx.type_pool.intern_ptr_mut_from_type(pointee_ty);
+            Ok(Type::PtrMut(ptr_type_id))
         } else {
             Err(CompileError::new(
                 ErrorKind::UnknownType(type_name.to_string()),
@@ -7398,6 +7393,20 @@ impl<'a> Sema<'a> {
             self.analyze_random_u32_intrinsic(air, name, &args, span)
         } else if name == known.random_u64 {
             self.analyze_random_u64_intrinsic(air, name, &args, span)
+        } else if name == known.ptr_read {
+            self.analyze_ptr_read_intrinsic(air, name, &args, span, ctx)
+        } else if name == known.ptr_write {
+            self.analyze_ptr_write_intrinsic(air, name, &args, span, ctx)
+        } else if name == known.ptr_offset {
+            self.analyze_ptr_offset_intrinsic(air, name, &args, span, ctx)
+        } else if name == known.ptr_to_int {
+            self.analyze_ptr_to_int_intrinsic(air, name, &args, span, ctx)
+        } else if name == known.int_to_ptr {
+            self.analyze_int_to_ptr_intrinsic(air, name, inst_ref, &args, span, ctx)
+        } else if name == known.addr_of {
+            self.analyze_addr_of_intrinsic(air, &args, span, ctx, false)
+        } else if name == known.addr_of_mut {
+            self.analyze_addr_of_intrinsic(air, &args, span, ctx, true)
         } else {
             // Unknown intrinsic - resolve name for error message
             let intrinsic_name_str = self.interner.resolve(&name);
@@ -8416,8 +8425,7 @@ impl<'a> Sema<'a> {
             InstData::AnonStructType {
                 fields_start,
                 fields_len,
-                methods_start: _,
-                methods_len: _,
+                ..
             } => {
                 // Get the field declarations from the RIR
                 let field_decls = self.rir.get_field_decls(*fields_start, *fields_len);
@@ -8760,8 +8768,7 @@ impl<'a> Sema<'a> {
             InstData::AnonStructType {
                 fields_start,
                 fields_len,
-                methods_start: _,
-                methods_len: _,
+                ..
             } => {
                 let field_decls = self.rir.get_field_decls(*fields_start, *fields_len);
 
@@ -9592,5 +9599,398 @@ impl<'a> Sema<'a> {
         } else {
             self.resolve_type(type_sym, span)
         }
+    }
+
+    // ========================================================================
+    // Pointer intrinsics (require unchecked context)
+    // ========================================================================
+
+    /// Analyze @ptr_read intrinsic: reads value through pointer.
+    /// Signature: @ptr_read(ptr: ptr const T) -> T
+    fn analyze_ptr_read_intrinsic(
+        &mut self,
+        air: &mut Air,
+        name: Spur,
+        args: &[RirCallArg],
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AnalysisResult> {
+        // Require unchecked context
+        self.require_preview(PreviewFeature::UncheckedCode, "pointer intrinsics", span)?;
+
+        if args.len() != 1 {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicWrongArgCount {
+                    name: "ptr_read".to_string(),
+                    expected: 1,
+                    found: args.len(),
+                },
+                span,
+            ));
+        }
+
+        let ptr_result = self.analyze_inst(air, args[0].value, ctx)?;
+        let ptr_type = ptr_result.ty;
+
+        // Get the pointee type from the pointer type
+        let pointee_type = match ptr_type.kind() {
+            TypeKind::PtrConst(ptr_id) => self.type_pool.ptr_const_def(ptr_id),
+            TypeKind::PtrMut(ptr_id) => self.type_pool.ptr_mut_def(ptr_id),
+            _ => {
+                return Err(CompileError::new(
+                    ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
+                        name: "ptr_read".to_string(),
+                        expected: "ptr const T or ptr mut T".to_string(),
+                        found: self.format_type_name(ptr_type),
+                    })),
+                    span,
+                ));
+            }
+        };
+
+        // Create the intrinsic call instruction
+        let args_start = air.add_extra(&[ptr_result.air_ref.as_u32()]);
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::Intrinsic {
+                name,
+                args_start,
+                args_len: 1,
+            },
+            ty: pointee_type,
+            span,
+        });
+        Ok(AnalysisResult::new(air_ref, pointee_type))
+    }
+
+    /// Analyze @ptr_write intrinsic: writes value through pointer.
+    /// Signature: @ptr_write(ptr: ptr mut T, value: T) -> ()
+    fn analyze_ptr_write_intrinsic(
+        &mut self,
+        air: &mut Air,
+        name: Spur,
+        args: &[RirCallArg],
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AnalysisResult> {
+        // Require unchecked context
+        self.require_preview(PreviewFeature::UncheckedCode, "pointer intrinsics", span)?;
+
+        if args.len() != 2 {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicWrongArgCount {
+                    name: "ptr_write".to_string(),
+                    expected: 2,
+                    found: args.len(),
+                },
+                span,
+            ));
+        }
+
+        let ptr_result = self.analyze_inst(air, args[0].value, ctx)?;
+        let value_result = self.analyze_inst(air, args[1].value, ctx)?;
+        let ptr_type = ptr_result.ty;
+        let value_type = value_result.ty;
+
+        // Pointer must be ptr mut T
+        let pointee_type = match ptr_type.kind() {
+            TypeKind::PtrMut(ptr_id) => self.type_pool.ptr_mut_def(ptr_id),
+            TypeKind::PtrConst(_) => {
+                return Err(CompileError::new(
+                    ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
+                        name: "ptr_write".to_string(),
+                        expected: "ptr mut T (cannot write through ptr const)".to_string(),
+                        found: self.format_type_name(ptr_type),
+                    })),
+                    span,
+                ));
+            }
+            _ => {
+                return Err(CompileError::new(
+                    ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
+                        name: "ptr_write".to_string(),
+                        expected: "ptr mut T".to_string(),
+                        found: self.format_type_name(ptr_type),
+                    })),
+                    span,
+                ));
+            }
+        };
+
+        // Check that value type matches pointee type
+        if value_type != pointee_type && !value_type.is_error() && !value_type.is_never() {
+            return Err(CompileError::new(
+                ErrorKind::TypeMismatch {
+                    expected: self.format_type_name(pointee_type),
+                    found: self.format_type_name(value_type),
+                },
+                span,
+            ));
+        }
+
+        // Create the intrinsic call instruction
+        let args_start =
+            air.add_extra(&[ptr_result.air_ref.as_u32(), value_result.air_ref.as_u32()]);
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::Intrinsic {
+                name,
+                args_start,
+                args_len: 2,
+            },
+            ty: Type::Unit,
+            span,
+        });
+        Ok(AnalysisResult::new(air_ref, Type::Unit))
+    }
+
+    /// Analyze @ptr_offset intrinsic: pointer arithmetic.
+    /// Signature: @ptr_offset(ptr: ptr T, offset: i64) -> ptr T
+    fn analyze_ptr_offset_intrinsic(
+        &mut self,
+        air: &mut Air,
+        name: Spur,
+        args: &[RirCallArg],
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AnalysisResult> {
+        // Require unchecked context
+        self.require_preview(PreviewFeature::UncheckedCode, "pointer intrinsics", span)?;
+
+        if args.len() != 2 {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicWrongArgCount {
+                    name: "ptr_offset".to_string(),
+                    expected: 2,
+                    found: args.len(),
+                },
+                span,
+            ));
+        }
+
+        let ptr_result = self.analyze_inst(air, args[0].value, ctx)?;
+        let offset_result = self.analyze_inst(air, args[1].value, ctx)?;
+        let ptr_type = ptr_result.ty;
+        let offset_type = offset_result.ty;
+
+        // Validate pointer type
+        if !ptr_type.is_ptr() && !ptr_type.is_error() && !ptr_type.is_never() {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
+                    name: "ptr_offset".to_string(),
+                    expected: "ptr const T or ptr mut T".to_string(),
+                    found: self.format_type_name(ptr_type),
+                })),
+                span,
+            ));
+        }
+
+        // Validate offset type (must be integer)
+        if !offset_type.is_integer() && !offset_type.is_error() && !offset_type.is_never() {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
+                    name: "ptr_offset".to_string(),
+                    expected: "integer offset".to_string(),
+                    found: self.format_type_name(offset_type),
+                })),
+                span,
+            ));
+        }
+
+        // Create the intrinsic call instruction (returns same pointer type)
+        let args_start =
+            air.add_extra(&[ptr_result.air_ref.as_u32(), offset_result.air_ref.as_u32()]);
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::Intrinsic {
+                name,
+                args_start,
+                args_len: 2,
+            },
+            ty: ptr_type,
+            span,
+        });
+        Ok(AnalysisResult::new(air_ref, ptr_type))
+    }
+
+    /// Analyze @ptr_to_int intrinsic: converts pointer to u64.
+    /// Signature: @ptr_to_int(ptr: ptr T) -> u64
+    fn analyze_ptr_to_int_intrinsic(
+        &mut self,
+        air: &mut Air,
+        name: Spur,
+        args: &[RirCallArg],
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AnalysisResult> {
+        // Require unchecked context
+        self.require_preview(PreviewFeature::UncheckedCode, "pointer intrinsics", span)?;
+
+        if args.len() != 1 {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicWrongArgCount {
+                    name: "ptr_to_int".to_string(),
+                    expected: 1,
+                    found: args.len(),
+                },
+                span,
+            ));
+        }
+
+        let ptr_result = self.analyze_inst(air, args[0].value, ctx)?;
+        let ptr_type = ptr_result.ty;
+
+        // Validate pointer type
+        if !ptr_type.is_ptr() && !ptr_type.is_error() && !ptr_type.is_never() {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
+                    name: "ptr_to_int".to_string(),
+                    expected: "ptr const T or ptr mut T".to_string(),
+                    found: self.format_type_name(ptr_type),
+                })),
+                span,
+            ));
+        }
+
+        // Create the intrinsic call instruction (returns u64)
+        let args_start = air.add_extra(&[ptr_result.air_ref.as_u32()]);
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::Intrinsic {
+                name,
+                args_start,
+                args_len: 1,
+            },
+            ty: Type::U64,
+            span,
+        });
+        Ok(AnalysisResult::new(air_ref, Type::U64))
+    }
+
+    /// Analyze @int_to_ptr intrinsic: converts u64 to pointer.
+    /// Signature: @int_to_ptr(addr: u64) -> ptr mut T
+    /// The result type T is inferred from context (e.g., `let p: ptr mut i32 = @int_to_ptr(addr)`)
+    fn analyze_int_to_ptr_intrinsic(
+        &mut self,
+        air: &mut Air,
+        name: Spur,
+        inst_ref: InstRef,
+        args: &[RirCallArg],
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AnalysisResult> {
+        // Require unchecked context
+        self.require_preview(PreviewFeature::UncheckedCode, "pointer intrinsics", span)?;
+
+        if args.len() != 1 {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicWrongArgCount {
+                    name: "int_to_ptr".to_string(),
+                    expected: 1,
+                    found: args.len(),
+                },
+                span,
+            ));
+        }
+
+        let addr_result = self.analyze_inst(air, args[0].value, ctx)?;
+        let addr_type = addr_result.ty;
+
+        // Validate address type (must be u64)
+        if addr_type != Type::U64 && !addr_type.is_error() && !addr_type.is_never() {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
+                    name: "int_to_ptr".to_string(),
+                    expected: "u64".to_string(),
+                    found: self.format_type_name(addr_type),
+                })),
+                span,
+            ));
+        }
+
+        // Get the result type from HM inference (must be a ptr mut T)
+        let result_type = Self::get_resolved_type(ctx, inst_ref, span, "@int_to_ptr intrinsic")?;
+
+        // Validate that the inferred type is a mutable pointer
+        if !result_type.is_ptr_mut() && !result_type.is_error() && !result_type.is_never() {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
+                    name: "int_to_ptr".to_string(),
+                    expected: "ptr mut T".to_string(),
+                    found: self.format_type_name(result_type),
+                })),
+                span,
+            ));
+        }
+
+        // Create the intrinsic call instruction
+        let args_start = air.add_extra(&[addr_result.air_ref.as_u32()]);
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::Intrinsic {
+                name,
+                args_start,
+                args_len: 1,
+            },
+            ty: result_type,
+            span,
+        });
+        Ok(AnalysisResult::new(air_ref, result_type))
+    }
+
+    /// Analyze @addr_of / @addr_of_mut intrinsics: takes address of lvalue.
+    /// Signature: @addr_of(lvalue) -> ptr const T
+    /// Signature: @addr_of_mut(lvalue) -> ptr mut T
+    fn analyze_addr_of_intrinsic(
+        &mut self,
+        air: &mut Air,
+        args: &[RirCallArg],
+        span: Span,
+        ctx: &mut AnalysisContext,
+        is_mut: bool,
+    ) -> CompileResult<AnalysisResult> {
+        let intrinsic_name = if is_mut { "addr_of_mut" } else { "addr_of" };
+
+        // Require unchecked context
+        self.require_preview(PreviewFeature::UncheckedCode, "pointer intrinsics", span)?;
+
+        if args.len() != 1 {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicWrongArgCount {
+                    name: intrinsic_name.to_string(),
+                    expected: 1,
+                    found: args.len(),
+                },
+                span,
+            ));
+        }
+
+        let arg_result = self.analyze_inst(air, args[0].value, ctx)?;
+        let pointee_type = arg_result.ty;
+
+        // For addr_of, we need the argument to be an lvalue (addressable)
+        // This is validated at the RIR level - here we just compute the result type
+
+        // Create the pointer type
+        let result_type = if is_mut {
+            let ptr_type_id = self.type_pool.intern_ptr_mut_from_type(pointee_type);
+            Type::PtrMut(ptr_type_id)
+        } else {
+            let ptr_type_id = self.type_pool.intern_ptr_const_from_type(pointee_type);
+            Type::PtrConst(ptr_type_id)
+        };
+
+        // Create the intrinsic call instruction
+        let name = if is_mut {
+            self.known.addr_of_mut
+        } else {
+            self.known.addr_of
+        };
+        let args_start = air.add_extra(&[arg_result.air_ref.as_u32()]);
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::Intrinsic {
+                name,
+                args_start,
+                args_len: 1,
+            },
+            ty: result_type,
+            span,
+        });
+        Ok(AnalysisResult::new(air_ref, result_type))
     }
 }

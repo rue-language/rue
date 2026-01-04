@@ -78,16 +78,35 @@ impl ArrayTypeId {
     }
 }
 
-/// A unique identifier for a pointer type.
-/// Raw pointers come in two forms: `ptr const T` (immutable) and `ptr mut T` (mutable).
+/// A unique identifier for a `ptr const T` type.
+/// This is needed because Type is Copy, so we can't use Box<Type> for the pointee type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct PtrTypeId(pub u32);
+pub struct PtrConstTypeId(pub u32);
 
-impl PtrTypeId {
-    /// Create a PtrTypeId from a pool index.
+impl PtrConstTypeId {
+    /// Create a PtrConstTypeId from a pool index.
     #[inline]
     pub fn from_pool_index(pool_index: u32) -> Self {
-        PtrTypeId(pool_index)
+        PtrConstTypeId(pool_index)
+    }
+
+    /// Get the pool index for this pointer type.
+    #[inline]
+    pub fn pool_index(self) -> u32 {
+        self.0
+    }
+}
+
+/// A unique identifier for a `ptr mut T` type.
+/// This is needed because Type is Copy, so we can't use Box<Type> for the pointee type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PtrMutTypeId(pub u32);
+
+impl PtrMutTypeId {
+    /// Create a PtrMutTypeId from a pool index.
+    #[inline]
+    pub fn from_pool_index(pool_index: u32) -> Self {
+        PtrMutTypeId(pool_index)
     }
 
     /// Get the pool index for this pointer type.
@@ -156,9 +175,9 @@ pub enum TypeKind {
     /// Fixed-size array type: [T; N]
     Array(ArrayTypeId),
     /// Raw pointer to immutable data: ptr const T
-    PtrConst(PtrTypeId),
+    PtrConst(PtrConstTypeId),
     /// Raw pointer to mutable data: ptr mut T
-    PtrMut(PtrTypeId),
+    PtrMut(PtrMutTypeId),
     /// A module type (from @import)
     Module(ModuleId),
     /// An error type (used during type checking to continue after errors)
@@ -231,8 +250,8 @@ impl std::fmt::Debug for Type {
             TypeKind::Struct(id) => write!(f, "Type::Struct(StructId({}))", id.0),
             TypeKind::Enum(id) => write!(f, "Type::Enum(EnumId({}))", id.0),
             TypeKind::Array(id) => write!(f, "Type::Array(ArrayTypeId({}))", id.0),
-            TypeKind::PtrConst(id) => write!(f, "Type::PtrConst(PtrTypeId({}))", id.0),
-            TypeKind::PtrMut(id) => write!(f, "Type::PtrMut(PtrTypeId({}))", id.0),
+            TypeKind::PtrConst(id) => write!(f, "Type::PtrConst(PtrConstTypeId({}))", id.0),
+            TypeKind::PtrMut(id) => write!(f, "Type::PtrMut(PtrMutTypeId({}))", id.0),
             TypeKind::Module(id) => write!(f, "Type::Module(ModuleId({}))", id.0),
         }
     }
@@ -240,7 +259,7 @@ impl std::fmt::Debug for Type {
 
 // Composite type tag constants
 // These are used in the low byte of the u32 encoding to identify composite types.
-// The high 24 bits contain the ID (StructId, EnumId, ArrayTypeId, ModuleId, or PtrTypeId).
+// The high 24 bits contain the ID (StructId, EnumId, ArrayTypeId, ModuleId, or pointer type IDs).
 const TAG_STRUCT: u32 = 100;
 const TAG_ENUM: u32 = 101;
 const TAG_ARRAY: u32 = 102;
@@ -298,22 +317,22 @@ impl Type {
         Type(TAG_ARRAY | ((id.0 as u32) << 8))
     }
 
+    /// Create a raw const pointer type from a PtrConstTypeId.
+    #[inline]
+    pub const fn PtrConst(id: PtrConstTypeId) -> Type {
+        Type(TAG_PTR_CONST | ((id.0 as u32) << 8))
+    }
+
+    /// Create a raw mut pointer type from a PtrMutTypeId.
+    #[inline]
+    pub const fn PtrMut(id: PtrMutTypeId) -> Type {
+        Type(TAG_PTR_MUT | ((id.0 as u32) << 8))
+    }
+
     /// Create a module type from a ModuleId.
     #[inline]
     pub const fn Module(id: ModuleId) -> Type {
         Type(TAG_MODULE | ((id.0 as u32) << 8))
-    }
-
-    /// Create a const pointer type from a PtrTypeId.
-    #[inline]
-    pub const fn PtrConst(id: PtrTypeId) -> Type {
-        Type(TAG_PTR_CONST | ((id.0 as u32) << 8))
-    }
-
-    /// Create a mutable pointer type from a PtrTypeId.
-    #[inline]
-    pub const fn PtrMut(id: PtrTypeId) -> Type {
-        Type(TAG_PTR_MUT | ((id.0 as u32) << 8))
     }
 }
 
@@ -480,15 +499,15 @@ impl Type {
             TAG_STRUCT => TypeKind::Struct(StructId(self.0 >> 8)),
             TAG_ENUM => TypeKind::Enum(EnumId(self.0 >> 8)),
             TAG_ARRAY => TypeKind::Array(ArrayTypeId(self.0 >> 8)),
+            TAG_PTR_CONST => TypeKind::PtrConst(PtrConstTypeId(self.0 >> 8)),
+            TAG_PTR_MUT => TypeKind::PtrMut(PtrMutTypeId(self.0 >> 8)),
             TAG_MODULE => TypeKind::Module(ModuleId(self.0 >> 8)),
-            TAG_PTR_CONST => TypeKind::PtrConst(PtrTypeId(self.0 >> 8)),
-            TAG_PTR_MUT => TypeKind::PtrMut(PtrTypeId(self.0 >> 8)),
             _ => panic!("invalid Type encoding: {}", self.0),
         }
     }
 
     /// Get a human-readable name for this type.
-    /// Note: For struct, array, and pointer types, this returns a placeholder.
+    /// Note: For struct and array types, this returns a placeholder.
     /// Use `type_name_with_structs` for proper struct/array names.
     pub fn name(&self) -> &'static str {
         match self.kind() {
@@ -603,39 +622,39 @@ impl Type {
         }
     }
 
-    /// Check if this is a const pointer type (ptr const T).
+    /// Check if this is a raw const pointer type.
     #[inline]
     pub fn is_ptr_const(&self) -> bool {
         (self.0 & 0xFF) == TAG_PTR_CONST
     }
 
-    /// Get the pointer type ID if this is a const pointer type.
+    /// Get the pointer type ID if this is a ptr const type.
     #[inline]
-    pub fn as_ptr_const(&self) -> Option<PtrTypeId> {
+    pub fn as_ptr_const(&self) -> Option<PtrConstTypeId> {
         if self.is_ptr_const() {
-            Some(PtrTypeId(self.0 >> 8))
+            Some(PtrConstTypeId(self.0 >> 8))
         } else {
             None
         }
     }
 
-    /// Check if this is a mutable pointer type (ptr mut T).
+    /// Check if this is a raw mut pointer type.
     #[inline]
     pub fn is_ptr_mut(&self) -> bool {
         (self.0 & 0xFF) == TAG_PTR_MUT
     }
 
-    /// Get the pointer type ID if this is a mutable pointer type.
+    /// Get the pointer type ID if this is a ptr mut type.
     #[inline]
-    pub fn as_ptr_mut(&self) -> Option<PtrTypeId> {
+    pub fn as_ptr_mut(&self) -> Option<PtrMutTypeId> {
         if self.is_ptr_mut() {
-            Some(PtrTypeId(self.0 >> 8))
+            Some(PtrMutTypeId(self.0 >> 8))
         } else {
             None
         }
     }
 
-    /// Check if this is any pointer type (const or mutable).
+    /// Check if this is any raw pointer type (ptr const or ptr mut).
     #[inline]
     pub fn is_ptr(&self) -> bool {
         let tag = self.0 & 0xFF;
@@ -656,7 +675,6 @@ impl Type {
     /// - Boolean
     /// - Unit
     /// - Enum types
-    /// - Pointer types (raw pointers are just addresses)
     /// - Never type and Error type (for convenience in error recovery)
     ///
     /// Non-Copy types (move types) are:
@@ -677,8 +695,6 @@ impl Type {
             TAG_ENUM => true,
             // Module types are Copy (they're just compile-time namespace references)
             TAG_MODULE => true,
-            // Pointer types are Copy (they're just addresses)
-            TAG_PTR_CONST | TAG_PTR_MUT => true,
             // Struct types are move types by default
             TAG_STRUCT => false,
             // Arrays may be Copy if element type is Copy (need ArrayTypeDef to check)
@@ -802,6 +818,29 @@ impl std::fmt::Display for Type {
     }
 }
 
+/// Pointer mutability - whether the pointed-to data can be modified.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PtrMutability {
+    /// Immutable pointer (`ptr const T`)
+    Const,
+    /// Mutable pointer (`ptr mut T`)
+    Mut,
+}
+
+/// Parse pointer type syntax "ptr const T" or "ptr mut T" and return (pointee_type_str, mutability).
+///
+/// Returns `None` if the string doesn't match pointer syntax.
+pub fn parse_pointer_type_syntax(type_name: &str) -> Option<(String, PtrMutability)> {
+    let type_name = type_name.trim();
+    if let Some(rest) = type_name.strip_prefix("ptr const ") {
+        Some((rest.trim().to_string(), PtrMutability::Const))
+    } else if let Some(rest) = type_name.strip_prefix("ptr mut ") {
+        Some((rest.trim().to_string(), PtrMutability::Mut))
+    } else {
+        None
+    }
+}
+
 /// Parse array type syntax "[T; N]" and return (element_type_str, length).
 ///
 /// This handles nested arrays correctly by tracking bracket depth.
@@ -834,39 +873,6 @@ pub fn parse_array_type_syntax(type_name: &str) -> Option<(String, u64)> {
     let length: u64 = length_str.parse().ok()?;
 
     Some((element_type, length))
-}
-
-/// Pointer mutability for parsed pointer types.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PtrMutability {
-    /// `ptr const T` - pointer to immutable data
-    Const,
-    /// `ptr mut T` - pointer to mutable data
-    Mut,
-}
-
-/// Parse pointer type syntax "ptr const T" or "ptr mut T" and return (pointee_type_str, mutability).
-///
-/// This handles complex pointee types including arrays and nested pointers.
-/// For example, `ptr const [i32; 3]` returns `("[i32; 3]", PtrMutability::Const)`.
-pub fn parse_pointer_type_syntax(type_name: &str) -> Option<(String, PtrMutability)> {
-    let type_name = type_name.trim();
-
-    if let Some(rest) = type_name.strip_prefix("ptr const ") {
-        let pointee = rest.trim().to_string();
-        if !pointee.is_empty() {
-            return Some((pointee, PtrMutability::Const));
-        }
-    }
-
-    if let Some(rest) = type_name.strip_prefix("ptr mut ") {
-        let pointee = rest.trim().to_string();
-        if !pointee.is_empty() {
-            return Some((pointee, PtrMutability::Mut));
-        }
-    }
-
-    None
 }
 
 #[cfg(test)]

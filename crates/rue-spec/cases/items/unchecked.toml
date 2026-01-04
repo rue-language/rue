@@ -110,16 +110,17 @@ fn main() -> i32 {
 exit_code = 42
 
 # =============================================================================
-# Pointer type syntax - Phase 2: Semantic analysis understands pointer types
+# Pointer type syntax - Phase 2 adds semantic analysis
 # =============================================================================
 
-# These tests verify pointer types are recognized by the semantic analyzer.
-# Phase 2 adds pointer type support to the type system.
+# These tests verify pointer types are recognized in the type system.
+# Phase 2 implemented pointer types (PtrConst, PtrMut).
 
 [[case]]
 name = "ptr_const_type_in_param"
 spec = ["9.1:9", "9.1:10"]
 preview = "unchecked_code"
+preview_should_pass = true
 source = """
 fn takes_ptr(p: ptr const i32) -> i32 { 0 }
 fn main() -> i32 { 0 }
@@ -130,6 +131,7 @@ exit_code = 0
 name = "ptr_mut_type_in_param"
 spec = ["9.1:9"]
 preview = "unchecked_code"
+preview_should_pass = true
 source = """
 fn takes_mut_ptr(p: ptr mut i32) -> i32 { 0 }
 fn main() -> i32 { 0 }
@@ -140,10 +142,11 @@ exit_code = 0
 name = "ptr_const_return_type"
 spec = ["9.1:9"]
 preview = "unchecked_code"
+preview_should_pass = true
 source = """
-unchecked fn get_ptr() -> ptr const i32 {
-    @panic()
-}
+// Test that ptr const T can be used as a return type
+// Pass the pointer through to verify the return type is recognized
+fn identity_ptr(p: ptr const i32) -> ptr const i32 { p }
 fn main() -> i32 { 0 }
 """
 exit_code = 0
@@ -152,6 +155,7 @@ exit_code = 0
 name = "ptr_to_struct_type"
 spec = ["9.1:9"]
 preview = "unchecked_code"
+preview_should_pass = true
 source = """
 struct Point { x: i32, y: i32 }
 fn takes_point_ptr(p: ptr const Point) -> i32 { 0 }

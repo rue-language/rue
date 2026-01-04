@@ -40,7 +40,9 @@ use std::sync::RwLock;
 
 use lasso::Spur;
 
-use crate::types::{ArrayTypeId, EnumDef, EnumId, PtrTypeId, StructDef, StructId, Type, TypeKind};
+use crate::types::{
+    ArrayTypeId, EnumDef, EnumId, PtrConstTypeId, PtrMutTypeId, StructDef, StructId, Type, TypeKind,
+};
 
 /// Interned type index - 32 bits, Copy, cheap comparison.
 ///
@@ -159,7 +161,7 @@ impl std::fmt::Debug for InternedType {
 /// # Type Categories
 ///
 /// - **Struct** and **Enum** are nominal types: identity comes from the name
-/// - **Array** and **Pointer** are structural types: identity comes from element type
+/// - **Array**, **PtrConst**, and **PtrMut** are structural types: identity comes from element/pointee type
 #[derive(Debug, Clone)]
 pub enum TypeData {
     /// User-defined struct (nominal type).
@@ -178,14 +180,14 @@ pub enum TypeData {
     /// regardless of where they were defined.
     Array { element: InternedType, len: u64 },
 
-    /// Raw pointer to immutable data: `ptr const T` (structural type).
+    /// Raw const pointer (structural type).
     ///
-    /// Const pointers with the same pointee type are the same type.
+    /// `ptr const T` - pointer to immutable data.
     PtrConst { pointee: InternedType },
 
-    /// Raw pointer to mutable data: `ptr mut T` (structural type).
+    /// Raw mut pointer (structural type).
     ///
-    /// Mut pointers with the same pointee type are the same type.
+    /// `ptr mut T` - pointer to mutable data.
     PtrMut { pointee: InternedType },
 }
 
@@ -261,17 +263,17 @@ struct TypeInternPoolInner {
     /// Structural type deduplication: (element, len) -> InternedType for arrays.
     array_map: HashMap<(InternedType, u64), InternedType>,
 
-    /// Nominal type lookup: name -> InternedType for structs.
-    struct_by_name: HashMap<Spur, InternedType>,
-
-    /// Nominal type lookup: name -> InternedType for enums.
-    enum_by_name: HashMap<Spur, InternedType>,
-
     /// Structural type deduplication: pointee -> InternedType for ptr const.
     ptr_const_map: HashMap<InternedType, InternedType>,
 
     /// Structural type deduplication: pointee -> InternedType for ptr mut.
     ptr_mut_map: HashMap<InternedType, InternedType>,
+
+    /// Nominal type lookup: name -> InternedType for structs.
+    struct_by_name: HashMap<Spur, InternedType>,
+
+    /// Nominal type lookup: name -> InternedType for enums.
+    enum_by_name: HashMap<Spur, InternedType>,
 }
 
 impl TypeInternPool {
@@ -281,10 +283,10 @@ impl TypeInternPool {
             inner: RwLock::new(TypeInternPoolInner {
                 types: Vec::new(),
                 array_map: HashMap::new(),
-                struct_by_name: HashMap::new(),
-                enum_by_name: HashMap::new(),
                 ptr_const_map: HashMap::new(),
                 ptr_mut_map: HashMap::new(),
+                struct_by_name: HashMap::new(),
+                enum_by_name: HashMap::new(),
             }),
         }
     }
@@ -401,9 +403,9 @@ impl TypeInternPool {
         interned
     }
 
-    /// Intern a const pointer type: `ptr const T` (structural - deduplicated by pointee).
+    /// Intern a ptr const type (structural - deduplicates).
     ///
-    /// Returns the canonical `InternedType` for const pointers to this pointee type.
+    /// Returns the canonical `InternedType` for pointers to this pointee type.
     /// If an identical pointer type already exists, returns the existing type.
     ///
     /// # Panics
@@ -436,7 +438,7 @@ impl TypeInternPool {
         interned
     }
 
-    /// Intern a mutable pointer type: `ptr mut T` (structural - deduplicated by pointee).
+    /// Intern a ptr mut type (structural - deduplicates).
     ///
     /// Returns the canonical `InternedType` for mutable pointers to this pointee type.
     /// If an identical pointer type already exists, returns the existing type.
@@ -730,56 +732,57 @@ impl TypeInternPool {
         ))
     }
 
-    /// Intern a const pointer type from a Type pointee.
-    ///
-    /// This is a helper method that converts the Type to InternedType
-    /// and then interns the pointer.
+    /// Intern a ptr const type from a Type pointee.
     ///
     /// # Panics
     ///
     /// Panics if the pointee type contains a struct/enum that isn't in the pool.
-    pub fn intern_ptr_const_from_type(&self, pointee_type: Type) -> PtrTypeId {
+    pub fn intern_ptr_const_from_type(&self, pointee_type: Type) -> PtrConstTypeId {
         let pointee_interned = Self::type_to_interned_recursive(pointee_type);
         let ptr_interned = self.intern_ptr_const(pointee_interned);
-        PtrTypeId::from_pool_index(
+        PtrConstTypeId::from_pool_index(
             ptr_interned
                 .pool_index()
-                .expect("pointer must have pool index"),
+                .expect("ptr const must have pool index"),
         )
     }
 
-    /// Intern a mutable pointer type from a Type pointee.
-    ///
-    /// This is a helper method that converts the Type to InternedType
-    /// and then interns the pointer.
+    /// Intern a ptr mut type from a Type pointee.
     ///
     /// # Panics
     ///
     /// Panics if the pointee type contains a struct/enum that isn't in the pool.
-    pub fn intern_ptr_mut_from_type(&self, pointee_type: Type) -> PtrTypeId {
+    pub fn intern_ptr_mut_from_type(&self, pointee_type: Type) -> PtrMutTypeId {
         let pointee_interned = Self::type_to_interned_recursive(pointee_type);
         let ptr_interned = self.intern_ptr_mut(pointee_interned);
-        PtrTypeId::from_pool_index(
+        PtrMutTypeId::from_pool_index(
             ptr_interned
                 .pool_index()
-                .expect("pointer must have pool index"),
+                .expect("ptr mut must have pool index"),
         )
     }
 
-    /// Get the pointee type for a pointer type.
-    ///
-    /// # Panics
-    ///
-    /// Panics if ptr_id is not a valid pointer type in the pool.
-    pub fn get_ptr_pointee(&self, ptr_id: PtrTypeId) -> Type {
+    /// Get ptr const pointee type if this is a ptr const type.
+    pub fn ptr_const_def(&self, ptr_id: PtrConstTypeId) -> Type {
         let inner = self.inner.read().expect("TypeInternPool lock poisoned");
-        let pool_index = ptr_id.pool_index() as usize;
+        let pool_index = ptr_id.0 as usize;
         match &inner.types[pool_index] {
-            TypeData::PtrConst { pointee } | TypeData::PtrMut { pointee } => {
-                Self::interned_to_type_recursive(*pointee, &inner)
-            }
+            TypeData::PtrConst { pointee } => Self::interned_to_type_recursive(*pointee, &inner),
             other => panic!(
-                "Expected pointer at pool index {}, got {:?}",
+                "Expected ptr const at pool index {}, got {:?}",
+                pool_index, other
+            ),
+        }
+    }
+
+    /// Get ptr mut pointee type if this is a ptr mut type.
+    pub fn ptr_mut_def(&self, ptr_id: PtrMutTypeId) -> Type {
+        let inner = self.inner.read().expect("TypeInternPool lock poisoned");
+        let pool_index = ptr_id.0 as usize;
+        match &inner.types[pool_index] {
+            TypeData::PtrMut { pointee } => Self::interned_to_type_recursive(*pointee, &inner),
+            other => panic!(
+                "Expected ptr mut at pool index {}, got {:?}",
                 pool_index, other
             ),
         }
@@ -812,8 +815,10 @@ impl TypeInternPool {
             TypeData::Struct(_) => Type::Struct(StructId::from_pool_index(pool_index)),
             TypeData::Enum(_) => Type::Enum(EnumId::from_pool_index(pool_index)),
             TypeData::Array { .. } => Type::Array(ArrayTypeId::from_pool_index(pool_index)),
-            TypeData::PtrConst { .. } => Type::PtrConst(PtrTypeId::from_pool_index(pool_index)),
-            TypeData::PtrMut { .. } => Type::PtrMut(PtrTypeId::from_pool_index(pool_index)),
+            TypeData::PtrConst { .. } => {
+                Type::PtrConst(PtrConstTypeId::from_pool_index(pool_index))
+            }
+            TypeData::PtrMut { .. } => Type::PtrMut(PtrMutTypeId::from_pool_index(pool_index)),
         }
     }
 
@@ -926,7 +931,7 @@ impl TypeInternPool {
                 TypeData::Enum(_) => enum_count += 1,
                 TypeData::Array { .. } => array_count += 1,
                 TypeData::PtrConst { .. } | TypeData::PtrMut { .. } => {
-                    // Pointer types counted separately if needed
+                    // Pointer types are not counted separately in stats
                 }
             }
         }
@@ -1025,10 +1030,10 @@ impl Clone for TypeInternPool {
             inner: RwLock::new(TypeInternPoolInner {
                 types: inner.types.clone(),
                 array_map: inner.array_map.clone(),
-                struct_by_name: inner.struct_by_name.clone(),
-                enum_by_name: inner.enum_by_name.clone(),
                 ptr_const_map: inner.ptr_const_map.clone(),
                 ptr_mut_map: inner.ptr_mut_map.clone(),
+                struct_by_name: inner.struct_by_name.clone(),
+                enum_by_name: inner.enum_by_name.clone(),
             }),
         }
     }

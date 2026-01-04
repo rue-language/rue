@@ -38,12 +38,12 @@ impl<'a> Sema<'a> {
                 format!("[{}; {}]", self.format_type_name(element_type), length)
             }
             TypeKind::PtrConst(ptr_id) => {
-                let pointee_type = self.type_pool.get_ptr_pointee(ptr_id);
-                format!("ptr const {}", self.format_type_name(pointee_type))
+                let pointee = self.type_pool.ptr_const_def(ptr_id);
+                format!("ptr const {}", self.format_type_name(pointee))
             }
             TypeKind::PtrMut(ptr_id) => {
-                let pointee_type = self.type_pool.get_ptr_pointee(ptr_id);
-                format!("ptr mut {}", self.format_type_name(pointee_type))
+                let pointee = self.type_pool.ptr_mut_def(ptr_id);
+                format!("ptr mut {}", self.format_type_name(pointee))
             }
             TypeKind::Module(_) => "<module>".to_string(),
             TypeKind::ComptimeType => "type".to_string(),
@@ -81,12 +81,12 @@ impl<'a> Sema<'a> {
                 let (element_type, _length) = self.type_pool.array_def(array_id);
                 self.is_type_copy(element_type)
             }
-            // Pointer types are Copy (they're just addresses)
-            TypeKind::PtrConst(_) | TypeKind::PtrMut(_) => true,
             // Module types are Copy (they're just compile-time namespace references)
             TypeKind::Module(_) => true,
             // ComptimeType is Copy (only exists at comptime anyway)
             TypeKind::ComptimeType => true,
+            // Pointer types are Copy (they're just addresses)
+            TypeKind::PtrConst(_) | TypeKind::PtrMut(_) => true,
         }
     }
 
@@ -168,6 +168,18 @@ impl<'a> Sema<'a> {
                 // Get or create the array type
                 let array_type_id = self.get_or_create_array_type(element_ty, length);
                 Ok(Type::Array(array_type_id))
+            } else if let Some(pointee_type_str) = type_name.strip_prefix("ptr const ") {
+                // Pointer type syntax: ptr const T
+                let pointee_sym = self.interner.get_or_intern(pointee_type_str);
+                let pointee_ty = self.resolve_type(pointee_sym, span)?;
+                let ptr_type_id = self.type_pool.intern_ptr_const_from_type(pointee_ty);
+                Ok(Type::PtrConst(ptr_type_id))
+            } else if let Some(pointee_type_str) = type_name.strip_prefix("ptr mut ") {
+                // Pointer type syntax: ptr mut T
+                let pointee_sym = self.interner.get_or_intern(pointee_type_str);
+                let pointee_ty = self.resolve_type(pointee_sym, span)?;
+                let ptr_type_id = self.type_pool.intern_ptr_mut_from_type(pointee_ty);
+                Ok(Type::PtrMut(ptr_type_id))
             } else {
                 Err(CompileError::new(
                     ErrorKind::UnknownType(type_name.to_string()),
@@ -230,6 +242,18 @@ impl<'a> Sema<'a> {
             // Get or create the array type
             let array_type_id = self.get_or_create_array_type(element_ty, length);
             Some(Type::Array(array_type_id))
+        } else if let Some(pointee_type_str) = type_name.strip_prefix("ptr const ") {
+            // Pointer type syntax: ptr const T
+            let pointee_sym = self.interner.get_or_intern(pointee_type_str);
+            let pointee_ty = self.resolve_type_for_comptime_with_subst(pointee_sym, type_subst)?;
+            let ptr_type_id = self.type_pool.intern_ptr_const_from_type(pointee_ty);
+            Some(Type::PtrConst(ptr_type_id))
+        } else if let Some(pointee_type_str) = type_name.strip_prefix("ptr mut ") {
+            // Pointer type syntax: ptr mut T
+            let pointee_sym = self.interner.get_or_intern(pointee_type_str);
+            let pointee_ty = self.resolve_type_for_comptime_with_subst(pointee_sym, type_subst)?;
+            let ptr_type_id = self.type_pool.intern_ptr_mut_from_type(pointee_ty);
+            Some(Type::PtrMut(ptr_type_id))
         } else {
             None // Unknown type
         }
@@ -331,10 +355,10 @@ impl<'a> Sema<'a> {
                 let element_slots = self.abi_slot_count(element_type);
                 element_slots * length as u32
             }
-            // Pointer types take 1 slot (they're 64-bit addresses)
-            TypeKind::PtrConst(_) | TypeKind::PtrMut(_) => 1,
             // Module types don't take ABI slots (they're compile-time only)
             TypeKind::Module(_) => 0,
+            // Pointer types take 1 slot (64-bit address)
+            TypeKind::PtrConst(_) | TypeKind::PtrMut(_) => 1,
         }
     }
 
