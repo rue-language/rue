@@ -233,17 +233,12 @@ impl<'a> Sema<'a> {
                     let is_copy = self.has_copy_directive(&directives);
                     let is_handle = self.has_handle_directive(&directives);
 
-                    // Linear types require preview feature
-                    if *is_linear {
-                        self.require_preview(PreviewFeature::AffineMvs, "linear types", inst.span)?;
-
-                        // Linear types cannot be @copy
-                        if is_copy {
-                            return Err(CompileError::new(
-                                ErrorKind::LinearStructCopy(struct_name.clone()),
-                                inst.span,
-                            ));
-                        }
+                    // Linear types cannot be @copy
+                    if *is_linear && is_copy {
+                        return Err(CompileError::new(
+                            ErrorKind::LinearStructCopy(struct_name.clone()),
+                            inst.span,
+                        ));
                     }
 
                     // Create placeholder struct def (fields will be resolved in phase 2)

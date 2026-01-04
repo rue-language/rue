@@ -1,12 +1,11 @@
 ---
 id: 0008
 title: Affine Types and Mutable Value Semantics
-status: accepted
+status: implemented
 tags: [types, semantics, ownership]
-feature-flag: affine-mvs
 created: 2025-12-24
 accepted: 2025-12-24
-implemented: 2025-12-31
+implemented: 2026-01-04
 spec-sections: ["3.8"]
 superseded-by:
 ---
@@ -15,7 +14,7 @@ superseded-by:
 
 ## Status
 
-Accepted
+Implemented
 
 ## Summary
 

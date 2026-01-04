@@ -252,9 +252,6 @@ pub enum PreviewFeature {
     /// Testing infrastructure feature - permanently unstable.
     /// Used to verify the preview feature gating mechanism works.
     TestInfra,
-    /// Affine types and mutable value semantics.
-    /// See ADR-0008 for the full design.
-    AffineMvs,
     /// Module type access (e.g., `module.StructName`, `module.EnumName::Variant`).
     /// Part of the module system (ADR-0026) - accessing types through modules.
     ModuleTypes,
@@ -285,7 +282,6 @@ impl PreviewFeature {
     pub fn name(&self) -> &'static str {
         match *self {
             PreviewFeature::TestInfra => "test_infra",
-            PreviewFeature::AffineMvs => "affine_mvs",
             PreviewFeature::ModuleTypes => "module_types",
             PreviewFeature::AnonStructMethods => "anon_struct_methods",
             PreviewFeature::UncheckedCode => "unchecked_code",
@@ -297,7 +293,6 @@ impl PreviewFeature {
     pub fn adr(&self) -> &'static str {
         match *self {
             PreviewFeature::TestInfra => "ADR-0005",
-            PreviewFeature::AffineMvs => "ADR-0008",
             PreviewFeature::ModuleTypes => "ADR-0026",
             PreviewFeature::AnonStructMethods => "ADR-0029",
             PreviewFeature::UncheckedCode => "ADR-0028",
@@ -308,7 +303,6 @@ impl PreviewFeature {
     pub fn all() -> &'static [PreviewFeature] {
         &[
             PreviewFeature::TestInfra,
-            PreviewFeature::AffineMvs,
             PreviewFeature::ModuleTypes,
             PreviewFeature::AnonStructMethods,
             PreviewFeature::UncheckedCode,
@@ -335,7 +329,6 @@ impl std::str::FromStr for PreviewFeature {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "test_infra" => Ok(PreviewFeature::TestInfra),
-            "affine_mvs" => Ok(PreviewFeature::AffineMvs),
             "module_types" => Ok(PreviewFeature::ModuleTypes),
             "anon_struct_methods" => Ok(PreviewFeature::AnonStructMethods),
             "unchecked_code" => Ok(PreviewFeature::UncheckedCode),
@@ -1854,7 +1847,7 @@ mod tests {
         let names = PreviewFeature::all_names();
         assert_eq!(
             names,
-            "test_infra, affine_mvs, module_types, anon_struct_methods, unchecked_code"
+            "test_infra, module_types, anon_struct_methods, unchecked_code"
         );
     }
 
