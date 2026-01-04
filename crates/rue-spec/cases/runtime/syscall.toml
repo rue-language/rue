@@ -87,12 +87,11 @@ compile_fail = true
 error_contains = "wrong number of arguments"
 
 # Test that @syscall accepts up to 7 arguments
-# TODO: This test currently fails - the syscall doesn't terminate with max args.
-# Filed as rue-8qt6 for investigation.
 [[case]]
 name = "syscall_max_args"
 spec = ["9.2:4"]
 preview = "unchecked_code"
+only_on = ["x86-64-linux"]
 source = """
 fn main() -> i32 {
     // Test that we can pass 7 arguments (syscall number + 6 args)
@@ -155,20 +154,46 @@ fn main() -> i32 {
 compile_fail = true
 error_contains = "type mismatch"
 
-# Test that @syscall returns i64
-# TODO: This test currently fails due to checked block type inference issue.
-# Filed as rue-8qt6 for investigation.
+# Test that @syscall returns i64 (using assignment inside block)
 [[case]]
 name = "syscall_returns_i64"
 spec = ["9.2:5"]
 preview = "unchecked_code"
+preview_should_pass = true
+only_on = ["x86-64-linux"]
 source = """
 fn main() -> i32 {
     // getpid syscall (39 on Linux x86-64) returns the process ID
     let syscall_num: u64 = 39;
-    let result: i64 = 0;
+    let mut result: i64 = 0;
     checked {
         result = @syscall(syscall_num);
+    };
+    // PID should be positive
+    let zero: i64 = 0;
+    if result > zero {
+        42
+    } else {
+        1
+    }
+}
+"""
+exit_code = 42
+
+# Test checked block as expression returning syscall result
+[[case]]
+name = "syscall_checked_block_expression"
+spec = ["9.2:5"]
+preview = "unchecked_code"
+preview_should_pass = true
+only_on = ["x86-64-linux"]
+source = """
+fn main() -> i32 {
+    // getpid syscall (39 on Linux x86-64) returns the process ID
+    let syscall_num: u64 = 39;
+    // Test checked block as expression (type inference must work correctly)
+    let result: i64 = checked {
+        @syscall(syscall_num)
     };
     // PID should be positive
     let zero: i64 = 0;

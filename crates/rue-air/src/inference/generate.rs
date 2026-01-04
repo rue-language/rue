@@ -632,6 +632,12 @@ impl<'a> ConstraintGenerator<'a> {
                 } else if intrinsic_name == "random_u64" {
                     // @random_u64: no arguments, returns u64
                     InferType::Concrete(Type::U64)
+                } else if intrinsic_name == "syscall" {
+                    // @syscall: syscall_num and up to 6 args (all u64), returns i64
+                    for arg_ref in args.iter() {
+                        self.generate(*arg_ref, ctx);
+                    }
+                    InferType::Concrete(Type::I64)
                 } else {
                     // Generate constraints for arguments (they need to be processed)
                     for arg_ref in args.iter() {
