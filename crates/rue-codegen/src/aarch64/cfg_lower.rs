@@ -2257,6 +2257,149 @@ impl<'a> CfgLower<'a> {
                         src: Operand::Physical(Reg::X0),
                     });
                     self.value_map.insert(value, result_vreg);
+                } else if name_str == "ptr_read" {
+                    // @ptr_read(ptr) - Read value at pointer
+                    // The pointer is in the first argument, we load from [ptr].
+                    let args = self.cfg.get_extra(*args_start, *args_len);
+                    let ptr_val = args[0];
+                    let ptr_vreg = self.get_vreg(ptr_val);
+
+                    // Load from memory at the pointer address
+                    let result_vreg = self.mir.alloc_vreg();
+                    self.mir.push(Aarch64Inst::LdrIndexed {
+                        dst: Operand::Virtual(result_vreg),
+                        base: ptr_vreg,
+                    });
+                    self.value_map.insert(value, result_vreg);
+                } else if name_str == "ptr_write" {
+                    // @ptr_write(ptr, value) - Write value at pointer
+                    // First argument is pointer, second is value to write.
+                    let args = self.cfg.get_extra(*args_start, *args_len);
+                    let ptr_val = args[0];
+                    let value_val = args[1];
+                    let ptr_vreg = self.get_vreg(ptr_val);
+                    let value_vreg = self.get_vreg(value_val);
+
+                    // Store value to memory at the pointer address
+                    self.mir.push(Aarch64Inst::StrIndexed {
+                        src: Operand::Virtual(value_vreg),
+                        base: ptr_vreg,
+                    });
+
+                    // Result is unit (no meaningful value)
+                    let result_vreg = self.mir.alloc_vreg();
+                    self.value_map.insert(value, result_vreg);
+                } else if name_str == "ptr_offset" {
+                    // @ptr_offset(ptr, offset) - Pointer arithmetic
+                    // Advances pointer by offset * sizeof(pointee)
+                    let args = self.cfg.get_extra(*args_start, *args_len);
+                    let ptr_val = args[0];
+                    let offset_val = args[1];
+                    let ptr_vreg = self.get_vreg(ptr_val);
+                    let offset_vreg = self.get_vreg(offset_val);
+
+                    // Get the pointer type to determine element size
+                    let ptr_type = self.cfg.get_inst(ptr_val).ty;
+                    let pointee_type = match ptr_type.kind() {
+                        TypeKind::PtrConst(ptr_id) => self.type_pool.ptr_const_def(ptr_id),
+                        TypeKind::PtrMut(ptr_id) => self.type_pool.ptr_mut_def(ptr_id),
+                        _ => unreachable!("ptr_offset requires pointer type"),
+                    };
+                    let element_size = types::type_size_bytes(self.type_pool, pointee_type);
+
+                    // Calculate: ptr + (offset * element_size)
+                    // First, multiply offset by element size
+                    let scaled_offset_vreg = self.mir.alloc_vreg();
+                    if element_size == 1 {
+                        // No multiplication needed
+                        self.mir.push(Aarch64Inst::MovRR {
+                            dst: Operand::Virtual(scaled_offset_vreg),
+                            src: Operand::Virtual(offset_vreg),
+                        });
+                    } else if element_size == 0 {
+                        // Zero-sized type - offset is always 0
+                        self.mir.push(Aarch64Inst::MovImm {
+                            dst: Operand::Virtual(scaled_offset_vreg),
+                            imm: 0,
+                        });
+                    } else {
+                        // Multiply offset by element size
+                        let size_vreg = self.mir.alloc_vreg();
+                        self.mir.push(Aarch64Inst::MovImm {
+                            dst: Operand::Virtual(size_vreg),
+                            imm: element_size as i64,
+                        });
+                        // MUL dst, src1, src2 (dst = src1 * src2)
+                        self.mir.push(Aarch64Inst::MulRR {
+                            dst: Operand::Virtual(scaled_offset_vreg),
+                            src1: Operand::Virtual(offset_vreg),
+                            src2: Operand::Virtual(size_vreg),
+                        });
+                    }
+
+                    // Add to pointer (64-bit add for addresses)
+                    let result_vreg = self.mir.alloc_vreg();
+                    self.mir.push(Aarch64Inst::AddRR {
+                        dst: Operand::Virtual(result_vreg),
+                        src1: Operand::Virtual(ptr_vreg),
+                        src2: Operand::Virtual(scaled_offset_vreg),
+                    });
+                    self.value_map.insert(value, result_vreg);
+                } else if name_str == "ptr_to_int" {
+                    // @ptr_to_int(ptr) - Convert pointer to u64
+                    // On aarch64, pointers are already 64-bit values, so this is a simple move.
+                    let args = self.cfg.get_extra(*args_start, *args_len);
+                    let ptr_val = args[0];
+                    let ptr_vreg = self.get_vreg(ptr_val);
+
+                    let result_vreg = self.mir.alloc_vreg();
+                    self.mir.push(Aarch64Inst::MovRR {
+                        dst: Operand::Virtual(result_vreg),
+                        src: Operand::Virtual(ptr_vreg),
+                    });
+                    self.value_map.insert(value, result_vreg);
+                } else if name_str == "int_to_ptr" {
+                    // @int_to_ptr(addr) - Convert u64 to pointer
+                    // On aarch64, this is also a simple move.
+                    let args = self.cfg.get_extra(*args_start, *args_len);
+                    let addr_val = args[0];
+                    let addr_vreg = self.get_vreg(addr_val);
+
+                    let result_vreg = self.mir.alloc_vreg();
+                    self.mir.push(Aarch64Inst::MovRR {
+                        dst: Operand::Virtual(result_vreg),
+                        src: Operand::Virtual(addr_vreg),
+                    });
+                    self.value_map.insert(value, result_vreg);
+                } else if name_str == "addr_of" || name_str == "addr_of_mut" {
+                    // @addr_of(lvalue) / @addr_of_mut(lvalue) - Take address of a value
+                    // The argument should be a local variable, and we compute its stack address.
+                    let args = self.cfg.get_extra(*args_start, *args_len);
+                    let lvalue_val = args[0];
+
+                    // Get the local slot for this value
+                    // For now, we handle the simple case where the argument is a Load from a local.
+                    // The Load instruction references a slot number.
+                    let lvalue_inst = self.cfg.get_inst(lvalue_val);
+                    if let CfgInstData::Load { slot } = &lvalue_inst.data {
+                        let offset = self.local_offset(*slot);
+                        let result_vreg = self.mir.alloc_vreg();
+                        // ADD to compute address: result = fp + offset
+                        // Since offset is negative (locals below FP), we use AddImm
+                        self.mir.push(Aarch64Inst::AddImm {
+                            dst: Operand::Virtual(result_vreg),
+                            src: Operand::Physical(Reg::Fp),
+                            imm: offset,
+                        });
+                        self.value_map.insert(value, result_vreg);
+                    } else {
+                        // For non-Load values, we need to handle other cases
+                        // like Param or FieldGet. For now, fall back to just getting the vreg
+                        // (which may not give the correct address semantics).
+                        // This is a limitation that can be addressed later.
+                        let vreg = self.get_vreg(lvalue_val);
+                        self.value_map.insert(value, vreg);
+                    }
                 }
             }
 

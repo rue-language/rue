@@ -93,6 +93,19 @@ pub fn array_element_slot_count(type_pool: &TypeInternPool, array_type_id: Array
     type_slot_count(type_pool, element_type)
 }
 
+/// Calculate the size in bytes of a type.
+///
+/// This is used for pointer arithmetic where we need the actual byte size,
+/// not the slot count. Each slot is 8 bytes, but primitive types may use
+/// fewer bytes (e.g., i8 uses 1 byte, i16 uses 2 bytes).
+///
+/// However, for simplicity and alignment purposes, all types currently use
+/// 8 bytes per slot. This function returns `slot_count * 8`.
+pub fn type_size_bytes(type_pool: &TypeInternPool, ty: Type) -> u64 {
+    let slots = type_slot_count(type_pool, ty);
+    (slots as u64) * 8
+}
+
 /// Calculate the slot offset for a field within a struct.
 ///
 /// This accounts for the sizes of all preceding fields.
