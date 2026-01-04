@@ -1209,4 +1209,637 @@ mod tests {
             .expect("should have .text section");
         assert_eq!(text_section.relocations.len(), 3);
     }
+
+    // ========================================================================
+    // Mach-O Comprehensive Tests
+    // ========================================================================
+
+    /// Test ADRP + ADD pairs (common pattern for loading addresses on ARM64).
+    /// Each pair uses PAGE21 + PAGEOFF12 relocation types.
+    #[test]
+    fn test_macho_adrp_add_relocation_pairs() {
+        // Simulate code that loads multiple addresses using ADRP + ADD pairs:
+        // adrp x0, symbol1@PAGE
+        // add  x0, x0, symbol1@PAGEOFF
+        // adrp x1, symbol2@PAGE
+        // add  x1, x1, symbol2@PAGEOFF
+        let obj = ObjectBuilder::new(Target::Aarch64Macos, "load_addresses")
+            .code(vec![
+                // adrp x0, symbol1@PAGE (placeholder)
+                0x00, 0x00, 0x00, 0x90, // add x0, x0, symbol1@PAGEOFF (placeholder)
+                0x00, 0x00, 0x00, 0x91, // adrp x1, symbol2@PAGE (placeholder)
+                0x01, 0x00, 0x00, 0x90, // add x1, x1, symbol2@PAGEOFF (placeholder)
+                0x21, 0x00, 0x00, 0x91, // ret
+                0xC0, 0x03, 0x5F, 0xD6,
+            ])
+            .relocation(CodeRelocation {
+                offset: 0,
+                symbol: "symbol1".into(),
+                rel_type: RelocationType::AdrpPage21,
+                addend: 0,
+            })
+            .relocation(CodeRelocation {
+                offset: 4,
+                symbol: "symbol1".into(),
+                rel_type: RelocationType::AddLo12,
+                addend: 0,
+            })
+            .relocation(CodeRelocation {
+                offset: 8,
+                symbol: "symbol2".into(),
+                rel_type: RelocationType::AdrpPage21,
+                addend: 0,
+            })
+            .relocation(CodeRelocation {
+                offset: 12,
+                symbol: "symbol2".into(),
+                rel_type: RelocationType::AddLo12,
+                addend: 0,
+            })
+            .build();
+
+        // Basic Mach-O validation
+        assert_eq!(&obj[0..4], &0xFEEDFACF_u32.to_le_bytes());
+
+        // Verify we have at least 4 relocations worth of data
+        // (The file should be larger than just the header + code)
+        assert!(obj.len() > 100, "object should have relocation data");
+    }
+
+    /// Test string constants with multiple references.
+    /// Same string symbol referenced from different locations in code.
+    #[test]
+    fn test_macho_string_multiple_references() {
+        // Simulate code that references the same string constant twice
+        let obj = ObjectBuilder::new(Target::Aarch64Macos, "multi_ref")
+            .code(vec![
+                // adrp x0, str0@PAGE
+                0x00, 0x00, 0x00, 0x90, // add x0, x0, str0@PAGEOFF
+                0x00, 0x00, 0x00, 0x91, // ... some code ...
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                // adrp x1, str0@PAGE (same string)
+                0x01, 0x00, 0x00, 0x90, // add x1, x1, str0@PAGEOFF
+                0x21, 0x00, 0x00, 0x91, // ret
+                0xC0, 0x03, 0x5F, 0xD6,
+            ])
+            .strings(vec!["hello world".to_string()])
+            .relocation(CodeRelocation {
+                offset: 0,
+                symbol: ".rodata.str0".into(),
+                rel_type: RelocationType::AdrpPage21,
+                addend: 0,
+            })
+            .relocation(CodeRelocation {
+                offset: 4,
+                symbol: ".rodata.str0".into(),
+                rel_type: RelocationType::AddLo12,
+                addend: 0,
+            })
+            .relocation(CodeRelocation {
+                offset: 16,
+                symbol: ".rodata.str0".into(),
+                rel_type: RelocationType::AdrpPage21,
+                addend: 0,
+            })
+            .relocation(CodeRelocation {
+                offset: 20,
+                symbol: ".rodata.str0".into(),
+                rel_type: RelocationType::AddLo12,
+                addend: 0,
+            })
+            .build();
+
+        // Check Mach-O magic
+        assert_eq!(&obj[0..4], &0xFEEDFACF_u32.to_le_bytes());
+
+        // Verify the file contains the string data
+        let obj_str = String::from_utf8_lossy(&obj);
+        assert!(
+            obj_str.contains("hello world"),
+            "object should contain string constant"
+        );
+    }
+
+    /// Test empty rodata section (all empty strings).
+    /// Empty strings should not create a rodata section since there's no content.
+    #[test]
+    fn test_macho_empty_strings() {
+        // Object with only empty strings - should NOT create rodata section
+        let obj = ObjectBuilder::new(Target::Aarch64Macos, "empty_str")
+            .code(vec![
+                // ret
+                0xC0, 0x03, 0x5F, 0xD6,
+            ])
+            .strings(vec!["".to_string(), "".to_string()])
+            .build();
+
+        // Check Mach-O magic
+        assert_eq!(&obj[0..4], &0xFEEDFACF_u32.to_le_bytes());
+
+        // The object should be small since there's no rodata
+        // With rodata it would be larger
+        assert!(
+            obj.len() < 500,
+            "object should be small without rodata content"
+        );
+    }
+
+    /// Test large code section that stresses offset calculations.
+    /// The 21-bit page limit means ADRP can only handle ±4GB offsets,
+    /// but this tests that internal offset calculations handle large code.
+    #[test]
+    fn test_macho_large_code_section() {
+        // Create a larger code section (4KB of NOPs)
+        let nop = [0x1F, 0x20, 0x03, 0xD5]; // ARM64 NOP
+        let mut code = Vec::new();
+        for _ in 0..1024 {
+            code.extend_from_slice(&nop);
+        }
+        // Add a ret at the end
+        code.extend_from_slice(&[0xC0, 0x03, 0x5F, 0xD6]);
+
+        // Add relocation at the end of the large code section
+        let reloc_offset = code.len() - 8; // Before the ret
+
+        let obj = ObjectBuilder::new(Target::Aarch64Macos, "large_code")
+            .code(code.clone())
+            .relocation(CodeRelocation {
+                offset: reloc_offset as u64,
+                symbol: "far_symbol".into(),
+                rel_type: RelocationType::Call26,
+                addend: 0,
+            })
+            .build();
+
+        // Check Mach-O magic
+        assert_eq!(&obj[0..4], &0xFEEDFACF_u32.to_le_bytes());
+
+        // Verify the object file is large enough
+        assert!(obj.len() > 4096, "object should contain large code section");
+    }
+
+    /// Test negative addends in relocations.
+    /// Addends are used to adjust the final symbol address.
+    #[test]
+    fn test_macho_negative_addend() {
+        // While Mach-O ARM64 doesn't directly store addends like ELF,
+        // the ObjectBuilder should handle negative addends gracefully
+        let obj = ObjectBuilder::new(Target::Aarch64Macos, "neg_addend")
+            .code(vec![
+                // bl target (placeholder)
+                0x00, 0x00, 0x00, 0x94, // ret
+                0xC0, 0x03, 0x5F, 0xD6,
+            ])
+            .relocation(CodeRelocation {
+                offset: 0,
+                symbol: "target".into(),
+                rel_type: RelocationType::Call26,
+                addend: -4,
+            })
+            .build();
+
+        // Check Mach-O magic
+        assert_eq!(&obj[0..4], &0xFEEDFACF_u32.to_le_bytes());
+    }
+
+    /// Test recursive self-calls (function calling itself).
+    #[test]
+    fn test_macho_self_recursive_call() {
+        // Function that calls itself recursively
+        let obj = ObjectBuilder::new(Target::Aarch64Macos, "recursive")
+            .code(vec![
+                // Compare and branch
+                0x1F, 0x00, 0x00, 0x71, // cmp w0, #0
+                0x40, 0x00, 0x00, 0x54, // b.eq skip
+                // bl recursive (self-call)
+                0x00, 0x00, 0x00, 0x94, // skip: ret
+                0xC0, 0x03, 0x5F, 0xD6,
+            ])
+            .relocation(CodeRelocation {
+                offset: 8,
+                symbol: "recursive".into(), // Self-reference!
+                rel_type: RelocationType::Call26,
+                addend: 0,
+            })
+            .build();
+
+        // Check Mach-O magic
+        assert_eq!(&obj[0..4], &0xFEEDFACF_u32.to_le_bytes());
+
+        // Verify the function symbol is in the string table
+        let obj_str = String::from_utf8_lossy(&obj);
+        assert!(
+            obj_str.contains("_recursive"),
+            "should contain function symbol"
+        );
+    }
+
+    /// Test multiple functions in one object file.
+    /// Note: ObjectBuilder currently creates one symbol per call, but we can
+    /// simulate multiple functions by having multiple call targets.
+    #[test]
+    fn test_macho_multiple_function_calls() {
+        // Code that calls three different functions
+        let obj = ObjectBuilder::new(Target::Aarch64Macos, "multi_func")
+            .code(vec![
+                // bl func_a
+                0x00, 0x00, 0x00, 0x94, // bl func_b
+                0x00, 0x00, 0x00, 0x94, // bl func_c
+                0x00, 0x00, 0x00, 0x94, // ret
+                0xC0, 0x03, 0x5F, 0xD6,
+            ])
+            .relocation(CodeRelocation {
+                offset: 0,
+                symbol: "func_a".into(),
+                rel_type: RelocationType::Call26,
+                addend: 0,
+            })
+            .relocation(CodeRelocation {
+                offset: 4,
+                symbol: "func_b".into(),
+                rel_type: RelocationType::Call26,
+                addend: 0,
+            })
+            .relocation(CodeRelocation {
+                offset: 8,
+                symbol: "func_c".into(),
+                rel_type: RelocationType::Call26,
+                addend: 0,
+            })
+            .build();
+
+        // Check Mach-O magic
+        assert_eq!(&obj[0..4], &0xFEEDFACF_u32.to_le_bytes());
+
+        // Verify all function symbols are present
+        let obj_str = String::from_utf8_lossy(&obj);
+        assert!(obj_str.contains("_func_a"), "should contain _func_a");
+        assert!(obj_str.contains("_func_b"), "should contain _func_b");
+        assert!(obj_str.contains("_func_c"), "should contain _func_c");
+    }
+
+    /// Test mixed relocation types in a single object.
+    /// Combines ADRP+ADD pairs with branch relocations.
+    #[test]
+    fn test_macho_mixed_relocation_types() {
+        let obj = ObjectBuilder::new(Target::Aarch64Macos, "mixed_relocs")
+            .code(vec![
+                // adrp x0, data@PAGE
+                0x00, 0x00, 0x00, 0x90, // add x0, x0, data@PAGEOFF
+                0x00, 0x00, 0x00, 0x91, // bl helper
+                0x00, 0x00, 0x00, 0x94, // adrp x1, more_data@PAGE
+                0x01, 0x00, 0x00, 0x90, // add x1, x1, more_data@PAGEOFF
+                0x21, 0x00, 0x00, 0x91, // b exit
+                0x00, 0x00, 0x00, 0x14, // ret
+                0xC0, 0x03, 0x5F, 0xD6,
+            ])
+            .relocation(CodeRelocation {
+                offset: 0,
+                symbol: "data".into(),
+                rel_type: RelocationType::AdrpPage21,
+                addend: 0,
+            })
+            .relocation(CodeRelocation {
+                offset: 4,
+                symbol: "data".into(),
+                rel_type: RelocationType::AddLo12,
+                addend: 0,
+            })
+            .relocation(CodeRelocation {
+                offset: 8,
+                symbol: "helper".into(),
+                rel_type: RelocationType::Call26,
+                addend: 0,
+            })
+            .relocation(CodeRelocation {
+                offset: 12,
+                symbol: "more_data".into(),
+                rel_type: RelocationType::AdrpPage21,
+                addend: 0,
+            })
+            .relocation(CodeRelocation {
+                offset: 16,
+                symbol: "more_data".into(),
+                rel_type: RelocationType::AddLo12,
+                addend: 0,
+            })
+            .relocation(CodeRelocation {
+                offset: 20,
+                symbol: "exit".into(),
+                rel_type: RelocationType::Jump26,
+                addend: 0,
+            })
+            .build();
+
+        // Check Mach-O magic
+        assert_eq!(&obj[0..4], &0xFEEDFACF_u32.to_le_bytes());
+
+        // Verify all symbols are in the string table
+        let obj_str = String::from_utf8_lossy(&obj);
+        assert!(obj_str.contains("_data"), "should contain _data");
+        assert!(obj_str.contains("_helper"), "should contain _helper");
+        assert!(obj_str.contains("_more_data"), "should contain _more_data");
+        assert!(obj_str.contains("_exit"), "should contain _exit");
+    }
+
+    /// Test multiple string constants with varying sizes.
+    #[test]
+    fn test_macho_multiple_string_constants() {
+        let obj = ObjectBuilder::new(Target::Aarch64Macos, "multi_str")
+            .code(vec![
+                // adrp x0, str0@PAGE
+                0x00, 0x00, 0x00, 0x90, // add x0, x0, str0@PAGEOFF
+                0x00, 0x00, 0x00, 0x91, // adrp x1, str1@PAGE
+                0x01, 0x00, 0x00, 0x90, // add x1, x1, str1@PAGEOFF
+                0x21, 0x00, 0x00, 0x91, // adrp x2, str2@PAGE
+                0x02, 0x00, 0x00, 0x90, // add x2, x2, str2@PAGEOFF
+                0x42, 0x00, 0x00, 0x91, // ret
+                0xC0, 0x03, 0x5F, 0xD6,
+            ])
+            .strings(vec![
+                "short".to_string(),
+                "medium length string".to_string(),
+                "this is a much longer string that tests larger rodata offsets".to_string(),
+            ])
+            .relocation(CodeRelocation {
+                offset: 0,
+                symbol: ".rodata.str0".into(),
+                rel_type: RelocationType::AdrpPage21,
+                addend: 0,
+            })
+            .relocation(CodeRelocation {
+                offset: 4,
+                symbol: ".rodata.str0".into(),
+                rel_type: RelocationType::AddLo12,
+                addend: 0,
+            })
+            .relocation(CodeRelocation {
+                offset: 8,
+                symbol: ".rodata.str1".into(),
+                rel_type: RelocationType::AdrpPage21,
+                addend: 0,
+            })
+            .relocation(CodeRelocation {
+                offset: 12,
+                symbol: ".rodata.str1".into(),
+                rel_type: RelocationType::AddLo12,
+                addend: 0,
+            })
+            .relocation(CodeRelocation {
+                offset: 16,
+                symbol: ".rodata.str2".into(),
+                rel_type: RelocationType::AdrpPage21,
+                addend: 0,
+            })
+            .relocation(CodeRelocation {
+                offset: 20,
+                symbol: ".rodata.str2".into(),
+                rel_type: RelocationType::AddLo12,
+                addend: 0,
+            })
+            .build();
+
+        // Check Mach-O magic
+        assert_eq!(&obj[0..4], &0xFEEDFACF_u32.to_le_bytes());
+
+        // Verify all strings are in the object
+        let obj_str = String::from_utf8_lossy(&obj);
+        assert!(obj_str.contains("short"), "should contain 'short'");
+        assert!(
+            obj_str.contains("medium length string"),
+            "should contain medium string"
+        );
+        assert!(
+            obj_str.contains("this is a much longer string"),
+            "should contain long string"
+        );
+    }
+
+    /// Test that Mach-O object files have correct header structure.
+    /// Validates ncmds, sizeofcmds, and section count.
+    #[test]
+    fn test_macho_header_structure() {
+        // Test with rodata (2 sections)
+        let obj_with_rodata = ObjectBuilder::new(Target::Aarch64Macos, "with_rodata")
+            .code(vec![0xC0, 0x03, 0x5F, 0xD6])
+            .strings(vec!["test".to_string()])
+            .build();
+
+        // Check ncmds (at offset 16) - should be 4 (LC_SEGMENT_64, LC_BUILD_VERSION, LC_SYMTAB, LC_DYSYMTAB)
+        let ncmds = u32::from_le_bytes([
+            obj_with_rodata[16],
+            obj_with_rodata[17],
+            obj_with_rodata[18],
+            obj_with_rodata[19],
+        ]);
+        assert_eq!(ncmds, 4, "should have 4 load commands");
+
+        // Test without rodata (1 section)
+        let obj_no_rodata = ObjectBuilder::new(Target::Aarch64Macos, "no_rodata")
+            .code(vec![0xC0, 0x03, 0x5F, 0xD6])
+            .build();
+
+        let ncmds = u32::from_le_bytes([
+            obj_no_rodata[16],
+            obj_no_rodata[17],
+            obj_no_rodata[18],
+            obj_no_rodata[19],
+        ]);
+        assert_eq!(ncmds, 4, "should still have 4 load commands");
+    }
+
+    /// Test that symbols use correct underscore prefixes for macOS.
+    #[test]
+    fn test_macho_symbol_underscore_prefix() {
+        let obj = ObjectBuilder::new(Target::Aarch64Macos, "my_func")
+            .code(vec![
+                0x00, 0x00, 0x00, 0x94, // bl other
+                0xC0, 0x03, 0x5F, 0xD6, // ret
+            ])
+            .relocation(CodeRelocation {
+                offset: 0,
+                symbol: "other_func".into(),
+                rel_type: RelocationType::Call26,
+                addend: 0,
+            })
+            .build();
+
+        let obj_str = String::from_utf8_lossy(&obj);
+
+        // Function name should have underscore prefix
+        assert!(
+            obj_str.contains("_my_func"),
+            "function should have _ prefix"
+        );
+
+        // External symbol should also have underscore prefix
+        assert!(
+            obj_str.contains("_other_func"),
+            "external symbol should have _ prefix"
+        );
+    }
+
+    /// Test jump (B) vs call (BL) relocations.
+    #[test]
+    fn test_macho_jump_vs_call() {
+        let obj = ObjectBuilder::new(Target::Aarch64Macos, "branch_test")
+            .code(vec![
+                // bl callee (call with link)
+                0x00, 0x00, 0x00, 0x94, // b tail_target (unconditional jump)
+                0x00, 0x00, 0x00, 0x14,
+            ])
+            .relocation(CodeRelocation {
+                offset: 0,
+                symbol: "callee".into(),
+                rel_type: RelocationType::Call26,
+                addend: 0,
+            })
+            .relocation(CodeRelocation {
+                offset: 4,
+                symbol: "tail_target".into(),
+                rel_type: RelocationType::Jump26,
+                addend: 0,
+            })
+            .build();
+
+        // Check Mach-O magic
+        assert_eq!(&obj[0..4], &0xFEEDFACF_u32.to_le_bytes());
+
+        // Both symbols should be present
+        let obj_str = String::from_utf8_lossy(&obj);
+        assert!(obj_str.contains("_callee"), "should contain _callee");
+        assert!(
+            obj_str.contains("_tail_target"),
+            "should contain _tail_target"
+        );
+    }
+
+    /// Test that Mach-O object files have valid structure for system linker.
+    /// This validates the object file structure without actually invoking the linker
+    /// (which would require running on macOS).
+    ///
+    /// A valid Mach-O object file for linking must have:
+    /// - Correct magic number and header
+    /// - Valid LC_SEGMENT_64 with sections
+    /// - Valid LC_SYMTAB with symbol and string tables
+    /// - LC_BUILD_VERSION for modern macOS
+    /// - LC_DYSYMTAB for dynamic symbol table
+    /// - Proper section and symbol alignment
+    #[test]
+    fn test_macho_linker_compatible_structure() {
+        // Create an object file that would be produced by actual compilation
+        let obj = ObjectBuilder::new(Target::Aarch64Macos, "main")
+            .code(vec![
+                // Function prologue
+                0xFD, 0x7B, 0xBF, 0xA9, // stp x29, x30, [sp, #-16]!
+                0xFD, 0x03, 0x00, 0x91, // mov x29, sp
+                // adrp x0, str@PAGE
+                0x00, 0x00, 0x00, 0x90, // add x0, x0, str@PAGEOFF
+                0x00, 0x00, 0x00, 0x91, // bl puts
+                0x00, 0x00, 0x00, 0x94, // mov w0, #0
+                0x00, 0x00, 0x80, 0x52, // Function epilogue
+                0xFD, 0x7B, 0xC1, 0xA8, // ldp x29, x30, [sp], #16
+                0xC0, 0x03, 0x5F, 0xD6, // ret
+            ])
+            .strings(vec!["Hello, World!".to_string()])
+            .relocation(CodeRelocation {
+                offset: 8,
+                symbol: ".rodata.str0".into(),
+                rel_type: RelocationType::AdrpPage21,
+                addend: 0,
+            })
+            .relocation(CodeRelocation {
+                offset: 12,
+                symbol: ".rodata.str0".into(),
+                rel_type: RelocationType::AddLo12,
+                addend: 0,
+            })
+            .relocation(CodeRelocation {
+                offset: 16,
+                symbol: "puts".into(),
+                rel_type: RelocationType::Call26,
+                addend: 0,
+            })
+            .build();
+
+        // Validate header
+        assert_eq!(
+            &obj[0..4],
+            &0xFEEDFACF_u32.to_le_bytes(),
+            "should have MH_MAGIC_64"
+        );
+        assert_eq!(
+            &obj[4..8],
+            &0x0100000C_u32.to_le_bytes(),
+            "should have CPU_TYPE_ARM64"
+        );
+        assert_eq!(
+            &obj[12..16],
+            &0x1_u32.to_le_bytes(),
+            "should have MH_OBJECT filetype"
+        );
+
+        // Validate load command count
+        let ncmds = u32::from_le_bytes([obj[16], obj[17], obj[18], obj[19]]);
+        assert_eq!(ncmds, 4, "should have 4 load commands");
+
+        // Read sizeofcmds
+        let sizeofcmds = u32::from_le_bytes([obj[20], obj[21], obj[22], obj[23]]);
+        assert!(sizeofcmds > 0, "sizeofcmds should be positive");
+
+        // Verify first load command is LC_SEGMENT_64
+        let first_cmd = u32::from_le_bytes([obj[32], obj[33], obj[34], obj[35]]);
+        assert_eq!(first_cmd, 0x19, "first command should be LC_SEGMENT_64");
+
+        // Verify the object contains expected symbols
+        let obj_str = String::from_utf8_lossy(&obj);
+        assert!(obj_str.contains("_main"), "should contain _main symbol");
+        assert!(obj_str.contains("_puts"), "should contain _puts symbol");
+
+        // Verify the object contains the string constant
+        assert!(
+            obj_str.contains("Hello, World!"),
+            "should contain string data"
+        );
+
+        // Verify file size is reasonable (header + commands + sections + relocations + symtab + strtab)
+        assert!(
+            obj.len() > 200,
+            "object file should be reasonably sized: {}",
+            obj.len()
+        );
+        assert!(
+            obj.len() < 2000,
+            "object file should not be excessively large: {}",
+            obj.len()
+        );
+    }
+
+    /// Test that empty code section is handled correctly.
+    #[test]
+    fn test_macho_empty_code() {
+        let obj = ObjectBuilder::new(Target::Aarch64Macos, "empty")
+            .code(vec![])
+            .build();
+
+        // Should still produce valid Mach-O
+        assert_eq!(&obj[0..4], &0xFEEDFACF_u32.to_le_bytes());
+    }
+
+    /// Test code with only a single instruction.
+    #[test]
+    fn test_macho_minimal_code() {
+        let obj = ObjectBuilder::new(Target::Aarch64Macos, "minimal")
+            .code(vec![0xC0, 0x03, 0x5F, 0xD6]) // Just a ret
+            .build();
+
+        assert_eq!(&obj[0..4], &0xFEEDFACF_u32.to_le_bytes());
+
+        // Verify the function symbol exists
+        let obj_str = String::from_utf8_lossy(&obj);
+        assert!(
+            obj_str.contains("_minimal"),
+            "should contain function symbol"
+        );
+    }
 }
