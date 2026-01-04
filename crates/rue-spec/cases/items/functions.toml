@@ -134,6 +134,70 @@ params = [
 ]
 
 # =============================================================================
+# Self-Call Edge Cases (r_symbolnum=0 relocation testing)
+# =============================================================================
+# These tests verify that recursive functions work correctly when the function
+# symbol is at index 0 in the symbol table. In Mach-O, relocations reference
+# symbols by index, and self-calls create relocations targeting the same
+# function, which may be at index 0.
+
+[[case]]
+name = "recursive_self_call_only"
+spec = ["6.1:10"]
+description = "A function with only a self-call (no other function calls)"
+source = """
+fn recurse(n: i32) -> i32 {
+    if n == 0 { 42 }
+    else { recurse(n - 1) }
+}
+fn main() -> i32 { recurse(10) }
+"""
+exit_code = 42
+
+[[case]]
+name = "recursive_multiple_self_calls"
+spec = ["6.1:10"]
+description = "Multiple self-calls in the same function (multiple relocations to index 0)"
+source = """
+fn multi_recurse(n: i32) -> i32 {
+    if n <= 0 { 0 }
+    else if n == 1 { 1 }
+    else { multi_recurse(n - 1) + multi_recurse(n - 2) + multi_recurse(n - 3) }
+}
+fn main() -> i32 { multi_recurse(5) }
+"""
+exit_code = 7
+
+[[case]]
+name = "recursive_self_call_in_sequence"
+spec = ["6.1:10"]
+description = "Sequential self-calls (multiple relocations in sequence)"
+source = """
+fn seq_recurse(n: i32, acc: i32) -> i32 {
+    if n == 0 { acc }
+    else {
+        let a = seq_recurse(n - 1, acc + 1);
+        seq_recurse(0, a)
+    }
+}
+fn main() -> i32 { seq_recurse(42, 0) }
+"""
+exit_code = 42
+
+[[case]]
+name = "recursive_tail_call_pattern"
+spec = ["6.1:10"]
+description = "Tail-call style recursion with accumulator (self-call as last expression)"
+source = """
+fn sum_to(n: i32, acc: i32) -> i32 {
+    if n == 0 { acc }
+    else { sum_to(n - 1, acc + n) }
+}
+fn main() -> i32 { sum_to(8, 6) }
+"""
+exit_code = 42
+
+# =============================================================================
 # Call expressions
 # =============================================================================
 
