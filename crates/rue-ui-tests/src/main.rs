@@ -4,7 +4,9 @@
 //! such as warnings, diagnostics quality, and compiler flags.
 
 use libtest2_mimic::{Harness, RunContext, RunError, Trial};
-use rue_test_runner::{Case, find_dir, find_rue_binary, load_test_files, run_test_case};
+use rue_test_runner::{
+    Case, find_dir, find_rue_binary, load_test_files, run_test_case, should_skip_for_platform,
+};
 use std::path::Path;
 
 /// Possible paths for the cases directory.
@@ -23,6 +25,9 @@ fn run_case_wrapper(
 ) -> Result<(), RunError> {
     if skip {
         return ctx.ignore_for("marked as skip");
+    }
+    if let Some(reason) = should_skip_for_platform(&case.only_on) {
+        return ctx.ignore_for(reason);
     }
     run_test_case(case, rue_binary).map_err(|e| RunError::fail(e.to_string()))
 }

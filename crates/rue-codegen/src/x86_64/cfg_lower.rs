@@ -2351,6 +2351,46 @@ impl<'a> CfgLower<'a> {
                         src: Operand::Physical(Reg::Rax),
                     });
                     self.value_map.insert(value, result_vreg);
+                } else if name_str == "syscall" {
+                    // @syscall intrinsic - perform a direct system call
+                    // Linux x86-64 syscall ABI:
+                    //   - RAX: syscall number
+                    //   - RDI, RSI, RDX, R10, R8, R9: arguments 1-6
+                    //   - Returns result in RAX
+                    //   - Clobbers RCX and R11 (saved by hardware)
+
+                    let args = self.cfg.get_extra(*args_start, *args_len);
+
+                    // Syscall argument registers (different from regular function call ABI!)
+                    const SYSCALL_ARG_REGS: [Reg; 6] =
+                        [Reg::Rdi, Reg::Rsi, Reg::Rdx, Reg::R10, Reg::R8, Reg::R9];
+
+                    // First argument is syscall number -> RAX
+                    let syscall_num_vreg = self.get_vreg(args[0]);
+                    self.mir.push(X86Inst::MovRR {
+                        dst: Operand::Physical(Reg::Rax),
+                        src: Operand::Virtual(syscall_num_vreg),
+                    });
+
+                    // Remaining arguments go to RDI, RSI, RDX, R10, R8, R9
+                    for (i, &arg) in args.iter().skip(1).enumerate() {
+                        let arg_vreg = self.get_vreg(arg);
+                        self.mir.push(X86Inst::MovRR {
+                            dst: Operand::Physical(SYSCALL_ARG_REGS[i]),
+                            src: Operand::Virtual(arg_vreg),
+                        });
+                    }
+
+                    // Execute the syscall instruction
+                    self.mir.push(X86Inst::Syscall);
+
+                    // Result is in RAX, move to a vreg
+                    let result_vreg = self.mir.alloc_vreg();
+                    self.mir.push(X86Inst::MovRR {
+                        dst: Operand::Virtual(result_vreg),
+                        src: Operand::Physical(Reg::Rax),
+                    });
+                    self.value_map.insert(value, result_vreg);
                 }
             }
 

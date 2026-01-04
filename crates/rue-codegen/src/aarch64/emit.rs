@@ -1033,6 +1033,12 @@ impl<'a> Emitter<'a> {
                 end_inst!(self, "ret");
             }
 
+            Aarch64Inst::Svc { imm } => {
+                self.begin_inst();
+                self.emit_svc(*imm);
+                end_inst!(self, "svc #{:#x}", imm);
+            }
+
             Aarch64Inst::StpPre { src1, src2, offset } => {
                 let rt1 = src1.as_physical();
                 let rt2 = src2.as_physical();
@@ -1825,6 +1831,14 @@ impl<'a> Emitter<'a> {
     fn emit_ret(&mut self) {
         // RET (branch to LR)
         self.emit_u32(OPCODE_RET);
+    }
+
+    fn emit_svc(&mut self, imm: u16) {
+        // SVC #imm - Supervisor Call
+        // Encoding: 1101 0100 000 imm16 00001
+        // imm16 is 16 bits from bits 5-20
+        let encoding = 0xD400_0001 | ((imm as u32) << 5);
+        self.emit_u32(encoding);
     }
 
     fn emit_lsl_imm(&mut self, rd: Reg, rn: Reg, shift: u8) {

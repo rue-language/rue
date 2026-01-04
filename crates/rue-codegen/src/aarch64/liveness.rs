@@ -260,7 +260,8 @@ fn uses(inst: &Aarch64Inst) -> Vec<VReg> {
         | Aarch64Inst::Bvc { .. }
         | Aarch64Inst::Label { .. }
         | Aarch64Inst::Bl { .. }
-        | Aarch64Inst::Ret => {
+        | Aarch64Inst::Ret
+        | Aarch64Inst::Svc { .. } => {
             // No vreg operands
         }
     }
@@ -380,7 +381,8 @@ fn defs(inst: &Aarch64Inst) -> Vec<VReg> {
         | Aarch64Inst::Bvc { .. }
         | Aarch64Inst::Label { .. }
         | Aarch64Inst::Bl { .. }
-        | Aarch64Inst::Ret => {
+        | Aarch64Inst::Ret
+        | Aarch64Inst::Svc { .. } => {
             // No vreg operands
         }
     }

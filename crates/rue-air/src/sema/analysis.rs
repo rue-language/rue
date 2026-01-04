@@ -7407,6 +7407,8 @@ impl<'a> Sema<'a> {
             self.analyze_addr_of_intrinsic(air, &args, span, ctx, false)
         } else if name == known.addr_of_mut {
             self.analyze_addr_of_intrinsic(air, &args, span, ctx, true)
+        } else if name == known.syscall {
+            self.analyze_syscall_intrinsic(air, name, &args, span, ctx)
         } else {
             // Unknown intrinsic - resolve name for error message
             let intrinsic_name_str = self.interner.resolve(&name);
@@ -9992,5 +9994,69 @@ impl<'a> Sema<'a> {
             span,
         });
         Ok(AnalysisResult::new(air_ref, result_type))
+    }
+
+    /// Analyze @syscall intrinsic: perform a raw OS syscall.
+    /// Signature: @syscall(syscall_num: u64, arg0?: u64, ..., arg5?: u64) -> i64
+    ///
+    /// Takes a syscall number and up to 6 arguments, all of which must be u64.
+    /// Returns i64 (the syscall return value, which may be negative for errors).
+    /// Requires a checked block.
+    fn analyze_syscall_intrinsic(
+        &mut self,
+        air: &mut Air,
+        name: Spur,
+        args: &[RirCallArg],
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AnalysisResult> {
+        // Require unchecked context
+        self.require_preview(PreviewFeature::UncheckedCode, "@syscall intrinsic", span)?;
+
+        // Syscall takes 1-7 arguments: syscall number + up to 6 arguments
+        if args.is_empty() || args.len() > 7 {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicWrongArgCount {
+                    name: "syscall".to_string(),
+                    expected: 7, // Show max expected for "at least 1, at most 7"
+                    found: args.len(),
+                },
+                span,
+            ));
+        }
+
+        // Analyze all arguments and verify they are u64
+        let mut arg_refs = Vec::with_capacity(args.len());
+        for (i, arg) in args.iter().enumerate() {
+            let arg_result = self.analyze_inst(air, arg.value, ctx)?;
+            let arg_type = arg_result.ty;
+
+            // All syscall arguments must be u64
+            if arg_type != Type::U64 && !arg_type.is_error() && !arg_type.is_never() {
+                return Err(CompileError::new(
+                    ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
+                        name: "syscall".to_string(),
+                        expected: format!("u64 for argument {}", i),
+                        found: self.format_type_name(arg_type),
+                    })),
+                    span,
+                ));
+            }
+
+            arg_refs.push(arg_result.air_ref.as_u32());
+        }
+
+        // Create the intrinsic call instruction
+        let args_start = air.add_extra(&arg_refs);
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::Intrinsic {
+                name,
+                args_start,
+                args_len: args.len() as u32,
+            },
+            ty: Type::I64,
+            span,
+        });
+        Ok(AnalysisResult::new(air_ref, Type::I64))
     }
 }

@@ -407,7 +407,7 @@ fn generate_aarch64_stack_frame(
     let num_params = cfg.num_params();
 
     // Lower CFG to Aarch64Mir with virtual registers
-    let mir = CfgLower::new(cfg, type_pool, strings, interner).lower();
+    let mir = CfgLower::new(cfg, type_pool, strings, interner, target).lower();
 
     // Allocate physical registers (may add spill slots)
     let existing_slots = num_locals + num_params;

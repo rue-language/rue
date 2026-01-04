@@ -715,6 +715,13 @@ pub enum Aarch64Inst {
     /// `ret` - Return (branch to LR).
     Ret,
 
+    /// `svc #imm` - Supervisor call (syscall instruction).
+    ///
+    /// On macOS, syscalls use `svc #0x80` with syscall number in X16.
+    /// On Linux, syscalls use `svc #0` with syscall number in X8.
+    /// This instruction takes an immediate that specifies the system call type.
+    Svc { imm: u16 },
+
     // === Stack operations ===
     /// `stp x1, x2, [sp, #offset]!` - Store pair with pre-index (push).
     StpPre {
@@ -770,6 +777,10 @@ impl Aarch64Inst {
                 Reg::X17,
                 Reg::Lr,
             ],
+            // Syscall clobbers X0 (return value) and preserves most registers.
+            // On macOS, X16 contains syscall number; on Linux, X8 does.
+            // We conservatively clobber both to handle either target.
+            Aarch64Inst::Svc { .. } => &[Reg::X0, Reg::X8, Reg::X16],
             // All other instructions don't clobber additional registers
             _ => &[],
         }
@@ -922,6 +933,7 @@ impl fmt::Display for Aarch64Inst {
             Aarch64Inst::Label { id } => write!(f, "{}:", id),
             Aarch64Inst::Bl { symbol_id } => write!(f, "bl sym{}", symbol_id),
             Aarch64Inst::Ret => write!(f, "ret"),
+            Aarch64Inst::Svc { imm } => write!(f, "svc #{:#x}", imm),
             Aarch64Inst::StpPre { src1, src2, offset } => {
                 write!(f, "stp {}, {}, [sp, #{}]!", src1, src2, offset)
             }

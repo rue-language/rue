@@ -907,6 +907,7 @@ impl RegAlloc {
             Aarch64Inst::Label { id } => mir.push(Aarch64Inst::Label { id }),
             Aarch64Inst::Bl { symbol_id } => mir.push(Aarch64Inst::Bl { symbol_id }),
             Aarch64Inst::Ret => mir.push(Aarch64Inst::Ret),
+            Aarch64Inst::Svc { imm } => mir.push(Aarch64Inst::Svc { imm }),
         }
         Ok(())
     }

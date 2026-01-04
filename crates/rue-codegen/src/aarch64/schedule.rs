@@ -184,6 +184,9 @@ fn get_latency(inst: &Aarch64Inst) -> u32 {
         Aarch64Inst::StringConstPtr { .. }
         | Aarch64Inst::StringConstLen { .. }
         | Aarch64Inst::StringConstCap { .. } => 1,
+
+        // Syscall instruction
+        Aarch64Inst::Svc { .. } => 1,
     }
 }
 

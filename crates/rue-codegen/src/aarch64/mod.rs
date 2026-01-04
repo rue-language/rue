@@ -30,6 +30,7 @@ use lasso::ThreadedRodeo;
 use rue_air::TypeInternPool;
 use rue_cfg::Cfg;
 use rue_error::CompileResult;
+use rue_target::Target;
 
 use crate::MachineCode;
 use crate::regalloc::RegAllocDebugInfo;
@@ -45,12 +46,13 @@ pub fn generate(
     type_pool: &TypeInternPool,
     strings: &[String],
     interner: &ThreadedRodeo,
+    target: Target,
 ) -> CompileResult<MachineCode> {
     let num_locals = cfg.num_locals();
     let num_params = cfg.num_params();
 
     // Lower CFG to Aarch64Mir with virtual registers
-    let mir = CfgLower::new(cfg, type_pool, strings, interner).lower();
+    let mir = CfgLower::new(cfg, type_pool, strings, interner, target).lower();
 
     // Allocate physical registers
     let existing_slots = num_locals + num_params;
@@ -88,12 +90,13 @@ pub fn generate_with_asm(
     type_pool: &TypeInternPool,
     strings: &[String],
     interner: &ThreadedRodeo,
+    target: Target,
 ) -> CompileResult<(MachineCode, String)> {
     let num_locals = cfg.num_locals();
     let num_params = cfg.num_params();
 
     // Lower CFG to Aarch64Mir with virtual registers
-    let mir = CfgLower::new(cfg, type_pool, strings, interner).lower();
+    let mir = CfgLower::new(cfg, type_pool, strings, interner, target).lower();
 
     // Allocate physical registers
     let existing_slots = num_locals + num_params;
@@ -134,12 +137,13 @@ pub fn generate_regalloc_info(
     type_pool: &TypeInternPool,
     strings: &[String],
     interner: &ThreadedRodeo,
+    target: Target,
 ) -> CompileResult<RegAllocDebugInfo<Reg>> {
     let num_locals = cfg.num_locals();
     let num_params = cfg.num_params();
 
     // Lower CFG to Aarch64Mir with virtual registers
-    let mir = CfgLower::new(cfg, type_pool, strings, interner).lower();
+    let mir = CfgLower::new(cfg, type_pool, strings, interner, target).lower();
 
     // Allocate physical registers with debug info
     let existing_slots = num_locals + num_params;

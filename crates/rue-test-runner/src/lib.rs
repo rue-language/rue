@@ -164,6 +164,12 @@ pub struct Case {
     /// Use this when tests need to call functions from imported modules.
     #[serde(default)]
     pub pass_aux_files: bool,
+    /// List of target triples on which this test should run.
+    /// If specified, the test is skipped on hosts that don't match any of the targets.
+    /// Example: `only_on = ["x86-64-linux", "aarch64-linux"]`
+    /// If not specified, the test runs on all platforms.
+    #[serde(default)]
+    pub only_on: Vec<String>,
 }
 
 /// A test file containing a section and its cases.
@@ -176,6 +182,56 @@ pub struct TestFile {
 
 /// Result of running a test.
 pub type TestResult = Result<(), String>;
+
+/// Get the current host target triple in Rue's format.
+///
+/// Returns strings like "x86-64-linux", "aarch64-linux", "aarch64-macos".
+pub fn get_host_target() -> &'static str {
+    #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+    {
+        "x86-64-linux"
+    }
+    #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+    {
+        "aarch64-linux"
+    }
+    #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+    {
+        "aarch64-macos"
+    }
+    #[cfg(all(target_arch = "x86_64", target_os = "macos"))]
+    {
+        "x86-64-macos"
+    }
+    #[cfg(not(any(
+        all(target_arch = "x86_64", target_os = "linux"),
+        all(target_arch = "aarch64", target_os = "linux"),
+        all(target_arch = "aarch64", target_os = "macos"),
+        all(target_arch = "x86_64", target_os = "macos"),
+    )))]
+    {
+        "unknown"
+    }
+}
+
+/// Check if a test should be skipped based on `only_on` restrictions.
+///
+/// Returns `Some(reason)` if the test should be skipped, `None` if it should run.
+pub fn should_skip_for_platform(only_on: &[String]) -> Option<String> {
+    if only_on.is_empty() {
+        return None;
+    }
+
+    let host = get_host_target();
+    if only_on.iter().any(|target| target == host) {
+        None
+    } else {
+        Some(format!(
+            "test only runs on {:?}, current host is {}",
+            only_on, host
+        ))
+    }
+}
 
 /// Convert a TOML value to a string for template substitution.
 fn toml_value_to_string(value: &toml::Value) -> String {
@@ -263,6 +319,7 @@ pub fn expand_case(case: Case) -> Vec<Case> {
                 timeout_ms: case.timeout_ms,
                 aux_files: case.aux_files.clone(),
                 pass_aux_files: case.pass_aux_files,
+                only_on: case.only_on.clone(),
 
                 // Clear params on expanded case
                 params: vec![],
@@ -996,6 +1053,7 @@ mod tests {
             params: vec![],
             aux_files: HashMap::new(),
             pass_aux_files: false,
+            only_on: vec![],
         };
 
         let expanded = expand_case(case);
@@ -1045,6 +1103,7 @@ mod tests {
             params: vec![ParamSet { values: param1 }, ParamSet { values: param2 }],
             aux_files: HashMap::new(),
             pass_aux_files: false,
+            only_on: vec![],
         };
 
         let expanded = expand_case(case);
@@ -1102,6 +1161,7 @@ mod tests {
             params: vec![ParamSet { values: params }],
             aux_files: HashMap::new(),
             pass_aux_files: false,
+            only_on: vec![],
         };
 
         let expanded = expand_case(case);
@@ -1151,6 +1211,7 @@ mod tests {
             params: vec![ParamSet { values: params }],
             aux_files: HashMap::new(),
             pass_aux_files: false,
+            only_on: vec![],
         };
 
         let expanded = expand_case(case);

@@ -1,0 +1,182 @@
+# Syscall Intrinsic Tests
+#
+# These tests verify the @syscall intrinsic, which performs direct OS syscalls.
+# The intrinsic requires the unchecked_code preview feature and a checked block.
+
+[section]
+id = "runtime.syscall"
+spec_chapter = "9.2"
+name = "Syscall Intrinsic"
+
+# Test that @syscall requires the unchecked_code preview feature
+[[case]]
+name = "syscall_requires_unchecked_preview"
+spec = ["9.2:2", "9.2:3"]
+source = """
+fn main() -> i32 {
+    let syscall_num: u64 = 60;
+    let arg: u64 = 0;
+    checked {
+        @syscall(syscall_num, arg);
+    };
+    0
+}
+"""
+compile_fail = true
+error_contains = "requires preview feature"
+
+# Test that @syscall works with the preview feature enabled (x86-64 Linux)
+# Note: only_on restricts this test to run only on matching host platforms
+[[case]]
+name = "syscall_basic_x86_64"
+spec = ["9.2:1", "9.2:5"]
+preview = "unchecked_code"
+preview_should_pass = true
+only_on = ["x86-64-linux"]
+source = """
+fn main() -> i32 {
+    // exit_group syscall (231 on Linux x86-64)
+    // This will immediately terminate the program with exit code 42
+    let syscall_num: u64 = 231;
+    let exit_code: u64 = 42;
+    checked {
+        @syscall(syscall_num, exit_code);
+    };
+    // Unreachable - the syscall terminates the process
+    0
+}
+"""
+exit_code = 42
+
+# Test that @syscall works with the preview feature enabled (aarch64 Linux)
+[[case]]
+name = "syscall_basic_aarch64"
+spec = ["9.2:1", "9.2:5"]
+preview = "unchecked_code"
+preview_should_pass = true
+only_on = ["aarch64-linux"]
+source = """
+fn main() -> i32 {
+    // exit_group syscall (94 on Linux aarch64)
+    // This will immediately terminate the program with exit code 42
+    let syscall_num: u64 = 94;
+    let exit_code: u64 = 42;
+    checked {
+        @syscall(syscall_num, exit_code);
+    };
+    // Unreachable - the syscall terminates the process
+    0
+}
+"""
+exit_code = 42
+
+# Test that @syscall requires at least one argument (the syscall number)
+[[case]]
+name = "syscall_requires_syscall_number"
+spec = ["9.2:4"]
+preview = "unchecked_code"
+source = """
+fn main() -> i32 {
+    checked {
+        @syscall();
+    };
+    0
+}
+"""
+compile_fail = true
+error_contains = "wrong number of arguments"
+
+# Test that @syscall accepts up to 7 arguments
+# TODO: This test currently fails - the syscall doesn't terminate with max args.
+# Filed as rue-8qt6 for investigation.
+[[case]]
+name = "syscall_max_args"
+spec = ["9.2:4"]
+preview = "unchecked_code"
+source = """
+fn main() -> i32 {
+    // Test that we can pass 7 arguments (syscall number + 6 args)
+    // We use exit_group syscall which terminates the process with exit code 0
+    let syscall_num: u64 = 231;
+    let a0: u64 = 0;
+    let a1: u64 = 0;
+    let a2: u64 = 0;
+    let a3: u64 = 0;
+    let a4: u64 = 0;
+    let a5: u64 = 0;
+    checked {
+        @syscall(syscall_num, a0, a1, a2, a3, a4, a5);
+    };
+    // Unreachable - the syscall terminates the process with exit code 0
+    42
+}
+"""
+exit_code = 0
+
+# Test that @syscall rejects too many arguments
+[[case]]
+name = "syscall_too_many_args"
+spec = ["9.2:4"]
+preview = "unchecked_code"
+source = """
+fn main() -> i32 {
+    let n: u64 = 60;
+    let a0: u64 = 0;
+    let a1: u64 = 0;
+    let a2: u64 = 0;
+    let a3: u64 = 0;
+    let a4: u64 = 0;
+    let a5: u64 = 0;
+    let a6: u64 = 0;
+    checked {
+        @syscall(n, a0, a1, a2, a3, a4, a5, a6);
+    };
+    0
+}
+"""
+compile_fail = true
+error_contains = "wrong number of arguments"
+
+# Test that @syscall requires u64 arguments
+[[case]]
+name = "syscall_requires_u64_args"
+spec = ["9.2:4"]
+preview = "unchecked_code"
+source = """
+fn main() -> i32 {
+    let syscall_num: i32 = 60;  // i32 instead of u64
+    let arg: i32 = 0;           // i32 instead of u64
+    checked {
+        @syscall(syscall_num, arg);
+    };
+    0
+}
+"""
+compile_fail = true
+error_contains = "type mismatch"
+
+# Test that @syscall returns i64
+# TODO: This test currently fails due to checked block type inference issue.
+# Filed as rue-8qt6 for investigation.
+[[case]]
+name = "syscall_returns_i64"
+spec = ["9.2:5"]
+preview = "unchecked_code"
+source = """
+fn main() -> i32 {
+    // getpid syscall (39 on Linux x86-64) returns the process ID
+    let syscall_num: u64 = 39;
+    let result: i64 = 0;
+    checked {
+        result = @syscall(syscall_num);
+    };
+    // PID should be positive
+    let zero: i64 = 0;
+    if result > zero {
+        42
+    } else {
+        1
+    }
+}
+"""
+exit_code = 42

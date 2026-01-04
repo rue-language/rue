@@ -84,6 +84,8 @@ pub struct KnownSymbols {
     pub addr_of: Spur,
     /// The `addr_of_mut` intrinsic symbol - takes mutable address of lvalue.
     pub addr_of_mut: Spur,
+    /// The `syscall` intrinsic symbol - direct OS syscall.
+    pub syscall: Spur,
 
     // Builtin type names
     /// The `String` type name symbol.
@@ -128,6 +130,7 @@ impl KnownSymbols {
             int_to_ptr: interner.get_or_intern_static("int_to_ptr"),
             addr_of: interner.get_or_intern_static("addr_of"),
             addr_of_mut: interner.get_or_intern_static("addr_of_mut"),
+            syscall: interner.get_or_intern_static("syscall"),
 
             // Builtin type names
             string_type: interner.get_or_intern_static("String"),
@@ -191,6 +194,7 @@ mod tests {
         assert_eq!(interner.resolve(&known.int_to_ptr), "int_to_ptr");
         assert_eq!(interner.resolve(&known.addr_of), "addr_of");
         assert_eq!(interner.resolve(&known.addr_of_mut), "addr_of_mut");
+        assert_eq!(interner.resolve(&known.syscall), "syscall");
         assert_eq!(interner.resolve(&known.string_type), "String");
         assert_eq!(interner.resolve(&known.main_fn), "main");
     }

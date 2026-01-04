@@ -35,7 +35,9 @@
 //! - `RUE_BINARY` - Path to the rue compiler binary
 
 use libtest2_mimic::{Harness, RunContext, RunError, Trial};
-use rue_test_runner::{Case, find_dir, find_rue_binary, load_test_files, run_test_case};
+use rue_test_runner::{
+    Case, find_dir, find_rue_binary, load_test_files, run_test_case, should_skip_for_platform,
+};
 use std::path::Path;
 
 mod traceability;
@@ -88,6 +90,9 @@ fn run_case_wrapper(
     if skip {
         return ctx.ignore_for("marked as skip");
     }
+    if let Some(reason) = should_skip_for_platform(&case.only_on) {
+        return ctx.ignore_for(reason);
+    }
     run_test_case(case, rue_binary).map_err(|e| RunError::fail(e.to_string()))
 }
 
@@ -100,6 +105,9 @@ fn run_preview_case_wrapper(
 ) -> Result<(), RunError> {
     if skip {
         return ctx.ignore_for("marked as skip");
+    }
+    if let Some(reason) = should_skip_for_platform(&case.only_on) {
+        return ctx.ignore_for(reason);
     }
     match run_test_case(case, rue_binary) {
         Ok(()) => Ok(()),

@@ -1506,6 +1506,7 @@ fn compile_aarch64(
                     &state.type_pool,
                     &state.strings,
                     &state.interner,
+                    options.target,
                 )?;
 
                 let mut obj_builder = ObjectBuilder::new(options.target, &func.analyzed.name)
@@ -1669,6 +1670,7 @@ fn compile_aarch64_from_rir(
                     &state.type_pool,
                     &state.strings,
                     &state.interner,
+                    options.target,
                 )?;
 
                 let mut obj_builder = ObjectBuilder::new(options.target, &func.analyzed.name)
@@ -1813,7 +1815,8 @@ pub fn generate_mir(
         }
         Arch::Aarch64 => {
             let mir =
-                rue_codegen::aarch64::CfgLower::new(cfg, type_pool, strings, interner).lower();
+                rue_codegen::aarch64::CfgLower::new(cfg, type_pool, strings, interner, target)
+                    .lower();
             Mir::Aarch64(mir)
         }
     }
@@ -1848,7 +1851,8 @@ pub fn generate_allocated_mir(
         Arch::Aarch64 => {
             // Lower CFG to Aarch64Mir with virtual registers
             let mir =
-                rue_codegen::aarch64::CfgLower::new(cfg, type_pool, strings, interner).lower();
+                rue_codegen::aarch64::CfgLower::new(cfg, type_pool, strings, interner, target)
+                    .lower();
 
             // Allocate physical registers
             let (mir, _num_spills, _used_callee_saved) =
@@ -1879,7 +1883,8 @@ pub fn generate_liveness_info(
         }
         Arch::Aarch64 => {
             let mir =
-                rue_codegen::aarch64::CfgLower::new(cfg, type_pool, strings, interner).lower();
+                rue_codegen::aarch64::CfgLower::new(cfg, type_pool, strings, interner, target)
+                    .lower();
             rue_codegen::aarch64::liveness::analyze_debug(&mir)
         }
     }
@@ -1907,7 +1912,7 @@ pub fn generate_lowering_info(
         }
         Arch::Aarch64 => {
             let (_mir, debug_info) =
-                rue_codegen::aarch64::CfgLower::new(cfg, type_pool, strings, interner)
+                rue_codegen::aarch64::CfgLower::new(cfg, type_pool, strings, interner, target)
                     .lower_with_debug();
             debug_info
         }
@@ -1937,7 +1942,7 @@ pub fn generate_emitted_asm(
         }
         Arch::Aarch64 => {
             let (_machine_code, asm) =
-                rue_codegen::aarch64::generate_with_asm(cfg, type_pool, strings, interner)?;
+                rue_codegen::aarch64::generate_with_asm(cfg, type_pool, strings, interner, target)?;
             Ok(asm)
         }
     }
@@ -1962,8 +1967,9 @@ pub fn generate_regalloc_info(
             Ok(debug_info.to_string())
         }
         Arch::Aarch64 => {
-            let debug_info =
-                rue_codegen::aarch64::generate_regalloc_info(cfg, type_pool, strings, interner)?;
+            let debug_info = rue_codegen::aarch64::generate_regalloc_info(
+                cfg, type_pool, strings, interner, target,
+            )?;
             Ok(debug_info.to_string())
         }
     }

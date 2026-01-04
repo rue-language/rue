@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use lasso::ThreadedRodeo;
 use rue_air::{StructId, TypeInternPool};
 use rue_cfg::{BasicBlock, BlockId, Cfg, CfgInstData, CfgValue, Terminator, Type, TypeKind};
+use rue_target::Target;
 
 use super::mir::{Aarch64Inst, Aarch64Mir, Cond, LabelId, Operand, Reg, VReg};
 use crate::cfg_lower::{FieldChainBase, IndexChainBase, IndexLevel};
@@ -46,6 +47,8 @@ pub struct CfgLower<'a> {
     strings: &'a [String],
     /// Interner for resolving Spur to string
     interner: &'a ThreadedRodeo,
+    /// Target platform (needed for syscall ABI differences between Linux/macOS).
+    target: Target,
     mir: Aarch64Mir,
     /// Maps CFG values to vregs
     value_map: HashMap<CfgValue, VReg>,
@@ -72,6 +75,7 @@ impl<'a> CfgLower<'a> {
         type_pool: &'a TypeInternPool,
         strings: &'a [String],
         interner: &'a ThreadedRodeo,
+        target: Target,
     ) -> Self {
         let num_locals = cfg.num_locals();
         let num_params = cfg.num_params();
@@ -91,6 +95,7 @@ impl<'a> CfgLower<'a> {
             type_pool,
             strings,
             interner,
+            target,
             mir: Aarch64Mir::new(),
             value_map: HashMap::with_capacity(num_values),
             block_param_vregs: HashMap::with_capacity(estimated_block_params),
@@ -2190,6 +2195,68 @@ impl<'a> CfgLower<'a> {
                         src: Operand::Physical(Reg::X0),
                     });
                     self.value_map.insert(value, result_vreg);
+                } else if name_str == "syscall" {
+                    // @syscall intrinsic - perform a direct system call
+                    //
+                    // ABI differs between Linux and macOS:
+                    //
+                    // Linux aarch64:
+                    //   - X8: syscall number
+                    //   - X0-X5: arguments 1-6
+                    //   - Returns result in X0
+                    //   - Uses SVC #0
+                    //
+                    // macOS aarch64:
+                    //   - X16: syscall number
+                    //   - X0-X5: arguments 1-6
+                    //   - Returns result in X0
+                    //   - Uses SVC #0x80
+
+                    let args = self.cfg.get_extra(*args_start, *args_len);
+
+                    // First argument is syscall number
+                    // Linux uses X8, macOS uses X16
+                    let syscall_num_vreg = self.get_vreg(args[0]);
+                    let syscall_num_reg = if self.target.is_macho() {
+                        Reg::X16
+                    } else {
+                        Reg::X8
+                    };
+                    self.mir.push(Aarch64Inst::MovRR {
+                        dst: Operand::Physical(syscall_num_reg),
+                        src: Operand::Virtual(syscall_num_vreg),
+                    });
+
+                    // Remaining arguments go to X0-X5
+                    for (i, &arg) in args.iter().skip(1).enumerate() {
+                        let arg_vreg = self.get_vreg(arg);
+                        let target_reg = match i {
+                            0 => Reg::X0,
+                            1 => Reg::X1,
+                            2 => Reg::X2,
+                            3 => Reg::X3,
+                            4 => Reg::X4,
+                            5 => Reg::X5,
+                            _ => unreachable!("syscall can have at most 6 arguments"),
+                        };
+                        self.mir.push(Aarch64Inst::MovRR {
+                            dst: Operand::Physical(target_reg),
+                            src: Operand::Virtual(arg_vreg),
+                        });
+                    }
+
+                    // Execute the syscall
+                    // Linux uses SVC #0, macOS uses SVC #0x80
+                    let svc_imm = if self.target.is_macho() { 0x80 } else { 0 };
+                    self.mir.push(Aarch64Inst::Svc { imm: svc_imm });
+
+                    // Result is in X0, move to a vreg
+                    let result_vreg = self.mir.alloc_vreg();
+                    self.mir.push(Aarch64Inst::MovRR {
+                        dst: Operand::Virtual(result_vreg),
+                        src: Operand::Physical(Reg::X0),
+                    });
+                    self.value_map.insert(value, result_vreg);
                 }
             }
 
@@ -4109,7 +4176,15 @@ mod tests {
             &interner,
         );
 
-        CfgLower::new(&cfg_output.cfg, type_pool, strings, &interner).lower()
+        // Use host target for tests
+        CfgLower::new(
+            &cfg_output.cfg,
+            type_pool,
+            strings,
+            &interner,
+            Target::host(),
+        )
+        .lower()
     }
 
     #[test]
