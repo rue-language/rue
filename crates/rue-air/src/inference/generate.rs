@@ -638,6 +638,48 @@ impl<'a> ConstraintGenerator<'a> {
                         self.generate(*arg_ref, ctx);
                     }
                     InferType::Concrete(Type::I64)
+                } else if intrinsic_name == "ptr_read" {
+                    // @ptr_read(ptr): returns the pointee type
+                    // We use a fresh type var since we can't resolve pointer types here
+                    for arg_ref in args.iter() {
+                        self.generate(*arg_ref, ctx);
+                    }
+                    let result_var = self.fresh_var();
+                    InferType::Var(result_var)
+                } else if intrinsic_name == "ptr_write" {
+                    // @ptr_write(ptr, value): returns unit
+                    for arg_ref in args.iter() {
+                        self.generate(*arg_ref, ctx);
+                    }
+                    InferType::Concrete(Type::Unit)
+                } else if intrinsic_name == "ptr_offset" {
+                    // @ptr_offset(ptr, offset): returns same type as ptr
+                    // We use a fresh type var since we can't resolve pointer types here
+                    for arg_ref in args.iter() {
+                        self.generate(*arg_ref, ctx);
+                    }
+                    let result_var = self.fresh_var();
+                    InferType::Var(result_var)
+                } else if intrinsic_name == "ptr_to_int" {
+                    // @ptr_to_int(ptr): returns u64
+                    for arg_ref in args.iter() {
+                        self.generate(*arg_ref, ctx);
+                    }
+                    InferType::Concrete(Type::U64)
+                } else if intrinsic_name == "int_to_ptr" {
+                    // @int_to_ptr(addr): returns ptr mut T, type inferred from context
+                    for arg_ref in args.iter() {
+                        self.generate(*arg_ref, ctx);
+                    }
+                    let result_var = self.fresh_var();
+                    InferType::Var(result_var)
+                } else if intrinsic_name == "addr_of" || intrinsic_name == "addr_of_mut" {
+                    // @addr_of / @addr_of_mut: returns pointer type, inferred from context
+                    for arg_ref in args.iter() {
+                        self.generate(*arg_ref, ctx);
+                    }
+                    let result_var = self.fresh_var();
+                    InferType::Var(result_var)
                 } else {
                     // Generate constraints for arguments (they need to be processed)
                     for arg_ref in args.iter() {

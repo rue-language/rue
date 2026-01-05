@@ -2085,6 +2085,26 @@ fn get_resolved_type_ctx(
     })
 }
 
+/// Check that the unchecked_code preview feature is enabled (parallel version).
+fn require_preview_ctx(
+    ctx: &SemaContext<'_>,
+    feature: PreviewFeature,
+    what: &str,
+    span: Span,
+) -> CompileResult<()> {
+    if !ctx.preview_features.contains(&feature) {
+        Err(CompileError::new(
+            ErrorKind::PreviewFeatureRequired {
+                feature,
+                what: what.to_string(),
+            },
+            span,
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 /// Analyze binary arithmetic operation (parallel version).
 fn analyze_binary_arith_ctx<F>(
     ctx: &SemaContext<'_>,
@@ -5484,6 +5504,396 @@ fn analyze_intrinsic_ctx(
             span,
         });
         Ok(AnalysisResult::new(air_ref, Type::U64))
+    } else if name == known.ptr_read {
+        // @ptr_read(ptr) - Read value through pointer
+        require_preview_ctx(
+            ctx,
+            PreviewFeature::UncheckedCode,
+            "pointer intrinsics",
+            span,
+        )?;
+
+        if args.len() != 1 {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicWrongArgCount {
+                    name: "ptr_read".to_string(),
+                    expected: 1,
+                    found: args.len(),
+                },
+                span,
+            ));
+        }
+
+        let ptr_result = analyze_inst_with_context(ctx, air, args[0].value, analysis_ctx)?;
+        let ptr_type = ptr_result.ty;
+
+        // Get the pointee type from the pointer type
+        let pointee_type = match ptr_type.kind() {
+            TypeKind::PtrConst(ptr_id) => ctx.type_pool.ptr_const_def(ptr_id),
+            TypeKind::PtrMut(ptr_id) => ctx.type_pool.ptr_mut_def(ptr_id),
+            _ => {
+                return Err(CompileError::new(
+                    ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
+                        name: "ptr_read".to_string(),
+                        expected: "ptr const T or ptr mut T".to_string(),
+                        found: ptr_type.name().to_string(),
+                    })),
+                    span,
+                ));
+            }
+        };
+
+        let args_start = air.add_extra(&[ptr_result.air_ref.as_u32()]);
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::Intrinsic {
+                name,
+                args_start,
+                args_len: 1,
+            },
+            ty: pointee_type,
+            span,
+        });
+        Ok(AnalysisResult::new(air_ref, pointee_type))
+    } else if name == known.ptr_write {
+        // @ptr_write(ptr, value) - Write value through pointer
+        require_preview_ctx(
+            ctx,
+            PreviewFeature::UncheckedCode,
+            "pointer intrinsics",
+            span,
+        )?;
+
+        if args.len() != 2 {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicWrongArgCount {
+                    name: "ptr_write".to_string(),
+                    expected: 2,
+                    found: args.len(),
+                },
+                span,
+            ));
+        }
+
+        let ptr_result = analyze_inst_with_context(ctx, air, args[0].value, analysis_ctx)?;
+        let value_result = analyze_inst_with_context(ctx, air, args[1].value, analysis_ctx)?;
+        let ptr_type = ptr_result.ty;
+        let value_type = value_result.ty;
+
+        // Pointer must be ptr mut T
+        let pointee_type = match ptr_type.kind() {
+            TypeKind::PtrMut(ptr_id) => ctx.type_pool.ptr_mut_def(ptr_id),
+            TypeKind::PtrConst(_) => {
+                return Err(CompileError::new(
+                    ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
+                        name: "ptr_write".to_string(),
+                        expected: "ptr mut T (cannot write through ptr const)".to_string(),
+                        found: ptr_type.name().to_string(),
+                    })),
+                    span,
+                ));
+            }
+            _ => {
+                return Err(CompileError::new(
+                    ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
+                        name: "ptr_write".to_string(),
+                        expected: "ptr mut T".to_string(),
+                        found: ptr_type.name().to_string(),
+                    })),
+                    span,
+                ));
+            }
+        };
+
+        // Check that value type matches pointee type
+        if value_type != pointee_type && !value_type.is_error() && !value_type.is_never() {
+            return Err(CompileError::new(
+                ErrorKind::TypeMismatch {
+                    expected: pointee_type.name().to_string(),
+                    found: value_type.name().to_string(),
+                },
+                span,
+            ));
+        }
+
+        let args_start =
+            air.add_extra(&[ptr_result.air_ref.as_u32(), value_result.air_ref.as_u32()]);
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::Intrinsic {
+                name,
+                args_start,
+                args_len: 2,
+            },
+            ty: Type::Unit,
+            span,
+        });
+        Ok(AnalysisResult::new(air_ref, Type::Unit))
+    } else if name == known.ptr_offset {
+        // @ptr_offset(ptr, offset) - Pointer arithmetic
+        require_preview_ctx(
+            ctx,
+            PreviewFeature::UncheckedCode,
+            "pointer intrinsics",
+            span,
+        )?;
+
+        if args.len() != 2 {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicWrongArgCount {
+                    name: "ptr_offset".to_string(),
+                    expected: 2,
+                    found: args.len(),
+                },
+                span,
+            ));
+        }
+
+        let ptr_result = analyze_inst_with_context(ctx, air, args[0].value, analysis_ctx)?;
+        let offset_result = analyze_inst_with_context(ctx, air, args[1].value, analysis_ctx)?;
+        let ptr_type = ptr_result.ty;
+        let offset_type = offset_result.ty;
+
+        // Validate pointer type
+        if !ptr_type.is_ptr() && !ptr_type.is_error() && !ptr_type.is_never() {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
+                    name: "ptr_offset".to_string(),
+                    expected: "ptr const T or ptr mut T".to_string(),
+                    found: ptr_type.name().to_string(),
+                })),
+                span,
+            ));
+        }
+
+        // Validate offset type (must be integer)
+        if !offset_type.is_integer() && !offset_type.is_error() && !offset_type.is_never() {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
+                    name: "ptr_offset".to_string(),
+                    expected: "integer offset".to_string(),
+                    found: offset_type.name().to_string(),
+                })),
+                span,
+            ));
+        }
+
+        let args_start =
+            air.add_extra(&[ptr_result.air_ref.as_u32(), offset_result.air_ref.as_u32()]);
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::Intrinsic {
+                name,
+                args_start,
+                args_len: 2,
+            },
+            ty: ptr_type,
+            span,
+        });
+        Ok(AnalysisResult::new(air_ref, ptr_type))
+    } else if name == known.ptr_to_int {
+        // @ptr_to_int(ptr) - Convert pointer to u64
+        require_preview_ctx(
+            ctx,
+            PreviewFeature::UncheckedCode,
+            "pointer intrinsics",
+            span,
+        )?;
+
+        if args.len() != 1 {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicWrongArgCount {
+                    name: "ptr_to_int".to_string(),
+                    expected: 1,
+                    found: args.len(),
+                },
+                span,
+            ));
+        }
+
+        let ptr_result = analyze_inst_with_context(ctx, air, args[0].value, analysis_ctx)?;
+        let ptr_type = ptr_result.ty;
+
+        // Validate pointer type
+        if !ptr_type.is_ptr() && !ptr_type.is_error() && !ptr_type.is_never() {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
+                    name: "ptr_to_int".to_string(),
+                    expected: "ptr const T or ptr mut T".to_string(),
+                    found: ptr_type.name().to_string(),
+                })),
+                span,
+            ));
+        }
+
+        let args_start = air.add_extra(&[ptr_result.air_ref.as_u32()]);
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::Intrinsic {
+                name,
+                args_start,
+                args_len: 1,
+            },
+            ty: Type::U64,
+            span,
+        });
+        Ok(AnalysisResult::new(air_ref, Type::U64))
+    } else if name == known.int_to_ptr {
+        // @int_to_ptr(addr) - Convert u64 to pointer
+        require_preview_ctx(
+            ctx,
+            PreviewFeature::UncheckedCode,
+            "pointer intrinsics",
+            span,
+        )?;
+
+        if args.len() != 1 {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicWrongArgCount {
+                    name: "int_to_ptr".to_string(),
+                    expected: 1,
+                    found: args.len(),
+                },
+                span,
+            ));
+        }
+
+        let addr_result = analyze_inst_with_context(ctx, air, args[0].value, analysis_ctx)?;
+        let addr_type = addr_result.ty;
+
+        // Validate address type (must be u64)
+        if addr_type != Type::U64 && !addr_type.is_error() && !addr_type.is_never() {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
+                    name: "int_to_ptr".to_string(),
+                    expected: "u64".to_string(),
+                    found: addr_type.name().to_string(),
+                })),
+                span,
+            ));
+        }
+
+        // Get the result type from HM inference (must be a ptr mut T)
+        let result_type =
+            get_resolved_type_ctx(analysis_ctx, inst_ref, span, "@int_to_ptr intrinsic")?;
+
+        // Validate that the inferred type is a mutable pointer
+        if !result_type.is_ptr_mut() && !result_type.is_error() && !result_type.is_never() {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
+                    name: "int_to_ptr".to_string(),
+                    expected: "ptr mut T".to_string(),
+                    found: result_type.name().to_string(),
+                })),
+                span,
+            ));
+        }
+
+        let args_start = air.add_extra(&[addr_result.air_ref.as_u32()]);
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::Intrinsic {
+                name,
+                args_start,
+                args_len: 1,
+            },
+            ty: result_type,
+            span,
+        });
+        Ok(AnalysisResult::new(air_ref, result_type))
+    } else if name == known.addr_of || name == known.addr_of_mut {
+        // @addr_of(lvalue) / @addr_of_mut(lvalue) - Take address of lvalue
+        let is_mut = name == known.addr_of_mut;
+        let intrinsic_name = if is_mut { "addr_of_mut" } else { "addr_of" };
+
+        require_preview_ctx(
+            ctx,
+            PreviewFeature::UncheckedCode,
+            "pointer intrinsics",
+            span,
+        )?;
+
+        if args.len() != 1 {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicWrongArgCount {
+                    name: intrinsic_name.to_string(),
+                    expected: 1,
+                    found: args.len(),
+                },
+                span,
+            ));
+        }
+
+        let arg_result = analyze_inst_with_context(ctx, air, args[0].value, analysis_ctx)?;
+        let pointee_type = arg_result.ty;
+
+        // Create the pointer type
+        let result_type = if is_mut {
+            let ptr_type_id = ctx.type_pool.intern_ptr_mut_from_type(pointee_type);
+            Type::PtrMut(ptr_type_id)
+        } else {
+            let ptr_type_id = ctx.type_pool.intern_ptr_const_from_type(pointee_type);
+            Type::PtrConst(ptr_type_id)
+        };
+
+        let args_start = air.add_extra(&[arg_result.air_ref.as_u32()]);
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::Intrinsic {
+                name,
+                args_start,
+                args_len: 1,
+            },
+            ty: result_type,
+            span,
+        });
+        Ok(AnalysisResult::new(air_ref, result_type))
+    } else if name == known.syscall {
+        // @syscall(num, arg0?, ..., arg5?) - Direct OS syscall
+        require_preview_ctx(
+            ctx,
+            PreviewFeature::UncheckedCode,
+            "@syscall intrinsic",
+            span,
+        )?;
+
+        // Syscall takes 1-7 arguments: syscall number + up to 6 arguments
+        if args.is_empty() || args.len() > 7 {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicWrongArgCount {
+                    name: "syscall".to_string(),
+                    expected: 7,
+                    found: args.len(),
+                },
+                span,
+            ));
+        }
+
+        // Analyze all arguments and verify they are u64
+        let mut air_arg_refs = Vec::with_capacity(args.len());
+        for (i, arg) in args.iter().enumerate() {
+            let arg_result = analyze_inst_with_context(ctx, air, arg.value, analysis_ctx)?;
+            let arg_type = arg_result.ty;
+
+            if arg_type != Type::U64 && !arg_type.is_error() && !arg_type.is_never() {
+                return Err(CompileError::new(
+                    ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
+                        name: "syscall".to_string(),
+                        expected: format!("u64 for argument {}", i),
+                        found: arg_type.name().to_string(),
+                    })),
+                    span,
+                ));
+            }
+
+            air_arg_refs.push(arg_result.air_ref.as_u32());
+        }
+
+        let args_start = air.add_extra(&air_arg_refs);
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::Intrinsic {
+                name,
+                args_start,
+                args_len: args.len() as u32,
+            },
+            ty: Type::I64,
+            span,
+        });
+        Ok(AnalysisResult::new(air_ref, Type::I64))
     } else {
         // Unknown intrinsic - resolve name for error message
         let intrinsic_name = ctx.interner.resolve(&name);
