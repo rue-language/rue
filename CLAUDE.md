@@ -357,7 +357,7 @@ Tests for preview features use two fields:
 2. As you implement parts of the feature, add `preview_should_pass = true` to tests that should now pass
 3. When stabilizing the feature, remove both `preview` and `preview_should_pass` fields
 
-**IMPORTANT:** The `preview` field must match a valid `PreviewFeature` variant name (currently only `test_infra`). If you use a non-existent preview feature name, the test will be silently skipped!
+The `preview` field must match a valid `PreviewFeature` variant name. The test runner validates all preview feature names on startup and will fail with a clear error if an unknown feature name is used.
 
 #### Spec Paragraph References
 

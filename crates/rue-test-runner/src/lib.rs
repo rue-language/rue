@@ -3,6 +3,7 @@
 //! This crate provides common functionality for running compiler tests,
 //! including test case parsing, execution, and output comparison.
 
+use rue_error::PreviewFeature;
 use serde::Deserialize;
 
 /// Default timeout for test execution in milliseconds (10 seconds).
@@ -405,6 +406,55 @@ pub fn expand_test_file(mut test_file: TestFile) -> TestFile {
     test_file
 }
 
+/// An error indicating an unknown preview feature name was used in a test.
+#[derive(Debug, Clone)]
+pub struct UnknownPreviewFeatureError {
+    /// The invalid feature name found in the test.
+    pub feature_name: String,
+    /// The name of the test case using this feature.
+    pub test_name: String,
+    /// The section ID the test belongs to.
+    pub section_id: String,
+}
+
+impl std::fmt::Display for UnknownPreviewFeatureError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "unknown preview feature '{}' in test '{}::{}'; valid features are: {}",
+            self.feature_name,
+            self.section_id,
+            self.test_name,
+            PreviewFeature::all_names()
+        )
+    }
+}
+
+impl std::error::Error for UnknownPreviewFeatureError {}
+
+/// Validate all preview feature names in a test file.
+///
+/// Returns a list of errors for any unknown preview feature names.
+/// An empty list means all preview features are valid (or no preview features are used).
+pub fn validate_preview_features(test_file: &TestFile) -> Vec<UnknownPreviewFeatureError> {
+    let mut errors = Vec::new();
+
+    for case in &test_file.case {
+        if let Some(ref feature_name) = case.preview {
+            // Try to parse as a valid PreviewFeature
+            if feature_name.parse::<PreviewFeature>().is_err() {
+                errors.push(UnknownPreviewFeatureError {
+                    feature_name: feature_name.clone(),
+                    test_name: case.name.clone(),
+                    section_id: test_file.section.id.clone(),
+                });
+            }
+        }
+    }
+
+    errors
+}
+
 /// Recursively collect all files with the given extension from a directory.
 pub fn collect_files_by_ext(dir: &Path, ext: &str, files: &mut Vec<PathBuf>) {
     if let Ok(entries) = fs::read_dir(dir) {
@@ -427,8 +477,18 @@ pub fn collect_toml_files(dir: &Path, files: &mut Vec<PathBuf>) {
 }
 
 /// Load all test files from a directory (including subdirectories).
+///
+/// This function validates that all preview feature names in tests are known.
+/// If any unknown preview features are found, an error is printed for each
+/// invalid feature and the function panics with a summary.
+///
+/// # Panics
+///
+/// Panics if any test uses an unknown preview feature name. This prevents
+/// tests from being silently skipped due to typos in feature names.
 pub fn load_test_files(cases_dir: &Path) -> Vec<(String, TestFile)> {
     let mut specs = Vec::new();
+    let mut preview_errors: Vec<UnknownPreviewFeatureError> = Vec::new();
 
     if !cases_dir.exists() {
         eprintln!(
@@ -456,6 +516,9 @@ pub fn load_test_files(cases_dir: &Path) -> Vec<(String, TestFile)> {
                 // Expand any parameterized test cases
                 let spec = expand_test_file(spec);
 
+                // Validate preview feature names
+                preview_errors.extend(validate_preview_features(&spec));
+
                 // Build a relative path from cases_dir to create the identifier
                 // e.g., "expressions/match" for "cases/expressions/match.toml"
                 let relative = path
@@ -471,6 +534,22 @@ pub fn load_test_files(cases_dir: &Path) -> Vec<(String, TestFile)> {
                 eprintln!("Error parsing {}: {}", path.display(), e);
             }
         }
+    }
+
+    // Report all preview feature errors and fail if any were found
+    if !preview_errors.is_empty() {
+        eprintln!(
+            "\nError: Found {} unknown preview feature name(s):",
+            preview_errors.len()
+        );
+        for error in &preview_errors {
+            eprintln!("  - {}", error);
+        }
+        panic!(
+            "Test loading failed: {} test(s) use unknown preview feature names. \
+             See errors above for details.",
+            preview_errors.len()
+        );
     }
 
     // Sort by identifier for deterministic ordering
@@ -1482,5 +1561,147 @@ mod tests {
         let output = result.unwrap();
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert_eq!(stdout, "line1\nline2\n");
+    }
+
+    // Tests for validate_preview_features
+
+    fn make_test_case(name: &str, preview: Option<&str>) -> Case {
+        Case {
+            name: name.to_string(),
+            source: "fn main() {}".to_string(),
+            exit_code: Some(0),
+            compile_fail: false,
+            compile_only: false,
+            error_contains: None,
+            expected_error: None,
+            expected_tokens: None,
+            expected_ast: None,
+            expected_rir: None,
+            expected_air: None,
+            expected_mir: None,
+            expected_cfg: None,
+            runtime_error: None,
+            runtime_exit_code: None,
+            skip: false,
+            warning_contains: None,
+            expected_warning_count: None,
+            no_warnings: false,
+            spec: vec![],
+            expected_stdout: None,
+            preview: preview.map(|s| s.to_string()),
+            preview_should_pass: false,
+            target: None,
+            opt_level: None,
+            timeout_ms: None,
+            stdin: None,
+            stderr_contains: None,
+            params: vec![],
+            aux_files: HashMap::new(),
+            pass_aux_files: false,
+            only_on: vec![],
+        }
+    }
+
+    fn make_test_file(section_id: &str, cases: Vec<Case>) -> TestFile {
+        TestFile {
+            section: Section {
+                id: section_id.to_string(),
+                name: "Test Section".to_string(),
+                description: String::new(),
+                spec_chapter: None,
+            },
+            case: cases,
+        }
+    }
+
+    #[test]
+    fn test_validate_preview_features_no_preview() {
+        // Test with no preview features - should return no errors
+        let test_file = make_test_file(
+            "test",
+            vec![
+                make_test_case("basic_test", None),
+                make_test_case("another_test", None),
+            ],
+        );
+
+        let errors = validate_preview_features(&test_file);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_validate_preview_features_valid_feature() {
+        // Test with a valid preview feature
+        let test_file = make_test_file(
+            "test",
+            vec![make_test_case("preview_test", Some("test_infra"))],
+        );
+
+        let errors = validate_preview_features(&test_file);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_validate_preview_features_unknown_feature() {
+        // Test with an unknown preview feature
+        let test_file = make_test_file(
+            "expressions",
+            vec![make_test_case("bad_test", Some("nonexistent_feature"))],
+        );
+
+        let errors = validate_preview_features(&test_file);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].feature_name, "nonexistent_feature");
+        assert_eq!(errors[0].test_name, "bad_test");
+        assert_eq!(errors[0].section_id, "expressions");
+    }
+
+    #[test]
+    fn test_validate_preview_features_typo() {
+        // Test with a typo in the preview feature name (common case)
+        let test_file = make_test_file(
+            "items",
+            vec![
+                make_test_case("typo_test", Some("test_infr")), // Missing 'a'
+            ],
+        );
+
+        let errors = validate_preview_features(&test_file);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].feature_name, "test_infr");
+    }
+
+    #[test]
+    fn test_validate_preview_features_multiple_errors() {
+        // Test with multiple unknown preview features
+        let test_file = make_test_file(
+            "test",
+            vec![
+                make_test_case("good_test", Some("test_infra")), // Valid
+                make_test_case("bad_test_1", Some("unknown1")),  // Invalid
+                make_test_case("normal_test", None),             // No preview
+                make_test_case("bad_test_2", Some("unknown2")),  // Invalid
+            ],
+        );
+
+        let errors = validate_preview_features(&test_file);
+        assert_eq!(errors.len(), 2);
+        assert_eq!(errors[0].feature_name, "unknown1");
+        assert_eq!(errors[1].feature_name, "unknown2");
+    }
+
+    #[test]
+    fn test_unknown_preview_feature_error_display() {
+        let error = UnknownPreviewFeatureError {
+            feature_name: "bad_feature".to_string(),
+            test_name: "my_test".to_string(),
+            section_id: "section.id".to_string(),
+        };
+
+        let msg = error.to_string();
+        assert!(msg.contains("bad_feature"), "Should contain feature name");
+        assert!(msg.contains("my_test"), "Should contain test name");
+        assert!(msg.contains("section.id"), "Should contain section ID");
+        assert!(msg.contains("test_infra"), "Should list valid features");
     }
 }

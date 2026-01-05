@@ -2,6 +2,7 @@ rust_library(
     name = "rue-test-runner",
     srcs = glob(["src/**/*.rs"]),
     deps = [
+        "//crates/rue-error:rue-error",
         "//third-party:serde",
         "//third-party:tempfile",
         "//third-party:toml",
@@ -13,6 +14,7 @@ rust_test(
     name = "rue-test-runner-test",
     srcs = glob(["src/**/*.rs"]),
     deps = [
+        "//crates/rue-error:rue-error",
         "//third-party:serde",
         "//third-party:tempfile",
         "//third-party:toml",
