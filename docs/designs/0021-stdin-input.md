@@ -1,12 +1,12 @@
 ---
 id: 0021
 title: Standard Input
-status: proposal
+status: implemented
 tags: [io, intrinsics, runtime]
 feature-flag: stdin-input
 created: 2025-12-31
-accepted:
-implemented:
+accepted: 2025-12-31
+implemented: 2026-01-04
 spec-sections: ["4.13"]
 superseded-by:
 ---
@@ -15,7 +15,7 @@ superseded-by:
 
 ## Status
 
-Proposal
+Implemented
 
 ## Summary
 
@@ -168,31 +168,31 @@ This follows the same pattern as `String::new()` and other String-returning func
 
 ### Phase 1: Runtime Read Syscall
 
-- [ ] Add `SYS_READ` constant to platform modules
-- [ ] Add `read(fd, buf, len) -> i64` to platform modules
-- [ ] Add `STDIN` constant (0) to platform modules
-- [ ] Unit tests for read syscall
+- [x] Add `SYS_READ` constant to platform modules
+- [x] Add `read(fd, buf, len) -> i64` to platform modules
+- [x] Add `STDIN` constant (0) to platform modules
+- [x] Unit tests for read syscall
 
 ### Phase 2: Line Reading Runtime Function
 
-- [ ] Add `__rue_read_line() -> (ptr, len, cap)` to runtime
-- [ ] Implement byte-by-byte reading until newline
-- [ ] Handle EOF (panic if no data, otherwise return partial)
-- [ ] Handle errors (panic with message)
-- [ ] Unit tests in Rust
+- [x] Add `__rue_read_line() -> (ptr, len, cap)` to runtime
+- [x] Implement byte-by-byte reading until newline
+- [x] Handle EOF (panic if no data, otherwise return partial)
+- [x] Handle errors (panic with message)
+- [x] Unit tests in Rust
 
 ### Phase 3: Intrinsic in Compiler
 
-- [ ] Add `@read_line` to known intrinsics in sema
-- [ ] Type check: no arguments, returns `String`
-- [ ] Lower to `__rue_read_line` call in codegen
-- [ ] Handle String return value assembly
+- [x] Add `@read_line` to known intrinsics in sema
+- [x] Type check: no arguments, returns `String`
+- [x] Lower to `__rue_read_line` call in codegen
+- [x] Handle String return value assembly
 
 ### Phase 4: Spec and Tests
 
-- [ ] Add `@read_line` to spec section 4.13 (Intrinsics)
-- [ ] Add spec tests (may need special handling for stdin in test harness)
-- [ ] Document in language guide
+- [x] Add `@read_line` to spec section 4.13 (Intrinsics)
+- [x] Add spec tests (may need special handling for stdin in test harness)
+- [x] Document in language guide
 
 ## Consequences
 
