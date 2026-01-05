@@ -427,6 +427,63 @@ pub static STRING_TYPE: BuiltinTypeDef = BuiltinTypeDef {
 /// processing user code.
 pub static BUILTIN_TYPES: &[&BuiltinTypeDef] = &[&STRING_TYPE];
 
+// ============================================================================
+// Built-in Enums (Target Platform)
+// ============================================================================
+
+/// Definition of a built-in enum type.
+///
+/// These are synthetic enums injected by the compiler before processing user code.
+/// They are used for compile-time platform detection via intrinsics like
+/// `@target_arch()` and `@target_os()`.
+#[derive(Debug, Clone)]
+pub struct BuiltinEnumDef {
+    /// Enum name as it appears in source code (e.g., "Arch")
+    pub name: &'static str,
+    /// Variant names in order (index matches variant_index in EnumVariant)
+    pub variants: &'static [&'static str],
+}
+
+/// The built-in Arch enum for CPU architecture detection.
+///
+/// Variants:
+/// - `X86_64` (index 0): x86-64 / AMD64
+/// - `Aarch64` (index 1): ARM64 / AArch64
+///
+/// Used with `@target_arch()` intrinsic for platform-specific code.
+pub static ARCH_ENUM: BuiltinEnumDef = BuiltinEnumDef {
+    name: "Arch",
+    variants: &["X86_64", "Aarch64"],
+};
+
+/// The built-in Os enum for operating system detection.
+///
+/// Variants:
+/// - `Linux` (index 0): Linux
+/// - `Macos` (index 1): macOS / Darwin
+///
+/// Used with `@target_os()` intrinsic for platform-specific code.
+pub static OS_ENUM: BuiltinEnumDef = BuiltinEnumDef {
+    name: "Os",
+    variants: &["Linux", "Macos"],
+};
+
+/// All built-in enums.
+///
+/// The compiler iterates over this to inject synthetic enums before
+/// processing user code.
+pub static BUILTIN_ENUMS: &[&BuiltinEnumDef] = &[&ARCH_ENUM, &OS_ENUM];
+
+/// Look up a built-in enum by name.
+pub fn get_builtin_enum(name: &str) -> Option<&'static BuiltinEnumDef> {
+    BUILTIN_ENUMS.iter().find(|e| e.name == name).copied()
+}
+
+/// Check if a name is reserved for a built-in enum.
+pub fn is_reserved_enum_name(name: &str) -> bool {
+    BUILTIN_ENUMS.iter().any(|e| e.name == name)
+}
+
 /// Look up a built-in type by name.
 pub fn get_builtin_type(name: &str) -> Option<&'static BuiltinTypeDef> {
     BUILTIN_TYPES.iter().find(|t| t.name == name).copied()
@@ -550,5 +607,44 @@ mod tests {
                 name
             );
         }
+    }
+
+    // ========================================================================
+    // Built-in Enum Tests
+    // ========================================================================
+
+    #[test]
+    fn test_arch_enum() {
+        assert_eq!(ARCH_ENUM.name, "Arch");
+        assert_eq!(ARCH_ENUM.variants.len(), 2);
+        assert_eq!(ARCH_ENUM.variants[0], "X86_64");
+        assert_eq!(ARCH_ENUM.variants[1], "Aarch64");
+    }
+
+    #[test]
+    fn test_os_enum() {
+        assert_eq!(OS_ENUM.name, "Os");
+        assert_eq!(OS_ENUM.variants.len(), 2);
+        assert_eq!(OS_ENUM.variants[0], "Linux");
+        assert_eq!(OS_ENUM.variants[1], "Macos");
+    }
+
+    #[test]
+    fn test_get_builtin_enum() {
+        assert!(get_builtin_enum("Arch").is_some());
+        assert!(get_builtin_enum("Os").is_some());
+        assert!(get_builtin_enum("Target").is_none());
+    }
+
+    #[test]
+    fn test_is_reserved_enum_name() {
+        assert!(is_reserved_enum_name("Arch"));
+        assert!(is_reserved_enum_name("Os"));
+        assert!(!is_reserved_enum_name("MyEnum"));
+    }
+
+    #[test]
+    fn test_builtin_enums_count() {
+        assert_eq!(BUILTIN_ENUMS.len(), 2);
     }
 }

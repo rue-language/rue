@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 
 use lasso::Spur;
+use rue_target::Target;
 
 use crate::inference::{FunctionSig, MethodSig};
 use crate::sema_context::{InferenceContext as SemaContextInferenceContext, SemaContext};
@@ -55,6 +56,9 @@ impl<'a> Sema<'a> {
             constants: &self.constants,
             preview_features: self.preview_features.clone(),
             builtin_string_id: self.builtin_string_id,
+            builtin_arch_id: self.builtin_arch_id,
+            builtin_os_id: self.builtin_os_id,
+            target: Target::default(), // Will be overridden by caller if needed
             inference_ctx,
             known: KnownSymbols::new(self.interner),
             type_pool: self.type_pool.clone(),

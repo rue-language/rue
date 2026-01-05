@@ -205,6 +205,12 @@ pub struct SemaContext<'a> {
     pub preview_features: PreviewFeatures,
     /// StructId of the synthetic String type.
     pub builtin_string_id: Option<StructId>,
+    /// EnumId of the synthetic Arch enum (for @target_arch intrinsic).
+    pub builtin_arch_id: Option<EnumId>,
+    /// EnumId of the synthetic Os enum (for @target_os intrinsic).
+    pub builtin_os_id: Option<EnumId>,
+    /// Compilation target (architecture + OS).
+    pub target: rue_target::Target,
     /// Pre-computed inference context for HM type inference.
     pub inference_ctx: InferenceContext,
     /// Pre-interned known symbols for fast comparison.

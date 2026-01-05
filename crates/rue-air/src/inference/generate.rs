@@ -719,6 +719,28 @@ impl<'a> ConstraintGenerator<'a> {
                         self.generate(*arg_ref, ctx);
                     }
                     InferType::Concrete(Type::Unit)
+                } else if intrinsic_name == "target_arch" {
+                    // @target_arch: returns Arch enum
+                    if let Some(arch_spur) = self.interner.get("Arch") {
+                        if let Some(&arch_ty) = self.enums.get(&arch_spur) {
+                            InferType::Concrete(arch_ty)
+                        } else {
+                            InferType::Concrete(Type::Error)
+                        }
+                    } else {
+                        InferType::Concrete(Type::Error)
+                    }
+                } else if intrinsic_name == "target_os" {
+                    // @target_os: returns Os enum
+                    if let Some(os_spur) = self.interner.get("Os") {
+                        if let Some(&os_ty) = self.enums.get(&os_spur) {
+                            InferType::Concrete(os_ty)
+                        } else {
+                            InferType::Concrete(Type::Error)
+                        }
+                    } else {
+                        InferType::Concrete(Type::Error)
+                    }
                 } else {
                     // Generate constraints for arguments (they need to be processed)
                     for arg_ref in args.iter() {

@@ -25,6 +25,7 @@ use rue_error::{
 };
 use rue_rir::{InstData, InstRef, RirArgMode, RirCallArg, RirDirective, RirParamMode};
 use rue_span::Span;
+use rue_target::{Arch, Os};
 
 use super::context::{
     AnalysisContext, AnalysisResult, BuiltinMethodContext, ConstValue, FieldPath, ParamInfo,
@@ -6111,6 +6112,68 @@ fn analyze_intrinsic_ctx(
             span,
         });
         Ok(AnalysisResult::new(air_ref, Type::I64))
+    } else if name == known.target_arch {
+        // @target_arch() - Returns Arch enum value for target CPU architecture
+        if !args.is_empty() {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicWrongArgCount {
+                    name: "target_arch".to_string(),
+                    expected: 0,
+                    found: args.len(),
+                },
+                span,
+            ));
+        }
+
+        let arch_enum_id = ctx
+            .builtin_arch_id
+            .expect("Arch enum not injected - internal compiler error");
+        let variant_index = match ctx.target.arch() {
+            Arch::X86_64 => 0,
+            Arch::Aarch64 => 1,
+        };
+
+        let result_type = Type::Enum(arch_enum_id);
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::EnumVariant {
+                enum_id: arch_enum_id,
+                variant_index,
+            },
+            ty: result_type,
+            span,
+        });
+        Ok(AnalysisResult::new(air_ref, result_type))
+    } else if name == known.target_os {
+        // @target_os() - Returns Os enum value for target operating system
+        if !args.is_empty() {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicWrongArgCount {
+                    name: "target_os".to_string(),
+                    expected: 0,
+                    found: args.len(),
+                },
+                span,
+            ));
+        }
+
+        let os_enum_id = ctx
+            .builtin_os_id
+            .expect("Os enum not injected - internal compiler error");
+        let variant_index = match ctx.target.os() {
+            Os::Linux => 0,
+            Os::Macos => 1,
+        };
+
+        let result_type = Type::Enum(os_enum_id);
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::EnumVariant {
+                enum_id: os_enum_id,
+                variant_index,
+            },
+            ty: result_type,
+            span,
+        });
+        Ok(AnalysisResult::new(air_ref, result_type))
     } else {
         // Unknown intrinsic - resolve name for error message
         let intrinsic_name = ctx.interner.resolve(&name);
@@ -8099,6 +8162,10 @@ impl<'a> Sema<'a> {
             self.analyze_addr_of_intrinsic(air, &args, span, ctx, true)
         } else if name == known.syscall {
             self.analyze_syscall_intrinsic(air, name, &args, span, ctx)
+        } else if name == known.target_arch {
+            self.analyze_target_arch_intrinsic(air, &args, span)
+        } else if name == known.target_os {
+            self.analyze_target_os_intrinsic(air, &args, span)
         } else {
             // Unknown intrinsic - resolve name for error message
             let intrinsic_name_str = self.interner.resolve(&name);
@@ -11014,5 +11081,95 @@ impl<'a> Sema<'a> {
             span,
         });
         Ok(AnalysisResult::new(air_ref, Type::I64))
+    }
+
+    /// Analyze @target_arch() intrinsic - returns target CPU architecture enum.
+    ///
+    /// This intrinsic takes no arguments and returns an Arch enum value
+    /// representing the target CPU architecture (X86_64 or Aarch64).
+    fn analyze_target_arch_intrinsic(
+        &self,
+        air: &mut Air,
+        args: &[RirCallArg],
+        span: Span,
+    ) -> CompileResult<AnalysisResult> {
+        // Validate: no arguments
+        if !args.is_empty() {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicWrongArgCount {
+                    name: "target_arch".to_string(),
+                    expected: 0,
+                    found: args.len(),
+                },
+                span,
+            ));
+        }
+
+        let arch_enum_id = self
+            .builtin_arch_id
+            .expect("Arch enum not injected - internal compiler error");
+
+        // Determine variant index based on host architecture (compile-time evaluation)
+        // Currently we always compile for the host architecture
+        let variant_index = match rue_target::Target::host().arch() {
+            Arch::X86_64 => 0,
+            Arch::Aarch64 => 1,
+        };
+
+        let result_type = Type::Enum(arch_enum_id);
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::EnumVariant {
+                enum_id: arch_enum_id,
+                variant_index,
+            },
+            ty: result_type,
+            span,
+        });
+        Ok(AnalysisResult::new(air_ref, result_type))
+    }
+
+    /// Analyze @target_os() intrinsic - returns target operating system enum.
+    ///
+    /// This intrinsic takes no arguments and returns an Os enum value
+    /// representing the target operating system (Linux or Macos).
+    fn analyze_target_os_intrinsic(
+        &self,
+        air: &mut Air,
+        args: &[RirCallArg],
+        span: Span,
+    ) -> CompileResult<AnalysisResult> {
+        // Validate: no arguments
+        if !args.is_empty() {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicWrongArgCount {
+                    name: "target_os".to_string(),
+                    expected: 0,
+                    found: args.len(),
+                },
+                span,
+            ));
+        }
+
+        let os_enum_id = self
+            .builtin_os_id
+            .expect("Os enum not injected - internal compiler error");
+
+        // Determine variant index based on host OS (compile-time evaluation)
+        // Currently we always compile for the host OS
+        let variant_index = match rue_target::Target::host().os() {
+            Os::Linux => 0,
+            Os::Macos => 1,
+        };
+
+        let result_type = Type::Enum(os_enum_id);
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::EnumVariant {
+                enum_id: os_enum_id,
+                variant_index,
+            },
+            ty: result_type,
+            span,
+        });
+        Ok(AnalysisResult::new(air_ref, result_type))
     }
 }

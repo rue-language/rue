@@ -457,3 +457,96 @@ fn main() -> i32 {
     0
 }
 ```
+
+## `@target_arch`
+
+{{ rule(id="4.13:66", cat="normative") }}
+
+The `@target_arch` intrinsic returns the target architecture as an `Arch` enum value.
+
+{{ rule(id="4.13:67", cat="normative") }}
+
+`@target_arch` accepts no arguments.
+
+{{ rule(id="4.13:68", cat="normative") }}
+
+The return type of `@target_arch` is `Arch`.
+
+{{ rule(id="4.13:69", cat="normative") }}
+
+The `Arch` enum is a built-in enum with the following variants:
+- `Arch::X86_64` - x86-64 architecture
+- `Arch::Aarch64` - ARM64/AArch64 architecture
+
+{{ rule(id="4.13:70", cat="normative") }}
+
+The value returned by `@target_arch` is determined at compile time based on the compilation target.
+
+{{ rule(id="4.13:71") }}
+
+```rue
+fn main() -> i32 {
+    match @target_arch() {
+        Arch::X86_64 => 1,
+        Arch::Aarch64 => 2,
+    }
+}
+```
+
+## `@target_os`
+
+{{ rule(id="4.13:72", cat="normative") }}
+
+The `@target_os` intrinsic returns the target operating system as an `Os` enum value.
+
+{{ rule(id="4.13:73", cat="normative") }}
+
+`@target_os` accepts no arguments.
+
+{{ rule(id="4.13:74", cat="normative") }}
+
+The return type of `@target_os` is `Os`.
+
+{{ rule(id="4.13:75", cat="normative") }}
+
+The `Os` enum is a built-in enum with the following variants:
+- `Os::Linux` - Linux operating system
+- `Os::Macos` - macOS operating system
+
+{{ rule(id="4.13:76", cat="normative") }}
+
+The value returned by `@target_os` is determined at compile time based on the compilation target.
+
+{{ rule(id="4.13:77") }}
+
+```rue
+fn main() -> i32 {
+    match @target_os() {
+        Os::Linux => 1,
+        Os::Macos => 2,
+    }
+}
+```
+
+{{ rule(id="4.13:78") }}
+
+Combining `@target_arch` and `@target_os` for platform-specific code:
+
+```rue
+fn main() -> i32 {
+    match @target_arch() {
+        Arch::X86_64 => {
+            match @target_os() {
+                Os::Linux => 99,
+                Os::Macos => 88,
+            }
+        },
+        Arch::Aarch64 => {
+            match @target_os() {
+                Os::Linux => 77,
+                Os::Macos => 66,
+            }
+        },
+    }
+}
+```

@@ -82,6 +82,10 @@ pub struct Sema<'a> {
     pub(crate) preview_features: PreviewFeatures,
     /// StructId of the synthetic String type.
     pub(crate) builtin_string_id: Option<StructId>,
+    /// EnumId of the synthetic Arch enum (for @target_arch intrinsic).
+    pub(crate) builtin_arch_id: Option<EnumId>,
+    /// EnumId of the synthetic Os enum (for @target_os intrinsic).
+    pub(crate) builtin_os_id: Option<EnumId>,
     /// Pre-interned known symbols for fast comparison.
     pub(crate) known: KnownSymbols,
     /// Type intern pool for unified type representation (ADR-0024 Phase 1).
@@ -113,6 +117,8 @@ impl<'a> Sema<'a> {
             constants: HashMap::new(),
             preview_features,
             builtin_string_id: None,
+            builtin_arch_id: None,
+            builtin_os_id: None,
             known: KnownSymbols::new(interner),
             type_pool: TypeInternPool::new(),
             module_registry: crate::sema_context::ModuleRegistry::new(),

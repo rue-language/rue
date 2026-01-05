@@ -18,7 +18,7 @@
 //! This ensures the runtime panic behavior is preserved.
 
 use crate::{Cfg, CfgInstData, CfgValue};
-use rue_air::{Type, TypeKind};
+use rue_air::{EnumId, Type, TypeKind};
 
 /// Run constant folding on the CFG.
 ///
@@ -62,8 +62,16 @@ fn fold_instruction(cfg: &mut Cfg, value: CfgValue) {
         }
 
         // Comparisons (result is always bool)
-        CfgInstData::Eq(lhs, rhs) => fold_comparison(cfg, *lhs, *rhs, |a, b| a == b),
-        CfgInstData::Ne(lhs, rhs) => fold_comparison(cfg, *lhs, *rhs, |a, b| a != b),
+        CfgInstData::Eq(lhs, rhs) => {
+            // Try integer comparison first, then enum variant comparison
+            fold_comparison(cfg, *lhs, *rhs, |a, b| a == b)
+                .or_else(|| fold_enum_comparison(cfg, *lhs, *rhs, |v1, v2| v1 == v2))
+        }
+        CfgInstData::Ne(lhs, rhs) => {
+            // Try integer comparison first, then enum variant comparison
+            fold_comparison(cfg, *lhs, *rhs, |a, b| a != b)
+                .or_else(|| fold_enum_comparison(cfg, *lhs, *rhs, |v1, v2| v1 != v2))
+        }
         CfgInstData::Lt(lhs, rhs) => {
             let lhs_ty = cfg.get_inst(*lhs).ty;
             fold_comparison_signed(cfg, *lhs, *rhs, lhs_ty, |a, b| a < b, |a, b| a < b)
@@ -131,6 +139,30 @@ where
     let rhs_val = get_const_int(cfg, rhs)?;
     let result = op(lhs_val, rhs_val);
     Some(CfgInstData::BoolConst(result))
+}
+
+/// Try to fold an enum variant comparison on two constant operands.
+///
+/// This enables dead code elimination for platform-specific code like:
+/// ```ignore
+/// if @target_arch() == Arch::X86_64 { ... }
+/// ```
+fn fold_enum_comparison<F>(cfg: &Cfg, lhs: CfgValue, rhs: CfgValue, op: F) -> Option<CfgInstData>
+where
+    F: FnOnce(u32, u32) -> bool,
+{
+    let (lhs_enum_id, lhs_variant) = get_enum_variant(cfg, lhs)?;
+    let (rhs_enum_id, rhs_variant) = get_enum_variant(cfg, rhs)?;
+
+    // Only fold if both operands are from the same enum type
+    if lhs_enum_id == rhs_enum_id {
+        let result = op(lhs_variant, rhs_variant);
+        Some(CfgInstData::BoolConst(result))
+    } else {
+        // Different enum types - this would be a type error,
+        // but let it pass through unfold for error reporting
+        None
+    }
 }
 
 /// Try to fold a comparison that needs signed semantics for signed types.
@@ -228,6 +260,17 @@ fn get_const_int(cfg: &Cfg, value: CfgValue) -> Option<u64> {
 fn get_const_bool(cfg: &Cfg, value: CfgValue) -> Option<bool> {
     match &cfg.get_inst(value).data {
         CfgInstData::BoolConst(v) => Some(*v),
+        _ => None,
+    }
+}
+
+/// Get the enum variant info of an instruction, if it's an EnumVariant.
+fn get_enum_variant(cfg: &Cfg, value: CfgValue) -> Option<(EnumId, u32)> {
+    match &cfg.get_inst(value).data {
+        CfgInstData::EnumVariant {
+            enum_id,
+            variant_index,
+        } => Some((*enum_id, *variant_index)),
         _ => None,
     }
 }

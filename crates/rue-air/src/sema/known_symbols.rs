@@ -87,6 +87,12 @@ pub struct KnownSymbols {
     /// The `syscall` intrinsic symbol - direct OS syscall.
     pub syscall: Spur,
 
+    // Target platform intrinsics
+    /// The `target_arch` intrinsic symbol - returns target CPU architecture.
+    pub target_arch: Spur,
+    /// The `target_os` intrinsic symbol - returns target operating system.
+    pub target_os: Spur,
+
     // Builtin type names
     /// The `String` type name symbol.
     pub string_type: Spur,
@@ -131,6 +137,10 @@ impl KnownSymbols {
             addr_of: interner.get_or_intern_static("addr_of"),
             addr_of_mut: interner.get_or_intern_static("addr_of_mut"),
             syscall: interner.get_or_intern_static("syscall"),
+
+            // Target platform intrinsics
+            target_arch: interner.get_or_intern_static("target_arch"),
+            target_os: interner.get_or_intern_static("target_os"),
 
             // Builtin type names
             string_type: interner.get_or_intern_static("String"),
@@ -195,6 +205,8 @@ mod tests {
         assert_eq!(interner.resolve(&known.addr_of), "addr_of");
         assert_eq!(interner.resolve(&known.addr_of_mut), "addr_of_mut");
         assert_eq!(interner.resolve(&known.syscall), "syscall");
+        assert_eq!(interner.resolve(&known.target_arch), "target_arch");
+        assert_eq!(interner.resolve(&known.target_os), "target_os");
         assert_eq!(interner.resolve(&known.string_type), "String");
         assert_eq!(interner.resolve(&known.main_fn), "main");
     }

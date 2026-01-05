@@ -1081,3 +1081,405 @@ fn main() -> i32 {
 }
 """
 exit_code = 0
+
+# =============================================================================
+# @target_arch Intrinsic
+# =============================================================================
+
+[[case]]
+name = "target_arch_returns_enum_x86_64"
+spec = ["4.13:66", "4.13:68"]
+only_on = ["x86-64-linux", "x86-64-macos"]
+source = """
+fn main() -> i32 {
+    // @target_arch() returns an Arch enum value
+    let arch = @target_arch();
+    match arch {
+        Arch::X86_64 => 1,
+        Arch::Aarch64 => 2,
+    }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "target_arch_returns_enum_aarch64"
+spec = ["4.13:66", "4.13:68"]
+only_on = ["aarch64-linux", "aarch64-macos"]
+source = """
+fn main() -> i32 {
+    // @target_arch() returns an Arch enum value
+    let arch = @target_arch();
+    match arch {
+        Arch::X86_64 => 1,
+        Arch::Aarch64 => 2,
+    }
+}
+"""
+exit_code = 2
+
+[[case]]
+name = "target_arch_no_args"
+spec = ["4.13:67"]
+source = """
+fn main() -> i32 {
+    // Verify @target_arch takes no arguments
+    let arch = @target_arch();
+    0
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "target_arch_wrong_arg_count"
+spec = ["4.13:4", "4.13:67"]
+source = """
+fn main() -> i32 {
+    let arch = @target_arch(42);
+    0
+}
+"""
+compile_fail = true
+error_contains = "argument"
+
+[[case]]
+name = "target_arch_constant_folding_x86_64"
+spec = ["4.13:66", "4.13:70"]
+only_on = ["x86-64-linux", "x86-64-macos"]
+source = """
+// The branch is selected at compile time based on target arch
+fn main() -> i32 {
+    match @target_arch() {
+        Arch::X86_64 => 42,
+        Arch::Aarch64 => 43,
+    }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "target_arch_constant_folding_aarch64"
+spec = ["4.13:66", "4.13:70"]
+only_on = ["aarch64-linux", "aarch64-macos"]
+source = """
+// The branch is selected at compile time based on target arch
+fn main() -> i32 {
+    match @target_arch() {
+        Arch::X86_64 => 42,
+        Arch::Aarch64 => 43,
+    }
+}
+"""
+exit_code = 43
+
+[[case]]
+name = "target_arch_match_x86_64"
+spec = ["4.13:66", "4.13:68"]
+only_on = ["x86-64-linux", "x86-64-macos"]
+source = """
+fn main() -> i32 {
+    match @target_arch() {
+        Arch::X86_64 => 100,
+        Arch::Aarch64 => 200,
+    }
+}
+"""
+exit_code = 100
+
+[[case]]
+name = "target_arch_match_aarch64"
+spec = ["4.13:66", "4.13:68"]
+only_on = ["aarch64-linux", "aarch64-macos"]
+source = """
+fn main() -> i32 {
+    match @target_arch() {
+        Arch::X86_64 => 100,
+        Arch::Aarch64 => 200,
+    }
+}
+"""
+exit_code = 200
+
+# =============================================================================
+# @target_os Intrinsic
+# =============================================================================
+
+[[case]]
+name = "target_os_returns_enum_linux"
+spec = ["4.13:72", "4.13:74"]
+only_on = ["x86-64-linux", "aarch64-linux"]
+source = """
+fn main() -> i32 {
+    // @target_os() returns an Os enum value
+    let os = @target_os();
+    match os {
+        Os::Linux => 1,
+        Os::Macos => 2,
+    }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "target_os_returns_enum_macos"
+spec = ["4.13:72", "4.13:74"]
+only_on = ["x86-64-macos", "aarch64-macos"]
+source = """
+fn main() -> i32 {
+    // @target_os() returns an Os enum value
+    let os = @target_os();
+    match os {
+        Os::Linux => 1,
+        Os::Macos => 2,
+    }
+}
+"""
+exit_code = 2
+
+[[case]]
+name = "target_os_no_args"
+spec = ["4.13:73"]
+source = """
+fn main() -> i32 {
+    // Verify @target_os takes no arguments
+    let os = @target_os();
+    0
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "target_os_wrong_arg_count"
+spec = ["4.13:4", "4.13:73"]
+source = """
+fn main() -> i32 {
+    let os = @target_os(42);
+    0
+}
+"""
+compile_fail = true
+error_contains = "argument"
+
+[[case]]
+name = "target_os_match_linux"
+spec = ["4.13:72", "4.13:74"]
+only_on = ["x86-64-linux", "aarch64-linux"]
+source = """
+fn main() -> i32 {
+    match @target_os() {
+        Os::Linux => 10,
+        Os::Macos => 20,
+    }
+}
+"""
+exit_code = 10
+
+[[case]]
+name = "target_os_match_macos"
+spec = ["4.13:72", "4.13:74"]
+only_on = ["x86-64-macos", "aarch64-macos"]
+source = """
+fn main() -> i32 {
+    match @target_os() {
+        Os::Linux => 10,
+        Os::Macos => 20,
+    }
+}
+"""
+exit_code = 20
+
+# =============================================================================
+# Combined Platform Detection
+# =============================================================================
+
+[[case]]
+name = "target_combined_detection_x86_64_linux"
+spec = ["4.13:66", "4.13:72"]
+only_on = ["x86-64-linux"]
+source = """
+fn main() -> i32 {
+    // Combined arch + os detection using nested match
+    match @target_arch() {
+        Arch::X86_64 => {
+            match @target_os() {
+                Os::Linux => 99,
+                Os::Macos => 88,
+            }
+        },
+        Arch::Aarch64 => {
+            match @target_os() {
+                Os::Linux => 77,
+                Os::Macos => 66,
+            }
+        },
+    }
+}
+"""
+exit_code = 99
+
+[[case]]
+name = "target_combined_detection_x86_64_macos"
+spec = ["4.13:66", "4.13:72"]
+only_on = ["x86-64-macos"]
+source = """
+fn main() -> i32 {
+    // Combined arch + os detection using nested match
+    match @target_arch() {
+        Arch::X86_64 => {
+            match @target_os() {
+                Os::Linux => 99,
+                Os::Macos => 88,
+            }
+        },
+        Arch::Aarch64 => {
+            match @target_os() {
+                Os::Linux => 77,
+                Os::Macos => 66,
+            }
+        },
+    }
+}
+"""
+exit_code = 88
+
+[[case]]
+name = "target_combined_detection_aarch64_linux"
+spec = ["4.13:66", "4.13:72"]
+only_on = ["aarch64-linux"]
+source = """
+fn main() -> i32 {
+    // Combined arch + os detection using nested match
+    match @target_arch() {
+        Arch::X86_64 => {
+            match @target_os() {
+                Os::Linux => 99,
+                Os::Macos => 88,
+            }
+        },
+        Arch::Aarch64 => {
+            match @target_os() {
+                Os::Linux => 77,
+                Os::Macos => 66,
+            }
+        },
+    }
+}
+"""
+exit_code = 77
+
+[[case]]
+name = "target_combined_detection_aarch64_macos"
+spec = ["4.13:66", "4.13:72"]
+only_on = ["aarch64-macos"]
+source = """
+fn main() -> i32 {
+    // Combined arch + os detection using nested match
+    match @target_arch() {
+        Arch::X86_64 => {
+            match @target_os() {
+                Os::Linux => 99,
+                Os::Macos => 88,
+            }
+        },
+        Arch::Aarch64 => {
+            match @target_os() {
+                Os::Linux => 77,
+                Os::Macos => 66,
+            }
+        },
+    }
+}
+"""
+exit_code = 66
+
+[[case]]
+name = "target_arch_enum_variants_x86_64"
+spec = ["4.13:69"]
+only_on = ["x86-64-linux", "x86-64-macos"]
+source = """
+fn main() -> i32 {
+    // Test that Arch enum has X86_64 and Aarch64 variants
+    match @target_arch() {
+        Arch::X86_64 => 1,
+        Arch::Aarch64 => 2,
+    }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "target_arch_enum_variants_aarch64"
+spec = ["4.13:69"]
+only_on = ["aarch64-linux", "aarch64-macos"]
+source = """
+fn main() -> i32 {
+    // Test that Arch enum has X86_64 and Aarch64 variants
+    match @target_arch() {
+        Arch::X86_64 => 1,
+        Arch::Aarch64 => 2,
+    }
+}
+"""
+exit_code = 2
+
+[[case]]
+name = "target_os_enum_variants_linux"
+spec = ["4.13:75"]
+only_on = ["x86-64-linux", "aarch64-linux"]
+source = """
+fn main() -> i32 {
+    // Test that Os enum has Linux and Macos variants
+    match @target_os() {
+        Os::Linux => 1,
+        Os::Macos => 2,
+    }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "target_os_enum_variants_macos"
+spec = ["4.13:75"]
+only_on = ["x86-64-macos", "aarch64-macos"]
+source = """
+fn main() -> i32 {
+    // Test that Os enum has Linux and Macos variants
+    match @target_os() {
+        Os::Linux => 1,
+        Os::Macos => 2,
+    }
+}
+"""
+exit_code = 2
+
+[[case]]
+name = "target_os_compile_time_linux"
+spec = ["4.13:76"]
+only_on = ["x86-64-linux", "aarch64-linux"]
+source = """
+fn main() -> i32 {
+    // The value is determined at compile time
+    let os = @target_os();
+    match os {
+        Os::Linux => 10,
+        Os::Macos => 20,
+    }
+}
+"""
+exit_code = 10
+
+[[case]]
+name = "target_os_compile_time_macos"
+spec = ["4.13:76"]
+only_on = ["x86-64-macos", "aarch64-macos"]
+source = """
+fn main() -> i32 {
+    // The value is determined at compile time
+    let os = @target_os();
+    match os {
+        Os::Linux => 10,
+        Os::Macos => 20,
+    }
+}
+"""
+exit_code = 20

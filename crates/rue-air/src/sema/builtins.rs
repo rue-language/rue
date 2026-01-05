@@ -1,25 +1,28 @@
 //! Built-in type injection for semantic analysis.
 //!
 //! This module handles injection of built-in types like String as synthetic
-//! structs. Built-in types are registered before user code is processed,
+//! structs, and built-in enums like Arch and Os as synthetic enums.
+//! Built-in types are registered before user code is processed,
 //! enabling collision detection and proper type resolution.
 
-use rue_builtins::{BUILTIN_TYPES, BuiltinFieldType, BuiltinTypeDef};
+use rue_builtins::{BUILTIN_ENUMS, BUILTIN_TYPES, BuiltinFieldType, BuiltinTypeDef};
 
 use super::Sema;
-use crate::types::{StructDef, StructField, StructId, Type, TypeKind};
+use crate::types::{EnumDef, EnumId, StructDef, StructField, StructId, Type, TypeKind};
 
 impl<'a> Sema<'a> {
-    /// Phase 0: Inject built-in types as synthetic structs.
+    /// Phase 0: Inject built-in types as synthetic structs and enums.
     ///
-    /// This creates `StructDef` entries for built-in types like `String` before
+    /// This creates `StructDef` entries for built-in types like `String` and
+    /// `EnumDef` entries for built-in enums like `Arch` and `Os` before
     /// processing user code. The built-in types are registered in the `structs`
-    /// HashMap so they can be looked up by name, and their StructIds are stored
-    /// in dedicated fields (e.g., `builtin_string_id`) for fast access.
+    /// and `enums` HashMaps so they can be looked up by name, and their IDs are
+    /// stored in dedicated fields for fast access.
     ///
     /// Built-in types are marked with `is_builtin: true` and have their fields,
     /// destructor, and copy status derived from the `rue-builtins` registry.
     pub(crate) fn inject_builtin_types(&mut self) {
+        // Inject built-in struct types (String, etc.)
         for builtin in BUILTIN_TYPES {
             // Convert builtin field types to our Type enum
             let fields: Vec<StructField> = builtin
@@ -64,6 +67,37 @@ impl<'a> Sema<'a> {
             // Note: Associated functions and methods are not registered here.
             // They are handled by looking up methods in the builtin registry
             // when analyzing method calls on builtin types.
+        }
+
+        // Inject built-in enum types (Arch, Os)
+        for builtin_enum in BUILTIN_ENUMS {
+            let variants: Vec<String> = builtin_enum
+                .variants
+                .iter()
+                .map(|v| v.to_string())
+                .collect();
+
+            // Create the synthetic enum definition
+            let enum_def = EnumDef {
+                name: builtin_enum.name.to_string(),
+                variants,
+                is_pub: true,                      // Built-in enums are always public
+                file_id: rue_span::FileId::new(0), // Synthetic, no source file
+            };
+
+            // Register in type pool and get pool-based EnumId
+            let name_spur = self.interner.get_or_intern(builtin_enum.name);
+            let (enum_id, _) = self.type_pool.register_enum(name_spur, enum_def);
+
+            // Register in enum lookup
+            self.enums.insert(name_spur, enum_id);
+
+            // Store special IDs for quick access
+            if builtin_enum.name == "Arch" {
+                self.builtin_arch_id = Some(enum_id);
+            } else if builtin_enum.name == "Os" {
+                self.builtin_os_id = Some(enum_id);
+            }
         }
     }
 

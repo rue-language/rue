@@ -64,6 +64,10 @@ pub struct GatherOutput<'a> {
     pub preview_features: PreviewFeatures,
     /// StructId of the synthetic String type.
     pub builtin_string_id: Option<StructId>,
+    /// EnumId of the synthetic Arch enum (for @target_arch intrinsic).
+    pub builtin_arch_id: Option<EnumId>,
+    /// EnumId of the synthetic Os enum (for @target_os intrinsic).
+    pub builtin_os_id: Option<EnumId>,
     /// Type intern pool (ADR-0024 Phase 1).
     pub type_pool: TypeInternPool,
     /// Arena storage for function/method parameter data.
@@ -86,6 +90,8 @@ impl<'a> GatherOutput<'a> {
             constants: self.constants,
             preview_features: self.preview_features,
             builtin_string_id: self.builtin_string_id,
+            builtin_arch_id: self.builtin_arch_id,
+            builtin_os_id: self.builtin_os_id,
             known: KnownSymbols::new(self.interner),
             type_pool: self.type_pool,
             module_registry: crate::sema_context::ModuleRegistry::new(),
