@@ -27,6 +27,9 @@
 
 mod diagnostic;
 mod drop_glue;
+mod unit;
+
+pub use unit::CompilationUnit;
 
 use rayon::prelude::*;
 use tracing::{info, info_span};
@@ -763,6 +766,7 @@ impl Default for CompileOptions {
 /// A function with its typed IR (AIR) and control flow graph (CFG).
 ///
 /// This combines the output of semantic analysis with CFG construction.
+#[derive(Debug)]
 pub struct FunctionWithCfg {
     /// The analyzed function from semantic analysis.
     pub analyzed: AnalyzedFunction,
@@ -1207,131 +1211,12 @@ pub fn compile_multi_file_with_options(
     )
     .entered();
 
-    // Parse all files with shared interner
-    let parsed = parse_all_files(sources)?;
-
-    // Validate symbols and generate RIR per-file in parallel, then merge
-    // This is faster than the sequential path for multi-file projects
-    let validated = validate_and_generate_rir_parallel(parsed)?;
-
-    // Compile from the merged RIR (with file paths for module resolution)
-    let state = compile_frontend_from_rir_with_file_paths(
-        validated.rir,
-        validated.interner,
-        options.opt_level,
-        &options.preview_features,
-        validated.file_paths,
-    )?;
-
-    // Check for main function
-    let _main_fn = state
-        .functions
-        .iter()
-        .find(|f| f.analyzed.name == "main")
-        .ok_or_else(|| {
-            CompileErrors::from(CompileError::without_span(ErrorKind::NoMainFunction))
-        })?;
-
-    // Dispatch to the appropriate backend based on target architecture
-    match options.target.arch() {
-        Arch::X86_64 => compile_x86_64_from_rir(&state, options),
-        Arch::Aarch64 => compile_aarch64_from_rir(&state, options),
-    }
-}
-
-/// Compile for x86-64 target.
-fn compile_x86_64(
-    state: &CompileState,
-    options: &CompileOptions,
-) -> MultiErrorResult<CompileOutput> {
-    // Generate machine code for all functions in parallel
-    let object_files = {
-        let _span = info_span!("codegen", arch = "x86_64").entered();
-
-        // Parallel code generation - each function is independent
-        let results: Vec<CompileResult<Vec<u8>>> = state
-            .functions
-            .par_iter()
-            .map(|func| {
-                let machine_code = rue_codegen::x86_64::generate(
-                    &func.cfg,
-                    &state.type_pool,
-                    &state.strings,
-                    &state.interner,
-                )?;
-
-                // Build object file for this function
-                let mut obj_builder = ObjectBuilder::new(options.target, &func.analyzed.name)
-                    .code(machine_code.code)
-                    .strings(machine_code.strings);
-
-                // Add relocations from codegen (convert RelocationKind to RelocationType).
-                for reloc in machine_code.relocations {
-                    let rel_type = match reloc.kind {
-                        RelocationKind::X86Pc32 => RelocationType::Pc32,
-                        RelocationKind::X86Plt32 => RelocationType::Plt32,
-                        // AArch64 relocations should never appear in x86-64 codegen
-                        RelocationKind::Aarch64AdrpPage21
-                        | RelocationKind::Aarch64AddLo12
-                        | RelocationKind::Aarch64Call26 => {
-                            unreachable!(
-                                "x86-64 codegen emitted AArch64 relocation {:?}",
-                                reloc.kind
-                            )
-                        }
-                    };
-
-                    obj_builder = obj_builder.relocation(CodeRelocation {
-                        offset: reloc.offset,
-                        symbol: reloc.symbol,
-                        rel_type,
-                        addend: reloc.addend,
-                    });
-                }
-
-                Ok(obj_builder.build())
-            })
-            .collect();
-
-        // Collect results, propagating any errors
-        let mut object_files = Vec::with_capacity(results.len());
-        let mut total_code_bytes = 0usize;
-        for result in results {
-            let obj = result.map_err(CompileErrors::from)?;
-            // Estimate code bytes from object file size (not exact, but close)
-            total_code_bytes += obj.len();
-            object_files.push(obj);
-        }
-
-        info!(
-            function_count = state.functions.len(),
-            code_bytes = total_code_bytes,
-            "codegen complete"
-        );
-        object_files
-    };
-
-    // Link to executable
-    match &options.linker {
-        LinkerMode::Internal => link_internal(state, options, &object_files),
-        LinkerMode::System(linker_cmd) => link_system(state, options, &object_files, linker_cmd),
-    }
+    // Use CompilationUnit for the entire pipeline
+    let mut unit = CompilationUnit::new(sources.to_vec(), options.clone());
+    unit.run_all()
 }
 
 /// Link using the internal linker.
-///
-/// For ELF targets (Linux), uses the built-in ELF linker.
-/// For Mach-O targets (macOS), delegates to the system linker (clang) since
-/// the internal linker only supports ELF.
-fn link_internal(
-    state: &CompileState,
-    options: &CompileOptions,
-    object_files: &[Vec<u8>],
-) -> MultiErrorResult<CompileOutput> {
-    link_internal_with_warnings(options, object_files, &state.warnings)
-}
-
-/// Link using the internal linker (helper that takes warnings directly).
 fn link_internal_with_warnings(
     options: &CompileOptions,
     object_files: &[Vec<u8>],
@@ -1395,18 +1280,6 @@ fn link_internal_with_warnings(
 }
 
 /// Link using an external system linker.
-///
-/// Handles target-specific linker flags for both Linux and macOS.
-fn link_system(
-    state: &CompileState,
-    options: &CompileOptions,
-    object_files: &[Vec<u8>],
-    linker_cmd: &str,
-) -> MultiErrorResult<CompileOutput> {
-    link_system_with_warnings(options, object_files, linker_cmd, &state.warnings)
-}
-
-/// Link using an external system linker (helper that takes warnings directly).
 fn link_system_with_warnings(
     options: &CompileOptions,
     object_files: &[Vec<u8>],
@@ -1486,249 +1359,168 @@ fn link_system_with_warnings(
     })
 }
 
-/// Compile for AArch64 target.
-fn compile_aarch64(
-    state: &CompileState,
+// ============================================================================
+// Unified Backend (Codegen + Linking)
+// ============================================================================
+
+/// Compile analyzed functions to a binary.
+///
+/// This is the unified backend that handles both architectures. It:
+/// 1. Generates machine code for each function in parallel
+/// 2. Creates object files with relocations
+/// 3. Links them into an executable
+///
+/// This function is used by `CompilationUnit::compile()` and the legacy
+/// compile functions.
+pub fn compile_backend(
+    functions: &[FunctionWithCfg],
+    type_pool: &TypeInternPool,
+    strings: &[String],
+    interner: &ThreadedRodeo,
     options: &CompileOptions,
+    warnings: &[CompileWarning],
 ) -> MultiErrorResult<CompileOutput> {
-    // Generate machine code for all functions in parallel using the aarch64 backend
-    let object_files = {
-        let _span = info_span!("codegen", arch = "aarch64").entered();
+    // Check for main function
+    let _main_fn = functions
+        .iter()
+        .find(|f| f.analyzed.name == "main")
+        .ok_or_else(|| {
+            CompileErrors::from(CompileError::without_span(ErrorKind::NoMainFunction))
+        })?;
 
-        // Parallel code generation - each function is independent
-        let results: Vec<CompileResult<Vec<u8>>> = state
-            .functions
-            .par_iter()
-            .map(|func| {
-                let machine_code = rue_codegen::aarch64::generate(
-                    &func.cfg,
-                    &state.type_pool,
-                    &state.strings,
-                    &state.interner,
-                    options.target,
-                )?;
-
-                let mut obj_builder = ObjectBuilder::new(options.target, &func.analyzed.name)
-                    .code(machine_code.code)
-                    .strings(machine_code.strings);
-
-                // Add relocations from codegen (convert RelocationKind to RelocationType).
-                for reloc in machine_code.relocations {
-                    let rel_type = match reloc.kind {
-                        RelocationKind::Aarch64AdrpPage21 => RelocationType::AdrpPage21,
-                        RelocationKind::Aarch64AddLo12 => RelocationType::AddLo12,
-                        RelocationKind::Aarch64Call26 => RelocationType::Call26,
-                        // x86-64 relocations should never appear in AArch64 codegen
-                        RelocationKind::X86Pc32 | RelocationKind::X86Plt32 => {
-                            unreachable!(
-                                "AArch64 codegen emitted x86-64 relocation {:?}",
-                                reloc.kind
-                            )
-                        }
-                    };
-
-                    obj_builder = obj_builder.relocation(CodeRelocation {
-                        offset: reloc.offset,
-                        symbol: reloc.symbol,
-                        rel_type,
-                        addend: reloc.addend,
-                    });
-                }
-
-                Ok(obj_builder.build())
-            })
-            .collect();
-
-        // Collect results, propagating any errors
-        let mut object_files = Vec::with_capacity(results.len());
-        let mut total_code_bytes = 0usize;
-        for result in results {
-            let obj = result.map_err(CompileErrors::from)?;
-            // Estimate code bytes from object file size (not exact, but close)
-            total_code_bytes += obj.len();
-            object_files.push(obj);
+    // Generate object files based on target architecture
+    let object_files = match options.target.arch() {
+        Arch::X86_64 => generate_x86_64_objects(functions, type_pool, strings, interner, options)?,
+        Arch::Aarch64 => {
+            generate_aarch64_objects(functions, type_pool, strings, interner, options)?
         }
-
-        info!(
-            function_count = state.functions.len(),
-            code_bytes = total_code_bytes,
-            "codegen complete"
-        );
-        object_files
-    };
-
-    // Link to executable (linker selection is handled at the top level, not here)
-    match &options.linker {
-        LinkerMode::Internal => {
-            link_internal_with_warnings(options, &object_files, &state.warnings)
-        }
-        LinkerMode::System(linker_cmd) => {
-            link_system_with_warnings(options, &object_files, linker_cmd, &state.warnings)
-        }
-    }
-}
-
-/// Compile for x86-64 target from RIR state (used by parallel compilation path).
-fn compile_x86_64_from_rir(
-    state: &CompileStateFromRir,
-    options: &CompileOptions,
-) -> MultiErrorResult<CompileOutput> {
-    // Generate machine code for all functions in parallel
-    let object_files = {
-        let _span = info_span!("codegen", arch = "x86_64").entered();
-
-        // Parallel code generation - each function is independent
-        let results: Vec<CompileResult<Vec<u8>>> = state
-            .functions
-            .par_iter()
-            .map(|func| {
-                let machine_code = rue_codegen::x86_64::generate(
-                    &func.cfg,
-                    &state.type_pool,
-                    &state.strings,
-                    &state.interner,
-                )?;
-
-                // Build object file for this function
-                let mut obj_builder = ObjectBuilder::new(options.target, &func.analyzed.name)
-                    .code(machine_code.code)
-                    .strings(machine_code.strings);
-
-                // Add relocations from codegen (convert RelocationKind to RelocationType).
-                for reloc in machine_code.relocations {
-                    let rel_type = match reloc.kind {
-                        RelocationKind::X86Pc32 => RelocationType::Pc32,
-                        RelocationKind::X86Plt32 => RelocationType::Plt32,
-                        // AArch64 relocations should never appear in x86-64 codegen
-                        RelocationKind::Aarch64AdrpPage21
-                        | RelocationKind::Aarch64AddLo12
-                        | RelocationKind::Aarch64Call26 => {
-                            unreachable!(
-                                "x86-64 codegen emitted AArch64 relocation {:?}",
-                                reloc.kind
-                            )
-                        }
-                    };
-
-                    obj_builder = obj_builder.relocation(CodeRelocation {
-                        offset: reloc.offset,
-                        symbol: reloc.symbol,
-                        rel_type,
-                        addend: reloc.addend,
-                    });
-                }
-
-                Ok(obj_builder.build())
-            })
-            .collect();
-
-        // Collect results, propagating any errors
-        let mut object_files = Vec::with_capacity(results.len());
-        let mut total_code_bytes = 0usize;
-        for result in results {
-            let obj = result.map_err(CompileErrors::from)?;
-            total_code_bytes += obj.len();
-            object_files.push(obj);
-        }
-
-        info!(
-            function_count = state.functions.len(),
-            code_bytes = total_code_bytes,
-            "codegen complete"
-        );
-        object_files
     };
 
     // Link to executable
     match &options.linker {
-        LinkerMode::Internal => {
-            link_internal_with_warnings(options, &object_files, &state.warnings)
-        }
+        LinkerMode::Internal => link_internal_with_warnings(options, &object_files, warnings),
         LinkerMode::System(linker_cmd) => {
-            link_system_with_warnings(options, &object_files, linker_cmd, &state.warnings)
+            link_system_with_warnings(options, &object_files, linker_cmd, warnings)
         }
     }
 }
 
-/// Compile for AArch64 target from RIR state (used by parallel compilation path).
-fn compile_aarch64_from_rir(
-    state: &CompileStateFromRir,
+/// Generate x86-64 object files for all functions.
+fn generate_x86_64_objects(
+    functions: &[FunctionWithCfg],
+    type_pool: &TypeInternPool,
+    strings: &[String],
+    interner: &ThreadedRodeo,
     options: &CompileOptions,
-) -> MultiErrorResult<CompileOutput> {
-    // Generate machine code for all functions in parallel using the aarch64 backend
-    let object_files = {
-        let _span = info_span!("codegen", arch = "aarch64").entered();
+) -> MultiErrorResult<Vec<Vec<u8>>> {
+    let _span = info_span!("codegen", arch = "x86_64").entered();
 
-        // Parallel code generation - each function is independent
-        let results: Vec<CompileResult<Vec<u8>>> = state
-            .functions
-            .par_iter()
-            .map(|func| {
-                let machine_code = rue_codegen::aarch64::generate(
-                    &func.cfg,
-                    &state.type_pool,
-                    &state.strings,
-                    &state.interner,
-                    options.target,
-                )?;
+    let results: Vec<CompileResult<Vec<u8>>> = functions
+        .par_iter()
+        .map(|func| {
+            let machine_code =
+                rue_codegen::x86_64::generate(&func.cfg, type_pool, strings, interner)?;
 
-                let mut obj_builder = ObjectBuilder::new(options.target, &func.analyzed.name)
-                    .code(machine_code.code)
-                    .strings(machine_code.strings);
+            let mut obj_builder = ObjectBuilder::new(options.target, &func.analyzed.name)
+                .code(machine_code.code)
+                .strings(machine_code.strings);
 
-                // Add relocations from codegen (convert RelocationKind to RelocationType).
-                for reloc in machine_code.relocations {
-                    let rel_type = match reloc.kind {
-                        RelocationKind::Aarch64AdrpPage21 => RelocationType::AdrpPage21,
-                        RelocationKind::Aarch64AddLo12 => RelocationType::AddLo12,
-                        RelocationKind::Aarch64Call26 => RelocationType::Call26,
-                        // x86-64 relocations should never appear in AArch64 codegen
-                        RelocationKind::X86Pc32 | RelocationKind::X86Plt32 => {
-                            unreachable!(
-                                "AArch64 codegen emitted x86-64 relocation {:?}",
-                                reloc.kind
-                            )
-                        }
-                    };
+            for reloc in machine_code.relocations {
+                let rel_type = match reloc.kind {
+                    RelocationKind::X86Pc32 => RelocationType::Pc32,
+                    RelocationKind::X86Plt32 => RelocationType::Plt32,
+                    RelocationKind::Aarch64AdrpPage21
+                    | RelocationKind::Aarch64AddLo12
+                    | RelocationKind::Aarch64Call26 => {
+                        unreachable!("x86-64 codegen emitted AArch64 relocation {:?}", reloc.kind)
+                    }
+                };
 
-                    obj_builder = obj_builder.relocation(CodeRelocation {
-                        offset: reloc.offset,
-                        symbol: reloc.symbol,
-                        rel_type,
-                        addend: reloc.addend,
-                    });
-                }
+                obj_builder = obj_builder.relocation(CodeRelocation {
+                    offset: reloc.offset,
+                    symbol: reloc.symbol,
+                    rel_type,
+                    addend: reloc.addend,
+                });
+            }
 
-                Ok(obj_builder.build())
-            })
-            .collect();
+            Ok(obj_builder.build())
+        })
+        .collect();
 
-        // Collect results, propagating any errors
-        let mut object_files = Vec::with_capacity(results.len());
-        let mut total_code_bytes = 0usize;
-        for result in results {
-            let obj = result.map_err(CompileErrors::from)?;
-            total_code_bytes += obj.len();
-            object_files.push(obj);
-        }
+    collect_codegen_results(results, functions.len())
+}
 
-        info!(
-            function_count = state.functions.len(),
-            code_bytes = total_code_bytes,
-            "codegen complete"
-        );
-        object_files
-    };
+/// Generate AArch64 object files for all functions.
+fn generate_aarch64_objects(
+    functions: &[FunctionWithCfg],
+    type_pool: &TypeInternPool,
+    strings: &[String],
+    interner: &ThreadedRodeo,
+    options: &CompileOptions,
+) -> MultiErrorResult<Vec<Vec<u8>>> {
+    let _span = info_span!("codegen", arch = "aarch64").entered();
 
-    // Link to executable
-    match &options.linker {
-        LinkerMode::Internal => {
-            link_internal_with_warnings(options, &object_files, &state.warnings)
-        }
-        LinkerMode::System(linker_cmd) => {
-            link_system_with_warnings(options, &object_files, linker_cmd, &state.warnings)
-        }
+    let results: Vec<CompileResult<Vec<u8>>> = functions
+        .par_iter()
+        .map(|func| {
+            let machine_code = rue_codegen::aarch64::generate(
+                &func.cfg,
+                type_pool,
+                strings,
+                interner,
+                options.target,
+            )?;
+
+            let mut obj_builder = ObjectBuilder::new(options.target, &func.analyzed.name)
+                .code(machine_code.code)
+                .strings(machine_code.strings);
+
+            for reloc in machine_code.relocations {
+                let rel_type = match reloc.kind {
+                    RelocationKind::Aarch64AdrpPage21 => RelocationType::AdrpPage21,
+                    RelocationKind::Aarch64AddLo12 => RelocationType::AddLo12,
+                    RelocationKind::Aarch64Call26 => RelocationType::Call26,
+                    RelocationKind::X86Pc32 | RelocationKind::X86Plt32 => {
+                        unreachable!("AArch64 codegen emitted x86-64 relocation {:?}", reloc.kind)
+                    }
+                };
+
+                obj_builder = obj_builder.relocation(CodeRelocation {
+                    offset: reloc.offset,
+                    symbol: reloc.symbol,
+                    rel_type,
+                    addend: reloc.addend,
+                });
+            }
+
+            Ok(obj_builder.build())
+        })
+        .collect();
+
+    collect_codegen_results(results, functions.len())
+}
+
+/// Collect codegen results, propagating errors and logging stats.
+fn collect_codegen_results(
+    results: Vec<CompileResult<Vec<u8>>>,
+    function_count: usize,
+) -> MultiErrorResult<Vec<Vec<u8>>> {
+    let mut object_files = Vec::with_capacity(results.len());
+    let mut total_code_bytes = 0usize;
+
+    for result in results {
+        let obj = result.map_err(CompileErrors::from)?;
+        total_code_bytes += obj.len();
+        object_files.push(obj);
     }
+
+    info!(
+        function_count,
+        code_bytes = total_code_bytes,
+        "codegen complete"
+    );
+    Ok(object_files)
 }
 
 /// Machine IR that can hold either x86-64 or AArch64 MIR.
