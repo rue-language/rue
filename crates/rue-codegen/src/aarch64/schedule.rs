@@ -126,7 +126,7 @@ fn get_latency(inst: &Aarch64Inst) -> u32 {
         | Aarch64Inst::Msub { .. } => 3,
 
         // Division: 12-20 cycles (highly variable)
-        Aarch64Inst::SdivRR { .. } => 12,
+        Aarch64Inst::SdivRR { .. } | Aarch64Inst::UdivRR { .. } => 12,
 
         // Logical operations: 1 cycle
         Aarch64Inst::AndRR { .. }
@@ -256,6 +256,7 @@ fn regs_read(inst: &Aarch64Inst) -> Vec<Reg> {
         | Aarch64Inst::SmulhRR { src1, src2, .. }
         | Aarch64Inst::UmulhRR { src1, src2, .. }
         | Aarch64Inst::SdivRR { src1, src2, .. }
+        | Aarch64Inst::UdivRR { src1, src2, .. }
         | Aarch64Inst::AndRR { src1, src2, .. }
         | Aarch64Inst::OrrRR { src1, src2, .. }
         | Aarch64Inst::EorRR { src1, src2, .. }
@@ -355,6 +356,7 @@ fn regs_written(inst: &Aarch64Inst) -> Vec<Reg> {
         | Aarch64Inst::SmulhRR { dst, .. }
         | Aarch64Inst::UmulhRR { dst, .. }
         | Aarch64Inst::SdivRR { dst, .. }
+        | Aarch64Inst::UdivRR { dst, .. }
         | Aarch64Inst::Msub { dst, .. }
         | Aarch64Inst::Neg { dst, .. }
         | Aarch64Inst::Negs { dst, .. }

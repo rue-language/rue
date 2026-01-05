@@ -270,12 +270,16 @@ pub enum X86Inst {
     /// `sar dst, imm` - Arithmetic shift right 32-bit by immediate.
     Sar32RI { dst: Operand, imm: u8 },
 
-    /// `cdq` - Sign-extend EAX into EDX:EAX (for division).
+    /// `cdq` - Sign-extend EAX into EDX:EAX (for signed division).
     Cdq,
 
     /// `idiv src` - Signed divide EDX:EAX by src.
     /// Quotient in EAX, remainder in EDX.
     IdivR { src: Operand },
+
+    /// `div src` - Unsigned divide EDX:EAX by src.
+    /// Quotient in EAX, remainder in EDX.
+    DivR { src: Operand },
 
     // Comparison and control flow
     /// `cmp src1, src2` - Compare 32-bit (subtract and set flags, discard result).
@@ -466,7 +470,7 @@ impl X86Inst {
     pub fn clobbers(&self) -> &'static [Reg] {
         match self {
             // Division clobbers RAX (quotient) and RDX (remainder)
-            X86Inst::IdivR { .. } => &[Reg::Rax, Reg::Rdx],
+            X86Inst::IdivR { .. } | X86Inst::DivR { .. } => &[Reg::Rax, Reg::Rdx],
             // CDQ sign-extends EAX into EDX, clobbering RDX
             X86Inst::Cdq => &[Reg::Rdx],
             // Function calls clobber all caller-saved registers per System V AMD64 ABI
@@ -537,6 +541,7 @@ impl fmt::Display for X86Inst {
             X86Inst::Sar32RI { dst, imm } => write!(f, "sarl {}, {}", dst, imm),
             X86Inst::Cdq => write!(f, "cdq"),
             X86Inst::IdivR { src } => write!(f, "idiv {}", src),
+            X86Inst::DivR { src } => write!(f, "div {}", src),
             X86Inst::CmpRR { src1, src2 } => write!(f, "cmp {}, {}", src1, src2),
             X86Inst::Cmp64RR { src1, src2 } => write!(f, "cmpq {}, {}", src1, src2),
             X86Inst::CmpRI { src, imm } => write!(f, "cmp {}, {}", src, imm),

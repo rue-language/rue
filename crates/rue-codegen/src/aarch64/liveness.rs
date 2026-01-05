@@ -163,6 +163,7 @@ fn uses(inst: &Aarch64Inst) -> Vec<VReg> {
         | Aarch64Inst::SmulhRR { src1, src2, .. }
         | Aarch64Inst::UmulhRR { src1, src2, .. }
         | Aarch64Inst::SdivRR { src1, src2, .. }
+        | Aarch64Inst::UdivRR { src1, src2, .. }
         | Aarch64Inst::AndRR { src1, src2, .. }
         | Aarch64Inst::OrrRR { src1, src2, .. }
         | Aarch64Inst::EorRR { src1, src2, .. }
@@ -309,6 +310,7 @@ fn defs(inst: &Aarch64Inst) -> Vec<VReg> {
         | Aarch64Inst::Lsr64Imm { dst, .. }
         | Aarch64Inst::Asr64Imm { dst, .. }
         | Aarch64Inst::SdivRR { dst, .. }
+        | Aarch64Inst::UdivRR { dst, .. }
         | Aarch64Inst::Msub { dst, .. }
         | Aarch64Inst::Neg { dst, .. }
         | Aarch64Inst::Negs { dst, .. }

@@ -425,6 +425,11 @@ impl RegAlloc {
                 mir.push(X86Inst::IdivR { src: src_op });
             }
 
+            X86Inst::DivR { src } => {
+                let src_op = self.load_operand(mir, src, Reg::R10)?;
+                mir.push(X86Inst::DivR { src: src_op });
+            }
+
             X86Inst::TestRR { src1, src2 } => {
                 let src1_op = self.load_operand(mir, src1, Reg::Rax)?;
                 let src2_op = self.load_operand(mir, src2, Reg::R10)?;

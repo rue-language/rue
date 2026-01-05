@@ -111,7 +111,7 @@ fn get_latency(inst: &X86Inst) -> u32 {
         X86Inst::ImulRR { .. } | X86Inst::ImulRR64 { .. } => 3,
 
         // Division: 20-80 cycles (highly variable)
-        X86Inst::IdivR { .. } => 20,
+        X86Inst::IdivR { .. } | X86Inst::DivR { .. } => 20,
         X86Inst::Cdq => 1,
 
         // Negation: 1 cycle
@@ -294,7 +294,7 @@ fn regs_read(inst: &X86Inst) -> Vec<Reg> {
         | X86Inst::Sar32RI { dst, .. } => {
             add_if_phys(dst, &mut result);
         }
-        X86Inst::IdivR { src } => {
+        X86Inst::IdivR { src } | X86Inst::DivR { src } => {
             add_if_phys(src, &mut result);
             result.push(Reg::Rax);
             result.push(Reg::Rdx);
@@ -412,7 +412,7 @@ fn regs_written(inst: &X86Inst) -> Vec<Reg> {
         | X86Inst::Sar32RI { dst, .. } => {
             add_if_phys(dst, &mut result);
         }
-        X86Inst::IdivR { .. } => {
+        X86Inst::IdivR { .. } | X86Inst::DivR { .. } => {
             result.push(Reg::Rax);
             result.push(Reg::Rdx);
         }
@@ -477,6 +477,7 @@ fn writes_flags(inst: &X86Inst) -> bool {
             | X86Inst::ImulRR { .. }
             | X86Inst::ImulRR64 { .. }
             | X86Inst::IdivR { .. }
+            | X86Inst::DivR { .. }
             | X86Inst::Neg { .. }
             | X86Inst::Neg64 { .. }
             // Logical (set SF, ZF, PF; clear OF, CF)

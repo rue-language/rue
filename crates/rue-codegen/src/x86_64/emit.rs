@@ -723,6 +723,11 @@ impl<'a> Emitter<'a> {
                 self.emit_idiv(src.as_physical());
                 end_inst!(self, "idiv {}", src.as_physical());
             }
+            X86Inst::DivR { src } => {
+                self.begin_inst();
+                self.emit_div(src.as_physical());
+                end_inst!(self, "div {}", src.as_physical());
+            }
             X86Inst::CmpRR { src1, src2 } => {
                 self.begin_inst();
                 self.emit_cmp_rr(src1.as_physical(), src2.as_physical());
@@ -2064,6 +2069,25 @@ impl<'a> Emitter<'a> {
 
         // ModR/M: mod=11, reg=7 (IDIV), r/m=src
         let modrm = 0xC0 | (7 << 3) | (src_enc & 7);
+        self.code.push(modrm);
+    }
+
+    /// Emit `div r32` - Unsigned divide EDX:EAX by r32.
+    ///
+    /// Encoding: [REX] F7 /6 (div r/m32)
+    fn emit_div(&mut self, src: Reg) {
+        let src_enc = src.encoding();
+
+        // REX prefix if needed
+        if src.needs_rex() {
+            self.code.push(0x41); // REX.B
+        }
+
+        // Opcode: F7 (group 3 operations)
+        self.code.push(0xF7);
+
+        // ModR/M: mod=11, reg=6 (DIV), r/m=src
+        let modrm = 0xC0 | (6 << 3) | (src_enc & 7);
         self.code.push(modrm);
     }
 

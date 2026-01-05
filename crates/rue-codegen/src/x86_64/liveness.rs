@@ -205,7 +205,7 @@ pub fn uses(inst: &X86Inst) -> Vec<VReg> {
             // dst is both read and written
             add_if_virtual(dst, &mut result);
         }
-        X86Inst::IdivR { src } => {
+        X86Inst::IdivR { src } | X86Inst::DivR { src } => {
             add_if_virtual(src, &mut result);
             // Also implicitly uses RAX and RDX (physical)
         }
@@ -360,7 +360,7 @@ pub fn defs(inst: &X86Inst) -> Vec<VReg> {
         | X86Inst::Sar32RI { dst, .. } => {
             add_if_virtual(dst, &mut result);
         }
-        X86Inst::IdivR { .. } => {
+        X86Inst::IdivR { .. } | X86Inst::DivR { .. } => {
             // Implicitly defines RAX (quotient) and RDX (remainder), but those are physical
         }
         X86Inst::TestRR { .. }

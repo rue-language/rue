@@ -1006,11 +1006,20 @@ impl<'a> CfgLower<'a> {
                 self.mir.push(Aarch64Inst::Bl { symbol_id });
                 self.mir.push(Aarch64Inst::Label { id: ok_label });
 
-                self.mir.push(Aarch64Inst::SdivRR {
-                    dst: Operand::Virtual(vreg),
-                    src1: Operand::Virtual(lhs_vreg),
-                    src2: Operand::Virtual(rhs_vreg),
-                });
+                // Use SDIV for signed types, UDIV for unsigned types
+                if ty.is_signed() {
+                    self.mir.push(Aarch64Inst::SdivRR {
+                        dst: Operand::Virtual(vreg),
+                        src1: Operand::Virtual(lhs_vreg),
+                        src2: Operand::Virtual(rhs_vreg),
+                    });
+                } else {
+                    self.mir.push(Aarch64Inst::UdivRR {
+                        dst: Operand::Virtual(vreg),
+                        src1: Operand::Virtual(lhs_vreg),
+                        src2: Operand::Virtual(rhs_vreg),
+                    });
+                }
             }
 
             CfgInstData::Mod(lhs, rhs) => {
@@ -1030,13 +1039,21 @@ impl<'a> CfgLower<'a> {
                 self.mir.push(Aarch64Inst::Bl { symbol_id });
                 self.mir.push(Aarch64Inst::Label { id: ok_label });
 
-                // Compute quotient first
+                // Compute quotient first using SDIV or UDIV based on signedness
                 let quot_vreg = self.mir.alloc_vreg();
-                self.mir.push(Aarch64Inst::SdivRR {
-                    dst: Operand::Virtual(quot_vreg),
-                    src1: Operand::Virtual(lhs_vreg),
-                    src2: Operand::Virtual(rhs_vreg),
-                });
+                if ty.is_signed() {
+                    self.mir.push(Aarch64Inst::SdivRR {
+                        dst: Operand::Virtual(quot_vreg),
+                        src1: Operand::Virtual(lhs_vreg),
+                        src2: Operand::Virtual(rhs_vreg),
+                    });
+                } else {
+                    self.mir.push(Aarch64Inst::UdivRR {
+                        dst: Operand::Virtual(quot_vreg),
+                        src1: Operand::Virtual(lhs_vreg),
+                        src2: Operand::Virtual(rhs_vreg),
+                    });
+                }
 
                 // rem = dividend - (quotient * divisor)
                 self.mir.push(Aarch64Inst::Msub {

@@ -559,6 +559,13 @@ pub enum Aarch64Inst {
         src2: Operand,
     },
 
+    /// `udiv dst, src1, src2` - Unsigned divide.
+    UdivRR {
+        dst: Operand,
+        src1: Operand,
+        src2: Operand,
+    },
+
     /// `msub dst, src1, src2, src3` - Multiply-subtract: dst = src3 - (src1 * src2)
     /// Used for computing remainder: rem = dividend - (quotient * divisor)
     Msub {
@@ -875,6 +882,9 @@ impl fmt::Display for Aarch64Inst {
             }
             Aarch64Inst::SdivRR { dst, src1, src2 } => {
                 write!(f, "sdiv {}, {}, {}", dst, src1, src2)
+            }
+            Aarch64Inst::UdivRR { dst, src1, src2 } => {
+                write!(f, "udiv {}, {}, {}", dst, src1, src2)
             }
             Aarch64Inst::Msub {
                 dst,

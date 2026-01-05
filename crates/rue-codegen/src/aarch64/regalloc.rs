@@ -415,6 +415,14 @@ impl RegAlloc {
                 })?;
             }
 
+            Aarch64Inst::UdivRR { dst, src1, src2 } => {
+                self.emit_ternop(mir, dst, src1, src2, |d, s1, s2| Aarch64Inst::UdivRR {
+                    dst: d,
+                    src1: s1,
+                    src2: s2,
+                })?;
+            }
+
             Aarch64Inst::Msub {
                 dst,
                 src1,

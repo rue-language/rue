@@ -1120,10 +1120,25 @@ impl<'a> CfgLower<'a> {
                     dst: Operand::Physical(Reg::Rax),
                     src: Operand::Virtual(lhs_vreg),
                 });
-                self.mir.push(X86Inst::Cdq);
-                self.mir.push(X86Inst::IdivR {
-                    src: Operand::Virtual(rhs_vreg),
-                });
+
+                // Use signed division (CDQ + IDIV) for signed types,
+                // unsigned division (XOR EDX,EDX + DIV) for unsigned types
+                if ty.is_signed() {
+                    self.mir.push(X86Inst::Cdq);
+                    self.mir.push(X86Inst::IdivR {
+                        src: Operand::Virtual(rhs_vreg),
+                    });
+                } else {
+                    // Zero-extend EAX into EDX:EAX by zeroing EDX
+                    self.mir.push(X86Inst::XorRR {
+                        dst: Operand::Physical(Reg::Rdx),
+                        src: Operand::Physical(Reg::Rdx),
+                    });
+                    self.mir.push(X86Inst::DivR {
+                        src: Operand::Virtual(rhs_vreg),
+                    });
+                }
+
                 self.mir.push(X86Inst::MovRR {
                     dst: Operand::Virtual(vreg),
                     src: Operand::Physical(Reg::Rax),
@@ -1151,10 +1166,25 @@ impl<'a> CfgLower<'a> {
                     dst: Operand::Physical(Reg::Rax),
                     src: Operand::Virtual(lhs_vreg),
                 });
-                self.mir.push(X86Inst::Cdq);
-                self.mir.push(X86Inst::IdivR {
-                    src: Operand::Virtual(rhs_vreg),
-                });
+
+                // Use signed division (CDQ + IDIV) for signed types,
+                // unsigned division (XOR EDX,EDX + DIV) for unsigned types
+                if ty.is_signed() {
+                    self.mir.push(X86Inst::Cdq);
+                    self.mir.push(X86Inst::IdivR {
+                        src: Operand::Virtual(rhs_vreg),
+                    });
+                } else {
+                    // Zero-extend EAX into EDX:EAX by zeroing EDX
+                    self.mir.push(X86Inst::XorRR {
+                        dst: Operand::Physical(Reg::Rdx),
+                        src: Operand::Physical(Reg::Rdx),
+                    });
+                    self.mir.push(X86Inst::DivR {
+                        src: Operand::Virtual(rhs_vreg),
+                    });
+                }
+
                 self.mir.push(X86Inst::MovRR {
                     dst: Operand::Virtual(vreg),
                     src: Operand::Physical(Reg::Rdx),

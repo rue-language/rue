@@ -271,3 +271,74 @@ params = [
   { op = "mul", expr = "2147483647 * 2" },
   { op = "neg", expr = "--2147483648" },
 ]
+
+# =============================================================================
+# Unsigned Division/Modulo
+# =============================================================================
+# These tests verify that unsigned division/modulo work correctly with values
+# that would be negative if treated as signed. This catches bugs where the
+# compiler incorrectly uses signed division for unsigned types.
+
+[[case]]
+name = "unsigned_division_large_value"
+spec = ["4.2:10"]
+source = """
+fn main() -> i32 {
+    // 0x80000000 = 2147483648 (would be -2147483648 if signed)
+    let x: u32 = 2147483648;
+    // Unsigned: 2147483648 / 100 = 21474836
+    // If incorrectly using signed: -2147483648 / 100 = -21474836
+    let result: u32 = x / 100;
+    // 21474836 % 256 = 20
+    let low_byte: u32 = result % 256;
+    @intCast(low_byte)
+}
+"""
+exit_code = 20
+
+[[case]]
+name = "unsigned_modulo_large_value"
+spec = ["4.2:10"]
+source = """
+fn main() -> i32 {
+    // 0x80000000 = 2147483648 (would be -2147483648 if signed)
+    let x: u32 = 2147483648;
+    // Unsigned: 2147483648 % 100 = 48
+    // If incorrectly using signed: -2147483648 % 100 = -48 (or something wrong)
+    let result: u32 = x % 100;
+    @intCast(result)
+}
+"""
+exit_code = 48
+
+[[case]]
+name = "unsigned_division_max_value"
+spec = ["4.2:10"]
+source = """
+fn main() -> i32 {
+    // 0xFFFFFFFF = 4294967295 (would be -1 if signed)
+    let x: u32 = 4294967295;
+    // Unsigned: 4294967295 / 1000 = 4294967
+    // If incorrectly using signed: -1 / 1000 = 0
+    let result: u32 = x / 1000;
+    // 4294967 % 256 = 55
+    let low_byte: u32 = result % 256;
+    @intCast(low_byte)
+}
+"""
+exit_code = 55
+
+[[case]]
+name = "unsigned_modulo_max_value"
+spec = ["4.2:10"]
+source = """
+fn main() -> i32 {
+    // 0xFFFFFFFF = 4294967295 (would be -1 if signed)
+    let x: u32 = 4294967295;
+    // Unsigned: 4294967295 % 100 = 95
+    // If incorrectly using signed: -1 % 100 = -1
+    let result: u32 = x % 100;
+    @intCast(result)
+}
+"""
+exit_code = 95
