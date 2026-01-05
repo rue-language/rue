@@ -165,6 +165,9 @@ pub struct ConstraintGenerator<'a> {
     /// Type variables allocated for integer literals.
     /// These start as unbound and need to be defaulted to i32 if unconstrained.
     int_literal_vars: Vec<TypeVarId>,
+    /// Type substitutions for Self and type parameters (used in method bodies).
+    /// Maps type names (like "Self") to their concrete types.
+    type_subst: Option<&'a HashMap<Spur, Type>>,
 }
 
 impl<'a> ConstraintGenerator<'a> {
@@ -177,6 +180,24 @@ impl<'a> ConstraintGenerator<'a> {
         enums: &'a HashMap<Spur, Type>,
         methods: &'a HashMap<(StructId, Spur), MethodSig>,
     ) -> Self {
+        Self::with_type_subst(rir, interner, functions, structs, enums, methods, None)
+    }
+
+    /// Create a new constraint generator with type substitutions.
+    ///
+    /// The `type_subst` map provides type substitutions for names like "Self"
+    /// that should be resolved to concrete types during constraint generation.
+    /// This is used for method bodies where `Self { ... }` struct literals
+    /// need to know the concrete struct type.
+    pub fn with_type_subst(
+        rir: &'a Rir,
+        interner: &'a ThreadedRodeo,
+        functions: &'a HashMap<Spur, FunctionSig>,
+        structs: &'a HashMap<Spur, Type>,
+        enums: &'a HashMap<Spur, Type>,
+        methods: &'a HashMap<(StructId, Spur), MethodSig>,
+        type_subst: Option<&'a HashMap<Spur, Type>>,
+    ) -> Self {
         Self {
             rir,
             interner,
@@ -188,6 +209,7 @@ impl<'a> ConstraintGenerator<'a> {
             enums,
             methods,
             int_literal_vars: Vec::new(),
+            type_subst,
         }
     }
 
@@ -879,7 +901,13 @@ impl<'a> ConstraintGenerator<'a> {
                 fields_len,
                 ..
             } => {
-                if let Some(&struct_ty) = self.structs.get(type_name) {
+                // Check type_subst first (for Self and type parameters in method bodies)
+                let struct_ty = self
+                    .type_subst
+                    .and_then(|subst| subst.get(type_name).copied())
+                    .or_else(|| self.structs.get(type_name).copied());
+
+                if let Some(struct_ty) = struct_ty {
                     let fields = self.rir.get_field_inits(*fields_start, *fields_len);
                     // Generate constraints for each field
                     for (_, value_ref) in fields.iter() {

@@ -231,9 +231,9 @@ Epic: rue-nj40
 - [ ] Update structural equality to include method signatures
 - [ ] Handle comptime parameter capture in method bodies
 - [x] Analyze method bodies with `self` in scope
-- [ ] Resolve `Self` in method body expressions
+- [x] Resolve `Self` in method body expressions (rue-h6zn)
 
-**Status**: Partial - method registration works, `self` in method bodies works, associated function calls on comptime type variables work (e.g., `P::constant()`), but `Self` type resolution in method bodies is incomplete. See rue-h6zn for remaining work.
+**Status**: Most items complete. Method registration, `self` in method bodies, associated function calls on comptime type variables (`P::constant()`), and `Self` type resolution all work. Remaining: structural equality with methods, comptime parameter capture.
 
 **Deliverable**: `v.push(42)` compiles when `v` is an anonymous struct type with a `push` method.
 
@@ -243,8 +243,6 @@ Epic: rue-nj40
 - [x] Add comprehensive spec tests (17 tests, preview-gated)
 - [x] Add UI tests for error messages (2 tests)
 - [x] Traceability coverage for all spec paragraphs (100% normative)
-
-**Note**: Tests are in place but preview tests fail because Phase 3 is incomplete.
 
 **Deliverable**: Full test coverage and specification documentation.
 

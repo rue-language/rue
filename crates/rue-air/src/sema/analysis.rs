@@ -6448,7 +6448,8 @@ impl<'a> Sema<'a> {
         // ======================================================================
         // Run constraint generation and unification to determine types
         // for all expressions BEFORE emitting AIR.
-        let resolved_types = self.run_type_inference(infer_ctx, return_type, params, body)?;
+        let resolved_types =
+            self.run_type_inference(infer_ctx, return_type, params, body, type_subst)?;
 
         // Create analysis context with resolved types
         // If type_subst is provided, initialize comptime_type_vars with the substitutions
@@ -6577,15 +6578,17 @@ impl<'a> Sema<'a> {
         return_type: Type,
         params: &[(Spur, Type, RirParamMode)],
         body: InstRef,
+        type_subst: Option<&HashMap<Spur, Type>>,
     ) -> CompileResult<HashMap<InstRef, Type>> {
         // Create constraint generator using pre-computed inference context
-        let mut cgen = ConstraintGenerator::new(
+        let mut cgen = ConstraintGenerator::with_type_subst(
             self.rir,
             self.interner,
             &infer_ctx.func_sigs,
             &infer_ctx.struct_types,
             &infer_ctx.enum_types,
             &infer_ctx.method_sigs,
+            type_subst,
         );
 
         // Build parameter map for constraint context.
