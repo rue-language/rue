@@ -1,12 +1,12 @@
 ---
 id: 0010
 title: Destructors
-status: proposal
+status: implemented
 tags: [types, semantics, ownership, memory]
 feature-flag: destructors
 created: 2025-12-24
-accepted:
-implemented:
+accepted: 2026-01-04
+implemented: 2026-01-04
 spec-sections: ["3.9"]
 superseded-by:
 ---
@@ -15,7 +15,7 @@ superseded-by:
 
 ## Status
 
-Proposal
+Implemented
 
 ## Summary
 
