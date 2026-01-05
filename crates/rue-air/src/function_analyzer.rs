@@ -12,7 +12,7 @@
 //! - Better separation of concerns (immutable type info vs mutable analysis state)
 //! - Post-analysis merging of results (strings, warnings)
 //!
-//! Array types are managed by the thread-safe `ArrayTypeRegistry` in `SemaContext`,
+//! Array types are managed by the thread-safe `TypeInternPool` in `SemaContext`,
 //! allowing parallel creation without local buffering or post-merge remapping.
 
 use std::collections::HashMap;
@@ -39,7 +39,7 @@ use crate::types::{ArrayTypeId, Type};
 /// - Independent mutable state per function
 /// - Post-analysis merging of results (strings, warnings)
 ///
-/// Array types are created via the thread-safe `ArrayTypeRegistry` in `SemaContext`,
+/// Array types are created via the thread-safe `TypeInternPool` in `SemaContext`,
 /// so they don't require local buffering or post-merge remapping.
 #[derive(Debug)]
 pub struct FunctionAnalyzer<'a, 'ctx> {
@@ -103,7 +103,7 @@ impl<'a, 'ctx> FunctionAnalyzer<'a, 'ctx> {
 
     /// Get or create an array type, returning its ID.
     ///
-    /// Delegates to the thread-safe `ArrayTypeRegistry` in `SemaContext`.
+    /// Delegates to the thread-safe `TypeInternPool` in `SemaContext`.
     pub fn get_or_create_array_type(&self, element_type: Type, length: u64) -> ArrayTypeId {
         self.ctx.get_or_create_array_type(element_type, length)
     }
@@ -120,7 +120,7 @@ impl<'a, 'ctx> FunctionAnalyzer<'a, 'ctx> {
     /// This walks the InferType recursively and ensures all array types that will
     /// be needed during `infer_type_to_type` conversion are created beforehand.
     ///
-    /// With the thread-safe `ArrayTypeRegistry`, this is no longer strictly necessary
+    /// With the thread-safe `TypeInternPool`, this is no longer strictly necessary
     /// since `infer_type_to_type` can create array types on-demand. However, it's
     /// kept for explicit documentation of intent and potential future optimizations.
     pub fn pre_create_array_types_from_infer_type(&self, ty: &InferType) {
@@ -292,7 +292,7 @@ impl<'a, 'ctx> FunctionAnalyzer<'a, 'ctx> {
 /// Merge multiple function analyzer outputs into a single result.
 ///
 /// This is used after parallel analysis to combine results from all functions.
-/// Array types are managed by the thread-safe `ArrayTypeRegistry` in `SemaContext`,
+/// Array types are managed by the thread-safe `TypeInternPool` in `SemaContext`,
 /// so only strings and warnings need merging.
 #[derive(Debug, Default)]
 pub struct MergedFunctionOutput {

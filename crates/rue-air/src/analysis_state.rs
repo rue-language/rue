@@ -4,12 +4,12 @@
 //! Each function can have its own `FunctionAnalysisState`, which is then
 //! merged after parallel analysis completes.
 //!
-//! # Array Type Handling (Phase 2 - ADR-0024)
+//! # Array Type Handling (ADR-0024)
 //!
-//! Array types are now handled by the shared `ArrayTypeRegistry` in `SemaContext`,
+//! Array types are handled by the shared `TypeInternPool` in `SemaContext`,
 //! which is thread-safe and handles deduplication automatically. Per-function
 //! array tracking has been removed - array types created during function analysis
-//! go directly to the shared registry.
+//! go directly to the shared pool.
 
 use std::collections::HashMap;
 
@@ -28,8 +28,8 @@ use rue_error::CompileWarning;
 ///
 /// # Note on Array Types
 ///
-/// Array types are handled by the shared `ArrayTypeRegistry` in `SemaContext`.
-/// They are no longer tracked per-function as of ADR-0024 Phase 2.
+/// Array types are handled by the shared `TypeInternPool` in `SemaContext`.
+/// They are no longer tracked per-function.
 ///
 /// # Merging
 ///
@@ -80,8 +80,8 @@ impl FunctionAnalysisState {
 ///
 /// # Note on Array Types
 ///
-/// Array types are handled by the shared `ArrayTypeRegistry` in `SemaContext`.
-/// They are no longer merged here as of ADR-0024 Phase 2.
+/// Array types are handled by the shared `TypeInternPool` in `SemaContext`.
+/// They are no longer merged here.
 #[derive(Debug, Default)]
 pub struct MergedAnalysisState {
     /// All string literals (deduplicated).
@@ -105,8 +105,8 @@ impl MergedAnalysisState {
     ///
     /// # Note
     ///
-    /// Array type merging is no longer needed (ADR-0024 Phase 2).
-    /// Array types go directly to the shared `ArrayTypeRegistry`.
+    /// Array type merging is no longer needed.
+    /// Array types go directly to the shared `TypeInternPool`.
     pub fn merge_function_state(&mut self, state: FunctionAnalysisState) -> AnalysisStateRemapping {
         let mut string_remap = HashMap::new();
 
@@ -139,8 +139,8 @@ impl MergedAnalysisState {
 ///
 /// # Note
 ///
-/// Array type remapping is no longer needed (ADR-0024 Phase 2).
-/// Array types use the shared `ArrayTypeRegistry` which handles deduplication.
+/// Array type remapping is no longer needed.
+/// Array types use the shared `TypeInternPool` which handles deduplication.
 #[derive(Debug, Default)]
 pub struct AnalysisStateRemapping {
     /// Mapping from old string index to new string index.

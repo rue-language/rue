@@ -734,26 +734,9 @@ impl Type {
             TAG_MODULE => true,
             // Struct types are move types by default
             TAG_STRUCT => false,
-            // Arrays may be Copy if element type is Copy (need ArrayTypeDef to check)
+            // Arrays may be Copy if element type is Copy (need TypeInternPool to check)
             TAG_ARRAY => false,
             _ => false,
-        }
-    }
-
-    /// Check if this type is Copy, with access to StructDefs for struct checking.
-    ///
-    /// This is used during anonymous struct creation to determine if the new struct
-    /// should be Copy based on its field types.
-    pub fn is_copy_in_sema(&self, struct_defs: &[StructDef]) -> bool {
-        if let Some(struct_id) = self.as_struct() {
-            let idx = struct_id.0 as usize;
-            if idx < struct_defs.len() {
-                struct_defs[idx].is_copy
-            } else {
-                false
-            }
-        } else {
-            self.is_copy()
         }
     }
 

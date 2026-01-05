@@ -669,10 +669,10 @@ impl TypeInternPool {
         }
     }
 
-    /// Intern an array type from a Type element (for Phase 2B migration).
+    /// Intern an array type from a Type element.
     ///
     /// This is a helper method that converts the Type to InternedType
-    /// and then interns the array. Used during migration from ArrayTypeRegistry.
+    /// and then interns the array.
     ///
     /// # Panics
     ///
@@ -687,7 +687,7 @@ impl TypeInternPool {
         )
     }
 
-    /// Look up an array type by Type element and length (for Phase 2B migration).
+    /// Look up an array type by Type element and length.
     ///
     /// Returns None if no such array exists in the pool.
     pub fn get_array_by_type(&self, element_type: Type, len: u64) -> Option<ArrayTypeId> {

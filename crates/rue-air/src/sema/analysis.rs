@@ -1531,7 +1531,7 @@ fn run_type_inference_with_context(
 /// Convert an InferType to a concrete Type using the context.
 ///
 /// This function is thread-safe and can be called from parallel function analysis.
-/// Array types are created on-demand via the thread-safe `ArrayTypeRegistry`.
+/// Array types are created on-demand via the thread-safe `TypeInternPool`.
 fn infer_type_to_type_standalone(ty: &InferType, ctx: &SemaContext<'_>) -> Type {
     match ty {
         InferType::Concrete(t) => *t,

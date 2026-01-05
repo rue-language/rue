@@ -1,12 +1,12 @@
 ---
 id: 0024
 title: Type Intern Pool
-status: proposal
+status: implemented
 tags: [type-system, performance, parallelization]
 feature-flag: null
 created: 2026-01-01
-accepted:
-implemented:
+accepted: 2026-01-01
+implemented: 2026-01-04
 spec-sections: []
 superseded-by:
 ---
@@ -15,7 +15,7 @@ superseded-by:
 
 ## Status
 
-Proposal
+Implemented
 
 ## Summary
 
@@ -199,10 +199,10 @@ The key insight is that `Type` remains a small, Copy value - we're just changing
 
 Create the new `TypeInternPool` infrastructure without removing the old system. Both coexist temporarily.
 
-- [ ] Create `rue-air/src/intern_pool.rs` with `TypeInternPool`, `TypeData`
-- [ ] Add `TypeInternPool` to `Sema` and `TypeContext`
-- [ ] Populate pool during declaration collection (structs, enums)
-- [ ] Verify pool contents match existing registries (test coverage)
+- [x] Create `rue-air/src/intern_pool.rs` with `TypeInternPool`, `TypeData`
+- [x] Add `TypeInternPool` to `Sema` and `SemaContext`
+- [x] Populate pool during declaration collection (structs, enums)
+- [x] Verify pool contents match existing registries (test coverage)
 
 **Ship criterion**: All existing tests pass, pool is populated but not yet used.
 
@@ -210,10 +210,10 @@ Create the new `TypeInternPool` infrastructure without removing the old system. 
 
 Replace `ArrayTypeId` and the per-function array type handling with pool interning.
 
-- [ ] Replace `FunctionAnalysisState.array_types` with `TypeInternPool.intern_array()`
-- [ ] Update `MergedAnalysisState` - array merging becomes a no-op (pool handles dedup)
-- [ ] Update AIR instructions that reference `ArrayTypeId` to use `Type`
-- [ ] Remove `ArrayTypeId`, `ArrayTypeDef` as separate concepts
+- [x] Replace `FunctionAnalysisState.array_types` with `TypeInternPool.intern_array()`
+- [x] Update `MergedAnalysisState` - array merging becomes a no-op (pool handles dedup)
+- [x] Update AIR instructions that reference `ArrayTypeId` to use `Type`
+- [x] `ArrayTypeId` now wraps pool indices (kept for type safety)
 
 **Ship criterion**: Arrays work, parallel function analysis uses shared pool, no per-function array registries.
 
@@ -221,21 +221,21 @@ Replace `ArrayTypeId` and the per-function array type handling with pool interni
 
 Replace `StructId` and `EnumId` with `Type` indices directly.
 
-- [ ] Change `Type::Struct(StructId)` → composite `Type` index
-- [ ] Change `Type::Enum(EnumId)` → composite `Type` index
-- [ ] Update all `StructId`/`EnumId` usages in AIR, CFG, codegen
-- [ ] Remove `StructId`, `EnumId` as separate types
+- [x] Change `Type::Struct(StructId)` → composite `Type` index with tag encoding
+- [x] Change `Type::Enum(EnumId)` → composite `Type` index with tag encoding
+- [x] Update all `StructId`/`EnumId` usages in AIR, CFG, codegen
+- [x] `StructId`/`EnumId` now wrap pool indices (kept for type safety)
 
-**Ship criterion**: `Type` is now a u32 index. `StructId`/`EnumId` no longer exist.
+**Ship criterion**: `Type` is now a u32 index. All lookups go through the pool.
 
 ### Phase 4: Unify Type representation (rue-wsny)
 
 Replace the `Type` enum entirely with the `Type(u32)` newtype.
 
-- [ ] Remove old `Type` enum variants
-- [ ] Update all pattern matches on `Type` to use pool queries
-- [ ] Add helper methods to `Type` for common checks (`is_integer()`, `is_signed()`, etc.)
-- [ ] Optimize: inline primitive checks (no pool lookup for `Type::I32.is_integer()`)
+- [x] Remove old `Type` enum variants - now `struct Type(u32)` with tag encoding
+- [x] Update all pattern matches on `Type` to use `kind()` method returning `TypeKind`
+- [x] Add helper methods to `Type` for common checks (`is_integer()`, `is_signed()`, etc.)
+- [x] Optimize: inline primitive checks (no pool lookup for `Type::I32.is_integer()`)
 
 **Ship criterion**: Single unified type representation. Clean API.
 
@@ -248,6 +248,9 @@ If profiling shows lock contention:
 - [ ] Benchmark and tune
 
 **Ship criterion**: No regression from current performance. Improvements for parallel compilation.
+
+> **Note**: Phase 5 is deferred until profiling shows a need. The current RwLock
+> implementation works well for the current workload.
 
 ## Consequences
 
@@ -262,7 +265,7 @@ If profiling shows lock contention:
 
 3. **Simplicity**:
    - One way to create and compare types
-   - Removes `StructId`, `EnumId`, `ArrayTypeId` - just `Type`
+   - `StructId`, `EnumId`, `ArrayTypeId` are now thin wrappers around pool indices
    - `FunctionAnalysisState` becomes much simpler (no array handling)
 
 4. **Future-ready**:

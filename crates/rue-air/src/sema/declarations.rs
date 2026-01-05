@@ -277,7 +277,7 @@ impl<'a> Sema<'a> {
     /// Array types from explicit type annotations (struct fields, function parameters,
     /// return types, local variable annotations) are registered during this phase via
     /// `resolve_type()` calls. Array types from literals (inferred during HM inference)
-    /// are created on-demand via the thread-safe `ArrayTypeRegistry` during function
+    /// are created on-demand via the thread-safe `TypeInternPool` during function
     /// body analysis.
     pub(crate) fn resolve_declarations(&mut self) -> CompileResult<()> {
         self.resolve_struct_fields()?;
@@ -305,9 +305,8 @@ impl<'a> Sema<'a> {
         }
 
         // Note: Enum definitions don't need updating as they are complete when registered.
-        // Note: Array types are not populated here during Phase 1.
-        // They are created on-demand during function body analysis via the
-        // ArrayTypeRegistry, and will be migrated to the pool in Phase 2.
+        // Note: Array types are created on-demand during function body analysis via
+        // the TypeInternPool, which handles deduplication automatically.
     }
 
     /// Resolve struct field types. Must run before @copy validation.
