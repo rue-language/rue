@@ -1,13 +1,13 @@
 ---
 id: 0025
 title: Compile-Time Execution (comptime)
-status: proposal
+status: implemented
 tags: [compiler, type-system, generics]
 feature-flag: comptime
 created: 2026-01-01
-accepted:
-implemented:
-spec-sections: []
+accepted: 2026-01-01
+implemented: 2026-01-04
+spec-sections: ["4.14"]
 superseded-by:
 ---
 
@@ -15,7 +15,7 @@ superseded-by:
 
 ## Status
 
-Proposal
+Implemented
 
 ## Summary
 
@@ -300,53 +300,53 @@ This is deferred to Phase 4.
 
 ## Implementation Phases
 
-Epic: rue-33lf
+Epic: rue-33lf (closed)
 
-### Phase 1: Comptime Expressions (rue-3xoq)
+### Phase 1: Comptime Expressions (rue-3xoq) - Complete
 
 **Goal**: `comptime { expr }` syntax with basic expression evaluation.
 
-- [ ] Add `comptime` keyword to lexer
-- [ ] Add `ComptimeBlock` AST/RIR node
-- [ ] Add comptime context tracking in Sema
-- [ ] Extend `try_evaluate_const()` to handle comptime blocks
-- [ ] Gate behind preview flag `comptime`
-- [ ] Add spec tests for comptime expressions
+- [x] Add `comptime` keyword to lexer
+- [x] Add `ComptimeBlock` AST/RIR node
+- [x] Add comptime context tracking in Sema
+- [x] Extend `try_evaluate_const()` to handle comptime blocks
+- [x] Gate behind preview flag `comptime`
+- [x] Add spec tests for comptime expressions
 
 **Deliverable**: Users can write `const X: i32 = comptime { 1 + 2 * 3 };`
 
-### Phase 2: Comptime Parameters (Value) (rue-ya9i)
+### Phase 2: Comptime Parameters (Value) (rue-ya9i) - Complete
 
 **Goal**: Functions can take comptime value parameters.
 
-- [ ] Add `comptime` parameter modifier to parser
-- [ ] Track comptime parameters in function signatures
-- [ ] Validate comptime args are comptime-known at call sites
-- [ ] Implement function specialization for comptime value params
-- [ ] Add spec tests
+- [x] Add `comptime` parameter modifier to parser
+- [x] Track comptime parameters in function signatures
+- [x] Validate comptime args are comptime-known at call sites
+- [x] Implement function specialization for comptime value params
+- [x] Add spec tests
 
 **Deliverable**: Users can write `fn repeat(comptime n: i32, x: i32) -> i32`
 
-### Phase 3: Type Parameters (rue-fbwv)
+### Phase 3: Type Parameters (rue-fbwv) - Complete
 
 **Goal**: The `type` type and comptime type parameters.
 
-- [ ] Add `Type::ComptimeType` variant
-- [ ] Add `ConstValue::Type(TypeId)` variant
-- [ ] Parse `type` as a type name
-- [ ] Implement type parameter substitution in specialization
-- [ ] Add spec tests for generic functions
+- [x] Add `Type::ComptimeType` variant
+- [x] Add `ConstValue::Type(TypeId)` variant
+- [x] Parse `type` as a type name
+- [x] Implement type parameter substitution in specialization
+- [x] Add spec tests for generic functions
 
 **Deliverable**: Users can write `fn max(comptime T: type, a: T, b: T) -> T`
 
-### Phase 4: Comptime Type Construction (rue-ak9z)
+### Phase 4: Comptime Type Construction (rue-ak9z) - Complete
 
 **Goal**: Comptime functions can construct and return types.
 
-- [ ] Anonymous struct type syntax
-- [ ] Comptime struct construction
-- [ ] Structural type equality
-- [ ] Add spec tests
+- [x] Anonymous struct type syntax
+- [x] Comptime struct construction
+- [x] Structural type equality
+- [x] Add spec tests
 
 **Deliverable**: Users can write `fn Pair(comptime T: type) -> type { struct { ... } }`
 
