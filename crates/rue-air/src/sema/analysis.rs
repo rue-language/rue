@@ -321,11 +321,24 @@ fn analyze_all_function_bodies_sequential(sema: &mut Sema<'_>) -> MultiErrorResu
             params_len,
             return_type,
             body,
-            has_self: _,
+            has_self,
             ..
         } = &inst.data
         {
             if method_refs.contains(&inst_ref) {
+                continue;
+            }
+
+            // Skip methods (has_self = true) - these are handled elsewhere:
+            // - Named struct methods are collected below via StructDecl
+            // - Anonymous struct methods are analyzed in the fixed-point loop later
+            if *has_self {
+                continue;
+            }
+
+            // Skip FnDecls that are not in the functions table.
+            // These are anonymous struct methods which are analyzed separately.
+            if !sema.functions.contains_key(name) {
                 continue;
             }
 
@@ -1009,11 +1022,24 @@ fn collect_function_jobs(ctx: &SemaContext<'_>) -> Vec<FunctionJob> {
             params_len,
             return_type,
             body,
-            has_self: _,
+            has_self,
             ..
         } = &inst.data
         {
             if method_refs.contains(&inst_ref) {
+                continue;
+            }
+
+            // Skip methods (has_self = true) - these are handled elsewhere:
+            // - Named struct methods are collected below via StructDecl
+            // - Anonymous struct methods are analyzed in the fixed-point loop later
+            if *has_self {
+                continue;
+            }
+
+            // Skip FnDecls that are not in the functions table.
+            // These are anonymous struct methods which are analyzed separately.
+            if !ctx.functions.contains_key(name) {
                 continue;
             }
 
@@ -8996,7 +9022,8 @@ impl<'a> Sema<'a> {
             InstData::AnonStructType {
                 fields_start,
                 fields_len,
-                ..
+                methods_start,
+                methods_len,
             } => {
                 // Get the field declarations from the RIR
                 let field_decls = self.rir.get_field_decls(*fields_start, *fields_len);
@@ -9016,6 +9043,40 @@ impl<'a> Sema<'a> {
 
                 // Find or create the anonymous struct type
                 let struct_ty = self.find_or_create_anon_struct(&struct_fields);
+
+                // Register methods if present (requires preview feature)
+                if *methods_len > 0 {
+                    // Check preview feature is enabled
+                    if !self
+                        .preview_features
+                        .contains(&PreviewFeature::AnonStructMethods)
+                    {
+                        return None; // Feature not enabled, can't evaluate
+                    }
+                    let struct_id = struct_ty.as_struct()?;
+                    // Only register methods if not already registered
+                    // (can happen if the same AnonStructType is evaluated multiple times)
+                    let method_refs = self.rir.get_inst_refs(*methods_start, *methods_len);
+                    let first_method_ref = method_refs.first()?;
+                    let first_method_inst = self.rir.get(*first_method_ref);
+                    if let InstData::FnDecl {
+                        name: method_name, ..
+                    } = &first_method_inst.data
+                    {
+                        let key = (struct_id, *method_name);
+                        if !self.methods.contains_key(&key) {
+                            // Use comptime-safe method registration
+                            self.register_anon_struct_methods_for_comptime(
+                                struct_id,
+                                struct_ty,
+                                *methods_start,
+                                *methods_len,
+                                inst.span,
+                            )?;
+                        }
+                    }
+                }
+
                 Some(ConstValue::Type(struct_ty))
             }
 
@@ -10152,6 +10213,91 @@ impl<'a> Sema<'a> {
             }
         }
         Ok(())
+    }
+
+    /// Register methods from an anonymous struct type (comptime-safe version).
+    ///
+    /// This is the comptime-safe version of `register_anon_struct_methods`.
+    /// It returns `Option<()>` instead of `CompileResult<()>`, allowing
+    /// `try_evaluate_const` to gracefully fall back when method registration
+    /// encounters issues that would be errors at compile time.
+    ///
+    /// Key differences from `register_anon_struct_methods`:
+    /// - Uses `resolve_type_for_comptime` instead of `resolve_type`
+    /// - Returns `None` on any failure instead of an error
+    /// - Silently skips duplicate methods (returns None)
+    fn register_anon_struct_methods_for_comptime(
+        &mut self,
+        struct_id: StructId,
+        struct_type: Type,
+        methods_start: u32,
+        methods_len: u32,
+        _span: Span,
+    ) -> Option<()> {
+        let method_refs = self.rir.get_inst_refs(methods_start, methods_len);
+
+        for method_ref in method_refs {
+            let method_inst = self.rir.get(method_ref);
+            if let InstData::FnDecl {
+                name: method_name,
+                params_start,
+                params_len,
+                return_type,
+                body,
+                has_self,
+                ..
+            } = &method_inst.data
+            {
+                let key = (struct_id, *method_name);
+
+                // Check for duplicate methods - return None in comptime context
+                if self.methods.contains_key(&key) {
+                    return None;
+                }
+
+                // Resolve parameter types using comptime-safe resolution
+                let params = self.rir.get_params(*params_start, *params_len);
+                let param_names: Vec<Spur> = params.iter().map(|p| p.name).collect();
+                let mut param_types: Vec<Type> = Vec::with_capacity(params.len());
+
+                for p in params {
+                    // Resolve type, with Self mapping to this struct
+                    let type_str = self.interner.resolve(&p.ty);
+                    let resolved_ty = if type_str == "Self" {
+                        struct_type
+                    } else {
+                        self.resolve_type_for_comptime(p.ty)?
+                    };
+                    param_types.push(resolved_ty);
+                }
+
+                // Resolve return type
+                let ret_type_str = self.interner.resolve(return_type);
+                let ret_type = if ret_type_str == "Self" {
+                    struct_type
+                } else {
+                    self.resolve_type_for_comptime(*return_type)?
+                };
+
+                // Allocate method parameters in the arena
+                let param_range = self
+                    .param_arena
+                    .alloc_method(param_names.into_iter(), param_types.into_iter());
+
+                self.methods.insert(
+                    key,
+                    MethodInfo {
+                        struct_type,
+                        has_self: *has_self,
+                        params: param_range,
+                        return_type: ret_type,
+                        body: *body,
+                        span: method_inst.span,
+                    },
+                );
+            }
+        }
+        Some(())
     }
 
     /// Resolve a type symbol, with special handling for Self.

@@ -415,8 +415,16 @@ impl<'a> Sema<'a> {
                     params_len,
                     return_type,
                     body,
+                    has_self,
                     ..
                 } => {
+                    // Skip methods (has_self = true) - these are handled elsewhere:
+                    // - Named struct methods are collected via ImplDecl
+                    // - Anonymous struct methods are registered during comptime evaluation
+                    if *has_self {
+                        continue;
+                    }
+
                     // Unchecked functions require preview feature
                     if *is_unchecked {
                         self.require_preview(

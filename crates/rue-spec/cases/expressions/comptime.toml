@@ -633,6 +633,7 @@ exit_code = 42
 name = "anon_struct_method_basic"
 spec = ["4.14:10"]
 preview = "anon_struct_methods"
+preview_should_pass = true
 description = "Basic method definition in anonymous struct"
 source = """
 fn Counter() -> type {
@@ -854,6 +855,7 @@ exit_code = 42
 name = "anon_struct_duplicate_method_error"
 spec = ["4.14:14"]
 preview = "anon_struct_methods"
+preview_should_pass = true
 description = "Error on duplicate method names"
 source = """
 fn Bad() -> type {
