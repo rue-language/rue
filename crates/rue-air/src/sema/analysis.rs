@@ -7926,10 +7926,27 @@ impl<'a> Sema<'a> {
         let function_name_str = self.interner.resolve(&function).to_string();
 
         // Check that the type exists and is a struct
-        let struct_id = *self
-            .structs
-            .get(&type_name)
-            .ok_or_compile_error(ErrorKind::UnknownType(type_name_str.clone()), span)?;
+        // First check if it's a comptime type variable (e.g., `let P = Point(); P::origin()`)
+        let struct_id = if let Some(&ty) = ctx.comptime_type_vars.get(&type_name) {
+            // Extract struct ID from the comptime type
+            match ty.kind() {
+                TypeKind::Struct(id) => id,
+                _ => {
+                    return Err(CompileError::new(
+                        ErrorKind::TypeMismatch {
+                            expected: "struct type".to_string(),
+                            found: ty.name().to_string(),
+                        },
+                        span,
+                    ));
+                }
+            }
+        } else {
+            *self
+                .structs
+                .get(&type_name)
+                .ok_or_compile_error(ErrorKind::UnknownType(type_name_str.clone()), span)?
+        };
 
         // Handle builtin type associated functions
         if let Some(builtin_def) = self.get_builtin_type_def(struct_id) {
@@ -7990,7 +8007,11 @@ impl<'a> Sema<'a> {
         let air_args = self.analyze_call_args(air, &args, ctx)?;
 
         // Generate a function call name: Type::function
-        let call_name = format!("{}::{}", type_name_str, function_name_str);
+        // Use the internal struct name (e.g., "__anon_struct_0") for anonymous structs,
+        // not the user-visible type variable name (e.g., "P")
+        let struct_def = self.type_pool.struct_def(struct_id);
+        let internal_type_name = &struct_def.name;
+        let call_name = format!("{}::{}", internal_type_name, function_name_str);
         let call_name_sym = self.interner.get_or_intern(&call_name);
 
         // Encode call args into extra array

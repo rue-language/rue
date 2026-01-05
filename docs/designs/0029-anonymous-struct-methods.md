@@ -227,12 +227,13 @@ Epic: rue-nj40
 - [x] Change method lookup key from `(Spur, Spur)` to `(StructId, Spur)`
 - [x] Register methods when creating anonymous struct types
 - [x] Resolve `Self` to the anonymous struct's `StructId` (in signatures only)
+- [x] Handle `Type::function()` call syntax for comptime type variables (rue-ybbz)
 - [ ] Update structural equality to include method signatures
 - [ ] Handle comptime parameter capture in method bodies
 - [x] Analyze method bodies with `self` in scope
 - [ ] Resolve `Self` in method body expressions
 
-**Status**: Partial - method registration works, `self` in method bodies works, but `Self` type resolution is incomplete. See rue-h6zn for remaining work.
+**Status**: Partial - method registration works, `self` in method bodies works, associated function calls on comptime type variables work (e.g., `P::constant()`), but `Self` type resolution in method bodies is incomplete. See rue-h6zn for remaining work.
 
 **Deliverable**: `v.push(42)` compiles when `v` is an anonymous struct type with a `push` method.
 
