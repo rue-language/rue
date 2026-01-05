@@ -29,7 +29,7 @@
 //! - Write lock for insertions (rare, only for new array types)
 
 use std::collections::HashMap;
-use std::sync::RwLock;
+use std::sync::{PoisonError, RwLock};
 
 use lasso::{Spur, ThreadedRodeo};
 use rue_error::PreviewFeatures;
@@ -70,7 +70,7 @@ impl ModuleRegistry {
     pub fn get(&self, import_path: &str) -> Option<ModuleId> {
         self.paths
             .read()
-            .expect("ModuleRegistry lock poisoned")
+            .unwrap_or_else(PoisonError::into_inner)
             .get(import_path)
             .copied()
     }
@@ -81,20 +81,20 @@ impl ModuleRegistry {
     pub fn get_or_create(&self, import_path: String, file_path: String) -> (ModuleId, bool) {
         // Fast path: check if already exists
         {
-            let paths = self.paths.read().expect("ModuleRegistry lock poisoned");
+            let paths = self.paths.read().unwrap_or_else(PoisonError::into_inner);
             if let Some(id) = paths.get(&import_path) {
                 return (*id, false);
             }
         }
 
         // Slow path: acquire write lock and insert
-        let mut paths = self.paths.write().expect("ModuleRegistry lock poisoned");
+        let mut paths = self.paths.write().unwrap_or_else(PoisonError::into_inner);
         // Double-check after acquiring write lock
         if let Some(id) = paths.get(&import_path) {
             return (*id, false);
         }
 
-        let mut defs = self.defs.write().expect("ModuleRegistry lock poisoned");
+        let mut defs = self.defs.write().unwrap_or_else(PoisonError::into_inner);
         let id = ModuleId::new(defs.len() as u32);
         defs.push(ModuleDef::new(import_path.clone(), file_path));
         paths.insert(import_path, id);
@@ -105,7 +105,7 @@ impl ModuleRegistry {
     pub fn get_def(&self, id: ModuleId) -> ModuleDef {
         self.defs
             .read()
-            .expect("ModuleRegistry lock poisoned")
+            .unwrap_or_else(PoisonError::into_inner)
             .get(id.index() as usize)
             .cloned()
             .expect("Invalid ModuleId")
@@ -113,7 +113,7 @@ impl ModuleRegistry {
 
     /// Update a module definition.
     pub fn update_def(&self, id: ModuleId, def: ModuleDef) {
-        let mut defs = self.defs.write().expect("ModuleRegistry lock poisoned");
+        let mut defs = self.defs.write().unwrap_or_else(PoisonError::into_inner);
         defs[id.index() as usize] = def;
     }
 
@@ -121,7 +121,7 @@ impl ModuleRegistry {
     pub fn len(&self) -> usize {
         self.defs
             .read()
-            .expect("ModuleRegistry lock poisoned")
+            .unwrap_or_else(PoisonError::into_inner)
             .len()
     }
 
@@ -134,7 +134,7 @@ impl ModuleRegistry {
     pub fn into_defs(self) -> Vec<ModuleDef> {
         self.defs
             .into_inner()
-            .expect("ModuleRegistry lock poisoned")
+            .unwrap_or_else(PoisonError::into_inner)
     }
 }
 

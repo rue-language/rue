@@ -40,7 +40,7 @@
 //! ```
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
@@ -137,7 +137,7 @@ impl TimingData {
 
     /// Record a duration for the given pass.
     fn record(&self, pass: &str, duration: Duration) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
         let entry = inner
             .passes
             .entry(pass.to_string())
@@ -155,7 +155,7 @@ impl TimingData {
     /// Returns a formatted string showing each pass's timing and percentage
     /// of total compilation time.
     pub fn report(&self) -> String {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
 
         if inner.passes.is_empty() {
             return String::from("No timing data collected (no instrumented passes ran).\n");
@@ -230,7 +230,7 @@ impl TimingData {
         source_metrics: Option<SourceMetrics>,
         peak_memory_bytes: Option<u64>,
     ) -> BenchmarkTiming {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
 
         let total: Duration = inner.passes.values().sum();
         let total_ms = total.as_secs_f64() * 1000.0;

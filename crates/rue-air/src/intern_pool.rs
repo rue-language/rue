@@ -36,7 +36,7 @@
 //! - Write lock for insertions (rare, during declaration gathering)
 
 use std::collections::HashMap;
-use std::sync::RwLock;
+use std::sync::{PoisonError, RwLock};
 
 use lasso::Spur;
 
@@ -295,14 +295,10 @@ impl TypeInternPool {
     ///
     /// Returns the `StructId` (containing the pool index) and whether it was newly inserted.
     /// If a struct with this name already exists, returns the existing StructId.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the lock is poisoned.
     pub fn register_struct(&self, name: Spur, def: StructDef) -> (StructId, bool) {
         // Fast path: check with read lock
         {
-            let inner = self.inner.read().expect("TypeInternPool lock poisoned");
+            let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
             if let Some(&existing) = inner.struct_by_name.get(&name) {
                 // Convert InternedType back to StructId via pool_index
                 let pool_index = existing.pool_index().expect("struct must have pool index");
@@ -311,7 +307,7 @@ impl TypeInternPool {
         }
 
         // Slow path: acquire write lock
-        let mut inner = self.inner.write().expect("TypeInternPool lock poisoned");
+        let mut inner = self.inner.write().unwrap_or_else(PoisonError::into_inner);
 
         // Double-check after acquiring write lock
         if let Some(&existing) = inner.struct_by_name.get(&name) {
@@ -333,14 +329,10 @@ impl TypeInternPool {
     ///
     /// Returns the `EnumId` (containing the pool index) and whether it was newly inserted.
     /// If an enum with this name already exists, returns the existing EnumId.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the lock is poisoned.
     pub fn register_enum(&self, name: Spur, def: EnumDef) -> (EnumId, bool) {
         // Fast path: check with read lock
         {
-            let inner = self.inner.read().expect("TypeInternPool lock poisoned");
+            let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
             if let Some(&existing) = inner.enum_by_name.get(&name) {
                 let pool_index = existing.pool_index().expect("enum must have pool index");
                 return (EnumId::from_pool_index(pool_index), false);
@@ -348,7 +340,7 @@ impl TypeInternPool {
         }
 
         // Slow path: acquire write lock
-        let mut inner = self.inner.write().expect("TypeInternPool lock poisoned");
+        let mut inner = self.inner.write().unwrap_or_else(PoisonError::into_inner);
 
         // Double-check after acquiring write lock
         if let Some(&existing) = inner.enum_by_name.get(&name) {
@@ -370,23 +362,19 @@ impl TypeInternPool {
     ///
     /// Returns the canonical `InternedType` for arrays with this element type and length.
     /// If an identical array type already exists, returns the existing type.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the lock is poisoned.
     pub fn intern_array(&self, element: InternedType, len: u64) -> InternedType {
         let key = (element, len);
 
         // Fast path: check with read lock
         {
-            let inner = self.inner.read().expect("TypeInternPool lock poisoned");
+            let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
             if let Some(&existing) = inner.array_map.get(&key) {
                 return existing;
             }
         }
 
         // Slow path: acquire write lock
-        let mut inner = self.inner.write().expect("TypeInternPool lock poisoned");
+        let mut inner = self.inner.write().unwrap_or_else(PoisonError::into_inner);
 
         // Double-check after acquiring write lock
         if let Some(&existing) = inner.array_map.get(&key) {
@@ -407,21 +395,17 @@ impl TypeInternPool {
     ///
     /// Returns the canonical `InternedType` for pointers to this pointee type.
     /// If an identical pointer type already exists, returns the existing type.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the lock is poisoned.
     pub fn intern_ptr_const(&self, pointee: InternedType) -> InternedType {
         // Fast path: check with read lock
         {
-            let inner = self.inner.read().expect("TypeInternPool lock poisoned");
+            let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
             if let Some(&existing) = inner.ptr_const_map.get(&pointee) {
                 return existing;
             }
         }
 
         // Slow path: acquire write lock
-        let mut inner = self.inner.write().expect("TypeInternPool lock poisoned");
+        let mut inner = self.inner.write().unwrap_or_else(PoisonError::into_inner);
 
         // Double-check after acquiring write lock
         if let Some(&existing) = inner.ptr_const_map.get(&pointee) {
@@ -442,21 +426,17 @@ impl TypeInternPool {
     ///
     /// Returns the canonical `InternedType` for mutable pointers to this pointee type.
     /// If an identical pointer type already exists, returns the existing type.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the lock is poisoned.
     pub fn intern_ptr_mut(&self, pointee: InternedType) -> InternedType {
         // Fast path: check with read lock
         {
-            let inner = self.inner.read().expect("TypeInternPool lock poisoned");
+            let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
             if let Some(&existing) = inner.ptr_mut_map.get(&pointee) {
                 return existing;
             }
         }
 
         // Slow path: acquire write lock
-        let mut inner = self.inner.write().expect("TypeInternPool lock poisoned");
+        let mut inner = self.inner.write().unwrap_or_else(PoisonError::into_inner);
 
         // Double-check after acquiring write lock
         if let Some(&existing) = inner.ptr_mut_map.get(&pointee) {
@@ -475,31 +455,20 @@ impl TypeInternPool {
 
     /// Look up a struct by name.
     ///
-    /// # Panics
-    ///
-    /// Panics if the lock is poisoned.
     pub fn get_struct_by_name(&self, name: Spur) -> Option<InternedType> {
-        let inner = self.inner.read().expect("TypeInternPool lock poisoned");
+        let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
         inner.struct_by_name.get(&name).copied()
     }
 
     /// Look up an enum by name.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the lock is poisoned.
     pub fn get_enum_by_name(&self, name: Spur) -> Option<InternedType> {
-        let inner = self.inner.read().expect("TypeInternPool lock poisoned");
+        let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
         inner.enum_by_name.get(&name).copied()
     }
 
     /// Look up an array type by element and length.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the lock is poisoned.
     pub fn get_array(&self, element: InternedType, len: u64) -> Option<InternedType> {
-        let inner = self.inner.read().expect("TypeInternPool lock poisoned");
+        let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
         inner.array_map.get(&(element, len)).copied()
     }
 
@@ -509,14 +478,14 @@ impl TypeInternPool {
     ///
     /// # Panics
     ///
-    /// Panics if the lock is poisoned or if the index is invalid.
+    /// Panics if the index is invalid.
     pub fn get(&self, ty: InternedType) -> Option<TypeData> {
         if ty.is_primitive() {
             return None;
         }
 
         let pool_index = ty.pool_index().expect("non-primitive must have pool index");
-        let inner = self.inner.read().expect("TypeInternPool lock poisoned");
+        let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
         Some(inner.types[pool_index as usize].clone())
     }
 
@@ -584,7 +553,7 @@ impl TypeInternPool {
     ///
     /// Panics if the StructId doesn't correspond to a struct in the pool.
     pub fn struct_def(&self, struct_id: StructId) -> StructDef {
-        let inner = self.inner.read().expect("TypeInternPool lock poisoned");
+        let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
         let pool_index = struct_id.0 as usize;
         match &inner.types[pool_index] {
             TypeData::Struct(data) => data.def.clone(),
@@ -604,7 +573,7 @@ impl TypeInternPool {
     ///
     /// Panics if the EnumId doesn't correspond to an enum in the pool.
     pub fn enum_def(&self, enum_id: EnumId) -> EnumDef {
-        let inner = self.inner.read().expect("TypeInternPool lock poisoned");
+        let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
         let pool_index = enum_id.0 as usize;
         match &inner.types[pool_index] {
             TypeData::Enum(data) => data.def.clone(),
@@ -624,7 +593,7 @@ impl TypeInternPool {
     ///
     /// Panics if the StructId doesn't correspond to a struct in the pool.
     pub fn update_struct_def(&self, struct_id: StructId, new_def: StructDef) {
-        let mut inner = self.inner.write().expect("TypeInternPool lock poisoned");
+        let mut inner = self.inner.write().unwrap_or_else(PoisonError::into_inner);
         let pool_index = struct_id.0 as usize;
         match &mut inner.types[pool_index] {
             TypeData::Struct(data) => data.def = new_def,
@@ -644,7 +613,7 @@ impl TypeInternPool {
     ///
     /// Panics if the EnumId doesn't correspond to an enum in the pool.
     pub fn update_enum_def(&self, enum_id: EnumId, new_def: EnumDef) {
-        let mut inner = self.inner.write().expect("TypeInternPool lock poisoned");
+        let mut inner = self.inner.write().unwrap_or_else(PoisonError::into_inner);
         let pool_index = enum_id.0 as usize;
         match &mut inner.types[pool_index] {
             TypeData::Enum(data) => data.def = new_def,
@@ -685,7 +654,7 @@ impl TypeInternPool {
     ///
     /// Panics if the ArrayTypeId doesn't correspond to an array in the pool.
     pub fn array_def(&self, array_id: ArrayTypeId) -> (Type, u64) {
-        let inner = self.inner.read().expect("TypeInternPool lock poisoned");
+        let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
         let pool_index = array_id.0 as usize;
         match &inner.types[pool_index] {
             TypeData::Array { element, len } => {
@@ -722,7 +691,7 @@ impl TypeInternPool {
     ///
     /// Returns None if no such array exists in the pool.
     pub fn get_array_by_type(&self, element_type: Type, len: u64) -> Option<ArrayTypeId> {
-        let inner = self.inner.read().expect("TypeInternPool lock poisoned");
+        let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
         let element_interned = Self::type_to_interned_recursive(element_type);
         let array_interned = inner.array_map.get(&(element_interned, len))?;
         Some(ArrayTypeId::from_pool_index(
@@ -764,7 +733,7 @@ impl TypeInternPool {
 
     /// Get ptr const pointee type if this is a ptr const type.
     pub fn ptr_const_def(&self, ptr_id: PtrConstTypeId) -> Type {
-        let inner = self.inner.read().expect("TypeInternPool lock poisoned");
+        let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
         let pool_index = ptr_id.0 as usize;
         match &inner.types[pool_index] {
             TypeData::PtrConst { pointee } => Self::interned_to_type_recursive(*pointee, &inner),
@@ -777,7 +746,7 @@ impl TypeInternPool {
 
     /// Get ptr mut pointee type if this is a ptr mut type.
     pub fn ptr_mut_def(&self, ptr_id: PtrMutTypeId) -> Type {
-        let inner = self.inner.read().expect("TypeInternPool lock poisoned");
+        let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
         let pool_index = ptr_id.0 as usize;
         match &inner.types[pool_index] {
             TypeData::PtrMut { pointee } => Self::interned_to_type_recursive(*pointee, &inner),
@@ -863,7 +832,7 @@ impl TypeInternPool {
     /// Returns a vector of all StructId values, useful for iterating over all
     /// structs (e.g., for drop glue synthesis).
     pub fn all_struct_ids(&self) -> Vec<StructId> {
-        let inner = self.inner.read().expect("TypeInternPool lock poisoned");
+        let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
         inner
             .struct_by_name
             .values()
@@ -879,7 +848,7 @@ impl TypeInternPool {
     /// Returns a vector of all EnumId values, useful for iterating over all
     /// enums.
     pub fn all_enum_ids(&self) -> Vec<EnumId> {
-        let inner = self.inner.read().expect("TypeInternPool lock poisoned");
+        let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
         inner
             .enum_by_name
             .values()
@@ -895,7 +864,7 @@ impl TypeInternPool {
     /// Returns a vector of all ArrayTypeId values, useful for iterating over all
     /// arrays (e.g., for drop glue synthesis).
     pub fn all_array_ids(&self) -> Vec<ArrayTypeId> {
-        let inner = self.inner.read().expect("TypeInternPool lock poisoned");
+        let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
         inner
             .types
             .iter()
@@ -909,7 +878,7 @@ impl TypeInternPool {
 
     /// Get the number of composite types in the pool.
     pub fn len(&self) -> usize {
-        let inner = self.inner.read().expect("TypeInternPool lock poisoned");
+        let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
         inner.types.len()
     }
 
@@ -920,7 +889,7 @@ impl TypeInternPool {
 
     /// Get statistics about the pool contents.
     pub fn stats(&self) -> TypeInternPoolStats {
-        let inner = self.inner.read().expect("TypeInternPool lock poisoned");
+        let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
         let mut struct_count = 0;
         let mut enum_count = 0;
         let mut array_count = 0;
@@ -1025,7 +994,7 @@ impl Clone for TypeInternPool {
     /// This is used when building `SemaContext` from `Sema`, as the context
     /// needs its own copy of the pool for thread-safe sharing.
     fn clone(&self) -> Self {
-        let inner = self.inner.read().expect("TypeInternPool lock poisoned");
+        let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
         Self {
             inner: RwLock::new(TypeInternPoolInner {
                 types: inner.types.clone(),
