@@ -443,6 +443,30 @@ mod tests {
     }
 
     #[test]
+    fn test_non_overlapping_ranges() {
+        let mut mir = Aarch64Mir::new();
+        let v0 = mir.alloc_vreg();
+        let v1 = mir.alloc_vreg();
+
+        // v0 = 1
+        mir.push(Aarch64Inst::MovImm {
+            dst: Operand::Virtual(v0),
+            imm: 1,
+        });
+        // (v0 is dead after this, not used again)
+        // v1 = 2
+        mir.push(Aarch64Inst::MovImm {
+            dst: Operand::Virtual(v1),
+            imm: 2,
+        });
+
+        let info = analyze(&mir);
+
+        // v0 and v1 don't interfere (v0 is not used after being defined)
+        assert!(!info.interferes(v0, v1));
+    }
+
+    #[test]
     fn test_empty_mir() {
         let mir = Aarch64Mir::new();
         let info = analyze(&mir);
@@ -599,5 +623,43 @@ mod tests {
         let v0_range = info.range(v0).expect("v0 should have a range");
         assert_eq!(v0_range.start, 0);
         assert!(v0_range.end >= 4, "v0 should be live through CBNZ");
+    }
+
+    #[test]
+    fn test_ldr_indexed_only_defines_dst() {
+        let mut mir = Aarch64Mir::new();
+        let v0 = mir.alloc_vreg();
+        let v1 = mir.alloc_vreg();
+
+        // v0 = base address
+        mir.push(Aarch64Inst::MovImm {
+            dst: Operand::Virtual(v0),
+            imm: 1000,
+        });
+
+        // v1 = [v0] (load from base, defines v1 without reading v1's old value)
+        mir.push(Aarch64Inst::LdrIndexed {
+            dst: Operand::Virtual(v1),
+            base: v0,
+        });
+
+        let info = analyze(&mir);
+
+        // v1 should have a range starting at 1 (where it's defined)
+        let v1_range = info.range(v1).expect("v1 should have a range");
+        assert_eq!(v1_range.start, 1, "LdrIndexed defines v1 at instruction 1");
+
+        // The instruction's uses should NOT include v1 (only the base v0)
+        let inst_uses = uses(&mir.instructions()[1]);
+        assert!(
+            !inst_uses.contains(&v1),
+            "LdrIndexed should not list dst in uses(); found uses: {:?}",
+            inst_uses
+        );
+        assert!(
+            inst_uses.contains(&v0),
+            "LdrIndexed should list base in uses(); found uses: {:?}",
+            inst_uses
+        );
     }
 }
