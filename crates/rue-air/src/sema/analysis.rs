@@ -9421,8 +9421,29 @@ impl<'a> Sema<'a> {
                 // Extract method signatures for structural equality comparison
                 let method_sigs = self.extract_anon_method_sigs(*methods_start, *methods_len);
 
-                let (struct_ty, _is_new) =
+                let (struct_ty, is_new) =
                     self.find_or_create_anon_struct(&struct_fields, &method_sigs);
+
+                // Register methods if present (requires preview feature)
+                if *methods_len > 0 && is_new {
+                    // Check preview feature is enabled
+                    if !self
+                        .preview_features
+                        .contains(&PreviewFeature::AnonStructMethods)
+                    {
+                        return None; // Feature not enabled, can't evaluate
+                    }
+                    let struct_id = struct_ty.as_struct()?;
+                    // Use comptime-safe method registration with type substitution
+                    self.register_anon_struct_methods_for_comptime_with_subst(
+                        struct_id,
+                        struct_ty,
+                        *methods_start,
+                        *methods_len,
+                        inst.span,
+                        type_subst,
+                    )?;
+                }
                 Some(ConstValue::Type(struct_ty))
             }
 
@@ -10283,6 +10304,95 @@ impl<'a> Sema<'a> {
                     struct_type
                 } else {
                     self.resolve_type_for_comptime(*return_type)?
+                };
+
+                // Allocate method parameters in the arena
+                let param_range = self
+                    .param_arena
+                    .alloc_method(param_names.into_iter(), param_types.into_iter());
+
+                self.methods.insert(
+                    key,
+                    MethodInfo {
+                        struct_type,
+                        has_self: *has_self,
+                        params: param_range,
+                        return_type: ret_type,
+                        body: *body,
+                        span: method_inst.span,
+                    },
+                );
+            }
+        }
+        Some(())
+    }
+
+    /// Register methods from an anonymous struct type with type substitution (comptime-safe).
+    ///
+    /// This variant supports comptime parameter capture by using `resolve_type_for_comptime_with_subst`
+    /// to resolve type parameters like `T` to their concrete types from the enclosing function's
+    /// comptime arguments.
+    ///
+    /// For example, in:
+    /// ```rue
+    /// fn Wrapper(comptime T: type) -> type {
+    ///     struct { value: T, fn get(self) -> T { self.value } }
+    /// }
+    /// ```
+    /// When `Wrapper(i32)` is called, the type_subst map will contain `T -> i32`, so the
+    /// method's return type `T` is resolved to `i32`.
+    fn register_anon_struct_methods_for_comptime_with_subst(
+        &mut self,
+        struct_id: StructId,
+        struct_type: Type,
+        methods_start: u32,
+        methods_len: u32,
+        _span: Span,
+        type_subst: &std::collections::HashMap<Spur, Type>,
+    ) -> Option<()> {
+        let method_refs = self.rir.get_inst_refs(methods_start, methods_len);
+
+        for method_ref in method_refs {
+            let method_inst = self.rir.get(method_ref);
+            if let InstData::FnDecl {
+                name: method_name,
+                params_start,
+                params_len,
+                return_type,
+                body,
+                has_self,
+                ..
+            } = &method_inst.data
+            {
+                let key = (struct_id, *method_name);
+
+                // Check for duplicate methods - return None in comptime context
+                if self.methods.contains_key(&key) {
+                    return None;
+                }
+
+                // Resolve parameter types using comptime-safe resolution with substitution
+                let params = self.rir.get_params(*params_start, *params_len);
+                let param_names: Vec<Spur> = params.iter().map(|p| p.name).collect();
+                let mut param_types: Vec<Type> = Vec::with_capacity(params.len());
+
+                for p in params {
+                    // Resolve type, with Self mapping to this struct
+                    let type_str = self.interner.resolve(&p.ty);
+                    let resolved_ty = if type_str == "Self" {
+                        struct_type
+                    } else {
+                        self.resolve_type_for_comptime_with_subst(p.ty, type_subst)?
+                    };
+                    param_types.push(resolved_ty);
+                }
+
+                // Resolve return type
+                let ret_type_str = self.interner.resolve(return_type);
+                let ret_type = if ret_type_str == "Self" {
+                    struct_type
+                } else {
+                    self.resolve_type_for_comptime_with_subst(*return_type, type_subst)?
                 };
 
                 // Allocate method parameters in the arena
