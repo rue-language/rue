@@ -1,12 +1,12 @@
 ---
 id: 0011
 title: Runtime Heap
-status: proposal
+status: implemented
 tags: [runtime, memory, allocator]
 feature-flag: runtime-heap
 created: 2025-12-25
-accepted:
-implemented:
+accepted: 2025-12-25
+implemented: 2026-01-04
 spec-sections: []
 superseded-by:
 ---
@@ -15,7 +15,7 @@ superseded-by:
 
 ## Status
 
-Proposal
+Implemented
 
 ## Summary
 
