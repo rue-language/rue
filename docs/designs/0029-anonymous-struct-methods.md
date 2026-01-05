@@ -229,10 +229,10 @@ Epic: rue-nj40
 - [x] Resolve `Self` to the anonymous struct's `StructId` (in signatures only)
 - [ ] Update structural equality to include method signatures
 - [ ] Handle comptime parameter capture in method bodies
-- [ ] Analyze method bodies with `self` in scope
+- [x] Analyze method bodies with `self` in scope
 - [ ] Resolve `Self` in method body expressions
 
-**Status**: Partial - method registration works but method body analysis is incomplete. See rue-xo14 for remaining work.
+**Status**: Partial - method registration works, `self` in method bodies works, but `Self` type resolution is incomplete. See rue-h6zn for remaining work.
 
 **Deliverable**: `v.push(42)` compiles when `v` is an anonymous struct type with a `push` method.
 

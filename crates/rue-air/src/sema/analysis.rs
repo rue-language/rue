@@ -300,16 +300,31 @@ fn analyze_all_function_bodies_sequential(sema: &mut Sema<'_>) -> MultiErrorResu
     // Collect method refs from struct declarations to skip them when analyzing regular functions
     let mut method_refs: HashSet<InstRef> = HashSet::new();
     for (_, inst) in sema.rir.iter() {
-        if let InstData::StructDecl {
-            methods_start,
-            methods_len,
-            ..
-        } = &inst.data
-        {
-            let methods = sema.rir.get_inst_refs(*methods_start, *methods_len);
-            for method_ref in methods {
-                method_refs.insert(method_ref);
+        match &inst.data {
+            InstData::StructDecl {
+                methods_start,
+                methods_len,
+                ..
+            } => {
+                let methods = sema.rir.get_inst_refs(*methods_start, *methods_len);
+                for method_ref in methods {
+                    method_refs.insert(method_ref);
+                }
             }
+            // Also collect methods from anonymous structs (inside comptime functions like Vec<T>)
+            InstData::AnonStructType {
+                methods_start,
+                methods_len,
+                ..
+            } => {
+                if *methods_len > 0 {
+                    let methods = sema.rir.get_inst_refs(*methods_start, *methods_len);
+                    for method_ref in methods {
+                        method_refs.insert(method_ref);
+                    }
+                }
+            }
+            _ => {}
         }
     }
 
@@ -531,11 +546,12 @@ fn analyze_all_function_bodies_sequential(sema: &mut Sema<'_>) -> MultiErrorResu
                 param_info.push((param_names[i], param_types[i], param_modes[i]));
             }
 
-            match sema.analyze_function(
+            match sema.analyze_method_body(
                 &infer_ctx,
                 method_info.return_type,
                 &param_info,
                 method_info.body,
+                method_info.struct_type,
             ) {
                 Ok((
                     air,
@@ -781,11 +797,12 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
                     param_info.push((param_names[i], param_types[i], param_modes[i]));
                 }
 
-                match sema.analyze_function(
+                match sema.analyze_method_body(
                     &infer_ctx,
                     method_info.return_type,
                     &param_info,
                     method_info.body,
+                    method_info.struct_type,
                 ) {
                     Ok((
                         air,
@@ -3565,6 +3582,20 @@ fn analyze_struct_init_ctx(
     let struct_id = if let Some(module_ref) = module {
         // Qualified access: module.StructName { ... }
         ctx.resolve_struct_through_module(module_ref, type_name, span)?
+    } else if let Some(&ty) = analysis_ctx.comptime_type_vars.get(&type_name) {
+        // Check comptime_type_vars first (handles Self and type parameters)
+        match ty.kind() {
+            TypeKind::Struct(id) => id,
+            _ => {
+                return Err(CompileError::new(
+                    ErrorKind::TypeMismatch {
+                        expected: "struct type".to_string(),
+                        found: ty.name().to_string(),
+                    },
+                    span,
+                ));
+            }
+        }
     } else {
         // Unqualified access: StructName { ... }
         ctx.get_struct(type_name)
@@ -6497,6 +6528,36 @@ impl<'a> Sema<'a> {
         // type substitutions so that references to type parameters (like `P { ... }`)
         // can be resolved in the function body.
         self.analyze_function_internal(infer_ctx, return_type, params, body, Some(type_subst))
+    }
+
+    /// Analyze a method body with `Self` type resolution.
+    ///
+    /// This is used for anonymous struct methods where `Self` should resolve to the
+    /// struct type. The `self_type` is added to the type substitution map under the
+    /// symbol "Self", allowing `Self { ... }` struct literals to work correctly.
+    fn analyze_method_body(
+        &mut self,
+        infer_ctx: &InferenceContext,
+        return_type: Type,
+        params: &[(Spur, Type, RirParamMode)],
+        body: InstRef,
+        self_type: Type,
+    ) -> CompileResult<(
+        Air,
+        u32,
+        u32,
+        Vec<bool>,
+        Vec<CompileWarning>,
+        Vec<String>,
+        HashSet<Spur>,
+        HashSet<(StructId, Spur)>,
+    )> {
+        // Create a type substitution map with Self -> the struct type
+        let self_sym = self.interner.get_or_intern("Self");
+        let mut type_subst = HashMap::new();
+        type_subst.insert(self_sym, self_type);
+
+        self.analyze_function_internal(infer_ctx, return_type, params, body, Some(&type_subst))
     }
 
     /// Run Hindley-Milner type inference on a function body.
