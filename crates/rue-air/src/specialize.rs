@@ -15,8 +15,9 @@
 use std::collections::HashMap;
 
 use lasso::{Spur, ThreadedRodeo};
-use rue_error::CompileResult;
+use rue_error::{CompileError, CompileResult, ErrorKind};
 use rue_rir::RirParamMode;
+use rue_span::Span;
 
 use crate::inst::{Air, AirInstData};
 use crate::sema::{AnalyzedFunction, FunctionInfo, InferenceContext, Sema, SemaOutput};
@@ -31,6 +32,14 @@ pub struct SpecializationKey {
     pub type_args: Vec<Type>,
 }
 
+/// Info about a specialization: the mangled name and the first call site span.
+struct SpecializationInfo {
+    /// The mangled name for the specialized function.
+    mangled_name: Spur,
+    /// The span of the first call site (for error reporting if the function doesn't exist).
+    call_site_span: Span,
+}
+
 /// Perform the specialization pass on the sema output.
 ///
 /// This collects all `CallGeneric` instructions, creates specialized functions,
@@ -42,7 +51,7 @@ pub fn specialize(
     interner: &ThreadedRodeo,
 ) -> CompileResult<()> {
     // Phase 1: Collect all specialization requests
-    let mut specializations: HashMap<SpecializationKey, Spur> = HashMap::new();
+    let mut specializations: HashMap<SpecializationKey, SpecializationInfo> = HashMap::new();
 
     for func in &output.functions {
         collect_specializations(&func.air, interner, &mut specializations);
@@ -53,23 +62,34 @@ pub fn specialize(
         return Ok(());
     }
 
+    // Build a map from key to just the mangled name for the rewrite phase
+    let name_map: HashMap<SpecializationKey, Spur> = specializations
+        .iter()
+        .map(|(k, v)| (k.clone(), v.mangled_name))
+        .collect();
+
     // Phase 2: Rewrite CallGeneric to Call in all functions
     for func in &mut output.functions {
-        rewrite_call_generic(&mut func.air, &specializations);
+        rewrite_call_generic(&mut func.air, &name_map);
     }
 
     // Phase 3: Create specialized function bodies by re-analyzing with type substitution
-    for (key, specialized_name) in &specializations {
-        let base_info = sema
-            .functions
-            .get(&key.base_name)
-            .expect("function must exist")
-            .clone();
+    for (key, info) in &specializations {
+        let base_info = match sema.functions.get(&key.base_name) {
+            Some(info) => info.clone(),
+            None => {
+                let func_name = interner.resolve(&key.base_name);
+                return Err(CompileError::new(
+                    ErrorKind::UndefinedFunction(func_name.to_string()),
+                    info.call_site_span,
+                ));
+            }
+        };
         let specialized_func = create_specialized_function(
             sema,
             infer_ctx,
             key,
-            *specialized_name,
+            info.mangled_name,
             &base_info,
             interner,
         )?;
@@ -83,7 +103,7 @@ pub fn specialize(
 fn collect_specializations(
     air: &Air,
     interner: &ThreadedRodeo,
-    specializations: &mut HashMap<SpecializationKey, Spur>,
+    specializations: &mut HashMap<SpecializationKey, SpecializationInfo>,
 ) {
     for inst in air.instructions() {
         if let AirInstData::CallGeneric {
@@ -110,7 +130,13 @@ fn collect_specializations(
                 let base_name = interner.resolve(name);
                 let mangled = mangle_specialized_name(base_name, &type_args);
                 let mangled_sym = interner.get_or_intern(&mangled);
-                specializations.insert(key, mangled_sym);
+                specializations.insert(
+                    key,
+                    SpecializationInfo {
+                        mangled_name: mangled_sym,
+                        call_site_span: inst.span,
+                    },
+                );
             }
         }
     }
