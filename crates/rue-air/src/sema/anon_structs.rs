@@ -62,7 +62,7 @@ impl Sema<'_> {
                 }
                 if methods_match {
                     // Found a matching struct - return it with is_new=false
-                    return (Type::Struct(struct_id), false);
+                    return (Type::new_struct(struct_id), false);
                 }
             }
         }
@@ -111,6 +111,6 @@ impl Sema<'_> {
         self.structs.insert(final_name_spur, struct_id);
 
         // Return with is_new=true
-        (Type::Struct(struct_id), true)
+        (Type::new_struct(struct_id), true)
     }
 }

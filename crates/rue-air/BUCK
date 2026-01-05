@@ -1,6 +1,7 @@
 rust_library(
     name = "rue-air",
     srcs = glob(["src/**/*.rs"]),
+    rustc_flags = ["-Dwarnings"],
     deps = [
         "//crates/rue-builtins:rue-builtins",
         "//crates/rue-error:rue-error",
@@ -18,6 +19,7 @@ rust_library(
 rust_test(
     name = "rue-air-test",
     srcs = glob(["src/**/*.rs"]),
+    rustc_flags = ["-Dwarnings"],
     deps = [
         "//crates/rue-builtins:rue-builtins",
         "//crates/rue-error:rue-error",

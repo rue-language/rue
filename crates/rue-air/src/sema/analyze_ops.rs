@@ -25,7 +25,7 @@ use std::collections::{HashMap, HashSet};
 use lasso::Spur;
 use rue_error::{
     CompileError, CompileResult, CompileWarning, ErrorKind, MissingFieldsError, OptionExt,
-    PreviewFeature, WarningKind,
+    WarningKind,
 };
 use rue_rir::{InstData, InstRef, RirArgMode, RirParamMode, RirPattern};
 
@@ -33,13 +33,13 @@ use crate::sema::context::ConstValue;
 use rue_span::Span;
 
 use super::Sema;
-use super::context::{AnalysisContext, AnalysisResult, LocalVar, ParamInfo};
+use super::context::{AnalysisContext, AnalysisResult, LocalVar};
 use crate::inst::{
     Air, AirCallArg, AirInst, AirInstData, AirPattern, AirPlaceBase, AirPlaceRef, AirProjection,
     AirRef,
 };
 use crate::scope::ScopedContext;
-use crate::types::{StructId, Type, TypeKind};
+use crate::types::{Type, TypeKind};
 
 // ============================================================================
 // Place Building (ADR-0030 Phase 8)
@@ -332,7 +332,7 @@ impl<'a> Sema<'a> {
             }
 
             InstData::BoolConst(value) => {
-                let ty = Type::Bool;
+                let ty = Type::BOOL;
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::BoolConst(*value),
                     ty,
@@ -357,7 +357,7 @@ impl<'a> Sema<'a> {
             }
 
             InstData::UnitConst => {
-                let ty = Type::Unit;
+                let ty = Type::UNIT;
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::UnitConst,
                     ty,
@@ -442,10 +442,10 @@ impl<'a> Sema<'a> {
 
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::Not(operand_result.air_ref),
-                    ty: Type::Bool,
+                    ty: Type::BOOL,
                     span: inst.span,
                 });
-                Ok(AnalysisResult::new(air_ref, Type::Bool))
+                Ok(AnalysisResult::new(air_ref, Type::BOOL))
             }
 
             InstData::BitNot { operand } => {
@@ -505,10 +505,10 @@ impl<'a> Sema<'a> {
 
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::And(lhs_result.air_ref, rhs_result.air_ref),
-                    ty: Type::Bool,
+                    ty: Type::BOOL,
                     span: inst.span,
                 });
-                Ok(AnalysisResult::new(air_ref, Type::Bool))
+                Ok(AnalysisResult::new(air_ref, Type::BOOL))
             }
 
             InstData::Or { lhs, rhs } => {
@@ -517,10 +517,10 @@ impl<'a> Sema<'a> {
 
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::Or(lhs_result.air_ref, rhs_result.air_ref),
-                    ty: Type::Bool,
+                    ty: Type::BOOL,
                     span: inst.span,
                 });
-                Ok(AnalysisResult::new(air_ref, Type::Bool))
+                Ok(AnalysisResult::new(air_ref, Type::BOOL))
             }
 
             _ => Err(CompileError::new(
@@ -578,10 +578,10 @@ impl<'a> Sema<'a> {
                 // Break has the never type - it diverges
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::Break,
-                    ty: Type::Never,
+                    ty: Type::NEVER,
                     span: inst.span,
                 });
-                Ok(AnalysisResult::new(air_ref, Type::Never))
+                Ok(AnalysisResult::new(air_ref, Type::NEVER))
             }
 
             InstData::Continue => {
@@ -593,10 +593,10 @@ impl<'a> Sema<'a> {
                 // Continue has the never type - it diverges
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::Continue,
-                    ty: Type::Never,
+                    ty: Type::NEVER,
                     span: inst.span,
                 });
-                Ok(AnalysisResult::new(air_ref, Type::Never))
+                Ok(AnalysisResult::new(air_ref, Type::NEVER))
             }
 
             InstData::Ret(inner) => {
@@ -667,7 +667,7 @@ impl<'a> Sema<'a> {
 
             // Compute the unified result type using never type coercion
             let result_type = match (then_type.is_never(), else_type.is_never()) {
-                (true, true) => Type::Never,
+                (true, true) => Type::NEVER,
                 (true, false) => else_type,
                 (false, true) => then_type,
                 (false, false) => {
@@ -710,7 +710,7 @@ impl<'a> Sema<'a> {
 
             // Check that the then branch has unit type (or Never/Error)
             let then_type = then_result.ty;
-            if then_type != Type::Unit && !then_type.is_never() && !then_type.is_error() {
+            if then_type != Type::UNIT && !then_type.is_never() && !then_type.is_error() {
                 return Err(CompileError::new(
                     ErrorKind::TypeMismatch {
                         expected: "()".to_string(),
@@ -747,10 +747,10 @@ impl<'a> Sema<'a> {
                     then_value: then_result.air_ref,
                     else_value: None,
                 },
-                ty: Type::Unit,
+                ty: Type::UNIT,
                 span,
             });
-            Ok(AnalysisResult::new(air_ref, Type::Unit))
+            Ok(AnalysisResult::new(air_ref, Type::UNIT))
         }
     }
 
@@ -778,10 +778,10 @@ impl<'a> Sema<'a> {
                 cond: cond_result.air_ref,
                 body: body_result.air_ref,
             },
-            ty: Type::Unit,
+            ty: Type::UNIT,
             span,
         });
-        Ok(AnalysisResult::new(air_ref, Type::Unit))
+        Ok(AnalysisResult::new(air_ref, Type::UNIT))
     }
 
     /// Analyze an infinite loop.
@@ -804,10 +804,10 @@ impl<'a> Sema<'a> {
             data: AirInstData::InfiniteLoop {
                 body: body_result.air_ref,
             },
-            ty: Type::Never,
+            ty: Type::NEVER,
             span,
         });
-        Ok(AnalysisResult::new(air_ref, Type::Never))
+        Ok(AnalysisResult::new(air_ref, Type::NEVER))
     }
 
     /// Analyze a match expression.
@@ -825,7 +825,7 @@ impl<'a> Sema<'a> {
         let scrutinee_type = scrutinee_result.ty;
 
         // Validate that we can match on this type (integers, booleans, and enums)
-        if !scrutinee_type.is_integer() && scrutinee_type != Type::Bool && !scrutinee_type.is_enum()
+        if !scrutinee_type.is_integer() && scrutinee_type != Type::BOOL && !scrutinee_type.is_enum()
         {
             return Err(CompileError::new(
                 ErrorKind::InvalidMatchType(scrutinee_type.name().to_string()),
@@ -845,7 +845,6 @@ impl<'a> Sema<'a> {
         let mut bool_false_span: Option<Span> = None;
         let mut seen_ints: HashMap<i64, Span> = HashMap::new();
         let mut covered_variants: HashSet<u32> = HashSet::new();
-        let mut seen_variants: HashMap<u32, Span> = HashMap::new();
         let mut pattern_enum_id: Option<crate::types::EnumId> = None;
 
         // Analyze each arm (each arm gets its own scope)
@@ -919,7 +918,7 @@ impl<'a> Sema<'a> {
                     }
                 }
                 RirPattern::Bool(b, _) => {
-                    if scrutinee_type != Type::Bool {
+                    if scrutinee_type != Type::BOOL {
                         return Err(CompileError::new(
                             ErrorKind::TypeMismatch {
                                 expected: scrutinee_type.name().to_string(),
@@ -973,7 +972,7 @@ impl<'a> Sema<'a> {
                     let enum_def = self.type_pool.enum_def(enum_id);
 
                     // Check that scrutinee type matches the pattern's enum type
-                    if scrutinee_type != Type::Enum(enum_id) {
+                    if scrutinee_type != Type::new_enum(enum_id) {
                         return Err(CompileError::new(
                             ErrorKind::TypeMismatch {
                                 expected: scrutinee_type.name().to_string(),
@@ -1079,7 +1078,7 @@ impl<'a> Sema<'a> {
         let has_wildcard = wildcard_span.is_some();
         let bool_true_covered = bool_true_span.is_some();
         let bool_false_covered = bool_false_span.is_some();
-        let is_exhaustive = if scrutinee_type == Type::Bool {
+        let is_exhaustive = if scrutinee_type == Type::BOOL {
             has_wildcard || (bool_true_covered && bool_false_covered)
         } else if let Some(enum_id) = pattern_enum_id {
             let enum_def = self.type_pool.enum_def(enum_id);
@@ -1093,7 +1092,7 @@ impl<'a> Sema<'a> {
             return Err(CompileError::new(ErrorKind::NonExhaustiveMatch, span));
         }
 
-        let final_type = result_type.unwrap_or(Type::Unit);
+        let final_type = result_type.unwrap_or(Type::UNIT);
 
         // Encode match arms into extra array
         let arms_len = air_arms.len() as u32;
@@ -1144,7 +1143,7 @@ impl<'a> Sema<'a> {
             Some(inner_result.air_ref)
         } else {
             // `return;` without expression - only valid for unit-returning functions
-            if ctx.return_type != Type::Unit && !ctx.return_type.is_error() {
+            if ctx.return_type != Type::UNIT && !ctx.return_type.is_error() {
                 return Err(CompileError::new(
                     ErrorKind::TypeMismatch {
                         expected: ctx.return_type.name().to_string(),
@@ -1158,10 +1157,10 @@ impl<'a> Sema<'a> {
 
         let air_ref = air.add_inst(AirInst {
             data: AirInstData::Ret(inner_air_ref),
-            ty: Type::Never, // Return expressions have Never type
+            ty: Type::NEVER, // Return expressions have Never type
             span,
         });
-        Ok(AnalysisResult::new(air_ref, Type::Never))
+        Ok(AnalysisResult::new(air_ref, Type::NEVER))
     }
 
     /// Analyze a block expression.
@@ -1211,10 +1210,10 @@ impl<'a> Sema<'a> {
                 // Empty block: create a UnitConst
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::UnitConst,
-                    ty: Type::Unit,
+                    ty: Type::UNIT,
                     span,
                 });
-                AnalysisResult::new(air_ref, Type::Unit)
+                AnalysisResult::new(air_ref, Type::UNIT)
             }
         };
 
@@ -1312,14 +1311,14 @@ impl<'a> Sema<'a> {
 
         // If name is None, this is a wildcard pattern `_` that discards the value
         let Some(name) = name else {
-            return Ok(AnalysisResult::new(init_result.air_ref, Type::Unit));
+            return Ok(AnalysisResult::new(init_result.air_ref, Type::UNIT));
         };
 
         // Special case: comptime type variables
         // When a variable is assigned a comptime type value (e.g., `let P = make_type()`),
         // we store the type in comptime_type_vars instead of creating a runtime variable.
         // This allows the variable to be used as a type annotation later (e.g., `let p: P = ...`).
-        if var_type == Type::ComptimeType {
+        if var_type == Type::COMPTIME_TYPE {
             // Extract the type value from the TypeConst instruction
             let inst = air.get(init_result.air_ref);
             if let AirInstData::TypeConst(ty) = &inst.data {
@@ -1327,10 +1326,10 @@ impl<'a> Sema<'a> {
                 // Return Unit - no runtime code is generated for comptime type bindings
                 let nop_ref = air.add_inst(AirInst {
                     data: AirInstData::UnitConst,
-                    ty: Type::Unit,
+                    ty: Type::UNIT,
                     span,
                 });
-                return Ok(AnalysisResult::new(nop_ref, Type::Unit));
+                return Ok(AnalysisResult::new(nop_ref, Type::UNIT));
             }
             // If it's not a TypeConst, fall through to error (can't store types at runtime)
             let name_str = self.interner.resolve(&name);
@@ -1380,7 +1379,7 @@ impl<'a> Sema<'a> {
                 slot,
                 init: init_result.air_ref,
             },
-            ty: Type::Unit,
+            ty: Type::UNIT,
             span,
         });
 
@@ -1392,10 +1391,10 @@ impl<'a> Sema<'a> {
                 stmts_len: 1,
                 value: alloc_ref,
             },
-            ty: Type::Unit,
+            ty: Type::UNIT,
             span,
         });
-        Ok(AnalysisResult::new(block_ref, Type::Unit))
+        Ok(AnalysisResult::new(block_ref, Type::UNIT))
     }
 
     /// Analyze a variable reference.
@@ -1506,10 +1505,10 @@ impl<'a> Sema<'a> {
             // Comptime type vars produce TypeConst instructions
             let air_ref = air.add_inst(AirInst {
                 data: AirInstData::TypeConst(ty),
-                ty: Type::ComptimeType,
+                ty: Type::COMPTIME_TYPE,
                 span,
             });
-            return Ok(AnalysisResult::new(air_ref, Type::ComptimeType));
+            return Ok(AnalysisResult::new(air_ref, Type::COMPTIME_TYPE));
         }
 
         // Check if it's a constant (e.g., `const VALUE = 42` or `const math = @import("math")`)
@@ -1541,10 +1540,10 @@ impl<'a> Sema<'a> {
                 rue_rir::InstData::BoolConst(value) => {
                     let air_ref = air.add_inst(AirInst {
                         data: AirInstData::BoolConst(*value),
-                        ty: Type::Bool,
+                        ty: Type::BOOL,
                         span,
                     });
-                    return Ok(AnalysisResult::new(air_ref, Type::Bool));
+                    return Ok(AnalysisResult::new(air_ref, Type::BOOL));
                 }
                 _ => {
                     // For complex expressions, fall back to analyzing the init expression
@@ -1560,10 +1559,10 @@ impl<'a> Sema<'a> {
             // This is a type name being used as a value (e.g., `i32` passed to `comptime T: type`)
             let air_ref = air.add_inst(AirInst {
                 data: AirInstData::TypeConst(resolved_type),
-                ty: Type::ComptimeType,
+                ty: Type::COMPTIME_TYPE,
                 span,
             });
-            return Ok(AnalysisResult::new(air_ref, Type::ComptimeType));
+            return Ok(AnalysisResult::new(air_ref, Type::COMPTIME_TYPE));
         }
 
         // Check if this is a module-level constant (e.g., `const utils = @import("utils")`)
@@ -1663,10 +1662,10 @@ impl<'a> Sema<'a> {
                     param_slot: abi_slot,
                     value: value_result.air_ref,
                 },
-                ty: Type::Unit,
+                ty: Type::UNIT,
                 span,
             });
-            return Ok(AnalysisResult::new(air_ref, Type::Unit));
+            return Ok(AnalysisResult::new(air_ref, Type::UNIT));
         }
 
         // Look up local variable
@@ -1702,10 +1701,10 @@ impl<'a> Sema<'a> {
                 slot,
                 value: value_result.air_ref,
             },
-            ty: Type::Unit,
+            ty: Type::UNIT,
             span,
         });
-        Ok(AnalysisResult::new(air_ref, Type::Unit))
+        Ok(AnalysisResult::new(air_ref, Type::UNIT))
     }
 
     // ========================================================================
@@ -1803,7 +1802,7 @@ impl<'a> Sema<'a> {
 
         // Get struct def (returns owned copy from pool)
         let struct_def = self.type_pool.struct_def(struct_id);
-        let struct_type = Type::Struct(struct_id);
+        let struct_type = Type::new_struct(struct_id);
 
         // Build a map from field name to struct field index
         let field_index_map: std::collections::HashMap<&str, usize> = struct_def
@@ -2164,13 +2163,13 @@ impl<'a> Sema<'a> {
                     }
 
                     // Return a TypeConst instruction with the struct type
-                    let struct_type = Type::Struct(struct_id);
+                    let struct_type = Type::new_struct(struct_id);
                     let air_ref = air.add_inst(AirInst {
                         data: AirInstData::TypeConst(struct_type),
-                        ty: Type::ComptimeType,
+                        ty: Type::COMPTIME_TYPE,
                         span,
                     });
-                    return Ok(AnalysisResult::new(air_ref, Type::ComptimeType));
+                    return Ok(AnalysisResult::new(air_ref, Type::COMPTIME_TYPE));
                 }
             }
         }
@@ -2206,13 +2205,13 @@ impl<'a> Sema<'a> {
                     }
 
                     // Return a TypeConst instruction with the enum type
-                    let enum_type = Type::Enum(enum_id);
+                    let enum_type = Type::new_enum(enum_id);
                     let air_ref = air.add_inst(AirInst {
                         data: AirInstData::TypeConst(enum_type),
-                        ty: Type::ComptimeType,
+                        ty: Type::COMPTIME_TYPE,
                         span,
                     });
-                    return Ok(AnalysisResult::new(air_ref, Type::ComptimeType));
+                    return Ok(AnalysisResult::new(air_ref, Type::COMPTIME_TYPE));
                 }
             }
         }
@@ -2281,7 +2280,7 @@ impl<'a> Sema<'a> {
         // Get the array type from HM inference
         let array_type = Self::get_resolved_type(ctx, inst_ref, span, "array literal")?;
 
-        let (array_type_id, _elem_type, expected_len) = match array_type.as_array() {
+        let (_array_type_id, _elem_type, expected_len) = match array_type.as_array() {
             Some(type_id) => {
                 let (element_type, length) = self.type_pool.array_def(type_id);
                 (type_id, element_type, length)
@@ -2345,7 +2344,7 @@ impl<'a> Sema<'a> {
     ) -> CompileResult<AnalysisResult> {
         // Check for constant out-of-bounds index early (before tracing)
         // We need the array type for bounds checking, so peek at the base first
-        let base_inst = self.rir.get(base);
+        let _base_inst = self.rir.get(base);
 
         // Try to trace this expression to a place (lvalue)
         if let Some(trace) = self.try_trace_place(inst_ref, air, ctx)? {
@@ -2503,10 +2502,10 @@ impl<'a> Sema<'a> {
                 // Enum declarations are processed during collection phase
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::UnitConst,
-                    ty: Type::Unit,
+                    ty: Type::UNIT,
                     span: inst.span,
                 });
-                Ok(AnalysisResult::new(air_ref, Type::Unit))
+                Ok(AnalysisResult::new(air_ref, Type::UNIT))
             }
 
             InstData::EnumVariant {
@@ -2537,7 +2536,7 @@ impl<'a> Sema<'a> {
                     inst.span,
                 )?;
 
-                let ty = Type::Enum(enum_id);
+                let ty = Type::new_enum(enum_id);
 
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::EnumVariant {
@@ -2701,16 +2700,16 @@ impl<'a> Sema<'a> {
 
         // Special case: functions that return `type` with no parameters are implicitly comptime
         // and should be evaluated at compile time.
-        if base_return_type == Type::ComptimeType && args.is_empty() {
+        if base_return_type == Type::COMPTIME_TYPE && args.is_empty() {
             // Try to evaluate the function body at compile time
             if let Some(ConstValue::Type(ty)) = self.try_evaluate_const(fn_body) {
                 // Success! Return a TypeConst instruction instead of a runtime call
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::TypeConst(ty),
-                    ty: Type::ComptimeType,
+                    ty: Type::COMPTIME_TYPE,
                     span,
                 });
-                return Ok(AnalysisResult::new(air_ref, Type::ComptimeType));
+                return Ok(AnalysisResult::new(air_ref, Type::COMPTIME_TYPE));
             }
             // If we can't evaluate at compile time, fall through to runtime call
             // (which will fail at link time, but gives a better error experience)
@@ -2759,7 +2758,7 @@ impl<'a> Sema<'a> {
                 if *is_comptime {
                     // Check if this is a type parameter (param type is ComptimeType)
                     // vs a value parameter (param type is i32, bool, etc.)
-                    if param_types[i] == Type::ComptimeType {
+                    if param_types[i] == Type::COMPTIME_TYPE {
                         // This is a TYPE parameter - expect a TypeConst instruction
                         let inst = air.get(air_arg.value);
                         if let AirInstData::TypeConst(ty) = &inst.data {
@@ -2789,7 +2788,7 @@ impl<'a> Sema<'a> {
             }
 
             // Determine the actual return type by substituting type parameters
-            let return_type = if base_return_type == Type::ComptimeType {
+            let return_type = if base_return_type == Type::COMPTIME_TYPE {
                 // Return type is a type parameter - look it up in substitutions
                 *type_subst
                     .get(&return_type_sym)
@@ -2801,7 +2800,7 @@ impl<'a> Sema<'a> {
             // Special case: functions that return `type` (not a type parameter) with no runtime args
             // can be fully evaluated at compile time to produce a concrete anonymous struct type.
             // This handles cases like: `fn Pair(comptime T: type) -> type { struct { first: T, second: T } }`
-            if return_type == Type::ComptimeType && runtime_args.is_empty() {
+            if return_type == Type::COMPTIME_TYPE && runtime_args.is_empty() {
                 // The return type is literally `type`, not a type parameter that was substituted.
                 // Try to evaluate the function body at compile time with type substitutions.
                 if let Some(ConstValue::Type(ty)) =
@@ -2810,10 +2809,10 @@ impl<'a> Sema<'a> {
                     // Success! Return a TypeConst instruction instead of a runtime call
                     let air_ref = air.add_inst(AirInst {
                         data: AirInstData::TypeConst(ty),
-                        ty: Type::ComptimeType,
+                        ty: Type::COMPTIME_TYPE,
                         span,
                     });
-                    return Ok(AnalysisResult::new(air_ref, Type::ComptimeType));
+                    return Ok(AnalysisResult::new(air_ref, Type::COMPTIME_TYPE));
                 }
                 // If we can't evaluate at compile time, fall through to the error below
                 // (we can't have a runtime call that returns `type`)
@@ -3024,10 +3023,10 @@ impl<'a> Sema<'a> {
                 // These are processed during collection phase, just return Unit
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::UnitConst,
-                    ty: Type::Unit,
+                    ty: Type::UNIT,
                     span: inst.span,
                 });
-                Ok(AnalysisResult::new(air_ref, Type::Unit))
+                Ok(AnalysisResult::new(air_ref, Type::UNIT))
             }
 
             InstData::FnDecl { .. } => {

@@ -8,7 +8,7 @@
 use rue_builtins::{BUILTIN_ENUMS, BUILTIN_TYPES, BuiltinFieldType, BuiltinTypeDef};
 
 use super::Sema;
-use crate::types::{EnumDef, EnumId, StructDef, StructField, StructId, Type, TypeKind};
+use crate::types::{EnumDef, StructDef, StructField, StructId, Type, TypeKind};
 
 impl<'a> Sema<'a> {
     /// Phase 0: Inject built-in types as synthetic structs and enums.
@@ -33,7 +33,7 @@ impl<'a> Sema<'a> {
                     ty: match f.ty {
                         BuiltinFieldType::U64 => Type::U64,
                         BuiltinFieldType::U8 => Type::U8,
-                        BuiltinFieldType::Bool => Type::Bool,
+                        BuiltinFieldType::Bool => Type::BOOL,
                     },
                 })
                 .collect();
@@ -136,7 +136,7 @@ impl<'a> Sema<'a> {
     /// Returns the Type::Struct for the builtin String type.
     /// Panics if called before builtin types are injected.
     pub(crate) fn builtin_string_type(&self) -> Type {
-        Type::Struct(
+        Type::new_struct(
             self.builtin_string_id
                 .expect("builtin types not injected yet"),
         )
@@ -164,7 +164,7 @@ impl<'a> Sema<'a> {
     ///
     /// Builtin types like String are now represented as Type::Struct with is_builtin=true.
     pub(crate) fn builtin_air_type(&self, struct_id: StructId) -> Type {
-        Type::Struct(struct_id)
+        Type::new_struct(struct_id)
     }
 
     /// Check if a type is a linear type.

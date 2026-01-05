@@ -203,19 +203,6 @@ impl TimingData {
         output
     }
 
-    /// Generate structured timing data for JSON serialization.
-    ///
-    /// Returns a `BenchmarkTiming` struct that can be serialized to JSON
-    /// for machine-readable output. This is used by `--benchmark-json` for
-    /// the performance dashboard.
-    ///
-    /// # Arguments
-    /// * `target` - The target platform string (e.g., "x86_64-linux")
-    /// * `version` - The compiler version string
-    pub fn to_benchmark_timing(&self, target: &str, version: &str) -> BenchmarkTiming {
-        self.to_benchmark_timing_with_metrics(target, version, None, None)
-    }
-
     /// Generate structured timing data with optional source metrics and memory usage.
     ///
     /// # Arguments
@@ -270,34 +257,6 @@ impl TimingData {
         }
     }
 
-    /// Generate JSON output for benchmark timing.
-    ///
-    /// Returns a JSON string suitable for machine parsing. The format includes
-    /// metadata for historical analysis:
-    /// ```json
-    /// {
-    ///   "metadata": {
-    ///     "timestamp": "2025-12-27T21:30:00Z",
-    ///     "version": "0.1.0",
-    ///     "target": "aarch64-macos"
-    ///   },
-    ///   "passes": [
-    ///     {"name": "lexer", "duration_ms": 0.5, "percent": 10.0},
-    ///     {"name": "parser", "duration_ms": 2.3, "percent": 46.0},
-    ///     ...
-    ///   ],
-    ///   "total_ms": 5.0
-    /// }
-    /// ```
-    ///
-    /// # Arguments
-    /// * `target` - The target platform string (e.g., "x86_64-linux")
-    /// * `version` - The compiler version string
-    pub fn to_json(&self, target: &str, version: &str) -> String {
-        let timing = self.to_benchmark_timing(target, version);
-        serde_json::to_string(&timing).unwrap_or_else(|_| "{}".to_string())
-    }
-
     /// Generate JSON output with additional source metrics.
     ///
     /// # Arguments
@@ -319,14 +278,6 @@ impl TimingData {
             peak_memory_bytes,
         );
         serde_json::to_string(&timing).unwrap_or_else(|_| "{}".to_string())
-    }
-
-    /// Generate pretty-printed JSON output for benchmark timing.
-    ///
-    /// Same as `to_json()` but with indentation for human readability.
-    pub fn to_json_pretty(&self, target: &str, version: &str) -> String {
-        let timing = self.to_benchmark_timing(target, version);
-        serde_json::to_string_pretty(&timing).unwrap_or_else(|_| "{}".to_string())
     }
 }
 
@@ -557,7 +508,7 @@ mod tests {
     #[test]
     fn test_to_benchmark_timing_empty() {
         let data = TimingData::new();
-        let timing = data.to_benchmark_timing("x86_64-linux", "0.1.0");
+        let timing = data.to_benchmark_timing_with_metrics("x86_64-linux", "0.1.0", None, None);
         assert!(timing.passes.is_empty());
         assert_eq!(timing.total_ms, 0.0);
     }
@@ -568,7 +519,7 @@ mod tests {
         data.record("lexer", Duration::from_millis(100));
         data.record("parser", Duration::from_millis(200));
 
-        let timing = data.to_benchmark_timing("x86_64-linux", "0.1.0");
+        let timing = data.to_benchmark_timing_with_metrics("x86_64-linux", "0.1.0", None, None);
         assert_eq!(timing.passes.len(), 2);
         assert_eq!(timing.passes[0].name, "lexer");
         assert_eq!(timing.passes[1].name, "parser");
@@ -582,7 +533,7 @@ mod tests {
         data.record("lexer", Duration::from_millis(100));
         data.record("parser", Duration::from_millis(300));
 
-        let timing = data.to_benchmark_timing("x86_64-linux", "0.1.0");
+        let timing = data.to_benchmark_timing_with_metrics("x86_64-linux", "0.1.0", None, None);
         // lexer should be 25%, parser should be 75%
         assert!((timing.passes[0].percent - 25.0).abs() < 0.1);
         assert!((timing.passes[1].percent - 75.0).abs() < 0.1);
@@ -593,7 +544,7 @@ mod tests {
         let data = TimingData::new();
         data.record("lexer", Duration::from_millis(100));
 
-        let timing = data.to_benchmark_timing("aarch64-macos", "0.2.0");
+        let timing = data.to_benchmark_timing_with_metrics("aarch64-macos", "0.2.0", None, None);
         assert_eq!(timing.metadata.target, "aarch64-macos");
         assert_eq!(timing.metadata.version, "0.2.0");
         // Timestamp should be an ISO 8601 format
@@ -606,7 +557,7 @@ mod tests {
         let data = TimingData::new();
         data.record("lexer", Duration::from_millis(100));
 
-        let json = data.to_json("x86_64-linux", "0.1.0");
+        let json = data.to_json_with_metrics("x86_64-linux", "0.1.0", None, None);
         assert!(json.contains("\"passes\""));
         assert!(json.contains("\"name\""));
         assert!(json.contains("\"lexer\""));
@@ -621,21 +572,9 @@ mod tests {
     }
 
     #[test]
-    fn test_to_json_pretty() {
-        let data = TimingData::new();
-        data.record("lexer", Duration::from_millis(100));
-
-        let json = data.to_json_pretty("x86_64-linux", "0.1.0");
-        // Pretty JSON should have newlines
-        assert!(json.contains('\n'));
-        // And should still contain the data
-        assert!(json.contains("lexer"));
-    }
-
-    #[test]
     fn test_to_json_empty() {
         let data = TimingData::new();
-        let json = data.to_json("x86_64-linux", "0.1.0");
+        let json = data.to_json_with_metrics("x86_64-linux", "0.1.0", None, None);
         // Should produce valid JSON even with empty data
         assert!(json.contains("\"passes\":[]"));
         assert!(json.contains("\"total_ms\":0"));
@@ -648,7 +587,7 @@ mod tests {
         data.record("zzz", Duration::from_millis(100));
         data.record("mmm", Duration::from_millis(100));
 
-        let timing = data.to_benchmark_timing("x86_64-linux", "0.1.0");
+        let timing = data.to_benchmark_timing_with_metrics("x86_64-linux", "0.1.0", None, None);
         assert_eq!(timing.passes[0].name, "aaa");
         assert_eq!(timing.passes[1].name, "zzz");
         assert_eq!(timing.passes[2].name, "mmm");

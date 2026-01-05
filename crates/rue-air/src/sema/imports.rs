@@ -103,7 +103,7 @@ impl Sema<'_> {
             .module_registry
             .get_or_create(import_path, resolved_path);
 
-        Ok(Type::Module(module_id))
+        Ok(Type::new_module(module_id))
     }
 
     /// Resolve an import path for const evaluation.

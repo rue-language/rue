@@ -474,7 +474,7 @@ mod tests {
             entry,
             CfgInst {
                 data: CfgInstData::BoolConst(val),
-                ty: Type::Bool,
+                ty: Type::BOOL,
                 span: Span::new(0, 0),
             },
         )
@@ -547,7 +547,7 @@ mod tests {
             entry,
             CfgInst {
                 data: CfgInstData::Lt(c1, c2),
-                ty: Type::Bool,
+                ty: Type::BOOL,
                 span: Span::new(0, 0),
             },
         );
@@ -573,7 +573,7 @@ mod tests {
             entry,
             CfgInst {
                 data: CfgInstData::Lt(c1, c2),
-                ty: Type::Bool,
+                ty: Type::BOOL,
                 span: Span::new(0, 0),
             },
         );

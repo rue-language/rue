@@ -56,7 +56,7 @@ pub enum InferType {
 
     /// An array type during inference.
     ///
-    /// Unlike `Concrete(Type::Array(id))`, this stores the element type as an
+    /// Unlike `Concrete(Type::new_array(id))`, this stores the element type as an
     /// `InferType` so we can handle cases where the element type is still a
     /// type variable. After unification, these are converted to `Type::Array`.
     Array {

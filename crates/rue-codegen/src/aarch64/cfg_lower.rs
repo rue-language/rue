@@ -238,7 +238,7 @@ impl<'a> CfgLower<'a> {
             }
             CfgInstData::Load { slot } => {
                 // Load slot values from consecutive stack slots
-                let slot_count = self.ctx.type_slot_count(Type::Struct(struct_id));
+                let slot_count = self.ctx.type_slot_count(Type::new_struct(struct_id));
                 let mut vregs = Vec::with_capacity(slot_count as usize);
                 for i in 0..slot_count {
                     let vreg = self.mir.alloc_vreg();
@@ -254,7 +254,7 @@ impl<'a> CfgLower<'a> {
             }
             CfgInstData::Param { index } => {
                 // Get slot values from parameter area
-                let slot_count = self.ctx.type_slot_count(Type::Struct(struct_id));
+                let slot_count = self.ctx.type_slot_count(Type::new_struct(struct_id));
                 let mut vregs = Vec::with_capacity(slot_count as usize);
                 for i in 0..slot_count {
                     let vreg = self.mir.alloc_vreg();
@@ -317,7 +317,7 @@ impl<'a> CfgLower<'a> {
 
                 // For struct types, also allocate vregs for each slot
                 if let Some(struct_id) = ty.as_struct() {
-                    let slot_count = self.ctx.type_slot_count(Type::Struct(struct_id));
+                    let slot_count = self.ctx.type_slot_count(Type::new_struct(struct_id));
                     let mut slot_vregs = vec![vreg]; // First slot uses main vreg
                     for _ in 1..slot_count {
                         slot_vregs.push(self.mir.alloc_vreg());
@@ -360,7 +360,7 @@ impl<'a> CfgLower<'a> {
                 self.value_map.insert(*param_val, vreg);
 
                 if let Some(struct_id) = ty.as_struct() {
-                    let slot_count = self.ctx.type_slot_count(Type::Struct(struct_id));
+                    let slot_count = self.ctx.type_slot_count(Type::new_struct(struct_id));
                     let mut slot_vregs = vec![vreg];
                     for _ in 1..slot_count {
                         slot_vregs.push(self.mir.alloc_vreg());
@@ -948,7 +948,7 @@ impl<'a> CfgLower<'a> {
                     // String equality: call __rue_str_eq(ptr1, len1, ptr2, len2)
                     let vreg = self.emit_string_eq_call(*lhs, *rhs);
                     self.value_map.insert(value, vreg);
-                } else if lhs_ty == Type::Unit {
+                } else if lhs_ty == Type::UNIT {
                     // Unit equality: () == () is always true
                     let vreg = self.mir.alloc_vreg();
                     self.value_map.insert(value, vreg);
@@ -977,7 +977,7 @@ impl<'a> CfgLower<'a> {
                         src: Operand::Virtual(vreg),
                         imm: 1,
                     });
-                } else if lhs_ty == Type::Unit {
+                } else if lhs_ty == Type::UNIT {
                     // Unit inequality: () != () is always false
                     let vreg = self.mir.alloc_vreg();
                     self.value_map.insert(value, vreg);
@@ -1352,7 +1352,7 @@ impl<'a> CfgLower<'a> {
                     }
                 } else if let Some(struct_id) = load_type.as_struct() {
                     // Struct: load all field slots (recursively flattened)
-                    let slot_count = self.ctx.type_slot_count(Type::Struct(struct_id));
+                    let slot_count = self.ctx.type_slot_count(Type::new_struct(struct_id));
                     let mut slot_vregs = Vec::with_capacity(slot_count as usize);
 
                     for i in 0..slot_count {
@@ -1615,7 +1615,7 @@ impl<'a> CfgLower<'a> {
                     match arg_type.kind() {
                         TypeKind::Struct(struct_id) => {
                             let arg_data = &self.ctx.cfg.get_inst(arg_value).data;
-                            let slot_count = self.ctx.type_slot_count(Type::Struct(struct_id));
+                            let slot_count = self.ctx.type_slot_count(Type::new_struct(struct_id));
                             match arg_data {
                                 CfgInstData::Load { slot } => {
                                     for slot_idx in 0..slot_count {
@@ -1786,7 +1786,7 @@ impl<'a> CfgLower<'a> {
                     });
                 } else if let Some(struct_id) = ty.as_struct() {
                     // Non-builtin structs return in registers
-                    let slot_count = self.ctx.type_slot_count(Type::Struct(struct_id));
+                    let slot_count = self.ctx.type_slot_count(Type::new_struct(struct_id));
                     let mut slot_vregs = Vec::new();
                     for slot_idx in 0..slot_count {
                         let slot_vreg = self.mir.alloc_vreg();
@@ -3687,7 +3687,7 @@ impl<'a> CfgLower<'a> {
                     self.mir.push(Aarch64Inst::Bl { symbol_id });
                 } else if let Some(struct_id) = return_type.as_struct() {
                     // Return struct in registers
-                    let slot_count = self.ctx.type_slot_count(Type::Struct(struct_id));
+                    let slot_count = self.ctx.type_slot_count(Type::new_struct(struct_id));
                     let value_data = &self.ctx.cfg.get_inst(*value).data;
 
                     match value_data {

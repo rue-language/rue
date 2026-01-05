@@ -45,7 +45,7 @@ use crate::inst::{
 };
 use crate::scope::ScopedContext;
 use crate::sema_context::SemaContext;
-use crate::types::{EnumId, StructDef, StructField, StructId, Type, TypeKind};
+use crate::types::{EnumId, StructField, StructId, Type, TypeKind};
 
 /// Try to evaluate an RIR expression as a compile-time constant.
 ///
@@ -220,7 +220,7 @@ fn try_evaluate_const_in_rir(rir: &rue_rir::Rir, inst_ref: InstRef) -> Option<Co
             // the Sema::try_evaluate_const method which has full context.
             // For primitive type checks, this is good enough since the
             // argument is validated at the call site.
-            Some(ConstValue::Type(Type::ComptimeType))
+            Some(ConstValue::Type(Type::COMPTIME_TYPE))
         }
 
         // Everything else requires runtime evaluation
@@ -411,7 +411,7 @@ fn analyze_all_function_bodies_sequential(sema: &mut Sema<'_>) -> MultiErrorResu
                     continue;
                 }
             };
-            let struct_type = Type::Struct(struct_id);
+            let struct_type = Type::new_struct(struct_id);
 
             let methods = sema.rir.get_inst_refs(*methods_start, *methods_len);
             for method_ref in methods {
@@ -473,7 +473,7 @@ fn analyze_all_function_bodies_sequential(sema: &mut Sema<'_>) -> MultiErrorResu
                     continue;
                 }
             };
-            let struct_type = Type::Struct(struct_id);
+            let struct_type = Type::new_struct(struct_id);
             let full_name = format!("{}.__drop", type_name_str);
 
             match sema.analyze_destructor_function(
@@ -930,7 +930,7 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
                 Some(id) => *id,
                 None => continue,
             };
-            let struct_type = Type::Struct(struct_id);
+            let struct_type = Type::new_struct(struct_id);
             let full_name = format!("{}.__drop", type_name_str);
 
             match sema.analyze_destructor_function(
@@ -1097,7 +1097,7 @@ fn collect_function_jobs(ctx: &SemaContext<'_>) -> Vec<FunctionJob> {
                 Some(id) => *id,
                 None => continue, // Error will be caught elsewhere
             };
-            let struct_type = Type::Struct(struct_id);
+            let struct_type = Type::new_struct(struct_id);
 
             let methods = ctx.rir.get_inst_refs(*methods_start, *methods_len);
             for method_ref in methods {
@@ -1142,7 +1142,7 @@ fn collect_function_jobs(ctx: &SemaContext<'_>) -> Vec<FunctionJob> {
                 Some(id) => *id,
                 None => continue, // Error will be caught elsewhere
             };
-            let struct_type = Type::Struct(struct_id);
+            let struct_type = Type::new_struct(struct_id);
             let full_name = format!("{}.__drop", type_name_str);
 
             jobs.push(FunctionJob::Destructor {
@@ -1270,7 +1270,7 @@ fn analyze_destructor_function_parallel(
     let param_info: Vec<(Spur, Type, RirParamMode)> =
         vec![(self_sym, struct_type, RirParamMode::Normal)];
 
-    analyze_function_with_context(ctx, full_name, Type::Unit, &param_info, body)
+    analyze_function_with_context(ctx, full_name, Type::UNIT, &param_info, body)
 }
 
 /// Resolve a type symbol using the shared context.
@@ -1287,18 +1287,18 @@ fn resolve_type_from_ctx(ctx: &SemaContext<'_>, type_sym: Spur, span: Span) -> C
         "u16" => return Ok(Type::U16),
         "u32" => return Ok(Type::U32),
         "u64" => return Ok(Type::U64),
-        "bool" => return Ok(Type::Bool),
-        "()" => return Ok(Type::Unit),
-        "!" => return Ok(Type::Never),
+        "bool" => return Ok(Type::BOOL),
+        "()" => return Ok(Type::UNIT),
+        "!" => return Ok(Type::NEVER),
         // The type of types - used for comptime type parameters
-        "type" => return Ok(Type::ComptimeType),
+        "type" => return Ok(Type::COMPTIME_TYPE),
         _ => {}
     }
 
     if let Some(struct_id) = ctx.get_struct(type_sym) {
-        Ok(Type::Struct(struct_id))
+        Ok(Type::new_struct(struct_id))
     } else if let Some(enum_id) = ctx.get_enum(type_sym) {
-        Ok(Type::Enum(enum_id))
+        Ok(Type::new_enum(enum_id))
     } else {
         // Check for array type syntax: [T; N]
         if let Some((element_type, length)) = crate::types::parse_array_type_syntax(type_name) {
@@ -1307,7 +1307,7 @@ fn resolve_type_from_ctx(ctx: &SemaContext<'_>, type_sym: Spur, span: Span) -> C
             let element_ty = resolve_type_from_ctx(ctx, element_sym, span)?;
             // Get the array type (must exist from declaration gathering)
             if let Some(array_type_id) = ctx.get_array_type(element_ty, length) {
-                Ok(Type::Array(array_type_id))
+                Ok(Type::new_array(array_type_id))
             } else {
                 Err(CompileError::new(
                     ErrorKind::UnknownType(type_name.to_string()),
@@ -1319,13 +1319,13 @@ fn resolve_type_from_ctx(ctx: &SemaContext<'_>, type_sym: Spur, span: Span) -> C
             let pointee_sym = ctx.interner.get_or_intern(pointee_type_str);
             let pointee_ty = resolve_type_from_ctx(ctx, pointee_sym, span)?;
             let ptr_type_id = ctx.type_pool.intern_ptr_const_from_type(pointee_ty);
-            Ok(Type::PtrConst(ptr_type_id))
+            Ok(Type::new_ptr_const(ptr_type_id))
         } else if let Some(pointee_type_str) = type_name.strip_prefix("ptr mut ") {
             // Pointer type syntax: ptr mut T
             let pointee_sym = ctx.interner.get_or_intern(pointee_type_str);
             let pointee_ty = resolve_type_from_ctx(ctx, pointee_sym, span)?;
             let ptr_type_id = ctx.type_pool.intern_ptr_mut_from_type(pointee_ty);
-            Ok(Type::PtrMut(ptr_type_id))
+            Ok(Type::new_ptr_mut(ptr_type_id))
         } else {
             Err(CompileError::new(
                 ErrorKind::UnknownType(type_name.to_string()),
@@ -1403,7 +1403,7 @@ fn analyze_function_with_context(
     let body_result = analyze_inst_with_context(ctx, &mut air, body, &mut analysis_ctx)?;
 
     // Add implicit return only if body doesn't already diverge
-    if body_result.ty != Type::Never {
+    if body_result.ty != Type::NEVER {
         air.add_inst(AirInst {
             data: AirInstData::Ret(Some(body_result.air_ref)),
             ty: return_type,
@@ -1521,7 +1521,7 @@ fn run_type_inference_with_context(
     // Build the resolved types map, converting InferType to Type.
     // Note: Array types should already be created during declaration gathering.
     // If new array types appear in function bodies (e.g., array literals), they
-    // won't be found and will result in Type::Error.
+    // won't be found and will result in Type::ERROR.
     let mut resolved_types = HashMap::new();
     for (inst_ref, infer_ty) in &expr_types {
         let resolved = unifier.resolve_infer_type(infer_ty);
@@ -1539,16 +1539,16 @@ fn run_type_inference_with_context(
 fn infer_type_to_type_standalone(ty: &InferType, ctx: &SemaContext<'_>) -> Type {
     match ty {
         InferType::Concrete(t) => *t,
-        InferType::Var(_) => Type::Error,
+        InferType::Var(_) => Type::ERROR,
         InferType::IntLiteral => Type::I32,
         InferType::Array { element, length } => {
             let elem_ty = infer_type_to_type_standalone(element, ctx);
-            if elem_ty == Type::Error {
-                return Type::Error;
+            if elem_ty == Type::ERROR {
+                return Type::ERROR;
             }
             // Use get_or_create to handle inferred array types from literals
             let id = ctx.get_or_create_array_type(elem_ty, *length);
-            Type::Array(id)
+            Type::new_array(id)
         }
     }
 }
@@ -1590,7 +1590,7 @@ fn analyze_inst_with_context(
         }
 
         InstData::BoolConst(value) => {
-            let ty = Type::Bool;
+            let ty = Type::BOOL;
             let air_ref = air.add_inst(AirInst {
                 data: AirInstData::BoolConst(*value),
                 ty,
@@ -1613,7 +1613,7 @@ fn analyze_inst_with_context(
         }
 
         InstData::UnitConst => {
-            let ty = Type::Unit;
+            let ty = Type::UNIT;
             let air_ref = air.add_inst(AirInst {
                 data: AirInstData::UnitConst,
                 ty,
@@ -1744,10 +1744,10 @@ fn analyze_inst_with_context(
 
             let air_ref = air.add_inst(AirInst {
                 data: AirInstData::And(lhs_result.air_ref, rhs_result.air_ref),
-                ty: Type::Bool,
+                ty: Type::BOOL,
                 span: inst.span,
             });
-            Ok(AnalysisResult::new(air_ref, Type::Bool))
+            Ok(AnalysisResult::new(air_ref, Type::BOOL))
         }
 
         InstData::Or { lhs, rhs } => {
@@ -1756,10 +1756,10 @@ fn analyze_inst_with_context(
 
             let air_ref = air.add_inst(AirInst {
                 data: AirInstData::Or(lhs_result.air_ref, rhs_result.air_ref),
-                ty: Type::Bool,
+                ty: Type::BOOL,
                 span: inst.span,
             });
-            Ok(AnalysisResult::new(air_ref, Type::Bool))
+            Ok(AnalysisResult::new(air_ref, Type::BOOL))
         }
 
         InstData::BitAnd { lhs, rhs } => analyze_binary_arith_ctx(
@@ -1863,10 +1863,10 @@ fn analyze_inst_with_context(
 
             let air_ref = air.add_inst(AirInst {
                 data: AirInstData::Not(operand_result.air_ref),
-                ty: Type::Bool,
+                ty: Type::BOOL,
                 span: inst.span,
             });
-            Ok(AnalysisResult::new(air_ref, Type::Bool))
+            Ok(AnalysisResult::new(air_ref, Type::BOOL))
         }
 
         InstData::BitNot { operand } => {
@@ -1905,10 +1905,10 @@ fn analyze_inst_with_context(
             // Break has the never type - it diverges
             let air_ref = air.add_inst(AirInst {
                 data: AirInstData::Break,
-                ty: Type::Never,
+                ty: Type::NEVER,
                 span: inst.span,
             });
-            Ok(AnalysisResult::new(air_ref, Type::Never))
+            Ok(AnalysisResult::new(air_ref, Type::NEVER))
         }
 
         InstData::Continue => {
@@ -1920,10 +1920,10 @@ fn analyze_inst_with_context(
             // Continue has the never type - it diverges
             let air_ref = air.add_inst(AirInst {
                 data: AirInstData::Continue,
-                ty: Type::Never,
+                ty: Type::NEVER,
                 span: inst.span,
             });
-            Ok(AnalysisResult::new(air_ref, Type::Never))
+            Ok(AnalysisResult::new(air_ref, Type::NEVER))
         }
 
         // Return statement
@@ -2068,10 +2068,10 @@ fn analyze_inst_with_context(
             // Enum declarations are processed during collection phase
             let air_ref = air.add_inst(AirInst {
                 data: AirInstData::UnitConst,
-                ty: Type::Unit,
+                ty: Type::UNIT,
                 span: inst.span,
             });
-            Ok(AnalysisResult::new(air_ref, Type::Unit))
+            Ok(AnalysisResult::new(air_ref, Type::UNIT))
         }
 
         InstData::EnumVariant {
@@ -2152,10 +2152,10 @@ fn analyze_inst_with_context(
             // These are processed during collection phase, just return Unit
             let air_ref = air.add_inst(AirInst {
                 data: AirInstData::UnitConst,
-                ty: Type::Unit,
+                ty: Type::UNIT,
                 span: inst.span,
             });
-            Ok(AnalysisResult::new(air_ref, Type::Unit))
+            Ok(AnalysisResult::new(air_ref, Type::UNIT))
         }
 
         InstData::FnDecl { .. } => {
@@ -2207,7 +2207,7 @@ fn analyze_inst_with_context(
                     Ok(AnalysisResult::new(air_ref, ty))
                 }
                 Some(ConstValue::Bool(value)) => {
-                    let ty = Type::Bool;
+                    let ty = Type::BOOL;
                     let air_ref = air.add_inst(AirInst {
                         data: AirInstData::BoolConst(value),
                         ty,
@@ -2227,7 +2227,7 @@ fn analyze_inst_with_context(
                     ))
                 }
                 Some(ConstValue::Unit) => {
-                    let ty = Type::Unit;
+                    let ty = Type::UNIT;
                     let air_ref = air.add_inst(AirInst {
                         data: AirInstData::UnitConst,
                         ty,
@@ -2254,10 +2254,10 @@ fn analyze_inst_with_context(
             let ty = resolve_type_from_ctx(ctx, *type_name, inst.span)?;
             let air_ref = air.add_inst(AirInst {
                 data: AirInstData::TypeConst(ty),
-                ty: Type::ComptimeType,
+                ty: Type::COMPTIME_TYPE,
                 span: inst.span,
             });
-            Ok(AnalysisResult::new(air_ref, Type::ComptimeType))
+            Ok(AnalysisResult::new(air_ref, Type::COMPTIME_TYPE))
         }
 
         InstData::AnonStructType { .. } => {
@@ -2356,10 +2356,10 @@ where
 
     let air_ref = air.add_inst(AirInst {
         data: make_inst(lhs_result.air_ref, rhs_result.air_ref),
-        ty: Type::Bool,
+        ty: Type::BOOL,
         span,
     });
-    Ok(AnalysisResult::new(air_ref, Type::Bool))
+    Ok(AnalysisResult::new(air_ref, Type::BOOL))
 }
 
 /// Merge results from parallel function analysis.
@@ -2450,7 +2450,7 @@ fn analyze_return_ctx(
         Some(inner_result.air_ref)
     } else {
         // `return;` without expression - only valid for unit-returning functions
-        if analysis_ctx.return_type != Type::Unit && !analysis_ctx.return_type.is_error() {
+        if analysis_ctx.return_type != Type::UNIT && !analysis_ctx.return_type.is_error() {
             return Err(CompileError::new(
                 ErrorKind::TypeMismatch {
                     expected: analysis_ctx.return_type.name().to_string(),
@@ -2464,10 +2464,10 @@ fn analyze_return_ctx(
 
     let air_ref = air.add_inst(AirInst {
         data: AirInstData::Ret(inner_air_ref),
-        ty: Type::Never, // Return expressions have Never type
+        ty: Type::NEVER, // Return expressions have Never type
         span,
     });
-    Ok(AnalysisResult::new(air_ref, Type::Never))
+    Ok(AnalysisResult::new(air_ref, Type::NEVER))
 }
 
 /// Analyze a block expression using the shared context.
@@ -2517,10 +2517,10 @@ fn analyze_block_ctx(
             // Empty block: create a UnitConst
             let air_ref = air.add_inst(AirInst {
                 data: AirInstData::UnitConst,
-                ty: Type::Unit,
+                ty: Type::UNIT,
                 span,
             });
-            AnalysisResult::new(air_ref, Type::Unit)
+            AnalysisResult::new(air_ref, Type::UNIT)
         }
     };
 
@@ -2678,10 +2678,10 @@ fn analyze_var_ref_ctx(
         // Comptime type vars produce TypeConst instructions
         let air_ref = air.add_inst(AirInst {
             data: AirInstData::TypeConst(ty),
-            ty: Type::ComptimeType,
+            ty: Type::COMPTIME_TYPE,
             span,
         });
-        return Ok(AnalysisResult::new(air_ref, Type::ComptimeType));
+        return Ok(AnalysisResult::new(air_ref, Type::COMPTIME_TYPE));
     }
 
     // Check if it's a constant (e.g., `const VALUE = 42` or `const math = @import("math")`)
@@ -2713,10 +2713,10 @@ fn analyze_var_ref_ctx(
             InstData::BoolConst(value) => {
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::BoolConst(*value),
-                    ty: Type::Bool,
+                    ty: Type::BOOL,
                     span,
                 });
-                return Ok(AnalysisResult::new(air_ref, Type::Bool));
+                return Ok(AnalysisResult::new(air_ref, Type::BOOL));
             }
             _ => {
                 // For other expressions, we'd need to run full analysis on the init
@@ -2870,14 +2870,14 @@ fn analyze_alloc_ctx(
 
     // If name is None, this is a wildcard pattern `_` that discards the value
     let Some(name) = name else {
-        return Ok(AnalysisResult::new(init_result.air_ref, Type::Unit));
+        return Ok(AnalysisResult::new(init_result.air_ref, Type::UNIT));
     };
 
     // Special case: comptime type variables
     // When a variable is assigned a comptime type value (e.g., `let P = make_type()`),
     // we store the type in comptime_type_vars instead of creating a runtime variable.
     // This allows the variable to be used as a type annotation later (e.g., `let p: P = ...`).
-    if var_type == Type::ComptimeType {
+    if var_type == Type::COMPTIME_TYPE {
         // Extract the type value from the TypeConst instruction
         let inst = air.get(init_result.air_ref);
         if let AirInstData::TypeConst(ty) = &inst.data {
@@ -2885,10 +2885,10 @@ fn analyze_alloc_ctx(
             // Return Unit - no runtime code is generated for comptime type bindings
             let nop_ref = air.add_inst(AirInst {
                 data: AirInstData::UnitConst,
-                ty: Type::Unit,
+                ty: Type::UNIT,
                 span,
             });
-            return Ok(AnalysisResult::new(nop_ref, Type::Unit));
+            return Ok(AnalysisResult::new(nop_ref, Type::UNIT));
         }
         // If it's not a TypeConst, fall through to error (can't store types at runtime)
         let name_str = ctx.interner.resolve(&name);
@@ -2938,7 +2938,7 @@ fn analyze_alloc_ctx(
             slot,
             init: init_result.air_ref,
         },
-        ty: Type::Unit,
+        ty: Type::UNIT,
         span,
     });
 
@@ -2950,10 +2950,10 @@ fn analyze_alloc_ctx(
             stmts_len: 1,
             value: alloc_ref,
         },
-        ty: Type::Unit,
+        ty: Type::UNIT,
         span,
     });
-    Ok(AnalysisResult::new(block_ref, Type::Unit))
+    Ok(AnalysisResult::new(block_ref, Type::UNIT))
 }
 
 /// Analyze an assignment using the shared context.
@@ -3009,10 +3009,10 @@ fn analyze_assign_ctx(
                 param_slot: abi_slot,
                 value: value_result.air_ref,
             },
-            ty: Type::Unit,
+            ty: Type::UNIT,
             span,
         });
-        return Ok(AnalysisResult::new(air_ref, Type::Unit));
+        return Ok(AnalysisResult::new(air_ref, Type::UNIT));
     }
 
     // Look up local variable
@@ -3047,10 +3047,10 @@ fn analyze_assign_ctx(
             slot,
             value: value_result.air_ref,
         },
-        ty: Type::Unit,
+        ty: Type::UNIT,
         span,
     });
-    Ok(AnalysisResult::new(air_ref, Type::Unit))
+    Ok(AnalysisResult::new(air_ref, Type::UNIT))
 }
 
 /// Analyze a branch (if-else) expression using the shared context.
@@ -3103,7 +3103,7 @@ fn analyze_branch_ctx(
 
         // Compute the unified result type using never type coercion
         let result_type = match (then_type.is_never(), else_type.is_never()) {
-            (true, true) => Type::Never,
+            (true, true) => Type::NEVER,
             (true, false) => else_type,
             (false, true) => then_type,
             (false, false) => {
@@ -3146,7 +3146,7 @@ fn analyze_branch_ctx(
 
         // Check that the then branch has unit type (or Never/Error)
         let then_type = then_result.ty;
-        if then_type != Type::Unit && !then_type.is_never() && !then_type.is_error() {
+        if then_type != Type::UNIT && !then_type.is_never() && !then_type.is_error() {
             return Err(CompileError::new(
                 ErrorKind::TypeMismatch {
                     expected: "()".to_string(),
@@ -3183,10 +3183,10 @@ fn analyze_branch_ctx(
                 then_value: then_result.air_ref,
                 else_value: None,
             },
-            ty: Type::Unit,
+            ty: Type::UNIT,
             span,
         });
-        Ok(AnalysisResult::new(air_ref, Type::Unit))
+        Ok(AnalysisResult::new(air_ref, Type::UNIT))
     }
 }
 
@@ -3214,10 +3214,10 @@ fn analyze_while_loop_ctx(
             cond: cond_result.air_ref,
             body: body_result.air_ref,
         },
-        ty: Type::Unit,
+        ty: Type::UNIT,
         span,
     });
-    Ok(AnalysisResult::new(air_ref, Type::Unit))
+    Ok(AnalysisResult::new(air_ref, Type::UNIT))
 }
 
 /// Analyze an infinite loop using the shared context.
@@ -3240,10 +3240,10 @@ fn analyze_infinite_loop_ctx(
         data: AirInstData::InfiniteLoop {
             body: body_result.air_ref,
         },
-        ty: Type::Never,
+        ty: Type::NEVER,
         span,
     });
-    Ok(AnalysisResult::new(air_ref, Type::Never))
+    Ok(AnalysisResult::new(air_ref, Type::NEVER))
 }
 
 /// Analyze a match expression using the shared context.
@@ -3263,7 +3263,7 @@ fn analyze_match_ctx(
     let scrutinee_type = scrutinee_result.ty;
 
     // Validate that we can match on this type (integers, booleans, and enums)
-    if !scrutinee_type.is_integer() && scrutinee_type != Type::Bool && !scrutinee_type.is_enum() {
+    if !scrutinee_type.is_integer() && scrutinee_type != Type::BOOL && !scrutinee_type.is_enum() {
         return Err(CompileError::new(
             ErrorKind::InvalidMatchType(scrutinee_type.name().to_string()),
             span,
@@ -3353,7 +3353,7 @@ fn analyze_match_ctx(
                 }
             }
             RirPattern::Bool(b, _) => {
-                if scrutinee_type != Type::Bool {
+                if scrutinee_type != Type::BOOL {
                     return Err(CompileError::new(
                         ErrorKind::TypeMismatch {
                             expected: scrutinee_type.name().to_string(),
@@ -3403,7 +3403,7 @@ fn analyze_match_ctx(
                 let enum_def = ctx.get_enum_def(enum_id);
 
                 // Check that scrutinee type matches the pattern's enum type
-                if scrutinee_type != Type::Enum(enum_id) {
+                if scrutinee_type != Type::new_enum(enum_id) {
                     return Err(CompileError::new(
                         ErrorKind::TypeMismatch {
                             expected: scrutinee_type.name().to_string(),
@@ -3530,7 +3530,7 @@ fn analyze_match_ctx(
     let has_wildcard = wildcard_span.is_some();
     let bool_true_covered = bool_true_span.is_some();
     let bool_false_covered = bool_false_span.is_some();
-    let is_exhaustive = if scrutinee_type == Type::Bool {
+    let is_exhaustive = if scrutinee_type == Type::BOOL {
         has_wildcard || (bool_true_covered && bool_false_covered)
     } else if let Some(enum_id) = pattern_enum_id {
         let enum_def = ctx.get_enum_def(enum_id);
@@ -3544,7 +3544,7 @@ fn analyze_match_ctx(
         return Err(CompileError::new(ErrorKind::NonExhaustiveMatch, span));
     }
 
-    let final_type = result_type.unwrap_or(Type::Unit);
+    let final_type = result_type.unwrap_or(Type::UNIT);
 
     // Encode match arms into extra array
     let arms_len = air_arms.len() as u32;
@@ -3607,7 +3607,7 @@ fn analyze_struct_init_ctx(
     };
 
     let struct_def = ctx.get_struct_def(struct_id);
-    let struct_type = Type::Struct(struct_id);
+    let struct_type = Type::new_struct(struct_id);
 
     // Build a map from field name to struct field index
     let field_index_map: std::collections::HashMap<&str, usize> = struct_def
@@ -3820,7 +3820,7 @@ fn analyze_inst_for_projection_ctx(
             let index_result = analyze_inst_with_context(ctx, air, *index, analysis_ctx)?;
 
             // Verify base is an array
-            let (array_type_id, elem_type, _array_len) = match base_type.kind() {
+            let (_array_type_id, elem_type, _array_len) = match base_type.kind() {
                 TypeKind::Array(type_id) => {
                     let (element_type, length) = ctx.get_array_type_def(type_id);
                     (type_id, element_type, length)
@@ -4081,7 +4081,7 @@ fn analyze_field_set_ctx(
     };
 
     // Check mutability based on root kind
-    let root_slot = match root_kind {
+    let _root_slot = match root_kind {
         RootKind::Local { slot, is_mut } => {
             if !is_mut {
                 return Err(CompileError::new(
@@ -4190,7 +4190,7 @@ fn analyze_field_set_ctx(
                     field_index: field_index as u32,
                     value: value_result.air_ref,
                 },
-                ty: Type::Unit,
+                ty: Type::UNIT,
                 span,
             })
         }
@@ -4202,11 +4202,11 @@ fn analyze_field_set_ctx(
                 field_index: field_index as u32,
                 value: value_result.air_ref,
             },
-            ty: Type::Unit,
+            ty: Type::UNIT,
             span,
         }),
     };
-    Ok(AnalysisResult::new(air_ref, Type::Unit))
+    Ok(AnalysisResult::new(air_ref, Type::UNIT))
 }
 
 /// Analyze an array initialization using the shared context.
@@ -4224,7 +4224,7 @@ fn analyze_array_init_ctx(
     // Get the array type from HM inference
     let array_type = get_resolved_type_ctx(analysis_ctx, inst_ref, span, "array literal")?;
 
-    let (array_type_id, _elem_type, expected_len) = match array_type.kind() {
+    let (_array_type_id, _elem_type, expected_len) = match array_type.kind() {
         TypeKind::Array(type_id) => {
             let (element_type, length) = ctx.get_array_type_def(type_id);
             (type_id, element_type, length)
@@ -4307,7 +4307,7 @@ fn analyze_index_get_ctx(
     let index_result = analyze_inst_with_context(ctx, air, index, analysis_ctx)?;
 
     // Verify base is an array
-    let (array_type_id, elem_type, array_len) = match base_type.kind() {
+    let (_array_type_id, elem_type, array_len) = match base_type.kind() {
         TypeKind::Array(type_id) => {
             let (element_type, length) = ctx.get_array_type_def(type_id);
             (type_id, element_type, length)
@@ -4488,7 +4488,7 @@ fn analyze_index_set_ctx(
     };
 
     // Verify base is an array and get its element type
-    let (array_type_id, _elem_type, array_len) = match base_type.kind() {
+    let (_array_type_id, _elem_type, array_len) = match base_type.kind() {
         TypeKind::Array(type_id) => {
             let (element_type, length) = ctx.get_array_type_def(type_id);
             (type_id, element_type, length)
@@ -4531,7 +4531,7 @@ fn analyze_index_set_ctx(
                 index: index_result.air_ref,
                 value: value_result.air_ref,
             },
-            ty: Type::Unit,
+            ty: Type::UNIT,
             span,
         })
     } else {
@@ -4542,11 +4542,11 @@ fn analyze_index_set_ctx(
                 index: index_result.air_ref,
                 value: value_result.air_ref,
             },
-            ty: Type::Unit,
+            ty: Type::UNIT,
             span,
         })
     };
-    Ok(AnalysisResult::new(air_ref, Type::Unit))
+    Ok(AnalysisResult::new(air_ref, Type::UNIT))
 }
 
 /// Analyze an enum variant using the shared context.
@@ -4581,7 +4581,7 @@ fn analyze_enum_variant_ctx(
         span,
     )?;
 
-    let ty = Type::Enum(enum_id);
+    let ty = Type::new_enum(enum_id);
 
     let air_ref = air.add_inst(AirInst {
         data: AirInstData::EnumVariant {
@@ -4722,7 +4722,7 @@ fn analyze_call_ctx(
         }
 
         // Determine the actual return type by substituting type parameters
-        let return_type = if base_return_type == Type::ComptimeType {
+        let return_type = if base_return_type == Type::COMPTIME_TYPE {
             // Return type is a type parameter - look it up in substitutions
             *type_subst
                 .get(&return_type_sym)
@@ -5162,7 +5162,7 @@ fn analyze_builtin_method_ctx(
                     slot,
                     value: call_ref,
                 },
-                ty: Type::Unit,
+                ty: Type::UNIT,
                 span,
             }),
             StringReceiverStorage::Param { abi_slot } => air.add_inst(AirInst {
@@ -5170,7 +5170,7 @@ fn analyze_builtin_method_ctx(
                     param_slot: abi_slot,
                     value: call_ref,
                 },
-                ty: Type::Unit,
+                ty: Type::UNIT,
                 span,
             }),
         };
@@ -5179,7 +5179,7 @@ fn analyze_builtin_method_ctx(
         // Otherwise return the call result (e.g., for pop() which returns the popped char)
         if return_type == receiver_type {
             // Return unit since mutation methods that return Self are for chaining
-            Ok(AnalysisResult::new(store_ref, Type::Unit))
+            Ok(AnalysisResult::new(store_ref, Type::UNIT))
         } else {
             // Return the actual return value
             Ok(AnalysisResult::new(call_ref, return_type))
@@ -5289,10 +5289,10 @@ fn resolve_builtin_return_type_ctx(
     self_struct_id: StructId,
 ) -> Type {
     match return_type {
-        BuiltinReturnType::Unit => Type::Unit,
+        BuiltinReturnType::Unit => Type::UNIT,
         BuiltinReturnType::U64 => Type::U64,
         BuiltinReturnType::U8 => Type::U8,
-        BuiltinReturnType::Bool => Type::Bool,
+        BuiltinReturnType::Bool => Type::BOOL,
         BuiltinReturnType::SelfType => ctx.builtin_air_type(self_struct_id),
     }
 }
@@ -5467,7 +5467,7 @@ fn analyze_intrinsic_ctx(
 
         // Validate type
         if !arg_type.is_integer()
-            && arg_type != Type::Bool
+            && arg_type != Type::BOOL
             && !arg_type.is_struct()
             && !arg_type.is_enum()
             && !arg_type.is_array()
@@ -5491,10 +5491,10 @@ fn analyze_intrinsic_ctx(
                 args_start: air_args_start,
                 args_len: 1,
             },
-            ty: Type::Unit,
+            ty: Type::UNIT,
             span,
         });
-        Ok(AnalysisResult::new(air_ref, Type::Unit))
+        Ok(AnalysisResult::new(air_ref, Type::UNIT))
     } else if name == known.cast {
         if args.len() != 1 {
             return Err(CompileError::new(
@@ -5566,10 +5566,10 @@ fn analyze_intrinsic_ctx(
             // Panic with no message
             let air_ref = air.add_inst(AirInst {
                 data: AirInstData::UnitConst,
-                ty: Type::Never,
+                ty: Type::NEVER,
                 span,
             });
-            return Ok(AnalysisResult::new(air_ref, Type::Never));
+            return Ok(AnalysisResult::new(air_ref, Type::NEVER));
         }
 
         // Analyze the message argument
@@ -5582,10 +5582,10 @@ fn analyze_intrinsic_ctx(
                 args_start: air_args_start,
                 args_len: 1,
             },
-            ty: Type::Never,
+            ty: Type::NEVER,
             span,
         });
-        Ok(AnalysisResult::new(air_ref, Type::Never))
+        Ok(AnalysisResult::new(air_ref, Type::NEVER))
     } else if name == known.assert {
         if args.len() != 1 {
             return Err(CompileError::new(
@@ -5607,10 +5607,10 @@ fn analyze_intrinsic_ctx(
                 args_start: air_args_start,
                 args_len: 1,
             },
-            ty: Type::Unit,
+            ty: Type::UNIT,
             span,
         });
-        Ok(AnalysisResult::new(air_ref, Type::Unit))
+        Ok(AnalysisResult::new(air_ref, Type::UNIT))
     } else if name == known.import {
         // @import takes exactly one string literal argument
         if args.len() != 1 {
@@ -5675,10 +5675,10 @@ fn analyze_intrinsic_ctx(
         // The type is what matters for subsequent member access resolution
         let air_ref = air.add_inst(AirInst {
             data: AirInstData::UnitConst, // Placeholder - module values are compile-time only
-            ty: Type::Module(module_id),
+            ty: Type::new_module(module_id),
             span,
         });
-        Ok(AnalysisResult::new(air_ref, Type::Module(module_id)))
+        Ok(AnalysisResult::new(air_ref, Type::new_module(module_id)))
     } else if name == known.random_u32 {
         // @random_u32() - takes no arguments, returns u32
         if !args.is_empty() {
@@ -5844,10 +5844,10 @@ fn analyze_intrinsic_ctx(
                 args_start,
                 args_len: 2,
             },
-            ty: Type::Unit,
+            ty: Type::UNIT,
             span,
         });
-        Ok(AnalysisResult::new(air_ref, Type::Unit))
+        Ok(AnalysisResult::new(air_ref, Type::UNIT))
     } else if name == known.ptr_offset {
         // @ptr_offset(ptr, offset) - Pointer arithmetic
         require_preview_ctx(
@@ -6046,10 +6046,10 @@ fn analyze_intrinsic_ctx(
         // Create the pointer type
         let result_type = if is_mut {
             let ptr_type_id = ctx.type_pool.intern_ptr_mut_from_type(pointee_type);
-            Type::PtrMut(ptr_type_id)
+            Type::new_ptr_mut(ptr_type_id)
         } else {
             let ptr_type_id = ctx.type_pool.intern_ptr_const_from_type(pointee_type);
-            Type::PtrConst(ptr_type_id)
+            Type::new_ptr_const(ptr_type_id)
         };
 
         let args_start = air.add_extra(&[arg_result.air_ref.as_u32()]);
@@ -6136,7 +6136,7 @@ fn analyze_intrinsic_ctx(
             Arch::Aarch64 => 1,
         };
 
-        let result_type = Type::Enum(arch_enum_id);
+        let result_type = Type::new_enum(arch_enum_id);
         let air_ref = air.add_inst(AirInst {
             data: AirInstData::EnumVariant {
                 enum_id: arch_enum_id,
@@ -6167,7 +6167,7 @@ fn analyze_intrinsic_ctx(
             Os::Macos => 1,
         };
 
-        let result_type = Type::Enum(os_enum_id);
+        let result_type = Type::new_enum(os_enum_id);
         let air_ref = air.add_inst(AirInst {
             data: AirInstData::EnumVariant {
                 enum_id: os_enum_id,
@@ -6411,7 +6411,7 @@ impl<'a> Sema<'a> {
             local_strings,
             ref_fns,
             ref_meths,
-        ) = self.analyze_function(infer_ctx, Type::Unit, &param_info, body)?;
+        ) = self.analyze_function(infer_ctx, Type::UNIT, &param_info, body)?;
 
         Ok((
             AnalyzedFunction {
@@ -6546,7 +6546,7 @@ impl<'a> Sema<'a> {
         let body_result = self.analyze_inst(&mut air, body, &mut ctx)?;
 
         // Add implicit return only if body doesn't already diverge (e.g., explicit return)
-        if body_result.ty != Type::Never {
+        if body_result.ty != Type::NEVER {
             air.add_inst(AirInst {
                 data: AirInstData::Ret(Some(body_result.air_ref)),
                 ty: return_type,
@@ -7170,7 +7170,7 @@ impl<'a> Sema<'a> {
                         Ok(AnalysisResult::new(air_ref, ty))
                     }
                     Some(ConstValue::Bool(value)) => {
-                        let ty = Type::Bool;
+                        let ty = Type::BOOL;
                         let air_ref = air.add_inst(AirInst {
                             data: AirInstData::BoolConst(value),
                             ty,
@@ -7189,7 +7189,7 @@ impl<'a> Sema<'a> {
                         ))
                     }
                     Some(ConstValue::Unit) => {
-                        let ty = Type::Unit;
+                        let ty = Type::UNIT;
                         let air_ref = air.add_inst(AirInst {
                             data: AirInstData::UnitConst,
                             ty,
@@ -7214,10 +7214,10 @@ impl<'a> Sema<'a> {
                 let ty = self.resolve_type(*type_name, inst.span)?;
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::TypeConst(ty),
-                    ty: Type::ComptimeType,
+                    ty: Type::COMPTIME_TYPE,
                     span: inst.span,
                 });
-                Ok(AnalysisResult::new(air_ref, Type::ComptimeType))
+                Ok(AnalysisResult::new(air_ref, Type::COMPTIME_TYPE))
             }
 
             // Anonymous struct type: a struct type constructed at comptime
@@ -7282,10 +7282,10 @@ impl<'a> Sema<'a> {
 
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::TypeConst(struct_ty),
-                    ty: Type::ComptimeType,
+                    ty: Type::COMPTIME_TYPE,
                     span: inst.span,
                 });
-                Ok(AnalysisResult::new(air_ref, Type::ComptimeType))
+                Ok(AnalysisResult::new(air_ref, Type::COMPTIME_TYPE))
             }
 
             // Checked block: evaluate the inner expression
@@ -7410,10 +7410,10 @@ impl<'a> Sema<'a> {
                     place: place_ref,
                     value: value_result.air_ref,
                 },
-                ty: Type::Unit,
+                ty: Type::UNIT,
                 span,
             });
-            return Ok(AnalysisResult::new(air_ref, Type::Unit));
+            return Ok(AnalysisResult::new(air_ref, Type::UNIT));
         }
 
         // Fallback: base is not a place (e.g., function call result)
@@ -7485,7 +7485,7 @@ impl<'a> Sema<'a> {
 
             // Get array type info from the trace
             let base_type = trace.result_type();
-            let (array_type_id, elem_type, array_len) = match base_type.as_array() {
+            let (_array_type_id, elem_type, array_len) = match base_type.as_array() {
                 Some(id) => {
                     let (elem, len) = self.type_pool.array_def(id);
                     (id, elem, len)
@@ -7545,10 +7545,10 @@ impl<'a> Sema<'a> {
                     place: place_ref,
                     value: value_result.air_ref,
                 },
-                ty: Type::Unit,
+                ty: Type::UNIT,
                 span,
             });
-            return Ok(AnalysisResult::new(air_ref, Type::Unit));
+            return Ok(AnalysisResult::new(air_ref, Type::UNIT));
         }
 
         // Fallback: base is not a place
@@ -8030,7 +8030,7 @@ impl<'a> Sema<'a> {
 
         // Validate type
         if !arg_type.is_integer()
-            && arg_type != Type::Bool
+            && arg_type != Type::BOOL
             && !arg_type.is_struct()
             && !arg_type.is_enum()
             && !arg_type.is_array()
@@ -8054,10 +8054,10 @@ impl<'a> Sema<'a> {
                 args_start,
                 args_len: 1,
             },
-            ty: Type::Unit,
+            ty: Type::UNIT,
             span,
         });
-        Ok(AnalysisResult::new(air_ref, Type::Unit))
+        Ok(AnalysisResult::new(air_ref, Type::UNIT))
     }
 
     fn analyze_cast_intrinsic(
@@ -8146,10 +8146,10 @@ impl<'a> Sema<'a> {
             // Panic with no message
             let air_ref = air.add_inst(AirInst {
                 data: AirInstData::UnitConst,
-                ty: Type::Never,
+                ty: Type::NEVER,
                 span,
             });
-            return Ok(AnalysisResult::new(air_ref, Type::Never));
+            return Ok(AnalysisResult::new(air_ref, Type::NEVER));
         }
 
         // Analyze the message argument
@@ -8162,10 +8162,10 @@ impl<'a> Sema<'a> {
                 args_start,
                 args_len: 1,
             },
-            ty: Type::Never,
+            ty: Type::NEVER,
             span,
         });
-        Ok(AnalysisResult::new(air_ref, Type::Never))
+        Ok(AnalysisResult::new(air_ref, Type::NEVER))
     }
 
     fn analyze_assert_intrinsic(
@@ -8204,10 +8204,10 @@ impl<'a> Sema<'a> {
                 args_start,
                 args_len,
             },
-            ty: Type::Unit,
+            ty: Type::UNIT,
             span,
         });
-        Ok(AnalysisResult::new(air_ref, Type::Unit))
+        Ok(AnalysisResult::new(air_ref, Type::UNIT))
     }
 
     /// Analyze @intCast intrinsic.
@@ -8252,7 +8252,7 @@ impl<'a> Sema<'a> {
         // Get the target type from HM inference
         let target_ty = match ctx.resolved_types.get(&inst_ref).copied() {
             Some(ty) if ty.is_integer() => ty,
-            Some(Type::Error) => {
+            Some(Type::ERROR) => {
                 // Error already reported during type inference
                 return Err(CompileError::new(ErrorKind::TypeAnnotationRequired, span));
             }
@@ -8312,10 +8312,10 @@ impl<'a> Sema<'a> {
         // No-op: just return a unit constant
         let air_ref = air.add_inst(AirInst {
             data: AirInstData::UnitConst,
-            ty: Type::Unit,
+            ty: Type::UNIT,
             span,
         });
-        Ok(AnalysisResult::new(air_ref, Type::Unit))
+        Ok(AnalysisResult::new(air_ref, Type::UNIT))
     }
 
     /// Analyze @read_line intrinsic.
@@ -8537,10 +8537,10 @@ impl<'a> Sema<'a> {
         // The type is what matters for subsequent member access resolution
         let air_ref = air.add_inst(AirInst {
             data: AirInstData::UnitConst, // Placeholder - module values are compile-time only
-            ty: Type::Module(module_id),
+            ty: Type::new_module(module_id),
             span,
         });
-        Ok(AnalysisResult::new(air_ref, Type::Module(module_id)))
+        Ok(AnalysisResult::new(air_ref, Type::new_module(module_id)))
     }
 
     /// Resolve an import path to an absolute file path.
@@ -8779,10 +8779,10 @@ impl<'a> Sema<'a> {
         if lhs_type.is_never() || lhs_type.is_error() {
             let air_ref = air.add_inst(AirInst {
                 data: make_data(lhs_result.air_ref, rhs_result.air_ref),
-                ty: Type::Bool,
+                ty: Type::BOOL,
                 span,
             });
-            return Ok(AnalysisResult::new(air_ref, Type::Bool));
+            return Ok(AnalysisResult::new(air_ref, Type::BOOL));
         }
 
         // Validate the type is appropriate for this comparison
@@ -8790,8 +8790,8 @@ impl<'a> Sema<'a> {
             // Equality operators (==, !=) work on integers, booleans, strings, unit, and structs
             // Note: String is now a struct, so is_struct() covers it
             if !lhs_type.is_integer()
-                && lhs_type != Type::Bool
-                && lhs_type != Type::Unit
+                && lhs_type != Type::BOOL
+                && lhs_type != Type::UNIT
                 && !lhs_type.is_struct()
                 && !self.is_builtin_string(lhs_type)
             {
@@ -8815,10 +8815,10 @@ impl<'a> Sema<'a> {
 
         let air_ref = air.add_inst(AirInst {
             data: make_data(lhs_result.air_ref, rhs_result.air_ref),
-            ty: Type::Bool,
+            ty: Type::BOOL,
             span,
         });
-        Ok(AnalysisResult::new(air_ref, Type::Bool))
+        Ok(AnalysisResult::new(air_ref, Type::BOOL))
     }
 
     /// Try to evaluate an RIR expression as a compile-time constant.
@@ -9073,15 +9073,15 @@ impl<'a> Sema<'a> {
                     "u16" => Type::U16,
                     "u32" => Type::U32,
                     "u64" => Type::U64,
-                    "bool" => Type::Bool,
-                    "()" => Type::Unit,
-                    "!" => Type::Never,
+                    "bool" => Type::BOOL,
+                    "()" => Type::UNIT,
+                    "!" => Type::NEVER,
                     _ => {
                         // Check for struct types
                         if let Some(&struct_id) = self.structs.get(type_name) {
-                            Type::Struct(struct_id)
+                            Type::new_struct(struct_id)
                         } else if let Some(&enum_id) = self.enums.get(type_name) {
-                            Type::Enum(enum_id)
+                            Type::new_enum(enum_id)
                         } else {
                             return None; // Unknown type
                         }
@@ -9103,15 +9103,15 @@ impl<'a> Sema<'a> {
                     "u16" => Type::U16,
                     "u32" => Type::U32,
                     "u64" => Type::U64,
-                    "bool" => Type::Bool,
-                    "()" => Type::Unit,
-                    "!" => Type::Never,
+                    "bool" => Type::BOOL,
+                    "()" => Type::UNIT,
+                    "!" => Type::NEVER,
                     _ => {
                         // Check for struct types
                         if let Some(&struct_id) = self.structs.get(name) {
-                            Type::Struct(struct_id)
+                            Type::new_struct(struct_id)
                         } else if let Some(&enum_id) = self.enums.get(name) {
-                            Type::Enum(enum_id)
+                            Type::new_enum(enum_id)
                         } else {
                             return None; // Not a type name - can't evaluate at compile time
                         }
@@ -9444,14 +9444,14 @@ impl<'a> Sema<'a> {
                     "u16" => Type::U16,
                     "u32" => Type::U32,
                     "u64" => Type::U64,
-                    "bool" => Type::Bool,
-                    "()" => Type::Unit,
-                    "!" => Type::Never,
+                    "bool" => Type::BOOL,
+                    "()" => Type::UNIT,
+                    "!" => Type::NEVER,
                     _ => {
                         if let Some(&struct_id) = self.structs.get(type_name) {
-                            Type::Struct(struct_id)
+                            Type::new_struct(struct_id)
                         } else if let Some(&enum_id) = self.enums.get(type_name) {
-                            Type::Enum(enum_id)
+                            Type::new_enum(enum_id)
                         } else {
                             return None;
                         }
@@ -9478,14 +9478,14 @@ impl<'a> Sema<'a> {
                     "u16" => Type::U16,
                     "u32" => Type::U32,
                     "u64" => Type::U64,
-                    "bool" => Type::Bool,
-                    "()" => Type::Unit,
-                    "!" => Type::Never,
+                    "bool" => Type::BOOL,
+                    "()" => Type::UNIT,
+                    "!" => Type::NEVER,
                     _ => {
                         if let Some(&struct_id) = self.structs.get(name) {
-                            Type::Struct(struct_id)
+                            Type::new_struct(struct_id)
                         } else if let Some(&enum_id) = self.enums.get(name) {
-                            Type::Enum(enum_id)
+                            Type::new_enum(enum_id)
                         } else {
                             return None;
                         }
@@ -9497,14 +9497,6 @@ impl<'a> Sema<'a> {
             // Everything else requires runtime evaluation
             _ => None,
         }
-    }
-
-    /// Check if an RIR instruction is an integer literal.
-    ///
-    /// This is used for bidirectional type inference to detect when the LHS
-    /// of a binary operator is a literal that can adopt its type from the RHS.
-    fn is_integer_literal(&self, inst_ref: InstRef) -> bool {
-        matches!(self.rir.get(inst_ref).data, InstData::IntConst(_))
     }
 
     /// Check if an RIR instruction is a VarRef to a comptime type variable.
@@ -9583,8 +9575,8 @@ impl<'a> Sema<'a> {
             let expected_ty = match assoc_fn.params[i].ty {
                 BuiltinParamType::U64 => Type::U64,
                 BuiltinParamType::U8 => Type::U8,
-                BuiltinParamType::Bool => Type::Bool,
-                BuiltinParamType::SelfType => Type::Struct(struct_id),
+                BuiltinParamType::Bool => Type::BOOL,
+                BuiltinParamType::SelfType => Type::new_struct(struct_id),
             };
 
             // Type check
@@ -9604,10 +9596,10 @@ impl<'a> Sema<'a> {
         // Determine return type
         // Use builtin_air_type for SelfType to get correct AIR output type
         let return_ty = match assoc_fn.return_ty {
-            BuiltinReturnType::Unit => Type::Unit,
+            BuiltinReturnType::Unit => Type::UNIT,
             BuiltinReturnType::U64 => Type::U64,
             BuiltinReturnType::U8 => Type::U8,
-            BuiltinReturnType::Bool => Type::Bool,
+            BuiltinReturnType::Bool => Type::BOOL,
             BuiltinReturnType::SelfType => self.builtin_air_type(struct_id),
         };
 
@@ -9708,8 +9700,8 @@ impl<'a> Sema<'a> {
             let expected_ty = match method.params[i].ty {
                 BuiltinParamType::U64 => Type::U64,
                 BuiltinParamType::U8 => Type::U8,
-                BuiltinParamType::Bool => Type::Bool,
-                BuiltinParamType::SelfType => Type::Struct(method_ctx.struct_id),
+                BuiltinParamType::Bool => Type::BOOL,
+                BuiltinParamType::SelfType => Type::new_struct(method_ctx.struct_id),
             };
 
             // Type check
@@ -9733,10 +9725,10 @@ impl<'a> Sema<'a> {
         // Determine return type
         // Use builtin_air_type for SelfType to get correct AIR output type
         let return_ty = match method.return_ty {
-            BuiltinReturnType::Unit => Type::Unit,
+            BuiltinReturnType::Unit => Type::UNIT,
             BuiltinReturnType::U64 => Type::U64,
             BuiltinReturnType::U8 => Type::U8,
-            BuiltinReturnType::Bool => Type::Bool,
+            BuiltinReturnType::Bool => Type::BOOL,
             BuiltinReturnType::SelfType => self.builtin_air_type(method_ctx.struct_id),
         };
 
@@ -9863,7 +9855,7 @@ impl<'a> Sema<'a> {
                     slot,
                     value: call_ref,
                 },
-                ty: Type::Unit,
+                ty: Type::UNIT,
                 span,
             }),
             StringReceiverStorage::Param { abi_slot } => air.add_inst(AirInst {
@@ -9871,12 +9863,12 @@ impl<'a> Sema<'a> {
                     param_slot: abi_slot,
                     value: call_ref,
                 },
-                ty: Type::Unit,
+                ty: Type::UNIT,
                 span,
             }),
         };
 
-        Ok(AnalysisResult::new(store_ref, Type::Unit))
+        Ok(AnalysisResult::new(store_ref, Type::UNIT))
     }
 
     /// Check if directives contain @allow for a specific warning name.
@@ -10007,37 +9999,6 @@ impl<'a> Sema<'a> {
         }
     }
 
-    /// Extract the root variable symbol and field path from an expression.
-    ///
-    /// For expressions like `s.a.b`, returns (sym("s"), [sym("a"), sym("b")]).
-    /// For `s`, returns (sym("s"), []).
-    ///
-    /// Returns None for expressions that don't refer to a variable (literals, calls, etc.)
-    pub(crate) fn extract_field_path(&self, inst_ref: InstRef) -> Option<(Spur, FieldPath)> {
-        let mut path = Vec::new();
-        let root = self.extract_field_path_inner(inst_ref, &mut path)?;
-        // Path is built in reverse order, so reverse it
-        path.reverse();
-        Some((root, path))
-    }
-
-    /// Helper for extract_field_path that builds the path in reverse order.
-    fn extract_field_path_inner(&self, inst_ref: InstRef, path: &mut FieldPath) -> Option<Spur> {
-        let inst = self.rir.get(inst_ref);
-        match &inst.data {
-            InstData::VarRef { name } => Some(*name),
-            InstData::ParamRef { name, .. } => Some(*name),
-            InstData::FieldGet { base, field } => {
-                path.push(*field);
-                self.extract_field_path_inner(*base, path)
-            }
-            // For index expressions, we stop tracking the field path
-            // (index-based moves are more complex and not addressed here)
-            InstData::IndexGet { .. } => None,
-            _ => None,
-        }
-    }
-
     /// Check exclusivity rules for inout and borrow parameters in a call.
     ///
     /// This enforces two rules:
@@ -10157,7 +10118,7 @@ impl<'a> Sema<'a> {
         struct_type: Type,
         methods_start: u32,
         methods_len: u32,
-        span: Span,
+        _span: Span,
     ) -> CompileResult<()> {
         let method_refs = self.rir.get_inst_refs(methods_start, methods_len);
 
@@ -10589,10 +10550,10 @@ impl<'a> Sema<'a> {
                 args_start,
                 args_len: 2,
             },
-            ty: Type::Unit,
+            ty: Type::UNIT,
             span,
         });
-        Ok(AnalysisResult::new(air_ref, Type::Unit))
+        Ok(AnalysisResult::new(air_ref, Type::UNIT))
     }
 
     /// Analyze @ptr_offset intrinsic: pointer arithmetic.
@@ -10822,10 +10783,10 @@ impl<'a> Sema<'a> {
         // Create the pointer type
         let result_type = if is_mut {
             let ptr_type_id = self.type_pool.intern_ptr_mut_from_type(pointee_type);
-            Type::PtrMut(ptr_type_id)
+            Type::new_ptr_mut(ptr_type_id)
         } else {
             let ptr_type_id = self.type_pool.intern_ptr_const_from_type(pointee_type);
-            Type::PtrConst(ptr_type_id)
+            Type::new_ptr_const(ptr_type_id)
         };
 
         // Create the intrinsic call instruction
@@ -10944,7 +10905,7 @@ impl<'a> Sema<'a> {
             Arch::Aarch64 => 1,
         };
 
-        let result_type = Type::Enum(arch_enum_id);
+        let result_type = Type::new_enum(arch_enum_id);
         let air_ref = air.add_inst(AirInst {
             data: AirInstData::EnumVariant {
                 enum_id: arch_enum_id,
@@ -10989,7 +10950,7 @@ impl<'a> Sema<'a> {
             Os::Macos => 1,
         };
 
-        let result_type = Type::Enum(os_enum_id);
+        let result_type = Type::new_enum(os_enum_id);
         let air_ref = air.add_inst(AirInst {
             data: AirInstData::EnumVariant {
                 enum_id: os_enum_id,

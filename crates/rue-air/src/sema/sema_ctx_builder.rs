@@ -96,18 +96,18 @@ impl<'a> Sema<'a> {
             })
             .collect();
 
-        // Build struct types map (name -> Type::Struct(id))
+        // Build struct types map (name -> Type::new_struct(id))
         let struct_types: HashMap<Spur, Type> = self
             .structs
             .iter()
-            .map(|(name, id)| (*name, Type::Struct(*id)))
+            .map(|(name, id)| (*name, Type::new_struct(*id)))
             .collect();
 
-        // Build enum types map (name -> Type::Enum(id))
+        // Build enum types map (name -> Type::new_enum(id))
         let enum_types: HashMap<Spur, Type> = self
             .enums
             .iter()
-            .map(|(name, id)| (*name, Type::Enum(*id)))
+            .map(|(name, id)| (*name, Type::new_enum(*id)))
             .collect();
 
         // Build method signatures with InferType for constraint generation

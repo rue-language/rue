@@ -210,7 +210,7 @@ pub enum TypeKind {
 ///
 /// Use constructor methods for composite types:
 /// ```ignore
-/// let ty = Type::Struct(struct_id);
+/// let ty = Type::new_struct(struct_id);
 /// ```
 ///
 /// Use `kind()` for pattern matching:
@@ -226,7 +226,7 @@ pub struct Type(u32);
 
 impl Default for Type {
     fn default() -> Self {
-        Type::Unit
+        Type::UNIT
     }
 }
 
@@ -242,17 +242,17 @@ impl std::fmt::Debug for Type {
             TypeKind::U16 => write!(f, "Type::U16"),
             TypeKind::U32 => write!(f, "Type::U32"),
             TypeKind::U64 => write!(f, "Type::U64"),
-            TypeKind::Bool => write!(f, "Type::Bool"),
-            TypeKind::Unit => write!(f, "Type::Unit"),
-            TypeKind::Error => write!(f, "Type::Error"),
-            TypeKind::Never => write!(f, "Type::Never"),
-            TypeKind::ComptimeType => write!(f, "Type::ComptimeType"),
-            TypeKind::Struct(id) => write!(f, "Type::Struct(StructId({}))", id.0),
-            TypeKind::Enum(id) => write!(f, "Type::Enum(EnumId({}))", id.0),
-            TypeKind::Array(id) => write!(f, "Type::Array(ArrayTypeId({}))", id.0),
-            TypeKind::PtrConst(id) => write!(f, "Type::PtrConst(PtrConstTypeId({}))", id.0),
-            TypeKind::PtrMut(id) => write!(f, "Type::PtrMut(PtrMutTypeId({}))", id.0),
-            TypeKind::Module(id) => write!(f, "Type::Module(ModuleId({}))", id.0),
+            TypeKind::Bool => write!(f, "Type::BOOL"),
+            TypeKind::Unit => write!(f, "Type::UNIT"),
+            TypeKind::Error => write!(f, "Type::ERROR"),
+            TypeKind::Never => write!(f, "Type::NEVER"),
+            TypeKind::ComptimeType => write!(f, "Type::COMPTIME_TYPE"),
+            TypeKind::Struct(id) => write!(f, "Type::new_struct(StructId({}))", id.0),
+            TypeKind::Enum(id) => write!(f, "Type::new_enum(EnumId({}))", id.0),
+            TypeKind::Array(id) => write!(f, "Type::new_array(ArrayTypeId({}))", id.0),
+            TypeKind::PtrConst(id) => write!(f, "Type::new_ptr_const(PtrConstTypeId({}))", id.0),
+            TypeKind::PtrMut(id) => write!(f, "Type::new_ptr_mut(PtrMutTypeId({}))", id.0),
+            TypeKind::Module(id) => write!(f, "Type::new_module(ModuleId({}))", id.0),
         }
     }
 }
@@ -286,52 +286,52 @@ impl Type {
     /// 64-bit unsigned integer
     pub const U64: Type = Type(7);
     /// Boolean
-    pub const Bool: Type = Type(8);
+    pub const BOOL: Type = Type(8);
     /// The unit type (for functions that don't return a value)
-    pub const Unit: Type = Type(9);
+    pub const UNIT: Type = Type(9);
     /// An error type (used during type checking to continue after errors)
-    pub const Error: Type = Type(10);
+    pub const ERROR: Type = Type(10);
     /// The never type - represents computations that don't return
-    pub const Never: Type = Type(11);
+    pub const NEVER: Type = Type(11);
     /// The comptime type - the type of types themselves
-    pub const ComptimeType: Type = Type(12);
+    pub const COMPTIME_TYPE: Type = Type(12);
 }
 
 // Composite type constructors
 impl Type {
     /// Create a struct type from a StructId.
     #[inline]
-    pub const fn Struct(id: StructId) -> Type {
+    pub const fn new_struct(id: StructId) -> Type {
         Type(TAG_STRUCT | ((id.0 as u32) << 8))
     }
 
     /// Create an enum type from an EnumId.
     #[inline]
-    pub const fn Enum(id: EnumId) -> Type {
+    pub const fn new_enum(id: EnumId) -> Type {
         Type(TAG_ENUM | ((id.0 as u32) << 8))
     }
 
     /// Create an array type from an ArrayTypeId.
     #[inline]
-    pub const fn Array(id: ArrayTypeId) -> Type {
+    pub const fn new_array(id: ArrayTypeId) -> Type {
         Type(TAG_ARRAY | ((id.0 as u32) << 8))
     }
 
     /// Create a raw const pointer type from a PtrConstTypeId.
     #[inline]
-    pub const fn PtrConst(id: PtrConstTypeId) -> Type {
+    pub const fn new_ptr_const(id: PtrConstTypeId) -> Type {
         Type(TAG_PTR_CONST | ((id.0 as u32) << 8))
     }
 
     /// Create a raw mut pointer type from a PtrMutTypeId.
     #[inline]
-    pub const fn PtrMut(id: PtrMutTypeId) -> Type {
+    pub const fn new_ptr_mut(id: PtrMutTypeId) -> Type {
         Type(TAG_PTR_MUT | ((id.0 as u32) << 8))
     }
 
     /// Create a module type from a ModuleId.
     #[inline]
-    pub const fn Module(id: ModuleId) -> Type {
+    pub const fn new_module(id: ModuleId) -> Type {
         Type(TAG_MODULE | ((id.0 as u32) << 8))
     }
 }
@@ -412,7 +412,7 @@ impl EnumDef {
     pub fn discriminant_type(&self) -> Type {
         let count = self.variants.len();
         if count == 0 {
-            Type::Never // Zero-variant enum is uninhabited
+            Type::NEVER // Zero-variant enum is uninhabited
         } else if count <= 256 {
             Type::U8
         } else if count <= 65536 {
@@ -580,19 +580,19 @@ impl Type {
     /// Check if this is an error type.
     #[inline]
     pub fn is_error(&self) -> bool {
-        *self == Type::Error
+        *self == Type::ERROR
     }
 
     /// Check if this is the never type.
     #[inline]
     pub fn is_never(&self) -> bool {
-        *self == Type::Never
+        *self == Type::NEVER
     }
 
     /// Check if this is the comptime type (the type of types).
     #[inline]
     pub fn is_comptime_type(&self) -> bool {
-        *self == Type::ComptimeType
+        *self == Type::COMPTIME_TYPE
     }
 
     /// Check if this is a struct type.
@@ -997,17 +997,17 @@ mod tests {
 
     #[test]
     fn test_type_name_other() {
-        assert_eq!(Type::Bool.name(), "bool");
-        assert_eq!(Type::Unit.name(), "()");
-        assert_eq!(Type::Error.name(), "<error>");
-        assert_eq!(Type::Never.name(), "!");
+        assert_eq!(Type::BOOL.name(), "bool");
+        assert_eq!(Type::UNIT.name(), "()");
+        assert_eq!(Type::ERROR.name(), "<error>");
+        assert_eq!(Type::NEVER.name(), "!");
     }
 
     #[test]
     fn test_type_name_composite() {
-        assert_eq!(Type::Struct(StructId(0)).name(), "<struct>");
-        assert_eq!(Type::Enum(EnumId(0)).name(), "<enum>");
-        assert_eq!(Type::Array(ArrayTypeId(0)).name(), "<array>");
+        assert_eq!(Type::new_struct(StructId(0)).name(), "<struct>");
+        assert_eq!(Type::new_enum(EnumId(0)).name(), "<enum>");
+        assert_eq!(Type::new_array(ArrayTypeId(0)).name(), "<array>");
     }
 
     // ========== Type::is_integer() tests ==========
@@ -1030,13 +1030,13 @@ mod tests {
 
     #[test]
     fn test_is_integer_non_integers() {
-        assert!(!Type::Bool.is_integer());
-        assert!(!Type::Unit.is_integer());
-        assert!(!Type::Struct(StructId(0)).is_integer());
-        assert!(!Type::Enum(EnumId(0)).is_integer());
-        assert!(!Type::Array(ArrayTypeId(0)).is_integer());
-        assert!(!Type::Error.is_integer());
-        assert!(!Type::Never.is_integer());
+        assert!(!Type::BOOL.is_integer());
+        assert!(!Type::UNIT.is_integer());
+        assert!(!Type::new_struct(StructId(0)).is_integer());
+        assert!(!Type::new_enum(EnumId(0)).is_integer());
+        assert!(!Type::new_array(ArrayTypeId(0)).is_integer());
+        assert!(!Type::ERROR.is_integer());
+        assert!(!Type::NEVER.is_integer());
     }
 
     // ========== Type::is_signed() tests ==========
@@ -1052,7 +1052,7 @@ mod tests {
         assert!(!Type::U16.is_signed());
         assert!(!Type::U32.is_signed());
         assert!(!Type::U64.is_signed());
-        assert!(!Type::Bool.is_signed());
+        assert!(!Type::BOOL.is_signed());
     }
 
     // ========== Type::is_unsigned() tests ==========
@@ -1068,7 +1068,7 @@ mod tests {
         assert!(!Type::I16.is_unsigned());
         assert!(!Type::I32.is_unsigned());
         assert!(!Type::I64.is_unsigned());
-        assert!(!Type::Bool.is_unsigned());
+        assert!(!Type::BOOL.is_unsigned());
     }
 
     // ========== Type::is_64_bit() tests ==========
@@ -1084,76 +1084,79 @@ mod tests {
         assert!(!Type::U8.is_64_bit());
         assert!(!Type::U16.is_64_bit());
         assert!(!Type::U32.is_64_bit());
-        assert!(!Type::Bool.is_64_bit());
+        assert!(!Type::BOOL.is_64_bit());
     }
 
     // ========== Type::is_error() tests ==========
 
     #[test]
     fn test_is_error() {
-        assert!(Type::Error.is_error());
+        assert!(Type::ERROR.is_error());
         assert!(!Type::I32.is_error());
-        assert!(!Type::Never.is_error());
+        assert!(!Type::NEVER.is_error());
     }
 
     // ========== Type::is_never() tests ==========
 
     #[test]
     fn test_is_never() {
-        assert!(Type::Never.is_never());
+        assert!(Type::NEVER.is_never());
         assert!(!Type::I32.is_never());
-        assert!(!Type::Error.is_never());
+        assert!(!Type::ERROR.is_never());
     }
 
     // ========== Type::is_struct() and as_struct() tests ==========
 
     #[test]
     fn test_is_struct() {
-        assert!(Type::Struct(StructId(0)).is_struct());
-        assert!(Type::Struct(StructId(42)).is_struct());
+        assert!(Type::new_struct(StructId(0)).is_struct());
+        assert!(Type::new_struct(StructId(42)).is_struct());
         assert!(!Type::I32.is_struct());
-        assert!(!Type::Enum(EnumId(0)).is_struct());
+        assert!(!Type::new_enum(EnumId(0)).is_struct());
     }
 
     #[test]
     fn test_as_struct() {
-        assert_eq!(Type::Struct(StructId(5)).as_struct(), Some(StructId(5)));
+        assert_eq!(Type::new_struct(StructId(5)).as_struct(), Some(StructId(5)));
         assert_eq!(Type::I32.as_struct(), None);
-        assert_eq!(Type::Enum(EnumId(0)).as_struct(), None);
+        assert_eq!(Type::new_enum(EnumId(0)).as_struct(), None);
     }
 
     // ========== Type::is_enum() and as_enum() tests ==========
 
     #[test]
     fn test_is_enum() {
-        assert!(Type::Enum(EnumId(0)).is_enum());
-        assert!(Type::Enum(EnumId(42)).is_enum());
+        assert!(Type::new_enum(EnumId(0)).is_enum());
+        assert!(Type::new_enum(EnumId(42)).is_enum());
         assert!(!Type::I32.is_enum());
-        assert!(!Type::Struct(StructId(0)).is_enum());
+        assert!(!Type::new_struct(StructId(0)).is_enum());
     }
 
     #[test]
     fn test_as_enum() {
-        assert_eq!(Type::Enum(EnumId(5)).as_enum(), Some(EnumId(5)));
+        assert_eq!(Type::new_enum(EnumId(5)).as_enum(), Some(EnumId(5)));
         assert_eq!(Type::I32.as_enum(), None);
-        assert_eq!(Type::Struct(StructId(0)).as_enum(), None);
+        assert_eq!(Type::new_struct(StructId(0)).as_enum(), None);
     }
 
     // ========== Type::is_array() and as_array() tests ==========
 
     #[test]
     fn test_is_array() {
-        assert!(Type::Array(ArrayTypeId(0)).is_array());
-        assert!(Type::Array(ArrayTypeId(42)).is_array());
+        assert!(Type::new_array(ArrayTypeId(0)).is_array());
+        assert!(Type::new_array(ArrayTypeId(42)).is_array());
         assert!(!Type::I32.is_array());
-        assert!(!Type::Struct(StructId(0)).is_array());
+        assert!(!Type::new_struct(StructId(0)).is_array());
     }
 
     #[test]
     fn test_as_array() {
-        assert_eq!(Type::Array(ArrayTypeId(5)).as_array(), Some(ArrayTypeId(5)));
+        assert_eq!(
+            Type::new_array(ArrayTypeId(5)).as_array(),
+            Some(ArrayTypeId(5))
+        );
         assert_eq!(Type::I32.as_array(), None);
-        assert_eq!(Type::Struct(StructId(0)).as_array(), None);
+        assert_eq!(Type::new_struct(StructId(0)).as_array(), None);
     }
 
     // ========== Type::is_copy() tests ==========
@@ -1171,25 +1174,25 @@ mod tests {
         assert!(Type::U64.is_copy());
 
         // Bool and Unit are Copy
-        assert!(Type::Bool.is_copy());
-        assert!(Type::Unit.is_copy());
+        assert!(Type::BOOL.is_copy());
+        assert!(Type::UNIT.is_copy());
     }
 
     #[test]
     fn test_is_copy_special() {
         // Enum types are Copy
-        assert!(Type::Enum(EnumId(0)).is_copy());
+        assert!(Type::new_enum(EnumId(0)).is_copy());
 
         // Never and Error are Copy for convenience
-        assert!(Type::Never.is_copy());
-        assert!(Type::Error.is_copy());
+        assert!(Type::NEVER.is_copy());
+        assert!(Type::ERROR.is_copy());
     }
 
     #[test]
     fn test_is_copy_move_types() {
         // Struct and Array are move types (String is a builtin struct now)
-        assert!(!Type::Struct(StructId(0)).is_copy());
-        assert!(!Type::Array(ArrayTypeId(0)).is_copy());
+        assert!(!Type::new_struct(StructId(0)).is_copy());
+        assert!(!Type::new_array(ArrayTypeId(0)).is_copy());
     }
 
     // ========== Type::can_coerce_to() tests ==========
@@ -1197,30 +1200,30 @@ mod tests {
     #[test]
     fn test_can_coerce_to_same_type() {
         assert!(Type::I32.can_coerce_to(&Type::I32));
-        assert!(Type::Bool.can_coerce_to(&Type::Bool));
-        assert!(Type::Struct(StructId(0)).can_coerce_to(&Type::Struct(StructId(0))));
+        assert!(Type::BOOL.can_coerce_to(&Type::BOOL));
+        assert!(Type::new_struct(StructId(0)).can_coerce_to(&Type::new_struct(StructId(0))));
     }
 
     #[test]
     fn test_can_coerce_to_never_coerces_to_anything() {
-        assert!(Type::Never.can_coerce_to(&Type::I32));
-        assert!(Type::Never.can_coerce_to(&Type::Bool));
-        assert!(Type::Never.can_coerce_to(&Type::Struct(StructId(0))));
+        assert!(Type::NEVER.can_coerce_to(&Type::I32));
+        assert!(Type::NEVER.can_coerce_to(&Type::BOOL));
+        assert!(Type::NEVER.can_coerce_to(&Type::new_struct(StructId(0))));
     }
 
     #[test]
     fn test_can_coerce_to_error_coerces_to_anything() {
-        assert!(Type::Error.can_coerce_to(&Type::I32));
-        assert!(Type::Error.can_coerce_to(&Type::Bool));
-        assert!(Type::Error.can_coerce_to(&Type::Struct(StructId(0))));
+        assert!(Type::ERROR.can_coerce_to(&Type::I32));
+        assert!(Type::ERROR.can_coerce_to(&Type::BOOL));
+        assert!(Type::ERROR.can_coerce_to(&Type::new_struct(StructId(0))));
     }
 
     #[test]
     fn test_can_coerce_to_different_types_fail() {
-        assert!(!Type::I32.can_coerce_to(&Type::Bool));
-        assert!(!Type::Bool.can_coerce_to(&Type::I32));
+        assert!(!Type::I32.can_coerce_to(&Type::BOOL));
+        assert!(!Type::BOOL.can_coerce_to(&Type::I32));
         assert!(!Type::I32.can_coerce_to(&Type::I64));
-        assert!(!Type::Struct(StructId(0)).can_coerce_to(&Type::I32));
+        assert!(!Type::new_struct(StructId(0)).can_coerce_to(&Type::I32));
     }
 
     // ========== Type::literal_fits() tests ==========
@@ -1282,9 +1285,9 @@ mod tests {
 
     #[test]
     fn test_literal_fits_non_integer() {
-        assert!(!Type::Bool.literal_fits(0));
-        assert!(!Type::Struct(StructId(0)).literal_fits(0));
-        assert!(!Type::Unit.literal_fits(0));
+        assert!(!Type::BOOL.literal_fits(0));
+        assert!(!Type::new_struct(StructId(0)).literal_fits(0));
+        assert!(!Type::UNIT.literal_fits(0));
     }
 
     // ========== Type::negated_literal_fits() tests ==========
@@ -1324,8 +1327,8 @@ mod tests {
 
     #[test]
     fn test_negated_literal_fits_non_integer() {
-        assert!(!Type::Bool.negated_literal_fits(1));
-        assert!(!Type::Struct(StructId(0)).negated_literal_fits(1));
+        assert!(!Type::BOOL.negated_literal_fits(1));
+        assert!(!Type::new_struct(StructId(0)).negated_literal_fits(1));
     }
 
     // ========== Type Display tests ==========
@@ -1333,15 +1336,15 @@ mod tests {
     #[test]
     fn test_type_display() {
         assert_eq!(format!("{}", Type::I32), "i32");
-        assert_eq!(format!("{}", Type::Bool), "bool");
-        assert_eq!(format!("{}", Type::Never), "!");
+        assert_eq!(format!("{}", Type::BOOL), "bool");
+        assert_eq!(format!("{}", Type::NEVER), "!");
     }
 
     // ========== Type Default tests ==========
 
     #[test]
     fn test_type_default() {
-        assert_eq!(Type::default(), Type::Unit);
+        assert_eq!(Type::default(), Type::UNIT);
     }
 
     // ========== StructDef tests ==========
@@ -1405,7 +1408,7 @@ mod tests {
                 },
                 StructField {
                     name: "b".to_string(),
-                    ty: Type::Bool,
+                    ty: Type::BOOL,
                 },
                 StructField {
                     name: "c".to_string(),
@@ -1467,7 +1470,7 @@ mod tests {
             is_pub: false,
             file_id: rue_span::FileId::DEFAULT,
         };
-        assert_eq!(empty.discriminant_type(), Type::Never);
+        assert_eq!(empty.discriminant_type(), Type::NEVER);
     }
 
     #[test]
@@ -1502,49 +1505,49 @@ mod tests {
         assert_eq!(medium.discriminant_type(), Type::U16);
     }
 
-    // ========== Type::ComptimeType tests ==========
+    // ========== Type::COMPTIME_TYPE tests ==========
 
     #[test]
     fn test_comptime_type_name() {
-        assert_eq!(Type::ComptimeType.name(), "type");
+        assert_eq!(Type::COMPTIME_TYPE.name(), "type");
     }
 
     #[test]
     fn test_comptime_type_is_copy() {
-        assert!(Type::ComptimeType.is_copy());
+        assert!(Type::COMPTIME_TYPE.is_copy());
     }
 
     #[test]
     fn test_comptime_type_is_comptime_type() {
-        assert!(Type::ComptimeType.is_comptime_type());
+        assert!(Type::COMPTIME_TYPE.is_comptime_type());
         assert!(!Type::I32.is_comptime_type());
-        assert!(!Type::Bool.is_comptime_type());
+        assert!(!Type::BOOL.is_comptime_type());
     }
 
     #[test]
     fn test_comptime_type_not_integer() {
-        assert!(!Type::ComptimeType.is_integer());
+        assert!(!Type::COMPTIME_TYPE.is_integer());
     }
 
     #[test]
     fn test_comptime_type_not_signed() {
-        assert!(!Type::ComptimeType.is_signed());
+        assert!(!Type::COMPTIME_TYPE.is_signed());
     }
 
     #[test]
     fn test_comptime_type_not_64_bit() {
-        assert!(!Type::ComptimeType.is_64_bit());
+        assert!(!Type::COMPTIME_TYPE.is_64_bit());
     }
 
     #[test]
     fn test_comptime_type_can_coerce_to_itself() {
-        assert!(Type::ComptimeType.can_coerce_to(&Type::ComptimeType));
+        assert!(Type::COMPTIME_TYPE.can_coerce_to(&Type::COMPTIME_TYPE));
     }
 
     #[test]
     fn test_comptime_type_cannot_coerce_to_runtime_types() {
-        assert!(!Type::ComptimeType.can_coerce_to(&Type::I32));
-        assert!(!Type::ComptimeType.can_coerce_to(&Type::Bool));
+        assert!(!Type::COMPTIME_TYPE.can_coerce_to(&Type::I32));
+        assert!(!Type::COMPTIME_TYPE.can_coerce_to(&Type::BOOL));
     }
 
     // ========== Type encoding validation tests ==========
@@ -1621,9 +1624,9 @@ mod tests {
     #[test]
     fn test_try_kind_valid() {
         assert_eq!(Type::I32.try_kind(), Some(TypeKind::I32));
-        assert_eq!(Type::Bool.try_kind(), Some(TypeKind::Bool));
+        assert_eq!(Type::BOOL.try_kind(), Some(TypeKind::Bool));
         assert_eq!(
-            Type::Struct(StructId(42)).try_kind(),
+            Type::new_struct(StructId(42)).try_kind(),
             Some(TypeKind::Struct(StructId(42)))
         );
     }
@@ -1641,7 +1644,7 @@ mod tests {
     #[test]
     fn test_is_valid_method() {
         assert!(Type::I32.is_valid());
-        assert!(Type::Struct(StructId(0)).is_valid());
+        assert!(Type::new_struct(StructId(0)).is_valid());
 
         // Invalid types
         let invalid = Type::from_u32(50);
@@ -1667,18 +1670,18 @@ mod tests {
             Type::U16,
             Type::U32,
             Type::U64,
-            Type::Bool,
-            Type::Unit,
-            Type::Error,
-            Type::Never,
-            Type::ComptimeType,
-            Type::Struct(StructId(0)),
-            Type::Struct(StructId(1000)),
-            Type::Enum(EnumId(5)),
-            Type::Array(ArrayTypeId(10)),
-            Type::PtrConst(PtrConstTypeId(20)),
-            Type::PtrMut(PtrMutTypeId(30)),
-            Type::Module(ModuleId(40)),
+            Type::BOOL,
+            Type::UNIT,
+            Type::ERROR,
+            Type::NEVER,
+            Type::COMPTIME_TYPE,
+            Type::new_struct(StructId(0)),
+            Type::new_struct(StructId(1000)),
+            Type::new_enum(EnumId(5)),
+            Type::new_array(ArrayTypeId(10)),
+            Type::new_ptr_const(PtrConstTypeId(20)),
+            Type::new_ptr_mut(PtrMutTypeId(30)),
+            Type::new_module(ModuleId(40)),
         ];
 
         for ty in types {

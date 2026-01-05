@@ -12,8 +12,8 @@ use tracing_subscriber::{EnvFilter, fmt};
 mod timing;
 
 use rue_compiler::{
-    CompileOptions, DiagnosticFormatter, FileId, Lexer, LinkerMode, MultiFileFormatter, OptLevel,
-    ParsedProgram, PreviewFeature, PreviewFeatures, SourceFile, SourceInfo,
+    CompileOptions, FileId, Lexer, LinkerMode, MultiFileFormatter, OptLevel, ParsedProgram,
+    PreviewFeature, PreviewFeatures, SourceFile, SourceInfo,
     compile_frontend_from_ast_with_options, compile_multi_file_with_options, generate_emitted_asm,
     generate_liveness_info, generate_lowering_info, generate_mir, generate_regalloc_info,
     generate_stack_frame_info, merge_symbols, parse_all_files,
@@ -762,7 +762,7 @@ fn main() {
     let formatter = MultiFileFormatter::new(source_infos);
 
     // Also keep a single-file formatter for the primary file (for source metrics)
-    let (primary_path, primary_source) = &sources[0];
+    let (_primary_path, primary_source) = &sources[0];
 
     // Compute source metrics if benchmark JSON is requested
     let source_metrics = if options.benchmark_json {

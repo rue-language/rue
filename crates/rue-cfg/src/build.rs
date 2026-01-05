@@ -393,10 +393,10 @@ impl<'a> CfgBuilder<'a> {
                 let join_block = self.cfg.new_block();
 
                 // Add block parameter for the result
-                let result_param = self.cfg.add_block_param(join_block, Type::Bool);
+                let result_param = self.cfg.add_block_param(join_block, Type::BOOL);
 
                 // Branch: if lhs is false, go to join with false; else evaluate rhs
-                let false_val = self.emit(CfgInstData::BoolConst(false), Type::Bool, span);
+                let false_val = self.emit(CfgInstData::BoolConst(false), Type::BOOL, span);
                 let (then_args_start, then_args_len) = self.cfg.push_extra(std::iter::empty());
                 let (else_args_start, else_args_len) =
                     self.cfg.push_extra(std::iter::once(false_val));
@@ -447,10 +447,10 @@ impl<'a> CfgBuilder<'a> {
                 let join_block = self.cfg.new_block();
 
                 // Add block parameter for the result
-                let result_param = self.cfg.add_block_param(join_block, Type::Bool);
+                let result_param = self.cfg.add_block_param(join_block, Type::BOOL);
 
                 // Branch: if lhs is true, go to join with true; else evaluate rhs
-                let true_val = self.emit(CfgInstData::BoolConst(true), Type::Bool, span);
+                let true_val = self.emit(CfgInstData::BoolConst(true), Type::BOOL, span);
                 let (then_args_start, then_args_len) =
                     self.cfg.push_extra(std::iter::once(true_val));
                 let (else_args_start, else_args_len) = self.cfg.push_extra(std::iter::empty());
@@ -607,13 +607,13 @@ impl<'a> CfgBuilder<'a> {
                 // If init produces a value, use it; otherwise use a dummy Unit value
                 let init_val = init_result
                     .value
-                    .unwrap_or_else(|| self.emit(CfgInstData::Const(0), Type::Unit, span));
+                    .unwrap_or_else(|| self.emit(CfgInstData::Const(0), Type::UNIT, span));
                 self.emit(
                     CfgInstData::Alloc {
                         slot: *slot,
                         init: init_val,
                     },
-                    Type::Unit,
+                    Type::UNIT,
                     span,
                 );
                 ExprResult {
@@ -640,7 +640,7 @@ impl<'a> CfgBuilder<'a> {
                         slot: *slot,
                         value: val,
                     },
-                    Type::Unit,
+                    Type::UNIT,
                     span,
                 );
                 ExprResult {
@@ -658,7 +658,7 @@ impl<'a> CfgBuilder<'a> {
                         param_slot: *param_slot,
                         value: val,
                     },
-                    Type::Unit,
+                    Type::UNIT,
                     span,
                 );
                 ExprResult {
@@ -803,7 +803,7 @@ impl<'a> CfgBuilder<'a> {
                 // Emit StorageLive, Alloc to store the computed struct
                 self.emit(
                     CfgInstData::StorageLive { slot: temp_slot },
-                    Type::Unit,
+                    Type::UNIT,
                     span,
                 );
                 self.emit(
@@ -811,7 +811,7 @@ impl<'a> CfgBuilder<'a> {
                         slot: temp_slot,
                         init: base_val,
                     },
-                    Type::Unit,
+                    Type::UNIT,
                     span,
                 );
 
@@ -828,7 +828,7 @@ impl<'a> CfgBuilder<'a> {
                 // Emit StorageDead for the temp
                 self.emit(
                     CfgInstData::StorageDead { slot: temp_slot },
-                    Type::Unit,
+                    Type::UNIT,
                     span,
                 );
 
@@ -855,7 +855,7 @@ impl<'a> CfgBuilder<'a> {
                         field_index: *field_index,
                         value: val,
                     },
-                    Type::Unit,
+                    Type::UNIT,
                     span,
                 );
                 ExprResult {
@@ -882,7 +882,7 @@ impl<'a> CfgBuilder<'a> {
                         field_index: *field_index,
                         value: val,
                     },
-                    Type::Unit,
+                    Type::UNIT,
                     span,
                 );
                 ExprResult {
@@ -998,7 +998,7 @@ impl<'a> CfgBuilder<'a> {
                                     );
                                     self.emit(
                                         CfgInstData::Drop { value: slot_val },
-                                        Type::Unit,
+                                        Type::UNIT,
                                         live_slot.span,
                                     );
                                 }
@@ -1006,7 +1006,7 @@ impl<'a> CfgBuilder<'a> {
                                     CfgInstData::StorageDead {
                                         slot: live_slot.slot,
                                     },
-                                    Type::Unit,
+                                    Type::UNIT,
                                     live_slot.span,
                                 );
                             }
@@ -1062,7 +1062,7 @@ impl<'a> CfgBuilder<'a> {
                     self.lower_inst(*else_val)
                 } else {
                     // No else - emit unit
-                    let unit_val = self.emit(CfgInstData::Const(0), Type::Unit, span);
+                    let unit_val = self.emit(CfgInstData::Const(0), Type::UNIT, span);
                     ExprResult {
                         value: Some(unit_val),
                         continuation: Continuation::Continues,
@@ -1082,13 +1082,13 @@ impl<'a> CfgBuilder<'a> {
 
                 // Determine result type
                 let result_type = if then_type.is_never() {
-                    else_type.unwrap_or(Type::Unit)
+                    else_type.unwrap_or(Type::UNIT)
                 } else {
                     then_type
                 };
 
                 // Add block parameter for result (if we have a value type)
-                let result_param = if result_type != Type::Unit && result_type != Type::Never {
+                let result_param = if result_type != Type::UNIT && result_type != Type::NEVER {
                     Some(self.cfg.add_block_param(join_block, result_type))
                 } else {
                     None
@@ -1219,7 +1219,7 @@ impl<'a> CfgBuilder<'a> {
                 self.current_block = exit_block;
 
                 // Loops produce a unit value (for use in unit-returning functions)
-                let unit_val = self.emit(CfgInstData::Const(0), Type::Unit, span);
+                let unit_val = self.emit(CfgInstData::Const(0), Type::UNIT, span);
                 ExprResult {
                     value: Some(unit_val),
                     continuation: Continuation::Continues,
@@ -1289,7 +1289,7 @@ impl<'a> CfgBuilder<'a> {
 
                 // Infinite loops have Never type, but if we reach exit_block via break,
                 // we need a dummy unit value for the loop expression result.
-                let unit_val = self.emit(CfgInstData::Const(0), Type::Unit, span);
+                let unit_val = self.emit(CfgInstData::Const(0), Type::UNIT, span);
                 ExprResult {
                     value: Some(unit_val),
                     continuation: Continuation::Continues,
@@ -1319,7 +1319,7 @@ impl<'a> CfgBuilder<'a> {
                     .iter()
                     .map(|(_, body)| self.air.get(*body).ty)
                     .find(|ty| !ty.is_never())
-                    .unwrap_or(Type::Never);
+                    .unwrap_or(Type::NEVER);
 
                 // Create the switch terminator
                 // Build cases: for each arm, check pattern and jump to corresponding block
@@ -1398,7 +1398,7 @@ impl<'a> CfgBuilder<'a> {
                 }
 
                 // Add block parameter for result (if we have a value type)
-                let result_param = if result_type != Type::Unit && result_type != Type::Never {
+                let result_param = if result_type != Type::UNIT && result_type != Type::NEVER {
                     Some(self.cfg.add_block_param(join_block, result_type))
                 } else {
                     None
@@ -1574,7 +1574,7 @@ impl<'a> CfgBuilder<'a> {
                 // Emit StorageLive, Alloc to store the computed array
                 self.emit(
                     CfgInstData::StorageLive { slot: temp_slot },
-                    Type::Unit,
+                    Type::UNIT,
                     span,
                 );
                 self.emit(
@@ -1582,7 +1582,7 @@ impl<'a> CfgBuilder<'a> {
                         slot: temp_slot,
                         init: base_val,
                     },
-                    Type::Unit,
+                    Type::UNIT,
                     span,
                 );
 
@@ -1599,7 +1599,7 @@ impl<'a> CfgBuilder<'a> {
                 // Emit StorageDead for the temp
                 self.emit(
                     CfgInstData::StorageDead { slot: temp_slot },
-                    Type::Unit,
+                    Type::UNIT,
                     span,
                 );
 
@@ -1629,7 +1629,7 @@ impl<'a> CfgBuilder<'a> {
                         index: index_val,
                         value: val,
                     },
-                    Type::Unit,
+                    Type::UNIT,
                     span,
                 );
                 ExprResult {
@@ -1657,7 +1657,7 @@ impl<'a> CfgBuilder<'a> {
                         index: index_val,
                         value: val,
                     },
-                    Type::Unit,
+                    Type::UNIT,
                     span,
                 );
                 ExprResult {
@@ -1694,7 +1694,7 @@ impl<'a> CfgBuilder<'a> {
                         place: cfg_place,
                         value: val,
                     },
-                    Type::Unit,
+                    Type::UNIT,
                     span,
                 );
                 ExprResult {
@@ -1757,7 +1757,7 @@ impl<'a> CfgBuilder<'a> {
                 // We use self.type_needs_drop() which has access to struct/array
                 // definitions to recursively check if fields need drop.
                 if self.type_needs_drop(val_ty) {
-                    self.emit(CfgInstData::Drop { value: val }, Type::Unit, span);
+                    self.emit(CfgInstData::Drop { value: val }, Type::UNIT, span);
                 }
 
                 // Drop is a statement, produces no value
@@ -1769,7 +1769,7 @@ impl<'a> CfgBuilder<'a> {
 
             AirInstData::StorageLive { slot } => {
                 // Emit StorageLive to CFG
-                self.emit(CfgInstData::StorageLive { slot: *slot }, Type::Unit, span);
+                self.emit(CfgInstData::StorageLive { slot: *slot }, Type::UNIT, span);
 
                 // Record this slot as live in the current scope for drop elaboration
                 if let Some(scope) = self.scope_stack.last_mut() {
@@ -1789,7 +1789,7 @@ impl<'a> CfgBuilder<'a> {
             AirInstData::StorageDead { slot } => {
                 // StorageDead in AIR is a hint; CFG builder emits these at scope exit
                 // This case handles explicit StorageDead if any (currently unused)
-                self.emit(CfgInstData::StorageDead { slot: *slot }, Type::Unit, span);
+                self.emit(CfgInstData::StorageDead { slot: *slot }, Type::UNIT, span);
                 ExprResult {
                     value: None,
                     continuation: Continuation::Continues,
@@ -1946,13 +1946,13 @@ impl<'a> CfgBuilder<'a> {
                 live_slot.ty,
                 span,
             );
-            self.emit(CfgInstData::Drop { value: slot_val }, Type::Unit, span);
+            self.emit(CfgInstData::Drop { value: slot_val }, Type::UNIT, span);
         }
         self.emit(
             CfgInstData::StorageDead {
                 slot: live_slot.slot,
             },
-            Type::Unit,
+            Type::UNIT,
             span,
         );
     }

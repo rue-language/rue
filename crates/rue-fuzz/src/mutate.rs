@@ -33,10 +33,6 @@ impl SimpleRng {
         }
         (self.next_u64() as usize) % max
     }
-
-    pub fn coin_flip(&mut self) -> bool {
-        self.next_u64() & 1 == 0
-    }
 }
 
 /// Mutate input bytes in place.

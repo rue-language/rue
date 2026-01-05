@@ -642,7 +642,7 @@ pub enum AirInstData {
     /// Type constant - a compile-time type value.
     /// This is used for comptime type parameters (e.g., passing `i32` to `fn foo(comptime T: type)`).
     /// The contained Type is the type being passed as a value.
-    /// This instruction has type `Type::ComptimeType` and is erased during specialization.
+    /// This instruction has type `Type::COMPTIME_TYPE` and is erased during specialization.
     TypeConst(crate::Type),
 
     // Binary arithmetic operations
@@ -873,7 +873,7 @@ pub enum AirInstData {
 
     // Array operations
     /// Create a new array with initialized elements.
-    /// The array type is stored in `AirInst.ty` as `Type::Array(...)`.
+    /// The array type is stored in `AirInst.ty` as `Type::new_array(...)`.
     ArrayInit {
         /// Start index into extra array for element refs
         elems_start: u32,

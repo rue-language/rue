@@ -6,6 +6,7 @@ rust_library(
     preferred_linkage = "static",
     # Minimize output size and ensure no_std compatibility
     rustc_flags = [
+        "-Dwarnings",
         "-Cpanic=abort",
         "-Copt-level=z",
         "-Clto=true",

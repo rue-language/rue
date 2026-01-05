@@ -27,9 +27,9 @@ use crate::types::{StructId, Type};
 pub struct InferenceContext {
     /// Function signatures with InferType (for constraint generation).
     pub func_sigs: HashMap<Spur, FunctionSig>,
-    /// Struct types: name -> Type::Struct(id).
+    /// Struct types: name -> Type::new_struct(id).
     pub struct_types: HashMap<Spur, Type>,
-    /// Enum types: name -> Type::Enum(id).
+    /// Enum types: name -> Type::new_enum(id).
     pub enum_types: HashMap<Spur, Type>,
     /// Method signatures with InferType: (struct_id, method_name) -> MethodSig.
     pub method_sigs: HashMap<(StructId, Spur), MethodSig>,

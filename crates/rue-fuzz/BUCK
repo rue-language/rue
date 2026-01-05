@@ -1,6 +1,7 @@
 rust_binary(
     name = "rue-fuzz",
     srcs = glob(["src/**/*.rs"]),
+    rustc_flags = ["-Dwarnings"],
     deps = [
         "//crates/rue-codegen:rue-codegen",
         "//crates/rue-compiler:rue-compiler",
@@ -16,6 +17,7 @@ rust_binary(
 rust_test(
     name = "rue-fuzz-test",
     srcs = glob(["src/**/*.rs"]),
+    rustc_flags = ["-Dwarnings"],
     deps = [
         "//crates/rue-codegen:rue-codegen",
         "//crates/rue-compiler:rue-compiler",

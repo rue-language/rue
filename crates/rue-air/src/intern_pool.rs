@@ -771,23 +771,23 @@ impl TypeInternPool {
                 5 => Type::U16,
                 6 => Type::U32,
                 7 => Type::U64,
-                8 => Type::Bool,
-                9 => Type::Unit,
-                10 => Type::Never,
-                11 => Type::Error,
+                8 => Type::BOOL,
+                9 => Type::UNIT,
+                10 => Type::NEVER,
+                11 => Type::ERROR,
                 _ => panic!("Unknown primitive index: {}", ty.0),
             };
         }
 
         let pool_index = ty.pool_index().expect("non-primitive must have pool index");
         match &inner.types[pool_index as usize] {
-            TypeData::Struct(_) => Type::Struct(StructId::from_pool_index(pool_index)),
-            TypeData::Enum(_) => Type::Enum(EnumId::from_pool_index(pool_index)),
-            TypeData::Array { .. } => Type::Array(ArrayTypeId::from_pool_index(pool_index)),
+            TypeData::Struct(_) => Type::new_struct(StructId::from_pool_index(pool_index)),
+            TypeData::Enum(_) => Type::new_enum(EnumId::from_pool_index(pool_index)),
+            TypeData::Array { .. } => Type::new_array(ArrayTypeId::from_pool_index(pool_index)),
             TypeData::PtrConst { .. } => {
-                Type::PtrConst(PtrConstTypeId::from_pool_index(pool_index))
+                Type::new_ptr_const(PtrConstTypeId::from_pool_index(pool_index))
             }
-            TypeData::PtrMut { .. } => Type::PtrMut(PtrMutTypeId::from_pool_index(pool_index)),
+            TypeData::PtrMut { .. } => Type::new_ptr_mut(PtrMutTypeId::from_pool_index(pool_index)),
         }
     }
 
@@ -973,10 +973,10 @@ impl TypeInternPool {
             5 => Type::U16,
             6 => Type::U32,
             7 => Type::U64,
-            8 => Type::Bool,
-            9 => Type::Unit,
-            10 => Type::Never,
-            11 => Type::Error,
+            8 => Type::BOOL,
+            9 => Type::UNIT,
+            10 => Type::NEVER,
+            11 => Type::ERROR,
             _ => return None,
         })
     }
@@ -1511,28 +1511,28 @@ mod tests {
         assert_eq!(pool.type_to_interned(Type::U16), Some(InternedType::U16));
         assert_eq!(pool.type_to_interned(Type::U32), Some(InternedType::U32));
         assert_eq!(pool.type_to_interned(Type::U64), Some(InternedType::U64));
-        assert_eq!(pool.type_to_interned(Type::Bool), Some(InternedType::BOOL));
-        assert_eq!(pool.type_to_interned(Type::Unit), Some(InternedType::UNIT));
+        assert_eq!(pool.type_to_interned(Type::BOOL), Some(InternedType::BOOL));
+        assert_eq!(pool.type_to_interned(Type::UNIT), Some(InternedType::UNIT));
         assert_eq!(
-            pool.type_to_interned(Type::Never),
+            pool.type_to_interned(Type::NEVER),
             Some(InternedType::NEVER)
         );
         assert_eq!(
-            pool.type_to_interned(Type::Error),
+            pool.type_to_interned(Type::ERROR),
             Some(InternedType::ERROR)
         );
 
         // Composite types return None (need name lookup)
         assert!(
-            pool.type_to_interned(Type::Struct(crate::types::StructId(0)))
+            pool.type_to_interned(Type::new_struct(crate::types::StructId(0)))
                 .is_none()
         );
         assert!(
-            pool.type_to_interned(Type::Enum(crate::types::EnumId(0)))
+            pool.type_to_interned(Type::new_enum(crate::types::EnumId(0)))
                 .is_none()
         );
         assert!(
-            pool.type_to_interned(Type::Array(crate::types::ArrayTypeId(0)))
+            pool.type_to_interned(Type::new_array(crate::types::ArrayTypeId(0)))
                 .is_none()
         );
     }
@@ -1550,15 +1550,15 @@ mod tests {
         assert_eq!(pool.interned_to_type(InternedType::U16), Some(Type::U16));
         assert_eq!(pool.interned_to_type(InternedType::U32), Some(Type::U32));
         assert_eq!(pool.interned_to_type(InternedType::U64), Some(Type::U64));
-        assert_eq!(pool.interned_to_type(InternedType::BOOL), Some(Type::Bool));
-        assert_eq!(pool.interned_to_type(InternedType::UNIT), Some(Type::Unit));
+        assert_eq!(pool.interned_to_type(InternedType::BOOL), Some(Type::BOOL));
+        assert_eq!(pool.interned_to_type(InternedType::UNIT), Some(Type::UNIT));
         assert_eq!(
             pool.interned_to_type(InternedType::NEVER),
-            Some(Type::Never)
+            Some(Type::NEVER)
         );
         assert_eq!(
             pool.interned_to_type(InternedType::ERROR),
-            Some(Type::Error)
+            Some(Type::ERROR)
         );
 
         // Composite types return None

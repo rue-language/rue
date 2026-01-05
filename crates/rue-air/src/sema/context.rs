@@ -34,13 +34,6 @@ pub(crate) struct LocalVar {
 /// For example, `s.a.b` is represented as [sym("a"), sym("b")] with root sym("s").
 pub(crate) type FieldPath = Vec<Spur>;
 
-/// Information about a variable that has been moved.
-#[derive(Debug, Clone)]
-pub(crate) struct MoveInfo {
-    /// Span where the move occurred
-    pub moved_at: Span,
-}
-
 /// Tracks move state for a variable, including partial (field-level) moves.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct VariableMoveState {
@@ -91,15 +84,6 @@ impl VariableMoveState {
         None
     }
 
-    /// Check if the variable is partially moved (some field is moved but not the whole var).
-    /// Returns Some(span) of the first partial move found.
-    pub fn is_partially_moved(&self) -> Option<Span> {
-        if self.full_move.is_some() {
-            return None; // Fully moved, not partially moved
-        }
-        self.partial_moves.values().next().copied()
-    }
-
     /// Check if the entire variable (including all fields) is fully valid to use.
     /// Returns Some(span) if there's any move (full or partial) that would prevent use.
     pub fn is_any_part_moved(&self) -> Option<Span> {
@@ -107,12 +91,6 @@ impl VariableMoveState {
             return Some(span);
         }
         self.partial_moves.values().next().copied()
-    }
-
-    /// Clear all move state (used when variable is reassigned).
-    pub fn clear(&mut self) {
-        self.full_move = None;
-        self.partial_moves.clear();
     }
 
     /// Check if the variable has any move state.
@@ -212,16 +190,8 @@ use rue_rir::InstRef;
 impl ScopedContext for AnalysisContext<'_> {
     type VarInfo = LocalVar;
 
-    fn locals(&self) -> &HashMap<Spur, Self::VarInfo> {
-        &self.locals
-    }
-
     fn locals_mut(&mut self) -> &mut HashMap<Spur, Self::VarInfo> {
         &mut self.locals
-    }
-
-    fn scope_stack(&self) -> &[Vec<(Spur, Option<Self::VarInfo>)>] {
-        &self.scope_stack
     }
 
     fn scope_stack_mut(&mut self) -> &mut Vec<Vec<(Spur, Option<Self::VarInfo>)>> {
@@ -372,6 +342,8 @@ pub(crate) enum ConstValue {
     /// with a specific type like `i32` or `bool`.
     Type(Type),
     /// Unit value - the value of `()`.
+    // TODO(rue-c6gi): Remove #[allow] when Unit const evaluation is implemented
+    #[allow(dead_code)]
     Unit,
 }
 
@@ -393,6 +365,8 @@ impl ConstValue {
     }
 
     /// Try to extract a type value.
+    // TODO(rue-c6gi): Remove #[allow] when Unit const evaluation is implemented
+    #[allow(dead_code)]
     pub fn as_type(self) -> Option<Type> {
         match self {
             ConstValue::Type(ty) => Some(ty),
@@ -401,17 +375,21 @@ impl ConstValue {
     }
 
     /// Check if this is a unit value.
+    // TODO(rue-c6gi): Remove #[allow] when Unit const evaluation is implemented
+    #[allow(dead_code)]
     pub fn is_unit(self) -> bool {
         matches!(self, ConstValue::Unit)
     }
 
     /// Get the type of this constant value.
+    // TODO(rue-c6gi): Remove #[allow] when Unit const evaluation is implemented
+    #[allow(dead_code)]
     pub fn get_type(&self) -> Type {
         match self {
             ConstValue::Integer(_) => Type::I64, // Default to i64 for comptime integers
-            ConstValue::Bool(_) => Type::Bool,
-            ConstValue::Type(_) => Type::ComptimeType,
-            ConstValue::Unit => Type::Unit,
+            ConstValue::Bool(_) => Type::BOOL,
+            ConstValue::Type(_) => Type::COMPTIME_TYPE,
+            ConstValue::Unit => Type::UNIT,
         }
     }
 }
@@ -603,25 +581,6 @@ mod tests {
     }
 
     #[test]
-    fn variable_move_state_is_partially_moved() {
-        let mut state = VariableMoveState::default();
-        let interner = ThreadedRodeo::new();
-        let field_x = interner.get_or_intern("x");
-        let span = Span::new(10, 20);
-
-        // Initially not partially moved
-        assert!(state.is_partially_moved().is_none());
-
-        // After partial move
-        state.mark_path_moved(&[field_x], span);
-        assert_eq!(state.is_partially_moved(), Some(span));
-
-        // After full move, is_partially_moved returns None
-        state.mark_path_moved(&[], Span::new(50, 60));
-        assert!(state.is_partially_moved().is_none());
-    }
-
-    #[test]
     fn variable_move_state_is_any_part_moved() {
         let mut state = VariableMoveState::default();
         let interner = ThreadedRodeo::new();
@@ -640,23 +599,6 @@ mod tests {
         let mut state2 = VariableMoveState::default();
         state2.mark_path_moved(&[], span2);
         assert_eq!(state2.is_any_part_moved(), Some(span2));
-    }
-
-    #[test]
-    fn variable_move_state_clear() {
-        let mut state = VariableMoveState::default();
-        let interner = ThreadedRodeo::new();
-        let field_x = interner.get_or_intern("x");
-        let span = Span::new(10, 20);
-
-        state.mark_path_moved(&[], span);
-        state.partial_moves.insert(vec![field_x], Span::new(30, 40));
-
-        state.clear();
-
-        assert!(state.full_move.is_none());
-        assert!(state.partial_moves.is_empty());
-        assert!(state.is_empty());
     }
 
     #[test]
@@ -782,8 +724,8 @@ mod tests {
         assert_eq!(cv.as_integer(), None);
         assert_eq!(cv.as_bool(), None);
 
-        let cv2 = ConstValue::Type(Type::Bool);
-        assert_eq!(cv2.as_type(), Some(Type::Bool));
+        let cv2 = ConstValue::Type(Type::BOOL);
+        assert_eq!(cv2.as_type(), Some(Type::BOOL));
     }
 
     #[test]
@@ -798,9 +740,9 @@ mod tests {
     #[test]
     fn const_value_get_type() {
         assert_eq!(ConstValue::Integer(42).get_type(), Type::I64);
-        assert_eq!(ConstValue::Bool(true).get_type(), Type::Bool);
-        assert_eq!(ConstValue::Type(Type::I32).get_type(), Type::ComptimeType);
-        assert_eq!(ConstValue::Unit.get_type(), Type::Unit);
+        assert_eq!(ConstValue::Bool(true).get_type(), Type::BOOL);
+        assert_eq!(ConstValue::Type(Type::I32).get_type(), Type::COMPTIME_TYPE);
+        assert_eq!(ConstValue::Unit.get_type(), Type::UNIT);
     }
 
     #[test]

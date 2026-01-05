@@ -134,7 +134,7 @@ pub fn synthesize_drop_glue(type_pool: &TypeInternPool) -> Vec<AnalyzedFunction>
     for struct_id in type_pool.all_struct_ids() {
         let struct_def = type_pool.struct_def(struct_id);
         // Skip structs that don't need drop
-        let struct_ty = Type::Struct(struct_id);
+        let struct_ty = Type::new_struct(struct_id);
         if !type_needs_drop(struct_ty, type_pool) {
             continue;
         }
@@ -154,7 +154,7 @@ pub fn synthesize_drop_glue(type_pool: &TypeInternPool) -> Vec<AnalyzedFunction>
     // Create drop glue for arrays
     for array_id in type_pool.all_array_ids() {
         // Skip arrays that don't need drop
-        let array_ty = Type::Array(array_id);
+        let array_ty = Type::new_array(array_id);
         if !type_needs_drop(array_ty, type_pool) {
             continue;
         }
@@ -177,7 +177,7 @@ fn create_struct_drop_glue_function(
     let span = Span::new(0, 0); // Synthetic span
 
     // Create AIR for the drop glue function
-    let mut air = Air::new(Type::Unit);
+    let mut air = Air::new(Type::UNIT);
 
     // Calculate total parameter slots
     let mut num_param_slots = 0u32;
@@ -206,12 +206,12 @@ fn create_struct_drop_glue_function(
                         data: AirInstData::Param {
                             index: current_param_slot,
                         },
-                        ty: Type::Struct(nested_struct_id),
+                        ty: Type::new_struct(nested_struct_id),
                         span,
                     });
                     let drop_ref = air.add_inst(AirInst {
                         data: AirInstData::Drop { value: param_ref },
-                        ty: Type::Unit,
+                        ty: Type::UNIT,
                         span,
                     });
                     drop_statements.push(drop_ref);
@@ -223,12 +223,12 @@ fn create_struct_drop_glue_function(
                         data: AirInstData::Param {
                             index: current_param_slot,
                         },
-                        ty: Type::Array(array_id),
+                        ty: Type::new_array(array_id),
                         span,
                     });
                     let drop_ref = air.add_inst(AirInst {
                         data: AirInstData::Drop { value: param_ref },
-                        ty: Type::Unit,
+                        ty: Type::UNIT,
                         span,
                     });
                     drop_statements.push(drop_ref);
@@ -244,7 +244,7 @@ fn create_struct_drop_glue_function(
     // Create the unit value for return
     let unit_const = air.add_inst(AirInst {
         data: AirInstData::UnitConst,
-        ty: Type::Unit,
+        ty: Type::UNIT,
         span,
     });
 
@@ -264,7 +264,7 @@ fn create_struct_drop_glue_function(
                 stmts_len,
                 value: unit_const,
             },
-            ty: Type::Unit,
+            ty: Type::UNIT,
             span,
         })
     };
@@ -272,7 +272,7 @@ fn create_struct_drop_glue_function(
     // Add return instruction
     air.add_inst(AirInst {
         data: AirInstData::Ret(Some(return_value)),
-        ty: Type::Unit,
+        ty: Type::UNIT,
         span,
     });
 
@@ -303,7 +303,7 @@ fn create_array_drop_glue_function(
     let (element_type, length) = type_pool.array_def(array_id);
 
     // Create AIR for the drop glue function
-    let mut air = Air::new(Type::Unit);
+    let mut air = Air::new(Type::UNIT);
 
     // Calculate total parameter slots (element slots * length)
     let element_slot_count = type_slot_count(element_type, type_pool);
@@ -324,12 +324,12 @@ fn create_array_drop_glue_function(
                     data: AirInstData::Param {
                         index: current_param_slot,
                     },
-                    ty: Type::Struct(struct_id),
+                    ty: Type::new_struct(struct_id),
                     span,
                 });
                 let drop_ref = air.add_inst(AirInst {
                     data: AirInstData::Drop { value: param_ref },
-                    ty: Type::Unit,
+                    ty: Type::UNIT,
                     span,
                 });
                 drop_statements.push(drop_ref);
@@ -339,12 +339,12 @@ fn create_array_drop_glue_function(
                     data: AirInstData::Param {
                         index: current_param_slot,
                     },
-                    ty: Type::Array(nested_array_id),
+                    ty: Type::new_array(nested_array_id),
                     span,
                 });
                 let drop_ref = air.add_inst(AirInst {
                     data: AirInstData::Drop { value: param_ref },
-                    ty: Type::Unit,
+                    ty: Type::UNIT,
                     span,
                 });
                 drop_statements.push(drop_ref);
@@ -357,7 +357,7 @@ fn create_array_drop_glue_function(
     // Create the unit value for return
     let unit_const = air.add_inst(AirInst {
         data: AirInstData::UnitConst,
-        ty: Type::Unit,
+        ty: Type::UNIT,
         span,
     });
 
@@ -374,7 +374,7 @@ fn create_array_drop_glue_function(
                 stmts_len,
                 value: unit_const,
             },
-            ty: Type::Unit,
+            ty: Type::UNIT,
             span,
         })
     };
@@ -382,7 +382,7 @@ fn create_array_drop_glue_function(
     // Add return instruction
     air.add_inst(AirInst {
         data: AirInstData::Ret(Some(return_value)),
-        ty: Type::Unit,
+        ty: Type::UNIT,
         span,
     });
 

@@ -304,7 +304,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(output.functions[0].num_locals, 2);
-        assert_eq!(output.functions[0].air.return_type(), Type::Bool);
+        assert_eq!(output.functions[0].air.return_type(), Type::BOOL);
     }
 
     #[test]
@@ -626,7 +626,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(output.functions[0].air.return_type(), Type::Bool);
+        assert_eq!(output.functions[0].air.return_type(), Type::BOOL);
     }
 
     #[test]

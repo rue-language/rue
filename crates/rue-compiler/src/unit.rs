@@ -412,7 +412,7 @@ impl<'src> CompilationUnit<'src> {
         let all_functions: Vec<_> = sema_output
             .functions
             .into_iter()
-            .filter(|f| f.air.return_type() != Type::ComptimeType)
+            .filter(|f| f.air.return_type() != Type::COMPTIME_TYPE)
             .chain(drop_glue_functions)
             .collect();
 

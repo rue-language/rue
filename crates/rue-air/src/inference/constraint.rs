@@ -261,10 +261,10 @@ mod tests {
     fn test_substitution_apply_bound_var() {
         let mut subst = Substitution::new();
         let v0 = TypeVarId::new(0);
-        subst.insert(v0, InferType::Concrete(Type::Bool));
+        subst.insert(v0, InferType::Concrete(Type::BOOL));
 
         let ty = InferType::Var(v0);
-        assert_eq!(subst.apply(&ty), InferType::Concrete(Type::Bool));
+        assert_eq!(subst.apply(&ty), InferType::Concrete(Type::BOOL));
     }
 
     #[test]
@@ -375,7 +375,7 @@ mod tests {
         assert_eq!(subst.len(), 1);
 
         // Insert at a higher index - only counts actual mappings
-        subst.insert(TypeVarId::new(5), InferType::Concrete(Type::Bool));
+        subst.insert(TypeVarId::new(5), InferType::Concrete(Type::BOOL));
         assert_eq!(subst.len(), 2);
     }
 }

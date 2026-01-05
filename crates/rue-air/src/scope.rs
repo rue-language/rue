@@ -45,14 +45,8 @@ pub trait ScopedContext {
     /// The type of variable information stored for each local.
     type VarInfo: Clone;
 
-    /// Get a reference to the locals map.
-    fn locals(&self) -> &HashMap<Spur, Self::VarInfo>;
-
     /// Get a mutable reference to the locals map.
     fn locals_mut(&mut self) -> &mut HashMap<Spur, Self::VarInfo>;
-
-    /// Get a reference to the scope stack.
-    fn scope_stack(&self) -> &[Vec<(Spur, Option<Self::VarInfo>)>];
 
     /// Get a mutable reference to the scope stack.
     fn scope_stack_mut(&mut self) -> &mut Vec<Vec<(Spur, Option<Self::VarInfo>)>>;
@@ -128,16 +122,8 @@ mod tests {
     impl ScopedContext for TestContext {
         type VarInfo = i32;
 
-        fn locals(&self) -> &HashMap<Spur, Self::VarInfo> {
-            &self.locals
-        }
-
         fn locals_mut(&mut self) -> &mut HashMap<Spur, Self::VarInfo> {
             &mut self.locals
-        }
-
-        fn scope_stack(&self) -> &[Vec<(Spur, Option<Self::VarInfo>)>] {
-            &self.scope_stack
         }
 
         fn scope_stack_mut(&mut self) -> &mut Vec<Vec<(Spur, Option<Self::VarInfo>)>> {

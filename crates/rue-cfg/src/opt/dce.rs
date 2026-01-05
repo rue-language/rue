@@ -602,7 +602,7 @@ mod tests {
                     args_start,
                     args_len,
                 },
-                ty: Type::Unit,
+                ty: Type::UNIT,
                 span: Span::new(0, 0),
             },
         );

@@ -927,7 +927,7 @@ pub fn compile_frontend_from_ast_with_options(
     let all_functions: Vec<_> = sema_output
         .functions
         .into_iter()
-        .filter(|f| f.air.return_type() != Type::ComptimeType)
+        .filter(|f| f.air.return_type() != Type::COMPTIME_TYPE)
         .chain(drop_glue_functions)
         .collect();
 
@@ -1053,7 +1053,7 @@ pub fn compile_frontend_from_rir_with_file_paths(
     let all_functions: Vec<_> = sema_output
         .functions
         .into_iter()
-        .filter(|f| f.air.return_type() != Type::ComptimeType)
+        .filter(|f| f.air.return_type() != Type::COMPTIME_TYPE)
         .chain(drop_glue_functions)
         .collect();
 

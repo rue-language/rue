@@ -106,16 +106,8 @@ impl<'a> ConstraintContext<'a> {
 impl ScopedContext for ConstraintContext<'_> {
     type VarInfo = LocalVarInfo;
 
-    fn locals(&self) -> &HashMap<Spur, Self::VarInfo> {
-        &self.locals
-    }
-
     fn locals_mut(&mut self) -> &mut HashMap<Spur, Self::VarInfo> {
         &mut self.locals
-    }
-
-    fn scope_stack(&self) -> &[Vec<(Spur, Option<Self::VarInfo>)>] {
-        &self.scope_stack
     }
 
     fn scope_stack_mut(&mut self) -> &mut Vec<Vec<(Spur, Option<Self::VarInfo>)>> {
@@ -156,9 +148,9 @@ pub struct ConstraintGenerator<'a> {
     expr_types: HashMap<InstRef, InferType>,
     /// Function signatures (for call type checking).
     functions: &'a HashMap<Spur, FunctionSig>,
-    /// Struct types (name -> Type::Struct(id)).
+    /// Struct types (name -> Type::new_struct(id)).
     structs: &'a HashMap<Spur, Type>,
-    /// Enum types (name -> Type::Enum(id)).
+    /// Enum types (name -> Type::new_enum(id)).
     enums: &'a HashMap<Spur, Type>,
     /// Method signatures: (struct_id, method_name) -> MethodSig
     methods: &'a HashMap<(StructId, Spur), MethodSig>,
@@ -299,7 +291,7 @@ impl<'a> ConstraintGenerator<'a> {
                 InferType::Var(var)
             }
 
-            InstData::BoolConst(_) => InferType::Concrete(Type::Bool),
+            InstData::BoolConst(_) => InferType::Concrete(Type::BOOL),
 
             // String constants use the builtin String struct type.
             InstData::StringConst(_) => {
@@ -309,14 +301,14 @@ impl<'a> ConstraintGenerator<'a> {
                         InferType::Concrete(string_ty)
                     } else {
                         // Fallback if String struct not found (shouldn't happen after builtin injection)
-                        InferType::Concrete(Type::Error)
+                        InferType::Concrete(Type::ERROR)
                     }
                 } else {
-                    InferType::Concrete(Type::Error)
+                    InferType::Concrete(Type::ERROR)
                 }
             }
 
-            InstData::UnitConst => InferType::Concrete(Type::Unit),
+            InstData::UnitConst => InferType::Concrete(Type::UNIT),
 
             // Binary arithmetic: both operands must have the same type, result is that type
             InstData::Add { lhs, rhs }
@@ -343,7 +335,7 @@ impl<'a> ConstraintGenerator<'a> {
                 let rhs_info = self.generate(*rhs, ctx);
                 // Operands must have the same type
                 self.add_constraint(Constraint::equal(lhs_info.ty, rhs_info.ty, span));
-                InferType::Concrete(Type::Bool)
+                InferType::Concrete(Type::BOOL)
             }
 
             // Logical operators: operands must be bool, result is bool
@@ -352,15 +344,15 @@ impl<'a> ConstraintGenerator<'a> {
                 let rhs_info = self.generate(*rhs, ctx);
                 self.add_constraint(Constraint::equal(
                     lhs_info.ty,
-                    InferType::Concrete(Type::Bool),
+                    InferType::Concrete(Type::BOOL),
                     lhs_info.span,
                 ));
                 self.add_constraint(Constraint::equal(
                     rhs_info.ty,
-                    InferType::Concrete(Type::Bool),
+                    InferType::Concrete(Type::BOOL),
                     rhs_info.span,
                 ));
-                InferType::Concrete(Type::Bool)
+                InferType::Concrete(Type::BOOL)
             }
 
             // Unary negation: operand must be signed integer
@@ -378,10 +370,10 @@ impl<'a> ConstraintGenerator<'a> {
                 let operand_info = self.generate(*operand, ctx);
                 self.add_constraint(Constraint::equal(
                     operand_info.ty,
-                    InferType::Concrete(Type::Bool),
+                    InferType::Concrete(Type::BOOL),
                     operand_info.span,
                 ));
-                InferType::Concrete(Type::Bool)
+                InferType::Concrete(Type::BOOL)
             }
 
             // Bitwise NOT: operand must be integer
@@ -401,7 +393,7 @@ impl<'a> ConstraintGenerator<'a> {
                     param.ty.clone()
                 } else {
                     // Unknown variable - will be caught during semantic analysis
-                    InferType::Concrete(Type::Error)
+                    InferType::Concrete(Type::ERROR)
                 }
             }
 
@@ -410,7 +402,7 @@ impl<'a> ConstraintGenerator<'a> {
                 if let Some(param) = ctx.params.get(name) {
                     param.ty.clone()
                 } else {
-                    InferType::Concrete(Type::Error)
+                    InferType::Concrete(Type::ERROR)
                 }
             }
 
@@ -459,7 +451,7 @@ impl<'a> ConstraintGenerator<'a> {
                 }
 
                 // Alloc produces unit type
-                InferType::Concrete(Type::Unit)
+                InferType::Concrete(Type::UNIT)
             }
 
             // Assignment
@@ -470,7 +462,7 @@ impl<'a> ConstraintGenerator<'a> {
                     self.add_constraint(Constraint::equal(value_info.ty, local.ty.clone(), span));
                 }
                 // Assignment produces unit
-                InferType::Concrete(Type::Unit)
+                InferType::Concrete(Type::UNIT)
             }
 
             // Return statement
@@ -486,13 +478,13 @@ impl<'a> ConstraintGenerator<'a> {
                 } else {
                     // Return without value - function must return unit
                     self.add_constraint(Constraint::equal(
-                        InferType::Concrete(Type::Unit),
+                        InferType::Concrete(Type::UNIT),
                         InferType::Concrete(ctx.return_type),
                         span,
                     ));
                 }
                 // Return diverges
-                InferType::Concrete(Type::Never)
+                InferType::Concrete(Type::NEVER)
             }
 
             // Function call
@@ -517,7 +509,7 @@ impl<'a> ConstraintGenerator<'a> {
                             // If this is a comptime parameter, extract the type for substitution
                             if i < func.param_comptime.len() && func.param_comptime[i] {
                                 // The argument should be a TypeConst - extract the concrete type
-                                if let InferType::Concrete(Type::ComptimeType) = &arg_info.ty {
+                                if let InferType::Concrete(Type::COMPTIME_TYPE) = &arg_info.ty {
                                     // This is a type value - get the actual type from the RIR
                                     let arg_inst = self.rir.get(arg.value);
                                     if let rue_rir::InstData::TypeConst { type_name } =
@@ -534,9 +526,9 @@ impl<'a> ConstraintGenerator<'a> {
                                             "u16" => Type::U16,
                                             "u32" => Type::U32,
                                             "u64" => Type::U64,
-                                            "bool" => Type::Bool,
-                                            "()" => Type::Unit,
-                                            _ => Type::Error, // Unknown type
+                                            "bool" => Type::BOOL,
+                                            "()" => Type::UNIT,
+                                            _ => Type::ERROR, // Unknown type
                                         };
                                         if i < func.param_names.len() {
                                             type_subst.insert(func.param_names[i], concrete_ty);
@@ -548,7 +540,7 @@ impl<'a> ConstraintGenerator<'a> {
 
                         // Compute the actual return type by substituting type parameters
                         let return_type =
-                            if func.return_type == InferType::Concrete(Type::ComptimeType) {
+                            if func.return_type == InferType::Concrete(Type::COMPTIME_TYPE) {
                                 // Return type is a type parameter - look it up in substitutions
                                 if let Some(&concrete_ty) = type_subst.get(&func.return_type_sym) {
                                     InferType::Concrete(concrete_ty)
@@ -587,7 +579,7 @@ impl<'a> ConstraintGenerator<'a> {
                     for arg in args.iter() {
                         self.generate(arg.value, ctx);
                     }
-                    InferType::Concrete(Type::Error)
+                    InferType::Concrete(Type::ERROR)
                 }
             }
 
@@ -619,10 +611,10 @@ impl<'a> ConstraintGenerator<'a> {
                             InferType::Concrete(string_ty)
                         } else {
                             // Fallback if String struct not found
-                            InferType::Concrete(Type::Error)
+                            InferType::Concrete(Type::ERROR)
                         }
                     } else {
-                        InferType::Concrete(Type::Error)
+                        InferType::Concrete(Type::ERROR)
                     }
                 } else if intrinsic_name == "parse_i32" {
                     // @parse_i32: takes a String, returns i32
@@ -671,13 +663,13 @@ impl<'a> ConstraintGenerator<'a> {
                     for arg_ref in args.iter() {
                         self.generate(*arg_ref, ctx);
                     }
-                    InferType::Concrete(Type::Unit)
+                    InferType::Concrete(Type::UNIT)
                 } else if intrinsic_name == "is_null" {
                     // @is_null: takes a pointer, returns bool
                     for arg_ref in args.iter() {
                         self.generate(*arg_ref, ctx);
                     }
-                    InferType::Concrete(Type::Bool)
+                    InferType::Concrete(Type::BOOL)
                 } else if intrinsic_name == "ptr_read" {
                     // @ptr_read: takes ptr const T or ptr mut T, returns T
                     // The return type depends on the pointee type of the argument.
@@ -718,17 +710,17 @@ impl<'a> ConstraintGenerator<'a> {
                     for arg_ref in args.iter() {
                         self.generate(*arg_ref, ctx);
                     }
-                    InferType::Concrete(Type::Unit)
+                    InferType::Concrete(Type::UNIT)
                 } else if intrinsic_name == "target_arch" {
                     // @target_arch: returns Arch enum
                     if let Some(arch_spur) = self.interner.get("Arch") {
                         if let Some(&arch_ty) = self.enums.get(&arch_spur) {
                             InferType::Concrete(arch_ty)
                         } else {
-                            InferType::Concrete(Type::Error)
+                            InferType::Concrete(Type::ERROR)
                         }
                     } else {
-                        InferType::Concrete(Type::Error)
+                        InferType::Concrete(Type::ERROR)
                     }
                 } else if intrinsic_name == "target_os" {
                     // @target_os: returns Os enum
@@ -736,10 +728,10 @@ impl<'a> ConstraintGenerator<'a> {
                         if let Some(&os_ty) = self.enums.get(&os_spur) {
                             InferType::Concrete(os_ty)
                         } else {
-                            InferType::Concrete(Type::Error)
+                            InferType::Concrete(Type::ERROR)
                         }
                     } else {
-                        InferType::Concrete(Type::Error)
+                        InferType::Concrete(Type::ERROR)
                     }
                 } else {
                     // Generate constraints for arguments (they need to be processed)
@@ -747,7 +739,7 @@ impl<'a> ConstraintGenerator<'a> {
                         self.generate(*arg_ref, ctx);
                     }
                     // @dbg and other intrinsics return Unit
-                    InferType::Concrete(Type::Unit)
+                    InferType::Concrete(Type::UNIT)
                 }
             }
 
@@ -763,7 +755,7 @@ impl<'a> ConstraintGenerator<'a> {
             // Block
             InstData::Block { extra_start, len } => {
                 ctx.push_scope();
-                let mut last_ty = InferType::Concrete(Type::Unit);
+                let mut last_ty = InferType::Concrete(Type::UNIT);
                 let block_insts = self.rir.get_extra(*extra_start, *len);
                 for &inst_raw in block_insts {
                     let block_inst_ref = InstRef::from_raw(inst_raw);
@@ -783,7 +775,7 @@ impl<'a> ConstraintGenerator<'a> {
                 let cond_info = self.generate(*cond, ctx);
                 self.add_constraint(Constraint::equal(
                     cond_info.ty,
-                    InferType::Concrete(Type::Bool),
+                    InferType::Concrete(Type::BOOL),
                     cond_info.span,
                 ));
 
@@ -796,13 +788,13 @@ impl<'a> ConstraintGenerator<'a> {
                     // - If one branch is Never, the if-else takes the other branch's type
                     // - If both are Never, the result is Never
                     // - Otherwise, both must unify to the same type
-                    let then_is_never = matches!(&then_info.ty, InferType::Concrete(Type::Never));
-                    let else_is_never = matches!(&else_info.ty, InferType::Concrete(Type::Never));
+                    let then_is_never = matches!(&then_info.ty, InferType::Concrete(Type::NEVER));
+                    let else_is_never = matches!(&else_info.ty, InferType::Concrete(Type::NEVER));
 
                     match (then_is_never, else_is_never) {
                         (true, true) => {
                             // Both diverge - result is Never
-                            InferType::Concrete(Type::Never)
+                            InferType::Concrete(Type::NEVER)
                         }
                         (true, false) => {
                             // Then diverges - result is else type
@@ -832,7 +824,7 @@ impl<'a> ConstraintGenerator<'a> {
                 } else {
                     // No else branch - the if expression has unit type
                     // (or the then branch type if it's unit-compatible)
-                    InferType::Concrete(Type::Unit)
+                    InferType::Concrete(Type::UNIT)
                 }
             }
 
@@ -841,7 +833,7 @@ impl<'a> ConstraintGenerator<'a> {
                 let cond_info = self.generate(*cond, ctx);
                 self.add_constraint(Constraint::equal(
                     cond_info.ty,
-                    InferType::Concrete(Type::Bool),
+                    InferType::Concrete(Type::BOOL),
                     cond_info.span,
                 ));
 
@@ -850,7 +842,7 @@ impl<'a> ConstraintGenerator<'a> {
                 ctx.loop_depth -= 1;
 
                 // Loops produce unit
-                InferType::Concrete(Type::Unit)
+                InferType::Concrete(Type::UNIT)
             }
 
             // Infinite loop
@@ -860,11 +852,11 @@ impl<'a> ConstraintGenerator<'a> {
                 ctx.loop_depth -= 1;
 
                 // Infinite loop without break never returns
-                InferType::Concrete(Type::Never)
+                InferType::Concrete(Type::NEVER)
             }
 
             // Break/Continue
-            InstData::Break | InstData::Continue => InferType::Concrete(Type::Never),
+            InstData::Break | InstData::Continue => InferType::Concrete(Type::NEVER),
 
             // Match expression
             InstData::Match {
@@ -895,12 +887,12 @@ impl<'a> ConstraintGenerator<'a> {
                 // Filter out Never arms and use the remaining non-Never types
                 let non_never_arms: Vec<_> = arm_types
                     .iter()
-                    .filter(|info| !matches!(&info.ty, InferType::Concrete(Type::Never)))
+                    .filter(|info| !matches!(&info.ty, InferType::Concrete(Type::NEVER)))
                     .collect();
 
                 if non_never_arms.is_empty() {
                     // All arms diverge - result is Never
-                    InferType::Concrete(Type::Never)
+                    InferType::Concrete(Type::NEVER)
                 } else {
                     // Create constraints for non-Never arms to have the same type
                     let result_var = self.fresh_var();
@@ -937,7 +929,7 @@ impl<'a> ConstraintGenerator<'a> {
                     }
                     InferType::Concrete(struct_ty)
                 } else {
-                    InferType::Concrete(Type::Error)
+                    InferType::Concrete(Type::ERROR)
                 }
             }
 
@@ -960,7 +952,7 @@ impl<'a> ConstraintGenerator<'a> {
             } => {
                 self.generate(*base, ctx);
                 self.generate(*value, ctx);
-                InferType::Concrete(Type::Unit)
+                InferType::Concrete(Type::UNIT)
             }
 
             // Enum variant
@@ -968,7 +960,7 @@ impl<'a> ConstraintGenerator<'a> {
                 if let Some(&enum_ty) = self.enums.get(type_name) {
                     InferType::Concrete(enum_ty)
                 } else {
-                    InferType::Concrete(Type::Error)
+                    InferType::Concrete(Type::ERROR)
                 }
             }
 
@@ -1044,7 +1036,7 @@ impl<'a> ConstraintGenerator<'a> {
                     ));
                 }
 
-                InferType::Concrete(Type::Unit)
+                InferType::Concrete(Type::UNIT)
             }
 
             // Type declarations don't produce values
@@ -1052,7 +1044,7 @@ impl<'a> ConstraintGenerator<'a> {
             | InstData::StructDecl { .. }
             | InstData::EnumDecl { .. }
             | InstData::DropFnDecl { .. }
-            | InstData::ConstDecl { .. } => InferType::Concrete(Type::Unit),
+            | InstData::ConstDecl { .. } => InferType::Concrete(Type::UNIT),
 
             // Method call: receiver.method(args)
             InstData::MethodCall {
@@ -1090,21 +1082,21 @@ impl<'a> ConstraintGenerator<'a> {
                             for arg in args.iter() {
                                 self.generate(arg.value, ctx);
                             }
-                            InferType::Concrete(Type::Error)
+                            InferType::Concrete(Type::ERROR)
                         }
                     } else {
                         // Non-struct receiver - sema will report the error
                         for arg in args.iter() {
                             self.generate(arg.value, ctx);
                         }
-                        InferType::Concrete(Type::Error)
+                        InferType::Concrete(Type::ERROR)
                     }
                 } else {
                     // Non-concrete type - generate args and return error
                     for arg in args.iter() {
                         self.generate(arg.value, ctx);
                     }
-                    InferType::Concrete(Type::Error)
+                    InferType::Concrete(Type::ERROR)
                 };
 
                 result_type
@@ -1139,14 +1131,14 @@ impl<'a> ConstraintGenerator<'a> {
                         for arg in args.iter() {
                             self.generate(arg.value, ctx);
                         }
-                        InferType::Concrete(Type::Error)
+                        InferType::Concrete(Type::ERROR)
                     }
                 } else {
                     // Type not found - sema will report the error
                     for arg in args.iter() {
                         self.generate(arg.value, ctx);
                     }
-                    InferType::Concrete(Type::Error)
+                    InferType::Concrete(Type::ERROR)
                 };
                 result_type
             }
@@ -1178,11 +1170,11 @@ impl<'a> ConstraintGenerator<'a> {
 
             // Type constant: a type used as a value (e.g., `i32` in `identity(i32, 42)`)
             // This has the special ComptimeType type which indicates it's a type value.
-            InstData::TypeConst { .. } => InferType::Concrete(Type::ComptimeType),
+            InstData::TypeConst { .. } => InferType::Concrete(Type::COMPTIME_TYPE),
 
             // Anonymous struct type: a struct type used as a comptime value
             // This also has the ComptimeType type.
-            InstData::AnonStructType { .. } => InferType::Concrete(Type::ComptimeType),
+            InstData::AnonStructType { .. } => InferType::Concrete(Type::COMPTIME_TYPE),
         };
 
         // Record the type for this expression
@@ -1231,12 +1223,12 @@ impl<'a> ConstraintGenerator<'a> {
                 InferType::Var(var)
             }
             rue_rir::RirPattern::Int(_, _) => InferType::IntLiteral,
-            rue_rir::RirPattern::Bool(_, _) => InferType::Concrete(Type::Bool),
+            rue_rir::RirPattern::Bool(_, _) => InferType::Concrete(Type::BOOL),
             rue_rir::RirPattern::Path { type_name, .. } => {
                 if let Some(&enum_ty) = self.enums.get(type_name) {
                     InferType::Concrete(enum_ty)
                 } else {
-                    InferType::Concrete(Type::Error)
+                    InferType::Concrete(Type::ERROR)
                 }
             }
         }
@@ -1266,8 +1258,8 @@ impl<'a> ConstraintGenerator<'a> {
             "u16" => Type::U16,
             "u32" => Type::U32,
             "u64" => Type::U64,
-            "bool" => Type::Bool,
-            "()" => Type::Unit,
+            "bool" => Type::BOOL,
+            "()" => Type::UNIT,
             _ => {
                 // Check for struct types (including builtin String)
                 if let Some(name_spur) = self.interner.get(name) {
@@ -1342,11 +1334,11 @@ mod tests {
         let mut cgen =
             ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums, &methods);
         let params = HashMap::new();
-        let mut ctx = ConstraintContext::new(&params, Type::Bool);
+        let mut ctx = ConstraintContext::new(&params, Type::BOOL);
 
         let info = cgen.generate(inst_ref, &mut ctx);
 
-        assert_eq!(info.ty, InferType::Concrete(Type::Bool));
+        assert_eq!(info.ty, InferType::Concrete(Type::BOOL));
         assert_eq!(cgen.constraints().len(), 0);
     }
 
@@ -1415,12 +1407,12 @@ mod tests {
         let mut cgen =
             ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums, &methods);
         let params = HashMap::new();
-        let mut ctx = ConstraintContext::new(&params, Type::Bool);
+        let mut ctx = ConstraintContext::new(&params, Type::BOOL);
 
         let info = cgen.generate(lt, &mut ctx);
 
         // Comparisons always return Bool
-        assert_eq!(info.ty, InferType::Concrete(Type::Bool));
+        assert_eq!(info.ty, InferType::Concrete(Type::BOOL));
         // Should generate 1 constraint: lhs type = rhs type
         assert_eq!(cgen.constraints().len(), 1);
     }
@@ -1450,12 +1442,12 @@ mod tests {
         let mut cgen =
             ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums, &methods);
         let params = HashMap::new();
-        let mut ctx = ConstraintContext::new(&params, Type::Bool);
+        let mut ctx = ConstraintContext::new(&params, Type::BOOL);
 
         let info = cgen.generate(and, &mut ctx);
 
         // Logical operators return Bool
-        assert_eq!(info.ty, InferType::Concrete(Type::Bool));
+        assert_eq!(info.ty, InferType::Concrete(Type::BOOL));
         // Should generate 2 constraints: lhs = bool, rhs = bool
         assert_eq!(cgen.constraints().len(), 2);
     }
@@ -1522,7 +1514,7 @@ mod tests {
         let info = cgen.generate(ret, &mut ctx);
 
         // Return is divergent (Never type)
-        assert_eq!(info.ty, InferType::Concrete(Type::Never));
+        assert_eq!(info.ty, InferType::Concrete(Type::NEVER));
         // Should generate 1 constraint: return value = return type
         assert_eq!(cgen.constraints().len(), 1);
     }
@@ -1595,12 +1587,12 @@ mod tests {
         let mut cgen =
             ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums, &methods);
         let params = HashMap::new();
-        let mut ctx = ConstraintContext::new(&params, Type::Unit);
+        let mut ctx = ConstraintContext::new(&params, Type::UNIT);
 
         let info = cgen.generate(loop_inst, &mut ctx);
 
         // While loops produce Unit
-        assert_eq!(info.ty, InferType::Concrete(Type::Unit));
+        assert_eq!(info.ty, InferType::Concrete(Type::UNIT));
         // Should generate 1 constraint: cond = bool
         assert_eq!(cgen.constraints().len(), 1);
     }
@@ -1673,7 +1665,7 @@ mod tests {
         let sig = make_test_func_sig(
             vec![
                 InferType::Concrete(Type::I32),
-                InferType::Concrete(Type::Bool),
+                InferType::Concrete(Type::BOOL),
             ],
             InferType::Concrete(Type::I64),
         );
@@ -1702,12 +1694,12 @@ mod tests {
         let mut cgen =
             ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums, &methods);
         let params = HashMap::new();
-        let mut ctx = ConstraintContext::new(&params, Type::Unit);
+        let mut ctx = ConstraintContext::new(&params, Type::UNIT);
 
         let info = cgen.generate(loop_inst, &mut ctx);
 
         // Infinite loop produces Never (diverges)
-        assert_eq!(info.ty, InferType::Concrete(Type::Never));
+        assert_eq!(info.ty, InferType::Concrete(Type::NEVER));
         // No constraints for infinite loop itself
         assert_eq!(cgen.constraints().len(), 0);
     }
@@ -1728,12 +1720,12 @@ mod tests {
         let mut cgen =
             ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums, &methods);
         let params = HashMap::new();
-        let mut ctx = ConstraintContext::new(&params, Type::Unit);
+        let mut ctx = ConstraintContext::new(&params, Type::UNIT);
 
         let info = cgen.generate(break_inst, &mut ctx);
 
         // Break diverges
-        assert_eq!(info.ty, InferType::Concrete(Type::Never));
+        assert_eq!(info.ty, InferType::Concrete(Type::NEVER));
         assert_eq!(cgen.constraints().len(), 0);
     }
 
@@ -1805,12 +1797,12 @@ mod tests {
         let mut cgen =
             ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums, &methods);
         let params = HashMap::new();
-        let mut ctx = ConstraintContext::new(&params, Type::Unit);
+        let mut ctx = ConstraintContext::new(&params, Type::UNIT);
 
         let info = cgen.generate(index_set, &mut ctx);
 
         // Index assignment produces Unit
-        assert_eq!(info.ty, InferType::Concrete(Type::Unit));
+        assert_eq!(info.ty, InferType::Concrete(Type::UNIT));
         // Should generate 1 constraint: index must be unsigned
         assert_eq!(cgen.constraints().len(), 1);
         match &cgen.constraints()[0] {
@@ -1839,12 +1831,12 @@ mod tests {
         let mut cgen =
             ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums, &methods);
         let params = HashMap::new();
-        let mut ctx = ConstraintContext::new(&params, Type::Unit);
+        let mut ctx = ConstraintContext::new(&params, Type::UNIT);
 
         let info = cgen.generate(block, &mut ctx);
 
         // Empty block produces Unit
-        assert_eq!(info.ty, InferType::Concrete(Type::Unit));
+        assert_eq!(info.ty, InferType::Concrete(Type::UNIT));
         assert_eq!(cgen.constraints().len(), 0);
     }
 
@@ -1900,7 +1892,7 @@ mod tests {
                     InferType::Concrete(Type::I32),
                     InferType::Concrete(Type::I32),
                 ],
-                InferType::Concrete(Type::Bool),
+                InferType::Concrete(Type::BOOL),
             ),
         );
 
@@ -1925,12 +1917,12 @@ mod tests {
         let mut cgen =
             ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums, &methods);
         let params = HashMap::new();
-        let mut ctx = ConstraintContext::new(&params, Type::Bool);
+        let mut ctx = ConstraintContext::new(&params, Type::BOOL);
 
         let info = cgen.generate(call, &mut ctx);
 
         // Should still return the declared return type
-        assert_eq!(info.ty, InferType::Concrete(Type::Bool));
+        assert_eq!(info.ty, InferType::Concrete(Type::BOOL));
         // No constraints generated when arg count mismatches (error will be in sema)
         assert_eq!(cgen.constraints().len(), 0);
     }
@@ -1970,7 +1962,7 @@ mod tests {
         let info = cgen.generate(call, &mut ctx);
 
         // Unknown function returns Error type
-        assert_eq!(info.ty, InferType::Concrete(Type::Error));
+        assert_eq!(info.ty, InferType::Concrete(Type::ERROR));
         // Arguments should still be processed (but no constraints generated for them)
         assert_eq!(cgen.constraints().len(), 0);
     }

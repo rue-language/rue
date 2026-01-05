@@ -230,12 +230,12 @@ fn create_specialized_function(
     }
 
     // Calculate the return type by substituting type parameters
-    let return_type = if base_info.return_type == Type::ComptimeType {
+    let return_type = if base_info.return_type == Type::COMPTIME_TYPE {
         // The return type references a type parameter - substitute it
         type_subst
             .get(&base_info.return_type_sym)
             .copied()
-            .unwrap_or(Type::Unit)
+            .unwrap_or(Type::UNIT)
     } else {
         base_info.return_type
     };
@@ -254,7 +254,7 @@ fn create_specialized_function(
             // The param name's type symbol is stored in param_types as ComptimeType,
             // but we need to find which type param it references.
             // For now, we'll need to look at the original RIR to get the type name.
-            let concrete_ty = if *ty == Type::ComptimeType {
+            let concrete_ty = if *ty == Type::COMPTIME_TYPE {
                 // This parameter's type is a type parameter. We need to find which one.
                 // The type name in RIR is stored in the param's ty field as a Spur.
                 // Unfortunately, we've lost that information by this point.
@@ -304,9 +304,6 @@ fn substitute_param_type(
     param_name: Spur,
     type_subst: &HashMap<Spur, Type>,
 ) -> Option<Type> {
-    // Get the original RIR function to find the type symbol for this param
-    let fn_inst = sema.rir.get(base_info.body);
-
     // Walk up to find the FnDecl that contains this body
     for (_, inst) in sema.rir.iter() {
         if let rue_rir::InstData::FnDecl {

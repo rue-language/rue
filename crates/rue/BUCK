@@ -4,6 +4,7 @@ rust_binary(
         "src/main.rs",
         "src/timing.rs",
     ],
+    rustc_flags = ["-Dwarnings"],
     deps = [
         "//crates/rue-compiler:rue-compiler",
         "//crates/rue-rir:rue-rir",
@@ -23,6 +24,7 @@ rust_test(
         "src/main.rs",
         "src/timing.rs",
     ],
+    rustc_flags = ["-Dwarnings"],
     deps = [
         "//crates/rue-compiler:rue-compiler",
         "//crates/rue-rir:rue-rir",

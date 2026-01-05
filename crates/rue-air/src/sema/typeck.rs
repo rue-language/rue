@@ -12,7 +12,7 @@ use rue_span::Span;
 
 use super::Sema;
 use crate::inference::InferType;
-use crate::types::{ArrayTypeId, StructId, Type, TypeKind, parse_array_type_syntax};
+use crate::types::{ArrayTypeId, Type, TypeKind, parse_array_type_syntax};
 
 impl<'a> Sema<'a> {
     /// Get a human-readable name for a type.
@@ -92,29 +92,29 @@ impl<'a> Sema<'a> {
 
     /// Convert a fully-resolved InferType to a concrete Type.
     ///
-    /// This handles the conversion of InferType::Array to Type::Array(id)
+    /// This handles the conversion of InferType::Array to Type::new_array(id)
     /// by using the array type registry.
     pub(crate) fn infer_type_to_type(&mut self, ty: &InferType) -> Type {
         match ty {
             InferType::Concrete(t) => *t,
-            InferType::Var(_) => Type::Error,   // Unbound variable
+            InferType::Var(_) => Type::ERROR,   // Unbound variable
             InferType::IntLiteral => Type::I32, // Default (shouldn't happen after resolution)
             InferType::Array { element, length } => {
                 // Recursively convert element type
                 let elem_ty = self.infer_type_to_type(element);
-                if elem_ty == Type::Error {
-                    return Type::Error;
+                if elem_ty == Type::ERROR {
+                    return Type::ERROR;
                 }
                 // Get or create the array type ID
                 let array_type_id = self.get_or_create_array_type(elem_ty, *length);
-                Type::Array(array_type_id)
+                Type::new_array(array_type_id)
             }
         }
     }
 
     /// Convert a concrete Type to InferType for use in constraint generation.
     ///
-    /// This handles the conversion of Type::Array(id) to InferType::Array
+    /// This handles the conversion of Type::new_array(id) to InferType::Array
     /// by looking up the array definition to get element type and length.
     pub(crate) fn type_to_infer_type(&self, ty: Type) -> InferType {
         match ty.kind() {
@@ -147,18 +147,18 @@ impl<'a> Sema<'a> {
             "u16" => return Ok(Type::U16),
             "u32" => return Ok(Type::U32),
             "u64" => return Ok(Type::U64),
-            "bool" => return Ok(Type::Bool),
-            "()" => return Ok(Type::Unit),
-            "!" => return Ok(Type::Never),
+            "bool" => return Ok(Type::BOOL),
+            "()" => return Ok(Type::UNIT),
+            "!" => return Ok(Type::NEVER),
             // The type of types - used for comptime type parameters
-            "type" => return Ok(Type::ComptimeType),
+            "type" => return Ok(Type::COMPTIME_TYPE),
             _ => {}
         }
 
         if let Some(&struct_id) = self.structs.get(&type_sym) {
-            Ok(Type::Struct(struct_id))
+            Ok(Type::new_struct(struct_id))
         } else if let Some(&enum_id) = self.enums.get(&type_sym) {
-            Ok(Type::Enum(enum_id))
+            Ok(Type::new_enum(enum_id))
         } else {
             // Check for array type syntax: [T; N]
             if let Some((element_type, length)) = parse_array_type_syntax(type_name) {
@@ -167,19 +167,19 @@ impl<'a> Sema<'a> {
                 let element_ty = self.resolve_type(element_sym, span)?;
                 // Get or create the array type
                 let array_type_id = self.get_or_create_array_type(element_ty, length);
-                Ok(Type::Array(array_type_id))
+                Ok(Type::new_array(array_type_id))
             } else if let Some(pointee_type_str) = type_name.strip_prefix("ptr const ") {
                 // Pointer type syntax: ptr const T
                 let pointee_sym = self.interner.get_or_intern(pointee_type_str);
                 let pointee_ty = self.resolve_type(pointee_sym, span)?;
                 let ptr_type_id = self.type_pool.intern_ptr_const_from_type(pointee_ty);
-                Ok(Type::PtrConst(ptr_type_id))
+                Ok(Type::new_ptr_const(ptr_type_id))
             } else if let Some(pointee_type_str) = type_name.strip_prefix("ptr mut ") {
                 // Pointer type syntax: ptr mut T
                 let pointee_sym = self.interner.get_or_intern(pointee_type_str);
                 let pointee_ty = self.resolve_type(pointee_sym, span)?;
                 let ptr_type_id = self.type_pool.intern_ptr_mut_from_type(pointee_ty);
-                Ok(Type::PtrMut(ptr_type_id))
+                Ok(Type::new_ptr_mut(ptr_type_id))
             } else {
                 Err(CompileError::new(
                     ErrorKind::UnknownType(type_name.to_string()),
@@ -224,36 +224,36 @@ impl<'a> Sema<'a> {
             "u16" => return Some(Type::U16),
             "u32" => return Some(Type::U32),
             "u64" => return Some(Type::U64),
-            "bool" => return Some(Type::Bool),
-            "()" => return Some(Type::Unit),
-            "!" => return Some(Type::Never),
-            "type" => return Some(Type::ComptimeType),
+            "bool" => return Some(Type::BOOL),
+            "()" => return Some(Type::UNIT),
+            "!" => return Some(Type::NEVER),
+            "type" => return Some(Type::COMPTIME_TYPE),
             _ => {}
         }
 
         if let Some(&struct_id) = self.structs.get(&type_sym) {
-            Some(Type::Struct(struct_id))
+            Some(Type::new_struct(struct_id))
         } else if let Some(&enum_id) = self.enums.get(&type_sym) {
-            Some(Type::Enum(enum_id))
+            Some(Type::new_enum(enum_id))
         } else if let Some((element_type, length)) = parse_array_type_syntax(type_name) {
             // Resolve the element type first
             let element_sym = self.interner.get_or_intern(&element_type);
             let element_ty = self.resolve_type_for_comptime_with_subst(element_sym, type_subst)?;
             // Get or create the array type
             let array_type_id = self.get_or_create_array_type(element_ty, length);
-            Some(Type::Array(array_type_id))
+            Some(Type::new_array(array_type_id))
         } else if let Some(pointee_type_str) = type_name.strip_prefix("ptr const ") {
             // Pointer type syntax: ptr const T
             let pointee_sym = self.interner.get_or_intern(pointee_type_str);
             let pointee_ty = self.resolve_type_for_comptime_with_subst(pointee_sym, type_subst)?;
             let ptr_type_id = self.type_pool.intern_ptr_const_from_type(pointee_ty);
-            Some(Type::PtrConst(ptr_type_id))
+            Some(Type::new_ptr_const(ptr_type_id))
         } else if let Some(pointee_type_str) = type_name.strip_prefix("ptr mut ") {
             // Pointer type syntax: ptr mut T
             let pointee_sym = self.interner.get_or_intern(pointee_type_str);
             let pointee_ty = self.resolve_type_for_comptime_with_subst(pointee_sym, type_subst)?;
             let ptr_type_id = self.type_pool.intern_ptr_mut_from_type(pointee_ty);
-            Some(Type::PtrMut(ptr_type_id))
+            Some(Type::new_ptr_mut(ptr_type_id))
         } else {
             None // Unknown type
         }
@@ -283,7 +283,7 @@ impl<'a> Sema<'a> {
                 // Convert the element type to get the concrete Type
                 // (This is safe because we processed nested arrays first)
                 let elem_ty = self.infer_type_to_concrete_type_for_key(element);
-                if elem_ty != Type::Error {
+                if elem_ty != Type::ERROR {
                     // Pre-create this array type
                     self.get_or_create_array_type(elem_ty, *length);
                 }
@@ -302,17 +302,17 @@ impl<'a> Sema<'a> {
     pub(crate) fn infer_type_to_concrete_type_for_key(&self, ty: &InferType) -> Type {
         match ty {
             InferType::Concrete(t) => *t,
-            InferType::Var(_) => Type::Error,   // Unbound variable
+            InferType::Var(_) => Type::ERROR,   // Unbound variable
             InferType::IntLiteral => Type::I32, // Default
             InferType::Array { element, length } => {
                 // For nested arrays, look up or create the array type
                 let elem_ty = self.infer_type_to_concrete_type_for_key(element);
-                if elem_ty == Type::Error {
-                    return Type::Error;
+                if elem_ty == Type::ERROR {
+                    return Type::ERROR;
                 }
                 // Get or create the array type in the pool
                 let id = self.type_pool.intern_array_from_type(elem_ty, *length);
-                Type::Array(id)
+                Type::new_array(id)
             }
         }
     }
@@ -360,15 +360,5 @@ impl<'a> Sema<'a> {
             // Pointer types take 1 slot (64-bit address)
             TypeKind::PtrConst(_) | TypeKind::PtrMut(_) => 1,
         }
-    }
-
-    /// Get the slot offset of a field within a struct.
-    /// Returns the number of slots before the field starts.
-    pub(crate) fn field_slot_offset(&self, struct_id: StructId, field_index: usize) -> u32 {
-        let struct_def = self.type_pool.struct_def(struct_id);
-        struct_def.fields[..field_index]
-            .iter()
-            .map(|f| self.abi_slot_count(f.ty))
-            .sum()
     }
 }

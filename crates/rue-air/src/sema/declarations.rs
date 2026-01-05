@@ -21,7 +21,7 @@ use rue_span::Span;
 
 use super::{ConstInfo, FunctionInfo, InferenceContext, MethodInfo, Sema};
 use crate::inference::{FunctionSig, MethodSig};
-use crate::types::{EnumDef, EnumId, StructDef, StructField, StructId, Type};
+use crate::types::{EnumDef, StructDef, StructField, StructId, Type};
 
 impl<'a> Sema<'a> {
     /// Build an `InferenceContext` from the collected type information.
@@ -62,18 +62,18 @@ impl<'a> Sema<'a> {
             })
             .collect();
 
-        // Build struct types map (name -> Type::Struct(id))
+        // Build struct types map (name -> Type::new_struct(id))
         let struct_types: HashMap<Spur, Type> = self
             .structs
             .iter()
-            .map(|(name, id)| (*name, Type::Struct(*id)))
+            .map(|(name, id)| (*name, Type::new_struct(*id)))
             .collect();
 
-        // Build enum types map (name -> Type::Enum(id))
+        // Build enum types map (name -> Type::new_enum(id))
         let enum_types: HashMap<Spur, Type> = self
             .enums
             .iter()
-            .map(|(name, id)| (*name, Type::Enum(*id)))
+            .map(|(name, id)| (*name, Type::new_enum(*id)))
             .collect();
 
         // Build method signatures with InferType for constraint generation
@@ -282,31 +282,7 @@ impl<'a> Sema<'a> {
     pub(crate) fn resolve_declarations(&mut self) -> CompileResult<()> {
         self.resolve_struct_fields()?;
         self.resolve_remaining_declarations()?;
-
-        // Populate the type intern pool (ADR-0024 Phase 1).
-        // This runs after all type definitions are complete so we have
-        // full struct/enum definitions with resolved fields and variants.
-        self.populate_type_pool();
-
         Ok(())
-    }
-
-    /// Update the type intern pool with resolved struct/enum definitions.
-    ///
-    /// This is part of ADR-0024 Phase 3: structs and enums are registered in the
-    /// pool during `register_type_names()` with placeholder empty fields, then
-    /// this method updates them with the fully resolved definitions after
-    /// `resolve_struct_fields()` completes.
-    pub(crate) fn populate_type_pool(&mut self) {
-        // Update all structs in the pool with resolved field definitions
-        for (_, &struct_id) in &self.structs {
-            // The struct is already in the pool from register_type_names
-            // No need to update it again - it's the source of truth
-        }
-
-        // Note: Enum definitions don't need updating as they are complete when registered.
-        // Note: Array types are created on-demand during function body analysis via
-        // the TypeInternPool, which handles deduplication automatically.
     }
 
     /// Resolve struct field types. Must run before @copy validation.
@@ -543,7 +519,7 @@ impl<'a> Sema<'a> {
                         inst.span,
                     )
                 })?;
-                let struct_type = Type::Struct(struct_id);
+                let struct_type = Type::new_struct(struct_id);
 
                 // Look for a .handle() method using StructId
                 let handle_sym = self.interner.get("handle");
@@ -709,17 +685,17 @@ impl<'a> Sema<'a> {
             .collect();
 
         // For generic functions, we defer type resolution of type parameters until specialization.
-        // We use Type::ComptimeType as a placeholder for comptime T: type parameters.
+        // We use Type::COMPTIME_TYPE as a placeholder for comptime T: type parameters.
         let param_types: Vec<Type> = params
             .iter()
             .map(|p| {
                 if p.is_comptime && p.ty == type_sym {
                     // For comptime TYPE parameters (comptime T: type), the type is `type`
-                    Ok(Type::ComptimeType)
+                    Ok(Type::COMPTIME_TYPE)
                 } else if type_param_names.contains(&p.ty) {
                     // This parameter's type is a type parameter (e.g., `x: T` where T is comptime)
                     // Use ComptimeType as a placeholder - actual type determined at specialization
-                    Ok(Type::ComptimeType)
+                    Ok(Type::COMPTIME_TYPE)
                 } else {
                     // Regular params OR comptime VALUE params (comptime n: i32)
                     self.resolve_type(p.ty, span)
@@ -732,7 +708,7 @@ impl<'a> Sema<'a> {
         // a type parameter. For now, check if it matches any type parameter name.
         let ret_type = if type_param_names.contains(&return_type_sym) {
             // Return type is a type parameter - use placeholder
-            Type::ComptimeType
+            Type::COMPTIME_TYPE
         } else {
             self.resolve_type(return_type_sym, span)?
         };
@@ -779,7 +755,7 @@ impl<'a> Sema<'a> {
                 ));
             }
         };
-        let struct_type = Type::Struct(struct_id);
+        let struct_type = Type::new_struct(struct_id);
 
         let methods = self.rir.get_inst_refs(methods_start, methods_len);
         for method_ref in methods {
@@ -953,7 +929,7 @@ impl<'a> Sema<'a> {
                         .module_registry
                         .get_or_create(import_path, resolved_path);
 
-                    Ok(Type::Module(module_id))
+                    Ok(Type::new_module(module_id))
                 } else {
                     // For other intrinsics in const context, we don't support them yet
                     let intrinsic_name = self.interner.resolve(name).to_string();
@@ -972,10 +948,10 @@ impl<'a> Sema<'a> {
             InstData::IntConst(_) => Ok(Type::I32),
 
             // Boolean literals
-            InstData::BoolConst(_) => Ok(Type::Bool),
+            InstData::BoolConst(_) => Ok(Type::BOOL),
 
             // Unit literal
-            InstData::UnitConst => Ok(Type::Unit),
+            InstData::UnitConst => Ok(Type::UNIT),
 
             // String literals
             InstData::StringConst(_) => {

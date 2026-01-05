@@ -154,9 +154,9 @@ impl Default for ModuleRegistry {
 pub struct InferenceContext {
     /// Function signatures with InferType (for constraint generation).
     pub func_sigs: HashMap<Spur, FunctionSig>,
-    /// Struct types: name -> Type::Struct(id).
+    /// Struct types: name -> Type::new_struct(id).
     pub struct_types: HashMap<Spur, Type>,
-    /// Enum types: name -> Type::Enum(id).
+    /// Enum types: name -> Type::new_enum(id).
     pub enum_types: HashMap<Spur, Type>,
     /// Method signatures with InferType: (struct_id, method_name) -> MethodSig.
     pub method_sigs: HashMap<(StructId, Spur), MethodSig>,
@@ -254,7 +254,7 @@ impl<'a> SemaContext<'a> {
     /// Get the builtin String type as a Type::Struct.
     pub fn builtin_string_type(&self) -> Type {
         self.builtin_string_id
-            .map(Type::Struct)
+            .map(Type::new_struct)
             .expect("String type should be registered during builtin injection")
     }
 
@@ -595,7 +595,7 @@ impl<'a> SemaContext<'a> {
 
     /// Get the AIR output type for a builtin struct.
     pub fn builtin_air_type(&self, struct_id: StructId) -> Type {
-        Type::Struct(struct_id)
+        Type::new_struct(struct_id)
     }
 
     /// Check if a type is a linear type.

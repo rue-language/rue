@@ -354,7 +354,7 @@ mod tests {
 
         let range = arena.alloc(
             [x, y, z],
-            [Type::I32, Type::Bool, Type::I64],
+            [Type::I32, Type::BOOL, Type::I64],
             [
                 RirParamMode::Normal,
                 RirParamMode::Inout,
@@ -364,7 +364,7 @@ mod tests {
         );
 
         assert_eq!(range.len(), 3);
-        assert_eq!(arena.types(range), &[Type::I32, Type::Bool, Type::I64]);
+        assert_eq!(arena.types(range), &[Type::I32, Type::BOOL, Type::I64]);
         assert_eq!(
             arena.modes(range),
             &[
@@ -393,7 +393,7 @@ mod tests {
 
         // Second function with 1 param
         let c = make_spur(&mut rodeo, "c");
-        let range2 = arena.alloc([c], [Type::Bool], [RirParamMode::Inout], [false]);
+        let range2 = arena.alloc([c], [Type::BOOL], [RirParamMode::Inout], [false]);
 
         // Verify they don't overlap
         assert_eq!(range1.len(), 2);
@@ -402,7 +402,7 @@ mod tests {
 
         // Verify data is correct for each range
         assert_eq!(arena.types(range1), &[Type::I32, Type::I32]);
-        assert_eq!(arena.types(range2), &[Type::Bool]);
+        assert_eq!(arena.types(range2), &[Type::BOOL]);
     }
 
     #[test]
@@ -413,11 +413,11 @@ mod tests {
         let x = make_spur(&mut rodeo, "x");
         let y = make_spur(&mut rodeo, "y");
 
-        let range = arena.alloc_method([x, y], [Type::I32, Type::Bool]);
+        let range = arena.alloc_method([x, y], [Type::I32, Type::BOOL]);
 
         assert_eq!(range.len(), 2);
         assert_eq!(arena.names(range), &[x, y]);
-        assert_eq!(arena.types(range), &[Type::I32, Type::Bool]);
+        assert_eq!(arena.types(range), &[Type::I32, Type::BOOL]);
         // Methods default to Normal mode and non-comptime
         assert_eq!(
             arena.modes(range),
@@ -436,7 +436,7 @@ mod tests {
 
         let range = arena.alloc(
             [x, y],
-            [Type::I32, Type::Bool],
+            [Type::I32, Type::BOOL],
             [RirParamMode::Normal, RirParamMode::Inout],
             [false, true],
         );
@@ -444,7 +444,7 @@ mod tests {
         let items: Vec<_> = arena.iter(range).collect();
         assert_eq!(items.len(), 2);
         assert_eq!(items[0], (&x, &Type::I32, &RirParamMode::Normal, &false));
-        assert_eq!(items[1], (&y, &Type::Bool, &RirParamMode::Inout, &true));
+        assert_eq!(items[1], (&y, &Type::BOOL, &RirParamMode::Inout, &true));
     }
 
     #[test]
@@ -457,13 +457,13 @@ mod tests {
 
         let range = arena.alloc(
             [x, y],
-            [Type::I32, Type::Bool],
+            [Type::I32, Type::BOOL],
             [RirParamMode::Normal, RirParamMode::Normal],
             [false, false],
         );
 
         let pairs: Vec<_> = arena.name_type_pairs(range).collect();
-        assert_eq!(pairs, vec![(&x, &Type::I32), (&y, &Type::Bool)]);
+        assert_eq!(pairs, vec![(&x, &Type::I32), (&y, &Type::BOOL)]);
     }
 
     #[test]
@@ -476,7 +476,7 @@ mod tests {
 
         let range = arena.alloc(
             [x, y],
-            [Type::I32, Type::Bool],
+            [Type::I32, Type::BOOL],
             [RirParamMode::Normal, RirParamMode::Inout],
             [false, false],
         );
@@ -486,7 +486,7 @@ mod tests {
             pairs,
             vec![
                 (&Type::I32, &RirParamMode::Normal),
-                (&Type::Bool, &RirParamMode::Inout)
+                (&Type::BOOL, &RirParamMode::Inout)
             ]
         );
     }

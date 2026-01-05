@@ -131,7 +131,7 @@ impl<'a, 'ctx> FunctionAnalyzer<'a, 'ctx> {
 
                 // Convert the element type to get the concrete Type
                 let elem_ty = self.infer_type_to_type(element);
-                if elem_ty != Type::Error {
+                if elem_ty != Type::ERROR {
                     // Pre-create this array type
                     self.get_or_create_array_type(elem_ty, *length);
                 }
@@ -146,16 +146,16 @@ impl<'a, 'ctx> FunctionAnalyzer<'a, 'ctx> {
     pub fn infer_type_to_type(&self, ty: &InferType) -> Type {
         match ty {
             InferType::Concrete(t) => *t,
-            InferType::Var(_) => Type::Error,
+            InferType::Var(_) => Type::ERROR,
             InferType::IntLiteral => Type::I32,
             InferType::Array { element, length } => {
                 let elem_ty = self.infer_type_to_type(element);
-                if elem_ty == Type::Error {
-                    return Type::Error;
+                if elem_ty == Type::ERROR {
+                    return Type::ERROR;
                 }
                 // Use the thread-safe registry to get or create the array type
                 let id = self.get_or_create_array_type(elem_ty, *length);
-                Type::Array(id)
+                Type::new_array(id)
             }
         }
     }
@@ -233,16 +233,16 @@ impl<'a, 'ctx> FunctionAnalyzer<'a, 'ctx> {
             "u16" => return Ok(Type::U16),
             "u32" => return Ok(Type::U32),
             "u64" => return Ok(Type::U64),
-            "bool" => return Ok(Type::Bool),
-            "()" => return Ok(Type::Unit),
-            "!" => return Ok(Type::Never),
+            "bool" => return Ok(Type::BOOL),
+            "()" => return Ok(Type::UNIT),
+            "!" => return Ok(Type::NEVER),
             _ => {}
         }
 
         if let Some(struct_id) = self.ctx.get_struct(type_sym) {
-            Ok(Type::Struct(struct_id))
+            Ok(Type::new_struct(struct_id))
         } else if let Some(enum_id) = self.ctx.get_enum(type_sym) {
-            Ok(Type::Enum(enum_id))
+            Ok(Type::new_enum(enum_id))
         } else {
             // Check for array type syntax: [T; N]
             if let Some((element_type, length)) = crate::types::parse_array_type_syntax(type_name) {
@@ -251,7 +251,7 @@ impl<'a, 'ctx> FunctionAnalyzer<'a, 'ctx> {
                 let element_ty = self.resolve_type(element_sym, span)?;
                 // Get or create the array type
                 let array_type_id = self.get_or_create_array_type(element_ty, length);
-                Ok(Type::Array(array_type_id))
+                Ok(Type::new_array(array_type_id))
             } else if let Some((pointee_type, mutability)) =
                 crate::types::parse_pointer_type_syntax(type_name)
             {
@@ -262,11 +262,11 @@ impl<'a, 'ctx> FunctionAnalyzer<'a, 'ctx> {
                 match mutability {
                     crate::types::PtrMutability::Const => {
                         let ptr_id = self.ctx.get_or_create_ptr_const_type(pointee_ty);
-                        Ok(Type::PtrConst(ptr_id))
+                        Ok(Type::new_ptr_const(ptr_id))
                     }
                     crate::types::PtrMutability::Mut => {
                         let ptr_id = self.ctx.get_or_create_ptr_mut_type(pointee_ty);
-                        Ok(Type::PtrMut(ptr_id))
+                        Ok(Type::new_ptr_mut(ptr_id))
                     }
                 }
             } else {
