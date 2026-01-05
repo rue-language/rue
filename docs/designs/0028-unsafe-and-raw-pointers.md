@@ -1,13 +1,13 @@
 ---
 id: 0028
 title: Unchecked Code and Raw Pointers
-status: proposal
+status: implemented
 tags: [types, semantics, stdlib, ffi]
 feature-flag: unchecked
 created: 2026-01-03
-accepted:
-implemented:
-spec-sections: []
+accepted: 2026-01-03
+implemented: 2026-01-04
+spec-sections: ["9.1", "9.2"]
 superseded-by:
 ---
 
@@ -15,7 +15,7 @@ superseded-by:
 
 ## Status
 
-Proposal
+Implemented (under preview feature `unchecked_code`)
 
 ## Summary
 
@@ -323,10 +323,10 @@ Outside `checked` blocks, all of Rue's safety guarantees still hold.
 
 - [x] **Phase 1: Parser support** (rue-7qxm) - Add `checked` block syntax, `unchecked` function modifier, `ptr const`/`ptr mut` types
 - [x] **Phase 2: Type system** (rue-pb4z) - Pointer types in sema, checked block tracking
-- [x] **Phase 3: Pointer intrinsics** (rue-u9a4) - `@ptr_read`, `@ptr_write`, `@ptr_offset`, `@raw`, `@raw_mut`, etc.
+- [x] **Phase 3: Pointer intrinsics** (rue-u9a4) - `@ptr_read`, `@ptr_write`, `@ptr_offset`, `@addr_of`, `@addr_of_mut`, `@ptr_to_int`, `@int_to_ptr`
 - [x] **Phase 4: Syscall intrinsic** (rue-pwyw) - `@syscall` for direct OS calls
-- [x] **Phase 5: Codegen** (rue-bk7s) - Generate correct code for pointer operations
-- [ ] **Phase 6: Stdlib foundation** (rue-i3ti) - Implement basic Vec and I/O using unchecked code
+- [x] **Phase 5: Codegen** (rue-bk7s) - Generate correct code for pointer operations in both x86_64 and aarch64 backends
+- [ ] **Phase 6: Stdlib foundation** (rue-i3ti) - Implement basic Vec and I/O using unchecked code (follow-on work)
 
 ## Consequences
 
