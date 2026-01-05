@@ -639,9 +639,10 @@ impl<'a> SemaContext<'a> {
     ///
     /// Used for qualified struct literals like `module.StructName { ... }`.
     /// The `module_ref` is an InstRef pointing to the result of an @import.
+    /// Checks visibility: private structs are only accessible from the same directory.
     pub fn resolve_struct_through_module(
         &self,
-        module_ref: rue_rir::InstRef,
+        _module_ref: rue_rir::InstRef,
         type_name: lasso::Spur,
         span: rue_span::Span,
     ) -> rue_error::CompileResult<StructId> {
@@ -659,16 +660,26 @@ impl<'a> SemaContext<'a> {
         let type_name_str = self.interner.resolve(&type_name);
 
         // Try to find the struct globally
-        self.get_struct(type_name).ok_or_else(|| {
-            CompileError::new(
-                ErrorKind::UnknownType(format!(
-                    "{} (through module %{})",
-                    type_name_str,
-                    module_ref.as_u32()
-                )),
+        let struct_id = self.get_struct(type_name).ok_or_else(|| {
+            CompileError::new(ErrorKind::UnknownType(type_name_str.to_string()), span)
+        })?;
+
+        // Check visibility
+        let struct_def = self.get_struct_def(struct_id);
+        let accessing_file_id = span.file_id;
+        let target_file_id = struct_def.file_id;
+
+        if !self.is_accessible(accessing_file_id, target_file_id, struct_def.is_pub) {
+            return Err(CompileError::new(
+                ErrorKind::PrivateMemberAccess {
+                    item_kind: "struct".to_string(),
+                    name: type_name_str.to_string(),
+                },
                 span,
-            )
-        })
+            ));
+        }
+
+        Ok(struct_id)
     }
 
     /// Resolve an enum type through a module reference.
