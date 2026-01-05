@@ -7106,6 +7106,15 @@ impl<'a> Sema<'a> {
                     return Err(CompileError::new(ErrorKind::EmptyStruct, inst.span));
                 }
 
+                // If methods are present, check the preview feature first
+                if *methods_len > 0 {
+                    self.require_preview(
+                        PreviewFeature::AnonStructMethods,
+                        "anonymous struct methods",
+                        inst.span,
+                    )?;
+                }
+
                 // Resolve each field type and build the struct fields
                 let mut struct_fields = Vec::with_capacity(field_decls.len());
                 for (name_sym, type_sym) in field_decls {
@@ -7117,17 +7126,18 @@ impl<'a> Sema<'a> {
                     });
                 }
 
-                // Check if an equivalent anonymous struct already exists (structural equality)
-                let struct_ty = self.find_or_create_anon_struct(&struct_fields);
+                // Extract method signatures for structural equality comparison
+                // (uses type symbols, not resolved Types, so Self matches Self)
+                let method_sigs = self.extract_anon_method_sigs(*methods_start, *methods_len);
 
-                // Register methods for this anonymous struct
-                if *methods_len > 0 {
-                    // Anonymous struct methods require preview feature
-                    self.require_preview(
-                        PreviewFeature::AnonStructMethods,
-                        "anonymous struct methods",
-                        inst.span,
-                    )?;
+                // Check if an equivalent anonymous struct already exists (structural equality)
+                // This now compares both fields AND method signatures
+                let (struct_ty, is_new) =
+                    self.find_or_create_anon_struct(&struct_fields, &method_sigs);
+
+                // Register methods only for newly created anonymous structs
+                // (existing ones already have their methods registered)
+                if is_new && *methods_len > 0 {
                     let struct_id = struct_ty
                         .as_struct()
                         .expect("anon struct should have StructId");
@@ -9041,11 +9051,16 @@ impl<'a> Sema<'a> {
                     });
                 }
 
+                // Extract method signatures for structural equality comparison
+                let method_sigs = self.extract_anon_method_sigs(*methods_start, *methods_len);
+
                 // Find or create the anonymous struct type
-                let struct_ty = self.find_or_create_anon_struct(&struct_fields);
+                let (struct_ty, is_new) =
+                    self.find_or_create_anon_struct(&struct_fields, &method_sigs);
 
                 // Register methods if present (requires preview feature)
-                if *methods_len > 0 {
+                // Only register for newly created structs to avoid duplicate registration
+                if is_new && *methods_len > 0 {
                     // Check preview feature is enabled
                     if !self
                         .preview_features
@@ -9054,29 +9069,15 @@ impl<'a> Sema<'a> {
                         return None; // Feature not enabled, can't evaluate
                     }
                     let struct_id = struct_ty.as_struct()?;
-                    // Only register methods if not already registered
-                    // (can happen if the same AnonStructType is evaluated multiple times)
-                    let method_refs = self.rir.get_inst_refs(*methods_start, *methods_len);
-                    let first_method_ref = method_refs.first()?;
-                    let first_method_inst = self.rir.get(*first_method_ref);
-                    if let InstData::FnDecl {
-                        name: method_name, ..
-                    } = &first_method_inst.data
-                    {
-                        let key = (struct_id, *method_name);
-                        if !self.methods.contains_key(&key) {
-                            // Use comptime-safe method registration
-                            self.register_anon_struct_methods_for_comptime(
-                                struct_id,
-                                struct_ty,
-                                *methods_start,
-                                *methods_len,
-                                inst.span,
-                            )?;
-                        }
-                    }
+                    // Use comptime-safe method registration
+                    self.register_anon_struct_methods_for_comptime(
+                        struct_id,
+                        struct_ty,
+                        *methods_start,
+                        *methods_len,
+                        inst.span,
+                    )?;
                 }
-
                 Some(ConstValue::Type(struct_ty))
             }
 
@@ -9400,7 +9401,8 @@ impl<'a> Sema<'a> {
             InstData::AnonStructType {
                 fields_start,
                 fields_len,
-                ..
+                methods_start,
+                methods_len,
             } => {
                 let field_decls = self.rir.get_field_decls(*fields_start, *fields_len);
 
@@ -9416,7 +9418,11 @@ impl<'a> Sema<'a> {
                     });
                 }
 
-                let struct_ty = self.find_or_create_anon_struct(&struct_fields);
+                // Extract method signatures for structural equality comparison
+                let method_sigs = self.extract_anon_method_sigs(*methods_start, *methods_len);
+
+                let (struct_ty, _is_new) =
+                    self.find_or_create_anon_struct(&struct_fields, &method_sigs);
                 Some(ConstValue::Type(struct_ty))
             }
 
@@ -10316,6 +10322,46 @@ impl<'a> Sema<'a> {
         } else {
             self.resolve_type(type_sym, span)
         }
+    }
+
+    /// Extract method signatures from RIR for structural equality comparison.
+    ///
+    /// This extracts method signatures as type symbols (Spur), not resolved Types.
+    /// This is intentional: for structural equality, we compare type symbols directly
+    /// so that `Self` matches `Self` even before we know the concrete StructId.
+    fn extract_anon_method_sigs(
+        &self,
+        methods_start: u32,
+        methods_len: u32,
+    ) -> Vec<super::AnonMethodSig> {
+        let method_refs = self.rir.get_inst_refs(methods_start, methods_len);
+        let mut sigs = Vec::with_capacity(method_refs.len());
+
+        for method_ref in method_refs {
+            let method_inst = self.rir.get(method_ref);
+            if let InstData::FnDecl {
+                name,
+                params_start,
+                params_len,
+                return_type,
+                has_self,
+                ..
+            } = &method_inst.data
+            {
+                // Extract parameter types as symbols (excluding self)
+                let params = self.rir.get_params(*params_start, *params_len);
+                let param_types: Vec<Spur> = params.iter().map(|p| p.ty).collect();
+
+                sigs.push(super::AnonMethodSig {
+                    name: *name,
+                    has_self: *has_self,
+                    param_types,
+                    return_type: *return_type,
+                });
+            }
+        }
+
+        sigs
     }
 
     // ========================================================================

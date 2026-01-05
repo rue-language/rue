@@ -120,6 +120,7 @@ impl<'a> GatherOutput<'a> {
             module_registry: crate::sema_context::ModuleRegistry::new(),
             file_paths: HashMap::new(),
             param_arena: self.param_arena,
+            anon_struct_method_sigs: HashMap::new(),
         }
     }
 }
@@ -222,6 +223,27 @@ pub struct MethodInfo {
     pub span: rue_span::Span,
 }
 
+/// Method signature for anonymous struct structural equality comparison.
+///
+/// This captures only the parts of a method that affect structural equality:
+/// method name, whether it has self, parameter types (as symbols), and return type.
+/// Method bodies do NOT affect structural equality - only signatures matter.
+///
+/// Type symbols are stored as Spur (interned strings) rather than resolved Types
+/// because at comparison time, `Self` hasn't been resolved to a concrete StructId yet.
+/// Two methods using `Self` in the same positions are considered structurally equal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnonMethodSig {
+    /// Method name
+    pub name: Spur,
+    /// Whether this is a method (has self) or associated function (no self)
+    pub has_self: bool,
+    /// Parameter type symbols (excluding self parameter)
+    pub param_types: Vec<Spur>,
+    /// Return type symbol
+    pub return_type: Spur,
+}
+
 /// Information about a constant declaration.
 ///
 /// Constants are compile-time values. In the module system, they're primarily
@@ -282,6 +304,11 @@ pub struct Sema<'a> {
     /// Arena storage for function/method parameter data.
     /// FunctionInfo and MethodInfo store ParamRange handles into this arena.
     pub(crate) param_arena: ParamArena,
+    /// Method signatures for anonymous structs, used for structural equality comparison.
+    /// Maps StructId to the list of method signatures (as type symbols, not resolved Types).
+    /// This enables comparing anonymous structs by their method signatures before methods
+    /// are fully registered.
+    pub(crate) anon_struct_method_sigs: HashMap<StructId, Vec<AnonMethodSig>>,
 }
 
 impl<'a> Sema<'a> {
@@ -306,6 +333,7 @@ impl<'a> Sema<'a> {
             module_registry: crate::sema_context::ModuleRegistry::new(),
             file_paths: HashMap::new(),
             param_arena: ParamArena::new(),
+            anon_struct_method_sigs: HashMap::new(),
         }
     }
 
@@ -583,27 +611,59 @@ impl<'a> Sema<'a> {
         }
     }
 
-    /// Find an existing anonymous struct with the same fields, or create a new one.
+    /// Find an existing anonymous struct with the same fields and methods, or create a new one.
     ///
     /// This implements structural type equality for anonymous structs: two anonymous
-    /// structs with the same field names and types (in the same order) are the same type.
-    pub(crate) fn find_or_create_anon_struct(&mut self, fields: &[StructField]) -> Type {
+    /// structs with the same field names/types (in the same order) AND the same method
+    /// signatures are the same type. Method bodies do NOT affect structural equality.
+    ///
+    /// Returns a tuple of (Type, is_new) where is_new indicates whether the struct was
+    /// newly created (true) or an existing match was found (false). Callers should only
+    /// register methods for newly created structs.
+    pub(crate) fn find_or_create_anon_struct(
+        &mut self,
+        fields: &[StructField],
+        method_sigs: &[AnonMethodSig],
+    ) -> (Type, bool) {
         // Check if an equivalent anonymous struct already exists
         // Anonymous structs have names starting with "__anon_struct_"
         for struct_id in self.type_pool.all_struct_ids() {
             let struct_def = self.type_pool.struct_def(struct_id);
             if struct_def.name.starts_with("__anon_struct_") {
-                if struct_def.fields.len() == fields.len() {
-                    let mut all_match = true;
-                    for (def_field, new_field) in struct_def.fields.iter().zip(fields.iter()) {
-                        if def_field.name != new_field.name || def_field.ty != new_field.ty {
-                            all_match = false;
-                            break;
-                        }
+                // Check fields match
+                if struct_def.fields.len() != fields.len() {
+                    continue;
+                }
+                let mut fields_match = true;
+                for (def_field, new_field) in struct_def.fields.iter().zip(fields.iter()) {
+                    if def_field.name != new_field.name || def_field.ty != new_field.ty {
+                        fields_match = false;
+                        break;
                     }
-                    if all_match {
-                        return Type::Struct(struct_id);
+                }
+                if !fields_match {
+                    continue;
+                }
+
+                // Check method signatures match
+                let existing_sigs = self
+                    .anon_struct_method_sigs
+                    .get(&struct_id)
+                    .map(|v| v.as_slice())
+                    .unwrap_or(&[]);
+                if existing_sigs.len() != method_sigs.len() {
+                    continue;
+                }
+                let mut methods_match = true;
+                for (existing, new) in existing_sigs.iter().zip(method_sigs.iter()) {
+                    if existing != new {
+                        methods_match = false;
+                        break;
                     }
+                }
+                if methods_match {
+                    // Found a matching struct - return it with is_new=false
+                    return (Type::Struct(struct_id), false);
                 }
             }
         }
@@ -629,6 +689,12 @@ impl<'a> Sema<'a> {
 
         let (struct_id, _) = self.type_pool.register_struct(name_spur, struct_def);
 
+        // Store method signatures for future structural equality checks
+        if !method_sigs.is_empty() {
+            self.anon_struct_method_sigs
+                .insert(struct_id, method_sigs.to_vec());
+        }
+
         // Register in struct lookup
         self.structs.insert(name_spur, struct_id);
 
@@ -645,7 +711,8 @@ impl<'a> Sema<'a> {
         self.structs.remove(&name_spur);
         self.structs.insert(final_name_spur, struct_id);
 
-        Type::Struct(struct_id)
+        // Return with is_new=true
+        (Type::Struct(struct_id), true)
     }
 
     /// Resolve an enum type through a module reference.
