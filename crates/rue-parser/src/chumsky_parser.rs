@@ -16,6 +16,7 @@ use crate::ast::{
 use chumsky::input::{Input as ChumskyInput, MapExtra, Stream, ValueInput};
 use chumsky::pratt::{infix, left, prefix};
 use chumsky::prelude::*;
+use chumsky::recovery::via_parser;
 use lasso::{Spur, ThreadedRodeo};
 use rue_error::{CompileError, CompileErrors, ErrorKind, MultiErrorResult};
 use rue_lexer::TokenKind;
@@ -2183,12 +2184,65 @@ where
     ))
 }
 
+/// Parser that matches tokens that can start an item (for recovery).
+/// This is a "lookahead" - it peeks but doesn't consume.
+fn item_start<'src, I>() -> impl Parser<'src, I, (), ParserExtras<'src>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    choice((
+        just(TokenKind::Fn).ignored(),
+        just(TokenKind::Struct).ignored(),
+        just(TokenKind::Enum).ignored(),
+        just(TokenKind::Drop).ignored(),
+        just(TokenKind::Const).ignored(),
+        just(TokenKind::Pub).ignored(),
+        just(TokenKind::Linear).ignored(),
+        just(TokenKind::Unchecked).ignored(),
+        just(TokenKind::At).ignored(), // For @directives
+    ))
+    .rewind() // Peek without consuming
+}
+
+/// Recovery parser that skips tokens until finding an item start.
+/// Consumes at least one token to guarantee progress, then skips until
+/// we find a token that could start an item.
+fn error_recovery<'src, I>() -> impl Parser<'src, I, Item, ParserExtras<'src>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    // Skip at least one token to make progress, capturing the span
+    any()
+        .map_with(|_, extra| extra.span())
+        // Then skip any more tokens that don't start an item
+        .then(
+            any()
+                .and_is(item_start().not())
+                .repeated()
+                .collect::<Vec<_>>(),
+        )
+        .map(|(start_span, _): (SimpleSpan, Vec<TokenKind>)| {
+            // Convert SimpleSpan to Span
+            Item::Error(to_rue_span(start_span))
+        })
+}
+
+/// Parser for top-level items with error recovery.
+/// When an item fails to parse, we skip tokens until we find the start of
+/// another item, emit an Error node, and continue parsing.
+fn item_with_recovery<'src, I>() -> impl Parser<'src, I, Item, ParserExtras<'src>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    item_parser().recover_with(via_parser(error_recovery()))
+}
+
 /// Main parser that produces an AST
 fn ast_parser<'src, I>() -> impl Parser<'src, I, Ast, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    item_parser()
+    item_with_recovery()
         .repeated()
         .collect::<Vec<_>>()
         .then_ignore(end())
@@ -2377,6 +2431,7 @@ mod tests {
             Item::Enum(_) => panic!("parse_expr helper should only be used with functions"),
             Item::DropFn(_) => panic!("parse_expr helper should only be used with functions"),
             Item::Const(_) => panic!("parse_expr helper should only be used with functions"),
+            Item::Error(_) => panic!("parse_expr helper should only be used with functions"),
         };
         Ok(ExprResult { expr, interner })
     }
@@ -2405,6 +2460,7 @@ mod tests {
             Item::Enum(_) => panic!("expected Function"),
             Item::DropFn(_) => panic!("expected Function"),
             Item::Const(_) => panic!("expected Function"),
+            Item::Error(_) => panic!("expected Function"),
         }
     }
 
@@ -2474,6 +2530,7 @@ mod tests {
             Item::Enum(_) => panic!("expected Function"),
             Item::DropFn(_) => panic!("expected Function"),
             Item::Const(_) => panic!("expected Function"),
+            Item::Error(_) => panic!("expected Function"),
         }
     }
 

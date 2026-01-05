@@ -495,6 +495,9 @@ pub fn merge_symbols(program: ParsedProgram) -> MultiErrorResult<MergedProgram> 
                     // Drop fns and const declarations are validated in Sema, not here.
                     // Const declarations are checked for duplicates in the declarations phase.
                 }
+                Item::Error(_) => {
+                    // Error nodes from parser recovery are skipped - errors were already reported
+                }
             }
             all_items.push(item.clone());
         }
@@ -657,6 +660,9 @@ pub fn validate_and_generate_rir_parallel(
                 }
                 Item::DropFn(_) | Item::Const(_) => {
                     // Validated in Sema
+                }
+                Item::Error(_) => {
+                    // Error nodes from parser recovery are skipped
                 }
             }
         }

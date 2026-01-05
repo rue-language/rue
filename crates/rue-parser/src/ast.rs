@@ -70,6 +70,9 @@ pub enum Item {
     DropFn(DropFn),
     /// Constant declaration (e.g., `const math = @import("math");`)
     Const(ConstDecl),
+    /// Error node for recovered parse errors at item level.
+    /// Used by error recovery to continue parsing after a syntax error.
+    Error(Span),
 }
 
 /// A constant declaration.
@@ -433,6 +436,9 @@ pub enum Expr {
     Checked(CheckedBlockExpr),
     /// Type literal expression (e.g., `i32` used as a value in generic function calls)
     TypeLit(TypeLitExpr),
+    /// Error node for recovered parse errors.
+    /// Used by error recovery to continue parsing after a syntax error.
+    Error(Span),
 }
 
 /// An integer literal.
@@ -932,6 +938,7 @@ impl Expr {
             Expr::Comptime(comptime_expr) => comptime_expr.span,
             Expr::Checked(checked_expr) => checked_expr.span,
             Expr::TypeLit(type_lit) => type_lit.span,
+            Expr::Error(span) => *span,
         }
     }
 }
@@ -947,6 +954,7 @@ impl fmt::Display for Ast {
                 Item::Enum(e) => fmt_enum(f, e, 0)?,
                 Item::DropFn(drop_fn) => fmt_drop_fn(f, drop_fn, 0)?,
                 Item::Const(c) => fmt_const(f, c, 0)?,
+                Item::Error(span) => writeln!(f, "Error({:?})", span)?,
             }
         }
         Ok(())
@@ -1273,6 +1281,9 @@ fn fmt_expr(f: &mut fmt::Formatter<'_>, expr: &Expr, level: usize) -> fmt::Resul
         }
         Expr::TypeLit(type_lit) => {
             writeln!(f, "TypeLit({})", type_lit.type_expr)
+        }
+        Expr::Error(span) => {
+            writeln!(f, "Error({:?})", span)
         }
     }
 }

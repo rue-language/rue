@@ -1,0 +1,133 @@
+[section]
+id = "diagnostics.multi-error"
+name = "Multi-Error Reporting"
+description = "Tests that the parser reports multiple syntax errors in a single compilation."
+
+# =============================================================================
+# Multiple Syntax Errors at Item Level
+# =============================================================================
+
+# These tests verify that the parser can recover from one syntax error and
+# continue to find additional errors in subsequent items.
+
+[[case]]
+name = "multiple_function_errors"
+source = """
+fn foo( -> i32 { 0 }
+
+fn bar() -> i32 { 0 }
+
+fn baz( -> i32 { 0 }
+"""
+compile_fail = true
+# Both functions with missing params should be reported (lines 1 and 5)
+error_contains = ["1:9", "5:9"]
+
+[[case]]
+name = "missing_braces_multiple_functions"
+source = """
+fn foo() -> i32 0
+
+fn bar() -> i32 { 0 }
+
+fn baz() -> i32 0
+"""
+compile_fail = true
+# Both functions with missing braces should be reported
+error_contains = ["expected", "{"]
+
+[[case]]
+name = "multiple_struct_errors"
+source = """
+struct Foo x: i32 }
+
+struct Bar { y: i32 }
+
+struct Baz { z i32 }
+"""
+compile_fail = true
+error_contains = ["expected"]
+
+# =============================================================================
+# Multiple Errors Within a Function (Future: statement-level recovery)
+# =============================================================================
+
+# These tests verify that the parser can recover from errors within a function
+# body and continue to find additional errors. Note: statement-level recovery
+# is not yet implemented, so these tests are expected to report only the first error.
+
+[[case]]
+name = "multiple_statement_errors"
+source = """
+fn main() -> i32 {
+    let x 5;
+    let y = 10;
+    let z 15;
+    y
+}
+"""
+compile_fail = true
+# Currently only the first error is reported (no statement-level recovery yet)
+error_contains = ["expected"]
+
+[[case]]
+name = "missing_semicolons"
+source = """
+fn main() -> i32 {
+    let x = 5
+    let y = 10
+    y
+}
+"""
+compile_fail = true
+# The parser reports this as an unexpected 'let' token
+error_contains = ["expected"]
+
+# =============================================================================
+# Nested Delimiter Recovery (Future: delimiter recovery)
+# =============================================================================
+
+# These tests verify that the parser can recover from unbalanced delimiters.
+# Note: nested delimiter recovery is not yet implemented.
+
+[[case]]
+name = "unbalanced_parens"
+source = """
+fn main() -> i32 {
+    let x = (1 + 2;
+    let y = 3;
+    y
+}
+"""
+compile_fail = true
+# The parser reports an unexpected ';' token
+error_contains = ["expected"]
+
+[[case]]
+name = "unbalanced_braces"
+source = """
+fn main() -> i32 {
+    if true { 1
+    0
+}
+"""
+compile_fail = true
+# The parser reports expected semicolon
+error_contains = ["semicolon"]
+
+# =============================================================================
+# Error Count Verification
+# =============================================================================
+
+# These tests verify that we report multiple errors at item level.
+
+[[case]]
+name = "three_distinct_errors"
+source = """
+fn foo( -> i32 { 0 }
+fn bar( -> i32 { 0 }
+fn baz( -> i32 { 0 }
+"""
+compile_fail = true
+# All three function signatures are malformed - we should see errors on lines 1, 2, and 3
+error_contains = ["1:9", "2:9", "3:9"]

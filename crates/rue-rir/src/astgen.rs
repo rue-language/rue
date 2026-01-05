@@ -65,6 +65,8 @@ impl<'a> AstGen<'a> {
             Item::Const(const_decl) => {
                 self.gen_const(const_decl);
             }
+            // Error nodes from parser recovery are skipped - errors were already reported
+            Item::Error(_) => {}
         }
     }
 
@@ -773,6 +775,12 @@ impl<'a> AstGen<'a> {
                     }
                 }
             }
+            // Error nodes from parser recovery - generate a unit constant as a placeholder
+            // The error was already reported during parsing
+            Expr::Error(span) => self.rir.add_inst(Inst {
+                data: InstData::UnitConst,
+                span: *span,
+            }),
         }
     }
 

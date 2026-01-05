@@ -322,6 +322,9 @@ impl<'src> CompilationUnit<'src> {
                     Item::DropFn(_) | Item::Const(_) => {
                         // Validated in Sema
                     }
+                    Item::Error(_) => {
+                        // Error nodes from parser recovery are skipped
+                    }
                 }
                 all_items.push(item.clone());
             }

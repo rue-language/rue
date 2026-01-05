@@ -4,7 +4,7 @@
 //! including test case parsing, execution, and output comparison.
 
 use rue_error::PreviewFeature;
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 
 /// Default timeout for test execution in milliseconds (10 seconds).
 pub const DEFAULT_TIMEOUT_MS: u64 = 10_000;
@@ -51,6 +51,61 @@ pub struct ParamSet {
     pub values: HashMap<String, toml::Value>,
 }
 
+/// Wrapper type for `error_contains` that can be either a single string or an array.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ErrorContains(pub Vec<String>);
+
+impl ErrorContains {
+    /// Returns true if there are no expected error substrings.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Returns an iterator over the expected error substrings.
+    pub fn iter(&self) -> impl Iterator<Item = &String> {
+        self.0.iter()
+    }
+}
+
+impl<'de> Deserialize<'de> for ErrorContains {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        use serde::de::{self, Visitor};
+
+        struct ErrorContainsVisitor;
+
+        impl<'de> Visitor<'de> for ErrorContainsVisitor {
+            type Value = ErrorContains;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a string or array of strings")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<ErrorContains, E>
+            where
+                E: de::Error,
+            {
+                Ok(ErrorContains(vec![value.to_string()]))
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<ErrorContains, A::Error>
+            where
+                A: de::SeqAccess<'de>,
+            {
+                let mut values = Vec::new();
+                while let Some(value) = seq.next_element::<String>()? {
+                    values.push(value);
+                }
+                Ok(ErrorContains(values))
+            }
+        }
+
+        deserializer.deserialize_any(ErrorContainsVisitor)
+    }
+}
+
 /// A single test case.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Case {
@@ -65,9 +120,10 @@ pub struct Case {
     /// If true, only compile (don't run) - useful for infinite loops
     #[serde(default)]
     pub compile_only: bool,
-    /// Optional substring that should appear in the error message
+    /// Substring(s) that should appear in the error message.
+    /// Can be a single string or an array of strings.
     #[serde(default)]
-    pub error_contains: Option<String>,
+    pub error_contains: ErrorContains,
     /// Expected exact error output (golden test)
     #[serde(default)]
     pub expected_error: Option<String>,
@@ -272,10 +328,12 @@ pub fn expand_case(case: Case) -> Vec<Case> {
                 // Substitute placeholders in string fields
                 name: substitute_placeholders(&case.name, params),
                 source: substitute_placeholders(&case.source, params),
-                error_contains: case
-                    .error_contains
-                    .as_ref()
-                    .map(|s| substitute_placeholders(s, params)),
+                error_contains: ErrorContains(
+                    case.error_contains
+                        .iter()
+                        .map(|s| substitute_placeholders(s, params))
+                        .collect(),
+                ),
                 expected_error: case
                     .expected_error
                     .as_ref()
@@ -861,8 +919,8 @@ pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
             }
         }
 
-        // Check error message contains substring
-        if let Some(ref expected_error) = case.error_contains {
+        // Check error message contains all expected substrings
+        for expected_error in case.error_contains.iter() {
             if !stderr.contains(expected_error) {
                 return Err(format!(
                     "Error message mismatch:\n  expected to contain: {}\n  actual stderr: {}\n  source: {}",
@@ -1106,7 +1164,7 @@ mod tests {
             exit_code: Some(0),
             compile_fail: false,
             compile_only: false,
-            error_contains: None,
+            error_contains: ErrorContains::default(),
             expected_error: None,
             expected_tokens: None,
             expected_ast: None,
@@ -1156,7 +1214,7 @@ mod tests {
             exit_code: None, // Will be overridden
             compile_fail: false,
             compile_only: false,
-            error_contains: None,
+            error_contains: ErrorContains::default(),
             expected_error: None,
             expected_tokens: None,
             expected_ast: None,
@@ -1214,7 +1272,7 @@ mod tests {
             exit_code: Some(0),
             compile_fail: false,
             compile_only: false,
-            error_contains: None,
+            error_contains: ErrorContains::default(),
             expected_error: None,
             expected_tokens: None,
             expected_ast: None,
@@ -1264,7 +1322,7 @@ mod tests {
             exit_code: None,
             compile_fail: false, // Will be overridden
             compile_only: false,
-            error_contains: Some("{error_msg}".to_string()),
+            error_contains: ErrorContains(vec!["{error_msg}".to_string()]),
             expected_error: None,
             expected_tokens: None,
             expected_ast: None,
@@ -1298,7 +1356,7 @@ mod tests {
         assert!(expanded[0].compile_fail);
         assert_eq!(
             expanded[0].error_contains,
-            Some("type mismatch".to_string())
+            ErrorContains(vec!["type mismatch".to_string()])
         );
     }
 
@@ -1572,7 +1630,7 @@ mod tests {
             exit_code: Some(0),
             compile_fail: false,
             compile_only: false,
-            error_contains: None,
+            error_contains: ErrorContains::default(),
             expected_error: None,
             expected_tokens: None,
             expected_ast: None,
