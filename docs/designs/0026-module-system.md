@@ -1,12 +1,12 @@
 ---
 id: 0026
 title: Module System
-status: implemented
+status: stable
 tags: [architecture, compiler, modules, scalability]
-feature-flag: modules
 created: 2026-01-01
 accepted: 2026-01-04
 implemented: 2026-01-04
+stabilized: 2026-01-04
 spec-sections: []
 superseded-by:
 ---
@@ -15,7 +15,7 @@ superseded-by:
 
 ## Status
 
-Implemented
+Stable (no longer requires `--preview module_types`)
 
 ## Summary
 
@@ -322,7 +322,7 @@ All phases are complete. 40 spec tests pass.
 - [x] Resolve relative file paths from importing file
 - [x] Load and parse imported files on demand
 - [x] Create Module type for imported file
-- [x] PreviewFeature gate (`module_types`)
+- [x] Stabilized (preview gate removed)
 
 ### Phase 2: Module Member Access ✓
 
@@ -357,11 +357,6 @@ All phases are complete. 40 spec tests pass.
 - [x] `std/` directory with `_std.rue` root
 - [x] `@import("std")` resolution
 - [x] `std.math` submodule with abs, min, max, clamp
-
-### Remaining Work
-
-One test remains under `preview = "module_types"` without `preview_should_pass`:
-- `same_dir_access_private_enum`: Needs parser support for `module.EnumName::Variant` in match patterns
 
 ## Consequences
 

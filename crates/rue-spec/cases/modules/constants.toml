@@ -48,8 +48,6 @@ exit_code = 0
 [[case]]
 name = "const_import_syntax"
 description = "Const with @import syntax evaluated at compile time"
-preview = "module_types"
-preview_should_pass = true
 source = """
 const math = @import("nonexistent");
 fn main() -> i32 { 0 }
@@ -60,8 +58,6 @@ error_contains = "cannot find module 'nonexistent'"
 [[case]]
 name = "pub_const_import_syntax"
 description = "Pub const with @import syntax evaluated at compile time"
-preview = "module_types"
-preview_should_pass = true
 source = """
 pub const math = @import("nonexistent");
 fn main() -> i32 { 0 }

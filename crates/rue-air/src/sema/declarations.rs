@@ -919,13 +919,6 @@ impl<'a> Sema<'a> {
                 args_len,
             } => {
                 if *name == self.known.import {
-                    // Require module_types preview feature
-                    self.require_preview(
-                        PreviewFeature::ModuleTypes,
-                        "const = @import(...)",
-                        span,
-                    )?;
-
                     // Validate exactly one argument
                     if *args_len != 1 {
                         return Err(CompileError::new(

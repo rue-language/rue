@@ -252,9 +252,6 @@ pub enum PreviewFeature {
     /// Testing infrastructure feature - permanently unstable.
     /// Used to verify the preview feature gating mechanism works.
     TestInfra,
-    /// Module type access (e.g., `module.StructName`, `module.EnumName::Variant`).
-    /// Part of the module system (ADR-0026) - accessing types through modules.
-    ModuleTypes,
     /// Anonymous struct methods (Zig-style).
     /// Allows method definitions inside anonymous struct type expressions.
     /// See ADR-0029 for the full design.
@@ -282,7 +279,6 @@ impl PreviewFeature {
     pub fn name(&self) -> &'static str {
         match *self {
             PreviewFeature::TestInfra => "test_infra",
-            PreviewFeature::ModuleTypes => "module_types",
             PreviewFeature::AnonStructMethods => "anon_struct_methods",
             PreviewFeature::UncheckedCode => "unchecked_code",
         }
@@ -293,7 +289,6 @@ impl PreviewFeature {
     pub fn adr(&self) -> &'static str {
         match *self {
             PreviewFeature::TestInfra => "ADR-0005",
-            PreviewFeature::ModuleTypes => "ADR-0026",
             PreviewFeature::AnonStructMethods => "ADR-0029",
             PreviewFeature::UncheckedCode => "ADR-0028",
         }
@@ -303,7 +298,6 @@ impl PreviewFeature {
     pub fn all() -> &'static [PreviewFeature] {
         &[
             PreviewFeature::TestInfra,
-            PreviewFeature::ModuleTypes,
             PreviewFeature::AnonStructMethods,
             PreviewFeature::UncheckedCode,
         ]
@@ -329,7 +323,6 @@ impl std::str::FromStr for PreviewFeature {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "test_infra" => Ok(PreviewFeature::TestInfra),
-            "module_types" => Ok(PreviewFeature::ModuleTypes),
             "anon_struct_methods" => Ok(PreviewFeature::AnonStructMethods),
             "unchecked_code" => Ok(PreviewFeature::UncheckedCode),
             _ => Err(ParsePreviewFeatureError(s.to_string())),
@@ -1845,10 +1838,7 @@ mod tests {
     #[test]
     fn test_preview_feature_all_names() {
         let names = PreviewFeature::all_names();
-        assert_eq!(
-            names,
-            "test_infra, module_types, anon_struct_methods, unchecked_code"
-        );
+        assert_eq!(names, "test_infra, anon_struct_methods, unchecked_code");
     }
 
     // ========================================================================
