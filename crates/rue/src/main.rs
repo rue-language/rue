@@ -923,7 +923,7 @@ fn handle_emit_multi_file(
     };
 
     // Parse all files (needed for AST output or later stages)
-    let parsed: Option<ParsedProgram> = if needs_ast || needs_later_stages {
+    let mut parsed: Option<ParsedProgram> = if needs_ast || needs_later_stages {
         match parse_all_files(sources) {
             Ok(program) => Some(program),
             Err(errors) => {
@@ -950,15 +950,10 @@ fn handle_emit_multi_file(
 
     // Merge symbols and compile frontend (needed for later stages)
     let frontend_state = if needs_later_stages {
-        // We need to re-parse for merge_symbols since it consumes the ParsedProgram
-        // This is because we already consumed parsed above for AST cloning
-        let program = match parse_all_files(sources) {
-            Ok(program) => program,
-            Err(errors) => {
-                eprintln!("{}", formatter.format_errors(&errors));
-                return Err(());
-            }
-        };
+        // Take ownership of the parsed program (already parsed above)
+        let program = parsed
+            .take()
+            .expect("parsed should be Some when needs_later_stages is true");
 
         let merged = match merge_symbols(program) {
             Ok(m) => m,
