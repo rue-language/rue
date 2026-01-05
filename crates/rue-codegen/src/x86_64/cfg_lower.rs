@@ -29,11 +29,11 @@ use std::collections::HashMap;
 
 use lasso::ThreadedRodeo;
 use rue_air::{StructId, TypeInternPool, TypeKind};
-use rue_builtins::{BinOp, get_builtin_type};
+use rue_builtins::BinOp;
 use rue_cfg::{BasicBlock, BlockId, Cfg, CfgInstData, CfgValue, Terminator, Type};
 
 use super::mir::{LabelId, Operand, Reg, VReg, X86Inst, X86Mir};
-use crate::cfg_lower::{FieldChainBase, IndexChainBase, IndexLevel};
+use crate::cfg_lower::{CfgLowerContext, FieldChainBase, IndexChainBase, IndexLevel};
 use crate::types;
 use crate::vreg::BLOCK_LABEL_BASE;
 
@@ -45,9 +45,8 @@ const RET_REGS: [Reg; 6] = [Reg::Rax, Reg::Rdx, Reg::Rcx, Reg::R8, Reg::R9, Reg:
 
 /// CFG to X86Mir lowering.
 pub struct CfgLower<'a> {
-    cfg: &'a Cfg,
-    /// Type intern pool for struct/enum/array lookups (Phase 2B ADR-0024).
-    type_pool: &'a TypeInternPool,
+    /// Shared context with type helpers and chain tracing.
+    ctx: CfgLowerContext<'a>,
     /// String table from semantic analysis (indexed by StringId).
     strings: &'a [String],
     /// Interner for resolving Spur to string
@@ -62,10 +61,6 @@ pub struct CfgLower<'a> {
     /// Inline labels (for overflow checks, bounds checks, etc.) use IDs from
     /// the lower half of the `u32` space. See module docs for namespace details.
     next_label: u32,
-    /// Number of local variable slots
-    num_locals: u32,
-    /// Number of parameter slots
-    num_params: u32,
     /// Function name (needed to detect main function)
     fn_name: &'a str,
     /// Maps StructInit CFG values to their field vregs
@@ -84,7 +79,6 @@ impl<'a> CfgLower<'a> {
         strings: &'a [String],
         interner: &'a ThreadedRodeo,
     ) -> Self {
-        let num_locals = cfg.num_locals();
         let num_params = cfg.num_params();
 
         // Pre-calculate capacity hints to reduce HashMap reallocations
@@ -98,222 +92,48 @@ impl<'a> CfgLower<'a> {
         let estimated_inout_params = num_params.min(4) as usize;
 
         Self {
-            cfg,
-            type_pool,
+            ctx: CfgLowerContext::new(cfg, type_pool),
             strings,
             interner,
             mir: X86Mir::new(),
             value_map: HashMap::with_capacity(num_values),
             block_param_vregs: HashMap::with_capacity(estimated_block_params),
             next_label: 0,
-            num_locals,
-            num_params,
             fn_name: cfg.fn_name(),
             struct_slot_vregs: HashMap::with_capacity(estimated_struct_inits),
             inout_param_ptrs: HashMap::with_capacity(estimated_inout_params),
         }
     }
 
+    // ========================================================================
+    // Helper methods
+    // ========================================================================
+
     /// Intern a symbol name and return its ID.
-    ///
-    /// Convenience method that delegates to the MIR's symbol table.
     fn intern_symbol(&mut self, symbol: &str) -> u32 {
         self.mir.intern_symbol(symbol)
     }
 
-    /// Get the length of an array type.
-    fn array_length(&self, array_type: Type) -> u64 {
-        types::array_length_from_type(self.type_pool, array_type)
-    }
-
-    /// Get the array type definition.
-    ///
-    /// Returns `Some((element_type, length))` for array types, `None` otherwise.
-    fn array_type_def(&self, array_type: Type) -> Option<(Type, u64)> {
-        types::array_type_def_from_type(self.type_pool, array_type)
-    }
-
-    // ========================================================================
-    // Builtin type helpers
-    // ========================================================================
-
-    /// Check if a type is the builtin String struct.
-    ///
-    /// Returns true if the type is a struct that is marked as builtin with name "String".
-    fn is_builtin_string(&self, ty: Type) -> bool {
-        match ty.kind() {
-            TypeKind::Struct(struct_id) => {
-                let struct_def = self.type_pool.struct_def(struct_id);
-                struct_def.is_builtin && struct_def.name == "String"
-            }
-            _ => false,
-        }
-    }
-
-    /// Get the builtin operator runtime function for a type and operation.
-    ///
-    /// Returns `Some((runtime_fn, invert_result))` if the type has a builtin
-    /// operator implementation, `None` otherwise.
-    fn get_builtin_operator(&self, ty: Type, op: BinOp) -> Option<(&'static str, bool)> {
-        let builtin = match ty.kind() {
-            TypeKind::Struct(struct_id) => {
-                let struct_def = self.type_pool.struct_def(struct_id);
-                if struct_def.is_builtin {
-                    get_builtin_type(&struct_def.name)?
-                } else {
-                    return None;
-                }
-            }
-            _ => return None,
-        };
-        builtin
-            .find_operator(op)
-            .map(|op_def| (op_def.runtime_fn, op_def.invert_result))
-    }
-
-    /// Calculate the total number of slots needed to store a type.
-    fn type_slot_count(&self, ty: Type) -> u32 {
-        types::type_slot_count(self.type_pool, ty)
-    }
-
-    /// Calculate the slot count for a single element of an array type.
-    fn array_element_slot_count(&self, array_type: Type) -> u32 {
-        types::array_element_slot_count_from_type(self.type_pool, array_type)
-    }
-
-    /// Calculate the slot offset for a field within a struct.
-    fn struct_field_slot_offset(&self, struct_id: StructId, field_index: u32) -> u32 {
-        types::struct_field_slot_offset(self.type_pool, struct_id, field_index)
-    }
-
-    /// Trace back through a chain of FieldGet instructions to find the original
-    /// Load or Param source. Returns the base kind and accumulated slot offset.
-    fn trace_field_chain(&self, value: CfgValue) -> Option<(FieldChainBase, u32)> {
-        let inst = self.cfg.get_inst(value);
-        match &inst.data {
-            CfgInstData::Load { slot } => Some((FieldChainBase::Load { slot: *slot }, 0)),
-            CfgInstData::Param { index } => Some((FieldChainBase::Param { index: *index }, 0)),
-            CfgInstData::FieldGet {
-                base,
-                struct_id,
-                field_index,
-            } => {
-                // Recursively trace back through the base
-                if let Some((base_kind, accumulated_offset)) = self.trace_field_chain(*base) {
-                    let this_offset = self.struct_field_slot_offset(*struct_id, *field_index);
-                    Some((base_kind, accumulated_offset + this_offset))
-                } else {
-                    None
-                }
-            }
-            CfgInstData::IndexGet {
-                base: array_base,
-                array_type,
-                index,
-            } => {
-                // Array of structs case: the field's base is an IndexGet
-                // Try to trace the array base to find the original Load/Param
-                if let Some((index_base, mut levels)) = self.trace_index_chain(*array_base) {
-                    let elem_slot_count = self.array_element_slot_count(*array_type);
-                    levels.push(IndexLevel {
-                        index: *index,
-                        elem_slot_count,
-                        array_type: *array_type,
-                    });
-                    Some((
-                        FieldChainBase::IndexGet {
-                            index_base,
-                            index_levels: levels,
-                        },
-                        0, // No field offset yet - that will be added by the calling FieldGet
-                    ))
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        }
-    }
-
-    /// Trace back through a chain of IndexGet instructions to find the original
-    /// source (Load, Param, or FieldGet). Returns the base kind and the list of
-    /// index levels from outermost to innermost.
-    fn trace_index_chain(&self, value: CfgValue) -> Option<(IndexChainBase, Vec<IndexLevel>)> {
-        let inst = self.cfg.get_inst(value);
-        match &inst.data {
-            CfgInstData::Load { slot } => Some((IndexChainBase::Load { slot: *slot }, vec![])),
-            CfgInstData::Param { index } => Some((IndexChainBase::Param { index: *index }, vec![])),
-            CfgInstData::FieldGet {
-                base,
-                struct_id,
-                field_index,
-            } => {
-                // Array within a struct - find the struct's Load/Param
-                let struct_base_data = &self.cfg.get_inst(*base).data;
-                match struct_base_data {
-                    CfgInstData::Load { slot } => {
-                        let field_slot_offset =
-                            self.struct_field_slot_offset(*struct_id, *field_index);
-                        Some((
-                            IndexChainBase::FieldGet {
-                                struct_base_slot: *slot,
-                                field_slot_offset,
-                            },
-                            vec![],
-                        ))
-                    }
-                    _ => None, // Other struct sources not supported
-                }
-            }
-            CfgInstData::IndexGet {
-                base,
-                array_type,
-                index,
-            } => {
-                // Recursively trace the base
-                if let Some((base_kind, mut levels)) = self.trace_index_chain(*base) {
-                    let elem_slot_count = self.array_element_slot_count(*array_type);
-                    levels.push(IndexLevel {
-                        index: *index,
-                        elem_slot_count,
-                        array_type: *array_type,
-                    });
-                    Some((base_kind, levels))
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        }
-    }
-
     /// Recursively collect all scalar vregs from an array value.
-    /// Delegates to the shared implementation in `types`.
     fn collect_array_scalar_vregs(&mut self, value: CfgValue) -> Vec<VReg> {
-        // Clone struct_slot_vregs to avoid borrow conflict with get_vreg
         let slot_vregs = self.struct_slot_vregs.clone();
-        types::collect_array_scalar_vregs(self.cfg, &slot_vregs, value, &mut |v| self.get_vreg(v))
+        types::collect_array_scalar_vregs(self.ctx.cfg, &slot_vregs, value, &mut |v| {
+            self.get_vreg(v)
+        })
     }
 
     /// Recursively collect all scalar vregs from a struct value.
-    /// Delegates to the shared implementation in `types`.
     fn collect_struct_scalar_vregs(&mut self, value: CfgValue) -> Vec<VReg> {
-        // Clone struct_slot_vregs to avoid borrow conflict with get_vreg
         let slot_vregs = self.struct_slot_vregs.clone();
-        types::collect_struct_scalar_vregs(self.cfg, &slot_vregs, value, &mut |v| self.get_vreg(v))
-    }
-
-    /// Calculate the stack offset for a local variable slot.
-    fn local_offset(&self, slot: u32) -> i32 {
-        -((slot as i32 + 1) * 8)
+        types::collect_struct_scalar_vregs(self.ctx.cfg, &slot_vregs, value, &mut |v| {
+            self.get_vreg(v)
+        })
     }
 
     /// Check if a slot corresponds to an inout parameter.
-    /// Returns Some(param_index) if it's an inout param slot, None otherwise.
     fn slot_to_inout_param_index(&self, slot: u32) -> Option<u32> {
-        if slot >= self.num_locals && slot < self.num_locals + self.num_params {
-            let param_index = slot - self.num_locals;
-            if self.cfg.is_param_inout(param_index) {
+        if let Some(param_index) = self.ctx.slot_to_inout_param_index(slot) {
+            if self.ctx.cfg.is_param_inout(param_index) {
                 return Some(param_index);
             }
         }
@@ -335,8 +155,8 @@ impl<'a> CfgLower<'a> {
         let ptr_vreg = self.mir.alloc_vreg();
 
         if (param_slot as usize) < ARG_REGS.len() {
-            let slot = self.num_locals + param_slot;
-            let offset = self.local_offset(slot);
+            let slot = self.ctx.num_locals + param_slot;
+            let offset = self.ctx.local_offset(slot);
             self.mir.push(X86Inst::MovRM {
                 dst: Operand::Virtual(ptr_vreg),
                 base: Reg::Rbp,
@@ -424,7 +244,7 @@ impl<'a> CfgLower<'a> {
             return Some(vregs);
         }
 
-        let inst = self.cfg.get_inst(value);
+        let inst = self.ctx.cfg.get_inst(value);
         let struct_id = match inst.ty.kind() {
             TypeKind::Struct(id) => id,
             _ => return None,
@@ -436,16 +256,16 @@ impl<'a> CfgLower<'a> {
                 fields_len,
                 ..
             } => {
-                let fields = self.cfg.get_extra(*fields_start, *fields_len);
+                let fields = self.ctx.cfg.get_extra(*fields_start, *fields_len);
                 Some(fields.iter().map(|f| self.get_vreg(*f)).collect())
             }
             CfgInstData::Load { slot } => {
                 // Load slot values from consecutive stack slots
-                let slot_count = self.type_slot_count(Type::Struct(struct_id));
+                let slot_count = self.ctx.type_slot_count(Type::Struct(struct_id));
                 let mut vregs = Vec::with_capacity(slot_count as usize);
                 for i in 0..slot_count {
                     let vreg = self.mir.alloc_vreg();
-                    let offset = self.local_offset(slot + i);
+                    let offset = self.ctx.local_offset(slot + i);
                     self.mir.push(X86Inst::MovRM {
                         dst: Operand::Virtual(vreg),
                         base: Reg::Rbp,
@@ -457,12 +277,12 @@ impl<'a> CfgLower<'a> {
             }
             CfgInstData::Param { index } => {
                 // Get slot values from parameter area
-                let slot_count = self.type_slot_count(Type::Struct(struct_id));
+                let slot_count = self.ctx.type_slot_count(Type::Struct(struct_id));
                 let mut vregs = Vec::with_capacity(slot_count as usize);
                 for i in 0..slot_count {
                     let vreg = self.mir.alloc_vreg();
-                    let param_slot = self.num_locals + index + i;
-                    let offset = self.local_offset(param_slot);
+                    let param_slot = self.ctx.num_locals + index + i;
+                    let offset = self.ctx.local_offset(param_slot);
                     self.mir.push(X86Inst::MovRM {
                         dst: Operand::Virtual(vreg),
                         base: Reg::Rbp,
@@ -479,7 +299,7 @@ impl<'a> CfgLower<'a> {
 
     /// Copy a struct value's field vregs to a block parameter's field vregs.
     fn copy_struct_to_block_param(&mut self, arg: CfgValue, target_block: BlockId, param_idx: u32) {
-        let target_param = self.cfg.get_block(target_block).params[param_idx as usize].0;
+        let target_param = self.ctx.cfg.get_block(target_block).params[param_idx as usize].0;
 
         let src_fields = self.get_or_compute_field_vregs(arg);
         let dst_fields = self.struct_slot_vregs.get(&target_param).cloned();
@@ -511,7 +331,7 @@ impl<'a> CfgLower<'a> {
     /// Lower CFG to X86Mir.
     pub fn lower(mut self) -> X86Mir {
         // Pre-allocate vregs for block parameters
-        for block in self.cfg.blocks() {
+        for block in self.ctx.cfg.blocks() {
             for (param_idx, (param_val, ty)) in block.params.iter().enumerate() {
                 let vreg = self.mir.alloc_vreg();
                 self.block_param_vregs
@@ -520,7 +340,7 @@ impl<'a> CfgLower<'a> {
 
                 // For struct types, also allocate vregs for each slot
                 if let TypeKind::Struct(struct_id) = ty.kind() {
-                    let slot_count = self.type_slot_count(Type::Struct(struct_id));
+                    let slot_count = self.ctx.type_slot_count(Type::Struct(struct_id));
                     let mut slot_vregs = vec![vreg]; // First slot uses main vreg
                     for _ in 1..slot_count {
                         slot_vregs.push(self.mir.alloc_vreg());
@@ -531,7 +351,7 @@ impl<'a> CfgLower<'a> {
         }
 
         // Lower each block
-        for block in self.cfg.blocks() {
+        for block in self.ctx.cfg.blocks() {
             self.lower_block(block);
         }
 
@@ -555,7 +375,7 @@ impl<'a> CfgLower<'a> {
         };
 
         // Pre-allocate vregs for block parameters (same as lower())
-        for block in self.cfg.blocks() {
+        for block in self.ctx.cfg.blocks() {
             for (param_idx, (param_val, ty)) in block.params.iter().enumerate() {
                 let vreg = self.mir.alloc_vreg();
                 self.block_param_vregs
@@ -563,7 +383,7 @@ impl<'a> CfgLower<'a> {
                 self.value_map.insert(*param_val, vreg);
 
                 if let TypeKind::Struct(struct_id) = ty.kind() {
-                    let slot_count = self.type_slot_count(Type::Struct(struct_id));
+                    let slot_count = self.ctx.type_slot_count(Type::Struct(struct_id));
                     let mut slot_vregs = vec![vreg];
                     for _ in 1..slot_count {
                         slot_vregs.push(self.mir.alloc_vreg());
@@ -574,7 +394,7 @@ impl<'a> CfgLower<'a> {
         }
 
         // Lower each block with debug tracking
-        for block in self.cfg.blocks() {
+        for block in self.ctx.cfg.blocks() {
             let mut block_info = BlockLoweringInfo {
                 block_id: block.id,
                 instructions: Vec::new(),
@@ -582,7 +402,7 @@ impl<'a> CfgLower<'a> {
             };
 
             // Emit block label (except for entry block)
-            if block.id != self.cfg.entry {
+            if block.id != self.ctx.cfg.entry {
                 self.mir.push(X86Inst::Label {
                     id: self.block_label(block.id),
                 });
@@ -595,7 +415,7 @@ impl<'a> CfgLower<'a> {
                     continue;
                 }
 
-                let inst = self.cfg.get_inst(value);
+                let inst = self.ctx.cfg.get_inst(value);
                 let inst_before = self.mir.inst_count();
 
                 // Lower the instruction
@@ -636,7 +456,7 @@ impl<'a> CfgLower<'a> {
             let term_rationale = self.get_terminator_rationale(&block.terminator);
 
             block_info.terminator = Some(TerminatorLoweringDecision {
-                terminator_desc: format_terminator(self.cfg, &block.terminator),
+                terminator_desc: format_terminator(self.ctx.cfg, &block.terminator),
                 mir_insts: term_mir_insts,
                 rationale: term_rationale,
             });
@@ -692,7 +512,7 @@ impl<'a> CfgLower<'a> {
                 args_len,
                 ..
             } => {
-                let args = self.cfg.get_call_args(*args_start, *args_len);
+                let args = self.ctx.cfg.get_call_args(*args_start, *args_len);
                 let inout_count = args.iter().filter(|a| a.is_inout()).count();
                 let borrow_count = args.iter().filter(|a| a.is_borrow()).count();
                 if inout_count > 0 || borrow_count > 0 {
@@ -707,7 +527,7 @@ impl<'a> CfgLower<'a> {
                 }
             }
             CfgInstData::Param { index } => {
-                if self.cfg.is_param_inout(*index) {
+                if self.ctx.cfg.is_param_inout(*index) {
                     Some("Inout param: load pointer then dereference".to_string())
                 } else if (*index as usize) < ARG_REGS.len() {
                     Some(format!(
@@ -755,7 +575,7 @@ impl<'a> CfgLower<'a> {
     /// Lower a single basic block.
     fn lower_block(&mut self, block: &BasicBlock) {
         // Emit block label (except for entry block)
-        if block.id != self.cfg.entry {
+        if block.id != self.ctx.cfg.entry {
             self.mir.push(X86Inst::Label {
                 id: self.block_label(block.id),
             });
@@ -777,7 +597,7 @@ impl<'a> CfgLower<'a> {
             return;
         }
 
-        let inst = self.cfg.get_inst(value);
+        let inst = self.ctx.cfg.get_inst(value);
         let ty = inst.ty;
 
         match &inst.data {
@@ -840,7 +660,7 @@ impl<'a> CfgLower<'a> {
 
             CfgInstData::Param { index } => {
                 // Check if this is an inout parameter
-                let is_inout = self.cfg.is_param_inout(*index);
+                let is_inout = self.ctx.cfg.is_param_inout(*index);
 
                 if is_inout {
                     // For inout params, the slot contains a POINTER to the caller's memory.
@@ -850,8 +670,8 @@ impl<'a> CfgLower<'a> {
 
                     // Load the pointer from the param slot
                     if (*index as usize) < ARG_REGS.len() {
-                        let slot = self.num_locals + *index;
-                        let offset = self.local_offset(slot);
+                        let slot = self.ctx.num_locals + *index;
+                        let offset = self.ctx.local_offset(slot);
                         self.mir.push(X86Inst::MovRM {
                             dst: Operand::Virtual(ptr_vreg),
                             base: Reg::Rbp,
@@ -883,8 +703,8 @@ impl<'a> CfgLower<'a> {
                     self.value_map.insert(value, vreg);
 
                     if (*index as usize) < ARG_REGS.len() {
-                        let slot = self.num_locals + *index;
-                        let offset = self.local_offset(slot);
+                        let slot = self.ctx.num_locals + *index;
+                        let offset = self.ctx.local_offset(slot);
                         self.mir.push(X86Inst::MovRM {
                             dst: Operand::Virtual(vreg),
                             base: Reg::Rbp,
@@ -1318,7 +1138,7 @@ impl<'a> CfgLower<'a> {
                 // Check if shift amount is a constant - use immediate form if so
                 // Mask shift amount to match x86-64 hardware semantics:
                 // 63 (0x3F) for 64-bit shifts, 31 (0x1F) for 32-bit shifts
-                let rhs_inst = &self.cfg.get_inst(*rhs).data;
+                let rhs_inst = &self.ctx.cfg.get_inst(*rhs).data;
                 if let CfgInstData::Const(shift_amount) = rhs_inst {
                     let mask = if ty.is_64_bit() { 0x3F } else { 0x1F };
                     let imm = (*shift_amount & mask) as u8;
@@ -1373,7 +1193,7 @@ impl<'a> CfgLower<'a> {
                 // Check if shift amount is a constant - use immediate form if so.
                 // Mask shift amount to match x86-64 hardware semantics:
                 // 63 (0x3F) for 64-bit shifts, 31 (0x1F) for 32-bit shifts
-                let rhs_inst = &self.cfg.get_inst(*rhs).data;
+                let rhs_inst = &self.ctx.cfg.get_inst(*rhs).data;
                 if let CfgInstData::Const(shift_amount) = rhs_inst {
                     let mask = if ty.is_64_bit() { 0x3F } else { 0x1F };
                     let imm = (*shift_amount & mask) as u8;
@@ -1433,10 +1253,11 @@ impl<'a> CfgLower<'a> {
             }
 
             CfgInstData::Eq(lhs, rhs) => {
-                let lhs_ty = self.cfg.get_inst(*lhs).ty;
+                let lhs_ty = self.ctx.cfg.get_inst(*lhs).ty;
 
                 // Check for builtin operator (e.g., String equality via __rue_str_eq)
-                if let Some((runtime_fn, invert)) = self.get_builtin_operator(lhs_ty, BinOp::Eq) {
+                if let Some((runtime_fn, invert)) = self.ctx.get_builtin_operator(lhs_ty, BinOp::Eq)
+                {
                     let vreg = self.emit_builtin_eq_call(*lhs, *rhs, runtime_fn);
                     self.value_map.insert(value, vreg);
                     if invert {
@@ -1466,10 +1287,11 @@ impl<'a> CfgLower<'a> {
             }
 
             CfgInstData::Ne(lhs, rhs) => {
-                let lhs_ty = self.cfg.get_inst(*lhs).ty;
+                let lhs_ty = self.ctx.cfg.get_inst(*lhs).ty;
 
                 // Check for builtin operator (e.g., String inequality via __rue_str_eq + invert)
-                if let Some((runtime_fn, invert)) = self.get_builtin_operator(lhs_ty, BinOp::Ne) {
+                if let Some((runtime_fn, invert)) = self.ctx.get_builtin_operator(lhs_ty, BinOp::Ne)
+                {
                     let vreg = self.emit_builtin_eq_call(*lhs, *rhs, runtime_fn);
                     self.value_map.insert(value, vreg);
                     if invert {
@@ -1560,20 +1382,20 @@ impl<'a> CfgLower<'a> {
             }
 
             CfgInstData::Alloc { slot, init } => {
-                let init_type = self.cfg.get_inst(*init).ty;
+                let init_type = self.ctx.cfg.get_inst(*init).ty;
                 if matches!(init_type.kind(), TypeKind::Array(_)) {
                     // Array: recursively flatten nested arrays and store scalar elements
                     let scalar_vregs = self.collect_array_scalar_vregs(*init);
                     for (i, scalar_vreg) in scalar_vregs.iter().enumerate() {
                         let elem_slot = slot + i as u32;
-                        let offset = self.local_offset(elem_slot);
+                        let offset = self.ctx.local_offset(elem_slot);
                         self.mir.push(X86Inst::MovMR {
                             base: Reg::Rbp,
                             offset,
                             src: Operand::Virtual(*scalar_vreg),
                         });
                     }
-                } else if self.is_builtin_string(init_type) {
+                } else if self.ctx.is_builtin_string(init_type) {
                     // Builtin String: store ptr, len, and cap to consecutive slots
                     // Check this before generic Struct case so builtin String uses this path
                     let field_vregs = self
@@ -1592,7 +1414,7 @@ impl<'a> CfgLower<'a> {
                     let cap_vreg = field_vregs[2];
 
                     // Store ptr to slot
-                    let ptr_offset = self.local_offset(*slot);
+                    let ptr_offset = self.ctx.local_offset(*slot);
                     self.mir.push(X86Inst::MovMR {
                         base: Reg::Rbp,
                         offset: ptr_offset,
@@ -1600,7 +1422,7 @@ impl<'a> CfgLower<'a> {
                     });
 
                     // Store len to slot + 1
-                    let len_offset = self.local_offset(slot + 1);
+                    let len_offset = self.ctx.local_offset(slot + 1);
                     self.mir.push(X86Inst::MovMR {
                         base: Reg::Rbp,
                         offset: len_offset,
@@ -1608,7 +1430,7 @@ impl<'a> CfgLower<'a> {
                     });
 
                     // Store cap to slot + 2
-                    let cap_offset = self.local_offset(slot + 2);
+                    let cap_offset = self.ctx.local_offset(slot + 2);
                     self.mir.push(X86Inst::MovMR {
                         base: Reg::Rbp,
                         offset: cap_offset,
@@ -1619,7 +1441,7 @@ impl<'a> CfgLower<'a> {
                     let scalar_vregs = self.collect_struct_scalar_vregs(*init);
                     for (i, scalar_vreg) in scalar_vregs.iter().enumerate() {
                         let field_slot = slot + i as u32;
-                        let offset = self.local_offset(field_slot);
+                        let offset = self.ctx.local_offset(field_slot);
                         self.mir.push(X86Inst::MovMR {
                             base: Reg::Rbp,
                             offset,
@@ -1628,7 +1450,7 @@ impl<'a> CfgLower<'a> {
                     }
                 } else {
                     let init_vreg = self.get_vreg(*init);
-                    let offset = self.local_offset(*slot);
+                    let offset = self.ctx.local_offset(*slot);
                     self.mir.push(X86Inst::MovMR {
                         base: Reg::Rbp,
                         offset,
@@ -1638,9 +1460,9 @@ impl<'a> CfgLower<'a> {
             }
 
             CfgInstData::Load { slot } => {
-                let load_type = self.cfg.get_inst(value).ty;
+                let load_type = self.ctx.cfg.get_inst(value).ty;
 
-                if self.is_builtin_string(load_type) {
+                if self.ctx.is_builtin_string(load_type) {
                     // Builtin String: load ptr, len, and cap from consecutive slots
                     // Check this before generic Struct case so builtin String uses this path
                     let ptr_vreg = self.mir.alloc_vreg();
@@ -1648,7 +1470,7 @@ impl<'a> CfgLower<'a> {
                     let cap_vreg = self.mir.alloc_vreg();
 
                     // Load ptr from slot
-                    let ptr_offset = self.local_offset(*slot);
+                    let ptr_offset = self.ctx.local_offset(*slot);
                     self.mir.push(X86Inst::MovRM {
                         dst: Operand::Virtual(ptr_vreg),
                         base: Reg::Rbp,
@@ -1656,7 +1478,7 @@ impl<'a> CfgLower<'a> {
                     });
 
                     // Load len from slot + 1
-                    let len_offset = self.local_offset(slot + 1);
+                    let len_offset = self.ctx.local_offset(slot + 1);
                     self.mir.push(X86Inst::MovRM {
                         dst: Operand::Virtual(len_vreg),
                         base: Reg::Rbp,
@@ -1664,7 +1486,7 @@ impl<'a> CfgLower<'a> {
                     });
 
                     // Load cap from slot + 2
-                    let cap_offset = self.local_offset(slot + 2);
+                    let cap_offset = self.ctx.local_offset(slot + 2);
                     self.mir.push(X86Inst::MovRM {
                         dst: Operand::Virtual(cap_vreg),
                         base: Reg::Rbp,
@@ -1677,12 +1499,12 @@ impl<'a> CfgLower<'a> {
                     self.value_map.insert(value, ptr_vreg);
                 } else if let TypeKind::Array(_) = load_type.kind() {
                     // Array: load all element slots (recursively flattened)
-                    let slot_count = self.type_slot_count(load_type);
+                    let slot_count = self.ctx.type_slot_count(load_type);
                     let mut slot_vregs = Vec::with_capacity(slot_count as usize);
 
                     for i in 0..slot_count {
                         let elem_vreg = self.mir.alloc_vreg();
-                        let elem_offset = self.local_offset(slot + i);
+                        let elem_offset = self.ctx.local_offset(slot + i);
                         self.mir.push(X86Inst::MovRM {
                             dst: Operand::Virtual(elem_vreg),
                             base: Reg::Rbp,
@@ -1703,12 +1525,12 @@ impl<'a> CfgLower<'a> {
                     }
                 } else if let TypeKind::Struct(struct_id) = load_type.kind() {
                     // Struct: load all field slots (recursively flattened)
-                    let slot_count = self.type_slot_count(Type::Struct(struct_id));
+                    let slot_count = self.ctx.type_slot_count(Type::Struct(struct_id));
                     let mut slot_vregs = Vec::with_capacity(slot_count as usize);
 
                     for i in 0..slot_count {
                         let field_vreg = self.mir.alloc_vreg();
-                        let field_offset = self.local_offset(slot + i);
+                        let field_offset = self.ctx.local_offset(slot + i);
                         self.mir.push(X86Inst::MovRM {
                             dst: Operand::Virtual(field_vreg),
                             base: Reg::Rbp,
@@ -1731,7 +1553,7 @@ impl<'a> CfgLower<'a> {
                     let vreg = self.mir.alloc_vreg();
                     self.value_map.insert(value, vreg);
 
-                    let offset = self.local_offset(*slot);
+                    let offset = self.ctx.local_offset(*slot);
                     self.mir.push(X86Inst::MovRM {
                         dst: Operand::Virtual(vreg),
                         base: Reg::Rbp,
@@ -1741,8 +1563,8 @@ impl<'a> CfgLower<'a> {
             }
 
             CfgInstData::Store { slot, value: val } => {
-                let val_type = self.cfg.get_inst(*val).ty;
-                if self.is_builtin_string(val_type) {
+                let val_type = self.ctx.cfg.get_inst(*val).ty;
+                if self.ctx.is_builtin_string(val_type) {
                     // Builtin String: store ptr, len, and cap to consecutive slots
                     let field_vregs = self
                         .struct_slot_vregs
@@ -1760,7 +1582,7 @@ impl<'a> CfgLower<'a> {
                     let cap_vreg = field_vregs[2];
 
                     // Store ptr to slot
-                    let ptr_offset = self.local_offset(*slot);
+                    let ptr_offset = self.ctx.local_offset(*slot);
                     self.mir.push(X86Inst::MovMR {
                         base: Reg::Rbp,
                         offset: ptr_offset,
@@ -1768,7 +1590,7 @@ impl<'a> CfgLower<'a> {
                     });
 
                     // Store len to slot + 1
-                    let len_offset = self.local_offset(slot + 1);
+                    let len_offset = self.ctx.local_offset(slot + 1);
                     self.mir.push(X86Inst::MovMR {
                         base: Reg::Rbp,
                         offset: len_offset,
@@ -1776,7 +1598,7 @@ impl<'a> CfgLower<'a> {
                     });
 
                     // Store cap to slot + 2
-                    let cap_offset = self.local_offset(slot + 2);
+                    let cap_offset = self.ctx.local_offset(slot + 2);
                     self.mir.push(X86Inst::MovMR {
                         base: Reg::Rbp,
                         offset: cap_offset,
@@ -1797,7 +1619,7 @@ impl<'a> CfgLower<'a> {
                         });
                     } else {
                         // Normal local variable: store to stack slot
-                        let offset = self.local_offset(*slot);
+                        let offset = self.ctx.local_offset(*slot);
                         self.mir.push(X86Inst::MovMR {
                             base: Reg::Rbp,
                             offset,
@@ -1818,7 +1640,7 @@ impl<'a> CfgLower<'a> {
                 // For scalar params, param_slot = param_index.
                 // For struct params, param_slot is the first slot (same as param_index for first param).
                 // We use is_param_inout(param_slot) to check if this slot is inout.
-                if self.cfg.is_param_inout(*param_slot) {
+                if self.ctx.cfg.is_param_inout(*param_slot) {
                     // Use ensure_inout_param_ptr in case the param was never accessed via Param instruction
                     let ptr_vreg = self.ensure_inout_param_ptr(*param_slot);
                     self.mir.push(X86Inst::MovMRIndexed {
@@ -1840,7 +1662,7 @@ impl<'a> CfgLower<'a> {
                 self.value_map.insert(value, result_vreg);
 
                 // Check if this call returns a builtin String (uses sret convention)
-                let is_sret_call = self.is_builtin_string(ty);
+                let is_sret_call = self.ctx.is_builtin_string(ty);
 
                 // For sret calls, allocate 32 bytes on stack for the return value (24 bytes + padding for 16-byte alignment)
                 // We'll pass a pointer to this space as the first argument
@@ -1864,20 +1686,20 @@ impl<'a> CfgLower<'a> {
                     });
                     flattened_vregs.push(sret_ptr_vreg);
                 }
-                let args = self.cfg.get_call_args(*args_start, *args_len).to_vec();
+                let args = self.ctx.cfg.get_call_args(*args_start, *args_len).to_vec();
                 for arg in &args {
                     let arg_value = arg.value;
-                    let arg_type = self.cfg.get_inst(arg_value).ty;
+                    let arg_type = self.ctx.cfg.get_inst(arg_value).ty;
 
                     // For by-ref args (inout or borrow), pass address instead of value
                     if arg.is_by_ref() {
-                        let arg_data = &self.cfg.get_inst(arg_value).data;
+                        let arg_data = &self.ctx.cfg.get_inst(arg_value).data;
                         let addr_vreg = self.mir.alloc_vreg();
 
                         match arg_data {
                             CfgInstData::Load { slot } => {
                                 // Emit lea to get the address of the local variable
-                                let offset = self.local_offset(*slot);
+                                let offset = self.ctx.local_offset(*slot);
                                 self.mir.push(X86Inst::Lea {
                                     dst: Operand::Virtual(addr_vreg),
                                     base: Reg::Rbp,
@@ -1888,7 +1710,7 @@ impl<'a> CfgLower<'a> {
                             }
                             CfgInstData::Param { index } => {
                                 // Check if this param is itself a by-ref param (forwarding case)
-                                if self.cfg.is_param_inout(*index) {
+                                if self.ctx.cfg.is_param_inout(*index) {
                                     // For by-ref param, just pass the pointer we received
                                     // Use ensure_inout_param_ptr in case the param was never accessed via Param instruction
                                     let ptr_vreg = self.ensure_inout_param_ptr(*index);
@@ -1898,8 +1720,8 @@ impl<'a> CfgLower<'a> {
                                     });
                                 } else {
                                     // Normal param: emit lea to get its address
-                                    let param_slot = self.num_locals + *index;
-                                    let offset = self.local_offset(param_slot);
+                                    let param_slot = self.ctx.num_locals + *index;
+                                    let offset = self.ctx.local_offset(param_slot);
                                     self.mir.push(X86Inst::Lea {
                                         dst: Operand::Virtual(addr_vreg),
                                         base: Reg::Rbp,
@@ -1921,14 +1743,14 @@ impl<'a> CfgLower<'a> {
 
                     match arg_type.kind() {
                         TypeKind::Struct(struct_id) => {
-                            let arg_data = &self.cfg.get_inst(arg_value).data;
-                            let slot_count = self.type_slot_count(Type::Struct(struct_id));
+                            let arg_data = &self.ctx.cfg.get_inst(arg_value).data;
+                            let slot_count = self.ctx.type_slot_count(Type::Struct(struct_id));
                             match arg_data {
                                 CfgInstData::Load { slot } => {
                                     for slot_idx in 0..slot_count {
                                         let slot_vreg = self.mir.alloc_vreg();
                                         let actual_slot = slot + slot_idx;
-                                        let offset = self.local_offset(actual_slot);
+                                        let offset = self.ctx.local_offset(actual_slot);
                                         self.mir.push(X86Inst::MovRM {
                                             dst: Operand::Virtual(slot_vreg),
                                             base: Reg::Rbp,
@@ -1940,8 +1762,8 @@ impl<'a> CfgLower<'a> {
                                 CfgInstData::Param { index } => {
                                     for slot_idx in 0..slot_count {
                                         let slot_vreg = self.mir.alloc_vreg();
-                                        let param_slot = self.num_locals + index + slot_idx;
-                                        let offset = self.local_offset(param_slot);
+                                        let param_slot = self.ctx.num_locals + index + slot_idx;
+                                        let offset = self.ctx.local_offset(param_slot);
                                         self.mir.push(X86Inst::MovRM {
                                             dst: Operand::Virtual(slot_vreg),
                                             base: Reg::Rbp,
@@ -1968,14 +1790,14 @@ impl<'a> CfgLower<'a> {
                             }
                         }
                         TypeKind::Array(_) => {
-                            let arg_data = &self.cfg.get_inst(arg_value).data;
-                            let array_len = self.array_length(arg_type) as u32;
+                            let arg_data = &self.ctx.cfg.get_inst(arg_value).data;
+                            let array_len = self.ctx.array_length(arg_type) as u32;
                             match arg_data {
                                 CfgInstData::Load { slot } => {
                                     for elem_idx in 0..array_len {
                                         let elem_vreg = self.mir.alloc_vreg();
                                         let elem_slot = slot + elem_idx;
-                                        let offset = self.local_offset(elem_slot);
+                                        let offset = self.ctx.local_offset(elem_slot);
                                         self.mir.push(X86Inst::MovRM {
                                             dst: Operand::Virtual(elem_vreg),
                                             base: Reg::Rbp,
@@ -1987,8 +1809,8 @@ impl<'a> CfgLower<'a> {
                                 CfgInstData::Param { index } => {
                                     for elem_idx in 0..array_len {
                                         let elem_vreg = self.mir.alloc_vreg();
-                                        let param_slot = self.num_locals + index + elem_idx;
-                                        let offset = self.local_offset(param_slot);
+                                        let param_slot = self.ctx.num_locals + index + elem_idx;
+                                        let offset = self.ctx.local_offset(param_slot);
                                         self.mir.push(X86Inst::MovRM {
                                             dst: Operand::Virtual(elem_vreg),
                                             base: Reg::Rbp,
@@ -2079,7 +1901,7 @@ impl<'a> CfgLower<'a> {
 
                 // Handle struct and string returns (multi-slot types)
                 // Check builtin String first - it uses sret convention
-                if self.is_builtin_string(ty) {
+                if self.ctx.is_builtin_string(ty) {
                     // Builtin String uses sret convention: result was written to [rsp]
                     // Load ptr, len, cap from stack
                     let mut slot_vregs = Vec::new();
@@ -2105,7 +1927,7 @@ impl<'a> CfgLower<'a> {
                     });
                 } else if let TypeKind::Struct(struct_id) = ty.kind() {
                     // Non-builtin structs return in registers
-                    let slot_count = self.type_slot_count(Type::Struct(struct_id));
+                    let slot_count = self.ctx.type_slot_count(Type::Struct(struct_id));
                     let mut slot_vregs = Vec::new();
                     for slot_idx in 0..slot_count {
                         let slot_vreg = self.mir.alloc_vreg();
@@ -2189,12 +2011,12 @@ impl<'a> CfgLower<'a> {
                     });
                     self.value_map.insert(value, result_vreg);
                 } else if name_str == "dbg" {
-                    let args = self.cfg.get_extra(*args_start, *args_len);
+                    let args = self.ctx.cfg.get_extra(*args_start, *args_len);
                     let arg_val = args[0];
-                    let arg_type = self.cfg.get_inst(arg_val).ty;
+                    let arg_type = self.ctx.cfg.get_inst(arg_val).ty;
 
                     // Handle builtin String type specially
-                    if self.is_builtin_string(arg_type) {
+                    if self.ctx.is_builtin_string(arg_type) {
                         // Get the fat pointer (ptr, len, cap) from struct_slot_vregs
                         if let Some(field_vregs) = self.struct_slot_vregs.get(&arg_val).cloned() {
                             debug_assert_eq!(
@@ -2313,7 +2135,7 @@ impl<'a> CfgLower<'a> {
                     || name_str == "parse_u64"
                 {
                     // @parse_* intrinsics: take a String, return an integer
-                    let args = self.cfg.get_extra(*args_start, *args_len);
+                    let args = self.ctx.cfg.get_extra(*args_start, *args_len);
                     let arg_val = args[0];
 
                     // Get the String fat pointer (ptr, len, cap) from struct_slot_vregs
@@ -2389,7 +2211,7 @@ impl<'a> CfgLower<'a> {
                     //   - Returns result in RAX
                     //   - Clobbers RCX and R11 (saved by hardware)
 
-                    let args = self.cfg.get_extra(*args_start, *args_len);
+                    let args = self.ctx.cfg.get_extra(*args_start, *args_len);
 
                     // Syscall argument registers (different from regular function call ABI!)
                     const SYSCALL_ARG_REGS: [Reg; 6] =
@@ -2424,7 +2246,7 @@ impl<'a> CfgLower<'a> {
                 } else if name_str == "ptr_read" {
                     // @ptr_read(ptr) - Read value at pointer
                     // The pointer is in the first argument, we load from [ptr].
-                    let args = self.cfg.get_extra(*args_start, *args_len);
+                    let args = self.ctx.cfg.get_extra(*args_start, *args_len);
                     let ptr_val = args[0];
                     let ptr_vreg = self.get_vreg(ptr_val);
 
@@ -2439,7 +2261,7 @@ impl<'a> CfgLower<'a> {
                 } else if name_str == "ptr_write" {
                     // @ptr_write(ptr, value) - Write value at pointer
                     // First argument is pointer, second is value to write.
-                    let args = self.cfg.get_extra(*args_start, *args_len);
+                    let args = self.ctx.cfg.get_extra(*args_start, *args_len);
                     let ptr_val = args[0];
                     let value_val = args[1];
                     let ptr_vreg = self.get_vreg(ptr_val);
@@ -2458,20 +2280,20 @@ impl<'a> CfgLower<'a> {
                 } else if name_str == "ptr_offset" {
                     // @ptr_offset(ptr, offset) - Pointer arithmetic
                     // Advances pointer by offset * sizeof(pointee)
-                    let args = self.cfg.get_extra(*args_start, *args_len);
+                    let args = self.ctx.cfg.get_extra(*args_start, *args_len);
                     let ptr_val = args[0];
                     let offset_val = args[1];
                     let ptr_vreg = self.get_vreg(ptr_val);
                     let offset_vreg = self.get_vreg(offset_val);
 
                     // Get the pointer type to determine element size
-                    let ptr_type = self.cfg.get_inst(ptr_val).ty;
+                    let ptr_type = self.ctx.cfg.get_inst(ptr_val).ty;
                     let pointee_type = match ptr_type.kind() {
-                        TypeKind::PtrConst(ptr_id) => self.type_pool.ptr_const_def(ptr_id),
-                        TypeKind::PtrMut(ptr_id) => self.type_pool.ptr_mut_def(ptr_id),
+                        TypeKind::PtrConst(ptr_id) => self.ctx.type_pool.ptr_const_def(ptr_id),
+                        TypeKind::PtrMut(ptr_id) => self.ctx.type_pool.ptr_mut_def(ptr_id),
                         _ => unreachable!("ptr_offset requires pointer type"),
                     };
-                    let element_size = types::type_size_bytes(self.type_pool, pointee_type);
+                    let element_size = types::type_size_bytes(self.ctx.type_pool, pointee_type);
 
                     // Calculate: ptr + (offset * element_size)
                     // First, multiply offset by element size
@@ -2519,7 +2341,7 @@ impl<'a> CfgLower<'a> {
                 } else if name_str == "ptr_to_int" {
                     // @ptr_to_int(ptr) - Convert pointer to u64
                     // On x86-64, pointers are already 64-bit values, so this is a simple move.
-                    let args = self.cfg.get_extra(*args_start, *args_len);
+                    let args = self.ctx.cfg.get_extra(*args_start, *args_len);
                     let ptr_val = args[0];
                     let ptr_vreg = self.get_vreg(ptr_val);
 
@@ -2532,7 +2354,7 @@ impl<'a> CfgLower<'a> {
                 } else if name_str == "int_to_ptr" {
                     // @int_to_ptr(addr) - Convert u64 to pointer
                     // On x86-64, this is also a simple move.
-                    let args = self.cfg.get_extra(*args_start, *args_len);
+                    let args = self.ctx.cfg.get_extra(*args_start, *args_len);
                     let addr_val = args[0];
                     let addr_vreg = self.get_vreg(addr_val);
 
@@ -2545,14 +2367,14 @@ impl<'a> CfgLower<'a> {
                 } else if name_str == "addr_of" || name_str == "addr_of_mut" {
                     // @addr_of(lvalue) / @addr_of_mut(lvalue) - Take address of a value
                     // The argument should be a local variable, and we compute its stack address.
-                    let args = self.cfg.get_extra(*args_start, *args_len);
+                    let args = self.ctx.cfg.get_extra(*args_start, *args_len);
                     let lvalue_val = args[0];
 
                     // Get the local slot for this value
-                    let lvalue_inst = self.cfg.get_inst(lvalue_val);
+                    let lvalue_inst = self.ctx.cfg.get_inst(lvalue_val);
                     if let CfgInstData::Load { slot } = &lvalue_inst.data {
                         // Simple case: address of a local variable
-                        let offset = self.local_offset(*slot);
+                        let offset = self.ctx.local_offset(*slot);
                         let result_vreg = self.mir.alloc_vreg();
                         // LEA to compute address: result = rbp + offset
                         self.mir.push(X86Inst::Lea {
@@ -2575,10 +2397,10 @@ impl<'a> CfgLower<'a> {
                         let index = *index;
                         let base = *base;
 
-                        let elem_slot_count = self.array_element_slot_count(array_type);
+                        let elem_slot_count = self.ctx.array_element_slot_count(array_type);
 
                         // Use trace_index_chain to handle arbitrary nesting depth
-                        if let Some((chain_base, mut levels)) = self.trace_index_chain(base) {
+                        if let Some((chain_base, mut levels)) = self.ctx.trace_index_chain(base) {
                             // Add this level's index to the chain
                             levels.push(IndexLevel {
                                 index,
@@ -2641,7 +2463,7 @@ impl<'a> CfgLower<'a> {
 
                             if let IndexChainBase::Param { index: param_index } = &chain_base {
                                 // Check if this is an inout parameter
-                                if self.cfg.is_param_inout(*param_index) {
+                                if self.ctx.cfg.is_param_inout(*param_index) {
                                     // For inout params, use the stored pointer
                                     let ptr_vreg = self.ensure_inout_param_ptr(*param_index);
                                     self.mir.push(X86Inst::MovRR {
@@ -2664,17 +2486,17 @@ impl<'a> CfgLower<'a> {
 
                             // Normal case: compute from RBP offset
                             let base_offset = match &chain_base {
-                                IndexChainBase::Load { slot } => self.local_offset(*slot),
+                                IndexChainBase::Load { slot } => self.ctx.local_offset(*slot),
                                 IndexChainBase::Param { index: param_index } => {
-                                    let base_slot = self.num_locals + *param_index as u32;
-                                    self.local_offset(base_slot)
+                                    let base_slot = self.ctx.num_locals + *param_index as u32;
+                                    self.ctx.local_offset(base_slot)
                                 }
                                 IndexChainBase::FieldGet {
                                     struct_base_slot,
                                     field_slot_offset,
                                 } => {
                                     let array_base_slot = struct_base_slot + field_slot_offset;
-                                    self.local_offset(array_base_slot)
+                                    self.ctx.local_offset(array_base_slot)
                                 }
                             };
 
@@ -2723,9 +2545,9 @@ impl<'a> CfgLower<'a> {
                 // For scalar fields, this is a single vreg.
                 // For nested struct fields, recursively collect all slot vregs.
                 let mut slot_vregs = Vec::new();
-                let fields = self.cfg.get_extra(*fields_start, *fields_len).to_vec();
+                let fields = self.ctx.cfg.get_extra(*fields_start, *fields_len).to_vec();
                 for field in &fields {
-                    let field_inst = self.cfg.get_inst(*field);
+                    let field_inst = self.ctx.cfg.get_inst(*field);
                     if let TypeKind::Struct(_) = field_inst.ty.kind() {
                         // Nested struct - get all its slot vregs
                         let nested_vregs = self
@@ -2765,14 +2587,14 @@ impl<'a> CfgLower<'a> {
 
                 // Try to trace back through any chain of FieldGets to find
                 // the original Load or Param. This handles nested struct field access.
-                let this_offset = self.struct_field_slot_offset(*struct_id, *field_index);
-                if let Some((base_kind, accumulated_offset)) = self.trace_field_chain(*base) {
+                let this_offset = self.ctx.struct_field_slot_offset(*struct_id, *field_index);
+                if let Some((base_kind, accumulated_offset)) = self.ctx.trace_field_chain(*base) {
                     let total_offset = accumulated_offset + this_offset;
                     match base_kind {
                         FieldChainBase::Load { slot } => {
                             // Chain originates from a Load - compute offset from local slot
                             let actual_slot = slot + total_offset;
-                            let offset = self.local_offset(actual_slot);
+                            let offset = self.ctx.local_offset(actual_slot);
                             self.mir.push(X86Inst::MovRM {
                                 dst: Operand::Virtual(vreg),
                                 base: Reg::Rbp,
@@ -2781,7 +2603,7 @@ impl<'a> CfgLower<'a> {
                         }
                         FieldChainBase::Param { index } => {
                             // Check if this is an inout parameter
-                            if self.cfg.is_param_inout(index) {
+                            if self.ctx.cfg.is_param_inout(index) {
                                 // For inout params, use the pointer we stored earlier
                                 // Use ensure_inout_param_ptr in case the param was never accessed via Param instruction
                                 let ptr_vreg = self.ensure_inout_param_ptr(index);
@@ -2793,8 +2615,8 @@ impl<'a> CfgLower<'a> {
                                 });
                             } else {
                                 // Non-inout param: struct is copied to our stack
-                                let param_slot = self.num_locals + index + total_offset;
-                                let offset = self.local_offset(param_slot);
+                                let param_slot = self.ctx.num_locals + index + total_offset;
+                                let offset = self.ctx.local_offset(param_slot);
                                 self.mir.push(X86Inst::MovRM {
                                     dst: Operand::Virtual(vreg),
                                     base: Reg::Rbp,
@@ -2812,7 +2634,7 @@ impl<'a> CfgLower<'a> {
                             // Emit bounds check for the innermost index
                             if let Some(innermost) = index_levels.last() {
                                 let innermost_index_vreg = self.get_vreg(innermost.index);
-                                let array_length = self.array_length(innermost.array_type);
+                                let array_length = self.ctx.array_length(innermost.array_type);
                                 self.emit_bounds_check(innermost_index_vreg, array_length);
                             }
 
@@ -2886,7 +2708,7 @@ impl<'a> CfgLower<'a> {
                             let addr_vreg = self.mir.alloc_vreg();
 
                             if let IndexChainBase::Param { index: param_index } = &index_base {
-                                if self.cfg.is_param_inout(*param_index) {
+                                if self.ctx.cfg.is_param_inout(*param_index) {
                                     // For inout params, use the stored pointer
                                     let ptr_vreg = self.ensure_inout_param_ptr(*param_index);
                                     self.mir.push(X86Inst::MovRR {
@@ -2914,17 +2736,17 @@ impl<'a> CfgLower<'a> {
 
                             // Normal case: compute from RBP offset
                             let base_offset = match &index_base {
-                                IndexChainBase::Load { slot } => self.local_offset(*slot),
+                                IndexChainBase::Load { slot } => self.ctx.local_offset(*slot),
                                 IndexChainBase::Param { index: param_index } => {
-                                    let base_slot = self.num_locals + *param_index as u32;
-                                    self.local_offset(base_slot)
+                                    let base_slot = self.ctx.num_locals + *param_index as u32;
+                                    self.ctx.local_offset(base_slot)
                                 }
                                 IndexChainBase::FieldGet {
                                     struct_base_slot,
                                     field_slot_offset,
                                 } => {
                                     let array_base_slot = struct_base_slot + field_slot_offset;
-                                    self.local_offset(array_base_slot)
+                                    self.ctx.local_offset(array_base_slot)
                                 }
                             };
 
@@ -2956,7 +2778,7 @@ impl<'a> CfgLower<'a> {
                     // For other sources (BlockParam, StructInit, Call), use slot vregs.
                     // IMPORTANT: struct_slot_vregs contains slot vregs (accounting for
                     // nested struct sizes), so we need to use the slot offset, not field index.
-                    let slot_offset = self.struct_field_slot_offset(*struct_id, *field_index);
+                    let slot_offset = self.ctx.struct_field_slot_offset(*struct_id, *field_index);
                     let slot_vregs = self
                         .struct_slot_vregs
                         .get(base)
@@ -2979,9 +2801,9 @@ impl<'a> CfgLower<'a> {
                 value: val,
             } => {
                 let val_vreg = self.get_vreg(*val);
-                let field_slot_offset = self.struct_field_slot_offset(*struct_id, *field_index);
+                let field_slot_offset = self.ctx.struct_field_slot_offset(*struct_id, *field_index);
                 let actual_slot = slot + field_slot_offset;
-                let offset = self.local_offset(actual_slot);
+                let offset = self.ctx.local_offset(actual_slot);
                 self.mir.push(X86Inst::MovMR {
                     base: Reg::Rbp,
                     offset,
@@ -2997,11 +2819,11 @@ impl<'a> CfgLower<'a> {
                 value: val,
             } => {
                 let val_vreg = self.get_vreg(*val);
-                let field_slot_offset = self.struct_field_slot_offset(*struct_id, *field_index);
+                let field_slot_offset = self.ctx.struct_field_slot_offset(*struct_id, *field_index);
                 let total_offset = *inner_offset + field_slot_offset;
 
                 // Check if this is an inout parameter
-                if self.cfg.is_param_inout(*param_slot) {
+                if self.ctx.cfg.is_param_inout(*param_slot) {
                     // For inout params, store through the pointer
                     // Use ensure_inout_param_ptr in case the param was never accessed via Param instruction
                     let ptr_vreg = self.ensure_inout_param_ptr(*param_slot);
@@ -3013,8 +2835,8 @@ impl<'a> CfgLower<'a> {
                     });
                 } else {
                     // Non-inout param: struct is on our stack
-                    let param_stack_slot = self.num_locals + *param_slot + total_offset;
-                    let offset = self.local_offset(param_stack_slot);
+                    let param_stack_slot = self.ctx.num_locals + *param_slot + total_offset;
+                    let offset = self.ctx.local_offset(param_stack_slot);
                     self.mir.push(X86Inst::MovMR {
                         base: Reg::Rbp,
                         offset,
@@ -3034,7 +2856,7 @@ impl<'a> CfgLower<'a> {
                 self.value_map.insert(value, vreg);
 
                 // Store element vregs for later IndexGet access
-                let elements = self.cfg.get_extra(*elements_start, *elements_len);
+                let elements = self.ctx.cfg.get_extra(*elements_start, *elements_len);
                 let element_vregs: Vec<VReg> = elements.iter().map(|e| self.get_vreg(*e)).collect();
                 self.struct_slot_vregs.insert(value, element_vregs);
 
@@ -3054,13 +2876,13 @@ impl<'a> CfgLower<'a> {
                 self.value_map.insert(value, vreg);
 
                 // Calculate the slot stride for this array's elements
-                let elem_slot_count = self.array_element_slot_count(*array_type);
+                let elem_slot_count = self.ctx.array_element_slot_count(*array_type);
 
                 // First, check if base is an ArrayInit (constant index case)
-                let base_data = &self.cfg.get_inst(*base).data.clone();
+                let base_data = &self.ctx.cfg.get_inst(*base).data.clone();
                 if let CfgInstData::ArrayInit { .. } = base_data {
                     // For ArrayInit sources, use element vregs if index is constant
-                    let index_inst = &self.cfg.get_inst(*index).data;
+                    let index_inst = &self.ctx.cfg.get_inst(*index).data;
                     if let CfgInstData::Const(idx) = index_inst {
                         if let Some(element_vregs) = self.struct_slot_vregs.get(base).cloned() {
                             if let Some(&elem_vreg) = element_vregs.get(*idx as usize) {
@@ -3081,7 +2903,7 @@ impl<'a> CfgLower<'a> {
                 }
 
                 // Use trace_index_chain to handle arbitrary nesting depth
-                if let Some((chain_base, mut levels)) = self.trace_index_chain(*base) {
+                if let Some((chain_base, mut levels)) = self.ctx.trace_index_chain(*base) {
                     // Add this level's index to the chain
                     levels.push(IndexLevel {
                         index: *index,
@@ -3091,7 +2913,7 @@ impl<'a> CfgLower<'a> {
 
                     // Emit bounds check for the innermost index
                     let innermost_index_vreg = self.get_vreg(*index);
-                    let array_length = self.array_length(*array_type);
+                    let array_length = self.ctx.array_length(*array_type);
                     self.emit_bounds_check(innermost_index_vreg, array_length);
 
                     // Calculate total offset by summing index * stride for each level
@@ -3149,7 +2971,7 @@ impl<'a> CfgLower<'a> {
 
                     if let IndexChainBase::Param { index: param_index } = &chain_base {
                         // Check if this is an inout parameter
-                        if self.cfg.is_param_inout(*param_index) {
+                        if self.ctx.cfg.is_param_inout(*param_index) {
                             // For inout params, use the stored pointer
                             // Use ensure_inout_param_ptr in case the param was never accessed via Param instruction
                             let ptr_vreg = self.ensure_inout_param_ptr(*param_index);
@@ -3178,17 +3000,17 @@ impl<'a> CfgLower<'a> {
 
                     // Normal case: compute from RBP offset
                     let base_offset = match &chain_base {
-                        IndexChainBase::Load { slot } => self.local_offset(*slot),
+                        IndexChainBase::Load { slot } => self.ctx.local_offset(*slot),
                         IndexChainBase::Param { index: param_index } => {
-                            let base_slot = self.num_locals + *param_index as u32;
-                            self.local_offset(base_slot)
+                            let base_slot = self.ctx.num_locals + *param_index as u32;
+                            self.ctx.local_offset(base_slot)
                         }
                         IndexChainBase::FieldGet {
                             struct_base_slot,
                             field_slot_offset,
                         } => {
                             let array_base_slot = struct_base_slot + field_slot_offset;
-                            self.local_offset(array_base_slot)
+                            self.ctx.local_offset(array_base_slot)
                         }
                     };
 
@@ -3275,14 +3097,14 @@ impl<'a> CfgLower<'a> {
                 let index_vreg = self.get_vreg(*index);
 
                 // Emit runtime bounds check
-                let array_length = self.array_length(*array_type);
+                let array_length = self.ctx.array_length(*array_type);
                 self.emit_bounds_check(index_vreg, array_length);
 
                 // Optimization: use SIB addressing for single-element arrays
                 // This is always the case for IndexSet (it doesn't chain like IndexGet)
-                let elem_slot_count = self.array_element_slot_count(*array_type);
+                let elem_slot_count = self.ctx.array_element_slot_count(*array_type);
 
-                let base_offset = self.local_offset(*slot);
+                let base_offset = self.ctx.local_offset(*slot);
 
                 if elem_slot_count == 1 {
                     // Single 8-byte element - use SIB addressing
@@ -3364,7 +3186,7 @@ impl<'a> CfgLower<'a> {
                 let index_vreg = self.get_vreg(*index);
 
                 // Emit runtime bounds check
-                let array_length = self.array_length(*array_type);
+                let array_length = self.ctx.array_length(*array_type);
                 self.emit_bounds_check(index_vreg, array_length);
 
                 // Scale index by 8 (element size)
@@ -3425,7 +3247,7 @@ impl<'a> CfgLower<'a> {
                 self.value_map.insert(value, vreg);
 
                 let src_vreg = self.get_vreg(*src_value);
-                let to_ty = self.cfg.get_inst(value).ty;
+                let to_ty = self.ctx.cfg.get_inst(value).ty;
 
                 // Emit range check and panic if out of bounds
                 self.emit_int_cast_check(src_vreg, *from_ty, to_ty);
@@ -3447,10 +3269,10 @@ impl<'a> CfgLower<'a> {
                 //
                 // Get the type of the value being dropped to determine which
                 // destructor function to call.
-                let dropped_ty = self.cfg.get_inst(*dropped_value).ty;
+                let dropped_ty = self.ctx.cfg.get_inst(*dropped_value).ty;
 
                 // Handle builtin String specially - it's a fat pointer (ptr, len, cap)
-                if self.is_builtin_string(dropped_ty) {
+                if self.ctx.is_builtin_string(dropped_ty) {
                     // String requires all 3 slots as arguments to __rue_drop_String
                     // First, try to get the vregs from cache
                     let field_vregs =
@@ -3458,14 +3280,14 @@ impl<'a> CfgLower<'a> {
                             vregs
                         } else {
                             // Not in cache - check if it's a Param instruction
-                            let dropped_inst = &self.cfg.get_inst(*dropped_value).data;
+                            let dropped_inst = &self.ctx.cfg.get_inst(*dropped_value).data;
                             if let CfgInstData::Param { index } = dropped_inst {
                                 // Load all 3 String fields from param slots
                                 let mut vregs = Vec::with_capacity(3);
                                 for field_idx in 0..3u32 {
                                     let field_vreg = self.mir.alloc_vreg();
-                                    let param_slot = self.num_locals + index + field_idx;
-                                    let offset = self.local_offset(param_slot);
+                                    let param_slot = self.ctx.num_locals + index + field_idx;
+                                    let offset = self.ctx.local_offset(param_slot);
                                     self.mir.push(X86Inst::MovRM {
                                         dst: Operand::Virtual(field_vreg),
                                         base: Reg::Rbp,
@@ -3480,7 +3302,7 @@ impl<'a> CfgLower<'a> {
                                 for field_idx in 0..3u32 {
                                     let field_vreg = self.mir.alloc_vreg();
                                     let field_slot = slot + field_idx;
-                                    let offset = self.local_offset(field_slot);
+                                    let offset = self.ctx.local_offset(field_slot);
                                     self.mir.push(X86Inst::MovRM {
                                         dst: Operand::Virtual(field_vreg),
                                         base: Reg::Rbp,
@@ -3523,7 +3345,7 @@ impl<'a> CfgLower<'a> {
 
                 // Handle struct drops - need to pass all flattened field values
                 if let TypeKind::Struct(struct_id) = dropped_ty.kind() {
-                    let struct_def = self.type_pool.struct_def(struct_id);
+                    let struct_def = self.ctx.type_pool.struct_def(struct_id);
 
                     // Collect all scalar vregs for this struct (flattened)
                     let field_vregs = self.collect_struct_scalar_vregs(*dropped_value);
@@ -3603,7 +3425,7 @@ impl<'a> CfgLower<'a> {
                         });
                     }
 
-                    let drop_fn_name = types::array_drop_glue_name(array_id, self.type_pool);
+                    let drop_fn_name = types::array_drop_glue_name(array_id, self.ctx.type_pool);
                     let symbol_id = self.intern_symbol(&drop_fn_name);
                     self.mir.push(X86Inst::CallRel { symbol_id });
                     return;
@@ -3634,7 +3456,7 @@ impl<'a> CfgLower<'a> {
     ///
     /// Sema guarantees both operands have the same signedness, so we only need to check one.
     fn is_unsigned_comparison(&self, lhs: CfgValue) -> bool {
-        self.cfg.get_inst(lhs).ty.is_unsigned()
+        self.ctx.cfg.get_inst(lhs).ty.is_unsigned()
     }
 
     /// Try to extract a power-of-two shift amount from a constant value.
@@ -3644,7 +3466,7 @@ impl<'a> CfgLower<'a> {
     ///
     /// Used for strength reduction: `x * 2^n` can be lowered to `x << n`.
     fn try_power_of_two_shift(&self, value: CfgValue) -> Option<u8> {
-        let inst = self.cfg.get_inst(value);
+        let inst = self.ctx.cfg.get_inst(value);
         match &inst.data {
             CfgInstData::Const(n) => {
                 let n = *n;
@@ -3983,7 +3805,7 @@ impl<'a> CfgLower<'a> {
         let rhs_vreg = self.get_vreg(rhs);
 
         // Use 64-bit compare for i64/u64 types
-        let lhs_ty = self.cfg.get_inst(lhs).ty;
+        let lhs_ty = self.ctx.cfg.get_inst(lhs).ty;
         if matches!(lhs_ty.kind(), TypeKind::I64 | TypeKind::U64) {
             self.mir.push(X86Inst::Cmp64RR {
                 src1: Operand::Virtual(lhs_vreg),
@@ -4029,7 +3851,7 @@ impl<'a> CfgLower<'a> {
             .cloned()
             .expect("struct should have field vregs");
 
-        let struct_def = self.type_pool.struct_def(struct_id);
+        let struct_def = self.ctx.type_pool.struct_def(struct_id);
         let field_count = struct_def.fields.len();
 
         if field_count == 0 {
@@ -4050,7 +3872,7 @@ impl<'a> CfgLower<'a> {
         // Compare each field and AND with result
         let mut field_slot = 0usize;
         for field in &struct_def.fields {
-            let field_slots = self.type_slot_count(field.ty) as usize;
+            let field_slots = self.ctx.type_slot_count(field.ty) as usize;
             let lhs_field_vreg = lhs_fields[field_slot];
             let rhs_field_vreg = rhs_fields[field_slot];
 
@@ -4170,9 +3992,9 @@ impl<'a> CfgLower<'a> {
                 args_len,
             } => {
                 // Copy args to target's block params
-                let args = self.cfg.get_extra(*args_start, *args_len);
+                let args = self.ctx.cfg.get_extra(*args_start, *args_len);
                 for (i, &arg) in args.iter().enumerate() {
-                    let arg_type = self.cfg.get_inst(arg).ty;
+                    let arg_type = self.ctx.cfg.get_inst(arg).ty;
                     if matches!(arg_type.kind(), TypeKind::Struct(_)) {
                         // For struct args, copy all field vregs
                         self.copy_struct_to_block_param(arg, *target, i as u32);
@@ -4222,9 +4044,9 @@ impl<'a> CfgLower<'a> {
                 });
 
                 // Copy then_args to then_block's params
-                let then_args = self.cfg.get_extra(*then_args_start, *then_args_len);
+                let then_args = self.ctx.cfg.get_extra(*then_args_start, *then_args_len);
                 for (i, &arg) in then_args.iter().enumerate() {
-                    let arg_type = self.cfg.get_inst(arg).ty;
+                    let arg_type = self.ctx.cfg.get_inst(arg).ty;
                     if matches!(arg_type.kind(), TypeKind::Struct(_)) {
                         // For struct args, copy all field vregs
                         self.copy_struct_to_block_param(arg, *then_block, i as u32);
@@ -4248,9 +4070,9 @@ impl<'a> CfgLower<'a> {
                 self.mir.push(X86Inst::Label {
                     id: else_setup_label,
                 });
-                let else_args = self.cfg.get_extra(*else_args_start, *else_args_len);
+                let else_args = self.ctx.cfg.get_extra(*else_args_start, *else_args_len);
                 for (i, &arg) in else_args.iter().enumerate() {
-                    let arg_type = self.cfg.get_inst(arg).ty;
+                    let arg_type = self.ctx.cfg.get_inst(arg).ty;
                     if matches!(arg_type.kind(), TypeKind::Struct(_)) {
                         // For struct args, copy all field vregs
                         self.copy_struct_to_block_param(arg, *else_block, i as u32);
@@ -4283,7 +4105,7 @@ impl<'a> CfgLower<'a> {
                 let scrutinee_vreg = self.get_vreg(*scrutinee);
 
                 // Generate comparison and jump for each case
-                let cases = self.cfg.get_switch_cases(*cases_start, *cases_len);
+                let cases = self.ctx.cfg.get_switch_cases(*cases_start, *cases_len);
                 for (value, target) in cases {
                     // Load case value into a register (supports signed values for negative patterns)
                     let case_vreg = self.mir.alloc_vreg();
@@ -4313,7 +4135,7 @@ impl<'a> CfgLower<'a> {
                     return;
                 };
 
-                let return_type = self.cfg.return_type();
+                let return_type = self.ctx.cfg.return_type();
 
                 if self.fn_name == "main" {
                     let val_vreg = self.get_vreg(*value);
@@ -4329,8 +4151,8 @@ impl<'a> CfgLower<'a> {
                     self.mir.push(X86Inst::CallRel { symbol_id });
                 } else if let Some(struct_id) = return_type.as_struct() {
                     // Return struct in registers
-                    let slot_count = self.type_slot_count(Type::Struct(struct_id));
-                    let value_data = &self.cfg.get_inst(*value).data;
+                    let slot_count = self.ctx.type_slot_count(Type::Struct(struct_id));
+                    let value_data = &self.ctx.cfg.get_inst(*value).data;
 
                     match value_data {
                         CfgInstData::StructInit { .. }
@@ -4354,8 +4176,8 @@ impl<'a> CfgLower<'a> {
                         }
                         CfgInstData::Param { index } => {
                             for slot_idx in 0..slot_count {
-                                let param_slot = self.num_locals + index + slot_idx;
-                                let offset = self.local_offset(param_slot);
+                                let param_slot = self.ctx.num_locals + index + slot_idx;
+                                let offset = self.ctx.local_offset(param_slot);
                                 self.mir.push(X86Inst::MovRM {
                                     dst: Operand::Physical(RET_REGS[slot_idx as usize]),
                                     base: Reg::Rbp,
@@ -4366,7 +4188,7 @@ impl<'a> CfgLower<'a> {
                         CfgInstData::Load { slot } => {
                             for slot_idx in 0..slot_count {
                                 let actual_slot = slot + slot_idx;
-                                let offset = self.local_offset(actual_slot);
+                                let offset = self.ctx.local_offset(actual_slot);
                                 self.mir.push(X86Inst::MovRM {
                                     dst: Operand::Physical(RET_REGS[slot_idx as usize]),
                                     base: Reg::Rbp,

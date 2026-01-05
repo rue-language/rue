@@ -1,12 +1,30 @@
-//! Shared types for CFG lowering across backends.
+//! Shared types and utilities for CFG lowering across backends.
 //!
-//! This module contains types used by both x86_64 and aarch64 backends
-//! when tracing through field and index chains during CFG lowering.
+//! This module contains types and helper functions used by both x86_64 and aarch64
+//! backends when lowering CFG to machine IR.
+//!
+//! ## Architecture
+//!
+//! The CFG lowering is split into two parts:
+//!
+//! 1. **Shared context** ([`CfgLowerContext`]): Holds common data and implements
+//!    architecture-independent helper methods like type queries and chain tracing.
+//!
+//! 2. **Backend-specific lowering** (per-backend `CfgLower`): Each backend embeds
+//!    a `CfgLowerContext` and implements instruction-specific lowering that produces
+//!    its MIR type.
+//!
+//! This design eliminates significant code duplication while keeping the
+//! instruction-specific logic where it belongs.
 
 use std::fmt;
 
 use lasso::Key;
-use rue_cfg::{BlockId, CfgValue, Type};
+use rue_air::{StructId, TypeInternPool, TypeKind};
+use rue_builtins::{BinOp, get_builtin_type};
+use rue_cfg::{BlockId, Cfg, CfgInstData, CfgValue, Type};
+
+use crate::types;
 
 /// A single lowering decision: maps one CFG instruction to its MIR expansion.
 #[derive(Debug, Clone)]
@@ -341,4 +359,238 @@ pub struct IndexLevel {
     pub elem_slot_count: u32,
     /// The array type (Type::Array(...)) for bounds checking.
     pub array_type: Type,
+}
+
+// ============================================================================
+// Shared CFG Lowering Context
+// ============================================================================
+
+/// Shared context for CFG lowering operations.
+///
+/// This struct holds the common data needed by both x86_64 and aarch64 backends
+/// and provides architecture-independent helper methods for:
+///
+/// - Type queries (slot counts, field offsets, array lengths)
+/// - Chain tracing (following FieldGet/IndexGet chains to find origins)
+/// - Builtin type detection and operator lookup
+///
+/// Each backend's `CfgLower` embeds this context and delegates to its methods.
+pub struct CfgLowerContext<'a> {
+    /// The CFG being lowered.
+    pub cfg: &'a Cfg,
+    /// Type intern pool for struct/enum/array lookups.
+    pub type_pool: &'a TypeInternPool,
+    /// Number of local variable slots.
+    pub num_locals: u32,
+    /// Number of parameter slots.
+    pub num_params: u32,
+}
+
+impl<'a> CfgLowerContext<'a> {
+    /// Create a new CFG lowering context.
+    pub fn new(cfg: &'a Cfg, type_pool: &'a TypeInternPool) -> Self {
+        Self {
+            cfg,
+            type_pool,
+            num_locals: cfg.num_locals(),
+            num_params: cfg.num_params(),
+        }
+    }
+
+    // ========================================================================
+    // Type helpers
+    // ========================================================================
+
+    /// Get the length of an array type.
+    pub fn array_length(&self, array_type: Type) -> u64 {
+        types::array_length_from_type(self.type_pool, array_type)
+    }
+
+    /// Get the array type definition.
+    ///
+    /// Returns `Some((element_type, length))` for array types, `None` otherwise.
+    pub fn array_type_def(&self, array_type: Type) -> Option<(Type, u64)> {
+        types::array_type_def_from_type(self.type_pool, array_type)
+    }
+
+    /// Calculate the total number of slots needed to store a type.
+    pub fn type_slot_count(&self, ty: Type) -> u32 {
+        types::type_slot_count(self.type_pool, ty)
+    }
+
+    /// Calculate the slot count for a single element of an array type.
+    pub fn array_element_slot_count(&self, array_type: Type) -> u32 {
+        types::array_element_slot_count_from_type(self.type_pool, array_type)
+    }
+
+    /// Calculate the slot offset for a field within a struct.
+    pub fn struct_field_slot_offset(&self, struct_id: StructId, field_index: u32) -> u32 {
+        types::struct_field_slot_offset(self.type_pool, struct_id, field_index)
+    }
+
+    // ========================================================================
+    // Builtin type helpers
+    // ========================================================================
+
+    /// Check if a type is the builtin String struct.
+    ///
+    /// Returns true if the type is a struct that is marked as builtin with name "String".
+    pub fn is_builtin_string(&self, ty: Type) -> bool {
+        match ty.kind() {
+            TypeKind::Struct(struct_id) => {
+                let struct_def = self.type_pool.struct_def(struct_id);
+                struct_def.is_builtin && struct_def.name == "String"
+            }
+            _ => false,
+        }
+    }
+
+    /// Get the builtin operator runtime function for a type and operation.
+    ///
+    /// Returns `Some((runtime_fn, invert_result))` if the type has a builtin
+    /// operator implementation, `None` otherwise.
+    pub fn get_builtin_operator(&self, ty: Type, op: BinOp) -> Option<(&'static str, bool)> {
+        let builtin = match ty.kind() {
+            TypeKind::Struct(struct_id) => {
+                let struct_def = self.type_pool.struct_def(struct_id);
+                if struct_def.is_builtin {
+                    get_builtin_type(&struct_def.name)?
+                } else {
+                    return None;
+                }
+            }
+            _ => return None,
+        };
+        builtin
+            .find_operator(op)
+            .map(|op_def| (op_def.runtime_fn, op_def.invert_result))
+    }
+
+    // ========================================================================
+    // Chain tracing
+    // ========================================================================
+
+    /// Trace back through a chain of FieldGet instructions to find the original
+    /// Load or Param source. Returns the base kind and accumulated slot offset.
+    pub fn trace_field_chain(&self, value: CfgValue) -> Option<(FieldChainBase, u32)> {
+        let inst = self.cfg.get_inst(value);
+        match &inst.data {
+            CfgInstData::Load { slot } => Some((FieldChainBase::Load { slot: *slot }, 0)),
+            CfgInstData::Param { index } => Some((FieldChainBase::Param { index: *index }, 0)),
+            CfgInstData::FieldGet {
+                base,
+                struct_id,
+                field_index,
+            } => {
+                // Recursively trace back through the base
+                if let Some((base_kind, accumulated_offset)) = self.trace_field_chain(*base) {
+                    let this_offset = self.struct_field_slot_offset(*struct_id, *field_index);
+                    Some((base_kind, accumulated_offset + this_offset))
+                } else {
+                    None
+                }
+            }
+            CfgInstData::IndexGet {
+                base: array_base,
+                array_type,
+                index,
+            } => {
+                // Array of structs case: the field's base is an IndexGet
+                // Try to trace the array base to find the original Load/Param
+                if let Some((index_base, mut levels)) = self.trace_index_chain(*array_base) {
+                    let elem_slot_count = self.array_element_slot_count(*array_type);
+                    levels.push(IndexLevel {
+                        index: *index,
+                        elem_slot_count,
+                        array_type: *array_type,
+                    });
+                    Some((
+                        FieldChainBase::IndexGet {
+                            index_base,
+                            index_levels: levels,
+                        },
+                        0, // No field offset yet - that will be added by the calling FieldGet
+                    ))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Trace back through a chain of IndexGet instructions to find the original
+    /// source (Load, Param, or FieldGet). Returns the base kind and the list of
+    /// index levels from outermost to innermost.
+    pub fn trace_index_chain(&self, value: CfgValue) -> Option<(IndexChainBase, Vec<IndexLevel>)> {
+        let inst = self.cfg.get_inst(value);
+        match &inst.data {
+            CfgInstData::Load { slot } => Some((IndexChainBase::Load { slot: *slot }, vec![])),
+            CfgInstData::Param { index } => Some((IndexChainBase::Param { index: *index }, vec![])),
+            CfgInstData::FieldGet {
+                base,
+                struct_id,
+                field_index,
+            } => {
+                // Array within a struct - find the struct's Load/Param
+                let struct_base_data = &self.cfg.get_inst(*base).data;
+                match struct_base_data {
+                    CfgInstData::Load { slot } => {
+                        let field_slot_offset =
+                            self.struct_field_slot_offset(*struct_id, *field_index);
+                        Some((
+                            IndexChainBase::FieldGet {
+                                struct_base_slot: *slot,
+                                field_slot_offset,
+                            },
+                            vec![],
+                        ))
+                    }
+                    _ => None, // Other struct sources not supported
+                }
+            }
+            CfgInstData::IndexGet {
+                base,
+                array_type,
+                index,
+            } => {
+                // Recursively trace the base
+                if let Some((base_kind, mut levels)) = self.trace_index_chain(*base) {
+                    let elem_slot_count = self.array_element_slot_count(*array_type);
+                    levels.push(IndexLevel {
+                        index: *index,
+                        elem_slot_count,
+                        array_type: *array_type,
+                    });
+                    Some((base_kind, levels))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
+    // ========================================================================
+    // Slot helpers
+    // ========================================================================
+
+    /// Calculate the stack offset for a local variable slot.
+    ///
+    /// Local variables are stored at negative offsets from the frame pointer.
+    pub fn local_offset(&self, slot: u32) -> i32 {
+        -((slot as i32 + 1) * 8)
+    }
+
+    /// Check if a slot corresponds to an inout parameter.
+    ///
+    /// Returns `Some(param_index)` if it's an inout param slot, `None` otherwise.
+    /// Inout parameter slots are stored after local variable slots.
+    pub fn slot_to_inout_param_index(&self, slot: u32) -> Option<u32> {
+        if slot >= self.num_locals && slot < self.num_locals + self.num_params {
+            Some(slot - self.num_locals)
+        } else {
+            None
+        }
+    }
 }
