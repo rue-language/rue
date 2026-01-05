@@ -470,6 +470,12 @@ impl Type {
     /// This method decodes the u32 representation back to a `TypeKind` for pattern matching.
     /// Primitive types (0-12) decode directly; composite types decode the tag and ID.
     ///
+    /// # Panics
+    ///
+    /// Panics if the Type has an invalid encoding. This should never happen with Types
+    /// created through the normal API. If you're working with potentially corrupt data,
+    /// use [`try_kind`](Self::try_kind) instead.
+    ///
     /// # Example
     ///
     /// ```ignore
@@ -481,28 +487,59 @@ impl Type {
     /// ```
     #[inline]
     pub fn kind(&self) -> TypeKind {
+        self.try_kind().unwrap_or_else(|| {
+            panic!(
+                "invalid Type encoding: raw value {:#010x} (tag={}, id={}). \
+                 This indicates data corruption or a bug in Type construction. \
+                 Valid tags are 0-12 (primitives) or 100-105 (composites).",
+                self.0,
+                self.0 & 0xFF,
+                self.0 >> 8
+            )
+        })
+    }
+
+    /// Try to get the kind of this type, returning `None` if the encoding is invalid.
+    ///
+    /// This is the non-panicking version of [`kind`](Self::kind). Use this when working
+    /// with potentially corrupt data or for defensive programming.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// if let Some(kind) = ty.try_kind() {
+    ///     match kind {
+    ///         TypeKind::I32 => { /* ... */ }
+    ///         _ => { /* ... */ }
+    ///     }
+    /// } else {
+    ///     eprintln!("corrupt type data");
+    /// }
+    /// ```
+    #[inline]
+    pub fn try_kind(&self) -> Option<TypeKind> {
         let tag = self.0 & 0xFF;
         match tag {
-            0 => TypeKind::I8,
-            1 => TypeKind::I16,
-            2 => TypeKind::I32,
-            3 => TypeKind::I64,
-            4 => TypeKind::U8,
-            5 => TypeKind::U16,
-            6 => TypeKind::U32,
-            7 => TypeKind::U64,
-            8 => TypeKind::Bool,
-            9 => TypeKind::Unit,
-            10 => TypeKind::Error,
-            11 => TypeKind::Never,
-            12 => TypeKind::ComptimeType,
-            TAG_STRUCT => TypeKind::Struct(StructId(self.0 >> 8)),
-            TAG_ENUM => TypeKind::Enum(EnumId(self.0 >> 8)),
-            TAG_ARRAY => TypeKind::Array(ArrayTypeId(self.0 >> 8)),
-            TAG_PTR_CONST => TypeKind::PtrConst(PtrConstTypeId(self.0 >> 8)),
-            TAG_PTR_MUT => TypeKind::PtrMut(PtrMutTypeId(self.0 >> 8)),
-            TAG_MODULE => TypeKind::Module(ModuleId(self.0 >> 8)),
-            _ => panic!("invalid Type encoding: {}", self.0),
+            0 => Some(TypeKind::I8),
+            1 => Some(TypeKind::I16),
+            2 => Some(TypeKind::I32),
+            3 => Some(TypeKind::I64),
+            4 => Some(TypeKind::U8),
+            5 => Some(TypeKind::U16),
+            6 => Some(TypeKind::U32),
+            7 => Some(TypeKind::U64),
+            8 => Some(TypeKind::Bool),
+            9 => Some(TypeKind::Unit),
+            10 => Some(TypeKind::Error),
+            11 => Some(TypeKind::Never),
+            12 => Some(TypeKind::ComptimeType),
+            TAG_STRUCT => Some(TypeKind::Struct(StructId(self.0 >> 8))),
+            TAG_ENUM => Some(TypeKind::Enum(EnumId(self.0 >> 8))),
+            TAG_ARRAY => Some(TypeKind::Array(ArrayTypeId(self.0 >> 8))),
+            TAG_PTR_CONST => Some(TypeKind::PtrConst(PtrConstTypeId(self.0 >> 8))),
+            TAG_PTR_MUT => Some(TypeKind::PtrMut(PtrMutTypeId(self.0 >> 8))),
+            TAG_MODULE => Some(TypeKind::Module(ModuleId(self.0 >> 8))),
+            _ => None,
         }
     }
 
@@ -806,9 +843,62 @@ impl Type {
     ///
     /// Since Type is now a u32 newtype, this simply wraps the value.
     /// Note: This does not validate the encoding - use with values from `as_u32()`.
+    ///
+    /// # Safety (not unsafe, but correctness)
+    ///
+    /// This method trusts that the input is a valid encoding. For untrusted data,
+    /// use [`try_from_u32`](Self::try_from_u32) which validates the encoding.
     #[inline]
     pub fn from_u32(v: u32) -> Self {
         Type(v)
+    }
+
+    /// Try to decode a type from a u32 value, returning `None` if invalid.
+    ///
+    /// This validates that the encoding represents a valid type before returning.
+    /// Use this when reading potentially corrupt data (e.g., deserialization,
+    /// memory-mapped files, or debugging).
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// if let Some(ty) = Type::try_from_u32(encoded) {
+    ///     // Safe to use ty.kind()
+    /// } else {
+    ///     // Handle invalid encoding
+    /// }
+    /// ```
+    #[inline]
+    pub fn try_from_u32(v: u32) -> Option<Self> {
+        if Self::is_valid_encoding(v) {
+            Some(Type(v))
+        } else {
+            None
+        }
+    }
+
+    /// Check if a u32 value is a valid Type encoding.
+    ///
+    /// Returns `true` if the value represents a valid primitive or composite type.
+    #[inline]
+    pub fn is_valid_encoding(v: u32) -> bool {
+        let tag = v & 0xFF;
+        match tag {
+            // Primitive types: I8=0 through ComptimeType=12
+            0..=12 => true,
+            // Composite types with valid tags
+            TAG_STRUCT | TAG_ENUM | TAG_ARRAY | TAG_PTR_CONST | TAG_PTR_MUT | TAG_MODULE => true,
+            // Everything else is invalid
+            _ => false,
+        }
+    }
+
+    /// Check if this Type has a valid encoding.
+    ///
+    /// This is useful for debugging and assertions.
+    #[inline]
+    pub fn is_valid(&self) -> bool {
+        Self::is_valid_encoding(self.0)
     }
 }
 
@@ -1472,5 +1562,151 @@ mod tests {
     fn test_comptime_type_cannot_coerce_to_runtime_types() {
         assert!(!Type::ComptimeType.can_coerce_to(&Type::I32));
         assert!(!Type::ComptimeType.can_coerce_to(&Type::Bool));
+    }
+
+    // ========== Type encoding validation tests ==========
+
+    #[test]
+    fn test_is_valid_encoding_primitives() {
+        // All primitive types (0-12) are valid
+        for i in 0..=12u32 {
+            assert!(
+                Type::is_valid_encoding(i),
+                "primitive tag {} should be valid",
+                i
+            );
+        }
+    }
+
+    #[test]
+    fn test_is_valid_encoding_composites() {
+        // Composite types with valid tags
+        assert!(Type::is_valid_encoding(100)); // TAG_STRUCT
+        assert!(Type::is_valid_encoding(101)); // TAG_ENUM
+        assert!(Type::is_valid_encoding(102)); // TAG_ARRAY
+        assert!(Type::is_valid_encoding(103)); // TAG_MODULE
+        assert!(Type::is_valid_encoding(104)); // TAG_PTR_CONST
+        assert!(Type::is_valid_encoding(105)); // TAG_PTR_MUT
+
+        // With IDs in the high bits
+        assert!(Type::is_valid_encoding(100 | (42 << 8))); // Struct with ID 42
+        assert!(Type::is_valid_encoding(101 | (100 << 8))); // Enum with ID 100
+    }
+
+    #[test]
+    fn test_is_valid_encoding_invalid() {
+        // Tags between primitives and composites are invalid (13-99)
+        for tag in 13..100u32 {
+            assert!(
+                !Type::is_valid_encoding(tag),
+                "tag {} should be invalid",
+                tag
+            );
+        }
+
+        // Tags above composites are invalid (106+)
+        for tag in 106..=255u32 {
+            assert!(
+                !Type::is_valid_encoding(tag),
+                "tag {} should be invalid",
+                tag
+            );
+        }
+    }
+
+    #[test]
+    fn test_try_from_u32_valid() {
+        // Valid primitives
+        assert!(Type::try_from_u32(0).is_some()); // I8
+        assert!(Type::try_from_u32(2).is_some()); // I32
+        assert!(Type::try_from_u32(12).is_some()); // ComptimeType
+
+        // Valid composites
+        assert!(Type::try_from_u32(100).is_some()); // Struct(0)
+        assert!(Type::try_from_u32(100 | (42 << 8)).is_some()); // Struct(42)
+    }
+
+    #[test]
+    fn test_try_from_u32_invalid() {
+        // Invalid tags
+        assert!(Type::try_from_u32(50).is_none());
+        assert!(Type::try_from_u32(99).is_none());
+        assert!(Type::try_from_u32(106).is_none());
+        assert!(Type::try_from_u32(255).is_none());
+    }
+
+    #[test]
+    fn test_try_kind_valid() {
+        assert_eq!(Type::I32.try_kind(), Some(TypeKind::I32));
+        assert_eq!(Type::Bool.try_kind(), Some(TypeKind::Bool));
+        assert_eq!(
+            Type::Struct(StructId(42)).try_kind(),
+            Some(TypeKind::Struct(StructId(42)))
+        );
+    }
+
+    #[test]
+    fn test_try_kind_invalid() {
+        // Create an invalid Type by directly constructing with invalid encoding
+        let invalid = Type::from_u32(50); // Tag 50 is invalid
+        assert!(invalid.try_kind().is_none());
+
+        let invalid2 = Type::from_u32(200); // Tag 200 is invalid
+        assert!(invalid2.try_kind().is_none());
+    }
+
+    #[test]
+    fn test_is_valid_method() {
+        assert!(Type::I32.is_valid());
+        assert!(Type::Struct(StructId(0)).is_valid());
+
+        // Invalid types
+        let invalid = Type::from_u32(50);
+        assert!(!invalid.is_valid());
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid Type encoding")]
+    fn test_kind_panics_on_invalid() {
+        let invalid = Type::from_u32(50);
+        let _ = invalid.kind(); // Should panic
+    }
+
+    #[test]
+    fn test_roundtrip_encoding() {
+        // Test that as_u32 and from_u32 are inverses for valid types
+        let types = [
+            Type::I8,
+            Type::I16,
+            Type::I32,
+            Type::I64,
+            Type::U8,
+            Type::U16,
+            Type::U32,
+            Type::U64,
+            Type::Bool,
+            Type::Unit,
+            Type::Error,
+            Type::Never,
+            Type::ComptimeType,
+            Type::Struct(StructId(0)),
+            Type::Struct(StructId(1000)),
+            Type::Enum(EnumId(5)),
+            Type::Array(ArrayTypeId(10)),
+            Type::PtrConst(PtrConstTypeId(20)),
+            Type::PtrMut(PtrMutTypeId(30)),
+            Type::Module(ModuleId(40)),
+        ];
+
+        for ty in types {
+            let encoded = ty.as_u32();
+            let decoded = Type::from_u32(encoded);
+            assert_eq!(ty, decoded, "roundtrip failed for {:?}", ty);
+            assert!(
+                decoded.is_valid(),
+                "{:?} should be valid after roundtrip",
+                ty
+            );
+        }
     }
 }
