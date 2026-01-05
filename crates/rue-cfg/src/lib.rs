@@ -24,7 +24,8 @@ use rue_error::CompileWarning;
 
 pub use build::CfgBuilder;
 pub use inst::{
-    BasicBlock, BlockId, Cfg, CfgArgMode, CfgCallArg, CfgInst, CfgInstData, CfgValue, Terminator,
+    BasicBlock, BlockId, Cfg, CfgArgMode, CfgCallArg, CfgInst, CfgInstData, CfgValue, Place,
+    PlaceBase, Projection, Terminator,
 };
 pub use opt::OptLevel;
 

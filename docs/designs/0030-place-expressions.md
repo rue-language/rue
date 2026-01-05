@@ -1,7 +1,7 @@
 ---
 id: 0030
 title: Place Expressions for Memory Locations
-status: proposal
+status: implemented
 tags: [ir, codegen, performance]
 created: 2026-01-04
 spec-sections: []
@@ -11,7 +11,7 @@ spec-sections: []
 
 ## Status
 
-Proposal
+Implemented
 
 ## Summary
 
@@ -233,14 +233,24 @@ pub enum AirProjection {
 
 ## Implementation Phases
 
-- [ ] **Phase 1: Add Place type to CFG** - Define `Place`, `PlaceBase`, `Projection` in `rue-cfg`
-- [ ] **Phase 2: Add PlaceRead/PlaceWrite instructions** - Add new CFG instruction variants alongside existing ones
-- [ ] **Phase 3: Update CFG builder** - Generate Place-based instructions for simple cases
-- [ ] **Phase 4: Update x86_64 codegen** - Emit efficient code for Place-based instructions
-- [ ] **Phase 5: Update aarch64 codegen** - Same for ARM64 backend
-- [ ] **Phase 6: Migrate remaining cases** - Handle all array/field operations via places
-- [ ] **Phase 7: Remove old instructions** - Delete IndexGet/FieldGet with base values
-- [ ] **Phase 8: Apply same changes to AIR** - Propagate place abstraction to AIR level
+- [x] **Phase 1: Add Place type to CFG** - Define `Place`, `PlaceBase`, `Projection` in `rue-cfg`
+- [x] **Phase 2: Add PlaceRead/PlaceWrite instructions** - Add new CFG instruction variants alongside existing ones
+- [x] **Phase 3: Update CFG builder** - Generate Place-based instructions for simple cases
+- [x] **Phase 4: Update x86_64 codegen** - Emit efficient code for Place-based instructions
+- [x] **Phase 5: Update aarch64 codegen** - Same for ARM64 backend
+- [x] **Phase 6: Migrate remaining cases** - Handle all array/field operations via places
+- [x] **Phase 7: Remove old instructions** - Delete IndexGet/FieldGet with base values
+- [x] **Phase 8: Apply same changes to AIR** - Propagate place abstraction to AIR level
+  - Added `AirPlace`, `AirPlaceBase`, `AirProjection`, `AirPlaceRef` types to `rue-air`
+  - Added `AirInstData::PlaceRead` and `AirInstData::PlaceWrite` instruction variants
+  - Added `Air::make_place`, `Air::get_place`, `Air::get_place_projections` helper methods
+  - Updated CFG builder to lower `AirInstData::PlaceRead` → `CfgInstData::PlaceRead`
+  - Updated CFG builder to lower `AirInstData::PlaceWrite` → `CfgInstData::PlaceWrite`
+  - Added `PlaceTrace` and `try_trace_place` to trace RIR expressions to places
+  - Updated `analyze_field_get` and `analyze_index_get` to emit `PlaceRead` for place expressions
+  - Updated `analyze_field_set_impl` and `analyze_index_set_impl` to emit `PlaceWrite`
+  - Old instructions (`FieldGet`, `IndexGet`, etc.) remain as fallback for computed bases
+    (e.g., `get_struct().field` where base is a function call result)
 
 ## Consequences
 

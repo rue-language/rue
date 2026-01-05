@@ -38,7 +38,10 @@ use crate::inference::{
     Constraint, ConstraintContext, ConstraintGenerator, InferType, ParamVarInfo, Unifier,
     UnifyResult,
 };
-use crate::inst::{Air, AirArgMode, AirCallArg, AirInst, AirInstData, AirPattern, AirRef};
+use crate::inst::{
+    Air, AirArgMode, AirCallArg, AirInst, AirInstData, AirPattern, AirPlaceBase, AirProjection,
+    AirRef,
+};
 use crate::scope::ScopedContext;
 use crate::sema_context::SemaContext;
 use crate::types::{EnumId, StructDef, StructField, StructId, Type, TypeKind};
@@ -7243,159 +7246,67 @@ impl<'a> Sema<'a> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        // For field assignment, we need to walk up the chain of field accesses
-        // to find the root variable. We accumulate the slot offset as we go.
+        use crate::sema::analyze_ops::ProjectionInfo;
 
-        // Walk up to find the root variable, collecting field symbols
-        let mut current_base = base;
-        let mut field_symbols: Vec<Spur> = Vec::new();
-
-        // Result is either (Local, slot, type, is_mut, name) or (Param, abi_slot, type, mode, name)
-        enum RootKind {
-            Local { slot: u32, is_mut: bool },
-            Param { abi_slot: u32, mode: RirParamMode },
-        }
-
-        let (var_name, root_kind, root_type, root_symbol) = loop {
-            let current_inst = self.rir.get(current_base);
-            match &current_inst.data {
-                InstData::VarRef { name } => {
-                    let name_str = self.interner.resolve(&*name);
-
-                    // Check if this variable has been moved
-                    if let Some(move_state) = ctx.moved_vars.get(name) {
-                        if let Some(moved_span) = move_state.is_any_part_moved() {
-                            return Err(CompileError::new(
-                                ErrorKind::UseAfterMove(name_str.to_string()),
-                                span,
-                            )
-                            .with_label("value moved here", moved_span));
-                        }
-                    }
-
-                    // First check if it's a parameter
-                    if let Some(param_info) = ctx.params.get(name) {
-                        break (
-                            name_str.to_string(),
-                            RootKind::Param {
-                                abi_slot: param_info.abi_slot,
-                                mode: param_info.mode,
-                            },
-                            param_info.ty,
-                            *name,
-                        );
-                    }
-
-                    // Then check locals
-                    let local = ctx.locals.get(name).ok_or_compile_error(
-                        ErrorKind::UndefinedVariable(name_str.to_string()),
+        // Try to trace the base to a place
+        if let Some(mut trace) = self.try_trace_place(base, air, ctx)? {
+            // Check if the root variable was fully moved
+            if let Some(state) = ctx.moved_vars.get(&trace.root_var) {
+                if let Some(moved_span) = state.full_move {
+                    let root_name = self.interner.resolve(&trace.root_var);
+                    return Err(CompileError::new(
+                        ErrorKind::UseAfterMove(root_name.to_string()),
                         span,
-                    )?;
-
-                    break (
-                        name_str.to_string(),
-                        RootKind::Local {
-                            slot: local.slot,
-                            is_mut: local.is_mut,
-                        },
-                        local.ty,
-                        *name,
-                    );
-                }
-                InstData::ParamRef { name, .. } => {
-                    let name_str = self.interner.resolve(&*name);
-                    let param_info = ctx.params.get(name).ok_or_compile_error(
-                        ErrorKind::UndefinedVariable(name_str.to_string()),
-                        span,
-                    )?;
-
-                    // Check if this parameter has been moved
-                    if let Some(move_state) = ctx.moved_vars.get(name) {
-                        if let Some(moved_span) = move_state.is_any_part_moved() {
-                            return Err(CompileError::new(
-                                ErrorKind::UseAfterMove(name_str.to_string()),
-                                span,
-                            )
-                            .with_label("value moved here", moved_span));
-                        }
-                    }
-
-                    break (
-                        name_str.to_string(),
-                        RootKind::Param {
-                            abi_slot: param_info.abi_slot,
-                            mode: param_info.mode,
-                        },
-                        param_info.ty,
-                        *name,
-                    );
-                }
-                InstData::FieldGet {
-                    base: inner_base,
-                    field: inner_field,
-                } => {
-                    field_symbols.push(*inner_field);
-                    current_base = *inner_base;
-                }
-                _ => {
-                    return Err(CompileError::new(ErrorKind::InvalidAssignmentTarget, span));
+                    )
+                    .with_label("value moved here", moved_span));
                 }
             }
-        };
 
-        // Check mutability based on root kind
-        let root_slot = match root_kind {
-            RootKind::Local { slot, is_mut } => {
-                if !is_mut {
+            // Check mutability
+            let root_name = self.interner.resolve(&trace.root_var).to_string();
+            if !trace.is_root_mutable {
+                // Check if this is a borrow parameter - special error message
+                if trace.is_borrow_param {
                     return Err(CompileError::new(
-                        ErrorKind::AssignToImmutable(var_name),
+                        ErrorKind::MutateBorrowedValue {
+                            variable: root_name,
+                        },
                         span,
                     ));
                 }
-                slot
-            }
-            RootKind::Param { abi_slot, mode } => {
-                match mode {
-                    RirParamMode::Normal | RirParamMode::Comptime => {
+
+                let root_type = trace.base_type;
+                // Provide more specific error based on whether it's a param or local
+                match trace.base {
+                    AirPlaceBase::Param(_) => {
                         return Err(CompileError::new(
-                            ErrorKind::AssignToImmutable(var_name.clone()),
+                            ErrorKind::AssignToImmutable(root_name.clone()),
                             span,
                         )
                         .with_help(format!(
                             "consider making parameter `{}` inout: `inout {}: {}`",
-                            var_name,
-                            var_name,
+                            root_name,
+                            root_name,
                             root_type.name()
                         )));
                     }
-                    RirParamMode::Inout => {
-                        // Inout parameters can be mutated
-                    }
-                    RirParamMode::Borrow => {
+                    AirPlaceBase::Local(_) => {
                         return Err(CompileError::new(
-                            ErrorKind::MutateBorrowedValue { variable: var_name },
+                            ErrorKind::AssignToImmutable(root_name),
                             span,
                         ));
                     }
                 }
-                abi_slot
             }
-        };
 
-        // Suppress unused variable warning
-        let _ = root_symbol;
-
-        // Walk through the field chain to compute the slot offset
-        let mut current_type = root_type;
-        let mut slot_offset: u32 = 0;
-
-        for field_sym in field_symbols.iter().rev() {
-            let struct_id = match current_type.kind() {
-                TypeKind::Struct(id) => id,
-                _ => {
+            // Add the final field projection
+            let base_type = trace.result_type();
+            let struct_id = match base_type.as_struct() {
+                Some(id) => id,
+                None => {
                     return Err(CompileError::new(
                         ErrorKind::FieldAccessOnNonStruct {
-                            found: current_type.name().to_string(),
+                            found: base_type.name().to_string(),
                         },
                         span,
                     ));
@@ -7403,7 +7314,7 @@ impl<'a> Sema<'a> {
             };
 
             let struct_def = self.type_pool.struct_def(struct_id);
-            let field_name_str = self.interner.resolve(&*field_sym).to_string();
+            let field_name_str = self.interner.resolve(&field).to_string();
 
             let (field_index, struct_field) =
                 struct_def.find_field(&field_name_str).ok_or_compile_error(
@@ -7414,66 +7325,37 @@ impl<'a> Sema<'a> {
                     span,
                 )?;
 
-            slot_offset += self.field_slot_offset(struct_id, field_index);
-            current_type = struct_field.ty;
-        }
+            let field_type = struct_field.ty;
 
-        // Now handle the final field being assigned
-        let struct_id = match current_type.kind() {
-            TypeKind::Struct(id) => id,
-            _ => {
-                return Err(CompileError::new(
-                    ErrorKind::FieldAccessOnNonStruct {
-                        found: current_type.name().to_string(),
-                    },
-                    span,
-                ));
-            }
-        };
-
-        let struct_def = self.type_pool.struct_def(struct_id);
-        let field_name_str = self.interner.resolve(&field).to_string();
-
-        let (field_index, _struct_field) =
-            struct_def.find_field(&field_name_str).ok_or_compile_error(
-                ErrorKind::UnknownField {
-                    struct_name: struct_def.name.clone(),
-                    field_name: field_name_str.clone(),
-                },
-                span,
-            )?;
-
-        // Analyze the value
-        let value_result = self.analyze_inst(air, value, ctx)?;
-
-        // Emit the appropriate instruction based on whether root is a local or param
-        let air_ref = match root_kind {
-            RootKind::Local { slot, .. } => {
-                let base_slot = slot + slot_offset;
-                air.add_inst(AirInst {
-                    data: AirInstData::FieldSet {
-                        slot: base_slot,
-                        struct_id,
-                        field_index: field_index as u32,
-                        value: value_result.air_ref,
-                    },
-                    ty: Type::Unit,
-                    span,
-                })
-            }
-            RootKind::Param { abi_slot, .. } => air.add_inst(AirInst {
-                data: AirInstData::ParamFieldSet {
-                    param_slot: abi_slot,
-                    inner_offset: slot_offset,
+            // Add the field projection to the trace
+            trace.projections.push(ProjectionInfo {
+                proj: AirProjection::Field {
                     struct_id,
                     field_index: field_index as u32,
+                },
+                result_type: field_type,
+                field_name: Some(field),
+            });
+
+            // Analyze the value
+            let value_result = self.analyze_inst(air, value, ctx)?;
+
+            // Emit PlaceWrite instruction
+            let place_ref = Self::build_place_ref(air, &trace);
+            let air_ref = air.add_inst(AirInst {
+                data: AirInstData::PlaceWrite {
+                    place: place_ref,
                     value: value_result.air_ref,
                 },
                 ty: Type::Unit,
                 span,
-            }),
-        };
-        Ok(AnalysisResult::new(air_ref, Type::Unit))
+            });
+            return Ok(AnalysisResult::new(air_ref, Type::Unit));
+        }
+
+        // Fallback: base is not a place (e.g., function call result)
+        // This shouldn't normally happen for valid assignment targets
+        Err(CompileError::new(ErrorKind::InvalidAssignmentTarget, span))
     }
 
     /// Implementation for IndexSet - handles both local and parameter array index assignment.
@@ -7486,182 +7368,128 @@ impl<'a> Sema<'a> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        let base_inst = self.rir.get(base);
+        use crate::sema::analyze_ops::ProjectionInfo;
 
-        enum IndexSetRootKind {
-            Local { slot: u32, is_mut: bool },
-            Param { abi_slot: u32, mode: RirParamMode },
-        }
-
-        let (var_name, root_kind, base_type) = match &base_inst.data {
-            InstData::VarRef { name } => {
-                let name_str = self.interner.resolve(&*name);
-
-                // Check if this variable has been moved
-                if let Some(move_state) = ctx.moved_vars.get(name) {
-                    if let Some(moved_span) = move_state.is_any_part_moved() {
-                        return Err(CompileError::new(
-                            ErrorKind::UseAfterMove(name_str.to_string()),
-                            span,
-                        )
-                        .with_label("value moved here", moved_span));
-                    }
-                }
-
-                // First check if it's a parameter
-                if let Some(param_info) = ctx.params.get(name) {
-                    (
-                        name_str.to_string(),
-                        IndexSetRootKind::Param {
-                            abi_slot: param_info.abi_slot,
-                            mode: param_info.mode,
-                        },
-                        param_info.ty,
-                    )
-                } else {
-                    // Then check locals
-                    let local = ctx.locals.get(name).ok_or_compile_error(
-                        ErrorKind::UndefinedVariable(name_str.to_string()),
-                        span,
-                    )?;
-
-                    (
-                        name_str.to_string(),
-                        IndexSetRootKind::Local {
-                            slot: local.slot,
-                            is_mut: local.is_mut,
-                        },
-                        local.ty,
-                    )
-                }
-            }
-            InstData::ParamRef { name, .. } => {
-                let name_str = self.interner.resolve(&*name);
-                let param_info = ctx.params.get(name).ok_or_compile_error(
-                    ErrorKind::UndefinedVariable(name_str.to_string()),
-                    span,
-                )?;
-
-                // Check if this parameter has been moved
-                if let Some(move_state) = ctx.moved_vars.get(name) {
-                    if let Some(moved_span) = move_state.is_any_part_moved() {
-                        return Err(CompileError::new(
-                            ErrorKind::UseAfterMove(name_str.to_string()),
-                            span,
-                        )
-                        .with_label("value moved here", moved_span));
-                    }
-                }
-
-                (
-                    name_str.to_string(),
-                    IndexSetRootKind::Param {
-                        abi_slot: param_info.abi_slot,
-                        mode: param_info.mode,
-                    },
-                    param_info.ty,
-                )
-            }
-            _ => {
-                return Err(CompileError::new(ErrorKind::InvalidAssignmentTarget, span));
-            }
-        };
-
-        // Check mutability based on root kind
-        let (is_inout_param, slot) = match root_kind {
-            IndexSetRootKind::Local { slot, is_mut } => {
-                if !is_mut {
+        // Try to trace the base to a place
+        if let Some(mut trace) = self.try_trace_place(base, air, ctx)? {
+            // Check if the root variable was fully moved
+            if let Some(state) = ctx.moved_vars.get(&trace.root_var) {
+                if let Some(moved_span) = state.full_move {
+                    let root_name = self.interner.resolve(&trace.root_var);
                     return Err(CompileError::new(
-                        ErrorKind::AssignToImmutable(var_name),
+                        ErrorKind::UseAfterMove(root_name.to_string()),
+                        span,
+                    )
+                    .with_label("value moved here", moved_span));
+                }
+            }
+
+            // Check mutability
+            let root_name = self.interner.resolve(&trace.root_var).to_string();
+            if !trace.is_root_mutable {
+                // Check if this is a borrow parameter - special error message
+                if trace.is_borrow_param {
+                    return Err(CompileError::new(
+                        ErrorKind::MutateBorrowedValue {
+                            variable: root_name,
+                        },
                         span,
                     ));
                 }
-                (false, slot)
-            }
-            IndexSetRootKind::Param { abi_slot, mode } => {
-                let is_inout = match mode {
-                    RirParamMode::Normal | RirParamMode::Comptime => false,
-                    RirParamMode::Inout => true,
-                    RirParamMode::Borrow => {
+
+                let root_type = trace.base_type;
+                match trace.base {
+                    AirPlaceBase::Param(_) => {
                         return Err(CompileError::new(
-                            ErrorKind::MutateBorrowedValue { variable: var_name },
+                            ErrorKind::AssignToImmutable(root_name.clone()),
+                            span,
+                        )
+                        .with_help(format!(
+                            "consider making parameter `{}` inout: `inout {}: {}`",
+                            root_name,
+                            root_name,
+                            root_type.name()
+                        )));
+                    }
+                    AirPlaceBase::Local(_) => {
+                        return Err(CompileError::new(
+                            ErrorKind::AssignToImmutable(root_name),
                             span,
                         ));
                     }
-                };
-                (is_inout, abi_slot)
+                }
             }
-        };
 
-        let array_type_id = match base_type.kind() {
-            TypeKind::Array(id) => id,
-            _ => {
+            // Get array type info from the trace
+            let base_type = trace.result_type();
+            let (array_type_id, elem_type, array_len) = match base_type.as_array() {
+                Some(id) => {
+                    let (elem, len) = self.type_pool.array_def(id);
+                    (id, elem, len)
+                }
+                None => {
+                    return Err(CompileError::new(
+                        ErrorKind::IndexOnNonArray {
+                            found: base_type.name().to_string(),
+                        },
+                        span,
+                    ));
+                }
+            };
+
+            // Analyze index
+            let index_result = self.analyze_inst(air, index, ctx)?;
+            if !index_result.ty.is_unsigned() && !index_result.ty.is_error() {
                 return Err(CompileError::new(
-                    ErrorKind::IndexOnNonArray {
-                        found: base_type.name().to_string(),
-                    },
-                    span,
-                ));
-            }
-        };
-
-        let (element_type, length) = self.type_pool.array_def(array_type_id);
-
-        // Index must be an unsigned integer
-        let index_result = self.analyze_inst(air, index, ctx)?;
-        if !index_result.ty.is_unsigned() && !index_result.ty.is_error() {
-            return Err(CompileError::new(
-                ErrorKind::TypeMismatch {
-                    expected: "unsigned integer type".to_string(),
-                    found: index_result.ty.name().to_string(),
-                },
-                self.rir.get(index).span,
-            ));
-        }
-
-        let array_length = length;
-
-        // Compile-time bounds check for constant indices
-        if let Some(const_index) = self.try_get_const_index(index) {
-            if const_index < 0 || const_index as u64 >= array_length {
-                return Err(CompileError::new(
-                    ErrorKind::IndexOutOfBounds {
-                        index: const_index,
-                        length: array_length,
+                    ErrorKind::TypeMismatch {
+                        expected: "unsigned integer type".to_string(),
+                        found: index_result.ty.name().to_string(),
                     },
                     self.rir.get(index).span,
                 ));
             }
+
+            // Compile-time bounds check for constant indices
+            if let Some(const_index) = self.try_get_const_index(index) {
+                if const_index < 0 || const_index as u64 >= array_len {
+                    return Err(CompileError::new(
+                        ErrorKind::IndexOutOfBounds {
+                            index: const_index,
+                            length: array_len,
+                        },
+                        self.rir.get(index).span,
+                    ));
+                }
+            }
+
+            // Add the index projection
+            trace.projections.push(ProjectionInfo {
+                proj: AirProjection::Index {
+                    array_type: base_type,
+                    index: index_result.air_ref,
+                },
+                result_type: elem_type,
+                field_name: None,
+            });
+
+            // Analyze the value
+            let value_result = self.analyze_inst(air, value, ctx)?;
+
+            // Emit PlaceWrite instruction
+            let place_ref = Self::build_place_ref(air, &trace);
+            let air_ref = air.add_inst(AirInst {
+                data: AirInstData::PlaceWrite {
+                    place: place_ref,
+                    value: value_result.air_ref,
+                },
+                ty: Type::Unit,
+                span,
+            });
+            return Ok(AnalysisResult::new(air_ref, Type::Unit));
         }
 
-        // Analyze the value
-        let value_result = self.analyze_inst(air, value, ctx)?;
-
-        // Emit appropriate instruction
-        let air_ref = if is_inout_param {
-            air.add_inst(AirInst {
-                data: AirInstData::ParamIndexSet {
-                    param_slot: slot,
-                    array_type: base_type,
-                    index: index_result.air_ref,
-                    value: value_result.air_ref,
-                },
-                ty: Type::Unit,
-                span,
-            })
-        } else {
-            air.add_inst(AirInst {
-                data: AirInstData::IndexSet {
-                    slot,
-                    array_type: base_type,
-                    index: index_result.air_ref,
-                    value: value_result.air_ref,
-                },
-                ty: Type::Unit,
-                span,
-            })
-        };
-        Ok(AnalysisResult::new(air_ref, Type::Unit))
+        // Fallback: base is not a place
+        Err(CompileError::new(ErrorKind::InvalidAssignmentTarget, span))
     }
 
     /// Implementation for MethodCall.

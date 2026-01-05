@@ -7,11 +7,13 @@ use std::collections::HashMap;
 
 use lasso::ThreadedRodeo;
 use rue_air::{StructId, TypeInternPool, TypeKind};
-use rue_cfg::{BasicBlock, BlockId, Cfg, CfgInstData, CfgValue, Terminator, Type};
+use rue_cfg::{
+    BasicBlock, BlockId, Cfg, CfgInstData, CfgValue, Place, PlaceBase, Projection, Terminator, Type,
+};
 use rue_target::Target;
 
 use super::mir::{Aarch64Inst, Aarch64Mir, Cond, LabelId, Operand, Reg, VReg};
-use crate::cfg_lower::{CfgLowerContext, FieldChainBase, IndexChainBase, IndexLevel};
+use crate::cfg_lower::{CfgLowerContext, IndexLevel};
 use crate::types;
 
 /// Argument passing registers per AAPCS64.
@@ -493,9 +495,9 @@ impl<'a> CfgLower<'a> {
                     Some("From stack (AAPCS64, args > 8)".to_string())
                 }
             }
-            CfgInstData::IndexGet { .. } | CfgInstData::IndexSet { .. } => {
-                Some("Includes bounds check".to_string())
-            }
+            CfgInstData::IndexSet { .. }
+            | CfgInstData::PlaceRead { .. }
+            | CfgInstData::PlaceWrite { .. } => Some("Includes bounds check".to_string()),
             _ => None,
         }
     }
@@ -2247,145 +2249,14 @@ impl<'a> CfgLower<'a> {
                             imm: offset,
                         });
                         self.value_map.insert(value, result_vreg);
-                    } else if let CfgInstData::IndexGet {
-                        base,
-                        array_type,
-                        index,
-                    } = &lvalue_inst.data.clone()
-                    {
-                        // Address of an array element: arr[i]
-                        // We need to compute the address, NOT load the value
-                        let array_type = *array_type;
-                        let index = *index;
-                        let base = *base;
-
-                        let elem_slot_count = self.ctx.array_element_slot_count(array_type);
-
-                        // Use trace_index_chain to handle arbitrary nesting depth
-                        if let Some((chain_base, mut levels)) = self.ctx.trace_index_chain(base) {
-                            // Add this level's index to the chain
-                            levels.push(IndexLevel {
-                                index,
-                                elem_slot_count,
-                                array_type,
-                            });
-
-                            // Calculate total offset by summing index * stride for each level
-                            let mut total_offset_vreg: Option<VReg> = None;
-
-                            for level in &levels {
-                                let level_index_vreg = self.get_vreg(level.index);
-                                let level_stride = level.elem_slot_count;
-
-                                // Scale this level's index by its stride
-                                let scaled = self.mir.alloc_vreg();
-                                self.mir.push(Aarch64Inst::MovRR {
-                                    dst: Operand::Virtual(scaled),
-                                    src: Operand::Virtual(level_index_vreg),
-                                });
-
-                                if level_stride == 1 {
-                                    // Simple case: just shift by 3 (multiply by 8)
-                                    self.mir.push(Aarch64Inst::LslImm {
-                                        dst: Operand::Virtual(scaled),
-                                        src: Operand::Virtual(scaled),
-                                        imm: 3,
-                                    });
-                                } else {
-                                    // Multiply by stride * 8
-                                    let stride_vreg = self.mir.alloc_vreg();
-                                    self.mir.push(Aarch64Inst::MovImm {
-                                        dst: Operand::Virtual(stride_vreg),
-                                        imm: (level_stride * 8) as i64,
-                                    });
-                                    self.mir.push(Aarch64Inst::MulRR {
-                                        dst: Operand::Virtual(scaled),
-                                        src1: Operand::Virtual(scaled),
-                                        src2: Operand::Virtual(stride_vreg),
-                                    });
-                                }
-
-                                // Add to running total
-                                if let Some(prev_total) = total_offset_vreg {
-                                    self.mir.push(Aarch64Inst::AddRR {
-                                        dst: Operand::Virtual(prev_total),
-                                        src1: Operand::Virtual(prev_total),
-                                        src2: Operand::Virtual(scaled),
-                                    });
-                                    // prev_total is modified in place, so keep using it
-                                } else {
-                                    total_offset_vreg = Some(scaled);
-                                }
-                            }
-
-                            // Compute base address - different for inout params vs locals/normal params
-                            let addr_vreg = self.mir.alloc_vreg();
-
-                            if let IndexChainBase::Param { index: param_index } = &chain_base {
-                                // Check if this is an inout parameter
-                                if self.ctx.cfg.is_param_inout(*param_index) {
-                                    // For inout params, use the stored pointer
-                                    let ptr_vreg = self.ensure_inout_param_ptr(*param_index);
-                                    self.mir.push(Aarch64Inst::MovRR {
-                                        dst: Operand::Virtual(addr_vreg),
-                                        src: Operand::Virtual(ptr_vreg),
-                                    });
-
-                                    // Subtract total offset (stack grows down)
-                                    if let Some(total) = total_offset_vreg {
-                                        self.mir.push(Aarch64Inst::SubRR {
-                                            dst: Operand::Virtual(addr_vreg),
-                                            src1: Operand::Virtual(addr_vreg),
-                                            src2: Operand::Virtual(total),
-                                        });
-                                    }
-
-                                    self.value_map.insert(value, addr_vreg);
-                                    return;
-                                }
-                            }
-
-                            // Normal case: compute from FP offset
-                            let base_offset = match &chain_base {
-                                IndexChainBase::Load { slot } => self.ctx.local_offset(*slot),
-                                IndexChainBase::Param { index: param_index } => {
-                                    let base_slot = self.ctx.num_locals + *param_index as u32;
-                                    self.ctx.local_offset(base_slot)
-                                }
-                                IndexChainBase::FieldGet {
-                                    struct_base_slot,
-                                    field_slot_offset,
-                                } => {
-                                    let array_base_slot = struct_base_slot + field_slot_offset;
-                                    self.ctx.local_offset(array_base_slot)
-                                }
-                            };
-
-                            // Compute the element address: base_addr - offset
-                            // (stack grows down, so we subtract)
-                            self.mir.push(Aarch64Inst::AddImm {
-                                dst: Operand::Virtual(addr_vreg),
-                                src: Operand::Physical(Reg::Fp),
-                                imm: base_offset,
-                            });
-
-                            // Subtract total offset for the element position
-                            if let Some(total) = total_offset_vreg {
-                                self.mir.push(Aarch64Inst::SubRR {
-                                    dst: Operand::Virtual(addr_vreg),
-                                    src1: Operand::Virtual(addr_vreg),
-                                    src2: Operand::Virtual(total),
-                                });
-                            }
-
-                            self.value_map.insert(value, addr_vreg);
-                        } else {
-                            // Fallback for unsupported patterns
-                            let vreg = self.get_vreg(lvalue_val);
-                            self.value_map.insert(value, vreg);
-                        }
+                    } else if let CfgInstData::PlaceRead { place } = &lvalue_inst.data {
+                        // Address of a place expression (array element, struct field, etc.)
+                        // We compute the address without loading the value.
+                        let result_vreg = self.mir.alloc_vreg();
+                        self.lower_place_addr(result_vreg, place);
+                        self.value_map.insert(value, result_vreg);
                     } else {
-                        // For other lvalue types (Param, FieldGet), fall back to vreg
+                        // For other lvalue types (Param, etc.), fall back to vreg
                         // This is a limitation that can be addressed later.
                         let vreg = self.get_vreg(lvalue_val);
                         self.value_map.insert(value, vreg);
@@ -2435,219 +2306,6 @@ impl<'a> CfgLower<'a> {
                 }
 
                 self.struct_slot_vregs.insert(value, slot_vregs);
-            }
-
-            CfgInstData::FieldGet {
-                base,
-                struct_id,
-                field_index,
-            } => {
-                let vreg = self.mir.alloc_vreg();
-                self.value_map.insert(value, vreg);
-
-                // Try to trace back through any chain of FieldGets to find
-                // the original Load or Param. This handles nested struct field access.
-                let this_offset = self.ctx.struct_field_slot_offset(*struct_id, *field_index);
-                if let Some((base_kind, accumulated_offset)) = self.ctx.trace_field_chain(*base) {
-                    let total_offset = accumulated_offset + this_offset;
-                    match base_kind {
-                        FieldChainBase::Load { slot } => {
-                            // Chain originates from a Load - compute offset from local slot
-                            let actual_slot = slot + total_offset;
-                            let offset = self.ctx.local_offset(actual_slot);
-                            self.mir.push(Aarch64Inst::Ldr {
-                                dst: Operand::Virtual(vreg),
-                                base: Reg::Fp,
-                                offset,
-                            });
-                        }
-                        FieldChainBase::Param { index } => {
-                            // Check if this is an inout parameter
-                            if self.ctx.cfg.is_param_inout(index) {
-                                // For inout params, use the pointer we stored earlier
-                                // Use ensure_inout_param_ptr in case the param was never accessed via Param instruction
-                                let ptr_vreg = self.ensure_inout_param_ptr(index);
-                                // Load from pointer - field offset (negative because stack grows down)
-                                self.mir.push(Aarch64Inst::LdrIndexedOffset {
-                                    dst: Operand::Virtual(vreg),
-                                    base: ptr_vreg,
-                                    offset: -((total_offset as i32) * 8),
-                                });
-                            } else {
-                                // Non-inout param: struct is copied to our stack
-                                let param_slot = self.ctx.num_locals + index + total_offset;
-                                let offset = self.ctx.local_offset(param_slot);
-                                self.mir.push(Aarch64Inst::Ldr {
-                                    dst: Operand::Virtual(vreg),
-                                    base: Reg::Fp,
-                                    offset,
-                                });
-                            }
-                        }
-                        FieldChainBase::IndexGet {
-                            index_base,
-                            index_levels,
-                        } => {
-                            // Array of structs case: arr[i].field
-                            // Calculate the array element offset, then add the field offset
-
-                            // Emit bounds check for the innermost index
-                            if let Some(innermost) = index_levels.last() {
-                                let innermost_index_vreg = self.get_vreg(innermost.index);
-                                let array_length = self.ctx.array_length(innermost.array_type);
-                                self.emit_bounds_check(innermost_index_vreg, array_length);
-                            }
-
-                            // Calculate total array offset by summing index * stride for each level
-                            let mut total_array_offset_vreg: Option<VReg> = None;
-
-                            for level in &index_levels {
-                                let level_index_vreg = self.get_vreg(level.index);
-                                let level_stride = level.elem_slot_count;
-
-                                // Scale this level's index by its stride
-                                let scaled = self.mir.alloc_vreg();
-                                if level_stride == 1 {
-                                    // Simple case: just shift by 3 (multiply by 8)
-                                    self.mir.push(Aarch64Inst::LslImm {
-                                        dst: Operand::Virtual(scaled),
-                                        src: Operand::Virtual(level_index_vreg),
-                                        imm: 3,
-                                    });
-                                } else {
-                                    // Multiply by stride * 8
-                                    let stride_vreg = self.mir.alloc_vreg();
-                                    self.mir.push(Aarch64Inst::MovImm {
-                                        dst: Operand::Virtual(stride_vreg),
-                                        imm: (level_stride * 8) as i64,
-                                    });
-                                    self.mir.push(Aarch64Inst::MulRR {
-                                        dst: Operand::Virtual(scaled),
-                                        src1: Operand::Virtual(level_index_vreg),
-                                        src2: Operand::Virtual(stride_vreg),
-                                    });
-                                }
-
-                                // Add to running total
-                                if let Some(prev_total) = total_array_offset_vreg {
-                                    let new_total = self.mir.alloc_vreg();
-                                    self.mir.push(Aarch64Inst::AddRR {
-                                        dst: Operand::Virtual(new_total),
-                                        src1: Operand::Virtual(prev_total),
-                                        src2: Operand::Virtual(scaled),
-                                    });
-                                    total_array_offset_vreg = Some(new_total);
-                                } else {
-                                    total_array_offset_vreg = Some(scaled);
-                                }
-                            }
-
-                            // Add the field offset (in bytes) to the array element offset
-                            // total_offset is the field offset within the struct element
-                            if total_offset > 0 {
-                                let field_offset_bytes = (total_offset * 8) as i64;
-                                if let Some(arr_offset) = total_array_offset_vreg {
-                                    let field_offset_vreg = self.mir.alloc_vreg();
-                                    self.mir.push(Aarch64Inst::MovImm {
-                                        dst: Operand::Virtual(field_offset_vreg),
-                                        imm: field_offset_bytes,
-                                    });
-                                    let new_total = self.mir.alloc_vreg();
-                                    self.mir.push(Aarch64Inst::AddRR {
-                                        dst: Operand::Virtual(new_total),
-                                        src1: Operand::Virtual(arr_offset),
-                                        src2: Operand::Virtual(field_offset_vreg),
-                                    });
-                                    total_array_offset_vreg = Some(new_total);
-                                }
-                            }
-
-                            // Compute base address
-                            let addr_vreg = self.mir.alloc_vreg();
-
-                            if let IndexChainBase::Param { index: param_index } = &index_base {
-                                if self.ctx.cfg.is_param_inout(*param_index) {
-                                    // For inout params, use the stored pointer
-                                    let ptr_vreg = self.ensure_inout_param_ptr(*param_index);
-                                    self.mir.push(Aarch64Inst::MovRR {
-                                        dst: Operand::Virtual(addr_vreg),
-                                        src: Operand::Virtual(ptr_vreg),
-                                    });
-
-                                    // Subtract total offset (array offset + field offset)
-                                    if let Some(total) = total_array_offset_vreg {
-                                        self.mir.push(Aarch64Inst::SubRR {
-                                            dst: Operand::Virtual(addr_vreg),
-                                            src1: Operand::Virtual(addr_vreg),
-                                            src2: Operand::Virtual(total),
-                                        });
-                                    }
-
-                                    // Load from computed address
-                                    self.mir.push(Aarch64Inst::LdrIndexed {
-                                        dst: Operand::Virtual(vreg),
-                                        base: addr_vreg,
-                                    });
-                                    return;
-                                }
-                            }
-
-                            // Normal case: compute from FP offset
-                            let base_offset = match &index_base {
-                                IndexChainBase::Load { slot } => self.ctx.local_offset(*slot),
-                                IndexChainBase::Param { index: param_index } => {
-                                    let base_slot = self.ctx.num_locals + *param_index as u32;
-                                    self.ctx.local_offset(base_slot)
-                                }
-                                IndexChainBase::FieldGet {
-                                    struct_base_slot,
-                                    field_slot_offset,
-                                } => {
-                                    let array_base_slot = struct_base_slot + field_slot_offset;
-                                    self.ctx.local_offset(array_base_slot)
-                                }
-                            };
-
-                            self.mir.push(Aarch64Inst::SubImm {
-                                dst: Operand::Virtual(addr_vreg),
-                                src: Operand::Physical(Reg::Fp),
-                                imm: -base_offset,
-                            });
-
-                            // Subtract total offset (array offset + field offset)
-                            if let Some(total) = total_array_offset_vreg {
-                                self.mir.push(Aarch64Inst::SubRR {
-                                    dst: Operand::Virtual(addr_vreg),
-                                    src1: Operand::Virtual(addr_vreg),
-                                    src2: Operand::Virtual(total),
-                                });
-                            }
-
-                            // Load from computed address
-                            self.mir.push(Aarch64Inst::LdrIndexed {
-                                dst: Operand::Virtual(vreg),
-                                base: addr_vreg,
-                            });
-                        }
-                    }
-                } else {
-                    // For other sources (BlockParam, StructInit, Call), use slot vregs.
-                    // IMPORTANT: struct_slot_vregs contains slot vregs (accounting for
-                    // nested struct sizes), so we need to use the slot offset, not field index.
-                    let slot_offset = self.ctx.struct_field_slot_offset(*struct_id, *field_index);
-                    let slot_vregs = self
-                        .struct_slot_vregs
-                        .get(base)
-                        .cloned()
-                        .expect("struct base should have slot vregs in cache");
-                    let slot_vreg = *slot_vregs
-                        .get(slot_offset as usize)
-                        .expect("slot_offset should be within slot_vregs bounds");
-                    self.mir.push(Aarch64Inst::MovRR {
-                        dst: Operand::Virtual(vreg),
-                        src: Operand::Virtual(slot_vreg),
-                    });
-                }
             }
 
             CfgInstData::FieldSet {
@@ -2709,7 +2367,7 @@ impl<'a> CfgLower<'a> {
                 let vreg = self.mir.alloc_vreg();
                 self.value_map.insert(value, vreg);
 
-                // Store element vregs for later IndexGet access
+                // Store element vregs for later access
                 let elements = self.ctx.cfg.get_extra(*elements_start, *elements_len);
                 let element_vregs: Vec<VReg> = elements.iter().map(|e| self.get_vreg(*e)).collect();
                 self.struct_slot_vregs.insert(value, element_vregs);
@@ -2719,176 +2377,6 @@ impl<'a> CfgLower<'a> {
                     dst: Operand::Virtual(vreg),
                     imm: 0,
                 });
-            }
-
-            CfgInstData::IndexGet {
-                base,
-                array_type,
-                index,
-            } => {
-                let vreg = self.mir.alloc_vreg();
-                self.value_map.insert(value, vreg);
-
-                // Calculate the slot stride for this array's elements
-                let elem_slot_count = self.ctx.array_element_slot_count(*array_type);
-
-                // First, check if base is an ArrayInit (constant index case)
-                let base_data = &self.ctx.cfg.get_inst(*base).data.clone();
-                if let CfgInstData::ArrayInit { .. } = base_data {
-                    // For ArrayInit sources, use element vregs if index is constant
-                    let index_inst = &self.ctx.cfg.get_inst(*index).data;
-                    if let CfgInstData::Const(idx) = index_inst {
-                        if let Some(element_vregs) = self.struct_slot_vregs.get(base).cloned() {
-                            if let Some(&elem_vreg) = element_vregs.get(*idx as usize) {
-                                self.mir.push(Aarch64Inst::MovRR {
-                                    dst: Operand::Virtual(vreg),
-                                    src: Operand::Virtual(elem_vreg),
-                                });
-                                return;
-                            }
-                        }
-                    }
-                    // Fallback for non-constant index into ArrayInit
-                    self.mir.push(Aarch64Inst::MovImm {
-                        dst: Operand::Virtual(vreg),
-                        imm: 0,
-                    });
-                    return;
-                }
-
-                // Use trace_index_chain to handle arbitrary nesting depth
-                if let Some((chain_base, mut levels)) = self.ctx.trace_index_chain(*base) {
-                    // Add this level's index to the chain
-                    levels.push(IndexLevel {
-                        index: *index,
-                        elem_slot_count,
-                        array_type: *array_type,
-                    });
-
-                    // Emit bounds check for the innermost index
-                    let innermost_index_vreg = self.get_vreg(*index);
-                    let array_length = self.ctx.array_length(*array_type);
-                    self.emit_bounds_check(innermost_index_vreg, array_length);
-
-                    // Calculate total offset by summing index * stride for each level
-                    let mut total_offset_vreg: Option<VReg> = None;
-
-                    for level in &levels {
-                        let level_index_vreg = self.get_vreg(level.index);
-                        let level_stride = level.elem_slot_count;
-
-                        // Scale this level's index by its stride
-                        let scaled = self.mir.alloc_vreg();
-                        if level_stride == 1 {
-                            // Simple case: just shift by 3 (multiply by 8)
-                            self.mir.push(Aarch64Inst::LslImm {
-                                dst: Operand::Virtual(scaled),
-                                src: Operand::Virtual(level_index_vreg),
-                                imm: 3,
-                            });
-                        } else {
-                            // Multiply by stride * 8
-                            let stride_vreg = self.mir.alloc_vreg();
-                            self.mir.push(Aarch64Inst::MovImm {
-                                dst: Operand::Virtual(stride_vreg),
-                                imm: (level_stride * 8) as i64,
-                            });
-                            self.mir.push(Aarch64Inst::MulRR {
-                                dst: Operand::Virtual(scaled),
-                                src1: Operand::Virtual(level_index_vreg),
-                                src2: Operand::Virtual(stride_vreg),
-                            });
-                        }
-
-                        // Add to running total
-                        if let Some(prev_total) = total_offset_vreg {
-                            let new_total = self.mir.alloc_vreg();
-                            self.mir.push(Aarch64Inst::AddRR {
-                                dst: Operand::Virtual(new_total),
-                                src1: Operand::Virtual(prev_total),
-                                src2: Operand::Virtual(scaled),
-                            });
-                            total_offset_vreg = Some(new_total);
-                        } else {
-                            total_offset_vreg = Some(scaled);
-                        }
-                    }
-
-                    // Compute base address - different for inout params vs locals/normal params
-                    let addr_vreg = self.mir.alloc_vreg();
-
-                    if let IndexChainBase::Param { index: param_index } = &chain_base {
-                        // Check if this is an inout parameter
-                        if self.ctx.cfg.is_param_inout(*param_index) {
-                            // For inout params, use the stored pointer
-                            // Use ensure_inout_param_ptr in case the param was never accessed via Param instruction
-                            let ptr_vreg = self.ensure_inout_param_ptr(*param_index);
-                            self.mir.push(Aarch64Inst::MovRR {
-                                dst: Operand::Virtual(addr_vreg),
-                                src: Operand::Virtual(ptr_vreg),
-                            });
-
-                            // Subtract total offset
-                            if let Some(total) = total_offset_vreg {
-                                self.mir.push(Aarch64Inst::SubRR {
-                                    dst: Operand::Virtual(addr_vreg),
-                                    src1: Operand::Virtual(addr_vreg),
-                                    src2: Operand::Virtual(total),
-                                });
-                            }
-
-                            // Load from computed address
-                            self.mir.push(Aarch64Inst::LdrIndexed {
-                                dst: Operand::Virtual(vreg),
-                                base: addr_vreg,
-                            });
-                            return;
-                        }
-                    }
-
-                    // Normal case: compute from FP offset
-                    let base_offset = match &chain_base {
-                        IndexChainBase::Load { slot } => self.ctx.local_offset(*slot),
-                        IndexChainBase::Param { index: param_index } => {
-                            let base_slot = self.ctx.num_locals + *param_index as u32;
-                            self.ctx.local_offset(base_slot)
-                        }
-                        IndexChainBase::FieldGet {
-                            struct_base_slot,
-                            field_slot_offset,
-                        } => {
-                            let array_base_slot = struct_base_slot + field_slot_offset;
-                            self.ctx.local_offset(array_base_slot)
-                        }
-                    };
-
-                    self.mir.push(Aarch64Inst::SubImm {
-                        dst: Operand::Virtual(addr_vreg),
-                        src: Operand::Physical(Reg::Fp),
-                        imm: -base_offset,
-                    });
-
-                    // Subtract total offset
-                    if let Some(total) = total_offset_vreg {
-                        self.mir.push(Aarch64Inst::SubRR {
-                            dst: Operand::Virtual(addr_vreg),
-                            src1: Operand::Virtual(addr_vreg),
-                            src2: Operand::Virtual(total),
-                        });
-                    }
-
-                    // Load from computed address
-                    self.mir.push(Aarch64Inst::LdrIndexed {
-                        dst: Operand::Virtual(vreg),
-                        base: addr_vreg,
-                    });
-                } else {
-                    // Fallback for unsupported patterns
-                    self.mir.push(Aarch64Inst::MovImm {
-                        dst: Operand::Virtual(vreg),
-                        imm: 0,
-                    });
-                }
             }
 
             CfgInstData::IndexSet {
@@ -3179,6 +2667,19 @@ impl<'a> CfgLower<'a> {
                 // StorageDead marks a slot as no longer in use.
                 // Currently a no-op in codegen. In the future, this could be used
                 // for stack slot optimization (LLVM lifetime intrinsics).
+            }
+
+            // Place operations (ADR-0030)
+            // These provide a unified abstraction for memory access with projections.
+            CfgInstData::PlaceRead { place } => {
+                let vreg = self.mir.alloc_vreg();
+                self.value_map.insert(value, vreg);
+                self.lower_place_read(vreg, place, ty);
+            }
+
+            CfgInstData::PlaceWrite { place, value: val } => {
+                let val_vreg = self.get_vreg(*val);
+                self.lower_place_write(place, val_vreg);
             }
         }
     }
@@ -4253,6 +3754,549 @@ impl<'a> CfgLower<'a> {
 
             Terminator::None => {
                 panic!("block has no terminator");
+            }
+        }
+    }
+
+    // === Place operations (ADR-0030) ===
+
+    /// Lower a PlaceRead instruction.
+    ///
+    /// This loads a value from the memory location described by the place,
+    /// walking through any projections (field accesses, array indices).
+    fn lower_place_read(&mut self, dst: VReg, place: &Place, _ty: Type) {
+        let projections = self.ctx.cfg.get_place_projections(place);
+
+        // Simple case: no projections, just load from the base slot
+        if projections.is_empty() {
+            match place.base {
+                PlaceBase::Local(slot) => {
+                    let offset = self.ctx.local_offset(slot);
+                    self.mir.push(Aarch64Inst::Ldr {
+                        dst: Operand::Virtual(dst),
+                        base: Reg::Fp,
+                        offset,
+                    });
+                }
+                PlaceBase::Param(param_slot) => {
+                    // Check if this is an inout parameter
+                    if self.ctx.cfg.is_param_inout(param_slot) {
+                        // Inout param - load through the pointer
+                        let ptr_vreg = self.ensure_inout_param_ptr(param_slot);
+                        self.mir.push(Aarch64Inst::LdrIndexed {
+                            dst: Operand::Virtual(dst),
+                            base: ptr_vreg,
+                        });
+                    } else {
+                        // Normal param - load from local slot
+                        let slot = self.ctx.num_locals + param_slot;
+                        let offset = self.ctx.local_offset(slot);
+                        self.mir.push(Aarch64Inst::Ldr {
+                            dst: Operand::Virtual(dst),
+                            base: Reg::Fp,
+                            offset,
+                        });
+                    }
+                }
+            }
+            return;
+        }
+
+        // Complex case: has projections - compute the address
+        self.lower_place_read_with_projections(dst, place, projections);
+    }
+
+    /// Lower a PlaceRead with projections (field accesses and/or array indices).
+    fn lower_place_read_with_projections(
+        &mut self,
+        dst: VReg,
+        place: &Place,
+        projections: &[Projection],
+    ) {
+        // Calculate the static field offset (sum of all Field projection offsets)
+        let mut static_slot_offset: u32 = 0;
+
+        // Collect index projections for dynamic offset calculation
+        let mut index_levels: Vec<IndexLevel> = Vec::new();
+
+        for proj in projections {
+            match proj {
+                Projection::Field {
+                    struct_id,
+                    field_index,
+                } => {
+                    let field_offset = self.ctx.struct_field_slot_offset(*struct_id, *field_index);
+                    static_slot_offset += field_offset;
+                }
+                Projection::Index { array_type, index } => {
+                    // Emit bounds check for this index
+                    let index_vreg = self.get_vreg(*index);
+                    let array_length = self.ctx.array_length(*array_type);
+                    self.emit_bounds_check(index_vreg, array_length);
+
+                    let elem_slot_count = self.ctx.array_element_slot_count(*array_type);
+                    index_levels.push(IndexLevel {
+                        index: *index,
+                        elem_slot_count,
+                        array_type: *array_type,
+                    });
+                }
+            }
+        }
+
+        // Calculate dynamic offset from index projections
+        let dynamic_offset_vreg = if !index_levels.is_empty() {
+            Some(self.compute_index_offset(&index_levels))
+        } else {
+            None
+        };
+
+        // Compute final address based on base type
+        match place.base {
+            PlaceBase::Local(slot) => {
+                let base_slot = slot + static_slot_offset;
+                let base_offset = self.ctx.local_offset(base_slot);
+
+                if let Some(dyn_offset) = dynamic_offset_vreg {
+                    // Compute address: fp + base_offset - dynamic_offset
+                    let addr_vreg = self.mir.alloc_vreg();
+                    self.mir.push(Aarch64Inst::AddImm {
+                        dst: Operand::Virtual(addr_vreg),
+                        src: Operand::Physical(Reg::Fp),
+                        imm: base_offset,
+                    });
+                    self.mir.push(Aarch64Inst::SubRR {
+                        dst: Operand::Virtual(addr_vreg),
+                        src1: Operand::Virtual(addr_vreg),
+                        src2: Operand::Virtual(dyn_offset),
+                    });
+                    self.mir.push(Aarch64Inst::LdrIndexed {
+                        dst: Operand::Virtual(dst),
+                        base: addr_vreg,
+                    });
+                } else {
+                    // Static offset only
+                    self.mir.push(Aarch64Inst::Ldr {
+                        dst: Operand::Virtual(dst),
+                        base: Reg::Fp,
+                        offset: base_offset,
+                    });
+                }
+            }
+            PlaceBase::Param(param_slot) => {
+                if self.ctx.cfg.is_param_inout(param_slot) {
+                    // Inout param - use pointer
+                    let ptr_vreg = self.ensure_inout_param_ptr(param_slot);
+                    let static_byte_offset = (static_slot_offset as i32) * 8;
+
+                    if let Some(dyn_offset) = dynamic_offset_vreg {
+                        // Compute address: ptr - static_offset - dynamic_offset
+                        let addr_vreg = self.mir.alloc_vreg();
+                        self.mir.push(Aarch64Inst::MovRR {
+                            dst: Operand::Virtual(addr_vreg),
+                            src: Operand::Virtual(ptr_vreg),
+                        });
+                        if static_byte_offset != 0 {
+                            self.mir.push(Aarch64Inst::SubImm {
+                                dst: Operand::Virtual(addr_vreg),
+                                src: Operand::Virtual(addr_vreg),
+                                imm: static_byte_offset,
+                            });
+                        }
+                        self.mir.push(Aarch64Inst::SubRR {
+                            dst: Operand::Virtual(addr_vreg),
+                            src1: Operand::Virtual(addr_vreg),
+                            src2: Operand::Virtual(dyn_offset),
+                        });
+                        self.mir.push(Aarch64Inst::LdrIndexed {
+                            dst: Operand::Virtual(dst),
+                            base: addr_vreg,
+                        });
+                    } else {
+                        // Static offset only
+                        self.mir.push(Aarch64Inst::LdrIndexedOffset {
+                            dst: Operand::Virtual(dst),
+                            base: ptr_vreg,
+                            offset: -static_byte_offset,
+                        });
+                    }
+                } else {
+                    // Normal param - treat like local
+                    let base_slot = self.ctx.num_locals + param_slot + static_slot_offset;
+                    let base_offset = self.ctx.local_offset(base_slot);
+
+                    if let Some(dyn_offset) = dynamic_offset_vreg {
+                        let addr_vreg = self.mir.alloc_vreg();
+                        self.mir.push(Aarch64Inst::AddImm {
+                            dst: Operand::Virtual(addr_vreg),
+                            src: Operand::Physical(Reg::Fp),
+                            imm: base_offset,
+                        });
+                        self.mir.push(Aarch64Inst::SubRR {
+                            dst: Operand::Virtual(addr_vreg),
+                            src1: Operand::Virtual(addr_vreg),
+                            src2: Operand::Virtual(dyn_offset),
+                        });
+                        self.mir.push(Aarch64Inst::LdrIndexed {
+                            dst: Operand::Virtual(dst),
+                            base: addr_vreg,
+                        });
+                    } else {
+                        self.mir.push(Aarch64Inst::Ldr {
+                            dst: Operand::Virtual(dst),
+                            base: Reg::Fp,
+                            offset: base_offset,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    /// Lower a PlaceWrite instruction.
+    ///
+    /// This stores a value to the memory location described by the place.
+    fn lower_place_write(&mut self, place: &Place, val_vreg: VReg) {
+        let projections = self.ctx.cfg.get_place_projections(place);
+
+        // Simple case: no projections, just store to the base slot
+        if projections.is_empty() {
+            match place.base {
+                PlaceBase::Local(slot) => {
+                    let offset = self.ctx.local_offset(slot);
+                    self.mir.push(Aarch64Inst::Str {
+                        src: Operand::Virtual(val_vreg),
+                        base: Reg::Fp,
+                        offset,
+                    });
+                }
+                PlaceBase::Param(param_slot) => {
+                    if self.ctx.cfg.is_param_inout(param_slot) {
+                        // Inout param - store through the pointer
+                        let ptr_vreg = self.ensure_inout_param_ptr(param_slot);
+                        self.mir.push(Aarch64Inst::StrIndexed {
+                            src: Operand::Virtual(val_vreg),
+                            base: ptr_vreg,
+                        });
+                    } else {
+                        // Normal param - store to local slot
+                        let slot = self.ctx.num_locals + param_slot;
+                        let offset = self.ctx.local_offset(slot);
+                        self.mir.push(Aarch64Inst::Str {
+                            src: Operand::Virtual(val_vreg),
+                            base: Reg::Fp,
+                            offset,
+                        });
+                    }
+                }
+            }
+            return;
+        }
+
+        // Complex case: has projections - compute the address
+        self.lower_place_write_with_projections(place, projections, val_vreg);
+    }
+
+    /// Lower a PlaceWrite with projections.
+    fn lower_place_write_with_projections(
+        &mut self,
+        place: &Place,
+        projections: &[Projection],
+        val_vreg: VReg,
+    ) {
+        // Calculate the static field offset
+        let mut static_slot_offset: u32 = 0;
+
+        // Collect index projections for dynamic offset calculation
+        let mut index_levels: Vec<IndexLevel> = Vec::new();
+
+        for proj in projections {
+            match proj {
+                Projection::Field {
+                    struct_id,
+                    field_index,
+                } => {
+                    let field_offset = self.ctx.struct_field_slot_offset(*struct_id, *field_index);
+                    static_slot_offset += field_offset;
+                }
+                Projection::Index { array_type, index } => {
+                    // Emit bounds check for this index
+                    let index_vreg = self.get_vreg(*index);
+                    let array_length = self.ctx.array_length(*array_type);
+                    self.emit_bounds_check(index_vreg, array_length);
+
+                    let elem_slot_count = self.ctx.array_element_slot_count(*array_type);
+                    index_levels.push(IndexLevel {
+                        index: *index,
+                        elem_slot_count,
+                        array_type: *array_type,
+                    });
+                }
+            }
+        }
+
+        // Calculate dynamic offset from index projections
+        let dynamic_offset_vreg = if !index_levels.is_empty() {
+            Some(self.compute_index_offset(&index_levels))
+        } else {
+            None
+        };
+
+        // Compute final address based on base type
+        match place.base {
+            PlaceBase::Local(slot) => {
+                let base_slot = slot + static_slot_offset;
+                let base_offset = self.ctx.local_offset(base_slot);
+
+                if let Some(dyn_offset) = dynamic_offset_vreg {
+                    let addr_vreg = self.mir.alloc_vreg();
+                    self.mir.push(Aarch64Inst::AddImm {
+                        dst: Operand::Virtual(addr_vreg),
+                        src: Operand::Physical(Reg::Fp),
+                        imm: base_offset,
+                    });
+                    self.mir.push(Aarch64Inst::SubRR {
+                        dst: Operand::Virtual(addr_vreg),
+                        src1: Operand::Virtual(addr_vreg),
+                        src2: Operand::Virtual(dyn_offset),
+                    });
+                    self.mir.push(Aarch64Inst::StrIndexed {
+                        src: Operand::Virtual(val_vreg),
+                        base: addr_vreg,
+                    });
+                } else {
+                    self.mir.push(Aarch64Inst::Str {
+                        src: Operand::Virtual(val_vreg),
+                        base: Reg::Fp,
+                        offset: base_offset,
+                    });
+                }
+            }
+            PlaceBase::Param(param_slot) => {
+                if self.ctx.cfg.is_param_inout(param_slot) {
+                    let ptr_vreg = self.ensure_inout_param_ptr(param_slot);
+                    let static_byte_offset = (static_slot_offset as i32) * 8;
+
+                    if let Some(dyn_offset) = dynamic_offset_vreg {
+                        let addr_vreg = self.mir.alloc_vreg();
+                        self.mir.push(Aarch64Inst::MovRR {
+                            dst: Operand::Virtual(addr_vreg),
+                            src: Operand::Virtual(ptr_vreg),
+                        });
+                        if static_byte_offset != 0 {
+                            self.mir.push(Aarch64Inst::SubImm {
+                                dst: Operand::Virtual(addr_vreg),
+                                src: Operand::Virtual(addr_vreg),
+                                imm: static_byte_offset,
+                            });
+                        }
+                        self.mir.push(Aarch64Inst::SubRR {
+                            dst: Operand::Virtual(addr_vreg),
+                            src1: Operand::Virtual(addr_vreg),
+                            src2: Operand::Virtual(dyn_offset),
+                        });
+                        self.mir.push(Aarch64Inst::StrIndexed {
+                            src: Operand::Virtual(val_vreg),
+                            base: addr_vreg,
+                        });
+                    } else {
+                        self.mir.push(Aarch64Inst::StrIndexedOffset {
+                            src: Operand::Virtual(val_vreg),
+                            base: ptr_vreg,
+                            offset: -static_byte_offset,
+                        });
+                    }
+                } else {
+                    let base_slot = self.ctx.num_locals + param_slot + static_slot_offset;
+                    let base_offset = self.ctx.local_offset(base_slot);
+
+                    if let Some(dyn_offset) = dynamic_offset_vreg {
+                        let addr_vreg = self.mir.alloc_vreg();
+                        self.mir.push(Aarch64Inst::AddImm {
+                            dst: Operand::Virtual(addr_vreg),
+                            src: Operand::Physical(Reg::Fp),
+                            imm: base_offset,
+                        });
+                        self.mir.push(Aarch64Inst::SubRR {
+                            dst: Operand::Virtual(addr_vreg),
+                            src1: Operand::Virtual(addr_vreg),
+                            src2: Operand::Virtual(dyn_offset),
+                        });
+                        self.mir.push(Aarch64Inst::StrIndexed {
+                            src: Operand::Virtual(val_vreg),
+                            base: addr_vreg,
+                        });
+                    } else {
+                        self.mir.push(Aarch64Inst::Str {
+                            src: Operand::Virtual(val_vreg),
+                            base: Reg::Fp,
+                            offset: base_offset,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    /// Compute the byte offset for a series of index projections.
+    ///
+    /// Returns a vreg containing the total byte offset (index * stride for each level).
+    fn compute_index_offset(&mut self, levels: &[IndexLevel]) -> VReg {
+        let mut total_offset_vreg: Option<VReg> = None;
+
+        for level in levels {
+            let level_index_vreg = self.get_vreg(level.index);
+            let level_stride = level.elem_slot_count;
+
+            // Scale this level's index by its stride
+            let scaled = self.mir.alloc_vreg();
+            self.mir.push(Aarch64Inst::MovRR {
+                dst: Operand::Virtual(scaled),
+                src: Operand::Virtual(level_index_vreg),
+            });
+
+            if level_stride == 1 {
+                // Simple case: just shift by 3 (multiply by 8)
+                self.mir.push(Aarch64Inst::LslImm {
+                    dst: Operand::Virtual(scaled),
+                    src: Operand::Virtual(scaled),
+                    imm: 3,
+                });
+            } else {
+                // Multiply by stride * 8
+                let stride_vreg = self.mir.alloc_vreg();
+                self.mir.push(Aarch64Inst::MovImm {
+                    dst: Operand::Virtual(stride_vreg),
+                    imm: (level_stride * 8) as i64,
+                });
+                self.mir.push(Aarch64Inst::MulRR {
+                    dst: Operand::Virtual(scaled),
+                    src1: Operand::Virtual(scaled),
+                    src2: Operand::Virtual(stride_vreg),
+                });
+            }
+
+            // Add to running total
+            if let Some(prev_total) = total_offset_vreg {
+                self.mir.push(Aarch64Inst::AddRR {
+                    dst: Operand::Virtual(prev_total),
+                    src1: Operand::Virtual(prev_total),
+                    src2: Operand::Virtual(scaled),
+                });
+                // prev_total is modified in place
+            } else {
+                total_offset_vreg = Some(scaled);
+            }
+        }
+
+        total_offset_vreg.expect("compute_index_offset called with empty levels")
+    }
+
+    /// Compute the address of a place (for @addr_of intrinsic).
+    ///
+    /// This is similar to lower_place_read but returns the address instead of loading.
+    fn lower_place_addr(&mut self, dst: VReg, place: &Place) {
+        let projections = self.ctx.cfg.get_place_projections(place);
+
+        // Calculate static slot offset from field projections
+        let mut static_slot_offset: u32 = 0;
+        let mut index_levels: Vec<IndexLevel> = Vec::new();
+
+        for proj in projections {
+            match proj {
+                Projection::Field {
+                    struct_id,
+                    field_index,
+                } => {
+                    let field_offset = self.ctx.struct_field_slot_offset(*struct_id, *field_index);
+                    static_slot_offset += field_offset;
+                }
+                Projection::Index { array_type, index } => {
+                    let elem_slot_count = self.ctx.array_element_slot_count(*array_type);
+                    index_levels.push(IndexLevel {
+                        index: *index,
+                        elem_slot_count,
+                        array_type: *array_type,
+                    });
+                }
+            }
+        }
+
+        // Calculate dynamic offset from index projections
+        let dynamic_offset_vreg = if !index_levels.is_empty() {
+            Some(self.compute_index_offset(&index_levels))
+        } else {
+            None
+        };
+
+        // Compute address based on base type
+        match place.base {
+            PlaceBase::Local(slot) => {
+                let base_slot = slot + static_slot_offset;
+                let base_offset = self.ctx.local_offset(base_slot);
+
+                // Start with fp + base_offset
+                self.mir.push(Aarch64Inst::AddImm {
+                    dst: Operand::Virtual(dst),
+                    src: Operand::Physical(Reg::Fp),
+                    imm: base_offset,
+                });
+
+                // Subtract dynamic offset if any
+                if let Some(dyn_offset) = dynamic_offset_vreg {
+                    self.mir.push(Aarch64Inst::SubRR {
+                        dst: Operand::Virtual(dst),
+                        src1: Operand::Virtual(dst),
+                        src2: Operand::Virtual(dyn_offset),
+                    });
+                }
+            }
+            PlaceBase::Param(param_slot) => {
+                if self.ctx.cfg.is_param_inout(param_slot) {
+                    let ptr_vreg = self.ensure_inout_param_ptr(param_slot);
+                    let static_byte_offset = (static_slot_offset as i32) * 8;
+
+                    // Start with the pointer value
+                    self.mir.push(Aarch64Inst::MovRR {
+                        dst: Operand::Virtual(dst),
+                        src: Operand::Virtual(ptr_vreg),
+                    });
+
+                    // Subtract static offset
+                    if static_byte_offset != 0 {
+                        self.mir.push(Aarch64Inst::SubImm {
+                            dst: Operand::Virtual(dst),
+                            src: Operand::Virtual(dst),
+                            imm: static_byte_offset,
+                        });
+                    }
+
+                    // Subtract dynamic offset
+                    if let Some(dyn_offset) = dynamic_offset_vreg {
+                        self.mir.push(Aarch64Inst::SubRR {
+                            dst: Operand::Virtual(dst),
+                            src1: Operand::Virtual(dst),
+                            src2: Operand::Virtual(dyn_offset),
+                        });
+                    }
+                } else {
+                    let base_slot = self.ctx.num_locals + param_slot + static_slot_offset;
+                    let base_offset = self.ctx.local_offset(base_slot);
+
+                    self.mir.push(Aarch64Inst::AddImm {
+                        dst: Operand::Virtual(dst),
+                        src: Operand::Physical(Reg::Fp),
+                        imm: base_offset,
+                    });
+
+                    if let Some(dyn_offset) = dynamic_offset_vreg {
+                        self.mir.push(Aarch64Inst::SubRR {
+                            dst: Operand::Virtual(dst),
+                            src1: Operand::Virtual(dst),
+                            src2: Operand::Virtual(dyn_offset),
+                        });
+                    }
+                }
             }
         }
     }

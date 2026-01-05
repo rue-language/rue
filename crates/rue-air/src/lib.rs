@@ -32,7 +32,8 @@ pub use inference::{
     UnificationError, Unifier, UnifyResult,
 };
 pub use inst::{
-    Air, AirArgMode, AirCallArg, AirInst, AirInstData, AirParamMode, AirPattern, AirRef,
+    Air, AirArgMode, AirCallArg, AirInst, AirInstData, AirParamMode, AirPattern, AirPlace,
+    AirPlaceBase, AirPlaceRef, AirProjection, AirRef,
 };
 pub use intern_pool::{
     EnumData, InternedType, StructData, TypeData, TypeInternPool, TypeInternPoolStats,

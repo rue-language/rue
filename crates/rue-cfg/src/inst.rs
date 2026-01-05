@@ -2,6 +2,15 @@
 //!
 //! Unlike AIR, the CFG has explicit basic blocks and terminators.
 //! Control flow only happens at block boundaries via terminators.
+//!
+//! # Place Expressions (ADR-0030)
+//!
+//! Memory locations are represented using [`Place`], which consists of:
+//! - A base ([`PlaceBase`]): either a local variable slot or parameter slot
+//! - A list of projections ([`Projection`]): field accesses and array indices
+//!
+//! This design follows Rust MIR's proven approach and eliminates redundant
+//! Load instructions for nested access patterns like `arr[i].field`.
 
 use std::fmt;
 
@@ -18,6 +27,134 @@ const _: () = assert!(std::mem::size_of::<CfgInstData>() <= 32);
 use lasso::{Key, Spur};
 use rue_air::{EnumId, StructId, Type};
 use rue_span::Span;
+
+// ============================================================================
+// Place Expressions (ADR-0030)
+// ============================================================================
+
+/// A memory location that can be read from or written to.
+///
+/// A place represents a path to a memory location, consisting of a base
+/// (local variable or parameter) and zero or more projections (field access,
+/// array indexing).
+///
+/// # Examples
+///
+/// - `x` → `Place { base: Local(0), proj_start: 0, proj_len: 0 }`
+/// - `arr[i]` → `Place { base: Local(0), proj_start: 0, proj_len: 1 }` with `Index` projection
+/// - `point.x` → `Place { base: Local(0), proj_start: 0, proj_len: 1 }` with `Field` projection
+/// - `arr[i].x` → `Place { base: Local(0), proj_start: 0, proj_len: 2 }` with `Index` then `Field`
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Place {
+    /// The base of the place - either a local slot or parameter slot
+    pub base: PlaceBase,
+    /// Start index into Cfg's projections array
+    pub proj_start: u32,
+    /// Number of projections
+    pub proj_len: u32,
+}
+
+impl Place {
+    /// Create a place for a local variable with no projections.
+    #[inline]
+    pub const fn local(slot: u32) -> Self {
+        Self {
+            base: PlaceBase::Local(slot),
+            proj_start: 0,
+            proj_len: 0,
+        }
+    }
+
+    /// Create a place for a parameter with no projections.
+    #[inline]
+    pub const fn param(slot: u32) -> Self {
+        Self {
+            base: PlaceBase::Param(slot),
+            proj_start: 0,
+            proj_len: 0,
+        }
+    }
+
+    /// Returns true if this place has no projections (is just a variable).
+    #[inline]
+    pub const fn is_simple(&self) -> bool {
+        self.proj_len == 0
+    }
+
+    /// Returns the local slot if this is a simple local place with no projections.
+    #[inline]
+    pub const fn as_local(&self) -> Option<u32> {
+        if self.proj_len == 0 {
+            match self.base {
+                PlaceBase::Local(slot) => Some(slot),
+                PlaceBase::Param(_) => None,
+            }
+        } else {
+            None
+        }
+    }
+
+    /// Returns the param slot if this is a simple param place with no projections.
+    #[inline]
+    pub const fn as_param(&self) -> Option<u32> {
+        if self.proj_len == 0 {
+            match self.base {
+                PlaceBase::Param(slot) => Some(slot),
+                PlaceBase::Local(_) => None,
+            }
+        } else {
+            None
+        }
+    }
+}
+
+impl fmt::Display for Place {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.base {
+            PlaceBase::Local(slot) => write!(f, "${}", slot)?,
+            PlaceBase::Param(slot) => write!(f, "%{}", slot)?,
+        }
+        if self.proj_len > 0 {
+            write!(
+                f,
+                "[{}..{}]",
+                self.proj_start,
+                self.proj_start + self.proj_len
+            )?;
+        }
+        Ok(())
+    }
+}
+
+/// The base of a place - where the memory location starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaceBase {
+    /// Local variable slot
+    Local(u32),
+    /// Parameter slot (for parameters, including inout)
+    Param(u32),
+}
+
+/// A projection applied to a place to reach a nested location.
+///
+/// Projections are stored in `Cfg::projections` and referenced by
+/// `Place::proj_start` and `Place::proj_len`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Projection {
+    /// Field access: `.field_name`
+    ///
+    /// The struct_id identifies the struct type, and field_index is the
+    /// 0-based index of the field in declaration order.
+    Field {
+        struct_id: StructId,
+        field_index: u32,
+    },
+    /// Array index: `[index]`
+    ///
+    /// The array_type is needed for bounds checking and element size calculation.
+    /// The index is a CfgValue that will be evaluated at runtime.
+    Index { array_type: Type, index: CfgValue },
+}
 
 /// A basic block identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -187,6 +324,24 @@ pub enum CfgInstData {
         value: CfgValue,
     },
 
+    // Place operations (ADR-0030)
+    /// Read a value from a memory location.
+    ///
+    /// This unifies Load, IndexGet, and FieldGet into a single instruction
+    /// that can handle arbitrarily nested access patterns like `arr[i].field`.
+    PlaceRead {
+        place: Place,
+    },
+
+    /// Write a value to a memory location.
+    ///
+    /// This unifies Store, IndexSet, ParamIndexSet, FieldSet, and ParamFieldSet
+    /// into a single instruction that can handle nested writes.
+    PlaceWrite {
+        place: Place,
+        value: CfgValue,
+    },
+
     // Function calls
     /// Function call. Arguments are stored in the Cfg's call_args array.
     /// Use `Cfg::get_call_args(args_start, args_len)` to retrieve them.
@@ -220,11 +375,6 @@ pub enum CfgInstData {
         /// Number of fields
         fields_len: u32,
     },
-    FieldGet {
-        base: CfgValue,
-        struct_id: StructId,
-        field_index: u32,
-    },
     FieldSet {
         slot: u32,
         struct_id: StructId,
@@ -251,14 +401,6 @@ pub enum CfgInstData {
         elements_start: u32,
         /// Number of elements
         elements_len: u32,
-    },
-    /// Load an element from an array.
-    /// The result type is the element type.
-    IndexGet {
-        base: CfgValue,
-        /// The array type (for bounds checking and element size)
-        array_type: Type,
-        index: CfgValue,
     },
     /// Store a value to an array element.
     IndexSet {
@@ -428,6 +570,9 @@ pub struct Cfg {
     /// Extra storage for switch cases (value, target block pairs).
     /// Switch terminators store (start, len) indices into this array.
     switch_cases: Vec<(i64, BlockId)>,
+    /// Extra storage for place projections (ADR-0030).
+    /// Place instructions store (start, len) indices into this array.
+    projections: Vec<Projection>,
     /// Number of local variable slots
     num_locals: u32,
     /// Number of parameter slots
@@ -455,6 +600,7 @@ impl Cfg {
             extra: Vec::new(),
             call_args: Vec::new(),
             switch_cases: Vec::new(),
+            projections: Vec::new(),
             num_locals,
             num_params,
             fn_name,
@@ -472,6 +618,20 @@ impl Cfg {
     #[inline]
     pub fn num_locals(&self) -> u32 {
         self.num_locals
+    }
+
+    /// Allocate a new temporary local slot for spilling computed values.
+    ///
+    /// This is used during CFG construction when a computed value (e.g., method
+    /// call result) needs to be accessed via a place expression. The value is
+    /// spilled to this temporary slot.
+    ///
+    /// Returns the slot number for the new local.
+    #[inline]
+    pub fn alloc_temp_local(&mut self) -> u32 {
+        let slot = self.num_locals;
+        self.num_locals += 1;
+        slot
     }
 
     /// Get the number of parameter slots.
@@ -594,6 +754,45 @@ impl Cfg {
     #[inline]
     pub fn get_switch_cases(&self, start: u32, len: u32) -> &[(i64, BlockId)] {
         &self.switch_cases[start as usize..(start + len) as usize]
+    }
+
+    /// Add projections to the projections array and return (start, len).
+    ///
+    /// Used for PlaceRead and PlaceWrite instructions (ADR-0030).
+    pub fn push_projections(&mut self, projs: impl IntoIterator<Item = Projection>) -> (u32, u32) {
+        let start = self.projections.len() as u32;
+        self.projections.extend(projs);
+        let len = self.projections.len() as u32 - start;
+        (start, len)
+    }
+
+    /// Get a slice from the projections array.
+    #[inline]
+    pub fn get_projections(&self, start: u32, len: u32) -> &[Projection] {
+        &self.projections[start as usize..(start + len) as usize]
+    }
+
+    /// Get projections for a place.
+    #[inline]
+    pub fn get_place_projections(&self, place: &Place) -> &[Projection] {
+        self.get_projections(place.proj_start, place.proj_len)
+    }
+
+    /// Create a place with the given base and projections.
+    ///
+    /// This adds the projections to the projections array and returns a Place
+    /// that references them.
+    pub fn make_place(
+        &mut self,
+        base: PlaceBase,
+        projs: impl IntoIterator<Item = Projection>,
+    ) -> Place {
+        let (proj_start, proj_len) = self.push_projections(projs);
+        Place {
+            base,
+            proj_start,
+            proj_len,
+        }
     }
 
     /// Get the block arguments from a Goto terminator.
@@ -899,6 +1098,15 @@ impl Cfg {
             CfgInstData::ParamStore { param_slot, value } => {
                 write!(f, "param_store %{} = {}", param_slot, value)
             }
+            CfgInstData::PlaceRead { place } => {
+                write!(f, "place_read ")?;
+                self.fmt_place(f, place)
+            }
+            CfgInstData::PlaceWrite { place, value } => {
+                write!(f, "place_write ")?;
+                self.fmt_place(f, place)?;
+                write!(f, " = {}", value)
+            }
             CfgInstData::Call {
                 name,
                 args_start,
@@ -950,13 +1158,6 @@ impl Cfg {
                 }
                 write!(f, "}}")
             }
-            CfgInstData::FieldGet {
-                base,
-                struct_id,
-                field_index,
-            } => {
-                write!(f, "field_get {}.#{}.{}", base, struct_id.0, field_index)
-            }
             CfgInstData::FieldSet {
                 slot,
                 struct_id,
@@ -995,13 +1196,6 @@ impl Cfg {
                     write!(f, "{}", elem)?;
                 }
                 write!(f, "]")
-            }
-            CfgInstData::IndexGet {
-                base,
-                array_type,
-                index,
-            } => {
-                write!(f, "index_get {}({})[{}]", base, array_type.name(), index)
             }
             CfgInstData::IndexSet {
                 slot,
@@ -1052,6 +1246,33 @@ impl Cfg {
                 write!(f, "storage_dead ${}", slot)
             }
         }
+    }
+
+    /// Format a place for display, showing the base and projections.
+    fn fmt_place(&self, f: &mut fmt::Formatter<'_>, place: &Place) -> fmt::Result {
+        // Write the base
+        match place.base {
+            PlaceBase::Local(slot) => write!(f, "${}", slot)?,
+            PlaceBase::Param(slot) => write!(f, "param%{}", slot)?,
+        }
+
+        // Write the projections
+        let projections = self.get_place_projections(place);
+        for proj in projections {
+            match proj {
+                Projection::Field {
+                    struct_id,
+                    field_index,
+                } => {
+                    write!(f, ".#{}.{}", struct_id.0, field_index)?;
+                }
+                Projection::Index { array_type, index } => {
+                    write!(f, "({})[{}]", array_type.name(), index)?;
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 

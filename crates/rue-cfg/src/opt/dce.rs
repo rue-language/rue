@@ -22,7 +22,7 @@
 //! - Drop instructions (run destructors)
 //! - StorageLive, StorageDead (affect stack allocation)
 
-use crate::{BlockId, Cfg, CfgInstData, CfgValue, Terminator};
+use crate::{BlockId, Cfg, CfgInstData, CfgValue, Projection, Terminator};
 
 /// A simple bitset for tracking indices.
 ///
@@ -160,6 +160,12 @@ fn has_side_effects(cfg: &Cfg, value: CfgValue) -> bool {
         // IntCast can panic (range check), so it has side effects
         CfgInstData::IntCast { .. } => true,
 
+        // PlaceWrite is a memory write (side effect)
+        CfgInstData::PlaceWrite { .. } => true,
+
+        // PlaceRead is pure (no side effect unless indexing panics, but we treat that like other ops)
+        CfgInstData::PlaceRead { .. } => false,
+
         // Everything else is pure computation
         _ => false,
     }
@@ -281,7 +287,6 @@ fn visit_instruction_uses(cfg: &Cfg, value: CfgValue, mut f: impl FnMut(CfgValue
                 f(v);
             }
         }
-        CfgInstData::FieldGet { base, .. } => f(*base),
         CfgInstData::FieldSet { value, .. } => f(*value),
         CfgInstData::ParamFieldSet { value, .. } => f(*value),
 
@@ -294,10 +299,6 @@ fn visit_instruction_uses(cfg: &Cfg, value: CfgValue, mut f: impl FnMut(CfgValue
             for &v in cfg.get_extra(*elements_start, *elements_len) {
                 f(v);
             }
-        }
-        CfgInstData::IndexGet { base, index, .. } => {
-            f(*base);
-            f(*index);
         }
         CfgInstData::IndexSet { index, value, .. } => {
             f(*index);
@@ -319,6 +320,25 @@ fn visit_instruction_uses(cfg: &Cfg, value: CfgValue, mut f: impl FnMut(CfgValue
 
         // Storage liveness
         CfgInstData::StorageLive { .. } | CfgInstData::StorageDead { .. } => {}
+
+        // Place operations
+        CfgInstData::PlaceRead { place } => {
+            // Visit any index values used in projections
+            for proj in cfg.get_place_projections(place) {
+                if let Projection::Index { index, .. } = proj {
+                    f(*index);
+                }
+            }
+        }
+        CfgInstData::PlaceWrite { place, value } => {
+            f(*value);
+            // Visit any index values used in projections
+            for proj in cfg.get_place_projections(place) {
+                if let Projection::Index { index, .. } = proj {
+                    f(*index);
+                }
+            }
+        }
     }
 }
 

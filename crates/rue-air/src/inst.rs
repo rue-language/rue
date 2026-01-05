@@ -1,6 +1,15 @@
 //! AIR instruction definitions.
 //!
 //! Like RIR, instructions are stored densely and referenced by index.
+//!
+//! # Place Expressions (ADR-0030 Phase 8)
+//!
+//! Memory locations are represented using [`AirPlace`], which consists of:
+//! - A base ([`AirPlaceBase`]): either a local variable slot or parameter slot
+//! - A list of projections ([`AirProjection`]): field accesses and array indices
+//!
+//! This design follows Rust MIR's proven approach and eliminates redundant
+//! Load instructions for nested access patterns like `arr[i].field`.
 
 use std::fmt;
 
@@ -17,6 +26,142 @@ const _: () = assert!(std::mem::size_of::<AirInstData>() <= 32);
 use crate::types::{StructId, Type};
 use lasso::{Key, Spur};
 use rue_span::Span;
+
+// ============================================================================
+// Place Expressions (ADR-0030 Phase 8)
+// ============================================================================
+
+/// A reference to a place in AIR - stored as index into the places array.
+///
+/// This is a lightweight handle that can be copied and compared efficiently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct AirPlaceRef(u32);
+
+impl AirPlaceRef {
+    /// Create a new place reference from a raw index.
+    #[inline]
+    pub const fn from_raw(index: u32) -> Self {
+        Self(index)
+    }
+
+    /// Get the raw index.
+    #[inline]
+    pub const fn as_u32(self) -> u32 {
+        self.0
+    }
+}
+
+impl fmt::Display for AirPlaceRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "place#{}", self.0)
+    }
+}
+
+/// A memory location that can be read from or written to.
+///
+/// A place represents a path to a memory location, consisting of a base
+/// (local variable or parameter) and zero or more projections (field access,
+/// array indexing).
+///
+/// # Examples
+///
+/// - `x` → `AirPlace { base: Local(0), projections_start: 0, projections_len: 0 }`
+/// - `arr[i]` → `AirPlace { base: Local(0), ... }` with `Index` projection
+/// - `point.x` → `AirPlace { base: Local(0), ... }` with `Field` projection
+/// - `arr[i].x` → `AirPlace { base: Local(0), ... }` with `Index` then `Field`
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AirPlace {
+    /// The base of the place - either a local slot or parameter slot
+    pub base: AirPlaceBase,
+    /// Start index into Air's projections array
+    pub projections_start: u32,
+    /// Number of projections
+    pub projections_len: u32,
+}
+
+impl AirPlace {
+    /// Create a place for a local variable with no projections.
+    #[inline]
+    pub const fn local(slot: u32) -> Self {
+        Self {
+            base: AirPlaceBase::Local(slot),
+            projections_start: 0,
+            projections_len: 0,
+        }
+    }
+
+    /// Create a place for a parameter with no projections.
+    #[inline]
+    pub const fn param(slot: u32) -> Self {
+        Self {
+            base: AirPlaceBase::Param(slot),
+            projections_start: 0,
+            projections_len: 0,
+        }
+    }
+
+    /// Returns true if this place has no projections (is just a variable).
+    #[inline]
+    pub const fn is_simple(&self) -> bool {
+        self.projections_len == 0
+    }
+
+    /// Returns the local slot if this is a simple local place with no projections.
+    #[inline]
+    pub const fn as_local(&self) -> Option<u32> {
+        if self.projections_len == 0 {
+            match self.base {
+                AirPlaceBase::Local(slot) => Some(slot),
+                AirPlaceBase::Param(_) => None,
+            }
+        } else {
+            None
+        }
+    }
+
+    /// Returns the param slot if this is a simple param place with no projections.
+    #[inline]
+    pub const fn as_param(&self) -> Option<u32> {
+        if self.projections_len == 0 {
+            match self.base {
+                AirPlaceBase::Param(slot) => Some(slot),
+                AirPlaceBase::Local(_) => None,
+            }
+        } else {
+            None
+        }
+    }
+}
+
+/// The base of a place - where the memory location starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AirPlaceBase {
+    /// Local variable slot
+    Local(u32),
+    /// Parameter slot (for parameters, including inout)
+    Param(u32),
+}
+
+/// A projection applied to a place to reach a nested location.
+///
+/// Projections are stored in `Air::projections` and referenced by
+/// `AirPlace::projections_start` and `AirPlace::projections_len`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AirProjection {
+    /// Field access: `.field_name`
+    ///
+    /// The struct_id identifies the struct type, and field_index is the
+    /// 0-based index of the field in declaration order.
+    Field {
+        struct_id: StructId,
+        field_index: u32,
+    },
+    /// Array index: `[index]`
+    ///
+    /// The array_type is needed for bounds checking and element size calculation.
+    /// The index is an AirRef that will be evaluated at runtime.
+    Index { array_type: Type, index: AirRef },
+}
 
 /// Parameter passing mode in AIR.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -231,6 +376,12 @@ pub struct Air {
     extra: Vec<u32>,
     /// The return type of this function
     return_type: Type,
+    /// Storage for place projections (ADR-0030 Phase 8).
+    /// AirPlace instructions store (start, len) indices into this array.
+    projections: Vec<AirProjection>,
+    /// Storage for places (ADR-0030 Phase 8).
+    /// AirPlaceRef values are indices into this array.
+    places: Vec<AirPlace>,
 }
 
 impl Air {
@@ -240,6 +391,8 @@ impl Air {
             instructions: Vec::new(),
             extra: Vec::new(),
             return_type,
+            projections: Vec::new(),
+            places: Vec::new(),
         }
     }
 
@@ -393,6 +546,73 @@ impl Air {
     /// The type and span are preserved.
     pub fn rewrite_inst_data(&mut self, index: usize, new_data: AirInstData) {
         self.instructions[index].data = new_data;
+    }
+
+    // ========================================================================
+    // Place operations (ADR-0030 Phase 8)
+    // ========================================================================
+
+    /// Add projections to the projections array and return (start, len).
+    ///
+    /// Used for PlaceRead and PlaceWrite instructions.
+    pub fn push_projections(
+        &mut self,
+        projs: impl IntoIterator<Item = AirProjection>,
+    ) -> (u32, u32) {
+        let start = self.projections.len() as u32;
+        self.projections.extend(projs);
+        let len = self.projections.len() as u32 - start;
+        (start, len)
+    }
+
+    /// Get a slice from the projections array.
+    #[inline]
+    pub fn get_projections(&self, start: u32, len: u32) -> &[AirProjection] {
+        &self.projections[start as usize..(start + len) as usize]
+    }
+
+    /// Get projections for a place.
+    #[inline]
+    pub fn get_place_projections(&self, place: &AirPlace) -> &[AirProjection] {
+        self.get_projections(place.projections_start, place.projections_len)
+    }
+
+    /// Create a place with the given base and projections.
+    ///
+    /// This adds the projections to the projections array and returns a PlaceRef
+    /// that references the place.
+    pub fn make_place(
+        &mut self,
+        base: AirPlaceBase,
+        projs: impl IntoIterator<Item = AirProjection>,
+    ) -> AirPlaceRef {
+        let (projections_start, projections_len) = self.push_projections(projs);
+        let place = AirPlace {
+            base,
+            projections_start,
+            projections_len,
+        };
+        let index = self.places.len() as u32;
+        self.places.push(place);
+        AirPlaceRef::from_raw(index)
+    }
+
+    /// Get a place by reference.
+    #[inline]
+    pub fn get_place(&self, place_ref: AirPlaceRef) -> &AirPlace {
+        &self.places[place_ref.0 as usize]
+    }
+
+    /// Get all places.
+    #[inline]
+    pub fn places(&self) -> &[AirPlace] {
+        &self.places
+    }
+
+    /// Get all projections.
+    #[inline]
+    pub fn projections(&self) -> &[AirProjection] {
+        &self.projections
     }
 }
 
@@ -695,6 +915,29 @@ pub enum AirInstData {
         /// Index expression
         index: AirRef,
         /// Value to store
+        value: AirRef,
+    },
+
+    // Place operations (ADR-0030 Phase 8)
+    /// Read a value from a memory location.
+    ///
+    /// This unifies Load, IndexGet, and FieldGet into a single instruction
+    /// that can handle arbitrarily nested access patterns like `arr[i].field`.
+    /// Eventually, the separate FieldGet/IndexGet instructions will be removed.
+    PlaceRead {
+        /// Reference to the place to read from
+        place: AirPlaceRef,
+    },
+
+    /// Write a value to a memory location.
+    ///
+    /// This unifies Store, IndexSet, ParamIndexSet, FieldSet, and ParamFieldSet
+    /// into a single instruction that can handle nested writes.
+    /// Eventually, the separate *Set instructions will be removed.
+    PlaceWrite {
+        /// Reference to the place to write to
+        place: AirPlaceRef,
+        /// Value to write
         value: AirRef,
     },
 
@@ -1012,6 +1255,16 @@ impl fmt::Display for Air {
                         value
                     )?;
                 }
+                AirInstData::PlaceRead { place } => {
+                    write!(f, "place_read ")?;
+                    self.fmt_place(f, *place)?;
+                    writeln!(f)?;
+                }
+                AirInstData::PlaceWrite { place, value } => {
+                    write!(f, "place_write ")?;
+                    self.fmt_place(f, *place)?;
+                    writeln!(f, " = {}", value)?;
+                }
                 AirInstData::EnumVariant {
                     enum_id,
                     variant_index,
@@ -1033,6 +1286,37 @@ impl fmt::Display for Air {
             }
         }
         writeln!(f, "}}")
+    }
+}
+
+impl Air {
+    /// Format a place for display, showing the base and projections.
+    fn fmt_place(&self, f: &mut fmt::Formatter<'_>, place_ref: AirPlaceRef) -> fmt::Result {
+        let place = self.get_place(place_ref);
+
+        // Write the base
+        match place.base {
+            AirPlaceBase::Local(slot) => write!(f, "${}", slot)?,
+            AirPlaceBase::Param(slot) => write!(f, "param%{}", slot)?,
+        }
+
+        // Write the projections
+        let projections = self.get_place_projections(place);
+        for proj in projections {
+            match proj {
+                AirProjection::Field {
+                    struct_id,
+                    field_index,
+                } => {
+                    write!(f, ".#{}.{}", struct_id.0, field_index)?;
+                }
+                AirProjection::Index { array_type, index } => {
+                    write!(f, "({})[{}]", array_type.name(), index)?;
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 

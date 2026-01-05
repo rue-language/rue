@@ -33,12 +33,265 @@ use crate::sema::context::ConstValue;
 use rue_span::Span;
 
 use super::Sema;
-use super::context::{AnalysisContext, AnalysisResult, LocalVar};
-use crate::inst::{Air, AirCallArg, AirInst, AirInstData, AirPattern, AirRef};
+use super::context::{AnalysisContext, AnalysisResult, LocalVar, ParamInfo};
+use crate::inst::{
+    Air, AirCallArg, AirInst, AirInstData, AirPattern, AirPlaceBase, AirPlaceRef, AirProjection,
+    AirRef,
+};
 use crate::scope::ScopedContext;
-use crate::types::{Type, TypeKind};
+use crate::types::{StructId, Type, TypeKind};
+
+// ============================================================================
+// Place Building (ADR-0030 Phase 8)
+// ============================================================================
+
+/// Projection info collected during place tracing.
+///
+/// This extends `AirProjection` with additional metadata needed for type checking
+/// and move analysis.
+#[derive(Debug)]
+pub(crate) struct ProjectionInfo {
+    /// The projection to emit
+    pub proj: AirProjection,
+    /// The type resulting from this projection
+    pub result_type: Type,
+    /// For field projections: the field name (for move checking)
+    /// For index projections: None
+    pub field_name: Option<Spur>,
+}
+
+/// Result of tracing a place expression in RIR.
+///
+/// This contains all the information needed to build an `AirPlace` and emit
+/// a `PlaceRead` or `PlaceWrite` instruction.
+#[derive(Debug)]
+pub(crate) struct PlaceTrace {
+    /// The base of the place (local slot or param slot)
+    pub base: AirPlaceBase,
+    /// The type of the base (before projections)
+    pub base_type: Type,
+    /// Projections collected during tracing (in order from base to leaf)
+    pub projections: Vec<ProjectionInfo>,
+    /// The root variable name (for move checking)
+    pub root_var: Spur,
+    /// Whether the root is mutable (for write validation)
+    pub is_root_mutable: bool,
+    /// Whether this is a borrow parameter (for error messages)
+    pub is_borrow_param: bool,
+}
+
+impl PlaceTrace {
+    /// Get the final type of the place (after all projections).
+    pub fn result_type(&self) -> Type {
+        self.projections
+            .last()
+            .map(|p| p.result_type)
+            .unwrap_or(self.base_type)
+    }
+
+    /// Build the field path for move checking (list of field name symbols).
+    ///
+    /// Returns the field names in the projection chain. Index projections
+    /// break the field path (you can't partially move out of arrays), so
+    /// this returns field names from the last index projection to the end.
+    pub fn field_path(&self) -> Vec<Spur> {
+        // Find the last index projection (if any)
+        let start_from = self
+            .projections
+            .iter()
+            .rposition(|p| matches!(p.proj, AirProjection::Index { .. }))
+            .map(|i| i + 1)
+            .unwrap_or(0);
+
+        // Collect field names from that point to the end
+        self.projections[start_from..]
+            .iter()
+            .filter_map(|p| p.field_name)
+            .collect()
+    }
+}
 
 impl<'a> Sema<'a> {
+    // ========================================================================
+    // Place Tracing (ADR-0030 Phase 8)
+    // ========================================================================
+
+    /// Try to trace an RIR expression to a place (lvalue).
+    ///
+    /// This walks the RIR instruction chain backward from a `FieldGet` or `IndexGet`
+    /// to find the root `VarRef` or `ParamRef`, collecting projections along the way.
+    ///
+    /// Returns `None` if the expression is not a place (e.g., a function call result).
+    ///
+    /// # Arguments
+    /// * `inst_ref` - The RIR instruction to trace
+    /// * `air` - The AIR being built (needed to analyze index expressions)
+    /// * `ctx` - Analysis context with local/param info
+    ///
+    /// # Returns
+    /// * `Some(PlaceTrace)` if the expression is a place
+    /// * `None` if it's not (e.g., `get_struct().field` where base is a call)
+    pub(crate) fn try_trace_place(
+        &mut self,
+        inst_ref: InstRef,
+        air: &mut Air,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<Option<PlaceTrace>> {
+        self.try_trace_place_inner(inst_ref, air, ctx)
+    }
+
+    /// Inner implementation that accumulates projections.
+    fn try_trace_place_inner(
+        &mut self,
+        inst_ref: InstRef,
+        air: &mut Air,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<Option<PlaceTrace>> {
+        let inst = self.rir.get(inst_ref);
+
+        match &inst.data {
+            // Base case: local variable reference
+            InstData::VarRef { name } => {
+                // First check if it's actually a parameter
+                if let Some(param_info) = ctx.params.get(name) {
+                    return Ok(Some(PlaceTrace {
+                        base: AirPlaceBase::Param(param_info.abi_slot),
+                        base_type: param_info.ty,
+                        projections: Vec::new(),
+                        root_var: *name,
+                        is_root_mutable: matches!(param_info.mode, RirParamMode::Inout),
+                        is_borrow_param: matches!(param_info.mode, RirParamMode::Borrow),
+                    }));
+                }
+
+                // Check if it's a local variable
+                if let Some(local) = ctx.locals.get(name) {
+                    return Ok(Some(PlaceTrace {
+                        base: AirPlaceBase::Local(local.slot),
+                        base_type: local.ty,
+                        projections: Vec::new(),
+                        root_var: *name,
+                        is_root_mutable: local.is_mut,
+                        is_borrow_param: false,
+                    }));
+                }
+
+                // Not a variable - might be a constant or type name
+                Ok(None)
+            }
+
+            // Base case: explicit parameter reference
+            InstData::ParamRef { name, .. } => {
+                if let Some(param_info) = ctx.params.get(name) {
+                    return Ok(Some(PlaceTrace {
+                        base: AirPlaceBase::Param(param_info.abi_slot),
+                        base_type: param_info.ty,
+                        projections: Vec::new(),
+                        root_var: *name,
+                        is_root_mutable: matches!(param_info.mode, RirParamMode::Inout),
+                        is_borrow_param: matches!(param_info.mode, RirParamMode::Borrow),
+                    }));
+                }
+                Ok(None)
+            }
+
+            // Recursive case: field access
+            InstData::FieldGet { base, field } => {
+                // First, recursively trace the base
+                let base_trace = self.try_trace_place_inner(*base, air, ctx)?;
+
+                match base_trace {
+                    Some(mut trace) => {
+                        // Get the struct type from the base
+                        let base_type = trace.result_type();
+                        let struct_id = match base_type.as_struct() {
+                            Some(id) => id,
+                            None => {
+                                // Module access or non-struct - not a place
+                                return Ok(None);
+                            }
+                        };
+
+                        // Look up field info
+                        let struct_def = self.type_pool.struct_def(struct_id);
+                        let field_name_str = self.interner.resolve(field);
+                        let (field_index, struct_field) =
+                            match struct_def.find_field(field_name_str) {
+                                Some(info) => info,
+                                None => return Ok(None), // Unknown field
+                            };
+
+                        let field_type = struct_field.ty;
+
+                        // Add this projection with field name for move checking
+                        trace.projections.push(ProjectionInfo {
+                            proj: AirProjection::Field {
+                                struct_id,
+                                field_index: field_index as u32,
+                            },
+                            result_type: field_type,
+                            field_name: Some(*field),
+                        });
+
+                        Ok(Some(trace))
+                    }
+                    None => {
+                        // Base is not a place (e.g., function call result)
+                        Ok(None)
+                    }
+                }
+            }
+
+            // Recursive case: array index
+            InstData::IndexGet { base, index } => {
+                // First, recursively trace the base
+                let base_trace = self.try_trace_place_inner(*base, air, ctx)?;
+
+                match base_trace {
+                    Some(mut trace) => {
+                        // Get the array type from the base
+                        let base_type = trace.result_type();
+                        let (_array_type_id, elem_type) = match base_type.as_array() {
+                            Some(id) => {
+                                let (elem, _len) = self.type_pool.array_def(id);
+                                (id, elem)
+                            }
+                            None => return Ok(None), // Not an array
+                        };
+
+                        // Analyze the index expression to get an AirRef
+                        let index_result = self.analyze_inst(air, *index, ctx)?;
+
+                        // Add this projection (no field name for indices)
+                        trace.projections.push(ProjectionInfo {
+                            proj: AirProjection::Index {
+                                array_type: base_type,
+                                index: index_result.air_ref,
+                            },
+                            result_type: elem_type,
+                            field_name: None,
+                        });
+
+                        Ok(Some(trace))
+                    }
+                    None => {
+                        // Base is not a place
+                        Ok(None)
+                    }
+                }
+            }
+
+            // Not a place expression
+            _ => Ok(None),
+        }
+    }
+
+    /// Build an AirPlaceRef from a PlaceTrace, adding projections to the Air.
+    pub(crate) fn build_place_ref(air: &mut Air, trace: &PlaceTrace) -> AirPlaceRef {
+        let projs = trace.projections.iter().map(|p| p.proj);
+        air.make_place(trace.base, projs)
+    }
+
     // ========================================================================
     // Literals: IntConst, BoolConst, StringConst, UnitConst
     // ========================================================================
@@ -1679,6 +1932,8 @@ impl<'a> Sema<'a> {
     }
 
     /// Analyze a field access.
+    ///
+    /// Uses place-based analysis (ADR-0030) when possible for efficient code generation.
     fn analyze_field_get(
         &mut self,
         air: &mut Air,
@@ -1688,12 +1943,103 @@ impl<'a> Sema<'a> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        // Field access is a projection
-        let base_result = self.analyze_inst_for_projection(air, base, ctx)?;
+        // First, check if the base is a module access (special case, not a place)
+        // We need to peek at the base type to detect module.Type access patterns.
+        let base_inst = self.rir.get(base);
+        if let InstData::VarRef { name } = &base_inst.data {
+            // Check if this VarRef refers to a module
+            if let Some(local) = ctx.locals.get(name) {
+                if local.ty.as_module().is_some() {
+                    // This is module.Member access - handle specially
+                    let module_id = local.ty.as_module().unwrap();
+                    return self.analyze_module_type_member_access(air, module_id, field, span);
+                }
+            }
+        }
+
+        // Try to trace this expression to a place (lvalue)
+        if let Some(trace) = self.try_trace_place(inst_ref, air, ctx)? {
+            let field_type = trace.result_type();
+
+            // Check if the root variable was fully moved (applies regardless of field type)
+            if let Some(state) = ctx.moved_vars.get(&trace.root_var) {
+                if let Some(moved_span) = state.full_move {
+                    let root_name = self.interner.resolve(&trace.root_var);
+                    return Err(CompileError::new(
+                        ErrorKind::UseAfterMove(root_name.to_string()),
+                        span,
+                    )
+                    .with_label("value moved here", moved_span));
+                }
+            }
+
+            // Get struct info for move checking
+            // The trace's result type is the field type, but we need the parent struct type
+            // to check if it's linear. The parent is the type *before* the last projection.
+            let parent_type = if trace.projections.len() > 1 {
+                trace.projections[trace.projections.len() - 2].result_type
+            } else {
+                trace.base_type
+            };
+
+            let is_linear = parent_type
+                .as_struct()
+                .map(|id| self.type_pool.struct_def(id).is_linear)
+                .unwrap_or(false);
+
+            // Move checking using the trace
+            if is_linear {
+                // For linear types, field access consumes the entire struct
+                ctx.moved_vars
+                    .entry(trace.root_var)
+                    .or_default()
+                    .mark_path_moved(&[], span);
+            } else if !self.is_type_copy(field_type) {
+                // For non-linear types, check if accessing a non-Copy field
+                let field_path = trace.field_path();
+
+                // Check if this field path is already moved (partial moves)
+                if let Some(state) = ctx.moved_vars.get(&trace.root_var) {
+                    if let Some(moved_span) = state.is_path_moved(&field_path) {
+                        let root_name = self.interner.resolve(&trace.root_var);
+                        let path_str = if field_path.is_empty() {
+                            root_name.to_string()
+                        } else {
+                            let field_names: Vec<_> = field_path
+                                .iter()
+                                .map(|s| self.interner.resolve(s).to_string())
+                                .collect();
+                            format!("{}.{}", root_name, field_names.join("."))
+                        };
+                        return Err(CompileError::new(ErrorKind::UseAfterMove(path_str), span)
+                            .with_label("value moved here", moved_span));
+                    }
+                }
+
+                // Mark this field path as moved
+                ctx.moved_vars
+                    .entry(trace.root_var)
+                    .or_default()
+                    .mark_path_moved(&field_path, span);
+            }
+
+            // Emit PlaceRead instruction
+            let place_ref = Self::build_place_ref(air, &trace);
+            let air_ref = air.add_inst(AirInst {
+                data: AirInstData::PlaceRead { place: place_ref },
+                ty: field_type,
+                span,
+            });
+            return Ok(AnalysisResult::new(air_ref, field_type));
+        }
+
+        // Fallback: base is not a place (e.g., function call result)
+        // Analyze the base and emit the old-style FieldGet
+        // This case handles `get_struct().field` patterns
+        let base_result = self.analyze_inst(air, base, ctx)?;
         let base_type = base_result.ty;
 
-        // Handle module member access: module.StructName or module.EnumName
-        // This returns a comptime type that can be used to construct values
+        // Handle module member access that wasn't caught above
         if let Some(module_id) = base_type.as_module() {
             return self.analyze_module_type_member_access(air, module_id, field, span);
         }
@@ -1711,10 +2057,9 @@ impl<'a> Sema<'a> {
         };
 
         let struct_def = self.type_pool.struct_def(struct_id);
-        let is_linear = struct_def.is_linear;
         let field_name_str = self.interner.resolve(&field).to_string();
 
-        let (field_index, struct_field) =
+        let (_field_index, struct_field) =
             struct_def.find_field(&field_name_str).ok_or_compile_error(
                 ErrorKind::UnknownField {
                     struct_name: struct_def.name.clone(),
@@ -1725,49 +2070,14 @@ impl<'a> Sema<'a> {
 
         let field_type = struct_field.ty;
 
-        // For linear types, field access consumes the entire struct.
-        if is_linear {
-            if let Some(root_var) = self.extract_root_variable(inst_ref) {
-                ctx.moved_vars
-                    .entry(root_var)
-                    .or_default()
-                    .mark_path_moved(&[], span);
-            }
-        }
-        // For non-linear types, check if accessing a non-Copy field
-        else if !self.is_type_copy(field_type) {
-            if let Some((root_var, field_path)) = self.extract_field_path(inst_ref) {
-                // Check if this field path is already moved
-                if let Some(state) = ctx.moved_vars.get(&root_var) {
-                    if let Some(moved_span) = state.is_path_moved(&field_path) {
-                        let root_name = self.interner.resolve(&root_var);
-                        let path_str = if field_path.is_empty() {
-                            root_name.to_string()
-                        } else {
-                            let field_names: Vec<_> = field_path
-                                .iter()
-                                .map(|s| self.interner.resolve(s).to_string())
-                                .collect();
-                            format!("{}.{}", root_name, field_names.join("."))
-                        };
-                        return Err(CompileError::new(ErrorKind::UseAfterMove(path_str), span)
-                            .with_label("value moved here", moved_span));
-                    }
-                }
-
-                // Mark this field path as moved
-                ctx.moved_vars
-                    .entry(root_var)
-                    .or_default()
-                    .mark_path_moved(&field_path, span);
-            }
-        }
-
+        // For non-place expressions, we can't do partial move tracking.
+        // The value is temporary and will be dropped after use.
+        // Just emit a FieldGet for now - we'll need to spill to a temp if this becomes common.
         let air_ref = air.add_inst(AirInst {
             data: AirInstData::FieldGet {
                 base: base_result.air_ref,
                 struct_id,
-                field_index: field_index as u32,
+                field_index: _field_index as u32,
             },
             ty: field_type,
             span,
@@ -1939,7 +2249,7 @@ impl<'a> Sema<'a> {
             } => self.analyze_array_init(air, inst_ref, *elems_start, *elems_len, inst.span, ctx),
 
             InstData::IndexGet { base, index } => {
-                self.analyze_index_get(air, *base, *index, inst.span, ctx)
+                self.analyze_index_get(air, inst_ref, *base, *index, inst.span, ctx)
             }
 
             InstData::IndexSet { base, index, value } => {
@@ -2022,22 +2332,90 @@ impl<'a> Sema<'a> {
     }
 
     /// Analyze an array index read.
+    ///
+    /// Uses place-based analysis (ADR-0030) when possible for efficient code generation.
     fn analyze_index_get(
         &mut self,
         air: &mut Air,
+        inst_ref: InstRef,
         base: InstRef,
         index: InstRef,
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        // Analyze base and index
-        let base_result = self.analyze_inst_for_projection(air, base, ctx)?;
-        let base_type = base_result.ty;
+        // Check for constant out-of-bounds index early (before tracing)
+        // We need the array type for bounds checking, so peek at the base first
+        let base_inst = self.rir.get(base);
 
+        // Try to trace this expression to a place (lvalue)
+        if let Some(trace) = self.try_trace_place(inst_ref, air, ctx)? {
+            let elem_type = trace.result_type();
+
+            // Get array info from the parent type (before the last projection)
+            let parent_type = if trace.projections.len() > 1 {
+                trace.projections[trace.projections.len() - 2].result_type
+            } else {
+                trace.base_type
+            };
+
+            let array_len = match parent_type.as_array() {
+                Some(type_id) => {
+                    let (_elem, len) = self.type_pool.array_def(type_id);
+                    len
+                }
+                None => {
+                    // This shouldn't happen if try_trace_place worked correctly
+                    return Err(CompileError::new(
+                        ErrorKind::IndexOnNonArray {
+                            found: parent_type.name().to_string(),
+                        },
+                        span,
+                    ));
+                }
+            };
+
+            // Check for constant out-of-bounds index
+            if let Some(const_idx) = self.try_get_const_index(index) {
+                if const_idx < 0 || const_idx as u64 >= array_len {
+                    return Err(CompileError::new(
+                        ErrorKind::IndexOutOfBounds {
+                            index: const_idx,
+                            length: array_len,
+                        },
+                        self.rir.get(index).span,
+                    ));
+                }
+            }
+
+            // Prevent moving non-Copy elements out of arrays.
+            if !self.is_type_copy(elem_type) {
+                return Err(CompileError::new(
+                    ErrorKind::MoveOutOfIndex {
+                        element_type: elem_type.name().to_string(),
+                    },
+                    span,
+                )
+                .with_help("use explicit methods like swap() or take() to remove elements"));
+            }
+
+            // Emit PlaceRead instruction
+            let place_ref = Self::build_place_ref(air, &trace);
+            let air_ref = air.add_inst(AirInst {
+                data: AirInstData::PlaceRead { place: place_ref },
+                ty: elem_type,
+                span,
+            });
+            return Ok(AnalysisResult::new(air_ref, elem_type));
+        }
+
+        // Fallback: base is not a place (e.g., function call result)
+        // Analyze the base and emit the old-style IndexGet
+        let base_result = self.analyze_inst(air, base, ctx)?;
+        let base_type = base_result.ty;
         let index_result = self.analyze_inst(air, index, ctx)?;
 
         // Verify base is an array
-        let (array_type_id, elem_type, array_len) = match base_type.as_array() {
+        let (_array_type_id, elem_type, array_len) = match base_type.as_array() {
             Some(type_id) => {
                 let (element_type, length) = self.type_pool.array_def(type_id);
                 (type_id, element_type, length)
@@ -2066,9 +2444,6 @@ impl<'a> Sema<'a> {
         }
 
         // Prevent moving non-Copy elements out of arrays.
-        // This check is only applied in consume context (analyze_inst), not in
-        // projection context (analyze_inst_for_projection), which allows
-        // patterns like `arr[i].field` where field is Copy.
         if !self.is_type_copy(elem_type) {
             return Err(CompileError::new(
                 ErrorKind::MoveOutOfIndex {

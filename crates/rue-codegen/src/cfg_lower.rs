@@ -26,6 +26,16 @@ use rue_cfg::{BlockId, Cfg, CfgInstData, CfgValue, Type};
 
 use crate::types;
 
+/// Represents an index operation: the index value and the stride (slots per element).
+/// Used for lowering Place projections that include array indexing.
+#[derive(Clone)]
+pub struct IndexLevel {
+    pub index: CfgValue,
+    pub elem_slot_count: u32,
+    /// The array type (Type::Array(...)) for bounds checking.
+    pub array_type: Type,
+}
+
 /// A single lowering decision: maps one CFG instruction to its MIR expansion.
 #[derive(Debug, Clone)]
 pub struct LoweringDecision {
@@ -170,11 +180,6 @@ pub fn format_cfg_inst_data(data: &rue_cfg::CfgInstData) -> String {
             // Note: Can't show fields without Cfg access; just show struct_id
             format!("struct_init #{} {{...}}", struct_id.0)
         }
-        CfgInstData::FieldGet {
-            base,
-            struct_id,
-            field_index,
-        } => format!("field_get {}.#{}.{}", base, struct_id.0, field_index),
         CfgInstData::FieldSet {
             slot,
             struct_id,
@@ -198,11 +203,6 @@ pub fn format_cfg_inst_data(data: &rue_cfg::CfgInstData) -> String {
             // Note: Can't show elements without Cfg access
             "array_init [...]".to_string()
         }
-        CfgInstData::IndexGet {
-            base,
-            array_type,
-            index,
-        } => format!("index_get {}[{}][{}]", base, array_type.name(), index),
         CfgInstData::IndexSet {
             slot,
             array_type,
@@ -239,6 +239,13 @@ pub fn format_cfg_inst_data(data: &rue_cfg::CfgInstData) -> String {
         CfgInstData::Drop { value } => format!("drop {}", value),
         CfgInstData::StorageLive { slot } => format!("storage_live ${}", slot),
         CfgInstData::StorageDead { slot } => format!("storage_dead ${}", slot),
+        // Place operations (ADR-0030)
+        CfgInstData::PlaceRead { place } => {
+            format!("place_read {}", place)
+        }
+        CfgInstData::PlaceWrite { place, value } => {
+            format!("place_write {} = {}", place, value)
+        }
     }
 }
 
@@ -323,44 +330,6 @@ pub fn format_terminator(cfg: &rue_cfg::Cfg, terminator: &rue_cfg::Terminator) -
     }
 }
 
-/// Result of tracing back through FieldGet chains to find the original source.
-#[derive(Clone)]
-pub enum FieldChainBase {
-    /// Chain originates from a Load instruction with the given slot.
-    Load { slot: u32 },
-    /// Chain originates from a Param instruction with the given index.
-    Param { index: u32 },
-    /// Chain originates from an IndexGet (struct element within an array).
-    /// Contains the index chain base and levels needed to compute the element address.
-    IndexGet {
-        index_base: IndexChainBase,
-        index_levels: Vec<IndexLevel>,
-    },
-}
-
-/// Result of tracing back through IndexGet chains to find the original source.
-#[derive(Clone)]
-pub enum IndexChainBase {
-    /// Chain originates from a Load instruction with the given slot.
-    Load { slot: u32 },
-    /// Chain originates from a Param instruction with the given index.
-    Param { index: u32 },
-    /// Chain originates from a FieldGet (array within a struct).
-    FieldGet {
-        struct_base_slot: u32,
-        field_slot_offset: u32,
-    },
-}
-
-/// Represents an index operation in a chain: the index value and the stride (slots per element).
-#[derive(Clone)]
-pub struct IndexLevel {
-    pub index: CfgValue,
-    pub elem_slot_count: u32,
-    /// The array type (Type::Array(...)) for bounds checking.
-    pub array_type: Type,
-}
-
 // ============================================================================
 // Shared CFG Lowering Context
 // ============================================================================
@@ -371,8 +340,8 @@ pub struct IndexLevel {
 /// and provides architecture-independent helper methods for:
 ///
 /// - Type queries (slot counts, field offsets, array lengths)
-/// - Chain tracing (following FieldGet/IndexGet chains to find origins)
 /// - Builtin type detection and operator lookup
+/// - Slot offset calculations
 ///
 /// Each backend's `CfgLower` embeds this context and delegates to its methods.
 pub struct CfgLowerContext<'a> {
@@ -464,111 +433,6 @@ impl<'a> CfgLowerContext<'a> {
         builtin
             .find_operator(op)
             .map(|op_def| (op_def.runtime_fn, op_def.invert_result))
-    }
-
-    // ========================================================================
-    // Chain tracing
-    // ========================================================================
-
-    /// Trace back through a chain of FieldGet instructions to find the original
-    /// Load or Param source. Returns the base kind and accumulated slot offset.
-    pub fn trace_field_chain(&self, value: CfgValue) -> Option<(FieldChainBase, u32)> {
-        let inst = self.cfg.get_inst(value);
-        match &inst.data {
-            CfgInstData::Load { slot } => Some((FieldChainBase::Load { slot: *slot }, 0)),
-            CfgInstData::Param { index } => Some((FieldChainBase::Param { index: *index }, 0)),
-            CfgInstData::FieldGet {
-                base,
-                struct_id,
-                field_index,
-            } => {
-                // Recursively trace back through the base
-                if let Some((base_kind, accumulated_offset)) = self.trace_field_chain(*base) {
-                    let this_offset = self.struct_field_slot_offset(*struct_id, *field_index);
-                    Some((base_kind, accumulated_offset + this_offset))
-                } else {
-                    None
-                }
-            }
-            CfgInstData::IndexGet {
-                base: array_base,
-                array_type,
-                index,
-            } => {
-                // Array of structs case: the field's base is an IndexGet
-                // Try to trace the array base to find the original Load/Param
-                if let Some((index_base, mut levels)) = self.trace_index_chain(*array_base) {
-                    let elem_slot_count = self.array_element_slot_count(*array_type);
-                    levels.push(IndexLevel {
-                        index: *index,
-                        elem_slot_count,
-                        array_type: *array_type,
-                    });
-                    Some((
-                        FieldChainBase::IndexGet {
-                            index_base,
-                            index_levels: levels,
-                        },
-                        0, // No field offset yet - that will be added by the calling FieldGet
-                    ))
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        }
-    }
-
-    /// Trace back through a chain of IndexGet instructions to find the original
-    /// source (Load, Param, or FieldGet). Returns the base kind and the list of
-    /// index levels from outermost to innermost.
-    pub fn trace_index_chain(&self, value: CfgValue) -> Option<(IndexChainBase, Vec<IndexLevel>)> {
-        let inst = self.cfg.get_inst(value);
-        match &inst.data {
-            CfgInstData::Load { slot } => Some((IndexChainBase::Load { slot: *slot }, vec![])),
-            CfgInstData::Param { index } => Some((IndexChainBase::Param { index: *index }, vec![])),
-            CfgInstData::FieldGet {
-                base,
-                struct_id,
-                field_index,
-            } => {
-                // Array within a struct - find the struct's Load/Param
-                let struct_base_data = &self.cfg.get_inst(*base).data;
-                match struct_base_data {
-                    CfgInstData::Load { slot } => {
-                        let field_slot_offset =
-                            self.struct_field_slot_offset(*struct_id, *field_index);
-                        Some((
-                            IndexChainBase::FieldGet {
-                                struct_base_slot: *slot,
-                                field_slot_offset,
-                            },
-                            vec![],
-                        ))
-                    }
-                    _ => None, // Other struct sources not supported
-                }
-            }
-            CfgInstData::IndexGet {
-                base,
-                array_type,
-                index,
-            } => {
-                // Recursively trace the base
-                if let Some((base_kind, mut levels)) = self.trace_index_chain(*base) {
-                    let elem_slot_count = self.array_element_slot_count(*array_type);
-                    levels.push(IndexLevel {
-                        index: *index,
-                        elem_slot_count,
-                        array_type: *array_type,
-                    });
-                    Some((base_kind, levels))
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        }
     }
 
     // ========================================================================

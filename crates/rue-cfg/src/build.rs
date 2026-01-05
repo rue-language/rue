@@ -4,12 +4,16 @@
 //! into explicit basic blocks with terminators.
 
 use lasso::ThreadedRodeo;
-use rue_air::{Air, AirArgMode, AirInstData, AirPattern, AirRef, Type, TypeInternPool, TypeKind};
+use rue_air::{
+    Air, AirArgMode, AirInstData, AirPattern, AirPlaceBase, AirPlaceRef, AirProjection, AirRef,
+    Type, TypeInternPool, TypeKind,
+};
 use rue_error::{CompileWarning, WarningKind};
 
 use crate::CfgOutput;
 use crate::inst::{
-    BlockId, Cfg, CfgArgMode, CfgCallArg, CfgInst, CfgInstData, CfgValue, Terminator,
+    BlockId, Cfg, CfgArgMode, CfgCallArg, CfgInst, CfgInstData, CfgValue, Place, PlaceBase,
+    Projection, Terminator,
 };
 
 /// Result of lowering an expression.
@@ -777,18 +781,57 @@ impl<'a> CfgBuilder<'a> {
                 struct_id,
                 field_index,
             } => {
+                // ADR-0030 Phase 3: Try to use PlaceRead for field access
+                if let Some(value) = self.lower_place_read(air_ref, ty, span) {
+                    self.cache(air_ref, value);
+                    return ExprResult {
+                        value: Some(value),
+                        continuation: Continuation::Continues,
+                    };
+                }
+
+                // ADR-0030 Phase 6: Spill computed struct to temp, then use PlaceRead
+                // This handles cases like `get_struct().field` or `method().field`
+                // where the base is a computed value, not a local variable.
                 let Some(base_val) = self.lower_value(*base) else {
                     return Self::diverged();
                 };
-                let value = self.emit(
-                    CfgInstData::FieldGet {
-                        base: base_val,
-                        struct_id: *struct_id,
-                        field_index: *field_index,
-                    },
-                    ty,
+
+                // Allocate a temporary slot for the struct
+                let temp_slot = self.cfg.alloc_temp_local();
+
+                // Emit StorageLive, Alloc to store the computed struct
+                self.emit(
+                    CfgInstData::StorageLive { slot: temp_slot },
+                    Type::Unit,
                     span,
                 );
+                self.emit(
+                    CfgInstData::Alloc {
+                        slot: temp_slot,
+                        init: base_val,
+                    },
+                    Type::Unit,
+                    span,
+                );
+
+                // Create a PlaceRead from the temp slot with Field projection
+                let place = self.cfg.make_place(
+                    PlaceBase::Local(temp_slot),
+                    std::iter::once(Projection::Field {
+                        struct_id: *struct_id,
+                        field_index: *field_index,
+                    }),
+                );
+                let value = self.emit(CfgInstData::PlaceRead { place }, ty, span);
+
+                // Emit StorageDead for the temp
+                self.emit(
+                    CfgInstData::StorageDead { slot: temp_slot },
+                    Type::Unit,
+                    span,
+                );
+
                 self.cache(air_ref, value);
                 ExprResult {
                     value: Some(value),
@@ -1504,21 +1547,62 @@ impl<'a> CfgBuilder<'a> {
                 array_type,
                 index,
             } => {
+                // ADR-0030 Phase 3: Try to use PlaceRead for array indexing
+                if let Some(value) = self.lower_place_read(air_ref, ty, span) {
+                    self.cache(air_ref, value);
+                    return ExprResult {
+                        value: Some(value),
+                        continuation: Continuation::Continues,
+                    };
+                }
+
+                // ADR-0030 Phase 6: Spill computed array to temp, then use PlaceRead
+                // This handles cases like `get_array()[i]` where the base is a computed
+                // value, not a local variable.
+                // Note: Currently Rue can't return arrays (see issue rue-b79f), but this
+                // handles the case for when that's fixed.
                 let Some(base_val) = self.lower_value(*base) else {
                     return Self::diverged();
                 };
                 let Some(index_val) = self.lower_value(*index) else {
                     return Self::diverged();
                 };
-                let value = self.emit(
-                    CfgInstData::IndexGet {
-                        base: base_val,
-                        array_type: *array_type,
-                        index: index_val,
-                    },
-                    ty,
+
+                // Allocate a temporary slot for the array
+                let temp_slot = self.cfg.alloc_temp_local();
+
+                // Emit StorageLive, Alloc to store the computed array
+                self.emit(
+                    CfgInstData::StorageLive { slot: temp_slot },
+                    Type::Unit,
                     span,
                 );
+                self.emit(
+                    CfgInstData::Alloc {
+                        slot: temp_slot,
+                        init: base_val,
+                    },
+                    Type::Unit,
+                    span,
+                );
+
+                // Create a PlaceRead from the temp slot with Index projection
+                let place = self.cfg.make_place(
+                    PlaceBase::Local(temp_slot),
+                    std::iter::once(Projection::Index {
+                        array_type: *array_type,
+                        index: index_val,
+                    }),
+                );
+                let value = self.emit(CfgInstData::PlaceRead { place }, ty, span);
+
+                // Emit StorageDead for the temp
+                self.emit(
+                    CfgInstData::StorageDead { slot: temp_slot },
+                    Type::Unit,
+                    span,
+                );
+
                 self.cache(air_ref, value);
                 ExprResult {
                     value: Some(value),
@@ -1571,6 +1655,43 @@ impl<'a> CfgBuilder<'a> {
                         param_slot: *param_slot,
                         array_type: *array_type,
                         index: index_val,
+                        value: val,
+                    },
+                    Type::Unit,
+                    span,
+                );
+                ExprResult {
+                    value: None,
+                    continuation: Continuation::Continues,
+                }
+            }
+
+            // ADR-0030 Phase 8: Handle AIR place-based instructions
+            AirInstData::PlaceRead { place } => {
+                // Convert AIR place to CFG place
+                let Some(cfg_place) = self.lower_air_place(*place) else {
+                    return Self::diverged();
+                };
+                let value = self.emit(CfgInstData::PlaceRead { place: cfg_place }, ty, span);
+                self.cache(air_ref, value);
+                ExprResult {
+                    value: Some(value),
+                    continuation: Continuation::Continues,
+                }
+            }
+
+            AirInstData::PlaceWrite { place, value } => {
+                // Lower the value first
+                let Some(val) = self.lower_value(*value) else {
+                    return Self::diverged();
+                };
+                // Convert AIR place to CFG place
+                let Some(cfg_place) = self.lower_air_place(*place) else {
+                    return Self::diverged();
+                };
+                self.emit(
+                    CfgInstData::PlaceWrite {
+                        place: cfg_place,
                         value: val,
                     },
                     Type::Unit,
@@ -1834,6 +1955,155 @@ impl<'a> CfgBuilder<'a> {
             Type::Unit,
             span,
         );
+    }
+
+    // ============================================================================
+    // Place Expression Tracing (ADR-0030)
+    // ============================================================================
+
+    /// Try to trace an AIR expression back to a Place.
+    ///
+    /// Returns `Some((base, projections))` if the expression represents a place
+    /// (lvalue) that can be read from or written to. Returns `None` if the
+    /// expression is not a simple place (e.g., a function call result).
+    ///
+    /// This function traces chains like `arr[i][j].field` into a `PlaceBase` and
+    /// a list of `Projection`s. The projections are returned in order from the
+    /// base outward (e.g., for `arr[i].x`, the projections are `[Index(i), Field(x)]`).
+    ///
+    /// The returned CfgValue indices for Index projections are the already-lowered
+    /// index values, which must be computed before calling this function.
+    fn try_trace_place(
+        &mut self,
+        air_ref: AirRef,
+    ) -> Option<(PlaceBase, Vec<(Projection, Option<CfgValue>)>)> {
+        let inst = self.air.get(air_ref);
+
+        match &inst.data {
+            // Base case: Load from a local variable
+            AirInstData::Load { slot } => Some((PlaceBase::Local(*slot), Vec::new())),
+
+            // Base case: Parameter reference
+            AirInstData::Param { index } => Some((PlaceBase::Param(*index), Vec::new())),
+
+            // Recursive case: Array index
+            AirInstData::IndexGet {
+                base,
+                array_type,
+                index,
+            } => {
+                // Recursively trace the base
+                let (base_place, mut projections) = self.try_trace_place(*base)?;
+
+                // Lower the index expression to get the CfgValue
+                let index_val = self.lower_value(*index)?;
+
+                // Add the Index projection
+                projections.push((
+                    Projection::Index {
+                        array_type: *array_type,
+                        index: index_val,
+                    },
+                    Some(index_val),
+                ));
+
+                Some((base_place, projections))
+            }
+
+            // Recursive case: Field access
+            AirInstData::FieldGet {
+                base,
+                struct_id,
+                field_index,
+            } => {
+                // Recursively trace the base
+                let (base_place, mut projections) = self.try_trace_place(*base)?;
+
+                // Add the Field projection
+                projections.push((
+                    Projection::Field {
+                        struct_id: *struct_id,
+                        field_index: *field_index,
+                    },
+                    None,
+                ));
+
+                Some((base_place, projections))
+            }
+
+            // Not a simple place expression
+            _ => None,
+        }
+    }
+
+    /// Lower a place expression from AIR to a CFG PlaceRead instruction.
+    ///
+    /// This is called when we detect that an IndexGet or FieldGet chain can be
+    /// represented as a single PlaceRead, avoiding redundant Load instructions.
+    fn lower_place_read(
+        &mut self,
+        air_ref: AirRef,
+        ty: Type,
+        span: rue_span::Span,
+    ) -> Option<CfgValue> {
+        // Try to trace the expression to a place
+        let (base, projections) = self.try_trace_place(air_ref)?;
+
+        // Build the Place with all projections
+        let proj_iter = projections.into_iter().map(|(proj, _)| proj);
+        let place = self.cfg.make_place(base, proj_iter);
+
+        // Emit the PlaceRead instruction
+        let value = self.emit(CfgInstData::PlaceRead { place }, ty, span);
+
+        Some(value)
+    }
+
+    /// Lower an AIR place reference to a CFG Place.
+    ///
+    /// This converts AirPlaceRef -> AirPlace -> CFG Place, translating projections
+    /// and lowering any index expressions to CFG values.
+    ///
+    /// ADR-0030 Phase 8: This is the bridge between AIR's PlaceRead/PlaceWrite
+    /// and CFG's PlaceRead/PlaceWrite.
+    fn lower_air_place(&mut self, place_ref: AirPlaceRef) -> Option<Place> {
+        let air_place = self.air.get_place(place_ref);
+
+        // Convert the base
+        let base = match air_place.base {
+            AirPlaceBase::Local(slot) => PlaceBase::Local(slot),
+            AirPlaceBase::Param(slot) => PlaceBase::Param(slot),
+        };
+
+        // Convert projections, lowering any index expressions
+        let air_projections = self.air.get_place_projections(air_place);
+        let mut cfg_projections = Vec::with_capacity(air_projections.len());
+
+        for proj in air_projections {
+            let cfg_proj = match proj {
+                AirProjection::Field {
+                    struct_id,
+                    field_index,
+                } => Projection::Field {
+                    struct_id: *struct_id,
+                    field_index: *field_index,
+                },
+                AirProjection::Index { array_type, index } => {
+                    // Lower the index expression to a CFG value
+                    let index_val = self.lower_value(*index)?;
+                    Projection::Index {
+                        array_type: *array_type,
+                        index: index_val,
+                    }
+                }
+            };
+            cfg_projections.push(cfg_proj);
+        }
+
+        // Create the CFG place
+        let place = self.cfg.make_place(base, cfg_projections);
+
+        Some(place)
     }
 }
 
