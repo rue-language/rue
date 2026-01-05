@@ -2519,10 +2519,9 @@ impl<'a> CfgLower<'a> {
                     let lvalue_val = args[0];
 
                     // Get the local slot for this value
-                    // For now, we handle the simple case where the argument is a Load from a local.
-                    // The Load instruction references a slot number.
                     let lvalue_inst = self.cfg.get_inst(lvalue_val);
                     if let CfgInstData::Load { slot } = &lvalue_inst.data {
+                        // Simple case: address of a local variable
                         let offset = self.local_offset(*slot);
                         let result_vreg = self.mir.alloc_vreg();
                         // LEA to compute address: result = rbp + offset
@@ -2534,10 +2533,147 @@ impl<'a> CfgLower<'a> {
                             disp: offset,
                         });
                         self.value_map.insert(value, result_vreg);
+                    } else if let CfgInstData::IndexGet {
+                        base,
+                        array_type,
+                        index,
+                    } = &lvalue_inst.data.clone()
+                    {
+                        // Address of an array element: arr[i]
+                        // We need to compute the address, NOT load the value
+                        let array_type = *array_type;
+                        let index = *index;
+                        let base = *base;
+
+                        let elem_slot_count = self.array_element_slot_count(array_type);
+
+                        // Use trace_index_chain to handle arbitrary nesting depth
+                        if let Some((chain_base, mut levels)) = self.trace_index_chain(base) {
+                            // Add this level's index to the chain
+                            levels.push(IndexLevel {
+                                index,
+                                elem_slot_count,
+                                array_type,
+                            });
+
+                            // Calculate total offset by summing index * stride for each level
+                            let mut total_offset_vreg: Option<VReg> = None;
+
+                            for level in &levels {
+                                let level_index_vreg = self.get_vreg(level.index);
+                                let level_stride = level.elem_slot_count;
+
+                                // Scale this level's index by its stride
+                                let scaled = self.mir.alloc_vreg();
+                                self.mir.push(X86Inst::MovRR {
+                                    dst: Operand::Virtual(scaled),
+                                    src: Operand::Virtual(level_index_vreg),
+                                });
+
+                                if level_stride == 1 {
+                                    // Simple case: just shift by 3 (multiply by 8)
+                                    let shift_count = self.mir.alloc_vreg();
+                                    self.mir.push(X86Inst::MovRI32 {
+                                        dst: Operand::Virtual(shift_count),
+                                        imm: 3,
+                                    });
+                                    self.mir.push(X86Inst::Shl {
+                                        dst: Operand::Virtual(scaled),
+                                        count: Operand::Virtual(shift_count),
+                                    });
+                                } else {
+                                    // Multiply by stride * 8
+                                    let stride_vreg = self.mir.alloc_vreg();
+                                    self.mir.push(X86Inst::MovRI64 {
+                                        dst: Operand::Virtual(stride_vreg),
+                                        imm: (level_stride * 8) as i64,
+                                    });
+                                    self.mir.push(X86Inst::ImulRR64 {
+                                        dst: Operand::Virtual(scaled),
+                                        src: Operand::Virtual(stride_vreg),
+                                    });
+                                }
+
+                                // Add to running total
+                                if let Some(prev_total) = total_offset_vreg {
+                                    self.mir.push(X86Inst::AddRR64 {
+                                        dst: Operand::Virtual(prev_total),
+                                        src: Operand::Virtual(scaled),
+                                    });
+                                    // prev_total is modified in place, so keep using it
+                                } else {
+                                    total_offset_vreg = Some(scaled);
+                                }
+                            }
+
+                            // Compute base address - different for inout params vs locals/normal params
+                            let addr_vreg = self.mir.alloc_vreg();
+
+                            if let IndexChainBase::Param { index: param_index } = &chain_base {
+                                // Check if this is an inout parameter
+                                if self.cfg.is_param_inout(*param_index) {
+                                    // For inout params, use the stored pointer
+                                    let ptr_vreg = self.ensure_inout_param_ptr(*param_index);
+                                    self.mir.push(X86Inst::MovRR {
+                                        dst: Operand::Virtual(addr_vreg),
+                                        src: Operand::Virtual(ptr_vreg),
+                                    });
+
+                                    // Subtract total offset (stack grows down)
+                                    if let Some(total) = total_offset_vreg {
+                                        self.mir.push(X86Inst::SubRR64 {
+                                            dst: Operand::Virtual(addr_vreg),
+                                            src: Operand::Virtual(total),
+                                        });
+                                    }
+
+                                    self.value_map.insert(value, addr_vreg);
+                                    return;
+                                }
+                            }
+
+                            // Normal case: compute from RBP offset
+                            let base_offset = match &chain_base {
+                                IndexChainBase::Load { slot } => self.local_offset(*slot),
+                                IndexChainBase::Param { index: param_index } => {
+                                    let base_slot = self.num_locals + *param_index as u32;
+                                    self.local_offset(base_slot)
+                                }
+                                IndexChainBase::FieldGet {
+                                    struct_base_slot,
+                                    field_slot_offset,
+                                } => {
+                                    let array_base_slot = struct_base_slot + field_slot_offset;
+                                    self.local_offset(array_base_slot)
+                                }
+                            };
+
+                            // Compute the element address: base_addr - offset
+                            // (stack grows down, so we subtract)
+                            self.mir.push(X86Inst::Lea {
+                                dst: Operand::Virtual(addr_vreg),
+                                base: Reg::Rbp,
+                                index: None,
+                                scale: 1,
+                                disp: base_offset,
+                            });
+
+                            // Subtract total offset for the element position
+                            if let Some(total) = total_offset_vreg {
+                                self.mir.push(X86Inst::SubRR64 {
+                                    dst: Operand::Virtual(addr_vreg),
+                                    src: Operand::Virtual(total),
+                                });
+                            }
+
+                            self.value_map.insert(value, addr_vreg);
+                        } else {
+                            // Fallback for unsupported patterns
+                            let vreg = self.get_vreg(lvalue_val);
+                            self.value_map.insert(value, vreg);
+                        }
                     } else {
-                        // For non-Load values, we need to handle other cases
-                        // like Param or FieldGet. For now, fall back to just getting the vreg
-                        // (which may not give the correct address semantics).
+                        // For other lvalue types (Param, FieldGet), fall back to vreg
                         // This is a limitation that can be addressed later.
                         let vreg = self.get_vreg(lvalue_val);
                         self.value_map.insert(value, vreg);

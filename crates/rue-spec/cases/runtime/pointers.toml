@@ -1,0 +1,143 @@
+# Pointer Intrinsic Tests
+#
+# Tests for pointer intrinsics that require the unchecked_code preview feature.
+# These intrinsics operate on raw pointers for low-level memory access.
+
+[section]
+id = "runtime.pointers"
+spec_chapter = "9.2"
+name = "Pointer Intrinsics"
+description = "Tests for pointer intrinsics (@addr_of, @ptr_read, @ptr_write, etc.)"
+
+# =============================================================================
+# @addr_of with simple local variable
+# =============================================================================
+
+[[case]]
+name = "addr_of_simple_local"
+spec = ["9.2:1"]
+preview = "unchecked_code"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    let x: i32 = 42;
+    let p: ptr const i32 = checked { @addr_of(x) };
+    let val: i32 = checked { @ptr_read(p) };
+    val
+}
+"""
+exit_code = 42
+
+# =============================================================================
+# @addr_of with array element (the bug fix this was added for)
+# =============================================================================
+
+[[case]]
+name = "addr_of_array_element"
+spec = ["9.2:1"]
+preview = "unchecked_code"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 20, 30];
+    let first: i32 = checked {
+        let p: ptr const i32 = @addr_of(arr[0]);
+        @ptr_read(p)
+    };
+    first
+}
+"""
+exit_code = 10
+
+[[case]]
+name = "addr_of_array_second_element"
+spec = ["9.2:1"]
+preview = "unchecked_code"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 20, 30];
+    let second: i32 = checked {
+        let p: ptr const i32 = @addr_of(arr[1]);
+        @ptr_read(p)
+    };
+    second
+}
+"""
+exit_code = 20
+
+[[case]]
+name = "addr_of_array_last_element"
+spec = ["9.2:1"]
+preview = "unchecked_code"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 20, 30];
+    let third: i32 = checked {
+        let p: ptr const i32 = @addr_of(arr[2]);
+        @ptr_read(p)
+    };
+    third
+}
+"""
+exit_code = 30
+
+# =============================================================================
+# @ptr_to_int converts pointer to u64
+# =============================================================================
+
+[[case]]
+name = "ptr_to_int_basic"
+spec = ["9.2:1"]
+preview = "unchecked_code"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    let x: i32 = 42;
+    let p: ptr const i32 = checked { @addr_of(x) };
+    let addr: u64 = checked { @ptr_to_int(p) };
+    // Stack addresses are high values, should be > 1000
+    let threshold: u64 = 1000;
+    if addr > threshold { 42 } else { 1 }
+}
+"""
+exit_code = 42
+
+# =============================================================================
+# @ptr_write and @ptr_read work together
+# =============================================================================
+
+[[case]]
+name = "ptr_write_and_read"
+spec = ["9.2:1"]
+preview = "unchecked_code"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    let mut x: i32 = 10;
+    checked {
+        let p: ptr mut i32 = @addr_of_mut(x);
+        @ptr_write(p, 99);
+    };
+    x
+}
+"""
+exit_code = 99
+
+[[case]]
+name = "ptr_write_array_element"
+spec = ["9.2:1"]
+preview = "unchecked_code"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    let mut arr: [i32; 3] = [10, 20, 30];
+    checked {
+        let p: ptr mut i32 = @addr_of_mut(arr[1]);
+        @ptr_write(p, 77);
+    };
+    arr[1]
+}
+"""
+exit_code = 77
