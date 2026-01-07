@@ -325,6 +325,90 @@ impl TypeInternPool {
         (StructId::from_pool_index(pool_index), true)
     }
 
+    /// Reserve a struct ID without registering the full definition yet.
+    ///
+    /// This is used for anonymous structs where we need to know the ID before
+    /// we can construct the name (which includes the ID). Call `complete_struct_registration`
+    /// with the reserved ID to finish registration.
+    ///
+    /// # Returns
+    ///
+    /// Returns the reserved `StructId`. The caller MUST call `complete_struct_registration`
+    /// with this ID before any other pool operations that might read this entry.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let struct_id = pool.reserve_struct_id();
+    /// let name = format!("__anon_struct_{}", struct_id.0);
+    /// let name_spur = interner.get_or_intern(&name);
+    /// let def = StructDef { name: name.clone(), ... };
+    /// pool.complete_struct_registration(struct_id, name_spur, def);
+    /// ```
+    pub fn reserve_struct_id(&self) -> StructId {
+        let mut inner = self.inner.write().unwrap_or_else(PoisonError::into_inner);
+
+        // Reserve a slot by pushing a placeholder
+        // We use a placeholder Struct with empty data that will be overwritten
+        let pool_index = inner.types.len() as u32;
+
+        // Push a placeholder - this reserves the index
+        // The placeholder will be replaced by complete_struct_registration
+        inner.types.push(TypeData::Struct(StructData {
+            name: Spur::default(),
+            def: StructDef {
+                name: String::new(),
+                fields: vec![],
+                is_copy: false,
+                is_handle: false,
+                is_linear: false,
+                destructor: None,
+                is_builtin: false,
+                is_pub: false,
+                file_id: rue_span::FileId::DEFAULT,
+            },
+        }));
+
+        StructId::from_pool_index(pool_index)
+    }
+
+    /// Complete the registration of a previously reserved struct ID.
+    ///
+    /// This must be called after `reserve_struct_id` to fill in the actual struct data.
+    /// The struct will be registered with the provided name for lookup purposes.
+    ///
+    /// # Panics
+    ///
+    /// Panics if:
+    /// - The struct_id wasn't created by `reserve_struct_id`
+    /// - The slot at struct_id doesn't contain a placeholder struct
+    /// - A struct with the given name already exists
+    pub fn complete_struct_registration(&self, struct_id: StructId, name: Spur, def: StructDef) {
+        let mut inner = self.inner.write().unwrap_or_else(PoisonError::into_inner);
+        let pool_index = struct_id.0 as usize;
+
+        // Verify this is a valid reserved slot
+        assert!(
+            pool_index < inner.types.len(),
+            "Invalid reserved struct ID: index {} out of bounds (len {})",
+            pool_index,
+            inner.types.len()
+        );
+
+        // Check that a struct with this name doesn't already exist
+        assert!(
+            !inner.struct_by_name.contains_key(&name),
+            "Struct with this name already exists"
+        );
+
+        // Update the placeholder with actual data
+        inner.types[pool_index] = TypeData::Struct(StructData { name, def });
+
+        // Register in the name lookup
+        let interned = InternedType::from_pool_index(pool_index as u32);
+        inner.struct_by_name.insert(name, interned);
+    }
+
     /// Register a new enum (nominal - no deduplication).
     ///
     /// Returns the `EnumId` (containing the pool index) and whether it was newly inserted.
@@ -1652,6 +1736,85 @@ mod tests {
 
         // Only one array type should be in the pool
         assert_eq!(pool.stats().array_count, 1);
+    }
+
+    // ========================================================================
+    // Struct ID reservation tests
+    // ========================================================================
+
+    #[test]
+    fn test_pool_reserve_and_complete_struct() {
+        let pool = TypeInternPool::new();
+        let interner = ThreadedRodeo::default();
+
+        // Reserve an ID
+        let struct_id = pool.reserve_struct_id();
+        assert_eq!(struct_id.pool_index(), 0);
+        assert_eq!(pool.len(), 1); // Placeholder was pushed
+
+        // Use the ID to create a name
+        let name_str = format!("__anon_struct_{}", struct_id.0);
+        let name = interner.get_or_intern(&name_str);
+
+        let def = StructDef {
+            name: name_str.clone(),
+            fields: vec![],
+            is_copy: false,
+            is_handle: false,
+            is_linear: false,
+            destructor: None,
+            is_builtin: false,
+            is_pub: false,
+            file_id: rue_span::FileId::DEFAULT,
+        };
+
+        // Complete registration
+        pool.complete_struct_registration(struct_id, name, def);
+
+        // Verify registration succeeded
+        assert_eq!(pool.len(), 1); // No new entry, just updated
+        assert!(pool.get_struct_by_name(name).is_some());
+
+        // Can retrieve the struct definition
+        let retrieved = pool.struct_def(struct_id);
+        assert_eq!(retrieved.name, name_str);
+    }
+
+    #[test]
+    fn test_pool_reserve_multiple_structs() {
+        let pool = TypeInternPool::new();
+        let interner = ThreadedRodeo::default();
+
+        // Reserve multiple IDs
+        let id1 = pool.reserve_struct_id();
+        let id2 = pool.reserve_struct_id();
+        let id3 = pool.reserve_struct_id();
+
+        assert_eq!(id1.pool_index(), 0);
+        assert_eq!(id2.pool_index(), 1);
+        assert_eq!(id3.pool_index(), 2);
+        assert_eq!(pool.len(), 3);
+
+        // Complete them in any order (here: reverse)
+        for (i, id) in [(2, id3), (1, id2), (0, id1)] {
+            let name_str = format!("__anon_struct_{}", i);
+            let name = interner.get_or_intern(&name_str);
+            let def = StructDef {
+                name: name_str,
+                fields: vec![],
+                is_copy: false,
+                is_handle: false,
+                is_linear: false,
+                destructor: None,
+                is_builtin: false,
+                is_pub: false,
+                file_id: rue_span::FileId::DEFAULT,
+            };
+            pool.complete_struct_registration(id, name, def);
+        }
+
+        // All three should be registered
+        assert_eq!(pool.stats().struct_count, 3);
     }
 
     // Compile-time assertion that TypeInternPool is Send + Sync

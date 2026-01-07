@@ -67,15 +67,19 @@ impl Sema<'_> {
             }
         }
 
-        // No matching struct found - create a new one
-        let anon_name_temp = format!("__anon_struct_temp_{}", self.type_pool.len());
-        let name_spur = self.interner.get_or_intern(&anon_name_temp);
+        // No matching struct found - create a new one using ID reservation
+        // This avoids the fragile two-phase naming where a temp name is replaced
+        let struct_id = self.type_pool.reserve_struct_id();
+
+        // Now we know the ID, so we can create the final name directly
+        let name = format!("__anon_struct_{}", struct_id.0);
+        let name_spur = self.interner.get_or_intern(&name);
 
         // Determine if the struct is Copy (all fields are Copy)
         let is_copy = fields.iter().all(|f| f.ty.is_copy_in_pool(&self.type_pool));
 
         let struct_def = StructDef {
-            name: anon_name_temp.clone(),
+            name,
             fields: fields.to_vec(),
             is_copy,
             is_handle: false,
@@ -86,7 +90,9 @@ impl Sema<'_> {
             file_id: rue_span::FileId::new(0), // Anonymous, no source file
         };
 
-        let (struct_id, _) = self.type_pool.register_struct(name_spur, struct_def);
+        // Complete the registration with the final name
+        self.type_pool
+            .complete_struct_registration(struct_id, name_spur, struct_def);
 
         // Store method signatures for future structural equality checks
         if !method_sigs.is_empty() {
@@ -96,19 +102,6 @@ impl Sema<'_> {
 
         // Register in struct lookup
         self.structs.insert(name_spur, struct_id);
-
-        // Update the name now that we have the ID
-        let final_name = format!("__anon_struct_{}", struct_id.0);
-        let final_name_spur = self.interner.get_or_intern(&final_name);
-
-        // Update the struct definition with the correct name
-        let mut updated_def = self.type_pool.struct_def(struct_id);
-        updated_def.name = final_name.clone();
-        self.type_pool.update_struct_def(struct_id, updated_def);
-
-        // Update the struct lookup
-        self.structs.remove(&name_spur);
-        self.structs.insert(final_name_spur, struct_id);
 
         // Return with is_new=true
         (Type::new_struct(struct_id), true)
