@@ -41,6 +41,7 @@ mod imports;
 mod inference_ctx;
 mod info;
 mod known_symbols;
+mod module_path;
 mod output;
 mod sema_ctx_builder;
 mod typeck;

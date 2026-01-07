@@ -3,8 +3,10 @@
 //! This module handles:
 //! - Evaluating const initializers (e.g., `const x = @import(...)`)
 //! - Resolving import paths to actual file paths
-
-use std::path::Path;
+//!
+//! Import path resolution uses the structured [`ModulePath`] type for clear,
+//! testable resolution logic with explicit priority order. See the module_path
+//! module for details on how different import forms are resolved.
 
 use rue_error::{CompileError, CompileResult, ErrorKind};
 use rue_span::Span;
@@ -12,6 +14,7 @@ use rue_span::Span;
 use crate::types::Type;
 
 use super::Sema;
+use super::module_path::ModulePath;
 
 impl Sema<'_> {
     /// Evaluate const initializers to determine their types.
@@ -108,56 +111,26 @@ impl Sema<'_> {
 
     /// Resolve an import path for const evaluation.
     ///
-    /// This is a simplified version of `resolve_import_path` that works
-    /// during the const evaluation phase before full analysis.
+    /// This uses the structured `ModulePath` type for clear resolution logic.
+    /// See the module_path module for the resolution order and rules.
+    ///
+    /// # Resolution Order
+    ///
+    /// 1. Standard library (`"std"`) - currently not supported
+    /// 2. For explicit `.rue` paths - exact match, then suffix match
+    /// 3. For simple paths - `{path}.rue`, then suffix match, then basename match
+    /// 4. Facade files (`_foo.rue`) for directory modules
     pub(crate) fn resolve_import_path_for_const(
         &self,
         import_path: &str,
         span: Span,
     ) -> CompileResult<String> {
-        // Check for standard library import
-        if import_path == "std" {
-            // For now, std is not supported during const eval
-            return Err(CompileError::new(
-                ErrorKind::ModuleNotFound {
-                    path: import_path.to_string(),
-                    candidates: vec![],
-                },
-                span,
-            ));
-        }
+        let module_path = ModulePath::parse(import_path);
 
-        // Check if the import path matches an already-loaded file
-        let import_base = import_path.strip_suffix(".rue").unwrap_or(import_path);
-        let import_with_rue = format!("{}.rue", import_base);
-
-        for (_file_id, file_path) in &self.file_paths {
-            // Check for exact match
-            if file_path == import_path {
-                return Ok(file_path.clone());
-            }
-
-            // Check if file path ends with import_path.rue (e.g., "utils/strings" matches ".../utils/strings.rue")
-            if file_path.ends_with(&import_with_rue) {
-                return Ok(file_path.clone());
-            }
-
-            // Check if the file path ends with the import path (e.g., "utils/strings.rue" matches)
-            if file_path.ends_with(import_path) {
-                return Ok(file_path.clone());
-            }
-
-            // For imports like "math" or "math.rue", check if the file is named accordingly
-            let file_name = Path::new(file_path).file_stem().and_then(|s| s.to_str());
-            if let Some(name) = file_name {
-                if name == import_base {
-                    return Ok(file_path.clone());
-                }
-                // Also check for _foo.rue (directory module entry point)
-                if name == format!("_{}", import_base) {
-                    return Ok(file_path.clone());
-                }
-            }
+        // Try to resolve against loaded file paths
+        let loaded_paths = self.file_paths.values();
+        if let Some(resolved) = module_path.resolve(loaded_paths) {
+            return Ok(resolved);
         }
 
         // Module not found - collect candidates for error message
