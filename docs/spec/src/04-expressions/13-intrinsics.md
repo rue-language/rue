@@ -550,3 +550,82 @@ fn main() -> i32 {
     }
 }
 ```
+
+## `@import`
+
+{{ rule(id="4.13:79", cat="normative") }}
+
+The `@import` intrinsic imports a module from another source file.
+
+{{ rule(id="4.13:80", cat="normative") }}
+
+`@import` accepts exactly one argument, which **MUST** be a string literal specifying the module path.
+
+{{ rule(id="4.13:81", cat="normative") }}
+
+The return type of `@import` is a module struct type containing all `pub` declarations from the imported file.
+
+{{ rule(id="4.13:82", cat="normative") }}
+
+Module path resolution follows this order:
+1. Standard library: `@import("std")` resolves to the bundled standard library
+2. A file `{path}.rue` relative to the importing file's directory
+3. A directory module `_{path}.rue` with subdirectory `{path}/`
+
+{{ rule(id="4.13:83", cat="legality-rule") }}
+
+It is a compile-time error if the module path does not resolve to an existing file.
+
+{{ rule(id="4.13:84", cat="legality-rule") }}
+
+It is a compile-time error to pass a non-string-literal argument to `@import`.
+
+{{ rule(id="4.13:85") }}
+
+```rue
+// math.rue
+pub fn add(a: i32, b: i32) -> i32 { a + b }
+pub fn sub(a: i32, b: i32) -> i32 { a - b }
+fn helper() -> i32 { 42 }  // private, not exported
+
+// main.rue
+fn main() -> i32 {
+    let math = @import("math");
+    math.add(1, 2)  // returns 3
+}
+```
+
+{{ rule(id="4.13:86") }}
+
+Private declarations (those without `pub`) are not visible to importers:
+
+```rue
+// main.rue
+fn main() -> i32 {
+    let math = @import("math");
+    // math.helper()  // Error: `helper` is not visible
+    0
+}
+```
+
+{{ rule(id="4.13:87") }}
+
+The imported module can be bound to any name:
+
+```rue
+fn main() -> i32 {
+    let m = @import("math");
+    m.add(1, 2)
+}
+```
+
+{{ rule(id="4.13:88") }}
+
+Nested paths are supported for importing from subdirectories:
+
+```rue
+fn main() -> i32 {
+    let strings = @import("utils/strings");
+    0
+}
+```

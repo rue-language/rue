@@ -1,5 +1,6 @@
 [section]
 id = "modules.import"
+spec_chapter = "4.13"
 name = "Import Expressions"
 description = "The @import builtin for importing modules."
 
@@ -12,6 +13,7 @@ description = "The @import builtin for importing modules."
 
 [[case]]
 name = "import_basic_syntax"
+spec = ["4.13:79", "4.13:80", "4.13:82"]
 description = "@import with string argument is accepted"
 source = """
 fn main() -> i32 {
@@ -24,6 +26,7 @@ exit_code = 0
 
 [[case]]
 name = "import_used_in_const"
+spec = ["4.13:79", "4.13:80"]
 description = "@import can be used in a const binding (typical pattern)"
 source = """
 fn main() -> i32 {
@@ -36,6 +39,7 @@ exit_code = 0
 
 [[case]]
 name = "import_multiple_files"
+spec = ["4.13:79"]
 description = "Multiple @import calls in same file"
 source = """
 fn main() -> i32 {
@@ -49,6 +53,7 @@ exit_code = 0
 
 [[case]]
 name = "import_nested_path"
+spec = ["4.13:79", "4.13:82"]
 description = "@import with nested path"
 source = """
 fn main() -> i32 {
@@ -65,6 +70,7 @@ exit_code = 0
 
 [[case]]
 name = "import_no_args_error"
+spec = ["4.13:80"]
 description = "@import with no arguments is an error"
 source = """
 fn main() -> i32 {
@@ -77,6 +83,7 @@ error_contains = "expects 1 argument"
 
 [[case]]
 name = "import_integer_arg_error"
+spec = ["4.13:84"]
 description = "@import with integer argument should fail"
 source = """
 fn main() -> i32 {
@@ -89,6 +96,7 @@ error_contains = "requires a string literal"
 
 [[case]]
 name = "import_multiple_args_error"
+spec = ["4.13:80"]
 description = "@import with multiple arguments should fail"
 source = """
 fn main() -> i32 {
@@ -98,3 +106,16 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = "expects 1 argument"
+
+[[case]]
+name = "import_module_not_found_error"
+spec = ["4.13:83"]
+description = "@import with nonexistent module produces error"
+source = """
+fn main() -> i32 {
+    let m = @import("nonexistent");
+    0
+}
+"""
+compile_fail = true
+error_contains = "cannot find module"

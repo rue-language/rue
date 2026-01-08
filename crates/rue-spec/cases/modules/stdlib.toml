@@ -1,5 +1,6 @@
 [section]
 id = "modules.stdlib"
+spec_chapter = "4.13"
 name = "Standard Library Imports"
 description = "Resolution and usage of @import(\"std\") for the standard library."
 
@@ -9,6 +10,7 @@ description = "Resolution and usage of @import(\"std\") for the standard library
 
 [[case]]
 name = "import_std_resolves"
+spec = ["4.13:82"]
 description = "@import(\"std\") resolves to the standard library root when std/ exists"
 source = """
 fn main() -> i32 {
@@ -24,6 +26,7 @@ exit_code = 0
 
 [[case]]
 name = "import_std_not_found_error"
+spec = ["4.13:83"]
 description = "@import(\"std\") produces a clear error when stdlib is not found"
 source = """
 fn main() -> i32 {
@@ -44,6 +47,7 @@ error_contains = "standard library not found"
 
 [[case]]
 name = "import_std_with_submodule"
+spec = ["4.13:81", "4.13:82"]
 description = "std library with submodules can be imported"
 source = """
 fn main() -> i32 {
