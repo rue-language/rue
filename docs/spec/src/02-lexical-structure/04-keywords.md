@@ -31,6 +31,7 @@ The following words are keywords and cannot be used as identifiers:
 | `match` | Pattern matching expression |
 | `return` | Return from function |
 | `break` | Exit loop |
+| `comptime` | Compile-time evaluation |
 | `continue` | Skip to next iteration |
 | `true` | Boolean literal |
 | `false` | Boolean literal |
@@ -57,3 +58,4 @@ The following are type names and are reserved:
 | `u32` | 32-bit unsigned integer |
 | `u64` | 64-bit unsigned integer |
 | `bool` | Boolean type |
+| `type` | Compile-time type of types |
