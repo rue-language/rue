@@ -301,9 +301,224 @@ impl Linker {
 
     /// Link all objects and produce a Mach-O executable.
     ///
-    /// This is a stub - Mach-O executable generation is not yet implemented.
-    fn link_macho(self, _entry_point: &str) -> Result<Vec<u8>, LinkError> {
-        Err(LinkError::NotImplemented("Mach-O executable generation"))
+    /// NOTE: This generates a static executable with LC_UNIXTHREAD.
+    /// On macOS ARM64 (Apple Silicon), static executables are not supported
+    /// due to security restrictions - the kernel will kill them with SIGKILL.
+    /// For actual executable generation on macOS, use the system linker (clang).
+    /// This implementation is useful for:
+    /// - Generating structurally valid Mach-O executables for testing
+    /// - Future support for other platforms that accept Mach-O format
+    fn link_macho(self, entry_point: &str) -> Result<Vec<u8>, LinkError> {
+        use crate::constants::{
+            ARM_THREAD_STATE64, ARM_THREAD_STATE64_COUNT, CPU_SUBTYPE_ARM64_ALL, CPU_TYPE_ARM64,
+            LC_SEGMENT_64, LC_UNIXTHREAD, MACHO64_HEADER_SIZE, MACHO64_SECTION_SIZE,
+            MACHO64_SEGMENT_CMD_SIZE, MACHO64_UNIXTHREAD_ARM64_SIZE, MH_EXECUTE, MH_MAGIC_64,
+            S_ATTR_PURE_INSTRUCTIONS, S_ATTR_SOME_INSTRUCTIONS, VM_PROT_EXECUTE, VM_PROT_READ,
+        };
+
+        // Merge all code sections from objects
+        let mut merged_code = Vec::new();
+        let mut section_offsets: HashMap<(usize, usize), u64> = HashMap::new();
+
+        for (obj_idx, obj) in self.objects.iter().enumerate() {
+            for (sec_idx, section) in obj.sections.iter().enumerate() {
+                if !section.name.starts_with(".text") && !section.name.starts_with("__text") {
+                    continue;
+                }
+                if section.data.is_empty() {
+                    continue;
+                }
+
+                // Align to section alignment (minimum 4 for ARM64 instructions)
+                let align = section.align.max(4);
+                let current_len = merged_code.len() as u64;
+                let aligned_len = align_up(current_len, align);
+                let padding = (aligned_len - current_len) as usize;
+                // Use BRK #0 (0x00, 0x00, 0x20, 0xD4) as padding for ARM64
+                for _ in 0..padding / 4 {
+                    merged_code.extend_from_slice(&[0x00, 0x00, 0x20, 0xD4]);
+                }
+                // Handle non-aligned padding (shouldn't happen with 4-byte alignment)
+                for _ in 0..(padding % 4) {
+                    merged_code.push(0x00);
+                }
+
+                let offset = merged_code.len() as u64;
+                section_offsets.insert((obj_idx, sec_idx), offset);
+                merged_code.extend_from_slice(&section.data);
+            }
+        }
+
+        // Build symbol table mapping: name -> (object_index, address_in_merged_code)
+        let mut symbol_addresses: HashMap<String, u64> = HashMap::new();
+        for (obj_idx, obj) in self.objects.iter().enumerate() {
+            for sym in &obj.symbols {
+                if sym.name.is_empty() {
+                    continue;
+                }
+                if let Some(sec_idx) = sym.section_index {
+                    if sec_idx < obj.sections.len() {
+                        let sec_name = &obj.sections[sec_idx].name;
+                        if sec_name.starts_with(".text") || sec_name.starts_with("__text") {
+                            if let Some(&base_offset) = section_offsets.get(&(obj_idx, sec_idx)) {
+                                let addr = base_offset + sym.value;
+                                symbol_addresses.insert(sym.name.clone(), addr);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Find entry point
+        // On macOS, symbols have underscore prefix, so try both with and without
+        let entry_offset = symbol_addresses
+            .get(entry_point)
+            .or_else(|| symbol_addresses.get(&format!("_{}", entry_point)))
+            .copied()
+            .ok_or_else(|| LinkError::UndefinedSymbol(entry_point.to_string()))?;
+
+        // Calculate layout
+        // Load commands: __PAGEZERO + __TEXT (with 1 section) + LC_UNIXTHREAD
+        // We use LC_UNIXTHREAD instead of LC_MAIN for truly static executables
+        // (LC_MAIN requires dyld, but static executables don't use dyld)
+        let num_text_sections = 1; // Just __text for now
+        let pagezero_cmd_size = MACHO64_SEGMENT_CMD_SIZE; // No sections
+        let text_segment_cmd_size =
+            MACHO64_SEGMENT_CMD_SIZE + MACHO64_SECTION_SIZE * num_text_sections;
+        let load_commands_size =
+            pagezero_cmd_size + text_segment_cmd_size + MACHO64_UNIXTHREAD_ARM64_SIZE;
+        let header_size = MACHO64_HEADER_SIZE + load_commands_size;
+
+        // Page size for ARM64 macOS is 16KB (0x4000)
+        // But for simple executables, we can use smaller alignment
+        let page_size: u64 = 0x4000;
+
+        // Align code start to 16 bytes (within the page)
+        let text_file_offset = align_up(header_size as u64, 16) as usize;
+        let text_size = merged_code.len();
+
+        // Virtual memory layout:
+        // __PAGEZERO: 0x0 - 0x100000000 (catches null pointer derefs)
+        // __TEXT: 0x100000000 - ... (our code)
+        let vm_base: u64 = 0x100000000;
+        let text_vm_addr = vm_base + text_file_offset as u64;
+
+        // Build the Mach-O file
+        let mut macho = Vec::new();
+
+        // === Mach-O Header (mach_header_64) ===
+        macho.extend_from_slice(&MH_MAGIC_64.to_le_bytes()); // magic
+        macho.extend_from_slice(&CPU_TYPE_ARM64.to_le_bytes()); // cputype
+        macho.extend_from_slice(&CPU_SUBTYPE_ARM64_ALL.to_le_bytes()); // cpusubtype
+        macho.extend_from_slice(&MH_EXECUTE.to_le_bytes()); // filetype
+        macho.extend_from_slice(&3u32.to_le_bytes()); // ncmds (__PAGEZERO + __TEXT + LC_MAIN)
+        macho.extend_from_slice(&(load_commands_size as u32).to_le_bytes()); // sizeofcmds
+        macho.extend_from_slice(&0u32.to_le_bytes()); // flags
+        macho.extend_from_slice(&0u32.to_le_bytes()); // reserved
+
+        // === LC_SEGMENT_64 (__PAGEZERO) ===
+        // This segment catches null pointer dereferences
+        macho.extend_from_slice(&LC_SEGMENT_64.to_le_bytes()); // cmd
+        macho.extend_from_slice(&(pagezero_cmd_size as u32).to_le_bytes()); // cmdsize
+
+        let mut pagezero_name = [0u8; 16];
+        pagezero_name[..11].copy_from_slice(b"__PAGEZERO\0");
+        macho.extend_from_slice(&pagezero_name); // segname
+
+        macho.extend_from_slice(&0u64.to_le_bytes()); // vmaddr = 0
+        macho.extend_from_slice(&vm_base.to_le_bytes()); // vmsize = 0x100000000
+        macho.extend_from_slice(&0u64.to_le_bytes()); // fileoff = 0
+        macho.extend_from_slice(&0u64.to_le_bytes()); // filesize = 0 (no file content)
+        macho.extend_from_slice(&0u32.to_le_bytes()); // maxprot = 0 (no access)
+        macho.extend_from_slice(&0u32.to_le_bytes()); // initprot = 0 (no access)
+        macho.extend_from_slice(&0u32.to_le_bytes()); // nsects = 0
+        macho.extend_from_slice(&0u32.to_le_bytes()); // flags = 0
+
+        // === LC_SEGMENT_64 (__TEXT) ===
+        macho.extend_from_slice(&LC_SEGMENT_64.to_le_bytes()); // cmd
+        macho.extend_from_slice(&(text_segment_cmd_size as u32).to_le_bytes()); // cmdsize
+
+        let mut segname = [0u8; 16];
+        segname[..7].copy_from_slice(b"__TEXT\0");
+        macho.extend_from_slice(&segname);
+
+        // The __TEXT segment covers from vmaddr to end of code
+        let segment_file_size = text_file_offset as u64 + text_size as u64;
+        macho.extend_from_slice(&vm_base.to_le_bytes()); // vmaddr
+        macho.extend_from_slice(&segment_file_size.to_le_bytes()); // vmsize
+        macho.extend_from_slice(&0u64.to_le_bytes()); // fileoff (segment starts at file offset 0)
+        macho.extend_from_slice(&segment_file_size.to_le_bytes()); // filesize
+        let maxprot = VM_PROT_READ | VM_PROT_EXECUTE;
+        let initprot = VM_PROT_READ | VM_PROT_EXECUTE;
+        macho.extend_from_slice(&maxprot.to_le_bytes()); // maxprot
+        macho.extend_from_slice(&initprot.to_le_bytes()); // initprot
+        macho.extend_from_slice(&(num_text_sections as u32).to_le_bytes()); // nsects
+        macho.extend_from_slice(&0u32.to_le_bytes()); // flags
+
+        // === Section: __text ===
+        let mut sectname = [0u8; 16];
+        sectname[..7].copy_from_slice(b"__text\0");
+        macho.extend_from_slice(&sectname);
+        macho.extend_from_slice(&segname); // segname
+
+        macho.extend_from_slice(&text_vm_addr.to_le_bytes()); // addr
+        macho.extend_from_slice(&(text_size as u64).to_le_bytes()); // size
+        macho.extend_from_slice(&(text_file_offset as u32).to_le_bytes()); // offset
+        macho.extend_from_slice(&2u32.to_le_bytes()); // align (2^2 = 4 bytes for ARM64)
+        macho.extend_from_slice(&0u32.to_le_bytes()); // reloff
+        macho.extend_from_slice(&0u32.to_le_bytes()); // nreloc
+        let section_flags = S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS;
+        macho.extend_from_slice(&section_flags.to_le_bytes()); // flags
+        macho.extend_from_slice(&0u32.to_le_bytes()); // reserved1
+        macho.extend_from_slice(&0u32.to_le_bytes()); // reserved2
+        macho.extend_from_slice(&0u32.to_le_bytes()); // reserved3
+
+        // === LC_UNIXTHREAD ===
+        // For static executables, we use LC_UNIXTHREAD to set the initial thread state.
+        // This includes setting PC (program counter) to the entry point.
+        macho.extend_from_slice(&LC_UNIXTHREAD.to_le_bytes()); // cmd
+        macho.extend_from_slice(&(MACHO64_UNIXTHREAD_ARM64_SIZE as u32).to_le_bytes()); // cmdsize
+        macho.extend_from_slice(&ARM_THREAD_STATE64.to_le_bytes()); // flavor
+        macho.extend_from_slice(&ARM_THREAD_STATE64_COUNT.to_le_bytes()); // count
+
+        // ARM_THREAD_STATE64 structure:
+        // - x[29]: General purpose registers x0-x28 (29 * 8 = 232 bytes)
+        // - fp: Frame pointer x29 (8 bytes)
+        // - lr: Link register x30 (8 bytes)
+        // - sp: Stack pointer (8 bytes)
+        // - pc: Program counter (8 bytes) <- This is the entry point
+        // - cpsr: Current program status register (4 bytes)
+        // - __pad: Padding (4 bytes)
+
+        // x0-x28: all zeros (29 registers * 8 bytes = 232 bytes)
+        for _ in 0..29 {
+            macho.extend_from_slice(&0u64.to_le_bytes());
+        }
+
+        // fp (x29): zero
+        macho.extend_from_slice(&0u64.to_le_bytes());
+        // lr (x30): zero
+        macho.extend_from_slice(&0u64.to_le_bytes());
+        // sp: zero (kernel will set up the real stack)
+        macho.extend_from_slice(&0u64.to_le_bytes());
+        // pc: entry point virtual address
+        let entry_vmaddr = text_vm_addr + entry_offset;
+        macho.extend_from_slice(&entry_vmaddr.to_le_bytes());
+        // cpsr: zero
+        macho.extend_from_slice(&0u32.to_le_bytes());
+        // __pad: zero
+        macho.extend_from_slice(&0u32.to_le_bytes());
+
+        // Pad to text_file_offset
+        while macho.len() < text_file_offset {
+            macho.push(0);
+        }
+
+        // === Code section ===
+        macho.extend_from_slice(&merged_code);
+
+        Ok(macho)
     }
 
     /// Link all objects and produce an ELF executable.
@@ -2554,6 +2769,154 @@ mod tests {
         assert_eq!(
             code[1], 0x8D,
             "Opcode should be rewritten to LEA (8D) for GotPcRel relaxation"
+        );
+    }
+
+    // =========================================================================
+    // Mach-O Linker Tests
+    // =========================================================================
+
+    #[test]
+    fn test_macho_minimal_executable() {
+        use crate::constants::{MACHO64_HEADER_SIZE, MH_EXECUTE, MH_MAGIC_64};
+        use crate::elf::{Section, SectionFlags, Symbol, SymbolBinding, SymbolType};
+
+        // ARM64 code for: return 42
+        // MOV W0, #42  -> 0x52800540
+        // RET          -> 0xD65F03C0
+        let code = vec![
+            0x40, 0x05, 0x80, 0x52, // MOV W0, #42
+            0xC0, 0x03, 0x5F, 0xD6, // RET
+        ];
+
+        let text_section = Section {
+            name: "__text".to_string(),
+            data: code,
+            size: 8,
+            flags: SectionFlags::ALLOC | SectionFlags::EXEC,
+            relocations: vec![],
+            align: 4,
+        };
+
+        let main_symbol = Symbol {
+            name: "_main".to_string(),
+            section_index: Some(0),
+            value: 0,
+            size: 8,
+            binding: SymbolBinding::Global,
+            sym_type: SymbolType::Func,
+        };
+
+        let obj = ObjectFile {
+            sections: vec![text_section],
+            symbols: vec![main_symbol],
+            section_map: [("__text".to_string(), 0)].into_iter().collect(),
+        };
+
+        let mut linker = Linker::new(Target::Aarch64Macos);
+        linker.add_object(obj).unwrap();
+
+        let macho = linker.link("_main").unwrap();
+
+        // Verify Mach-O header
+        assert!(
+            macho.len() > MACHO64_HEADER_SIZE,
+            "File should be larger than header"
+        );
+
+        // Check magic number
+        let magic = u32::from_le_bytes([macho[0], macho[1], macho[2], macho[3]]);
+        assert_eq!(magic, MH_MAGIC_64, "Should have Mach-O 64-bit magic");
+
+        // Check file type
+        let filetype = u32::from_le_bytes([macho[12], macho[13], macho[14], macho[15]]);
+        assert_eq!(filetype, MH_EXECUTE, "Should be executable file type");
+
+        // Verify the code is present somewhere in the file
+        // Look for our MOV W0, #42 instruction
+        let mov_pattern = [0x40, 0x05, 0x80, 0x52];
+        let found = macho.windows(4).any(|w| w == mov_pattern);
+        assert!(found, "Code should be present in the executable");
+    }
+
+    #[test]
+    fn test_macho_entry_point_lookup() {
+        use crate::elf::{Section, SectionFlags, Symbol, SymbolBinding, SymbolType};
+
+        // Simple ARM64 RET instruction
+        let code = vec![0xC0, 0x03, 0x5F, 0xD6]; // RET
+
+        let text_section = Section {
+            name: "__text".to_string(),
+            data: code,
+            size: 4,
+            flags: SectionFlags::ALLOC | SectionFlags::EXEC,
+            relocations: vec![],
+            align: 4,
+        };
+
+        // Symbol without underscore prefix (linker should try both)
+        let main_symbol = Symbol {
+            name: "main".to_string(),
+            section_index: Some(0),
+            value: 0,
+            size: 4,
+            binding: SymbolBinding::Global,
+            sym_type: SymbolType::Func,
+        };
+
+        let obj = ObjectFile {
+            sections: vec![text_section],
+            symbols: vec![main_symbol],
+            section_map: [("__text".to_string(), 0)].into_iter().collect(),
+        };
+
+        let mut linker = Linker::new(Target::Aarch64Macos);
+        linker.add_object(obj).unwrap();
+
+        // Should find "main" even though we look for it without underscore
+        let result = linker.link("main");
+        assert!(result.is_ok(), "Should find entry point 'main'");
+    }
+
+    #[test]
+    fn test_macho_undefined_entry_point() {
+        use crate::elf::{Section, SectionFlags, Symbol, SymbolBinding, SymbolType};
+
+        let code = vec![0xC0, 0x03, 0x5F, 0xD6]; // RET
+
+        let text_section = Section {
+            name: "__text".to_string(),
+            data: code,
+            size: 4,
+            flags: SectionFlags::ALLOC | SectionFlags::EXEC,
+            relocations: vec![],
+            align: 4,
+        };
+
+        let other_symbol = Symbol {
+            name: "other_func".to_string(),
+            section_index: Some(0),
+            value: 0,
+            size: 4,
+            binding: SymbolBinding::Global,
+            sym_type: SymbolType::Func,
+        };
+
+        let obj = ObjectFile {
+            sections: vec![text_section],
+            symbols: vec![other_symbol],
+            section_map: [("__text".to_string(), 0)].into_iter().collect(),
+        };
+
+        let mut linker = Linker::new(Target::Aarch64Macos);
+        linker.add_object(obj).unwrap();
+
+        // Should fail because there's no "main" symbol
+        let result = linker.link("main");
+        assert!(
+            matches!(result, Err(LinkError::UndefinedSymbol(_))),
+            "Should return UndefinedSymbol error"
         );
     }
 }

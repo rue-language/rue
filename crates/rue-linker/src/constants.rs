@@ -211,6 +211,8 @@ pub const MH_MAGIC_64: u32 = 0xFEEDFACF;
 
 /// MH_OBJECT: Relocatable object file
 pub const MH_OBJECT: u32 = 0x1;
+/// MH_EXECUTE: Executable file
+pub const MH_EXECUTE: u32 = 0x2;
 
 // Mach-O CPU types
 
@@ -229,6 +231,20 @@ pub const LC_SYMTAB: u32 = 0x2;
 pub const LC_BUILD_VERSION: u32 = 0x32;
 /// LC_DYSYMTAB: Dynamic symbol table load command
 pub const LC_DYSYMTAB: u32 = 0xb;
+/// LC_MAIN: Entry point for executable (replaces LC_UNIXTHREAD)
+/// Note: LC_MAIN requires dyld; for static executables, use LC_UNIXTHREAD
+pub const LC_MAIN: u32 = 0x80000028;
+/// LC_UNIXTHREAD: Thread state for static executables (no dyld required)
+pub const LC_UNIXTHREAD: u32 = 0x5;
+
+// Mach-O VM protection flags
+
+/// VM_PROT_READ: Read permission
+pub const VM_PROT_READ: u32 = 0x1;
+/// VM_PROT_WRITE: Write permission
+pub const VM_PROT_WRITE: u32 = 0x2;
+/// VM_PROT_EXECUTE: Execute permission
+pub const VM_PROT_EXECUTE: u32 = 0x4;
 
 // Mach-O section flags
 
@@ -282,6 +298,23 @@ pub const MACHO64_NLIST_SIZE: usize = 16;
 pub const MACHO64_RELOC_SIZE: usize = 8;
 /// Size of Mach-O dysymtab_command
 pub const MACHO64_DYSYMTAB_CMD_SIZE: usize = 80;
+/// Size of Mach-O entry_point_command (LC_MAIN)
+pub const MACHO64_ENTRY_POINT_CMD_SIZE: usize = 24;
+/// Size of Mach-O thread_command header (cmd + cmdsize + flavor + count)
+pub const MACHO64_THREAD_CMD_HEADER_SIZE: usize = 16;
+
+// ARM64 thread state constants
+
+/// ARM_THREAD_STATE64: ARM64 thread state flavor
+pub const ARM_THREAD_STATE64: u32 = 6;
+/// Size of ARM64 thread state in 32-bit words
+/// State: x0-x28 (29 regs), fp, lr, sp, pc, cpsr, pad = 68 uint32s
+pub const ARM_THREAD_STATE64_COUNT: u32 = 68;
+/// Size of ARM_THREAD_STATE64 in bytes (68 * 4 = 272)
+pub const ARM_THREAD_STATE64_SIZE: usize = 272;
+/// Size of LC_UNIXTHREAD command for ARM64 (header + state)
+pub const MACHO64_UNIXTHREAD_ARM64_SIZE: usize =
+    MACHO64_THREAD_CMD_HEADER_SIZE + ARM_THREAD_STATE64_SIZE;
 
 #[cfg(test)]
 mod tests {
