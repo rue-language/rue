@@ -15,6 +15,7 @@ pub mod constants;
 mod elf;
 mod emit;
 mod linker;
+pub mod macho;
 
 pub use archive::{Archive, ArchiveError};
 pub use elf::{ObjectFile, Relocation, RelocationType, Section, Symbol};

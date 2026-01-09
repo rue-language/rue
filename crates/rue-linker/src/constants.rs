@@ -236,6 +236,23 @@ pub const LC_DYSYMTAB: u32 = 0xb;
 pub const LC_MAIN: u32 = 0x80000028;
 /// LC_UNIXTHREAD: Thread state for static executables (no dyld required)
 pub const LC_UNIXTHREAD: u32 = 0x5;
+/// LC_LOAD_DYLINKER: Load the dynamic linker (/usr/lib/dyld)
+pub const LC_LOAD_DYLINKER: u32 = 0xe;
+/// LC_LOAD_DYLIB: Load a dynamic library
+pub const LC_LOAD_DYLIB: u32 = 0xc;
+/// LC_UUID: Unique identifier for the binary
+pub const LC_UUID: u32 = 0x1b;
+
+// Mach-O header flags
+
+/// MH_NOUNDEFS: No undefined references
+pub const MH_NOUNDEFS: u32 = 0x1;
+/// MH_DYLDLINK: Input for the dynamic linker
+pub const MH_DYLDLINK: u32 = 0x4;
+/// MH_TWOLEVEL: Using two-level namespace bindings
+pub const MH_TWOLEVEL: u32 = 0x80;
+/// MH_PIE: Position Independent Executable
+pub const MH_PIE: u32 = 0x200000;
 
 // Mach-O VM protection flags
 
