@@ -1230,8 +1230,9 @@ fn link_internal_with_warnings(
 ) -> MultiErrorResult<CompileOutput> {
     let _span = info_span!("linker", mode = "internal").entered();
 
-    // For macOS targets, the internal linker doesn't support Mach-O,
-    // so we delegate to the system linker (clang).
+    // For macOS targets, the internal linker doesn't yet support Mach-O
+    // object file parsing or executable generation. Delegate to clang.
+    // TODO: Remove this once native Mach-O support is implemented.
     if options.target.is_macho() {
         return link_system_with_warnings(options, object_files, "clang", warnings);
     }

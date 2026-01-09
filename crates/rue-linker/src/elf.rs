@@ -1,16 +1,19 @@
-//! ELF64 object file parsing.
+//! Object file parsing (ELF and Mach-O).
 //!
-//! Parses relocatable ELF64 object files to extract:
+//! Parses relocatable object files to extract:
 //! - Sections (code and data)
 //! - Symbols (defined and undefined)
 //! - Relocations (patches to apply)
+//!
+//! Supports both ELF64 (Linux) and Mach-O 64-bit (macOS) formats.
+//! The format is auto-detected based on magic bytes.
 
 use std::collections::HashMap;
 
 use crate::constants::{
     E_MACHINE_OFFSET, E_SHENTSIZE_OFFSET, E_SHNUM_OFFSET, E_SHOFF_OFFSET, E_SHSTRNDX_OFFSET,
     E_TYPE_OFFSET, ELF_MAGIC, ELF64_EHDR_SIZE, ELF64_RELA_SIZE, ELF64_SHDR_SIZE, ELF64_SYM_SIZE,
-    ELFCLASS64, ELFDATA2LSB, EM_AARCH64, EM_X86_64, ET_REL, R_AARCH64_ABS64,
+    ELFCLASS64, ELFDATA2LSB, EM_AARCH64, EM_X86_64, ET_REL, MH_MAGIC_64, R_AARCH64_ABS64,
     R_AARCH64_ADD_ABS_LO12_NC, R_AARCH64_ADR_PREL_PG_HI21, R_AARCH64_CALL26, R_AARCH64_JUMP26,
     R_X86_64_32, R_X86_64_32S, R_X86_64_64, R_X86_64_GOTPCREL, R_X86_64_GOTPCRELX, R_X86_64_PC32,
     R_X86_64_PLT32, R_X86_64_REX_GOTPCRELX, SHN_LORESERVE, SHN_UNDEF, SHT_NULL, SHT_RELA,
@@ -281,12 +284,16 @@ pub enum ParseError {
     SectionOutOfBounds(String),
     /// Relocation data out of bounds.
     RelocationOutOfBounds,
+    /// Unknown object file format (not ELF or Mach-O).
+    UnknownFormat,
+    /// Feature not yet implemented.
+    NotImplemented(&'static str),
 }
 
 impl std::fmt::Display for ParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ParseError::TooShort => write!(f, "file is too short to be a valid ELF"),
+            ParseError::TooShort => write!(f, "file is too short to be a valid object file"),
             ParseError::InvalidMagic => write!(f, "invalid ELF magic number"),
             ParseError::Not64Bit => write!(f, "not a 64-bit ELF file"),
             ParseError::NotLittleEndian => write!(f, "not a little-endian ELF file"),
@@ -300,6 +307,10 @@ impl std::fmt::Display for ParseError {
             ParseError::InvalidShstrndx => write!(f, "invalid section header string table index"),
             ParseError::SectionOutOfBounds(s) => write!(f, "section data out of bounds: {}", s),
             ParseError::RelocationOutOfBounds => write!(f, "relocation data out of bounds"),
+            ParseError::UnknownFormat => {
+                write!(f, "unknown object file format (not ELF or Mach-O)")
+            }
+            ParseError::NotImplemented(feature) => write!(f, "{} not yet implemented", feature),
         }
     }
 }
@@ -307,15 +318,42 @@ impl std::fmt::Display for ParseError {
 impl std::error::Error for ParseError {}
 
 impl ObjectFile {
-    /// Parse an ELF64 relocatable object file.
+    /// Parse a relocatable object file (ELF or Mach-O).
+    ///
+    /// Automatically detects the format based on magic bytes and dispatches
+    /// to the appropriate parser.
     #[must_use = "parsing returns a Result that must be checked"]
     pub fn parse(data: &[u8]) -> Result<Self, ParseError> {
+        // Need at least 4 bytes to check magic
+        if data.len() < 4 {
+            return Err(ParseError::TooShort);
+        }
+
+        // Dispatch based on magic bytes
+        if data[0..4] == ELF_MAGIC {
+            Self::parse_elf(data)
+        } else if data.len() >= 4 && read_u32(data, 0) == MH_MAGIC_64 {
+            Self::parse_macho(data)
+        } else {
+            Err(ParseError::UnknownFormat)
+        }
+    }
+
+    /// Parse a Mach-O 64-bit relocatable object file.
+    ///
+    /// This is a stub - Mach-O parsing is not yet implemented.
+    fn parse_macho(_data: &[u8]) -> Result<Self, ParseError> {
+        Err(ParseError::NotImplemented("Mach-O object file parsing"))
+    }
+
+    /// Parse an ELF64 relocatable object file.
+    fn parse_elf(data: &[u8]) -> Result<Self, ParseError> {
         // Check minimum size for ELF header
         if data.len() < ELF64_EHDR_SIZE {
             return Err(ParseError::TooShort);
         }
 
-        // Check ELF magic
+        // We already verified ELF magic in parse(), but verify again for safety
         if data[0..4] != ELF_MAGIC {
             return Err(ParseError::InvalidMagic);
         }
@@ -691,7 +729,15 @@ mod tests {
         );
         assert_eq!(
             ParseError::TooShort.to_string(),
-            "file is too short to be a valid ELF"
+            "file is too short to be a valid object file"
+        );
+        assert_eq!(
+            ParseError::UnknownFormat.to_string(),
+            "unknown object file format (not ELF or Mach-O)"
+        );
+        assert_eq!(
+            ParseError::NotImplemented("Mach-O object file parsing").to_string(),
+            "Mach-O object file parsing not yet implemented"
         );
         assert_eq!(ParseError::Not64Bit.to_string(), "not a 64-bit ELF file");
         assert_eq!(
@@ -734,7 +780,8 @@ mod tests {
 
     #[test]
     fn test_too_short() {
-        let data = [0u8; 32];
+        // File with less than 4 bytes - can't even check magic
+        let data = [0u8; 3];
         assert!(matches!(
             ObjectFile::parse(&data),
             Err(ParseError::TooShort)
@@ -742,12 +789,36 @@ mod tests {
     }
 
     #[test]
-    fn test_invalid_magic() {
+    fn test_elf_too_short_for_header() {
+        // File with valid ELF magic but too short for header
+        let mut data = [0u8; 32];
+        data[0..4].copy_from_slice(&ELF_MAGIC);
+        assert!(matches!(
+            ObjectFile::parse(&data),
+            Err(ParseError::TooShort)
+        ));
+    }
+
+    #[test]
+    fn test_unknown_format() {
+        // File with unrecognized magic bytes
         let mut data = [0u8; ELF64_EHDR_SIZE];
         data[0..4].copy_from_slice(b"NOTF");
         assert!(matches!(
             ObjectFile::parse(&data),
-            Err(ParseError::InvalidMagic)
+            Err(ParseError::UnknownFormat)
+        ));
+    }
+
+    #[test]
+    fn test_macho_not_implemented() {
+        // File with Mach-O magic should return NotImplemented
+        let mut data = [0u8; 64];
+        // MH_MAGIC_64 = 0xFEEDFACF (little-endian)
+        data[0..4].copy_from_slice(&MH_MAGIC_64.to_le_bytes());
+        assert!(matches!(
+            ObjectFile::parse(&data),
+            Err(ParseError::NotImplemented(_))
         ));
     }
 

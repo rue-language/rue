@@ -40,6 +40,8 @@ pub enum LinkError {
         symbol_index: usize,
         symbol_count: usize,
     },
+    /// Feature not yet implemented.
+    NotImplemented(&'static str),
 }
 
 impl std::fmt::Display for LinkError {
@@ -84,6 +86,9 @@ impl std::fmt::Display for LinkError {
                     "relocation references invalid symbol index {} (object has {} symbols)",
                     symbol_index, symbol_count
                 )
+            }
+            LinkError::NotImplemented(feature) => {
+                write!(f, "{} not yet implemented", feature)
             }
         }
     }
@@ -282,8 +287,27 @@ impl Linker {
     }
 
     /// Link all objects and produce an executable.
+    ///
+    /// Automatically selects the output format (ELF or Mach-O) based on
+    /// the target platform.
     #[must_use = "linking returns a Result that must be checked"]
     pub fn link(self, entry_point: &str) -> Result<Vec<u8>, LinkError> {
+        if self.target.is_macho() {
+            self.link_macho(entry_point)
+        } else {
+            self.link_elf(entry_point)
+        }
+    }
+
+    /// Link all objects and produce a Mach-O executable.
+    ///
+    /// This is a stub - Mach-O executable generation is not yet implemented.
+    fn link_macho(self, _entry_point: &str) -> Result<Vec<u8>, LinkError> {
+        Err(LinkError::NotImplemented("Mach-O executable generation"))
+    }
+
+    /// Link all objects and produce an ELF executable.
+    fn link_elf(self, entry_point: &str) -> Result<Vec<u8>, LinkError> {
         // Layout constants - use separate program headers for proper W^X security:
         // - Segment 1: .text (R+X) - executable code
         // - Segment 2: .rodata (R) - read-only data (only if rodata exists)
