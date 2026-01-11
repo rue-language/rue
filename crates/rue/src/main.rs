@@ -4,6 +4,8 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 #[cfg(unix)]
 use std::path::Path;
+#[cfg(target_os = "macos")]
+use std::process::Command;
 
 use tracing::Level;
 use tracing_subscriber::fmt::format::FmtSpan;
@@ -837,6 +839,30 @@ fn main() {
                             "Warning: could not read file metadata for {}: {}",
                             options.output_path, e
                         );
+                    }
+                }
+            }
+
+            // Ad-hoc codesign for macOS (required for executables to run on ARM64)
+            #[cfg(target_os = "macos")]
+            {
+                // Only codesign if target is macOS (cross-compilation check)
+                if compile_options.target.is_macho() {
+                    let result = Command::new("codesign")
+                        .args(["-f", "-s", "-", &options.output_path])
+                        .output();
+                    match result {
+                        Ok(output) => {
+                            if !output.status.success() {
+                                eprintln!(
+                                    "Warning: codesign failed: {}",
+                                    String::from_utf8_lossy(&output.stderr)
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Warning: could not run codesign: {}", e);
+                        }
                     }
                 }
             }

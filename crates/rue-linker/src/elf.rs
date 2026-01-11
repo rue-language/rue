@@ -11,14 +11,68 @@
 use std::collections::HashMap;
 
 use crate::constants::{
-    E_MACHINE_OFFSET, E_SHENTSIZE_OFFSET, E_SHNUM_OFFSET, E_SHOFF_OFFSET, E_SHSTRNDX_OFFSET,
-    E_TYPE_OFFSET, ELF_MAGIC, ELF64_EHDR_SIZE, ELF64_RELA_SIZE, ELF64_SHDR_SIZE, ELF64_SYM_SIZE,
-    ELFCLASS64, ELFDATA2LSB, EM_AARCH64, EM_X86_64, ET_REL, MH_MAGIC_64, R_AARCH64_ABS64,
-    R_AARCH64_ADD_ABS_LO12_NC, R_AARCH64_ADR_PREL_PG_HI21, R_AARCH64_CALL26, R_AARCH64_JUMP26,
-    R_X86_64_32, R_X86_64_32S, R_X86_64_64, R_X86_64_GOTPCREL, R_X86_64_GOTPCRELX, R_X86_64_PC32,
-    R_X86_64_PLT32, R_X86_64_REX_GOTPCRELX, SHN_LORESERVE, SHN_UNDEF, SHT_NULL, SHT_RELA,
-    SHT_STRTAB, SHT_SYMTAB, STB_GLOBAL, STB_LOCAL, STB_WEAK, STT_FILE, STT_FUNC, STT_NOTYPE,
-    STT_OBJECT, STT_SECTION,
+    // Mach-O constants
+    ARM64_RELOC_BRANCH26,
+    ARM64_RELOC_PAGE21,
+    ARM64_RELOC_PAGEOFF12,
+    ARM64_RELOC_UNSIGNED,
+    E_MACHINE_OFFSET,
+    E_SHENTSIZE_OFFSET,
+    E_SHNUM_OFFSET,
+    E_SHOFF_OFFSET,
+    E_SHSTRNDX_OFFSET,
+    E_TYPE_OFFSET,
+    ELF_MAGIC,
+    ELF64_EHDR_SIZE,
+    ELF64_RELA_SIZE,
+    ELF64_SHDR_SIZE,
+    ELF64_SYM_SIZE,
+    ELFCLASS64,
+    ELFDATA2LSB,
+    EM_AARCH64,
+    EM_X86_64,
+    ET_REL,
+    LC_SEGMENT_64,
+    LC_SYMTAB,
+    MACHO64_HEADER_SIZE,
+    MACHO64_NLIST_SIZE,
+    MACHO64_RELOC_SIZE,
+    MACHO64_SECTION_SIZE,
+    MACHO64_SEGMENT_CMD_SIZE,
+    MH_MAGIC_64,
+    MH_OBJECT,
+    N_ABS,
+    N_EXT,
+    N_SECT,
+    N_TYPE,
+    N_UNDF,
+    R_AARCH64_ABS64,
+    R_AARCH64_ADD_ABS_LO12_NC,
+    R_AARCH64_ADR_PREL_PG_HI21,
+    R_AARCH64_CALL26,
+    R_AARCH64_JUMP26,
+    R_X86_64_32,
+    R_X86_64_32S,
+    R_X86_64_64,
+    R_X86_64_GOTPCREL,
+    R_X86_64_GOTPCRELX,
+    R_X86_64_PC32,
+    R_X86_64_PLT32,
+    R_X86_64_REX_GOTPCRELX,
+    SHN_LORESERVE,
+    SHN_UNDEF,
+    SHT_NULL,
+    SHT_RELA,
+    SHT_STRTAB,
+    SHT_SYMTAB,
+    STB_GLOBAL,
+    STB_LOCAL,
+    STB_WEAK,
+    STT_FILE,
+    STT_FUNC,
+    STT_NOTYPE,
+    STT_OBJECT,
+    STT_SECTION,
 };
 
 /// Helper to read a u16 from a byte slice at a given offset.
@@ -70,6 +124,14 @@ fn read_i64(data: &[u8], offset: usize) -> i64 {
         data[offset + 6],
         data[offset + 7],
     ])
+}
+
+/// Helper to read a null-terminated C string from a byte slice.
+/// Reads until a null byte or end of slice, returning the string as UTF-8.
+#[inline]
+fn read_cstring(data: &[u8]) -> String {
+    let end = data.iter().position(|&b| b == 0).unwrap_or(data.len());
+    String::from_utf8_lossy(&data[..end]).to_string()
 }
 
 /// A parsed ELF64 relocatable object file.
@@ -341,9 +403,336 @@ impl ObjectFile {
 
     /// Parse a Mach-O 64-bit relocatable object file.
     ///
-    /// This is a stub - Mach-O parsing is not yet implemented.
-    fn parse_macho(_data: &[u8]) -> Result<Self, ParseError> {
-        Err(ParseError::NotImplemented("Mach-O object file parsing"))
+    /// Extracts sections, symbols, and relocations from a Mach-O object file.
+    fn parse_macho(data: &[u8]) -> Result<Self, ParseError> {
+        // Minimum size check for Mach-O header
+        if data.len() < MACHO64_HEADER_SIZE {
+            return Err(ParseError::TooShort);
+        }
+
+        // Verify magic (already checked in parse(), but be defensive)
+        let magic = read_u32(data, 0);
+        if magic != MH_MAGIC_64 {
+            return Err(ParseError::InvalidMagic);
+        }
+
+        // Parse header
+        let filetype = read_u32(data, 12);
+        if filetype != MH_OBJECT {
+            return Err(ParseError::NotRelocatable);
+        }
+
+        let ncmds = read_u32(data, 16) as usize;
+        let sizeofcmds = read_u32(data, 20) as usize;
+
+        // Verify load commands fit
+        if data.len() < MACHO64_HEADER_SIZE + sizeofcmds {
+            return Err(ParseError::TooShort);
+        }
+
+        // Parse load commands to find segments and symbol table
+        let mut sections = Vec::new();
+        let mut section_map = HashMap::new();
+        let mut symtab_offset = 0usize;
+        let mut symtab_count = 0usize;
+        let mut strtab_offset = 0usize;
+        let mut strtab_size = 0usize;
+
+        // Track section info for relocations (offset, nreloc, reloff)
+        let mut section_reloc_info: Vec<(usize, usize, usize)> = Vec::new();
+
+        let mut cmd_offset = MACHO64_HEADER_SIZE;
+        for _ in 0..ncmds {
+            if cmd_offset + 8 > data.len() {
+                return Err(ParseError::TooShort);
+            }
+
+            let cmd = read_u32(data, cmd_offset);
+            let cmdsize = read_u32(data, cmd_offset + 4) as usize;
+
+            if cmd_offset + cmdsize > data.len() {
+                return Err(ParseError::TooShort);
+            }
+
+            match cmd {
+                LC_SEGMENT_64 => {
+                    // Parse segment_command_64
+                    if cmdsize < MACHO64_SEGMENT_CMD_SIZE {
+                        return Err(ParseError::InvalidSection("segment too small".into()));
+                    }
+
+                    let nsects = read_u32(data, cmd_offset + 64) as usize;
+
+                    // Parse sections in this segment
+                    let mut sect_offset = cmd_offset + MACHO64_SEGMENT_CMD_SIZE;
+                    for _ in 0..nsects {
+                        if sect_offset + MACHO64_SECTION_SIZE > data.len() {
+                            return Err(ParseError::TooShort);
+                        }
+
+                        // sectname: 16 bytes at offset 0
+                        let sectname = read_cstring(&data[sect_offset..sect_offset + 16]);
+                        // segname: 16 bytes at offset 16
+                        let segname = read_cstring(&data[sect_offset + 16..sect_offset + 32]);
+                        let full_name = format!("{},{}", segname, sectname);
+
+                        // addr: u64 at offset 32
+                        // size: u64 at offset 40
+                        let size = read_u64(data, sect_offset + 40);
+                        // offset: u32 at offset 48
+                        let offset = read_u32(data, sect_offset + 48) as usize;
+                        // align: u32 at offset 52
+                        let align = 1u64 << read_u32(data, sect_offset + 52);
+                        // reloff: u32 at offset 56
+                        let reloff = read_u32(data, sect_offset + 56) as usize;
+                        // nreloc: u32 at offset 60
+                        let nreloc = read_u32(data, sect_offset + 60) as usize;
+                        // flags: u32 at offset 64
+                        let flags = read_u32(data, sect_offset + 64);
+
+                        // Determine section flags
+                        let mut section_flags = SectionFlags::empty();
+                        section_flags |= SectionFlags::ALLOC;
+                        // S_ATTR_PURE_INSTRUCTIONS = 0x80000000
+                        if flags & 0x80000000 != 0 {
+                            section_flags |= SectionFlags::EXEC;
+                        }
+                        // Check segment name for writability
+                        if segname == "__DATA" {
+                            section_flags |= SectionFlags::WRITE;
+                        }
+
+                        // Read section data
+                        let section_data = if size > 0 && offset > 0 {
+                            if offset + size as usize > data.len() {
+                                return Err(ParseError::SectionOutOfBounds(full_name.clone()));
+                            }
+                            data[offset..offset + size as usize].to_vec()
+                        } else {
+                            Vec::new()
+                        };
+
+                        let section_index = sections.len();
+                        section_reloc_info.push((section_index, nreloc, reloff));
+                        section_map.insert(full_name.clone(), section_index);
+
+                        sections.push(Section {
+                            name: full_name,
+                            data: section_data,
+                            size,
+                            flags: section_flags,
+                            relocations: Vec::new(),
+                            align,
+                        });
+
+                        sect_offset += MACHO64_SECTION_SIZE;
+                    }
+                }
+                LC_SYMTAB => {
+                    // symtab_command
+                    // symoff: u32 at offset 8
+                    // nsyms: u32 at offset 12
+                    // stroff: u32 at offset 16
+                    // strsize: u32 at offset 20
+                    symtab_offset = read_u32(data, cmd_offset + 8) as usize;
+                    symtab_count = read_u32(data, cmd_offset + 12) as usize;
+                    strtab_offset = read_u32(data, cmd_offset + 16) as usize;
+                    strtab_size = read_u32(data, cmd_offset + 20) as usize;
+                }
+                _ => {
+                    // Skip other load commands (LC_BUILD_VERSION, LC_DYSYMTAB, etc.)
+                }
+            }
+
+            cmd_offset += cmdsize;
+        }
+
+        // Parse symbols
+        let mut symbols = Vec::new();
+        if symtab_count > 0 {
+            // Verify bounds
+            let symtab_end = symtab_offset + symtab_count * MACHO64_NLIST_SIZE;
+            let strtab_end = strtab_offset + strtab_size;
+            if symtab_end > data.len() || strtab_end > data.len() {
+                return Err(ParseError::InvalidSymbol(
+                    "symbol table out of bounds".into(),
+                ));
+            }
+
+            let strtab = &data[strtab_offset..strtab_end];
+
+            for i in 0..symtab_count {
+                let sym_offset = symtab_offset + i * MACHO64_NLIST_SIZE;
+
+                // nlist_64 structure:
+                // n_strx: u32 at offset 0
+                // n_type: u8 at offset 4
+                // n_sect: u8 at offset 5
+                // n_desc: u16 at offset 6
+                // n_value: u64 at offset 8
+
+                let n_strx = read_u32(data, sym_offset) as usize;
+                let n_type = data[sym_offset + 4];
+                let n_sect = data[sym_offset + 5];
+                let n_value = read_u64(data, sym_offset + 8);
+
+                // Read symbol name from string table
+                let mut name = if n_strx < strtab.len() {
+                    read_cstring(&strtab[n_strx..])
+                } else {
+                    String::new()
+                };
+
+                // Strip leading underscore from Mach-O symbols (but preserve double underscores)
+                // On macOS, all symbols get ONE leading underscore added, so:
+                // - "main" becomes "_main" -> strip to "main"
+                // - "__main" becomes "___main" -> strip ONE to "__main"
+                // - ".rodata.str0" becomes "_.rodata.str0" -> strip to ".rodata.str0"
+                // We need to strip exactly one leading underscore to match what relocations expect
+                if name.starts_with('_') && !name.starts_with("__") {
+                    name = name[1..].to_string();
+                } else if name.starts_with("___") {
+                    // Triple underscore: original had __, so strip one to get back to __
+                    name = name[1..].to_string();
+                }
+
+                // Determine binding (external or local)
+                // N_PEXT (0x10) makes a symbol private even if N_EXT is set
+                // Private external symbols should be treated as local to avoid duplicate symbol errors
+                let binding = if n_type & N_EXT != 0 && n_type & 0x10 == 0 {
+                    // External but not private -> Global
+                    SymbolBinding::Global
+                } else {
+                    // Local or private external -> Local
+                    SymbolBinding::Local
+                };
+
+                // Determine if symbol is defined (has a section) or undefined
+                let sym_type_bits = n_type & N_TYPE;
+                let section_index = if sym_type_bits == N_SECT && n_sect > 0 {
+                    // n_sect is 1-indexed
+                    Some((n_sect - 1) as usize)
+                } else if sym_type_bits == N_UNDF {
+                    None // Undefined symbol
+                } else if sym_type_bits == N_ABS {
+                    None // Absolute symbol (no section)
+                } else {
+                    None
+                };
+
+                // Determine symbol type based on section flags
+                let sym_type = if section_index.is_some() {
+                    // Check if it's in a code section
+                    if let Some(idx) = section_index {
+                        if idx < sections.len() && sections[idx].flags.contains(SectionFlags::EXEC)
+                        {
+                            SymbolType::Func
+                        } else {
+                            SymbolType::Object
+                        }
+                    } else {
+                        SymbolType::None
+                    }
+                } else {
+                    SymbolType::None
+                };
+
+                symbols.push(Symbol {
+                    name,
+                    section_index,
+                    value: n_value,
+                    size: 0, // Mach-O doesn't store symbol size
+                    binding,
+                    sym_type,
+                });
+            }
+        }
+
+        // Parse relocations for each section
+        for (section_index, nreloc, reloff) in section_reloc_info {
+            if nreloc == 0 {
+                continue;
+            }
+
+            let reloc_end = reloff + nreloc * MACHO64_RELOC_SIZE;
+            if reloc_end > data.len() {
+                return Err(ParseError::RelocationOutOfBounds);
+            }
+
+            for i in 0..nreloc {
+                let rel_offset = reloff + i * MACHO64_RELOC_SIZE;
+
+                // relocation_info structure:
+                // r_address: i32 at offset 0 (offset in section)
+                // r_info: u32 at offset 4
+                //   bits 0-23: r_symbolnum
+                //   bit 24: r_pcrel
+                //   bits 25-26: r_length
+                //   bit 27: r_extern
+                //   bits 28-31: r_type
+
+                let r_address = read_u32(data, rel_offset) as u64;
+                let r_info = read_u32(data, rel_offset + 4);
+
+                let r_symbolnum = r_info & 0x00FFFFFF;
+                let _r_pcrel = (r_info >> 24) & 1;
+                let _r_length = (r_info >> 25) & 3;
+                let r_extern = (r_info >> 27) & 1;
+                let r_type = (r_info >> 28) & 0xF;
+
+                let symbol_index = if r_extern == 1 {
+                    // External relocation: r_symbolnum is a symbol index
+                    let idx = r_symbolnum as usize;
+                    if idx >= symbols.len() {
+                        return Err(ParseError::InvalidSymbol(format!(
+                            "relocation references invalid symbol index {}",
+                            idx
+                        )));
+                    }
+                    idx
+                } else {
+                    // Local/section relocation: r_symbolnum is 1-indexed section number
+                    // Find the function symbol for this section (should be at offset 0)
+                    let target_section = (r_symbolnum - 1) as usize;
+                    let idx = symbols
+                        .iter()
+                        .position(|s| {
+                            s.section_index == Some(target_section)
+                                && s.value == 0
+                                && s.binding == SymbolBinding::Global
+                        })
+                        .ok_or_else(|| {
+                            ParseError::InvalidSymbol(format!(
+                                "no function symbol found for section {} (reloc at 0x{:x})",
+                                target_section, r_address
+                            ))
+                        })?;
+                    idx
+                };
+
+                // Convert Mach-O relocation type to our type
+                let rel_type = match r_type {
+                    ARM64_RELOC_UNSIGNED => RelocationType::Aarch64Abs64,
+                    ARM64_RELOC_BRANCH26 => RelocationType::Call26, // Could be Jump26, but works either way
+                    ARM64_RELOC_PAGE21 => RelocationType::AdrpPage21,
+                    ARM64_RELOC_PAGEOFF12 => RelocationType::AddLo12,
+                    _ => RelocationType::Unknown(r_type),
+                };
+
+                sections[section_index].relocations.push(Relocation {
+                    offset: r_address,
+                    symbol_index,
+                    rel_type,
+                    addend: 0, // Mach-O ARM64 uses implicit addends (in instruction)
+                });
+            }
+        }
+
+        Ok(ObjectFile {
+            sections,
+            symbols,
+            section_map,
+        })
     }
 
     /// Parse an ELF64 relocatable object file.
@@ -595,7 +984,23 @@ impl ObjectFile {
                 let st_value = read_u64(sym, 8);
                 let st_size = read_u64(sym, 16);
 
-                let name = read_string(strtab_data, st_name as usize)?;
+                let mut name = read_string(strtab_data, st_name as usize)?;
+
+                // For section symbols (STT_SECTION), the name in the string table is empty.
+                // Use the section name instead, which is needed for resolving relocations
+                // that target other sections (e.g., .text._ZN... internal runtime calls).
+                let sym_type_raw = st_info & 0xf;
+                if sym_type_raw == STT_SECTION
+                    && name.is_empty()
+                    && st_shndx != SHN_UNDEF
+                    && (st_shndx as usize) < raw_sections.len()
+                {
+                    // Get the section name
+                    let sec = &raw_sections[st_shndx as usize];
+                    if let Ok(section_name) = read_string(shstrtab_data, sec.name_offset as usize) {
+                        name = section_name;
+                    }
+                }
 
                 let binding = match st_info >> 4 {
                     STB_LOCAL => SymbolBinding::Local,
@@ -811,14 +1216,52 @@ mod tests {
     }
 
     #[test]
-    fn test_macho_not_implemented() {
-        // File with Mach-O magic should return NotImplemented
-        let mut data = [0u8; 64];
-        // MH_MAGIC_64 = 0xFEEDFACF (little-endian)
-        data[0..4].copy_from_slice(&MH_MAGIC_64.to_le_bytes());
+    fn test_macho_parse_basic() {
+        // Create a minimal Mach-O object file using ObjectBuilder
+        use crate::emit::ObjectBuilder;
+        use rue_target::Target;
+
+        let obj_bytes = ObjectBuilder::new(Target::Aarch64Macos, "test_func")
+            .code(vec![0xD6, 0x5F, 0x03, 0xC0]) // ret instruction
+            .build();
+
+        // Parse the Mach-O file
+        let obj = ObjectFile::parse(&obj_bytes).expect("should parse Mach-O");
+
+        // Should have at least one section (__TEXT,__text)
+        assert!(!obj.sections.is_empty());
+        assert!(obj.section_map.contains_key("__TEXT,__text"));
+
+        // Should have the function symbol (underscore prefix stripped during parsing)
+        let func_sym = obj.symbols.iter().find(|s| s.name == "test_func");
+        assert!(func_sym.is_some(), "should find test_func symbol");
+
+        // The function should be defined in a section
+        let sym = func_sym.unwrap();
+        assert!(sym.section_index.is_some());
+    }
+
+    #[test]
+    fn test_macho_too_short() {
+        // File with Mach-O magic but too short should return TooShort
+        let data = [0xCF, 0xFA, 0xED, 0xFE]; // MH_MAGIC_64 only (4 bytes)
         assert!(matches!(
             ObjectFile::parse(&data),
-            Err(ParseError::NotImplemented(_))
+            Err(ParseError::TooShort)
+        ));
+    }
+
+    #[test]
+    fn test_macho_not_relocatable() {
+        // Create a file with MH_EXECUTE type instead of MH_OBJECT
+        let mut data = vec![0u8; 64];
+        data[0..4].copy_from_slice(&MH_MAGIC_64.to_le_bytes()); // magic
+        data[4..8].copy_from_slice(&0x0100000C_u32.to_le_bytes()); // CPU_TYPE_ARM64
+        data[8..12].copy_from_slice(&0_u32.to_le_bytes()); // CPU_SUBTYPE_ARM64_ALL
+        data[12..16].copy_from_slice(&2_u32.to_le_bytes()); // MH_EXECUTE (not MH_OBJECT)
+        assert!(matches!(
+            ObjectFile::parse(&data),
+            Err(ParseError::NotRelocatable)
         ));
     }
 

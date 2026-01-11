@@ -305,58 +305,417 @@ impl Linker {
     /// after ad-hoc code signing with `codesign -s - <binary>`.
     fn link_macho(self, entry_point: &str) -> Result<Vec<u8>, LinkError> {
         use crate::constants::{VM_PROT_EXECUTE, VM_PROT_READ};
-        use crate::macho::{MachOBuilder, Section64, Segment64};
+        use crate::elf::RelocationType;
+        use crate::macho::{MachOBuilder, PAGE_SIZE, Section64, Segment64, VM_BASE};
 
-        // Merge all code sections from objects
-        let mut merged_code = Vec::new();
+        // Helper to check if a section is a text section
+        fn is_text_section(name: &str) -> bool {
+            name.starts_with(".text") || name == "__TEXT,__text" || name.starts_with("__text")
+        }
+
+        // Helper to check if a section is a rodata section
+        fn is_rodata_section(name: &str) -> bool {
+            name.starts_with(".rodata")
+                || name == "__DATA,__const"
+                || name == "__TEXT,__const"
+                || name == "__TEXT,__cstring"
+                || name == "__TEXT,__rodata"
+                || name.starts_with("__const")
+                || name.starts_with(".cstring")
+        }
+
+        // Helper to check if a section is a data section
+        fn is_data_section(name: &str) -> bool {
+            name.starts_with(".data") || name == "__DATA,__data" || name.starts_with("__data")
+        }
+
+        // Helper to check if a section is a bss section
+        fn is_bss_section(name: &str) -> bool {
+            name.starts_with(".bss") || name == "__DATA,__bss" || name.starts_with("__bss")
+        }
+
+        // Merge sections and collect relocations
+        // For Mach-O, we put code AND rodata in the __TEXT segment (same as clang/ld64).
+        // Only writable data goes in __DATA.
+        let mut merged_text = Vec::new(); // Code + rodata (goes in __TEXT)
+        let mut merged_data = Vec::new(); // Writable data (goes in __DATA)
+        let mut bss_size: u64 = 0;
         let mut section_offsets: HashMap<(usize, usize), u64> = HashMap::new();
+        let mut pending_relocations: Vec<(u64, String, Option<usize>, usize, RelocationType, i64)> =
+            Vec::new();
 
+        // Merge code sections (.text*)
         for (obj_idx, obj) in self.objects.iter().enumerate() {
             for (sec_idx, section) in obj.sections.iter().enumerate() {
-                if !section.name.starts_with(".text") && !section.name.starts_with("__text") {
-                    continue;
-                }
-                if section.data.is_empty() {
+                if !is_text_section(&section.name) || section.data.is_empty() {
                     continue;
                 }
 
                 // Align to section alignment (minimum 4 for ARM64 instructions)
                 let align = section.align.max(4);
-                let current_len = merged_code.len() as u64;
+                let current_len = merged_text.len() as u64;
                 let aligned_len = align_up(current_len, align);
                 let padding = (aligned_len - current_len) as usize;
                 // Use BRK #0 (0x00, 0x00, 0x20, 0xD4) as padding for ARM64
                 for _ in 0..padding / 4 {
-                    merged_code.extend_from_slice(&[0x00, 0x00, 0x20, 0xD4]);
+                    merged_text.extend_from_slice(&[0x00, 0x00, 0x20, 0xD4]);
                 }
-                // Handle non-aligned padding (shouldn't happen with 4-byte alignment)
+                // Handle non-aligned padding
                 for _ in 0..(padding % 4) {
-                    merged_code.push(0x00);
+                    merged_text.push(0x00);
                 }
 
-                let offset = merged_code.len() as u64;
+                let offset = merged_text.len() as u64;
                 section_offsets.insert((obj_idx, sec_idx), offset);
-                merged_code.extend_from_slice(&section.data);
+                merged_text.extend_from_slice(&section.data);
+
+                // Collect relocations for this section
+                for reloc in &section.relocations {
+                    // Validate symbol index
+                    if reloc.symbol_index >= obj.symbols.len() {
+                        return Err(LinkError::InvalidSymbolIndex {
+                            symbol_index: reloc.symbol_index,
+                            symbol_count: obj.symbols.len(),
+                        });
+                    }
+                    let sym = &obj.symbols[reloc.symbol_index];
+
+                    // Skip relocations that reference the null symbol (empty name)
+                    // Note: In Mach-O, symbol 0 is the function symbol, not null!
+                    if sym.name.is_empty() {
+                        continue;
+                    }
+
+                    // Skip relocations to debug/unwinding sections
+                    if let Some(sec_idx) = sym.section_index {
+                        if sec_idx < obj.sections.len() {
+                            let target_sec = &obj.sections[sec_idx];
+                            if !is_text_section(&target_sec.name)
+                                && !is_rodata_section(&target_sec.name)
+                                && !is_data_section(&target_sec.name)
+                                && !is_bss_section(&target_sec.name)
+                            {
+                                // Symbol is in a section we don't link
+                                continue;
+                            }
+                        }
+                    }
+
+                    pending_relocations.push((
+                        offset + reloc.offset,
+                        sym.name.clone(),
+                        sym.section_index,
+                        obj_idx,
+                        reloc.rel_type,
+                        reloc.addend,
+                    ));
+                }
             }
         }
 
-        // Build symbol table mapping: name -> offset_in_merged_code
+        // Merge rodata sections directly into __TEXT (after code)
+        // This keeps rodata addresses close to code for PC-relative addressing
+        for (obj_idx, obj) in self.objects.iter().enumerate() {
+            for (sec_idx, section) in obj.sections.iter().enumerate() {
+                eprintln!("DEBUG: Checking section '{}' for rodata", section.name);
+                if !is_rodata_section(&section.name) {
+                    continue;
+                }
+                eprintln!(
+                    "DEBUG: Merging rodata section '{}' (size: {})",
+                    section.name,
+                    section.data.len()
+                );
+                eprintln!("  merged_text size before: 0x{:x}", merged_text.len());
+
+                // Align rodata (8-byte alignment is common for data)
+                let align = section.align.max(8);
+                let padding = align_up(merged_text.len() as u64, align) - merged_text.len() as u64;
+                merged_text.resize(merged_text.len() + padding as usize, 0);
+
+                let offset = merged_text.len() as u64;
+                section_offsets.insert((obj_idx, sec_idx), offset);
+                merged_text.extend_from_slice(&section.data);
+                eprintln!("  merged_text size after: 0x{:x}", merged_text.len());
+            }
+        }
+
+        // Merge data sections
+        for (obj_idx, obj) in self.objects.iter().enumerate() {
+            for (sec_idx, section) in obj.sections.iter().enumerate() {
+                if !is_data_section(&section.name) || section.data.is_empty() {
+                    continue;
+                }
+
+                let align = section.align.max(1);
+                let padding = align_up(merged_data.len() as u64, align) - merged_data.len() as u64;
+                merged_data.resize(merged_data.len() + padding as usize, 0);
+
+                let offset = merged_data.len() as u64;
+                section_offsets.insert((obj_idx, sec_idx), offset);
+                merged_data.extend_from_slice(&section.data);
+            }
+        }
+
+        // Handle bss sections
+        let bss_offset_in_data = merged_data.len() as u64;
+        for (obj_idx, obj) in self.objects.iter().enumerate() {
+            for (sec_idx, section) in obj.sections.iter().enumerate() {
+                if !is_bss_section(&section.name) {
+                    continue;
+                }
+
+                let align = section.align.max(1);
+                let padding = align_up(bss_size, align) - bss_size;
+                bss_size += padding;
+
+                let offset = bss_size;
+                section_offsets.insert((obj_idx, sec_idx), offset);
+                bss_size += section.size;
+            }
+        }
+
+        // Calculate virtual addresses
+        // The MachOBuilder will place:
+        // - __TEXT at VM_BASE, code+rodata starts at text_file_offset within it
+        // - __DATA at VM_BASE + PAGE_SIZE (if writable data exists)
+        //
+        // Since rodata is now part of __TEXT (merged_text), all text/rodata symbols
+        // get addresses as offsets within merged_text.
+
+        // Only writable data goes in __DATA
+        let has_writable_data = !merged_data.is_empty() || bss_size > 0;
+
+        // Calculate data segment virtual address (if present)
+        let data_vaddr = if has_writable_data {
+            VM_BASE + PAGE_SIZE // __DATA starts at second page
+        } else {
+            0
+        };
+
+        // Calculate offsets within data segment (data, then bss)
+        let data_offset_in_data = 0u64;
+        let bss_vaddr = if bss_size > 0 {
+            data_vaddr + align_up(merged_data.len() as u64, 8) + bss_offset_in_data
+        } else {
+            0
+        };
+
+        // Build symbol table mapping: name -> address
+        // For text/rodata symbols (in merged_text): store offset within merged_text
+        // For data/bss symbols (in __DATA): store absolute virtual address
         let mut symbol_addresses: HashMap<String, u64> = HashMap::new();
+
         for (obj_idx, obj) in self.objects.iter().enumerate() {
             for sym in &obj.symbols {
                 if sym.name.is_empty() {
                     continue;
                 }
+
                 if let Some(sec_idx) = sym.section_index {
-                    if sec_idx < obj.sections.len() {
-                        let sec_name = &obj.sections[sec_idx].name;
-                        if sec_name.starts_with(".text") || sec_name.starts_with("__text") {
-                            if let Some(&base_offset) = section_offsets.get(&(obj_idx, sec_idx)) {
-                                let addr = base_offset + sym.value;
-                                symbol_addresses.insert(sym.name.clone(), addr);
+                    if sec_idx >= obj.sections.len() {
+                        continue;
+                    }
+                    if let Some(&section_offset) = section_offsets.get(&(obj_idx, sec_idx)) {
+                        let section = &obj.sections[sec_idx];
+                        let addr =
+                            if is_text_section(&section.name) || is_rodata_section(&section.name) {
+                                // Text and rodata are both in merged_text
+                                // Store offset (will be converted to vaddr during relocation)
+                                section_offset + sym.value
+                            } else if is_data_section(&section.name) {
+                                // Writable data in __DATA segment
+                                data_vaddr + data_offset_in_data + section_offset + sym.value
+                            } else if is_bss_section(&section.name) {
+                                bss_vaddr + section_offset + sym.value
+                            } else {
+                                continue;
+                            };
+
+                        // Prefer global symbols over local ones
+                        if sym.binding == SymbolBinding::Global
+                            || sym.binding == SymbolBinding::Weak
+                            || !symbol_addresses.contains_key(&sym.name)
+                        {
+                            // Debug: log function symbols
+                            if !sym.name.starts_with("l_anon")
+                                && !sym.name.starts_with(".rodata")
+                                && !sym.name.starts_with("__rue")
+                            {
+                                eprintln!(
+                                    "DEBUG: Adding symbol '{}' binding={:?} addr=0x{:x}",
+                                    sym.name, sym.binding, addr
+                                );
                             }
+                            symbol_addresses.insert(sym.name.clone(), addr);
                         }
                     }
+                }
+            }
+        }
+
+        // We need to calculate text_file_offset before applying relocations.
+        // Build the MachOBuilder structure (without building the binary yet) to calculate
+        // the offset where code will start in the final binary.
+        let mut builder = MachOBuilder::new()
+            .with_code(vec![], 0) // Temporary, will be replaced with relocated code
+            .with_data(merged_data.clone())
+            .with_bss(bss_size);
+
+        // Add __PAGEZERO segment (catches null pointer dereferences)
+        builder.add_segment(Segment64::pagezero());
+
+        // Add __TEXT segment with __text section
+        let mut text_segment =
+            Segment64::new("__TEXT").with_protection(VM_PROT_READ | VM_PROT_EXECUTE);
+        let text_section = Section64::new("__text", "__TEXT").with_code_flags();
+        text_segment.add_section(text_section);
+        builder.add_segment(text_segment);
+
+        // Add __LINKEDIT segment (build_dynamic adds this, so we need it for accurate calculation)
+        builder.add_segment(Segment64::new("__LINKEDIT").with_protection(VM_PROT_READ));
+
+        // Calculate text_file_offset using the builder
+        let text_file_offset = builder.calculate_text_file_offset_for_dynamic();
+        eprintln!("DEBUG: text_file_offset = 0x{:x}", text_file_offset);
+
+        // Apply relocations
+        for (patch_offset, sym_name, sym_section, _obj_idx, rel_type, addend) in pending_relocations
+        {
+            // Debug: log function call relocations
+            if matches!(rel_type, RelocationType::Call26)
+                && !sym_name.starts_with("__rue")
+                && !sym_name.starts_with("l_anon")
+            {
+                eprintln!("DEBUG: Processing Call26 relocation to '{}'", sym_name);
+            }
+
+            // Look up symbol address
+            // For dynamic executables, undefined symbols (external symbols from libSystem, etc.)
+            // will be resolved by dyld at runtime. Skip relocations for external symbols.
+            let sym_addr = match symbol_addresses.get(&sym_name).copied() {
+                Some(addr) => addr,
+                None => {
+                    // External symbol - skip relocation, dyld will handle it at runtime
+                    // Note: This works for dynamic executables linked with libSystem
+                    if matches!(rel_type, RelocationType::Call26)
+                        && !sym_name.starts_with("__rue")
+                        && !sym_name.starts_with("l_anon")
+                    {
+                        eprintln!(
+                            "DEBUG: Symbol '{}' not found in symbol_addresses, skipping relocation",
+                            sym_name
+                        );
+                    }
+                    continue;
+                }
+            };
+
+            // Calculate virtual addresses
+            let patch_vaddr = VM_BASE + text_file_offset + patch_offset;
+            // Text symbols are stored as offsets (< VM_BASE), data symbols as virtual addresses (>= VM_BASE)
+            let target_vaddr = if sym_addr < VM_BASE {
+                // Text symbol - convert offset to vaddr
+                VM_BASE + text_file_offset + sym_addr
+            } else {
+                // Data symbol - already a vaddr
+                sym_addr
+            };
+
+            if sym_name.contains("div_by_zero")
+                || sym_name.contains("l_anon")
+                || sym_name == "rec"
+                || sym_name == "other"
+                || sym_name == "main"
+            {
+                eprintln!(
+                    "DEBUG: Relocating symbol '{}' at patch_offset 0x{:x}, rel_type {:?}",
+                    sym_name, patch_offset, rel_type
+                );
+                eprintln!(
+                    "  sym_addr = 0x{:x}, target_vaddr = 0x{:x}, patch_vaddr = 0x{:x}, addend = {}",
+                    sym_addr, target_vaddr, patch_vaddr, addend
+                );
+            }
+
+            // Apply the relocation based on type
+            match rel_type {
+                RelocationType::Call26 | RelocationType::Jump26 => {
+                    // ARM64 branch instruction: imm26 * 4 gives PC-relative offset
+                    let offset_bytes = (target_vaddr as i64 - patch_vaddr as i64 + addend) as i32;
+                    let offset_words = offset_bytes / 4;
+
+                    // Check range: 26-bit signed field gives ±128MB range
+                    if offset_words < -(1 << 25) || offset_words >= (1 << 25) {
+                        return Err(LinkError::RelocationOverflow {
+                            symbol: sym_name,
+                            rel_type: "ARM64_RELOC_BRANCH26".to_string(),
+                        });
+                    }
+
+                    // Read existing instruction and patch imm26 field
+                    let patch_idx = patch_offset as usize;
+                    let mut insn = u32::from_le_bytes([
+                        merged_text[patch_idx],
+                        merged_text[patch_idx + 1],
+                        merged_text[patch_idx + 2],
+                        merged_text[patch_idx + 3],
+                    ]);
+                    insn = (insn & 0xFC000000) | ((offset_words as u32) & 0x03FFFFFF);
+                    merged_text[patch_idx..patch_idx + 4].copy_from_slice(&insn.to_le_bytes());
+
+                    if sym_name == "rec" || sym_name == "other" || sym_name == "main" {
+                        eprintln!(
+                            "  offset_bytes = {}, offset_words = {}, final_insn = 0x{:08x}",
+                            offset_bytes, offset_words, insn
+                        );
+                    }
+                }
+                RelocationType::AdrpPage21 => {
+                    // ADRP: load page address (bits 12-32 of PC-relative offset)
+                    let target_page = (target_vaddr as i64 + addend) & !0xFFF;
+                    let patch_page = patch_vaddr as i64 & !0xFFF;
+                    let page_offset = (target_page - patch_page) >> 12;
+
+                    // 21-bit signed field
+                    if page_offset < -(1 << 20) || page_offset >= (1 << 20) {
+                        return Err(LinkError::RelocationOverflow {
+                            symbol: sym_name,
+                            rel_type: "ARM64_RELOC_PAGE21".to_string(),
+                        });
+                    }
+
+                    // Encode into ADRP instruction
+                    let patch_idx = patch_offset as usize;
+                    let mut insn = u32::from_le_bytes([
+                        merged_text[patch_idx],
+                        merged_text[patch_idx + 1],
+                        merged_text[patch_idx + 2],
+                        merged_text[patch_idx + 3],
+                    ]);
+                    let imm = page_offset as u32 & 0x1FFFFF;
+                    let immlo = imm & 0x3;
+                    let immhi = (imm >> 2) & 0x7FFFF;
+                    insn = (insn & 0x9F00001F) | (immlo << 29) | (immhi << 5);
+                    merged_text[patch_idx..patch_idx + 4].copy_from_slice(&insn.to_le_bytes());
+                }
+                RelocationType::AddLo12 => {
+                    // ADD/LDR: page offset (bits 0-11)
+                    let page_offset = ((target_vaddr as i64 + addend) & 0xFFF) as u32;
+
+                    // Encode into ADD instruction (imm12 at bits 10-21)
+                    let patch_idx = patch_offset as usize;
+                    let mut insn = u32::from_le_bytes([
+                        merged_text[patch_idx],
+                        merged_text[patch_idx + 1],
+                        merged_text[patch_idx + 2],
+                        merged_text[patch_idx + 3],
+                    ]);
+                    insn = (insn & 0xFFC003FF) | (page_offset << 10);
+                    merged_text[patch_idx..patch_idx + 4].copy_from_slice(&insn.to_le_bytes());
+                }
+                _ => {
+                    return Err(LinkError::UnsupportedRelocation(format!("{:?}", rel_type)));
                 }
             }
         }
@@ -369,8 +728,14 @@ impl Linker {
             .copied()
             .ok_or_else(|| LinkError::UndefinedSymbol(entry_point.to_string()))?;
 
-        // Build using MachOBuilder
-        let mut builder = MachOBuilder::new().with_code(merged_code, entry_offset);
+        // Now rebuild the MachOBuilder with the relocated code
+        // Note: rodata is already included in merged_text (code + rodata in __TEXT)
+        // Only pass writable data to __DATA segment
+        eprintln!("DEBUG: merged_text size = 0x{:x} bytes", merged_text.len());
+        let mut builder = MachOBuilder::new()
+            .with_code(merged_text, entry_offset)
+            .with_data(merged_data)
+            .with_bss(bss_size);
 
         // Add __PAGEZERO segment (catches null pointer dereferences)
         builder.add_segment(Segment64::pagezero());
@@ -383,7 +748,17 @@ impl Linker {
         builder.add_segment(text_segment);
 
         // Build as dynamic executable (uses LC_MAIN + dyld)
-        Ok(builder.build_dynamic())
+        let (bytes, calculated_offset, _data_vm_addr) = builder.build_dynamic();
+
+        // Verify our pre-calculated offset matches (sanity check)
+        if text_file_offset != calculated_offset {
+            eprintln!(
+                "Warning: text_file_offset mismatch: pre-calculated={:#x}, actual={:#x}",
+                text_file_offset, calculated_offset
+            );
+        }
+
+        Ok(bytes)
     }
 
     /// Link all objects and produce an ELF executable.
@@ -405,7 +780,7 @@ impl Linker {
         let code_start = self.base_addr + HEADER_SIZE;
 
         // First, collect and merge all code sections
-        let mut merged_code = Vec::new();
+        let mut merged_text = Vec::new();
         let mut merged_rodata = Vec::new();
         let mut merged_data = Vec::new();
         let mut bss_size: u64 = 0;
@@ -424,21 +799,16 @@ impl Linker {
 
                 // Align
                 let align = section.align.max(1);
-                let padding = align_up(merged_code.len() as u64, align) - merged_code.len() as u64;
-                merged_code.resize(merged_code.len() + padding as usize, 0xCC); // INT3 padding
+                let padding = align_up(merged_text.len() as u64, align) - merged_text.len() as u64;
+                merged_text.resize(merged_text.len() + padding as usize, 0xCC); // INT3 padding
 
-                let offset = merged_code.len() as u64;
+                let offset = merged_text.len() as u64;
                 section_offsets.insert((obj_idx, sec_idx), offset);
 
-                merged_code.extend_from_slice(&section.data);
+                merged_text.extend_from_slice(&section.data);
 
                 // Collect relocations
                 for reloc in &section.relocations {
-                    // Skip relocations that reference the null symbol (index 0)
-                    // These are typically R_*_NONE relocations that slipped through
-                    if reloc.symbol_index == 0 {
-                        continue;
-                    }
                     // Validate symbol index before accessing
                     if reloc.symbol_index >= obj.symbols.len() {
                         return Err(LinkError::InvalidSymbolIndex {
@@ -447,6 +817,12 @@ impl Linker {
                         });
                     }
                     let sym = &obj.symbols[reloc.symbol_index];
+
+                    // Skip relocations that reference the null symbol (empty name)
+                    // These are typically R_*_NONE relocations that slipped through
+                    if sym.name.is_empty() {
+                        continue;
+                    }
 
                     // We now support .text, .rodata, .data, and .bss
                     // Only skip debug/unwinding sections
@@ -552,7 +928,7 @@ impl Linker {
 
         // Virtual addresses - calculate with page alignment between segments
         let code_vaddr = code_start;
-        let code_size = merged_code.len() as u64;
+        let code_size = merged_text.len() as u64;
 
         // Rodata starts on the next page boundary after code for W^X protection
         let rodata_vaddr = align_up(code_vaddr + code_size, self.page_size);
@@ -616,11 +992,15 @@ impl Linker {
             }
         }
 
-        // Also add section symbols for rodata and data/bss relocation
+        // Also add section symbols for text, rodata, data, and bss relocation
+        // This is needed for internal calls within object files that reference section names
+        // (e.g., .text._ZN11rue_runtime4heap5alloc... for Rust runtime internal calls)
         for (obj_idx, obj) in self.objects.iter().enumerate() {
             for (sec_idx, section) in obj.sections.iter().enumerate() {
                 if let Some(&offset) = section_offsets.get(&(obj_idx, sec_idx)) {
-                    let addr = if section.name.starts_with(".rodata") {
+                    let addr = if section.name.starts_with(".text") {
+                        code_vaddr + offset
+                    } else if section.name.starts_with(".rodata") {
                         rodata_vaddr + offset
                     } else if section.name.starts_with(".data") {
                         data_vaddr + offset
@@ -704,15 +1084,15 @@ impl Linker {
                             rel_type: format!("{:?}", rel_type),
                         });
                     }
-                    if patch_offset + 4 > merged_code.len() {
+                    if patch_offset + 4 > merged_text.len() {
                         return Err(LinkError::RelocationPatchOutOfBounds {
                             patch_offset,
                             patch_size: 4,
-                            section_size: merged_code.len(),
+                            section_size: merged_text.len(),
                             rel_type: format!("{:?}", rel_type),
                         });
                     }
-                    merged_code[patch_offset..patch_offset + 4]
+                    merged_text[patch_offset..patch_offset + 4]
                         .copy_from_slice(&(value as i32).to_le_bytes());
                 }
                 RelocationType::GotPcRel => {
@@ -727,23 +1107,23 @@ impl Linker {
                     // Transform indirect mov:  `mov reg, [rip+disp]` (8B) -> `lea reg, [rip+disp]` (8D)
                     if patch_offset >= 2 {
                         let opcode_offset = patch_offset - 2;
-                        if merged_code[opcode_offset] == 0xFF {
-                            let modrm = merged_code[opcode_offset + 1];
+                        if merged_text[opcode_offset] == 0xFF {
+                            let modrm = merged_text[opcode_offset + 1];
                             let reg_field = (modrm >> 3) & 0x7;
                             if reg_field == 2 {
                                 // Indirect call: `call *[rip+disp]` (FF /2, ModR/M 15)
                                 // Transform to: `addr32 call rel32` (67 E8)
-                                merged_code[opcode_offset] = 0x67; // addr32 prefix
-                                merged_code[opcode_offset + 1] = 0xE8; // direct call opcode
+                                merged_text[opcode_offset] = 0x67; // addr32 prefix
+                                merged_text[opcode_offset + 1] = 0xE8; // direct call opcode
                             } else if reg_field == 4 {
                                 // Indirect jmp: `jmp *[rip+disp]` (FF /4, ModR/M 25)
                                 // Transform to: `addr32 jmp rel32` (67 E9)
-                                merged_code[opcode_offset] = 0x67; // addr32 prefix
-                                merged_code[opcode_offset + 1] = 0xE9; // direct jmp opcode
+                                merged_text[opcode_offset] = 0x67; // addr32 prefix
+                                merged_text[opcode_offset + 1] = 0xE9; // direct jmp opcode
                             }
-                        } else if merged_code[opcode_offset] == 0x8B {
+                        } else if merged_text[opcode_offset] == 0x8B {
                             // MOV: `mov reg, [rip+disp]` -> `lea reg, [rip+disp]`
-                            merged_code[opcode_offset] = 0x8D; // LEA opcode
+                            merged_text[opcode_offset] = 0x8D; // LEA opcode
                         }
                         // Other patterns: just patch displacement (best effort)
                     }
@@ -755,15 +1135,15 @@ impl Linker {
                             rel_type: format!("{:?}", rel_type),
                         });
                     }
-                    if patch_offset + 4 > merged_code.len() {
+                    if patch_offset + 4 > merged_text.len() {
                         return Err(LinkError::RelocationPatchOutOfBounds {
                             patch_offset,
                             patch_size: 4,
-                            section_size: merged_code.len(),
+                            section_size: merged_text.len(),
                             rel_type: format!("{:?}", rel_type),
                         });
                     }
-                    merged_code[patch_offset..patch_offset + 4]
+                    merged_text[patch_offset..patch_offset + 4]
                         .copy_from_slice(&(value as i32).to_le_bytes());
                 }
                 RelocationType::GotPcRelX => {
@@ -778,23 +1158,23 @@ impl Linker {
                     // - For CALL/JMP: opcode (FF) is at offset - 2, ModR/M is at offset - 1
                     if patch_offset >= 2 {
                         let opcode_offset = patch_offset - 2;
-                        if merged_code[opcode_offset] == 0xFF {
-                            let modrm = merged_code[opcode_offset + 1];
+                        if merged_text[opcode_offset] == 0xFF {
+                            let modrm = merged_text[opcode_offset + 1];
                             let reg_field = (modrm >> 3) & 0x7;
                             if reg_field == 2 {
                                 // Indirect call: `call *[rip+disp]` (FF /2, ModR/M 15)
                                 // Transform to: `addr32 call rel32` (67 E8)
-                                merged_code[opcode_offset] = 0x67; // addr32 prefix
-                                merged_code[opcode_offset + 1] = 0xE8; // direct call opcode
+                                merged_text[opcode_offset] = 0x67; // addr32 prefix
+                                merged_text[opcode_offset + 1] = 0xE8; // direct call opcode
                             } else if reg_field == 4 {
                                 // Indirect jmp: `jmp *[rip+disp]` (FF /4, ModR/M 25)
                                 // Transform to: `addr32 jmp rel32` (67 E9)
-                                merged_code[opcode_offset] = 0x67; // addr32 prefix
-                                merged_code[opcode_offset + 1] = 0xE9; // direct jmp opcode
+                                merged_text[opcode_offset] = 0x67; // addr32 prefix
+                                merged_text[opcode_offset + 1] = 0xE9; // direct jmp opcode
                             }
-                        } else if merged_code[opcode_offset] == 0x8B {
+                        } else if merged_text[opcode_offset] == 0x8B {
                             // MOV: `mov reg, [rip+disp]` -> `lea reg, [rip+disp]`
-                            merged_code[opcode_offset] = 0x8D; // LEA opcode
+                            merged_text[opcode_offset] = 0x8D; // LEA opcode
                         }
                         // Other patterns: just patch displacement (best effort)
                     }
@@ -806,15 +1186,15 @@ impl Linker {
                             rel_type: format!("{:?}", rel_type),
                         });
                     }
-                    if patch_offset + 4 > merged_code.len() {
+                    if patch_offset + 4 > merged_text.len() {
                         return Err(LinkError::RelocationPatchOutOfBounds {
                             patch_offset,
                             patch_size: 4,
-                            section_size: merged_code.len(),
+                            section_size: merged_text.len(),
                             rel_type: format!("{:?}", rel_type),
                         });
                     }
-                    merged_code[patch_offset..patch_offset + 4]
+                    merged_text[patch_offset..patch_offset + 4]
                         .copy_from_slice(&(value as i32).to_le_bytes());
                 }
                 RelocationType::RexGotPcRelX => {
@@ -829,24 +1209,24 @@ impl Linker {
                     // - For CALL/JMP with REX: similar layout
                     if patch_offset >= 2 {
                         let opcode_offset = patch_offset - 2;
-                        if merged_code[opcode_offset] == 0xFF {
-                            let modrm = merged_code[opcode_offset + 1];
+                        if merged_text[opcode_offset] == 0xFF {
+                            let modrm = merged_text[opcode_offset + 1];
                             let reg_field = (modrm >> 3) & 0x7;
                             if reg_field == 2 {
                                 // Indirect call with REX: `REX call *[rip+disp]` (4x FF /2)
                                 // Transform to: `addr32 call rel32` (67 E8) - REX stays at offset-3
-                                merged_code[opcode_offset] = 0x67; // addr32 prefix
-                                merged_code[opcode_offset + 1] = 0xE8; // direct call opcode
+                                merged_text[opcode_offset] = 0x67; // addr32 prefix
+                                merged_text[opcode_offset + 1] = 0xE8; // direct call opcode
                             // Note: REX prefix at offset-3 becomes harmless (no-op for CALL)
                             } else if reg_field == 4 {
                                 // Indirect jmp with REX: `REX jmp *[rip+disp]` (4x FF /4)
                                 // Transform to: `addr32 jmp rel32` (67 E9)
-                                merged_code[opcode_offset] = 0x67; // addr32 prefix
-                                merged_code[opcode_offset + 1] = 0xE9; // direct jmp opcode
+                                merged_text[opcode_offset] = 0x67; // addr32 prefix
+                                merged_text[opcode_offset + 1] = 0xE9; // direct jmp opcode
                             }
-                        } else if merged_code[opcode_offset] == 0x8B {
+                        } else if merged_text[opcode_offset] == 0x8B {
                             // MOV with REX: `REX mov reg, [rip+disp]` -> `REX lea reg, [rip+disp]`
-                            merged_code[opcode_offset] = 0x8D; // LEA opcode
+                            merged_text[opcode_offset] = 0x8D; // LEA opcode
                         }
                         // Other patterns: just patch displacement (best effort)
                     }
@@ -858,28 +1238,28 @@ impl Linker {
                             rel_type: format!("{:?}", rel_type),
                         });
                     }
-                    if patch_offset + 4 > merged_code.len() {
+                    if patch_offset + 4 > merged_text.len() {
                         return Err(LinkError::RelocationPatchOutOfBounds {
                             patch_offset,
                             patch_size: 4,
-                            section_size: merged_code.len(),
+                            section_size: merged_text.len(),
                             rel_type: format!("{:?}", rel_type),
                         });
                     }
-                    merged_code[patch_offset..patch_offset + 4]
+                    merged_text[patch_offset..patch_offset + 4]
                         .copy_from_slice(&(value as i32).to_le_bytes());
                 }
                 RelocationType::Abs64 | RelocationType::Aarch64Abs64 => {
                     let value = (target_addr as i64 + addend) as u64;
-                    if patch_offset + 8 > merged_code.len() {
+                    if patch_offset + 8 > merged_text.len() {
                         return Err(LinkError::RelocationPatchOutOfBounds {
                             patch_offset,
                             patch_size: 8,
-                            section_size: merged_code.len(),
+                            section_size: merged_text.len(),
                             rel_type: format!("{:?}", rel_type),
                         });
                     }
-                    merged_code[patch_offset..patch_offset + 8]
+                    merged_text[patch_offset..patch_offset + 8]
                         .copy_from_slice(&value.to_le_bytes());
                 }
                 RelocationType::Abs32 => {
@@ -891,15 +1271,15 @@ impl Linker {
                             rel_type: "Abs32".to_string(),
                         });
                     }
-                    if patch_offset + 4 > merged_code.len() {
+                    if patch_offset + 4 > merged_text.len() {
                         return Err(LinkError::RelocationPatchOutOfBounds {
                             patch_offset,
                             patch_size: 4,
-                            section_size: merged_code.len(),
+                            section_size: merged_text.len(),
                             rel_type: "Abs32".to_string(),
                         });
                     }
-                    merged_code[patch_offset..patch_offset + 4]
+                    merged_text[patch_offset..patch_offset + 4]
                         .copy_from_slice(&(value as u32).to_le_bytes());
                 }
                 RelocationType::Abs32S => {
@@ -911,15 +1291,15 @@ impl Linker {
                             rel_type: "Abs32S".to_string(),
                         });
                     }
-                    if patch_offset + 4 > merged_code.len() {
+                    if patch_offset + 4 > merged_text.len() {
                         return Err(LinkError::RelocationPatchOutOfBounds {
                             patch_offset,
                             patch_size: 4,
-                            section_size: merged_code.len(),
+                            section_size: merged_text.len(),
                             rel_type: "Abs32S".to_string(),
                         });
                     }
-                    merged_code[patch_offset..patch_offset + 4]
+                    merged_text[patch_offset..patch_offset + 4]
                         .copy_from_slice(&(value as i32).to_le_bytes());
                 }
                 RelocationType::Jump26 | RelocationType::Call26 => {
@@ -940,22 +1320,22 @@ impl Linker {
                             rel_type: rel_name.to_string(),
                         });
                     }
-                    if patch_offset + 4 > merged_code.len() {
+                    if patch_offset + 4 > merged_text.len() {
                         return Err(LinkError::RelocationPatchOutOfBounds {
                             patch_offset,
                             patch_size: 4,
-                            section_size: merged_code.len(),
+                            section_size: merged_text.len(),
                             rel_type: rel_name.to_string(),
                         });
                     }
                     // Read existing instruction and patch the immediate field
                     let mut inst = u32::from_le_bytes(
-                        merged_code[patch_offset..patch_offset + 4]
+                        merged_text[patch_offset..patch_offset + 4]
                             .try_into()
                             .unwrap(),
                     );
                     inst = (inst & 0xFC000000) | ((offset as u32) & 0x03FFFFFF);
-                    merged_code[patch_offset..patch_offset + 4]
+                    merged_text[patch_offset..patch_offset + 4]
                         .copy_from_slice(&inst.to_le_bytes());
                 }
                 RelocationType::AdrpPage21 => {
@@ -975,11 +1355,11 @@ impl Linker {
                             rel_type: "AdrpPage21".to_string(),
                         });
                     }
-                    if patch_offset + 4 > merged_code.len() {
+                    if patch_offset + 4 > merged_text.len() {
                         return Err(LinkError::RelocationPatchOutOfBounds {
                             patch_offset,
                             patch_size: 4,
-                            section_size: merged_code.len(),
+                            section_size: merged_text.len(),
                             rel_type: "AdrpPage21".to_string(),
                         });
                     }
@@ -988,13 +1368,13 @@ impl Linker {
                     let immlo = (imm & 0x3) << 29; // bits 0-1 of imm -> bits 29-30
                     let immhi = ((imm >> 2) & 0x7FFFF) << 5; // bits 2-20 of imm -> bits 5-23
                     let mut inst = u32::from_le_bytes(
-                        merged_code[patch_offset..patch_offset + 4]
+                        merged_text[patch_offset..patch_offset + 4]
                             .try_into()
                             .unwrap(),
                     );
                     // Clear immlo and immhi fields, then set them
                     inst = (inst & 0x9F00001F) | immlo | immhi;
-                    merged_code[patch_offset..patch_offset + 4]
+                    merged_text[patch_offset..patch_offset + 4]
                         .copy_from_slice(&inst.to_le_bytes());
                 }
                 RelocationType::AddLo12 => {
@@ -1002,23 +1382,23 @@ impl Linker {
                     // S + A gives the effective address; extract low 12 bits as page offset
                     let effective_addr = (target_addr as i64 + addend) as u64;
                     let page_offset = (effective_addr & 0xFFF) as u32;
-                    if patch_offset + 4 > merged_code.len() {
+                    if patch_offset + 4 > merged_text.len() {
                         return Err(LinkError::RelocationPatchOutOfBounds {
                             patch_offset,
                             patch_size: 4,
-                            section_size: merged_code.len(),
+                            section_size: merged_text.len(),
                             rel_type: "AddLo12".to_string(),
                         });
                     }
                     // ADD instruction format: imm12 is in bits 10-21
                     let mut inst = u32::from_le_bytes(
-                        merged_code[patch_offset..patch_offset + 4]
+                        merged_text[patch_offset..patch_offset + 4]
                             .try_into()
                             .unwrap(),
                     );
                     // Clear imm12 field (bits 10-21) and set it
                     inst = (inst & 0xFFC003FF) | (page_offset << 10);
-                    merged_code[patch_offset..patch_offset + 4]
+                    merged_text[patch_offset..patch_offset + 4]
                         .copy_from_slice(&inst.to_le_bytes());
                 }
                 RelocationType::Unknown(t) => {
@@ -1157,7 +1537,7 @@ impl Linker {
         }
 
         // Write code section
-        elf.extend_from_slice(&merged_code);
+        elf.extend_from_slice(&merged_text);
 
         // Pad to rodata file offset if needed
         if has_rodata {

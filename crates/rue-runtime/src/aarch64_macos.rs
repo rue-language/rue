@@ -407,55 +407,6 @@ pub fn exit(status: i32) -> ! {
     }
 }
 
-/// Fill a buffer with random bytes from the system entropy pool.
-///
-/// This uses the macOS `getentropy(2)` function from libSystem.
-///
-/// # Arguments
-///
-/// * `buf` - Pointer to the buffer to fill with random bytes
-/// * `len` - Number of random bytes to generate (maximum 256 bytes per call)
-///
-/// # Returns
-///
-/// On success, returns the number of bytes written (equal to `len`).
-/// On error, returns a negative value.
-///
-/// # Safety
-///
-/// The caller must ensure:
-/// - `buf` points to a valid, writable memory region of at least `len` bytes
-/// - `len` does not exceed 256 bytes (macOS limit for getentropy)
-/// - The memory region remains valid for the duration of the call
-///
-/// # Note
-///
-/// macOS's `getentropy` has a maximum buffer size of 256 bytes. Callers
-/// should ensure `len <= 256`. For larger amounts of randomness, call
-/// multiple times.
-pub fn getrandom(buf: *mut u8, len: usize) -> i64 {
-    // Link with libSystem's getentropy function
-    unsafe extern "C" {
-        fn getentropy(buf: *mut u8, buflen: usize) -> i32;
-    }
-
-    // SAFETY: Calling getentropy is safe because:
-    // - We pass valid arguments (caller guarantees buf and len)
-    // - getentropy is a standard macOS library function
-    // - The function validates parameters and returns errors on failure
-    // - The caller ensures buf is writable and len is <= 256
-    unsafe {
-        let result = getentropy(buf, len);
-        if result == 0 {
-            // Success: return the number of bytes written
-            len as i64
-        } else {
-            // Error: return negative to match Linux convention
-            -1
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -601,31 +552,5 @@ mod tests {
         // Zero-size mmap should fail (returns EINVAL on macOS)
         let ptr = mmap(0);
         assert!(ptr.is_null());
-    }
-
-    #[test]
-    fn test_getrandom_basic() {
-        // Get 4 random bytes
-        let mut buf = [0u8; 4];
-        let result = getrandom(buf.as_mut_ptr(), 4);
-        assert_eq!(result, 4);
-        // We can't test the actual values (they're random), but we can verify
-        // the call succeeded
-    }
-
-    #[test]
-    fn test_getrandom_larger() {
-        // Get 32 random bytes
-        let mut buf = [0u8; 32];
-        let result = getrandom(buf.as_mut_ptr(), 32);
-        assert_eq!(result, 32);
-    }
-
-    #[test]
-    fn test_getrandom_zero_size() {
-        // Zero-size request should succeed and return 0
-        let mut buf = [0u8; 4];
-        let result = getrandom(buf.as_mut_ptr(), 0);
-        assert_eq!(result, 0);
     }
 }

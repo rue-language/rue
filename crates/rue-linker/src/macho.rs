@@ -571,6 +571,12 @@ pub struct MachOBuilder {
     code: Vec<u8>,
     /// Entry point offset within code.
     entry_offset: u64,
+    /// Read-only data (goes in __DATA,__const).
+    rodata: Vec<u8>,
+    /// Initialized data (goes in __DATA,__data).
+    data: Vec<u8>,
+    /// BSS size (uninitialized data, goes in __DATA,__bss).
+    bss_size: u64,
 }
 
 impl MachOBuilder {
@@ -582,6 +588,9 @@ impl MachOBuilder {
             flags: 0,
             code: Vec::new(),
             entry_offset: 0,
+            rodata: Vec::new(),
+            data: Vec::new(),
+            bss_size: 0,
         }
     }
 
@@ -595,6 +604,24 @@ impl MachOBuilder {
     pub fn with_code(mut self, code: Vec<u8>, entry_offset: u64) -> Self {
         self.code = code;
         self.entry_offset = entry_offset;
+        self
+    }
+
+    /// Set read-only data (goes in __DATA,__const).
+    pub fn with_rodata(mut self, rodata: Vec<u8>) -> Self {
+        self.rodata = rodata;
+        self
+    }
+
+    /// Set initialized data (goes in __DATA,__data).
+    pub fn with_data(mut self, data: Vec<u8>) -> Self {
+        self.data = data;
+        self
+    }
+
+    /// Set BSS size (uninitialized data, goes in __DATA,__bss).
+    pub fn with_bss(mut self, bss_size: u64) -> Self {
+        self.bss_size = bss_size;
         self
     }
 
@@ -701,17 +728,74 @@ impl MachOBuilder {
         buf
     }
 
+    /// Calculate the text file offset for a dynamic executable without building it.
+    ///
+    /// This is needed to apply relocations before calling build_dynamic().
+    /// The calculation matches what build_dynamic() will produce.
+    pub fn calculate_text_file_offset_for_dynamic(&self) -> u64 {
+        let has_data = !self.rodata.is_empty() || !self.data.is_empty() || self.bss_size > 0;
+
+        // Calculate initial load commands size (existing segments + dyld commands)
+        let data_segment_cmd_size = if has_data {
+            MACHO64_SEGMENT_CMD_SIZE + MACHO64_SECTION_SIZE
+        } else {
+            0
+        };
+
+        let initial_cmd_size: usize = self
+            .segments
+            .iter()
+            .map(|s| s.cmdsize() as usize)
+            .sum::<usize>()
+            + self
+                .commands
+                .iter()
+                .map(|c: &Box<dyn LoadCommand>| c.cmdsize() as usize)
+                .sum::<usize>()
+            + data_segment_cmd_size;
+
+        // We'll add symtab, dysymtab, entry point, dylinker, and dylib
+        // LC_LOAD_DYLINKER for "/usr/lib/dyld" is 32 bytes
+        // LC_LOAD_DYLIB for "/usr/lib/libSystem.B.dylib" is 56 bytes
+        let dylinker_size = LoadDylinker::new().cmdsize() as usize;
+        let dylib_size = LoadDylib::libsystem().cmdsize() as usize;
+        let remaining_cmd_size = MACHO64_SYMTAB_CMD_SIZE
+            + MACHO64_DYSYMTAB_CMD_SIZE
+            + MACHO64_ENTRY_POINT_CMD_SIZE
+            + dylinker_size
+            + dylib_size;
+
+        let load_commands_size = initial_cmd_size + remaining_cmd_size;
+        let header_size = MACHO64_HEADER_SIZE + load_commands_size;
+
+        // Leave extra padding for codesign to add LC_CODE_SIGNATURE
+        let codesign_padding = 256;
+        align_up((header_size + codesign_padding) as u64, 16)
+    }
+
     /// Build a dynamic executable (using LC_MAIN + dyld).
     ///
     /// This produces an executable that can run on macOS after ad-hoc code signing.
     /// The binary includes padding for codesign to add LC_CODE_SIGNATURE.
-    pub fn build_dynamic(mut self) -> Vec<u8> {
+    ///
+    /// Returns `(bytes, text_file_offset, data_vm_addr)` where:
+    /// - `text_file_offset` is the file offset where code starts (needed for relocation calculation)
+    /// - `data_vm_addr` is the virtual address of the __DATA segment (or 0 if no data segment)
+    pub fn build_dynamic(mut self) -> (Vec<u8>, u64, u64) {
         // For dynamic executables, we need:
         // 1. LC_LOAD_DYLINKER - loads /usr/lib/dyld
         // 2. LC_LOAD_DYLIB - loads libSystem
-        // 3. LC_MAIN - entry point (offset from __TEXT start)
+        // 3. LC_MAIN - entry point (offset from __TEXT segment start)
         // 4. LC_SYMTAB + LC_DYSYMTAB - symbol tables
         // 5. __LINKEDIT segment for code signature
+        //
+        // Segment layout:
+        // - __PAGEZERO: 0x0 - 0x100000000 (4GB null guard, no file data)
+        // - __TEXT: VM_BASE, contains code
+        // - __DATA: after __TEXT, contains rodata/data/bss (if any)
+        // - __LINKEDIT: after __DATA (or __TEXT), contains symbol tables
+
+        let has_data = !self.rodata.is_empty() || !self.data.is_empty() || self.bss_size > 0;
 
         // Add __LINKEDIT segment if not present
         let has_linkedit = self
@@ -727,6 +811,18 @@ impl MachOBuilder {
         self.add_command(LoadDylinker::new());
         self.add_command(LoadDylib::libsystem());
 
+        // We need to calculate load commands size accounting for __DATA segment
+        // that we'll add if there's data
+        let data_segment_cmd_size = if has_data {
+            // Segment header + up to 3 sections (const, data, bss)
+            let num_sections = (!self.rodata.is_empty() as usize)
+                + (!self.data.is_empty() as usize)
+                + ((self.bss_size > 0) as usize);
+            MACHO64_SEGMENT_CMD_SIZE + MACHO64_SECTION_SIZE * num_sections
+        } else {
+            0
+        };
+
         // Calculate load commands size (before adding remaining commands)
         let initial_cmd_size: usize = self
             .segments
@@ -737,7 +833,8 @@ impl MachOBuilder {
                 .commands
                 .iter()
                 .map(|c| c.cmdsize() as usize)
-                .sum::<usize>();
+                .sum::<usize>()
+            + data_segment_cmd_size;
 
         // We'll add symtab, dysymtab, and entry point
         let remaining_cmd_size =
@@ -753,9 +850,35 @@ impl MachOBuilder {
         // __TEXT segment spans from file offset 0 to the first page boundary after code
         let text_segment_file_size = PAGE_SIZE as usize;
 
-        // __LINKEDIT comes after __TEXT
-        let linkedit_file_offset = text_segment_file_size;
-        let linkedit_vm_addr = VM_BASE + linkedit_file_offset as u64;
+        // Calculate data segment layout (if needed)
+        let (data_file_offset, data_vm_addr, data_file_size, data_vm_size) = if has_data {
+            // Data segment starts at the next page after __TEXT
+            let offset = text_segment_file_size;
+            let vm_addr = VM_BASE + offset as u64;
+
+            // Calculate file size (rodata + data, but not bss)
+            let file_size =
+                align_up(self.rodata.len() as u64, 8) + align_up(self.data.len() as u64, 8);
+            // VM size includes bss
+            let vm_size = align_up(file_size + self.bss_size, PAGE_SIZE);
+
+            (offset, vm_addr, file_size as usize, vm_size)
+        } else {
+            (0, 0, 0, 0)
+        };
+
+        // __LINKEDIT comes after __DATA (or __TEXT if no data)
+        let linkedit_file_offset = if has_data {
+            align_up((data_file_offset + data_file_size) as u64, PAGE_SIZE) as usize
+        } else {
+            text_segment_file_size
+        };
+        // LINKEDIT's VM address must come after DATA's VM region (including bss)
+        let linkedit_vm_addr = if has_data {
+            data_vm_addr + data_vm_size
+        } else {
+            VM_BASE + text_segment_file_size as u64
+        };
         // Minimal LINKEDIT content: just a string table with null byte
         let linkedit_file_size = 16usize;
         let linkedit_vm_size = PAGE_SIZE;
@@ -791,6 +914,60 @@ impl MachOBuilder {
             }
         }
 
+        // Build __DATA segment if needed
+        let data_segment = if has_data {
+            let mut seg = Segment64::new("__DATA").with_protection(VM_PROT_READ | VM_PROT_WRITE);
+            seg.vmaddr = data_vm_addr;
+            seg.vmsize = data_vm_size;
+            seg.fileoff = data_file_offset as u64;
+            seg.filesize = data_file_size as u64;
+
+            let mut current_offset = data_file_offset as u64;
+            let mut current_addr = data_vm_addr;
+
+            // Add __const section for rodata
+            if !self.rodata.is_empty() {
+                let mut sect = Section64::new("__const", "__DATA");
+                sect.addr = current_addr;
+                sect.size = self.rodata.len() as u64;
+                sect.offset = current_offset as u32;
+                sect.align = 3; // 8-byte alignment (2^3)
+                seg.add_section(sect);
+
+                let aligned_size = align_up(self.rodata.len() as u64, 8);
+                current_offset += aligned_size;
+                current_addr += aligned_size;
+            }
+
+            // Add __data section for initialized data
+            if !self.data.is_empty() {
+                let mut sect = Section64::new("__data", "__DATA");
+                sect.addr = current_addr;
+                sect.size = self.data.len() as u64;
+                sect.offset = current_offset as u32;
+                sect.align = 3; // 8-byte alignment
+                seg.add_section(sect);
+
+                let aligned_size = align_up(self.data.len() as u64, 8);
+                current_addr += aligned_size;
+            }
+
+            // Add __bss section for uninitialized data
+            if self.bss_size > 0 {
+                let mut sect = Section64::new("__bss", "__DATA");
+                sect.addr = current_addr;
+                sect.size = self.bss_size;
+                sect.offset = 0; // BSS has no file data
+                sect.align = 3;
+                sect.flags = S_ZEROFILL; // Marks this as zero-filled
+                seg.add_section(sect);
+            }
+
+            Some(seg)
+        } else {
+            None
+        };
+
         // Add entry point and symbol tables
         self.add_command(EntryPoint::new(entryoff));
 
@@ -803,18 +980,23 @@ impl MachOBuilder {
         self.add_command(symtab);
         self.add_command(Dysymtab::new());
 
-        // Final counts
+        // Final counts - include data segment if present
         let load_commands_size: usize = self
             .segments
             .iter()
             .map(|s| s.cmdsize() as usize)
             .sum::<usize>()
+            + data_segment
+                .as_ref()
+                .map(|s| s.cmdsize() as usize)
+                .unwrap_or(0)
             + self
                 .commands
                 .iter()
                 .map(|c| c.cmdsize() as usize)
                 .sum::<usize>();
-        let num_commands = self.segments.len() + self.commands.len();
+        let num_commands =
+            self.segments.len() + data_segment.is_some() as usize + self.commands.len();
 
         // Flags for dynamic executable
         let flags = self.flags | MH_DYLDLINK | MH_NOUNDEFS | MH_TWOLEVEL | MH_PIE;
@@ -832,10 +1014,20 @@ impl MachOBuilder {
         buf.extend_from_slice(&flags.to_le_bytes());
         buf.extend_from_slice(&0u32.to_le_bytes());
 
-        // Load commands - segments first
+        // Load commands - segments first (in order: __PAGEZERO, __TEXT, __DATA, __LINKEDIT)
+        // Write segments in the order they were added, but insert __DATA before __LINKEDIT
         for seg in &self.segments {
+            let is_linkedit = &seg.segname[..10] == b"__LINKEDIT";
+            if is_linkedit {
+                // Write __DATA segment first if it exists
+                if let Some(ref data_seg) = data_segment {
+                    data_seg.write(&mut buf);
+                }
+            }
             seg.write(&mut buf);
         }
+
+        // Other commands
         for cmd in &self.commands {
             cmd.write(&mut buf);
         }
@@ -846,7 +1038,36 @@ impl MachOBuilder {
         }
 
         // Code
+        eprintln!(
+            "DEBUG MachOBuilder: Writing code, self.code.len() = 0x{:x}",
+            self.code.len()
+        );
+        eprintln!("DEBUG MachOBuilder: buf.len() before = 0x{:x}", buf.len());
         buf.extend_from_slice(&self.code);
+        eprintln!("DEBUG MachOBuilder: buf.len() after = 0x{:x}", buf.len());
+
+        // Pad and write data segment content if present
+        if has_data {
+            // Pad to data offset
+            while buf.len() < data_file_offset {
+                buf.push(0);
+            }
+
+            // Write rodata with alignment padding
+            buf.extend_from_slice(&self.rodata);
+            let rodata_padding = align_up(self.rodata.len() as u64, 8) as usize - self.rodata.len();
+            for _ in 0..rodata_padding {
+                buf.push(0);
+            }
+
+            // Write data with alignment padding
+            buf.extend_from_slice(&self.data);
+            let data_padding = align_up(self.data.len() as u64, 8) as usize - self.data.len();
+            for _ in 0..data_padding {
+                buf.push(0);
+            }
+            // Note: BSS is not written to file (it's zero-filled at runtime)
+        }
 
         // Pad to LINKEDIT offset
         while buf.len() < linkedit_file_offset {
@@ -861,7 +1082,8 @@ impl MachOBuilder {
             buf.push(0);
         }
 
-        buf
+        eprintln!("DEBUG MachOBuilder: Final buf.len() = 0x{:x}", buf.len());
+        (buf, text_file_offset as u64, data_vm_addr)
     }
 }
 
@@ -944,7 +1166,10 @@ mod tests {
         text.add_section(section);
         builder.add_segment(text);
 
-        let binary = builder.build_dynamic();
+        let (binary, _text_file_offset, data_vm_addr) = builder.build_dynamic();
+
+        // No data segment, so data_vm_addr should be 0
+        assert_eq!(data_vm_addr, 0);
 
         // Check magic
         assert_eq!(&binary[0..4], &MH_MAGIC_64.to_le_bytes());
@@ -958,6 +1183,45 @@ mod tests {
         assert!(
             binary.len() >= PAGE_SIZE as usize,
             "Should be at least one page"
+        );
+    }
+
+    #[test]
+    fn test_builder_dynamic_with_data() {
+        // Build a dynamic executable with data segment
+        let code = vec![
+            0x40, 0x05, 0x80, 0x52, // mov w0, #42
+            0xc0, 0x03, 0x5f, 0xd6, // ret
+        ];
+        let rodata = vec![0x48, 0x65, 0x6c, 0x6c, 0x6f]; // "Hello"
+        let data = vec![0x01, 0x02, 0x03, 0x04];
+
+        let mut builder = MachOBuilder::new()
+            .with_code(code, 0)
+            .with_rodata(rodata)
+            .with_data(data)
+            .with_bss(16);
+
+        builder.add_segment(Segment64::pagezero());
+
+        let mut text = Segment64::new("__TEXT").with_protection(VM_PROT_READ | VM_PROT_EXECUTE);
+        let section = Section64::new("__text", "__TEXT").with_code_flags();
+        text.add_section(section);
+        builder.add_segment(text);
+
+        let (binary, _text_file_offset, data_vm_addr) = builder.build_dynamic();
+
+        // Should have a data segment
+        assert!(data_vm_addr > 0, "Should have data segment");
+        assert_eq!(data_vm_addr, VM_BASE + PAGE_SIZE); // Data starts after __TEXT
+
+        // Check magic
+        assert_eq!(&binary[0..4], &MH_MAGIC_64.to_le_bytes());
+
+        // Check file size includes data segment
+        assert!(
+            binary.len() >= PAGE_SIZE as usize * 2,
+            "Should be at least two pages (TEXT + LINKEDIT after DATA)"
         );
     }
 }

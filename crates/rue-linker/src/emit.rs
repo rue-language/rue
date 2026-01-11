@@ -643,7 +643,7 @@ impl ObjectBuilder {
             } else {
                 string_sym_indices.push(Some(num_string_syms));
                 string_name_offsets.push(strtab.len());
-                let sym_name = format!("__{}.str{}", self.name, i);
+                let sym_name = format!("_.rodata.str{}", i);
                 strtab.extend_from_slice(sym_name.as_bytes());
                 strtab.push(0);
                 num_string_syms += 1;
@@ -939,16 +939,17 @@ impl ObjectBuilder {
                 continue;
             }
             macho.extend_from_slice(&(string_name_offsets[sym_name_idx] as u32).to_le_bytes()); // n_strx
-            macho.push(N_PEXT | N_EXT | N_SECT); // n_type: private external, defined in section
+            macho.push(N_SECT); // n_type: truly local, defined in section
             if has_rodata {
                 macho.push(2); // n_sect: section 2 (__rodata)
             } else {
                 macho.push(0); // Should not happen, but defensive
             }
             macho.extend_from_slice(&0_u16.to_le_bytes()); // n_desc
-            // n_value is the VM address: rodata section starts at text_size
-            let vm_addr = (text_size + string_offsets[i]) as u64;
-            macho.extend_from_slice(&vm_addr.to_le_bytes());
+            // n_value is the offset within the section (not a VM address!)
+            // For relocatable object files, n_value is relative to the section start
+            let section_offset = string_offsets[i] as u64;
+            macho.extend_from_slice(&section_offset.to_le_bytes());
             sym_name_idx += 1;
         }
 

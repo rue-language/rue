@@ -1230,17 +1230,6 @@ fn link_internal_with_warnings(
 ) -> MultiErrorResult<CompileOutput> {
     let _span = info_span!("linker", mode = "internal").entered();
 
-    // For macOS targets, the internal linker doesn't yet support Mach-O
-    // object file parsing or executable generation. Delegate to clang.
-    // TODO: Remove this once native Mach-O support is implemented.
-    if options.target.is_macho() {
-        return link_system_with_warnings(options, object_files, "clang", warnings);
-    }
-
-    // The internal linker handles ELF targets natively.
-    // The runtime is compiled with -Crelocation-model=static to avoid
-    // GOT-relative relocations that would require external symbols.
-
     let mut linker = Linker::new(options.target);
 
     // Add all object files to the linker
@@ -1254,10 +1243,19 @@ fn link_internal_with_warnings(
             .map_err(CompileErrors::from)?;
     }
 
-    // Mark _start as required so it gets pulled from the archive.
+    // Determine the entry point symbol based on target.
+    // ELF: _start (runtime's entry point that calls main)
+    // Mach-O: __main (runtime's entry point that calls _main)
+    let entry_point = if options.target.is_macho() {
+        "__main"
+    } else {
+        "_start"
+    };
+
+    // Mark the entry point as required so it gets pulled from the archive.
     // The entry point must be marked before adding the archive because
     // archive linking only includes objects that define needed symbols.
-    linker.require_symbol("_start");
+    linker.require_symbol(entry_point);
 
     // Add the runtime library
     let runtime = Archive::parse(RUNTIME_BYTES)
@@ -1269,19 +1267,18 @@ fn link_internal_with_warnings(
         .map_err(CompileErrors::from)?;
 
     // Link to executable
-    // Use _start from the runtime as the entry point (it will call main)
-    let elf = linker
-        .link("_start")
+    let executable = linker
+        .link(entry_point)
         .map_err(link_error)
         .map_err(CompileErrors::from)?;
     info!(
         object_count = object_files.len(),
-        output_bytes = elf.len(),
+        output_bytes = executable.len(),
         "linking complete"
     );
 
     Ok(CompileOutput {
-        elf,
+        elf: executable,
         warnings: warnings.to_vec(),
     })
 }

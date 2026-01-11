@@ -107,16 +107,36 @@ impl Archive {
 
             offset += HEADER_SIZE;
 
+            // Handle BSD long filename format (#1/N where N is the name length)
+            // The real filename is embedded at the start of the member data.
+            let (actual_name, name_len) = if name.starts_with("#1/") {
+                let name_len: usize = name[3..].trim().parse().map_err(|_| {
+                    ArchiveError::InvalidHeader(format!(
+                        "invalid BSD name length: '{}'",
+                        &name[3..]
+                    ))
+                })?;
+                // The actual name is at the start of the member data
+                if offset + name_len > data.len() {
+                    return Err(ArchiveError::TooShort);
+                }
+                let actual_name = std::str::from_utf8(&data[offset..offset + name_len])
+                    .map_err(|_| ArchiveError::InvalidHeader("invalid BSD name encoding".into()))?
+                    .trim_end_matches('\0')
+                    .to_string();
+                (actual_name, name_len)
+            } else {
+                (name.to_string(), 0)
+            };
+
             // Skip special entries:
             // - "/" or "/SYM64/" : Symbol table (GNU/LLVM style)
             // - "//" : Long filename table (GNU style)
             // - "__.SYMDEF" or "__.SYMDEF SORTED" : Symbol table (BSD style)
-            // - "#1/..." : BSD long filename (name follows header)
-            let is_special = name == "/"
-                || name == "//"
-                || name == "/SYM64/"
-                || name.starts_with("__.SYMDEF")
-                || name.starts_with("#1/");
+            let is_special = actual_name == "/"
+                || actual_name == "//"
+                || actual_name == "/SYM64/"
+                || actual_name.starts_with("__.SYMDEF");
 
             if is_special {
                 offset = offset.checked_add(size).ok_or(ArchiveError::Overflow)?;
@@ -127,23 +147,27 @@ impl Archive {
                 continue;
             }
 
-            // Read member data
-            let end_offset = offset.checked_add(size).ok_or(ArchiveError::Overflow)?;
+            // Read member data (skip over BSD long filename if present)
+            let member_start = offset.checked_add(name_len).ok_or(ArchiveError::Overflow)?;
+            let member_size = size.checked_sub(name_len).ok_or(ArchiveError::Overflow)?;
+            let end_offset = member_start
+                .checked_add(member_size)
+                .ok_or(ArchiveError::Overflow)?;
             if end_offset > data.len() {
                 return Err(ArchiveError::TooShort);
             }
-            let member_data = &data[offset..end_offset];
+            let member_data = &data[member_start..end_offset];
 
-            // Try to parse as ELF object.
-            // Non-ELF members (e.g., LLVM bitcode files from LTO builds) are skipped.
+            // Try to parse as object file (ELF or Mach-O).
+            // Non-object members (e.g., LLVM bitcode files from LTO builds) are skipped.
             match ObjectFile::parse(member_data) {
                 Ok(obj) => objects.push(obj),
                 Err(_) => {
-                    // Member is not a valid ELF object. This is common for:
+                    // Member is not a valid object file. This is common for:
                     // - LLVM bitcode files (.bc) in LTO-enabled builds
                     // - Rust metadata files
                     // - Other non-object archive members
-                    // We silently skip these since we only need ELF objects.
+                    // We silently skip these since we only need object files.
                 }
             }
 

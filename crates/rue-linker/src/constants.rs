@@ -269,6 +269,8 @@ pub const VM_PROT_EXECUTE: u32 = 0x4;
 pub const S_ATTR_PURE_INSTRUCTIONS: u32 = 0x80000000;
 /// S_ATTR_SOME_INSTRUCTIONS: Section contains some machine instructions
 pub const S_ATTR_SOME_INSTRUCTIONS: u32 = 0x00000400;
+/// S_ZEROFILL: Section is zero-filled on demand (BSS)
+pub const S_ZEROFILL: u32 = 0x1;
 
 // Mach-O platform constants
 
@@ -281,10 +283,14 @@ pub const PLATFORM_MACOS: u32 = 1;
 pub const N_EXT: u8 = 0x01;
 /// N_PEXT: Private external symbol (visible for linking but not exported)
 pub const N_PEXT: u8 = 0x10;
-/// N_SECT: Symbol defined in section
+/// N_TYPE: Mask for the type bits in n_type
+pub const N_TYPE: u8 = 0x0E;
+/// N_SECT: Symbol defined in section (type, not flag)
 pub const N_SECT: u8 = 0x0E;
-/// N_UNDF: Undefined symbol
+/// N_UNDF: Undefined symbol (type, not flag)
 pub const N_UNDF: u8 = 0x00;
+/// N_ABS: Absolute symbol
+pub const N_ABS: u8 = 0x02;
 
 // ARM64 relocation types (Mach-O)
 
