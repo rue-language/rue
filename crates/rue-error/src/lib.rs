@@ -196,9 +196,52 @@ impl fmt::Display for ErrorCode {
 // Boxed Error Payloads
 // ============================================================================
 //
+// # Boxing Policy
+//
 // Large error variants are boxed to reduce the size of ErrorKind.
 // This keeps Result<T, CompileError> smaller on the stack.
 // Errors are cold paths, so the extra indirection is acceptable.
+//
+// ## When to Box
+//
+// Box error payloads when the variant data is **≥ 72 bytes** (3 or more Strings).
+//
+// Basic sizes on 64-bit systems:
+// - String: 24 bytes
+// - Vec<T>: 24 bytes
+// - Box<T>: 8 bytes (pointer)
+// - Cow<'static, str>: 24 bytes
+//
+// Examples:
+// - 1 String: 24 bytes → inline
+// - 2 Strings: 48 bytes → inline
+// - 3 Strings: 72 bytes → **box**
+// - String + Vec<String>: 48 bytes → inline (unless Vec typically large)
+//
+// ## Pattern
+//
+// Use a dedicated struct for boxed payloads:
+//
+// ```rust
+// #[derive(Debug, Clone, PartialEq, Eq)]
+// pub struct LargeErrorPayload {
+//     pub field1: String,
+//     pub field2: String,
+//     pub field3: String,
+// }
+//
+// #[error("message")]
+// LargeError(Box<LargeErrorPayload>),
+// ```
+//
+// ## Current Status
+//
+// As of 2026-01-11:
+// - ErrorKind size: 56 bytes
+// - Boxed variants: 4 (MissingFields, CopyStructNonCopyField,
+//   IntrinsicTypeMismatch, FieldWrongOrder)
+// - All boxed variants contain 3+ Strings or String + Vec
+// - Policy is consistently applied
 
 /// Payload for `ErrorKind::MissingFields`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2145,5 +2188,74 @@ mod tests {
         set.insert(ErrorCode::UNDEFINED_VARIABLE);
         assert_eq!(set.len(), 2);
         assert!(set.contains(&ErrorCode::TYPE_MISMATCH));
+    }
+
+    // ========================================================================
+    // ErrorKind size and boxing policy tests
+    // ========================================================================
+
+    #[test]
+    fn test_error_kind_size() {
+        // Measure the size of ErrorKind to understand current memory usage
+        let size = std::mem::size_of::<ErrorKind>();
+
+        // Enforce the size limit to prevent regression.
+        // Target: ≤ 64 bytes (enum tag + largest inline variant)
+        //
+        // Current: 56 bytes (as of 2026-01-11)
+        // - Enum discriminant: 8 bytes
+        // - Largest inline variant: 48 bytes (2 Strings or 2 Cows)
+        //
+        // If this fails, check which variants are > 48 bytes and box them.
+        assert!(
+            size <= 64,
+            "ErrorKind is {} bytes, exceeds 64-byte limit. \
+             Consider boxing large variants (≥ 72 bytes / 3+ Strings). \
+             See the boxing policy documentation above ErrorKind.",
+            size
+        );
+    }
+
+    #[test]
+    fn test_error_kind_variant_sizes() {
+        use std::mem::size_of;
+
+        // Measure individual variant data sizes to identify which ones should be boxed
+        println!("String: {} bytes", size_of::<String>());
+        println!("Vec<String>: {} bytes", size_of::<Vec<String>>());
+        println!(
+            "Cow<'static, str>: {} bytes",
+            size_of::<Cow<'static, str>>()
+        );
+
+        // Inline variants (currently unboxed)
+        println!("TypeMismatch data: {} bytes", size_of::<(String, String)>());
+        println!("UnknownField data: {} bytes", size_of::<(String, String)>());
+        println!(
+            "DuplicateField data: {} bytes",
+            size_of::<(String, String)>()
+        );
+        println!(
+            "ModuleNotFound data: {} bytes",
+            size_of::<(String, Vec<String>)>()
+        );
+
+        // Boxed variants (currently boxed)
+        println!(
+            "MissingFieldsError: {} bytes",
+            size_of::<MissingFieldsError>()
+        );
+        println!(
+            "CopyStructNonCopyFieldError: {} bytes",
+            size_of::<CopyStructNonCopyFieldError>()
+        );
+        println!(
+            "IntrinsicTypeMismatchError: {} bytes",
+            size_of::<IntrinsicTypeMismatchError>()
+        );
+        println!(
+            "FieldWrongOrderError: {} bytes",
+            size_of::<FieldWrongOrderError>()
+        );
     }
 }
