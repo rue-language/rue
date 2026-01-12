@@ -244,7 +244,25 @@ jobs:
 
             # Enhance results with commit range metadata (convert to version 2 schema)
             enhanced_file="$artifact_dir/results_enhanced.json"
-            python3 -c "import json; import sys; data = json.load(open('$results_file')); data['version'] = 2; data['benchmark_reason'] = '$benchmark_reason'; commit_range_str = '${{ steps.commit.outputs.commit_range }}'; data['commit_range'] = [c.strip() for c in commit_range_str.split(',') if c.strip()] if commit_range_str else ['${{ steps.commit.outputs.full_sha }}']; json.dump(data, open('$enhanced_file', 'w'), indent=2)"
+            python3 << EOF
+import json
+import sys
+
+with open('$results_file') as f:
+    data = json.load(f)
+
+data['version'] = 2
+data['benchmark_reason'] = '$benchmark_reason'
+
+commit_range_str = '${{ steps.commit.outputs.commit_range }}'
+if commit_range_str:
+    data['commit_range'] = [c.strip() for c in commit_range_str.split(',') if c.strip()]
+else:
+    data['commit_range'] = ['${{ steps.commit.outputs.full_sha }}']
+
+with open('$enhanced_file', 'w') as f:
+    json.dump(data, f, indent=2)
+EOF
 
             # Create platform-specific history file if it doesn't exist
             history_file="perf-branch/benchmarks/history-$platform.json"
