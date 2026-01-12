@@ -1338,3 +1338,756 @@ fn fmt_stmt(f: &mut fmt::Formatter<'_>, stmt: &Statement, level: usize) -> fmt::
         }
     }
 }
+
+// ============================================================================
+// Struct-of-Arrays (SOA) AST Layout
+// ============================================================================
+//
+// This section implements Zig-style SOA layout for the AST.
+// See docs/designs/soa-ast-layout.md for full design rationale.
+//
+// Key characteristics:
+// - Fixed-size nodes (tag + main_token + lhs + rhs)
+// - Index-based references (no lifetimes)
+// - Extra data array for nodes with >2 children
+// - Single allocation for entire AST
+// - Better cache locality than tree-based approach
+//
+// Migration: This will eventually replace the tree-based Ast above.
+// For now, both representations coexist during Phase 2-3 migration.
+
+/// Node index - references a node in the SOA AST.
+///
+/// Nodes are stored in parallel arrays (tags, data, extra) and referenced
+/// by their index. This is similar to how RIR uses InstRef.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct NodeIndex(pub u32);
+
+impl NodeIndex {
+    /// Create a new node index.
+    pub const fn new(idx: u32) -> Self {
+        NodeIndex(idx)
+    }
+
+    /// Get the raw index value.
+    pub const fn as_u32(self) -> u32 {
+        self.0
+    }
+
+    /// Get the index as usize for array indexing.
+    pub const fn as_usize(self) -> usize {
+        self.0 as usize
+    }
+}
+
+/// Sentinel value representing "no node" or "null node".
+/// Used for optional children (e.g., else block in if expression).
+pub const NULL_NODE: NodeIndex = NodeIndex(u32::MAX);
+
+/// Encode a UnaryOp into a u32 for storage in NodeData.
+pub fn encode_unary_op(op: UnaryOp) -> u32 {
+    match op {
+        UnaryOp::Neg => 0,
+        UnaryOp::Not => 1,
+        UnaryOp::BitNot => 2,
+    }
+}
+
+/// Node tag - identifies what kind of node this is.
+///
+/// The tag determines how to interpret the lhs/rhs fields in NodeData.
+/// See docs/designs/soa-ast-layout.md for encoding details.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum NodeTag {
+    // ===== Items (top-level declarations) =====
+    /// Function declaration: fn name(params) -> ret { body }
+    /// - lhs: index into extra (param count + param nodes)
+    /// - rhs: body expression node
+    Function,
+
+    /// Struct declaration: struct Name { fields... methods... }
+    /// - lhs: index into extra (field count + field nodes)
+    /// - rhs: index into extra (method count + method nodes)
+    StructDecl,
+
+    /// Enum declaration: enum Name { variants... }
+    /// - lhs: index into extra (variant count + variant nodes)
+    /// - rhs: 0 (unused)
+    EnumDecl,
+
+    /// Drop function: drop fn TypeName(self) { body }
+    /// - lhs: type name identifier
+    /// - rhs: body expression node
+    DropFn,
+
+    /// Constant declaration: const name: type = init;
+    /// - lhs: type expression node (or NULL_NODE if inferred)
+    /// - rhs: initializer expression node
+    ConstDecl,
+
+    // ===== Expressions - Literals =====
+    /// Integer literal: 42
+    /// - lhs: low 32 bits of u64 value
+    /// - rhs: high 32 bits of u64 value
+    IntLit,
+
+    /// String literal: "hello"
+    /// - lhs: Spur index (u32) for interned string
+    /// - rhs: 0 (unused)
+    StringLit,
+
+    /// Boolean literal: true, false
+    /// - lhs: 0 (false) or 1 (true)
+    /// - rhs: 0 (unused)
+    BoolLit,
+
+    /// Unit literal: ()
+    /// - lhs: 0 (unused)
+    /// - rhs: 0 (unused)
+    UnitLit,
+
+    // ===== Expressions - Identifiers and Paths =====
+    /// Identifier: variable_name
+    /// - lhs: Spur index (u32) for identifier name
+    /// - rhs: 0 (unused)
+    Ident,
+
+    /// Path expression: Color::Red
+    /// - lhs: type name identifier node
+    /// - rhs: variant name identifier node
+    Path,
+
+    // ===== Expressions - Operations =====
+    /// Unary expression: -x, !x, ~x
+    /// - lhs: operand expression node
+    /// - rhs: operator kind (u32 from UnaryOp enum)
+    UnaryExpr,
+
+    /// Parenthesized expression: (expr)
+    /// - lhs: inner expression node
+    /// - rhs: 0 (unused)
+    ParenExpr,
+
+    /// Binary expression: a + b, a == b, etc.
+    /// - main_token: the operator token
+    /// - lhs: left operand expression node
+    /// - rhs: right operand expression node
+    BinaryExpr,
+
+    // ===== Expressions - Control Flow =====
+    /// If expression: if cond { then } else { else_block }
+    /// - lhs: condition expression node
+    /// - rhs: index into extra (then_block, else_block or NULL_NODE)
+    IfExpr,
+
+    /// Match expression: match x { arms... }
+    /// - lhs: scrutinee expression node
+    /// - rhs: index into extra (arm count + arm nodes)
+    MatchExpr,
+
+    /// While loop: while cond { body }
+    /// - lhs: condition expression node
+    /// - rhs: body block expression node
+    WhileExpr,
+
+    /// Infinite loop: loop { body }
+    /// - lhs: body block expression node
+    /// - rhs: 0 (unused)
+    LoopExpr,
+
+    /// Break statement: break
+    /// - lhs: 0 (unused)
+    /// - rhs: 0 (unused)
+    BreakExpr,
+
+    /// Continue statement: continue
+    /// - lhs: 0 (unused)
+    /// - rhs: 0 (unused)
+    ContinueExpr,
+
+    /// Return statement: return expr
+    /// - lhs: value expression node (or NULL_NODE for implicit unit return)
+    /// - rhs: 0 (unused)
+    ReturnExpr,
+
+    // ===== Expressions - Blocks and Statements =====
+    /// Block expression: { stmts...; final_expr }
+    /// - lhs: index into extra (stmt count + stmt nodes)
+    /// - rhs: final expression node
+    BlockExpr,
+
+    /// Let statement: let x: type = init;
+    /// - lhs: pattern node (identifier or wildcard)
+    /// - rhs: index into extra (flags, type_expr or NULL_NODE, init_expr)
+    LetStmt,
+
+    /// Assignment statement: x = value;
+    /// - lhs: target node (Ident, FieldExpr, or IndexExpr)
+    /// - rhs: value expression node
+    AssignStmt,
+
+    /// Expression statement: expr;
+    /// - lhs: expression node
+    /// - rhs: 0 (unused)
+    ExprStmt,
+
+    // ===== Expressions - Function Calls =====
+    /// Function call: func(args...)
+    /// - lhs: callee identifier node
+    /// - rhs: index into extra (arg count + arg nodes)
+    Call,
+
+    /// Method call: receiver.method(args...)
+    /// - lhs: receiver expression node
+    /// - rhs: index into extra (method name, arg count, arg nodes)
+    MethodCall,
+
+    /// Intrinsic call: @intrinsic(args...)
+    /// - lhs: intrinsic name identifier node
+    /// - rhs: index into extra (arg count + arg nodes)
+    IntrinsicCall,
+
+    /// Associated function call: Type::func(args...)
+    /// - lhs: type name identifier node
+    /// - rhs: index into extra (fn name, arg count, arg nodes)
+    AssocFnCall,
+
+    // ===== Expressions - Struct Operations =====
+    /// Struct literal: Point { x: 1, y: 2 }
+    /// - lhs: struct name identifier node
+    /// - rhs: index into extra (field init count + field init nodes)
+    StructLit,
+
+    /// Field access: obj.field
+    /// - lhs: base expression node
+    /// - rhs: field name identifier node
+    FieldExpr,
+
+    /// Field initializer in struct literal: field_name: value
+    /// - lhs: field name identifier node
+    /// - rhs: value expression node
+    FieldInit,
+
+    // ===== Expressions - Array Operations =====
+    /// Array literal: [1, 2, 3]
+    /// - lhs: index into extra (element count + element nodes)
+    /// - rhs: 0 (unused, count stored in extra)
+    ArrayLit,
+
+    /// Array index: arr[index]
+    /// - lhs: base expression node
+    /// - rhs: index expression node
+    IndexExpr,
+
+    // ===== Expressions - Special =====
+    /// Self expression: self
+    /// - lhs: 0 (unused)
+    /// - rhs: 0 (unused)
+    SelfExpr,
+
+    /// Comptime block: comptime { expr }
+    /// - lhs: inner expression node
+    /// - rhs: 0 (unused)
+    ComptimeBlockExpr,
+
+    /// Checked block: checked { expr }
+    /// - lhs: inner expression node
+    /// - rhs: 0 (unused)
+    CheckedBlockExpr,
+
+    /// Type literal: i32 (used as value)
+    /// - lhs: type expression node
+    /// - rhs: 0 (unused)
+    TypeLit,
+
+    // ===== Type Expressions =====
+    /// Named type: i32, MyStruct
+    /// - lhs: name identifier node
+    /// - rhs: 0 (unused)
+    TypeNamed,
+
+    /// Unit type: ()
+    /// - lhs: 0 (unused)
+    /// - rhs: 0 (unused)
+    TypeUnit,
+
+    /// Never type: !
+    /// - lhs: 0 (unused)
+    /// - rhs: 0 (unused)
+    TypeNever,
+
+    /// Array type: [T; N]
+    /// - lhs: element type expression node
+    /// - rhs: length (u32, stored directly)
+    TypeArray,
+
+    /// Anonymous struct type: struct { fields... methods... }
+    /// - lhs: index into extra (field count + field nodes)
+    /// - rhs: index into extra (method count + method nodes)
+    TypeAnonStruct,
+
+    /// Const pointer type: ptr const T
+    /// - lhs: pointee type expression node
+    /// - rhs: 0 (unused)
+    TypePointerConst,
+
+    /// Mutable pointer type: ptr mut T
+    /// - lhs: pointee type expression node
+    /// - rhs: 0 (unused)
+    TypePointerMut,
+
+    // ===== Patterns =====
+    /// Wildcard pattern: _
+    /// - lhs: 0 (unused)
+    /// - rhs: 0 (unused)
+    PatternWildcard,
+
+    /// Integer literal pattern: 42, -1
+    /// - lhs: low 32 bits of value
+    /// - rhs: high 32 bits of value
+    PatternInt,
+
+    /// Boolean literal pattern: true, false
+    /// - lhs: 0 (false) or 1 (true)
+    /// - rhs: 0 (unused)
+    PatternBool,
+
+    /// Path pattern: Color::Red
+    /// - lhs: type name identifier node
+    /// - rhs: variant name identifier node
+    PatternPath,
+
+    // ===== Other Nodes =====
+    /// Function parameter: name: type
+    /// - lhs: name identifier node
+    /// - rhs: type expression node
+    /// - extra: flags (is_comptime, mode)
+    Param,
+
+    /// Method definition
+    /// - lhs: index into extra (name, receiver?, param count, params)
+    /// - rhs: index into extra (return_type or NULL_NODE, body_expr)
+    Method,
+
+    /// Match arm: pattern => body
+    /// - lhs: pattern node
+    /// - rhs: body expression node
+    MatchArm,
+
+    /// Call argument (wraps expression with mode flags)
+    /// - lhs: expression node
+    /// - rhs: flags (normal=0, inout=1, borrow=2)
+    CallArg,
+
+    /// Field declaration in struct
+    /// - lhs: name identifier node
+    /// - rhs: type expression node
+    FieldDecl,
+
+    /// Enum variant
+    /// - lhs: name identifier node
+    /// - rhs: 0 (unused, payload support future)
+    EnumVariant,
+
+    /// Directive: @name(args...)
+    /// - lhs: name identifier node
+    /// - rhs: index into extra (arg count + arg nodes)
+    Directive,
+
+    /// Directive argument (currently just identifiers)
+    /// - lhs: identifier node
+    /// - rhs: 0 (unused)
+    DirectiveArg,
+
+    // ===== Error Recovery =====
+    /// Error node (parse error recovery)
+    /// - lhs: 0 (unused)
+    /// - rhs: 0 (unused)
+    ErrorNode,
+}
+
+/// Fixed-size node data (12 bytes total).
+///
+/// Each node in the SOA AST has:
+/// - A tag (stored in separate tags array)
+/// - A main_token (for span information)
+/// - Two u32 slots (lhs and rhs) whose meaning depends on the tag
+///
+/// This matches Zig's design: compact, cache-friendly, uniform size.
+#[derive(Debug, Clone, Copy)]
+pub struct NodeData {
+    /// Primary token for this node.
+    ///
+    /// Used for:
+    /// - Span information in error messages
+    /// - Operator tokens (for BinaryExpr, UnaryExpr)
+    /// - Keyword tokens (for if, while, etc.)
+    pub main_token: u32,
+
+    /// Left child or first data slot.
+    ///
+    /// Interpretation depends on NodeTag - see NodeTag documentation.
+    /// Common uses:
+    /// - Left operand in binary expressions
+    /// - Single child in unary expressions
+    /// - Index into extra_data for multi-child nodes
+    /// - Direct data storage (e.g., low 32 bits of u64)
+    pub lhs: u32,
+
+    /// Right child or second data slot.
+    ///
+    /// Interpretation depends on NodeTag - see NodeTag documentation.
+    /// Common uses:
+    /// - Right operand in binary expressions
+    /// - Index into extra_data for multi-child nodes
+    /// - Direct data storage (e.g., high 32 bits of u64)
+    /// - Flags and small enums
+    pub rhs: u32,
+}
+
+/// Struct-of-Arrays AST representation.
+///
+/// This is the new SOA-based AST that will replace the tree-based `Ast`.
+/// During migration (Phases 2-3), both representations will coexist.
+///
+/// Design principles:
+/// - All nodes stored in parallel arrays (tags, data, extra)
+/// - Nodes reference children by index, not pointers
+/// - Single allocation for entire AST (better cache locality)
+/// - Cheap cloning (just clone Arc, not deep copy)
+///
+/// See docs/designs/soa-ast-layout.md for full design.
+#[derive(Debug, Clone)]
+pub struct SoaAst {
+    /// Node tags (what kind of node is at each index).
+    ///
+    /// Index i contains the tag for node NodeIndex(i).
+    /// Length of this vec == number of nodes in the AST.
+    pub tags: Vec<NodeTag>,
+
+    /// Node data (main_token + lhs + rhs for each node).
+    ///
+    /// Parallel array to tags - tags[i] and data[i] together describe node i.
+    pub data: Vec<NodeData>,
+
+    /// Extra data storage for nodes with >2 children.
+    ///
+    /// Nodes that can't fit their data in lhs+rhs store additional
+    /// data here. The lhs or rhs field contains an index into this array.
+    ///
+    /// Layout is node-type specific - see NodeTag documentation.
+    pub extra: Vec<u32>,
+
+    /// Root nodes (top-level items in the source file).
+    ///
+    /// These are the entry points for traversing the AST.
+    /// Each element is a NodeIndex pointing to a Function, StructDecl, etc.
+    pub items: Vec<NodeIndex>,
+}
+
+impl SoaAst {
+    /// Create a new empty SOA AST.
+    pub fn new() -> Self {
+        SoaAst {
+            tags: Vec::new(),
+            data: Vec::new(),
+            extra: Vec::new(),
+            items: Vec::new(),
+        }
+    }
+
+    /// Create a new SOA AST with pre-allocated capacity.
+    pub fn with_capacity(nodes: usize, extra: usize) -> Self {
+        SoaAst {
+            tags: Vec::with_capacity(nodes),
+            data: Vec::with_capacity(nodes),
+            extra: Vec::with_capacity(extra),
+            items: Vec::new(),
+        }
+    }
+
+    /// Get the tag for a node.
+    pub fn node_tag(&self, idx: NodeIndex) -> NodeTag {
+        self.tags[idx.as_usize()]
+    }
+
+    /// Get the data for a node.
+    pub fn node_data(&self, idx: NodeIndex) -> NodeData {
+        self.data[idx.as_usize()]
+    }
+
+    /// Get the main token for a node.
+    pub fn main_token(&self, idx: NodeIndex) -> u32 {
+        self.data[idx.as_usize()].main_token
+    }
+
+    /// Get the number of nodes in the AST.
+    pub fn node_count(&self) -> usize {
+        self.tags.len()
+    }
+
+    /// Get a slice of the extra data array.
+    pub fn extra_slice(&self, start: usize, len: usize) -> &[u32] {
+        &self.extra[start..start + len]
+    }
+
+    // ===== Typed Accessors =====
+    // These provide type-safe access to specific node types.
+
+    /// Get the value of an integer literal.
+    pub fn int_value(&self, idx: NodeIndex) -> u64 {
+        debug_assert_eq!(self.node_tag(idx), NodeTag::IntLit);
+        let data = self.node_data(idx);
+        (data.lhs as u64) | ((data.rhs as u64) << 32)
+    }
+
+    /// Get the boolean value of a boolean literal.
+    pub fn bool_value(&self, idx: NodeIndex) -> bool {
+        debug_assert_eq!(self.node_tag(idx), NodeTag::BoolLit);
+        let data = self.node_data(idx);
+        data.lhs != 0
+    }
+
+    /// Get the string spur of a string literal.
+    pub fn string_spur(&self, idx: NodeIndex) -> Spur {
+        debug_assert_eq!(self.node_tag(idx), NodeTag::StringLit);
+        let data = self.node_data(idx);
+        Spur::try_from_usize(data.lhs as usize).expect("invalid spur")
+    }
+
+    /// Get the identifier spur.
+    pub fn ident_spur(&self, idx: NodeIndex) -> Spur {
+        debug_assert_eq!(self.node_tag(idx), NodeTag::Ident);
+        let data = self.node_data(idx);
+        Spur::try_from_usize(data.lhs as usize).expect("invalid spur")
+    }
+
+    /// Get the operands of a binary expression.
+    pub fn binary_operands(&self, idx: NodeIndex) -> (NodeIndex, NodeIndex) {
+        debug_assert_eq!(self.node_tag(idx), NodeTag::BinaryExpr);
+        let data = self.node_data(idx);
+        (NodeIndex(data.lhs), NodeIndex(data.rhs))
+    }
+
+    /// Get the operand of a unary expression.
+    pub fn unary_operand(&self, idx: NodeIndex) -> NodeIndex {
+        debug_assert_eq!(self.node_tag(idx), NodeTag::UnaryExpr);
+        let data = self.node_data(idx);
+        NodeIndex(data.lhs)
+    }
+
+    /// Get the operator kind of a unary expression.
+    pub fn unary_op(&self, idx: NodeIndex) -> UnaryOp {
+        debug_assert_eq!(self.node_tag(idx), NodeTag::UnaryExpr);
+        let data = self.node_data(idx);
+        match data.rhs {
+            0 => UnaryOp::Neg,
+            1 => UnaryOp::Not,
+            2 => UnaryOp::BitNot,
+            _ => panic!("invalid UnaryOp encoding: {}", data.rhs),
+        }
+    }
+}
+
+impl Default for SoaAst {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod soa_tests {
+    use super::*;
+
+    #[test]
+    fn test_node_index() {
+        let idx = NodeIndex::new(42);
+        assert_eq!(idx.as_u32(), 42);
+        assert_eq!(idx.as_usize(), 42);
+    }
+
+    #[test]
+    fn test_null_node() {
+        assert_eq!(NULL_NODE.as_u32(), u32::MAX);
+    }
+
+    #[test]
+    fn test_soa_ast_creation() {
+        let ast = SoaAst::new();
+        assert_eq!(ast.node_count(), 0);
+        assert_eq!(ast.tags.len(), 0);
+        assert_eq!(ast.data.len(), 0);
+        assert_eq!(ast.extra.len(), 0);
+    }
+
+    #[test]
+    fn test_soa_ast_with_capacity() {
+        let ast = SoaAst::with_capacity(100, 50);
+        assert!(ast.tags.capacity() >= 100);
+        assert!(ast.data.capacity() >= 100);
+        assert!(ast.extra.capacity() >= 50);
+    }
+
+    #[test]
+    fn test_int_literal_encoding() {
+        let mut ast = SoaAst::new();
+
+        // Add an integer literal node
+        let value = 0x123456789ABCDEF0u64;
+        ast.tags.push(NodeTag::IntLit);
+        ast.data.push(NodeData {
+            main_token: 0,
+            lhs: (value & 0xFFFFFFFF) as u32,         // low 32 bits
+            rhs: ((value >> 32) & 0xFFFFFFFF) as u32, // high 32 bits
+        });
+
+        let idx = NodeIndex(0);
+        assert_eq!(ast.node_tag(idx), NodeTag::IntLit);
+        assert_eq!(ast.int_value(idx), value);
+    }
+
+    #[test]
+    fn test_bool_literal_encoding() {
+        let mut ast = SoaAst::new();
+
+        // Add true
+        ast.tags.push(NodeTag::BoolLit);
+        ast.data.push(NodeData {
+            main_token: 0,
+            lhs: 1,
+            rhs: 0,
+        });
+
+        // Add false
+        ast.tags.push(NodeTag::BoolLit);
+        ast.data.push(NodeData {
+            main_token: 1,
+            lhs: 0,
+            rhs: 0,
+        });
+
+        assert_eq!(ast.bool_value(NodeIndex(0)), true);
+        assert_eq!(ast.bool_value(NodeIndex(1)), false);
+    }
+
+    #[test]
+    fn test_binary_expr_encoding() {
+        let mut ast = SoaAst::new();
+
+        // Create: 1 + 2
+        // First add the literals
+        ast.tags.push(NodeTag::IntLit);
+        ast.data.push(NodeData {
+            main_token: 0,
+            lhs: 1,
+            rhs: 0,
+        });
+
+        ast.tags.push(NodeTag::IntLit);
+        ast.data.push(NodeData {
+            main_token: 1,
+            lhs: 2,
+            rhs: 0,
+        });
+
+        // Then add the binary expression
+        ast.tags.push(NodeTag::BinaryExpr);
+        ast.data.push(NodeData {
+            main_token: 2, // the '+' token
+            lhs: 0,        // left operand (node 0)
+            rhs: 1,        // right operand (node 1)
+        });
+
+        let binop_idx = NodeIndex(2);
+        assert_eq!(ast.node_tag(binop_idx), NodeTag::BinaryExpr);
+
+        let (left, right) = ast.binary_operands(binop_idx);
+        assert_eq!(left, NodeIndex(0));
+        assert_eq!(right, NodeIndex(1));
+        assert_eq!(ast.int_value(left), 1);
+        assert_eq!(ast.int_value(right), 2);
+    }
+
+    #[test]
+    fn test_unary_expr_encoding() {
+        let mut ast = SoaAst::new();
+
+        // Create: -42
+        // First add the literal
+        ast.tags.push(NodeTag::IntLit);
+        ast.data.push(NodeData {
+            main_token: 0,
+            lhs: 42,
+            rhs: 0,
+        });
+
+        // Then add the unary expression
+        ast.tags.push(NodeTag::UnaryExpr);
+        ast.data.push(NodeData {
+            main_token: 1,                      // the '-' token
+            lhs: 0,                             // operand (node 0)
+            rhs: encode_unary_op(UnaryOp::Neg), // operator kind
+        });
+
+        let unary_idx = NodeIndex(1);
+        assert_eq!(ast.node_tag(unary_idx), NodeTag::UnaryExpr);
+
+        let operand = ast.unary_operand(unary_idx);
+        assert_eq!(operand, NodeIndex(0));
+        assert_eq!(ast.int_value(operand), 42);
+        assert_eq!(ast.unary_op(unary_idx), UnaryOp::Neg);
+    }
+
+    #[test]
+    fn test_ident_encoding() {
+        let mut ast = SoaAst::new();
+
+        // Mock identifier with spur index 123
+        ast.tags.push(NodeTag::Ident);
+        ast.data.push(NodeData {
+            main_token: 0,
+            lhs: 123, // spur index
+            rhs: 0,
+        });
+
+        let idx = NodeIndex(0);
+        assert_eq!(ast.node_tag(idx), NodeTag::Ident);
+        assert_eq!(ast.node_data(idx).lhs, 123);
+    }
+
+    #[test]
+    fn test_extra_data_slice() {
+        let mut ast = SoaAst::new();
+        ast.extra = vec![10, 20, 30, 40, 50];
+
+        let slice = ast.extra_slice(1, 3);
+        assert_eq!(slice, &[20, 30, 40]);
+    }
+
+    #[test]
+    fn test_items() {
+        let mut ast = SoaAst::new();
+
+        // Add two function nodes
+        ast.tags.push(NodeTag::Function);
+        ast.data.push(NodeData {
+            main_token: 0,
+            lhs: 0,
+            rhs: 0,
+        });
+
+        ast.tags.push(NodeTag::Function);
+        ast.data.push(NodeData {
+            main_token: 1,
+            lhs: 0,
+            rhs: 0,
+        });
+
+        ast.items = vec![NodeIndex(0), NodeIndex(1)];
+
+        assert_eq!(ast.items.len(), 2);
+        assert_eq!(ast.node_tag(ast.items[0]), NodeTag::Function);
+        assert_eq!(ast.node_tag(ast.items[1]), NodeTag::Function);
+    }
+}
