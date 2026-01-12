@@ -689,8 +689,8 @@ impl<'a> ConstraintGenerator<'a> {
                     }
                     let result_var = self.fresh_var();
                     InferType::Var(result_var)
-                } else if intrinsic_name == "addr_of" || intrinsic_name == "addr_of_mut" {
-                    // @addr_of / @addr_of_mut: takes a value, returns a pointer to it
+                } else if intrinsic_name == "raw" || intrinsic_name == "raw_mut" {
+                    // @raw / @raw_mut: takes a value, returns a pointer to it
                     // The return type is ptr const T or ptr mut T where T is the argument type.
                     // We create a fresh type variable for proper inference.
                     for arg_ref in args.iter() {

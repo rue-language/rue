@@ -2384,8 +2384,8 @@ impl<'a> CfgLower<'a> {
                         src: Operand::Virtual(addr_vreg),
                     });
                     self.value_map.insert(value, result_vreg);
-                } else if name_str == "addr_of" || name_str == "addr_of_mut" {
-                    // @addr_of(lvalue) / @addr_of_mut(lvalue) - Take address of a value
+                } else if name_str == "raw" || name_str == "raw_mut" {
+                    // @raw(lvalue) / @raw_mut(lvalue) - Take address of a value
                     // The argument should be a local variable, and we compute its stack address.
                     let args = self.ctx.cfg.get_extra(*args_start, *args_len);
                     let lvalue_val = args[0];
@@ -2406,7 +2406,7 @@ impl<'a> CfgLower<'a> {
                         });
                         self.value_map.insert(value, result_vreg);
                     } else if let CfgInstData::PlaceRead { place } = &lvalue_inst.data {
-                        // ADR-0030: Handle PlaceRead for @addr_of
+                        // ADR-0030: Handle PlaceRead for @raw
                         // Compute the address of the place instead of reading from it
                         let result_vreg = self.mir.alloc_vreg();
                         self.lower_place_addr(result_vreg, place);
@@ -4144,7 +4144,7 @@ impl<'a> CfgLower<'a> {
         total_offset_vreg.expect("compute_index_offset called with empty levels")
     }
 
-    /// Compute the address of a place (for @addr_of intrinsic).
+    /// Compute the address of a place (for @raw intrinsic).
     ///
     /// This is similar to lower_place_read but returns the address instead of loading.
     fn lower_place_addr(&mut self, dst: VReg, place: &Place) {

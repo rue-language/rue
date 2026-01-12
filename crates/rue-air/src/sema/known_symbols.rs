@@ -80,10 +80,10 @@ pub struct KnownSymbols {
     pub ptr_to_int: Spur,
     /// The `int_to_ptr` intrinsic symbol - converts usize to pointer.
     pub int_to_ptr: Spur,
-    /// The `addr_of` intrinsic symbol - takes address of lvalue.
-    pub addr_of: Spur,
-    /// The `addr_of_mut` intrinsic symbol - takes mutable address of lvalue.
-    pub addr_of_mut: Spur,
+    /// The `raw` intrinsic symbol - takes address of lvalue.
+    pub raw: Spur,
+    /// The `raw_mut` intrinsic symbol - takes mutable address of lvalue.
+    pub raw_mut: Spur,
     /// The `syscall` intrinsic symbol - direct OS syscall.
     pub syscall: Spur,
 
@@ -134,8 +134,8 @@ impl KnownSymbols {
             ptr_offset: interner.get_or_intern_static("ptr_offset"),
             ptr_to_int: interner.get_or_intern_static("ptr_to_int"),
             int_to_ptr: interner.get_or_intern_static("int_to_ptr"),
-            addr_of: interner.get_or_intern_static("addr_of"),
-            addr_of_mut: interner.get_or_intern_static("addr_of_mut"),
+            raw: interner.get_or_intern_static("raw"),
+            raw_mut: interner.get_or_intern_static("raw_mut"),
             syscall: interner.get_or_intern_static("syscall"),
 
             // Target platform intrinsics
@@ -202,8 +202,8 @@ mod tests {
         assert_eq!(interner.resolve(&known.ptr_offset), "ptr_offset");
         assert_eq!(interner.resolve(&known.ptr_to_int), "ptr_to_int");
         assert_eq!(interner.resolve(&known.int_to_ptr), "int_to_ptr");
-        assert_eq!(interner.resolve(&known.addr_of), "addr_of");
-        assert_eq!(interner.resolve(&known.addr_of_mut), "addr_of_mut");
+        assert_eq!(interner.resolve(&known.raw), "raw");
+        assert_eq!(interner.resolve(&known.raw_mut), "raw_mut");
         assert_eq!(interner.resolve(&known.syscall), "syscall");
         assert_eq!(interner.resolve(&known.target_arch), "target_arch");
         assert_eq!(interner.resolve(&known.target_os), "target_os");

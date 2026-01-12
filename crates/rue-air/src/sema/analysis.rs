@@ -6024,10 +6024,10 @@ fn analyze_intrinsic_ctx(
             span,
         });
         Ok(AnalysisResult::new(air_ref, result_type))
-    } else if name == known.addr_of || name == known.addr_of_mut {
-        // @addr_of(lvalue) / @addr_of_mut(lvalue) - Take address of lvalue
-        let is_mut = name == known.addr_of_mut;
-        let intrinsic_name = if is_mut { "addr_of_mut" } else { "addr_of" };
+    } else if name == known.raw || name == known.raw_mut {
+        // @raw(lvalue) / @raw_mut(lvalue) - Take address of lvalue
+        let is_mut = name == known.raw_mut;
+        let intrinsic_name = if is_mut { "raw_mut" } else { "raw" };
 
         require_preview_ctx(
             ctx,
@@ -8020,9 +8020,9 @@ impl<'a> Sema<'a> {
             self.analyze_ptr_to_int_intrinsic(air, name, &args, span, ctx)
         } else if name == known.int_to_ptr {
             self.analyze_int_to_ptr_intrinsic(air, name, inst_ref, &args, span, ctx)
-        } else if name == known.addr_of {
+        } else if name == known.raw {
             self.analyze_addr_of_intrinsic(air, &args, span, ctx, false)
-        } else if name == known.addr_of_mut {
+        } else if name == known.raw_mut {
             self.analyze_addr_of_intrinsic(air, &args, span, ctx, true)
         } else if name == known.syscall {
             self.analyze_syscall_intrinsic(air, name, &args, span, ctx)
@@ -10827,9 +10827,9 @@ impl<'a> Sema<'a> {
 
         // Create the intrinsic call instruction
         let name = if is_mut {
-            self.known.addr_of_mut
+            self.known.raw_mut
         } else {
-            self.known.addr_of
+            self.known.raw
         };
         let args_start = air.add_extra(&[arg_result.air_ref.as_u32()]);
         let air_ref = air.add_inst(AirInst {
