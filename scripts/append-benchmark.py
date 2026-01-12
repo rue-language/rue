@@ -8,11 +8,14 @@ It handles:
 - Creating the history file if it doesn't exist
 - Limiting history to the most recent 100 entries
 - Validating JSON structure
+- Supporting both version 1 and version 2 result schemas
 
 Usage:
     ./append-benchmark.py <results.json> <history.json>
 
-The results.json should have the format output by bench.sh:
+The results.json can be version 1 or version 2 format:
+
+Version 1 (legacy):
 {
     "version": 1,
     "timestamp": "2025-12-27T10:30:00Z",
@@ -22,6 +25,18 @@ The results.json should have the format output by bench.sh:
     "benchmarks": [
         {"name": "many_functions", "mean_ms": 10.5, "std_ms": 0.5, "iterations": 5}
     ]
+}
+
+Version 2 (with commit range tracking, ADR-0031 Phase 4):
+{
+    "version": 2,
+    "timestamp": "2025-12-27T10:30:00Z",
+    "commit": "abc123def",
+    "commit_range": ["abc123", "def456", "789abc"],
+    "benchmark_reason": "scheduled" | "manual" | "push",
+    "host": {"os": "darwin", "arch": "arm64"},
+    "iterations": 5,
+    "benchmarks": [...]
 }
 
 The history.json file stores an array of such results:

@@ -6,7 +6,7 @@ This document describes the `perf` branch workflow for storing benchmark history
 
 Benchmark results are stored on a dedicated `perf` branch to avoid cluttering the main branch with frequent updates. CI runs benchmarks in parallel across platforms and a collector job aggregates results before pushing atomically to the `perf` branch.
 
-**Architecture (ADR-0031 Phase 1 + 2 + 3):** The workflow uses artifact-based collection with atomic pushing and time-based batching. Individual platform jobs upload artifacts, and a single collector job downloads all artifacts and pushes to perf branch once. Time-based batching (scheduled runs + cancellation) handles high commit velocity by ensuring only the most recent commits are benchmarked.
+**Architecture (ADR-0031 Phase 1-4):** The workflow uses artifact-based collection with atomic pushing, time-based batching, and commit range tracking. Individual platform jobs upload artifacts, and a single collector job downloads all artifacts, enhances them with commit range metadata (version 2 schema), and pushes to perf branch once. Time-based batching (scheduled runs + cancellation) handles high commit velocity by ensuring only the most recent commits are benchmarked.
 
 ## Branch Structure
 
@@ -17,7 +17,7 @@ The `perf` branch contains:
 
 ### CI Workflow (Automated)
 
-**Current (Phase 1 + 2 + 3 - Parallel execution with atomic collection and time-based batching):**
+**Current (Phase 1-4 - Parallel execution with atomic collection, time-based batching, and commit range tracking):**
 
 1. Benchmarks are triggered by:
    - **Push to trunk**: Triggered on every commit (older queued runs are canceled)
@@ -39,6 +39,12 @@ The `perf` branch contains:
    - If multiple commits arrive rapidly, older queued runs are canceled
    - Only the most recent commit in the queue is benchmarked
    - Scheduled runs (every 15 minutes) ensure no commits are missed completely
+
+4. **Commit range tracking (Phase 4)**:
+   - Each benchmark result includes a commit_range field (version 2 schema)
+   - Tracks all commits in the last 24 hours that this benchmark represents
+   - Includes benchmark_reason field: "push", "scheduled", or "manual"
+   - Enables bisecting regressions across commit ranges
 
 **Legacy (Before Phase 1):**
 

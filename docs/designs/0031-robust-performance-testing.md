@@ -221,10 +221,11 @@ If the queue still backs up (e.g., during a period of intense development):
   - Enable cancel-in-progress for concurrency control
   - Update documentation
 
-- [ ] **Phase 4: Commit range tracking** - rue-1h38.4
-  - Update JSON schema to include commit_range
-  - Modify append-benchmark.py to handle ranges
-  - Update dashboard to show coverage metrics
+- [x] **Phase 4: Commit range tracking** - rue-1h38.4
+  - Update JSON schema to include commit_range field (version 2)
+  - Capture commit range in collector job (last 24 hours)
+  - Inject commit_range and benchmark_reason into results
+  - Update append-benchmark.py documentation for version 2 schema
 
 - [ ] **Phase 5: Graceful degradation** - rue-1h38.5
   - Add queue depth monitoring

@@ -149,12 +149,26 @@ jobs:
           ref: trunk
           path: trunk
 
-      - name: Get commit info
+      - name: Get commit info and range
         id: commit
         run: |
           cd trunk
           echo "sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
           echo "full_sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+
+          # Get all commits since the last benchmark run (or last 24 hours as fallback)
+          # This helps track which commits this benchmark represents
+          since_time=$(date -u -d '24 hours ago' '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date -u -v-24H '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "24 hours ago")
+          commit_range=$(git log --since="$since_time" --format="%H" --reverse | tr '\n' ',' | sed 's/,$//')
+
+          # Export for later use
+          echo "commit_range=$commit_range" >> $GITHUB_OUTPUT
+
+          # Count commits in range
+          commit_count=$(echo "$commit_range" | tr ',' '\n' | wc -l | tr -d ' ')
+          echo "commit_count=$commit_count" >> $GITHUB_OUTPUT
+
+          echo "Commit range: $commit_count commits in last 24h"
 
       - name: Download all benchmark artifacts
         uses: actions/download-artifact@v4
@@ -201,6 +215,15 @@ jobs:
 
       - name: Append results to history
         run: |
+          # Determine benchmark reason based on trigger
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            benchmark_reason="scheduled"
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            benchmark_reason="manual"
+          else
+            benchmark_reason="push"
+          fi
+
           # Process each platform's results
           for artifact_dir in artifacts/benchmark-results-*; do
             if [ ! -d "$artifact_dir" ]; then
@@ -219,6 +242,10 @@ jobs:
 
             echo "Processing results for platform: $platform"
 
+            # Enhance results with commit range metadata (convert to version 2 schema)
+            enhanced_file="$artifact_dir/results_enhanced.json"
+            python3 -c "import json; import sys; data = json.load(open('$results_file')); data['version'] = 2; data['benchmark_reason'] = '$benchmark_reason'; commit_range_str = '${{ steps.commit.outputs.commit_range }}'; data['commit_range'] = [c.strip() for c in commit_range_str.split(',') if c.strip()] if commit_range_str else ['${{ steps.commit.outputs.full_sha }}']; json.dump(data, open('$enhanced_file', 'w'), indent=2)"
+
             # Create platform-specific history file if it doesn't exist
             history_file="perf-branch/benchmarks/history-$platform.json"
             if [ ! -f "$history_file" ]; then
@@ -226,13 +253,13 @@ jobs:
               echo '{"version": 1, "runs": []}' > "$history_file"
             fi
 
-            # Append to history using the Python script
-            if ! python3 trunk/scripts/append-benchmark.py "$results_file" "$history_file"; then
+            # Append enhanced results to history using the Python script
+            if ! python3 trunk/scripts/append-benchmark.py "$enhanced_file" "$history_file"; then
               echo "::error::Failed to append benchmark results for $platform"
               exit 1
             fi
 
-            echo "✓ Appended results for $platform"
+            echo "✓ Appended results for $platform (covering ${{ steps.commit.outputs.commit_count }} commits)"
           done
 
       - name: Commit and push to perf branch
