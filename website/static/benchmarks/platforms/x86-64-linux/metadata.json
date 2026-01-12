@@ -121,6 +121,19 @@
       "binary_size_kb": 236.0
     }
   ],
+  "coverage": {
+    "total_commits_covered": 1,
+    "run_count": 1,
+    "avg_commits_per_run": 1.0,
+    "runs": [
+      {
+        "commit": "ea72413",
+        "timestamp": "2026-01-03T06:28:15Z",
+        "commit_count": 1,
+        "reason": "unknown"
+      }
+    ]
+  },
   "platform": "x86-64-linux",
   "platform_name": "Linux x86-64"
 }

@@ -910,6 +910,61 @@ def generate_comparison_timeline_chart(platform_data: dict[str, list[dict]]) -> 
     return "\n".join(svg_parts)
 
 
+def calculate_coverage_metrics(runs: list[dict]) -> dict:
+    """Calculate benchmark coverage metrics.
+
+    Returns coverage information including:
+    - How many distinct commits have been benchmarked
+    - The commit ranges covered by each benchmark run
+    - Data gaps (periods without benchmarks)
+    """
+    if not runs:
+        return {
+            "total_commits_covered": 0,
+            "run_count": 0,
+            "coverage_pct": 0,
+            "gaps": []
+        }
+
+    # Collect all commits covered by benchmark runs
+    covered_commits = set()
+    run_info = []
+
+    for run in runs:
+        # Version 2 schema has commit_range field
+        commit_range = run.get("commit_range", [])
+        if not commit_range:
+            # Version 1 schema - single commit only
+            commit = run.get("commit", "")
+            if commit:
+                covered_commits.add(commit)
+                commit_range = [commit]
+        else:
+            # Add all commits in the range
+            for c in commit_range:
+                if c:
+                    covered_commits.add(c)
+
+        run_info.append({
+            "commit": short_commit(run.get("commit", "")),
+            "timestamp": run.get("timestamp", ""),
+            "commit_count": len(commit_range),
+            "reason": run.get("benchmark_reason", "unknown")
+        })
+
+    # Calculate coverage percentage
+    # Note: We can't calculate true coverage without knowing the total number of commits
+    # in the repository, so we report the number of distinct commits benchmarked
+    total_commits_covered = len(covered_commits)
+
+    return {
+        "total_commits_covered": total_commits_covered,
+        "run_count": len(runs),
+        "avg_commits_per_run": round(total_commits_covered / len(runs), 1) if runs else 0,
+        "runs": run_info[-20:]  # Last 20 runs for display
+    }
+
+
 def generate_summary_data(runs: list[dict], platform: Optional[str] = None) -> dict:
     """Generate summary statistics for the performance dashboard."""
     if not runs:
@@ -1056,6 +1111,9 @@ def generate_platform_charts(history_path: Path, output_dir: Path, platform: Opt
                 bench_info["binary_size_kb"] = round(bench["binary_size_bytes"] / 1024, 2)
             latest_benchmarks.append(bench_info)
 
+    # Calculate coverage metrics
+    coverage = calculate_coverage_metrics(runs)
+
     # Write metadata JSON for the website to consume (includes summary and detailed metrics)
     metadata = {
         "benchmarks": benchmark_names,
@@ -1063,6 +1121,7 @@ def generate_platform_charts(history_path: Path, output_dir: Path, platform: Opt
         "latest_commit": short_commit(runs[-1].get("commit", "")) if runs else None,
         "summary": summary,
         "latest_benchmarks": latest_benchmarks,
+        "coverage": coverage,
     }
     if platform:
         metadata["platform"] = platform

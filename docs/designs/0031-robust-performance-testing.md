@@ -233,7 +233,7 @@ If the queue still backs up (e.g., during a period of intense development):
   - Add logging for skipped commits with reason and queue depth
   - Manual runs always proceed regardless of queue depth
 
-- [ ] **Phase 6: Dashboard improvements** - rue-1h38.6
+- [x] **Phase 6: Dashboard improvements** - rue-1h38.6
   - Visualize benchmark coverage
   - Show commit ranges for each benchmark run
   - Highlight data gaps

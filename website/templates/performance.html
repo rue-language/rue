@@ -60,6 +60,33 @@
             </div>
         </section>
 
+        <!-- Benchmark Coverage (Only shown for single platform) -->
+        <section id="coverage-section" class="mb-12">
+            <h2 class="text-xl font-semibold mb-4">Benchmark Coverage</h2>
+            <div class="bg-surface border border-themed rounded-lg p-6">
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
+                    <div>
+                        <div class="text-sm text-muted mb-1">Benchmark Runs</div>
+                        <div class="text-2xl font-semibold" id="coverage-run-count">--</div>
+                    </div>
+                    <div>
+                        <div class="text-sm text-muted mb-1">Commits Covered</div>
+                        <div class="text-2xl font-semibold" id="coverage-commits">--</div>
+                    </div>
+                    <div>
+                        <div class="text-sm text-muted mb-1">Avg Commits/Run</div>
+                        <div class="text-2xl font-semibold" id="coverage-avg">--</div>
+                    </div>
+                </div>
+                <div>
+                    <h3 class="text-sm font-medium mb-2">Recent Benchmark Runs</h3>
+                    <div id="coverage-runs-list" class="space-y-2 max-h-64 overflow-y-auto">
+                        <p class="text-muted text-sm">Loading...</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
         <!-- Timeline Chart (Aggregate) -->
         <section class="mb-12">
             <h2 class="text-xl font-semibold mb-4">Compilation Time Trend</h2>
@@ -151,6 +178,7 @@
             const binaryContainer = document.getElementById('binary-chart-container');
             const metricsSection = document.getElementById('metrics-section');
             const metricsContainer = document.getElementById('metrics-table-container');
+            const coverageSection = document.getElementById('coverage-section');
 
             let currentPlatform = 'comparison';
             let platformMetadata = null;
@@ -275,6 +303,47 @@
                 metricsContainer.innerHTML = html;
             }
 
+            // Update coverage display
+            function updateCoverage(coverage) {
+                if (!coverage) {
+                    document.getElementById('coverage-run-count').textContent = '--';
+                    document.getElementById('coverage-commits').textContent = '--';
+                    document.getElementById('coverage-avg').textContent = '--';
+                    document.getElementById('coverage-runs-list').innerHTML = '<p class="text-muted text-sm">No coverage data available</p>';
+                    return;
+                }
+
+                document.getElementById('coverage-run-count').textContent = coverage.run_count || 0;
+                document.getElementById('coverage-commits').textContent = coverage.total_commits_covered || 0;
+                document.getElementById('coverage-avg').textContent = coverage.avg_commits_per_run?.toFixed(1) || '--';
+
+                // Build runs list
+                const runs = coverage.runs || [];
+                if (runs.length === 0) {
+                    document.getElementById('coverage-runs-list').innerHTML = '<p class="text-muted text-sm">No run information available</p>';
+                    return;
+                }
+
+                let html = '';
+                runs.forEach(run => {
+                    const reasonBadge = run.reason === 'scheduled' ? 'bg-blue-500' :
+                                       run.reason === 'manual' ? 'bg-green-500' : 'bg-gray-500';
+                    const commitInfo = run.commit_count > 1 ?
+                        `${run.commit} (${run.commit_count} commits)` :
+                        run.commit;
+
+                    html += '<div class="flex items-center justify-between text-sm py-1 border-b border-themed">';
+                    html += `<div class="flex items-center gap-2">`;
+                    html += `<span class="font-mono text-xs">${commitInfo}</span>`;
+                    html += `<span class="px-2 py-0.5 ${reasonBadge} text-white text-xs rounded">${run.reason}</span>`;
+                    html += `</div>`;
+                    html += `<span class="text-xs text-muted">${run.timestamp || '--'}</span>`;
+                    html += '</div>';
+                });
+
+                document.getElementById('coverage-runs-list').innerHTML = html;
+            }
+
             // Load data for a specific platform
             function loadPlatformData(platform) {
                 currentPlatform = platform;
@@ -287,6 +356,7 @@
                     memorySection.style.display = 'none';
                     binarySection.style.display = 'none';
                     metricsSection.style.display = 'none';
+                    coverageSection.style.display = 'none';
 
                     loadSvg(timelineContainer, '/benchmarks/comparison/timeline.svg');
                     updateStats(null);
@@ -299,6 +369,7 @@
                     memorySection.style.display = 'block';
                     binarySection.style.display = 'block';
                     metricsSection.style.display = 'block';
+                    coverageSection.style.display = 'block';
 
                     const basePath = `/benchmarks/platforms/${platform}`;
 
@@ -314,6 +385,7 @@
                         .then(data => {
                             updateStats(data.summary);
                             updateMetricsTable(data.latest_benchmarks);
+                            updateCoverage(data.coverage);
 
                             // Populate benchmark dropdown
                             benchmarkSelect.innerHTML = '<option value="">All (aggregate)</option>';
@@ -330,6 +402,7 @@
                         .catch(() => {
                             updateStats(null);
                             updateMetricsTable(null);
+                            updateCoverage(null);
                         });
                 }
             }
@@ -369,6 +442,7 @@
                     memorySection.style.display = 'block';
                     binarySection.style.display = 'block';
                     metricsSection.style.display = 'block';
+                    coverageSection.style.display = 'block';
 
                     loadSvg(timelineContainer, '/benchmarks/timeline.svg');
                     loadSvg(timelineByProgramContainer, '/benchmarks/timeline_by_program.svg');
@@ -382,6 +456,7 @@
                         .then(data => {
                             updateStats(data.summary);
                             updateMetricsTable(data.latest_benchmarks);
+                            updateCoverage(data.coverage);
 
                             // Populate benchmark dropdown
                             if (data.benchmarks && data.benchmarks.length > 0) {
@@ -397,6 +472,7 @@
                         .catch(() => {
                             updateStats(null);
                             updateMetricsTable(null);
+                            updateCoverage(null);
                         });
                 });
 
@@ -457,6 +533,21 @@
                 comparisons should focus on trends rather than absolute numbers, as different
                 architectures have different performance characteristics.
             </p>
+            <h3>Benchmark Coverage</h3>
+            <p>
+                To handle high commit velocity, the performance testing system uses time-based
+                batching: benchmarks run every 15 minutes, potentially covering multiple commits
+                in a single run. The "Benchmark Coverage" section shows which commits have been
+                benchmarked and tracks the commit ranges covered by each benchmark run.
+            </p>
+            <p>
+                Benchmark runs are triggered by three mechanisms:
+            </p>
+            <ul>
+                <li><strong>Scheduled</strong> - Automatic runs every 15 minutes via GitHub Actions</li>
+                <li><strong>Manual</strong> - On-demand runs triggered by developers</li>
+                <li><strong>Push</strong> - Triggered by pushes to trunk (subject to queue-based throttling)</li>
+            </ul>
         </section>
     </div>
 </article>
