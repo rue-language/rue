@@ -3,6 +3,7 @@
 //! This module provides rich context capture for internal compiler errors to
 //! improve bug reports and developer debugging experience.
 
+use std::backtrace::Backtrace;
 use std::fmt;
 
 /// Context information for an Internal Compiler Error (ICE).
@@ -15,9 +16,10 @@ use std::fmt;
 /// let ice = IceContext::new("unexpected type in codegen")
 ///     .with_version("0.1.0")
 ///     .with_target("x86_64-unknown-linux-gnu")
-///     .with_phase("codegen/emit");
+///     .with_phase("codegen/emit")
+///     .with_backtrace();
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct IceContext {
     /// The error message describing what went wrong.
     pub message: String,
@@ -35,6 +37,8 @@ pub struct IceContext {
     /// - Type information
     /// - Any other relevant state
     pub details: Vec<(String, String)>,
+    /// Backtrace captured at the ICE site.
+    pub backtrace: Option<Backtrace>,
 }
 
 impl IceContext {
@@ -46,6 +50,7 @@ impl IceContext {
             target: None,
             phase: None,
             details: Vec::new(),
+            backtrace: None,
         }
     }
 
@@ -72,6 +77,15 @@ impl IceContext {
     /// Details provide context-specific information about the compiler state.
     pub fn with_detail(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.details.push((key.into(), value.into()));
+        self
+    }
+
+    /// Capture a backtrace at the current call site.
+    ///
+    /// This should be called at the point where the ICE is detected to capture
+    /// the most relevant stack trace.
+    pub fn with_backtrace(mut self) -> Self {
+        self.backtrace = Some(Backtrace::capture());
         self
     }
 
@@ -102,18 +116,49 @@ impl IceContext {
 
         output
     }
+
+    /// Format the backtrace for display.
+    ///
+    /// Returns a formatted backtrace if one was captured, or None otherwise.
+    /// The backtrace is formatted with frame numbers and source locations.
+    pub fn format_backtrace(&self) -> Option<String> {
+        self.backtrace.as_ref().map(|bt| {
+            let bt_str = format!("{}", bt);
+            if bt_str.trim().is_empty() || bt_str.contains("disabled") {
+                // Backtrace capture is disabled
+                "  (backtrace capture disabled; set RUST_BACKTRACE=1 to enable)".to_string()
+            } else {
+                // Format each frame with indentation
+                bt_str
+                    .lines()
+                    .map(|line| format!("  {}", line))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            }
+        })
+    }
 }
 
 impl fmt::Display for IceContext {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "internal compiler error: {}", self.message)?;
 
-        if self.version.is_some()
+        let has_details = self.version.is_some()
             || self.target.is_some()
             || self.phase.is_some()
-            || !self.details.is_empty()
-        {
+            || !self.details.is_empty();
+
+        if has_details {
             write!(f, "\n\ndebug info:\n{}", self.format_details())?;
+        }
+
+        if let Some(backtrace) = self.format_backtrace() {
+            if has_details {
+                write!(f, "\n")?;
+            } else {
+                write!(f, "\n\n")?;
+            }
+            write!(f, "backtrace:\n{}", backtrace)?;
         }
 
         Ok(())
@@ -231,5 +276,56 @@ mod tests {
         assert!(output.contains("debug info:"));
         assert!(output.contains("rue version: 0.1.0"));
         assert!(output.contains("phase: codegen"));
+    }
+
+    #[test]
+    fn test_ice_context_with_backtrace() {
+        let ice = IceContext::new("test error").with_backtrace();
+        assert!(ice.backtrace.is_some());
+    }
+
+    #[test]
+    fn test_ice_context_format_backtrace_when_none() {
+        let ice = IceContext::new("test error");
+        assert!(ice.format_backtrace().is_none());
+    }
+
+    #[test]
+    fn test_ice_context_format_backtrace_when_captured() {
+        let ice = IceContext::new("test error").with_backtrace();
+        let formatted = ice.format_backtrace();
+        assert!(formatted.is_some());
+        // The backtrace should either contain actual frames or the disabled message
+        let bt_str = formatted.unwrap();
+        assert!(bt_str.contains("backtrace capture disabled") || bt_str.len() > 0);
+    }
+
+    #[test]
+    fn test_ice_context_display_with_backtrace() {
+        let ice = IceContext::new("test error")
+            .with_version("0.1.0")
+            .with_backtrace();
+
+        let output = ice.to_string();
+        assert!(output.contains("internal compiler error: test error"));
+        assert!(output.contains("backtrace:"));
+    }
+
+    #[test]
+    fn test_ice_context_full_builder() {
+        // Test the full builder chain with backtrace
+        let ice = IceContext::new("unexpected type")
+            .with_version("0.1.0")
+            .with_target("x86_64-unknown-linux-gnu")
+            .with_phase("codegen/emit")
+            .with_detail("function", "main")
+            .with_backtrace();
+
+        assert_eq!(ice.message, "unexpected type");
+        assert!(ice.version.is_some());
+        assert!(ice.target.is_some());
+        assert!(ice.phase.is_some());
+        assert_eq!(ice.details.len(), 1);
+        assert!(ice.backtrace.is_some());
     }
 }
