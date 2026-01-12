@@ -15,7 +15,7 @@ superseded-by:
 
 ## Status
 
-Implemented (under preview feature `unchecked_code`)
+Implemented and stabilized (2026-01-11)
 
 ## Summary
 

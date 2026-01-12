@@ -301,9 +301,6 @@ pub enum PreviewFeature {
     /// Allows method definitions inside anonymous struct type expressions.
     /// See ADR-0029 for the full design.
     AnonStructMethods,
-    /// Unchecked code and raw pointers.
-    /// See ADR-0028 for the full design.
-    UncheckedCode,
 }
 
 /// Error returned when parsing a preview feature name fails.
@@ -325,7 +322,6 @@ impl PreviewFeature {
         match *self {
             PreviewFeature::TestInfra => "test_infra",
             PreviewFeature::AnonStructMethods => "anon_struct_methods",
-            PreviewFeature::UncheckedCode => "unchecked_code",
         }
     }
 
@@ -335,17 +331,12 @@ impl PreviewFeature {
         match *self {
             PreviewFeature::TestInfra => "ADR-0005",
             PreviewFeature::AnonStructMethods => "ADR-0029",
-            PreviewFeature::UncheckedCode => "ADR-0028",
         }
     }
 
     /// Get all available preview features.
     pub fn all() -> &'static [PreviewFeature] {
-        &[
-            PreviewFeature::TestInfra,
-            PreviewFeature::AnonStructMethods,
-            PreviewFeature::UncheckedCode,
-        ]
+        &[PreviewFeature::TestInfra, PreviewFeature::AnonStructMethods]
     }
 
     /// Get a comma-separated list of all feature names (for help text).
@@ -369,7 +360,6 @@ impl std::str::FromStr for PreviewFeature {
         match s {
             "test_infra" => Ok(PreviewFeature::TestInfra),
             "anon_struct_methods" => Ok(PreviewFeature::AnonStructMethods),
-            "unchecked_code" => Ok(PreviewFeature::UncheckedCode),
             _ => Err(ParsePreviewFeatureError(s.to_string())),
         }
     }
@@ -1883,7 +1873,7 @@ mod tests {
     #[test]
     fn test_preview_feature_all_names() {
         let names = PreviewFeature::all_names();
-        assert_eq!(names, "test_infra, anon_struct_methods, unchecked_code");
+        assert_eq!(names, "test_infra, anon_struct_methods");
     }
 
     // ========================================================================

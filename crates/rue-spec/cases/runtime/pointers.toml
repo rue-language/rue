@@ -16,8 +16,6 @@ description = "Tests for pointer intrinsics (@addr_of, @ptr_read, @ptr_write, et
 [[case]]
 name = "addr_of_simple_local"
 spec = ["9.2:1"]
-preview = "unchecked_code"
-preview_should_pass = true
 source = """
 fn main() -> i32 {
     let x: i32 = 42;
@@ -35,8 +33,6 @@ exit_code = 42
 [[case]]
 name = "addr_of_array_element"
 spec = ["9.2:1"]
-preview = "unchecked_code"
-preview_should_pass = true
 source = """
 fn main() -> i32 {
     let arr: [i32; 3] = [10, 20, 30];
@@ -52,8 +48,6 @@ exit_code = 10
 [[case]]
 name = "addr_of_array_second_element"
 spec = ["9.2:1"]
-preview = "unchecked_code"
-preview_should_pass = true
 source = """
 fn main() -> i32 {
     let arr: [i32; 3] = [10, 20, 30];
@@ -69,8 +63,6 @@ exit_code = 20
 [[case]]
 name = "addr_of_array_last_element"
 spec = ["9.2:1"]
-preview = "unchecked_code"
-preview_should_pass = true
 source = """
 fn main() -> i32 {
     let arr: [i32; 3] = [10, 20, 30];
@@ -90,8 +82,6 @@ exit_code = 30
 [[case]]
 name = "ptr_to_int_basic"
 spec = ["9.2:1"]
-preview = "unchecked_code"
-preview_should_pass = true
 source = """
 fn main() -> i32 {
     let x: i32 = 42;
@@ -111,8 +101,6 @@ exit_code = 42
 [[case]]
 name = "ptr_write_and_read"
 spec = ["9.2:1"]
-preview = "unchecked_code"
-preview_should_pass = true
 source = """
 fn main() -> i32 {
     let mut x: i32 = 10;
@@ -128,8 +116,6 @@ exit_code = 99
 [[case]]
 name = "ptr_write_array_element"
 spec = ["9.2:1"]
-preview = "unchecked_code"
-preview_should_pass = true
 source = """
 fn main() -> i32 {
     let mut arr: [i32; 3] = [10, 20, 30];

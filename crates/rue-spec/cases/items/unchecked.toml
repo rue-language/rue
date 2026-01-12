@@ -20,8 +20,7 @@ description = "Unchecked functions, checked blocks, and raw pointer types for lo
 
 [[case]]
 name = "unchecked_fn_basic"
-spec = ["9.1:1", "9.1:3"]
-preview = "unchecked_code"
+spec = ["9.1:1", "9.1:2"]
 source = """
 unchecked fn dangerous_op() -> i32 { 42 }
 fn main() -> i32 { 0 }
@@ -31,7 +30,6 @@ exit_code = 0
 [[case]]
 name = "unchecked_fn_with_params"
 spec = ["9.1:1"]
-preview = "unchecked_code"
 source = """
 unchecked fn read_memory(addr: i32) -> i32 { addr }
 fn main() -> i32 { 0 }
@@ -41,7 +39,6 @@ exit_code = 0
 [[case]]
 name = "pub_unchecked_fn"
 spec = ["9.1:1"]
-preview = "unchecked_code"
 source = """
 pub unchecked fn public_dangerous() -> i32 { 0 }
 fn main() -> i32 { 0 }
@@ -49,27 +46,12 @@ fn main() -> i32 { 0 }
 exit_code = 0
 
 # =============================================================================
-# Unchecked function requires preview feature
-# =============================================================================
-
-[[case]]
-name = "unchecked_fn_requires_preview"
-spec = ["9.1:2"]
-source = """
-unchecked fn dangerous_op() -> i32 { 42 }
-fn main() -> i32 { 0 }
-"""
-compile_fail = true
-error_contains = "requires preview feature"
-
-# =============================================================================
 # Checked block expressions
 # =============================================================================
 
 [[case]]
 name = "checked_block_basic"
-spec = ["9.1:5", "9.1:6", "9.1:7"]
-preview = "unchecked_code"
+spec = ["9.1:4", "9.1:5", "9.1:6"]
 source = """
 fn main() -> i32 {
     let x = checked { 42 };
@@ -80,8 +62,7 @@ exit_code = 42
 
 [[case]]
 name = "checked_block_nested"
-spec = ["9.1:5"]
-preview = "unchecked_code"
+spec = ["9.1:4"]
 source = """
 fn main() -> i32 {
     checked {
@@ -95,8 +76,7 @@ exit_code = 42
 
 [[case]]
 name = "checked_block_with_statements"
-spec = ["9.1:5"]
-preview = "unchecked_code"
+spec = ["9.1:4"]
 source = """
 fn main() -> i32 {
     let result = checked {
@@ -118,9 +98,7 @@ exit_code = 42
 
 [[case]]
 name = "ptr_const_type_in_param"
-spec = ["9.1:9", "9.1:10"]
-preview = "unchecked_code"
-preview_should_pass = true
+spec = ["9.1:8", "9.1:9"]
 source = """
 fn takes_ptr(p: ptr const i32) -> i32 { 0 }
 fn main() -> i32 { 0 }
@@ -129,9 +107,7 @@ exit_code = 0
 
 [[case]]
 name = "ptr_mut_type_in_param"
-spec = ["9.1:9"]
-preview = "unchecked_code"
-preview_should_pass = true
+spec = ["9.1:8"]
 source = """
 fn takes_mut_ptr(p: ptr mut i32) -> i32 { 0 }
 fn main() -> i32 { 0 }
@@ -140,9 +116,7 @@ exit_code = 0
 
 [[case]]
 name = "ptr_const_return_type"
-spec = ["9.1:9"]
-preview = "unchecked_code"
-preview_should_pass = true
+spec = ["9.1:8"]
 source = """
 // Test that ptr const T can be used as a return type
 // Pass the pointer through to verify the return type is recognized
@@ -153,9 +127,7 @@ exit_code = 0
 
 [[case]]
 name = "ptr_to_struct_type"
-spec = ["9.1:9"]
-preview = "unchecked_code"
-preview_should_pass = true
+spec = ["9.1:8"]
 source = """
 struct Point { x: i32, y: i32 }
 fn takes_point_ptr(p: ptr const Point) -> i32 { 0 }
