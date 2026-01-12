@@ -17,6 +17,8 @@
 //!     .with_help("consider using a type conversion")
 //! ```
 
+pub mod ice;
+
 use rue_span::Span;
 use std::borrow::Cow;
 use std::collections::HashSet;
