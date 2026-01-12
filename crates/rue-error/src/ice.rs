@@ -2,6 +2,32 @@
 //!
 //! This module provides rich context capture for internal compiler errors to
 //! improve bug reports and developer debugging experience.
+//!
+//! # Creating ICEs
+//!
+//! Use the [`ice!`] macro for easy ICE creation:
+//!
+//! ```ignore
+//! use rue_error::ice;
+//!
+//! // Simple ICE with just a message
+//! let ctx = ice!("unexpected type in codegen");
+//!
+//! // ICE with phase information
+//! let ctx = ice!("invalid instruction", phase: "codegen/emit");
+//!
+//! // ICE with custom details
+//! let ctx = ice!("type mismatch",
+//!     phase: "sema",
+//!     details: {
+//!         "expected" => "i32",
+//!         "found" => "bool"
+//!     }
+//! );
+//!
+//! // Create a CompileError directly
+//! return Err(ice_error!("codegen failed", phase: "emit"));
+//! ```
 
 use std::backtrace::Backtrace;
 use std::fmt;
@@ -163,6 +189,95 @@ impl fmt::Display for IceContext {
 
         Ok(())
     }
+}
+
+/// Create an [`IceContext`] with automatic version and backtrace capture.
+///
+/// This macro provides a convenient way to create ICE contexts with common
+/// defaults while allowing customization of phase and details.
+///
+/// # Syntax
+///
+/// ```ignore
+/// // Just a message
+/// ice!("error message")
+///
+/// // Message + phase
+/// ice!("error message", phase: "codegen/emit")
+///
+/// // Message + details
+/// ice!("error message", details: { "key1" => "value1", "key2" => "value2" })
+///
+/// // Message + phase + details
+/// ice!("error message",
+///     phase: "sema",
+///     details: { "expected" => "i32", "found" => "bool" }
+/// )
+/// ```
+///
+/// The macro automatically:
+/// - Captures a backtrace
+///
+/// Callers should add version information using `.with_version()` when creating ICEs.
+#[macro_export]
+macro_rules! ice {
+    // Just message
+    ($msg:expr) => {
+        $crate::ice::IceContext::new($msg)
+            .with_backtrace()
+    };
+
+    // Message + phase
+    ($msg:expr, phase: $phase:expr) => {
+        $crate::ice::IceContext::new($msg)
+            .with_phase($phase)
+            .with_backtrace()
+    };
+
+    // Message + details
+    ($msg:expr, details: { $($key:expr => $value:expr),+ $(,)? }) => {{
+        let mut ctx = $crate::ice::IceContext::new($msg)
+            .with_backtrace();
+        $(
+            ctx = ctx.with_detail($key, $value);
+        )+
+        ctx
+    }};
+
+    // Message + phase + details
+    ($msg:expr, phase: $phase:expr, details: { $($key:expr => $value:expr),+ $(,)? }) => {{
+        let mut ctx = $crate::ice::IceContext::new($msg)
+            .with_phase($phase)
+            .with_backtrace();
+        $(
+            ctx = ctx.with_detail($key, $value);
+        )+
+        ctx
+    }};
+}
+
+/// Create a [`CompileError`] from an ICE context.
+///
+/// This is a convenience wrapper around [`ice!`] that wraps the result
+/// in a [`CompileError`] for direct use in error returns.
+///
+/// # Syntax
+///
+/// Same as [`ice!`], but returns a [`CompileError`]:
+///
+/// ```ignore
+/// return Err(ice_error!("unexpected type"));
+/// return Err(ice_error!("invalid instruction", phase: "codegen"));
+/// ```
+///
+/// [`CompileError`]: crate::CompileError
+#[macro_export]
+macro_rules! ice_error {
+    ($($tt:tt)*) => {
+        $crate::CompileError::without_span(
+            $crate::ErrorKind::InternalError($crate::ice!($($tt)*).to_string())
+        )
+    };
 }
 
 #[cfg(test)]
@@ -327,5 +442,75 @@ mod tests {
         assert!(ice.phase.is_some());
         assert_eq!(ice.details.len(), 1);
         assert!(ice.backtrace.is_some());
+    }
+
+    // ========================================================================
+    // Macro tests
+    // ========================================================================
+
+    #[test]
+    fn test_ice_macro_simple() {
+        let ctx = ice!("test error");
+        assert_eq!(ctx.message, "test error");
+        assert!(ctx.backtrace.is_some());
+        assert!(ctx.phase.is_none());
+        assert!(ctx.details.is_empty());
+    }
+
+    #[test]
+    fn test_ice_macro_with_phase() {
+        let ctx = ice!("test error", phase: "codegen");
+        assert_eq!(ctx.message, "test error");
+        assert_eq!(ctx.phase.as_deref(), Some("codegen"));
+        assert!(ctx.backtrace.is_some());
+    }
+
+    #[test]
+    fn test_ice_macro_with_details() {
+        let ctx = ice!("test error", details: {
+            "key1" => "value1",
+            "key2" => "value2"
+        });
+        assert_eq!(ctx.message, "test error");
+        assert_eq!(ctx.details.len(), 2);
+        assert_eq!(ctx.details[0], ("key1".to_string(), "value1".to_string()));
+        assert_eq!(ctx.details[1], ("key2".to_string(), "value2".to_string()));
+    }
+
+    #[test]
+    fn test_ice_macro_with_phase_and_details() {
+        let ctx = ice!("test error",
+            phase: "sema",
+            details: {
+                "expected" => "i32",
+                "found" => "bool"
+            }
+        );
+        assert_eq!(ctx.message, "test error");
+        assert_eq!(ctx.phase.as_deref(), Some("sema"));
+        assert_eq!(ctx.details.len(), 2);
+    }
+
+    #[test]
+    fn test_ice_error_macro_simple() {
+        let err = ice_error!("test error");
+        let output = err.to_string();
+        assert!(output.contains("test error"));
+    }
+
+    #[test]
+    fn test_ice_error_macro_with_phase() {
+        let err = ice_error!("test error", phase: "codegen");
+        let output = err.to_string();
+        assert!(output.contains("test error"));
+        assert!(output.contains("codegen"));
+    }
+
+    #[test]
+    fn test_ice_error_returns_compile_error() {
+        fn make_error() -> Result<(), crate::CompileError> {
+            Err(ice_error!("test"))
+        }
+        assert!(make_error().is_err());
     }
 }
