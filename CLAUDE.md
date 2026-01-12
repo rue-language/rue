@@ -103,6 +103,8 @@ graph LR
 | `rue-span` | Source location tracking |
 | `rue-target` | Target platform configuration |
 | `rue-spec` | Specification test runner |
+| `rue-ui-tests` | UI/diagnostics tests (warnings, error messages) |
+| `rue-fuzz` | Fuzz testing infrastructure |
 | `rue-runtime` | Runtime support |
 | `rue-builtins` | Built-in type definitions (String, future Vec, etc.) |
 
@@ -441,6 +443,75 @@ Generate a report showing test coverage of spec paragraphs:
 The traceability check is run as part of `./test.sh` and fails if:
 - Any spec paragraph has no covering test (coverage < 100%)
 - Any test references a non-existent spec paragraph ID
+
+### Fuzz Testing
+
+The project has comprehensive fuzz testing infrastructure in `crates/rue-fuzz` that tests the compiler for crashes, panics, and security issues using both mutation-based and property-based fuzzing.
+
+#### Available Fuzz Targets
+
+```bash
+# List all fuzz targets
+./buck2 run //crates/rue-fuzz:rue-fuzz -- --list
+
+# Available targets:
+# - lexer: Tokenization only (~27,000 exec/s)
+# - parser: Lexing + parsing (~6,500 exec/s)
+# - sema: Semantic analysis (~4,000-8,000 exec/s)
+# - compiler: Full frontend (~4,000-8,000 exec/s)
+# - emitter: x86-64 instruction encoding (~15,000 exec/s)
+# - emitter_sequence: Instruction sequences with labels/jumps (~10,000 exec/s)
+```
+
+#### Running Fuzz Tests
+
+```bash
+# Initialize corpus from spec tests
+./buck2 run //crates/rue-fuzz:rue-fuzz -- --init-corpus crates/rue-fuzz/corpus
+
+# Run a fuzz target with mutations
+./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate lexer crates/rue-fuzz/corpus
+
+# Run for a specific duration (300 seconds = 5 minutes)
+./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 parser crates/rue-fuzz/corpus
+
+# Run for a specific number of iterations
+./buck2 run //crates/rue-fuzz:rue-fuzz -- --max-runs=10000 sema crates/rue-fuzz/corpus
+
+# Run all fuzz targets for 5 minutes each
+for target in lexer parser sema compiler emitter emitter_sequence; do
+    ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 $target crates/rue-fuzz/corpus
+done
+```
+
+#### Property-Based Testing
+
+The fuzzer includes proptest-based generators that create syntactically valid Rue programs:
+
+```bash
+# Run proptest-based fuzz tests
+./buck2 test //crates/rue-fuzz:rue-fuzz-test
+```
+
+These generators create valid identifiers, types, expressions, statements, functions, and complete programs. This enables deeper testing than random byte mutation since the inputs exercise semantic analysis and type checking.
+
+#### CI Integration
+
+Fuzzing runs automatically in CI via `.github/workflows/fuzz.yml`. Each target runs for 5 minutes daily. Any crashes trigger a non-zero exit code and create an issue with the `fuzz-crash` label.
+
+#### When a Crash is Found
+
+If fuzzing finds a crash, the input is saved to `crates/rue-fuzz/crashes/`:
+
+```bash
+# Reproduce the crash
+./buck2 run //crates/rue:rue -- crates/rue-fuzz/crashes/crash-*.txt output
+
+# Or just tokenize to see the issue
+./buck2 run //crates/rue:rue -- --emit tokens crates/rue-fuzz/crashes/crash-*.txt
+```
+
+See `crates/rue-fuzz/README.md` for complete documentation.
 
 ## Modifying the Language
 
