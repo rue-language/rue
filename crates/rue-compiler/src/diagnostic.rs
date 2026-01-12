@@ -220,17 +220,24 @@ impl<'a> DiagnosticFormatter<'a> {
             return format!("{}", self.renderer.render(report));
         };
 
+        // Validate and clamp the span to prevent annotate-snippets panics
+        let source_len = self.source_info.source.len();
+        let start = (span.start as usize).min(source_len);
+        let end = (span.end as usize).min(source_len).max(start);
+
         // Build snippet with primary annotation
         let mut snippet = Snippet::source(self.source_info.source)
             .origin(self.source_info.path)
             .fold(true)
-            .annotation(level.span(span.start as usize..span.end as usize));
+            .annotation(level.span(start..end));
 
         // Add secondary labels as Info annotations
         for label in &diagnostic.labels {
+            let label_start = (label.span.start as usize).min(source_len);
+            let label_end = (label.span.end as usize).min(source_len).max(label_start);
             snippet = snippet.annotation(
                 Level::Info
-                    .span(label.span.start as usize..label.span.end as usize)
+                    .span(label_start..label_end)
                     .label(&label.message),
             );
         }
@@ -499,8 +506,13 @@ impl<'a> MultiFileFormatter<'a> {
                 .origin(source_info.path)
                 .fold(true);
 
+            let source_len = source_info.source.len();
             for (span, label, span_level) in spans {
-                let annotation = span_level.span(span.start as usize..span.end as usize);
+                // Validate and clamp the span to prevent annotate-snippets panics
+                let start = (span.start as usize).min(source_len);
+                let end = (span.end as usize).min(source_len).max(start);
+
+                let annotation = span_level.span(start..end);
                 let annotation = if let Some(label_text) = label {
                     annotation.label(label_text)
                 } else {
@@ -1306,6 +1318,48 @@ mod tests {
     }
 
     #[test]
+    fn test_format_error_with_invalid_span() {
+        let source = "fn main() -> i32 { 42 }";
+        let source_info = SourceInfo::new(source, "test.rue");
+        let formatter = DiagnosticFormatter::new(&source_info);
+
+        // Span that extends beyond source length
+        let error = CompileError::new(
+            ErrorKind::TypeMismatch {
+                expected: "i32".to_string(),
+                found: "bool".to_string(),
+            },
+            Span::new(20, 1000), // end is way beyond source length
+        );
+
+        // Should not panic, should clamp to valid range
+        let output = formatter.format_error(&error);
+        assert!(output.contains("[E0206]"));
+        assert!(output.contains("type mismatch"));
+    }
+
+    #[test]
+    fn test_format_error_with_reversed_span() {
+        let source = "fn main() -> i32 { 42 }";
+        let source_info = SourceInfo::new(source, "test.rue");
+        let formatter = DiagnosticFormatter::new(&source_info);
+
+        // Span with start > end (should be clamped so start == end)
+        let error = CompileError::new(
+            ErrorKind::TypeMismatch {
+                expected: "i32".to_string(),
+                found: "bool".to_string(),
+            },
+            Span::new(20, 10), // start > end
+        );
+
+        // Should not panic
+        let output = formatter.format_error(&error);
+        assert!(output.contains("[E0206]"));
+        assert!(output.contains("type mismatch"));
+    }
+
+    #[test]
     fn test_color_choice_always() {
         let source = "fn main() -> i32 { 1 + true }";
         let source_info = SourceInfo::new(source, "test.rue");
@@ -1581,6 +1635,48 @@ mod tests {
         let output = formatter.format_error(&error);
         // Output should not contain ANSI escape codes
         assert!(!output.contains("\x1b["));
+    }
+
+    #[test]
+    fn test_multi_file_formatter_invalid_span() {
+        let source = "fn main() -> i32 { 42 }";
+        let sources = vec![(FileId::new(1), SourceInfo::new(source, "test.rue"))];
+        let formatter = MultiFileFormatter::new(sources);
+
+        // Span that extends beyond source length
+        let error = CompileError::new(
+            ErrorKind::TypeMismatch {
+                expected: "i32".to_string(),
+                found: "bool".to_string(),
+            },
+            Span::with_file(FileId::new(1), 20, 1000),
+        );
+
+        // Should not panic, should clamp to valid range
+        let output = formatter.format_error(&error);
+        assert!(output.contains("[E0206]"));
+        assert!(output.contains("type mismatch"));
+    }
+
+    #[test]
+    fn test_multi_file_formatter_reversed_span() {
+        let source = "fn main() -> i32 { 42 }";
+        let sources = vec![(FileId::new(1), SourceInfo::new(source, "test.rue"))];
+        let formatter = MultiFileFormatter::new(sources);
+
+        // Span with start > end
+        let error = CompileError::new(
+            ErrorKind::TypeMismatch {
+                expected: "i32".to_string(),
+                found: "bool".to_string(),
+            },
+            Span::with_file(FileId::new(1), 20, 10),
+        );
+
+        // Should not panic
+        let output = formatter.format_error(&error);
+        assert!(output.contains("[E0206]"));
+        assert!(output.contains("type mismatch"));
     }
 
     // ========================================================================
