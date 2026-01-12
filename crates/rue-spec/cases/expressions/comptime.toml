@@ -632,8 +632,6 @@ exit_code = 42
 [[case]]
 name = "anon_struct_method_basic"
 spec = ["4.14:10"]
-preview = "anon_struct_methods"
-preview_should_pass = true
 description = "Basic method definition in anonymous struct"
 source = """
 fn Counter() -> type {
@@ -656,7 +654,6 @@ exit_code = 42
 [[case]]
 name = "anon_struct_method_self_return"
 spec = ["4.14:10", "4.14:11"]
-preview = "anon_struct_methods"
 description = "Method returning Self type"
 source = """
 fn Counter() -> type {
@@ -680,7 +677,6 @@ exit_code = 42
 [[case]]
 name = "anon_struct_method_chain"
 spec = ["4.14:10", "4.14:11"]
-preview = "anon_struct_methods"
 description = "Chaining multiple method calls"
 source = """
 fn Counter() -> type {
@@ -707,7 +703,6 @@ exit_code = 3
 [[case]]
 name = "anon_struct_method_with_params"
 spec = ["4.14:10"]
-preview = "anon_struct_methods"
 description = "Method with additional parameters"
 source = """
 fn Counter() -> type {
@@ -734,7 +729,6 @@ exit_code = 42
 [[case]]
 name = "anon_struct_self_type_annotation"
 spec = ["4.14:11"]
-preview = "anon_struct_methods"
 description = "Self used in parameter type annotation"
 source = """
 fn Pair() -> type {
@@ -760,7 +754,6 @@ exit_code = 42
 [[case]]
 name = "anon_struct_generic_method"
 spec = ["4.14:10", "4.14:12"]
-preview = "anon_struct_methods"
 description = "Method using captured comptime type parameter"
 source = """
 fn Wrapper(comptime T: type) -> type {
@@ -783,7 +776,6 @@ exit_code = 42
 [[case]]
 name = "anon_struct_comptime_param_capture"
 spec = ["4.14:12"]
-preview = "anon_struct_methods"
 description = "Method accessing comptime parameter from enclosing function"
 source = """
 fn FixedBuffer(comptime N: i32) -> type {
@@ -806,7 +798,6 @@ exit_code = 42
 [[case]]
 name = "anon_struct_associated_fn"
 spec = ["4.14:13"]
-preview = "anon_struct_methods"
 description = "Associated function (no self parameter)"
 source = """
 fn Point() -> type {
@@ -830,7 +821,6 @@ exit_code = 0
 [[case]]
 name = "anon_struct_associated_fn_with_params"
 spec = ["4.14:13"]
-preview = "anon_struct_methods"
 description = "Associated function with parameters"
 source = """
 fn Point() -> type {
@@ -854,8 +844,6 @@ exit_code = 42
 [[case]]
 name = "anon_struct_duplicate_method_error"
 spec = ["4.14:14"]
-preview = "anon_struct_methods"
-preview_should_pass = true
 description = "Error on duplicate method names"
 source = """
 fn Bad() -> type {
@@ -879,30 +867,8 @@ compile_fail = true
 error_contains = "duplicate method"
 
 [[case]]
-name = "anon_struct_preview_required"
-spec = ["4.14:10"]
-description = "Anonymous struct methods require preview feature"
-source = """
-fn Counter() -> type {
-    struct {
-        value: i32,
-
-        fn get(self) -> i32 {
-            self.value
-        }
-    }
-}
-fn main() -> i32 {
-    0
-}
-"""
-compile_fail = true
-error_contains = "preview feature"
-
-[[case]]
 name = "anon_struct_empty_with_method_ok"
 spec = ["4.14:9", "4.14:10"]
-preview = "anon_struct_methods"
 description = "Anonymous struct with only methods (no fields) is allowed"
 source = """
 fn StaticUtils() -> type {
@@ -922,7 +888,6 @@ exit_code = 42
 [[case]]
 name = "anon_struct_structural_equality_with_methods"
 spec = ["4.14:15"]
-preview = "anon_struct_methods"
 description = "Structural equality includes method signatures"
 source = """
 fn A() -> type {
@@ -950,7 +915,6 @@ exit_code = 43
 [[case]]
 name = "anon_struct_swap_method"
 spec = ["4.14:11"]
-preview = "anon_struct_methods"
 description = "Swap method from spec example"
 source = """
 fn Pair(comptime T: type) -> type {
@@ -975,7 +939,6 @@ exit_code = 32
 [[case]]
 name = "anon_struct_different_method_return_type_different_types"
 spec = ["4.14:15"]
-preview = "anon_struct_methods"
 description = "Different method return types mean different struct types"
 source = """
 fn A() -> type {
@@ -1003,7 +966,6 @@ exit_code = 42
 [[case]]
 name = "anon_struct_no_method_vs_with_method_different_types"
 spec = ["4.14:15"]
-preview = "anon_struct_methods"
 description = "Struct with method is different from struct without method"
 source = """
 fn WithMethod() -> type {

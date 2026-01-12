@@ -2293,26 +2293,6 @@ fn get_resolved_type_ctx(
     })
 }
 
-/// Check that the unchecked_code preview feature is enabled (parallel version).
-fn require_preview_ctx(
-    ctx: &SemaContext<'_>,
-    feature: PreviewFeature,
-    what: &str,
-    span: Span,
-) -> CompileResult<()> {
-    if !ctx.preview_features.contains(&feature) {
-        Err(CompileError::new(
-            ErrorKind::PreviewFeatureRequired {
-                feature,
-                what: what.to_string(),
-            },
-            span,
-        ))
-    } else {
-        Ok(())
-    }
-}
-
 /// Analyze binary arithmetic operation (parallel version).
 fn analyze_binary_arith_ctx<F>(
     ctx: &SemaContext<'_>,
@@ -5728,13 +5708,6 @@ fn analyze_intrinsic_ctx(
         Ok(AnalysisResult::new(air_ref, Type::U64))
     } else if name == known.ptr_read {
         // @ptr_read(ptr) - Read value through pointer
-        require_preview_ctx(
-            ctx,
-            PreviewFeature::UncheckedCode,
-            "pointer intrinsics",
-            span,
-        )?;
-
         if args.len() != 1 {
             return Err(CompileError::new(
                 ErrorKind::IntrinsicWrongArgCount {
@@ -5778,13 +5751,6 @@ fn analyze_intrinsic_ctx(
         Ok(AnalysisResult::new(air_ref, pointee_type))
     } else if name == known.ptr_write {
         // @ptr_write(ptr, value) - Write value through pointer
-        require_preview_ctx(
-            ctx,
-            PreviewFeature::UncheckedCode,
-            "pointer intrinsics",
-            span,
-        )?;
-
         if args.len() != 2 {
             return Err(CompileError::new(
                 ErrorKind::IntrinsicWrongArgCount {
@@ -5851,13 +5817,6 @@ fn analyze_intrinsic_ctx(
         Ok(AnalysisResult::new(air_ref, Type::UNIT))
     } else if name == known.ptr_offset {
         // @ptr_offset(ptr, offset) - Pointer arithmetic
-        require_preview_ctx(
-            ctx,
-            PreviewFeature::UncheckedCode,
-            "pointer intrinsics",
-            span,
-        )?;
-
         if args.len() != 2 {
             return Err(CompileError::new(
                 ErrorKind::IntrinsicWrongArgCount {
@@ -5912,13 +5871,6 @@ fn analyze_intrinsic_ctx(
         Ok(AnalysisResult::new(air_ref, ptr_type))
     } else if name == known.ptr_to_int {
         // @ptr_to_int(ptr) - Convert pointer to u64
-        require_preview_ctx(
-            ctx,
-            PreviewFeature::UncheckedCode,
-            "pointer intrinsics",
-            span,
-        )?;
-
         if args.len() != 1 {
             return Err(CompileError::new(
                 ErrorKind::IntrinsicWrongArgCount {
@@ -5958,13 +5910,6 @@ fn analyze_intrinsic_ctx(
         Ok(AnalysisResult::new(air_ref, Type::U64))
     } else if name == known.int_to_ptr {
         // @int_to_ptr(addr) - Convert u64 to pointer
-        require_preview_ctx(
-            ctx,
-            PreviewFeature::UncheckedCode,
-            "pointer intrinsics",
-            span,
-        )?;
-
         if args.len() != 1 {
             return Err(CompileError::new(
                 ErrorKind::IntrinsicWrongArgCount {
@@ -6023,13 +5968,6 @@ fn analyze_intrinsic_ctx(
         let is_mut = name == known.addr_of_mut;
         let intrinsic_name = if is_mut { "addr_of_mut" } else { "addr_of" };
 
-        require_preview_ctx(
-            ctx,
-            PreviewFeature::UncheckedCode,
-            "pointer intrinsics",
-            span,
-        )?;
-
         if args.len() != 1 {
             return Err(CompileError::new(
                 ErrorKind::IntrinsicWrongArgCount {
@@ -6066,13 +6004,6 @@ fn analyze_intrinsic_ctx(
         Ok(AnalysisResult::new(air_ref, result_type))
     } else if name == known.syscall {
         // @syscall(num, arg0?, ..., arg5?) - Direct OS syscall
-        require_preview_ctx(
-            ctx,
-            PreviewFeature::UncheckedCode,
-            "@syscall intrinsic",
-            span,
-        )?;
-
         // Syscall takes 1-7 arguments: syscall number + up to 6 arguments
         if args.is_empty() || args.len() > 7 {
             return Err(CompileError::new(
@@ -7236,15 +7167,6 @@ impl<'a> Sema<'a> {
                 // Empty structs are not allowed (unless they have methods)
                 if field_decls.is_empty() && *methods_len == 0 {
                     return Err(CompileError::new(ErrorKind::EmptyStruct, inst.span));
-                }
-
-                // If methods are present, check the preview feature first
-                if *methods_len > 0 {
-                    self.require_preview(
-                        PreviewFeature::AnonStructMethods,
-                        "anonymous struct methods",
-                        inst.span,
-                    )?;
                 }
 
                 // Resolve each field type and build the struct fields
@@ -9040,16 +8962,9 @@ impl<'a> Sema<'a> {
                 let (struct_ty, is_new) =
                     self.find_or_create_anon_struct(&struct_fields, &method_sigs);
 
-                // Register methods if present (requires preview feature)
+                // Register methods if present
                 // Only register for newly created structs to avoid duplicate registration
                 if is_new && *methods_len > 0 {
-                    // Check preview feature is enabled
-                    if !self
-                        .preview_features
-                        .contains(&PreviewFeature::AnonStructMethods)
-                    {
-                        return None; // Feature not enabled, can't evaluate
-                    }
                     let struct_id = struct_ty.as_struct()?;
                     // Use comptime-safe method registration
                     self.register_anon_struct_methods_for_comptime(
@@ -9406,15 +9321,8 @@ impl<'a> Sema<'a> {
                 let (struct_ty, is_new) =
                     self.find_or_create_anon_struct(&struct_fields, &method_sigs);
 
-                // Register methods if present (requires preview feature)
+                // Register methods if present
                 if *methods_len > 0 && is_new {
-                    // Check preview feature is enabled
-                    if !self
-                        .preview_features
-                        .contains(&PreviewFeature::AnonStructMethods)
-                    {
-                        return None; // Feature not enabled, can't evaluate
-                    }
                     let struct_id = struct_ty.as_struct()?;
                     // Use comptime-safe method registration with type substitution
                     self.register_anon_struct_methods_for_comptime_with_subst(
@@ -10431,9 +10339,6 @@ impl<'a> Sema<'a> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        // Require unchecked context
-        self.require_preview(PreviewFeature::UncheckedCode, "pointer intrinsics", span)?;
-
         if args.len() != 1 {
             return Err(CompileError::new(
                 ErrorKind::IntrinsicWrongArgCount {
@@ -10488,9 +10393,6 @@ impl<'a> Sema<'a> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        // Require unchecked context
-        self.require_preview(PreviewFeature::UncheckedCode, "pointer intrinsics", span)?;
-
         if args.len() != 2 {
             return Err(CompileError::new(
                 ErrorKind::IntrinsicWrongArgCount {
@@ -10568,9 +10470,6 @@ impl<'a> Sema<'a> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        // Require unchecked context
-        self.require_preview(PreviewFeature::UncheckedCode, "pointer intrinsics", span)?;
-
         if args.len() != 2 {
             return Err(CompileError::new(
                 ErrorKind::IntrinsicWrongArgCount {
@@ -10636,9 +10535,6 @@ impl<'a> Sema<'a> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        // Require unchecked context
-        self.require_preview(PreviewFeature::UncheckedCode, "pointer intrinsics", span)?;
-
         if args.len() != 1 {
             return Err(CompileError::new(
                 ErrorKind::IntrinsicWrongArgCount {
@@ -10691,9 +10587,6 @@ impl<'a> Sema<'a> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        // Require unchecked context
-        self.require_preview(PreviewFeature::UncheckedCode, "pointer intrinsics", span)?;
-
         if args.len() != 1 {
             return Err(CompileError::new(
                 ErrorKind::IntrinsicWrongArgCount {
@@ -10762,9 +10655,6 @@ impl<'a> Sema<'a> {
     ) -> CompileResult<AnalysisResult> {
         let intrinsic_name = if is_mut { "addr_of_mut" } else { "addr_of" };
 
-        // Require unchecked context
-        self.require_preview(PreviewFeature::UncheckedCode, "pointer intrinsics", span)?;
-
         if args.len() != 1 {
             return Err(CompileError::new(
                 ErrorKind::IntrinsicWrongArgCount {
@@ -10824,9 +10714,6 @@ impl<'a> Sema<'a> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        // Require unchecked context
-        self.require_preview(PreviewFeature::UncheckedCode, "@syscall intrinsic", span)?;
-
         // Syscall takes 1-7 arguments: syscall number + up to 6 arguments
         if args.is_empty() || args.len() > 7 {
             return Err(CompileError::new(

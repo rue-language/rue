@@ -13,9 +13,7 @@ use std::collections::{HashMap, HashSet};
 
 use lasso::Spur;
 use rue_builtins::is_reserved_type_name;
-use rue_error::{
-    CompileError, CompileResult, CopyStructNonCopyFieldError, ErrorKind, PreviewFeature,
-};
+use rue_error::{CompileError, CompileResult, CopyStructNonCopyFieldError, ErrorKind};
 use rue_rir::{InstData, InstRef, RirDirective, RirParamMode};
 use rue_span::Span;
 
@@ -384,7 +382,7 @@ impl<'a> Sema<'a> {
 
                 InstData::FnDecl {
                     is_pub,
-                    is_unchecked,
+                    is_unchecked: _,
                     name,
                     params_start,
                     params_len,
@@ -400,14 +398,6 @@ impl<'a> Sema<'a> {
                         continue;
                     }
 
-                    // Unchecked functions require preview feature
-                    if *is_unchecked {
-                        self.require_preview(
-                            PreviewFeature::UncheckedCode,
-                            "unchecked functions",
-                            inst.span,
-                        )?;
-                    }
                     self.collect_function_signature(
                         *name,
                         *params_start,

@@ -1,37 +1,18 @@
 # Syscall Intrinsic Tests
 #
 # These tests verify the @syscall intrinsic, which performs direct OS syscalls.
-# The intrinsic requires the unchecked_code preview feature and a checked block.
+# The intrinsic requires a checked block for safety.
 
 [section]
 id = "runtime.syscall"
 spec_chapter = "9.2"
 name = "Syscall Intrinsic"
 
-# Test that @syscall requires the unchecked_code preview feature
-[[case]]
-name = "syscall_requires_unchecked_preview"
-spec = ["9.2:2", "9.2:3"]
-source = """
-fn main() -> i32 {
-    let syscall_num: u64 = 60;
-    let arg: u64 = 0;
-    checked {
-        @syscall(syscall_num, arg);
-    };
-    0
-}
-"""
-compile_fail = true
-error_contains = "requires preview feature"
-
-# Test that @syscall works with the preview feature enabled (x86-64 Linux)
+# Test that @syscall works on x86-64 Linux
 # Note: only_on restricts this test to run only on matching host platforms
 [[case]]
 name = "syscall_basic_x86_64"
 spec = ["9.2:1", "9.2:5"]
-preview = "unchecked_code"
-preview_should_pass = true
 only_on = ["x86-64-linux"]
 source = """
 fn main() -> i32 {
@@ -52,8 +33,6 @@ exit_code = 42
 [[case]]
 name = "syscall_basic_aarch64"
 spec = ["9.2:1", "9.2:5"]
-preview = "unchecked_code"
-preview_should_pass = true
 only_on = ["aarch64-linux"]
 source = """
 fn main() -> i32 {
@@ -74,7 +53,6 @@ exit_code = 42
 [[case]]
 name = "syscall_requires_syscall_number"
 spec = ["9.2:4"]
-preview = "unchecked_code"
 source = """
 fn main() -> i32 {
     checked {
@@ -84,13 +62,12 @@ fn main() -> i32 {
 }
 """
 compile_fail = true
-error_contains = "wrong number of arguments"
+error_contains = "expects 7 arguments, found 0"
 
 # Test that @syscall accepts up to 7 arguments
 [[case]]
 name = "syscall_max_args"
 spec = ["9.2:4"]
-preview = "unchecked_code"
 only_on = ["x86-64-linux"]
 source = """
 fn main() -> i32 {
@@ -116,7 +93,6 @@ exit_code = 0
 [[case]]
 name = "syscall_too_many_args"
 spec = ["9.2:4"]
-preview = "unchecked_code"
 source = """
 fn main() -> i32 {
     let n: u64 = 60;
@@ -134,13 +110,12 @@ fn main() -> i32 {
 }
 """
 compile_fail = true
-error_contains = "wrong number of arguments"
+error_contains = "expects 7 arguments, found 8"
 
 # Test that @syscall requires u64 arguments
 [[case]]
 name = "syscall_requires_u64_args"
 spec = ["9.2:4"]
-preview = "unchecked_code"
 source = """
 fn main() -> i32 {
     let syscall_num: i32 = 60;  // i32 instead of u64
@@ -152,14 +127,12 @@ fn main() -> i32 {
 }
 """
 compile_fail = true
-error_contains = "type mismatch"
+error_contains = "expects u64"
 
 # Test that @syscall returns i64 (using assignment inside block)
 [[case]]
 name = "syscall_returns_i64"
 spec = ["9.2:5"]
-preview = "unchecked_code"
-preview_should_pass = true
 only_on = ["x86-64-linux"]
 source = """
 fn main() -> i32 {
@@ -184,8 +157,6 @@ exit_code = 42
 [[case]]
 name = "syscall_checked_block_expression"
 spec = ["9.2:5"]
-preview = "unchecked_code"
-preview_should_pass = true
 only_on = ["x86-64-linux"]
 source = """
 fn main() -> i32 {
