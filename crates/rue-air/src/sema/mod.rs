@@ -48,6 +48,7 @@ mod typeck;
 mod visibility;
 
 // Public re-exports
+pub use context::ConstValue;
 pub use gather::GatherOutput;
 pub use inference_ctx::InferenceContext;
 pub use info::{AnonMethodSig, ConstInfo, FunctionInfo, MethodInfo};
@@ -99,6 +100,12 @@ pub struct Sema<'a> {
     pub(crate) param_arena: ParamArena,
     /// Method signatures for anonymous structs, used for structural equality comparison.
     pub(crate) anon_struct_method_sigs: HashMap<StructId, Vec<AnonMethodSig>>,
+    /// Captured comptime values for anonymous structs.
+    /// When an anonymous struct with methods is created inside a comptime function,
+    /// the comptime parameter values (e.g., N=42 in FixedBuffer(comptime N: i32)) are
+    /// stored here, keyed by StructId. These values become part of type identity:
+    /// FixedBuffer(42) and FixedBuffer(100) are different types.
+    pub(crate) anon_struct_captured_values: HashMap<StructId, HashMap<Spur, ConstValue>>,
 }
 
 impl<'a> Sema<'a> {
@@ -126,6 +133,7 @@ impl<'a> Sema<'a> {
             file_paths: HashMap::new(),
             param_arena: ParamArena::new(),
             anon_struct_method_sigs: HashMap::new(),
+            anon_struct_captured_values: HashMap::new(),
         }
     }
 

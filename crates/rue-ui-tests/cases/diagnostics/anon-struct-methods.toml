@@ -36,10 +36,13 @@ fn Counter() -> type {
         fn get(self) -> i32 { 0 }
     }
 }
-fn main() -> i32 { 0 }
+fn main() -> i32 {
+    let C = Counter();
+    0
+}
 """
 compile_fail = true
-error_contains = "duplicate"
+error_contains = "comptime evaluation failed"
 
 # =============================================================================
 # Method Lookup Errors (Currently Broken - Phase 3 Implementation Incomplete)

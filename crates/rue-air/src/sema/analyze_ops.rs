@@ -1511,6 +1511,48 @@ impl<'a> Sema<'a> {
             return Ok(AnalysisResult::new(air_ref, Type::COMPTIME_TYPE));
         }
 
+        // Check if it's a comptime value variable (e.g., captured `comptime N: i32`)
+        // When an anonymous struct method captures comptime parameters from its enclosing function,
+        // references to those parameters are resolved here and emitted as const instructions.
+        if let Some(const_value) = ctx.comptime_value_vars.get(&name) {
+            match const_value {
+                ConstValue::Integer(val) => {
+                    // For now, emit as i32 const. TODO: Track actual type.
+                    let air_ref = air.add_inst(AirInst {
+                        data: AirInstData::Const(*val as u64),
+                        ty: Type::I32,
+                        span,
+                    });
+                    return Ok(AnalysisResult::new(air_ref, Type::I32));
+                }
+                ConstValue::Bool(val) => {
+                    let air_ref = air.add_inst(AirInst {
+                        data: AirInstData::Const(*val as u64),
+                        ty: Type::BOOL,
+                        span,
+                    });
+                    return Ok(AnalysisResult::new(air_ref, Type::BOOL));
+                }
+                ConstValue::Type(ty) => {
+                    // If someone captured a type value, treat it like a type const
+                    let air_ref = air.add_inst(AirInst {
+                        data: AirInstData::TypeConst(*ty),
+                        ty: Type::COMPTIME_TYPE,
+                        span,
+                    });
+                    return Ok(AnalysisResult::new(air_ref, Type::COMPTIME_TYPE));
+                }
+                ConstValue::Unit => {
+                    let air_ref = air.add_inst(AirInst {
+                        data: AirInstData::Const(0),
+                        ty: Type::UNIT,
+                        span,
+                    });
+                    return Ok(AnalysisResult::new(air_ref, Type::UNIT));
+                }
+            }
+        }
+
         // Check if it's a constant (e.g., `const VALUE = 42` or `const math = @import("math")`)
         if let Some(const_info) = self.constants.get(&name).cloned() {
             let ty = const_info.ty;
@@ -2777,11 +2819,30 @@ impl<'a> Sema<'a> {
         let base_return_type = fn_info.return_type;
         let fn_body = fn_info.body;
 
-        // Special case: functions that return `type` with no parameters are implicitly comptime
-        // and should be evaluated at compile time.
-        if base_return_type == Type::COMPTIME_TYPE && args.is_empty() {
+        // Special case: functions that return `type` with only comptime parameters
+        // should be evaluated at compile time.
+        // This handles both:
+        //   - `fn SimpleType() -> type { struct { x: i32 } }`  (no params)
+        //   - `fn FixedBuffer(comptime N: i32) -> type { struct { fn capacity(self) -> i32 { N } } }`
+        let all_params_comptime = param_comptime.iter().all(|&c| c);
+        if base_return_type == Type::COMPTIME_TYPE && (args.is_empty() || all_params_comptime) {
+            // Build value_subst from comptime VALUE parameters (e.g., comptime N: i32)
+            let mut value_subst: std::collections::HashMap<Spur, ConstValue> =
+                std::collections::HashMap::new();
+            for (i, is_comptime) in param_comptime.iter().enumerate() {
+                if *is_comptime && param_types[i] != Type::COMPTIME_TYPE {
+                    // This is a comptime VALUE parameter - extract its const value
+                    if let Some(const_val) = self.try_evaluate_const(args[i].value) {
+                        value_subst.insert(param_names[i], const_val);
+                    }
+                }
+            }
             // Try to evaluate the function body at compile time
-            if let Some(ConstValue::Type(ty)) = self.try_evaluate_const(fn_body) {
+            if let Some(ConstValue::Type(ty)) = self.try_evaluate_const_with_subst(
+                fn_body,
+                &std::collections::HashMap::new(),
+                &value_subst,
+            ) {
                 // Success! Return a TypeConst instruction instead of a runtime call
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::TypeConst(ty),
@@ -2876,14 +2937,28 @@ impl<'a> Sema<'a> {
                 base_return_type
             };
 
-            // Special case: functions that return `type` (not a type parameter) with no runtime args
+            // Special case: functions that return `type` (not a type parameter) with only comptime args
             // can be fully evaluated at compile time to produce a concrete anonymous struct type.
-            // This handles cases like: `fn Pair(comptime T: type) -> type { struct { first: T, second: T } }`
-            if return_type == Type::COMPTIME_TYPE && runtime_args.is_empty() {
+            // This handles cases like:
+            //   - `fn Pair(comptime T: type) -> type { struct { first: T, second: T } }`
+            //   - `fn FixedBuffer(comptime N: i32) -> type { struct { fn capacity(self) -> i32 { N } } }`
+            let all_params_comptime = param_comptime.iter().all(|&c| c);
+            if return_type == Type::COMPTIME_TYPE && all_params_comptime {
                 // The return type is literally `type`, not a type parameter that was substituted.
                 // Try to evaluate the function body at compile time with type substitutions.
+                // Also build value_subst from comptime VALUE parameters (e.g., comptime N: i32)
+                let mut value_subst: std::collections::HashMap<Spur, ConstValue> =
+                    std::collections::HashMap::new();
+                for (i, is_comptime) in param_comptime.iter().enumerate() {
+                    if *is_comptime && param_types[i] != Type::COMPTIME_TYPE {
+                        // This is a comptime VALUE parameter - extract its const value
+                        if let Some(const_val) = self.try_evaluate_const(args[i].value) {
+                            value_subst.insert(param_names[i], const_val);
+                        }
+                    }
+                }
                 if let Some(ConstValue::Type(ty)) =
-                    self.try_evaluate_const_with_subst(fn_body, &type_subst)
+                    self.try_evaluate_const_with_subst(fn_body, &type_subst, &value_subst)
                 {
                     // Success! Return a TypeConst instruction instead of a runtime call
                     let air_ref = air.add_inst(AirInst {

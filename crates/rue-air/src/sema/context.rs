@@ -177,6 +177,11 @@ pub(crate) struct AnalysisContext<'a> {
     /// `make_point() -> type`), this map stores the resolved type so it can be used
     /// as a type annotation (e.g., `let p: P = ...`).
     pub comptime_type_vars: HashMap<Spur, Type>,
+    /// Comptime value variables: maps variable symbols to their compile-time constant values.
+    /// When an anonymous struct method captures comptime parameters from the enclosing function
+    /// (e.g., `fn FixedBuffer(comptime N: i32)` creates a struct with methods that reference `N`),
+    /// this map stores the captured values so method bodies can resolve them.
+    pub comptime_value_vars: HashMap<Spur, ConstValue>,
     /// Functions referenced during analysis of this function.
     /// Used for lazy semantic analysis (Phase 3 of module system) to track
     /// which functions need to be analyzed. Each entry is a function name symbol.
@@ -334,7 +339,7 @@ impl AnalysisResult {
 /// This is used for constant expression evaluation, primarily for compile-time
 /// bounds checking. It can be extended for future `comptime` features.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ConstValue {
+pub enum ConstValue {
     /// Integer value (signed to handle arithmetic correctly)
     Integer(i64),
     /// Boolean value

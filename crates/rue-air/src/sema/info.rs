@@ -33,6 +33,10 @@ pub struct FunctionInfo {
 }
 
 /// Information about a method in an impl block.
+///
+/// Note: Captured comptime values for anonymous struct methods are stored at the
+/// struct level in `Sema::anon_struct_captured_values`, not per-method. This ensures
+/// that different instantiations with different captured values create different types.
 #[derive(Debug, Clone, Copy)]
 pub struct MethodInfo {
     /// The struct type this method belongs to

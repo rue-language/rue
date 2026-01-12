@@ -2,19 +2,28 @@
 //!
 //! This module implements structural type equality for anonymous structs.
 //! Two anonymous structs with the same field names/types (in order) AND
-//! the same method signatures are the same type.
+//! the same method signatures AND the same captured comptime values are the same type.
 
+use std::collections::HashMap;
+
+use lasso::Spur;
+
+use crate::sema::context::ConstValue;
 use crate::types::{StructDef, StructField, Type};
 
 use super::Sema;
 use super::info::AnonMethodSig;
 
 impl Sema<'_> {
-    /// Find an existing anonymous struct with the same fields and methods, or create a new one.
+    /// Find an existing anonymous struct with the same fields, methods, and captured values, or create a new one.
     ///
     /// This implements structural type equality for anonymous structs: two anonymous
     /// structs with the same field names/types (in the same order) AND the same method
-    /// signatures are the same type. Method bodies do NOT affect structural equality.
+    /// signatures AND the same captured comptime values are the same type.
+    ///
+    /// Method bodies do NOT affect structural equality, but captured comptime values DO.
+    /// This means `FixedBuffer(42)` and `FixedBuffer(100)` are different types because
+    /// they capture different values, similar to how C++ templates or Zig comptime work.
     ///
     /// Returns a tuple of (Type, is_new) where is_new indicates whether the struct was
     /// newly created (true) or an existing match was found (false). Callers should only
@@ -23,6 +32,7 @@ impl Sema<'_> {
         &mut self,
         fields: &[StructField],
         method_sigs: &[AnonMethodSig],
+        captured_values: &HashMap<Spur, ConstValue>,
     ) -> (Type, bool) {
         // Check if an equivalent anonymous struct already exists
         // Anonymous structs have names starting with "__anon_struct_"
@@ -60,7 +70,32 @@ impl Sema<'_> {
                         break;
                     }
                 }
-                if methods_match {
+                if !methods_match {
+                    continue;
+                }
+
+                // Check captured comptime values match
+                let empty_map = HashMap::new();
+                let existing_captures = self
+                    .anon_struct_captured_values
+                    .get(&struct_id)
+                    .unwrap_or(&empty_map);
+                if existing_captures.len() != captured_values.len() {
+                    continue;
+                }
+                let mut captures_match = true;
+                for (key, new_val) in captured_values.iter() {
+                    if let Some(existing_val) = existing_captures.get(key) {
+                        if existing_val != new_val {
+                            captures_match = false;
+                            break;
+                        }
+                    } else {
+                        captures_match = false;
+                        break;
+                    }
+                }
+                if captures_match {
                     // Found a matching struct - return it with is_new=false
                     return (Type::new_struct(struct_id), false);
                 }
@@ -98,6 +133,12 @@ impl Sema<'_> {
         if !method_sigs.is_empty() {
             self.anon_struct_method_sigs
                 .insert(struct_id, method_sigs.to_vec());
+        }
+
+        // Store captured comptime values for future structural equality checks and method analysis
+        if !captured_values.is_empty() {
+            self.anon_struct_captured_values
+                .insert(struct_id, captured_values.clone());
         }
 
         // Register in struct lookup

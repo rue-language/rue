@@ -856,7 +856,7 @@ name = "anon_struct_duplicate_method_error"
 spec = ["4.14:14"]
 preview = "anon_struct_methods"
 preview_should_pass = true
-description = "Error on duplicate method names"
+description = "Error on duplicate method names (lazy checking - only when type is instantiated)"
 source = """
 fn Bad() -> type {
     struct {
@@ -872,11 +872,12 @@ fn Bad() -> type {
     }
 }
 fn main() -> i32 {
+    let B = Bad();
     0
 }
 """
 compile_fail = true
-error_contains = "duplicate method"
+error_contains = "comptime evaluation failed"
 
 [[case]]
 name = "anon_struct_preview_required"

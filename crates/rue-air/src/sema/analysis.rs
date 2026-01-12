@@ -508,7 +508,7 @@ fn analyze_all_function_bodies_sequential(sema: &mut Sema<'_>) -> MultiErrorResu
                 if struct_def.name.starts_with("__anon_struct_")
                     && !analyzed_anon_methods.contains(&(*struct_id, *method_name))
                 {
-                    Some((*struct_id, *method_name, *method_info))
+                    Some((*struct_id, *method_name, method_info.clone()))
                 } else {
                     None
                 }
@@ -550,12 +550,25 @@ fn analyze_all_function_bodies_sequential(sema: &mut Sema<'_>) -> MultiErrorResu
                 param_info.push((param_names[i], param_types[i], param_modes[i]));
             }
 
+            // Retrieve captured comptime values from struct-level storage
+            // Clone the HashMap to avoid borrowing issues with mutable analyze_method_body call
+            let struct_id = method_info
+                .struct_type
+                .as_struct()
+                .expect("method must belong to struct");
+            let captured_values = sema
+                .anon_struct_captured_values
+                .get(&struct_id)
+                .cloned()
+                .unwrap_or_else(HashMap::new);
+
             match sema.analyze_method_body(
                 &infer_ctx,
                 method_info.return_type,
                 &param_info,
                 method_info.body,
                 method_info.struct_type,
+                &captured_values,
             ) {
                 Ok((
                     air,
@@ -765,7 +778,7 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
 
             // Look up the method info
             let method_info = match sema.methods.get(&(struct_id, method_name)) {
-                Some(info) => *info,
+                Some(info) => info.clone(),
                 None => continue,
             };
 
@@ -801,12 +814,25 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
                     param_info.push((param_names[i], param_types[i], param_modes[i]));
                 }
 
+                // Retrieve captured comptime values from struct-level storage
+                // Clone the HashMap to avoid borrowing issues with mutable analyze_method_body call
+                let struct_id = method_info
+                    .struct_type
+                    .as_struct()
+                    .expect("method must belong to struct");
+                let captured_values = sema
+                    .anon_struct_captured_values
+                    .get(&struct_id)
+                    .cloned()
+                    .unwrap_or_else(HashMap::new);
+
                 match sema.analyze_method_body(
                     &infer_ctx,
                     method_info.return_type,
                     &param_info,
                     method_info.body,
                     method_info.struct_type,
+                    &captured_values,
                 ) {
                     Ok((
                         air,
@@ -1393,6 +1419,7 @@ fn analyze_function_with_context(
         local_string_table: HashMap::new(),
         local_strings: Vec::new(),
         comptime_type_vars: HashMap::new(),
+        comptime_value_vars: HashMap::new(),
         referenced_functions: HashSet::new(),
         referenced_methods: HashSet::new(),
     };
@@ -2684,6 +2711,45 @@ fn analyze_var_ref_ctx(
             span,
         });
         return Ok(AnalysisResult::new(air_ref, Type::COMPTIME_TYPE));
+    }
+
+    // Check if it's a comptime value variable (e.g., captured `comptime N: i32`)
+    // These are captured comptime parameters from enclosing functions, stored in comptime_value_vars
+    if let Some(const_val) = analysis_ctx.comptime_value_vars.get(&name) {
+        match const_val {
+            ConstValue::Integer(value) => {
+                let air_ref = air.add_inst(AirInst {
+                    data: AirInstData::Const(*value as u64),
+                    ty: Type::I32, // TODO: Track actual integer type
+                    span,
+                });
+                return Ok(AnalysisResult::new(air_ref, Type::I32));
+            }
+            ConstValue::Bool(value) => {
+                let air_ref = air.add_inst(AirInst {
+                    data: AirInstData::BoolConst(*value),
+                    ty: Type::BOOL,
+                    span,
+                });
+                return Ok(AnalysisResult::new(air_ref, Type::BOOL));
+            }
+            ConstValue::Type(ty) => {
+                let air_ref = air.add_inst(AirInst {
+                    data: AirInstData::TypeConst(*ty),
+                    ty: Type::COMPTIME_TYPE,
+                    span,
+                });
+                return Ok(AnalysisResult::new(air_ref, Type::COMPTIME_TYPE));
+            }
+            ConstValue::Unit => {
+                let air_ref = air.add_inst(AirInst {
+                    data: AirInstData::UnitConst,
+                    ty: Type::UNIT,
+                    span,
+                });
+                return Ok(AnalysisResult::new(air_ref, Type::UNIT));
+            }
+        }
     }
 
     // Check if it's a constant (e.g., `const VALUE = 42` or `const math = @import("math")`)
@@ -6439,7 +6505,7 @@ impl<'a> Sema<'a> {
         HashSet<Spur>,
         HashSet<(StructId, Spur)>,
     )> {
-        self.analyze_function_internal(infer_ctx, return_type, params, body, None)
+        self.analyze_function_internal(infer_ctx, return_type, params, body, None, None)
     }
 
     /// Internal function analysis with optional type substitutions.
@@ -6454,6 +6520,7 @@ impl<'a> Sema<'a> {
         params: &[(Spur, Type, RirParamMode)],
         body: InstRef,
         type_subst: Option<&std::collections::HashMap<Spur, Type>>,
+        value_subst: Option<&std::collections::HashMap<Spur, ConstValue>>,
     ) -> CompileResult<(
         Air,
         u32,
@@ -6501,13 +6568,20 @@ impl<'a> Sema<'a> {
         // ======================================================================
         // Run constraint generation and unification to determine types
         // for all expressions BEFORE emitting AIR.
-        let resolved_types =
-            self.run_type_inference(infer_ctx, return_type, params, body, type_subst)?;
+        let resolved_types = self.run_type_inference(
+            infer_ctx,
+            return_type,
+            params,
+            body,
+            type_subst,
+            value_subst,
+        )?;
 
         // Create analysis context with resolved types
         // If type_subst is provided, initialize comptime_type_vars with the substitutions
         // so that type parameters can be resolved during struct initialization.
         let comptime_type_vars = type_subst.map(|s| s.clone()).unwrap_or_else(HashMap::new);
+        let comptime_value_vars = value_subst.map(|s| s.clone()).unwrap_or_else(HashMap::new);
         let mut ctx = AnalysisContext {
             locals: HashMap::new(),
             params: &param_vec,
@@ -6522,6 +6596,7 @@ impl<'a> Sema<'a> {
             local_string_table: HashMap::new(),
             local_strings: Vec::new(),
             comptime_type_vars,
+            comptime_value_vars,
             referenced_functions: HashSet::new(),
             referenced_methods: HashSet::new(),
         };
@@ -6581,7 +6656,7 @@ impl<'a> Sema<'a> {
         // For specialized functions, we need to populate comptime_type_vars with the
         // type substitutions so that references to type parameters (like `P { ... }`)
         // can be resolved in the function body.
-        self.analyze_function_internal(infer_ctx, return_type, params, body, Some(type_subst))
+        self.analyze_function_internal(infer_ctx, return_type, params, body, Some(type_subst), None)
     }
 
     /// Analyze a method body with `Self` type resolution.
@@ -6596,6 +6671,7 @@ impl<'a> Sema<'a> {
         params: &[(Spur, Type, RirParamMode)],
         body: InstRef,
         self_type: Type,
+        captured_comptime_values: &std::collections::HashMap<Spur, ConstValue>,
     ) -> CompileResult<(
         Air,
         u32,
@@ -6611,7 +6687,14 @@ impl<'a> Sema<'a> {
         let mut type_subst = HashMap::new();
         type_subst.insert(self_sym, self_type);
 
-        self.analyze_function_internal(infer_ctx, return_type, params, body, Some(&type_subst))
+        self.analyze_function_internal(
+            infer_ctx,
+            return_type,
+            params,
+            body,
+            Some(&type_subst),
+            Some(captured_comptime_values),
+        )
     }
 
     /// Run Hindley-Milner type inference on a function body.
@@ -6632,6 +6715,7 @@ impl<'a> Sema<'a> {
         params: &[(Spur, Type, RirParamMode)],
         body: InstRef,
         type_subst: Option<&HashMap<Spur, Type>>,
+        value_subst: Option<&HashMap<Spur, ConstValue>>,
     ) -> CompileResult<HashMap<InstRef, Type>> {
         // Create constraint generator using pre-computed inference context
         let mut cgen = ConstraintGenerator::with_type_subst(
@@ -6646,7 +6730,7 @@ impl<'a> Sema<'a> {
 
         // Build parameter map for constraint context.
         // Convert Type to InferType so arrays are represented structurally.
-        let param_vars: HashMap<Spur, ParamVarInfo> = params
+        let mut param_vars: HashMap<Spur, ParamVarInfo> = params
             .iter()
             .map(|(name, ty, _mode)| {
                 (
@@ -6657,6 +6741,25 @@ impl<'a> Sema<'a> {
                 )
             })
             .collect();
+
+        // Add comptime value variables as if they were parameters
+        // This allows constraint generation to see captured comptime values
+        if let Some(values) = value_subst {
+            for (name, const_val) in values {
+                let ty = match const_val {
+                    ConstValue::Integer(_) => Type::I32, // TODO: Track actual type
+                    ConstValue::Bool(_) => Type::BOOL,
+                    ConstValue::Type(t) => *t,
+                    ConstValue::Unit => Type::UNIT,
+                };
+                param_vars.insert(
+                    *name,
+                    ParamVarInfo {
+                        ty: self.type_to_infer_type(ty),
+                    },
+                );
+            }
+        }
 
         // Create constraint context
         let mut cgen_ctx = ConstraintContext::new(&param_vars, return_type);
@@ -7249,24 +7352,26 @@ impl<'a> Sema<'a> {
                 let method_sigs = self.extract_anon_method_sigs(*methods_start, *methods_len);
 
                 // Check if an equivalent anonymous struct already exists (structural equality)
-                // This now compares both fields AND method signatures
-                let (struct_ty, is_new) =
-                    self.find_or_create_anon_struct(&struct_fields, &method_sigs);
+                // This now compares fields, method signatures, AND captured comptime values
+                let (struct_ty, _is_new) =
+                    self.find_or_create_anon_struct(&struct_fields, &method_sigs, &HashMap::new());
 
-                // Register methods only for newly created anonymous structs
-                // (existing ones already have their methods registered)
-                if is_new && *methods_len > 0 {
-                    let struct_id = struct_ty
-                        .as_struct()
-                        .expect("anon struct should have StructId");
-                    self.register_anon_struct_methods(
-                        struct_id,
-                        struct_ty,
-                        *methods_start,
-                        *methods_len,
-                        inst.span,
-                    )?;
-                }
+                // DON'T register methods here - they should be registered during const evaluation
+                // (either try_evaluate_const for non-comptime, or try_evaluate_const_with_subst for comptime).
+                // If we register here, we create a struct without captured comptime values, which is incorrect.
+                //
+                // if is_new && *methods_len > 0 {
+                //     let struct_id = struct_ty
+                //         .as_struct()
+                //         .expect("anon struct should have StructId");
+                //     self.register_anon_struct_methods(
+                //         struct_id,
+                //         struct_ty,
+                //         *methods_start,
+                //         *methods_len,
+                //         inst.span,
+                //     )?;
+                // }
 
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::TypeConst(struct_ty),
@@ -9024,10 +9129,11 @@ impl<'a> Sema<'a> {
 
                 // Find or create the anonymous struct type
                 let (struct_ty, is_new) =
-                    self.find_or_create_anon_struct(&struct_fields, &method_sigs);
+                    self.find_or_create_anon_struct(&struct_fields, &method_sigs, &HashMap::new());
 
-                // Register methods if present (requires preview feature)
-                // Only register for newly created structs to avoid duplicate registration
+                // Register methods if present and struct is new
+                // This handles non-comptime functions like `fn Counter() -> type { struct { fn get() {} } }`
+                // For comptime functions with captured values, use try_evaluate_const_with_subst instead
                 if is_new && *methods_len > 0 {
                     // Check preview feature is enabled
                     if !self
@@ -9037,13 +9143,15 @@ impl<'a> Sema<'a> {
                         return None; // Feature not enabled, can't evaluate
                     }
                     let struct_id = struct_ty.as_struct()?;
-                    // Use comptime-safe method registration
-                    self.register_anon_struct_methods_for_comptime(
+                    // Use comptime-safe method registration (no type subst, no value subst for non-comptime)
+                    self.register_anon_struct_methods_for_comptime_with_subst(
                         struct_id,
                         struct_ty,
                         *methods_start,
                         *methods_len,
                         inst.span,
+                        &HashMap::new(), // Empty type substitution
+                        &HashMap::new(), // Empty value substitution (non-comptime)
                     )?;
                 }
                 Some(ConstValue::Type(struct_ty))
@@ -9132,6 +9240,7 @@ impl<'a> Sema<'a> {
         &mut self,
         inst_ref: InstRef,
         type_subst: &std::collections::HashMap<Spur, Type>,
+        value_subst: &std::collections::HashMap<Spur, ConstValue>,
     ) -> Option<ConstValue> {
         let inst = self.rir.get(inst_ref);
         match &inst.data {
@@ -9143,7 +9252,7 @@ impl<'a> Sema<'a> {
 
             // Unary negation: -expr
             InstData::Neg { operand } => {
-                match self.try_evaluate_const_with_subst(*operand, type_subst)? {
+                match self.try_evaluate_const_with_subst(*operand, type_subst, value_subst)? {
                     ConstValue::Integer(n) => n.checked_neg().map(ConstValue::Integer),
                     ConstValue::Bool(_) | ConstValue::Type(_) | ConstValue::Unit => None,
                 }
@@ -9151,7 +9260,7 @@ impl<'a> Sema<'a> {
 
             // Logical NOT: !expr
             InstData::Not { operand } => {
-                match self.try_evaluate_const_with_subst(*operand, type_subst)? {
+                match self.try_evaluate_const_with_subst(*operand, type_subst, value_subst)? {
                     ConstValue::Bool(b) => Some(ConstValue::Bool(!b)),
                     ConstValue::Integer(_) | ConstValue::Type(_) | ConstValue::Unit => None,
                 }
@@ -9160,37 +9269,37 @@ impl<'a> Sema<'a> {
             // Binary arithmetic operations
             InstData::Add { lhs, rhs } => {
                 let l = self
-                    .try_evaluate_const_with_subst(*lhs, type_subst)?
+                    .try_evaluate_const_with_subst(*lhs, type_subst, value_subst)?
                     .as_integer()?;
                 let r = self
-                    .try_evaluate_const_with_subst(*rhs, type_subst)?
+                    .try_evaluate_const_with_subst(*rhs, type_subst, value_subst)?
                     .as_integer()?;
                 l.checked_add(r).map(ConstValue::Integer)
             }
             InstData::Sub { lhs, rhs } => {
                 let l = self
-                    .try_evaluate_const_with_subst(*lhs, type_subst)?
+                    .try_evaluate_const_with_subst(*lhs, type_subst, value_subst)?
                     .as_integer()?;
                 let r = self
-                    .try_evaluate_const_with_subst(*rhs, type_subst)?
+                    .try_evaluate_const_with_subst(*rhs, type_subst, value_subst)?
                     .as_integer()?;
                 l.checked_sub(r).map(ConstValue::Integer)
             }
             InstData::Mul { lhs, rhs } => {
                 let l = self
-                    .try_evaluate_const_with_subst(*lhs, type_subst)?
+                    .try_evaluate_const_with_subst(*lhs, type_subst, value_subst)?
                     .as_integer()?;
                 let r = self
-                    .try_evaluate_const_with_subst(*rhs, type_subst)?
+                    .try_evaluate_const_with_subst(*rhs, type_subst, value_subst)?
                     .as_integer()?;
                 l.checked_mul(r).map(ConstValue::Integer)
             }
             InstData::Div { lhs, rhs } => {
                 let l = self
-                    .try_evaluate_const_with_subst(*lhs, type_subst)?
+                    .try_evaluate_const_with_subst(*lhs, type_subst, value_subst)?
                     .as_integer()?;
                 let r = self
-                    .try_evaluate_const_with_subst(*rhs, type_subst)?
+                    .try_evaluate_const_with_subst(*rhs, type_subst, value_subst)?
                     .as_integer()?;
                 if r == 0 {
                     None
@@ -9200,10 +9309,10 @@ impl<'a> Sema<'a> {
             }
             InstData::Mod { lhs, rhs } => {
                 let l = self
-                    .try_evaluate_const_with_subst(*lhs, type_subst)?
+                    .try_evaluate_const_with_subst(*lhs, type_subst, value_subst)?
                     .as_integer()?;
                 let r = self
-                    .try_evaluate_const_with_subst(*rhs, type_subst)?
+                    .try_evaluate_const_with_subst(*rhs, type_subst, value_subst)?
                     .as_integer()?;
                 if r == 0 {
                     None
@@ -9214,8 +9323,8 @@ impl<'a> Sema<'a> {
 
             // Comparison operations
             InstData::Eq { lhs, rhs } => {
-                let l = self.try_evaluate_const_with_subst(*lhs, type_subst)?;
-                let r = self.try_evaluate_const_with_subst(*rhs, type_subst)?;
+                let l = self.try_evaluate_const_with_subst(*lhs, type_subst, value_subst)?;
+                let r = self.try_evaluate_const_with_subst(*rhs, type_subst, value_subst)?;
                 match (l, r) {
                     (ConstValue::Integer(a), ConstValue::Integer(b)) => {
                         Some(ConstValue::Bool(a == b))
@@ -9225,8 +9334,8 @@ impl<'a> Sema<'a> {
                 }
             }
             InstData::Ne { lhs, rhs } => {
-                let l = self.try_evaluate_const_with_subst(*lhs, type_subst)?;
-                let r = self.try_evaluate_const_with_subst(*rhs, type_subst)?;
+                let l = self.try_evaluate_const_with_subst(*lhs, type_subst, value_subst)?;
+                let r = self.try_evaluate_const_with_subst(*rhs, type_subst, value_subst)?;
                 match (l, r) {
                     (ConstValue::Integer(a), ConstValue::Integer(b)) => {
                         Some(ConstValue::Bool(a != b))
@@ -9237,37 +9346,37 @@ impl<'a> Sema<'a> {
             }
             InstData::Lt { lhs, rhs } => {
                 let l = self
-                    .try_evaluate_const_with_subst(*lhs, type_subst)?
+                    .try_evaluate_const_with_subst(*lhs, type_subst, value_subst)?
                     .as_integer()?;
                 let r = self
-                    .try_evaluate_const_with_subst(*rhs, type_subst)?
+                    .try_evaluate_const_with_subst(*rhs, type_subst, value_subst)?
                     .as_integer()?;
                 Some(ConstValue::Bool(l < r))
             }
             InstData::Gt { lhs, rhs } => {
                 let l = self
-                    .try_evaluate_const_with_subst(*lhs, type_subst)?
+                    .try_evaluate_const_with_subst(*lhs, type_subst, value_subst)?
                     .as_integer()?;
                 let r = self
-                    .try_evaluate_const_with_subst(*rhs, type_subst)?
+                    .try_evaluate_const_with_subst(*rhs, type_subst, value_subst)?
                     .as_integer()?;
                 Some(ConstValue::Bool(l > r))
             }
             InstData::Le { lhs, rhs } => {
                 let l = self
-                    .try_evaluate_const_with_subst(*lhs, type_subst)?
+                    .try_evaluate_const_with_subst(*lhs, type_subst, value_subst)?
                     .as_integer()?;
                 let r = self
-                    .try_evaluate_const_with_subst(*rhs, type_subst)?
+                    .try_evaluate_const_with_subst(*rhs, type_subst, value_subst)?
                     .as_integer()?;
                 Some(ConstValue::Bool(l <= r))
             }
             InstData::Ge { lhs, rhs } => {
                 let l = self
-                    .try_evaluate_const_with_subst(*lhs, type_subst)?
+                    .try_evaluate_const_with_subst(*lhs, type_subst, value_subst)?
                     .as_integer()?;
                 let r = self
-                    .try_evaluate_const_with_subst(*rhs, type_subst)?
+                    .try_evaluate_const_with_subst(*rhs, type_subst, value_subst)?
                     .as_integer()?;
                 Some(ConstValue::Bool(l >= r))
             }
@@ -9275,19 +9384,19 @@ impl<'a> Sema<'a> {
             // Logical operations
             InstData::And { lhs, rhs } => {
                 let l = self
-                    .try_evaluate_const_with_subst(*lhs, type_subst)?
+                    .try_evaluate_const_with_subst(*lhs, type_subst, value_subst)?
                     .as_bool()?;
                 let r = self
-                    .try_evaluate_const_with_subst(*rhs, type_subst)?
+                    .try_evaluate_const_with_subst(*rhs, type_subst, value_subst)?
                     .as_bool()?;
                 Some(ConstValue::Bool(l && r))
             }
             InstData::Or { lhs, rhs } => {
                 let l = self
-                    .try_evaluate_const_with_subst(*lhs, type_subst)?
+                    .try_evaluate_const_with_subst(*lhs, type_subst, value_subst)?
                     .as_bool()?;
                 let r = self
-                    .try_evaluate_const_with_subst(*rhs, type_subst)?
+                    .try_evaluate_const_with_subst(*rhs, type_subst, value_subst)?
                     .as_bool()?;
                 Some(ConstValue::Bool(l || r))
             }
@@ -9295,37 +9404,37 @@ impl<'a> Sema<'a> {
             // Bitwise operations
             InstData::BitAnd { lhs, rhs } => {
                 let l = self
-                    .try_evaluate_const_with_subst(*lhs, type_subst)?
+                    .try_evaluate_const_with_subst(*lhs, type_subst, value_subst)?
                     .as_integer()?;
                 let r = self
-                    .try_evaluate_const_with_subst(*rhs, type_subst)?
+                    .try_evaluate_const_with_subst(*rhs, type_subst, value_subst)?
                     .as_integer()?;
                 Some(ConstValue::Integer(l & r))
             }
             InstData::BitOr { lhs, rhs } => {
                 let l = self
-                    .try_evaluate_const_with_subst(*lhs, type_subst)?
+                    .try_evaluate_const_with_subst(*lhs, type_subst, value_subst)?
                     .as_integer()?;
                 let r = self
-                    .try_evaluate_const_with_subst(*rhs, type_subst)?
+                    .try_evaluate_const_with_subst(*rhs, type_subst, value_subst)?
                     .as_integer()?;
                 Some(ConstValue::Integer(l | r))
             }
             InstData::BitXor { lhs, rhs } => {
                 let l = self
-                    .try_evaluate_const_with_subst(*lhs, type_subst)?
+                    .try_evaluate_const_with_subst(*lhs, type_subst, value_subst)?
                     .as_integer()?;
                 let r = self
-                    .try_evaluate_const_with_subst(*rhs, type_subst)?
+                    .try_evaluate_const_with_subst(*rhs, type_subst, value_subst)?
                     .as_integer()?;
                 Some(ConstValue::Integer(l ^ r))
             }
             InstData::Shl { lhs, rhs } => {
                 let l = self
-                    .try_evaluate_const_with_subst(*lhs, type_subst)?
+                    .try_evaluate_const_with_subst(*lhs, type_subst, value_subst)?
                     .as_integer()?;
                 let r = self
-                    .try_evaluate_const_with_subst(*rhs, type_subst)?
+                    .try_evaluate_const_with_subst(*rhs, type_subst, value_subst)?
                     .as_integer()?;
                 if r < 0 || r >= 8 {
                     return None;
@@ -9334,10 +9443,10 @@ impl<'a> Sema<'a> {
             }
             InstData::Shr { lhs, rhs } => {
                 let l = self
-                    .try_evaluate_const_with_subst(*lhs, type_subst)?
+                    .try_evaluate_const_with_subst(*lhs, type_subst, value_subst)?
                     .as_integer()?;
                 let r = self
-                    .try_evaluate_const_with_subst(*rhs, type_subst)?
+                    .try_evaluate_const_with_subst(*rhs, type_subst, value_subst)?
                     .as_integer()?;
                 if r < 0 || r >= 8 {
                     return None;
@@ -9346,20 +9455,22 @@ impl<'a> Sema<'a> {
             }
             InstData::BitNot { operand } => {
                 let n = self
-                    .try_evaluate_const_with_subst(*operand, type_subst)?
+                    .try_evaluate_const_with_subst(*operand, type_subst, value_subst)?
                     .as_integer()?;
                 Some(ConstValue::Integer(!n))
             }
 
             // Comptime block: comptime { expr } is compile-time evaluable if its inner expr is
-            InstData::Comptime { expr } => self.try_evaluate_const_with_subst(*expr, type_subst),
+            InstData::Comptime { expr } => {
+                self.try_evaluate_const_with_subst(*expr, type_subst, value_subst)
+            }
 
             // Block: evaluate the result expression (last expression in the block)
             InstData::Block { extra_start, len } => {
                 if *len == 1 {
                     let inst_refs = self.rir.get_extra(*extra_start, *len);
                     let result_ref = InstRef::from_raw(inst_refs[0]);
-                    self.try_evaluate_const_with_subst(result_ref, type_subst)
+                    self.try_evaluate_const_with_subst(result_ref, type_subst, value_subst)
                 } else {
                     None
                 }
@@ -9389,11 +9500,14 @@ impl<'a> Sema<'a> {
                 // Extract method signatures for structural equality comparison
                 let method_sigs = self.extract_anon_method_sigs(*methods_start, *methods_len);
 
-                let (struct_ty, is_new) =
-                    self.find_or_create_anon_struct(&struct_fields, &method_sigs);
+                let (struct_ty, _is_new) =
+                    self.find_or_create_anon_struct(&struct_fields, &method_sigs, value_subst);
 
                 // Register methods if present (requires preview feature)
-                if *methods_len > 0 && is_new {
+                // Register if either:
+                // 1. This is a newly created struct (is_new=true), OR
+                // 2. The struct exists but has no methods registered yet
+                if *methods_len > 0 {
                     // Check preview feature is enabled
                     if !self
                         .preview_features
@@ -9402,15 +9516,31 @@ impl<'a> Sema<'a> {
                         return None; // Feature not enabled, can't evaluate
                     }
                     let struct_id = struct_ty.as_struct()?;
-                    // Use comptime-safe method registration with type substitution
-                    self.register_anon_struct_methods_for_comptime_with_subst(
-                        struct_id,
-                        struct_ty,
-                        *methods_start,
-                        *methods_len,
-                        inst.span,
-                        type_subst,
-                    )?;
+
+                    // Check if methods are already registered for this struct
+                    let method_refs = self.rir.get_inst_refs(*methods_start, *methods_len);
+                    let first_method_ref = method_refs[0];
+                    let first_method_inst = self.rir.get(first_method_ref);
+                    if let InstData::FnDecl {
+                        name: method_name, ..
+                    } = &first_method_inst.data
+                    {
+                        let needs_registration =
+                            !self.methods.contains_key(&(struct_id, *method_name));
+
+                        if needs_registration {
+                            // Use comptime-safe method registration with type substitution
+                            self.register_anon_struct_methods_for_comptime_with_subst(
+                                struct_id,
+                                struct_ty,
+                                *methods_start,
+                                *methods_len,
+                                inst.span,
+                                type_subst,
+                                value_subst,
+                            )?;
+                        }
+                    }
                 }
                 Some(ConstValue::Type(struct_ty))
             }
@@ -9448,11 +9578,16 @@ impl<'a> Sema<'a> {
                 Some(ConstValue::Type(ty))
             }
 
-            // VarRef: check substitution map first, then try as a type name
+            // VarRef: check substitution maps first, then try as a type name
             InstData::VarRef { name } => {
-                // Check if this is a type parameter in the substitution map
+                // Check if this is a type parameter in the type substitution map
                 if let Some(&ty) = type_subst.get(name) {
                     return Some(ConstValue::Type(ty));
+                }
+
+                // Check if this is a comptime value variable in the value substitution map
+                if let Some(value) = value_subst.get(name) {
+                    return Some(value.clone());
                 }
 
                 // Try to resolve as a type name
@@ -10100,6 +10235,7 @@ impl<'a> Sema<'a> {
     ///
     /// Note: Self type in method signatures is resolved to the anonymous struct's
     /// StructId during parameter type resolution.
+    #[allow(dead_code)] // Currently unused; kept for reference. Methods are registered via _for_comptime variants.
     fn register_anon_struct_methods(
         &mut self,
         struct_id: StructId,
@@ -10182,6 +10318,7 @@ impl<'a> Sema<'a> {
     /// - Uses `resolve_type_for_comptime` instead of `resolve_type`
     /// - Returns `None` on any failure instead of an error
     /// - Silently skips duplicate methods (returns None)
+    #[allow(dead_code)] // Currently unused; methods registered via analyze_inst or _with_subst variant
     fn register_anon_struct_methods_for_comptime(
         &mut self,
         struct_id: StructId,
@@ -10278,8 +10415,12 @@ impl<'a> Sema<'a> {
         methods_len: u32,
         _span: Span,
         type_subst: &std::collections::HashMap<Spur, Type>,
+        _value_subst: &std::collections::HashMap<Spur, ConstValue>,
     ) -> Option<()> {
         let method_refs = self.rir.get_inst_refs(methods_start, methods_len);
+
+        // Track method names in this registration batch to detect duplicates
+        let mut seen_methods: std::collections::HashSet<Spur> = std::collections::HashSet::new();
 
         for method_ref in method_refs {
             let method_inst = self.rir.get(method_ref);
@@ -10295,7 +10436,13 @@ impl<'a> Sema<'a> {
             {
                 let key = (struct_id, *method_name);
 
-                // Check for duplicate methods - return None in comptime context
+                // Check for duplicate methods within this struct definition
+                if seen_methods.contains(method_name) {
+                    return None; // Duplicate method in same struct - evaluation fails
+                }
+                seen_methods.insert(*method_name);
+
+                // Check if method was already registered from a previous call
                 if self.methods.contains_key(&key) {
                     return None;
                 }
