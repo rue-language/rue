@@ -2819,8 +2819,8 @@ impl<'a> Sema<'a> {
         let base_return_type = fn_info.return_type;
         let fn_body = fn_info.body;
 
-        // Special case: functions that return `type` with only comptime parameters
-        // should be evaluated at compile time.
+        // Special case: functions that return `type` with no parameters or only comptime parameters
+        // are implicitly comptime and should be evaluated at compile time.
         // This handles both:
         //   - `fn SimpleType() -> type { struct { x: i32 } }`  (no params)
         //   - `fn FixedBuffer(comptime N: i32) -> type { struct { fn capacity(self) -> i32 { N } } }`
