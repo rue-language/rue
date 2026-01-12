@@ -1462,9 +1462,10 @@ fn run_type_inference_with_context(
     let body_info = cgen.generate(body, &mut cgen_ctx);
 
     // The function body's type must match the return type.
+    // For arrays, we need to convert Type to InferType structurally.
     cgen.add_constraint(Constraint::equal(
         body_info.ty,
-        InferType::Concrete(return_type),
+        ctx.type_to_infer_type(return_type),
         body_info.span,
     ));
 
@@ -6679,9 +6680,10 @@ impl<'a> Sema<'a> {
 
         // The function body's type must match the return type.
         // This handles implicit returns like `fn foo() -> i8 { 42 }`.
+        // For arrays, we need to convert Type to InferType structurally.
         cgen.add_constraint(Constraint::equal(
             body_info.ty,
-            InferType::Concrete(return_type),
+            self.type_to_infer_type(return_type),
             body_info.span,
         ));
 
