@@ -2213,6 +2213,11 @@ impl<'a> CfgLower<'a> {
                     //   - RDI, RSI, RDX, R10, R8, R9: arguments 1-6
                     //   - Returns result in RAX
                     //   - Clobbers RCX and R11 (saved by hardware)
+                    //
+                    // IMPORTANT: We use push/pop to load arguments into physical registers
+                    // immediately before the syscall instruction. This prevents the register
+                    // allocator from reusing these registers between the setup and the syscall,
+                    // which would break the syscall (especially RAX containing the syscall number).
 
                     let args = self.ctx.cfg.get_extra(*args_start, *args_len);
 
@@ -2220,20 +2225,32 @@ impl<'a> CfgLower<'a> {
                     const SYSCALL_ARG_REGS: [Reg; 6] =
                         [Reg::Rdi, Reg::Rsi, Reg::Rdx, Reg::R10, Reg::R8, Reg::R9];
 
-                    // First argument is syscall number -> RAX
-                    let syscall_num_vreg = self.get_vreg(args[0]);
-                    self.mir.push(X86Inst::MovRR {
-                        dst: Operand::Physical(Reg::Rax),
-                        src: Operand::Virtual(syscall_num_vreg),
-                    });
-
-                    // Remaining arguments go to RDI, RSI, RDX, R10, R8, R9
-                    for (i, &arg) in args.iter().skip(1).enumerate() {
+                    // Push all arguments onto the stack in reverse order (syscall num last)
+                    // This creates a safe staging area that the register allocator won't touch
+                    for &arg in args.iter().rev() {
                         let arg_vreg = self.get_vreg(arg);
                         self.mir.push(X86Inst::MovRR {
-                            dst: Operand::Physical(SYSCALL_ARG_REGS[i]),
+                            dst: Operand::Physical(Reg::Rax),
                             src: Operand::Virtual(arg_vreg),
                         });
+                        self.mir.push(X86Inst::Push {
+                            src: Operand::Physical(Reg::Rax),
+                        });
+                    }
+
+                    // Pop syscall number into RAX
+                    self.mir.push(X86Inst::Pop {
+                        dst: Operand::Physical(Reg::Rax),
+                    });
+
+                    // Pop remaining arguments into their syscall ABI registers
+                    for (i, reg) in SYSCALL_ARG_REGS.iter().enumerate() {
+                        if i < args.len() - 1 {
+                            // -1 because first arg (syscall num) is already in RAX
+                            self.mir.push(X86Inst::Pop {
+                                dst: Operand::Physical(*reg),
+                            });
+                        }
                     }
 
                     // Execute the syscall instruction

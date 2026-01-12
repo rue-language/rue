@@ -2069,37 +2069,68 @@ impl<'a> CfgLower<'a> {
                     //   - X0-X5: arguments 1-6
                     //   - Returns result in X0
                     //   - Uses SVC #0x80
+                    //
+                    // IMPORTANT: We allocate temporary stack space to stage arguments
+                    // before loading them into physical registers. This prevents the register
+                    // allocator from reusing these registers between setup and the SVC instruction,
+                    // which would break the syscall (especially the syscall number register).
 
                     let args = self.ctx.cfg.get_extra(*args_start, *args_len);
 
-                    // First argument is syscall number
+                    // Allocate stack space for all arguments (8 bytes each, 16-byte aligned)
+                    let num_args = args.len();
+                    let stack_space = ((num_args * 8 + 15) & !15) as i32; // Round up to 16-byte alignment
+                    if stack_space > 0 {
+                        self.mir.push(Aarch64Inst::SubImm {
+                            dst: Operand::Physical(Reg::Sp),
+                            src: Operand::Physical(Reg::Sp),
+                            imm: stack_space,
+                        });
+                    }
+
+                    // Store all arguments to the stack
+                    for (i, &arg) in args.iter().enumerate() {
+                        let arg_vreg = self.get_vreg(arg);
+                        let offset = (i * 8) as i32;
+                        self.mir.push(Aarch64Inst::Str {
+                            src: Operand::Virtual(arg_vreg),
+                            base: Reg::Sp,
+                            offset,
+                        });
+                    }
+
+                    // Load syscall number from stack into syscall number register
                     // Linux uses X8, macOS uses X16
-                    let syscall_num_vreg = self.get_vreg(args[0]);
                     let syscall_num_reg = if self.target.is_macho() {
                         Reg::X16
                     } else {
                         Reg::X8
                     };
-                    self.mir.push(Aarch64Inst::MovRR {
+                    self.mir.push(Aarch64Inst::Ldr {
                         dst: Operand::Physical(syscall_num_reg),
-                        src: Operand::Virtual(syscall_num_vreg),
+                        base: Reg::Sp,
+                        offset: 0,
                     });
 
-                    // Remaining arguments go to X0-X5
-                    for (i, &arg) in args.iter().skip(1).enumerate() {
-                        let arg_vreg = self.get_vreg(arg);
-                        let target_reg = match i {
+                    // Load remaining arguments from stack into X0-X5
+                    for i in 1..num_args {
+                        if i > 6 {
+                            break; // Syscall can have at most 6 arguments (plus syscall number)
+                        }
+                        let target_reg = match i - 1 {
                             0 => Reg::X0,
                             1 => Reg::X1,
                             2 => Reg::X2,
                             3 => Reg::X3,
                             4 => Reg::X4,
                             5 => Reg::X5,
-                            _ => unreachable!("syscall can have at most 6 arguments"),
+                            _ => unreachable!(),
                         };
-                        self.mir.push(Aarch64Inst::MovRR {
+                        let offset = (i * 8) as i32;
+                        self.mir.push(Aarch64Inst::Ldr {
                             dst: Operand::Physical(target_reg),
-                            src: Operand::Virtual(arg_vreg),
+                            base: Reg::Sp,
+                            offset,
                         });
                     }
 
@@ -2107,6 +2138,15 @@ impl<'a> CfgLower<'a> {
                     // Linux uses SVC #0, macOS uses SVC #0x80
                     let svc_imm = if self.target.is_macho() { 0x80 } else { 0 };
                     self.mir.push(Aarch64Inst::Svc { imm: svc_imm });
+
+                    // Clean up stack space
+                    if stack_space > 0 {
+                        self.mir.push(Aarch64Inst::AddImm {
+                            dst: Operand::Physical(Reg::Sp),
+                            src: Operand::Physical(Reg::Sp),
+                            imm: stack_space,
+                        });
+                    }
 
                     // Result is in X0, move to a vreg
                     let result_vreg = self.mir.alloc_vreg();
