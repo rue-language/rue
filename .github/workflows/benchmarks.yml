@@ -3,6 +3,10 @@ name: Benchmarks
 on:
   push:
     branches: [trunk]
+  schedule:
+    # Run every 15 minutes to ensure benchmark coverage
+    # This provides predictable resource usage and handles high commit velocity
+    - cron: '*/15 * * * *'
   workflow_dispatch:
     inputs:
       iterations:
@@ -13,11 +17,12 @@ on:
 permissions:
   contents: write  # Needed to push to perf branch (used by collector job)
 
-# Allow concurrent benchmark runs across platforms
-# No race conditions since individual jobs upload artifacts instead of pushing
+# Time-based batching: Cancel older queued runs when new ones arrive
+# This handles high commit velocity by ensuring only the latest commit is benchmarked
+# Scheduled runs every 15 minutes ensure coverage even during quiet periods
 concurrency:
   group: benchmarks
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   benchmark:

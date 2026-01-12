@@ -6,7 +6,7 @@ This document describes the `perf` branch workflow for storing benchmark history
 
 Benchmark results are stored on a dedicated `perf` branch to avoid cluttering the main branch with frequent updates. CI runs benchmarks in parallel across platforms and a collector job aggregates results before pushing atomically to the `perf` branch.
 
-**Architecture (ADR-0031 Phase 1 + 2):** The workflow uses artifact-based collection with atomic pushing. Individual platform jobs upload artifacts, and a single collector job downloads all artifacts and pushes to perf branch once. This eliminates race conditions while enabling parallel execution.
+**Architecture (ADR-0031 Phase 1 + 2 + 3):** The workflow uses artifact-based collection with atomic pushing and time-based batching. Individual platform jobs upload artifacts, and a single collector job downloads all artifacts and pushes to perf branch once. Time-based batching (scheduled runs + cancellation) handles high commit velocity by ensuring only the most recent commits are benchmarked.
 
 ## Branch Structure
 
@@ -17,9 +17,14 @@ The `perf` branch contains:
 
 ### CI Workflow (Automated)
 
-**Current (Phase 1 + 2 - Parallel execution with atomic collection):**
+**Current (Phase 1 + 2 + 3 - Parallel execution with atomic collection and time-based batching):**
 
-1. On each commit to `trunk`:
+1. Benchmarks are triggered by:
+   - **Push to trunk**: Triggered on every commit (older queued runs are canceled)
+   - **Scheduled**: Every 15 minutes to ensure coverage
+   - **Manual**: workflow_dispatch for on-demand runs
+
+2. When triggered:
    - Three platform jobs run in parallel (x86-64-linux, aarch64-linux, aarch64-macos)
    - Each job:
      - Runs `./bench.sh --no-history --output /tmp/results.json`
@@ -29,6 +34,11 @@ The `perf` branch contains:
      - Checkouts perf branch
      - Appends each platform's results to its history file
      - Commits and pushes once (atomic push, no race conditions)
+
+3. **Time-based batching (Phase 3)**:
+   - If multiple commits arrive rapidly, older queued runs are canceled
+   - Only the most recent commit in the queue is benchmarked
+   - Scheduled runs (every 15 minutes) ensure no commits are missed completely
 
 **Legacy (Before Phase 1):**
 

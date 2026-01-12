@@ -216,9 +216,9 @@ If the queue still backs up (e.g., during a period of intense development):
   - Implement atomic push to perf branch
   - Test with multiple parallel platform jobs
 
-- [ ] **Phase 3: Time-based batching** - rue-1h38.3
+- [x] **Phase 3: Time-based batching** - rue-1h38.3
   - Add scheduled trigger (every 15 minutes)
-  - Remove push trigger or debounce it
+  - Enable cancel-in-progress for concurrency control
   - Update documentation
 
 - [ ] **Phase 4: Commit range tracking** - rue-1h38.4
