@@ -25,7 +25,89 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Graceful degradation: Check queue depth and decide whether to run
+  # This prevents resource exhaustion during periods of high commit velocity
+  check-queue:
+    name: Check queue depth
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.decide.outputs.should_run }}
+      queue_depth: ${{ steps.queue.outputs.queue_depth }}
+      reason: ${{ steps.decide.outputs.reason }}
+
+    steps:
+      - name: Check workflow queue depth
+        id: queue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            // Get all workflow runs for this workflow in queued or in_progress state
+            const runs = await github.rest.actions.listWorkflowRuns({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'benchmarks.yml',
+              status: 'queued',
+              per_page: 100
+            });
+
+            const queueDepth = runs.data.workflow_runs.length;
+            core.setOutput('queue_depth', queueDepth);
+            core.info(`Current queue depth: ${queueDepth} queued runs`);
+
+            return queueDepth;
+
+      - name: Decide whether to run
+        id: decide
+        run: |
+          queue_depth="${{ steps.queue.outputs.queue_depth }}"
+
+          # Manual runs always proceed
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "should_run=true" >> $GITHUB_OUTPUT
+            echo "reason=Manual run always proceeds" >> $GITHUB_OUTPUT
+            echo "✓ Manual run - proceeding regardless of queue depth"
+            exit 0
+          fi
+
+          # Adaptive sampling based on queue depth
+          if [ "$queue_depth" -gt 20 ]; then
+            echo "should_run=false" >> $GITHUB_OUTPUT
+            echo "reason=Queue depth ($queue_depth) exceeds threshold (20) - skipping to reduce backlog" >> $GITHUB_OUTPUT
+            echo "⚠️  Queue depth too high ($queue_depth > 20) - skipping this run"
+          elif [ "$queue_depth" -gt 10 ]; then
+            # For medium queue depth, only run scheduled jobs (skip push-triggered ones)
+            if [ "${{ github.event_name }}" = "schedule" ]; then
+              echo "should_run=true" >> $GITHUB_OUTPUT
+              echo "reason=Moderate queue depth ($queue_depth) - running scheduled job only" >> $GITHUB_OUTPUT
+              echo "✓ Scheduled run with moderate queue ($queue_depth) - proceeding"
+            else
+              echo "should_run=false" >> $GITHUB_OUTPUT
+              echo "reason=Queue depth ($queue_depth) exceeds threshold (10) - skipping push-triggered run, waiting for scheduled run" >> $GITHUB_OUTPUT
+              echo "⚠️  Moderate queue depth ($queue_depth > 10) - skipping push-triggered run"
+            fi
+          else
+            echo "should_run=true" >> $GITHUB_OUTPUT
+            echo "reason=Queue depth acceptable ($queue_depth <= 10)" >> $GITHUB_OUTPUT
+            echo "✓ Queue depth acceptable ($queue_depth) - proceeding"
+          fi
+
+      - name: Log skip decision
+        if: steps.decide.outputs.should_run == 'false'
+        run: |
+          echo "## ⚠️  Benchmark Run Skipped" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Reason:** ${{ steps.decide.outputs.reason }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Queue depth:** ${{ steps.queue.outputs.queue_depth }} queued runs" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit:** \`$(git rev-parse --short HEAD 2>/dev/null || echo 'unknown')\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "This run was skipped to prevent resource exhaustion during high commit velocity." >> $GITHUB_STEP_SUMMARY
+          echo "Scheduled runs every 15 minutes ensure benchmark coverage." >> $GITHUB_STEP_SUMMARY
+
   benchmark:
+    needs: check-queue
+    if: needs.check-queue.outputs.should_run == 'true'
     strategy:
       fail-fast: false
       # Parallel execution - no max-parallel constraint
@@ -137,10 +219,10 @@ jobs:
 
   collect-results:
     name: Collect and push results
-    needs: benchmark
+    needs: [check-queue, benchmark]
     runs-on: ubuntu-latest
-    # Only run if at least one benchmark job succeeded
-    if: ${{ !cancelled() && needs.benchmark.result != 'failure' }}
+    # Only run if benchmarks were executed and at least one succeeded
+    if: ${{ needs.check-queue.outputs.should_run == 'true' && !cancelled() && needs.benchmark.result != 'failure' }}
 
     steps:
       - name: Checkout trunk for scripts

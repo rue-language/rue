@@ -227,10 +227,11 @@ If the queue still backs up (e.g., during a period of intense development):
   - Inject commit_range and benchmark_reason into results
   - Update append-benchmark.py documentation for version 2 schema
 
-- [ ] **Phase 5: Graceful degradation** - rue-1h38.5
-  - Add queue depth monitoring
-  - Implement adaptive sampling logic
-  - Add logging for skipped commits
+- [x] **Phase 5: Graceful degradation** - rue-1h38.5
+  - Add queue depth monitoring using GitHub API
+  - Implement adaptive sampling logic (skip if queue > 10 for push, > 20 for all)
+  - Add logging for skipped commits with reason and queue depth
+  - Manual runs always proceed regardless of queue depth
 
 - [ ] **Phase 6: Dashboard improvements** - rue-1h38.6
   - Visualize benchmark coverage
