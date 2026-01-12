@@ -1486,20 +1486,22 @@ fn run_type_inference_with_context(
             },
             UnifyResult::IntLiteralNonInteger { found } => ErrorKind::TypeMismatch {
                 expected: "integer type".to_string(),
-                found: found.name().to_string(),
+                found: found.safe_name_with_pool(Some(&ctx.type_pool)),
             },
             UnifyResult::OccursCheck { var, ty } => ErrorKind::TypeMismatch {
                 expected: "non-recursive type".to_string(),
                 found: format!("{var} = {ty} (infinite type)"),
             },
-            UnifyResult::NotSigned { ty } => ErrorKind::CannotNegateUnsigned(ty.name().to_string()),
+            UnifyResult::NotSigned { ty } => {
+                ErrorKind::CannotNegateUnsigned(ty.safe_name_with_pool(Some(&ctx.type_pool)))
+            }
             UnifyResult::NotInteger { ty } => ErrorKind::TypeMismatch {
                 expected: "integer type".to_string(),
-                found: ty.name().to_string(),
+                found: ty.safe_name_with_pool(Some(&ctx.type_pool)),
             },
             UnifyResult::NotUnsigned { ty } => ErrorKind::TypeMismatch {
                 expected: "unsigned integer type".to_string(),
-                found: ty.name().to_string(),
+                found: ty.safe_name_with_pool(Some(&ctx.type_pool)),
             },
             UnifyResult::ArrayLengthMismatch { expected, found } => {
                 ErrorKind::ArrayLengthMismatch {
@@ -6260,6 +6262,36 @@ impl<'a> Sema<'a> {
                 feature.adr()
             )))
         }
+    }
+
+    /// Create a type mismatch error with safe type name resolution.
+    ///
+    /// This helper method safely resolves type names even for anonymous structs
+    /// by using the type pool. This prevents panics when rendering error messages
+    /// for anonymous struct types that might not be fully registered yet.
+    ///
+    /// # Arguments
+    /// - `expected`: The expected type
+    /// - `found`: The actual type found
+    /// - `span`: The source location of the mismatch
+    ///
+    /// # Returns
+    /// A CompileError with properly formatted type names
+    #[inline]
+    #[allow(dead_code)] // TODO: Use this helper throughout the codebase
+    pub(crate) fn type_mismatch_error(
+        &self,
+        expected: Type,
+        found: Type,
+        span: Span,
+    ) -> CompileError {
+        CompileError::new(
+            ErrorKind::TypeMismatch {
+                expected: expected.safe_name_with_pool(Some(&self.type_pool)),
+                found: found.safe_name_with_pool(Some(&self.type_pool)),
+            },
+            span,
+        )
     }
 
     fn analyze_single_function(

@@ -570,6 +570,39 @@ impl Type {
         }
     }
 
+    /// Get a human-readable type name, safely handling anonymous structs and missing definitions.
+    ///
+    /// Unlike `name()`, this method can access the type pool to get actual struct/enum names
+    /// instead of returning generic placeholders like `"<struct>"`.
+    ///
+    /// This is primarily used for error messages where we want to show meaningful type names
+    /// even if the type pool lookup fails (returns safe fallback in that case).
+    ///
+    /// # Safety
+    ///
+    /// This method is safe even if the struct/enum ID is invalid or the pool is None.
+    /// It will return a fallback string like `"<struct#123>"` in those cases.
+    pub fn safe_name_with_pool(&self, pool: Option<&crate::intern_pool::TypeInternPool>) -> String {
+        match self.try_kind() {
+            Some(TypeKind::Struct(struct_id)) => {
+                if let Some(pool) = pool {
+                    let def = pool.struct_def(struct_id);
+                    return def.name.clone();
+                }
+                format!("<struct#{}>", struct_id.0)
+            }
+            Some(TypeKind::Enum(enum_id)) => {
+                if let Some(pool) = pool {
+                    let def = pool.enum_def(enum_id);
+                    return def.name.clone();
+                }
+                format!("<enum#{}>", enum_id.0)
+            }
+            Some(_kind) => self.name().to_string(),
+            None => format!("<invalid type encoding: {:#x}>", self.0),
+        }
+    }
+
     /// Check if this type is an integer type.
     /// Optimized: checks tag range directly (0-7 are integer types).
     #[inline]

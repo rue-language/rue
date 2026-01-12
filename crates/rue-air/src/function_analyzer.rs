@@ -51,6 +51,15 @@ pub struct FunctionAnalyzer<'a, 'ctx> {
     strings: Vec<String>,
     /// Warnings collected during analysis.
     warnings: Vec<CompileWarning>,
+    /// The `Self` type for methods.
+    ///
+    /// When analyzing methods (both instance methods with `self` and associated functions),
+    /// this field contains the struct type that the method belongs to. This allows resolving
+    /// `Self` type annotations in method signatures and bodies.
+    ///
+    /// `None` for regular functions (not methods).
+    #[allow(dead_code)] // TODO: Use this for Self type resolution
+    self_type: Option<Type>,
 }
 
 /// Output from analyzing a single function.
@@ -64,12 +73,17 @@ pub struct FunctionAnalyzerOutput {
 
 impl<'a, 'ctx> FunctionAnalyzer<'a, 'ctx> {
     /// Create a new function analyzer with a reference to the shared context.
-    pub fn new(ctx: &'a SemaContext<'ctx>) -> Self {
+    ///
+    /// # Parameters
+    /// - `ctx`: The shared semantic analysis context
+    /// - `self_type`: The `Self` type for methods, or `None` for regular functions
+    pub fn new(ctx: &'a SemaContext<'ctx>, self_type: Option<Type>) -> Self {
         Self {
             ctx,
             string_table: HashMap::new(),
             strings: Vec::new(),
             warnings: Vec::new(),
+            self_type,
         }
     }
 
