@@ -1,7 +1,7 @@
 # Pointer Intrinsic Tests
 #
-# Tests for pointer intrinsics that require the unchecked_code preview feature.
-# These intrinsics operate on raw pointers for low-level memory access.
+# Tests for pointer intrinsics that operate on raw pointers for low-level memory access.
+# These intrinsics must be used within `checked` blocks.
 
 [section]
 id = "runtime.pointers"
@@ -127,3 +127,57 @@ fn main() -> i32 {
 }
 """
 exit_code = 77
+
+# =============================================================================
+# @int_to_ptr converts u64 address to pointer with explicit type annotation
+# =============================================================================
+
+[[case]]
+name = "int_to_ptr_with_type_annotation"
+spec = ["9.2:1"]
+source = """
+fn main() -> i32 {
+    let x: i32 = 42;
+    let p1: ptr const i32 = checked { @raw(x) };
+    let addr: u64 = checked { @ptr_to_int(p1) };
+    // Convert address back to pointer with explicit type annotation
+    let p2: ptr mut i32 = checked { @int_to_ptr(addr) };
+    let val: i32 = checked { @ptr_read(p2) };
+    val
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "int_to_ptr_mutable_pointer"
+spec = ["9.2:1"]
+source = """
+fn main() -> i32 {
+    let x: i32 = 99;
+    let p1: ptr const i32 = checked { @raw(x) };
+    let addr: u64 = checked { @ptr_to_int(p1) };
+    // Convert to ptr mut (even from a const pointer address)
+    // This is allowed because int_to_ptr assumes you know what you're doing
+    let p2: ptr mut i32 = checked { @int_to_ptr(addr) };
+    let val: i32 = checked { @ptr_read(p2) };
+    val
+}
+"""
+exit_code = 99
+
+[[case]]
+name = "int_to_ptr_u64_pointer"
+spec = ["9.2:1"]
+source = """
+fn main() -> i32 {
+    let x: u64 = 12345;
+    let p1: ptr const u64 = checked { @raw(x) };
+    let addr: u64 = checked { @ptr_to_int(p1) };
+    // Convert to ptr mut u64
+    let p2: ptr mut u64 = checked { @int_to_ptr(addr) };
+    let val: u64 = checked { @ptr_read(p2) };
+    // Return i32 conversion for exit code
+    @intCast(val)
+}
+"""
+exit_code = 57  # 12345 % 256 = 57

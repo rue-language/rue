@@ -9,8 +9,9 @@
 use super::constraint::Constraint;
 use super::types::{InferType, TypeVarAllocator, TypeVarId};
 use crate::Type;
+use crate::intern_pool::TypeInternPool;
 use crate::scope::ScopedContext;
-use crate::types::{StructId, parse_array_type_syntax};
+use crate::types::{PtrMutability, StructId, parse_array_type_syntax, parse_pointer_type_syntax};
 use lasso::{Spur, ThreadedRodeo};
 use rue_rir::{InstData, InstRef, Rir};
 use rue_span::Span;
@@ -160,6 +161,8 @@ pub struct ConstraintGenerator<'a> {
     /// Type substitutions for Self and type parameters (used in method bodies).
     /// Maps type names (like "Self") to their concrete types.
     type_subst: Option<&'a HashMap<Spur, Type>>,
+    /// Type intern pool for creating pointer and array types during constraint generation.
+    type_pool: &'a TypeInternPool,
 }
 
 impl<'a> ConstraintGenerator<'a> {
@@ -171,8 +174,11 @@ impl<'a> ConstraintGenerator<'a> {
         structs: &'a HashMap<Spur, Type>,
         enums: &'a HashMap<Spur, Type>,
         methods: &'a HashMap<(StructId, Spur), MethodSig>,
+        type_pool: &'a TypeInternPool,
     ) -> Self {
-        Self::with_type_subst(rir, interner, functions, structs, enums, methods, None)
+        Self::with_type_subst(
+            rir, interner, functions, structs, enums, methods, type_pool, None,
+        )
     }
 
     /// Create a new constraint generator with type substitutions.
@@ -188,6 +194,7 @@ impl<'a> ConstraintGenerator<'a> {
         structs: &'a HashMap<Spur, Type>,
         enums: &'a HashMap<Spur, Type>,
         methods: &'a HashMap<(StructId, Spur), MethodSig>,
+        type_pool: &'a TypeInternPool,
         type_subst: Option<&'a HashMap<Spur, Type>>,
     ) -> Self {
         Self {
@@ -202,6 +209,7 @@ impl<'a> ConstraintGenerator<'a> {
             methods,
             int_literal_vars: Vec::new(),
             type_subst,
+            type_pool,
         }
     }
 
@@ -1236,7 +1244,8 @@ impl<'a> ConstraintGenerator<'a> {
 
     /// Resolve a type name to an InferType.
     ///
-    /// Handles primitive types, array syntax `[T; N]`, and struct/enum types.
+    /// Handles primitive types, array syntax `[T; N]`, pointer syntax `ptr mut T` / `ptr const T`,
+    /// and struct/enum types.
     fn resolve_type_name(&self, name: &str) -> Option<InferType> {
         // Check for array syntax first: [T; N]
         if let Some((element_type_str, length)) = parse_array_type_syntax(name) {
@@ -1246,6 +1255,32 @@ impl<'a> ConstraintGenerator<'a> {
                 element: Box::new(element_ty),
                 length,
             });
+        }
+
+        // Check for pointer syntax: ptr mut T / ptr const T
+        if let Some((pointee_type_str, mutability)) = parse_pointer_type_syntax(name) {
+            // Recursively resolve the pointee type
+            let pointee_infer_ty = self.resolve_type_name(&pointee_type_str)?;
+
+            // Convert InferType to Type so we can intern the pointer
+            let pointee_ty = match pointee_infer_ty {
+                InferType::Concrete(ty) => ty,
+                // Can't handle non-concrete types in pointer positions during constraint generation
+                _ => return None,
+            };
+
+            // Intern the pointer type
+            let ptr_ty = match mutability {
+                PtrMutability::Mut => {
+                    let ptr_id = self.type_pool.intern_ptr_mut_from_type(pointee_ty);
+                    Type::new_ptr_mut(ptr_id)
+                }
+                PtrMutability::Const => {
+                    let ptr_id = self.type_pool.intern_ptr_const_from_type(pointee_ty);
+                    Type::new_ptr_const(ptr_id)
+                }
+            };
+            return Some(InferType::Concrete(ptr_ty));
         }
 
         // Check primitives
@@ -1282,16 +1317,17 @@ mod tests {
     use super::*;
     use lasso::ThreadedRodeo;
 
-    /// Helper to create a minimal RIR for testing.
-    fn make_test_rir_and_interner() -> (Rir, ThreadedRodeo) {
+    /// Helper to create a minimal RIR, interner, and type pool for testing.
+    fn make_test_rir_interner_and_type_pool() -> (Rir, ThreadedRodeo, TypeInternPool) {
         let rir = Rir::new();
         let interner = ThreadedRodeo::new();
-        (rir, interner)
+        let type_pool = TypeInternPool::new();
+        (rir, interner, type_pool)
     }
 
     #[test]
     fn test_constraint_generator_int_literal() {
-        let (mut rir, interner) = make_test_rir_and_interner();
+        let (mut rir, interner, type_pool) = make_test_rir_interner_and_type_pool();
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
@@ -1303,8 +1339,9 @@ mod tests {
             span: Span::new(0, 2),
         });
 
-        let mut cgen =
-            ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums, &methods);
+        let mut cgen = ConstraintGenerator::new(
+            &rir, &interner, &functions, &structs, &enums, &methods, &type_pool,
+        );
         let params = HashMap::new();
         let mut ctx = ConstraintContext::new(&params, Type::I32);
 
@@ -1320,7 +1357,7 @@ mod tests {
 
     #[test]
     fn test_constraint_generator_bool_literal() {
-        let (mut rir, interner) = make_test_rir_and_interner();
+        let (mut rir, interner, type_pool) = make_test_rir_interner_and_type_pool();
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
@@ -1331,8 +1368,9 @@ mod tests {
             span: Span::new(0, 4),
         });
 
-        let mut cgen =
-            ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums, &methods);
+        let mut cgen = ConstraintGenerator::new(
+            &rir, &interner, &functions, &structs, &enums, &methods, &type_pool,
+        );
         let params = HashMap::new();
         let mut ctx = ConstraintContext::new(&params, Type::BOOL);
 
@@ -1344,7 +1382,7 @@ mod tests {
 
     #[test]
     fn test_constraint_generator_binary_add() {
-        let (mut rir, interner) = make_test_rir_and_interner();
+        let (mut rir, interner, type_pool) = make_test_rir_interner_and_type_pool();
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
@@ -1364,8 +1402,9 @@ mod tests {
             span: Span::new(0, 5),
         });
 
-        let mut cgen =
-            ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums, &methods);
+        let mut cgen = ConstraintGenerator::new(
+            &rir, &interner, &functions, &structs, &enums, &methods, &type_pool,
+        );
         let params = HashMap::new();
         let mut ctx = ConstraintContext::new(&params, Type::I32);
 
@@ -1384,7 +1423,7 @@ mod tests {
 
     #[test]
     fn test_constraint_generator_comparison() {
-        let (mut rir, interner) = make_test_rir_and_interner();
+        let (mut rir, interner, type_pool) = make_test_rir_interner_and_type_pool();
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
@@ -1404,8 +1443,9 @@ mod tests {
             span: Span::new(0, 5),
         });
 
-        let mut cgen =
-            ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums, &methods);
+        let mut cgen = ConstraintGenerator::new(
+            &rir, &interner, &functions, &structs, &enums, &methods, &type_pool,
+        );
         let params = HashMap::new();
         let mut ctx = ConstraintContext::new(&params, Type::BOOL);
 
@@ -1419,7 +1459,7 @@ mod tests {
 
     #[test]
     fn test_constraint_generator_logical_and() {
-        let (mut rir, interner) = make_test_rir_and_interner();
+        let (mut rir, interner, type_pool) = make_test_rir_interner_and_type_pool();
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
@@ -1439,8 +1479,9 @@ mod tests {
             span: Span::new(0, 13),
         });
 
-        let mut cgen =
-            ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums, &methods);
+        let mut cgen = ConstraintGenerator::new(
+            &rir, &interner, &functions, &structs, &enums, &methods, &type_pool,
+        );
         let params = HashMap::new();
         let mut ctx = ConstraintContext::new(&params, Type::BOOL);
 
@@ -1454,7 +1495,7 @@ mod tests {
 
     #[test]
     fn test_constraint_generator_negation() {
-        let (mut rir, interner) = make_test_rir_and_interner();
+        let (mut rir, interner, type_pool) = make_test_rir_interner_and_type_pool();
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
@@ -1470,8 +1511,9 @@ mod tests {
             span: Span::new(0, 3),
         });
 
-        let mut cgen =
-            ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums, &methods);
+        let mut cgen = ConstraintGenerator::new(
+            &rir, &interner, &functions, &structs, &enums, &methods, &type_pool,
+        );
         let params = HashMap::new();
         let mut ctx = ConstraintContext::new(&params, Type::I32);
 
@@ -1490,7 +1532,7 @@ mod tests {
 
     #[test]
     fn test_constraint_generator_return() {
-        let (mut rir, interner) = make_test_rir_and_interner();
+        let (mut rir, interner, type_pool) = make_test_rir_interner_and_type_pool();
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
@@ -1506,8 +1548,9 @@ mod tests {
             span: Span::new(0, 9),
         });
 
-        let mut cgen =
-            ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums, &methods);
+        let mut cgen = ConstraintGenerator::new(
+            &rir, &interner, &functions, &structs, &enums, &methods, &type_pool,
+        );
         let params = HashMap::new();
         let mut ctx = ConstraintContext::new(&params, Type::I32);
 
@@ -1521,7 +1564,7 @@ mod tests {
 
     #[test]
     fn test_constraint_generator_if_else() {
-        let (mut rir, interner) = make_test_rir_and_interner();
+        let (mut rir, interner, type_pool) = make_test_rir_interner_and_type_pool();
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
@@ -1549,8 +1592,9 @@ mod tests {
             span: Span::new(0, 25),
         });
 
-        let mut cgen =
-            ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums, &methods);
+        let mut cgen = ConstraintGenerator::new(
+            &rir, &interner, &functions, &structs, &enums, &methods, &type_pool,
+        );
         let params = HashMap::new();
         let mut ctx = ConstraintContext::new(&params, Type::I32);
 
@@ -1564,7 +1608,7 @@ mod tests {
 
     #[test]
     fn test_constraint_generator_while_loop() {
-        let (mut rir, interner) = make_test_rir_and_interner();
+        let (mut rir, interner, type_pool) = make_test_rir_interner_and_type_pool();
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
@@ -1584,8 +1628,9 @@ mod tests {
             span: Span::new(0, 15),
         });
 
-        let mut cgen =
-            ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums, &methods);
+        let mut cgen = ConstraintGenerator::new(
+            &rir, &interner, &functions, &structs, &enums, &methods, &type_pool,
+        );
         let params = HashMap::new();
         let mut ctx = ConstraintContext::new(&params, Type::UNIT);
 
@@ -1675,7 +1720,7 @@ mod tests {
 
     #[test]
     fn test_constraint_generator_infinite_loop() {
-        let (mut rir, interner) = make_test_rir_and_interner();
+        let (mut rir, interner, type_pool) = make_test_rir_interner_and_type_pool();
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
@@ -1691,8 +1736,9 @@ mod tests {
             span: Span::new(0, 10),
         });
 
-        let mut cgen =
-            ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums, &methods);
+        let mut cgen = ConstraintGenerator::new(
+            &rir, &interner, &functions, &structs, &enums, &methods, &type_pool,
+        );
         let params = HashMap::new();
         let mut ctx = ConstraintContext::new(&params, Type::UNIT);
 
@@ -1706,7 +1752,7 @@ mod tests {
 
     #[test]
     fn test_constraint_generator_break_continue() {
-        let (mut rir, interner) = make_test_rir_and_interner();
+        let (mut rir, interner, type_pool) = make_test_rir_interner_and_type_pool();
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
@@ -1717,8 +1763,9 @@ mod tests {
             span: Span::new(0, 5),
         });
 
-        let mut cgen =
-            ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums, &methods);
+        let mut cgen = ConstraintGenerator::new(
+            &rir, &interner, &functions, &structs, &enums, &methods, &type_pool,
+        );
         let params = HashMap::new();
         let mut ctx = ConstraintContext::new(&params, Type::UNIT);
 
@@ -1731,7 +1778,7 @@ mod tests {
 
     #[test]
     fn test_constraint_generator_index_get() {
-        let (mut rir, interner) = make_test_rir_and_interner();
+        let (mut rir, interner, type_pool) = make_test_rir_interner_and_type_pool();
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
@@ -1751,8 +1798,9 @@ mod tests {
             span: Span::new(0, 6),
         });
 
-        let mut cgen =
-            ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums, &methods);
+        let mut cgen = ConstraintGenerator::new(
+            &rir, &interner, &functions, &structs, &enums, &methods, &type_pool,
+        );
         let params = HashMap::new();
         let mut ctx = ConstraintContext::new(&params, Type::I32);
 
@@ -1770,7 +1818,7 @@ mod tests {
 
     #[test]
     fn test_constraint_generator_index_set() {
-        let (mut rir, interner) = make_test_rir_and_interner();
+        let (mut rir, interner, type_pool) = make_test_rir_interner_and_type_pool();
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
@@ -1794,8 +1842,9 @@ mod tests {
             span: Span::new(0, 11),
         });
 
-        let mut cgen =
-            ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums, &methods);
+        let mut cgen = ConstraintGenerator::new(
+            &rir, &interner, &functions, &structs, &enums, &methods, &type_pool,
+        );
         let params = HashMap::new();
         let mut ctx = ConstraintContext::new(&params, Type::UNIT);
 
@@ -1813,7 +1862,7 @@ mod tests {
 
     #[test]
     fn test_constraint_generator_empty_block() {
-        let (mut rir, interner) = make_test_rir_and_interner();
+        let (mut rir, interner, type_pool) = make_test_rir_interner_and_type_pool();
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
@@ -1828,8 +1877,9 @@ mod tests {
             span: Span::new(0, 2),
         });
 
-        let mut cgen =
-            ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums, &methods);
+        let mut cgen = ConstraintGenerator::new(
+            &rir, &interner, &functions, &structs, &enums, &methods, &type_pool,
+        );
         let params = HashMap::new();
         let mut ctx = ConstraintContext::new(&params, Type::UNIT);
 
@@ -1842,7 +1892,7 @@ mod tests {
 
     #[test]
     fn test_constraint_generator_bitwise_not() {
-        let (mut rir, interner) = make_test_rir_and_interner();
+        let (mut rir, interner, type_pool) = make_test_rir_interner_and_type_pool();
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
@@ -1858,8 +1908,9 @@ mod tests {
             span: Span::new(0, 3),
         });
 
-        let mut cgen =
-            ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums, &methods);
+        let mut cgen = ConstraintGenerator::new(
+            &rir, &interner, &functions, &structs, &enums, &methods, &type_pool,
+        );
         let params = HashMap::new();
         let mut ctx = ConstraintContext::new(&params, Type::I32);
 
@@ -1877,7 +1928,7 @@ mod tests {
 
     #[test]
     fn test_constraint_generator_function_call_arg_count_mismatch() {
-        let (mut rir, interner) = make_test_rir_and_interner();
+        let (mut rir, interner, type_pool) = make_test_rir_interner_and_type_pool();
         let mut functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
@@ -1914,8 +1965,9 @@ mod tests {
             span: Span::new(0, 7),
         });
 
-        let mut cgen =
-            ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums, &methods);
+        let mut cgen = ConstraintGenerator::new(
+            &rir, &interner, &functions, &structs, &enums, &methods, &type_pool,
+        );
         let params = HashMap::new();
         let mut ctx = ConstraintContext::new(&params, Type::BOOL);
 
@@ -1929,7 +1981,7 @@ mod tests {
 
     #[test]
     fn test_constraint_generator_unknown_function() {
-        let (mut rir, interner) = make_test_rir_and_interner();
+        let (mut rir, interner, type_pool) = make_test_rir_interner_and_type_pool();
         let functions = HashMap::new(); // Empty - no functions registered
         let structs = HashMap::new();
         let enums = HashMap::new();
@@ -1954,8 +2006,9 @@ mod tests {
             span: Span::new(0, 11),
         });
 
-        let mut cgen =
-            ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums, &methods);
+        let mut cgen = ConstraintGenerator::new(
+            &rir, &interner, &functions, &structs, &enums, &methods, &type_pool,
+        );
         let params = HashMap::new();
         let mut ctx = ConstraintContext::new(&params, Type::I32);
 
@@ -1969,7 +2022,7 @@ mod tests {
 
     #[test]
     fn test_constraint_generator_match_multiple_arms() {
-        let (mut rir, interner) = make_test_rir_and_interner();
+        let (mut rir, interner, type_pool) = make_test_rir_interner_and_type_pool();
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
@@ -2013,8 +2066,9 @@ mod tests {
             span: Span::new(0, 40),
         });
 
-        let mut cgen =
-            ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums, &methods);
+        let mut cgen = ConstraintGenerator::new(
+            &rir, &interner, &functions, &structs, &enums, &methods, &type_pool,
+        );
         let params = HashMap::new();
         let mut ctx = ConstraintContext::new(&params, Type::I32);
 

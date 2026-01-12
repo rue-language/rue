@@ -1,12 +1,11 @@
-# Unchecked Code and Raw Pointers - Phase 1: Parser Support
+# Unchecked Code and Raw Pointers
 #
 # This tests the syntax support for:
 # - `unchecked fn` modifier
 # - `checked { }` block expressions
 # - `ptr const T` and `ptr mut T` type syntax
 #
-# Note: These tests use the unchecked_code preview feature and are expected
-# to pass for Phase 1 (parsing). Later phases will add semantic analysis.
+# These features are now part of the language and do not require a preview feature.
 
 [section]
 id = "items.unchecked"

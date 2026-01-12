@@ -1,7 +1,7 @@
 # Syscall Intrinsic Tests
 #
 # These tests verify the @syscall intrinsic, which performs direct OS syscalls.
-# The intrinsic requires the unchecked_code preview feature and a checked block.
+# The intrinsic must be used within a checked block.
 
 [section]
 id = "runtime.syscall"
