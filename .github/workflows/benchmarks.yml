@@ -129,3 +129,139 @@ jobs:
           cat /tmp/results.json >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+
+  collect-results:
+    name: Collect and push results
+    needs: benchmark
+    runs-on: ubuntu-latest
+    # Only run if at least one benchmark job succeeded
+    if: ${{ !cancelled() && needs.benchmark.result != 'failure' }}
+
+    steps:
+      - name: Checkout trunk for scripts
+        uses: actions/checkout@v4
+        with:
+          ref: trunk
+          path: trunk
+
+      - name: Get commit info
+        id: commit
+        run: |
+          cd trunk
+          echo "sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+          echo "full_sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Download all benchmark artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: benchmark-results-${{ steps.commit.outputs.full_sha }}-*
+          merge-multiple: false
+
+      - name: List downloaded artifacts
+        run: |
+          echo "=== Downloaded Artifacts ==="
+          ls -R artifacts/
+          echo ""
+          echo "=== Artifact Contents ==="
+          for dir in artifacts/benchmark-results-*; do
+            if [ -d "$dir" ]; then
+              echo "Directory: $dir"
+              cat "$dir/results.json" | head -20
+              echo ""
+            fi
+          done
+
+      - name: Checkout perf branch
+        uses: actions/checkout@v4
+        with:
+          ref: perf
+          path: perf-branch
+          fetch-depth: 1
+        continue-on-error: true
+
+      - name: Initialize perf branch if needed
+        run: |
+          if [ ! -d "perf-branch" ]; then
+            mkdir -p perf-branch
+            cd perf-branch
+            git init
+            git checkout -b perf
+            mkdir -p benchmarks
+            echo "# Performance History" > README.md
+            echo "" >> README.md
+            echo "This branch stores benchmark history for the Rue compiler." >> README.md
+            echo "See [Performance Dashboard](https://rue-lang.dev/performance/) for visualization." >> README.md
+          fi
+
+      - name: Append results to history
+        run: |
+          # Process each platform's results
+          for artifact_dir in artifacts/benchmark-results-*; do
+            if [ ! -d "$artifact_dir" ]; then
+              continue
+            fi
+
+            # Extract platform from directory name
+            # Format: benchmark-results-{sha}-{platform}
+            platform=$(basename "$artifact_dir" | sed 's/benchmark-results-.*-//')
+            results_file="$artifact_dir/results.json"
+
+            if [ ! -f "$results_file" ]; then
+              echo "::warning::No results.json found in $artifact_dir"
+              continue
+            fi
+
+            echo "Processing results for platform: $platform"
+
+            # Create platform-specific history file if it doesn't exist
+            history_file="perf-branch/benchmarks/history-$platform.json"
+            if [ ! -f "$history_file" ]; then
+              mkdir -p perf-branch/benchmarks
+              echo '{"version": 1, "runs": []}' > "$history_file"
+            fi
+
+            # Append to history using the Python script
+            if ! python3 trunk/scripts/append-benchmark.py "$results_file" "$history_file"; then
+              echo "::error::Failed to append benchmark results for $platform"
+              exit 1
+            fi
+
+            echo "✓ Appended results for $platform"
+          done
+
+      - name: Commit and push to perf branch
+        run: |
+          cd perf-branch
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add benchmarks/
+
+          # Only commit if there are changes
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            # Count how many platforms were updated
+            platform_count=$(git diff --staged --name-only | wc -l)
+
+            git commit -m "Benchmark results for ${{ steps.commit.outputs.sha }} ($platform_count platforms)"
+
+            # Push to perf branch (create if doesn't exist)
+            # Only this job pushes, so no race conditions
+            git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git HEAD:perf
+
+      - name: Summary
+        run: |
+          echo "## Benchmark Collection Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit:** \`${{ steps.commit.outputs.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Platforms Collected" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          for artifact_dir in artifacts/benchmark-results-*; do
+            if [ -d "$artifact_dir" ]; then
+              platform=$(basename "$artifact_dir" | sed 's/benchmark-results-.*-//')
+              echo "- ✓ $platform" >> $GITHUB_STEP_SUMMARY
+            fi
+          done

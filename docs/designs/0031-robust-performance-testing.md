@@ -211,7 +211,7 @@ If the queue still backs up (e.g., during a period of intense development):
   - Change platform jobs to upload artifacts instead of pushing to perf
   - Verify artifacts are created correctly
 
-- [ ] **Phase 2: Atomic collector job** - rue-1h38.2
+- [x] **Phase 2: Atomic collector job** - rue-1h38.2
   - Add collect-results job that downloads artifacts
   - Implement atomic push to perf branch
   - Test with multiple parallel platform jobs

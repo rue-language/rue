@@ -4,9 +4,9 @@ This document describes the `perf` branch workflow for storing benchmark history
 
 ## Overview
 
-Benchmark results are stored on a dedicated `perf` branch to avoid cluttering the main branch with frequent updates. CI runs benchmarks and a collector job aggregates results before pushing to the `perf` branch.
+Benchmark results are stored on a dedicated `perf` branch to avoid cluttering the main branch with frequent updates. CI runs benchmarks in parallel across platforms and a collector job aggregates results before pushing atomically to the `perf` branch.
 
-**Note:** As of ADR-0031 Phase 1, the workflow uses artifact-based collection. Individual platform jobs upload artifacts, and a collector job (Phase 2) will push to the perf branch atomically.
+**Architecture (ADR-0031 Phase 1 + 2):** The workflow uses artifact-based collection with atomic pushing. Individual platform jobs upload artifacts, and a single collector job downloads all artifacts and pushes to perf branch once. This eliminates race conditions while enabling parallel execution.
 
 ## Branch Structure
 
@@ -17,14 +17,18 @@ The `perf` branch contains:
 
 ### CI Workflow (Automated)
 
-**Current (Phase 1 - Artifact-based):**
+**Current (Phase 1 + 2 - Parallel execution with atomic collection):**
 
 1. On each commit to `trunk`:
    - Three platform jobs run in parallel (x86-64-linux, aarch64-linux, aarch64-macos)
    - Each job:
      - Runs `./bench.sh --no-history --output /tmp/results.json`
      - Uploads results as artifact: `benchmark-results-{commit_sha}-{platform}.json`
-   - **Note:** Collector job (Phase 2) will download artifacts and push to perf branch
+   - Collector job runs after all platform jobs complete:
+     - Downloads all platform artifacts
+     - Checkouts perf branch
+     - Appends each platform's results to its history file
+     - Commits and pushes once (atomic push, no race conditions)
 
 **Legacy (Before Phase 1):**
 
