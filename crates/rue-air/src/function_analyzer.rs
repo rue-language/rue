@@ -237,7 +237,7 @@ impl<'a, 'ctx> FunctionAnalyzer<'a, 'ctx> {
     pub fn resolve_type(&mut self, type_sym: Spur, span: Span) -> CompileResult<Type> {
         let type_name = self.ctx.interner.resolve(&type_sym);
 
-        // Check primitive types first
+        // Check primitive types
         match type_name {
             "i8" => return Ok(Type::I8),
             "i16" => return Ok(Type::I16),

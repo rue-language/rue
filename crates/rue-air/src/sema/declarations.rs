@@ -369,8 +369,27 @@ impl<'a> Sema<'a> {
 
     /// Resolve @copy validation, destructors, functions, and methods.
     pub(crate) fn resolve_remaining_declarations(&mut self) -> CompileResult<()> {
-        // First pass: collect all declarations and validate @copy structs
+        // Collect all method InstRefs from anonymous struct types
+        // These need to be skipped during function declaration collection because:
+        // - They may use `Self` type which requires struct context
+        // - They are registered later during comptime evaluation with proper Self resolution
+        let mut anon_struct_method_refs = std::collections::HashSet::new();
         for (_, inst) in self.rir.iter() {
+            if let InstData::AnonStructType {
+                methods_start,
+                methods_len,
+                ..
+            } = &inst.data
+            {
+                let method_refs = self.rir.get_inst_refs(*methods_start, *methods_len);
+                for method_ref in method_refs {
+                    anon_struct_method_refs.insert(method_ref);
+                }
+            }
+        }
+
+        // First pass: collect all declarations and validate @copy structs
+        for (inst_ref, inst) in self.rir.iter() {
             match &inst.data {
                 InstData::StructDecl {
                     directives_start,
@@ -407,8 +426,13 @@ impl<'a> Sema<'a> {
                 } => {
                     // Skip methods (has_self = true) - these are handled elsewhere:
                     // - Named struct methods are collected via ImplDecl
-                    // - Anonymous struct methods are registered during comptime evaluation
                     if *has_self {
+                        continue;
+                    }
+
+                    // Skip ALL methods from anonymous structs (including associated functions)
+                    // These are registered during comptime evaluation with proper Self type context
+                    if anon_struct_method_refs.contains(&inst_ref) {
                         continue;
                     }
 
