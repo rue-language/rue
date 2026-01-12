@@ -33,6 +33,29 @@ It is a compile-time error to call an intrinsic with the wrong number of argumen
 
 It is a compile-time error to use an unknown intrinsic name.
 
+## Quick Reference
+
+{{ rule(id="4.13:5a", cat="informative") }}
+
+The following table provides a quick reference to all available intrinsics:
+
+| Intrinsic | Purpose | Arguments | Return Type |
+|-----------|---------|-----------|-------------|
+| `@dbg` | Print debug output | 1 expression (int, bool, or string) | `()` |
+| `@size_of` | Get type size in bytes | 1 type | `i32` |
+| `@align_of` | Get type alignment in bytes | 1 type | `i32` |
+| `@intCast` | Convert between integer types | 1 expression (integer) | inferred integer type |
+| `@read_line` | Read line from stdin | none | `String` |
+| `@parse_i32` | Parse string to i32 | 1 expression (`String`) | `i32` |
+| `@parse_i64` | Parse string to i64 | 1 expression (`String`) | `i64` |
+| `@parse_u32` | Parse string to u32 | 1 expression (`String`) | `u32` |
+| `@parse_u64` | Parse string to u64 | 1 expression (`String`) | `u64` |
+| `@random_u32` | Generate random u32 | none | `u32` |
+| `@random_u64` | Generate random u64 | none | `u64` |
+| `@target_arch` | Get target architecture | none | `Arch` |
+| `@target_os` | Get target OS | none | `Os` |
+| `@import` | Import module | 1 expression (string literal) | module type |
+
 ## `@dbg`
 
 {{ rule(id="4.13:6", cat="normative") }}
