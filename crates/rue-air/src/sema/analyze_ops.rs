@@ -153,7 +153,7 @@ impl<'a> Sema<'a> {
             // Base case: local variable reference
             InstData::VarRef { name } => {
                 // First check if it's actually a parameter
-                if let Some(param_info) = ctx.params.get(name) {
+                if let Some(param_info) = ctx.params.iter().find(|p| p.name == *name) {
                     return Ok(Some(PlaceTrace {
                         base: AirPlaceBase::Param(param_info.abi_slot),
                         base_type: param_info.ty,
@@ -182,7 +182,7 @@ impl<'a> Sema<'a> {
 
             // Base case: explicit parameter reference
             InstData::ParamRef { name, .. } => {
-                if let Some(param_info) = ctx.params.get(name) {
+                if let Some(param_info) = ctx.params.iter().find(|p| p.name == *name) {
                     return Ok(Some(PlaceTrace {
                         base: AirPlaceBase::Param(param_info.abi_slot),
                         base_type: param_info.ty,
@@ -1406,7 +1406,7 @@ impl<'a> Sema<'a> {
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
         // First check if it's a parameter
-        if let Some(param_info) = ctx.params.get(&name) {
+        if let Some(param_info) = ctx.params.iter().find(|p| p.name == name) {
             let ty = param_info.ty;
             let name_str = self.interner.resolve(&name);
 
@@ -1593,7 +1593,8 @@ impl<'a> Sema<'a> {
         let name_str = self.interner.resolve(&name);
         let param_info = ctx
             .params
-            .get(&name)
+            .iter()
+            .find(|p| p.name == name)
             .ok_or_compile_error(ErrorKind::UndefinedVariable(name_str.to_string()), span)?;
 
         let ty = param_info.ty;
@@ -1620,7 +1621,7 @@ impl<'a> Sema<'a> {
         let name_str = self.interner.resolve(&name);
 
         // First check if it's a parameter (for inout params)
-        if let Some(param_info) = ctx.params.get(&name) {
+        if let Some(param_info) = ctx.params.iter().find(|p| p.name == name) {
             // Check parameter mode - only inout can be assigned to
             match param_info.mode {
                 // Normal and comptime parameters are immutable

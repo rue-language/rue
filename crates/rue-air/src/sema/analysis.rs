@@ -1347,20 +1347,18 @@ fn analyze_function_with_context(
     body: InstRef,
 ) -> FunctionResult {
     let mut air = Air::new(return_type);
-    let mut param_map: HashMap<Spur, ParamInfo> = HashMap::new();
+    let mut param_vec: Vec<ParamInfo> = Vec::new();
     let mut param_modes: Vec<bool> = Vec::new();
 
-    // Add parameters to the param map, tracking ABI slot offsets.
+    // Add parameters to the param vec, tracking ABI slot offsets.
     let mut next_abi_slot: u32 = 0;
     for (pname, ptype, mode) in params.iter() {
-        param_map.insert(
-            *pname,
-            ParamInfo {
-                abi_slot: next_abi_slot,
-                ty: *ptype,
-                mode: *mode,
-            },
-        );
+        param_vec.push(ParamInfo {
+            name: *pname,
+            abi_slot: next_abi_slot,
+            ty: *ptype,
+            mode: *mode,
+        });
         // Inout and Borrow parameters are passed by reference.
         // Comptime parameters are VALUE params (like `comptime n: i32`), passed by value.
         // Normal parameters are passed by value.
@@ -1383,7 +1381,7 @@ fn analyze_function_with_context(
     // Create analysis context with resolved types
     let mut analysis_ctx = AnalysisContext {
         locals: HashMap::new(),
-        params: &param_map,
+        params: &param_vec,
         next_slot: 0,
         loop_depth: 0,
         used_locals: HashSet::new(),
@@ -2622,7 +2620,7 @@ fn analyze_var_ref_ctx(
     analysis_ctx: &mut AnalysisContext,
 ) -> CompileResult<AnalysisResult> {
     // First check if it's a parameter
-    if let Some(param_info) = analysis_ctx.params.get(&name) {
+    if let Some(param_info) = analysis_ctx.params.iter().find(|p| p.name == name) {
         let ty = param_info.ty;
         let name_str = ctx.interner.resolve(&name);
 
@@ -2784,7 +2782,8 @@ fn analyze_param_ref_ctx(
     let name_str = ctx.interner.resolve(&name);
     let param_info = analysis_ctx
         .params
-        .get(&name)
+        .iter()
+        .find(|p| p.name == name)
         .ok_or_compile_error(ErrorKind::UndefinedVariable(name_str.to_string()), span)?;
 
     let ty = param_info.ty;
@@ -2971,7 +2970,7 @@ fn analyze_assign_ctx(
     let name_str = ctx.interner.resolve(&name);
 
     // First check if it's a parameter (for inout params)
-    if let Some(param_info) = analysis_ctx.params.get(&name) {
+    if let Some(param_info) = analysis_ctx.params.iter().find(|p| p.name == name) {
         // Check parameter mode - only inout can be assigned to
         match param_info.mode {
             RirParamMode::Normal | RirParamMode::Comptime => {
@@ -3716,7 +3715,7 @@ fn analyze_inst_for_projection_ctx(
     match &inst.data {
         InstData::VarRef { name } => {
             // First check if it's a parameter
-            if let Some(param_info) = analysis_ctx.params.get(name) {
+            if let Some(param_info) = analysis_ctx.params.iter().find(|p| p.name == *name) {
                 let ty = param_info.ty;
                 let name_str = ctx.interner.resolve(name);
 
@@ -4014,7 +4013,7 @@ fn analyze_field_set_ctx(
                 }
 
                 // First check if it's a parameter
-                if let Some(param_info) = analysis_ctx.params.get(name) {
+                if let Some(param_info) = analysis_ctx.params.iter().find(|p| p.name == *name) {
                     break (
                         name_str.to_string(),
                         RootKind::Param {
@@ -4044,10 +4043,14 @@ fn analyze_field_set_ctx(
             }
             InstData::ParamRef { name, .. } => {
                 let name_str = ctx.interner.resolve(&*name);
-                let param_info = analysis_ctx.params.get(name).ok_or_compile_error(
-                    ErrorKind::UndefinedVariable(name_str.to_string()),
-                    span,
-                )?;
+                let param_info = analysis_ctx
+                    .params
+                    .iter()
+                    .find(|p| p.name == *name)
+                    .ok_or_compile_error(
+                        ErrorKind::UndefinedVariable(name_str.to_string()),
+                        span,
+                    )?;
 
                 // Check if this parameter has been moved
                 if let Some(move_state) = analysis_ctx.moved_vars.get(name) {
@@ -4394,7 +4397,7 @@ fn analyze_index_set_ctx(
             }
 
             // First check if it's a parameter
-            if let Some(param_info) = analysis_ctx.params.get(name) {
+            if let Some(param_info) = analysis_ctx.params.iter().find(|p| p.name == *name) {
                 (
                     name_str.to_string(),
                     IndexSetRootKind::Param {
@@ -4424,7 +4427,8 @@ fn analyze_index_set_ctx(
             let name_str = ctx.interner.resolve(&*name);
             let param_info = analysis_ctx
                 .params
-                .get(name)
+                .iter()
+                .find(|p| p.name == *name)
                 .ok_or_compile_error(ErrorKind::UndefinedVariable(name_str.to_string()), span)?;
 
             // Check if this parameter has been moved
@@ -5225,7 +5229,7 @@ fn get_receiver_storage_ctx(
     match &inst.data {
         InstData::VarRef { name } => {
             // Check if it's a parameter
-            if let Some(param_info) = analysis_ctx.params.get(name) {
+            if let Some(param_info) = analysis_ctx.params.iter().find(|p| p.name == *name) {
                 // Check parameter mode
                 match param_info.mode {
                     RirParamMode::Inout => {
@@ -5269,7 +5273,7 @@ fn get_receiver_storage_ctx(
             ))
         }
         InstData::ParamRef { name, .. } => {
-            if let Some(param_info) = analysis_ctx.params.get(name) {
+            if let Some(param_info) = analysis_ctx.params.iter().find(|p| p.name == *name) {
                 Ok(StringReceiverStorage::Param {
                     abi_slot: param_info.abi_slot,
                 })
@@ -6509,22 +6513,20 @@ impl<'a> Sema<'a> {
         HashSet<(StructId, Spur)>,
     )> {
         let mut air = Air::new(return_type);
-        let mut param_map: HashMap<Spur, ParamInfo> = HashMap::new();
+        let mut param_vec: Vec<ParamInfo> = Vec::new();
         let mut param_modes: Vec<bool> = Vec::new();
 
-        // Add parameters to the param map, tracking ABI slot offsets.
+        // Add parameters to the param vec, tracking ABI slot offsets.
         // Each parameter starts at the next available ABI slot.
         // For struct parameters, the slot count is the number of fields.
         let mut next_abi_slot: u32 = 0;
         for (pname, ptype, mode) in params.iter() {
-            param_map.insert(
-                *pname,
-                ParamInfo {
-                    abi_slot: next_abi_slot,
-                    ty: *ptype,
-                    mode: *mode,
-                },
-            );
+            param_vec.push(ParamInfo {
+                name: *pname,
+                abi_slot: next_abi_slot,
+                ty: *ptype,
+                mode: *mode,
+            });
             // Inout and Borrow parameters are passed by reference.
             // Comptime parameters are VALUE params (like `comptime n: i32`), passed by value.
             // Normal parameters are passed by value.
@@ -6556,7 +6558,7 @@ impl<'a> Sema<'a> {
         let comptime_type_vars = type_subst.map(|s| s.clone()).unwrap_or_else(HashMap::new);
         let mut ctx = AnalysisContext {
             locals: HashMap::new(),
-            params: &param_map,
+            params: &param_vec,
             next_slot: 0,
             loop_depth: 0,
             used_locals: HashSet::new(),
@@ -6816,7 +6818,7 @@ impl<'a> Sema<'a> {
         // For VarRef, we handle it specially: check for full moves but don't mark as moved
         if let InstData::VarRef { name } = &inst.data {
             // First check if it's a parameter
-            if let Some(param_info) = ctx.params.get(name) {
+            if let Some(param_info) = ctx.params.iter().find(|p| p.name == *name) {
                 let ty = param_info.ty;
 
                 // Check if this parameter has been fully moved
@@ -9819,7 +9821,7 @@ impl<'a> Sema<'a> {
         match &receiver_inst.data {
             InstData::VarRef { name } => {
                 // Check if this is a parameter
-                if let Some(param_info) = ctx.params.get(name) {
+                if let Some(param_info) = ctx.params.iter().find(|p| p.name == *name) {
                     // Check parameter mode
                     match param_info.mode {
                         RirParamMode::Inout => {

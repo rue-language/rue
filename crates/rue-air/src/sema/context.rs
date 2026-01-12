@@ -122,6 +122,8 @@ impl VariableMoveState {
 /// Information about a function parameter.
 #[derive(Debug, Clone)]
 pub(crate) struct ParamInfo {
+    /// Parameter name symbol
+    pub name: Spur,
     /// Starting ABI slot for this parameter (0-based).
     /// For scalar types, this is the single slot.
     /// For struct types, this is the first field's slot.
@@ -140,7 +142,7 @@ pub(crate) struct AnalysisContext<'a> {
     /// Local variables in scope
     pub locals: HashMap<Spur, LocalVar>,
     /// Function parameters (immutable reference, shared across the function)
-    pub params: &'a HashMap<Spur, ParamInfo>,
+    pub params: &'a [ParamInfo],
     /// Next available slot for local variables
     pub next_slot: u32,
     /// How many loops we're nested inside (for break/continue validation)
