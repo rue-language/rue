@@ -25,7 +25,7 @@ use std::io::IsTerminal;
 
 use annotate_snippets::{Level, Renderer, Snippet};
 
-use crate::{CompileError, CompileErrors, CompileWarning, Diagnostic, FileId, Span};
+use crate::{CompileError, CompileErrors, CompileWarning, Diagnostic, ErrorCode, FileId, Span};
 
 /// Source code information for diagnostic rendering.
 ///
@@ -97,15 +97,35 @@ impl<'a> DiagnosticFormatter<'a> {
     ///
     /// The error is formatted with its error code, e.g.:
     /// `error[E0206]: type mismatch: expected i32, found bool`
+    ///
+    /// Internal compiler errors (ICEs) receive special formatting with
+    /// bug report instructions.
     pub fn format_error(&self, error: &CompileError) -> String {
         // Format with error code: error[E0XXX]: message
         let message_with_code = format!("[{}]: {}", error.kind.code(), error.kind);
-        self.format_diagnostic_impl(
+
+        // Check if this is an internal compiler error
+        let is_ice = matches!(
+            error.kind.code(),
+            ErrorCode::INTERNAL_ERROR | ErrorCode::INTERNAL_CODEGEN_ERROR
+        );
+
+        let mut output = self.format_diagnostic_impl(
             Level::Error,
             &message_with_code,
             error.span(),
             error.diagnostic(),
-        )
+        );
+
+        // Add ICE-specific notes and helps
+        if is_ice {
+            output.push_str("\nnote: this is a bug in the Rue compiler\n");
+            output.push_str(
+                "help: please report this issue at https://github.com/rue-language/rue/issues\n",
+            );
+        }
+
+        output
     }
 
     /// Format multiple compilation errors into a string.
@@ -334,14 +354,34 @@ impl<'a> MultiFileFormatter<'a> {
     ///
     /// If the error or its labels reference multiple files, each file's
     /// snippet is shown separately.
+    ///
+    /// Internal compiler errors (ICEs) receive special formatting with
+    /// bug report instructions.
     pub fn format_error(&self, error: &CompileError) -> String {
         let message_with_code = format!("[{}]: {}", error.kind.code(), error.kind);
-        self.format_diagnostic_impl(
+
+        // Check if this is an internal compiler error
+        let is_ice = matches!(
+            error.kind.code(),
+            ErrorCode::INTERNAL_ERROR | ErrorCode::INTERNAL_CODEGEN_ERROR
+        );
+
+        let mut output = self.format_diagnostic_impl(
             Level::Error,
             &message_with_code,
             error.span(),
             error.diagnostic(),
-        )
+        );
+
+        // Add ICE-specific notes and helps
+        if is_ice {
+            output.push_str("\nnote: this is a bug in the Rue compiler\n");
+            output.push_str(
+                "help: please report this issue at https://github.com/rue-language/rue/issues\n",
+            );
+        }
+
+        output
     }
 
     /// Format multiple compilation errors into a string.
@@ -1323,6 +1363,65 @@ mod tests {
         // Output should contain ANSI escape codes
         assert!(output.contains("\x1b["));
         assert!(output.contains("type mismatch"));
+    }
+
+    #[test]
+    fn test_ice_formatting() {
+        let source = "fn main() -> i32 { 42 }";
+        let source_info = SourceInfo::new(source, "test.rue");
+        let formatter = DiagnosticFormatter::new(&source_info);
+
+        let error = CompileError::without_span(ErrorKind::InternalError(
+            "unexpected type in codegen".to_string(),
+        ));
+
+        let output = formatter.format_error(&error);
+        // Should contain ICE error code
+        assert!(output.contains("[E9000]"));
+        assert!(output.contains("internal compiler error"));
+        // Should contain ICE-specific note and help
+        assert!(output.contains("note: this is a bug in the Rue compiler"));
+        assert!(output.contains("help: please report this issue"));
+        assert!(output.contains("github.com/rue-language/rue/issues"));
+    }
+
+    #[test]
+    fn test_ice_codegen_formatting() {
+        let source = "fn main() -> i32 { 42 }";
+        let source_info = SourceInfo::new(source, "test.rue");
+        let formatter = DiagnosticFormatter::new(&source_info);
+
+        let error = CompileError::without_span(ErrorKind::InternalCodegenError(
+            "failed to emit instruction".to_string(),
+        ));
+
+        let output = formatter.format_error(&error);
+        // Should contain ICE codegen error code
+        assert!(output.contains("[E9001]"));
+        assert!(output.contains("internal codegen error"));
+        // Should contain ICE-specific note and help
+        assert!(output.contains("note: this is a bug in the Rue compiler"));
+        assert!(output.contains("help: please report this issue"));
+    }
+
+    #[test]
+    fn test_non_ice_no_extra_formatting() {
+        let source = "fn main() -> i32 { 1 + true }";
+        let source_info = SourceInfo::new(source, "test.rue");
+        let formatter = DiagnosticFormatter::new(&source_info);
+
+        let error = CompileError::new(
+            ErrorKind::TypeMismatch {
+                expected: "i32".to_string(),
+                found: "bool".to_string(),
+            },
+            Span::new(23, 27),
+        );
+
+        let output = formatter.format_error(&error);
+        // Non-ICE errors should not have ICE-specific messages
+        assert!(!output.contains("note: this is a bug in the Rue compiler"));
+        assert!(!output.contains("please report this issue"));
     }
 
     // ========================================================================
