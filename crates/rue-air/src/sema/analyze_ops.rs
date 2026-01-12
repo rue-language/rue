@@ -2033,8 +2033,8 @@ impl<'a> Sema<'a> {
         }
 
         // Fallback: base is not a place (e.g., function call result)
-        // Analyze the base and emit the old-style FieldGet
-        // This case handles `get_struct().field` patterns
+        // Spill the computed value to a temporary, then use PlaceRead.
+        // This handles `get_struct().field` patterns.
         let base_result = self.analyze_inst(air, base, ctx)?;
         let base_type = base_result.ty;
 
@@ -2058,7 +2058,7 @@ impl<'a> Sema<'a> {
         let struct_def = self.type_pool.struct_def(struct_id);
         let field_name_str = self.interner.resolve(&field).to_string();
 
-        let (_field_index, struct_field) =
+        let (field_index, struct_field) =
             struct_def.find_field(&field_name_str).ok_or_compile_error(
                 ErrorKind::UnknownField {
                     struct_name: struct_def.name.clone(),
@@ -2069,19 +2069,57 @@ impl<'a> Sema<'a> {
 
         let field_type = struct_field.ty;
 
-        // For non-place expressions, we can't do partial move tracking.
-        // The value is temporary and will be dropped after use.
-        // Just emit a FieldGet for now - we'll need to spill to a temp if this becomes common.
-        let air_ref = air.add_inst(AirInst {
-            data: AirInstData::FieldGet {
-                base: base_result.air_ref,
+        // Allocate a temporary slot for the computed struct value
+        let temp_slot = ctx.next_slot;
+        let num_slots = self.abi_slot_count(base_type);
+        ctx.next_slot += num_slots;
+
+        // Emit StorageLive for the temporary
+        let storage_live_ref = air.add_inst(AirInst {
+            data: AirInstData::StorageLive { slot: temp_slot },
+            ty: base_type,
+            span,
+        });
+
+        // Emit Alloc to store the computed value
+        let alloc_ref = air.add_inst(AirInst {
+            data: AirInstData::Alloc {
+                slot: temp_slot,
+                init: base_result.air_ref,
+            },
+            ty: Type::UNIT,
+            span,
+        });
+
+        // Create PlaceRead with Field projection on the temp slot
+        let place_ref = air.make_place(
+            AirPlaceBase::Local(temp_slot),
+            std::iter::once(AirProjection::Field {
                 struct_id,
-                field_index: _field_index as u32,
+                field_index: field_index as u32,
+            }),
+        );
+        let read_ref = air.add_inst(AirInst {
+            data: AirInstData::PlaceRead { place: place_ref },
+            ty: field_type,
+            span,
+        });
+
+        // Note: We don't emit StorageDead here. The temporary will be cleaned up by
+        // scope-based drop elaboration in the CFG builder. This is slightly conservative
+        // (temp lives until scope exit rather than immediately after use) but correct.
+        // A future optimization could add explicit StorageDead at the right point.
+        let stmts_start = air.add_extra(&[storage_live_ref.as_u32(), alloc_ref.as_u32()]);
+        let block_ref = air.add_inst(AirInst {
+            data: AirInstData::Block {
+                stmts_start,
+                stmts_len: 2,
+                value: read_ref,
             },
             ty: field_type,
             span,
         });
-        Ok(AnalysisResult::new(air_ref, field_type))
+        Ok(AnalysisResult::new(block_ref, field_type))
     }
 
     /// Analyze a field assignment.
@@ -2408,7 +2446,8 @@ impl<'a> Sema<'a> {
         }
 
         // Fallback: base is not a place (e.g., function call result)
-        // Analyze the base and emit the old-style IndexGet
+        // Spill the computed array to a temporary, then use PlaceRead.
+        // This handles `get_array()[i]` patterns.
         let base_result = self.analyze_inst(air, base, ctx)?;
         let base_type = base_result.ty;
         let index_result = self.analyze_inst(air, index, ctx)?;
@@ -2453,16 +2492,55 @@ impl<'a> Sema<'a> {
             .with_help("use explicit methods like swap() or take() to remove elements"));
         }
 
-        let air_ref = air.add_inst(AirInst {
-            data: AirInstData::IndexGet {
-                base: base_result.air_ref,
+        // Allocate a temporary slot for the computed array value
+        let temp_slot = ctx.next_slot;
+        let num_slots = self.abi_slot_count(base_type);
+        ctx.next_slot += num_slots;
+
+        // Emit StorageLive for the temporary
+        let storage_live_ref = air.add_inst(AirInst {
+            data: AirInstData::StorageLive { slot: temp_slot },
+            ty: base_type,
+            span,
+        });
+
+        // Emit Alloc to store the computed array
+        let alloc_ref = air.add_inst(AirInst {
+            data: AirInstData::Alloc {
+                slot: temp_slot,
+                init: base_result.air_ref,
+            },
+            ty: Type::UNIT,
+            span,
+        });
+
+        // Create PlaceRead with Index projection on the temp slot
+        let place_ref = air.make_place(
+            AirPlaceBase::Local(temp_slot),
+            std::iter::once(AirProjection::Index {
                 array_type: base_type,
                 index: index_result.air_ref,
+            }),
+        );
+        let read_ref = air.add_inst(AirInst {
+            data: AirInstData::PlaceRead { place: place_ref },
+            ty: elem_type,
+            span,
+        });
+
+        // Note: We don't emit StorageDead here. The temporary will be cleaned up by
+        // scope-based drop elaboration in the CFG builder.
+        let stmts_start = air.add_extra(&[storage_live_ref.as_u32(), alloc_ref.as_u32()]);
+        let block_ref = air.add_inst(AirInst {
+            data: AirInstData::Block {
+                stmts_start,
+                stmts_len: 2,
+                value: read_ref,
             },
             ty: elem_type,
             span,
         });
-        Ok(AnalysisResult::new(air_ref, elem_type))
+        Ok(AnalysisResult::new(block_ref, elem_type))
     }
 
     /// Analyze an array index write.
