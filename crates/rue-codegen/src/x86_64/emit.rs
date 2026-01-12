@@ -95,7 +95,7 @@
 //! - Caller-saved: RAX, RCX, RDX, RSI, RDI, R8-R11, XMM0-XMM15
 //! - Callee-saved: RBX, RBP, R12-R15
 
-use rue_error::{CompileError, CompileResult, ErrorKind};
+use rue_error::{CompileError, CompileResult, ErrorKind, ice_error};
 
 use super::mir::{LabelId, Reg, X86Inst, X86Mir};
 use crate::vreg::BLOCK_LABEL_BASE;
@@ -347,13 +347,15 @@ impl<'a> Emitter<'a> {
                 inst,
                 X86Inst::MovRMIndexed { .. } | X86Inst::MovMRIndexed { .. }
             ) {
-                return Err(CompileError::without_span(ErrorKind::InternalCodegenError(
-                    format!(
-                        "post-regalloc verification failed: instruction {} is {:?}, \
-                         which should have been lowered by regalloc",
-                        i, inst
-                    ),
-                )));
+                return Err(ice_error!(
+                    "post-regalloc verification failed",
+                    phase: "codegen/emit",
+                    details: {
+                        "instruction_index" => i.to_string(),
+                        "instruction" => format!("{:?}", inst),
+                        "reason" => "should have been lowered by regalloc"
+                    }
+                ));
             }
         }
 
@@ -510,10 +512,13 @@ impl<'a> Emitter<'a> {
     fn apply_fixups(&mut self) -> CompileResult<()> {
         for fixup in &self.fixups {
             let target_offset = self.labels.get(&fixup.label).ok_or_else(|| {
-                CompileError::without_span(ErrorKind::InternalCodegenError(format!(
-                    "undefined label: {}",
-                    fixup.label
-                )))
+                ice_error!(
+                    "undefined label during fixup",
+                    phase: "codegen/emit",
+                    details: {
+                        "label" => fixup.label.to_string()
+                    }
+                )
             })?;
 
             match fixup.kind {
@@ -525,12 +530,15 @@ impl<'a> Emitter<'a> {
 
                     // rel32 encoding supports i32 range
                     if relative < i32::MIN as i64 || relative > i32::MAX as i64 {
-                        return Err(CompileError::without_span(ErrorKind::InternalCodegenError(
-                            format!(
-                                "jump offset {} exceeds rel32 range for label '{}'",
-                                relative, fixup.label
-                            ),
-                        )));
+                        return Err(ice_error!(
+                            "jump offset exceeds rel32 range",
+                            phase: "codegen/emit",
+                            details: {
+                                "offset" => relative.to_string(),
+                                "label" => fixup.label.to_string(),
+                                "range" => "i32::MIN..=i32::MAX"
+                            }
+                        ));
                     }
 
                     let bytes = (relative as i32).to_le_bytes();
@@ -1323,7 +1331,7 @@ impl<'a> Emitter<'a> {
             2 => 0b01,
             4 => 0b10,
             8 => 0b11,
-            _ => panic!("Invalid SIB scale: {}", scale),
+            _ => unreachable!("Invalid SIB scale (compiler bug): {}", scale),
         };
 
         // x86 quirk: index=RSP (100) means "no index" - we shouldn't emit this

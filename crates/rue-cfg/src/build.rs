@@ -8,7 +8,7 @@ use rue_air::{
     Air, AirArgMode, AirInstData, AirPattern, AirPlaceBase, AirPlaceRef, AirProjection, AirRef,
     Type, TypeInternPool, TypeKind,
 };
-use rue_error::{CompileWarning, WarningKind};
+use rue_error::{CompileWarning, WarningKind, ice_error};
 
 use crate::CfgOutput;
 use crate::inst::{
@@ -202,6 +202,10 @@ impl<'a> CfgBuilder<'a> {
             AirInstData::CallGeneric { .. } => {
                 // CallGeneric instructions must be specialized (rewritten to Call)
                 // before CFG building. If we reach here, specialization didn't run.
+                //
+                // TODO(ICE): This should be converted to:
+                //   return Err(ice_error!("CallGeneric not specialized", phase: "cfg_builder"));
+                // But that requires refactoring build() to return CompileResult.
                 panic!(
                     "CallGeneric instruction reached CFG building - this is a compiler bug. \
                      CallGeneric must be specialized to regular Call before codegen."

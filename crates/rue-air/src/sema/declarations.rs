@@ -14,7 +14,7 @@ use std::collections::{HashMap, HashSet};
 use lasso::Spur;
 use rue_builtins::is_reserved_type_name;
 use rue_error::{
-    CompileError, CompileResult, CopyStructNonCopyFieldError, ErrorKind, PreviewFeature,
+    CompileError, CompileResult, CopyStructNonCopyFieldError, ErrorKind, PreviewFeature, ice,
 };
 use rue_rir::{InstData, InstRef, RirDirective, RirParamMode};
 use rue_span::Span;
@@ -299,10 +299,16 @@ impl<'a> Sema<'a> {
                 // Verify the struct exists in our lookup table
                 if !self.structs.contains_key(name) {
                     return Err(CompileError::new(
-                        ErrorKind::InternalError(format!(
-                            "struct '{}' not found in struct map during field resolution",
-                            name_str
-                        )),
+                        ErrorKind::InternalError(
+                            ice!(
+                                "struct not found in struct map",
+                                phase: "sema/declarations",
+                                details: {
+                                    "struct_name" => name_str.to_string()
+                                }
+                            )
+                            .to_string(),
+                        ),
                         inst.span,
                     ));
                 }
@@ -310,10 +316,16 @@ impl<'a> Sema<'a> {
                 // Get the struct ID from the lookup table
                 let struct_id = *self.structs.get(name).ok_or_else(|| {
                     CompileError::new(
-                        ErrorKind::InternalError(format!(
-                            "struct '{}' not found in structs map during field resolution",
-                            name_str
-                        )),
+                        ErrorKind::InternalError(
+                            ice!(
+                                "struct not found in structs map",
+                                phase: "sema/declarations",
+                                details: {
+                                    "struct_name" => name_str.to_string()
+                                }
+                            )
+                            .to_string(),
+                        ),
                         inst.span,
                     )
                 })?;
@@ -452,10 +464,16 @@ impl<'a> Sema<'a> {
         // Verify struct exists in our lookup
         if !self.structs.contains_key(&name) {
             return Err(CompileError::new(
-                ErrorKind::InternalError(format!(
-                    "struct '{}' not found in struct map during @copy validation",
-                    struct_name
-                )),
+                ErrorKind::InternalError(
+                    ice!(
+                        "struct not found during @copy validation",
+                        phase: "sema/declarations",
+                        details: {
+                            "struct_name" => struct_name.clone()
+                        }
+                    )
+                    .to_string(),
+                ),
                 span,
             ));
         }
@@ -463,10 +481,16 @@ impl<'a> Sema<'a> {
         // Get the struct ID from the lookup table
         let struct_id = *self.structs.get(&name).ok_or_else(|| {
             CompileError::new(
-                ErrorKind::InternalError(format!(
-                    "struct '{}' not found in structs map during @copy validation",
-                    struct_name
-                )),
+                ErrorKind::InternalError(
+                    ice!(
+                        "struct not found during @copy validation",
+                        phase: "sema/declarations",
+                        details: {
+                            "struct_name" => struct_name.clone()
+                        }
+                    )
+                    .to_string(),
+                ),
                 span,
             )
         })?;
@@ -512,10 +536,16 @@ impl<'a> Sema<'a> {
                 let struct_name = self.interner.resolve(&*name).to_string();
                 let struct_id = *self.structs.get(name).ok_or_else(|| {
                     CompileError::new(
-                        ErrorKind::InternalError(format!(
-                            "struct '{}' not found in struct map during @handle validation",
-                            struct_name
-                        )),
+                        ErrorKind::InternalError(
+                            ice!(
+                                "struct not found during @handle validation",
+                                phase: "sema/declarations",
+                                details: {
+                                    "struct_name" => struct_name.clone()
+                                }
+                            )
+                            .to_string(),
+                        ),
                         inst.span,
                     )
                 })?;
@@ -630,10 +660,16 @@ impl<'a> Sema<'a> {
         // Get the struct ID from the lookup table
         let struct_id = *self.structs.get(&type_name).ok_or_else(|| {
             CompileError::new(
-                ErrorKind::InternalError(format!(
-                    "struct '{}' not found in structs map during destructor collection",
-                    type_name_str
-                )),
+                ErrorKind::InternalError(
+                    ice!(
+                        "struct not found during destructor collection",
+                        phase: "sema/declarations",
+                        details: {
+                            "struct_name" => type_name_str.to_string()
+                        }
+                    )
+                    .to_string(),
+                ),
                 span,
             )
         })?;

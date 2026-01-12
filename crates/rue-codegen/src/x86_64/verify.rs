@@ -34,7 +34,7 @@
 use std::collections::HashMap;
 
 use super::mir::{LabelId, Operand, Reg, X86Inst, X86Mir};
-use rue_error::{CompileError, CompileResult, ErrorKind};
+use rue_error::{CompileError, CompileResult, ErrorKind, ice_error};
 
 /// Verifies that the stack is properly aligned throughout function execution.
 ///
@@ -185,10 +185,16 @@ impl StackVerifier {
     }
 
     fn alignment_error(&self, idx: usize, inst: &X86Inst, message: String) -> CompileError {
-        CompileError::without_span(ErrorKind::InternalCodegenError(format!(
-            "stack alignment verification failed at instruction {}: {} (depth: {} bytes) - {}",
-            idx, inst, self.current_depth, message
-        )))
+        ice_error!(
+            "stack alignment verification failed",
+            phase: "codegen/verify",
+            details: {
+                "instruction_index" => idx.to_string(),
+                "instruction" => inst.to_string(),
+                "stack_depth_bytes" => self.current_depth.to_string(),
+                "message" => message
+            }
+        )
     }
 }
 
