@@ -11,10 +11,10 @@ on:
         type: string
 
 permissions:
-  contents: write  # Needed to push to perf branch
+  contents: write  # Needed to push to perf branch (used by collector job)
 
-# Only allow one benchmark run at a time to prevent race conditions
-# when pushing to the perf branch. New runs will queue and wait.
+# Allow concurrent benchmark runs across platforms
+# No race conditions since individual jobs upload artifacts instead of pushing
 concurrency:
   group: benchmarks
   cancel-in-progress: false
@@ -23,7 +23,8 @@ jobs:
   benchmark:
     strategy:
       fail-fast: false
-      max-parallel: 1  # Run sequentially to avoid race conditions on perf branch
+      # Parallel execution - no max-parallel constraint
+      # Each job uploads artifacts instead of pushing to perf branch
       matrix:
         include:
           - runner: ubuntu-latest
@@ -78,28 +79,6 @@ jobs:
           cat /tmp/results.json >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
-      - name: Checkout perf branch
-        uses: actions/checkout@v4
-        with:
-          ref: perf
-          path: perf-branch
-          fetch-depth: 1
-        continue-on-error: true
-
-      - name: Initialize perf branch if needed
-        run: |
-          if [ ! -d "perf-branch" ]; then
-            mkdir -p perf-branch
-            cd perf-branch
-            git init
-            git checkout -b perf
-            mkdir -p benchmarks
-            echo "# Performance History" > README.md
-            echo "" >> README.md
-            echo "This branch stores benchmark history for the Rue compiler." >> README.md
-            echo "See [Performance Dashboard](https://rue-lang.dev/performance/) for visualization." >> README.md
-          fi
-
       - name: Validate benchmark results
         run: |
           echo "=== Benchmark Results ==="
@@ -130,40 +109,12 @@ jobs:
           print('Validation passed!')
           "
 
-      - name: Append to history
-        run: |
-          # Create platform-specific history file if it doesn't exist
-          history_file="perf-branch/benchmarks/history-${{ matrix.platform }}.json"
-          if [ ! -f "$history_file" ]; then
-            mkdir -p perf-branch/benchmarks
-            echo '{"version": 1, "runs": []}' > "$history_file"
-          fi
-
-          # Run append with explicit error checking
-          if ! python3 scripts/append-benchmark.py /tmp/results.json "$history_file"; then
-            echo "::error::Failed to append benchmark results for ${{ matrix.platform }}"
-            echo "See validation step above for details"
-            exit 1
-          fi
-
-      - name: Commit and push to perf branch
-        run: |
-          cd perf-branch
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          git add benchmarks/
-
-          # Only commit if there are changes
-          if git diff --staged --quiet; then
-            echo "No changes to commit"
-          else
-            git commit -m "[${{ matrix.platform }}] Benchmark results for ${{ steps.commit.outputs.sha }}"
-
-            # Push to perf branch (create if doesn't exist)
-            # Jobs run sequentially (max-parallel: 1) so no race conditions
-            git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git HEAD:perf
-          fi
+      - name: Upload benchmark results as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results-${{ steps.commit.outputs.full_sha }}-${{ matrix.platform }}
+          path: /tmp/results.json
+          retention-days: 90
 
       - name: Summary
         run: |

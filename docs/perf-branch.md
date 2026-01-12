@@ -4,7 +4,9 @@ This document describes the `perf` branch workflow for storing benchmark history
 
 ## Overview
 
-Benchmark results are stored on a dedicated `perf` branch to avoid cluttering the main branch with frequent updates. CI runs benchmarks on each commit to trunk and pushes results to the `perf` branch.
+Benchmark results are stored on a dedicated `perf` branch to avoid cluttering the main branch with frequent updates. CI runs benchmarks and a collector job aggregates results before pushing to the `perf` branch.
+
+**Note:** As of ADR-0031 Phase 1, the workflow uses artifact-based collection. Individual platform jobs upload artifacts, and a collector job (Phase 2) will push to the perf branch atomically.
 
 ## Branch Structure
 
@@ -15,11 +17,20 @@ The `perf` branch contains:
 
 ### CI Workflow (Automated)
 
-1. On each commit to `main`:
-   - CI runs `./bench.sh --no-history --output /tmp/results.json`
-   - CI switches to `perf` branch
-   - CI runs `./scripts/append-benchmark.py /tmp/results.json benchmarks/history.json`
-   - CI commits and pushes to `perf` branch
+**Current (Phase 1 - Artifact-based):**
+
+1. On each commit to `trunk`:
+   - Three platform jobs run in parallel (x86-64-linux, aarch64-linux, aarch64-macos)
+   - Each job:
+     - Runs `./bench.sh --no-history --output /tmp/results.json`
+     - Uploads results as artifact: `benchmark-results-{commit_sha}-{platform}.json`
+   - **Note:** Collector job (Phase 2) will download artifacts and push to perf branch
+
+**Legacy (Before Phase 1):**
+
+1. On each commit to `trunk`:
+   - Three platform jobs ran sequentially (max-parallel: 1)
+   - Each job directly pushed to perf branch (caused race conditions and throughput bottleneck)
 
 ### Local Workflow (Manual)
 
