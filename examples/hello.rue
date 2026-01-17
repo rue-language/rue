@@ -1,3 +1,8 @@
+// The classic first program in Rue
+//
+// Run with: rue hello.rue hello && ./hello
+
 fn main() -> i32 {
-    42
+    @dbg("Hello, World!");
+    0
 }
