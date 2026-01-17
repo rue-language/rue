@@ -116,7 +116,7 @@ impl Sema<'_> {
     ///
     /// # Resolution Order
     ///
-    /// 1. Standard library (`"std"`) - currently not supported
+    /// 1. Standard library (`"std"`) - resolves to the bundled std library
     /// 2. For explicit `.rue` paths - exact match, then suffix match
     /// 3. For simple paths - `{path}.rue`, then suffix match, then basename match
     /// 4. Facade files (`_foo.rue`) for directory modules
@@ -125,6 +125,10 @@ impl Sema<'_> {
         import_path: &str,
         span: Span,
     ) -> CompileResult<String> {
+        if import_path == "std" {
+            return self.resolve_std_import(span);
+        }
+
         let module_path = ModulePath::parse(import_path);
 
         // Try to resolve against loaded file paths

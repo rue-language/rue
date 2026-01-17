@@ -425,42 +425,50 @@ impl EnumDef {
     }
 }
 
-/// Definition of a module (imported file).
-///
-/// A module contains the public declarations from an imported file.
-/// When code accesses `math.add()`, the module definition is consulted
-/// to find the corresponding function.
+#[derive(Debug, Clone)]
+pub struct ModuleExport {
+    pub ty: Type,
+    pub is_pub: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct ModuleDef {
-    /// The path used in @import (e.g., "math.rue")
     pub import_path: String,
-    /// The resolved absolute file path
     pub file_path: String,
-    /// Public functions in this module: name -> mangled name
-    /// The mangled name includes the module path (e.g., "math::add")
-    pub functions: std::collections::HashMap<String, String>,
-    /// Public structs in this module
-    pub structs: Vec<String>,
-    /// Public enums in this module
-    pub enums: Vec<String>,
+    pub functions: std::collections::HashMap<String, (String, bool)>,
+    pub structs: std::collections::HashMap<String, bool>,
+    pub enums: std::collections::HashMap<String, bool>,
+    pub constants: std::collections::HashMap<String, ModuleExport>,
+    pub is_loaded: bool,
 }
 
 impl ModuleDef {
-    /// Create a new empty module definition.
     pub fn new(import_path: String, file_path: String) -> Self {
         Self {
             import_path,
             file_path,
             functions: std::collections::HashMap::new(),
-            structs: Vec::new(),
-            enums: Vec::new(),
+            structs: std::collections::HashMap::new(),
+            enums: std::collections::HashMap::new(),
+            constants: std::collections::HashMap::new(),
+            is_loaded: false,
         }
     }
 
-    /// Find a function by name in this module.
-    /// Returns the mangled function name if found.
-    pub fn find_function(&self, name: &str) -> Option<&str> {
-        self.functions.get(name).map(|s| s.as_str())
+    pub fn find_function(&self, name: &str) -> Option<(&str, bool)> {
+        self.functions.get(name).map(|(n, p)| (n.as_str(), *p))
+    }
+
+    pub fn find_struct(&self, name: &str) -> Option<bool> {
+        self.structs.get(name).copied()
+    }
+
+    pub fn find_enum(&self, name: &str) -> Option<bool> {
+        self.enums.get(name).copied()
+    }
+
+    pub fn find_constant(&self, name: &str) -> Option<&ModuleExport> {
+        self.constants.get(name)
     }
 }
 

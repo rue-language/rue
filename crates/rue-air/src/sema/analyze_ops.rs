@@ -2204,104 +2204,66 @@ impl<'a> Sema<'a> {
         member_name: Spur,
         span: Span,
     ) -> CompileResult<AnalysisResult> {
-        let member_name_str = self.interner.resolve(&member_name).to_string();
+        self.ensure_module_loaded(module_id, span)?;
 
-        // Get the module definition to find its file path
+        let member_str = self.interner.resolve(&member_name).to_string();
         let module_def = self.module_registry.get_def(module_id);
-        let module_file_path = module_def.file_path.clone();
+        let same_dir = is_same_directory(
+            self.get_source_path(span),
+            &module_def.file_path,
+        );
 
-        // Get the accessing file's directory for visibility check
-        let accessing_file_path = self.get_source_path(span).map(|s| s.to_string());
+        if let Some(export) = module_def.find_constant(&member_str) {
+            check_visibility(export.is_pub, same_dir, "constant", &member_str, span)?;
+            let ty = export.ty;
+            if ty.as_module().is_some() {
+                return Ok(AnalysisResult::new(
+                    air.add_inst(AirInst { data: AirInstData::UnitConst, ty, span }),
+                    ty,
+                ));
+            }
+            return Ok(AnalysisResult::new(
+                air.add_inst(AirInst {
+                    data: AirInstData::TypeConst(ty),
+                    ty: Type::COMPTIME_TYPE,
+                    span,
+                }),
+                ty,
+            ));
+        }
 
-        // First, try to find a struct with this name that belongs to the module's file
-        if let Some(&struct_id) = self.structs.get(&member_name) {
-            let struct_def = self.type_pool.struct_def(struct_id);
-
-            // Check if this struct was defined in the module's file
-            if let Some(struct_file_path) = self.get_file_path(struct_def.file_id) {
-                if struct_file_path == module_file_path {
-                    // Check visibility: pub structs are visible to all, private only to same directory
-                    if !struct_def.is_pub {
-                        // Check if accessing from same directory
-                        let same_dir = match &accessing_file_path {
-                            Some(accessing) => {
-                                let accessing_dir = std::path::Path::new(accessing).parent();
-                                let module_dir = std::path::Path::new(&module_file_path).parent();
-                                accessing_dir == module_dir
-                            }
-                            None => true, // Be permissive if we can't determine the path
-                        };
-
-                        if !same_dir {
-                            return Err(CompileError::new(
-                                ErrorKind::PrivateMemberAccess {
-                                    item_kind: "struct".to_string(),
-                                    name: member_name_str,
-                                },
-                                span,
-                            ));
-                        }
-                    }
-
-                    // Return a TypeConst instruction with the struct type
-                    let struct_type = Type::new_struct(struct_id);
-                    let air_ref = air.add_inst(AirInst {
-                        data: AirInstData::TypeConst(struct_type),
+        if let Some(is_pub) = module_def.find_struct(&member_str) {
+            check_visibility(is_pub, same_dir, "struct", &member_str, span)?;
+            if let Some(&struct_id) = self.structs.get(&member_name) {
+                return Ok(AnalysisResult::new(
+                    air.add_inst(AirInst {
+                        data: AirInstData::TypeConst(Type::new_struct(struct_id)),
                         ty: Type::COMPTIME_TYPE,
                         span,
-                    });
-                    return Ok(AnalysisResult::new(air_ref, Type::COMPTIME_TYPE));
-                }
+                    }),
+                    Type::COMPTIME_TYPE,
+                ));
             }
         }
 
-        // Next, try to find an enum with this name that belongs to the module's file
-        if let Some(&enum_id) = self.enums.get(&member_name) {
-            let enum_def = self.type_pool.enum_def(enum_id);
-
-            // Check if this enum was defined in the module's file
-            if let Some(enum_file_path) = self.get_file_path(enum_def.file_id) {
-                if enum_file_path == module_file_path {
-                    // Check visibility: pub enums are visible to all, private only to same directory
-                    if !enum_def.is_pub {
-                        // Check if accessing from same directory
-                        let same_dir = match &accessing_file_path {
-                            Some(accessing) => {
-                                let accessing_dir = std::path::Path::new(accessing).parent();
-                                let module_dir = std::path::Path::new(&module_file_path).parent();
-                                accessing_dir == module_dir
-                            }
-                            None => true, // Be permissive if we can't determine the path
-                        };
-
-                        if !same_dir {
-                            return Err(CompileError::new(
-                                ErrorKind::PrivateMemberAccess {
-                                    item_kind: "enum".to_string(),
-                                    name: member_name_str,
-                                },
-                                span,
-                            ));
-                        }
-                    }
-
-                    // Return a TypeConst instruction with the enum type
-                    let enum_type = Type::new_enum(enum_id);
-                    let air_ref = air.add_inst(AirInst {
-                        data: AirInstData::TypeConst(enum_type),
+        if let Some(is_pub) = module_def.find_enum(&member_str) {
+            check_visibility(is_pub, same_dir, "enum", &member_str, span)?;
+            if let Some(&enum_id) = self.enums.get(&member_name) {
+                return Ok(AnalysisResult::new(
+                    air.add_inst(AirInst {
+                        data: AirInstData::TypeConst(Type::new_enum(enum_id)),
                         ty: Type::COMPTIME_TYPE,
                         span,
-                    });
-                    return Ok(AnalysisResult::new(air_ref, Type::COMPTIME_TYPE));
-                }
+                    }),
+                    Type::COMPTIME_TYPE,
+                ));
             }
         }
 
-        // Member not found in the module
         Err(CompileError::new(
             ErrorKind::UnknownModuleMember {
                 module_name: module_def.import_path.clone(),
-                member_name: member_name_str,
+                member_name: member_str,
             },
             span,
         ))
@@ -3201,5 +3163,34 @@ impl<'a> Sema<'a> {
                 inst.span,
             )),
         }
+    }
+}
+
+fn is_same_directory(accessing: Option<&str>, module: &str) -> bool {
+    match accessing {
+        Some(acc) => {
+            std::path::Path::new(acc).parent() == std::path::Path::new(module).parent()
+        }
+        None => true,
+    }
+}
+
+fn check_visibility(
+    is_pub: bool,
+    same_dir: bool,
+    item_kind: &str,
+    name: &str,
+    span: Span,
+) -> CompileResult<()> {
+    if is_pub || same_dir {
+        Ok(())
+    } else {
+        Err(CompileError::new(
+            ErrorKind::PrivateMemberAccess {
+                item_kind: item_kind.to_string(),
+                name: name.to_string(),
+            },
+            span,
+        ))
     }
 }

@@ -8743,7 +8743,7 @@ impl<'a> Sema<'a> {
     /// 3. Known installation paths
     ///
     /// Returns the path to `_std.rue`, the standard library root module.
-    fn resolve_std_import(&self, span: Span) -> CompileResult<String> {
+    pub(crate) fn resolve_std_import(&self, span: Span) -> CompileResult<String> {
         use std::path::Path;
 
         // Check if we have a pre-loaded std library in file_paths
