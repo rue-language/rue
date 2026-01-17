@@ -1,13 +1,13 @@
 ---
 id: 0029
 title: Anonymous Struct Methods (Zig-Style)
-status: proposal
+status: implemented
 tags: [types, methods, comptime, generics]
 feature-flag: anon_struct_methods
 created: 2026-01-03
-accepted:
-implemented:
-spec-sections: []
+accepted: 2026-01-10
+implemented: 2026-01-17
+spec-sections: ["4.14:10", "4.14:11", "4.14:12", "4.14:13", "4.14:14", "4.14:15"]
 superseded-by:
 ---
 
@@ -15,7 +15,7 @@ superseded-by:
 
 ## Status
 
-Proposal
+Implemented (preview feature: `anon_struct_methods`)
 
 ## Summary
 
@@ -45,8 +45,8 @@ This severely limits the usefulness of comptime type construction for building g
 
 - **Named struct methods (ADR-0009)**: Fully implemented via `impl` blocks
 - **Comptime Phase 1-3 (ADR-0025)**: Implemented - type parameters and monomorphization work
-- **Comptime Phase 4**: Anonymous structs can be created and instantiated, but cannot have methods
-- **Method lookup**: Uses `(struct_name_symbol, method_name_symbol)` key, which doesn't work for anonymous structs with generated names like `__anon_struct_<id>`
+- **Comptime Phase 4**: Anonymous structs can be created and instantiated
+- **Anonymous struct methods**: Fully implemented (this ADR) - methods can be defined inline, `Self` resolves correctly, structural equality includes method signatures
 
 ### Alternatives Considered
 
@@ -222,18 +222,22 @@ Epic: rue-nj40
 
 **Deliverable**: RIR correctly represents anonymous structs with methods.
 
-### Phase 3: Semantic Analysis (rue-nj40.3) 🔶
+### Phase 3: Semantic Analysis (rue-nj40.3) ✅
 
 - [x] Change method lookup key from `(Spur, Spur)` to `(StructId, Spur)`
 - [x] Register methods when creating anonymous struct types
 - [x] Resolve `Self` to the anonymous struct's `StructId` (in signatures only)
 - [x] Handle `Type::function()` call syntax for comptime type variables (rue-ybbz)
-- [ ] Update structural equality to include method signatures
-- [ ] Handle comptime parameter capture in method bodies
+- [x] Update structural equality to include method signatures
+- [x] Handle comptime parameter capture in method bodies
 - [x] Analyze method bodies with `self` in scope
 - [x] Resolve `Self` in method body expressions (rue-h6zn)
 
-**Status**: Most items complete. Method registration, `self` in method bodies, associated function calls on comptime type variables (`P::constant()`), and `Self` type resolution all work. Remaining: structural equality with methods, comptime parameter capture.
+**Status**: Complete. All semantic analysis features implemented:
+- Method lookup via `(StructId, Spur)` key in `sema/mod.rs`
+- Structural equality includes method signatures in `sema/anon_structs.rs`
+- Comptime parameter capture tracked via `anon_struct_captured_values` HashMap
+- Tests verify structural equality with methods (spec 4.14:15)
 
 **Deliverable**: `v.push(42)` compiles when `v` is an anonymous struct type with a `push` method.
 
