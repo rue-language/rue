@@ -797,6 +797,8 @@ impl<'a> Sema<'a> {
                 return_type: ret_type,
                 return_type_sym,
                 body,
+                rir_params_start: params_start,
+                rir_params_len: params_len,
                 span,
                 is_generic,
                 is_pub,
