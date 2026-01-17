@@ -10,6 +10,13 @@
             <div class="spec-sidebar-header">
                 <a href="{{ get_url(path='spec') }}" class="spec-title">Rue Specification</a>
             </div>
+            <div class="spec-search">
+                <div class="spec-search-input-wrapper">
+                    <input type="text" id="spec-search-input" placeholder="Search..." autocomplete="off">
+                    <kbd class="spec-search-shortcut"><span class="spec-search-shortcut-mod"></span>K</kbd>
+                </div>
+                <div id="spec-search-results" class="spec-search-results"></div>
+            </div>
             <nav class="spec-nav">
                 {% set spec_section = get_section(path="spec/_index.md") %}
                 {% set current = page.permalink | default(value=section.permalink) | default(value="") %}
