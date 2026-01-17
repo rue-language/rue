@@ -1,0 +1,39 @@
+// Prime Factorization
+//
+// Finds all prime factors of a number using trial division.
+// Demonstrates loops, conditionals, and integer arithmetic.
+
+fn is_divisible(n: i32, d: i32) -> bool {
+    n % d == 0
+}
+
+fn factorize(n: i32) -> i32 {
+    let mut num = n;
+    let mut count = 0;
+    let mut divisor = 2;
+
+    @dbg(n);
+
+    while divisor * divisor <= num {
+        while is_divisible(num, divisor) {
+            @dbg(divisor);
+            num = num / divisor;
+            count = count + 1;
+        }
+        divisor = divisor + 1;
+    }
+
+    if num > 1 {
+        @dbg(num);
+        count = count + 1;
+    }
+
+    count
+}
+
+fn main() -> i32 {
+    let n = 360;
+    let count = factorize(n);
+    @dbg(count);
+    0
+}

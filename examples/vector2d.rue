@@ -1,0 +1,60 @@
+// 2D Vector Math
+//
+// Demonstrates structs with inline methods and basic vector operations.
+// Uses @copy since Vec2 contains only primitive Copy types (i32).
+
+@copy
+struct Vec2 {
+    x: i32,
+    y: i32,
+
+    fn new(x: i32, y: i32) -> Self {
+        Vec2 { x: x, y: y }
+    }
+
+    fn add(self, other: Vec2) -> Vec2 {
+        Vec2::new(self.x + other.x, self.y + other.y)
+    }
+
+    fn sub(self, other: Vec2) -> Vec2 {
+        Vec2::new(self.x - other.x, self.y - other.y)
+    }
+
+    fn scale(self, factor: i32) -> Vec2 {
+        Vec2::new(self.x * factor, self.y * factor)
+    }
+
+    fn dot(self, other: Vec2) -> i32 {
+        self.x * other.x + self.y * other.y
+    }
+
+    fn magnitude_squared(self) -> i32 {
+        self.dot(self)
+    }
+}
+
+fn print_vec(name: i32, v: Vec2) {
+    @dbg(name);
+    @dbg(v.x);
+    @dbg(v.y);
+}
+
+fn main() -> i32 {
+    let a = Vec2::new(3, 4);
+    let b = Vec2::new(1, 2);
+
+    let sum = a.add(b);
+    print_vec(1, sum);
+
+    let diff = a.sub(b);
+    print_vec(2, diff);
+
+    let scaled = a.scale(2);
+    print_vec(3, scaled);
+
+    let dot_product = a.dot(b);
+    @dbg(dot_product);
+
+    let mag_sq = a.magnitude_squared();
+    mag_sq
+}
