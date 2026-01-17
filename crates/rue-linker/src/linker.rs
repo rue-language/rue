@@ -417,16 +417,9 @@ impl Linker {
         // This keeps rodata addresses close to code for PC-relative addressing
         for (obj_idx, obj) in self.objects.iter().enumerate() {
             for (sec_idx, section) in obj.sections.iter().enumerate() {
-                eprintln!("DEBUG: Checking section '{}' for rodata", section.name);
                 if !is_rodata_section(&section.name) {
                     continue;
                 }
-                eprintln!(
-                    "DEBUG: Merging rodata section '{}' (size: {})",
-                    section.name,
-                    section.data.len()
-                );
-                eprintln!("  merged_text size before: 0x{:x}", merged_text.len());
 
                 // Align rodata (8-byte alignment is common for data)
                 let align = section.align.max(8);
@@ -436,7 +429,6 @@ impl Linker {
                 let offset = merged_text.len() as u64;
                 section_offsets.insert((obj_idx, sec_idx), offset);
                 merged_text.extend_from_slice(&section.data);
-                eprintln!("  merged_text size after: 0x{:x}", merged_text.len());
             }
         }
 
@@ -537,16 +529,6 @@ impl Linker {
                             || sym.binding == SymbolBinding::Weak
                             || !symbol_addresses.contains_key(&sym.name)
                         {
-                            // Debug: log function symbols
-                            if !sym.name.starts_with("l_anon")
-                                && !sym.name.starts_with(".rodata")
-                                && !sym.name.starts_with("__rue")
-                            {
-                                eprintln!(
-                                    "DEBUG: Adding symbol '{}' binding={:?} addr=0x{:x}",
-                                    sym.name, sym.binding, addr
-                                );
-                            }
                             symbol_addresses.insert(sym.name.clone(), addr);
                         }
                     }
@@ -577,19 +559,10 @@ impl Linker {
 
         // Calculate text_file_offset using the builder
         let text_file_offset = builder.calculate_text_file_offset_for_dynamic();
-        eprintln!("DEBUG: text_file_offset = 0x{:x}", text_file_offset);
 
         // Apply relocations
         for (patch_offset, sym_name, sym_section, _obj_idx, rel_type, addend) in pending_relocations
         {
-            // Debug: log function call relocations
-            if matches!(rel_type, RelocationType::Call26)
-                && !sym_name.starts_with("__rue")
-                && !sym_name.starts_with("l_anon")
-            {
-                eprintln!("DEBUG: Processing Call26 relocation to '{}'", sym_name);
-            }
-
             // Look up symbol address
             // For dynamic executables, undefined symbols (external symbols from libSystem, etc.)
             // will be resolved by dyld at runtime. Skip relocations for external symbols.
@@ -597,16 +570,6 @@ impl Linker {
                 Some(addr) => addr,
                 None => {
                     // External symbol - skip relocation, dyld will handle it at runtime
-                    // Note: This works for dynamic executables linked with libSystem
-                    if matches!(rel_type, RelocationType::Call26)
-                        && !sym_name.starts_with("__rue")
-                        && !sym_name.starts_with("l_anon")
-                    {
-                        eprintln!(
-                            "DEBUG: Symbol '{}' not found in symbol_addresses, skipping relocation",
-                            sym_name
-                        );
-                    }
                     continue;
                 }
             };
@@ -621,22 +584,6 @@ impl Linker {
                 // Data symbol - already a vaddr
                 sym_addr
             };
-
-            if sym_name.contains("div_by_zero")
-                || sym_name.contains("l_anon")
-                || sym_name == "rec"
-                || sym_name == "other"
-                || sym_name == "main"
-            {
-                eprintln!(
-                    "DEBUG: Relocating symbol '{}' at patch_offset 0x{:x}, rel_type {:?}",
-                    sym_name, patch_offset, rel_type
-                );
-                eprintln!(
-                    "  sym_addr = 0x{:x}, target_vaddr = 0x{:x}, patch_vaddr = 0x{:x}, addend = {}",
-                    sym_addr, target_vaddr, patch_vaddr, addend
-                );
-            }
 
             // Apply the relocation based on type
             match rel_type {
@@ -663,13 +610,6 @@ impl Linker {
                     ]);
                     insn = (insn & 0xFC000000) | ((offset_words as u32) & 0x03FFFFFF);
                     merged_text[patch_idx..patch_idx + 4].copy_from_slice(&insn.to_le_bytes());
-
-                    if sym_name == "rec" || sym_name == "other" || sym_name == "main" {
-                        eprintln!(
-                            "  offset_bytes = {}, offset_words = {}, final_insn = 0x{:08x}",
-                            offset_bytes, offset_words, insn
-                        );
-                    }
                 }
                 RelocationType::AdrpPage21 => {
                     // ADRP: load page address (bits 12-32 of PC-relative offset)
@@ -731,7 +671,6 @@ impl Linker {
         // Now rebuild the MachOBuilder with the relocated code
         // Note: rodata is already included in merged_text (code + rodata in __TEXT)
         // Only pass writable data to __DATA segment
-        eprintln!("DEBUG: merged_text size = 0x{:x} bytes", merged_text.len());
         let mut builder = MachOBuilder::new()
             .with_code(merged_text, entry_offset)
             .with_data(merged_data)
@@ -751,12 +690,11 @@ impl Linker {
         let (bytes, calculated_offset, _data_vm_addr) = builder.build_dynamic();
 
         // Verify our pre-calculated offset matches (sanity check)
-        if text_file_offset != calculated_offset {
-            eprintln!(
-                "Warning: text_file_offset mismatch: pre-calculated={:#x}, actual={:#x}",
-                text_file_offset, calculated_offset
-            );
-        }
+        debug_assert_eq!(
+            text_file_offset, calculated_offset,
+            "text_file_offset mismatch: pre-calculated={:#x}, actual={:#x}",
+            text_file_offset, calculated_offset
+        );
 
         Ok(bytes)
     }

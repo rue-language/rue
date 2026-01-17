@@ -1038,13 +1038,7 @@ impl MachOBuilder {
         }
 
         // Code
-        eprintln!(
-            "DEBUG MachOBuilder: Writing code, self.code.len() = 0x{:x}",
-            self.code.len()
-        );
-        eprintln!("DEBUG MachOBuilder: buf.len() before = 0x{:x}", buf.len());
         buf.extend_from_slice(&self.code);
-        eprintln!("DEBUG MachOBuilder: buf.len() after = 0x{:x}", buf.len());
 
         // Pad and write data segment content if present
         if has_data {
@@ -1082,7 +1076,6 @@ impl MachOBuilder {
             buf.push(0);
         }
 
-        eprintln!("DEBUG MachOBuilder: Final buf.len() = 0x{:x}", buf.len());
         (buf, text_file_offset as u64, data_vm_addr)
     }
 }
