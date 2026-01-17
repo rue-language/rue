@@ -6,6 +6,14 @@ compile_sass = false
 minify_html = true
 generate_feeds = true
 feed_filenames = ["rss.xml"]
+build_search_index = true
+
+[search]
+index_format = "elasticlunr_json"
+include_title = true
+include_description = true
+include_path = true
+include_content = true
 
 [markdown]
 highlight_code = true
