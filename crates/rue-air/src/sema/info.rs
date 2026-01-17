@@ -20,8 +20,11 @@ pub struct FunctionInfo {
     pub return_type: Type,
     /// The return type symbol (before resolution) - needed for generic function specialization
     pub return_type_sym: Spur,
-    /// The RIR instruction ref for the function body - needed for generic function specialization
+    /// RIR body ref for generic specialization
     pub body: rue_rir::InstRef,
+    /// RIR params indices for type symbol lookup during specialization
+    pub rir_params_start: u32,
+    pub rir_params_len: u32,
     /// Span of the function declaration
     pub span: Span,
     /// Whether this function has any comptime type parameters
