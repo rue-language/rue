@@ -39,23 +39,23 @@ pub(crate) type FieldPath = Vec<Spur>;
 pub(crate) struct VariableMoveState {
     /// If Some, the entire variable has been fully moved at this span.
     pub full_move: Option<Span>,
-    /// Partial moves: maps field paths to the span where they were moved.
+    /// Partial moves: field paths paired with the span where they were moved.
     /// For example, if `s.a` was moved, this contains ([sym("a")], span).
-    pub partial_moves: HashMap<FieldPath, Span>,
+    /// Uses Vec instead of HashMap for 3-6x faster lookups on small collections
+    /// (typically 0-5 partial moves per variable). See ADR-0032.
+    pub partial_moves: Vec<(FieldPath, Span)>,
 }
 
 impl VariableMoveState {
     /// Mark a field path as moved.
     pub fn mark_path_moved(&mut self, path: &[Spur], span: Span) {
         if path.is_empty() {
-            // Moving the whole variable
             self.full_move = Some(span);
-            // Clear partial moves since the whole thing is moved
             self.partial_moves.clear();
-        } else {
-            // Partial move - only if not already fully moved
-            if self.full_move.is_none() {
-                self.partial_moves.insert(path.to_vec(), span);
+        } else if self.full_move.is_none() {
+            // Only add if not already present (preserve first move span)
+            if !self.partial_moves.iter().any(|(p, _)| p.as_slice() == path) {
+                self.partial_moves.push((path.to_vec(), span));
             }
         }
     }
@@ -63,20 +63,14 @@ impl VariableMoveState {
     /// Check if a field path is moved.
     /// Returns Some(span) if the path (or any ancestor) is moved.
     pub fn is_path_moved(&self, path: &[Spur]) -> Option<Span> {
-        // If fully moved, everything is moved
         if let Some(span) = self.full_move {
             return Some(span);
         }
 
-        // Check if this exact path is moved
-        if let Some(span) = self.partial_moves.get(path) {
-            return Some(*span);
-        }
-
-        // Check if any prefix (ancestor) of this path is moved
-        // e.g., if s.a is moved, then s.a.b is also considered moved
-        for len in 1..path.len() {
-            if let Some(span) = self.partial_moves.get(&path[..len]) {
+        let path_len = path.len();
+        for (stored_path, span) in &self.partial_moves {
+            let stored_len = stored_path.len();
+            if stored_len <= path_len && path[..stored_len] == stored_path[..] {
                 return Some(*span);
             }
         }
@@ -90,7 +84,7 @@ impl VariableMoveState {
         if let Some(span) = self.full_move {
             return Some(span);
         }
-        self.partial_moves.values().next().copied()
+        self.partial_moves.first().map(|(_, s)| *s)
     }
 
     /// Check if the variable has any move state.
@@ -102,20 +96,16 @@ impl VariableMoveState {
     /// A variable is considered moved after a branch if it was moved in EITHER branch.
     /// This prevents use-after-move when a value might have been moved.
     pub fn merge_union(branch1: &Self, branch2: &Self) -> Self {
-        // If either branch has a full move, the result is a full move
-        // (use the span from whichever branch has it, preferring branch1)
         let full_move = branch1.full_move.or(branch2.full_move);
 
-        // A partial move is kept if it appears in EITHER branch
         let mut partial_moves = branch1.partial_moves.clone();
         for (path, span) in &branch2.partial_moves {
-            partial_moves.entry(path.clone()).or_insert(*span);
+            if !partial_moves.iter().any(|(p, _)| p == path) {
+                partial_moves.push((path.clone(), *span));
+            }
         }
 
-        Self {
-            full_move,
-            partial_moves,
-        }
+        Self { full_move, partial_moves }
     }
 }
 
