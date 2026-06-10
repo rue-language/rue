@@ -1054,15 +1054,18 @@ fn string_ensure_capacity(ptr: *mut u8, len: u64, cap: u64, additional: u64) -> 
         }
         (new_ptr, new_cap)
     } else if required > cap {
-        // Need to grow: use the realloc function which implements growth strategy
-        let new_ptr = heap::realloc(ptr, cap, required, 1);
+        // Need to grow. Compute the doubled capacity FIRST and allocate exactly
+        // that: the capacity we record must never exceed the bytes we actually
+        // own. (This previously realloc'd only `required` while recording the
+        // doubled value — the next append that fit the phantom capacity wrote
+        // past the allocation into neighboring heap memory. RUE-34)
+        let grown_cap = cap.saturating_mul(2);
+        let new_cap = required.max(grown_cap).max(STRING_MIN_CAPACITY);
+        let new_ptr = heap::realloc(ptr, cap, new_cap, 1);
         // Check for allocation failure
         if new_ptr.is_null() {
             return (core::ptr::null_mut(), 0);
         }
-        // Calculate actual new capacity (realloc uses 2x growth strategy)
-        let grown_cap = cap.saturating_mul(2);
-        let new_cap = required.max(grown_cap).max(STRING_MIN_CAPACITY);
         (new_ptr, new_cap)
     } else {
         // Capacity is sufficient

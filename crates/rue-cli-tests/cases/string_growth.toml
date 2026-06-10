@@ -1,0 +1,45 @@
+# String heap-growth correctness (RUE-34).
+#
+# string_ensure_capacity used to realloc only `required` bytes while RECORDING
+# the doubled capacity — the next append that fit the phantom capacity wrote
+# past the allocation into neighboring heap memory (cross-allocation
+# corruption). The capacity recorded must never exceed the bytes owned.
+
+[section]
+id = "cli.string_growth"
+name = "String growth"
+description = "Growing a String must allocate at least the capacity it records."
+
+[[case]]
+name = "growth_does_not_corrupt_neighbor"
+description = "Two interleaved strings: growing one then appending in-place must not clobber the other (the original RUE-34 repro)."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let cap: u64 = 16;
+    let mut s = String::with_capacity(cap);
+    s.push_str("AAAAAAAAAAAAAAAAA");
+    let mut s2 = String::with_capacity(cap);
+    s2.push_str("ZZZZZZZZ");
+    s.push_str("XXXXXXXXXXXXXXX");
+    if s2 == "ZZZZZZZZ" { 0 } else { 1 }
+}
+""" }]
+exit_code = 0
+
+[[case]]
+name = "interleaved_repeated_growth_stress"
+description = "Two strings growing in lockstep through many cap*2 doublings stay independent and reach the right lengths."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut a = String::new();
+    let mut b = String::new();
+    let mut i = 0;
+    while i < 50 {
+        a.push_str("aaaaaaaaaa");
+        b.push_str("bbbbbbbbbb");
+        i = i + 1;
+    }
+    if a.len() == 500 { if b.len() == 500 { 0 } else { 2 } } else { 1 }
+}
+""" }]
+exit_code = 0
