@@ -255,3 +255,37 @@ fn main() -> i32 {
 """
 exit_code = 10
 no_warnings = true
+
+# RUE-75: a duplicate enum-variant match arm must warn (it previously slipped
+# through silently, unlike duplicate integer/boolean patterns). The first arm
+# wins at runtime; the second is unreachable.
+[[case]]
+name = "duplicate_enum_variant_pattern"
+source = """
+enum Dir { N, S }
+fn main() -> i32 {
+    match Dir::N {
+        Dir::N => 1,
+        Dir::N => 2,
+        Dir::S => 3,
+    }
+}
+"""
+exit_code = 1
+warning_contains = ["unreachable pattern", "'Dir::N'"]
+expected_warning_count = 1
+
+# Negative control: distinct variants must NOT warn.
+[[case]]
+name = "distinct_enum_variant_patterns_no_warning"
+source = """
+enum Dir { N, S }
+fn main() -> i32 {
+    match Dir::S {
+        Dir::N => 1,
+        Dir::S => 3,
+    }
+}
+"""
+exit_code = 3
+no_warnings = true
