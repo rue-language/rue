@@ -873,7 +873,16 @@ In Claude Code, use the Linear MCP tools (`list_issues`, `get_issue`, `save_issu
    - Will be overwritten with the final commit message when complete
 4. **Work on it**: Implement, test, document
 5. **Discover new work?** Create a linked issue (`relatedTo` the current one)
-6. **Complete**: set state to `Done`, and reference the issue in the commit message (e.g., "Fixes RUE-42")
+6. **Complete**: put `Fixes RUE-42` in the **PR body** — the issue moves to `Done` automatically when the PR merges (see below). No manual state change is needed.
+
+### Closing issues: GitHub ↔ Linear sync
+
+The Linear ↔ GitHub integration is connected to both `steveklabnik/rue` (the fork) and `rue-language/rue` (upstream). A merged PR **auto-links and auto-closes** the issues it references, so you don't need to set issues to `Done` by hand.
+
+- Put a closing keyword in the **PR body** (not just the commit message): `Fixes RUE-NN` (also accepts `Closes`/`Resolves`). The PR body is what the integration parses.
+- **One issue per line** for a PR that fixes several issues — `Fixes RUE-28` / `Fixes RUE-60` / `Fixes RUE-98`, each on its own line. A bare comma list (`Fixes RUE-28, RUE-60`) only closes the first.
+- The branch name (`steveklabnik/push-<changeid>`) does **not** carry the issue ID, so rely on the PR-body keywords, not branch-name linking. This also handles multi-issue PRs, which a branch name can't.
+- On merge, the integration links the PR as an attachment on each issue **and** transitions it to `Done`. Marking `Done` manually is an optional backstop (e.g. for a PR that merged before the integration existed, which it won't retroactively process).
 
 ### Important Rules
 
