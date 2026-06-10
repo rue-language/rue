@@ -212,6 +212,45 @@ impl<'a> CfgLower<'a> {
         self.mir.push(X86Inst::Label { id: ok_label });
     }
 
+    /// Emit the divide instruction for a div/mod, with the dividend already in
+    /// RAX. Sign-extends (signed) or zero-extends (unsigned) the dividend into
+    /// RDX:RAX, then divides by `rhs_vreg`, selecting 64-bit forms (CQO + REX.W
+    /// idiv/div) for 64-bit operands instead of the 32-bit CDQ + idiv/div that
+    /// would only operate on the low 32 bits (RUE-26). Quotient lands in RAX,
+    /// remainder in RDX.
+    fn emit_div_core(&mut self, is_64: bool, is_signed: bool, rhs_vreg: VReg) {
+        if is_signed {
+            // Sign-extend (R/E)AX into (R/E)DX.
+            self.mir
+                .push(if is_64 { X86Inst::Cqo } else { X86Inst::Cdq });
+            self.mir.push(if is_64 {
+                X86Inst::Idiv64R {
+                    src: Operand::Virtual(rhs_vreg),
+                }
+            } else {
+                X86Inst::IdivR {
+                    src: Operand::Virtual(rhs_vreg),
+                }
+            });
+        } else {
+            // Zero RDX so the dividend is RDX:RAX with a zero high half.
+            // (`xor edx, edx` clears all 64 bits of RDX.)
+            self.mir.push(X86Inst::XorRR {
+                dst: Operand::Physical(Reg::Rdx),
+                src: Operand::Physical(Reg::Rdx),
+            });
+            self.mir.push(if is_64 {
+                X86Inst::Div64R {
+                    src: Operand::Virtual(rhs_vreg),
+                }
+            } else {
+                X86Inst::DivR {
+                    src: Operand::Virtual(rhs_vreg),
+                }
+            });
+        }
+    }
+
     /// Allocate a new inline label ID.
     ///
     /// These labels are used for control flow within instruction lowering
@@ -932,12 +971,23 @@ impl<'a> CfgLower<'a> {
                 let lhs_vreg = self.get_vreg(*lhs);
                 let rhs_vreg = self.get_vreg(*rhs);
 
-                // Division by zero check
+                // Division by zero check. For a 64-bit divisor the test must be
+                // 64-bit — a 32-bit test would only look at the low half and
+                // falsely trap (or fail to trap) when the high bits differ
+                // (RUE-26).
+                let is_64 = ty.is_64_bit();
                 let ok_label = self.new_label();
-                self.mir.push(X86Inst::TestRR {
-                    src1: Operand::Virtual(rhs_vreg),
-                    src2: Operand::Virtual(rhs_vreg),
-                });
+                if is_64 {
+                    self.mir.push(X86Inst::Test64RR {
+                        src1: Operand::Virtual(rhs_vreg),
+                        src2: Operand::Virtual(rhs_vreg),
+                    });
+                } else {
+                    self.mir.push(X86Inst::TestRR {
+                        src1: Operand::Virtual(rhs_vreg),
+                        src2: Operand::Virtual(rhs_vreg),
+                    });
+                }
                 self.mir.push(X86Inst::Jnz { label: ok_label });
                 let symbol_id = self.intern_symbol("__rue_div_by_zero");
                 self.mir.push(X86Inst::CallRel { symbol_id });
@@ -948,23 +998,10 @@ impl<'a> CfgLower<'a> {
                     src: Operand::Virtual(lhs_vreg),
                 });
 
-                // Use signed division (CDQ + IDIV) for signed types,
-                // unsigned division (XOR EDX,EDX + DIV) for unsigned types
-                if ty.is_signed() {
-                    self.mir.push(X86Inst::Cdq);
-                    self.mir.push(X86Inst::IdivR {
-                        src: Operand::Virtual(rhs_vreg),
-                    });
-                } else {
-                    // Zero-extend EAX into EDX:EAX by zeroing EDX
-                    self.mir.push(X86Inst::XorRR {
-                        dst: Operand::Physical(Reg::Rdx),
-                        src: Operand::Physical(Reg::Rdx),
-                    });
-                    self.mir.push(X86Inst::DivR {
-                        src: Operand::Virtual(rhs_vreg),
-                    });
-                }
+                // Use signed division (CDQ/CQO + IDIV) for signed types,
+                // unsigned division (XOR EDX,EDX + DIV) for unsigned types,
+                // selecting 64-bit forms for 64-bit operands (RUE-26).
+                self.emit_div_core(is_64, ty.is_signed(), rhs_vreg);
 
                 self.mir.push(X86Inst::MovRR {
                     dst: Operand::Virtual(vreg),
@@ -979,11 +1016,19 @@ impl<'a> CfgLower<'a> {
                 let lhs_vreg = self.get_vreg(*lhs);
                 let rhs_vreg = self.get_vreg(*rhs);
 
+                let is_64 = ty.is_64_bit();
                 let ok_label = self.new_label();
-                self.mir.push(X86Inst::TestRR {
-                    src1: Operand::Virtual(rhs_vreg),
-                    src2: Operand::Virtual(rhs_vreg),
-                });
+                if is_64 {
+                    self.mir.push(X86Inst::Test64RR {
+                        src1: Operand::Virtual(rhs_vreg),
+                        src2: Operand::Virtual(rhs_vreg),
+                    });
+                } else {
+                    self.mir.push(X86Inst::TestRR {
+                        src1: Operand::Virtual(rhs_vreg),
+                        src2: Operand::Virtual(rhs_vreg),
+                    });
+                }
                 self.mir.push(X86Inst::Jnz { label: ok_label });
                 let symbol_id = self.intern_symbol("__rue_div_by_zero");
                 self.mir.push(X86Inst::CallRel { symbol_id });
@@ -994,23 +1039,10 @@ impl<'a> CfgLower<'a> {
                     src: Operand::Virtual(lhs_vreg),
                 });
 
-                // Use signed division (CDQ + IDIV) for signed types,
-                // unsigned division (XOR EDX,EDX + DIV) for unsigned types
-                if ty.is_signed() {
-                    self.mir.push(X86Inst::Cdq);
-                    self.mir.push(X86Inst::IdivR {
-                        src: Operand::Virtual(rhs_vreg),
-                    });
-                } else {
-                    // Zero-extend EAX into EDX:EAX by zeroing EDX
-                    self.mir.push(X86Inst::XorRR {
-                        dst: Operand::Physical(Reg::Rdx),
-                        src: Operand::Physical(Reg::Rdx),
-                    });
-                    self.mir.push(X86Inst::DivR {
-                        src: Operand::Virtual(rhs_vreg),
-                    });
-                }
+                // Use signed division (CDQ/CQO + IDIV) for signed types,
+                // unsigned division (XOR EDX,EDX + DIV) for unsigned types,
+                // selecting 64-bit forms for 64-bit operands (RUE-26).
+                self.emit_div_core(is_64, ty.is_signed(), rhs_vreg);
 
                 self.mir.push(X86Inst::MovRR {
                     dst: Operand::Virtual(vreg),

@@ -430,10 +430,29 @@ impl RegAlloc {
                 mir.push(X86Inst::DivR { src: src_op });
             }
 
+            X86Inst::Idiv64R { src } => {
+                let src_op = self.load_operand(mir, src, Reg::R10)?;
+                mir.push(X86Inst::Idiv64R { src: src_op });
+            }
+
+            X86Inst::Div64R { src } => {
+                let src_op = self.load_operand(mir, src, Reg::R10)?;
+                mir.push(X86Inst::Div64R { src: src_op });
+            }
+
             X86Inst::TestRR { src1, src2 } => {
                 let src1_op = self.load_operand(mir, src1, Reg::Rax)?;
                 let src2_op = self.load_operand(mir, src2, Reg::R10)?;
                 mir.push(X86Inst::TestRR {
+                    src1: src1_op,
+                    src2: src2_op,
+                });
+            }
+
+            X86Inst::Test64RR { src1, src2 } => {
+                let src1_op = self.load_operand(mir, src1, Reg::Rax)?;
+                let src2_op = self.load_operand(mir, src2, Reg::R10)?;
+                mir.push(X86Inst::Test64RR {
                     src1: src1_op,
                     src2: src2_op,
                 });
@@ -869,6 +888,7 @@ impl RegAlloc {
 
             // Instructions without register operands pass through unchanged
             X86Inst::Cdq => mir.push(X86Inst::Cdq),
+            X86Inst::Cqo => mir.push(X86Inst::Cqo),
             X86Inst::Jz { label } => mir.push(X86Inst::Jz { label }),
             X86Inst::Jnz { label } => mir.push(X86Inst::Jnz { label }),
             X86Inst::Jo { label } => mir.push(X86Inst::Jo { label }),
