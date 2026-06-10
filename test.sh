@@ -5,20 +5,12 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-# Run unit tests for all crates
+# Run unit tests for ALL crates. Use //... rather than a hand-maintained target
+# list: the old list silently omitted ~300 tests across 7 crates (rue,
+# rue-runtime, rue-fuzz, rue-test-runner, rue-builtins, rue-spec, rue-cli-tests)
+# because nobody remembered to add new crates here. (RUE-132)
 echo "Running unit tests..."
-./buck2 test \
-    //crates/rue-span:rue-span-test \
-    //crates/rue-error:rue-error-test \
-    //crates/rue-target:rue-target-test \
-    //crates/rue-lexer:rue-lexer-test \
-    //crates/rue-parser:rue-parser-test \
-    //crates/rue-rir:rue-rir-test \
-    //crates/rue-cfg:rue-cfg-test \
-    //crates/rue-air:rue-air-test \
-    //crates/rue-codegen:rue-codegen-test \
-    //crates/rue-linker:rue-linker-test \
-    //crates/rue-compiler:rue-compiler-test
+./buck2 test //...
 
 # Get the path to the rue binary (this also builds it if needed).
 # scripts/rue-bin resolves it to a stable absolute path.

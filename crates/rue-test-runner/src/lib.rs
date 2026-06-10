@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 
 /// A section header in a test file.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Section {
     pub id: String,
     #[allow(dead_code)]
@@ -108,8 +109,14 @@ impl<'de> Deserialize<'de> for ErrorContains {
 
 /// A single test case.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Case {
     pub name: String,
+    /// Human-readable explanation of what this case pins and why. Not used by
+    /// the runner; it exists so case files can document intent inline.
+    #[allow(dead_code)]
+    #[serde(default)]
+    pub description: Option<String>,
     pub source: String,
     /// Expected exit code (for successful compilation)
     #[serde(default)]
@@ -231,6 +238,7 @@ pub struct Case {
 
 /// A test file containing a section and its cases.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TestFile {
     pub section: Section,
     #[serde(default)]
@@ -327,6 +335,7 @@ pub fn expand_case(case: Case) -> Vec<Case> {
             let mut expanded = Case {
                 // Substitute placeholders in string fields
                 name: substitute_placeholders(&case.name, params),
+                description: case.description.clone(),
                 source: substitute_placeholders(&case.source, params),
                 error_contains: ErrorContains(
                     case.error_contains
@@ -560,11 +569,12 @@ pub fn load_test_files(cases_dir: &Path) -> Vec<(String, TestFile)> {
     let mut toml_files = Vec::new();
     collect_toml_files(cases_dir, &mut toml_files);
 
+    let mut load_errors: Vec<String> = Vec::new();
     for path in toml_files {
         let content = match fs::read_to_string(&path) {
             Ok(c) => c,
             Err(e) => {
-                eprintln!("Error reading {}: {}", path.display(), e);
+                load_errors.push(format!("{}: {}", path.display(), e));
                 continue;
             }
         };
@@ -589,9 +599,26 @@ pub fn load_test_files(cases_dir: &Path) -> Vec<(String, TestFile)> {
                 specs.push((identifier, spec));
             }
             Err(e) => {
-                eprintln!("Error parsing {}: {}", path.display(), e);
+                load_errors.push(format!("{}: {}", path.display(), e));
             }
         }
+    }
+
+    // A case file that fails to load must fail the suite: silently skipping it
+    // would silently remove every test it contains. (RUE-132)
+    if !load_errors.is_empty() {
+        eprintln!(
+            "
+Error: {} test file(s) failed to load:",
+            load_errors.len()
+        );
+        for error in &load_errors {
+            eprintln!("  - {}", error);
+        }
+        panic!(
+            "Test loading failed: {} file(s) unreadable or unparsable.              See errors above for details.",
+            load_errors.len()
+        );
     }
 
     // Report all preview feature errors and fail if any were found
@@ -793,6 +820,30 @@ fn run_with_timeout(
     }
 }
 
+/// Detect an internal compiler error in a compiler invocation's outcome.
+///
+/// Returns a failure message when the compiler panicked (a Rust `panicked at`
+/// backtrace or an `internal compiler error` diagnostic on stderr) or died by
+/// signal (e.g. SIGABRT — no exit code on unix). An ICE must never satisfy a
+/// `compile_fail` expectation: "the compiler rejected the program" and "the
+/// compiler crashed" are different outcomes, and conflating them lets crashes
+/// hide inside passing suites. Mirrors `ice_message` in rue-cli-tests.
+fn ice_message(status: &std::process::ExitStatus, stderr: &str) -> Option<String> {
+    if stderr.contains("panicked at") || stderr.contains("internal compiler error") {
+        return Some(format!(
+            "INTERNAL COMPILER ERROR: compiler panicked\n--- compiler stderr ---\n{}",
+            stderr
+        ));
+    }
+    if status.code().is_none() {
+        return Some(format!(
+            "INTERNAL COMPILER ERROR: compiler killed by signal ({:?})\n--- compiler stderr ---\n{}",
+            status, stderr
+        ));
+    }
+    None
+}
+
 /// Run a single test case.
 pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
     // Create a temporary directory for this test
@@ -891,12 +942,21 @@ pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
         }
     }
     compile_cmd.arg("-o").arg(&output_path);
-    let compile_output = compile_cmd
-        .output()
+    // Run the compiler under the same timeout as the compiled program, so a
+    // compiler hang fails the case instead of wedging the whole suite.
+    let compile_timeout = Duration::from_millis(case.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS));
+    let compile_output = run_with_timeout(compile_cmd, compile_timeout, None)
         .map_err(|e| format!("Failed to run rue compiler: {}", e))?;
 
     let compile_succeeded = compile_output.status.success();
     let stderr = String::from_utf8_lossy(&compile_output.stderr);
+
+    // A compiler crash is NEVER a pass — not even for compile_fail cases, where a
+    // panic would otherwise be indistinguishable from the expected diagnostic
+    // failure. Report it as a distinct ICE failure class instead.
+    if let Some(ice) = ice_message(&compile_output.status, &stderr) {
+        return Err(format!("{}\n  source: {}", ice, case.source));
+    }
 
     if case.compile_fail {
         // Expected to fail compilation
@@ -1160,6 +1220,7 @@ mod tests {
     fn test_expand_case_no_params() {
         let case = Case {
             name: "test".to_string(),
+            description: None,
             source: "fn main() {}".to_string(),
             exit_code: Some(0),
             compile_fail: false,
@@ -1210,6 +1271,7 @@ mod tests {
 
         let case = Case {
             name: "{type}_return".to_string(),
+            description: None,
             source: "fn main() -> {type} { 0 }".to_string(),
             exit_code: None, // Will be overridden
             compile_fail: false,
@@ -1268,6 +1330,7 @@ mod tests {
 
         let case = Case {
             name: "{type}_test".to_string(),
+            description: None,
             source: "fn main() {}".to_string(),
             exit_code: Some(0),
             compile_fail: false,
@@ -1318,6 +1381,7 @@ mod tests {
 
         let case = Case {
             name: "{type}_error".to_string(),
+            description: None,
             source: "fn main() -> {type} { true }".to_string(),
             exit_code: None,
             compile_fail: false, // Will be overridden
@@ -1626,6 +1690,7 @@ mod tests {
     fn make_test_case(name: &str, preview: Option<&str>) -> Case {
         Case {
             name: name.to_string(),
+            description: None,
             source: "fn main() {}".to_string(),
             exit_code: Some(0),
             compile_fail: false,
