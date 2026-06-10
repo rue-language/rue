@@ -1181,6 +1181,14 @@ impl<'a> CfgBuilder<'a> {
                 // Lower condition in header
                 self.current_block = header_block;
                 let Some(cond_val) = self.lower_value(*cond) else {
+                    // The condition itself diverges (e.g. `while return 8 {}`), so the
+                    // loop body and everything after the loop are unreachable. The
+                    // body/exit blocks allocated above are now orphaned — mark them
+                    // Unreachable so codegen does not assert on a missing terminator —
+                    // and pop the loop context we pushed to keep loop_stack balanced.
+                    self.cfg.set_terminator(body_block, Terminator::Unreachable);
+                    self.cfg.set_terminator(exit_block, Terminator::Unreachable);
+                    self.loop_stack.pop();
                     return Self::diverged();
                 };
 

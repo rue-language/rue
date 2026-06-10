@@ -205,3 +205,32 @@ fn main() -> i32 {
 }
 """ }]
 stdout = "111\n"
+
+# RUE-77: a `while` whose condition diverges (never-typed) left the loop body and
+# exit blocks orphaned (no terminator) -> codegen aborted "block has no terminator".
+# The loop body and everything after the loop are unreachable; the condition's
+# divergence is the function's result.
+[[case]]
+name = "while_with_diverging_condition"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    while return 8 {}
+    5
+}
+""" }]
+exit_code = 8
+
+# Same diverging-condition while nested inside an outer loop — confirms the
+# loop_stack stays balanced and the enclosing loop's break target is intact.
+[[case]]
+name = "while_diverging_condition_inside_outer_loop"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    loop {
+        while return 7 {}
+        break;
+    }
+    5
+}
+""" }]
+exit_code = 7
