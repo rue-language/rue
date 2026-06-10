@@ -30,7 +30,8 @@ use crate::regalloc::{
 /// We avoid:
 /// - X0-X7: Argument/return registers
 /// - X8: Indirect result location
-/// - X9-X15: Caller-saved temporaries (but X9 used as scratch)
+/// - X9-X15: Caller-saved temporaries (X9-X12 are spill scratches; X15 is
+///   reserved as the emitter's large-offset address scratch — never allocate)
 /// - X16-X17: IP0, IP1 (linker scratch)
 /// - X18: Platform register (reserved on macOS)
 /// - X29 (FP): Frame pointer

@@ -324,6 +324,13 @@ pub struct Emitter<'a> {
     fixups: Vec<Fixup>,
     /// Total number of local slots including spills (for stack frame size).
     num_locals: u32,
+    /// Original local count BEFORE regalloc added spill slots. CfgLower
+    /// generates parameter slot numbers against this count, so the prologue's
+    /// param stores must use it too — using the post-spill total stored params
+    /// at deeper slots than the body reads whenever anything spilled (params
+    /// then read uninitialized stack). Mirrors x86's num_locals_original.
+    /// (RUE-129)
+    num_locals_original: u32,
     /// Number of function parameters.
     num_params: u32,
     /// Callee-saved registers that need to be preserved.
@@ -343,6 +350,7 @@ impl<'a> Emitter<'a> {
     pub fn new(
         mir: &'a Aarch64Mir,
         num_locals: u32,
+        num_locals_original: u32,
         num_params: u32,
         callee_saved: &[Reg],
         strings: &'a [String],
@@ -366,6 +374,7 @@ impl<'a> Emitter<'a> {
             labels: LabelOffsets::with_capacity(estimated_inline_labels, estimated_block_labels),
             fixups: Vec::with_capacity(estimated_fixups),
             num_locals,
+            num_locals_original,
             num_params,
             callee_saved: callee_saved.to_vec(),
             has_frame: false,
@@ -553,7 +562,10 @@ impl<'a> Emitter<'a> {
         ];
         let callee_saved_size = self.callee_saved_stack_size();
         for i in 0..self.num_params.min(8) as usize {
-            let slot = self.num_locals + i as u32;
+            // Use num_locals_original (not num_locals, which includes spill
+            // slots): CfgLower generated the body's param reads against the
+            // pre-spill count. (RUE-129)
+            let slot = self.num_locals_original + i as u32;
             // Skip past callee-saved registers in the offset calculation
             let offset = -callee_saved_size - ((slot as i32 + 1) * 8);
             self.begin_inst();
@@ -1423,11 +1435,26 @@ impl<'a> Emitter<'a> {
                 | (base.encoding() as u32) << 5
                 | rd.encoding() as u32;
             self.emit_u32(inst);
-        } else {
-            // Use unscaled offset (LDUR)
+        } else if (-256..=255).contains(&offset) {
+            // Use unscaled offset (LDUR). imm9 is a SIGNED 9-bit field; the
+            // two's-complement low bits encode in-range values exactly.
             let imm9 = (offset as u32) & 0x1FF;
             let inst =
                 OPCODE_LDUR | (imm9 << 12) | (base.encoding() as u32) << 5 | rd.encoding() as u32;
+            self.emit_u32(inst);
+        } else {
+            // Offset outside the unscaled range: materialize the address in
+            // X15 — the dedicated address scratch; X9-X12 carry spilled values
+            // and may be the very rd/rs of this access. Previously the offset
+            // was masked & 0x1FF, silently WRAPPING — locals deeper than 256
+            // bytes loaded from above the frame pointer. (RUE-129)
+            debug_assert!(
+                base != Reg::Sp && base != Reg::X15,
+                "large-offset load needs a general base register"
+            );
+            self.emit_mov_imm(Reg::X15, offset as i64);
+            self.emit_add_rr(Reg::X15, base, Reg::X15, false);
+            let inst = OPCODE_LDR_UOFF | (Reg::X15.encoding() as u32) << 5 | rd.encoding() as u32;
             self.emit_u32(inst);
         }
     }
@@ -1441,11 +1468,27 @@ impl<'a> Emitter<'a> {
                 | (base.encoding() as u32) << 5
                 | rs.encoding() as u32;
             self.emit_u32(inst);
-        } else {
-            // Use unscaled offset (STUR)
+        } else if (-256..=255).contains(&offset) {
+            // Use unscaled offset (STUR). imm9 is a SIGNED 9-bit field; the
+            // two's-complement low bits encode in-range values exactly.
             let imm9 = (offset as u32) & 0x1FF;
             let inst =
                 OPCODE_STUR | (imm9 << 12) | (base.encoding() as u32) << 5 | rs.encoding() as u32;
+            self.emit_u32(inst);
+        } else {
+            // Offset outside the unscaled range: materialize the address in
+            // X15 — the dedicated address scratch; X9-X12 carry spilled values
+            // and may be the very rd/rs of this access. Previously the offset
+            // was masked & 0x1FF, silently WRAPPING — locals deeper than 256
+            // bytes stored ABOVE the frame pointer, corrupting the caller's
+            // stack. (RUE-129)
+            debug_assert!(
+                base != Reg::Sp && base != Reg::X15 && rs != Reg::X15,
+                "large-offset store needs a general base register"
+            );
+            self.emit_mov_imm(Reg::X15, offset as i64);
+            self.emit_add_rr(Reg::X15, base, Reg::X15, false);
+            let inst = OPCODE_STR_UOFF | (Reg::X15.encoding() as u32) << 5 | rs.encoding() as u32;
             self.emit_u32(inst);
         }
     }
@@ -1518,7 +1561,28 @@ impl<'a> Emitter<'a> {
     }
 
     fn emit_add_imm(&mut self, rd: Reg, rn: Reg, imm: u32) {
-        // ADD Xd, Xn, #imm
+        // ADD Xd, Xn, #imm. The immediate field is 12 bits; larger values use
+        // the shifted form (LSL #12, bit 22) for the high part plus a second
+        // ADD for the low part. Previously the immediate was masked & 0xFFF,
+        // silently truncating — e.g. epilogues of frames >4095 bytes
+        // mis-adjusted SP by multiples of 4096. (RUE-129)
+        debug_assert!(imm < (1 << 24), "ADD immediate exceeds 24 bits: {imm}");
+        if imm > 0xFFF {
+            let inst = OPCODE_ADD_IMM_X
+                | (1 << 22)
+                | (((imm >> 12) & 0xFFF) << 10)
+                | (rn.encoding() as u32) << 5
+                | rd.encoding() as u32;
+            self.emit_u32(inst);
+            if imm & 0xFFF != 0 {
+                let inst = OPCODE_ADD_IMM_X
+                    | ((imm & 0xFFF) << 10)
+                    | (rd.encoding() as u32) << 5
+                    | rd.encoding() as u32;
+                self.emit_u32(inst);
+            }
+            return;
+        }
         let inst = OPCODE_ADD_IMM_X
             | ((imm & 0xFFF) << 10)
             | (rn.encoding() as u32) << 5
@@ -1573,7 +1637,29 @@ impl<'a> Emitter<'a> {
     }
 
     fn emit_sub_imm(&mut self, rd: Reg, rn: Reg, imm: u32) {
-        // SUB Xd, Xn, #imm
+        // SUB Xd, Xn, #imm. The immediate field is 12 bits; larger values use
+        // the shifted form (LSL #12, bit 22) for the high part plus a second
+        // SUB for the low part. Previously the immediate was masked & 0xFFF,
+        // silently truncating — prologues of frames >4095 bytes UNDER-ALLOCATED
+        // by multiples of 4096, so locals overlapped the caller's stack.
+        // (RUE-129)
+        debug_assert!(imm < (1 << 24), "SUB immediate exceeds 24 bits: {imm}");
+        if imm > 0xFFF {
+            let inst = OPCODE_SUB_IMM_X
+                | (1 << 22)
+                | (((imm >> 12) & 0xFFF) << 10)
+                | (rn.encoding() as u32) << 5
+                | rd.encoding() as u32;
+            self.emit_u32(inst);
+            if imm & 0xFFF != 0 {
+                let inst = OPCODE_SUB_IMM_X
+                    | ((imm & 0xFFF) << 10)
+                    | (rd.encoding() as u32) << 5
+                    | rd.encoding() as u32;
+                self.emit_u32(inst);
+            }
+            return;
+        }
         let inst = OPCODE_SUB_IMM_X
             | ((imm & 0xFFF) << 10)
             | (rn.encoding() as u32) << 5
@@ -2200,7 +2286,7 @@ mod tests {
     fn emit_single(inst: Aarch64Inst) -> Vec<u8> {
         let mut mir = Aarch64Mir::new();
         mir.push(inst);
-        Emitter::new(&mir, 0, 0, &[], &[]).emit().unwrap().0
+        Emitter::new(&mir, 0, 0, 0, &[], &[]).emit().unwrap().0
     }
 
     // --- Move instructions ---
@@ -2276,6 +2362,70 @@ mod tests {
         // adds x0, x1, x2 (64-bit)
         let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
         assert_eq!(inst & 0xFF200000, 0xAB000000, "Should be ADDS 64-bit");
+    }
+
+    #[test]
+    fn test_add_imm_large_splits_with_lsl12() {
+        // 5000 = 0x1388 > 0xFFF: must emit ADD #1 LSL#12 then ADD #0x388,
+        // not a single truncated ADD. (RUE-129)
+        let code = emit_single(Aarch64Inst::AddImm {
+            dst: Operand::Physical(Reg::X0),
+            src: Operand::Physical(Reg::X1),
+            imm: 5000,
+        });
+        assert_eq!(code.len(), 8, "large immediate must split into two ADDs");
+        let hi = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        let lo = u32::from_le_bytes(code[4..8].try_into().unwrap());
+        assert_eq!(hi & 0xFF000000, 0x91000000, "first should be ADD immediate");
+        assert_ne!(hi & (1 << 22), 0, "first ADD must use the LSL #12 form");
+        assert_eq!((hi >> 10) & 0xFFF, 0x1, "high chunk should be 1 (=4096)");
+        assert_eq!(lo & (1 << 22), 0, "second ADD must be unshifted");
+        assert_eq!((lo >> 10) & 0xFFF, 0x388, "low chunk should be 0x388");
+        assert_eq!((lo >> 5) & 0x1F, 0, "second ADD chains off Rd (X0)");
+    }
+
+    #[test]
+    fn test_sub_imm_large_splits_with_lsl12() {
+        // Negative AddImm routes through emit_sub_imm; -9536 needs the split.
+        // Previously frames >4095 bytes under-allocated by the truncated
+        // multiple of 4096. (RUE-129)
+        let code = emit_single(Aarch64Inst::AddImm {
+            dst: Operand::Physical(Reg::X0),
+            src: Operand::Physical(Reg::X1),
+            imm: -9536,
+        });
+        assert_eq!(code.len(), 8, "large immediate must split into two SUBs");
+        let hi = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        let lo = u32::from_le_bytes(code[4..8].try_into().unwrap());
+        assert_eq!(hi & 0xFF000000, 0xD1000000, "first should be SUB immediate");
+        assert_ne!(hi & (1 << 22), 0, "first SUB must use the LSL #12 form");
+        assert_eq!((hi >> 10) & 0xFFF, 0x2, "high chunk should be 2 (=8192)");
+        assert_eq!((lo >> 10) & 0xFFF, 9536 - 8192, "low chunk remainder");
+    }
+
+    #[test]
+    fn test_str_large_negative_offset_materializes_address() {
+        // -2048 is outside STUR's signed imm9 range [-256, 255]. Previously the
+        // offset was masked & 0x1FF and silently wrapped, storing ABOVE the
+        // frame pointer. Now: MOVN x15 / ADD x15, fp, x15 / STR [x15]. (RUE-129)
+        let code = emit_single(Aarch64Inst::Str {
+            src: Operand::Physical(Reg::X0),
+            base: Reg::Fp,
+            offset: -2048,
+        });
+        assert_eq!(
+            code.len(),
+            12,
+            "large-offset store should be mov_imm + add + str"
+        );
+        let last = u32::from_le_bytes(code[8..12].try_into().unwrap());
+        assert_eq!(
+            last & 0xFFC00000,
+            0xF9000000,
+            "final word should be STR (scaled)"
+        );
+        assert_eq!((last >> 5) & 0x1F, 15, "STR base should be X15");
+        assert_eq!((last >> 10) & 0xFFF, 0, "STR offset should be 0");
     }
 
     #[test]
@@ -2708,7 +2858,7 @@ mod tests {
             id: LabelId::new(0),
         });
 
-        let (code, _) = Emitter::new(&mir, 0, 0, &[], &[]).emit().unwrap();
+        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[]).emit().unwrap();
 
         // b forward -> 0x14000002 (offset = 2 instructions = 8 bytes / 4)
         let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
@@ -2727,7 +2877,7 @@ mod tests {
             id: LabelId::new(0),
         });
 
-        let (code, _) = Emitter::new(&mir, 0, 0, &[], &[]).emit().unwrap();
+        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[]).emit().unwrap();
 
         // b.eq -> 0x54000000 + condition (eq = 0)
         let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
@@ -2745,7 +2895,7 @@ mod tests {
             id: LabelId::new(0),
         });
 
-        let (code, _) = Emitter::new(&mir, 0, 0, &[], &[]).emit().unwrap();
+        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[]).emit().unwrap();
 
         // cbz x0, label
         let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
@@ -2764,7 +2914,7 @@ mod tests {
             id: LabelId::new(0),
         });
 
-        let (code, _) = Emitter::new(&mir, 0, 0, &[], &[]).emit().unwrap();
+        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[]).emit().unwrap();
 
         // cbnz x0, label
         let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
@@ -2779,7 +2929,7 @@ mod tests {
         let symbol_id = mir.intern_symbol("test_func");
         mir.push(Aarch64Inst::Bl { symbol_id });
 
-        let (code, relocs) = Emitter::new(&mir, 0, 0, &[], &[]).emit().unwrap();
+        let (code, relocs) = Emitter::new(&mir, 0, 0, 0, &[], &[]).emit().unwrap();
 
         // bl -> 0x94000000
         let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
@@ -2876,7 +3026,7 @@ mod tests {
             dst: Operand::Physical(Reg::X0),
             imm: 42,
         });
-        let (code, _relocations) = Emitter::new(&mir, 0, 0, &[], &[]).emit().unwrap();
+        let (code, _relocations) = Emitter::new(&mir, 0, 0, 0, &[], &[]).emit().unwrap();
         // Code should be generated
         assert!(!code.is_empty());
     }
@@ -2889,7 +3039,7 @@ mod tests {
             dst: Operand::Physical(Reg::X0),
             imm: 42,
         });
-        let emitted = Emitter::new(&mir, 0, 0, &[], &[]).emit_all().unwrap();
+        let emitted = Emitter::new(&mir, 0, 0, 0, &[], &[]).emit_all().unwrap();
         // Instructions should be populated with asm text
         assert!(!emitted.instructions.is_empty());
         // Should contain the mov instruction

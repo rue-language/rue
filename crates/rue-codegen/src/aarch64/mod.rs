@@ -71,8 +71,15 @@ pub fn generate(
 
     // Emit machine code bytes
     let total_locals = num_locals + num_spills;
-    let (code, relocations) =
-        Emitter::new(&mir, total_locals, num_params, &used_callee_saved, strings).emit()?;
+    let (code, relocations) = Emitter::new(
+        &mir,
+        total_locals,
+        num_locals,
+        num_params,
+        &used_callee_saved,
+        strings,
+    )
+    .emit()?;
 
     Ok(MachineCode {
         code,
@@ -115,8 +122,15 @@ pub fn generate_with_asm(
 
     // Emit machine code bytes with assembly text
     let total_locals = num_locals + num_spills;
-    let emitted =
-        Emitter::new(&mir, total_locals, num_params, &used_callee_saved, strings).emit_all()?;
+    let emitted = Emitter::new(
+        &mir,
+        total_locals,
+        num_locals,
+        num_params,
+        &used_callee_saved,
+        strings,
+    )
+    .emit_all()?;
 
     let asm = emitted.to_asm();
     let machine_code = MachineCode {

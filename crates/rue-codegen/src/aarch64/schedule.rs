@@ -211,6 +211,12 @@ fn is_barrier(inst: &Aarch64Inst) -> bool {
             | Aarch64Inst::Cbnz { .. }
             | Aarch64Inst::Label { .. }
             | Aarch64Inst::Bl { .. }
+            // A syscall is a barrier exactly like a call: the kernel reads its
+            // argument registers and writes x0. Without this, the scheduler was
+            // free to hoist the x0 result capture ABOVE `svc #0`, so every used
+            // @syscall result read garbage. x86's barrier set includes Syscall;
+            // this was pure backend drift. (RUE-129)
+            | Aarch64Inst::Svc { .. }
             | Aarch64Inst::Ret
     )
 }
