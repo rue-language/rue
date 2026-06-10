@@ -390,7 +390,7 @@ fn main() -> i32 {
 }
 """
 exit_code = 0
-stdout = "hello\n"
+expected_stdout = "hello\n"
 
 [[case]]
 name = "string_dbg_variable"
@@ -403,7 +403,7 @@ fn main() -> i32 {
 }
 """
 exit_code = 0
-stdout = "world\n"
+expected_stdout = "world\n"
 
 [[case]]
 name = "string_dbg_empty"
@@ -415,7 +415,7 @@ fn main() -> i32 {
 }
 """
 exit_code = 0
-stdout = "\n"
+expected_stdout = "\n"
 
 [[case]]
 name = "string_dbg_with_spaces"
@@ -428,7 +428,7 @@ fn main() -> i32 {
 }
 """
 exit_code = 0
-stdout = "Hello, world!\n"
+expected_stdout = "Hello, world!\n"
 
 [[case]]
 name = "string_dbg_with_escaped_newline"
@@ -440,7 +440,7 @@ fn main() -> i32 {
 }
 """
 exit_code = 0
-stdout = "line1\nline2\n"
+expected_stdout = "line1\nline2\n"
 
 [[case]]
 name = "string_dbg_with_escaped_tab"
@@ -452,7 +452,7 @@ fn main() -> i32 {
 }
 """
 exit_code = 0
-stdout = "col1\tcol2\n"
+expected_stdout = "col1\tcol2\n"
 
 # =============================================================================
 # String in Complex Expressions

@@ -5540,19 +5540,20 @@ fn analyze_intrinsic_ctx(
         let arg_result = analyze_inst_with_context(ctx, air, args[0].value, analysis_ctx)?;
         let arg_type = arg_result.ty;
 
-        // Validate type
+        // Validate type: @dbg supports integers, bool, and String (spec 4.13:7).
+        // Structs, enums, and arrays must be rejected HERE — codegen has no
+        // lowering for them and would panic ("@dbg only supports scalars and
+        // strings"), which the spec mandates as a compile error instead.
         if !arg_type.is_integer()
             && arg_type != Type::BOOL
-            && !arg_type.is_struct()
-            && !arg_type.is_enum()
-            && !arg_type.is_array()
+            && !ctx.is_builtin_string(arg_type)
             && !arg_type.is_error()
             && !arg_type.is_never()
         {
             return Err(CompileError::new(
                 ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
                     name: "dbg".to_string(),
-                    expected: "integer, bool, struct, enum, or array".to_string(),
+                    expected: "integer, bool, or String".to_string(),
                     found: arg_type.name().to_string(),
                 })),
                 span,
@@ -8114,19 +8115,20 @@ impl<'a> Sema<'a> {
         let arg_result = self.analyze_inst(air, args[0].value, ctx)?;
         let arg_type = arg_result.ty;
 
-        // Validate type
+        // Validate type: @dbg supports integers, bool, and String (spec 4.13:7).
+        // Structs, enums, and arrays must be rejected HERE — codegen has no
+        // lowering for them and would panic ("@dbg only supports scalars and
+        // strings"), which the spec mandates as a compile error instead.
         if !arg_type.is_integer()
             && arg_type != Type::BOOL
-            && !arg_type.is_struct()
-            && !arg_type.is_enum()
-            && !arg_type.is_array()
+            && !self.is_builtin_string(arg_type)
             && !arg_type.is_error()
             && !arg_type.is_never()
         {
             return Err(CompileError::new(
                 ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
                     name: "dbg".to_string(),
-                    expected: "integer, bool, struct, enum, or array".to_string(),
+                    expected: "integer, bool, or String".to_string(),
                     found: arg_type.name().to_string(),
                 })),
                 span,

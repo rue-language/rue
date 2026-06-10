@@ -1452,6 +1452,35 @@ impl WarningKind {
 mod tests {
     use super::*;
 
+    /// Every ErrorCode constant must map to a distinct number: two diagnostics
+    /// sharing an E-code would be indistinguishable to users and tests.
+    /// Scans this file's source for the `pub const NAME: Self = Self(NNN);`
+    /// declarations so the check can't go stale as codes are added.
+    #[test]
+    fn test_error_codes_are_unique() {
+        let src = include_str!("lib.rs");
+        let mut seen: std::collections::HashMap<u32, String> = std::collections::HashMap::new();
+        for line in src.lines() {
+            let Some(rest) = line.trim().strip_prefix("pub const ") else {
+                continue;
+            };
+            let Some((name, tail)) = rest.split_once(": Self = Self(") else {
+                continue;
+            };
+            let Some(num) = tail.split(')').next().and_then(|n| n.parse::<u32>().ok()) else {
+                continue;
+            };
+            if let Some(prev) = seen.insert(num, name.to_string()) {
+                panic!("duplicate ErrorCode {num}: {prev} and {name}");
+            }
+        }
+        assert!(
+            seen.len() > 50,
+            "expected to find the ErrorCode constants (found {})",
+            seen.len()
+        );
+    }
+
     #[test]
     fn test_error_with_span() {
         let span = Span::new(10, 20);

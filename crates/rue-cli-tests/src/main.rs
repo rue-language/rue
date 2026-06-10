@@ -82,6 +82,7 @@ const CASES_DIR_PATHS: &[&str] = &[
 const STD_DIR_PATHS: &[&str] = &["std", "../std", "../../std"];
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct TestFile {
     section: Section,
     #[serde(default, rename = "case")]
@@ -89,6 +90,7 @@ struct TestFile {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Section {
     id: String,
     #[allow(dead_code)]
@@ -99,12 +101,14 @@ struct Section {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct SourceFile {
     path: String,
     source: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Case {
     name: String,
     /// Files written to the temp directory before invoking the compiler.

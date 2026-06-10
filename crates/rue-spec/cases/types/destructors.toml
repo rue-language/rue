@@ -159,7 +159,7 @@ fn main() -> i32 {
 }
 """
 exit_code = 0
-stdout = "1\n2\n3\n"
+expected_stdout = "1\n2\n3\n"
 
 [[case]]
 name = "array_of_struct_with_destructor_dropped"
@@ -182,7 +182,7 @@ fn main() -> i32 {
 }
 """
 exit_code = 0
-stdout = "10\n20\n"
+expected_stdout = "10\n20\n"
 
 # =============================================================================
 # Drop Placement
@@ -651,7 +651,7 @@ fn main() -> i32 {
 }  // Counter destructor runs, prints 99
 """
 exit_code = 0
-stdout = "99\n"
+expected_stdout = "99\n"
 
 [[case]]
 name = "duplicate_destructor_error"
