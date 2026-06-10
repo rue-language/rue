@@ -133,6 +133,11 @@ struct Case {
     /// Substrings expected in the compiler's stdout (e.g. `--emit` output).
     #[serde(default)]
     compile_stdout_contains: Vec<String>,
+    /// Substrings that must NOT appear in the compiler's stderr, regardless of
+    /// whether compilation succeeds or fails. Use to guard against debug spew
+    /// or leaked internal diagnostics (e.g. raw `DEBUG:` eprintln lines).
+    #[serde(default)]
+    compile_stderr_not_contains: Vec<String>,
     /// Exact expected program stdout.
     #[serde(default)]
     stdout: Option<String>,
@@ -226,6 +231,16 @@ fn run_case(case: &Case, rue_binary: &Path, real_std: &Path) -> TestResult {
     // even for compile_fail cases.
     if let Some(ice) = ice_message(&compile_output.status, &compile_stderr) {
         return Err(ice);
+    }
+
+    // Debug-spew / leaked-diagnostics guard runs regardless of compile outcome.
+    for forbidden in &case.compile_stderr_not_contains {
+        if compile_stderr.contains(forbidden) {
+            return Err(format!(
+                "compiler stderr contained forbidden substring: {}\n--- actual stderr ---\n{}",
+                forbidden, compile_stderr
+            ));
+        }
     }
 
     let compile_succeeded = compile_output.status.success();
