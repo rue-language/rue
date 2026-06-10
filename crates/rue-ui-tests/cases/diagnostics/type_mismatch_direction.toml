@@ -1,0 +1,35 @@
+[section]
+id = "diagnostics.type_mismatch_direction"
+name = "Type mismatch direction"
+description = "E0206 must report the context's expected type as 'expected' and the actual value's type as 'found' — these were systematically swapped (RUE-133)."
+
+[[case]]
+name = "return_type_mismatch_direction"
+source = """
+fn main() -> i32 { true }
+"""
+exit_code = 1
+compile_fail = true
+error_contains = ["expected i32, found bool"]
+
+[[case]]
+name = "let_annotation_mismatch_direction"
+source = """
+fn main() -> i32 {
+    let x: i32 = true;
+    0
+}
+"""
+exit_code = 1
+compile_fail = true
+error_contains = ["expected i32, found bool"]
+
+[[case]]
+name = "call_arg_mismatch_direction"
+source = """
+fn f(n: i32) -> i32 { n }
+fn main() -> i32 { f(true) }
+"""
+exit_code = 1
+compile_fail = true
+error_contains = ["expected i32, found bool"]
