@@ -3074,8 +3074,14 @@ impl<'a> CfgLower<'a> {
                     dst: Operand::Virtual(sext_vreg),
                     src: Operand::Virtual(result_vreg),
                 });
-                // Use 64-bit compare since sext_vreg is a 64-bit value
-                self.mir.push(X86Inst::Cmp64RR {
+                // Compare at 32-bit width. The sub-word arithmetic was emitted
+                // as a 32-bit op that zero-extends bits 32-63, so result_vreg's
+                // valid data is only in its low 32 bits. A 64-bit compare against
+                // the sign-extended byte/word (1s in bits 32-63 for a negative
+                // value) would mismatch a legitimately-negative in-range result
+                // and falsely trap (RUE-28 sub, RUE-60 neg). The low 32 bits —
+                // sign-extended byte/word vs the 32-bit result — must match.
+                self.mir.push(X86Inst::CmpRR {
                     src1: Operand::Virtual(result_vreg),
                     src2: Operand::Virtual(sext_vreg),
                 });
@@ -3089,8 +3095,14 @@ impl<'a> CfgLower<'a> {
                     dst: Operand::Virtual(sext_vreg),
                     src: Operand::Virtual(result_vreg),
                 });
-                // Use 64-bit compare since sext_vreg is a 64-bit value
-                self.mir.push(X86Inst::Cmp64RR {
+                // Compare at 32-bit width. The sub-word arithmetic was emitted
+                // as a 32-bit op that zero-extends bits 32-63, so result_vreg's
+                // valid data is only in its low 32 bits. A 64-bit compare against
+                // the sign-extended byte/word (1s in bits 32-63 for a negative
+                // value) would mismatch a legitimately-negative in-range result
+                // and falsely trap (RUE-28 sub, RUE-60 neg). The low 32 bits —
+                // sign-extended byte/word vs the 32-bit result — must match.
+                self.mir.push(X86Inst::CmpRR {
                     src1: Operand::Virtual(result_vreg),
                     src2: Operand::Virtual(sext_vreg),
                 });
