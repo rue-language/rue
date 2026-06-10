@@ -1,0 +1,120 @@
+# Multi-slot aggregate consumer sites (RUE-118).
+#
+# A multi-slot aggregate (struct, struct-with-array, or the 3-slot String fat
+# pointer) read from a *place* — a struct field `h.s`/`w.p` or a rebound local —
+# must materialize ALL its slots at every consumer site, not just slot 0. These
+# pin the fixed behavior after routing every consumer (call arg, return, Alloc,
+# Store, StructInit field, @dbg, drop) through `get_or_compute_field_vregs`.
+# Previously these silently miscompiled (wrong value, no diagnostic) or ICE'd.
+# Runs on both backends — the aarch64 runtime path is only exercised in CI.
+
+[section]
+id = "cli.aggregate_slots"
+name = "Multi-slot aggregate place-read consumers"
+description = "All slots of a place-read aggregate must reach every consumer site, both backends."
+
+# By-value struct arg sourced from a struct field — previously passed only slot 0
+# (silent miscompile: returned 10 instead of 30).
+[[case]]
+name = "struct_arg_from_field"
+files = [{ path = "main.rue", source = """
+struct Point { x: i32, y: i32 }
+struct Wrap { p: Point, tag: i32 }
+fn sum(pt: Point) -> i32 { pt.x + pt.y }
+fn main() -> i32 {
+    let w = Wrap { p: Point { x: 10, y: 20 }, tag: 1 };
+    sum(w.p)
+}
+""" }]
+exit_code = 30
+
+# Struct returned by value sourced from a struct field — previously returned only
+# slot 0 (silent miscompile: returned 11 instead of 30).
+[[case]]
+name = "struct_return_from_field"
+files = [{ path = "main.rue", source = """
+struct Point { x: i32, y: i32 }
+struct Wrap { p: Point, tag: i32 }
+fn get_p(w: Wrap) -> Point { w.p }
+fn main() -> i32 {
+    let w = Wrap { p: Point { x: 10, y: 20 }, tag: 1 };
+    let p = get_p(w);
+    p.x + p.y
+}
+""" }]
+exit_code = 30
+
+# Multi-slot struct read from a field, rebound to a local (Alloc) — previously
+# kept only slot 0.
+[[case]]
+name = "struct_field_rebound_to_local"
+files = [{ path = "main.rue", source = """
+struct Point { x: i32, y: i32 }
+struct A { p: Point }
+fn main() -> i32 {
+    let a = A { p: Point { x: 10, y: 20 } };
+    let q = a.p;
+    q.x + q.y
+}
+""" }]
+exit_code = 30
+
+# StructInit with a nested-struct field sourced from a place-read — previously an
+# ICE ("nested struct field should have slot vregs in cache").
+[[case]]
+name = "struct_init_nested_field_from_place"
+files = [{ path = "main.rue", source = """
+struct Point { x: i32, y: i32 }
+struct A { p: Point }
+struct B { p: Point, tag: i32 }
+fn main() -> i32 {
+    let a = A { p: Point { x: 10, y: 20 } };
+    let b = B { p: a.p, tag: 99 };
+    b.p.x + b.p.y
+}
+""" }]
+exit_code = 30
+
+# Store of a String sourced from a struct field — previously an ICE
+# ("string should have fat pointer fields in Store").
+[[case]]
+name = "store_string_from_field"
+files = [{ path = "main.rue", source = """
+struct Holder { s: String, n: i32 }
+fn main() -> i32 {
+    let h = Holder { s: "hello", n: 7 };
+    let mut s2 = "init";
+    s2 = h.s;
+    if s2 == "hello" { 5 } else { 0 }
+}
+""" }]
+exit_code = 5
+
+# @dbg of a String sourced from a struct field — previously an ICE
+# ("string value should have field vregs for fat pointer"). Prints the string.
+[[case]]
+name = "dbg_string_from_field"
+files = [{ path = "main.rue", source = """
+struct Holder { s: String, n: i32 }
+fn main() -> i32 {
+    let h = Holder { s: "hi", n: 1 };
+    @dbg(h.s);
+    0
+}
+""" }]
+exit_code = 0
+stdout = "hi\n"
+
+# Struct containing an array field, copied by value — regression guard that the
+# StructInit/Alloc slot lists stay fully flattened (array elements included).
+[[case]]
+name = "struct_with_array_field_copy"
+files = [{ path = "main.rue", source = """
+struct S { a: [i32; 3], n: i32 }
+fn main() -> i32 {
+    let s = S { a: [1, 2, 3], n: 9 };
+    let t = s;
+    t.a[2] + t.n
+}
+""" }]
+exit_code = 12
