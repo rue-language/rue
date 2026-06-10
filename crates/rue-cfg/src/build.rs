@@ -608,6 +608,15 @@ impl<'a> CfgBuilder<'a> {
 
             AirInstData::Alloc { slot, init } => {
                 let init_result = self.lower_inst(*init);
+                // If the initializer diverges (e.g. `let x = { return 7; 2 };`),
+                // the binding never happens and everything after the `let` is
+                // unreachable. Propagate the divergence — previously this arm
+                // always reported Continues, so the builder kept lowering the
+                // rest of the block and silently OVERWROTE the initializer's
+                // Return terminator with the later code's. (RUE-128)
+                if matches!(init_result.continuation, Continuation::Diverged) {
+                    return Self::diverged();
+                }
                 // If init produces a value, use it; otherwise use a dummy Unit value
                 let init_val = init_result
                     .value

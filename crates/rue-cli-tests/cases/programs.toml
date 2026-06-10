@@ -234,3 +234,27 @@ fn main() -> i32 {
 }
 """ }]
 exit_code = 7
+
+# RUE-128: a let whose initializer diverges. The Alloc lowering used to discard
+# the initializer's continuation, so the builder kept lowering the rest of the
+# block and silently OVERWROTE the Return terminator — `let x = { return 7; 2 }; 3`
+# returned 3. Everything after such a let is unreachable.
+[[case]]
+name = "let_with_diverging_block_initializer"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let x = { return 7; 2 };
+    3
+}
+""" }]
+exit_code = 7
+
+[[case]]
+name = "let_with_diverging_if_initializer"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let x: i32 = if true { return 9; } else { return 8; };
+    3
+}
+""" }]
+exit_code = 9
