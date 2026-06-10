@@ -212,7 +212,8 @@ impl<'a> CfgLower<'a> {
         Aarch64Mir::block_label(block_id.as_u32())
     }
 
-    /// Get or compute field vregs for a struct value.
+    /// Get or compute the slot vregs for a multi-slot aggregate value
+    /// (struct, builtin String, or fixed-size array).
     ///
     /// This handles different sources of struct values:
     /// - StructInit: use the field values directly
@@ -226,10 +227,10 @@ impl<'a> CfgLower<'a> {
         }
 
         let inst = self.ctx.cfg.get_inst(value);
-        let struct_id = match inst.ty.as_struct() {
-            Some(id) => id,
-            None => return None,
-        };
+        let ty = inst.ty;
+        if !(ty.is_struct() || ty.is_array()) {
+            return None;
+        }
 
         match &inst.data.clone() {
             CfgInstData::StructInit {
@@ -242,7 +243,7 @@ impl<'a> CfgLower<'a> {
             }
             CfgInstData::Load { slot } => {
                 // Load slot values from consecutive stack slots
-                let slot_count = self.ctx.type_slot_count(Type::new_struct(struct_id));
+                let slot_count = self.ctx.type_slot_count(ty);
                 let mut vregs = Vec::with_capacity(slot_count as usize);
                 for i in 0..slot_count {
                     let vreg = self.mir.alloc_vreg();
@@ -258,7 +259,7 @@ impl<'a> CfgLower<'a> {
             }
             CfgInstData::Param { index } => {
                 // Get slot values from parameter area
-                let slot_count = self.ctx.type_slot_count(Type::new_struct(struct_id));
+                let slot_count = self.ctx.type_slot_count(ty);
                 let mut vregs = Vec::with_capacity(slot_count as usize);
                 for i in 0..slot_count {
                     let vreg = self.mir.alloc_vreg();
@@ -274,7 +275,7 @@ impl<'a> CfgLower<'a> {
                 Some(vregs)
             }
             CfgInstData::PlaceRead { place } => {
-                // A multi-slot aggregate (struct or builtin String) read from a
+                // A multi-slot aggregate (struct, builtin String, or array) read from a
                 // place — e.g. `let s2 = h.s;`. The base place-read lowering only
                 // materializes the first slot into `dst`; here we materialize all
                 // `slot_count` slots so consumers (struct equality, Alloc/Store of
@@ -304,7 +305,7 @@ impl<'a> CfgLower<'a> {
                         self.ctx.num_locals + param_slot + static_slot_offset
                     }
                 };
-                let slot_count = self.ctx.type_slot_count(Type::new_struct(struct_id));
+                let slot_count = self.ctx.type_slot_count(ty);
                 let mut vregs = Vec::with_capacity(slot_count as usize);
                 for i in 0..slot_count {
                     let vreg = self.mir.alloc_vreg();
@@ -1481,44 +1482,41 @@ impl<'a> CfgLower<'a> {
 
             CfgInstData::Store { slot, value: val } => {
                 let val_type = self.ctx.cfg.get_inst(*val).ty;
-                if self.ctx.is_builtin_string(val_type) {
-                    // String: store ptr, len, and cap to consecutive slots
-                    let field_vregs = self
-                        .get_or_compute_field_vregs(*val)
-                        .expect("string should have fat pointer fields in Store");
-                    debug_assert_eq!(
-                        field_vregs.len(),
-                        3,
-                        "string should have 3 fields (ptr, len, cap)"
-                    );
+                // Multi-slot aggregate (struct, builtin String fat pointer, or array):
+                // store ALL slots, not just the first. The accessor materializes
+                // lazily-sourced values and cache-hits eager ones; if it can't model
+                // the source (e.g. a dynamically-indexed place-read) fall back to the
+                // old single-slot behavior rather than ICE. (RUE-118, RUE-80)
+                let aggregate_vregs = if val_type.is_struct() || val_type.is_array() {
+                    self.get_or_compute_field_vregs(*val)
+                } else {
+                    None
+                };
 
-                    let ptr_vreg = field_vregs[0];
-                    let len_vreg = field_vregs[1];
-                    let cap_vreg = field_vregs[2];
-
-                    // Store ptr to slot
-                    let ptr_offset = self.ctx.local_offset(*slot);
-                    self.mir.push(Aarch64Inst::Str {
-                        src: Operand::Virtual(ptr_vreg),
-                        base: Reg::Fp,
-                        offset: ptr_offset,
-                    });
-
-                    // Store len to slot + 1
-                    let len_offset = self.ctx.local_offset(slot + 1);
-                    self.mir.push(Aarch64Inst::Str {
-                        src: Operand::Virtual(len_vreg),
-                        base: Reg::Fp,
-                        offset: len_offset,
-                    });
-
-                    // Store cap to slot + 2
-                    let cap_offset = self.ctx.local_offset(slot + 2);
-                    self.mir.push(Aarch64Inst::Str {
-                        src: Operand::Virtual(cap_vreg),
-                        base: Reg::Fp,
-                        offset: cap_offset,
-                    });
+                if let Some(slot_vregs) = aggregate_vregs {
+                    // Check if this slot corresponds to an inout parameter
+                    if let Some(param_index) = self.slot_to_inout_param_index(*slot) {
+                        // Whole-aggregate store through the inout pointer. Caller
+                        // slots descend from the pointer (stack grows down), so
+                        // slot i lives at ptr - i*8 — matching the place-read path.
+                        let ptr_vreg = self.ensure_inout_param_ptr(param_index);
+                        for (i, slot_vreg) in slot_vregs.iter().enumerate() {
+                            self.mir.push(Aarch64Inst::StrIndexedOffset {
+                                src: Operand::Virtual(*slot_vreg),
+                                base: ptr_vreg,
+                                offset: -((i as i32) * 8),
+                            });
+                        }
+                    } else {
+                        for (i, slot_vreg) in slot_vregs.iter().enumerate() {
+                            let offset = self.ctx.local_offset(slot + i as u32);
+                            self.mir.push(Aarch64Inst::Str {
+                                src: Operand::Virtual(*slot_vreg),
+                                base: Reg::Fp,
+                                offset,
+                            });
+                        }
+                    }
                 } else {
                     let val_vreg = self.get_vreg(*val);
 
@@ -1701,60 +1699,19 @@ impl<'a> CfgLower<'a> {
                     }
 
                     match arg_type.kind() {
-                        TypeKind::Struct(_) => {
-                            // Pass all slots of the (possibly multi-slot) struct/String arg,
-                            // regardless of how it was produced — StructInit, Load, Param, Call,
-                            // BlockParam, or a field place-read (`f(h.s)` / `f(w.p)`). The
-                            // accessor materializes lazily-sourced values (Load/Param/PlaceRead)
-                            // and cache-hits eager ones (StructInit/Call/BlockParam). Previously
-                            // the `_` arm here passed only slot 0 of a place-read aggregate. (RUE-118)
+                        TypeKind::Struct(_) | TypeKind::Array(_) => {
+                            // Pass all slots of the (possibly multi-slot) aggregate arg —
+                            // struct, builtin String, or fixed-size array — regardless of
+                            // how it was produced. The accessor materializes lazily-sourced
+                            // values (Load/Param/PlaceRead) and cache-hits eager ones
+                            // (StructInit/ArrayInit/Call/BlockParam). The old per-source
+                            // array ladder iterated array_len (element count), not
+                            // slot_count, so a multidimensional array dropped every row
+                            // after the first. (RUE-118, RUE-79)
                             if let Some(field_vregs) = self.get_or_compute_field_vregs(arg_value) {
                                 flattened_vregs.extend(field_vregs);
                             } else {
                                 flattened_vregs.push(self.get_vreg(arg_value));
-                            }
-                        }
-                        TypeKind::Array(_) => {
-                            let arg_data = &self.ctx.cfg.get_inst(arg_value).data;
-                            let array_len = self.ctx.array_length(arg_type) as u32;
-                            match arg_data {
-                                CfgInstData::Load { slot } => {
-                                    for elem_idx in 0..array_len {
-                                        let elem_vreg = self.mir.alloc_vreg();
-                                        let elem_slot = slot + elem_idx;
-                                        let offset = self.ctx.local_offset(elem_slot);
-                                        self.mir.push(Aarch64Inst::Ldr {
-                                            dst: Operand::Virtual(elem_vreg),
-                                            base: Reg::Fp,
-                                            offset,
-                                        });
-                                        flattened_vregs.push(elem_vreg);
-                                    }
-                                }
-                                CfgInstData::Param { index } => {
-                                    for elem_idx in 0..array_len {
-                                        let elem_vreg = self.mir.alloc_vreg();
-                                        let param_slot = self.ctx.num_locals + index + elem_idx;
-                                        let offset = self.ctx.local_offset(param_slot);
-                                        self.mir.push(Aarch64Inst::Ldr {
-                                            dst: Operand::Virtual(elem_vreg),
-                                            base: Reg::Fp,
-                                            offset,
-                                        });
-                                        flattened_vregs.push(elem_vreg);
-                                    }
-                                }
-                                CfgInstData::ArrayInit { .. } | CfgInstData::Call { .. } => {
-                                    if let Some(elem_vregs) = self.struct_slot_vregs.get(&arg_value)
-                                    {
-                                        flattened_vregs.extend(elem_vregs.iter().copied());
-                                    } else {
-                                        flattened_vregs.push(self.get_vreg(arg_value));
-                                    }
-                                }
-                                _ => {
-                                    flattened_vregs.push(self.get_vreg(arg_value));
-                                }
                             }
                         }
                         _ => {
@@ -1841,9 +1798,11 @@ impl<'a> CfgLower<'a> {
                         dst: Operand::Virtual(result_vreg),
                         src: Operand::Virtual(slot_vregs[0]),
                     });
-                } else if let Some(struct_id) = ty.as_struct() {
-                    // Non-builtin structs return in registers
-                    let slot_count = self.ctx.type_slot_count(Type::new_struct(struct_id));
+                } else if ty.is_struct() || ty.is_array() {
+                    // Non-builtin structs and arrays return in registers. Capture
+                    // every slot from RET_REGS, not just x0 — arrays previously fell
+                    // to the scalar path and lost all elements but the first. (RUE-78)
+                    let slot_count = self.ctx.type_slot_count(ty);
                     let mut slot_vregs = Vec::new();
                     for slot_idx in 0..slot_count {
                         let slot_vreg = self.mir.alloc_vreg();
@@ -2470,9 +2429,27 @@ impl<'a> CfgLower<'a> {
                 let vreg = self.mir.alloc_vreg();
                 self.value_map.insert(value, vreg);
 
-                // Store element vregs for later access
-                let elements = self.ctx.cfg.get_extra(*elements_start, *elements_len);
-                let element_vregs: Vec<VReg> = elements.iter().map(|e| self.get_vreg(*e)).collect();
+                // Store element vregs for later access. Nested aggregate elements
+                // (multidimensional arrays, arrays of structs) are flattened to their
+                // scalar slots so the cached list is the full slot set — their own
+                // value_map entry is just a placeholder vreg. (RUE-118)
+                let elements = self
+                    .ctx
+                    .cfg
+                    .get_extra(*elements_start, *elements_len)
+                    .to_vec();
+                let mut element_vregs: Vec<VReg> = Vec::new();
+                for e in &elements {
+                    let e_ty = self.ctx.cfg.get_inst(*e).ty;
+                    if e_ty.is_struct() || e_ty.is_array() {
+                        let nested = self
+                            .get_or_compute_field_vregs(*e)
+                            .expect("nested aggregate element should have slot vregs");
+                        element_vregs.extend(nested);
+                    } else {
+                        element_vregs.push(self.get_vreg(*e));
+                    }
+                }
                 self.struct_slot_vregs.insert(value, element_vregs);
 
                 // Move 0 into vreg as placeholder
@@ -2757,8 +2734,18 @@ impl<'a> CfgLower<'a> {
             }
 
             CfgInstData::PlaceWrite { place, value: val } => {
-                let val_vreg = self.get_vreg(*val);
-                self.lower_place_write(place, val_vreg);
+                // A multi-slot aggregate value (struct, String, array) must write
+                // ALL its slots to the place, not just the first. The accessor
+                // materializes lazily-sourced values; if it can't model the source,
+                // fall back to the old single-slot behavior. (RUE-118, RUE-23)
+                let val_type = self.ctx.cfg.get_inst(*val).ty;
+                let vals = if val_type.is_struct() || val_type.is_array() {
+                    self.get_or_compute_field_vregs(*val)
+                        .unwrap_or_else(|| vec![self.get_vreg(*val)])
+                } else {
+                    vec![self.get_vreg(*val)]
+                };
+                self.lower_place_write(place, &vals);
             }
         }
     }
@@ -3821,12 +3808,13 @@ impl<'a> CfgLower<'a> {
                     });
                     let symbol_id = self.intern_symbol("__rue_exit");
                     self.mir.push(Aarch64Inst::Bl { symbol_id });
-                } else if return_type.as_struct().is_some() {
-                    // Return struct in registers. Gather all slots of the returned
-                    // aggregate through the single accessor, regardless of source
-                    // (StructInit/Call/BlockParam cache-hit; Load/Param/PlaceRead
-                    // materialize). Previously the `_` arm returned only slot 0 of a
-                    // place-read aggregate (`fn f(w: Wrap) -> Point { w.p }`). (RUE-118)
+                } else if return_type.as_struct().is_some() || return_type.is_array() {
+                    // Return a multi-slot aggregate (struct or array) in registers.
+                    // Gather all slots through the single accessor, regardless of source
+                    // (StructInit/ArrayInit/Call/BlockParam cache-hit; Load/Param/
+                    // PlaceRead materialize). Previously the `_` arm returned only slot 0
+                    // of a place-read aggregate, and arrays had NO return path at all —
+                    // only the ArrayInit placeholder vreg reached x0. (RUE-118, RUE-78)
                     let slot_vregs = self
                         .get_or_compute_field_vregs(*value)
                         .unwrap_or_else(|| vec![self.get_vreg(*value)]);
@@ -4057,38 +4045,49 @@ impl<'a> CfgLower<'a> {
 
     /// Lower a PlaceWrite instruction.
     ///
-    /// This stores a value to the memory location described by the place.
-    fn lower_place_write(&mut self, place: &Place, val_vreg: VReg) {
+    /// This stores a value to the memory location described by the place. `vals`
+    /// holds one vreg per slot of the value (a single element for scalars); all
+    /// slots are stored to consecutive locations. Slot i of an fp-relative place
+    /// lives at `local_offset(slot + i)`; through a pointer it lives at
+    /// `ptr_offset - i*8` (caller slots descend, stack grows down). (RUE-118)
+    fn lower_place_write(&mut self, place: &Place, vals: &[VReg]) {
         let projections = self.ctx.cfg.get_place_projections(place);
 
         // Simple case: no projections, just store to the base slot
         if projections.is_empty() {
             match place.base {
                 PlaceBase::Local(slot) => {
-                    let offset = self.ctx.local_offset(slot);
-                    self.mir.push(Aarch64Inst::Str {
-                        src: Operand::Virtual(val_vreg),
-                        base: Reg::Fp,
-                        offset,
-                    });
+                    for (i, val_vreg) in vals.iter().enumerate() {
+                        let offset = self.ctx.local_offset(slot + i as u32);
+                        self.mir.push(Aarch64Inst::Str {
+                            src: Operand::Virtual(*val_vreg),
+                            base: Reg::Fp,
+                            offset,
+                        });
+                    }
                 }
                 PlaceBase::Param(param_slot) => {
                     if self.ctx.cfg.is_param_inout(param_slot) {
                         // Inout param - store through the pointer
                         let ptr_vreg = self.ensure_inout_param_ptr(param_slot);
-                        self.mir.push(Aarch64Inst::StrIndexed {
-                            src: Operand::Virtual(val_vreg),
-                            base: ptr_vreg,
-                        });
+                        for (i, val_vreg) in vals.iter().enumerate() {
+                            self.mir.push(Aarch64Inst::StrIndexedOffset {
+                                src: Operand::Virtual(*val_vreg),
+                                base: ptr_vreg,
+                                offset: -((i as i32) * 8),
+                            });
+                        }
                     } else {
                         // Normal param - store to local slot
                         let slot = self.ctx.num_locals + param_slot;
-                        let offset = self.ctx.local_offset(slot);
-                        self.mir.push(Aarch64Inst::Str {
-                            src: Operand::Virtual(val_vreg),
-                            base: Reg::Fp,
-                            offset,
-                        });
+                        for (i, val_vreg) in vals.iter().enumerate() {
+                            let offset = self.ctx.local_offset(slot + i as u32);
+                            self.mir.push(Aarch64Inst::Str {
+                                src: Operand::Virtual(*val_vreg),
+                                base: Reg::Fp,
+                                offset,
+                            });
+                        }
                     }
                 }
             }
@@ -4096,7 +4095,7 @@ impl<'a> CfgLower<'a> {
         }
 
         // Complex case: has projections - compute the address
-        self.lower_place_write_with_projections(place, projections, val_vreg);
+        self.lower_place_write_with_projections(place, projections, vals);
     }
 
     /// Lower a PlaceWrite with projections.
@@ -4104,7 +4103,7 @@ impl<'a> CfgLower<'a> {
         &mut self,
         place: &Place,
         projections: &[Projection],
-        val_vreg: VReg,
+        vals: &[VReg],
     ) {
         // Calculate the static field offset
         let mut static_slot_offset: u32 = 0;
@@ -4162,16 +4161,22 @@ impl<'a> CfgLower<'a> {
                         src1: Operand::Virtual(addr_vreg),
                         src2: Operand::Virtual(dyn_offset),
                     });
-                    self.mir.push(Aarch64Inst::StrIndexed {
-                        src: Operand::Virtual(val_vreg),
-                        base: addr_vreg,
-                    });
+                    for (i, val_vreg) in vals.iter().enumerate() {
+                        self.mir.push(Aarch64Inst::StrIndexedOffset {
+                            src: Operand::Virtual(*val_vreg),
+                            base: addr_vreg,
+                            offset: -((i as i32) * 8),
+                        });
+                    }
                 } else {
-                    self.mir.push(Aarch64Inst::Str {
-                        src: Operand::Virtual(val_vreg),
-                        base: Reg::Fp,
-                        offset: base_offset,
-                    });
+                    for (i, val_vreg) in vals.iter().enumerate() {
+                        let offset = self.ctx.local_offset(base_slot + i as u32);
+                        self.mir.push(Aarch64Inst::Str {
+                            src: Operand::Virtual(*val_vreg),
+                            base: Reg::Fp,
+                            offset,
+                        });
+                    }
                 }
             }
             PlaceBase::Param(param_slot) => {
@@ -4197,16 +4202,21 @@ impl<'a> CfgLower<'a> {
                             src1: Operand::Virtual(addr_vreg),
                             src2: Operand::Virtual(dyn_offset),
                         });
-                        self.mir.push(Aarch64Inst::StrIndexed {
-                            src: Operand::Virtual(val_vreg),
-                            base: addr_vreg,
-                        });
+                        for (i, val_vreg) in vals.iter().enumerate() {
+                            self.mir.push(Aarch64Inst::StrIndexedOffset {
+                                src: Operand::Virtual(*val_vreg),
+                                base: addr_vreg,
+                                offset: -((i as i32) * 8),
+                            });
+                        }
                     } else {
-                        self.mir.push(Aarch64Inst::StrIndexedOffset {
-                            src: Operand::Virtual(val_vreg),
-                            base: ptr_vreg,
-                            offset: -static_byte_offset,
-                        });
+                        for (i, val_vreg) in vals.iter().enumerate() {
+                            self.mir.push(Aarch64Inst::StrIndexedOffset {
+                                src: Operand::Virtual(*val_vreg),
+                                base: ptr_vreg,
+                                offset: -static_byte_offset - (i as i32) * 8,
+                            });
+                        }
                     }
                 } else {
                     let base_slot = self.ctx.num_locals + param_slot + static_slot_offset;
@@ -4224,16 +4234,22 @@ impl<'a> CfgLower<'a> {
                             src1: Operand::Virtual(addr_vreg),
                             src2: Operand::Virtual(dyn_offset),
                         });
-                        self.mir.push(Aarch64Inst::StrIndexed {
-                            src: Operand::Virtual(val_vreg),
-                            base: addr_vreg,
-                        });
+                        for (i, val_vreg) in vals.iter().enumerate() {
+                            self.mir.push(Aarch64Inst::StrIndexedOffset {
+                                src: Operand::Virtual(*val_vreg),
+                                base: addr_vreg,
+                                offset: -((i as i32) * 8),
+                            });
+                        }
                     } else {
-                        self.mir.push(Aarch64Inst::Str {
-                            src: Operand::Virtual(val_vreg),
-                            base: Reg::Fp,
-                            offset: base_offset,
-                        });
+                        for (i, val_vreg) in vals.iter().enumerate() {
+                            let offset = self.ctx.local_offset(base_slot + i as u32);
+                            self.mir.push(Aarch64Inst::Str {
+                                src: Operand::Virtual(*val_vreg),
+                                base: Reg::Fp,
+                                offset,
+                            });
+                        }
                     }
                 }
             }

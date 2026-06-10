@@ -170,7 +170,6 @@ stdout = "20\n"
 # top() underflows (runtime "integer overflow"). Part of RUE-13.
 [[case]]
 name = "method_self_update_5_slots"
-known_bug = "RUE-13"
 files = [{ path = "main.rue", source = """
 @copy
 struct Stack {
@@ -219,6 +218,7 @@ stdout = "8\n"
 [[case]]
 name = "bare_array_8_pass_and_return"
 known_bug = "RUE-13"
+known_bug_on = ["x86-64-linux"]
 files = [{ path = "main.rue", source = """
 fn through(a: [i32; 8]) -> [i32; 8] {
     a
