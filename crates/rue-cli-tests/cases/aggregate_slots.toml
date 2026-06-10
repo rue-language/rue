@@ -118,3 +118,105 @@ fn main() -> i32 {
 }
 """ }]
 exit_code = 12
+
+# ── RUE-118 part 2: arrays + PlaceWrite ──────────────────────────────────────
+# The struct-shaped fixes above left their array-shaped and write-side siblings
+# broken. These pin the second wave: array return/args (RUE-78/79), whole-
+# aggregate reassignment (RUE-80), and multi-slot PlaceWrite (RUE-23).
+
+# RUE-78: returning an array by value lost all elements (only the ArrayInit
+# placeholder vreg reached the return register).
+[[case]]
+name = "array_return_by_value"
+files = [{ path = "main.rue", source = """
+fn make() -> [i32; 3] { [10, 20, 30] }
+fn main() -> i32 { let arr = make(); arr[0] + arr[1] + arr[2] }
+""" }]
+exit_code = 60
+
+# RUE-78 (struct flavor): a struct containing an array field returned by value.
+[[case]]
+name = "struct_with_array_field_return"
+files = [{ path = "main.rue", source = """
+struct Grid { cells: [i32; 3], n: i32 }
+fn make() -> Grid { Grid { cells: [10, 20, 30], n: 7 } }
+fn main() -> i32 { let g = make(); g.cells[0] + g.cells[1] + g.cells[2] + g.n }
+""" }]
+exit_code = 67
+
+# RUE-79: multidimensional array passed by value dropped every row after the
+# first (the arg ladder iterated element count, not slot count).
+[[case]]
+name = "multidim_array_arg"
+files = [{ path = "main.rue", source = """
+fn sum(g: [[i32; 2]; 2]) -> i32 { g[0][0] + g[0][1] + g[1][0] + g[1][1] }
+fn main() -> i32 { let g = [[1, 2], [3, 4]]; sum(g) }
+""" }]
+exit_code = 10
+
+# Same shape but the nested array literal passed directly (exercises the
+# flattened ArrayInit slot cache rather than the Load path).
+[[case]]
+name = "multidim_array_literal_arg"
+files = [{ path = "main.rue", source = """
+fn sum(g: [[i32; 2]; 2]) -> i32 { g[0][0] + g[0][1] + g[1][0] + g[1][1] }
+fn main() -> i32 { sum([[1, 2], [3, 4]]) }
+""" }]
+exit_code = 10
+
+# RUE-80: whole-aggregate reassignment copied only the first slot.
+[[case]]
+name = "whole_array_reassign"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: [i32; 3] = [11, 22, 33];
+    let mut b: [i32; 3] = [0, 0, 0];
+    b = a;
+    b[0] + b[1] + b[2]
+}
+""" }]
+exit_code = 66
+
+# RUE-23: assigning a multi-slot struct to a struct field stored only slot 0.
+[[case]]
+name = "place_write_struct_field"
+files = [{ path = "main.rue", source = """
+struct Inner { a: i32, b: i32 }
+struct Outer { x: i32, inner: Inner }
+fn main() -> i32 {
+    let mut o = Outer { x: 1, inner: Inner { a: 0, b: 0 } };
+    let i = Inner { a: 20, b: 21 };
+    o.inner = i;
+    o.x + o.inner.a + o.inner.b
+}
+""" }]
+exit_code = 42
+
+# RUE-23 (array-element flavor): assigning a multi-slot struct into an indexed
+# element (dynamic-address store path).
+[[case]]
+name = "place_write_array_element"
+files = [{ path = "main.rue", source = """
+struct P { a: i32, b: i32 }
+fn main() -> i32 {
+    let mut arr: [P; 2] = [P { a: 0, b: 0 }, P { a: 0, b: 0 }];
+    let p = P { a: 20, b: 22 };
+    arr[0] = p;
+    arr[0].a + arr[0].b
+}
+""" }]
+exit_code = 42
+
+# RUE-25: a struct produced by an if/else block expression passed directly as a
+# call argument (BlockParam producer) — fixed in part 1, regression-pinned here.
+[[case]]
+name = "block_expr_struct_arg"
+files = [{ path = "main.rue", source = """
+struct P { a: i32, b: i32 }
+fn get_b(p: P) -> i32 { p.b }
+fn main() -> i32 {
+    let cond = true;
+    get_b(if cond { P { a: 10, b: 42 } } else { P { a: 1, b: 2 } })
+}
+""" }]
+exit_code = 42
