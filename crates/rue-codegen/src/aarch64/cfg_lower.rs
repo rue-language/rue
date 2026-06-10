@@ -1139,49 +1139,45 @@ impl<'a> CfgLower<'a> {
 
                 let lhs_vreg = self.get_vreg(*lhs);
 
-                // Check if shift amount is a constant within valid range - use immediate form if so
-                // For 64-bit: 0-63, for 32-bit: 0-31
+                // Shift count taken modulo the operand bit width (spec 4.3a:10);
+                // sub-word counts need an explicit mask (RUE-29).
+                let count_mask = Self::shift_count_mask(ty);
                 let rhs_inst = &self.ctx.cfg.get_inst(*rhs).data;
-                let bit_width = if ty.is_64_bit() { 64 } else { 32 };
                 if let CfgInstData::Const(shift_amount) = rhs_inst {
-                    let shift = *shift_amount;
-                    if shift < bit_width {
-                        let imm = shift as u8;
-                        // Use 64-bit shift for i64/u64, 32-bit shift for smaller types
-                        if ty.is_64_bit() {
-                            self.mir.push(Aarch64Inst::LslImm {
-                                dst: Operand::Virtual(vreg),
-                                src: Operand::Virtual(lhs_vreg),
-                                imm,
-                            });
-                        } else {
-                            self.mir.push(Aarch64Inst::Lsl32Imm {
-                                dst: Operand::Virtual(vreg),
-                                src: Operand::Virtual(lhs_vreg),
-                                imm,
-                            });
-                        }
-                        return;
+                    let imm = (*shift_amount & count_mask) as u8;
+                    if ty.is_64_bit() {
+                        self.mir.push(Aarch64Inst::LslImm {
+                            dst: Operand::Virtual(vreg),
+                            src: Operand::Virtual(lhs_vreg),
+                            imm,
+                        });
+                    } else {
+                        self.mir.push(Aarch64Inst::Lsl32Imm {
+                            dst: Operand::Virtual(vreg),
+                            src: Operand::Virtual(lhs_vreg),
+                            imm,
+                        });
+                    }
+                } else {
+                    // Variable shift amount - mask it (mod bit width).
+                    let count_vreg = self.emit_masked_shift_count(*rhs, ty);
+                    if ty.is_64_bit() {
+                        self.mir.push(Aarch64Inst::LslRR {
+                            dst: Operand::Virtual(vreg),
+                            src1: Operand::Virtual(lhs_vreg),
+                            src2: Operand::Virtual(count_vreg),
+                        });
+                    } else {
+                        self.mir.push(Aarch64Inst::Lsl32RR {
+                            dst: Operand::Virtual(vreg),
+                            src1: Operand::Virtual(lhs_vreg),
+                            src2: Operand::Virtual(count_vreg),
+                        });
                     }
                 }
-                // Variable shift amount or out-of-range constant - use register form
-                let rhs_vreg = self.get_vreg(*rhs);
-
-                // Use 64-bit shift for i64/u64, 32-bit shift for smaller types
-                // 32-bit shift masks by 31, 64-bit shift masks by 63
-                if ty.is_64_bit() {
-                    self.mir.push(Aarch64Inst::LslRR {
-                        dst: Operand::Virtual(vreg),
-                        src1: Operand::Virtual(lhs_vreg),
-                        src2: Operand::Virtual(rhs_vreg),
-                    });
-                } else {
-                    self.mir.push(Aarch64Inst::Lsl32RR {
-                        dst: Operand::Virtual(vreg),
-                        src1: Operand::Virtual(lhs_vreg),
-                        src2: Operand::Virtual(rhs_vreg),
-                    });
-                }
+                // Left shift can set bits above the operand width; narrow the
+                // result back to the sub-word type (RUE-29).
+                self.emit_subword_narrow(vreg, ty);
             }
 
             CfgInstData::Shr(lhs, rhs) => {
@@ -1190,73 +1186,66 @@ impl<'a> CfgLower<'a> {
 
                 let lhs_vreg = self.get_vreg(*lhs);
 
-                // Check if shift amount is a constant within valid range - use immediate form if so
-                // For 64-bit: 0-63, for 32-bit: 0-31
+                // Shift count taken modulo the operand bit width (spec 4.3a:10);
+                // sub-word counts need an explicit mask (RUE-29).
+                let count_mask = Self::shift_count_mask(ty);
                 let rhs_inst = &self.ctx.cfg.get_inst(*rhs).data;
-                let bit_width = if ty.is_64_bit() { 64 } else { 32 };
                 if let CfgInstData::Const(shift_amount) = rhs_inst {
-                    let shift = *shift_amount;
-                    if shift < bit_width {
-                        let imm = shift as u8;
-                        // Use arithmetic shift (ASR) for signed types, logical shift (LSR) for unsigned
-                        // Use 64-bit shift for i64/u64, 32-bit shift for smaller types
-                        if ty.is_64_bit() && ty.is_signed() {
-                            self.mir.push(Aarch64Inst::Asr64Imm {
-                                dst: Operand::Virtual(vreg),
-                                src: Operand::Virtual(lhs_vreg),
-                                imm,
-                            });
-                        } else if ty.is_64_bit() {
-                            self.mir.push(Aarch64Inst::Lsr64Imm {
-                                dst: Operand::Virtual(vreg),
-                                src: Operand::Virtual(lhs_vreg),
-                                imm,
-                            });
-                        } else if ty.is_signed() {
-                            self.mir.push(Aarch64Inst::Asr32Imm {
-                                dst: Operand::Virtual(vreg),
-                                src: Operand::Virtual(lhs_vreg),
-                                imm,
-                            });
-                        } else {
-                            self.mir.push(Aarch64Inst::Lsr32Imm {
-                                dst: Operand::Virtual(vreg),
-                                src: Operand::Virtual(lhs_vreg),
-                                imm,
-                            });
-                        }
-                        return;
+                    let imm = (*shift_amount & count_mask) as u8;
+                    // Use arithmetic shift (ASR) for signed types, logical shift (LSR) for unsigned
+                    if ty.is_64_bit() && ty.is_signed() {
+                        self.mir.push(Aarch64Inst::Asr64Imm {
+                            dst: Operand::Virtual(vreg),
+                            src: Operand::Virtual(lhs_vreg),
+                            imm,
+                        });
+                    } else if ty.is_64_bit() {
+                        self.mir.push(Aarch64Inst::Lsr64Imm {
+                            dst: Operand::Virtual(vreg),
+                            src: Operand::Virtual(lhs_vreg),
+                            imm,
+                        });
+                    } else if ty.is_signed() {
+                        self.mir.push(Aarch64Inst::Asr32Imm {
+                            dst: Operand::Virtual(vreg),
+                            src: Operand::Virtual(lhs_vreg),
+                            imm,
+                        });
+                    } else {
+                        self.mir.push(Aarch64Inst::Lsr32Imm {
+                            dst: Operand::Virtual(vreg),
+                            src: Operand::Virtual(lhs_vreg),
+                            imm,
+                        });
                     }
-                }
-                // Variable shift amount or out-of-range constant - use register form
-                let rhs_vreg = self.get_vreg(*rhs);
-
-                // Use arithmetic shift (ASR) for signed types, logical shift (LSR) for unsigned
-                // Use 64-bit shift for i64/u64, 32-bit shift for smaller types
-                if ty.is_64_bit() && ty.is_signed() {
-                    self.mir.push(Aarch64Inst::AsrRR {
-                        dst: Operand::Virtual(vreg),
-                        src1: Operand::Virtual(lhs_vreg),
-                        src2: Operand::Virtual(rhs_vreg),
-                    });
-                } else if ty.is_64_bit() {
-                    self.mir.push(Aarch64Inst::LsrRR {
-                        dst: Operand::Virtual(vreg),
-                        src1: Operand::Virtual(lhs_vreg),
-                        src2: Operand::Virtual(rhs_vreg),
-                    });
-                } else if ty.is_signed() {
-                    self.mir.push(Aarch64Inst::Asr32RR {
-                        dst: Operand::Virtual(vreg),
-                        src1: Operand::Virtual(lhs_vreg),
-                        src2: Operand::Virtual(rhs_vreg),
-                    });
                 } else {
-                    self.mir.push(Aarch64Inst::Lsr32RR {
-                        dst: Operand::Virtual(vreg),
-                        src1: Operand::Virtual(lhs_vreg),
-                        src2: Operand::Virtual(rhs_vreg),
-                    });
+                    // Variable shift amount - mask it (mod bit width).
+                    let count_vreg = self.emit_masked_shift_count(*rhs, ty);
+                    if ty.is_64_bit() && ty.is_signed() {
+                        self.mir.push(Aarch64Inst::AsrRR {
+                            dst: Operand::Virtual(vreg),
+                            src1: Operand::Virtual(lhs_vreg),
+                            src2: Operand::Virtual(count_vreg),
+                        });
+                    } else if ty.is_64_bit() {
+                        self.mir.push(Aarch64Inst::LsrRR {
+                            dst: Operand::Virtual(vreg),
+                            src1: Operand::Virtual(lhs_vreg),
+                            src2: Operand::Virtual(count_vreg),
+                        });
+                    } else if ty.is_signed() {
+                        self.mir.push(Aarch64Inst::Asr32RR {
+                            dst: Operand::Virtual(vreg),
+                            src1: Operand::Virtual(lhs_vreg),
+                            src2: Operand::Virtual(count_vreg),
+                        });
+                    } else {
+                        self.mir.push(Aarch64Inst::Lsr32RR {
+                            dst: Operand::Virtual(vreg),
+                            src1: Operand::Virtual(lhs_vreg),
+                            src2: Operand::Virtual(count_vreg),
+                        });
+                    }
                 }
             }
 
@@ -3374,6 +3363,55 @@ impl<'a> CfgLower<'a> {
     }
 
     /// Get the min and max values for an integer type.
+    /// The AND mask (bit_width - 1) applied to a shift count, since the count
+    /// is taken modulo the operand's bit width (spec 4.3a:10).
+    fn shift_count_mask(ty: Type) -> u64 {
+        match Self::type_bits(ty) {
+            8 => 0x07,
+            16 => 0x0F,
+            64 => 0x3F,
+            _ => 0x1F, // 32-bit
+        }
+    }
+
+    /// Materialize the shift count masked to the operand's bit width into a
+    /// fresh vreg (so a sub-word variable count >= the width wraps per spec).
+    /// For 32/64-bit operands the hardware mask already matches.
+    fn emit_masked_shift_count(&mut self, rhs: CfgValue, ty: Type) -> VReg {
+        let rhs_vreg = self.get_vreg(rhs);
+        if Self::type_bits(ty) >= 32 {
+            return rhs_vreg;
+        }
+        let mask_vreg = self.mir.alloc_vreg();
+        self.mir.push(Aarch64Inst::MovImm {
+            dst: Operand::Virtual(mask_vreg),
+            imm: Self::shift_count_mask(ty) as i64,
+        });
+        let count_vreg = self.mir.alloc_vreg();
+        self.mir.push(Aarch64Inst::AndRR {
+            dst: Operand::Virtual(count_vreg),
+            src1: Operand::Virtual(rhs_vreg),
+            src2: Operand::Virtual(mask_vreg),
+        });
+        count_vreg
+    }
+
+    /// Narrow a value to a sub-word integer type by sign-/zero-extending its
+    /// low byte/halfword, so it holds the correct value after an op that may
+    /// have set bits above the operand width (e.g. a left shift). No-op for
+    /// 32/64-bit types.
+    fn emit_subword_narrow(&mut self, vreg: VReg, ty: Type) {
+        let dst = Operand::Virtual(vreg);
+        let src = Operand::Virtual(vreg);
+        match Self::type_bits(ty) {
+            8 if ty.is_signed() => self.mir.push(Aarch64Inst::Sxtb { dst, src }),
+            8 => self.mir.push(Aarch64Inst::Uxtb { dst, src }),
+            16 if ty.is_signed() => self.mir.push(Aarch64Inst::Sxth { dst, src }),
+            16 => self.mir.push(Aarch64Inst::Uxth { dst, src }),
+            _ => {}
+        }
+    }
+
     fn type_range(ty: Type) -> (i64, i64) {
         match ty.kind() {
             TypeKind::I8 => (i8::MIN as i64, i8::MAX as i64),

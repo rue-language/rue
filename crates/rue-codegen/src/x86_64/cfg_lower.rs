@@ -251,6 +251,59 @@ impl<'a> CfgLower<'a> {
         }
     }
 
+    /// The AND mask (bit_width - 1) applied to a shift count, since the count
+    /// is taken modulo the operand's bit width (spec 4.3a:10).
+    fn shift_count_mask(ty: Type) -> u64 {
+        match Self::type_bits(ty) {
+            8 => 0x07,
+            16 => 0x0F,
+            64 => 0x3F,
+            _ => 0x1F, // 32-bit
+        }
+    }
+
+    /// Materialize the shift count masked to the operand's bit width into a
+    /// fresh vreg, so a sub-word variable count >= the width wraps per spec
+    /// (the x86 CL shift only masks by 31/63). For 32/64-bit operands the
+    /// hardware mask already matches, so the count is returned unmasked.
+    fn emit_masked_shift_count(&mut self, rhs: CfgValue, ty: Type) -> VReg {
+        let rhs_vreg = self.get_vreg(rhs);
+        if Self::type_bits(ty) >= 32 {
+            return rhs_vreg;
+        }
+        let mask_vreg = self.mir.alloc_vreg();
+        self.mir.push(X86Inst::MovRI32 {
+            dst: Operand::Virtual(mask_vreg),
+            imm: Self::shift_count_mask(ty) as i32,
+        });
+        let count_vreg = self.mir.alloc_vreg();
+        self.mir.push(X86Inst::MovRR {
+            dst: Operand::Virtual(count_vreg),
+            src: Operand::Virtual(rhs_vreg),
+        });
+        self.mir.push(X86Inst::AndRR {
+            dst: Operand::Virtual(count_vreg),
+            src: Operand::Virtual(mask_vreg),
+        });
+        count_vreg
+    }
+
+    /// Narrow a value to a sub-word integer type by sign-/zero-extending its
+    /// low byte/word over the register, so it holds the correct value for the
+    /// type after an op that may have set bits above the operand width (e.g. a
+    /// left shift). No-op for 32/64-bit types.
+    fn emit_subword_narrow(&mut self, vreg: VReg, ty: Type) {
+        let dst = Operand::Virtual(vreg);
+        let src = Operand::Virtual(vreg);
+        match Self::type_bits(ty) {
+            8 if ty.is_signed() => self.mir.push(X86Inst::Movsx8To64 { dst, src }),
+            8 => self.mir.push(X86Inst::Movzx8To64 { dst, src }),
+            16 if ty.is_signed() => self.mir.push(X86Inst::Movsx16To64 { dst, src }),
+            16 => self.mir.push(X86Inst::Movzx16To64 { dst, src }),
+            _ => {}
+        }
+    }
+
     /// Allocate a new inline label ID.
     ///
     /// These labels are used for control flow within instruction lowering
@@ -1197,14 +1250,15 @@ impl<'a> CfgLower<'a> {
                     src: Operand::Virtual(lhs_vreg),
                 });
 
-                // Check if shift amount is a constant - use immediate form if so
-                // Mask shift amount to match x86-64 hardware semantics:
-                // 63 (0x3F) for 64-bit shifts, 31 (0x1F) for 32-bit shifts
+                // The shift count is taken modulo the operand's bit width
+                // (spec 4.3a:10): mod 8 for i8/u8, 16 for i16/u16, 32 for
+                // i32/u32, 64 for i64/u64. The x86 hardware only masks by 31
+                // (32-bit shift) or 63 (64-bit), so sub-word counts need an
+                // explicit mask (RUE-29).
+                let count_mask = Self::shift_count_mask(ty);
                 let rhs_inst = &self.ctx.cfg.get_inst(*rhs).data;
                 if let CfgInstData::Const(shift_amount) = rhs_inst {
-                    let mask = if ty.is_64_bit() { 0x3F } else { 0x1F };
-                    let imm = (*shift_amount & mask) as u8;
-                    // Use 64-bit shift for i64/u64, 32-bit shift for smaller types
+                    let imm = (*shift_amount & count_mask) as u8;
                     if ty.is_64_bit() {
                         self.mir.push(X86Inst::ShlRI {
                             dst: Operand::Virtual(vreg),
@@ -1217,17 +1271,12 @@ impl<'a> CfgLower<'a> {
                         });
                     }
                 } else {
-                    // Variable shift amount - use CL register
-                    let rhs_vreg = self.get_vreg(*rhs);
-
-                    // Move shift amount to RCX (CL is the low byte)
+                    // Variable shift amount - mask it (mod bit width) and use CL.
+                    let count_vreg = self.emit_masked_shift_count(*rhs, ty);
                     self.mir.push(X86Inst::MovRR {
                         dst: Operand::Physical(Reg::Rcx),
-                        src: Operand::Virtual(rhs_vreg),
+                        src: Operand::Virtual(count_vreg),
                     });
-
-                    // Use 64-bit shift for i64/u64, 32-bit shift for smaller types
-                    // 32-bit shift masks by 31, 64-bit shift masks by 63
                     if ty.is_64_bit() {
                         self.mir.push(X86Inst::ShlRCl {
                             dst: Operand::Virtual(vreg),
@@ -1238,6 +1287,10 @@ impl<'a> CfgLower<'a> {
                         });
                     }
                 }
+                // Left shift can set bits above the operand's width; narrow the
+                // result back to the sub-word type so it has the correct value
+                // (e.g. 1i8 << 7 == -128, not +128) (RUE-29).
+                self.emit_subword_narrow(vreg, ty);
             }
 
             CfgInstData::Shr(lhs, rhs) => {
@@ -1252,13 +1305,12 @@ impl<'a> CfgLower<'a> {
                     src: Operand::Virtual(lhs_vreg),
                 });
 
-                // Check if shift amount is a constant - use immediate form if so.
-                // Mask shift amount to match x86-64 hardware semantics:
-                // 63 (0x3F) for 64-bit shifts, 31 (0x1F) for 32-bit shifts
+                // Shift count taken modulo the operand bit width (spec 4.3a:10);
+                // sub-word counts need an explicit mask (RUE-29).
+                let count_mask = Self::shift_count_mask(ty);
                 let rhs_inst = &self.ctx.cfg.get_inst(*rhs).data;
                 if let CfgInstData::Const(shift_amount) = rhs_inst {
-                    let mask = if ty.is_64_bit() { 0x3F } else { 0x1F };
-                    let imm = (*shift_amount & mask) as u8;
+                    let imm = (*shift_amount & count_mask) as u8;
                     // Use arithmetic shift (SAR) for signed types, logical shift (SHR) for unsigned
                     // Use 64-bit shift for i64/u64, 32-bit shift for smaller types
                     if ty.is_64_bit() && ty.is_signed() {
@@ -1283,13 +1335,11 @@ impl<'a> CfgLower<'a> {
                         });
                     }
                 } else {
-                    // Variable shift amount - use CL register
-                    let rhs_vreg = self.get_vreg(*rhs);
-
-                    // Move shift amount to RCX (CL is the low byte)
+                    // Variable shift amount - mask it (mod bit width) and use CL.
+                    let count_vreg = self.emit_masked_shift_count(*rhs, ty);
                     self.mir.push(X86Inst::MovRR {
                         dst: Operand::Physical(Reg::Rcx),
-                        src: Operand::Virtual(rhs_vreg),
+                        src: Operand::Virtual(count_vreg),
                     });
 
                     // Use arithmetic shift (SAR) for signed types, logical shift (SHR) for unsigned

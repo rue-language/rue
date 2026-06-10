@@ -1,0 +1,97 @@
+# Sub-word (i8/i16) shift semantics regression tests (RUE-29, epic RUE-107).
+#
+# Two defects: (1) the shift count was masked by 0x1F (mod 32) for every
+# sub-64-bit type instead of mod the operand's bit width, so `1i8 << 8` gave
+# `1 << 8 = 256` instead of the spec's `1 << (8 mod 8) = 1`; (2) the result was
+# not narrowed to the operand width, so `1i8 << 7` held +128 instead of -128
+# and `65535u16 << 1` held 131070 instead of wrapping to 65534. Now the count
+# is masked mod-bit-width and left-shift results are narrowed (sign/zero
+# extension) on both backends.
+
+[section]
+id = "cli.shift"
+name = "Sub-word shift semantics"
+description = "i8/i16 shifts mask the count mod bit width and narrow the result."
+
+[[case]]
+name = "i8_shl_into_sign_bit"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: i8 = 1;
+    let s: i8 = 7;
+    let r: i8 = a << s;    // 0x80 as i8 = -128
+    if r < 0 { 1 } else { 0 }
+}
+""" }]
+exit_code = 1
+
+[[case]]
+name = "i8_shl_count_mod_bitwidth"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: i8 = 1;
+    let s: i8 = 8;
+    let r: i8 = a << s;    // 8 mod 8 == 0, so 1 << 0 == 1
+    if r == 1 { 1 } else { 0 }
+}
+""" }]
+exit_code = 1
+
+[[case]]
+name = "u16_shl_wraps_to_width"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let v: u16 = 65535;
+    let r: u16 = v << 1;   // 131070 truncated to u16 == 65534
+    if r > 65535 { 1 } else { 0 }
+}
+""" }]
+exit_code = 0
+
+[[case]]
+name = "u8_shl_value"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: u8 = 1;
+    let s: u8 = 7;
+    let r: u8 = a << s;    // 128
+    @intCast(r)
+}
+""" }]
+exit_code = 128
+
+# Right shift: count is masked mod bit width too.
+[[case]]
+name = "i16_ashr_negative"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: i16 = 0 - 16;
+    let r: i16 = a >> 2;   // -4
+    if r == 0 - 4 { 1 } else { 0 }
+}
+""" }]
+exit_code = 1
+
+# Controls: 32/64-bit shifts unchanged.
+[[case]]
+name = "i32_shl_unchanged"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: i32 = 1;
+    let s: i32 = 4;
+    a << s             // 16
+}
+""" }]
+exit_code = 16
+
+[[case]]
+name = "i64_shl_high_bits"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: i64 = 1;
+    let s: i64 = 40;
+    let r: i64 = a << s;   // 2^40
+    if r > 4294967296 { 1 } else { 0 }
+}
+""" }]
+exit_code = 1
