@@ -111,6 +111,11 @@ struct SourceFile {
 #[serde(deny_unknown_fields)]
 struct Case {
     name: String,
+    /// Human-readable explanation of what this case pins and why. Not used by
+    /// the harness; it exists so case files can document intent inline.
+    #[allow(dead_code)]
+    #[serde(default)]
+    description: Option<String>,
     /// Files written to the temp directory before invoking the compiler.
     files: Vec<SourceFile>,
     /// Compiler arguments, relative to the temp dir (default: first file + `-o prog`).
