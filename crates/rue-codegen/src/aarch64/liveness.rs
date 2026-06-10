@@ -164,6 +164,8 @@ fn uses(inst: &Aarch64Inst) -> Vec<VReg> {
         | Aarch64Inst::UmulhRR { src1, src2, .. }
         | Aarch64Inst::SdivRR { src1, src2, .. }
         | Aarch64Inst::UdivRR { src1, src2, .. }
+        | Aarch64Inst::Sdiv64RR { src1, src2, .. }
+        | Aarch64Inst::Udiv64RR { src1, src2, .. }
         | Aarch64Inst::AndRR { src1, src2, .. }
         | Aarch64Inst::OrrRR { src1, src2, .. }
         | Aarch64Inst::EorRR { src1, src2, .. }
@@ -186,6 +188,9 @@ fn uses(inst: &Aarch64Inst) -> Vec<VReg> {
             add_if_virtual(src, &mut result);
         }
         Aarch64Inst::Msub {
+            src1, src2, src3, ..
+        }
+        | Aarch64Inst::Msub64 {
             src1, src2, src3, ..
         } => {
             add_if_virtual(src1, &mut result);
@@ -311,7 +316,10 @@ fn defs(inst: &Aarch64Inst) -> Vec<VReg> {
         | Aarch64Inst::Asr64Imm { dst, .. }
         | Aarch64Inst::SdivRR { dst, .. }
         | Aarch64Inst::UdivRR { dst, .. }
+        | Aarch64Inst::Sdiv64RR { dst, .. }
+        | Aarch64Inst::Udiv64RR { dst, .. }
         | Aarch64Inst::Msub { dst, .. }
+        | Aarch64Inst::Msub64 { dst, .. }
         | Aarch64Inst::Neg { dst, .. }
         | Aarch64Inst::Negs { dst, .. }
         | Aarch64Inst::Negs32 { dst, .. }

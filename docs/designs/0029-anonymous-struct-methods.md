@@ -1,13 +1,13 @@
 ---
 id: 0029
 title: Anonymous Struct Methods (Zig-Style)
-status: proposal
+status: implemented
 tags: [types, methods, comptime, generics]
-feature-flag: anon_struct_methods
+feature-flag: (none - feature stabilized)
 created: 2026-01-03
-accepted:
-implemented:
-spec-sections: []
+accepted: 2026-01-11
+implemented: 2026-01-12
+spec-sections: [4.14:10-15]
 superseded-by:
 ---
 
@@ -15,7 +15,7 @@ superseded-by:
 
 ## Status
 
-Proposal
+Implemented and stabilized (2026-01-12)
 
 ## Summary
 

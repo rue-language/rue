@@ -334,10 +334,11 @@ impl AnalysisResult {
     }
 }
 
-/// A value that can be computed at compile time.
+/// Represents a compile-time constant value.
 ///
-/// This is used for constant expression evaluation, primarily for compile-time
-/// bounds checking. It can be extended for future `comptime` features.
+/// This is used for compile-time evaluation of expressions and for
+/// comptime parameters. For example, in `fn Buffer(comptime N: i32)`,
+/// the value of `N` is stored as a `ConstValue::Integer`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConstValue {
     /// Integer value (signed to handle arithmetic correctly)

@@ -1,0 +1,117 @@
+# Basic CLI behavior: compile, run, output, exit codes, --emit, multi-file.
+
+[section]
+id = "cli.basics"
+name = "Basic CLI behavior"
+description = "The fundamental compile-and-run loop, exactly as a user drives it."
+
+[[case]]
+name = "hello_string"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let greeting = "Hello, world!";
+    @dbg(greeting);
+    0
+}
+""" }]
+stdout = "Hello, world!\n"
+
+[[case]]
+name = "exit_code_is_returned"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    42
+}
+""" }]
+exit_code = 42
+
+[[case]]
+name = "fizzbuzz_output"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut i = 1;
+    while i <= 15 {
+        if i % 15 == 0 {
+            @dbg("FizzBuzz");
+        } else if i % 3 == 0 {
+            @dbg("Fizz");
+        } else if i % 5 == 0 {
+            @dbg("Buzz");
+        } else {
+            @dbg(i);
+        }
+        i = i + 1;
+    }
+    0
+}
+""" }]
+stdout = """
+1
+2
+Fizz
+4
+Buzz
+Fizz
+7
+8
+Fizz
+Buzz
+11
+Fizz
+13
+14
+FizzBuzz
+"""
+
+[[case]]
+name = "compile_error_nonzero_exit_with_stderr"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    undefined_variable
+}
+""" }]
+compile_fail = true
+error_contains = ["E0201", "undefined_variable"]
+
+[[case]]
+name = "emit_tokens_prints_to_stdout"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    0
+}
+""" }]
+args = ["--emit", "tokens", "main.rue"]
+compile_only = true
+compile_stdout_contains = ["=== Tokens (main.rue) ===", "FN", "RBRACE"]
+
+[[case]]
+name = "multi_file_compilation_with_dash_o"
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    @dbg(triple(14));
+    0
+}
+""" },
+    { path = "utils.rue", source = """
+fn triple(x: i32) -> i32 {
+    x * 3
+}
+""" },
+]
+args = ["main.rue", "utils.rue", "-o", "prog"]
+stdout = "42\n"
+
+# CLAUDE.md documents `rue a.rue b.rue` as an error, but the CLI currently
+# treats b.rue as the OUTPUT path and silently overwrites the source file
+# with an ELF executable (data loss). See RUE-20.
+[[case]]
+name = "multi_file_without_dash_o_is_an_error"
+known_bug = "RUE-20"
+files = [
+    { path = "a.rue", source = "fn main() -> i32 { 0 }" },
+    { path = "b.rue", source = "fn helper() -> i32 { 1 }" },
+]
+args = ["a.rue", "b.rue"]
+compile_fail = true
+error_contains = ["-o"]

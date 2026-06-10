@@ -179,8 +179,12 @@ impl<'a> CfgLower<'a> {
             imm: length as i64,
         });
 
-        // Compare index (unsigned) against length
-        self.mir.push(Aarch64Inst::CmpRR {
+        // Compare index (unsigned) against length. The index is a usize
+        // (64-bit) and the length is materialized as a 64-bit immediate, so the
+        // comparison MUST be 64-bit — a 32-bit cmp would ignore the high half of
+        // the index and let an out-of-range index whose low 32 bits happen to be
+        // in range bypass the check, reading out of bounds (RUE-87).
+        self.mir.push(Aarch64Inst::Cmp64RR {
             src1: Operand::Virtual(index_vreg),
             src2: Operand::Virtual(length_vreg),
         });
@@ -260,6 +264,51 @@ impl<'a> CfgLower<'a> {
                     let vreg = self.mir.alloc_vreg();
                     let param_slot = self.ctx.num_locals + index + i;
                     let offset = self.ctx.local_offset(param_slot);
+                    self.mir.push(Aarch64Inst::Ldr {
+                        dst: Operand::Virtual(vreg),
+                        base: Reg::Fp,
+                        offset,
+                    });
+                    vregs.push(vreg);
+                }
+                Some(vregs)
+            }
+            CfgInstData::PlaceRead { place } => {
+                // A multi-slot aggregate (struct or builtin String) read from a
+                // place — e.g. `let s2 = h.s;`. The base place-read lowering only
+                // materializes the first slot into `dst`; here we materialize all
+                // `slot_count` slots so consumers (struct equality, Alloc/Store of
+                // a fat pointer, etc.) see the full value. Only static field
+                // projections are handled — dynamic array indexing and inout params
+                // fall through to None (preserving prior behavior). (RUE-22/63/94)
+                let projections = self.ctx.cfg.get_place_projections(place).to_vec();
+                let mut static_slot_offset: u32 = 0;
+                for proj in &projections {
+                    match proj {
+                        Projection::Field {
+                            struct_id,
+                            field_index,
+                        } => {
+                            static_slot_offset +=
+                                self.ctx.struct_field_slot_offset(*struct_id, *field_index);
+                        }
+                        Projection::Index { .. } => return None,
+                    }
+                }
+                let base_slot = match place.base {
+                    PlaceBase::Local(slot) => slot + static_slot_offset,
+                    PlaceBase::Param(param_slot) => {
+                        if self.ctx.cfg.is_param_inout(param_slot) {
+                            return None;
+                        }
+                        self.ctx.num_locals + param_slot + static_slot_offset
+                    }
+                };
+                let slot_count = self.ctx.type_slot_count(Type::new_struct(struct_id));
+                let mut vregs = Vec::with_capacity(slot_count as usize);
+                for i in 0..slot_count {
+                    let vreg = self.mir.alloc_vreg();
+                    let offset = self.ctx.local_offset(base_slot + i);
                     self.mir.push(Aarch64Inst::Ldr {
                         dst: Operand::Virtual(vreg),
                         base: Reg::Fp,
@@ -847,18 +896,37 @@ impl<'a> CfgLower<'a> {
                 self.mir.push(Aarch64Inst::Bl { symbol_id });
                 self.mir.push(Aarch64Inst::Label { id: ok_label });
 
-                // Use SDIV for signed types, UDIV for unsigned types
+                // Use SDIV for signed types, UDIV for unsigned types, selecting
+                // 64-bit (X-register) forms for 64-bit operands — the 32-bit
+                // (W-register) forms only divide the low 32 bits (RUE-26).
+                let is_64 = ty.is_64_bit();
                 if ty.is_signed() {
-                    self.mir.push(Aarch64Inst::SdivRR {
-                        dst: Operand::Virtual(vreg),
-                        src1: Operand::Virtual(lhs_vreg),
-                        src2: Operand::Virtual(rhs_vreg),
+                    self.mir.push(if is_64 {
+                        Aarch64Inst::Sdiv64RR {
+                            dst: Operand::Virtual(vreg),
+                            src1: Operand::Virtual(lhs_vreg),
+                            src2: Operand::Virtual(rhs_vreg),
+                        }
+                    } else {
+                        Aarch64Inst::SdivRR {
+                            dst: Operand::Virtual(vreg),
+                            src1: Operand::Virtual(lhs_vreg),
+                            src2: Operand::Virtual(rhs_vreg),
+                        }
                     });
                 } else {
-                    self.mir.push(Aarch64Inst::UdivRR {
-                        dst: Operand::Virtual(vreg),
-                        src1: Operand::Virtual(lhs_vreg),
-                        src2: Operand::Virtual(rhs_vreg),
+                    self.mir.push(if is_64 {
+                        Aarch64Inst::Udiv64RR {
+                            dst: Operand::Virtual(vreg),
+                            src1: Operand::Virtual(lhs_vreg),
+                            src2: Operand::Virtual(rhs_vreg),
+                        }
+                    } else {
+                        Aarch64Inst::UdivRR {
+                            dst: Operand::Virtual(vreg),
+                            src1: Operand::Virtual(lhs_vreg),
+                            src2: Operand::Virtual(rhs_vreg),
+                        }
                     });
                 }
             }
@@ -880,28 +948,55 @@ impl<'a> CfgLower<'a> {
                 self.mir.push(Aarch64Inst::Bl { symbol_id });
                 self.mir.push(Aarch64Inst::Label { id: ok_label });
 
-                // Compute quotient first using SDIV or UDIV based on signedness
+                // Compute quotient first using SDIV or UDIV based on signedness,
+                // selecting 64-bit forms for 64-bit operands (RUE-26).
+                let is_64 = ty.is_64_bit();
                 let quot_vreg = self.mir.alloc_vreg();
                 if ty.is_signed() {
-                    self.mir.push(Aarch64Inst::SdivRR {
-                        dst: Operand::Virtual(quot_vreg),
-                        src1: Operand::Virtual(lhs_vreg),
-                        src2: Operand::Virtual(rhs_vreg),
+                    self.mir.push(if is_64 {
+                        Aarch64Inst::Sdiv64RR {
+                            dst: Operand::Virtual(quot_vreg),
+                            src1: Operand::Virtual(lhs_vreg),
+                            src2: Operand::Virtual(rhs_vreg),
+                        }
+                    } else {
+                        Aarch64Inst::SdivRR {
+                            dst: Operand::Virtual(quot_vreg),
+                            src1: Operand::Virtual(lhs_vreg),
+                            src2: Operand::Virtual(rhs_vreg),
+                        }
                     });
                 } else {
-                    self.mir.push(Aarch64Inst::UdivRR {
-                        dst: Operand::Virtual(quot_vreg),
-                        src1: Operand::Virtual(lhs_vreg),
-                        src2: Operand::Virtual(rhs_vreg),
+                    self.mir.push(if is_64 {
+                        Aarch64Inst::Udiv64RR {
+                            dst: Operand::Virtual(quot_vreg),
+                            src1: Operand::Virtual(lhs_vreg),
+                            src2: Operand::Virtual(rhs_vreg),
+                        }
+                    } else {
+                        Aarch64Inst::UdivRR {
+                            dst: Operand::Virtual(quot_vreg),
+                            src1: Operand::Virtual(lhs_vreg),
+                            src2: Operand::Virtual(rhs_vreg),
+                        }
                     });
                 }
 
                 // rem = dividend - (quotient * divisor)
-                self.mir.push(Aarch64Inst::Msub {
-                    dst: Operand::Virtual(vreg),
-                    src1: Operand::Virtual(quot_vreg),
-                    src2: Operand::Virtual(rhs_vreg),
-                    src3: Operand::Virtual(lhs_vreg),
+                self.mir.push(if is_64 {
+                    Aarch64Inst::Msub64 {
+                        dst: Operand::Virtual(vreg),
+                        src1: Operand::Virtual(quot_vreg),
+                        src2: Operand::Virtual(rhs_vreg),
+                        src3: Operand::Virtual(lhs_vreg),
+                    }
+                } else {
+                    Aarch64Inst::Msub {
+                        dst: Operand::Virtual(vreg),
+                        src1: Operand::Virtual(quot_vreg),
+                        src2: Operand::Virtual(rhs_vreg),
+                        src3: Operand::Virtual(lhs_vreg),
+                    }
                 });
             }
 
@@ -1089,49 +1184,45 @@ impl<'a> CfgLower<'a> {
 
                 let lhs_vreg = self.get_vreg(*lhs);
 
-                // Check if shift amount is a constant within valid range - use immediate form if so
-                // For 64-bit: 0-63, for 32-bit: 0-31
+                // Shift count taken modulo the operand bit width (spec 4.3a:10);
+                // sub-word counts need an explicit mask (RUE-29).
+                let count_mask = Self::shift_count_mask(ty);
                 let rhs_inst = &self.ctx.cfg.get_inst(*rhs).data;
-                let bit_width = if ty.is_64_bit() { 64 } else { 32 };
                 if let CfgInstData::Const(shift_amount) = rhs_inst {
-                    let shift = *shift_amount;
-                    if shift < bit_width {
-                        let imm = shift as u8;
-                        // Use 64-bit shift for i64/u64, 32-bit shift for smaller types
-                        if ty.is_64_bit() {
-                            self.mir.push(Aarch64Inst::LslImm {
-                                dst: Operand::Virtual(vreg),
-                                src: Operand::Virtual(lhs_vreg),
-                                imm,
-                            });
-                        } else {
-                            self.mir.push(Aarch64Inst::Lsl32Imm {
-                                dst: Operand::Virtual(vreg),
-                                src: Operand::Virtual(lhs_vreg),
-                                imm,
-                            });
-                        }
-                        return;
+                    let imm = (*shift_amount & count_mask) as u8;
+                    if ty.is_64_bit() {
+                        self.mir.push(Aarch64Inst::LslImm {
+                            dst: Operand::Virtual(vreg),
+                            src: Operand::Virtual(lhs_vreg),
+                            imm,
+                        });
+                    } else {
+                        self.mir.push(Aarch64Inst::Lsl32Imm {
+                            dst: Operand::Virtual(vreg),
+                            src: Operand::Virtual(lhs_vreg),
+                            imm,
+                        });
+                    }
+                } else {
+                    // Variable shift amount - mask it (mod bit width).
+                    let count_vreg = self.emit_masked_shift_count(*rhs, ty);
+                    if ty.is_64_bit() {
+                        self.mir.push(Aarch64Inst::LslRR {
+                            dst: Operand::Virtual(vreg),
+                            src1: Operand::Virtual(lhs_vreg),
+                            src2: Operand::Virtual(count_vreg),
+                        });
+                    } else {
+                        self.mir.push(Aarch64Inst::Lsl32RR {
+                            dst: Operand::Virtual(vreg),
+                            src1: Operand::Virtual(lhs_vreg),
+                            src2: Operand::Virtual(count_vreg),
+                        });
                     }
                 }
-                // Variable shift amount or out-of-range constant - use register form
-                let rhs_vreg = self.get_vreg(*rhs);
-
-                // Use 64-bit shift for i64/u64, 32-bit shift for smaller types
-                // 32-bit shift masks by 31, 64-bit shift masks by 63
-                if ty.is_64_bit() {
-                    self.mir.push(Aarch64Inst::LslRR {
-                        dst: Operand::Virtual(vreg),
-                        src1: Operand::Virtual(lhs_vreg),
-                        src2: Operand::Virtual(rhs_vreg),
-                    });
-                } else {
-                    self.mir.push(Aarch64Inst::Lsl32RR {
-                        dst: Operand::Virtual(vreg),
-                        src1: Operand::Virtual(lhs_vreg),
-                        src2: Operand::Virtual(rhs_vreg),
-                    });
-                }
+                // Left shift can set bits above the operand width; narrow the
+                // result back to the sub-word type (RUE-29).
+                self.emit_subword_narrow(vreg, ty);
             }
 
             CfgInstData::Shr(lhs, rhs) => {
@@ -1140,73 +1231,66 @@ impl<'a> CfgLower<'a> {
 
                 let lhs_vreg = self.get_vreg(*lhs);
 
-                // Check if shift amount is a constant within valid range - use immediate form if so
-                // For 64-bit: 0-63, for 32-bit: 0-31
+                // Shift count taken modulo the operand bit width (spec 4.3a:10);
+                // sub-word counts need an explicit mask (RUE-29).
+                let count_mask = Self::shift_count_mask(ty);
                 let rhs_inst = &self.ctx.cfg.get_inst(*rhs).data;
-                let bit_width = if ty.is_64_bit() { 64 } else { 32 };
                 if let CfgInstData::Const(shift_amount) = rhs_inst {
-                    let shift = *shift_amount;
-                    if shift < bit_width {
-                        let imm = shift as u8;
-                        // Use arithmetic shift (ASR) for signed types, logical shift (LSR) for unsigned
-                        // Use 64-bit shift for i64/u64, 32-bit shift for smaller types
-                        if ty.is_64_bit() && ty.is_signed() {
-                            self.mir.push(Aarch64Inst::Asr64Imm {
-                                dst: Operand::Virtual(vreg),
-                                src: Operand::Virtual(lhs_vreg),
-                                imm,
-                            });
-                        } else if ty.is_64_bit() {
-                            self.mir.push(Aarch64Inst::Lsr64Imm {
-                                dst: Operand::Virtual(vreg),
-                                src: Operand::Virtual(lhs_vreg),
-                                imm,
-                            });
-                        } else if ty.is_signed() {
-                            self.mir.push(Aarch64Inst::Asr32Imm {
-                                dst: Operand::Virtual(vreg),
-                                src: Operand::Virtual(lhs_vreg),
-                                imm,
-                            });
-                        } else {
-                            self.mir.push(Aarch64Inst::Lsr32Imm {
-                                dst: Operand::Virtual(vreg),
-                                src: Operand::Virtual(lhs_vreg),
-                                imm,
-                            });
-                        }
-                        return;
+                    let imm = (*shift_amount & count_mask) as u8;
+                    // Use arithmetic shift (ASR) for signed types, logical shift (LSR) for unsigned
+                    if ty.is_64_bit() && ty.is_signed() {
+                        self.mir.push(Aarch64Inst::Asr64Imm {
+                            dst: Operand::Virtual(vreg),
+                            src: Operand::Virtual(lhs_vreg),
+                            imm,
+                        });
+                    } else if ty.is_64_bit() {
+                        self.mir.push(Aarch64Inst::Lsr64Imm {
+                            dst: Operand::Virtual(vreg),
+                            src: Operand::Virtual(lhs_vreg),
+                            imm,
+                        });
+                    } else if ty.is_signed() {
+                        self.mir.push(Aarch64Inst::Asr32Imm {
+                            dst: Operand::Virtual(vreg),
+                            src: Operand::Virtual(lhs_vreg),
+                            imm,
+                        });
+                    } else {
+                        self.mir.push(Aarch64Inst::Lsr32Imm {
+                            dst: Operand::Virtual(vreg),
+                            src: Operand::Virtual(lhs_vreg),
+                            imm,
+                        });
                     }
-                }
-                // Variable shift amount or out-of-range constant - use register form
-                let rhs_vreg = self.get_vreg(*rhs);
-
-                // Use arithmetic shift (ASR) for signed types, logical shift (LSR) for unsigned
-                // Use 64-bit shift for i64/u64, 32-bit shift for smaller types
-                if ty.is_64_bit() && ty.is_signed() {
-                    self.mir.push(Aarch64Inst::AsrRR {
-                        dst: Operand::Virtual(vreg),
-                        src1: Operand::Virtual(lhs_vreg),
-                        src2: Operand::Virtual(rhs_vreg),
-                    });
-                } else if ty.is_64_bit() {
-                    self.mir.push(Aarch64Inst::LsrRR {
-                        dst: Operand::Virtual(vreg),
-                        src1: Operand::Virtual(lhs_vreg),
-                        src2: Operand::Virtual(rhs_vreg),
-                    });
-                } else if ty.is_signed() {
-                    self.mir.push(Aarch64Inst::Asr32RR {
-                        dst: Operand::Virtual(vreg),
-                        src1: Operand::Virtual(lhs_vreg),
-                        src2: Operand::Virtual(rhs_vreg),
-                    });
                 } else {
-                    self.mir.push(Aarch64Inst::Lsr32RR {
-                        dst: Operand::Virtual(vreg),
-                        src1: Operand::Virtual(lhs_vreg),
-                        src2: Operand::Virtual(rhs_vreg),
-                    });
+                    // Variable shift amount - mask it (mod bit width).
+                    let count_vreg = self.emit_masked_shift_count(*rhs, ty);
+                    if ty.is_64_bit() && ty.is_signed() {
+                        self.mir.push(Aarch64Inst::AsrRR {
+                            dst: Operand::Virtual(vreg),
+                            src1: Operand::Virtual(lhs_vreg),
+                            src2: Operand::Virtual(count_vreg),
+                        });
+                    } else if ty.is_64_bit() {
+                        self.mir.push(Aarch64Inst::LsrRR {
+                            dst: Operand::Virtual(vreg),
+                            src1: Operand::Virtual(lhs_vreg),
+                            src2: Operand::Virtual(count_vreg),
+                        });
+                    } else if ty.is_signed() {
+                        self.mir.push(Aarch64Inst::Asr32RR {
+                            dst: Operand::Virtual(vreg),
+                            src1: Operand::Virtual(lhs_vreg),
+                            src2: Operand::Virtual(count_vreg),
+                        });
+                    } else {
+                        self.mir.push(Aarch64Inst::Lsr32RR {
+                            dst: Operand::Virtual(vreg),
+                            src1: Operand::Virtual(lhs_vreg),
+                            src2: Operand::Virtual(count_vreg),
+                        });
+                    }
                 }
             }
 
@@ -1224,9 +1308,17 @@ impl<'a> CfgLower<'a> {
                             offset,
                         });
                     }
-                } else if init_type.is_struct() {
-                    // Struct: recursively flatten struct fields (including array fields) to scalars
-                    let scalar_vregs = self.collect_struct_scalar_vregs(*init);
+                } else if init_type.is_struct() && !self.ctx.is_builtin_string(init_type) {
+                    // Struct: store all slots via the single accessor. It materializes a
+                    // struct read from a place (`let q = a.p`) by loading its slot_count
+                    // consecutive slots, and cache-hits StructInit/Load/Param/Call/
+                    // BlockParam — all of which now carry fully-flattened slot lists
+                    // (nested arrays included). Fall back to the flattener for any source
+                    // the accessor doesn't model. (RUE-118 / RUE-22)
+                    // (Builtin String is excluded above — it takes the fat-pointer branch.)
+                    let scalar_vregs = self
+                        .get_or_compute_field_vregs(*init)
+                        .unwrap_or_else(|| self.collect_struct_scalar_vregs(*init));
                     for (i, scalar_vreg) in scalar_vregs.iter().enumerate() {
                         let field_slot = slot + i as u32;
                         let offset = self.ctx.local_offset(field_slot);
@@ -1239,9 +1331,7 @@ impl<'a> CfgLower<'a> {
                 } else if self.ctx.is_builtin_string(init_type) {
                     // String: store ptr, len, and cap to consecutive slots
                     let field_vregs = self
-                        .struct_slot_vregs
-                        .get(init)
-                        .cloned()
+                        .get_or_compute_field_vregs(*init)
                         .expect("string should have fat pointer fields in Alloc");
                     debug_assert_eq!(
                         field_vregs.len(),
@@ -1394,9 +1484,7 @@ impl<'a> CfgLower<'a> {
                 if self.ctx.is_builtin_string(val_type) {
                     // String: store ptr, len, and cap to consecutive slots
                     let field_vregs = self
-                        .struct_slot_vregs
-                        .get(val)
-                        .cloned()
+                        .get_or_compute_field_vregs(*val)
                         .expect("string should have fat pointer fields in Store");
                     debug_assert_eq!(
                         field_vregs.len(),
@@ -1613,48 +1701,17 @@ impl<'a> CfgLower<'a> {
                     }
 
                     match arg_type.kind() {
-                        TypeKind::Struct(struct_id) => {
-                            let arg_data = &self.ctx.cfg.get_inst(arg_value).data;
-                            let slot_count = self.ctx.type_slot_count(Type::new_struct(struct_id));
-                            match arg_data {
-                                CfgInstData::Load { slot } => {
-                                    for slot_idx in 0..slot_count {
-                                        let slot_vreg = self.mir.alloc_vreg();
-                                        let actual_slot = slot + slot_idx;
-                                        let offset = self.ctx.local_offset(actual_slot);
-                                        self.mir.push(Aarch64Inst::Ldr {
-                                            dst: Operand::Virtual(slot_vreg),
-                                            base: Reg::Fp,
-                                            offset,
-                                        });
-                                        flattened_vregs.push(slot_vreg);
-                                    }
-                                }
-                                CfgInstData::Param { index } => {
-                                    for slot_idx in 0..slot_count {
-                                        let slot_vreg = self.mir.alloc_vreg();
-                                        let param_slot = self.ctx.num_locals + index + slot_idx;
-                                        let offset = self.ctx.local_offset(param_slot);
-                                        self.mir.push(Aarch64Inst::Ldr {
-                                            dst: Operand::Virtual(slot_vreg),
-                                            base: Reg::Fp,
-                                            offset,
-                                        });
-                                        flattened_vregs.push(slot_vreg);
-                                    }
-                                }
-                                CfgInstData::StructInit { .. } | CfgInstData::Call { .. } => {
-                                    if let Some(field_vregs) =
-                                        self.struct_slot_vregs.get(&arg_value)
-                                    {
-                                        flattened_vregs.extend(field_vregs.iter().copied());
-                                    } else {
-                                        flattened_vregs.push(self.get_vreg(arg_value));
-                                    }
-                                }
-                                _ => {
-                                    flattened_vregs.push(self.get_vreg(arg_value));
-                                }
+                        TypeKind::Struct(_) => {
+                            // Pass all slots of the (possibly multi-slot) struct/String arg,
+                            // regardless of how it was produced — StructInit, Load, Param, Call,
+                            // BlockParam, or a field place-read (`f(h.s)` / `f(w.p)`). The
+                            // accessor materializes lazily-sourced values (Load/Param/PlaceRead)
+                            // and cache-hits eager ones (StructInit/Call/BlockParam). Previously
+                            // the `_` arm here passed only slot 0 of a place-read aggregate. (RUE-118)
+                            if let Some(field_vregs) = self.get_or_compute_field_vregs(arg_value) {
+                                flattened_vregs.extend(field_vregs);
+                            } else {
+                                flattened_vregs.push(self.get_vreg(arg_value));
                             }
                         }
                         TypeKind::Array(_) => {
@@ -1878,8 +1935,9 @@ impl<'a> CfgLower<'a> {
 
                     // Handle String arguments separately
                     if self.ctx.is_builtin_string(arg_type) {
-                        // String is a fat pointer stored as [ptr_vreg, len_vreg] in struct_slot_vregs
-                        if let Some(field_vregs) = self.struct_slot_vregs.get(&arg_val) {
+                        // String fat pointer (ptr, len, cap) — materialize a String read
+                        // from a place (`@dbg(h.s)`) as well as cached sources. (RUE-118)
+                        if let Some(field_vregs) = self.get_or_compute_field_vregs(arg_val) {
                             let ptr_vreg = field_vregs[0];
                             let len_vreg = field_vregs[1];
 
@@ -1993,8 +2051,9 @@ impl<'a> CfgLower<'a> {
                     let args = self.ctx.cfg.get_extra(*args_start, *args_len);
                     let arg_val = args[0];
 
-                    // Get the String fat pointer (ptr, len, cap) from struct_slot_vregs
-                    if let Some(field_vregs) = self.struct_slot_vregs.get(&arg_val) {
+                    // Get the String fat pointer (ptr, len, cap) — materialize a String
+                    // read from a place (`@parse_i32(h.s)`) as well as cached sources. (RUE-118)
+                    if let Some(field_vregs) = self.get_or_compute_field_vregs(arg_val) {
                         let ptr_vreg = field_vregs[0];
                         let len_vreg = field_vregs[1];
 
@@ -2320,13 +2379,17 @@ impl<'a> CfgLower<'a> {
                 for field in &fields {
                     let field_inst = self.ctx.cfg.get_inst(*field);
                     if field_inst.ty.is_struct() {
-                        // Nested struct - get all its slot vregs
+                        // Nested struct/String field - all its slot vregs, incl. a
+                        // field read from another aggregate (`B { p: a.p }`). (RUE-118)
                         let nested_vregs = self
-                            .struct_slot_vregs
-                            .get(field)
-                            .cloned()
-                            .expect("nested struct field should have slot vregs in cache");
+                            .get_or_compute_field_vregs(*field)
+                            .expect("nested struct field should have slot vregs");
                         slot_vregs.extend(nested_vregs);
+                    } else if field_inst.ty.is_array() {
+                        // Nested array field - flatten to its element scalar slots so the
+                        // cached slot list is fully flattened (consumers and the Alloc-of-
+                        // this-StructInit rely on it). (RUE-118)
+                        slot_vregs.extend(self.collect_array_scalar_vregs(*field));
                     } else {
                         // Scalar field - single vreg
                         slot_vregs.push(self.get_vreg(*field));
@@ -2528,12 +2591,27 @@ impl<'a> CfgLower<'a> {
                 // Emit range check and panic if out of bounds
                 self.emit_int_cast_check(src_vreg, *from_ty, to_ty);
 
-                // Move the value to the result vreg (the bits are already correct
-                // after sign/zero extension from the range check or simple copy)
-                self.mir.push(Aarch64Inst::MovRR {
-                    dst: Operand::Virtual(vreg),
-                    src: Operand::Virtual(src_vreg),
-                });
+                // Move the value to the result vreg. A signed source widened to a
+                // larger type must be SIGN-extended into the high bits — a plain
+                // 64-bit copy would carry the source's zero-extended high bits,
+                // turning e.g. i32 -5 into 4294967291 (RUE-88). Emit an explicit
+                // sxtb/sxth/sxtw for that case.
+                let from_bits = Self::type_bits(*from_ty);
+                let to_bits = Self::type_bits(to_ty);
+                if from_ty.is_signed() && to_bits > from_bits {
+                    let dst = Operand::Virtual(vreg);
+                    let src = Operand::Virtual(src_vreg);
+                    match from_bits {
+                        8 => self.mir.push(Aarch64Inst::Sxtb { dst, src }),
+                        16 => self.mir.push(Aarch64Inst::Sxth { dst, src }),
+                        _ => self.mir.push(Aarch64Inst::Sxtw { dst, src }),
+                    }
+                } else {
+                    self.mir.push(Aarch64Inst::MovRR {
+                        dst: Operand::Virtual(vreg),
+                        src: Operand::Virtual(src_vreg),
+                    });
+                }
             }
 
             CfgInstData::Drop {
@@ -2549,51 +2627,12 @@ impl<'a> CfgLower<'a> {
 
                 // Handle String specially - it's a fat pointer (ptr, len, cap)
                 if self.ctx.is_builtin_string(dropped_ty) {
-                    // String requires all 3 slots as arguments to __rue_drop_String
-                    // First, try to get the vregs from cache
-                    let field_vregs =
-                        if let Some(vregs) = self.struct_slot_vregs.get(dropped_value).cloned() {
-                            vregs
-                        } else {
-                            // Not in cache - check if it's a Param instruction
-                            let dropped_inst = &self.ctx.cfg.get_inst(*dropped_value).data;
-                            if let CfgInstData::Param { index } = dropped_inst {
-                                // Load all 3 String fields from param slots
-                                let mut vregs = Vec::with_capacity(3);
-                                for field_idx in 0..3u32 {
-                                    let field_vreg = self.mir.alloc_vreg();
-                                    let param_slot = self.ctx.num_locals + index + field_idx;
-                                    let offset = self.ctx.local_offset(param_slot);
-                                    self.mir.push(Aarch64Inst::Ldr {
-                                        dst: Operand::Virtual(field_vreg),
-                                        base: Reg::Fp,
-                                        offset,
-                                    });
-                                    vregs.push(field_vreg);
-                                }
-                                vregs
-                            } else if let CfgInstData::Load { slot } = dropped_inst {
-                                // Load from local variable slots
-                                let mut vregs = Vec::with_capacity(3);
-                                for field_idx in 0..3u32 {
-                                    let field_vreg = self.mir.alloc_vreg();
-                                    let field_slot = slot + field_idx;
-                                    let offset = self.ctx.local_offset(field_slot);
-                                    self.mir.push(Aarch64Inst::Ldr {
-                                        dst: Operand::Virtual(field_vreg),
-                                        base: Reg::Fp,
-                                        offset,
-                                    });
-                                    vregs.push(field_vreg);
-                                }
-                                vregs
-                            } else {
-                                unreachable!(
-                                    "String value should have field vregs or be a Param/Load: {:?}",
-                                    dropped_inst
-                                );
-                            }
-                        };
+                    // String requires all 3 slots as arguments to __rue_drop_String.
+                    // The accessor handles every source (cache for StructInit/Call/
+                    // BlockParam; materialize for Load/Param/PlaceRead). (RUE-118)
+                    let field_vregs = self
+                        .get_or_compute_field_vregs(*dropped_value)
+                        .expect("String value should have field vregs");
 
                     debug_assert_eq!(
                         field_vregs.len(),
@@ -2808,8 +2847,12 @@ impl<'a> CfgLower<'a> {
                     dst: Operand::Virtual(sext_vreg),
                     src: Operand::Virtual(result_vreg),
                 });
-                // Use 64-bit compare since sext_vreg is a 64-bit value
-                self.mir.push(Aarch64Inst::Cmp64RR {
+                // Compare at 32-bit width. The sub-word arithmetic was emitted
+                // as a 32-bit (W-register) op that zeroes bits 32-63, so a 64-bit
+                // compare against the sign-extended byte/word would mismatch a
+                // legitimately-negative in-range result and falsely trap
+                // (RUE-28 sub, RUE-60 neg). The low 32 bits must match.
+                self.mir.push(Aarch64Inst::CmpRR {
                     src1: Operand::Virtual(result_vreg),
                     src2: Operand::Virtual(sext_vreg),
                 });
@@ -2825,8 +2868,12 @@ impl<'a> CfgLower<'a> {
                     dst: Operand::Virtual(sext_vreg),
                     src: Operand::Virtual(result_vreg),
                 });
-                // Use 64-bit compare since sext_vreg is a 64-bit value
-                self.mir.push(Aarch64Inst::Cmp64RR {
+                // Compare at 32-bit width. The sub-word arithmetic was emitted
+                // as a 32-bit (W-register) op that zeroes bits 32-63, so a 64-bit
+                // compare against the sign-extended byte/word would mismatch a
+                // legitimately-negative in-range result and falsely trap
+                // (RUE-28 sub, RUE-60 neg). The low 32 bits must match.
+                self.mir.push(Aarch64Inst::CmpRR {
                     src1: Operand::Virtual(result_vreg),
                     src2: Operand::Virtual(sext_vreg),
                 });
@@ -3301,6 +3348,55 @@ impl<'a> CfgLower<'a> {
     }
 
     /// Get the min and max values for an integer type.
+    /// The AND mask (bit_width - 1) applied to a shift count, since the count
+    /// is taken modulo the operand's bit width (spec 4.3a:10).
+    fn shift_count_mask(ty: Type) -> u64 {
+        match Self::type_bits(ty) {
+            8 => 0x07,
+            16 => 0x0F,
+            64 => 0x3F,
+            _ => 0x1F, // 32-bit
+        }
+    }
+
+    /// Materialize the shift count masked to the operand's bit width into a
+    /// fresh vreg (so a sub-word variable count >= the width wraps per spec).
+    /// For 32/64-bit operands the hardware mask already matches.
+    fn emit_masked_shift_count(&mut self, rhs: CfgValue, ty: Type) -> VReg {
+        let rhs_vreg = self.get_vreg(rhs);
+        if Self::type_bits(ty) >= 32 {
+            return rhs_vreg;
+        }
+        let mask_vreg = self.mir.alloc_vreg();
+        self.mir.push(Aarch64Inst::MovImm {
+            dst: Operand::Virtual(mask_vreg),
+            imm: Self::shift_count_mask(ty) as i64,
+        });
+        let count_vreg = self.mir.alloc_vreg();
+        self.mir.push(Aarch64Inst::AndRR {
+            dst: Operand::Virtual(count_vreg),
+            src1: Operand::Virtual(rhs_vreg),
+            src2: Operand::Virtual(mask_vreg),
+        });
+        count_vreg
+    }
+
+    /// Narrow a value to a sub-word integer type by sign-/zero-extending its
+    /// low byte/halfword, so it holds the correct value after an op that may
+    /// have set bits above the operand width (e.g. a left shift). No-op for
+    /// 32/64-bit types.
+    fn emit_subword_narrow(&mut self, vreg: VReg, ty: Type) {
+        let dst = Operand::Virtual(vreg);
+        let src = Operand::Virtual(vreg);
+        match Self::type_bits(ty) {
+            8 if ty.is_signed() => self.mir.push(Aarch64Inst::Sxtb { dst, src }),
+            8 => self.mir.push(Aarch64Inst::Uxtb { dst, src }),
+            16 if ty.is_signed() => self.mir.push(Aarch64Inst::Sxth { dst, src }),
+            16 => self.mir.push(Aarch64Inst::Uxth { dst, src }),
+            _ => {}
+        }
+    }
+
     fn type_range(ty: Type) -> (i64, i64) {
         match ty.kind() {
             TypeKind::I8 => (i8::MIN as i64, i8::MAX as i64),
@@ -3329,18 +3425,14 @@ impl<'a> CfgLower<'a> {
 
             // Get left string fat pointer
             let lhs_fields = self
-                .struct_slot_vregs
-                .get(&lhs)
-                .cloned()
+                .get_or_compute_field_vregs(lhs)
                 .expect("String should have fat pointer fields");
             let lhs_ptr = lhs_fields[0];
             let lhs_len = lhs_fields[1];
 
             // Get right string fat pointer
             let rhs_fields = self
-                .struct_slot_vregs
-                .get(&rhs)
-                .cloned()
+                .get_or_compute_field_vregs(rhs)
                 .expect("String should have fat pointer fields");
             let rhs_ptr = rhs_fields[0];
             let rhs_len = rhs_fields[1];
@@ -3423,14 +3515,10 @@ impl<'a> CfgLower<'a> {
 
         // Get the struct field vregs
         let lhs_fields = self
-            .struct_slot_vregs
-            .get(&lhs)
-            .cloned()
+            .get_or_compute_field_vregs(lhs)
             .expect("struct should have field vregs");
         let rhs_fields = self
-            .struct_slot_vregs
-            .get(&rhs)
-            .cloned()
+            .get_or_compute_field_vregs(rhs)
             .expect("struct should have field vregs");
 
         let struct_def = self.ctx.type_pool.struct_def(struct_id);
@@ -3507,14 +3595,10 @@ impl<'a> CfgLower<'a> {
         // Get string fields (ptr, len, cap) from struct_slot_vregs
         // For comparison, we only use ptr and len (cap is not compared)
         let lhs_fields = self
-            .struct_slot_vregs
-            .get(&lhs)
-            .cloned()
+            .get_or_compute_field_vregs(lhs)
             .expect("string should have fat pointer fields");
         let rhs_fields = self
-            .struct_slot_vregs
-            .get(&rhs)
-            .cloned()
+            .get_or_compute_field_vregs(rhs)
             .expect("string should have fat pointer fields");
 
         debug_assert_eq!(
@@ -3682,6 +3766,11 @@ impl<'a> CfgLower<'a> {
                 default,
             } => {
                 let scrutinee_vreg = self.get_vreg(*scrutinee);
+                // The case value is materialized as a full 64-bit immediate, so a
+                // 64-bit scrutinee must be compared at 64-bit width; a 32-bit cmp
+                // would match on only the low 32 bits (RUE-27). Sub-64-bit
+                // scrutinees keep the 32-bit compare (correct at their width).
+                let scrutinee_is_64 = self.ctx.cfg.get_inst(*scrutinee).ty.is_64_bit();
 
                 // Generate comparison and jump for each case
                 let cases = self.ctx.cfg.get_switch_cases(*cases_start, *cases_len);
@@ -3692,10 +3781,17 @@ impl<'a> CfgLower<'a> {
                         dst: Operand::Virtual(imm_vreg),
                         imm: *value,
                     });
-                    self.mir.push(Aarch64Inst::CmpRR {
-                        src1: Operand::Virtual(scrutinee_vreg),
-                        src2: Operand::Virtual(imm_vreg),
-                    });
+                    if scrutinee_is_64 {
+                        self.mir.push(Aarch64Inst::Cmp64RR {
+                            src1: Operand::Virtual(scrutinee_vreg),
+                            src2: Operand::Virtual(imm_vreg),
+                        });
+                    } else {
+                        self.mir.push(Aarch64Inst::CmpRR {
+                            src1: Operand::Virtual(scrutinee_vreg),
+                            src2: Operand::Virtual(imm_vreg),
+                        });
+                    }
                     self.mir.push(Aarch64Inst::BCond {
                         cond: Cond::Eq,
                         label: self.block_label(*target),
@@ -3725,54 +3821,20 @@ impl<'a> CfgLower<'a> {
                     });
                     let symbol_id = self.intern_symbol("__rue_exit");
                     self.mir.push(Aarch64Inst::Bl { symbol_id });
-                } else if let Some(struct_id) = return_type.as_struct() {
-                    // Return struct in registers
-                    let slot_count = self.ctx.type_slot_count(Type::new_struct(struct_id));
-                    let value_data = &self.ctx.cfg.get_inst(*value).data;
-
-                    match value_data {
-                        CfgInstData::StructInit { .. }
-                        | CfgInstData::Call { .. }
-                        | CfgInstData::BlockParam { .. } => {
-                            // Use slot vregs from cache (populated for BlockParam, StructInit, Call)
-                            if let Some(slot_vregs) = self.struct_slot_vregs.get(value).cloned() {
-                                for (i, slot_vreg) in slot_vregs.iter().enumerate() {
-                                    if i < RET_REGS.len() {
-                                        self.mir.push(Aarch64Inst::MovRR {
-                                            dst: Operand::Physical(RET_REGS[i]),
-                                            src: Operand::Virtual(*slot_vreg),
-                                        });
-                                    }
-                                }
-                            }
-                        }
-                        CfgInstData::Param { index } => {
-                            for slot_idx in 0..slot_count {
-                                let param_slot = self.ctx.num_locals + index + slot_idx;
-                                let offset = self.ctx.local_offset(param_slot);
-                                self.mir.push(Aarch64Inst::Ldr {
-                                    dst: Operand::Physical(RET_REGS[slot_idx as usize]),
-                                    base: Reg::Fp,
-                                    offset,
-                                });
-                            }
-                        }
-                        CfgInstData::Load { slot } => {
-                            for slot_idx in 0..slot_count {
-                                let actual_slot = slot + slot_idx;
-                                let offset = self.ctx.local_offset(actual_slot);
-                                self.mir.push(Aarch64Inst::Ldr {
-                                    dst: Operand::Physical(RET_REGS[slot_idx as usize]),
-                                    base: Reg::Fp,
-                                    offset,
-                                });
-                            }
-                        }
-                        _ => {
-                            let val_vreg = self.get_vreg(*value);
+                } else if return_type.as_struct().is_some() {
+                    // Return struct in registers. Gather all slots of the returned
+                    // aggregate through the single accessor, regardless of source
+                    // (StructInit/Call/BlockParam cache-hit; Load/Param/PlaceRead
+                    // materialize). Previously the `_` arm returned only slot 0 of a
+                    // place-read aggregate (`fn f(w: Wrap) -> Point { w.p }`). (RUE-118)
+                    let slot_vregs = self
+                        .get_or_compute_field_vregs(*value)
+                        .unwrap_or_else(|| vec![self.get_vreg(*value)]);
+                    for (i, slot_vreg) in slot_vregs.iter().enumerate() {
+                        if i < RET_REGS.len() {
                             self.mir.push(Aarch64Inst::MovRR {
-                                dst: Operand::Physical(Reg::X0),
-                                src: Operand::Virtual(val_vreg),
+                                dst: Operand::Physical(RET_REGS[i]),
+                                src: Operand::Virtual(*slot_vreg),
                             });
                         }
                     }

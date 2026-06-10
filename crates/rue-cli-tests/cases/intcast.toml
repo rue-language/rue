@@ -1,0 +1,107 @@
+# @intCast widening sign-extension regression tests (RUE-88, epic RUE-105).
+#
+# Widening a signed integer to a larger type must SIGN-extend the high bits.
+# Both backends used a plain 64-bit move after the range check, carrying the
+# source's zero-extended high bits, so e.g. i32 -5 widened to i64 became
+# 4294967291. Now a movsx (x86-64) / sxtb/sxth/sxtw (aarch64) is emitted.
+#
+# Negative i8/i16 values are produced by narrowing an i32 (`@intCast(0 - 5)`)
+# rather than i8/i16 arithmetic, to avoid the unrelated sub-word overflow-check
+# bug (RUE-28/RUE-60).
+
+[section]
+id = "cli.intcast"
+name = "@intCast widening sign-extension"
+description = "Widening a signed integer must sign-extend, not zero-extend."
+
+[[case]]
+name = "i32_to_i64_negative_sign_extends"
+files = [{ path = "main.rue", source = """
+fn neg(x: i32) -> i32 { 0 - x }
+fn main() -> i32 {
+    let a: i32 = neg(5);          // -5, produced at runtime
+    let b: i64 = @intCast(a);     // must be -5, not 4294967291
+    if b == 0 - 5 { 0 } else { 1 }
+}
+""" }]
+exit_code = 0
+
+[[case]]
+name = "i8_to_i64_negative_sign_extends"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let n: i32 = 0 - 5;
+    let a: i8 = @intCast(n);      // -5 as i8
+    let b: i64 = @intCast(a);     // widen i8 -> i64, must be -5
+    if b == 0 - 5 { 0 } else { 1 }
+}
+""" }]
+exit_code = 0
+
+[[case]]
+name = "i16_to_i64_negative_sign_extends"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let n: i32 = 0 - 5;
+    let a: i16 = @intCast(n);
+    let b: i64 = @intCast(a);
+    if b == 0 - 5 { 0 } else { 1 }
+}
+""" }]
+exit_code = 0
+
+[[case]]
+name = "i16_to_i32_negative_sign_extends"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let n: i32 = 0 - 5;
+    let a: i16 = @intCast(n);
+    let b: i32 = @intCast(a);
+    if b == 0 - 5 { 0 } else { 1 }
+}
+""" }]
+exit_code = 0
+
+# Control: positive signed widening is unchanged.
+[[case]]
+name = "i32_to_i64_positive_ok"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: i32 = 5;
+    let b: i64 = @intCast(a);
+    if b == 5 { 0 } else { 1 }
+}
+""" }]
+exit_code = 0
+
+# Control: unsigned widening must zero-extend (still correct).
+[[case]]
+name = "u32_to_u64_zero_extends"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: u32 = 4000000000;
+    let b: u64 = @intCast(a);
+    if b == 4000000000 { 0 } else { 1 }
+}
+""" }]
+exit_code = 0
+
+# Control: a narrowing cast that overflows still traps.
+#
+# xfail on aarch64: the narrowing range check there compares only the low 32
+# bits of the 64-bit source (RUE-31), so this out-of-range value (whose low 32
+# bits happen to land in i32 range) is silently truncated instead of trapping.
+# That is a separate bug from this PR's widening sign-extension; remove
+# `known_bug_on` when RUE-31 is fixed.
+[[case]]
+name = "i64_to_i32_overflow_traps"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: i64 = 5000000000;
+    @intCast(a)
+}
+""" }]
+exit_code = 101
+runtime_error_contains = ["integer cast overflow"]
+known_bug = "RUE-31"
+known_bug_on = ["aarch64-linux", "aarch64-macos"]

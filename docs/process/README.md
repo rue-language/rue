@@ -20,7 +20,7 @@ Each step has a corresponding document in this directory and a Claude Code comma
 | Implement | [implementation.md](implementation.md) | `/implement` | Write code, tests, and spec updates |
 | Review | [code-review.md](code-review.md) | `/code-review` | Check quality before committing |
 | Commit | [committing.md](committing.md) | `/commit` | Create well-formed commits |
-| - | [issue-tracking.md](issue-tracking.md) | `bd` CLI | Track work with beads |
+| - | [issue-tracking.md](issue-tracking.md) | Linear MCP tools | Track work with Linear |
 
 ## Feature Types
 
@@ -32,7 +32,7 @@ We distinguish between two types of work:
 - Completable in one session
 - No preview gate needed
 
-**Workflow**: Plan → bd issue → Implement → Review → Commit
+**Workflow**: Plan → Linear issue → Implement → Review → Commit
 
 ### Large Features
 - Touch many files across crates
@@ -40,7 +40,7 @@ We distinguish between two types of work:
 - May span multiple sessions
 - Require ADR and preview gate
 
-**Workflow**: Plan → ADR + bd epic → (Phase 1: Implement → Review → Commit) → ... → Stabilize
+**Workflow**: Plan → ADR + Linear epic → (Phase 1: Implement → Review → Commit) → ... → Stabilize
 
 ## Key Concepts
 
@@ -50,8 +50,8 @@ Design documents for large features. See [../designs/README.md](../designs/READM
 ### Preview Features
 Gating mechanism for incomplete features. Allows merging partial work to main without breaking stable functionality. See [ADR-0005](../designs/0005-preview-features.md).
 
-### Issue Tracking (bd)
-We use [beads](https://github.com/steveyegge/beads) for all issue tracking. See [issue-tracking.md](issue-tracking.md).
+### Issue Tracking (Linear)
+We use [Linear](https://linear.app) (team "Rue") for all issue tracking. See [issue-tracking.md](issue-tracking.md).
 
 ### Specification
 Language semantics are formally documented in [../spec/](../spec/). Changes to language behavior require spec updates.
@@ -60,12 +60,12 @@ Language semantics are formally documented in [../spec/](../spec/). Changes to l
 
 - **Buck2**: Build system (`./buck2 build`, `./buck2 test`)
 - **Jujutsu**: Version control (`jj status`, `jj commit`)
-- **bd**: Issue tracking (`bd create`, `bd ready`)
+- **Linear**: Issue tracking (via the Linear MCP tools)
 - **Claude Code**: AI assistant with `/plan`, `/implement`, etc.
 
 ## Getting Started
 
-1. **Find work**: `bd ready` shows unblocked issues
-2. **Claim it**: `bd update <id> --status in_progress`
+1. **Find work**: list `Todo`/`Backlog` issues in the Rue team via the Linear MCP tools
+2. **Claim it**: `save_issue` with state "In Progress" and assignee "me"
 3. **Follow the process**: Use the documents and commands above
-4. **Ship it**: Review, commit, close the issue
+4. **Ship it**: Review, commit, mark the issue Done

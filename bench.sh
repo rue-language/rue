@@ -102,10 +102,10 @@ arch=$(uname -m)
 
 # Build the compiler
 log_info "Building rue compiler ($BUILD_MODE mode)..."
-./buck2 build //crates/rue:rue --modifier //constraints:$BUILD_MODE 2>&1 | tail -3
 
-# Get the path to the built compiler
-RUE_BIN="$(./buck2 build //crates/rue:rue --modifier //constraints:$BUILD_MODE --show-output 2>/dev/null | awk '{print $2}')"
+# Get the path to the built compiler (scripts/rue-bin builds it and resolves a
+# stable absolute path; extra args pass through to buck2 build).
+RUE_BIN="$(./scripts/rue-bin --modifier //constraints:$BUILD_MODE)"
 if [[ ! -x "$RUE_BIN" ]]; then
     log_error "Failed to find rue binary at: $RUE_BIN"
     exit 1

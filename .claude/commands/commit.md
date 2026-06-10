@@ -1,6 +1,6 @@
 ---
 description: Create a commit with a descriptive message
-allowed-tools: Bash(jj:*), Bash(bd:*)
+allowed-tools: Bash(jj:*)
 argument-hint: [commit message]
 ---
 
@@ -26,23 +26,20 @@ If no message was provided:
 - Use imperative mood ("Add feature" not "Added feature")
 - First line: concise summary (50 chars preferred, 72 max)
 - Optional body: explain what and why (not how)
-- Reference bd issues: "Fixes bd-42" or "Related to bd-42"
+- Reference Linear issues: "Fixes RUE-42" or "Related to RUE-42"
 
 ## Workflow
 
-1. **Close related bd issues first** (so closure is in the commit):
-   ```bash
-   bd close <id> --reason "Completed"
-   ```
-
-2. **Create the commit**:
+1. **Create the commit**:
    ```bash
    jj commit -m "<message>"
    ```
 
+2. **Mark related Linear issues Done** (after committing): use the Linear MCP tools (`save_issue` with state "Done")
+
 ## Important
 
-- Close issues with `bd close` BEFORE `jj commit`
+- Commit first, then mark issues Done in Linear
 - Each commit should leave tests passing
 - Don't include file lists (VCS shows that)
 - Don't commit WIP or debug code

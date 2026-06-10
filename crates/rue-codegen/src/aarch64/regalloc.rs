@@ -423,6 +423,22 @@ impl RegAlloc {
                 })?;
             }
 
+            Aarch64Inst::Sdiv64RR { dst, src1, src2 } => {
+                self.emit_ternop(mir, dst, src1, src2, |d, s1, s2| Aarch64Inst::Sdiv64RR {
+                    dst: d,
+                    src1: s1,
+                    src2: s2,
+                })?;
+            }
+
+            Aarch64Inst::Udiv64RR { dst, src1, src2 } => {
+                self.emit_ternop(mir, dst, src1, src2, |d, s1, s2| Aarch64Inst::Udiv64RR {
+                    dst: d,
+                    src1: s1,
+                    src2: s2,
+                })?;
+            }
+
             Aarch64Inst::Msub {
                 dst,
                 src1,
@@ -437,6 +453,35 @@ impl RegAlloc {
                 alloc_dst!(self.get_allocation(dst), dst, Reg::X9 =>
                     emit |dst_op| {
                         mir.push(Aarch64Inst::Msub {
+                            dst: dst_op,
+                            src1: src1_op,
+                            src2: src2_op,
+                            src3: src3_op,
+                        });
+                    },
+                    store |offset| {
+                        mir.push(Aarch64Inst::Str {
+                            src: Operand::Physical(Reg::X9),
+                            base: Reg::Fp,
+                            offset,
+                        });
+                    },
+                );
+            }
+
+            Aarch64Inst::Msub64 {
+                dst,
+                src1,
+                src2,
+                src3,
+            } => {
+                // Use X10, X11, X12 for sources to avoid conflict with X9 used for spilled dst.
+                let src1_op = self.load_operand(mir, src1, Reg::X10)?;
+                let src2_op = self.load_operand(mir, src2, Reg::X11)?;
+                let src3_op = self.load_operand(mir, src3, Reg::X12)?;
+                alloc_dst!(self.get_allocation(dst), dst, Reg::X9 =>
+                    emit |dst_op| {
+                        mir.push(Aarch64Inst::Msub64 {
                             dst: dst_op,
                             src1: src1_op,
                             src2: src2_op,

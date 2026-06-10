@@ -1,0 +1,115 @@
+# 64-bit division/modulo regression tests (RUE-26, epic RUE-105).
+#
+# The x86-64 backend lowered i64/u64 `/` and `%` with 32-bit `cdq`/`idiv`/`div`
+# and a 32-bit divisor zero-test, so any operand with bits above bit 31 was
+# truncated — wrong quotients, false "division by zero" panics, and a SIGFPE on
+# values like 2147483648 / -1. Now lowered with `cqo` + REX.W `idiv`/`div` and a
+# 64-bit zero-test when the operands are 64-bit.
+
+[section]
+id = "cli.division"
+name = "64-bit division and modulo"
+description = "i64/u64 division and modulo must compute over the full 64-bit range."
+
+[[case]]
+name = "i64_div_high_bits_preserved"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: i64 = 8589934592;   // 2^33
+    let b: i64 = 2;
+    let q = a / b;
+    if q == 4294967296 { 42 } else { 7 }   // 2^33 / 2 == 2^32
+}
+""" }]
+exit_code = 42
+
+[[case]]
+name = "i64_div_result_value"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let n: i64 = 10000000000;
+    let d: i64 = 100000000;
+    let q: i64 = n / d;   // 100
+    @intCast(q)
+}
+""" }]
+exit_code = 100
+
+[[case]]
+name = "u64_div_high_bits_preserved"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: u64 = 10000000000;
+    let b: u64 = 2;
+    let c: u64 = a / b;     // 5000000000, > 2^32
+    let hi: u64 = c >> 32;
+    if hi == 1 { 1 } else { 7 }
+}
+""" }]
+exit_code = 1
+
+[[case]]
+name = "i64_mod_value"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: i64 = 1000000000000;
+    let b: i64 = 7;
+    let r: i64 = a % b;     // 1
+    if r == 1 { 42 } else { 7 }
+}
+""" }]
+exit_code = 42
+
+# RUE-26: the divisor zero-test was 32-bit, so a divisor whose low 32 bits are
+# zero (e.g. 2^32) falsely tripped "division by zero". It must NOT trap.
+[[case]]
+name = "i64_div_no_false_div_by_zero"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: i64 = 10;
+    let b: i64 = 4294967296;   // 2^32; low 32 bits == 0, but nonzero
+    let q: i64 = a / b;        // 0
+    @intCast(q)
+}
+""" }]
+exit_code = 0
+
+# RUE-26: a 32-bit idiv of 2147483648 / -1 raised #DE (SIGFPE) because the
+# 32-bit quotient +2^31 overflowed the 32-bit dest. The 64-bit result
+# -2147483648 is representable, so it must run to completion.
+[[case]]
+name = "i64_div_min32_neg1_no_sigfpe"
+files = [{ path = "main.rue", source = """
+fn main() -> i64 {
+    let a: i64 = 2147483648;
+    let b: i64 = -1;
+    a / b          // -2147483648; low byte 0
+}
+""" }]
+exit_code = 0
+
+# Control: a genuine division by zero still traps.
+[[case]]
+name = "i64_genuine_div_by_zero_traps"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: i64 = 10;
+    let z: i64 = 0;
+    let q: i64 = a / z;
+    @intCast(q)
+}
+""" }]
+exit_code = 101
+runtime_error_contains = ["division by zero"]
+
+# Control: 32-bit division is unaffected.
+[[case]]
+name = "i32_div_still_correct"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: i32 = 100;
+    let b: i32 = 7;
+    a / b          // 14
+}
+""" }]
+exit_code = 14

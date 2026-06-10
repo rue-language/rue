@@ -5,26 +5,20 @@ This document describes how to implement planned features. The `/implement` comm
 ## Prerequisites
 
 Before implementing:
-1. A plan exists (bd issue, and ADR for large features)
+1. A plan exists (Linear issue, and ADR for large features)
 2. You understand what needs to be done
 3. The work fits in a single session (split if not)
 
 ## Step 1: Load the Context
 
-1. **Get the issue details**:
-   ```bash
-   bd show <bd-id> --json
-   ```
+1. **Get the issue details**: use the Linear MCP `get_issue` tool with the issue ID (e.g., `RUE-42`)
 
 2. **For large features**, read the ADR:
    - Find it in `docs/designs/`
    - Identify which phase you're implementing
    - Understand how this phase fits into the whole
 
-3. **Mark work in progress**:
-   ```bash
-   bd update <bd-id> --status in_progress --json
-   ```
+3. **Mark work in progress**: use `save_issue` with state "In Progress" and assignee "me"
 
 ## Step 2: Scope Check
 
@@ -40,12 +34,9 @@ Verify the work fits in the current session:
 - Multiple unrelated changes
 - Would require extensive exploration
 
-If too large, create subtasks:
-```bash
-bd create "Subtask: <description>" --parent <bd-id> -t task --json
-```
+If too large, create sub-issues: use `save_issue` ("Subtask: <description>", `task` label) with `parentId` set to the current issue.
 
-Then implement subtasks one at a time.
+Then implement sub-issues one at a time.
 
 ## Step 3: Implementation Order
 
@@ -131,8 +122,8 @@ For large features, update the ADR checkbox:
 ```markdown
 ## Implementation Phases
 
-- [x] **Phase 1: Core parsing** - bd-42
-- [ ] **Phase 2: Type checking** - bd-43
+- [x] **Phase 1: Core parsing** - RUE-42
+- [ ] **Phase 2: Type checking** - RUE-43
 ```
 
 ## Step 6: Review and Commit
