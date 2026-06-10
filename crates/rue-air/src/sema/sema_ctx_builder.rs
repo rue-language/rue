@@ -205,6 +205,47 @@ impl<'a> Sema<'a> {
                     },
                 );
             }
+
+            // Associated functions (e.g. `String::new`, `String::with_capacity`) are
+            // resolved by inference through the same `(StructId, name)` method map (see
+            // `InstData::AssocFnCall` in inference/generate.rs). Like methods, they live
+            // only in the rue-builtins registry, so without registering them an untyped
+            // literal arg (`String::with_capacity(8)`) isn't constrained to the param's
+            // `u64` and a result feeding a literal resolves to `<error>`. (RUE-95 sibling)
+            for assoc_fn in builtin.associated_fns {
+                let Some(fn_spur) = self.interner.get(assoc_fn.name) else {
+                    continue; // never referenced in this program
+                };
+                let param_types = assoc_fn
+                    .params
+                    .iter()
+                    .map(|p| {
+                        let ty = match p.ty {
+                            BuiltinParamType::U64 => Type::U64,
+                            BuiltinParamType::U8 => Type::U8,
+                            BuiltinParamType::Bool => Type::BOOL,
+                            BuiltinParamType::SelfType => struct_type,
+                        };
+                        self.type_to_infer_type(ty)
+                    })
+                    .collect();
+                let return_ty = match assoc_fn.return_ty {
+                    BuiltinReturnType::Unit => Type::UNIT,
+                    BuiltinReturnType::U64 => Type::U64,
+                    BuiltinReturnType::U8 => Type::U8,
+                    BuiltinReturnType::Bool => Type::BOOL,
+                    BuiltinReturnType::SelfType => struct_type,
+                };
+                method_sigs.insert(
+                    (struct_id, fn_spur),
+                    MethodSig {
+                        struct_type,
+                        has_self: false,
+                        param_types,
+                        return_type: self.type_to_infer_type(return_ty),
+                    },
+                );
+            }
         }
     }
 }
