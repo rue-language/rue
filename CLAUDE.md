@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-**Note**: This project uses [bd (beads)](https://github.com/steveyegge/beads) for issue tracking. Use `bd` commands instead of markdown TODOs. See the Issue Tracking section below for workflow details.
+**Note**: This project uses [Linear](https://linear.app) (team: **Rue**) for issue tracking. Use the Linear MCP tools instead of markdown TODOs. See the Issue Tracking section below for workflow details.
 
 ## Project Overview
 
@@ -774,82 +774,44 @@ println!("Lexed {} tokens from {} bytes", tokens.len(), source.len());
 4. **Metrics in events**: Include computed metrics (instruction counts, sizes) in events
 5. **Zero-cost when off**: Tracing has no overhead when no subscriber is active
 
-## Issue Tracking with bd (beads)
+## Issue Tracking with Linear
 
-**IMPORTANT**: This project uses **bd (beads)** for ALL issue tracking. Do NOT use markdown TODOs, task lists, or other tracking methods.
+**IMPORTANT**: This project uses **Linear** for ALL issue tracking, in the **Rue** team. Do NOT use markdown TODOs, task lists, or other tracking methods.
 
-### Why bd?
+### Access
 
-- Dependency-aware: Track blockers and relationships between issues
-- VCS-friendly: Auto-syncs to JSONL for version control
-- Agent-optimized: JSON output, ready work detection, discovered-from links
-- Prevents duplicate tracking systems and confusion
+In Claude Code, use the Linear MCP tools (`list_issues`, `get_issue`, `save_issue`, `save_comment`, `list_my_issues`, etc.). Issues are identified as `RUE-NN`.
 
 ### Quick Start
 
-```bash
-# Find ready work
-bd ready --json
+- **Find ready work**: list issues in the Rue team with state `Todo` or `Backlog`, ordered by priority; skip issues blocked by open issues
+- **Create an issue**: `save_issue` with `team: "Rue"`, a clear title, and a Markdown description
+- **Claim**: `save_issue` with `state: "In Progress"` and `assignee: "me"`
+- **Complete**: `save_issue` with `state: "Done"`
 
-# Create new issues
-bd create "Issue title" -t bug|feature|task -p 0-4 --json
-bd create "Issue title" -p 1 --deps discovered-from:bd-123 --json
-bd create "Subtask" --parent <epic-id> --json  # Hierarchical subtask
+### Conventions
 
-# Claim and update
-bd update bd-42 --status in_progress --json
-
-# Complete work
-bd close bd-42 --reason "Completed" --json
-```
-
-### Issue Types
-
-- `bug` - Something broken
-- `feature` - New functionality
-- `task` - Work item (tests, docs, refactoring)
-- `epic` - Large feature with subtasks
-- `chore` - Maintenance (dependencies, tooling)
-
-### Priorities
-
-- `0` - Critical (security, data loss, broken builds)
-- `1` - High (major features, important bugs)
-- `2` - Medium (default, nice-to-have)
-- `3` - Low (polish, optimization)
-- `4` - Backlog (future ideas)
+- **Multi-phase features**: create a parent issue (the "epic") and sub-issues per phase via `parentId`; link the ADR in the description
+- **Discovered work**: when you find new work mid-task, create a new issue with `relatedTo` (or `blockedBy` if it's a true dependency) pointing at the issue you were working on
+- **Priorities (Linear semantics)**: `1` Urgent (security, broken builds), `2` High (major features, important bugs), `3` Medium (default), `4` Low (polish, backlog ideas)
+- **Labels**: use `bug`, `feature`, `task`, `chore` to mirror issue types
 
 ### Workflow for AI Agents
 
-1. **Check ready work**: `bd ready` shows unblocked issues
-2. **Claim your task**: `bd update <id> --status in_progress`
-3. **Describe the working commit**: `jj describe -m "WIP: bd-42 - short description"`
+1. **Check ready work**: list `Todo`/`Backlog` issues in the Rue team
+2. **Claim your task**: set state to `In Progress`
+3. **Describe the working commit**: `jj describe -m "WIP: RUE-42 - short description"`
    - This makes it easy to see what's being worked on in each workspace
    - Will be overwritten with the final commit message when complete
 4. **Work on it**: Implement, test, document
-5. **Discover new work?** Create linked issue:
-   - `bd create "Found bug" -p 1 --deps discovered-from:<parent-id>`
-6. **Complete**: `bd close <id> --reason "Done"`
-7. **Commit together**: Always commit the `.beads/issues.jsonl` file together with the code changes so issue state stays in sync with code state
-
-### Auto-Sync
-
-bd automatically syncs with version control:
-- Exports to `.beads/issues.jsonl` after changes (5s debounce)
-- Imports from JSONL when newer (e.g., after pulling changes)
-- No manual export/import needed!
-
-### CLI Help
-
-Run `bd <command> --help` to see all available flags for any command.
+5. **Discover new work?** Create a linked issue (`relatedTo` the current one)
+6. **Complete**: set state to `Done`, and reference the issue in the commit message (e.g., "Fixes RUE-42")
 
 ### Important Rules
 
-- ✅ Use bd for ALL task tracking
-- ✅ Always use `--json` flag for programmatic use
-- ✅ Link discovered work with `discovered-from` dependencies
-- ✅ Check `bd ready` before asking "what should I work on?"
-- ✅ Run `bd <cmd> --help` to discover available flags
+- ✅ Use Linear for ALL task tracking
+- ✅ Link discovered work to the issue it came from
+- ✅ Reference issue IDs (RUE-NN) in commit messages
 - ❌ Do NOT create markdown TODO lists
-- ❌ Do NOT use external issue trackers
+- ❌ Do NOT use other issue trackers
 - ❌ Do NOT duplicate tracking systems
