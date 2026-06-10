@@ -1,0 +1,33 @@
+# Linker / cross-compile hygiene regression tests.
+
+[section]
+id = "cli.linker"
+name = "Linker hygiene"
+description = "Cross-compile and link-path behavior, including diagnostic cleanliness."
+
+# RUE-86 regression: the aarch64-macos link path used to emit ~269 raw
+# `eprintln!("DEBUG: ...")` lines to stderr on every compile. They are now
+# tracing::trace! and must never appear on a normal compile.
+#
+# RUE-86 regression: compiling for aarch64-macos must not emit raw `DEBUG:`
+# eprintln spew to stderr (it used to print ~270 lines from link_macho and
+# MachOBuilder).
+#
+# Platform behavior differs, so the case is written as a *native macOS success*
+# case and xfailed on the linux hosts:
+#   - macOS: aarch64-macos is the NATIVE target — it compiles & links cleanly,
+#     so this runs as a real regression test (DEBUG guard + successful compile).
+#   - linux (x86-64 / aarch64): aarch64-macos can't cross-link yet (RUE-85), so
+#     the compile fails. Marked known_bug RUE-85 on those platforms (xfail).
+#     When RUE-85 is fixed, drop `known_bug_on` and it becomes a real test on
+#     linux too.
+[[case]]
+name = "aarch64_macos_link_no_debug_spew"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 { 0 }
+""" }]
+args = ["main.rue", "--target", "aarch64-macos", "-o", "prog"]
+compile_only = true
+compile_stderr_not_contains = ["DEBUG"]
+known_bug = "RUE-85"
+known_bug_on = ["x86-64-linux", "aarch64-linux"]
