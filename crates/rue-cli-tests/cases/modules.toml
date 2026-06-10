@@ -1,0 +1,166 @@
+# Module resolution from disk, through the real driver.
+#
+# The spec suite's disk-based import tests never CALL anything from the
+# imported module (and all usage tests pass files on the CLI), which is why
+# the breakage below went unnoticed. See RUE-14.
+
+[section]
+id = "cli.modules"
+name = "Module imports from disk"
+description = "@import resolution and loading as a user experiences it."
+
+# Resolution alone works: an adjacent module can be found on disk.
+[[case]]
+name = "import_resolves_adjacent_file"
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    let utils = @import("utils");
+    0
+}
+""" },
+    { path = "utils.rue", source = """
+pub fn triple(x: i32) -> i32 {
+    x * 3
+}
+""" },
+]
+exit_code = 0
+
+# ...but actually CALLING into the imported module fails: the resolved file
+# is never loaded/compiled. "undefined function 'triple'" (RUE-14).
+[[case]]
+name = "import_call_through_local_let"
+known_bug = "RUE-14"
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    let utils = @import("utils");
+    @dbg(utils.triple(14));
+    0
+}
+""" },
+    { path = "utils.rue", source = """
+pub fn triple(x: i32) -> i32 {
+    x * 3
+}
+""" },
+]
+stdout = "42\n"
+
+# Top-level `const utils = @import("utils")` — the idiomatic form from
+# ADR-0026 — fails outright with "cannot find module" (RUE-14).
+[[case]]
+name = "import_call_through_top_level_const"
+known_bug = "RUE-14"
+files = [
+    { path = "main.rue", source = """
+const utils = @import("utils");
+
+fn main() -> i32 {
+    @dbg(utils.triple(14));
+    0
+}
+""" },
+    { path = "utils.rue", source = """
+pub fn triple(x: i32) -> i32 {
+    x * 3
+}
+""" },
+]
+stdout = "42\n"
+
+# The `.rue`-suffixed form resolves from disk (when the module is not used).
+[[case]]
+name = "import_with_rue_extension"
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    let utils = @import("utils.rue");
+    0
+}
+""" },
+    { path = "utils.rue", source = """
+pub fn triple(x: i32) -> i32 {
+    x * 3
+}
+""" },
+]
+exit_code = 0
+
+# Directory module: _utils.rue alongside a utils/ directory (ADR-0026).
+[[case]]
+name = "import_directory_module_call"
+known_bug = "RUE-14"
+files = [
+    { path = "main.rue", source = """
+const utils = @import("utils");
+
+fn main() -> i32 {
+    @dbg(utils.triple(14));
+    0
+}
+""" },
+    { path = "_utils.rue", source = """
+pub fn triple(x: i32) -> i32 {
+    x * 3
+}
+""" },
+    { path = "utils/helpers.rue", source = """
+pub fn unused() -> i32 {
+    0
+}
+""" },
+]
+stdout = "42\n"
+
+# The standard library via a std/ directory adjacent to the source.
+[[case]]
+name = "import_std_adjacent_dir"
+known_bug = "RUE-14"
+files = [
+    { path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    @dbg(std.math.abs(-5));
+    0
+}
+""" },
+    { path = "std/_std.rue", source = """
+pub const math = @import("std/math.rue");
+""" },
+    { path = "std/math.rue", source = """
+pub fn abs(x: i32) -> i32 {
+    if x < 0 { 0 - x } else { x }
+}
+""" },
+]
+stdout = "5\n"
+
+# The standard library via RUE_STD_PATH pointing at the repo's real std/.
+[[case]]
+name = "import_std_via_env_var"
+known_bug = "RUE-14"
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    @dbg(std.math.abs(-5));
+    0
+}
+""" }]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+stdout = "5\n"
+
+# A genuinely missing module should be a clean error (works today).
+[[case]]
+name = "import_missing_module_is_clean_error"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let nope = @import("does_not_exist");
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0704", "does_not_exist"]

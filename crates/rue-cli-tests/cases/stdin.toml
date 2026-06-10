@@ -1,0 +1,73 @@
+# Programs that read stdin: the @read_line / @parse_i32 loop.
+
+[section]
+id = "cli.stdin"
+name = "Standard input interaction"
+description = "Piping input to compiled programs; current panic behavior on bad input."
+
+[[case]]
+name = "read_and_echo_number"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let line = @read_line();
+    let n = @parse_i32(line);
+    @dbg(n);
+    0
+}
+""" }]
+stdin = "42\n"
+stdout = "42\n"
+
+[[case]]
+name = "guessing_loop_scripted"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let secret = 73;
+    loop {
+        let guess = @parse_i32(@read_line());
+        if guess < secret {
+            @dbg("Too low!");
+        } else if guess > secret {
+            @dbg("Too high!");
+        } else {
+            @dbg("You got it!");
+            break;
+        }
+    }
+    0
+}
+""" }]
+stdin = "50\n90\n73\n"
+stdout = """
+Too low!
+Too high!
+You got it!
+"""
+
+# Current behavior: invalid input is an unrecoverable runtime panic.
+# When error handling lands (RUE-6), these tests should change to assert
+# the recoverable behavior instead.
+[[case]]
+name = "parse_error_panics_with_exit_101"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let n = @parse_i32(@read_line());
+    @dbg(n);
+    0
+}
+""" }]
+stdin = "banana\n"
+exit_code = 101
+runtime_error_contains = ["parse error"]
+
+[[case]]
+name = "read_line_at_eof_panics_with_exit_101"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let line = @read_line();
+    0
+}
+""" }]
+stdin = ""
+exit_code = 101
+runtime_error_contains = ["unexpected end of input"]
