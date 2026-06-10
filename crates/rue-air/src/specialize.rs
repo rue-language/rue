@@ -12,8 +12,8 @@
 //! The specialization pass runs after semantic analysis but before CFG building.
 //! It transforms the AIR in-place and adds new specialized functions to the output.
 
-use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 
 use lasso::{Spur, ThreadedRodeo};
 use rue_error::{CompileError, CompileResult, ErrorKind};
