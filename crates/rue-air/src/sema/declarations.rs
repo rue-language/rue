@@ -75,7 +75,7 @@ impl<'a> Sema<'a> {
             .collect();
 
         // Build method signatures with InferType for constraint generation
-        let method_sigs: HashMap<(StructId, Spur), MethodSig> = self
+        let mut method_sigs: HashMap<(StructId, Spur), MethodSig> = self
             .methods
             .iter()
             .map(|((struct_id, method_name), info)| {
@@ -95,6 +95,12 @@ impl<'a> Sema<'a> {
                 )
             })
             .collect();
+
+        // Register builtin-type method signatures (String::len, etc.) so inference
+        // can resolve their return types. Without this, a builtin method-call result
+        // used in a binop (e.g. `s.len() == 2`) was left unconstrained and resolved
+        // to `<error>`, poisoning the other operand's literal-range check. (RUE-95)
+        self.register_builtin_method_sigs(&mut method_sigs);
 
         InferenceContext {
             func_sigs,
