@@ -12,7 +12,7 @@ Rebase the current change on trunk and automatically resolve any conflicts.
 ### 1. Rebase on trunk
 
 ```bash
-jj rebase -d trunk
+jj rebase -d 'trunk()'
 ```
 
 ### 2. Check for conflicts

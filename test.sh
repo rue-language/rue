@@ -20,8 +20,9 @@ echo "Running unit tests..."
     //crates/rue-linker:rue-linker-test \
     //crates/rue-compiler:rue-compiler-test
 
-# Get the path to the rue binary (this also builds it if needed)
-RUE_BINARY="$(./buck2 build //crates/rue:rue --show-output | tail -1 | awk '{print $2}')"
+# Get the path to the rue binary (this also builds it if needed).
+# scripts/rue-bin resolves it to a stable absolute path.
+RUE_BINARY="$(./scripts/rue-bin)"
 
 # Run spec tests (buck2 run will build rue-spec if needed)
 echo "Running spec tests..."

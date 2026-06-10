@@ -4,6 +4,26 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Note**: This project uses [Linear](https://linear.app) (team: **Rue**) for issue tracking. Use the Linear MCP tools instead of markdown TODOs. See the Issue Tracking section below for workflow details.
 
+## Quickstart
+
+The 8 commands that cover ~90% of work here (all runnable from anywhere in the repo):
+
+```bash
+scripts/rue build                    # build the compiler -> refreshes bin/rue symlink
+scripts/rue exec prog.rue            # compile prog.rue to a temp file AND run it (quick check)
+RUE="$(scripts/rue-bin)"; "$RUE" a.rue b.rue -o out   # drive the real CLI (modules, multi-file)
+scripts/rue test [pattern]           # full suite (= ./test.sh): unit + spec + UI + CLI + traceability
+scripts/rue quick                    # unit tests only (~2-5s, fast inner loop)
+scripts/rue spec 4.2                 # run spec tests matching a pattern
+scripts/rue cli abi                  # run CLI integration tests matching a pattern
+scripts/rue fmt                      # format (= ./fmt.sh) before committing
+```
+
+Key rules (details in the sections below):
+- **Version control is `jj`, not git**, and this is a **fork** — never commit on `trunk`; work on a change and `jj git push -c @-` to PR a feature branch upstream. See [Version Control](#version-control).
+- **Issue tracking is Linear** (team Rue, `RUE-NN`). See [Issue Tracking](#issue-tracking-with-linear).
+- To get the compiler binary, use `scripts/rue-bin` (prints an absolute path; the old `buck2 ... --show-output | awk` one-liner returns a *relative* path that breaks when cwd changes).
+
 ## Project Overview
 
 Rue is a systems programming language aiming for memory safety without garbage collection, with higher-level ergonomics than Rust/Zig. Currently in early development with Rust-like syntax.
@@ -663,6 +683,34 @@ Example: If adding a new comparison instruction variant (e.g., 64-bit compare):
 - **Working copy is a commit**: Your uncommitted changes are already tracked
 - **Use `jj describe`** to update the current commit message
 - **Use `jj new`** to start a new change on top of current one
+
+### Fork Workflow (IMPORTANT)
+
+This is a **fork** setup. There are two git remotes:
+
+- `upstream` = `rue-language/rue` — the canonical repo, the source of truth. You **cannot** push here; you open PRs into it.
+- `origin` = `steveklabnik/rue` — your fork. You push feature branches here, then PR them upstream.
+
+**Rules:**
+
+1. **Never put your own commits on `origin/trunk`.** `origin/trunk` should only ever mirror `upstream/trunk`. Committing on `trunk` and PRing `trunk` causes hash-rewrite divergence every time upstream rebase/squash-merges.
+2. **Work on a feature change**, then push it as a branch and PR it:
+   ```bash
+   jj rebase -d 'trunk()'          # rebase onto upstream's canonical trunk (a revset, not a bookmark)
+   jj git push -c @-               # pushes as steveklabnik/push-<changeid> (see git_push_bookmark template)
+   # then open a PR from that branch -> upstream/trunk using the URL the push prints
+   ```
+3. **`trunk()` is a revset alias = `trunk@upstream`** — always means upstream's latest, regardless of local bookmark state. Prefer `trunk()` over the bare `trunk` bookmark in rebase/log commands.
+4. **After a PR merges**, just `jj git fetch` (configured to pull both remotes) and your base updates. If upstream rebase-merged (rewriting hashes), the old fork-side copies show as "divergent" — that's cosmetic; `jj abandon` the orphaned old-hash chain to tidy up.
+
+**Required repo config** (machine-local; set on a fresh clone — jj does not read committed config):
+
+```bash
+jj config set --repo 'revset-aliases."trunk()"' 'trunk@upstream'   # base/immutability = canonical repo
+jj config set --repo git.fetch '["origin", "upstream"]'            # always see both remotes
+```
+
+Without these, `jj git fetch` only pulls `origin` (you won't see upstream merges), and `trunk()`/immutability anchor to your fork instead of upstream.
 
 ### Commit Messages
 
