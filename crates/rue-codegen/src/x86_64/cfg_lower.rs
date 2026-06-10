@@ -329,117 +329,10 @@ impl<'a> CfgLower<'a> {
         LabelId::new(BLOCK_LABEL_BASE + block_id.as_u32())
     }
 
-    /// Get or compute the slot vregs for a multi-slot aggregate value
-    /// (struct, builtin String, or fixed-size array).
-    ///
-    /// This handles different sources of aggregate values:
-    /// - StructInit: use the field values directly
-    /// - Load: load slot values from consecutive stack slots
-    /// - Param: use parameter registers/slots
-    /// - PlaceRead (static field projections): load from the field's slots
-    /// - BlockParam/Call/ArrayInit: use cached struct_slot_vregs
+    /// Get or compute the slot vregs for a multi-slot aggregate value.
+    /// Single shared implementation — see crate::agg_slots. (RUE-121)
     fn get_or_compute_field_vregs(&mut self, value: CfgValue) -> Option<Vec<VReg>> {
-        // Check cache first
-        if let Some(vregs) = self.struct_slot_vregs.get(&value).cloned() {
-            return Some(vregs);
-        }
-
-        let inst = self.ctx.cfg.get_inst(value);
-        let ty = inst.ty;
-        if !matches!(ty.kind(), TypeKind::Struct(_) | TypeKind::Array(_)) {
-            return None;
-        }
-
-        match &inst.data.clone() {
-            CfgInstData::StructInit {
-                fields_start,
-                fields_len,
-                ..
-            } => {
-                let fields = self.ctx.cfg.get_extra(*fields_start, *fields_len);
-                Some(fields.iter().map(|f| self.get_vreg(*f)).collect())
-            }
-            CfgInstData::Load { slot } => {
-                // Load slot values from consecutive stack slots
-                let slot_count = self.ctx.type_slot_count(ty);
-                let mut vregs = Vec::with_capacity(slot_count as usize);
-                for i in 0..slot_count {
-                    let vreg = self.mir.alloc_vreg();
-                    let offset = self.ctx.local_offset(slot + i);
-                    self.mir.push(X86Inst::MovRM {
-                        dst: Operand::Virtual(vreg),
-                        base: Reg::Rbp,
-                        offset,
-                    });
-                    vregs.push(vreg);
-                }
-                Some(vregs)
-            }
-            CfgInstData::Param { index } => {
-                // Get slot values from parameter area
-                let slot_count = self.ctx.type_slot_count(ty);
-                let mut vregs = Vec::with_capacity(slot_count as usize);
-                for i in 0..slot_count {
-                    let vreg = self.mir.alloc_vreg();
-                    let param_slot = self.ctx.num_locals + index + i;
-                    let offset = self.ctx.local_offset(param_slot);
-                    self.mir.push(X86Inst::MovRM {
-                        dst: Operand::Virtual(vreg),
-                        base: Reg::Rbp,
-                        offset,
-                    });
-                    vregs.push(vreg);
-                }
-                Some(vregs)
-            }
-            CfgInstData::PlaceRead { place } => {
-                // A multi-slot aggregate (struct, builtin String, or array) read from
-                // a place — e.g. `let s2 = h.s;`. The base place-read lowering only
-                // materializes the first slot into `dst`; here we materialize all
-                // `slot_count` slots so consumers (struct equality, Alloc/Store of
-                // a fat pointer, etc.) see the full value. Only static field
-                // projections are handled — dynamic array indexing and inout params
-                // fall through to None (preserving prior behavior). (RUE-22/63/94)
-                let projections = self.ctx.cfg.get_place_projections(place).to_vec();
-                let mut static_slot_offset: u32 = 0;
-                for proj in &projections {
-                    match proj {
-                        Projection::Field {
-                            struct_id,
-                            field_index,
-                        } => {
-                            static_slot_offset +=
-                                self.ctx.struct_field_slot_offset(*struct_id, *field_index);
-                        }
-                        Projection::Index { .. } => return None,
-                    }
-                }
-                let base_slot = match place.base {
-                    PlaceBase::Local(slot) => slot + static_slot_offset,
-                    PlaceBase::Param(param_slot) => {
-                        if self.ctx.cfg.is_param_inout(param_slot) {
-                            return None;
-                        }
-                        self.ctx.num_locals + param_slot + static_slot_offset
-                    }
-                };
-                let slot_count = self.ctx.type_slot_count(ty);
-                let mut vregs = Vec::with_capacity(slot_count as usize);
-                for i in 0..slot_count {
-                    let vreg = self.mir.alloc_vreg();
-                    let offset = self.ctx.local_offset(base_slot + i);
-                    self.mir.push(X86Inst::MovRM {
-                        dst: Operand::Virtual(vreg),
-                        base: Reg::Rbp,
-                        offset,
-                    });
-                    vregs.push(vreg);
-                }
-                Some(vregs)
-            }
-            // BlockParam and Call should already have field vregs in cache
-            _ => None,
-        }
+        crate::agg_slots::get_or_compute_field_vregs(self, value)
     }
 
     /// Copy a struct value's field vregs to a block parameter's field vregs.
@@ -4372,6 +4265,29 @@ impl<'a> CfgLower<'a> {
             .get(&value)
             .copied()
             .expect("value should have been lowered")
+    }
+}
+
+impl crate::agg_slots::SlotBackend for CfgLower<'_> {
+    fn ctx(&self) -> &crate::cfg_lower::CfgLowerContext<'_> {
+        &self.ctx
+    }
+    fn slot_cache(&mut self) -> &mut std::collections::HashMap<CfgValue, Vec<VReg>> {
+        &mut self.struct_slot_vregs
+    }
+    fn alloc_vreg(&mut self) -> VReg {
+        self.mir.alloc_vreg()
+    }
+    fn get_vreg(&mut self, value: CfgValue) -> VReg {
+        CfgLower::get_vreg(self, value)
+    }
+    fn emit_load_slot(&mut self, dst: VReg, slot: u32) {
+        let offset = self.ctx.local_offset(slot);
+        self.mir.push(X86Inst::MovRM {
+            dst: Operand::Virtual(dst),
+            base: Reg::Rbp,
+            offset,
+        });
     }
 }
 
