@@ -40,3 +40,11 @@ echo "Running UI tests..."
 RUE_BINARY="$RUE_BINARY" \
 RUE_UI_CASES="crates/rue-ui-tests/cases" \
 ./buck2 run //crates/rue-ui-tests:rue-ui-tests -- --quiet "$@"
+
+# Run CLI integration tests (end-to-end through the real driver: files on
+# disk, relative paths, stdin, exit codes; catches ICEs and driver-only bugs)
+echo "Running CLI integration tests..."
+RUE_BINARY="$RUE_BINARY" \
+RUE_CLI_CASES="crates/rue-cli-tests/cases" \
+RUE_STD_DIR="std" \
+./buck2 run //crates/rue-cli-tests:rue-cli-tests -- --quiet "$@"

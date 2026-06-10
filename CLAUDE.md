@@ -273,6 +273,25 @@ no_warnings = true
 - **Spec tests** (`crates/rue-spec/cases/`): Language semantics defined in the specification. These tests have `spec = [...]` references linking to spec paragraphs.
 - **UI tests** (`crates/rue-ui-tests/cases/`): Compiler quality-of-life features not in the spec (warnings, diagnostics, CLI behavior).
 
+### CLI Integration Tests
+
+CLI integration tests (`crates/rue-cli-tests/cases/`) exercise the compiler **the way a user does**: the real `rue` binary invoked on real files in a temp directory with relative paths, env vars, and stdin piped to the compiled program. They catch driver-only bugs the spec harness can't see (module resolution from disk, ABI miscompilations, ICEs, CLI argument handling).
+
+```bash
+# Run all CLI integration tests
+./buck2 run //crates/rue-cli-tests:rue-cli-tests
+
+# Filter by pattern
+./buck2 run //crates/rue-cli-tests:rue-cli-tests -- "abi"
+```
+
+Key conventions (see the doc comment in `crates/rue-cli-tests/src/main.rs` for the full case format):
+
+- Each case lists `files` written to disk; the default invocation is `rue <first file> -o prog` with the temp dir as cwd
+- Any compiler panic is reported as an **INTERNAL COMPILER ERROR** — a distinct failure class
+- `known_bug = "RUE-NN"` marks an expected failure (xfail) referencing a Linear issue. The case still runs; if it unexpectedly PASSES, the suite fails and tells you to remove the marker — converting it into a regression test. **When fixing a bug, find and un-mark its cases.**
+- Prefer adding a CLI case (not just a spec test) for any bug that involves the driver, the ABI, multiple files, or runtime I/O
+
 ### Specification Tests
 
 The specification test system provides traceability between the language specification and tests.

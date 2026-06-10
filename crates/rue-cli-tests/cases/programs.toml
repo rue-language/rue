@@ -1,0 +1,207 @@
+# Whole "real program" tests from the 2026-06-09 dogfooding session.
+# These are deliberately program-shaped rather than feature-shaped: they
+# exercise combinations the spec suite's focused cases don't.
+
+[section]
+id = "cli.programs"
+name = "Real programs"
+description = "Small but complete programs exercising feature combinations."
+
+[[case]]
+name = "account_with_inout_free_function"
+files = [{ path = "main.rue", source = """
+struct Account {
+    balance: i64,
+
+    fn deposit(self, amount: i64) -> Account {
+        Account { balance: self.balance + amount }
+    }
+}
+
+fn deposit_free(inout acct: Account, amount: i64) {
+    acct.balance = acct.balance + amount;
+}
+
+fn main() -> i32 {
+    let mut acct = Account { balance: 100 };
+    acct = acct.deposit(50);
+    deposit_free(inout acct, 25);
+    @dbg(acct.balance);
+    0
+}
+""" }]
+stdout = "175\n"
+
+[[case]]
+name = "enum_match_exhaustive"
+files = [{ path = "main.rue", source = """
+enum Direction {
+    North,
+    South,
+    East,
+    West,
+}
+
+fn steps(d: Direction) -> i32 {
+    match d {
+        Direction::North => 1,
+        Direction::South => 2,
+        Direction::East => 3,
+        Direction::West => 4,
+    }
+}
+
+fn main() -> i32 {
+    @dbg(steps(Direction::East));
+    @dbg(steps(Direction::North));
+    0
+}
+""" }]
+stdout = """
+3
+1
+"""
+
+[[case]]
+name = "comptime_generic_pair"
+files = [{ path = "main.rue", source = """
+fn Pair(comptime T: type) -> type {
+    struct {
+        first: T,
+        second: T,
+
+        fn swapped(self) -> Self {
+            Self { first: self.second, second: self.first }
+        }
+    }
+}
+
+fn main() -> i32 {
+    let P = Pair(i32);
+    let p: P = P { first: 1, second: 2 };
+    let q = p.swapped();
+    @dbg(q.first);
+    @dbg(q.second);
+    0
+}
+""" }]
+stdout = """
+2
+1
+"""
+
+[[case]]
+name = "string_builder_push_str"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut s = String::new();
+    s.push_str("Hello");
+    s.push_str(", ");
+    s.push_str("Rue!");
+    @dbg(s.len());
+    @dbg(s);
+    0
+}
+""" }]
+stdout = """
+11
+Hello, Rue!
+"""
+
+# @dbg moves non-Copy values, so print-then-use is a compile error (RUE-21).
+[[case]]
+name = "dbg_string_then_use"
+known_bug = "RUE-21"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut s = String::new();
+    s.push_str("Hello");
+    @dbg(s);
+    @dbg(s.len());
+    0
+}
+""" }]
+stdout = """
+Hello
+5
+"""
+
+[[case]]
+name = "string_equality_branches"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let answer = @read_line();
+    if answer == "yes" {
+        @dbg("affirmative");
+    } else {
+        @dbg("negative");
+    }
+    0
+}
+""" }]
+stdin = "yes"
+stdout = "affirmative\n"
+
+[[case]]
+name = "selection_sort_in_place"
+files = [{ path = "main.rue", source = """
+fn sort(inout arr: [i32; 5]) {
+    let mut i: u32 = 0;
+    while i < 5 {
+        let mut min = i;
+        let mut j = i + 1;
+        while j < 5 {
+            if arr[j] < arr[min] {
+                min = j;
+            }
+            j = j + 1;
+        }
+        let tmp = arr[i];
+        arr[i] = arr[min];
+        arr[min] = tmp;
+        i = i + 1;
+    }
+}
+
+fn main() -> i32 {
+    let mut nums = [42, 7, 19, 3, 25];
+    sort(inout nums);
+    let mut i: u32 = 0;
+    while i < 5 {
+        @dbg(nums[i]);
+        i = i + 1;
+    }
+    0
+}
+""" }]
+stdout = """
+3
+7
+19
+25
+42
+"""
+
+[[case]]
+name = "collatz_steps"
+files = [{ path = "main.rue", source = """
+fn collatz_steps(start: i32) -> i32 {
+    let mut n = start;
+    let mut steps = 0;
+    while n != 1 {
+        if n % 2 == 0 {
+            n = n / 2;
+        } else {
+            n = 3 * n + 1;
+        }
+        steps = steps + 1;
+    }
+    steps
+}
+
+fn main() -> i32 {
+    @dbg(collatz_steps(27));
+    0
+}
+""" }]
+stdout = "111\n"

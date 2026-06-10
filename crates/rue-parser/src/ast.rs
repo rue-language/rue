@@ -1338,4 +1338,3 @@ fn fmt_stmt(f: &mut fmt::Formatter<'_>, stmt: &Statement, level: usize) -> fmt::
         }
     }
 }
-
