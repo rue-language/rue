@@ -552,15 +552,29 @@ pub enum Aarch64Inst {
     /// `asr dst, src, #imm` - Arithmetic shift right by immediate (64-bit).
     Asr64Imm { dst: Operand, src: Operand, imm: u8 },
 
-    /// `sdiv dst, src1, src2` - Signed divide.
+    /// `sdiv dst, src1, src2` - Signed divide (32-bit, W registers).
     SdivRR {
         dst: Operand,
         src1: Operand,
         src2: Operand,
     },
 
-    /// `udiv dst, src1, src2` - Unsigned divide.
+    /// `udiv dst, src1, src2` - Unsigned divide (32-bit, W registers).
     UdivRR {
+        dst: Operand,
+        src1: Operand,
+        src2: Operand,
+    },
+
+    /// `sdiv dst, src1, src2` - Signed divide (64-bit, X registers).
+    Sdiv64RR {
+        dst: Operand,
+        src1: Operand,
+        src2: Operand,
+    },
+
+    /// `udiv dst, src1, src2` - Unsigned divide (64-bit, X registers).
+    Udiv64RR {
         dst: Operand,
         src1: Operand,
         src2: Operand,
@@ -569,6 +583,14 @@ pub enum Aarch64Inst {
     /// `msub dst, src1, src2, src3` - Multiply-subtract: dst = src3 - (src1 * src2)
     /// Used for computing remainder: rem = dividend - (quotient * divisor)
     Msub {
+        dst: Operand,
+        src1: Operand,
+        src2: Operand,
+        src3: Operand,
+    },
+
+    /// `msub dst, src1, src2, src3` - Multiply-subtract (64-bit, X registers).
+    Msub64 {
         dst: Operand,
         src1: Operand,
         src2: Operand,
@@ -886,7 +908,19 @@ impl fmt::Display for Aarch64Inst {
             Aarch64Inst::UdivRR { dst, src1, src2 } => {
                 write!(f, "udiv {}, {}, {}", dst, src1, src2)
             }
+            Aarch64Inst::Sdiv64RR { dst, src1, src2 } => {
+                write!(f, "sdiv {}, {}, {}", dst, src1, src2)
+            }
+            Aarch64Inst::Udiv64RR { dst, src1, src2 } => {
+                write!(f, "udiv {}, {}, {}", dst, src1, src2)
+            }
             Aarch64Inst::Msub {
+                dst,
+                src1,
+                src2,
+                src3,
+            } => write!(f, "msub {}, {}, {}, {}", dst, src1, src2, src3),
+            Aarch64Inst::Msub64 {
                 dst,
                 src1,
                 src2,

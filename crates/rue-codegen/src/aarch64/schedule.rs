@@ -123,10 +123,14 @@ fn get_latency(inst: &Aarch64Inst) -> u32 {
         | Aarch64Inst::UmullRR { .. }
         | Aarch64Inst::SmulhRR { .. }
         | Aarch64Inst::UmulhRR { .. }
-        | Aarch64Inst::Msub { .. } => 3,
+        | Aarch64Inst::Msub { .. }
+        | Aarch64Inst::Msub64 { .. } => 3,
 
         // Division: 12-20 cycles (highly variable)
-        Aarch64Inst::SdivRR { .. } | Aarch64Inst::UdivRR { .. } => 12,
+        Aarch64Inst::SdivRR { .. }
+        | Aarch64Inst::UdivRR { .. }
+        | Aarch64Inst::Sdiv64RR { .. }
+        | Aarch64Inst::Udiv64RR { .. } => 12,
 
         // Logical operations: 1 cycle
         Aarch64Inst::AndRR { .. }
@@ -257,6 +261,8 @@ fn regs_read(inst: &Aarch64Inst) -> Vec<Reg> {
         | Aarch64Inst::UmulhRR { src1, src2, .. }
         | Aarch64Inst::SdivRR { src1, src2, .. }
         | Aarch64Inst::UdivRR { src1, src2, .. }
+        | Aarch64Inst::Sdiv64RR { src1, src2, .. }
+        | Aarch64Inst::Udiv64RR { src1, src2, .. }
         | Aarch64Inst::AndRR { src1, src2, .. }
         | Aarch64Inst::OrrRR { src1, src2, .. }
         | Aarch64Inst::EorRR { src1, src2, .. }
@@ -281,6 +287,9 @@ fn regs_read(inst: &Aarch64Inst) -> Vec<Reg> {
             add_if_phys(src, &mut result);
         }
         Aarch64Inst::Msub {
+            src1, src2, src3, ..
+        }
+        | Aarch64Inst::Msub64 {
             src1, src2, src3, ..
         } => {
             add_if_phys(src1, &mut result);
@@ -357,7 +366,10 @@ fn regs_written(inst: &Aarch64Inst) -> Vec<Reg> {
         | Aarch64Inst::UmulhRR { dst, .. }
         | Aarch64Inst::SdivRR { dst, .. }
         | Aarch64Inst::UdivRR { dst, .. }
+        | Aarch64Inst::Sdiv64RR { dst, .. }
+        | Aarch64Inst::Udiv64RR { dst, .. }
         | Aarch64Inst::Msub { dst, .. }
+        | Aarch64Inst::Msub64 { dst, .. }
         | Aarch64Inst::Neg { dst, .. }
         | Aarch64Inst::Negs { dst, .. }
         | Aarch64Inst::Negs32 { dst, .. }

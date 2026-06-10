@@ -111,8 +111,11 @@ fn get_latency(inst: &X86Inst) -> u32 {
         X86Inst::ImulRR { .. } | X86Inst::ImulRR64 { .. } => 3,
 
         // Division: 20-80 cycles (highly variable)
-        X86Inst::IdivR { .. } | X86Inst::DivR { .. } => 20,
-        X86Inst::Cdq => 1,
+        X86Inst::IdivR { .. }
+        | X86Inst::DivR { .. }
+        | X86Inst::Idiv64R { .. }
+        | X86Inst::Div64R { .. } => 20,
+        X86Inst::Cdq | X86Inst::Cqo => 1,
 
         // Negation: 1 cycle
         X86Inst::Neg { .. } | X86Inst::Neg64 { .. } => 1,
@@ -144,7 +147,8 @@ fn get_latency(inst: &X86Inst) -> u32 {
         | X86Inst::Cmp64RR { .. }
         | X86Inst::CmpRI { .. }
         | X86Inst::Cmp64RI { .. }
-        | X86Inst::TestRR { .. } => 1,
+        | X86Inst::TestRR { .. }
+        | X86Inst::Test64RR { .. } => 1,
 
         // Setcc: 1 cycle
         X86Inst::Sete { .. }
@@ -294,15 +298,19 @@ fn regs_read(inst: &X86Inst) -> Vec<Reg> {
         | X86Inst::Sar32RI { dst, .. } => {
             add_if_phys(dst, &mut result);
         }
-        X86Inst::IdivR { src } | X86Inst::DivR { src } => {
+        X86Inst::IdivR { src }
+        | X86Inst::DivR { src }
+        | X86Inst::Idiv64R { src }
+        | X86Inst::Div64R { src } => {
             add_if_phys(src, &mut result);
             result.push(Reg::Rax);
             result.push(Reg::Rdx);
         }
-        X86Inst::Cdq => result.push(Reg::Rax),
+        X86Inst::Cdq | X86Inst::Cqo => result.push(Reg::Rax),
         X86Inst::CmpRR { src1, src2 }
         | X86Inst::Cmp64RR { src1, src2 }
-        | X86Inst::TestRR { src1, src2 } => {
+        | X86Inst::TestRR { src1, src2 }
+        | X86Inst::Test64RR { src1, src2 } => {
             add_if_phys(src1, &mut result);
             add_if_phys(src2, &mut result);
         }
@@ -412,11 +420,14 @@ fn regs_written(inst: &X86Inst) -> Vec<Reg> {
         | X86Inst::Sar32RI { dst, .. } => {
             add_if_phys(dst, &mut result);
         }
-        X86Inst::IdivR { .. } | X86Inst::DivR { .. } => {
+        X86Inst::IdivR { .. }
+        | X86Inst::DivR { .. }
+        | X86Inst::Idiv64R { .. }
+        | X86Inst::Div64R { .. } => {
             result.push(Reg::Rax);
             result.push(Reg::Rdx);
         }
-        X86Inst::Cdq => result.push(Reg::Rdx),
+        X86Inst::Cdq | X86Inst::Cqo => result.push(Reg::Rdx),
         X86Inst::Sete { dst }
         | X86Inst::Setne { dst }
         | X86Inst::Setl { dst }
@@ -478,6 +489,8 @@ fn writes_flags(inst: &X86Inst) -> bool {
             | X86Inst::ImulRR64 { .. }
             | X86Inst::IdivR { .. }
             | X86Inst::DivR { .. }
+            | X86Inst::Idiv64R { .. }
+            | X86Inst::Div64R { .. }
             | X86Inst::Neg { .. }
             | X86Inst::Neg64 { .. }
             // Logical (set SF, ZF, PF; clear OF, CF)
@@ -505,6 +518,7 @@ fn writes_flags(inst: &X86Inst) -> bool {
             | X86Inst::CmpRI { .. }
             | X86Inst::Cmp64RI { .. }
             | X86Inst::TestRR { .. }
+            | X86Inst::Test64RR { .. }
     )
 }
 

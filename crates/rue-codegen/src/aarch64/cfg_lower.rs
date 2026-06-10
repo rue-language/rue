@@ -851,18 +851,37 @@ impl<'a> CfgLower<'a> {
                 self.mir.push(Aarch64Inst::Bl { symbol_id });
                 self.mir.push(Aarch64Inst::Label { id: ok_label });
 
-                // Use SDIV for signed types, UDIV for unsigned types
+                // Use SDIV for signed types, UDIV for unsigned types, selecting
+                // 64-bit (X-register) forms for 64-bit operands — the 32-bit
+                // (W-register) forms only divide the low 32 bits (RUE-26).
+                let is_64 = ty.is_64_bit();
                 if ty.is_signed() {
-                    self.mir.push(Aarch64Inst::SdivRR {
-                        dst: Operand::Virtual(vreg),
-                        src1: Operand::Virtual(lhs_vreg),
-                        src2: Operand::Virtual(rhs_vreg),
+                    self.mir.push(if is_64 {
+                        Aarch64Inst::Sdiv64RR {
+                            dst: Operand::Virtual(vreg),
+                            src1: Operand::Virtual(lhs_vreg),
+                            src2: Operand::Virtual(rhs_vreg),
+                        }
+                    } else {
+                        Aarch64Inst::SdivRR {
+                            dst: Operand::Virtual(vreg),
+                            src1: Operand::Virtual(lhs_vreg),
+                            src2: Operand::Virtual(rhs_vreg),
+                        }
                     });
                 } else {
-                    self.mir.push(Aarch64Inst::UdivRR {
-                        dst: Operand::Virtual(vreg),
-                        src1: Operand::Virtual(lhs_vreg),
-                        src2: Operand::Virtual(rhs_vreg),
+                    self.mir.push(if is_64 {
+                        Aarch64Inst::Udiv64RR {
+                            dst: Operand::Virtual(vreg),
+                            src1: Operand::Virtual(lhs_vreg),
+                            src2: Operand::Virtual(rhs_vreg),
+                        }
+                    } else {
+                        Aarch64Inst::UdivRR {
+                            dst: Operand::Virtual(vreg),
+                            src1: Operand::Virtual(lhs_vreg),
+                            src2: Operand::Virtual(rhs_vreg),
+                        }
                     });
                 }
             }
@@ -884,28 +903,55 @@ impl<'a> CfgLower<'a> {
                 self.mir.push(Aarch64Inst::Bl { symbol_id });
                 self.mir.push(Aarch64Inst::Label { id: ok_label });
 
-                // Compute quotient first using SDIV or UDIV based on signedness
+                // Compute quotient first using SDIV or UDIV based on signedness,
+                // selecting 64-bit forms for 64-bit operands (RUE-26).
+                let is_64 = ty.is_64_bit();
                 let quot_vreg = self.mir.alloc_vreg();
                 if ty.is_signed() {
-                    self.mir.push(Aarch64Inst::SdivRR {
-                        dst: Operand::Virtual(quot_vreg),
-                        src1: Operand::Virtual(lhs_vreg),
-                        src2: Operand::Virtual(rhs_vreg),
+                    self.mir.push(if is_64 {
+                        Aarch64Inst::Sdiv64RR {
+                            dst: Operand::Virtual(quot_vreg),
+                            src1: Operand::Virtual(lhs_vreg),
+                            src2: Operand::Virtual(rhs_vreg),
+                        }
+                    } else {
+                        Aarch64Inst::SdivRR {
+                            dst: Operand::Virtual(quot_vreg),
+                            src1: Operand::Virtual(lhs_vreg),
+                            src2: Operand::Virtual(rhs_vreg),
+                        }
                     });
                 } else {
-                    self.mir.push(Aarch64Inst::UdivRR {
-                        dst: Operand::Virtual(quot_vreg),
-                        src1: Operand::Virtual(lhs_vreg),
-                        src2: Operand::Virtual(rhs_vreg),
+                    self.mir.push(if is_64 {
+                        Aarch64Inst::Udiv64RR {
+                            dst: Operand::Virtual(quot_vreg),
+                            src1: Operand::Virtual(lhs_vreg),
+                            src2: Operand::Virtual(rhs_vreg),
+                        }
+                    } else {
+                        Aarch64Inst::UdivRR {
+                            dst: Operand::Virtual(quot_vreg),
+                            src1: Operand::Virtual(lhs_vreg),
+                            src2: Operand::Virtual(rhs_vreg),
+                        }
                     });
                 }
 
                 // rem = dividend - (quotient * divisor)
-                self.mir.push(Aarch64Inst::Msub {
-                    dst: Operand::Virtual(vreg),
-                    src1: Operand::Virtual(quot_vreg),
-                    src2: Operand::Virtual(rhs_vreg),
-                    src3: Operand::Virtual(lhs_vreg),
+                self.mir.push(if is_64 {
+                    Aarch64Inst::Msub64 {
+                        dst: Operand::Virtual(vreg),
+                        src1: Operand::Virtual(quot_vreg),
+                        src2: Operand::Virtual(rhs_vreg),
+                        src3: Operand::Virtual(lhs_vreg),
+                    }
+                } else {
+                    Aarch64Inst::Msub {
+                        dst: Operand::Virtual(vreg),
+                        src1: Operand::Virtual(quot_vreg),
+                        src2: Operand::Virtual(rhs_vreg),
+                        src3: Operand::Virtual(lhs_vreg),
+                    }
                 });
             }
 

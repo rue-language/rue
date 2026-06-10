@@ -133,6 +133,12 @@ const OPCODE_SDIV_W: u32 = 0x1AC00C00;
 const OPCODE_UDIV_W: u32 = 0x1AC00800;
 /// MSUB Wd, Wn, Wm, Wa - Multiply-subtract (32-bit)
 const OPCODE_MSUB_W: u32 = 0x1B008000;
+/// SDIV Xd, Xn, Xm - Signed divide (64-bit; sf bit 31 set)
+const OPCODE_SDIV_X: u32 = 0x9AC00C00;
+/// UDIV Xd, Xn, Xm - Unsigned divide (64-bit; sf bit 31 set)
+const OPCODE_UDIV_X: u32 = 0x9AC00800;
+/// MSUB Xd, Xn, Xm, Xa - Multiply-subtract (64-bit; sf bit 31 set)
+const OPCODE_MSUB_X: u32 = 0x9B008000;
 
 // Logical instructions
 /// AND Xd, Xn, Xm - Bitwise AND (64-bit)
@@ -756,6 +762,24 @@ impl<'a> Emitter<'a> {
                 end_inst!(self, "udiv {}, {}, {}", rd.as_w(), rn.as_w(), rm.as_w());
             }
 
+            Aarch64Inst::Sdiv64RR { dst, src1, src2 } => {
+                let rd = dst.as_physical();
+                let rn = src1.as_physical();
+                let rm = src2.as_physical();
+                self.begin_inst();
+                self.emit_sdiv64(rd, rn, rm);
+                end_inst!(self, "sdiv {}, {}, {}", rd, rn, rm);
+            }
+
+            Aarch64Inst::Udiv64RR { dst, src1, src2 } => {
+                let rd = dst.as_physical();
+                let rn = src1.as_physical();
+                let rm = src2.as_physical();
+                self.begin_inst();
+                self.emit_udiv64(rd, rn, rm);
+                end_inst!(self, "udiv {}, {}, {}", rd, rn, rm);
+            }
+
             Aarch64Inst::Msub {
                 dst,
                 src1,
@@ -776,6 +800,21 @@ impl<'a> Emitter<'a> {
                     rm.as_w(),
                     ra.as_w()
                 );
+            }
+
+            Aarch64Inst::Msub64 {
+                dst,
+                src1,
+                src2,
+                src3,
+            } => {
+                let rd = dst.as_physical();
+                let rn = src1.as_physical();
+                let rm = src2.as_physical();
+                let ra = src3.as_physical();
+                self.begin_inst();
+                self.emit_msub64(rd, rn, rm, ra);
+                end_inst!(self, "msub {}, {}, {}, {}", rd, rn, rm, ra);
             }
 
             Aarch64Inst::Neg { dst, src } => {
@@ -1628,6 +1667,34 @@ impl<'a> Emitter<'a> {
     fn emit_msub(&mut self, rd: Reg, rn: Reg, rm: Reg, ra: Reg) {
         // MSUB Wd, Wn, Wm, Wa (32-bit for proper i32 arithmetic)
         let inst = OPCODE_MSUB_W
+            | (rm.encoding() as u32) << 16
+            | (ra.encoding() as u32) << 10
+            | (rn.encoding() as u32) << 5
+            | rd.encoding() as u32;
+        self.emit_u32(inst);
+    }
+
+    fn emit_sdiv64(&mut self, rd: Reg, rn: Reg, rm: Reg) {
+        // SDIV Xd, Xn, Xm (64-bit signed division)
+        let inst = OPCODE_SDIV_X
+            | (rm.encoding() as u32) << 16
+            | (rn.encoding() as u32) << 5
+            | rd.encoding() as u32;
+        self.emit_u32(inst);
+    }
+
+    fn emit_udiv64(&mut self, rd: Reg, rn: Reg, rm: Reg) {
+        // UDIV Xd, Xn, Xm (64-bit unsigned division)
+        let inst = OPCODE_UDIV_X
+            | (rm.encoding() as u32) << 16
+            | (rn.encoding() as u32) << 5
+            | rd.encoding() as u32;
+        self.emit_u32(inst);
+    }
+
+    fn emit_msub64(&mut self, rd: Reg, rn: Reg, rm: Reg, ra: Reg) {
+        // MSUB Xd, Xn, Xm, Xa (64-bit multiply-subtract)
+        let inst = OPCODE_MSUB_X
             | (rm.encoding() as u32) << 16
             | (ra.encoding() as u32) << 10
             | (rn.encoding() as u32) << 5
