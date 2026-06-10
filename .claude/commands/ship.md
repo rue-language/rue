@@ -12,7 +12,7 @@ Ship the current work: rebase, format, review, test, commit, push, mark the Line
 ### 1. Rebase on trunk
 
 ```bash
-jj rebase -d trunk
+jj rebase -d 'trunk()'
 ```
 
 If conflicts, resolve them automatically (see `/fix-conflicts` for strategy).

@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+#
+# rue — convenience wrapper around the common Buck2 targets, so you don't have
+# to memorize `//crates/...` paths. Run from anywhere in the repo.
+#
+#   scripts/rue build              Build the compiler (refreshes bin/rue)
+#   scripts/rue run prog.rue out   Compile a program (then run ./out yourself)
+#   scripts/rue exec prog.rue      Compile prog.rue to a temp file AND run it
+#   scripts/rue test [pattern]     Full suite (./test.sh), optional filter
+#   scripts/rue quick              Unit tests only (./quick-test.sh)
+#   scripts/rue spec [pattern]     Spec tests, optional filter
+#   scripts/rue cli [pattern]      CLI integration tests, optional filter
+#   scripts/rue ui [pattern]       UI/diagnostics tests, optional filter
+#   scripts/rue fmt                Format the code (./fmt.sh)
+#   scripts/rue path               Print the absolute binary path (build if needed)
+#
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+cmd="${1:-}"
+shift || true
+
+case "$cmd" in
+    build)
+        scripts/rue-bin "$@" >/dev/null
+        echo "Built: bin/rue -> $(readlink bin/rue)"
+        ;;
+    path)
+        scripts/rue-bin "$@"
+        ;;
+    run)
+        # Compile via the real driver (so module resolution, -o, etc. behave
+        # exactly as a user would see).
+        bin="$(scripts/rue-bin)"
+        "$bin" "$@"
+        ;;
+    exec)
+        # Compile a single source to a temp executable and run it.
+        if [[ $# -lt 1 ]]; then
+            echo "usage: scripts/rue exec <source.rue> [program args...]" >&2
+            exit 2
+        fi
+        src="$1"; shift
+        bin="$(scripts/rue-bin)"
+        out="$(mktemp)"
+        "$bin" "$src" "$out"
+        "$out" "$@"
+        rc=$?
+        rm -f "$out"
+        exit $rc
+        ;;
+    test)
+        ./test.sh "$@"
+        ;;
+    quick)
+        ./quick-test.sh "$@"
+        ;;
+    spec)
+        RUE_BINARY="$(scripts/rue-bin)" \
+        RUE_SPEC_CASES="crates/rue-spec/cases" \
+        ./buck2 run //crates/rue-spec:rue-spec -- "$@"
+        ;;
+    cli)
+        RUE_BINARY="$(scripts/rue-bin)" \
+        RUE_CLI_CASES="crates/rue-cli-tests/cases" \
+        RUE_STD_DIR="std" \
+        ./buck2 run //crates/rue-cli-tests:rue-cli-tests -- "$@"
+        ;;
+    ui)
+        RUE_BINARY="$(scripts/rue-bin)" \
+        RUE_UI_CASES="crates/rue-ui-tests/cases" \
+        ./buck2 run //crates/rue-ui-tests:rue-ui-tests -- "$@"
+        ;;
+    fmt)
+        ./fmt.sh "$@"
+        ;;
+    ""|-h|--help|help)
+        sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+        ;;
+    *)
+        echo "scripts/rue: unknown command '$cmd' (try: scripts/rue help)" >&2
+        exit 2
+        ;;
+esac
