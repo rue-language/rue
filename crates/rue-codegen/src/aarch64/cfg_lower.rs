@@ -273,6 +273,51 @@ impl<'a> CfgLower<'a> {
                 }
                 Some(vregs)
             }
+            CfgInstData::PlaceRead { place } => {
+                // A multi-slot aggregate (struct or builtin String) read from a
+                // place — e.g. `let s2 = h.s;`. The base place-read lowering only
+                // materializes the first slot into `dst`; here we materialize all
+                // `slot_count` slots so consumers (struct equality, Alloc/Store of
+                // a fat pointer, etc.) see the full value. Only static field
+                // projections are handled — dynamic array indexing and inout params
+                // fall through to None (preserving prior behavior). (RUE-22/63/94)
+                let projections = self.ctx.cfg.get_place_projections(place).to_vec();
+                let mut static_slot_offset: u32 = 0;
+                for proj in &projections {
+                    match proj {
+                        Projection::Field {
+                            struct_id,
+                            field_index,
+                        } => {
+                            static_slot_offset +=
+                                self.ctx.struct_field_slot_offset(*struct_id, *field_index);
+                        }
+                        Projection::Index { .. } => return None,
+                    }
+                }
+                let base_slot = match place.base {
+                    PlaceBase::Local(slot) => slot + static_slot_offset,
+                    PlaceBase::Param(param_slot) => {
+                        if self.ctx.cfg.is_param_inout(param_slot) {
+                            return None;
+                        }
+                        self.ctx.num_locals + param_slot + static_slot_offset
+                    }
+                };
+                let slot_count = self.ctx.type_slot_count(Type::new_struct(struct_id));
+                let mut vregs = Vec::with_capacity(slot_count as usize);
+                for i in 0..slot_count {
+                    let vreg = self.mir.alloc_vreg();
+                    let offset = self.ctx.local_offset(base_slot + i);
+                    self.mir.push(Aarch64Inst::Ldr {
+                        dst: Operand::Virtual(vreg),
+                        base: Reg::Fp,
+                        offset,
+                    });
+                    vregs.push(vreg);
+                }
+                Some(vregs)
+            }
             // BlockParam and Call should already have field vregs in cache
             _ => None,
         }
@@ -1263,8 +1308,12 @@ impl<'a> CfgLower<'a> {
                             offset,
                         });
                     }
-                } else if init_type.is_struct() {
-                    // Struct: recursively flatten struct fields (including array fields) to scalars
+                } else if init_type.is_struct() && !self.ctx.is_builtin_string(init_type) {
+                    // Struct: recursively flatten struct fields (including array fields) to scalars.
+                    // Builtin String is also a struct, but must take the dedicated fat-pointer
+                    // branch below (it materializes all 3 slots via get_or_compute_field_vregs);
+                    // collect_struct_scalar_vregs only sees the single lowered vreg for a String
+                    // read from a place, which would drop len/cap. (RUE-63/94)
                     let scalar_vregs = self.collect_struct_scalar_vregs(*init);
                     for (i, scalar_vreg) in scalar_vregs.iter().enumerate() {
                         let field_slot = slot + i as u32;
@@ -1278,9 +1327,7 @@ impl<'a> CfgLower<'a> {
                 } else if self.ctx.is_builtin_string(init_type) {
                     // String: store ptr, len, and cap to consecutive slots
                     let field_vregs = self
-                        .struct_slot_vregs
-                        .get(init)
-                        .cloned()
+                        .get_or_compute_field_vregs(*init)
                         .expect("string should have fat pointer fields in Alloc");
                     debug_assert_eq!(
                         field_vregs.len(),
@@ -3440,18 +3487,14 @@ impl<'a> CfgLower<'a> {
 
             // Get left string fat pointer
             let lhs_fields = self
-                .struct_slot_vregs
-                .get(&lhs)
-                .cloned()
+                .get_or_compute_field_vregs(lhs)
                 .expect("String should have fat pointer fields");
             let lhs_ptr = lhs_fields[0];
             let lhs_len = lhs_fields[1];
 
             // Get right string fat pointer
             let rhs_fields = self
-                .struct_slot_vregs
-                .get(&rhs)
-                .cloned()
+                .get_or_compute_field_vregs(rhs)
                 .expect("String should have fat pointer fields");
             let rhs_ptr = rhs_fields[0];
             let rhs_len = rhs_fields[1];
@@ -3534,14 +3577,10 @@ impl<'a> CfgLower<'a> {
 
         // Get the struct field vregs
         let lhs_fields = self
-            .struct_slot_vregs
-            .get(&lhs)
-            .cloned()
+            .get_or_compute_field_vregs(lhs)
             .expect("struct should have field vregs");
         let rhs_fields = self
-            .struct_slot_vregs
-            .get(&rhs)
-            .cloned()
+            .get_or_compute_field_vregs(rhs)
             .expect("struct should have field vregs");
 
         let struct_def = self.ctx.type_pool.struct_def(struct_id);
@@ -3618,14 +3657,10 @@ impl<'a> CfgLower<'a> {
         // Get string fields (ptr, len, cap) from struct_slot_vregs
         // For comparison, we only use ptr and len (cap is not compared)
         let lhs_fields = self
-            .struct_slot_vregs
-            .get(&lhs)
-            .cloned()
+            .get_or_compute_field_vregs(lhs)
             .expect("string should have fat pointer fields");
         let rhs_fields = self
-            .struct_slot_vregs
-            .get(&rhs)
-            .cloned()
+            .get_or_compute_field_vregs(rhs)
             .expect("string should have fat pointer fields");
 
         debug_assert_eq!(

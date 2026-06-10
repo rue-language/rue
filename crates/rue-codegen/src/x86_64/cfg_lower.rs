@@ -390,6 +390,51 @@ impl<'a> CfgLower<'a> {
                 }
                 Some(vregs)
             }
+            CfgInstData::PlaceRead { place } => {
+                // A multi-slot aggregate (struct or builtin String) read from a
+                // place — e.g. `let s2 = h.s;`. The base place-read lowering only
+                // materializes the first slot into `dst`; here we materialize all
+                // `slot_count` slots so consumers (struct equality, Alloc/Store of
+                // a fat pointer, etc.) see the full value. Only static field
+                // projections are handled — dynamic array indexing and inout params
+                // fall through to None (preserving prior behavior). (RUE-22/63/94)
+                let projections = self.ctx.cfg.get_place_projections(place).to_vec();
+                let mut static_slot_offset: u32 = 0;
+                for proj in &projections {
+                    match proj {
+                        Projection::Field {
+                            struct_id,
+                            field_index,
+                        } => {
+                            static_slot_offset +=
+                                self.ctx.struct_field_slot_offset(*struct_id, *field_index);
+                        }
+                        Projection::Index { .. } => return None,
+                    }
+                }
+                let base_slot = match place.base {
+                    PlaceBase::Local(slot) => slot + static_slot_offset,
+                    PlaceBase::Param(param_slot) => {
+                        if self.ctx.cfg.is_param_inout(param_slot) {
+                            return None;
+                        }
+                        self.ctx.num_locals + param_slot + static_slot_offset
+                    }
+                };
+                let slot_count = self.ctx.type_slot_count(Type::new_struct(struct_id));
+                let mut vregs = Vec::with_capacity(slot_count as usize);
+                for i in 0..slot_count {
+                    let vreg = self.mir.alloc_vreg();
+                    let offset = self.ctx.local_offset(base_slot + i);
+                    self.mir.push(X86Inst::MovRM {
+                        dst: Operand::Virtual(vreg),
+                        base: Reg::Rbp,
+                        offset,
+                    });
+                    vregs.push(vreg);
+                }
+                Some(vregs)
+            }
             // BlockParam and Call should already have field vregs in cache
             _ => None,
         }
@@ -1511,9 +1556,7 @@ impl<'a> CfgLower<'a> {
                     // Builtin String: store ptr, len, and cap to consecutive slots
                     // Check this before generic Struct case so builtin String uses this path
                     let field_vregs = self
-                        .struct_slot_vregs
-                        .get(init)
-                        .cloned()
+                        .get_or_compute_field_vregs(*init)
                         .expect("string should have fat pointer fields in Alloc");
                     debug_assert_eq!(
                         field_vregs.len(),
@@ -3440,14 +3483,10 @@ impl<'a> CfgLower<'a> {
 
         // Get the struct field vregs
         let lhs_fields = self
-            .struct_slot_vregs
-            .get(&lhs)
-            .cloned()
+            .get_or_compute_field_vregs(lhs)
             .expect("struct should have field vregs");
         let rhs_fields = self
-            .struct_slot_vregs
-            .get(&rhs)
-            .cloned()
+            .get_or_compute_field_vregs(rhs)
             .expect("struct should have field vregs");
 
         let struct_def = self.ctx.type_pool.struct_def(struct_id);
@@ -3526,14 +3565,10 @@ impl<'a> CfgLower<'a> {
         // Get struct fields from struct_slot_vregs
         // For comparison, we use ptr and len (first two fields)
         let lhs_fields = self
-            .struct_slot_vregs
-            .get(&lhs)
-            .cloned()
+            .get_or_compute_field_vregs(lhs)
             .expect("builtin type should have field vregs");
         let rhs_fields = self
-            .struct_slot_vregs
-            .get(&rhs)
-            .cloned()
+            .get_or_compute_field_vregs(rhs)
             .expect("builtin type should have field vregs");
 
         debug_assert!(
