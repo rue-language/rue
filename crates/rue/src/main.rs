@@ -457,7 +457,19 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
         (positional, "a.out".to_string())
     } else if positional.len() == 2 {
         // Two positional args, no -o: backwards compatible mode
-        // First is source, second is output
+        // First is source, second is output — but NEVER treat a .rue file as
+        // the output. `rue a.rue b.rue` used to silently overwrite the b.rue
+        // SOURCE FILE with the compiled binary (RUE-130); the user almost
+        // certainly meant to compile both.
+        if positional[1].ends_with(".rue") {
+            eprintln!(
+                "Error: refusing to use '{}' as the output path: it looks like a source file",
+                positional[1]
+            );
+            eprintln!("To compile multiple source files, specify the output with -o:");
+            eprintln!("       rue {} {} -o <output>", positional[0], positional[1]);
+            return ParseResult::Error;
+        }
         let mut pos = positional;
         let out = pos.pop().unwrap();
         (pos, out)
@@ -467,6 +479,16 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
         eprintln!("Usage: rue a.rue b.rue -o output");
         return ParseResult::Error;
     };
+
+    // In every mode: the output must not clobber an input. (Catches explicit
+    // footguns like `rue a.rue -o a.rue` too.)
+    if source_paths.contains(&final_output_path) {
+        eprintln!(
+            "Error: output path '{}' is also an input source file; refusing to overwrite it",
+            final_output_path
+        );
+        return ParseResult::Error;
+    }
 
     ParseResult::Options(Options {
         source_paths,

@@ -103,11 +103,11 @@ args = ["main.rue", "utils.rue", "-o", "prog"]
 stdout = "42\n"
 
 # CLAUDE.md documents `rue a.rue b.rue` as an error, but the CLI currently
-# treats b.rue as the OUTPUT path and silently overwrites the source file
-# with an ELF executable (data loss). See RUE-20.
+# used to treat b.rue as the OUTPUT path and silently overwrite the source
+# file with an ELF executable (data loss). The driver now refuses .rue output
+# paths in legacy mode (fixed under RUE-20).
 [[case]]
 name = "multi_file_without_dash_o_is_an_error"
-known_bug = "RUE-20"
 files = [
     { path = "a.rue", source = "fn main() -> i32 { 0 }" },
     { path = "b.rue", source = "fn helper() -> i32 { 1 }" },
