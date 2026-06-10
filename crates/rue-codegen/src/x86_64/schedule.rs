@@ -124,6 +124,9 @@ fn get_latency(inst: &X86Inst) -> u32 {
         X86Inst::AndRR { .. }
         | X86Inst::OrRR { .. }
         | X86Inst::XorRR { .. }
+        | X86Inst::And64RR { .. }
+        | X86Inst::Or64RR { .. }
+        | X86Inst::Xor64RR { .. }
         | X86Inst::XorRI { .. }
         | X86Inst::NotR { .. } => 1,
 
@@ -271,7 +274,10 @@ fn regs_read(inst: &X86Inst) -> Vec<Reg> {
         | X86Inst::ImulRR64 { dst, src }
         | X86Inst::AndRR { dst, src }
         | X86Inst::OrRR { dst, src }
-        | X86Inst::XorRR { dst, src } => {
+        | X86Inst::XorRR { dst, src }
+        | X86Inst::And64RR { dst, src }
+        | X86Inst::Or64RR { dst, src }
+        | X86Inst::Xor64RR { dst, src } => {
             add_if_phys(dst, &mut result);
             add_if_phys(src, &mut result);
         }
@@ -405,6 +411,9 @@ fn regs_written(inst: &X86Inst) -> Vec<Reg> {
         X86Inst::AndRR { dst, .. }
         | X86Inst::OrRR { dst, .. }
         | X86Inst::XorRR { dst, .. }
+        | X86Inst::And64RR { dst, .. }
+        | X86Inst::Or64RR { dst, .. }
+        | X86Inst::Xor64RR { dst, .. }
         | X86Inst::NotR { dst }
         | X86Inst::ShlRCl { dst }
         | X86Inst::Shl32RCl { dst }
@@ -497,6 +506,9 @@ fn writes_flags(inst: &X86Inst) -> bool {
             | X86Inst::AndRR { .. }
             | X86Inst::OrRR { .. }
             | X86Inst::XorRR { .. }
+            | X86Inst::And64RR { .. }
+            | X86Inst::Or64RR { .. }
+            | X86Inst::Xor64RR { .. }
             | X86Inst::XorRI { .. }
             // Shifts (set CF, and SF/ZF/PF for non-zero counts)
             | X86Inst::ShlRCl { .. }

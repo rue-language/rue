@@ -368,6 +368,18 @@ impl RegAlloc {
                 self.emit_binop(mir, dst, src, |d, s| X86Inst::XorRR { dst: d, src: s })?;
             }
 
+            X86Inst::And64RR { dst, src } => {
+                self.emit_binop(mir, dst, src, |d, s| X86Inst::And64RR { dst: d, src: s })?;
+            }
+
+            X86Inst::Or64RR { dst, src } => {
+                self.emit_binop(mir, dst, src, |d, s| X86Inst::Or64RR { dst: d, src: s })?;
+            }
+
+            X86Inst::Xor64RR { dst, src } => {
+                self.emit_binop(mir, dst, src, |d, s| X86Inst::Xor64RR { dst: d, src: s })?;
+            }
+
             X86Inst::NotR { dst } => {
                 self.emit_unop(mir, dst, |d| X86Inst::NotR { dst: d });
             }

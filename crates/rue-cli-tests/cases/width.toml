@@ -95,3 +95,54 @@ fn main() -> i32 {
 }
 """ }]
 exit_code = 42
+
+# RUE-58: i64/u64 bitwise AND/OR/XOR were lowered as 32-bit ops, zeroing the
+# high 32 bits of the result. Now use REX.W forms when the operands are 64-bit.
+[[case]]
+name = "i64_bitor_high_bits_preserved"
+files = [{ path = "main.rue", source = """
+fn val() -> i64 { 1 }
+fn main() -> i32 {
+    let high: i64 = val() << 40;
+    let a: i64 = high | 1;          // (1<<40) | 1, high bits set
+    if a > 4294967296 { 1 } else { 2 }
+}
+""" }]
+exit_code = 1
+
+[[case]]
+name = "i64_bitand_high_bits_preserved"
+files = [{ path = "main.rue", source = """
+fn val() -> i64 { 1 }
+fn main() -> i32 {
+    let high: i64 = val() << 40;    // 2^40
+    let mask: i64 = val() << 40;    // 2^40
+    let a: i64 = high & mask;       // 2^40
+    if a > 4294967296 { 1 } else { 2 }
+}
+""" }]
+exit_code = 1
+
+[[case]]
+name = "i64_bitxor_high_bits_preserved"
+files = [{ path = "main.rue", source = """
+fn val() -> i64 { 1 }
+fn main() -> i32 {
+    let high: i64 = val() << 40;    // 2^40
+    let a: i64 = high ^ 1;          // 2^40 + 1, high bit retained
+    if a > 4294967296 { 1 } else { 2 }
+}
+""" }]
+exit_code = 1
+
+# Control: 32-bit bitwise ops are unaffected.
+[[case]]
+name = "i32_bitand_still_correct"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: i32 = 5;
+    let b: i32 = 3;
+    a & b          // 1
+}
+""" }]
+exit_code = 1
