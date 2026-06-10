@@ -14,8 +14,9 @@ cd "$(dirname "$0")"
 
 echo "Running unit tests (quick mode)..."
 # Run every crate's unit tests; //... avoids a hand-maintained list that
-# silently goes stale as crates are added. (RUE-132)
-./buck2 test //...
+# silently goes stale as crates are added; scoping to //crates/ keeps vendored
+# third-party targets out of the test set. (RUE-132)
+./buck2 test //crates/...
 
 echo ""
 echo "Unit tests passed! Run ./test.sh for full verification before committing."
