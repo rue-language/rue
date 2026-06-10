@@ -653,14 +653,20 @@ When making changes to codegen, **always check if the same change is needed in a
 - **Liveness analysis**: Update both `x86_64/liveness.rs` and `aarch64/liveness.rs`
 - **CFG lowering**: Update both `x86_64/cfg_lower.rs` and `aarch64/cfg_lower.rs`
 
-Example: If adding a new comparison instruction variant (e.g., 64-bit compare):
-1. Add `Cmp64RR` to both MIR definitions
-2. Add emission logic to both emitters
-3. Add register allocation handling to both allocators
-4. Add liveness tracking to both liveness analyzers
-5. Update CFG lowering in both backends to use the new instruction where appropriate
+### Checklist: adding a new MIR instruction variant
 
-**Testing across backends**: The spec tests run on the host architecture only. If you only have access to one platform, note in your commit message that the other backend may need verification.
+Adding a variant (e.g. a 64-bit `Cqo`, `And64RR`, or aarch64 `Sdiv64RR`) touches the **same set of match arms** in each backend. Miss one and you get a non-exhaustive-`match` build error (or, worse, a silently-wrong reg-alloc). For **each** backend (`x86_64/` and `aarch64/`), update:
+
+1. **`mir.rs`** — three places: the `enum` variant definition; the `Display` impl (`write!`); and `clobbers()` if it has implicit register effects (e.g. div clobbers rax/rdx).
+2. **`liveness.rs`** — two match arms: register **uses** (operands read) and **defs** (operands written). Add the variant alongside its closest sibling.
+3. **`regalloc.rs`** — the instruction-rewrite match (rebuild the variant with allocated operands; reuse `emit_binop`/`emit_ternop`/`load_operand` like the sibling).
+4. **`schedule.rs`** — usually four arms: `get_latency`, `regs_read`, `regs_written`, and `writes_flags` (if it sets flags).
+5. **`emit.rs`** — the encoder dispatch arm (calls a helper + `end_inst!`) and the encoder helper itself (the actual byte/word encoding). Add a unit test pinning the bytes.
+6. **`cfg_lower.rs`** — select the new variant where appropriate (this is the actual fix).
+
+Tip: `grep -n <SiblingVariant> crates/rue-codegen/src/<arch>/*.rs` lists every site you need to mirror.
+
+**Testing across backends**: x86-64 is verifiable locally (build + run). aarch64 is **not runnable locally** — you can only `--emit asm` and read it (cross-compiled binaries also embed the host runtime, RUE-36). But CI's `test (linux-arm64)` and `test (macos)` jobs build `rue` *natively* on arm64 and run the binaries, so an aarch64-only bug **will fail CI**. Therefore: **apply the parallel aarch64 change in the SAME PR** — never ship an x86-only fix expecting to follow up, or CI will bounce it. Use `known_bug` / `known_bug_on` in CLI tests only when a *separate, tracked* bug makes a case fail on one platform.
 
 ## Version Control
 
@@ -693,24 +699,27 @@ This is a **fork** setup. There are two git remotes:
 
 **Rules:**
 
-1. **Never put your own commits on `origin/trunk`.** `origin/trunk` should only ever mirror `upstream/trunk`. Committing on `trunk` and PRing `trunk` causes hash-rewrite divergence every time upstream rebase/squash-merges.
+1. **Always base work on `trunk()` (= `trunk@upstream`); do NOT push or sync `origin/trunk`.** You never need to mirror `origin/trunk` to upstream — cross-fork PRs diff against `upstream/trunk`, and jj's immutability anchor is `trunk@upstream`. So `origin/trunk` may sit stale (behind upstream); that's harmless. `trunk@origin` is untracked (see required config) precisely so you aren't tempted to push it. Never commit on `trunk` / PR `trunk` — that causes hash-rewrite divergence when upstream rebase/squash-merges.
 2. **Work on a feature change**, then push it as a branch and PR it:
    ```bash
-   jj rebase -d 'trunk()'          # rebase onto upstream's canonical trunk (a revset, not a bookmark)
-   jj git push -c @-               # pushes as steveklabnik/push-<changeid> (see git_push_bookmark template)
-   # then open a PR from that branch -> upstream/trunk using the URL the push prints
+   jj new 'trunk()'                # start the change on upstream's canonical trunk (a revset, not a bookmark)
+   # ... make edits ...
+   jj git push -c @                # pushes as steveklabnik/push-<changeid> (see git_push_bookmark template)
+   gh pr create --repo rue-language/rue --base trunk --head steveklabnik:<branch> ...
+   gh pr merge <n> --repo rue-language/rue --auto   # queue it immediately
    ```
-3. **`trunk()` is a revset alias = `trunk@upstream`** — always means upstream's latest, regardless of local bookmark state. Prefer `trunk()` over the bare `trunk` bookmark in rebase/log commands.
-4. **After a PR merges**, just `jj git fetch` (configured to pull both remotes) and your base updates. If upstream rebase-merged (rewriting hashes), the old fork-side copies show as "divergent" — that's cosmetic; `jj abandon` the orphaned old-hash chain to tidy up.
+3. **`trunk()` is a revset alias = `trunk@upstream`** — always means upstream's latest, regardless of local bookmark state. Always use `trunk()`, never the bare `trunk` bookmark, in `jj new`/rebase/log commands.
+4. **After a PR merges**, the only step is: `jj git fetch` (your local `trunk` fast-forwards to upstream), then `jj new 'trunk()'` to start the next change. Do **not** push `trunk` to origin — there's nothing to sync. If upstream rebase-merged (rewriting hashes), the old fork-side copies show as "divergent" — cosmetic; `jj abandon` the orphaned old-hash chain to tidy up.
 
 **Required repo config** (machine-local; set on a fresh clone — jj does not read committed config):
 
 ```bash
 jj config set --repo 'revset-aliases."trunk()"' 'trunk@upstream'   # base/immutability = canonical repo
 jj config set --repo git.fetch '["origin", "upstream"]'            # always see both remotes
+jj bookmark untrack 'trunk' --remote=origin                        # don't track/sync origin/trunk; base on upstream only
 ```
 
-Without these, `jj git fetch` only pulls `origin` (you won't see upstream merges), and `trunk()`/immutability anchor to your fork instead of upstream.
+Without the first two, `jj git fetch` only pulls `origin` (you won't see upstream merges), and `trunk()`/immutability anchor to your fork instead of upstream. The `untrack` keeps the local `trunk` bookmark tracking *only* `upstream`, so it fast-forwards to upstream on fetch and you never feel obligated to push it back to origin.
 
 ### Commit Messages
 
