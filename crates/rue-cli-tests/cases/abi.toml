@@ -5,10 +5,15 @@
 # that boundary, in every combination of pass/return, for structs, bare
 # arrays, and methods.
 #
-# Current state (RUE-13): pass+return above 6 slots ICEs the compiler;
-# pass-only and return-only above 6 slots SILENTLY MISCOMPILE (wrong
-# values); and method self-update drops field writes at just 5 slots.
-# Locals and borrow/inout are correct (those cases pass).
+# Current state (RUE-13): on x86-64, pass+return above 6 slots ICEs the
+# compiler; pass-only and return-only above 6 slots SILENTLY MISCOMPILE
+# (wrong values); and method self-update drops field writes at just 5
+# slots. Locals and borrow/inout are correct (those cases pass).
+#
+# aarch64 differs (CI evidence from PR #888): 7-slot cases and 9-slot
+# pass-only WORK there (AAPCS passes large aggregates indirectly), while
+# the return-path cases still fail - hence the platform-scoped
+# known_bug_on markers below.
 
 [section]
 id = "cli.abi"
@@ -39,6 +44,7 @@ stdout = "4\n"
 [[case]]
 name = "struct_9_slots_pass_only"
 known_bug = "RUE-13"
+known_bug_on = ["x86-64-linux"]
 files = [{ path = "main.rue", source = """
 struct S {
     items: [i32; 8],
@@ -81,6 +87,7 @@ stdout = "8\n"
 [[case]]
 name = "struct_7_slots_pass_and_return"
 known_bug = "RUE-13"
+known_bug_on = ["x86-64-linux"]
 files = [{ path = "main.rue", source = """
 struct S {
     items: [i32; 6],
@@ -192,6 +199,7 @@ stdout = "20\n"
 [[case]]
 name = "bare_array_7_pass_only"
 known_bug = "RUE-13"
+known_bug_on = ["x86-64-linux"]
 files = [{ path = "main.rue", source = """
 fn sum_ends(a: [i32; 7]) -> i32 {
     a[0] + a[6]

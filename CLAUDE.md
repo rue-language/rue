@@ -290,6 +290,7 @@ Key conventions (see the doc comment in `crates/rue-cli-tests/src/main.rs` for t
 - Each case lists `files` written to disk; the default invocation is `rue <first file> -o prog` with the temp dir as cwd
 - Any compiler panic is reported as an **INTERNAL COMPILER ERROR** — a distinct failure class
 - `known_bug = "RUE-NN"` marks an expected failure (xfail) referencing a Linear issue. The case still runs; if it unexpectedly PASSES, the suite fails and tells you to remove the marker — converting it into a regression test. **When fixing a bug, find and un-mark its cases.**
+- `known_bug_on = ["x86-64-linux"]` scopes the xfail to specific platforms (for ABI bugs that manifest differently per target); on other platforms the case runs as a normal test. Platform names match `get_host_target()`: `x86-64-linux`, `aarch64-linux`, `aarch64-macos`
 - Prefer adding a CLI case (not just a spec test) for any bug that involves the driver, the ABI, multiple files, or runtime I/O
 
 ### Specification Tests

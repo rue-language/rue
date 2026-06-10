@@ -148,6 +148,11 @@ struct Case {
     /// Expected failure: reference to the Linear issue tracking the bug.
     #[serde(default)]
     known_bug: Option<String>,
+    /// Platforms the known_bug applies to (e.g. ["x86-64-linux"]). Empty
+    /// means all platforms. On other platforms the case runs as a normal
+    /// test. Useful for ABI bugs that manifest differently per target.
+    #[serde(default)]
+    known_bug_on: Vec<String>,
     /// Skip this case entirely.
     #[serde(default)]
     skip: bool,
@@ -349,7 +354,21 @@ fn run_case_wrapper(
 
     let result = run_case(case, rue_binary, real_std);
 
-    match (&case.known_bug, result) {
+    // A known_bug scoped to other platforms doesn't apply here: the case
+    // runs as a normal test on this host.
+    let bug_applies_here = case.known_bug.is_some()
+        && (case.known_bug_on.is_empty()
+            || case
+                .known_bug_on
+                .iter()
+                .any(|p| p == rue_test_runner::get_host_target()));
+    let known_bug = if bug_applies_here {
+        &case.known_bug
+    } else {
+        &None
+    };
+
+    match (known_bug, result) {
         // Normal case.
         (None, Ok(())) => Ok(()),
         (None, Err(e)) => Err(RunError::fail(e)),
