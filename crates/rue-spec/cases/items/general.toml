@@ -87,3 +87,50 @@ fn main() -> i32 {
 }
 """
 exit_code = 42
+
+# =============================================================================
+# Reserved Function Names (RUE-84)
+# =============================================================================
+
+[[case]]
+name = "fn_reserved_builtin_method"
+spec = ["6.0:5"]
+description = "User-defined function cannot use a built-in type method name"
+source = """
+fn String__len() -> i32 { 12345 }
+fn main() -> i32 { String__len() }
+"""
+compile_fail = true
+error_contains = "cannot define function `String__len`: name is reserved for a runtime helper"
+
+[[case]]
+name = "fn_reserved_rue_prefix"
+spec = ["6.0:5"]
+description = "User-defined function cannot use the __rue_ runtime-helper prefix"
+source = """
+fn __rue_alloc() -> i32 { 7 }
+fn main() -> i32 { __rue_alloc() }
+"""
+compile_fail = true
+error_contains = "cannot define function `__rue_alloc`: name is reserved for a runtime helper"
+
+[[case]]
+name = "fn_reserved_entry_point"
+spec = ["6.0:5"]
+description = "User-defined function cannot use the entry-point name _start"
+source = """
+fn _start() -> i32 { 1 }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = "cannot define function `_start`: name is reserved for a runtime helper"
+
+[[case]]
+name = "fn_lookalike_name_allowed"
+spec = ["6.0:5"]
+description = "A name resembling but not matching a reserved name is allowed"
+source = """
+fn foo__bar() -> i32 { 9 }
+fn main() -> i32 { foo__bar() }
+"""
+exit_code = 9

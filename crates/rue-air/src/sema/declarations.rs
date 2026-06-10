@@ -720,6 +720,20 @@ impl<'a> Sema<'a> {
         span: Span,
         is_pub: bool,
     ) -> CompileResult<()> {
+        // Reject user functions whose name collides with a runtime/codegen helper
+        // symbol (e.g. `String__len`, `__rue_alloc`, `_start`). Without this, such a
+        // definition either fails to link with a confusing duplicate-symbol error or
+        // silently binds calls to the runtime's definition instead of the user's.
+        let name_str = self.interner.resolve(&name);
+        if rue_builtins::is_reserved_function_name(name_str) {
+            return Err(CompileError::new(
+                ErrorKind::ReservedFunctionName {
+                    function_name: name_str.to_string(),
+                },
+                span,
+            ));
+        }
+
         let params = self.rir.get_params(params_start, params_len);
 
         let param_names: Vec<Spur> = params.iter().map(|p| p.name).collect();

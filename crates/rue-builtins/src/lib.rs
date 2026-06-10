@@ -494,6 +494,35 @@ pub fn is_reserved_type_name(name: &str) -> bool {
     BUILTIN_TYPES.iter().any(|t| t.name == name)
 }
 
+/// Check if a name is reserved for a runtime/codegen helper function, and thus
+/// may not be used as a user-defined function name.
+///
+/// A user function with one of these names would collide with the symbol emitted
+/// by the runtime or codegen — a built-in type method (`String__len`), a
+/// `__rue_*` runtime helper (`__rue_alloc`, `__rue_exit`, drop glue, ...), or the
+/// program entry point (`_start`). Depending on link order that collision either
+/// fails to link or silently binds calls to the wrong definition, so these names
+/// are reserved and rejected at declaration time with a clear diagnostic.
+pub fn is_reserved_function_name(name: &str) -> bool {
+    // Runtime internal helpers: allocation, exit, debug, drop glue, parsing, ...
+    if name.starts_with("__rue_") {
+        return true;
+    }
+    // The program entry point emitted by the linker.
+    if name == "_start" {
+        return true;
+    }
+    // Built-in type methods and associated functions are emitted as
+    // `<TypeName>__<method>` (e.g. `String__len`, `Vec__push`). Reserve any name
+    // of that shape whose type component is a reserved built-in type name.
+    if let Some((type_part, _method)) = name.split_once("__") {
+        if !type_part.is_empty() && is_reserved_type_name(type_part) {
+            return true;
+        }
+    }
+    false
+}
+
 // ============================================================================
 // Helper methods
 // ============================================================================
@@ -592,6 +621,28 @@ mod tests {
     fn test_is_reserved_type_name() {
         assert!(is_reserved_type_name("String"));
         assert!(!is_reserved_type_name("MyStruct"));
+    }
+
+    #[test]
+    fn test_is_reserved_function_name() {
+        // Runtime helper prefix.
+        assert!(is_reserved_function_name("__rue_alloc"));
+        assert!(is_reserved_function_name("__rue_exit"));
+        assert!(is_reserved_function_name("__rue_drop_String"));
+        // Entry point.
+        assert!(is_reserved_function_name("_start"));
+        // Built-in type methods / associated functions (any String__* shape).
+        assert!(is_reserved_function_name("String__len"));
+        assert!(is_reserved_function_name("String__new"));
+        assert!(is_reserved_function_name("String__anything"));
+        // Not reserved: ordinary user names, including non-builtin `Type__` shapes
+        // and single-underscore names.
+        assert!(!is_reserved_function_name("main"));
+        assert!(!is_reserved_function_name("my_len"));
+        assert!(!is_reserved_function_name("foo__bar")); // foo is not a builtin type
+        assert!(!is_reserved_function_name("Vec__push")); // Vec is not a builtin type yet
+        assert!(!is_reserved_function_name("_start_engine"));
+        assert!(!is_reserved_function_name("rue_helper")); // no leading __
     }
 
     #[test]

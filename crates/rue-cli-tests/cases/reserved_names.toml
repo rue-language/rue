@@ -1,0 +1,50 @@
+# Runtime-helper names are reserved for user functions (RUE-84).
+#
+# Defining a function whose name collides with a runtime/codegen symbol
+# (String__len, __rue_*, _start) used to fail with a confusing duplicate-symbol
+# LINK error — or, worse, link "successfully" and silently bind calls to the
+# runtime's definition instead of the user's (a miscompile). These names are now
+# rejected at declaration time with a clear E0435 diagnostic. Legitimate names
+# that merely resemble the conventions still compile.
+
+[section]
+id = "cli.reserved_names"
+name = "Reserved runtime-helper function names"
+description = "User functions may not shadow runtime/codegen helper symbols; the error is reported at compile time."
+
+[[case]]
+name = "builtin_method_name_rejected"
+files = [{ path = "main.rue", source = """
+fn String__len() -> i32 { 12345 }
+fn main() -> i32 { String__len() }
+""" }]
+compile_fail = true
+error_contains = ["E0435", "String__len", "reserved"]
+
+[[case]]
+name = "rue_runtime_prefix_rejected"
+files = [{ path = "main.rue", source = """
+fn __rue_alloc() -> i32 { 7 }
+fn main() -> i32 { __rue_alloc() }
+""" }]
+compile_fail = true
+error_contains = ["E0435", "__rue_alloc", "reserved"]
+
+[[case]]
+name = "entry_point_name_rejected"
+files = [{ path = "main.rue", source = """
+fn _start() -> i32 { 1 }
+fn main() -> i32 { 0 }
+""" }]
+compile_fail = true
+error_contains = ["E0435", "_start", "reserved"]
+
+# Control: an ordinary user function with a similar-looking name (double
+# underscore, but the prefix is not a built-in type) compiles and runs.
+[[case]]
+name = "lookalike_user_name_allowed"
+files = [{ path = "main.rue", source = """
+fn foo__bar() -> i32 { 9 }
+fn main() -> i32 { foo__bar() }
+""" }]
+exit_code = 9
