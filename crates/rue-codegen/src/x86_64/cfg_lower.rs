@@ -2759,12 +2759,29 @@ impl<'a> CfgLower<'a> {
                 // Emit range check and panic if out of bounds
                 self.emit_int_cast_check(src_vreg, *from_ty, to_ty);
 
-                // Move the value to the result vreg (the bits are already correct
-                // after sign/zero extension from the range check or simple copy)
-                self.mir.push(X86Inst::MovRR {
-                    dst: Operand::Virtual(vreg),
-                    src: Operand::Virtual(src_vreg),
-                });
+                // Move the value to the result vreg. A signed source widened to a
+                // larger type must be SIGN-extended into the high bits — a plain
+                // 64-bit copy would carry the source's zero-extended high bits,
+                // turning e.g. i32 -5 into 4294967291 (RUE-88). The value is held
+                // zero-extended in the register, so emit an explicit movsx.
+                let from_bits = Self::type_bits(*from_ty);
+                let to_bits = Self::type_bits(to_ty);
+                if from_ty.is_signed() && to_bits > from_bits {
+                    let dst = Operand::Virtual(vreg);
+                    let src = Operand::Virtual(src_vreg);
+                    match from_bits {
+                        8 => self.mir.push(X86Inst::Movsx8To64 { dst, src }),
+                        16 => self.mir.push(X86Inst::Movsx16To64 { dst, src }),
+                        _ => self.mir.push(X86Inst::Movsx32To64 { dst, src }),
+                    }
+                } else {
+                    // Unsigned widening, narrowing, and same-size reinterpretation
+                    // already hold the correct bits in the low half.
+                    self.mir.push(X86Inst::MovRR {
+                        dst: Operand::Virtual(vreg),
+                        src: Operand::Virtual(src_vreg),
+                    });
+                }
             }
 
             CfgInstData::Drop {
