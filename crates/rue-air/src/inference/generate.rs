@@ -11,7 +11,9 @@ use super::types::{InferType, TypeVarAllocator, TypeVarId};
 use crate::Type;
 use crate::intern_pool::TypeInternPool;
 use crate::scope::ScopedContext;
-use crate::types::{PtrMutability, StructId, parse_array_type_syntax, parse_pointer_type_syntax};
+use crate::types::{
+    PtrMutability, StructId, TypeKind, parse_array_type_syntax, parse_pointer_type_syntax,
+};
 use lasso::{Spur, ThreadedRodeo};
 use rue_rir::{InstData, InstRef, Rir};
 use rue_span::Span;
@@ -219,6 +221,46 @@ impl<'a> ConstraintGenerator<'a> {
     }
 
     /// Allocate a fresh type variable.
+    /// Resolve a struct field's declared type when the base expression's type
+    /// is already a concrete struct. Returns None for unresolved bases,
+    /// non-struct types, and unknown field names (sema diagnoses those).
+    fn known_field_type(&self, base_ty: &InferType, field: Spur) -> Option<Type> {
+        let InferType::Concrete(ty) = base_ty else {
+            return None;
+        };
+        self.field_type_of(*ty, field)
+    }
+
+    /// Convert a resolved `Type` into an `InferType`, representing arrays
+    /// structurally so they unify with array-literal expressions. Mirrors
+    /// `Sema::type_to_infer_type`.
+    fn type_to_infer(&self, ty: Type) -> InferType {
+        match ty.kind() {
+            TypeKind::Array(array_id) => {
+                let (element_type, length) = self.type_pool.array_def(array_id);
+                InferType::Array {
+                    element: Box::new(self.type_to_infer(element_type)),
+                    length,
+                }
+            }
+            _ => InferType::Concrete(ty),
+        }
+    }
+
+    /// Resolve a field's declared type on a concrete struct type.
+    fn field_type_of(&self, struct_ty: Type, field: Spur) -> Option<Type> {
+        let TypeKind::Struct(struct_id) = struct_ty.kind() else {
+            return None;
+        };
+        let field_name = self.interner.resolve(&field);
+        self.type_pool
+            .struct_def(struct_id)
+            .fields
+            .iter()
+            .find(|f| f.name == field_name)
+            .map(|f| f.ty)
+    }
+
     pub fn fresh_var(&mut self) -> TypeVarId {
         self.type_vars.fresh()
     }
@@ -931,9 +973,17 @@ impl<'a> ConstraintGenerator<'a> {
 
                 if let Some(struct_ty) = struct_ty {
                     let fields = self.rir.get_field_inits(*fields_start, *fields_len);
-                    // Generate constraints for each field
-                    for (_, value_ref) in fields.iter() {
-                        self.generate(*value_ref, ctx);
+                    // Constrain each initializer against its field's declared
+                    // type, so literal initializers are range-checked at the
+                    // field's width instead of silently wrapping
+                    // (`S { a: 300 }` with a: u8 used to truncate to 44).
+                    // (RUE-72)
+                    for (field_name, value_ref) in fields.iter() {
+                        let value_info = self.generate(*value_ref, ctx);
+                        if let Some(field_ty) = self.field_type_of(struct_ty, *field_name) {
+                            let expected = self.type_to_infer(field_ty);
+                            self.add_constraint(Constraint::equal(value_info.ty, expected, span));
+                        }
                     }
                     InferType::Concrete(struct_ty)
                 } else {
@@ -942,24 +992,35 @@ impl<'a> ConstraintGenerator<'a> {
             }
 
             // Field access
-            InstData::FieldGet { base, field: _ } => {
-                // Generate constraints for the base expression (needed for nested field access)
-                let _base_info = self.generate(*base, ctx);
-                // We need to look up the field type from the struct definition.
-                // For now, use a fresh type variable - full resolution happens during
-                // semantic analysis which has access to struct definitions.
-                let result_var = self.fresh_var();
-                InferType::Var(result_var)
+            InstData::FieldGet { base, field } => {
+                let base_info = self.generate(*base, ctx);
+                // When the base's struct type is already concrete, the field's
+                // declared type is known RIGHT NOW — yield it so downstream
+                // constraints see the real type instead of a free variable.
+                // Leaving it free mis-defaulted literals compared against i64
+                // fields to i32 (spurious E0800) and made method calls on a
+                // field receiver unresolvable (the MethodCall arm requires a
+                // Concrete receiver). When the base is still a variable, fall
+                // back to a fresh var; sema resolves and diagnoses later.
+                // (RUE-89, RUE-126)
+                match self.known_field_type(&base_info.ty, *field) {
+                    Some(field_ty) => self.type_to_infer(field_ty),
+                    None => InferType::Var(self.fresh_var()),
+                }
             }
 
             // Field assignment
-            InstData::FieldSet {
-                base,
-                field: _,
-                value,
-            } => {
-                self.generate(*base, ctx);
-                self.generate(*value, ctx);
+            InstData::FieldSet { base, field, value } => {
+                let base_info = self.generate(*base, ctx);
+                let value_info = self.generate(*value, ctx);
+                // Constrain the assigned value against the field's declared
+                // type, so a literal RHS is range-checked at the field's width
+                // instead of silently wrapping (`s.a = 300` with a: u8 used to
+                // truncate to 44). (RUE-104)
+                if let Some(field_ty) = self.known_field_type(&base_info.ty, *field) {
+                    let expected = self.type_to_infer(field_ty);
+                    self.add_constraint(Constraint::equal(value_info.ty, expected, span));
+                }
                 InferType::Concrete(Type::UNIT)
             }
 
