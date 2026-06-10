@@ -190,8 +190,12 @@ impl<'a> CfgLower<'a> {
             imm: length as i64,
         });
 
-        // Compare index (unsigned) against length
-        self.mir.push(X86Inst::CmpRR {
+        // Compare index (unsigned) against length. The index is a usize
+        // (64-bit) and the length is materialized as a 64-bit immediate, so the
+        // comparison MUST be 64-bit — a 32-bit cmp would ignore the high half of
+        // the index and let an out-of-range index whose low 32 bits happen to be
+        // in range bypass the check, reading out of bounds (RUE-87).
+        self.mir.push(X86Inst::Cmp64RR {
             src1: Operand::Virtual(index_vreg),
             src2: Operand::Virtual(length_vreg),
         });
@@ -3564,6 +3568,11 @@ impl<'a> CfgLower<'a> {
                 default,
             } => {
                 let scrutinee_vreg = self.get_vreg(*scrutinee);
+                // The case value is materialized as a full 64-bit immediate, so a
+                // 64-bit scrutinee must be compared at 64-bit width; a 32-bit cmp
+                // would match on only the low 32 bits (RUE-27). Sub-64-bit
+                // scrutinees keep the 32-bit compare (correct at their width).
+                let scrutinee_is_64 = self.ctx.cfg.get_inst(*scrutinee).ty.is_64_bit();
 
                 // Generate comparison and jump for each case
                 let cases = self.ctx.cfg.get_switch_cases(*cases_start, *cases_len);
@@ -3574,10 +3583,17 @@ impl<'a> CfgLower<'a> {
                         dst: Operand::Virtual(case_vreg),
                         imm: *value,
                     });
-                    self.mir.push(X86Inst::CmpRR {
-                        src1: Operand::Virtual(scrutinee_vreg),
-                        src2: Operand::Virtual(case_vreg),
-                    });
+                    if scrutinee_is_64 {
+                        self.mir.push(X86Inst::Cmp64RR {
+                            src1: Operand::Virtual(scrutinee_vreg),
+                            src2: Operand::Virtual(case_vreg),
+                        });
+                    } else {
+                        self.mir.push(X86Inst::CmpRR {
+                            src1: Operand::Virtual(scrutinee_vreg),
+                            src2: Operand::Virtual(case_vreg),
+                        });
+                    }
                     self.mir.push(X86Inst::Jz {
                         label: self.block_label(*target),
                     });
