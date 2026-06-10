@@ -154,9 +154,16 @@ impl Unifier {
                 if t1 == t2 || t1.can_coerce_to(t2) || t2.can_coerce_to(t1) {
                     UnifyResult::Ok
                 } else {
+                    // Every directional constraint site passes (actual, expected):
+                    // Ret is (value, return_type), Assign is (value, variable),
+                    // Alloc is (init, annotation), calls are (arg, param). So the
+                    // RHS is what the context expects and the LHS is what was
+                    // found. This used to report lhs as "expected", which printed
+                    // every mismatch backwards ("expected bool, found i32" for
+                    // `fn main() -> i32 { true }`). (RUE-133)
                     UnifyResult::TypeMismatch {
-                        expected: lhs_resolved,
-                        found: rhs_resolved,
+                        expected: rhs_resolved,
+                        found: lhs_resolved,
                     }
                 }
             }
@@ -200,9 +207,10 @@ impl Unifier {
                 },
             ) => {
                 if len1 != len2 {
+                    // Same (actual, expected) convention as TypeMismatch above.
                     UnifyResult::ArrayLengthMismatch {
-                        expected: *len1,
-                        found: *len2,
+                        expected: *len2,
+                        found: *len1,
                     }
                 } else {
                     // Recursively unify element types
