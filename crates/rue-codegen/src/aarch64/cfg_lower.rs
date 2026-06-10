@@ -2858,8 +2858,12 @@ impl<'a> CfgLower<'a> {
                     dst: Operand::Virtual(sext_vreg),
                     src: Operand::Virtual(result_vreg),
                 });
-                // Use 64-bit compare since sext_vreg is a 64-bit value
-                self.mir.push(Aarch64Inst::Cmp64RR {
+                // Compare at 32-bit width. The sub-word arithmetic was emitted
+                // as a 32-bit (W-register) op that zeroes bits 32-63, so a 64-bit
+                // compare against the sign-extended byte/word would mismatch a
+                // legitimately-negative in-range result and falsely trap
+                // (RUE-28 sub, RUE-60 neg). The low 32 bits must match.
+                self.mir.push(Aarch64Inst::CmpRR {
                     src1: Operand::Virtual(result_vreg),
                     src2: Operand::Virtual(sext_vreg),
                 });
@@ -2875,8 +2879,12 @@ impl<'a> CfgLower<'a> {
                     dst: Operand::Virtual(sext_vreg),
                     src: Operand::Virtual(result_vreg),
                 });
-                // Use 64-bit compare since sext_vreg is a 64-bit value
-                self.mir.push(Aarch64Inst::Cmp64RR {
+                // Compare at 32-bit width. The sub-word arithmetic was emitted
+                // as a 32-bit (W-register) op that zeroes bits 32-63, so a 64-bit
+                // compare against the sign-extended byte/word would mismatch a
+                // legitimately-negative in-range result and falsely trap
+                // (RUE-28 sub, RUE-60 neg). The low 32 bits must match.
+                self.mir.push(Aarch64Inst::CmpRR {
                     src1: Operand::Virtual(result_vreg),
                     src2: Operand::Virtual(sext_vreg),
                 });

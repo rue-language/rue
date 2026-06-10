@@ -1,0 +1,113 @@
+# Sub-word (i8/i16) signed arithmetic overflow-check regression tests
+# (RUE-28 add/sub/mul, RUE-60 neg, RUE-98 right-shift; epic RUE-107).
+#
+# The sub-word overflow check sign-extended the low byte/word to 64 bits and
+# compared it with a 64-bit compare against the result. But the arithmetic was
+# emitted as a 32-bit op that zero-extends bits 32-63, so any legitimately
+# negative in-range result (e.g. -3) mismatched the sign-extended value and
+# falsely trapped "integer overflow". The compare is now 32-bit. Genuine
+# overflow (a value outside the type's range) must still trap.
+
+[section]
+id = "cli.subword"
+name = "Sub-word integer overflow checks"
+description = "i8/i16 arithmetic with in-range negative results must not falsely trap."
+
+[[case]]
+name = "i8_sub_negative_in_range"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: i8 = 2;
+    let b: i8 = 5;
+    let c: i8 = a - b;     // -3, in range; must not trap
+    if c == 0 - 3 { 1 } else { 0 }
+}
+""" }]
+exit_code = 1
+
+[[case]]
+name = "i8_add_negative_in_range"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: i8 = 0 - 1;
+    let b: i8 = 0 - 1;
+    let c: i8 = a + b;     // -2
+    if c == 0 - 2 { 1 } else { 0 }
+}
+""" }]
+exit_code = 1
+
+[[case]]
+name = "i8_mul_negative_in_range"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: i8 = 0 - 5;
+    let b: i8 = 3;
+    let c: i8 = a * b;     // -15
+    if c == 0 - 15 { 1 } else { 0 }
+}
+""" }]
+exit_code = 1
+
+[[case]]
+name = "i8_neg_in_range"
+files = [{ path = "main.rue", source = """
+fn negate(x: i8) -> i8 { 0 - x }
+fn main() -> i32 {
+    let c: i8 = negate(5);   // -5
+    if c == 0 - 5 { 1 } else { 0 }
+}
+""" }]
+exit_code = 1
+
+[[case]]
+name = "i16_sub_negative_in_range"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: i16 = 5;
+    let b: i16 = 10;
+    let c: i16 = a - b;    // -5
+    if c == 0 - 5 { 1 } else { 0 }
+}
+""" }]
+exit_code = 1
+
+[[case]]
+name = "i16_arith_right_shift_negative"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: i16 = 0 - 16;
+    let r: i16 = a >> 2;   // -4 (arithmetic shift)
+    if r == 0 - 4 { 1 } else { 0 }
+}
+""" }]
+exit_code = 1
+
+# Control: genuine overflow must still trap.
+[[case]]
+name = "i8_genuine_add_overflow_traps"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: i8 = 100;
+    let b: i8 = 50;
+    let c: i8 = a + b;     // 150 > 127, overflow at this op
+    @dbg(c);
+    0
+}
+""" }]
+exit_code = 101
+runtime_error_contains = ["integer overflow"]
+
+[[case]]
+name = "i8_genuine_mul_overflow_traps"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: i8 = 100;
+    let b: i8 = 2;
+    let c: i8 = a * b;     // 200 > 127, overflow at this op
+    @dbg(c);
+    0
+}
+""" }]
+exit_code = 101
+runtime_error_contains = ["integer overflow"]
