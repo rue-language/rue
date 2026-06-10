@@ -20,7 +20,7 @@ Before planning, ensure you understand:
 
 1. **What problem does this solve?** - Be specific about the use case
 2. **What's the desired behavior?** - How should it work from a user's perspective
-3. **What exists already?** - Check for related code, existing issues (`bd ready`)
+3. **What exists already?** - Check for related code, existing issues (Linear `list_issues` in the Rue team)
 
 Ask clarifying questions if requirements are ambiguous.
 
@@ -37,7 +37,7 @@ Characteristics:
 
 Examples: Add `%` operator, add `else if` syntax, add unary `+`, new warning type
 
-**Output**: A bd issue
+**Output**: A Linear issue
 
 ### Large Features
 
@@ -51,17 +51,13 @@ Characteristics:
 
 Examples: Mutable strings, inout parameters, enums and pattern matching, trait system
 
-**Output**: An ADR + bd epic with subtasks
+**Output**: An ADR + Linear epic with sub-issues
 
 ## Step 3: Create the Plan
 
 ### For Small Features
 
-Create a bd issue:
-
-```bash
-bd create "<feature title>" -t feature -p 2 --json
-```
+Create a Linear issue: use the Linear MCP `save_issue` tool with `team: "Rue"`, the `feature` label, and priority 3 (Medium).
 
 Include in the description:
 - What the feature does
@@ -96,25 +92,20 @@ Include in the description:
    }
    ```
 
-3. **Create the bd epic and subtasks**
+3. **Create the Linear epic and sub-issues**
 
-   ```bash
-   # Create the epic
-   bd create "<feature title>" -t epic -p 2 --json
-
-   # Create subtasks for each phase
-   bd create "Phase 1: <description>" -t task --parent <epic-id> --json
-   bd create "Phase 2: <description>" -t task --parent <epic-id> --json
-   ```
+   Use the Linear MCP `save_issue` tool:
+   - Create the epic: `team: "Rue"`, the `feature` label, priority 3 (Medium)
+   - Create a sub-issue per phase ("Phase 1: <description>", "Phase 2: <description>", ...) with the `task` label and `parentId` set to the epic
 
 4. **Update the ADR with issue IDs**
 
-   Fill in the bd issue IDs in the Implementation Phases section:
+   Fill in the Linear issue IDs in the Implementation Phases section:
    ```markdown
    ## Implementation Phases
 
-   - [ ] **Phase 1: Core parsing** - bd-42
-   - [ ] **Phase 2: Type checking** - bd-43
+   - [ ] **Phase 1: Core parsing** - RUE-42
+   - [ ] **Phase 2: Type checking** - RUE-43
    ```
 
 ## Step 4: Get Approval
@@ -130,13 +121,13 @@ For large features, the ADR serves as the approval artifact.
 
 | Feature Size | Artifacts Created |
 |--------------|-------------------|
-| Small | bd issue |
-| Large | ADR + bd epic + subtasks + PreviewFeature entry |
+| Small | Linear issue |
+| Large | ADR + Linear epic + sub-issues + PreviewFeature entry |
 
 ## Next Steps
 
 Once the plan is approved:
-- For small features: `/implement <bd-id>`
-- For large features: `/implement <first-subtask-id>`
+- For small features: `/implement <RUE-id>`
+- For large features: `/implement <first-sub-issue-id>`
 
 See [implementation.md](implementation.md) for the implementation process.

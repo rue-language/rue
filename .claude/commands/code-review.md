@@ -42,6 +42,6 @@ Review the current changes following `docs/process/code-review.md`.
 Provide specific, actionable feedback with file:line references.
 
 **Blocking issues**: Must fix before commit
-**Non-blocking**: File as bd issues for later
+**Non-blocking**: File as Linear issues for later
 
 Consider the way that a group of Rust experts and compiler experts would review this change.

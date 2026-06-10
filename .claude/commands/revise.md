@@ -98,4 +98,4 @@ If x86-64 passes but aarch64 fails (or vice versa):
 - Use `jj squash` to amend, not `jj commit`
 - Force push is expected - the branch is being revised
 - If multiple rounds of feedback, repeat this process
-- Don't close bd issues again - they were closed in `/ship`
+- Don't mark Linear issues Done again - they were completed in `/ship`

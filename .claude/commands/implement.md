@@ -1,7 +1,7 @@
 ---
-description: Implement a planned feature from a bd issue
+description: Implement a planned feature from a Linear issue
 allowed-tools: Bash, Read, Write, Edit, Glob, Grep, Task
-argument-hint: <bd-id>
+argument-hint: <RUE-id>
 ---
 
 ## Task
@@ -19,7 +19,7 @@ Key references:
 
 ## Summary
 
-1. **Load context** - `bd show <id>`, read ADR if applicable, mark in_progress
+1. **Load context** - fetch the issue with the Linear MCP `get_issue` tool, read ADR if applicable, claim it (`save_issue` with state "In Progress", assignee "me")
 2. **Scope check** - Ensure work fits in one session (split if not)
 3. **Implement** in order:
    - Update specification (`docs/spec/src/`) if changing language semantics

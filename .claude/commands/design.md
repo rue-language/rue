@@ -1,5 +1,5 @@
 ---
-description: Design a new feature (ADR + bd epic + subtasks)
+description: Design a new feature (ADR + Linear epic + sub-issues)
 allowed-tools: Bash, Read, Write, Edit, Glob, Grep, Task
 argument-hint: <feature description>
 ---
@@ -10,7 +10,7 @@ Design this feature: $ARGUMENTS
 
 ## Instructions
 
-This command handles the full design phase for new features, producing an ADR and bd tracking.
+This command handles the full design phase for new features, producing an ADR and Linear tracking.
 
 Read and follow `docs/process/planning.md` for details.
 
@@ -25,7 +25,7 @@ Key references:
 
 - Clarify requirements from the conversation context
 - Research the codebase to understand impact
-- Check `bd ready` for related work
+- Check for related work with the Linear MCP tools (`list_issues` in the Rue team)
 
 ### 2. Assess Size
 
@@ -40,7 +40,7 @@ Key references:
 
 **For small features:**
 - Draft a brief implementation plan
-- Create a bd issue after approval
+- Create a Linear issue after approval
 
 **For large features:**
 - Create ADR from template (`docs/designs/NNNN-<feature>.md`)
@@ -49,31 +49,21 @@ Key references:
 
 ### 4. Get Approval
 
-Present the plan and wait for user approval before creating bd issues.
+Present the plan and wait for user approval before creating Linear issues.
 
 ### 5. Create Tracking
 
-**After approval only:**
+**After approval only**, use the Linear MCP tools:
 
 For small features:
-```bash
-bd create "<title>" -t feature -p 2 --json
-```
+- `save_issue` with `team: "Rue"`, the `feature` label, and priority 3 (Medium)
 
 For large features:
-```bash
-# Create epic
-bd create "<title>" -t epic -p 2 --json
+- Create the epic: `save_issue` with `team: "Rue"`, the `feature` label, and priority 3 (Medium)
+- Create a sub-issue per phase: `save_issue` with `parentId` set to the epic and the `task` label ("Phase 1: <desc>", "Phase 2: <desc>", ...)
+- If preview gating needed, add to PreviewFeature enum
 
-# Create subtasks for each phase
-bd create "Phase 1: <desc>" -t task --parent <epic-id> --json
-bd create "Phase 2: <desc>" -t task --parent <epic-id> --json
-# ...
-
-# If preview gating needed, add to PreviewFeature enum
-```
-
-Update ADR with bd issue IDs.
+Update ADR with Linear issue IDs.
 
 ## Output Format
 
@@ -88,23 +78,23 @@ Update ADR with bd issue IDs.
 
 <Implementation plan or phase breakdown>
 
-Please review. Say "approved" to create bd issues, or request changes.
+Please review. Say "approved" to create Linear issues, or request changes.
 ```
 
 **After approval:**
 ```
 ## Design Complete
 
-**Issue:** bd-XX - <title>
-[For large: **Epic:** bd-XX with subtasks bd-YY, bd-ZZ]
+**Issue:** RUE-XX - <title>
+[For large: **Epic:** RUE-XX with sub-issues RUE-YY, RUE-ZZ]
 
-Next: `/implement bd-XX`
+Next: `/implement RUE-XX`
 ```
 
 ## Important
 
 - Design only - do not write implementation code
-- Do NOT create bd issues until user approves
+- Do NOT create Linear issues until user approves
 - Infer scope and priority from conversation context
 - For preview features, note the gate requirement in the ADR
 - Each phase should fit in one context window

@@ -47,7 +47,7 @@ We use **Jujutsu (jj)**, not git. Key differences:
 
 ### Footer (Optional)
 
-- Reference bd issues: `Fixes bd-42` or `Related to bd-42`
+- Reference Linear issues: `Fixes RUE-42` or `Related to RUE-42`
 - Multiple issues on separate lines
 
 ### Examples
@@ -65,7 +65,7 @@ Implements the modulo operator for integer types. The operator
 follows Rust semantics: the result has the same sign as the
 dividend (truncated division).
 
-Fixes bd-42
+Fixes RUE-42
 ```
 
 **Multi-issue:**
@@ -76,23 +76,13 @@ Consolidates duplicate type-checking logic for arithmetic,
 comparison, and bitwise operators into a shared helper function.
 This prepares for adding new operators without code duplication.
 
-Related to bd-45
-Related to bd-46
+Related to RUE-45
+Related to RUE-46
 ```
 
 ## Workflow
 
-### 1. Close Related Issues
-
-If this commit completes a bd issue, close it **before** committing:
-
-```bash
-bd close <bd-id> --reason "Completed"
-```
-
-This ensures the issue closure is included in the same commit as the code changes.
-
-### 2. Create the Commit
+### 1. Create the Commit
 
 ```bash
 jj commit -m "<message>"
@@ -102,6 +92,10 @@ For multi-line messages, use your editor:
 ```bash
 jj commit
 ```
+
+### 2. Mark Related Issues Done
+
+If this commit completes a Linear issue, mark it Done **after** committing: use the Linear MCP `save_issue` tool with state "Done". Linear state isn't stored in the repo, so the commit message reference (`Fixes RUE-NN`) is what links the two.
 
 ### 3. Verify
 
@@ -145,7 +139,7 @@ Stabilize modulo operator
 Remove preview gate and mark feature as stable. All tests pass
 without the preview flag.
 
-Closes bd-42 (epic)
+Closes RUE-42 (epic)
 ```
 
 ### Spec-Only Changes

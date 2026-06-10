@@ -95,7 +95,7 @@ Provide specific, actionable feedback:
 - Explain what's wrong and how to fix it
 
 **Non-blocking improvements**: Can be addressed later
-- File as bd issues: `bd create "..." -t bug -p 3`
+- File as Linear issues (`save_issue`, `bug` label, priority 4)
 - Note in review that it's non-blocking
 
 ## Example Review
@@ -115,7 +115,7 @@ Provide specific, actionable feedback:
 
 ### Non-Blocking (filed as issues)
 
-- bd-45: Consider optimizing modulo by power of 2 to bitwise AND
+- RUE-45: Consider optimizing modulo by power of 2 to bitwise AND
 
 ### Looks Good
 
