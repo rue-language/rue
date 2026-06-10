@@ -1309,12 +1309,16 @@ impl<'a> CfgLower<'a> {
                         });
                     }
                 } else if init_type.is_struct() && !self.ctx.is_builtin_string(init_type) {
-                    // Struct: recursively flatten struct fields (including array fields) to scalars.
-                    // Builtin String is also a struct, but must take the dedicated fat-pointer
-                    // branch below (it materializes all 3 slots via get_or_compute_field_vregs);
-                    // collect_struct_scalar_vregs only sees the single lowered vreg for a String
-                    // read from a place, which would drop len/cap. (RUE-63/94)
-                    let scalar_vregs = self.collect_struct_scalar_vregs(*init);
+                    // Struct: store all slots via the single accessor. It materializes a
+                    // struct read from a place (`let q = a.p`) by loading its slot_count
+                    // consecutive slots, and cache-hits StructInit/Load/Param/Call/
+                    // BlockParam — all of which now carry fully-flattened slot lists
+                    // (nested arrays included). Fall back to the flattener for any source
+                    // the accessor doesn't model. (RUE-118 / RUE-22)
+                    // (Builtin String is excluded above — it takes the fat-pointer branch.)
+                    let scalar_vregs = self
+                        .get_or_compute_field_vregs(*init)
+                        .unwrap_or_else(|| self.collect_struct_scalar_vregs(*init));
                     for (i, scalar_vreg) in scalar_vregs.iter().enumerate() {
                         let field_slot = slot + i as u32;
                         let offset = self.ctx.local_offset(field_slot);
@@ -1480,9 +1484,7 @@ impl<'a> CfgLower<'a> {
                 if self.ctx.is_builtin_string(val_type) {
                     // String: store ptr, len, and cap to consecutive slots
                     let field_vregs = self
-                        .struct_slot_vregs
-                        .get(val)
-                        .cloned()
+                        .get_or_compute_field_vregs(*val)
                         .expect("string should have fat pointer fields in Store");
                     debug_assert_eq!(
                         field_vregs.len(),
@@ -1699,48 +1701,17 @@ impl<'a> CfgLower<'a> {
                     }
 
                     match arg_type.kind() {
-                        TypeKind::Struct(struct_id) => {
-                            let arg_data = &self.ctx.cfg.get_inst(arg_value).data;
-                            let slot_count = self.ctx.type_slot_count(Type::new_struct(struct_id));
-                            match arg_data {
-                                CfgInstData::Load { slot } => {
-                                    for slot_idx in 0..slot_count {
-                                        let slot_vreg = self.mir.alloc_vreg();
-                                        let actual_slot = slot + slot_idx;
-                                        let offset = self.ctx.local_offset(actual_slot);
-                                        self.mir.push(Aarch64Inst::Ldr {
-                                            dst: Operand::Virtual(slot_vreg),
-                                            base: Reg::Fp,
-                                            offset,
-                                        });
-                                        flattened_vregs.push(slot_vreg);
-                                    }
-                                }
-                                CfgInstData::Param { index } => {
-                                    for slot_idx in 0..slot_count {
-                                        let slot_vreg = self.mir.alloc_vreg();
-                                        let param_slot = self.ctx.num_locals + index + slot_idx;
-                                        let offset = self.ctx.local_offset(param_slot);
-                                        self.mir.push(Aarch64Inst::Ldr {
-                                            dst: Operand::Virtual(slot_vreg),
-                                            base: Reg::Fp,
-                                            offset,
-                                        });
-                                        flattened_vregs.push(slot_vreg);
-                                    }
-                                }
-                                CfgInstData::StructInit { .. } | CfgInstData::Call { .. } => {
-                                    if let Some(field_vregs) =
-                                        self.struct_slot_vregs.get(&arg_value)
-                                    {
-                                        flattened_vregs.extend(field_vregs.iter().copied());
-                                    } else {
-                                        flattened_vregs.push(self.get_vreg(arg_value));
-                                    }
-                                }
-                                _ => {
-                                    flattened_vregs.push(self.get_vreg(arg_value));
-                                }
+                        TypeKind::Struct(_) => {
+                            // Pass all slots of the (possibly multi-slot) struct/String arg,
+                            // regardless of how it was produced — StructInit, Load, Param, Call,
+                            // BlockParam, or a field place-read (`f(h.s)` / `f(w.p)`). The
+                            // accessor materializes lazily-sourced values (Load/Param/PlaceRead)
+                            // and cache-hits eager ones (StructInit/Call/BlockParam). Previously
+                            // the `_` arm here passed only slot 0 of a place-read aggregate. (RUE-118)
+                            if let Some(field_vregs) = self.get_or_compute_field_vregs(arg_value) {
+                                flattened_vregs.extend(field_vregs);
+                            } else {
+                                flattened_vregs.push(self.get_vreg(arg_value));
                             }
                         }
                         TypeKind::Array(_) => {
@@ -1964,8 +1935,9 @@ impl<'a> CfgLower<'a> {
 
                     // Handle String arguments separately
                     if self.ctx.is_builtin_string(arg_type) {
-                        // String is a fat pointer stored as [ptr_vreg, len_vreg] in struct_slot_vregs
-                        if let Some(field_vregs) = self.struct_slot_vregs.get(&arg_val) {
+                        // String fat pointer (ptr, len, cap) — materialize a String read
+                        // from a place (`@dbg(h.s)`) as well as cached sources. (RUE-118)
+                        if let Some(field_vregs) = self.get_or_compute_field_vregs(arg_val) {
                             let ptr_vreg = field_vregs[0];
                             let len_vreg = field_vregs[1];
 
@@ -2079,8 +2051,9 @@ impl<'a> CfgLower<'a> {
                     let args = self.ctx.cfg.get_extra(*args_start, *args_len);
                     let arg_val = args[0];
 
-                    // Get the String fat pointer (ptr, len, cap) from struct_slot_vregs
-                    if let Some(field_vregs) = self.struct_slot_vregs.get(&arg_val) {
+                    // Get the String fat pointer (ptr, len, cap) — materialize a String
+                    // read from a place (`@parse_i32(h.s)`) as well as cached sources. (RUE-118)
+                    if let Some(field_vregs) = self.get_or_compute_field_vregs(arg_val) {
                         let ptr_vreg = field_vregs[0];
                         let len_vreg = field_vregs[1];
 
@@ -2406,13 +2379,17 @@ impl<'a> CfgLower<'a> {
                 for field in &fields {
                     let field_inst = self.ctx.cfg.get_inst(*field);
                     if field_inst.ty.is_struct() {
-                        // Nested struct - get all its slot vregs
+                        // Nested struct/String field - all its slot vregs, incl. a
+                        // field read from another aggregate (`B { p: a.p }`). (RUE-118)
                         let nested_vregs = self
-                            .struct_slot_vregs
-                            .get(field)
-                            .cloned()
-                            .expect("nested struct field should have slot vregs in cache");
+                            .get_or_compute_field_vregs(*field)
+                            .expect("nested struct field should have slot vregs");
                         slot_vregs.extend(nested_vregs);
+                    } else if field_inst.ty.is_array() {
+                        // Nested array field - flatten to its element scalar slots so the
+                        // cached slot list is fully flattened (consumers and the Alloc-of-
+                        // this-StructInit rely on it). (RUE-118)
+                        slot_vregs.extend(self.collect_array_scalar_vregs(*field));
                     } else {
                         // Scalar field - single vreg
                         slot_vregs.push(self.get_vreg(*field));
@@ -2650,51 +2627,12 @@ impl<'a> CfgLower<'a> {
 
                 // Handle String specially - it's a fat pointer (ptr, len, cap)
                 if self.ctx.is_builtin_string(dropped_ty) {
-                    // String requires all 3 slots as arguments to __rue_drop_String
-                    // First, try to get the vregs from cache
-                    let field_vregs =
-                        if let Some(vregs) = self.struct_slot_vregs.get(dropped_value).cloned() {
-                            vregs
-                        } else {
-                            // Not in cache - check if it's a Param instruction
-                            let dropped_inst = &self.ctx.cfg.get_inst(*dropped_value).data;
-                            if let CfgInstData::Param { index } = dropped_inst {
-                                // Load all 3 String fields from param slots
-                                let mut vregs = Vec::with_capacity(3);
-                                for field_idx in 0..3u32 {
-                                    let field_vreg = self.mir.alloc_vreg();
-                                    let param_slot = self.ctx.num_locals + index + field_idx;
-                                    let offset = self.ctx.local_offset(param_slot);
-                                    self.mir.push(Aarch64Inst::Ldr {
-                                        dst: Operand::Virtual(field_vreg),
-                                        base: Reg::Fp,
-                                        offset,
-                                    });
-                                    vregs.push(field_vreg);
-                                }
-                                vregs
-                            } else if let CfgInstData::Load { slot } = dropped_inst {
-                                // Load from local variable slots
-                                let mut vregs = Vec::with_capacity(3);
-                                for field_idx in 0..3u32 {
-                                    let field_vreg = self.mir.alloc_vreg();
-                                    let field_slot = slot + field_idx;
-                                    let offset = self.ctx.local_offset(field_slot);
-                                    self.mir.push(Aarch64Inst::Ldr {
-                                        dst: Operand::Virtual(field_vreg),
-                                        base: Reg::Fp,
-                                        offset,
-                                    });
-                                    vregs.push(field_vreg);
-                                }
-                                vregs
-                            } else {
-                                unreachable!(
-                                    "String value should have field vregs or be a Param/Load: {:?}",
-                                    dropped_inst
-                                );
-                            }
-                        };
+                    // String requires all 3 slots as arguments to __rue_drop_String.
+                    // The accessor handles every source (cache for StructInit/Call/
+                    // BlockParam; materialize for Load/Param/PlaceRead). (RUE-118)
+                    let field_vregs = self
+                        .get_or_compute_field_vregs(*dropped_value)
+                        .expect("String value should have field vregs");
 
                     debug_assert_eq!(
                         field_vregs.len(),
@@ -3883,54 +3821,20 @@ impl<'a> CfgLower<'a> {
                     });
                     let symbol_id = self.intern_symbol("__rue_exit");
                     self.mir.push(Aarch64Inst::Bl { symbol_id });
-                } else if let Some(struct_id) = return_type.as_struct() {
-                    // Return struct in registers
-                    let slot_count = self.ctx.type_slot_count(Type::new_struct(struct_id));
-                    let value_data = &self.ctx.cfg.get_inst(*value).data;
-
-                    match value_data {
-                        CfgInstData::StructInit { .. }
-                        | CfgInstData::Call { .. }
-                        | CfgInstData::BlockParam { .. } => {
-                            // Use slot vregs from cache (populated for BlockParam, StructInit, Call)
-                            if let Some(slot_vregs) = self.struct_slot_vregs.get(value).cloned() {
-                                for (i, slot_vreg) in slot_vregs.iter().enumerate() {
-                                    if i < RET_REGS.len() {
-                                        self.mir.push(Aarch64Inst::MovRR {
-                                            dst: Operand::Physical(RET_REGS[i]),
-                                            src: Operand::Virtual(*slot_vreg),
-                                        });
-                                    }
-                                }
-                            }
-                        }
-                        CfgInstData::Param { index } => {
-                            for slot_idx in 0..slot_count {
-                                let param_slot = self.ctx.num_locals + index + slot_idx;
-                                let offset = self.ctx.local_offset(param_slot);
-                                self.mir.push(Aarch64Inst::Ldr {
-                                    dst: Operand::Physical(RET_REGS[slot_idx as usize]),
-                                    base: Reg::Fp,
-                                    offset,
-                                });
-                            }
-                        }
-                        CfgInstData::Load { slot } => {
-                            for slot_idx in 0..slot_count {
-                                let actual_slot = slot + slot_idx;
-                                let offset = self.ctx.local_offset(actual_slot);
-                                self.mir.push(Aarch64Inst::Ldr {
-                                    dst: Operand::Physical(RET_REGS[slot_idx as usize]),
-                                    base: Reg::Fp,
-                                    offset,
-                                });
-                            }
-                        }
-                        _ => {
-                            let val_vreg = self.get_vreg(*value);
+                } else if return_type.as_struct().is_some() {
+                    // Return struct in registers. Gather all slots of the returned
+                    // aggregate through the single accessor, regardless of source
+                    // (StructInit/Call/BlockParam cache-hit; Load/Param/PlaceRead
+                    // materialize). Previously the `_` arm returned only slot 0 of a
+                    // place-read aggregate (`fn f(w: Wrap) -> Point { w.p }`). (RUE-118)
+                    let slot_vregs = self
+                        .get_or_compute_field_vregs(*value)
+                        .unwrap_or_else(|| vec![self.get_vreg(*value)]);
+                    for (i, slot_vreg) in slot_vregs.iter().enumerate() {
+                        if i < RET_REGS.len() {
                             self.mir.push(Aarch64Inst::MovRR {
-                                dst: Operand::Physical(Reg::X0),
-                                src: Operand::Virtual(val_vreg),
+                                dst: Operand::Physical(RET_REGS[i]),
+                                src: Operand::Virtual(*slot_vreg),
                             });
                         }
                     }

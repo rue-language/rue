@@ -66,6 +66,7 @@ stdout = "8\n"
 [[case]]
 name = "struct_9_slots_return_only"
 known_bug = "RUE-13"
+known_bug_on = ["x86-64-linux"]
 files = [{ path = "main.rue", source = """
 struct S {
     items: [i32; 8],
@@ -86,8 +87,6 @@ stdout = "8\n"
 
 [[case]]
 name = "struct_7_slots_pass_and_return"
-known_bug = "RUE-13"
-known_bug_on = ["x86-64-linux"]
 files = [{ path = "main.rue", source = """
 struct S {
     items: [i32; 6],
@@ -110,6 +109,7 @@ stdout = "6\n"
 [[case]]
 name = "struct_9_slots_pass_and_return"
 known_bug = "RUE-13"
+known_bug_on = ["x86-64-linux"]
 files = [{ path = "main.rue", source = """
 struct S {
     items: [i32; 8],
