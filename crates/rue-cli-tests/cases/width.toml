@@ -1,0 +1,148 @@
+# 64-bit operand-width regression tests (epic RUE-105).
+#
+# The x86-64 backend used to emit 32-bit compares for 64-bit operands, so any
+# value whose high 32 bits mattered was compared on its low 32 bits only. These
+# cases pin the fixed behavior for the two compare sites: the array bounds check
+# (RUE-87, a memory-safety hole) and the match/switch dispatch (RUE-27).
+
+[section]
+id = "cli.width"
+name = "64-bit operand width"
+description = "64-bit values must be compared at full width, not truncated to 32 bits."
+
+# RUE-87: a usize index above 2^32 whose low 32 bits are in range used to bypass
+# the bounds check and segfault (exit 139). It must now trap as a normal
+# out-of-bounds panic (exit 101).
+[[case]]
+name = "bounds_check_large_index_traps_not_segfaults"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let arr: [i32; 4] = [10, 20, 30, 40];
+    let idx: usize = 4294967298;   // 2^32 + 2; low 32 bits == 2
+    arr[idx]
+}
+""" }]
+exit_code = 101
+runtime_error_contains = ["index out of bounds"]
+
+# Control: an ordinary out-of-bounds index still traps (and a small index path
+# is unaffected by the 64-bit compare).
+[[case]]
+name = "bounds_check_small_oob_still_traps"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let arr: [i32; 4] = [10, 20, 30, 40];
+    let idx: usize = 5;
+    arr[idx]
+}
+""" }]
+exit_code = 101
+runtime_error_contains = ["index out of bounds"]
+
+[[case]]
+name = "bounds_check_in_bounds_ok"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let arr: [i32; 4] = [10, 20, 30, 40];
+    let i: usize = 2;
+    arr[i]
+}
+""" }]
+exit_code = 30
+
+# RUE-27: match on a 64-bit scrutinee used to compare only the low 32 bits, so
+# 2^32 wrongly matched the `0` arm (exit 1). It must take the wildcard (42).
+[[case]]
+name = "match_i64_high_bits_not_truncated"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let x: i64 = 4294967296;   // 2^32; low 32 bits == 0
+    match x {
+        0 => 1,
+        _ => 42,
+    }
+}
+""" }]
+exit_code = 42
+
+# RUE-27: the correct arm is selected by the full 64-bit value. 4294967297 has
+# low 32 bits == 1, which used to alias the `1 =>` arm (exit 7).
+[[case]]
+name = "match_i64_selects_correct_arm"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let x: i64 = 4294967297;
+    match x {
+        1 => 7,
+        4294967297 => 42,
+        _ => 2,
+    }
+}
+""" }]
+exit_code = 42
+
+# Control: sub-64-bit match dispatch keeps the 32-bit compare and stays correct.
+[[case]]
+name = "match_i32_still_correct"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let x: i32 = 5;
+    match x {
+        4 => 10,
+        5 => 42,
+        _ => 0,
+    }
+}
+""" }]
+exit_code = 42
+
+# RUE-58: i64/u64 bitwise AND/OR/XOR were lowered as 32-bit ops, zeroing the
+# high 32 bits of the result. Now use REX.W forms when the operands are 64-bit.
+[[case]]
+name = "i64_bitor_high_bits_preserved"
+files = [{ path = "main.rue", source = """
+fn val() -> i64 { 1 }
+fn main() -> i32 {
+    let high: i64 = val() << 40;
+    let a: i64 = high | 1;          // (1<<40) | 1, high bits set
+    if a > 4294967296 { 1 } else { 2 }
+}
+""" }]
+exit_code = 1
+
+[[case]]
+name = "i64_bitand_high_bits_preserved"
+files = [{ path = "main.rue", source = """
+fn val() -> i64 { 1 }
+fn main() -> i32 {
+    let high: i64 = val() << 40;    // 2^40
+    let mask: i64 = val() << 40;    // 2^40
+    let a: i64 = high & mask;       // 2^40
+    if a > 4294967296 { 1 } else { 2 }
+}
+""" }]
+exit_code = 1
+
+[[case]]
+name = "i64_bitxor_high_bits_preserved"
+files = [{ path = "main.rue", source = """
+fn val() -> i64 { 1 }
+fn main() -> i32 {
+    let high: i64 = val() << 40;    // 2^40
+    let a: i64 = high ^ 1;          // 2^40 + 1, high bit retained
+    if a > 4294967296 { 1 } else { 2 }
+}
+""" }]
+exit_code = 1
+
+# Control: 32-bit bitwise ops are unaffected.
+[[case]]
+name = "i32_bitand_still_correct"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: i32 = 5;
+    let b: i32 = 3;
+    a & b          // 1
+}
+""" }]
+exit_code = 1

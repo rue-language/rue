@@ -20,7 +20,7 @@
 //! - `analyze_comparison` - Eq, Ne, Lt, Gt, Le, Ge
 //! - Logical And/Or are simple enough to remain inline
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use lasso::Spur;
 use rue_error::{
@@ -844,7 +844,11 @@ impl<'a> Sema<'a> {
         let mut bool_true_span: Option<Span> = None;
         let mut bool_false_span: Option<Span> = None;
         let mut seen_ints: HashMap<i64, Span> = HashMap::new();
-        let mut covered_variants: HashSet<u32> = HashSet::new();
+        // Maps each covered enum-variant index to the span of its first arm, so a
+        // second arm matching the same variant can be reported as unreachable
+        // (mirroring seen_ints / bool_*_span). The map's len() still drives the
+        // exhaustiveness check below, identically to the former HashSet.
+        let mut covered_variants: HashMap<u32, Span> = HashMap::new();
         let mut pattern_enum_id: Option<crate::types::EnumId> = None;
 
         // Analyze each arm (each arm gets its own scope)
@@ -992,8 +996,31 @@ impl<'a> Sema<'a> {
                         pattern_span,
                     )?;
 
-                    covered_variants.insert(variant_index as u32);
                     pattern_enum_id = Some(enum_id);
+
+                    // Check for duplicate enum-variant pattern (mirrors the integer
+                    // and boolean duplicate checks above).
+                    if let Some(first_span) = covered_variants.get(&(variant_index as u32)) {
+                        if wildcard_span.is_none() {
+                            let pat_str = format!(
+                                "{}::{}",
+                                self.interner.resolve(&*type_name),
+                                self.interner.resolve(&*variant)
+                            );
+                            ctx.warnings.push(
+                                CompileWarning::new(
+                                    WarningKind::UnreachablePattern(pat_str),
+                                    pattern_span,
+                                )
+                                .with_label("first occurrence of this pattern", *first_span)
+                                .with_note(
+                                    "this pattern will never be matched because an earlier arm already matches the same value",
+                                ),
+                            );
+                        }
+                    } else {
+                        covered_variants.insert(variant_index as u32, pattern_span);
+                    }
                 }
             }
 
@@ -2819,8 +2846,8 @@ impl<'a> Sema<'a> {
         let base_return_type = fn_info.return_type;
         let fn_body = fn_info.body;
 
-        // Special case: functions that return `type` with only comptime parameters
-        // should be evaluated at compile time.
+        // Special case: functions that return `type` with no parameters or only comptime parameters
+        // are implicitly comptime and should be evaluated at compile time.
         // This handles both:
         //   - `fn SimpleType() -> type { struct { x: i32 } }`  (no params)
         //   - `fn FixedBuffer(comptime N: i32) -> type { struct { fn capacity(self) -> i32 { N } } }`

@@ -163,8 +163,26 @@ fn has_side_effects(cfg: &Cfg, value: CfgValue) -> bool {
         // PlaceWrite is a memory write (side effect)
         CfgInstData::PlaceWrite { .. } => true,
 
-        // PlaceRead is pure (no side effect unless indexing panics, but we treat that like other ops)
-        CfgInstData::PlaceRead { .. } => false,
+        // A PlaceRead is pure for field projections, but an array index read
+        // performs a bounds check that panics when out of range. A read whose
+        // place contains an Index projection is therefore side-effecting and
+        // must not be eliminated even when its value is unused (RUE-57).
+        CfgInstData::PlaceRead { place } => cfg
+            .get_place_projections(place)
+            .iter()
+            .any(|p| matches!(p, Projection::Index { .. })),
+
+        // Overflow-checked arithmetic (Add/Sub/Mul/Neg) and Div/Mod (division
+        // by zero) panic at runtime. That trap is observable behavior the
+        // optimizer must preserve, so these are side-effecting even when the
+        // result is unused (RUE-57). Bitwise ops and shifts do not trap (shift
+        // counts are masked per spec), so they remain pure.
+        CfgInstData::Add(..)
+        | CfgInstData::Sub(..)
+        | CfgInstData::Mul(..)
+        | CfgInstData::Div(..)
+        | CfgInstData::Mod(..)
+        | CfgInstData::Neg(..) => true,
 
         // Everything else is pure computation
         _ => false,
@@ -475,16 +493,17 @@ mod tests {
         let mut cfg = make_cfg();
         let entry = cfg.entry;
 
-        // Create: c1 = 10, c2 = 20, add = c1 + c2, c3 = 42, return c3
-        // c1, c2, and add should be removed since they're unused
+        // Create: c1 = 10, c2 = 20 (unused), c3 = 42, return c3
+        // c1 and c2 are unused PURE constants and should be removed. (Note: an
+        // unused `c1 + c2` must NOT be removed — arithmetic can overflow-trap;
+        // see test_dce_preserves_unused_trapping_arithmetic.)
         let _c1 = add_const(&mut cfg, 10, Type::I32);
         let _c2 = add_const(&mut cfg, 20, Type::I32);
-        let _add = add_add(&mut cfg, _c1, _c2, Type::I32);
         let c3 = add_const(&mut cfg, 42, Type::I32);
         finalize_cfg(&mut cfg, c3);
 
-        // Before DCE: block has 4 instructions
-        assert_eq!(cfg.get_block(entry).insts.len(), 4);
+        // Before DCE: block has 3 instructions
+        assert_eq!(cfg.get_block(entry).insts.len(), 3);
 
         run(&mut cfg);
 
@@ -503,6 +522,31 @@ mod tests {
             CfgInstData::Const(42) => {}
             other => panic!("Expected Const(42), got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_dce_preserves_unused_trapping_arithmetic() {
+        // An arithmetic op whose result is unused must still be preserved,
+        // because it can panic on overflow/division-by-zero — eliminating it
+        // would drop a mandatory runtime trap (RUE-57).
+        let mut cfg = make_cfg();
+        let entry = cfg.entry;
+
+        let c1 = add_const(&mut cfg, 10, Type::I32);
+        let c2 = add_const(&mut cfg, 20, Type::I32);
+        let _add = add_add(&mut cfg, c1, c2, Type::I32); // unused
+        let c3 = add_const(&mut cfg, 42, Type::I32);
+        finalize_cfg(&mut cfg, c3);
+
+        run(&mut cfg);
+
+        // The add (and its operands) must survive even though the add's result
+        // is never used; only nothing is removed here.
+        let block = cfg.get_block(entry);
+        assert!(
+            block.insts.contains(&_add),
+            "unused trapping arithmetic must not be eliminated by DCE"
+        );
     }
 
     #[test]

@@ -1,1 +1,36 @@
-{}
+{
+  "permissions": {
+    "allow": [
+      "Bash(./buck2 build:*)",
+      "Bash(./buck2 test:*)",
+      "Bash(./buck2 run:*)",
+      "Bash(./scripts/rue:*)",
+      "Bash(./scripts/rue-bin:*)",
+      "Bash(./test.sh:*)",
+      "Bash(./quick-test.sh:*)",
+      "Bash(./fmt.sh:*)",
+      "Bash(./bench.sh:*)",
+      "Bash(jj status:*)",
+      "Bash(jj log:*)",
+      "Bash(jj diff:*)",
+      "Bash(jj show:*)",
+      "Bash(jj op log:*)",
+      "Bash(jj bookmark list:*)",
+      "Bash(jj file list:*)",
+      "Bash(jj file show:*)",
+      "Bash(jj config get:*)",
+      "Bash(jj config list:*)",
+      "Bash(gh run view:*)",
+      "Bash(gh run list:*)",
+      "Bash(gh pr view:*)",
+      "Bash(gh pr checks:*)",
+      "Bash(grep:*)",
+      "Bash(rg:*)",
+      "Bash(find:*)",
+      "Bash(ls:*)",
+      "Bash(wc:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)"
+    ]
+  }
+}

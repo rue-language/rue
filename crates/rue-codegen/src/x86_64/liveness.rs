@@ -179,7 +179,12 @@ pub fn uses(inst: &X86Inst) -> Vec<VReg> {
             // dst is both read and written
             add_if_virtual(dst, &mut result);
         }
-        X86Inst::AndRR { dst, src } | X86Inst::OrRR { dst, src } | X86Inst::XorRR { dst, src } => {
+        X86Inst::AndRR { dst, src }
+        | X86Inst::OrRR { dst, src }
+        | X86Inst::XorRR { dst, src }
+        | X86Inst::And64RR { dst, src }
+        | X86Inst::Or64RR { dst, src }
+        | X86Inst::Xor64RR { dst, src } => {
             add_if_virtual(dst, &mut result);
             add_if_virtual(src, &mut result);
         }
@@ -205,11 +210,14 @@ pub fn uses(inst: &X86Inst) -> Vec<VReg> {
             // dst is both read and written
             add_if_virtual(dst, &mut result);
         }
-        X86Inst::IdivR { src } | X86Inst::DivR { src } => {
+        X86Inst::IdivR { src }
+        | X86Inst::DivR { src }
+        | X86Inst::Idiv64R { src }
+        | X86Inst::Div64R { src } => {
             add_if_virtual(src, &mut result);
             // Also implicitly uses RAX and RDX (physical)
         }
-        X86Inst::TestRR { src1, src2 } => {
+        X86Inst::TestRR { src1, src2 } | X86Inst::Test64RR { src1, src2 } => {
             add_if_virtual(src1, &mut result);
             add_if_virtual(src2, &mut result);
         }
@@ -285,6 +293,7 @@ pub fn uses(inst: &X86Inst) -> Vec<VReg> {
             // Only defines, no uses
         }
         X86Inst::Cdq
+        | X86Inst::Cqo
         | X86Inst::Jz { .. }
         | X86Inst::Jnz { .. }
         | X86Inst::Jo { .. }
@@ -345,6 +354,9 @@ pub fn defs(inst: &X86Inst) -> Vec<VReg> {
         X86Inst::AndRR { dst, .. }
         | X86Inst::OrRR { dst, .. }
         | X86Inst::XorRR { dst, .. }
+        | X86Inst::And64RR { dst, .. }
+        | X86Inst::Or64RR { dst, .. }
+        | X86Inst::Xor64RR { dst, .. }
         | X86Inst::NotR { dst }
         | X86Inst::ShlRCl { dst }
         | X86Inst::Shl32RCl { dst }
@@ -360,10 +372,14 @@ pub fn defs(inst: &X86Inst) -> Vec<VReg> {
         | X86Inst::Sar32RI { dst, .. } => {
             add_if_virtual(dst, &mut result);
         }
-        X86Inst::IdivR { .. } | X86Inst::DivR { .. } => {
+        X86Inst::IdivR { .. }
+        | X86Inst::DivR { .. }
+        | X86Inst::Idiv64R { .. }
+        | X86Inst::Div64R { .. } => {
             // Implicitly defines RAX (quotient) and RDX (remainder), but those are physical
         }
         X86Inst::TestRR { .. }
+        | X86Inst::Test64RR { .. }
         | X86Inst::CmpRR { .. }
         | X86Inst::Cmp64RR { .. }
         | X86Inst::CmpRI { .. }
@@ -421,6 +437,7 @@ pub fn defs(inst: &X86Inst) -> Vec<VReg> {
             add_if_virtual(dst, &mut result);
         }
         X86Inst::Cdq
+        | X86Inst::Cqo
         | X86Inst::Jz { .. }
         | X86Inst::Jnz { .. }
         | X86Inst::Jo { .. }

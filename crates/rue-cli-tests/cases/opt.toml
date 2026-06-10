@@ -1,0 +1,69 @@
+# Optimization-correctness regression tests.
+#
+# These compile at -O2 and assert that mandatory runtime traps (overflow,
+# divide-by-zero, out-of-bounds) still fire even when the trapping op's result
+# is unused. DCE used to eliminate these (RUE-57), silently turning exit 101
+# into exit 0 at -O1+. See crates/rue-cfg/src/opt/dce.rs has_side_effects.
+
+[section]
+id = "cli.opt"
+name = "Optimization correctness"
+description = "Mandatory runtime traps must survive optimization passes."
+
+[[case]]
+name = "dce_keeps_overflow_panic_at_O2"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: i32 = 2147483647;
+    a + 1;
+    0
+}
+""" }]
+args = ["main.rue", "-O2", "-o", "prog"]
+exit_code = 101
+runtime_error_contains = ["integer overflow"]
+
+[[case]]
+name = "dce_keeps_div_by_zero_panic_at_O2"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: i32 = 10;
+    let z: i32 = 0;
+    a / z;
+    0
+}
+""" }]
+args = ["main.rue", "-O2", "-o", "prog"]
+exit_code = 101
+runtime_error_contains = ["division by zero"]
+
+[[case]]
+name = "dce_keeps_bounds_check_panic_at_O2"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [1, 2, 3];
+    let i: u64 = 5;
+    arr[i];
+    0
+}
+""" }]
+args = ["main.rue", "-O2", "-o", "prog"]
+exit_code = 101
+runtime_error_contains = ["index out of bounds"]
+
+# A genuinely dead, non-trapping computation should still be optimized away,
+# and a normal program must produce the same result at -O2 as -O0.
+[[case]]
+name = "normal_program_unaffected_at_O2"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: i32 = 5;
+    let b: i32 = a & 3;
+    let mut s = 0;
+    let mut i = 0;
+    while i < 10 { s = s + i; i = i + 1; }
+    s
+}
+""" }]
+args = ["main.rue", "-O2", "-o", "prog"]
+exit_code = 45

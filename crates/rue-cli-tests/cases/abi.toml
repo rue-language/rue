@@ -1,0 +1,270 @@
+# By-value aggregate ABI stress tests (RUE-13).
+#
+# Aggregates passed/returned by value are exploded into per-slot arguments
+# (x86-64: 6 integer arg registers, 2 return registers; aarch64/AAPCS: 8 arg
+# registers, and large aggregates passed indirectly). This matrix probes sizes
+# around those boundaries in every pass/return combination for structs, bare
+# arrays, and methods. The per-case `known_bug` / `known_bug_on` markers are
+# the source of truth for exactly what fails where.
+#
+# State after RUE-118 (route every aggregate consumer through the slot
+# accessor): aarch64 now handles struct pass/return and bare-array pass-only at
+# all tested sizes (5/7/9 slots). The remaining failures are:
+#   - x86-64's spill of aggregate args/returns past its 6 int arg-registers /
+#     2 return-registers — the 9-slot struct cases, scoped
+#     known_bug_on = ["x86-64-linux"] (they still pass on aarch64). See RUE-91.
+#   - the value-method self-update idiom (method_self_update_5/9_slots) and the
+#     8-element array round-trip (bare_array_8_pass_and_return), which still
+#     drop slots on BOTH backends (known_bug, unscoped).
+# Locals and borrow/inout large aggregates are correct on both backends.
+
+[section]
+id = "cli.abi"
+name = "By-value aggregate ABI"
+description = "Structs and arrays passed/returned by value at sizes around the register boundary."
+
+[[case]]
+name = "struct_5_slots_pass_and_return"
+files = [{ path = "main.rue", source = """
+struct S {
+    items: [i32; 4],
+    len: u32,
+}
+
+fn through(s: S) -> S {
+    s
+}
+
+fn main() -> i32 {
+    let s = S { items: [1, 2, 3, 4], len: 4 };
+    let t = through(s);
+    @dbg(t.items[3]);
+    0
+}
+""" }]
+stdout = "4\n"
+
+[[case]]
+name = "struct_9_slots_pass_only"
+known_bug = "RUE-13"
+known_bug_on = ["x86-64-linux"]
+files = [{ path = "main.rue", source = """
+struct S {
+    items: [i32; 8],
+    len: u32,
+}
+
+fn get_last(s: S) -> i32 {
+    s.items[7]
+}
+
+fn main() -> i32 {
+    let s = S { items: [1, 2, 3, 4, 5, 6, 7, 8], len: 8 };
+    @dbg(get_last(s));
+    0
+}
+""" }]
+stdout = "8\n"
+
+[[case]]
+name = "struct_9_slots_return_only"
+known_bug = "RUE-13"
+known_bug_on = ["x86-64-linux"]
+files = [{ path = "main.rue", source = """
+struct S {
+    items: [i32; 8],
+    len: u32,
+}
+
+fn make() -> S {
+    S { items: [1, 2, 3, 4, 5, 6, 7, 8], len: 8 }
+}
+
+fn main() -> i32 {
+    let s = make();
+    @dbg(s.items[7]);
+    0
+}
+""" }]
+stdout = "8\n"
+
+[[case]]
+name = "struct_7_slots_pass_and_return"
+files = [{ path = "main.rue", source = """
+struct S {
+    items: [i32; 6],
+    len: u32,
+}
+
+fn through(s: S) -> S {
+    s
+}
+
+fn main() -> i32 {
+    let s = S { items: [1, 2, 3, 4, 5, 6], len: 6 };
+    let t = through(s);
+    @dbg(t.items[5]);
+    0
+}
+""" }]
+stdout = "6\n"
+
+[[case]]
+name = "struct_9_slots_pass_and_return"
+known_bug = "RUE-13"
+known_bug_on = ["x86-64-linux"]
+files = [{ path = "main.rue", source = """
+struct S {
+    items: [i32; 8],
+    len: u32,
+}
+
+fn through(s: S) -> S {
+    s
+}
+
+fn main() -> i32 {
+    let s = S { items: [1, 2, 3, 4, 5, 6, 7, 8], len: 8 };
+    let t = through(s);
+    @dbg(t.items[7]);
+    0
+}
+""" }]
+stdout = "8\n"
+
+# The value-oriented method idiom (self in, Self out) on a >6-slot struct —
+# the way this bug actually bites users writing ordinary code.
+[[case]]
+name = "method_self_update_9_slots"
+known_bug = "RUE-13"
+files = [{ path = "main.rue", source = """
+@copy
+struct Stack {
+    items: [i32; 8],
+    len: u32,
+
+    fn push(self, v: i32) -> Stack {
+        let mut s = self;
+        s.items[s.len] = v;
+        s.len = s.len + 1;
+        s
+    }
+
+    fn top(self) -> i32 {
+        self.items[self.len - 1]
+    }
+}
+
+fn main() -> i32 {
+    let mut s = Stack { items: [0, 0, 0, 0, 0, 0, 0, 0], len: 0 };
+    s = s.push(10);
+    s = s.push(20);
+    @dbg(s.top());
+    0
+}
+""" }]
+stdout = "20\n"
+
+# The same stack at 5 slots compiles and runs but MISCOMPILES: the len
+# field write is lost through the by-value return, so len stays 0 and
+# top() underflows (runtime "integer overflow"). Part of RUE-13.
+[[case]]
+name = "method_self_update_5_slots"
+known_bug = "RUE-13"
+files = [{ path = "main.rue", source = """
+@copy
+struct Stack {
+    items: [i32; 4],
+    len: u32,
+
+    fn push(self, v: i32) -> Stack {
+        let mut s = self;
+        s.items[s.len] = v;
+        s.len = s.len + 1;
+        s
+    }
+
+    fn top(self) -> i32 {
+        self.items[self.len - 1]
+    }
+}
+
+fn main() -> i32 {
+    let mut s = Stack { items: [0, 0, 0, 0], len: 0 };
+    s = s.push(10);
+    s = s.push(20);
+    @dbg(s.top());
+    0
+}
+""" }]
+stdout = "20\n"
+
+[[case]]
+name = "bare_array_7_pass_only"
+known_bug = "RUE-13"
+known_bug_on = ["x86-64-linux"]
+files = [{ path = "main.rue", source = """
+fn sum_ends(a: [i32; 7]) -> i32 {
+    a[0] + a[6]
+}
+
+fn main() -> i32 {
+    let arr = [1, 2, 3, 4, 5, 6, 7];
+    @dbg(sum_ends(arr));
+    0
+}
+""" }]
+stdout = "8\n"
+
+[[case]]
+name = "bare_array_8_pass_and_return"
+known_bug = "RUE-13"
+files = [{ path = "main.rue", source = """
+fn through(a: [i32; 8]) -> [i32; 8] {
+    a
+}
+
+fn main() -> i32 {
+    let arr = [1, 2, 3, 4, 5, 6, 7, 8];
+    let b = through(arr);
+    @dbg(b[7]);
+    0
+}
+""" }]
+stdout = "8\n"
+
+# Borrow/inout large aggregates should always work (by reference).
+[[case]]
+name = "struct_9_slots_borrow_and_inout"
+files = [{ path = "main.rue", source = """
+struct S {
+    items: [i32; 8],
+    len: u32,
+}
+
+fn total(borrow s: S) -> i32 {
+    let mut t = 0;
+    let mut i = 0;
+    while i < 8 {
+        t = t + s.items[i];
+        i = i + 1;
+    }
+    t
+}
+
+fn bump(inout s: S) {
+    s.items[0] = s.items[0] + 100;
+}
+
+fn main() -> i32 {
+    let mut s = S { items: [1, 2, 3, 4, 5, 6, 7, 8], len: 8 };
+    @dbg(total(borrow s));
+    bump(inout s);
+    @dbg(total(borrow s));
+    0
+}
+""" }]
+stdout = """
+36
+136
+"""

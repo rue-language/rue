@@ -656,6 +656,21 @@ impl<'a> Emitter<'a> {
                 self.emit_xor_rr(dst.as_physical(), src.as_physical());
                 end_inst!(self, "xor {}, {}", dst.as_physical(), src.as_physical());
             }
+            X86Inst::And64RR { dst, src } => {
+                self.begin_inst();
+                self.emit_and_rr64(dst.as_physical(), src.as_physical());
+                end_inst!(self, "and {}, {}", dst.as_physical(), src.as_physical());
+            }
+            X86Inst::Or64RR { dst, src } => {
+                self.begin_inst();
+                self.emit_or_rr64(dst.as_physical(), src.as_physical());
+                end_inst!(self, "or {}, {}", dst.as_physical(), src.as_physical());
+            }
+            X86Inst::Xor64RR { dst, src } => {
+                self.begin_inst();
+                self.emit_xor_rr64(dst.as_physical(), src.as_physical());
+                end_inst!(self, "xor {}, {}", dst.as_physical(), src.as_physical());
+            }
             X86Inst::NotR { dst } => {
                 self.begin_inst();
                 self.emit_not(dst.as_physical());
@@ -726,6 +741,11 @@ impl<'a> Emitter<'a> {
                 self.emit_cdq();
                 end_inst!(self, "cdq");
             }
+            X86Inst::Cqo => {
+                self.begin_inst();
+                self.emit_cqo();
+                end_inst!(self, "cqo");
+            }
             X86Inst::IdivR { src } => {
                 self.begin_inst();
                 self.emit_idiv(src.as_physical());
@@ -735,6 +755,16 @@ impl<'a> Emitter<'a> {
                 self.begin_inst();
                 self.emit_div(src.as_physical());
                 end_inst!(self, "div {}", src.as_physical());
+            }
+            X86Inst::Idiv64R { src } => {
+                self.begin_inst();
+                self.emit_idiv64(src.as_physical());
+                end_inst!(self, "idivq {}", src.as_physical());
+            }
+            X86Inst::Div64R { src } => {
+                self.begin_inst();
+                self.emit_div64(src.as_physical());
+                end_inst!(self, "divq {}", src.as_physical());
             }
             X86Inst::CmpRR { src1, src2 } => {
                 self.begin_inst();
@@ -839,6 +869,11 @@ impl<'a> Emitter<'a> {
             X86Inst::TestRR { src1, src2 } => {
                 self.begin_inst();
                 self.emit_test_rr(src1.as_physical(), src2.as_physical());
+                end_inst!(self, "test {}, {}", src1.as_physical(), src2.as_physical());
+            }
+            X86Inst::Test64RR { src1, src2 } => {
+                self.begin_inst();
+                self.emit_test64_rr(src1.as_physical(), src2.as_physical());
                 end_inst!(self, "test {}, {}", src1.as_physical(), src2.as_physical());
             }
             X86Inst::Jz { label } => {
@@ -1863,6 +1898,51 @@ impl<'a> Emitter<'a> {
         self.code.push(modrm);
     }
 
+    /// Emit `and r64, r64`.
+    ///
+    /// Encoding: REX.W 21 /r (and r/m64, r64)
+    fn emit_and_rr64(&mut self, dst: Reg, src: Reg) {
+        let dst_enc = dst.encoding();
+        let src_enc = src.encoding();
+        let rex = 0x48
+            | if src.needs_rex() { 0x04 } else { 0x00 }  // REX.R
+            | if dst.needs_rex() { 0x01 } else { 0x00 }; // REX.B
+        self.code.push(rex);
+        self.code.push(0x21);
+        let modrm = 0xC0 | ((src_enc & 7) << 3) | (dst_enc & 7);
+        self.code.push(modrm);
+    }
+
+    /// Emit `or r64, r64`.
+    ///
+    /// Encoding: REX.W 09 /r (or r/m64, r64)
+    fn emit_or_rr64(&mut self, dst: Reg, src: Reg) {
+        let dst_enc = dst.encoding();
+        let src_enc = src.encoding();
+        let rex = 0x48
+            | if src.needs_rex() { 0x04 } else { 0x00 }  // REX.R
+            | if dst.needs_rex() { 0x01 } else { 0x00 }; // REX.B
+        self.code.push(rex);
+        self.code.push(0x09);
+        let modrm = 0xC0 | ((src_enc & 7) << 3) | (dst_enc & 7);
+        self.code.push(modrm);
+    }
+
+    /// Emit `xor r64, r64`.
+    ///
+    /// Encoding: REX.W 31 /r (xor r/m64, r64)
+    fn emit_xor_rr64(&mut self, dst: Reg, src: Reg) {
+        let dst_enc = dst.encoding();
+        let src_enc = src.encoding();
+        let rex = 0x48
+            | if src.needs_rex() { 0x04 } else { 0x00 }  // REX.R
+            | if dst.needs_rex() { 0x01 } else { 0x00 }; // REX.B
+        self.code.push(rex);
+        self.code.push(0x31);
+        let modrm = 0xC0 | ((src_enc & 7) << 3) | (dst_enc & 7);
+        self.code.push(modrm);
+    }
+
     /// Emit `not r32`.
     ///
     /// Encoding: [REX] F7 /2 (not r/m32)
@@ -2061,6 +2141,14 @@ impl<'a> Emitter<'a> {
         self.code.push(0x99);
     }
 
+    /// Emit `cqo` - Sign-extend RAX to RDX:RAX (64-bit).
+    ///
+    /// Encoding: 48 99 (REX.W + CDQ-family opcode)
+    fn emit_cqo(&mut self) {
+        self.code.push(0x48);
+        self.code.push(0x99);
+    }
+
     /// Emit `idiv r32` - Signed divide EDX:EAX by r32.
     ///
     /// Encoding: [REX] F7 /7 (idiv r/m32)
@@ -2071,6 +2159,24 @@ impl<'a> Emitter<'a> {
         if src.needs_rex() {
             self.code.push(0x41); // REX.B
         }
+
+        // Opcode: F7 (group 3 operations)
+        self.code.push(0xF7);
+
+        // ModR/M: mod=11, reg=7 (IDIV), r/m=src
+        let modrm = 0xC0 | (7 << 3) | (src_enc & 7);
+        self.code.push(modrm);
+    }
+
+    /// Emit `idiv r64` - Signed divide RDX:RAX by r64.
+    ///
+    /// Encoding: REX.W F7 /7 (idiv r/m64)
+    fn emit_idiv64(&mut self, src: Reg) {
+        let src_enc = src.encoding();
+
+        // REX.W (+ REX.B for r8-r15)
+        let rex = 0x48 | if src.needs_rex() { 0x01 } else { 0x00 };
+        self.code.push(rex);
 
         // Opcode: F7 (group 3 operations)
         self.code.push(0xF7);
@@ -2099,6 +2205,24 @@ impl<'a> Emitter<'a> {
         self.code.push(modrm);
     }
 
+    /// Emit `div r64` - Unsigned divide RDX:RAX by r64.
+    ///
+    /// Encoding: REX.W F7 /6 (div r/m64)
+    fn emit_div64(&mut self, src: Reg) {
+        let src_enc = src.encoding();
+
+        // REX.W (+ REX.B for r8-r15)
+        let rex = 0x48 | if src.needs_rex() { 0x01 } else { 0x00 };
+        self.code.push(rex);
+
+        // Opcode: F7 (group 3 operations)
+        self.code.push(0xF7);
+
+        // ModR/M: mod=11, reg=6 (DIV), r/m=src
+        let modrm = 0xC0 | (6 << 3) | (src_enc & 7);
+        self.code.push(modrm);
+    }
+
     /// Emit `test r32, r32`.
     ///
     /// Encoding: [REX] 85 /r (test r/m32, r32)
@@ -2115,6 +2239,27 @@ impl<'a> Emitter<'a> {
         }
 
         // Opcode: 85 (test r/m32, r32)
+        self.code.push(0x85);
+
+        // ModR/M: mod=11, reg=src2, r/m=src1
+        let modrm = 0xC0 | ((src2_enc & 7) << 3) | (src1_enc & 7);
+        self.code.push(modrm);
+    }
+
+    /// Emit `test r64, r64`.
+    ///
+    /// Encoding: REX.W 85 /r (test r/m64, r64)
+    fn emit_test64_rr(&mut self, src1: Reg, src2: Reg) {
+        let src1_enc = src1.encoding();
+        let src2_enc = src2.encoding();
+
+        // REX.W prefix (always needed for 64-bit operands)
+        let rex = 0x48
+            | if src2.needs_rex() { 0x04 } else { 0x00 }  // REX.R
+            | if src1.needs_rex() { 0x01 } else { 0x00 }; // REX.B
+        self.code.push(rex);
+
+        // Opcode: 85 (test r/m64, r64)
         self.code.push(0x85);
 
         // ModR/M: mod=11, reg=src2, r/m=src1
@@ -2689,6 +2834,50 @@ mod tests {
         assert_eq!(code, vec![0x85, 0xC0]);
     }
 
+    #[test]
+    fn test_cqo() {
+        let code = emit_single(X86Inst::Cqo);
+        // cqo -> 48 99
+        assert_eq!(code, vec![0x48, 0x99]);
+    }
+
+    #[test]
+    fn test_idiv64_rcx() {
+        let code = emit_single(X86Inst::Idiv64R {
+            src: Operand::Physical(Reg::Rcx),
+        });
+        // idiv rcx -> 48 F7 F9
+        assert_eq!(code, vec![0x48, 0xF7, 0xF9]);
+    }
+
+    #[test]
+    fn test_idiv64_r10() {
+        let code = emit_single(X86Inst::Idiv64R {
+            src: Operand::Physical(Reg::R10),
+        });
+        // idiv r10 -> 49 F7 FA  (REX.W + REX.B)
+        assert_eq!(code, vec![0x49, 0xF7, 0xFA]);
+    }
+
+    #[test]
+    fn test_div64_rcx() {
+        let code = emit_single(X86Inst::Div64R {
+            src: Operand::Physical(Reg::Rcx),
+        });
+        // div rcx -> 48 F7 F1
+        assert_eq!(code, vec![0x48, 0xF7, 0xF1]);
+    }
+
+    #[test]
+    fn test_test64_rax_rax() {
+        let code = emit_single(X86Inst::Test64RR {
+            src1: Operand::Physical(Reg::Rax),
+            src2: Operand::Physical(Reg::Rax),
+        });
+        // test rax, rax -> 48 85 C0
+        assert_eq!(code, vec![0x48, 0x85, 0xC0]);
+    }
+
     // =========================================================================
     // Memory instruction tests (MovRM, MovMR)
     // =========================================================================
@@ -2925,6 +3114,46 @@ mod tests {
         });
         // xor eax, ecx -> 31 C8 (31 /r)
         assert_eq!(code, vec![0x31, 0xC8]);
+    }
+
+    #[test]
+    fn test_and64_rax_rcx() {
+        let code = emit_single(X86Inst::And64RR {
+            dst: Operand::Physical(Reg::Rax),
+            src: Operand::Physical(Reg::Rcx),
+        });
+        // and rax, rcx -> 48 21 C8 (REX.W 21 /r)
+        assert_eq!(code, vec![0x48, 0x21, 0xC8]);
+    }
+
+    #[test]
+    fn test_and64_r10_r11() {
+        let code = emit_single(X86Inst::And64RR {
+            dst: Operand::Physical(Reg::R10),
+            src: Operand::Physical(Reg::R11),
+        });
+        // and r10, r11 -> 4D 21 DA (REX.WRB 21 /r)
+        assert_eq!(code, vec![0x4D, 0x21, 0xDA]);
+    }
+
+    #[test]
+    fn test_or64_rax_rcx() {
+        let code = emit_single(X86Inst::Or64RR {
+            dst: Operand::Physical(Reg::Rax),
+            src: Operand::Physical(Reg::Rcx),
+        });
+        // or rax, rcx -> 48 09 C8 (REX.W 09 /r)
+        assert_eq!(code, vec![0x48, 0x09, 0xC8]);
+    }
+
+    #[test]
+    fn test_xor64_rax_rcx() {
+        let code = emit_single(X86Inst::Xor64RR {
+            dst: Operand::Physical(Reg::Rax),
+            src: Operand::Physical(Reg::Rcx),
+        });
+        // xor rax, rcx -> 48 31 C8 (REX.W 31 /r)
+        assert_eq!(code, vec![0x48, 0x31, 0xC8]);
     }
 
     #[test]

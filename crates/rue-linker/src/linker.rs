@@ -417,16 +417,16 @@ impl Linker {
         // This keeps rodata addresses close to code for PC-relative addressing
         for (obj_idx, obj) in self.objects.iter().enumerate() {
             for (sec_idx, section) in obj.sections.iter().enumerate() {
-                eprintln!("DEBUG: Checking section '{}' for rodata", section.name);
+                tracing::trace!(section = %section.name, "checking section for rodata");
                 if !is_rodata_section(&section.name) {
                     continue;
                 }
-                eprintln!(
-                    "DEBUG: Merging rodata section '{}' (size: {})",
-                    section.name,
-                    section.data.len()
+                tracing::trace!(
+                    section = %section.name,
+                    size = section.data.len(),
+                    merged_text_before = merged_text.len(),
+                    "merging rodata section"
                 );
-                eprintln!("  merged_text size before: 0x{:x}", merged_text.len());
 
                 // Align rodata (8-byte alignment is common for data)
                 let align = section.align.max(8);
@@ -436,7 +436,10 @@ impl Linker {
                 let offset = merged_text.len() as u64;
                 section_offsets.insert((obj_idx, sec_idx), offset);
                 merged_text.extend_from_slice(&section.data);
-                eprintln!("  merged_text size after: 0x{:x}", merged_text.len());
+                tracing::trace!(
+                    merged_text_after = merged_text.len(),
+                    "merged rodata section"
+                );
             }
         }
 
@@ -542,9 +545,11 @@ impl Linker {
                                 && !sym.name.starts_with(".rodata")
                                 && !sym.name.starts_with("__rue")
                             {
-                                eprintln!(
-                                    "DEBUG: Adding symbol '{}' binding={:?} addr=0x{:x}",
-                                    sym.name, sym.binding, addr
+                                tracing::trace!(
+                                    symbol = %sym.name,
+                                    binding = ?sym.binding,
+                                    addr = format_args!("0x{addr:x}"),
+                                    "adding symbol"
                                 );
                             }
                             symbol_addresses.insert(sym.name.clone(), addr);
@@ -577,7 +582,10 @@ impl Linker {
 
         // Calculate text_file_offset using the builder
         let text_file_offset = builder.calculate_text_file_offset_for_dynamic();
-        eprintln!("DEBUG: text_file_offset = 0x{:x}", text_file_offset);
+        tracing::trace!(
+            text_file_offset = format_args!("0x{text_file_offset:x}"),
+            "calculated text file offset"
+        );
 
         // Apply relocations
         for (patch_offset, sym_name, sym_section, _obj_idx, rel_type, addend) in pending_relocations
@@ -587,7 +595,7 @@ impl Linker {
                 && !sym_name.starts_with("__rue")
                 && !sym_name.starts_with("l_anon")
             {
-                eprintln!("DEBUG: Processing Call26 relocation to '{}'", sym_name);
+                tracing::trace!(symbol = %sym_name, "processing Call26 relocation");
             }
 
             // Look up symbol address
@@ -602,9 +610,9 @@ impl Linker {
                         && !sym_name.starts_with("__rue")
                         && !sym_name.starts_with("l_anon")
                     {
-                        eprintln!(
-                            "DEBUG: Symbol '{}' not found in symbol_addresses, skipping relocation",
-                            sym_name
+                        tracing::trace!(
+                            symbol = %sym_name,
+                            "symbol not found in symbol_addresses, skipping relocation"
                         );
                     }
                     continue;
@@ -628,13 +636,15 @@ impl Linker {
                 || sym_name == "other"
                 || sym_name == "main"
             {
-                eprintln!(
-                    "DEBUG: Relocating symbol '{}' at patch_offset 0x{:x}, rel_type {:?}",
-                    sym_name, patch_offset, rel_type
-                );
-                eprintln!(
-                    "  sym_addr = 0x{:x}, target_vaddr = 0x{:x}, patch_vaddr = 0x{:x}, addend = {}",
-                    sym_addr, target_vaddr, patch_vaddr, addend
+                tracing::trace!(
+                    symbol = %sym_name,
+                    patch_offset = format_args!("0x{patch_offset:x}"),
+                    rel_type = ?rel_type,
+                    sym_addr = format_args!("0x{sym_addr:x}"),
+                    target_vaddr = format_args!("0x{target_vaddr:x}"),
+                    patch_vaddr = format_args!("0x{patch_vaddr:x}"),
+                    addend,
+                    "relocating symbol"
                 );
             }
 
@@ -665,9 +675,11 @@ impl Linker {
                     merged_text[patch_idx..patch_idx + 4].copy_from_slice(&insn.to_le_bytes());
 
                     if sym_name == "rec" || sym_name == "other" || sym_name == "main" {
-                        eprintln!(
-                            "  offset_bytes = {}, offset_words = {}, final_insn = 0x{:08x}",
-                            offset_bytes, offset_words, insn
+                        tracing::trace!(
+                            offset_bytes,
+                            offset_words,
+                            final_insn = format_args!("0x{insn:08x}"),
+                            "patched branch instruction"
                         );
                     }
                 }
@@ -731,7 +743,10 @@ impl Linker {
         // Now rebuild the MachOBuilder with the relocated code
         // Note: rodata is already included in merged_text (code + rodata in __TEXT)
         // Only pass writable data to __DATA segment
-        eprintln!("DEBUG: merged_text size = 0x{:x} bytes", merged_text.len());
+        tracing::trace!(
+            merged_text_size = format_args!("0x{:x}", merged_text.len()),
+            "rebuilding MachOBuilder with relocated code"
+        );
         let mut builder = MachOBuilder::new()
             .with_code(merged_text, entry_offset)
             .with_data(merged_data)
@@ -752,9 +767,10 @@ impl Linker {
 
         // Verify our pre-calculated offset matches (sanity check)
         if text_file_offset != calculated_offset {
-            eprintln!(
-                "Warning: text_file_offset mismatch: pre-calculated={:#x}, actual={:#x}",
-                text_file_offset, calculated_offset
+            tracing::warn!(
+                pre_calculated = format_args!("{text_file_offset:#x}"),
+                actual = format_args!("{calculated_offset:#x}"),
+                "text_file_offset mismatch"
             );
         }
 

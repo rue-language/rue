@@ -2,7 +2,27 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-**Note**: This project uses [bd (beads)](https://github.com/steveyegge/beads) for issue tracking. Use `bd` commands instead of markdown TODOs. See the Issue Tracking section below for workflow details.
+**Note**: This project uses [Linear](https://linear.app) (team: **Rue**) for issue tracking. Use the Linear MCP tools instead of markdown TODOs. See the Issue Tracking section below for workflow details.
+
+## Quickstart
+
+The 8 commands that cover ~90% of work here (all runnable from anywhere in the repo):
+
+```bash
+scripts/rue build                    # build the compiler -> refreshes bin/rue symlink
+scripts/rue exec prog.rue            # compile prog.rue to a temp file AND run it (quick check)
+RUE="$(scripts/rue-bin)"; "$RUE" a.rue b.rue -o out   # drive the real CLI (modules, multi-file)
+scripts/rue test [pattern]           # full suite (= ./test.sh): unit + spec + UI + CLI + traceability
+scripts/rue quick                    # unit tests only (~2-5s, fast inner loop)
+scripts/rue spec 4.2                 # run spec tests matching a pattern
+scripts/rue cli abi                  # run CLI integration tests matching a pattern
+scripts/rue fmt                      # format (= ./fmt.sh) before committing
+```
+
+Key rules (details in the sections below):
+- **Version control is `jj`, not git**, and this is a **fork** — never commit on `trunk`; work on a change and `jj git push -c @-` to PR a feature branch upstream. See [Version Control](#version-control).
+- **Issue tracking is Linear** (team Rue, `RUE-NN`). See [Issue Tracking](#issue-tracking-with-linear).
+- To get the compiler binary, use `scripts/rue-bin` (prints an absolute path; the old `buck2 ... --show-output | awk` one-liner returns a *relative* path that breaks when cwd changes).
 
 ## Project Overview
 
@@ -272,6 +292,26 @@ no_warnings = true
 
 - **Spec tests** (`crates/rue-spec/cases/`): Language semantics defined in the specification. These tests have `spec = [...]` references linking to spec paragraphs.
 - **UI tests** (`crates/rue-ui-tests/cases/`): Compiler quality-of-life features not in the spec (warnings, diagnostics, CLI behavior).
+
+### CLI Integration Tests
+
+CLI integration tests (`crates/rue-cli-tests/cases/`) exercise the compiler **the way a user does**: the real `rue` binary invoked on real files in a temp directory with relative paths, env vars, and stdin piped to the compiled program. They catch driver-only bugs the spec harness can't see (module resolution from disk, ABI miscompilations, ICEs, CLI argument handling).
+
+```bash
+# Run all CLI integration tests
+./buck2 run //crates/rue-cli-tests:rue-cli-tests
+
+# Filter by pattern
+./buck2 run //crates/rue-cli-tests:rue-cli-tests -- "abi"
+```
+
+Key conventions (see the doc comment in `crates/rue-cli-tests/src/main.rs` for the full case format):
+
+- Each case lists `files` written to disk; the default invocation is `rue <first file> -o prog` with the temp dir as cwd
+- Any compiler panic is reported as an **INTERNAL COMPILER ERROR** — a distinct failure class
+- `known_bug = "RUE-NN"` marks an expected failure (xfail) referencing a Linear issue. The case still runs; if it unexpectedly PASSES, the suite fails and tells you to remove the marker — converting it into a regression test. **When fixing a bug, find and un-mark its cases.**
+- `known_bug_on = ["x86-64-linux"]` scopes the xfail to specific platforms (for ABI bugs that manifest differently per target); on other platforms the case runs as a normal test. Platform names match `get_host_target()`: `x86-64-linux`, `aarch64-linux`, `aarch64-macos`
+- Prefer adding a CLI case (not just a spec test) for any bug that involves the driver, the ABI, multiple files, or runtime I/O
 
 ### Specification Tests
 
@@ -613,14 +653,20 @@ When making changes to codegen, **always check if the same change is needed in a
 - **Liveness analysis**: Update both `x86_64/liveness.rs` and `aarch64/liveness.rs`
 - **CFG lowering**: Update both `x86_64/cfg_lower.rs` and `aarch64/cfg_lower.rs`
 
-Example: If adding a new comparison instruction variant (e.g., 64-bit compare):
-1. Add `Cmp64RR` to both MIR definitions
-2. Add emission logic to both emitters
-3. Add register allocation handling to both allocators
-4. Add liveness tracking to both liveness analyzers
-5. Update CFG lowering in both backends to use the new instruction where appropriate
+### Checklist: adding a new MIR instruction variant
 
-**Testing across backends**: The spec tests run on the host architecture only. If you only have access to one platform, note in your commit message that the other backend may need verification.
+Adding a variant (e.g. a 64-bit `Cqo`, `And64RR`, or aarch64 `Sdiv64RR`) touches the **same set of match arms** in each backend. Miss one and you get a non-exhaustive-`match` build error (or, worse, a silently-wrong reg-alloc). For **each** backend (`x86_64/` and `aarch64/`), update:
+
+1. **`mir.rs`** — three places: the `enum` variant definition; the `Display` impl (`write!`); and `clobbers()` if it has implicit register effects (e.g. div clobbers rax/rdx).
+2. **`liveness.rs`** — two match arms: register **uses** (operands read) and **defs** (operands written). Add the variant alongside its closest sibling.
+3. **`regalloc.rs`** — the instruction-rewrite match (rebuild the variant with allocated operands; reuse `emit_binop`/`emit_ternop`/`load_operand` like the sibling).
+4. **`schedule.rs`** — usually four arms: `get_latency`, `regs_read`, `regs_written`, and `writes_flags` (if it sets flags).
+5. **`emit.rs`** — the encoder dispatch arm (calls a helper + `end_inst!`) and the encoder helper itself (the actual byte/word encoding). Add a unit test pinning the bytes.
+6. **`cfg_lower.rs`** — select the new variant where appropriate (this is the actual fix).
+
+Tip: `grep -n <SiblingVariant> crates/rue-codegen/src/<arch>/*.rs` lists every site you need to mirror.
+
+**Testing across backends**: x86-64 is verifiable locally (build + run). aarch64 is **not runnable locally** — you can only `--emit asm` and read it (cross-compiled binaries also embed the host runtime, RUE-36). But CI's `test (linux-arm64)` and `test (macos)` jobs build `rue` *natively* on arm64 and run the binaries, so an aarch64-only bug **will fail CI**. Therefore: **apply the parallel aarch64 change in the SAME PR** — never ship an x86-only fix expecting to follow up, or CI will bounce it. Use `known_bug` / `known_bug_on` in CLI tests only when a *separate, tracked* bug makes a case fail on one platform.
 
 ## Version Control
 
@@ -643,6 +689,37 @@ Example: If adding a new comparison instruction variant (e.g., 64-bit compare):
 - **Working copy is a commit**: Your uncommitted changes are already tracked
 - **Use `jj describe`** to update the current commit message
 - **Use `jj new`** to start a new change on top of current one
+
+### Fork Workflow (IMPORTANT)
+
+This is a **fork** setup. There are two git remotes:
+
+- `upstream` = `rue-language/rue` — the canonical repo, the source of truth. You **cannot** push here; you open PRs into it.
+- `origin` = `steveklabnik/rue` — your fork. You push feature branches here, then PR them upstream.
+
+**Rules:**
+
+1. **Always base work on `trunk()` (= `trunk@upstream`); do NOT push or sync `origin/trunk`.** You never need to mirror `origin/trunk` to upstream — cross-fork PRs diff against `upstream/trunk`, and jj's immutability anchor is `trunk@upstream`. So `origin/trunk` may sit stale (behind upstream); that's harmless. `trunk@origin` is untracked (see required config) precisely so you aren't tempted to push it. Never commit on `trunk` / PR `trunk` — that causes hash-rewrite divergence when upstream rebase/squash-merges.
+2. **Work on a feature change**, then push it as a branch and PR it:
+   ```bash
+   jj new 'trunk()'                # start the change on upstream's canonical trunk (a revset, not a bookmark)
+   # ... make edits ...
+   jj git push -c @                # pushes as steveklabnik/push-<changeid> (see git_push_bookmark template)
+   gh pr create --repo rue-language/rue --base trunk --head steveklabnik:<branch> ...
+   gh pr merge <n> --repo rue-language/rue --auto   # queue it immediately
+   ```
+3. **`trunk()` is a revset alias = `trunk@upstream`** — always means upstream's latest, regardless of local bookmark state. Always use `trunk()`, never the bare `trunk` bookmark, in `jj new`/rebase/log commands.
+4. **After a PR merges**, the only step is: `jj git fetch` (your local `trunk` fast-forwards to upstream), then `jj new 'trunk()'` to start the next change. Do **not** push `trunk` to origin — there's nothing to sync. If upstream rebase-merged (rewriting hashes), the old fork-side copies show as "divergent" — cosmetic; `jj abandon` the orphaned old-hash chain to tidy up.
+
+**Required repo config** (machine-local; set on a fresh clone — jj does not read committed config):
+
+```bash
+jj config set --repo 'revset-aliases."trunk()"' 'trunk@upstream'   # base/immutability = canonical repo
+jj config set --repo git.fetch '["origin", "upstream"]'            # always see both remotes
+jj bookmark untrack 'trunk' --remote=origin                        # don't track/sync origin/trunk; base on upstream only
+```
+
+Without the first two, `jj git fetch` only pulls `origin` (you won't see upstream merges), and `trunk()`/immutability anchor to your fork instead of upstream. The `untrack` keeps the local `trunk` bookmark tracking *only* `upstream`, so it fast-forwards to upstream on fetch and you never feel obligated to push it back to origin.
 
 ### Commit Messages
 
@@ -774,82 +851,53 @@ println!("Lexed {} tokens from {} bytes", tokens.len(), source.len());
 4. **Metrics in events**: Include computed metrics (instruction counts, sizes) in events
 5. **Zero-cost when off**: Tracing has no overhead when no subscriber is active
 
-## Issue Tracking with bd (beads)
+## Issue Tracking with Linear
 
-**IMPORTANT**: This project uses **bd (beads)** for ALL issue tracking. Do NOT use markdown TODOs, task lists, or other tracking methods.
+**IMPORTANT**: This project uses **Linear** for ALL issue tracking, in the **Rue** team. Do NOT use markdown TODOs, task lists, or other tracking methods.
 
-### Why bd?
+### Access
 
-- Dependency-aware: Track blockers and relationships between issues
-- VCS-friendly: Auto-syncs to JSONL for version control
-- Agent-optimized: JSON output, ready work detection, discovered-from links
-- Prevents duplicate tracking systems and confusion
+In Claude Code, use the Linear MCP tools (`list_issues`, `get_issue`, `save_issue`, `save_comment`, `list_my_issues`, etc.). Issues are identified as `RUE-NN`.
 
 ### Quick Start
 
-```bash
-# Find ready work
-bd ready --json
+- **Find ready work**: list issues in the Rue team with state `Todo` or `Backlog`, ordered by priority; skip issues blocked by open issues
+- **Create an issue**: `save_issue` with `team: "Rue"`, a clear title, and a Markdown description
+- **Claim**: `save_issue` with `state: "In Progress"` and `assignee: "me"`
+- **Complete**: `save_issue` with `state: "Done"`
 
-# Create new issues
-bd create "Issue title" -t bug|feature|task -p 0-4 --json
-bd create "Issue title" -p 1 --deps discovered-from:bd-123 --json
-bd create "Subtask" --parent <epic-id> --json  # Hierarchical subtask
+### Conventions
 
-# Claim and update
-bd update bd-42 --status in_progress --json
-
-# Complete work
-bd close bd-42 --reason "Completed" --json
-```
-
-### Issue Types
-
-- `bug` - Something broken
-- `feature` - New functionality
-- `task` - Work item (tests, docs, refactoring)
-- `epic` - Large feature with subtasks
-- `chore` - Maintenance (dependencies, tooling)
-
-### Priorities
-
-- `0` - Critical (security, data loss, broken builds)
-- `1` - High (major features, important bugs)
-- `2` - Medium (default, nice-to-have)
-- `3` - Low (polish, optimization)
-- `4` - Backlog (future ideas)
+- **Multi-phase features**: create a parent issue (the "epic") and sub-issues per phase via `parentId`; link the ADR in the description
+- **Discovered work**: when you find new work mid-task, create a new issue with `relatedTo` (or `blockedBy` if it's a true dependency) pointing at the issue you were working on
+- **Priorities (Linear semantics)**: `1` Urgent (security, broken builds), `2` High (major features, important bugs), `3` Medium (default), `4` Low (polish, backlog ideas)
+- **Labels**: use `bug`, `feature`, `task`, `chore` to mirror issue types
 
 ### Workflow for AI Agents
 
-1. **Check ready work**: `bd ready` shows unblocked issues
-2. **Claim your task**: `bd update <id> --status in_progress`
-3. **Describe the working commit**: `jj describe -m "WIP: bd-42 - short description"`
+1. **Check ready work**: list `Todo`/`Backlog` issues in the Rue team
+2. **Claim your task**: set state to `In Progress`
+3. **Describe the working commit**: `jj describe -m "WIP: RUE-42 - short description"`
    - This makes it easy to see what's being worked on in each workspace
    - Will be overwritten with the final commit message when complete
 4. **Work on it**: Implement, test, document
-5. **Discover new work?** Create linked issue:
-   - `bd create "Found bug" -p 1 --deps discovered-from:<parent-id>`
-6. **Complete**: `bd close <id> --reason "Done"`
-7. **Commit together**: Always commit the `.beads/issues.jsonl` file together with the code changes so issue state stays in sync with code state
+5. **Discover new work?** Create a linked issue (`relatedTo` the current one)
+6. **Complete**: put `Fixes RUE-42` in the **PR body** — the issue moves to `Done` automatically when the PR merges (see below). No manual state change is needed.
 
-### Auto-Sync
+### Closing issues: GitHub ↔ Linear sync
 
-bd automatically syncs with version control:
-- Exports to `.beads/issues.jsonl` after changes (5s debounce)
-- Imports from JSONL when newer (e.g., after pulling changes)
-- No manual export/import needed!
+The Linear ↔ GitHub integration is connected to both `steveklabnik/rue` (the fork) and `rue-language/rue` (upstream). A merged PR **auto-links and auto-closes** the issues it references, so you don't need to set issues to `Done` by hand.
 
-### CLI Help
-
-Run `bd <command> --help` to see all available flags for any command.
+- Put a closing keyword in the **PR body** (not just the commit message): `Fixes RUE-NN` (also accepts `Closes`/`Resolves`). The PR body is what the integration parses.
+- **One issue per line** for a PR that fixes several issues — `Fixes RUE-28` / `Fixes RUE-60` / `Fixes RUE-98`, each on its own line. A bare comma list (`Fixes RUE-28, RUE-60`) only closes the first.
+- The branch name (`steveklabnik/push-<changeid>`) does **not** carry the issue ID, so rely on the PR-body keywords, not branch-name linking. This also handles multi-issue PRs, which a branch name can't.
+- On merge, the integration links the PR as an attachment on each issue **and** transitions it to `Done`. Marking `Done` manually is an optional backstop (e.g. for a PR that merged before the integration existed, which it won't retroactively process).
 
 ### Important Rules
 
-- ✅ Use bd for ALL task tracking
-- ✅ Always use `--json` flag for programmatic use
-- ✅ Link discovered work with `discovered-from` dependencies
-- ✅ Check `bd ready` before asking "what should I work on?"
-- ✅ Run `bd <cmd> --help` to discover available flags
+- ✅ Use Linear for ALL task tracking
+- ✅ Link discovered work to the issue it came from
+- ✅ Reference issue IDs (RUE-NN) in commit messages
 - ❌ Do NOT create markdown TODO lists
-- ❌ Do NOT use external issue trackers
+- ❌ Do NOT use other issue trackers
 - ❌ Do NOT duplicate tracking systems

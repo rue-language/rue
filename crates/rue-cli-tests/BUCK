@@ -1,0 +1,24 @@
+rust_binary(
+    name = "rue-cli-tests",
+    srcs = glob(["src/**/*.rs"]),
+    deps = [
+        "//crates/rue-test-runner:rue-test-runner",
+        "//third-party:libtest2-mimic",
+        "//third-party:serde",
+        "//third-party:tempfile",
+        "//third-party:toml",
+    ],
+    visibility = ["PUBLIC"],
+)
+
+rust_test(
+    name = "rue-cli-tests-test",
+    srcs = glob(["src/**/*.rs"]),
+    deps = [
+        "//crates/rue-test-runner:rue-test-runner",
+        "//third-party:libtest2-mimic",
+        "//third-party:serde",
+        "//third-party:tempfile",
+        "//third-party:toml",
+    ],
+)

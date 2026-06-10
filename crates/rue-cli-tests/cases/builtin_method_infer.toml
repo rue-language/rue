@@ -1,0 +1,65 @@
+# Builtin method-call return types must anchor integer-literal inference (RUE-95).
+#
+# `String::len`/`capacity` return u64, but builtin methods were registered only for
+# sema/airgen — NOT for the HM inference `method_sigs` map — so a builtin method-call
+# result used in a binop with an untyped literal (`s.len() + 1`, `s.len() == 2`) left
+# the literal's type unconstrained, resolving to `<error>` and tripping the E0800
+# range check. These pin the fixed behavior.
+
+[section]
+id = "cli.builtin_method_infer"
+name = "Builtin method return-type inference"
+description = "A builtin method-call result must anchor the type of an integer literal it is combined with."
+
+[[case]]
+name = "len_plus_literal"
+files = [{ path = "main.rue", source = """
+fn main() -> u64 {
+    let s = "hello";
+    s.len() + 1
+}
+""" }]
+exit_code = 6
+
+[[case]]
+name = "len_eq_literal"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let s = "hi";
+    if s.len() == 2 { 9 } else { 0 }
+}
+""" }]
+exit_code = 9
+
+[[case]]
+name = "len_lt_literal"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let s = "hello";
+    if s.len() < 10 { 9 } else { 0 }
+}
+""" }]
+exit_code = 9
+
+[[case]]
+name = "len_mul_literal_bound_to_local"
+files = [{ path = "main.rue", source = """
+fn main() -> u64 {
+    let s = "abc";
+    let n = s.len() * 2;
+    n
+}
+""" }]
+exit_code = 6
+
+# capacity() also returns u64; a string literal has cap == 0, so `> 0` is false.
+# (The point is that this compiles at all — previously it was E0800 <error>.)
+[[case]]
+name = "capacity_compare_literal_compiles"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let s = "hi";
+    if s.capacity() > 0 { 1 } else { 0 }
+}
+""" }]
+exit_code = 0

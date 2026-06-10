@@ -222,14 +222,23 @@ pub enum X86Inst {
     /// `xor dst, imm` - XOR with immediate (dst = dst ^ imm).
     XorRI { dst: Operand, imm: i32 },
 
-    /// `and dst, src` - Bitwise AND (dst = dst & src).
+    /// `and dst, src` - Bitwise AND, 32-bit (dst = dst & src).
     AndRR { dst: Operand, src: Operand },
 
-    /// `or dst, src` - Bitwise OR (dst = dst | src).
+    /// `or dst, src` - Bitwise OR, 32-bit (dst = dst | src).
     OrRR { dst: Operand, src: Operand },
 
-    /// `xor dst, src` - Bitwise XOR (dst = dst ^ src).
+    /// `xor dst, src` - Bitwise XOR, 32-bit (dst = dst ^ src).
     XorRR { dst: Operand, src: Operand },
+
+    /// `and dst, src` - Bitwise AND, 64-bit (dst = dst & src).
+    And64RR { dst: Operand, src: Operand },
+
+    /// `or dst, src` - Bitwise OR, 64-bit (dst = dst | src).
+    Or64RR { dst: Operand, src: Operand },
+
+    /// `xor dst, src` - Bitwise XOR, 64-bit (dst = dst ^ src).
+    Xor64RR { dst: Operand, src: Operand },
 
     /// `not dst` - Bitwise NOT (dst = ~dst).
     NotR { dst: Operand },
@@ -273,6 +282,9 @@ pub enum X86Inst {
     /// `cdq` - Sign-extend EAX into EDX:EAX (for signed division).
     Cdq,
 
+    /// `cqo` - Sign-extend RAX into RDX:RAX (for 64-bit signed division).
+    Cqo,
+
     /// `idiv src` - Signed divide EDX:EAX by src.
     /// Quotient in EAX, remainder in EDX.
     IdivR { src: Operand },
@@ -280,6 +292,14 @@ pub enum X86Inst {
     /// `div src` - Unsigned divide EDX:EAX by src.
     /// Quotient in EAX, remainder in EDX.
     DivR { src: Operand },
+
+    /// `idiv src` - Signed divide RDX:RAX by src (64-bit).
+    /// Quotient in RAX, remainder in RDX.
+    Idiv64R { src: Operand },
+
+    /// `div src` - Unsigned divide RDX:RAX by src (64-bit).
+    /// Quotient in RAX, remainder in RDX.
+    Div64R { src: Operand },
 
     // Comparison and control flow
     /// `cmp src1, src2` - Compare 32-bit (subtract and set flags, discard result).
@@ -344,6 +364,9 @@ pub enum X86Inst {
 
     /// `test src1, src2` - Bitwise AND, set flags, discard result.
     TestRR { src1: Operand, src2: Operand },
+
+    /// `test src1, src2` - Bitwise AND (64-bit), set flags, discard result.
+    Test64RR { src1: Operand, src2: Operand },
 
     /// `jz label` - Jump if zero flag is set.
     Jz { label: LabelId },
@@ -470,9 +493,12 @@ impl X86Inst {
     pub fn clobbers(&self) -> &'static [Reg] {
         match self {
             // Division clobbers RAX (quotient) and RDX (remainder)
-            X86Inst::IdivR { .. } | X86Inst::DivR { .. } => &[Reg::Rax, Reg::Rdx],
-            // CDQ sign-extends EAX into EDX, clobbering RDX
-            X86Inst::Cdq => &[Reg::Rdx],
+            X86Inst::IdivR { .. }
+            | X86Inst::DivR { .. }
+            | X86Inst::Idiv64R { .. }
+            | X86Inst::Div64R { .. } => &[Reg::Rax, Reg::Rdx],
+            // CDQ/CQO sign-extends (E/R)AX into (E/R)DX, clobbering RDX
+            X86Inst::Cdq | X86Inst::Cqo => &[Reg::Rdx],
             // Function calls clobber all caller-saved registers per System V AMD64 ABI
             X86Inst::CallRel { .. } => &[
                 Reg::Rax,
@@ -526,6 +552,9 @@ impl fmt::Display for X86Inst {
             X86Inst::AndRR { dst, src } => write!(f, "and {}, {}", dst, src),
             X86Inst::OrRR { dst, src } => write!(f, "or {}, {}", dst, src),
             X86Inst::XorRR { dst, src } => write!(f, "xor {}, {}", dst, src),
+            X86Inst::And64RR { dst, src } => write!(f, "andq {}, {}", dst, src),
+            X86Inst::Or64RR { dst, src } => write!(f, "orq {}, {}", dst, src),
+            X86Inst::Xor64RR { dst, src } => write!(f, "xorq {}, {}", dst, src),
             X86Inst::NotR { dst } => write!(f, "not {}", dst),
             X86Inst::ShlRCl { dst } => write!(f, "shlq {}, cl", dst),
             X86Inst::Shl32RCl { dst } => write!(f, "shll {}, cl", dst),
@@ -540,8 +569,11 @@ impl fmt::Display for X86Inst {
             X86Inst::SarRI { dst, imm } => write!(f, "sarq {}, {}", dst, imm),
             X86Inst::Sar32RI { dst, imm } => write!(f, "sarl {}, {}", dst, imm),
             X86Inst::Cdq => write!(f, "cdq"),
+            X86Inst::Cqo => write!(f, "cqo"),
             X86Inst::IdivR { src } => write!(f, "idiv {}", src),
             X86Inst::DivR { src } => write!(f, "div {}", src),
+            X86Inst::Idiv64R { src } => write!(f, "idivq {}", src),
+            X86Inst::Div64R { src } => write!(f, "divq {}", src),
             X86Inst::CmpRR { src1, src2 } => write!(f, "cmp {}, {}", src1, src2),
             X86Inst::Cmp64RR { src1, src2 } => write!(f, "cmpq {}, {}", src1, src2),
             X86Inst::CmpRI { src, imm } => write!(f, "cmp {}, {}", src, imm),
@@ -563,6 +595,7 @@ impl fmt::Display for X86Inst {
             X86Inst::Movzx8To64 { dst, src } => write!(f, "movzx {}, byte {}", dst, src),
             X86Inst::Movzx16To64 { dst, src } => write!(f, "movzx {}, word {}", dst, src),
             X86Inst::TestRR { src1, src2 } => write!(f, "test {}, {}", src1, src2),
+            X86Inst::Test64RR { src1, src2 } => write!(f, "testq {}, {}", src1, src2),
             X86Inst::Jz { label } => write!(f, "jz {}", label),
             X86Inst::Jnz { label } => write!(f, "jnz {}", label),
             X86Inst::Jo { label } => write!(f, "jo {}", label),

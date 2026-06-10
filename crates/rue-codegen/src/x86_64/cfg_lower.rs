@@ -190,8 +190,12 @@ impl<'a> CfgLower<'a> {
             imm: length as i64,
         });
 
-        // Compare index (unsigned) against length
-        self.mir.push(X86Inst::CmpRR {
+        // Compare index (unsigned) against length. The index is a usize
+        // (64-bit) and the length is materialized as a 64-bit immediate, so the
+        // comparison MUST be 64-bit — a 32-bit cmp would ignore the high half of
+        // the index and let an out-of-range index whose low 32 bits happen to be
+        // in range bypass the check, reading out of bounds (RUE-87).
+        self.mir.push(X86Inst::Cmp64RR {
             src1: Operand::Virtual(index_vreg),
             src2: Operand::Virtual(length_vreg),
         });
@@ -206,6 +210,98 @@ impl<'a> CfgLower<'a> {
 
         // Continue with valid access
         self.mir.push(X86Inst::Label { id: ok_label });
+    }
+
+    /// Emit the divide instruction for a div/mod, with the dividend already in
+    /// RAX. Sign-extends (signed) or zero-extends (unsigned) the dividend into
+    /// RDX:RAX, then divides by `rhs_vreg`, selecting 64-bit forms (CQO + REX.W
+    /// idiv/div) for 64-bit operands instead of the 32-bit CDQ + idiv/div that
+    /// would only operate on the low 32 bits (RUE-26). Quotient lands in RAX,
+    /// remainder in RDX.
+    fn emit_div_core(&mut self, is_64: bool, is_signed: bool, rhs_vreg: VReg) {
+        if is_signed {
+            // Sign-extend (R/E)AX into (R/E)DX.
+            self.mir
+                .push(if is_64 { X86Inst::Cqo } else { X86Inst::Cdq });
+            self.mir.push(if is_64 {
+                X86Inst::Idiv64R {
+                    src: Operand::Virtual(rhs_vreg),
+                }
+            } else {
+                X86Inst::IdivR {
+                    src: Operand::Virtual(rhs_vreg),
+                }
+            });
+        } else {
+            // Zero RDX so the dividend is RDX:RAX with a zero high half.
+            // (`xor edx, edx` clears all 64 bits of RDX.)
+            self.mir.push(X86Inst::XorRR {
+                dst: Operand::Physical(Reg::Rdx),
+                src: Operand::Physical(Reg::Rdx),
+            });
+            self.mir.push(if is_64 {
+                X86Inst::Div64R {
+                    src: Operand::Virtual(rhs_vreg),
+                }
+            } else {
+                X86Inst::DivR {
+                    src: Operand::Virtual(rhs_vreg),
+                }
+            });
+        }
+    }
+
+    /// The AND mask (bit_width - 1) applied to a shift count, since the count
+    /// is taken modulo the operand's bit width (spec 4.3a:10).
+    fn shift_count_mask(ty: Type) -> u64 {
+        match Self::type_bits(ty) {
+            8 => 0x07,
+            16 => 0x0F,
+            64 => 0x3F,
+            _ => 0x1F, // 32-bit
+        }
+    }
+
+    /// Materialize the shift count masked to the operand's bit width into a
+    /// fresh vreg, so a sub-word variable count >= the width wraps per spec
+    /// (the x86 CL shift only masks by 31/63). For 32/64-bit operands the
+    /// hardware mask already matches, so the count is returned unmasked.
+    fn emit_masked_shift_count(&mut self, rhs: CfgValue, ty: Type) -> VReg {
+        let rhs_vreg = self.get_vreg(rhs);
+        if Self::type_bits(ty) >= 32 {
+            return rhs_vreg;
+        }
+        let mask_vreg = self.mir.alloc_vreg();
+        self.mir.push(X86Inst::MovRI32 {
+            dst: Operand::Virtual(mask_vreg),
+            imm: Self::shift_count_mask(ty) as i32,
+        });
+        let count_vreg = self.mir.alloc_vreg();
+        self.mir.push(X86Inst::MovRR {
+            dst: Operand::Virtual(count_vreg),
+            src: Operand::Virtual(rhs_vreg),
+        });
+        self.mir.push(X86Inst::AndRR {
+            dst: Operand::Virtual(count_vreg),
+            src: Operand::Virtual(mask_vreg),
+        });
+        count_vreg
+    }
+
+    /// Narrow a value to a sub-word integer type by sign-/zero-extending its
+    /// low byte/word over the register, so it holds the correct value for the
+    /// type after an op that may have set bits above the operand width (e.g. a
+    /// left shift). No-op for 32/64-bit types.
+    fn emit_subword_narrow(&mut self, vreg: VReg, ty: Type) {
+        let dst = Operand::Virtual(vreg);
+        let src = Operand::Virtual(vreg);
+        match Self::type_bits(ty) {
+            8 if ty.is_signed() => self.mir.push(X86Inst::Movsx8To64 { dst, src }),
+            8 => self.mir.push(X86Inst::Movzx8To64 { dst, src }),
+            16 if ty.is_signed() => self.mir.push(X86Inst::Movsx16To64 { dst, src }),
+            16 => self.mir.push(X86Inst::Movzx16To64 { dst, src }),
+            _ => {}
+        }
     }
 
     /// Allocate a new inline label ID.
@@ -285,6 +381,51 @@ impl<'a> CfgLower<'a> {
                     let vreg = self.mir.alloc_vreg();
                     let param_slot = self.ctx.num_locals + index + i;
                     let offset = self.ctx.local_offset(param_slot);
+                    self.mir.push(X86Inst::MovRM {
+                        dst: Operand::Virtual(vreg),
+                        base: Reg::Rbp,
+                        offset,
+                    });
+                    vregs.push(vreg);
+                }
+                Some(vregs)
+            }
+            CfgInstData::PlaceRead { place } => {
+                // A multi-slot aggregate (struct or builtin String) read from a
+                // place — e.g. `let s2 = h.s;`. The base place-read lowering only
+                // materializes the first slot into `dst`; here we materialize all
+                // `slot_count` slots so consumers (struct equality, Alloc/Store of
+                // a fat pointer, etc.) see the full value. Only static field
+                // projections are handled — dynamic array indexing and inout params
+                // fall through to None (preserving prior behavior). (RUE-22/63/94)
+                let projections = self.ctx.cfg.get_place_projections(place).to_vec();
+                let mut static_slot_offset: u32 = 0;
+                for proj in &projections {
+                    match proj {
+                        Projection::Field {
+                            struct_id,
+                            field_index,
+                        } => {
+                            static_slot_offset +=
+                                self.ctx.struct_field_slot_offset(*struct_id, *field_index);
+                        }
+                        Projection::Index { .. } => return None,
+                    }
+                }
+                let base_slot = match place.base {
+                    PlaceBase::Local(slot) => slot + static_slot_offset,
+                    PlaceBase::Param(param_slot) => {
+                        if self.ctx.cfg.is_param_inout(param_slot) {
+                            return None;
+                        }
+                        self.ctx.num_locals + param_slot + static_slot_offset
+                    }
+                };
+                let slot_count = self.ctx.type_slot_count(Type::new_struct(struct_id));
+                let mut vregs = Vec::with_capacity(slot_count as usize);
+                for i in 0..slot_count {
+                    let vreg = self.mir.alloc_vreg();
+                    let offset = self.ctx.local_offset(base_slot + i);
                     self.mir.push(X86Inst::MovRM {
                         dst: Operand::Virtual(vreg),
                         base: Reg::Rbp,
@@ -928,12 +1069,23 @@ impl<'a> CfgLower<'a> {
                 let lhs_vreg = self.get_vreg(*lhs);
                 let rhs_vreg = self.get_vreg(*rhs);
 
-                // Division by zero check
+                // Division by zero check. For a 64-bit divisor the test must be
+                // 64-bit — a 32-bit test would only look at the low half and
+                // falsely trap (or fail to trap) when the high bits differ
+                // (RUE-26).
+                let is_64 = ty.is_64_bit();
                 let ok_label = self.new_label();
-                self.mir.push(X86Inst::TestRR {
-                    src1: Operand::Virtual(rhs_vreg),
-                    src2: Operand::Virtual(rhs_vreg),
-                });
+                if is_64 {
+                    self.mir.push(X86Inst::Test64RR {
+                        src1: Operand::Virtual(rhs_vreg),
+                        src2: Operand::Virtual(rhs_vreg),
+                    });
+                } else {
+                    self.mir.push(X86Inst::TestRR {
+                        src1: Operand::Virtual(rhs_vreg),
+                        src2: Operand::Virtual(rhs_vreg),
+                    });
+                }
                 self.mir.push(X86Inst::Jnz { label: ok_label });
                 let symbol_id = self.intern_symbol("__rue_div_by_zero");
                 self.mir.push(X86Inst::CallRel { symbol_id });
@@ -944,23 +1096,10 @@ impl<'a> CfgLower<'a> {
                     src: Operand::Virtual(lhs_vreg),
                 });
 
-                // Use signed division (CDQ + IDIV) for signed types,
-                // unsigned division (XOR EDX,EDX + DIV) for unsigned types
-                if ty.is_signed() {
-                    self.mir.push(X86Inst::Cdq);
-                    self.mir.push(X86Inst::IdivR {
-                        src: Operand::Virtual(rhs_vreg),
-                    });
-                } else {
-                    // Zero-extend EAX into EDX:EAX by zeroing EDX
-                    self.mir.push(X86Inst::XorRR {
-                        dst: Operand::Physical(Reg::Rdx),
-                        src: Operand::Physical(Reg::Rdx),
-                    });
-                    self.mir.push(X86Inst::DivR {
-                        src: Operand::Virtual(rhs_vreg),
-                    });
-                }
+                // Use signed division (CDQ/CQO + IDIV) for signed types,
+                // unsigned division (XOR EDX,EDX + DIV) for unsigned types,
+                // selecting 64-bit forms for 64-bit operands (RUE-26).
+                self.emit_div_core(is_64, ty.is_signed(), rhs_vreg);
 
                 self.mir.push(X86Inst::MovRR {
                     dst: Operand::Virtual(vreg),
@@ -975,11 +1114,19 @@ impl<'a> CfgLower<'a> {
                 let lhs_vreg = self.get_vreg(*lhs);
                 let rhs_vreg = self.get_vreg(*rhs);
 
+                let is_64 = ty.is_64_bit();
                 let ok_label = self.new_label();
-                self.mir.push(X86Inst::TestRR {
-                    src1: Operand::Virtual(rhs_vreg),
-                    src2: Operand::Virtual(rhs_vreg),
-                });
+                if is_64 {
+                    self.mir.push(X86Inst::Test64RR {
+                        src1: Operand::Virtual(rhs_vreg),
+                        src2: Operand::Virtual(rhs_vreg),
+                    });
+                } else {
+                    self.mir.push(X86Inst::TestRR {
+                        src1: Operand::Virtual(rhs_vreg),
+                        src2: Operand::Virtual(rhs_vreg),
+                    });
+                }
                 self.mir.push(X86Inst::Jnz { label: ok_label });
                 let symbol_id = self.intern_symbol("__rue_div_by_zero");
                 self.mir.push(X86Inst::CallRel { symbol_id });
@@ -990,23 +1137,10 @@ impl<'a> CfgLower<'a> {
                     src: Operand::Virtual(lhs_vreg),
                 });
 
-                // Use signed division (CDQ + IDIV) for signed types,
-                // unsigned division (XOR EDX,EDX + DIV) for unsigned types
-                if ty.is_signed() {
-                    self.mir.push(X86Inst::Cdq);
-                    self.mir.push(X86Inst::IdivR {
-                        src: Operand::Virtual(rhs_vreg),
-                    });
-                } else {
-                    // Zero-extend EAX into EDX:EAX by zeroing EDX
-                    self.mir.push(X86Inst::XorRR {
-                        dst: Operand::Physical(Reg::Rdx),
-                        src: Operand::Physical(Reg::Rdx),
-                    });
-                    self.mir.push(X86Inst::DivR {
-                        src: Operand::Virtual(rhs_vreg),
-                    });
-                }
+                // Use signed division (CDQ/CQO + IDIV) for signed types,
+                // unsigned division (XOR EDX,EDX + DIV) for unsigned types,
+                // selecting 64-bit forms for 64-bit operands (RUE-26).
+                self.emit_div_core(is_64, ty.is_signed(), rhs_vreg);
 
                 self.mir.push(X86Inst::MovRR {
                     dst: Operand::Virtual(vreg),
@@ -1086,9 +1220,18 @@ impl<'a> CfgLower<'a> {
                     dst: Operand::Virtual(vreg),
                     src: Operand::Virtual(lhs_vreg),
                 });
-                self.mir.push(X86Inst::AndRR {
-                    dst: Operand::Virtual(vreg),
-                    src: Operand::Virtual(rhs_vreg),
+                // 64-bit operands need a REX.W `and`; a 32-bit `and` would zero
+                // the high 32 bits of the result (RUE-58).
+                self.mir.push(if ty.is_64_bit() {
+                    X86Inst::And64RR {
+                        dst: Operand::Virtual(vreg),
+                        src: Operand::Virtual(rhs_vreg),
+                    }
+                } else {
+                    X86Inst::AndRR {
+                        dst: Operand::Virtual(vreg),
+                        src: Operand::Virtual(rhs_vreg),
+                    }
                 });
             }
 
@@ -1103,9 +1246,16 @@ impl<'a> CfgLower<'a> {
                     dst: Operand::Virtual(vreg),
                     src: Operand::Virtual(lhs_vreg),
                 });
-                self.mir.push(X86Inst::OrRR {
-                    dst: Operand::Virtual(vreg),
-                    src: Operand::Virtual(rhs_vreg),
+                self.mir.push(if ty.is_64_bit() {
+                    X86Inst::Or64RR {
+                        dst: Operand::Virtual(vreg),
+                        src: Operand::Virtual(rhs_vreg),
+                    }
+                } else {
+                    X86Inst::OrRR {
+                        dst: Operand::Virtual(vreg),
+                        src: Operand::Virtual(rhs_vreg),
+                    }
                 });
             }
 
@@ -1120,9 +1270,16 @@ impl<'a> CfgLower<'a> {
                     dst: Operand::Virtual(vreg),
                     src: Operand::Virtual(lhs_vreg),
                 });
-                self.mir.push(X86Inst::XorRR {
-                    dst: Operand::Virtual(vreg),
-                    src: Operand::Virtual(rhs_vreg),
+                self.mir.push(if ty.is_64_bit() {
+                    X86Inst::Xor64RR {
+                        dst: Operand::Virtual(vreg),
+                        src: Operand::Virtual(rhs_vreg),
+                    }
+                } else {
+                    X86Inst::XorRR {
+                        dst: Operand::Virtual(vreg),
+                        src: Operand::Virtual(rhs_vreg),
+                    }
                 });
             }
 
@@ -1138,14 +1295,15 @@ impl<'a> CfgLower<'a> {
                     src: Operand::Virtual(lhs_vreg),
                 });
 
-                // Check if shift amount is a constant - use immediate form if so
-                // Mask shift amount to match x86-64 hardware semantics:
-                // 63 (0x3F) for 64-bit shifts, 31 (0x1F) for 32-bit shifts
+                // The shift count is taken modulo the operand's bit width
+                // (spec 4.3a:10): mod 8 for i8/u8, 16 for i16/u16, 32 for
+                // i32/u32, 64 for i64/u64. The x86 hardware only masks by 31
+                // (32-bit shift) or 63 (64-bit), so sub-word counts need an
+                // explicit mask (RUE-29).
+                let count_mask = Self::shift_count_mask(ty);
                 let rhs_inst = &self.ctx.cfg.get_inst(*rhs).data;
                 if let CfgInstData::Const(shift_amount) = rhs_inst {
-                    let mask = if ty.is_64_bit() { 0x3F } else { 0x1F };
-                    let imm = (*shift_amount & mask) as u8;
-                    // Use 64-bit shift for i64/u64, 32-bit shift for smaller types
+                    let imm = (*shift_amount & count_mask) as u8;
                     if ty.is_64_bit() {
                         self.mir.push(X86Inst::ShlRI {
                             dst: Operand::Virtual(vreg),
@@ -1158,17 +1316,12 @@ impl<'a> CfgLower<'a> {
                         });
                     }
                 } else {
-                    // Variable shift amount - use CL register
-                    let rhs_vreg = self.get_vreg(*rhs);
-
-                    // Move shift amount to RCX (CL is the low byte)
+                    // Variable shift amount - mask it (mod bit width) and use CL.
+                    let count_vreg = self.emit_masked_shift_count(*rhs, ty);
                     self.mir.push(X86Inst::MovRR {
                         dst: Operand::Physical(Reg::Rcx),
-                        src: Operand::Virtual(rhs_vreg),
+                        src: Operand::Virtual(count_vreg),
                     });
-
-                    // Use 64-bit shift for i64/u64, 32-bit shift for smaller types
-                    // 32-bit shift masks by 31, 64-bit shift masks by 63
                     if ty.is_64_bit() {
                         self.mir.push(X86Inst::ShlRCl {
                             dst: Operand::Virtual(vreg),
@@ -1179,6 +1332,10 @@ impl<'a> CfgLower<'a> {
                         });
                     }
                 }
+                // Left shift can set bits above the operand's width; narrow the
+                // result back to the sub-word type so it has the correct value
+                // (e.g. 1i8 << 7 == -128, not +128) (RUE-29).
+                self.emit_subword_narrow(vreg, ty);
             }
 
             CfgInstData::Shr(lhs, rhs) => {
@@ -1193,13 +1350,12 @@ impl<'a> CfgLower<'a> {
                     src: Operand::Virtual(lhs_vreg),
                 });
 
-                // Check if shift amount is a constant - use immediate form if so.
-                // Mask shift amount to match x86-64 hardware semantics:
-                // 63 (0x3F) for 64-bit shifts, 31 (0x1F) for 32-bit shifts
+                // Shift count taken modulo the operand bit width (spec 4.3a:10);
+                // sub-word counts need an explicit mask (RUE-29).
+                let count_mask = Self::shift_count_mask(ty);
                 let rhs_inst = &self.ctx.cfg.get_inst(*rhs).data;
                 if let CfgInstData::Const(shift_amount) = rhs_inst {
-                    let mask = if ty.is_64_bit() { 0x3F } else { 0x1F };
-                    let imm = (*shift_amount & mask) as u8;
+                    let imm = (*shift_amount & count_mask) as u8;
                     // Use arithmetic shift (SAR) for signed types, logical shift (SHR) for unsigned
                     // Use 64-bit shift for i64/u64, 32-bit shift for smaller types
                     if ty.is_64_bit() && ty.is_signed() {
@@ -1224,13 +1380,11 @@ impl<'a> CfgLower<'a> {
                         });
                     }
                 } else {
-                    // Variable shift amount - use CL register
-                    let rhs_vreg = self.get_vreg(*rhs);
-
-                    // Move shift amount to RCX (CL is the low byte)
+                    // Variable shift amount - mask it (mod bit width) and use CL.
+                    let count_vreg = self.emit_masked_shift_count(*rhs, ty);
                     self.mir.push(X86Inst::MovRR {
                         dst: Operand::Physical(Reg::Rcx),
-                        src: Operand::Virtual(rhs_vreg),
+                        src: Operand::Virtual(count_vreg),
                     });
 
                     // Use arithmetic shift (SAR) for signed types, logical shift (SHR) for unsigned
@@ -1402,9 +1556,7 @@ impl<'a> CfgLower<'a> {
                     // Builtin String: store ptr, len, and cap to consecutive slots
                     // Check this before generic Struct case so builtin String uses this path
                     let field_vregs = self
-                        .struct_slot_vregs
-                        .get(init)
-                        .cloned()
+                        .get_or_compute_field_vregs(*init)
                         .expect("string should have fat pointer fields in Alloc");
                     debug_assert_eq!(
                         field_vregs.len(),
@@ -1440,8 +1592,15 @@ impl<'a> CfgLower<'a> {
                         src: Operand::Virtual(cap_vreg),
                     });
                 } else if matches!(init_type.kind(), TypeKind::Struct(_)) {
-                    // Struct: recursively flatten struct fields (including array fields) to scalars
-                    let scalar_vregs = self.collect_struct_scalar_vregs(*init);
+                    // Struct: store all slots via the single accessor. It materializes a
+                    // struct read from a place (`let q = a.p`) by loading its slot_count
+                    // consecutive slots, and cache-hits StructInit/Load/Param/Call/
+                    // BlockParam — all of which now carry fully-flattened slot lists
+                    // (nested arrays included). Fall back to the flattener for any source
+                    // the accessor doesn't model. (RUE-118 / RUE-22)
+                    let scalar_vregs = self
+                        .get_or_compute_field_vregs(*init)
+                        .unwrap_or_else(|| self.collect_struct_scalar_vregs(*init));
                     for (i, scalar_vreg) in scalar_vregs.iter().enumerate() {
                         let field_slot = slot + i as u32;
                         let offset = self.ctx.local_offset(field_slot);
@@ -1570,9 +1729,7 @@ impl<'a> CfgLower<'a> {
                 if self.ctx.is_builtin_string(val_type) {
                     // Builtin String: store ptr, len, and cap to consecutive slots
                     let field_vregs = self
-                        .struct_slot_vregs
-                        .get(val)
-                        .cloned()
+                        .get_or_compute_field_vregs(*val)
                         .expect("string should have fat pointer fields in Store");
                     debug_assert_eq!(
                         field_vregs.len(),
@@ -1745,51 +1902,18 @@ impl<'a> CfgLower<'a> {
                     }
 
                     match arg_type.kind() {
-                        TypeKind::Struct(struct_id) => {
-                            let arg_data = &self.ctx.cfg.get_inst(arg_value).data;
-                            let slot_count = self.ctx.type_slot_count(Type::new_struct(struct_id));
-                            match arg_data {
-                                CfgInstData::Load { slot } => {
-                                    for slot_idx in 0..slot_count {
-                                        let slot_vreg = self.mir.alloc_vreg();
-                                        let actual_slot = slot + slot_idx;
-                                        let offset = self.ctx.local_offset(actual_slot);
-                                        self.mir.push(X86Inst::MovRM {
-                                            dst: Operand::Virtual(slot_vreg),
-                                            base: Reg::Rbp,
-                                            offset,
-                                        });
-                                        flattened_vregs.push(slot_vreg);
-                                    }
-                                }
-                                CfgInstData::Param { index } => {
-                                    for slot_idx in 0..slot_count {
-                                        let slot_vreg = self.mir.alloc_vreg();
-                                        let param_slot = self.ctx.num_locals + index + slot_idx;
-                                        let offset = self.ctx.local_offset(param_slot);
-                                        self.mir.push(X86Inst::MovRM {
-                                            dst: Operand::Virtual(slot_vreg),
-                                            base: Reg::Rbp,
-                                            offset,
-                                        });
-                                        flattened_vregs.push(slot_vreg);
-                                    }
-                                }
-                                // StringConst for builtin String (when String becomes a struct)
-                                CfgInstData::StructInit { .. }
-                                | CfgInstData::Call { .. }
-                                | CfgInstData::StringConst(_) => {
-                                    if let Some(field_vregs) =
-                                        self.struct_slot_vregs.get(&arg_value)
-                                    {
-                                        flattened_vregs.extend(field_vregs.iter().copied());
-                                    } else {
-                                        flattened_vregs.push(self.get_vreg(arg_value));
-                                    }
-                                }
-                                _ => {
-                                    flattened_vregs.push(self.get_vreg(arg_value));
-                                }
+                        TypeKind::Struct(_) => {
+                            // Pass all slots of the (possibly multi-slot) struct/String arg,
+                            // regardless of how it was produced — StructInit, Load, Param, Call,
+                            // BlockParam, or a field place-read (`f(h.s)` / `f(w.p)`). The
+                            // accessor materializes lazily-sourced values (Load/Param/PlaceRead)
+                            // and cache-hits eager ones (StructInit/Call/BlockParam). Previously
+                            // the `_` arm here passed only slot 0 of a place-read aggregate,
+                            // silently dropping the rest. (RUE-118)
+                            if let Some(field_vregs) = self.get_or_compute_field_vregs(arg_value) {
+                                flattened_vregs.extend(field_vregs);
+                            } else {
+                                flattened_vregs.push(self.get_vreg(arg_value));
                             }
                         }
                         TypeKind::Array(_) => {
@@ -2020,8 +2144,9 @@ impl<'a> CfgLower<'a> {
 
                     // Handle builtin String type specially
                     if self.ctx.is_builtin_string(arg_type) {
-                        // Get the fat pointer (ptr, len, cap) from struct_slot_vregs
-                        if let Some(field_vregs) = self.struct_slot_vregs.get(&arg_val).cloned() {
+                        // Get the fat pointer (ptr, len, cap) — materializes a String read
+                        // from a place (`@dbg(h.s)`) as well as cached sources. (RUE-118)
+                        if let Some(field_vregs) = self.get_or_compute_field_vregs(arg_val) {
                             debug_assert_eq!(
                                 field_vregs.len(),
                                 3,
@@ -2141,8 +2266,9 @@ impl<'a> CfgLower<'a> {
                     let args = self.ctx.cfg.get_extra(*args_start, *args_len);
                     let arg_val = args[0];
 
-                    // Get the String fat pointer (ptr, len, cap) from struct_slot_vregs
-                    if let Some(field_vregs) = self.struct_slot_vregs.get(&arg_val).cloned() {
+                    // Get the String fat pointer (ptr, len, cap) — materializes a String
+                    // read from a place (`@parse_i32(h.s)`) as well as cached sources. (RUE-118)
+                    if let Some(field_vregs) = self.get_or_compute_field_vregs(arg_val) {
                         debug_assert_eq!(
                             field_vregs.len(),
                             3,
@@ -2435,17 +2561,25 @@ impl<'a> CfgLower<'a> {
                 let fields = self.ctx.cfg.get_extra(*fields_start, *fields_len).to_vec();
                 for field in &fields {
                     let field_inst = self.ctx.cfg.get_inst(*field);
-                    if let TypeKind::Struct(_) = field_inst.ty.kind() {
-                        // Nested struct - get all its slot vregs
-                        let nested_vregs = self
-                            .struct_slot_vregs
-                            .get(field)
-                            .cloned()
-                            .expect("nested struct field should have slot vregs in cache");
-                        slot_vregs.extend(nested_vregs);
-                    } else {
-                        // Scalar field - single vreg
-                        slot_vregs.push(self.get_vreg(*field));
+                    match field_inst.ty.kind() {
+                        TypeKind::Struct(_) => {
+                            // Nested struct/String field - all its slot vregs, incl. a
+                            // field read from another aggregate (`B { p: a.p }`). (RUE-118)
+                            let nested_vregs = self
+                                .get_or_compute_field_vregs(*field)
+                                .expect("nested struct field should have slot vregs");
+                            slot_vregs.extend(nested_vregs);
+                        }
+                        TypeKind::Array(_) => {
+                            // Nested array field - flatten to its element scalar slots so
+                            // the cached slot list is fully flattened (consumers and the
+                            // Alloc-of-this-StructInit rely on it). (RUE-118)
+                            slot_vregs.extend(self.collect_array_scalar_vregs(*field));
+                        }
+                        _ => {
+                            // Scalar field - single vreg
+                            slot_vregs.push(self.get_vreg(*field));
+                        }
                     }
                 }
 
@@ -2700,12 +2834,29 @@ impl<'a> CfgLower<'a> {
                 // Emit range check and panic if out of bounds
                 self.emit_int_cast_check(src_vreg, *from_ty, to_ty);
 
-                // Move the value to the result vreg (the bits are already correct
-                // after sign/zero extension from the range check or simple copy)
-                self.mir.push(X86Inst::MovRR {
-                    dst: Operand::Virtual(vreg),
-                    src: Operand::Virtual(src_vreg),
-                });
+                // Move the value to the result vreg. A signed source widened to a
+                // larger type must be SIGN-extended into the high bits — a plain
+                // 64-bit copy would carry the source's zero-extended high bits,
+                // turning e.g. i32 -5 into 4294967291 (RUE-88). The value is held
+                // zero-extended in the register, so emit an explicit movsx.
+                let from_bits = Self::type_bits(*from_ty);
+                let to_bits = Self::type_bits(to_ty);
+                if from_ty.is_signed() && to_bits > from_bits {
+                    let dst = Operand::Virtual(vreg);
+                    let src = Operand::Virtual(src_vreg);
+                    match from_bits {
+                        8 => self.mir.push(X86Inst::Movsx8To64 { dst, src }),
+                        16 => self.mir.push(X86Inst::Movsx16To64 { dst, src }),
+                        _ => self.mir.push(X86Inst::Movsx32To64 { dst, src }),
+                    }
+                } else {
+                    // Unsigned widening, narrowing, and same-size reinterpretation
+                    // already hold the correct bits in the low half.
+                    self.mir.push(X86Inst::MovRR {
+                        dst: Operand::Virtual(vreg),
+                        src: Operand::Virtual(src_vreg),
+                    });
+                }
             }
 
             CfgInstData::Drop {
@@ -2721,51 +2872,12 @@ impl<'a> CfgLower<'a> {
 
                 // Handle builtin String specially - it's a fat pointer (ptr, len, cap)
                 if self.ctx.is_builtin_string(dropped_ty) {
-                    // String requires all 3 slots as arguments to __rue_drop_String
-                    // First, try to get the vregs from cache
-                    let field_vregs =
-                        if let Some(vregs) = self.struct_slot_vregs.get(dropped_value).cloned() {
-                            vregs
-                        } else {
-                            // Not in cache - check if it's a Param instruction
-                            let dropped_inst = &self.ctx.cfg.get_inst(*dropped_value).data;
-                            if let CfgInstData::Param { index } = dropped_inst {
-                                // Load all 3 String fields from param slots
-                                let mut vregs = Vec::with_capacity(3);
-                                for field_idx in 0..3u32 {
-                                    let field_vreg = self.mir.alloc_vreg();
-                                    let param_slot = self.ctx.num_locals + index + field_idx;
-                                    let offset = self.ctx.local_offset(param_slot);
-                                    self.mir.push(X86Inst::MovRM {
-                                        dst: Operand::Virtual(field_vreg),
-                                        base: Reg::Rbp,
-                                        offset,
-                                    });
-                                    vregs.push(field_vreg);
-                                }
-                                vregs
-                            } else if let CfgInstData::Load { slot } = dropped_inst {
-                                // Load from local variable slots
-                                let mut vregs = Vec::with_capacity(3);
-                                for field_idx in 0..3u32 {
-                                    let field_vreg = self.mir.alloc_vreg();
-                                    let field_slot = slot + field_idx;
-                                    let offset = self.ctx.local_offset(field_slot);
-                                    self.mir.push(X86Inst::MovRM {
-                                        dst: Operand::Virtual(field_vreg),
-                                        base: Reg::Rbp,
-                                        offset,
-                                    });
-                                    vregs.push(field_vreg);
-                                }
-                                vregs
-                            } else {
-                                unreachable!(
-                                    "String value should have field vregs or be a Param/Load: {:?}",
-                                    dropped_inst
-                                );
-                            }
-                        };
+                    // String requires all 3 slots as arguments to __rue_drop_String.
+                    // The accessor handles every source (cache for StructInit/Call/
+                    // BlockParam; materialize for Load/Param/PlaceRead). (RUE-118)
+                    let field_vregs = self
+                        .get_or_compute_field_vregs(*dropped_value)
+                        .expect("String value should have field vregs");
 
                     debug_assert_eq!(
                         field_vregs.len(),
@@ -2998,8 +3110,14 @@ impl<'a> CfgLower<'a> {
                     dst: Operand::Virtual(sext_vreg),
                     src: Operand::Virtual(result_vreg),
                 });
-                // Use 64-bit compare since sext_vreg is a 64-bit value
-                self.mir.push(X86Inst::Cmp64RR {
+                // Compare at 32-bit width. The sub-word arithmetic was emitted
+                // as a 32-bit op that zero-extends bits 32-63, so result_vreg's
+                // valid data is only in its low 32 bits. A 64-bit compare against
+                // the sign-extended byte/word (1s in bits 32-63 for a negative
+                // value) would mismatch a legitimately-negative in-range result
+                // and falsely trap (RUE-28 sub, RUE-60 neg). The low 32 bits —
+                // sign-extended byte/word vs the 32-bit result — must match.
+                self.mir.push(X86Inst::CmpRR {
                     src1: Operand::Virtual(result_vreg),
                     src2: Operand::Virtual(sext_vreg),
                 });
@@ -3013,8 +3131,14 @@ impl<'a> CfgLower<'a> {
                     dst: Operand::Virtual(sext_vreg),
                     src: Operand::Virtual(result_vreg),
                 });
-                // Use 64-bit compare since sext_vreg is a 64-bit value
-                self.mir.push(X86Inst::Cmp64RR {
+                // Compare at 32-bit width. The sub-word arithmetic was emitted
+                // as a 32-bit op that zero-extends bits 32-63, so result_vreg's
+                // valid data is only in its low 32 bits. A 64-bit compare against
+                // the sign-extended byte/word (1s in bits 32-63 for a negative
+                // value) would mismatch a legitimately-negative in-range result
+                // and falsely trap (RUE-28 sub, RUE-60 neg). The low 32 bits —
+                // sign-extended byte/word vs the 32-bit result — must match.
+                self.mir.push(X86Inst::CmpRR {
                     src1: Operand::Virtual(result_vreg),
                     src2: Operand::Virtual(sext_vreg),
                 });
@@ -3302,14 +3426,10 @@ impl<'a> CfgLower<'a> {
 
         // Get the struct field vregs
         let lhs_fields = self
-            .struct_slot_vregs
-            .get(&lhs)
-            .cloned()
+            .get_or_compute_field_vregs(lhs)
             .expect("struct should have field vregs");
         let rhs_fields = self
-            .struct_slot_vregs
-            .get(&rhs)
-            .cloned()
+            .get_or_compute_field_vregs(rhs)
             .expect("struct should have field vregs");
 
         let struct_def = self.ctx.type_pool.struct_def(struct_id);
@@ -3388,14 +3508,10 @@ impl<'a> CfgLower<'a> {
         // Get struct fields from struct_slot_vregs
         // For comparison, we use ptr and len (first two fields)
         let lhs_fields = self
-            .struct_slot_vregs
-            .get(&lhs)
-            .cloned()
+            .get_or_compute_field_vregs(lhs)
             .expect("builtin type should have field vregs");
         let rhs_fields = self
-            .struct_slot_vregs
-            .get(&rhs)
-            .cloned()
+            .get_or_compute_field_vregs(rhs)
             .expect("builtin type should have field vregs");
 
         debug_assert!(
@@ -3564,6 +3680,11 @@ impl<'a> CfgLower<'a> {
                 default,
             } => {
                 let scrutinee_vreg = self.get_vreg(*scrutinee);
+                // The case value is materialized as a full 64-bit immediate, so a
+                // 64-bit scrutinee must be compared at 64-bit width; a 32-bit cmp
+                // would match on only the low 32 bits (RUE-27). Sub-64-bit
+                // scrutinees keep the 32-bit compare (correct at their width).
+                let scrutinee_is_64 = self.ctx.cfg.get_inst(*scrutinee).ty.is_64_bit();
 
                 // Generate comparison and jump for each case
                 let cases = self.ctx.cfg.get_switch_cases(*cases_start, *cases_len);
@@ -3574,10 +3695,17 @@ impl<'a> CfgLower<'a> {
                         dst: Operand::Virtual(case_vreg),
                         imm: *value,
                     });
-                    self.mir.push(X86Inst::CmpRR {
-                        src1: Operand::Virtual(scrutinee_vreg),
-                        src2: Operand::Virtual(case_vreg),
-                    });
+                    if scrutinee_is_64 {
+                        self.mir.push(X86Inst::Cmp64RR {
+                            src1: Operand::Virtual(scrutinee_vreg),
+                            src2: Operand::Virtual(case_vreg),
+                        });
+                    } else {
+                        self.mir.push(X86Inst::CmpRR {
+                            src1: Operand::Virtual(scrutinee_vreg),
+                            src2: Operand::Virtual(case_vreg),
+                        });
+                    }
                     self.mir.push(X86Inst::Jz {
                         label: self.block_label(*target),
                     });
@@ -3610,58 +3738,23 @@ impl<'a> CfgLower<'a> {
                     // it 0 mod 16 at callee entry, violating SysV ABI).
                     let symbol_id = self.intern_symbol("__rue_exit");
                     self.mir.push(X86Inst::CallRel { symbol_id });
-                } else if let Some(struct_id) = return_type.as_struct() {
-                    // Return struct in registers
-                    let slot_count = self.ctx.type_slot_count(Type::new_struct(struct_id));
-                    let value_data = &self.ctx.cfg.get_inst(*value).data;
-
-                    match value_data {
-                        CfgInstData::StructInit { .. }
-                        | CfgInstData::Call { .. }
-                        | CfgInstData::BlockParam { .. } => {
-                            // Use slot vregs from cache (populated for BlockParam, StructInit, Call)
-                            if let Some(slot_vregs) = self.struct_slot_vregs.get(value).cloned() {
-                                // Move slot values to return registers in REVERSE order.
-                                // This is important because register allocation uses Rax as
-                                // scratch when loading spilled values. By moving to Rax last,
-                                // we avoid clobbering it with scratch loads for later slots.
-                                for (i, slot_vreg) in slot_vregs.iter().enumerate().rev() {
-                                    if i < RET_REGS.len() {
-                                        self.mir.push(X86Inst::MovRR {
-                                            dst: Operand::Physical(RET_REGS[i]),
-                                            src: Operand::Virtual(*slot_vreg),
-                                        });
-                                    }
-                                }
-                            }
-                        }
-                        CfgInstData::Param { index } => {
-                            for slot_idx in 0..slot_count {
-                                let param_slot = self.ctx.num_locals + index + slot_idx;
-                                let offset = self.ctx.local_offset(param_slot);
-                                self.mir.push(X86Inst::MovRM {
-                                    dst: Operand::Physical(RET_REGS[slot_idx as usize]),
-                                    base: Reg::Rbp,
-                                    offset,
-                                });
-                            }
-                        }
-                        CfgInstData::Load { slot } => {
-                            for slot_idx in 0..slot_count {
-                                let actual_slot = slot + slot_idx;
-                                let offset = self.ctx.local_offset(actual_slot);
-                                self.mir.push(X86Inst::MovRM {
-                                    dst: Operand::Physical(RET_REGS[slot_idx as usize]),
-                                    base: Reg::Rbp,
-                                    offset,
-                                });
-                            }
-                        }
-                        _ => {
-                            let val_vreg = self.get_vreg(*value);
+                } else if return_type.as_struct().is_some() {
+                    // Return struct in registers. Gather all slots of the returned
+                    // aggregate through the single accessor, regardless of source
+                    // (StructInit/Call/BlockParam cache-hit; Load/Param/PlaceRead
+                    // materialize). Previously the `_` arm returned only slot 0 of a
+                    // place-read aggregate (`fn f(w: Wrap) -> Point { w.p }`). (RUE-118)
+                    let slot_vregs = self
+                        .get_or_compute_field_vregs(*value)
+                        .unwrap_or_else(|| vec![self.get_vreg(*value)]);
+                    // Move slot values to return registers in REVERSE order: regalloc
+                    // uses Rax as scratch when loading spilled values, so moving to Rax
+                    // (RET_REGS[0]) last avoids clobbering it with later slots' loads.
+                    for (i, slot_vreg) in slot_vregs.iter().enumerate().rev() {
+                        if i < RET_REGS.len() {
                             self.mir.push(X86Inst::MovRR {
-                                dst: Operand::Physical(Reg::Rax),
-                                src: Operand::Virtual(val_vreg),
+                                dst: Operand::Physical(RET_REGS[i]),
+                                src: Operand::Virtual(*slot_vreg),
                             });
                         }
                     }
