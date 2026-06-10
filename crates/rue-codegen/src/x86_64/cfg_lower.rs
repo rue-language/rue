@@ -1122,9 +1122,18 @@ impl<'a> CfgLower<'a> {
                     dst: Operand::Virtual(vreg),
                     src: Operand::Virtual(lhs_vreg),
                 });
-                self.mir.push(X86Inst::AndRR {
-                    dst: Operand::Virtual(vreg),
-                    src: Operand::Virtual(rhs_vreg),
+                // 64-bit operands need a REX.W `and`; a 32-bit `and` would zero
+                // the high 32 bits of the result (RUE-58).
+                self.mir.push(if ty.is_64_bit() {
+                    X86Inst::And64RR {
+                        dst: Operand::Virtual(vreg),
+                        src: Operand::Virtual(rhs_vreg),
+                    }
+                } else {
+                    X86Inst::AndRR {
+                        dst: Operand::Virtual(vreg),
+                        src: Operand::Virtual(rhs_vreg),
+                    }
                 });
             }
 
@@ -1139,9 +1148,16 @@ impl<'a> CfgLower<'a> {
                     dst: Operand::Virtual(vreg),
                     src: Operand::Virtual(lhs_vreg),
                 });
-                self.mir.push(X86Inst::OrRR {
-                    dst: Operand::Virtual(vreg),
-                    src: Operand::Virtual(rhs_vreg),
+                self.mir.push(if ty.is_64_bit() {
+                    X86Inst::Or64RR {
+                        dst: Operand::Virtual(vreg),
+                        src: Operand::Virtual(rhs_vreg),
+                    }
+                } else {
+                    X86Inst::OrRR {
+                        dst: Operand::Virtual(vreg),
+                        src: Operand::Virtual(rhs_vreg),
+                    }
                 });
             }
 
@@ -1156,9 +1172,16 @@ impl<'a> CfgLower<'a> {
                     dst: Operand::Virtual(vreg),
                     src: Operand::Virtual(lhs_vreg),
                 });
-                self.mir.push(X86Inst::XorRR {
-                    dst: Operand::Virtual(vreg),
-                    src: Operand::Virtual(rhs_vreg),
+                self.mir.push(if ty.is_64_bit() {
+                    X86Inst::Xor64RR {
+                        dst: Operand::Virtual(vreg),
+                        src: Operand::Virtual(rhs_vreg),
+                    }
+                } else {
+                    X86Inst::XorRR {
+                        dst: Operand::Virtual(vreg),
+                        src: Operand::Virtual(rhs_vreg),
+                    }
                 });
             }
 

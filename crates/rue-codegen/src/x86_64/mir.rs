@@ -222,14 +222,23 @@ pub enum X86Inst {
     /// `xor dst, imm` - XOR with immediate (dst = dst ^ imm).
     XorRI { dst: Operand, imm: i32 },
 
-    /// `and dst, src` - Bitwise AND (dst = dst & src).
+    /// `and dst, src` - Bitwise AND, 32-bit (dst = dst & src).
     AndRR { dst: Operand, src: Operand },
 
-    /// `or dst, src` - Bitwise OR (dst = dst | src).
+    /// `or dst, src` - Bitwise OR, 32-bit (dst = dst | src).
     OrRR { dst: Operand, src: Operand },
 
-    /// `xor dst, src` - Bitwise XOR (dst = dst ^ src).
+    /// `xor dst, src` - Bitwise XOR, 32-bit (dst = dst ^ src).
     XorRR { dst: Operand, src: Operand },
+
+    /// `and dst, src` - Bitwise AND, 64-bit (dst = dst & src).
+    And64RR { dst: Operand, src: Operand },
+
+    /// `or dst, src` - Bitwise OR, 64-bit (dst = dst | src).
+    Or64RR { dst: Operand, src: Operand },
+
+    /// `xor dst, src` - Bitwise XOR, 64-bit (dst = dst ^ src).
+    Xor64RR { dst: Operand, src: Operand },
 
     /// `not dst` - Bitwise NOT (dst = ~dst).
     NotR { dst: Operand },
@@ -543,6 +552,9 @@ impl fmt::Display for X86Inst {
             X86Inst::AndRR { dst, src } => write!(f, "and {}, {}", dst, src),
             X86Inst::OrRR { dst, src } => write!(f, "or {}, {}", dst, src),
             X86Inst::XorRR { dst, src } => write!(f, "xor {}, {}", dst, src),
+            X86Inst::And64RR { dst, src } => write!(f, "andq {}, {}", dst, src),
+            X86Inst::Or64RR { dst, src } => write!(f, "orq {}, {}", dst, src),
+            X86Inst::Xor64RR { dst, src } => write!(f, "xorq {}, {}", dst, src),
             X86Inst::NotR { dst } => write!(f, "not {}", dst),
             X86Inst::ShlRCl { dst } => write!(f, "shlq {}, cl", dst),
             X86Inst::Shl32RCl { dst } => write!(f, "shll {}, cl", dst),

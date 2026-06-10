@@ -656,6 +656,21 @@ impl<'a> Emitter<'a> {
                 self.emit_xor_rr(dst.as_physical(), src.as_physical());
                 end_inst!(self, "xor {}, {}", dst.as_physical(), src.as_physical());
             }
+            X86Inst::And64RR { dst, src } => {
+                self.begin_inst();
+                self.emit_and_rr64(dst.as_physical(), src.as_physical());
+                end_inst!(self, "and {}, {}", dst.as_physical(), src.as_physical());
+            }
+            X86Inst::Or64RR { dst, src } => {
+                self.begin_inst();
+                self.emit_or_rr64(dst.as_physical(), src.as_physical());
+                end_inst!(self, "or {}, {}", dst.as_physical(), src.as_physical());
+            }
+            X86Inst::Xor64RR { dst, src } => {
+                self.begin_inst();
+                self.emit_xor_rr64(dst.as_physical(), src.as_physical());
+                end_inst!(self, "xor {}, {}", dst.as_physical(), src.as_physical());
+            }
             X86Inst::NotR { dst } => {
                 self.begin_inst();
                 self.emit_not(dst.as_physical());
@@ -1883,6 +1898,51 @@ impl<'a> Emitter<'a> {
         self.code.push(modrm);
     }
 
+    /// Emit `and r64, r64`.
+    ///
+    /// Encoding: REX.W 21 /r (and r/m64, r64)
+    fn emit_and_rr64(&mut self, dst: Reg, src: Reg) {
+        let dst_enc = dst.encoding();
+        let src_enc = src.encoding();
+        let rex = 0x48
+            | if src.needs_rex() { 0x04 } else { 0x00 }  // REX.R
+            | if dst.needs_rex() { 0x01 } else { 0x00 }; // REX.B
+        self.code.push(rex);
+        self.code.push(0x21);
+        let modrm = 0xC0 | ((src_enc & 7) << 3) | (dst_enc & 7);
+        self.code.push(modrm);
+    }
+
+    /// Emit `or r64, r64`.
+    ///
+    /// Encoding: REX.W 09 /r (or r/m64, r64)
+    fn emit_or_rr64(&mut self, dst: Reg, src: Reg) {
+        let dst_enc = dst.encoding();
+        let src_enc = src.encoding();
+        let rex = 0x48
+            | if src.needs_rex() { 0x04 } else { 0x00 }  // REX.R
+            | if dst.needs_rex() { 0x01 } else { 0x00 }; // REX.B
+        self.code.push(rex);
+        self.code.push(0x09);
+        let modrm = 0xC0 | ((src_enc & 7) << 3) | (dst_enc & 7);
+        self.code.push(modrm);
+    }
+
+    /// Emit `xor r64, r64`.
+    ///
+    /// Encoding: REX.W 31 /r (xor r/m64, r64)
+    fn emit_xor_rr64(&mut self, dst: Reg, src: Reg) {
+        let dst_enc = dst.encoding();
+        let src_enc = src.encoding();
+        let rex = 0x48
+            | if src.needs_rex() { 0x04 } else { 0x00 }  // REX.R
+            | if dst.needs_rex() { 0x01 } else { 0x00 }; // REX.B
+        self.code.push(rex);
+        self.code.push(0x31);
+        let modrm = 0xC0 | ((src_enc & 7) << 3) | (dst_enc & 7);
+        self.code.push(modrm);
+    }
+
     /// Emit `not r32`.
     ///
     /// Encoding: [REX] F7 /2 (not r/m32)
@@ -3054,6 +3114,46 @@ mod tests {
         });
         // xor eax, ecx -> 31 C8 (31 /r)
         assert_eq!(code, vec![0x31, 0xC8]);
+    }
+
+    #[test]
+    fn test_and64_rax_rcx() {
+        let code = emit_single(X86Inst::And64RR {
+            dst: Operand::Physical(Reg::Rax),
+            src: Operand::Physical(Reg::Rcx),
+        });
+        // and rax, rcx -> 48 21 C8 (REX.W 21 /r)
+        assert_eq!(code, vec![0x48, 0x21, 0xC8]);
+    }
+
+    #[test]
+    fn test_and64_r10_r11() {
+        let code = emit_single(X86Inst::And64RR {
+            dst: Operand::Physical(Reg::R10),
+            src: Operand::Physical(Reg::R11),
+        });
+        // and r10, r11 -> 4D 21 DA (REX.WRB 21 /r)
+        assert_eq!(code, vec![0x4D, 0x21, 0xDA]);
+    }
+
+    #[test]
+    fn test_or64_rax_rcx() {
+        let code = emit_single(X86Inst::Or64RR {
+            dst: Operand::Physical(Reg::Rax),
+            src: Operand::Physical(Reg::Rcx),
+        });
+        // or rax, rcx -> 48 09 C8 (REX.W 09 /r)
+        assert_eq!(code, vec![0x48, 0x09, 0xC8]);
+    }
+
+    #[test]
+    fn test_xor64_rax_rcx() {
+        let code = emit_single(X86Inst::Xor64RR {
+            dst: Operand::Physical(Reg::Rax),
+            src: Operand::Physical(Reg::Rcx),
+        });
+        // xor rax, rcx -> 48 31 C8 (REX.W 31 /r)
+        assert_eq!(code, vec![0x48, 0x31, 0xC8]);
     }
 
     #[test]
