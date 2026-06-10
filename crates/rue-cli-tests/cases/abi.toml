@@ -1,19 +1,22 @@
-# By-value aggregate ABI stress tests.
+# By-value aggregate ABI stress tests (RUE-13).
 #
-# x86-64 has 6 integer argument registers; aggregates passed by value are
-# exploded into per-slot arguments. The matrix below probes sizes around
-# that boundary, in every combination of pass/return, for structs, bare
-# arrays, and methods.
+# Aggregates passed/returned by value are exploded into per-slot arguments
+# (x86-64: 6 integer arg registers, 2 return registers; aarch64/AAPCS: 8 arg
+# registers, and large aggregates passed indirectly). This matrix probes sizes
+# around those boundaries in every pass/return combination for structs, bare
+# arrays, and methods. The per-case `known_bug` / `known_bug_on` markers are
+# the source of truth for exactly what fails where.
 #
-# Current state (RUE-13): on x86-64, pass+return above 6 slots ICEs the
-# compiler; pass-only and return-only above 6 slots SILENTLY MISCOMPILE
-# (wrong values); and method self-update drops field writes at just 5
-# slots. Locals and borrow/inout are correct (those cases pass).
-#
-# aarch64 differs (CI evidence from PR #888): 7-slot cases and 9-slot
-# pass-only WORK there (AAPCS passes large aggregates indirectly), while
-# the return-path cases still fail - hence the platform-scoped
-# known_bug_on markers below.
+# State after RUE-118 (route every aggregate consumer through the slot
+# accessor): aarch64 now handles struct pass/return and bare-array pass-only at
+# all tested sizes (5/7/9 slots). The remaining failures are:
+#   - x86-64's spill of aggregate args/returns past its 6 int arg-registers /
+#     2 return-registers — the 9-slot struct cases, scoped
+#     known_bug_on = ["x86-64-linux"] (they still pass on aarch64). See RUE-91.
+#   - the value-method self-update idiom (method_self_update_5/9_slots) and the
+#     8-element array round-trip (bare_array_8_pass_and_return), which still
+#     drop slots on BOTH backends (known_bug, unscoped).
+# Locals and borrow/inout large aggregates are correct on both backends.
 
 [section]
 id = "cli.abi"
