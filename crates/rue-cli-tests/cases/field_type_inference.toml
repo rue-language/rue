@@ -1,0 +1,90 @@
+# Struct-field types must reach the inference layer (RUE-72/89/104/126).
+#
+# A field access used to yield an unconstrained fresh type variable ("full
+# resolution happens during semantic analysis"), and FieldSet/StructInit added
+# no constraint at all. Consequences: literals compared against i64 fields
+# mis-defaulted to i32 (spurious E0800), method calls on a field receiver were
+# unresolvable, and out-of-range literal initializers/assignments silently
+# wrapped. Field types are now resolved at constraint-generation time when the
+# base struct type is concrete, and the struct-init literal shortcut in sema
+# range-checks before coercing.
+
+[section]
+id = "cli.field_type_inference"
+name = "Field type inference"
+description = "Field reads anchor downstream inference; field writes and initializers are range-checked."
+
+[[case]]
+name = "i64_field_vs_large_literal"
+description = "RUE-89: a literal compared against an i64 field infers as i64, not i32."
+files = [{ path = "main.rue", source = """
+struct S { a: i64 }
+fn main() -> i32 {
+    let s = S { a: 1099511627776 };
+    if s.a == 1099511627776 { 1 } else { 0 }
+}
+""" }]
+exit_code = 1
+
+[[case]]
+name = "string_field_method_receiver_anchors_literal"
+description = "RUE-126: h.s.len() resolves (field receiver is concrete) and anchors the compared literal."
+files = [{ path = "main.rue", source = """
+struct Holder { s: String }
+fn main() -> i32 {
+    let h = Holder { s: "hello" };
+    if h.s.len() == 5 { 5 } else { 0 }
+}
+""" }]
+exit_code = 5
+
+[[case]]
+name = "struct_init_literal_out_of_range_rejected"
+description = "RUE-72: an out-of-range literal field initializer is E0800, not a silent wrap to 44."
+files = [{ path = "main.rue", source = """
+struct S { a: u8 }
+fn main() -> i32 {
+    let s = S { a: 300 };
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0800", "300", "u8"]
+
+[[case]]
+name = "field_assign_literal_out_of_range_rejected"
+description = "RUE-104: an out-of-range literal field assignment is E0800, not a silent wrap."
+files = [{ path = "main.rue", source = """
+struct S { a: u8 }
+fn main() -> i32 {
+    let mut s = S { a: 1 };
+    s.a = 300;
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0800", "300", "u8"]
+
+[[case]]
+name = "in_range_field_literals_still_work"
+files = [{ path = "main.rue", source = """
+struct S { a: u8 }
+fn main() -> i32 {
+    let mut s = S { a: 7 };
+    s.a = 49;
+    if s.a == 49 { 49 } else { 0 }
+}
+""" }]
+exit_code = 49
+
+[[case]]
+name = "array_field_initializer_still_works"
+description = "Array-typed fields unify structurally with array literals (regression guard for the conversion)."
+files = [{ path = "main.rue", source = """
+struct H { data: [i32; 3] }
+fn main() -> i32 {
+    let h = H { data: [1, 2, 3] };
+    h.data[0] + h.data[1] + h.data[2]
+}
+""" }]
+exit_code = 6

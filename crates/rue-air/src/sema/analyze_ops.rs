@@ -1981,7 +1981,19 @@ impl<'a> Sema<'a> {
             // (e.g., when the struct comes from a comptime type variable)
             let field_inst = self.rir.get(*field_value);
             let field_result = if let InstData::IntConst(value) = &field_inst.data {
-                // Integer literal - use the expected field type directly
+                // Integer literal - use the expected field type directly, but
+                // range-check it first: this shortcut bypasses analyze_literal,
+                // and previously skipped the E0800 check entirely, so
+                // `S { a: 300 }` with a: u8 silently truncated to 44. (RUE-72)
+                if !expected_field_type.literal_fits(*value) {
+                    return Err(CompileError::new(
+                        ErrorKind::LiteralOutOfRange {
+                            value: *value,
+                            ty: expected_field_type.name().to_string(),
+                        },
+                        field_inst.span,
+                    ));
+                }
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::Const(*value),
                     ty: expected_field_type,
