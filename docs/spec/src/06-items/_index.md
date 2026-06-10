@@ -30,3 +30,14 @@ User-defined types **MUST NOT** use names reserved for built-in types. Currently
 // Error: cannot define type with reserved name
 struct String { data: i32 }  // compile error
 ```
+
+{{ rule(id="6.0:5", cat="legality-rule") }}
+
+User-defined functions **MUST NOT** use names reserved for runtime and code-generation helpers. Reserved function names are: any name beginning with `__rue_`, the program entry point `_start`, and any name of the form `T__m` where `T` is a built-in type name (for example `String__len`). Defining a function with a reserved name produces a compile-time error.
+
+{{ rule(id="6.0:6", cat="example") }}
+
+```rue
+// Error: cannot define function with reserved name
+fn String__len() -> i32 { 0 }  // compile error
+```

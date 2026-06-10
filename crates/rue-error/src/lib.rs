@@ -122,6 +122,7 @@ impl ErrorCode {
     pub const INOUT_KEYWORD_MISSING: Self = Self(431);
     pub const BORROW_KEYWORD_MISSING: Self = Self(432);
     pub const EMPTY_STRUCT: Self = Self(433);
+    pub const RESERVED_FUNCTION_NAME: Self = Self(435);
 
     // ========================================================================
     // Control flow errors (E0500-E0599)
@@ -843,6 +844,9 @@ pub enum ErrorKind {
     /// User-defined type collides with a built-in type name
     #[error("cannot define type `{type_name}`: name is reserved for built-in type")]
     ReservedTypeName { type_name: String },
+    /// User-defined function collides with a runtime/codegen helper symbol
+    #[error("cannot define function `{function_name}`: name is reserved for a runtime helper")]
+    ReservedFunctionName { function_name: String },
     /// Duplicate type definition
     #[error("duplicate type definition: `{type_name}` is already defined")]
     DuplicateTypeDefinition { type_name: String },
@@ -1095,6 +1099,7 @@ impl ErrorKind {
             ErrorKind::EmptyStruct => ErrorCode::EMPTY_STRUCT,
             ErrorKind::CopyStructNonCopyField(_) => ErrorCode::COPY_STRUCT_NON_COPY_FIELD,
             ErrorKind::ReservedTypeName { .. } => ErrorCode::RESERVED_TYPE_NAME,
+            ErrorKind::ReservedFunctionName { .. } => ErrorCode::RESERVED_FUNCTION_NAME,
             ErrorKind::DuplicateTypeDefinition { .. } => ErrorCode::DUPLICATE_TYPE_DEFINITION,
             ErrorKind::LinearValueNotConsumed(_) => ErrorCode::LINEAR_VALUE_NOT_CONSUMED,
             ErrorKind::LinearStructCopy(_) => ErrorCode::LINEAR_STRUCT_COPY,
