@@ -1,0 +1,37 @@
+# Output-path safety (the legacy two-positional footgun).
+#
+# `rue a.rue b.rue` used to treat b.rue as the OUTPUT path and silently
+# overwrite the source file with the compiled binary (exit 0, file destroyed).
+# The driver now refuses a .rue output in legacy mode and refuses any output
+# path that equals an input, in every mode.
+
+[section]
+id = "cli.output_guard"
+name = "Output path safety"
+description = "The compiler must never write its output over a source file."
+
+[[case]]
+# RUE-130: two .rue positionals without -o must error, not clobber the second file.
+name = "legacy_two_rue_positionals_refused"
+files = [
+  { path = "a.rue", source = "fn main() -> i32 { 1 }\n" },
+  { path = "b.rue", source = "fn main() -> i32 { 2 }\n" },
+]
+args = ["a.rue", "b.rue"]
+compile_fail = true
+error_contains = ["refusing", "b.rue", "-o"]
+
+[[case]]
+# Explicit -o pointing at an input source must be refused.
+name = "output_equal_to_input_refused"
+files = [{ path = "a.rue", source = "fn main() -> i32 { 1 }\n" }]
+args = ["a.rue", "-o", "a.rue"]
+compile_fail = true
+error_contains = ["also an input source file"]
+
+[[case]]
+# The backwards-compatible `rue src out` form stays functional for non-.rue outputs.
+name = "legacy_non_rue_output_still_works"
+files = [{ path = "a.rue", source = "fn main() -> i32 { 5 }\n" }]
+args = ["a.rue", "prog"]
+exit_code = 5
