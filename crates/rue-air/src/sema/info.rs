@@ -95,6 +95,11 @@ pub struct ConstInfo {
     pub ty: Type,
     /// The RIR instruction ref for the initializer
     pub init: rue_rir::InstRef,
+    /// The compile-time value of the initializer, evaluated once during
+    /// declaration gathering. Module bindings store `ConstValue::Type` of
+    /// their module type; value constants store the evaluated value, which
+    /// use sites materialize directly (no re-analysis of the initializer).
+    pub value: crate::sema::ConstValue,
     /// Span of the const declaration
     pub span: Span,
 }

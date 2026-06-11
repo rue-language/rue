@@ -17,7 +17,7 @@ use rue_error::{CompileError, CompileResult, CopyStructNonCopyFieldError, ErrorK
 use rue_rir::{InstData, InstRef, RirDirective, RirParamMode};
 use rue_span::{FileId, Span};
 
-use super::{ConstInfo, FunctionInfo, InferenceContext, MethodInfo, Sema};
+use super::{ConstInfo, ConstValue, FunctionInfo, InferenceContext, MethodInfo, Sema};
 use crate::inference::{FunctionSig, MethodSig};
 use crate::types::{EnumDef, StructDef, StructField, StructId, Type};
 
@@ -418,6 +418,11 @@ impl<'a> Sema<'a> {
             }
         }
 
+        // Pre-scan const declarations: collection is dependency-ordered
+        // (an initializer may reference a constant declared later, even in
+        // another file), so all pending declarations must be known up front.
+        let mut const_collector = self.prescan_const_declarations()?;
+
         // First pass: collect all declarations and validate @copy structs
         for (inst_ref, inst) in self.rir.iter() {
             match &inst.data {
@@ -476,14 +481,11 @@ impl<'a> Sema<'a> {
                     )?;
                 }
 
-                InstData::ConstDecl {
-                    is_pub,
-                    name,
-                    ty,
-                    init,
-                    ..
-                } => {
-                    self.collect_const_declaration(*name, *is_pub, *ty, *init, inst.span)?;
+                InstData::ConstDecl { name, .. } => {
+                    // May already be collected: another constant's
+                    // initializer can pull declarations in early (the
+                    // collector is dependency-ordered, RUE-171).
+                    self.collect_const_by_key((inst.span.file_id, *name), &mut const_collector)?;
                 }
 
                 _ => {}
@@ -964,127 +966,219 @@ impl<'a> Sema<'a> {
         Ok(())
     }
 
-    /// Collect a constant declaration.
+    /// Collect a constant declaration by its `(file, name)` key.
     ///
-    /// Constants are compile-time values. In the module system, they're primarily
-    /// used for module bindings and re-exports:
-    /// ```rue
-    /// const utils = @import("utils.rue");
-    /// pub const strings = @import("utils/strings.rue");
-    /// ```
+    /// Constants are compile-time values. They come in two kinds, decided by
+    /// what the initializer evaluates to:
     ///
-    /// When the initializer is an `@import(...)`, we evaluate it at compile time
-    /// to resolve the module and register it in the module registry. This enables
-    /// subsequent member access via `const_name.function()` syntax.
+    /// - **Module bindings** — the initializer is an `@import(...)`, an alias
+    ///   of another module binding (`const m = other;`), or a member-access
+    ///   chain ending at a re-export (`const math = std.math;`). These are
+    ///   **per-file scoped** (ADR-0026: every file writes its own imports),
+    ///   stored in `module_bindings` keyed by the declaring file — two files
+    ///   binding the same name, even to different modules, is fine (RUE-113).
+    /// - **Value constants** — everything else: the initializer is evaluated
+    ///   through the comptime engine (`sema::comptime_eval`), so negated
+    ///   literals, arithmetic, and any other comptime-evaluable expression
+    ///   are legal initializers (RUE-171). Value constants keep the flat
+    ///   global namespace shared with functions/types, so duplicates across
+    ///   files are still E0418.
     ///
-    /// Module bindings are **per-file scoped** (ADR-0026: every file writes its
-    /// own imports), so they're stored in `module_bindings` keyed by the
-    /// declaring file — two files binding the same name, even to different
-    /// modules, is fine (RUE-113). Value constants keep the flat global
-    /// namespace shared with functions/types, so duplicates across files are
-    /// still E0418.
-    fn collect_const_declaration(
+    /// Collection is on-demand: an initializer that references another
+    /// not-yet-collected constant collects that constant first (see
+    /// [`ConstCollector`]), so declaration order — within a file or across
+    /// files — does not matter. Cyclic initializers are E0461.
+    fn collect_const_by_key(
         &mut self,
-        name: Spur,
-        is_pub: bool,
-        ty: Option<Spur>,
-        init: InstRef,
-        span: Span,
+        key: (FileId, Spur),
+        st: &mut ConstCollector,
     ) -> CompileResult<()> {
-        let name_str = self.interner.resolve(&name).to_string();
-        let file_id = span.file_id;
-
-        // A module binding is a const whose initializer is `@import(...)`.
-        let is_module_binding = matches!(
-            &self.rir.get(init).data,
-            InstData::Intrinsic { name: intrinsic, .. } if *intrinsic == self.known.import
-        );
-
-        // Duplicate checks. Module bindings only collide within their own
-        // file; value constants collide globally. Either kind collides with
-        // the other kind in the same file.
-        let duplicate = if is_module_binding {
-            self.module_bindings.contains_key(&(file_id, name))
-                || self
-                    .constants
-                    .get(&name)
-                    .is_some_and(|c| c.span.file_id == file_id)
-        } else {
-            self.constants.contains_key(&name)
-                || self.module_bindings.contains_key(&(file_id, name))
-        };
-        if duplicate {
+        if st.done.contains(&key) {
+            return Ok(());
+        }
+        if st.in_progress.contains(&key) {
+            // Re-entering a key that is mid-evaluation: the initializers
+            // form a cycle. Report it (never loop on it).
+            let pos = st
+                .in_progress
+                .iter()
+                .position(|k| k == &key)
+                .expect("key was just found in in_progress");
+            let cycle = st.in_progress[pos..]
+                .iter()
+                .chain(std::iter::once(&key))
+                .map(|(_, n)| self.interner.resolve(n))
+                .collect::<Vec<_>>()
+                .join(" -> ");
+            let span = st.pending[&key].span;
             return Err(CompileError::new(
-                ErrorKind::DuplicateConstant {
-                    name: name_str,
-                    kind: "constant".to_string(),
-                },
+                ErrorKind::ConstInitializerCycle { cycle },
                 span,
             ));
         }
+        // Not a pending const declaration (already-collected keys were
+        // handled above): nothing to do.
+        let Some(p) = st.pending.get(&key).copied() else {
+            return Ok(());
+        };
+        let (file_id, name) = key;
+        let name_str = self.interner.resolve(&name).to_string();
 
-        // Check for collision with function names
+        // Check for collision with function names. (Functions are collected
+        // in the same declaration walk, so this catches `fn` before `const`;
+        // a `const` collected on demand before a later same-named `fn` is
+        // not — matching the previous collection behavior.)
         if self.functions.contains_key(&name) {
             return Err(CompileError::new(
                 ErrorKind::DuplicateConstant {
                     name: name_str.clone(),
                     kind: "constant (conflicts with function)".to_string(),
                 },
-                span,
+                p.span,
             ));
         }
 
-        // Evaluate the initializer at compile time to determine the constant's
-        // natural type (this also performs @import resolution side effects).
-        // Currently we only handle @import(...) and literals - other constant
-        // expressions will be supported as part of the broader comptime
-        // feature (ADR-0025).
-        let inferred_type = self.evaluate_const_init(init, span)?;
+        st.in_progress.push(key);
+        let outcome = self.eval_const_initializer(p.init, file_id, st);
+        st.in_progress.pop();
+        let outcome = outcome?;
+        st.done.insert(key);
 
-        // An explicit annotation overrides the literal's default type:
-        // `const BIG: i64 = 5000000000;` must store an i64, not a silently
-        // truncated i32 (RUE-161). The annotation resolves like any signature
-        // type (unknown names are E0204) and the initializer is validated
-        // against it.
-        let const_type = match ty {
-            Some(ty_sym) => {
-                let declared = self.resolve_type(ty_sym, span)?;
-                self.check_const_init_matches_annotation(declared, inferred_type, init, span)?;
-                declared
+        match outcome {
+            ConstInit::Module(module_ty) => {
+                if let Some(ty_sym) = p.ty_sym {
+                    // No type annotation can name a module type, so an
+                    // annotated module binding is always a mismatch.
+                    let declared = self.resolve_type(ty_sym, p.span)?;
+                    return Err(CompileError::new(
+                        ErrorKind::TypeMismatch {
+                            expected: declared.safe_name_with_pool(Some(&self.type_pool)),
+                            found: module_ty.safe_name_with_pool(Some(&self.type_pool)),
+                        },
+                        p.span,
+                    ));
+                }
+                self.module_bindings.insert(
+                    (file_id, name),
+                    ConstInfo {
+                        is_pub: p.is_pub,
+                        ty: module_ty,
+                        init: p.init,
+                        value: ConstValue::Type(module_ty),
+                        span: p.span,
+                    },
+                );
             }
-            None => inferred_type,
-        };
-
-        let info = ConstInfo {
-            is_pub,
-            ty: const_type,
-            init,
-            span,
-        };
-        if is_module_binding {
-            self.module_bindings.insert((file_id, name), info);
-        } else {
-            self.constants.insert(name, info);
+            ConstInit::Value(value) => {
+                // Value constants share one global namespace (10.5:1): a
+                // second declaration anywhere is E0418. (Same-file pairs of
+                // any kind were already caught by the pre-scan.)
+                if self.constants.contains_key(&name) {
+                    return Err(CompileError::new(
+                        ErrorKind::DuplicateConstant {
+                            name: name_str,
+                            kind: "constant".to_string(),
+                        },
+                        p.span,
+                    ));
+                }
+                let ty = self.const_type_for_value(value, p.ty_sym, p.init, p.span)?;
+                self.constants.insert(
+                    name,
+                    ConstInfo {
+                        is_pub: p.is_pub,
+                        ty,
+                        init: p.init,
+                        value,
+                        span: p.span,
+                    },
+                );
+            }
         }
+        Ok(())
+    }
 
+    /// Pre-scan the RIR for every `const` declaration, building the
+    /// [`ConstCollector`] worklist. Two declarations of the same name in the
+    /// same file are always a duplicate (E0418), whatever their kinds.
+    fn prescan_const_declarations(&mut self) -> CompileResult<ConstCollector> {
+        let mut st = ConstCollector {
+            pending: HashMap::new(),
+            by_name: HashMap::new(),
+            done: HashSet::new(),
+            in_progress: Vec::new(),
+        };
+        for (_, inst) in self.rir.iter() {
+            if let InstData::ConstDecl {
+                is_pub,
+                name,
+                ty,
+                init,
+                ..
+            } = &inst.data
+            {
+                let key = (inst.span.file_id, *name);
+                let pending = PendingConst {
+                    is_pub: *is_pub,
+                    ty_sym: *ty,
+                    init: *init,
+                    span: inst.span,
+                };
+                if st.pending.insert(key, pending).is_some() {
+                    return Err(CompileError::new(
+                        ErrorKind::DuplicateConstant {
+                            name: self.interner.resolve(name).to_string(),
+                            kind: "constant".to_string(),
+                        },
+                        inst.span,
+                    ));
+                }
+                st.by_name.entry(*name).or_default().push(key);
+            }
+        }
+        Ok(st)
+    }
+
+    /// Collect (on demand) every constant declaration that the name `name`,
+    /// referenced from `referencing_file`, could resolve to: the same-file
+    /// declaration (module bindings are per-file scoped) and any other file's
+    /// declaration (value constants share one global namespace, and the
+    /// defining file may not have been walked yet — command-line file order
+    /// is arbitrary).
+    fn ensure_const_collected(
+        &mut self,
+        name: Spur,
+        referencing_file: FileId,
+        st: &mut ConstCollector,
+    ) -> CompileResult<()> {
+        let same_file_key = (referencing_file, name);
+        if st.pending.contains_key(&same_file_key) {
+            self.collect_const_by_key(same_file_key, st)?;
+        }
+        let keys = st.by_name.get(&name).cloned().unwrap_or_default();
+        for key in keys {
+            self.collect_const_by_key(key, st)?;
+        }
         Ok(())
     }
 
     /// Evaluate a constant initializer at compile time.
     ///
-    /// Currently handles:
-    /// - `@import("path")` - Returns Type::Module
-    /// - Integer literals - Returns the integer type
-    ///
-    /// Future extensions (ADR-0025 comptime) will support:
-    /// - Arithmetic on constants
-    /// - comptime blocks
-    /// - comptime function calls
-    fn evaluate_const_init(&mut self, init: InstRef, span: Span) -> CompileResult<Type> {
+    /// Module-flavored forms (`@import(...)`, aliases of module bindings,
+    /// member-access chains ending at a module) are resolved here; everything
+    /// else is delegated to the comptime engine via
+    /// [`Self::eval_const_value_expr`].
+    fn eval_const_initializer(
+        &mut self,
+        init: InstRef,
+        file_id: FileId,
+        st: &mut ConstCollector,
+    ) -> CompileResult<ConstInit> {
         let init_inst = self.rir.get(init);
+        let span = init_inst.span;
 
         match &init_inst.data {
-            // @import("path") evaluates to Type::Module at compile time
+            // @import("path") evaluates to a module at compile time.
             InstData::Intrinsic {
                 name,
                 args_start,
@@ -1126,9 +1220,9 @@ impl<'a> Sema<'a> {
                         .module_registry
                         .get_or_create(import_path, resolved_path);
 
-                    Ok(Type::new_module(module_id))
+                    Ok(ConstInit::Module(Type::new_module(module_id)))
                 } else {
-                    // For other intrinsics in const context, we don't support them yet
+                    // Other intrinsics are not supported in const context.
                     let intrinsic_name = self.interner.resolve(name).to_string();
                     Err(CompileError::new(
                         ErrorKind::ConstExprNotSupported {
@@ -1139,32 +1233,90 @@ impl<'a> Sema<'a> {
                 }
             }
 
-            // Integer literals evaluate to i32 (the default integer type).
-            // Note: RIR doesn't distinguish between integer types at this level.
-            // An explicit annotation (`const BIG: i64 = ...`) overrides this
-            // default in collect_const_declaration (RUE-161).
-            InstData::IntConst(_) => Ok(Type::I32),
-
-            // Boolean literals
-            InstData::BoolConst(_) => Ok(Type::BOOL),
-
-            // Unit literal
-            InstData::UnitConst => Ok(Type::UNIT),
-
-            // String literals
-            InstData::StringConst(_) => {
-                // String constants would need the String type
-                // For now, we don't support them in const context
-                Err(CompileError::new(
-                    ErrorKind::ConstExprNotSupported {
-                        expr_kind: "string literals".to_string(),
-                    },
-                    span,
-                ))
+            // A name: another module binding (alias) or a value constant.
+            InstData::VarRef { name } => {
+                let name = *name;
+                self.ensure_const_collected(name, file_id, st)?;
+                if let Some(binding) = self.module_bindings.get(&(file_id, name)) {
+                    // `const m2 = m;` — aliasing a module binding declared in
+                    // this file yields the same module (RUE-160).
+                    return Ok(ConstInit::Module(binding.ty));
+                }
+                if let Some(info) = self.constants.get(&name) {
+                    return Ok(ConstInit::Value(info.value));
+                }
+                // Not a constant: let the comptime engine decide (it rejects
+                // unknown names and type names as non-evaluable).
+                self.eval_const_value_expr(init, file_id, st, span)
             }
 
-            // Other expressions are not yet supported in const context
-            _ => Err(CompileError::new(
+            // Member access: `base.member` where `base` is a module —
+            // `const math = std.math;` (alias of a re-export, RUE-160) or
+            // `const X = m.ANSWER;` (a member value constant).
+            InstData::FieldGet { base, field } => {
+                let (base, field) = (*base, *field);
+                match self.eval_const_initializer(base, file_id, st)? {
+                    ConstInit::Module(module_ty) => {
+                        let module_id = module_ty
+                            .as_module()
+                            .expect("ConstInit::Module holds a module type");
+                        self.resolve_module_member_const(module_id, field, file_id, span, st)
+                    }
+                    ConstInit::Value(_) => Err(CompileError::new(
+                        ErrorKind::ConstExprNotSupported {
+                            expr_kind: "member access on a non-module value".to_string(),
+                        },
+                        span,
+                    )),
+                }
+            }
+
+            // String constants would need the String type; not supported in
+            // const context yet.
+            InstData::StringConst(_) => Err(CompileError::new(
+                ErrorKind::ConstExprNotSupported {
+                    expr_kind: "string literals".to_string(),
+                },
+                span,
+            )),
+
+            // Everything else: literals, arithmetic, comptime blocks, ... —
+            // evaluated by the comptime engine.
+            _ => self.eval_const_value_expr(init, file_id, st, span),
+        }
+    }
+
+    /// Evaluate a (non-module) constant initializer through the comptime
+    /// engine (`sema::comptime_eval`).
+    ///
+    /// The engine runs without HM type information here (a file-level const
+    /// has no enclosing function), so arithmetic uses the checked-`i64`
+    /// fallback semantics; the result is range-checked against the declared
+    /// or inferred type in [`Self::const_type_for_value`].
+    fn eval_const_value_expr(
+        &mut self,
+        init: InstRef,
+        file_id: FileId,
+        st: &mut ConstCollector,
+        span: Span,
+    ) -> CompileResult<ConstInit> {
+        // Pre-collect referenced constants: the engine's file-level-constant
+        // lookup only consults the finished `constants` table, so anything
+        // this initializer names must be collected first.
+        self.ensure_const_init_deps_collected(init, file_id, st)?;
+
+        let mut env = super::comptime_eval::ComptimeEnv::new();
+        match self.eval_const_expr(init, &mut env)? {
+            // Type values (e.g. `const T = i32;`) are not supported as
+            // constants: nothing can materialize them at a use site yet.
+            Some(ConstValue::Type(_)) => Err(CompileError::new(
+                ErrorKind::ConstExprNotSupported {
+                    expr_kind: "a type value".to_string(),
+                },
+                span,
+            )),
+            Some(value) => Ok(ConstInit::Value(value)),
+            None => Err(CompileError::new(
                 ErrorKind::ConstExprNotSupported {
                     expr_kind: "this expression".to_string(),
                 },
@@ -1173,40 +1325,282 @@ impl<'a> Sema<'a> {
         }
     }
 
-    /// Validate a constant initializer against the declared (annotated) type.
+    /// Walk a constant initializer expression and collect (on demand) every
+    /// constant it references, so the comptime engine sees them all in the
+    /// `constants` table regardless of declaration order.
     ///
-    /// Integer literals are range-checked against the declared integer type
-    /// (E0800), mirroring how annotated `let` literals are checked. Any other
-    /// initializer must match the annotation exactly (E0206).
-    fn check_const_init_matches_annotation(
+    /// Only the expression forms the engine can evaluate are walked; anything
+    /// else makes the expression non-evaluable anyway. A block-local `let`
+    /// that shadows a constant name still triggers collection of the constant
+    /// — harmless, since every constant is collected eventually.
+    fn ensure_const_init_deps_collected(
+        &mut self,
+        expr: InstRef,
+        file_id: FileId,
+        st: &mut ConstCollector,
+    ) -> CompileResult<()> {
+        match &self.rir.get(expr).data {
+            InstData::VarRef { name } => {
+                let name = *name;
+                self.ensure_const_collected(name, file_id, st)
+            }
+            InstData::Neg { operand }
+            | InstData::Not { operand }
+            | InstData::BitNot { operand } => {
+                let operand = *operand;
+                self.ensure_const_init_deps_collected(operand, file_id, st)
+            }
+            InstData::Add { lhs, rhs }
+            | InstData::Sub { lhs, rhs }
+            | InstData::Mul { lhs, rhs }
+            | InstData::Div { lhs, rhs }
+            | InstData::Mod { lhs, rhs }
+            | InstData::Eq { lhs, rhs }
+            | InstData::Ne { lhs, rhs }
+            | InstData::Lt { lhs, rhs }
+            | InstData::Gt { lhs, rhs }
+            | InstData::Le { lhs, rhs }
+            | InstData::Ge { lhs, rhs }
+            | InstData::And { lhs, rhs }
+            | InstData::Or { lhs, rhs }
+            | InstData::BitAnd { lhs, rhs }
+            | InstData::BitOr { lhs, rhs }
+            | InstData::BitXor { lhs, rhs }
+            | InstData::Shl { lhs, rhs }
+            | InstData::Shr { lhs, rhs } => {
+                let (lhs, rhs) = (*lhs, *rhs);
+                self.ensure_const_init_deps_collected(lhs, file_id, st)?;
+                self.ensure_const_init_deps_collected(rhs, file_id, st)
+            }
+            InstData::Comptime { expr: inner } => {
+                let inner = *inner;
+                self.ensure_const_init_deps_collected(inner, file_id, st)
+            }
+            InstData::Block { extra_start, len } => {
+                let stmt_refs: Vec<InstRef> = self
+                    .rir
+                    .get_extra(*extra_start, *len)
+                    .iter()
+                    .map(|&raw| InstRef::from_raw(raw))
+                    .collect();
+                for stmt_ref in stmt_refs {
+                    self.ensure_const_init_deps_collected(stmt_ref, file_id, st)?;
+                }
+                Ok(())
+            }
+            InstData::Alloc { init, .. } => {
+                let init = *init;
+                self.ensure_const_init_deps_collected(init, file_id, st)
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Resolve `module.member` in const context, where `member` must be a
+    /// constant declared in the module's file: a module binding (re-export)
+    /// yields its module, a value constant yields its value. Visibility
+    /// follows the usual rule (10.3/10.4): `pub` is visible everywhere,
+    /// non-`pub` only from the module's own directory (E0706).
+    fn resolve_module_member_const(
+        &mut self,
+        module_id: crate::types::ModuleId,
+        member: Spur,
+        accessing_file: FileId,
+        span: Span,
+        st: &mut ConstCollector,
+    ) -> CompileResult<ConstInit> {
+        let module_def = self.module_registry.get_def(module_id);
+        let module_file_path = module_def.file_path.clone();
+        let import_path = module_def.import_path.clone();
+        let member_str = self.interner.resolve(&member).to_string();
+
+        // Collect the member's declaration on demand (the module's file may
+        // appear later in the declaration walk).
+        let module_file_id = self.get_file_id(&module_file_path);
+        if let Some(mfile) = module_file_id {
+            self.collect_const_by_key((mfile, member), st)?;
+        }
+
+        // A module-binding member (re-export or alias) yields its module.
+        if let Some(mfile) = module_file_id {
+            if let Some(info) = self.module_bindings.get(&(mfile, member)) {
+                let (is_pub, ty) = (info.is_pub, info.ty);
+                self.check_const_member_visibility(
+                    is_pub,
+                    &member_str,
+                    &module_file_path,
+                    accessing_file,
+                    span,
+                )?;
+                return Ok(ConstInit::Module(ty));
+            }
+        }
+
+        // A value constant declared in the module's file yields its value.
+        if let Some(info) = self.constants.get(&member) {
+            if self.get_file_path(info.span.file_id) == Some(module_file_path.as_str()) {
+                let (is_pub, value) = (info.is_pub, info.value);
+                self.check_const_member_visibility(
+                    is_pub,
+                    &member_str,
+                    &module_file_path,
+                    accessing_file,
+                    span,
+                )?;
+                return Ok(ConstInit::Value(value));
+            }
+        }
+
+        // A function member is a value the constant machinery cannot hold:
+        // there is no function type or function const-value yet (fn-valued
+        // constants are a type-system gap, RUE-173). Diagnose it
+        // precisely rather than "unknown member". The RIR is scanned directly
+        // because function signatures are collected in the same declaration
+        // walk and may not have been reached yet.
+        if let Some(mfile) = module_file_id {
+            let is_fn = self.rir.iter().any(|(_, inst)| {
+                matches!(&inst.data, InstData::FnDecl { name, .. } if *name == member)
+                    && inst.span.file_id == mfile
+            });
+            if is_fn {
+                return Err(CompileError::new(
+                    ErrorKind::ConstExprNotSupported {
+                        expr_kind: "a function reference".to_string(),
+                    },
+                    span,
+                ));
+            }
+        }
+
+        // A struct/enum member would make this a type-valued constant, which
+        // is not supported (same as `const T = i32;`).
+        if self.structs.contains_key(&member) || self.enums.contains_key(&member) {
+            return Err(CompileError::new(
+                ErrorKind::ConstExprNotSupported {
+                    expr_kind: "a type value".to_string(),
+                },
+                span,
+            ));
+        }
+
+        Err(CompileError::new(
+            ErrorKind::UnknownModuleMember {
+                module_name: import_path,
+                member_name: member_str,
+            },
+            span,
+        ))
+    }
+
+    /// The visibility rule for module members accessed in const context
+    /// (10.3/10.4): `pub` members are visible from anywhere; non-`pub`
+    /// members only from the defining module's own directory (E0706).
+    pub(crate) fn check_const_member_visibility(
         &self,
-        declared: Type,
-        inferred: Type,
-        init: InstRef,
+        is_pub: bool,
+        member_str: &str,
+        module_file_path: &str,
+        accessing_file: FileId,
         span: Span,
     ) -> CompileResult<()> {
-        let init_inst = self.rir.get(init);
+        if is_pub {
+            return Ok(());
+        }
+        let same_dir = match self.get_file_path(accessing_file) {
+            Some(accessing) => {
+                std::path::Path::new(accessing).parent()
+                    == std::path::Path::new(module_file_path).parent()
+            }
+            // Be permissive if we can't determine the path (unit tests).
+            None => true,
+        };
+        if same_dir {
+            Ok(())
+        } else {
+            Err(CompileError::new(
+                ErrorKind::PrivateMemberAccess {
+                    item_kind: "const".to_string(),
+                    name: member_str.to_string(),
+                },
+                span,
+            ))
+        }
+    }
 
-        // An integer literal adopts any integer annotation it fits in.
-        if let InstData::IntConst(value) = &init_inst.data {
-            if declared.is_integer() {
-                if !declared.literal_fits(*value) {
-                    return Err(CompileError::new(
-                        ErrorKind::LiteralOutOfRange {
-                            value: *value,
-                            ty: declared.safe_name_with_pool(Some(&self.type_pool)),
-                        },
-                        init_inst.span,
-                    ));
+    /// Determine a value constant's type from its evaluated value and
+    /// optional annotation.
+    ///
+    /// Unannotated integer constants infer the smallest fitting type out of
+    /// `i32` -> `i64` -> `u64` (spec 6.5:4), so `const BIG = 5000000000;` is
+    /// an `i64`, not a truncated `i32`. An annotated integer constant adopts
+    /// any integer annotation its value fits in (RUE-161); a value out of
+    /// range of the annotation is rejected at the declaration (E0800).
+    fn const_type_for_value(
+        &mut self,
+        value: ConstValue,
+        ty_sym: Option<Spur>,
+        init: InstRef,
+        span: Span,
+    ) -> CompileResult<Type> {
+        use super::comptime_eval::const_int_fits;
+
+        let inferred = match value {
+            ConstValue::Integer(v) => {
+                if const_int_fits(v, Type::I32) {
+                    Type::I32
+                } else if const_int_fits(v, Type::I64) {
+                    Type::I64
+                } else {
+                    Type::U64
                 }
-                return Ok(());
+            }
+            ConstValue::Bool(_) => Type::BOOL,
+            ConstValue::Unit => Type::UNIT,
+            // Type values are rejected before this point (and module
+            // bindings never take this path); keep the type if one slips
+            // through so the mismatch error below names it.
+            ConstValue::Type(t) => t,
+        };
+
+        let Some(ty_sym) = ty_sym else {
+            return Ok(inferred);
+        };
+        // The annotation resolves like any signature type (unknown names are
+        // E0204) and the value is validated against it.
+        let declared = self.resolve_type(ty_sym, span)?;
+
+        // An integer value adopts any integer annotation it fits in.
+        if let ConstValue::Integer(v) = value {
+            if declared.is_integer() {
+                if const_int_fits(v, declared) {
+                    return Ok(declared);
+                }
+                let init_span = self.rir.get(init).span;
+                let ty_name = declared.safe_name_with_pool(Some(&self.type_pool));
+                return Err(if v >= 0 {
+                    CompileError::new(
+                        ErrorKind::LiteralOutOfRange {
+                            value: v as u64,
+                            ty: ty_name,
+                        },
+                        init_span,
+                    )
+                } else {
+                    // LiteralOutOfRange's payload is unsigned; negative
+                    // values mirror the comptime-block diagnostic instead.
+                    CompileError::new(
+                        ErrorKind::ComptimeEvaluationFailed {
+                            reason: format!("value {} is out of range for type {}", v, ty_name),
+                        },
+                        init_span,
+                    )
+                });
             }
         }
 
         if declared == inferred {
-            return Ok(());
+            return Ok(declared);
         }
-
         Err(CompileError::new(
             ErrorKind::TypeMismatch {
                 expected: declared.safe_name_with_pool(Some(&self.type_pool)),
@@ -1215,4 +1609,43 @@ impl<'a> Sema<'a> {
             span,
         ))
     }
+}
+
+/// A constant declaration captured by the pre-scan, waiting to be collected.
+#[derive(Clone, Copy)]
+struct PendingConst {
+    is_pub: bool,
+    ty_sym: Option<Spur>,
+    init: InstRef,
+    span: Span,
+}
+
+/// State for dependency-ordered constant collection (RUE-171).
+///
+/// Constants may reference other constants regardless of declaration order
+/// (including across files, where command-line order is arbitrary), so
+/// collection is on-demand: evaluating an initializer that names another
+/// not-yet-collected constant first collects that constant recursively.
+/// `in_progress` is the active evaluation stack; re-entering a key already
+/// on the stack is a cycle, reported as E0461 (never looped on).
+pub(crate) struct ConstCollector {
+    /// Every const declaration in the program, keyed per-file (two files may
+    /// declare module bindings of the same name, RUE-113).
+    pending: HashMap<(FileId, Spur), PendingConst>,
+    /// name -> declaring keys, for resolving cross-file references.
+    by_name: HashMap<Spur, Vec<(FileId, Spur)>>,
+    /// Keys whose collection finished.
+    done: HashSet<(FileId, Spur)>,
+    /// Active evaluation stack (cycle detection).
+    in_progress: Vec<(FileId, Spur)>,
+}
+
+/// What a constant initializer evaluated to.
+enum ConstInit {
+    /// A module: an `@import(...)`, an alias of a module binding, or a
+    /// member-access chain ending at a re-export. Becomes a per-file module
+    /// binding. The `Type` is always a `Type::Module`.
+    Module(Type),
+    /// A compile-time value: becomes a global value constant.
+    Value(ConstValue),
 }

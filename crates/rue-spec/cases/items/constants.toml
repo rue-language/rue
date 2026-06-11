@@ -1,0 +1,238 @@
+[section]
+id = "items.constants"
+spec_chapter = "6.5"
+name = "Constant Items"
+description = "Constant declarations: comptime-evaluated initializers, inferred and annotated types, dependency-ordered evaluation (spec chapter 6.5)."
+
+# =============================================================================
+# Declaration form (6.5:1)
+# =============================================================================
+
+[[case]]
+name = "const_declaration_forms"
+spec = ["6.5:1"]
+description = "pub/non-pub, annotated/unannotated const items all declare usable constants"
+source = """
+pub const A: i32 = 30;
+const B = 12;
+
+fn main() -> i32 { A + B }
+"""
+exit_code = 42
+
+# =============================================================================
+# Comptime-evaluable initializers (6.5:2)
+# =============================================================================
+
+[[case]]
+name = "negated_literal_initializer"
+spec = ["6.5:2", "6.5:3"]
+description = "A negated literal is a legal const initializer (RUE-171)"
+source = """
+const NEG: i32 = -5;
+
+fn main() -> i32 { NEG + 47 }
+"""
+exit_code = 42
+
+[[case]]
+name = "operator_and_const_ref_initializers"
+spec = ["6.5:2", "6.5:3"]
+description = "Arithmetic, boolean operators, and references to other constants"
+source = """
+const AREA = 6 * 7;
+const DOUBLE = AREA + AREA;
+const FLAG = !false;
+
+fn main() -> i32 {
+    if FLAG { DOUBLE - AREA } else { 0 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_block_initializer"
+spec = ["6.5:2"]
+description = "A comptime block is a legal const initializer"
+source = """
+const X = comptime { 40 + 2 };
+
+fn main() -> i32 { X }
+"""
+exit_code = 42
+
+[[case]]
+name = "non_evaluable_initializer_rejected"
+spec = ["6.5:2"]
+description = "A runtime function call is not compile-time evaluable (E0434)"
+source = """
+fn get() -> i32 { 42 }
+const X = get();
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = "not supported in const context"
+
+# =============================================================================
+# Inferred types (6.5:4)
+# =============================================================================
+
+[[case]]
+name = "unannotated_small_literal_is_i32"
+spec = ["6.5:4"]
+description = "A fitting literal infers i32 (usable where i32 is expected)"
+source = """
+const N = 42;
+
+fn takes_i32(x: i32) -> i32 { x }
+
+fn main() -> i32 { takes_i32(N) }
+"""
+exit_code = 42
+
+[[case]]
+name = "unannotated_big_literal_is_i64"
+spec = ["6.5:4"]
+description = "A literal that does not fit i32 infers i64; no truncation, no use-site error"
+source = """
+const BIG = 5000000000;
+
+fn main() -> i32 {
+    if BIG / 1000000000 == 5 { 5 } else { 1 }
+}
+"""
+exit_code = 5
+
+[[case]]
+name = "unannotated_huge_literal_is_u64"
+spec = ["6.5:4"]
+description = "A literal beyond i64::MAX infers u64"
+source = """
+const HUGE = 18446744073709551615;
+
+fn main() -> i32 {
+    if HUGE > 18446744073709551614 { 3 } else { 1 }
+}
+"""
+exit_code = 3
+
+[[case]]
+name = "unannotated_bool_const"
+spec = ["6.5:4"]
+description = "Boolean constants have type bool"
+source = """
+const FLAG = true;
+
+fn main() -> i32 { if FLAG { 7 } else { 1 } }
+"""
+exit_code = 7
+
+# =============================================================================
+# Annotated types (6.5:5)
+# =============================================================================
+
+[[case]]
+name = "annotation_adopted_when_value_fits"
+spec = ["6.5:5", "6.5:6"]
+description = "An integer value adopts any integer annotation it fits in"
+source = """
+const SMALL: u8 = 200;
+
+fn takes_u8(x: u8) -> i32 { 1 }
+
+fn main() -> i32 { takes_u8(SMALL) }
+"""
+exit_code = 1
+
+[[case]]
+name = "annotation_out_of_range_rejected_at_declaration"
+spec = ["6.5:5"]
+description = "An out-of-range value is rejected at the declaration"
+source = """
+const X: u8 = 300;
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = "out of range"
+
+[[case]]
+name = "negative_value_out_of_unsigned_range"
+spec = ["6.5:5"]
+description = "A negative value cannot adopt an unsigned annotation"
+source = """
+const N: u8 = -5;
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = "out of range"
+
+[[case]]
+name = "non_integer_annotation_must_match"
+spec = ["6.5:5"]
+description = "A non-integer annotation must match the value's type exactly"
+source = """
+const X: bool = 5;
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = "type mismatch"
+
+# =============================================================================
+# Evaluation order (6.5:7) and cycles (6.5:8)
+# =============================================================================
+
+[[case]]
+name = "forward_reference_same_file"
+spec = ["6.5:7", "6.5:9"]
+description = "A const may reference a const declared later in the file"
+source = """
+const A = B + 1;
+const B = C * 2;
+const C = 10;
+
+fn main() -> i32 { A }
+"""
+exit_code = 21
+
+[[case]]
+name = "forward_reference_across_files"
+spec = ["6.5:7"]
+description = "A const may reference a const declared in another (imported) file"
+source = """
+const cfg = @import("cfg");
+const BASE = cfg.LIMIT;
+const DERIVED = BASE + 1;
+
+fn main() -> i32 { DERIVED }
+"""
+aux_files = { "cfg.rue" = "pub const LIMIT = 41;" }
+exit_code = 42
+
+[[case]]
+name = "initializer_cycle_is_error"
+spec = ["6.5:8", "6.5:9"]
+description = "A reference cycle between const initializers is a compile error, not a hang"
+source = """
+const A = B;
+const B = A;
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = "cycle detected in constant initializers"
+
+[[case]]
+name = "self_referential_const_is_error"
+spec = ["6.5:8"]
+description = "A self-referential const is the smallest cycle"
+source = """
+const SELF = SELF;
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = "cycle detected in constant initializers"

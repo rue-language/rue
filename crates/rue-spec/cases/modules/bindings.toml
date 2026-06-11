@@ -182,3 +182,120 @@ pub fn twenty() -> i32 { 20 }
 """ }
 compile_fail = true
 error_contains = "duplicate constant 'm'"
+
+# =============================================================================
+# Module aliases (10.4:10) — RUE-160
+# =============================================================================
+
+[[case]]
+name = "alias_of_module_binding"
+spec = ["10.4:10"]
+description = "A const initialized from another module binding aliases the same module"
+source = """
+const m = @import("math");
+const m2 = m;
+
+fn main() -> i32 {
+    m2.add(m.add(20, 20), 2)
+}
+"""
+aux_files = { "math.rue" = "pub fn add(a: i32, b: i32) -> i32 { a + b }" }
+exit_code = 42
+
+[[case]]
+name = "alias_of_nested_reexport"
+spec = ["10.4:10", "10.4:11"]
+description = "A const initialized from a member-access chain ending at a re-export aliases the inner module"
+source = """
+const outer = @import("outer");
+const inner = outer.inner;
+
+fn main() -> i32 {
+    inner.value()
+}
+"""
+aux_files = { "outer/_outer.rue" = """
+pub const inner = @import("inner");
+""", "outer/inner.rue" = """
+pub fn value() -> i32 { 42 }
+""" }
+exit_code = 42
+
+# =============================================================================
+# Value constants as module members (10.4:12, 10.4:13) — RUE-160
+# =============================================================================
+
+[[case]]
+name = "value_const_member_at_use_site"
+spec = ["10.4:12"]
+description = "m.CONST yields the member constant's value with its declared type"
+source = """
+const math = @import("math");
+
+fn main() -> i32 {
+    math.ANSWER
+}
+"""
+aux_files = { "math.rue" = "pub const ANSWER: i32 = 42;" }
+exit_code = 42
+
+[[case]]
+name = "value_const_member_keeps_declared_width"
+spec = ["10.4:12"]
+description = "An i64 member constant keeps its width through the member access"
+source = """
+const cfg = @import("cfg");
+
+fn main() -> i32 {
+    if cfg.BIG / 1000000000 == 5 { 9 } else { 1 }
+}
+"""
+aux_files = { "cfg.rue" = "pub const BIG = 5000000000;" }
+exit_code = 9
+
+[[case]]
+name = "value_const_member_in_const_initializer"
+spec = ["10.4:12", "10.4:14"]
+description = "Member access to a value const is itself compile-time evaluable"
+source = """
+const math = @import("math");
+const COPY = math.ANSWER;
+
+fn main() -> i32 {
+    math.ANSWER + COPY
+}
+"""
+aux_files = { "math.rue" = "pub const ANSWER: i32 = 21;" }
+exit_code = 42
+
+[[case]]
+name = "pub_const_member_visible_across_directories"
+spec = ["10.4:13"]
+description = "A pub const member is accessible from any directory"
+source = """
+const lib = @import("sub/lib");
+
+fn main() -> i32 {
+    lib.LIMIT
+}
+"""
+aux_files = { "sub/lib.rue" = "pub const LIMIT: i32 = 17;" }
+exit_code = 17
+
+[[case]]
+name = "private_const_member_rejected_across_directories"
+spec = ["10.4:13"]
+description = "A non-pub const member is private outside its directory (E0706)"
+source = """
+const lib = @import("sub/lib");
+
+fn main() -> i32 {
+    lib.SECRET
+}
+"""
+aux_files = { "sub/lib.rue" = """
+const SECRET: i32 = 99;
+pub fn touch() -> i32 { SECRET }
+""" }
+compile_fail = true
+error_contains = "private"

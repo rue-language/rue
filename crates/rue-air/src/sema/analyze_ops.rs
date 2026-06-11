@@ -1685,6 +1685,21 @@ impl<'a> Sema<'a> {
         Ok(AnalysisResult::new(block_ref, Type::UNIT))
     }
 
+    /// Materialize a constant's evaluated value as an AIR instruction.
+    ///
+    /// Negative integers are sign-extended into the u64 payload (two's
+    /// complement), matching how comptime-block results are emitted.
+    fn materialize_const_value(value: ConstValue, ty: Type) -> (AirInstData, Type) {
+        match value {
+            ConstValue::Integer(v) => (AirInstData::Const(v as u64), ty),
+            ConstValue::Bool(b) => (AirInstData::BoolConst(b), Type::BOOL),
+            ConstValue::Unit => (AirInstData::UnitConst, Type::UNIT),
+            // Value constants never hold type values (declaration collection
+            // rejects them); this arm only fires defensively.
+            ConstValue::Type(t) => (AirInstData::TypeConst(t), ty),
+        }
+    }
+
     /// Analyze a variable reference.
     pub(crate) fn analyze_var_ref(
         &mut self,
@@ -1910,46 +1925,16 @@ impl<'a> Sema<'a> {
             return Ok(AnalysisResult::new(air_ref, ty));
         }
 
-        // Check if it's a constant (e.g., `const VALUE = 42`)
-        if let Some(const_info) = self.constants.get(&name).cloned() {
-            let ty = const_info.ty;
-            // For module constants, produce a TypeConst with the module type.
-            // This allows field access on the module (e.g., `math.add(1, 2)`)
-            if matches!(ty.kind(), TypeKind::Module(_)) {
-                let air_ref = air.add_inst(AirInst {
-                    data: AirInstData::TypeConst(ty),
-                    ty,
-                    span,
-                });
-                return Ok(AnalysisResult::new(air_ref, ty));
-            }
-            // For regular constants (e.g., `const VALUE = 42`), we need to inline the value.
-            // We read the RIR instruction directly since type inference hasn't run on const
-            // initializers in the declaration phase.
-            let init_inst = self.rir.get(const_info.init);
-            match &init_inst.data {
-                rue_rir::InstData::IntConst(value) => {
-                    let air_ref = air.add_inst(AirInst {
-                        data: AirInstData::Const(*value),
-                        ty,
-                        span,
-                    });
-                    return Ok(AnalysisResult::new(air_ref, ty));
-                }
-                rue_rir::InstData::BoolConst(value) => {
-                    let air_ref = air.add_inst(AirInst {
-                        data: AirInstData::BoolConst(*value),
-                        ty: Type::BOOL,
-                        span,
-                    });
-                    return Ok(AnalysisResult::new(air_ref, Type::BOOL));
-                }
-                _ => {
-                    // For complex expressions, fall back to analyzing the init expression
-                    // This may fail for expressions that need type inference context
-                    return self.analyze_inst(air, const_info.init, ctx);
-                }
-            }
+        // Check if it's a value constant (e.g., `const VALUE = -42;`).
+        // Module-typed constants never appear here: module bindings AND
+        // aliases (`const m2 = std.math;`) live in `module_bindings`,
+        // checked above. The value was evaluated once during declaration
+        // gathering (RUE-171); materialize it directly — the initializer is
+        // never re-analyzed at use sites.
+        if let Some(const_info) = self.constants.get(&name) {
+            let (data, ty) = Self::materialize_const_value(const_info.value, const_info.ty);
+            let air_ref = air.add_inst(AirInst { data, ty, span });
+            return Ok(AnalysisResult::new(air_ref, ty));
         }
 
         // Check if this is a type name (for comptime type parameters)
@@ -2448,9 +2433,11 @@ impl<'a> Sema<'a> {
         if let InstData::VarRef { name } = &base_inst.data {
             // Check if this VarRef refers to a module
             if let Some(local) = ctx.locals.get(name) {
-                if local.ty.as_module().is_some() {
-                    // This is module.Member access - handle specially
-                    let module_id = local.ty.as_module().unwrap();
+                if let Some(module_id) = local.ty.as_module() {
+                    // This is module.Member access - handle specially.
+                    // Member access is a use of the binding (`let m =
+                    // @import(..); m.ANSWER` must not warn about `m`).
+                    ctx.used_locals.insert(*name);
                     return self.analyze_module_type_member_access(air, module_id, field, span);
                 }
             }
@@ -2890,11 +2877,12 @@ impl<'a> Sema<'a> {
                 });
                 return Ok(AnalysisResult::new(air_ref, module_ty));
             }
-            // A value const (e.g. `pub const PI = ...`) accessed as a
-            // module member needs const evaluation through the member
-            // path — not supported yet; fall through to the unknown-
-            // member error below so the user gets a module-scoped
-            // message rather than a confusing type error.
+            // A value const (e.g. `pub const ANSWER = ...`) accessed as a
+            // module member: materialize the value that was evaluated at
+            // declaration time, typed as declared (RUE-160).
+            let (data, ty) = Self::materialize_const_value(const_info.value, const_info.ty);
+            let air_ref = air.add_inst(AirInst { data, ty, span });
+            return Ok(AnalysisResult::new(air_ref, ty));
         }
 
         // Member not found in the module
