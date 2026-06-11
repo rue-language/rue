@@ -2232,47 +2232,7 @@ impl<'a> CfgLower<'a> {
                 fields_start,
                 fields_len,
             } => {
-                let vreg = self.mir.alloc_vreg();
-                self.value_map.insert(value, vreg);
-
-                // Collect all slot vregs for the struct.
-                // For scalar fields, this is a single vreg.
-                // For nested struct fields, recursively collect all slot vregs.
-                let mut slot_vregs = Vec::new();
-                let fields = self.ctx.cfg.get_extra(*fields_start, *fields_len).to_vec();
-                for field in &fields {
-                    let field_inst = self.ctx.cfg.get_inst(*field);
-                    if field_inst.ty.is_struct() {
-                        // Nested struct/String field - all its slot vregs, incl. a
-                        // field read from another aggregate (`B { p: a.p }`). (RUE-118)
-                        let nested_vregs = self
-                            .get_or_compute_field_vregs(*field)
-                            .expect("nested struct field should have slot vregs");
-                        slot_vregs.extend(nested_vregs);
-                    } else if field_inst.ty.is_array() {
-                        // Nested array field - flatten to its element scalar slots so the
-                        // cached slot list is fully flattened (consumers and the Alloc-of-
-                        // this-StructInit rely on it). (RUE-118)
-                        slot_vregs.extend(self.collect_array_scalar_vregs(*field));
-                    } else {
-                        // Scalar field - single vreg
-                        slot_vregs.push(self.get_vreg(*field));
-                    }
-                }
-
-                if let Some(&first_vreg) = slot_vregs.first() {
-                    self.mir.push(Aarch64Inst::MovRR {
-                        dst: Operand::Virtual(vreg),
-                        src: Operand::Virtual(first_vreg),
-                    });
-                } else {
-                    self.mir.push(Aarch64Inst::MovImm {
-                        dst: Operand::Virtual(vreg),
-                        imm: 0,
-                    });
-                }
-
-                self.struct_slot_vregs.insert(value, slot_vregs);
+                crate::agg_slots::lower_struct_init(self, value, *fields_start, *fields_len);
             }
 
             CfgInstData::FieldSet {
@@ -2330,38 +2290,7 @@ impl<'a> CfgLower<'a> {
                 elements_start,
                 elements_len,
             } => {
-                // Array is stored in local slots; we just create vregs for elements.
-                let vreg = self.mir.alloc_vreg();
-                self.value_map.insert(value, vreg);
-
-                // Store element vregs for later access. Nested aggregate elements
-                // (multidimensional arrays, arrays of structs) are flattened to their
-                // scalar slots so the cached list is the full slot set — their own
-                // value_map entry is just a placeholder vreg. (RUE-118)
-                let elements = self
-                    .ctx
-                    .cfg
-                    .get_extra(*elements_start, *elements_len)
-                    .to_vec();
-                let mut element_vregs: Vec<VReg> = Vec::new();
-                for e in &elements {
-                    let e_ty = self.ctx.cfg.get_inst(*e).ty;
-                    if e_ty.is_struct() || e_ty.is_array() {
-                        let nested = self
-                            .get_or_compute_field_vregs(*e)
-                            .expect("nested aggregate element should have slot vregs");
-                        element_vregs.extend(nested);
-                    } else {
-                        element_vregs.push(self.get_vreg(*e));
-                    }
-                }
-                self.struct_slot_vregs.insert(value, element_vregs);
-
-                // Move 0 into vreg as placeholder
-                self.mir.push(Aarch64Inst::MovImm {
-                    dst: Operand::Virtual(vreg),
-                    imm: 0,
-                });
+                crate::agg_slots::lower_array_init(self, value, *elements_start, *elements_len);
             }
 
             CfgInstData::IndexSet {
@@ -4353,6 +4282,9 @@ impl crate::agg_slots::SlotBackend for CfgLower<'_> {
     fn get_vreg(&mut self, value: CfgValue) -> VReg {
         CfgLower::get_vreg(self, value)
     }
+    fn map_value(&mut self, value: CfgValue, vreg: VReg) {
+        self.value_map.insert(value, vreg);
+    }
     fn emit_load_slot(&mut self, dst: VReg, slot: u32) {
         let offset = self.ctx.local_offset(slot);
         self.mir.push(Aarch64Inst::Ldr {
@@ -4360,6 +4292,21 @@ impl crate::agg_slots::SlotBackend for CfgLower<'_> {
             base: Reg::Fp,
             offset,
         });
+    }
+    fn emit_reg_move(&mut self, dst: VReg, src: VReg) {
+        self.mir.push(Aarch64Inst::MovRR {
+            dst: Operand::Virtual(dst),
+            src: Operand::Virtual(src),
+        });
+    }
+    fn emit_load_zero(&mut self, dst: VReg) {
+        self.mir.push(Aarch64Inst::MovImm {
+            dst: Operand::Virtual(dst),
+            imm: 0,
+        });
+    }
+    fn collect_array_scalars(&mut self, value: CfgValue) -> Vec<VReg> {
+        self.collect_array_scalar_vregs(value)
     }
 }
 

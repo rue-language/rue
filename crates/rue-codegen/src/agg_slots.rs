@@ -14,10 +14,12 @@
 //! [`SlotBackend`]: vreg allocation, value lookup, and the one genuinely
 //! per-architecture instruction (load a frame slot into a vreg).
 //!
-//! Phase 1 covers the slot accessor. The StructInit/ArrayInit flattening and
-//! the consumer-side store loops still live per-backend; they migrate here in
-//! later phases once their (currently subtly different) behaviors are
-//! reconciled deliberately rather than incidentally.
+//! Phase 1 covered the slot accessor. Phase 2 moved the StructInit/ArrayInit
+//! flattening (the eager population of the slot cache) here as
+//! [`lower_struct_init`]/[`lower_array_init`]. The consumer-side store loops
+//! still live per-backend; they migrate in later phases once their (currently
+//! subtly different) behaviors are reconciled deliberately rather than
+//! incidentally.
 
 use std::collections::HashMap;
 
@@ -45,8 +47,21 @@ pub trait SlotBackend {
     /// Get (or lazily create) the primary vreg for a CFG value.
     fn get_vreg(&mut self, value: CfgValue) -> VReg;
 
+    /// Record `vreg` as the primary vreg for `value` (the `value_map` entry).
+    fn map_value(&mut self, value: CfgValue, vreg: VReg);
+
     /// Emit a load of frame slot `slot` into `dst`.
     fn emit_load_slot(&mut self, dst: VReg, slot: u32);
+
+    /// Emit a register-to-register move.
+    fn emit_reg_move(&mut self, dst: VReg, src: VReg);
+
+    /// Emit a load of the constant zero into `dst`.
+    fn emit_load_zero(&mut self, dst: VReg);
+
+    /// Recursively collect the scalar slot vregs of an array value
+    /// (the backends' thin wrapper over `types::collect_array_scalar_vregs`).
+    fn collect_array_scalars(&mut self, value: CfgValue) -> Vec<VReg>;
 }
 
 /// Get or compute the slot vregs for a multi-slot aggregate value
@@ -129,6 +144,87 @@ pub fn get_or_compute_field_vregs<B: SlotBackend>(b: &mut B, value: CfgValue) ->
         // BlockParam and Call should already have slot vregs in the cache
         _ => None,
     }
+}
+
+/// Lower a `StructInit`: flatten the field values into one vreg per slot,
+/// cache the list, and bind the value's primary vreg (first slot, or zero for
+/// a fieldless struct).
+///
+/// Nested struct/String fields contribute all their slot vregs via the
+/// accessor — including a field read from another aggregate (`B { p: a.p }`).
+/// Nested array fields flatten to their element scalar slots so the cached
+/// slot list is fully flattened (consumers and the Alloc of this StructInit
+/// rely on it). (RUE-118)
+pub fn lower_struct_init<B: SlotBackend>(
+    b: &mut B,
+    value: CfgValue,
+    fields_start: u32,
+    fields_len: u32,
+) {
+    let vreg = b.alloc_vreg();
+    b.map_value(value, vreg);
+
+    let fields = b.ctx().cfg.get_extra(fields_start, fields_len).to_vec();
+    let mut slot_vregs = Vec::new();
+    for field in &fields {
+        let field_ty = b.ctx().cfg.get_inst(*field).ty;
+        match field_ty.kind() {
+            TypeKind::Struct(_) => {
+                let nested = get_or_compute_field_vregs(b, *field)
+                    .expect("nested struct field should have slot vregs");
+                slot_vregs.extend(nested);
+            }
+            TypeKind::Array(_) => {
+                slot_vregs.extend(b.collect_array_scalars(*field));
+            }
+            _ => {
+                // Scalar field - single vreg
+                slot_vregs.push(b.get_vreg(*field));
+            }
+        }
+    }
+
+    if let Some(&first_vreg) = slot_vregs.first() {
+        b.emit_reg_move(vreg, first_vreg);
+    } else {
+        b.emit_load_zero(vreg);
+    }
+
+    b.slot_cache().insert(value, slot_vregs);
+}
+
+/// Lower an `ArrayInit`: flatten the element values into one vreg per slot
+/// and cache the list. The value's primary vreg is a zero placeholder — an
+/// array base has no single value; the actual storage is handled by the
+/// `Alloc` that precedes this.
+///
+/// Nested aggregate elements (multidimensional arrays, arrays of structs) are
+/// flattened to their scalar slots so the cached list is the full slot set —
+/// their own primary vreg is just a placeholder. (RUE-118)
+pub fn lower_array_init<B: SlotBackend>(
+    b: &mut B,
+    value: CfgValue,
+    elements_start: u32,
+    elements_len: u32,
+) {
+    let vreg = b.alloc_vreg();
+    b.map_value(value, vreg);
+
+    let elements = b.ctx().cfg.get_extra(elements_start, elements_len).to_vec();
+    let mut element_vregs: Vec<VReg> = Vec::new();
+    for e in &elements {
+        let e_ty = b.ctx().cfg.get_inst(*e).ty;
+        if matches!(e_ty.kind(), TypeKind::Struct(_) | TypeKind::Array(_)) {
+            let nested = get_or_compute_field_vregs(b, *e)
+                .expect("nested aggregate element should have slot vregs");
+            element_vregs.extend(nested);
+        } else {
+            element_vregs.push(b.get_vreg(*e));
+        }
+    }
+    b.slot_cache().insert(value, element_vregs);
+
+    b.emit_load_zero(vreg);
 }
 
 /// Load `count` consecutive frame slots starting at `base_slot`, returning the
