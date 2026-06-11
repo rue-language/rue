@@ -369,7 +369,9 @@ impl AirRef {
 }
 
 /// The complete AIR for a function.
-#[derive(Debug, Default)]
+// Clone exists for the loop back-edge move recheck in sema, which re-analyzes
+// a loop body against a scratch copy of the Air and then discards it.
+#[derive(Debug, Default, Clone)]
 pub struct Air {
     instructions: Vec<AirInst>,
     /// Extra data for variable-length instruction payloads (args, elements, etc.)

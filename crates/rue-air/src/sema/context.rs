@@ -35,7 +35,9 @@ pub(crate) struct LocalVar {
 pub(crate) type FieldPath = Vec<Spur>;
 
 /// Tracks move state for a variable, including partial (field-level) moves.
-#[derive(Debug, Clone, Default)]
+// PartialEq is used by the loop back-edge move recheck to detect whether a
+// loop body changed any move state.
+#[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct VariableMoveState {
     /// If Some, the entire variable has been fully moved at this span.
     pub full_move: Option<Span>,
@@ -189,6 +191,12 @@ pub(crate) struct AnalysisContext<'a> {
     /// Methods referenced during analysis of this function.
     /// Each entry is (struct_id, method_name) matching the key format in methods map.
     pub referenced_methods: HashSet<(StructId, Spur)>,
+    /// True while re-running a loop's condition/body to validate the loop's
+    /// back edge (see [`AnalysisContext::fork_for_loop_recheck`]). The recheck
+    /// pass starts from a move state that already includes every move the loop
+    /// performs, so nested loops analyzed within it don't need (and must not
+    /// trigger) their own recheck — that would make nested loops exponential.
+    pub in_loop_move_recheck: bool,
 }
 
 // Import InstRef for use in resolved_types
@@ -221,7 +229,43 @@ impl ScopedContext for AnalysisContext<'_> {
     }
 }
 
-impl AnalysisContext<'_> {
+impl<'a> AnalysisContext<'a> {
+    /// Create a scratch copy of this context for the loop back-edge move check.
+    ///
+    /// A value moved anywhere in a loop's condition or body is already moved
+    /// when the back edge re-enters the loop. After analyzing a loop once, the
+    /// loop is re-analyzed against a fork of the context (and a scratch `Air`)
+    /// whose starting move state is the *post-body* state; any use of a moved
+    /// value then surfaces as a `UseAfterMove` error pointing at the move from
+    /// the "previous iteration". One re-run reaches a fixpoint: analysis is
+    /// deterministic, so re-running from the post-body state marks exactly the
+    /// same moves again.
+    ///
+    /// Output accumulators (warnings, referenced functions/methods) start
+    /// empty so the discarded pass doesn't duplicate entries in the real
+    /// context.
+    pub fn fork_for_loop_recheck(&self) -> AnalysisContext<'a> {
+        AnalysisContext {
+            locals: self.locals.clone(),
+            params: self.params,
+            next_slot: self.next_slot,
+            loop_depth: self.loop_depth,
+            used_locals: self.used_locals.clone(),
+            return_type: self.return_type,
+            scope_stack: self.scope_stack.clone(),
+            resolved_types: self.resolved_types,
+            moved_vars: self.moved_vars.clone(),
+            warnings: Vec::new(),
+            local_string_table: self.local_string_table.clone(),
+            local_strings: self.local_strings.clone(),
+            comptime_type_vars: self.comptime_type_vars.clone(),
+            comptime_value_vars: self.comptime_value_vars.clone(),
+            referenced_functions: HashSet::new(),
+            referenced_methods: HashSet::new(),
+            in_loop_move_recheck: true,
+        }
+    }
+
     /// Merge move states from two branches.
     ///
     /// For if-else expressions, a variable is considered moved after the expression

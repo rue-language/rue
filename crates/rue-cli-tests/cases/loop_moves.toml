@@ -1,0 +1,171 @@
+# Move checker: loop back-edge soundness (RUE-32).
+#
+# A value moved anywhere in a loop's condition or body is already moved when
+# the back edge re-enters the loop, so iteration 2 would re-move (and
+# double-drop) it. These cases pin the E0205 error for that pattern and the
+# valid controls that must keep compiling (value defined inside the body,
+# reassignment before the next use, Copy types).
+#
+# Like Rust, the check is conservative: a `loop` body that unconditionally
+# breaks after the move still errors even though no second iteration runs.
+
+[section]
+id = "cli.loop_moves"
+name = "Loop back-edge move checking"
+description = "Use-of-moved-value across loop iterations (RUE-32)."
+
+[[case]]
+name = "move_into_call_in_while_loop"
+description = "Moving a non-Copy struct into a call inside a while body errors: iteration 2 re-moves it."
+files = [{ path = "main.rue", source = """
+struct Data { x: i32 }
+fn consume(d: Data) -> i32 { d.x }
+fn main() -> i32 {
+    let d = Data { x: 1 };
+    let mut i = 0;
+    let mut total = 0;
+    while i < 2 { total = total + consume(d); i = i + 1; }
+    total
+}
+""" }]
+compile_fail = true
+error_contains = ["E0205", "use of moved value", "previous iteration of the loop"]
+
+[[case]]
+name = "string_move_in_while_loop"
+description = "The String variant of the same bug double-freed at runtime before the fix."
+files = [{ path = "main.rue", source = """
+fn consume(s: String) -> i32 { 1 }
+fn main() -> i32 {
+    let s: String = "hi";
+    let mut i = 0;
+    while i < 2 { consume(s); i = i + 1; }
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0205", "previous iteration of the loop"]
+
+[[case]]
+name = "move_in_while_condition"
+description = "The condition re-executes every iteration, so a move inside it also errors."
+files = [{ path = "main.rue", source = """
+struct Data { x: i32 }
+fn check(d: Data) -> bool { d.x > 0 }
+fn main() -> i32 {
+    let d = Data { x: 1 };
+    while check(d) { }
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0205", "previous iteration of the loop"]
+
+[[case]]
+name = "move_in_infinite_loop_with_break"
+description = "Conservative like Rust: an unconditional break after the move still errors."
+files = [{ path = "main.rue", source = """
+struct Data { x: i32 }
+fn consume(d: Data) -> i32 { d.x }
+fn main() -> i32 {
+    let d = Data { x: 1 };
+    loop { consume(d); break; }
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0205", "previous iteration of the loop"]
+
+[[case]]
+name = "conditional_move_in_loop"
+description = "A move under an if inside the loop body is still a potential re-move (union semantics)."
+files = [{ path = "main.rue", source = """
+struct Data { x: i32 }
+fn consume(d: Data) -> i32 { d.x }
+fn main() -> i32 {
+    let d = Data { x: 1 };
+    let mut i = 0;
+    while i < 3 { if i == 1 { consume(d); } i = i + 1; }
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0205", "previous iteration of the loop"]
+
+[[case]]
+name = "move_in_nested_loop"
+description = "A move in an inner loop body errors at the inner back edge."
+files = [{ path = "main.rue", source = """
+struct Data { x: i32 }
+fn consume(d: Data) -> i32 { d.x }
+fn main() -> i32 {
+    let d = Data { x: 1 };
+    let mut i = 0;
+    while i < 2 { let mut j = 0; while j < 2 { consume(d); j = j + 1; } i = i + 1; }
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0205", "previous iteration of the loop"]
+
+[[case]]
+name = "value_defined_inside_loop_ok"
+description = "Control: a value created and moved within the same iteration is fine."
+files = [{ path = "main.rue", source = """
+struct Data { x: i32 }
+fn consume(d: Data) -> i32 { d.x }
+fn main() -> i32 {
+    let mut i = 0;
+    let mut total = 0;
+    while i < 2 { let t = Data { x: 1 }; total = total + consume(t); i = i + 1; }
+    total
+}
+""" }]
+exit_code = 2
+
+[[case]]
+name = "reassign_after_move_ok"
+description = "Control: reassigning before the next iteration's use makes the move per-iteration valid."
+files = [{ path = "main.rue", source = """
+struct Data { x: i32 }
+fn consume(d: Data) -> i32 { d.x }
+fn main() -> i32 {
+    let mut d = Data { x: 1 };
+    let mut i = 0;
+    let mut total = 0;
+    while i < 2 { total = total + consume(d); d = Data { x: 2 }; i = i + 1; }
+    total
+}
+""" }]
+exit_code = 3
+
+[[case]]
+name = "reassign_before_move_ok"
+description = "Control: reassignment at the top of the body clears last iteration's move."
+files = [{ path = "main.rue", source = """
+struct Data { x: i32 }
+fn consume(d: Data) -> i32 { d.x }
+fn main() -> i32 {
+    let mut d = Data { x: 1 };
+    let mut i = 0;
+    let mut total = 0;
+    while i < 2 { d = Data { x: 5 }; total = total + consume(d); i = i + 1; }
+    total
+}
+""" }]
+exit_code = 10
+
+[[case]]
+name = "copy_type_in_loop_ok"
+description = "Control: Copy types are never moved, so repeated by-value calls are fine."
+files = [{ path = "main.rue", source = """
+fn double(x: i32) -> i32 { x * 2 }
+fn main() -> i32 {
+    let v = 3;
+    let mut i = 0;
+    let mut total = 0;
+    while i < 2 { total = total + double(v); i = i + 1; }
+    total
+}
+""" }]
+exit_code = 12
