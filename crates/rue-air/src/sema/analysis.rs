@@ -3037,6 +3037,19 @@ impl<'a> Sema<'a> {
         let arg_result = self.analyze_inst(air, args[0].value, ctx)?;
         let arg_type = arg_result.ty;
 
+        // An `<error>`-typed argument reaching here via `Ok` means no
+        // diagnostic was emitted for it (sema errors propagate as `Err`), so
+        // type inference failed silently. Report a proper internal error
+        // instead of letting codegen hit its `unreachable!` (RUE-149).
+        if arg_type.is_error() {
+            return Err(CompileError::new(
+                ErrorKind::InternalError(
+                    "@dbg argument type failed to resolve during inference".to_string(),
+                ),
+                span,
+            ));
+        }
+
         // Validate type: @dbg supports integers, bool, and String (spec 4.13:7).
         // Structs, enums, and arrays must be rejected HERE — codegen has no
         // lowering for them and would panic ("@dbg only supports scalars and
@@ -3044,7 +3057,6 @@ impl<'a> Sema<'a> {
         if !arg_type.is_integer()
             && arg_type != Type::BOOL
             && !self.is_builtin_string(arg_type)
-            && !arg_type.is_error()
             && !arg_type.is_never()
         {
             return Err(CompileError::new(

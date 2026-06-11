@@ -42,3 +42,66 @@ fn main() -> i32 {
 ]
 compile_fail = true
 error_contains = ["E0702", "argument 1", "found type"]
+
+# Negation of a parenthesized binary expression in intrinsic-arg position
+# (RUE-149). Integer-literal defaulting used to bind only the literal's own
+# type variable, leaving the binop/neg result variable unresolved as
+# `<error>` with no diagnostic — and codegen then SIGABRTed on the
+# `unreachable!("@dbg only supports scalars and strings")` arm.
+[[case]]
+name = "dbg_neg_of_parenthesized_binop"
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    @dbg(-(3 + 4));
+    0
+}
+""" },
+]
+stdout = "-7\n"
+exit_code = 0
+
+# Leading `!` in an intrinsic argument must parse as logical not, not as the
+# never type (RUE-150). The parser used to commit to the never-type parse of
+# the bare `!` and then reject the rest of the argument with E0100.
+[[case]]
+name = "dbg_logical_not_literal"
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    @dbg(!true);
+    0
+}
+""" },
+]
+stdout = "false\n"
+exit_code = 0
+
+[[case]]
+name = "dbg_logical_not_variable"
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    let b = false;
+    @dbg(!b);
+    0
+}
+""" },
+]
+stdout = "true\n"
+exit_code = 0
+
+# Control for RUE-150: a bare `!` as the whole argument is still the never
+# type in type-argument position (@size_of(!) == 0).
+[[case]]
+name = "size_of_never_type_arg_still_parses"
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    @dbg(@size_of(!));
+    0
+}
+""" },
+]
+stdout = "0\n"
+exit_code = 0

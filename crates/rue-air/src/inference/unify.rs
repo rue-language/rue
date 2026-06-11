@@ -501,10 +501,15 @@ impl Unifier {
         for &var in int_literal_vars {
             // Check if this variable is already bound to a concrete type
             let resolved = self.substitution.apply(&InferType::Var(var));
-            if let InferType::Var(_) = resolved {
-                // Still unbound - default to i32
+            if let InferType::Var(rep) = resolved {
+                // Still unbound - default to i32. Bind the *representative*
+                // (the end of the substitution chain), not the literal's own
+                // variable: unification may have chained the literal to
+                // another variable (e.g. a binop result var for `-(3 + 4)`),
+                // and binding only the literal var would overwrite that chain
+                // and leave the result var unresolved as `<error>` (RUE-149).
                 self.substitution
-                    .insert(var, InferType::Concrete(Type::I32));
+                    .insert(rep, InferType::Concrete(Type::I32));
             }
             // If it resolved to Concrete, it was already constrained - no action needed
         }
@@ -1011,6 +1016,25 @@ mod tests {
         assert_eq!(unifier.resolve(&InferType::Var(v1)), Some(Type::I32));
         // v2 should still be Bool
         assert_eq!(unifier.resolve(&InferType::Var(v2)), Some(Type::BOOL));
+    }
+
+    #[test]
+    fn test_default_int_literal_vars_chained() {
+        // A literal var chained to another var (e.g. the result var of a
+        // binop, as in `-(3 + 4)`) must default the *representative*, so the
+        // chained var resolves to i32 too instead of staying unbound and
+        // decaying to `<error>` (RUE-149).
+        let mut unifier = Unifier::new();
+        let v0 = TypeVarId::new(0);
+        let v2 = TypeVarId::new(2);
+
+        // v0 (the literal) was unified with v2 (the binop result var).
+        unifier.substitution.insert(v0, InferType::Var(v2));
+
+        unifier.default_int_literal_vars(&[v0]);
+
+        assert_eq!(unifier.resolve(&InferType::Var(v0)), Some(Type::I32));
+        assert_eq!(unifier.resolve(&InferType::Var(v2)), Some(Type::I32));
     }
 
     #[test]
