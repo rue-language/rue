@@ -234,12 +234,12 @@ pass_aux_files = true
 exit_code = 42
 
 # =============================================================================
-# Unqualified Access to Module-Loaded Files (RUE-37)
+# Unqualified Cross-Directory Access (RUE-37, RUE-180)
 # =============================================================================
-# The flat global namespace (10.5:2) must not bypass module privacy: a
-# private function in an imported file in another directory is rejected even
-# when called WITHOUT the module qualifier (E0460). Files that are only
-# listed explicitly and never imported keep the flat namespace (10.3:8).
+# Privacy is uniform (10.3:7): a private function in a file in another
+# directory is rejected when called unqualified (E0460), whether that file
+# was imported or only listed explicitly. The flat namespace (10.5:2) only
+# resolves names — pub items remain callable without imports (10.3:8).
 
 [[case]]
 name = "cross_dir_unqualified_private_fn_error"
@@ -258,7 +258,7 @@ fn internal_fn() -> i32 {
 }
 """ }
 compile_fail = true
-error_contains = "private to module"
+error_contains = "is private (defined in"
 
 [[case]]
 name = "cross_dir_unqualified_pub_fn_allowed"
@@ -297,15 +297,50 @@ fn internal_fn() -> i32 {
 exit_code = 42
 
 [[case]]
-name = "flat_multifile_unqualified_private_fn_allowed"
-spec = ["10.3:8"]
-description = "A never-imported file listed explicitly keeps the flat namespace: cross-directory unqualified private call is allowed"
+name = "flat_multifile_unqualified_private_fn_error"
+spec = ["10.3:7", "10.3:8"]
+description = "Uniform privacy (RUE-180): a never-imported file listed explicitly is still private — cross-directory unqualified private call is E0460"
 source = """
 fn main() -> i32 {
     internal_fn()
 }
 """
 aux_files = { "subdir/utils.rue" = """
+fn internal_fn() -> i32 {
+    42
+}
+""" }
+pass_aux_files = true
+compile_fail = true
+error_contains = "is private (defined in"
+
+[[case]]
+name = "flat_multifile_unqualified_pub_fn_allowed"
+spec = ["10.3:8", "10.5:2"]
+description = "The flat namespace still resolves names without imports: a pub function in another never-imported directory is callable unqualified"
+source = """
+fn main() -> i32 {
+    public_fn()
+}
+"""
+aux_files = { "subdir/utils.rue" = """
+pub fn public_fn() -> i32 {
+    42
+}
+""" }
+pass_aux_files = true
+exit_code = 42
+
+[[case]]
+name = "flat_multifile_same_dir_private_fn_allowed"
+spec = ["10.3:2", "10.3:8"]
+description = "Intra-directory visibility (ADR-0026) is unchanged: a private function in another listed file in the same directory is callable unqualified"
+source = """
+fn main() -> i32 {
+    internal_fn()
+}
+"""
+aux_files = { "utils.rue" = """
 fn internal_fn() -> i32 {
     42
 }

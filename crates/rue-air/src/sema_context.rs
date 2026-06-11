@@ -70,23 +70,6 @@ impl ModuleRegistry {
         (id, true)
     }
 
-    /// Find the import path of a module whose resolved file path equals
-    /// `file_path`, if any.
-    ///
-    /// Used to decide whether a source file is "loaded as a module" (the
-    /// target of a resolved `@import`) — such files get directory-privacy
-    /// enforcement even for unqualified references (RUE-37), while files that
-    /// are only listed explicitly on the command line keep the transitional
-    /// flat namespace (spec 10.5:2).
-    pub fn import_path_for_file(&self, file_path: &str) -> Option<String> {
-        self.defs
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .iter()
-            .find(|def| def.file_path == file_path)
-            .map(|def| def.import_path.clone())
-    }
-
     /// Get a module definition by ID.
     pub fn get_def(&self, id: ModuleId) -> ModuleDef {
         self.defs

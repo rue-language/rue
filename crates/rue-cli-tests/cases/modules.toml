@@ -549,13 +549,14 @@ compile_fail = true
 error_contains = ["E0704", "til.rue"]
 
 # ---------------------------------------------------------------------------
-# Module privacy (RUE-114 + RUE-37).
+# Module privacy (RUE-114 + RUE-37 + RUE-180).
 #
 # Visibility boundaries are DIRECTORIES (ADR-0026, spec 10.3): a private item
 # is reachable from files in the same directory — including through a module
 # object — and rejected from any other directory, whether the call is
-# qualified (E0706) or unqualified (E0460). Files that are never imported
-# keep the transitional flat namespace (spec 10.3:8 / 10.5:2).
+# qualified (E0706) or unqualified (E0460). Privacy is uniform (RUE-180,
+# spec 10.3:7): it applies whether the defining file is imported or only
+# listed explicitly; the flat namespace (10.5:2) only resolves names.
 # ---------------------------------------------------------------------------
 
 [[case]]
@@ -596,11 +597,11 @@ fn secret() -> i32 {
 """ },
 ]
 compile_fail = true
-error_contains = ["E0460", "private to module `sub/lib.rue`"]
+error_contains = ["E0460", "function `secret` is private (defined in `sub/lib.rue`)"]
 
 [[case]]
 name = "private_fn_cross_dir_unqualified_rejected_when_also_listed"
-description = "Privacy is keyed on being imported, not on how the file was loaded: a file both listed on the CLI and imported is still a module (E0460)."
+description = "Privacy does not depend on how the file was loaded: a file both listed on the CLI and imported is still private cross-directory (E0460)."
 args = ["main.rue", "sub/lib.rue", "-o", "prog"]
 files = [
     { path = "main.rue", source = """
@@ -617,7 +618,7 @@ fn secret() -> i32 {
 """ },
 ]
 compile_fail = true
-error_contains = ["E0460", "private to module `sub/lib.rue`"]
+error_contains = ["E0460", "function `secret` is private (defined in `sub/lib.rue`)"]
 
 [[case]]
 name = "private_fn_same_dir_module_access_allowed"
@@ -658,8 +659,8 @@ pub fn open() -> i32 {
 exit_code = 14
 
 [[case]]
-name = "flat_multifile_private_fn_cross_dir_allowed"
-description = "A never-imported file listed explicitly keeps the flat namespace: cross-directory unqualified private call still works (spec 10.3:8)."
+name = "flat_multifile_private_fn_cross_dir_rejected"
+description = "Uniform privacy (RUE-180): a never-imported file listed explicitly is still private cross-directory — E0460, and the diagnostic names the defining file (no import exists, so no module relationship is claimed)."
 args = ["main.rue", "sub/util.rue", "-o", "prog"]
 files = [
     { path = "main.rue", source = """
@@ -668,6 +669,43 @@ fn main() -> i32 {
 }
 """ },
     { path = "sub/util.rue", source = """
+fn secret() -> i32 {
+    42
+}
+""" },
+]
+compile_fail = true
+error_contains = ["E0460", "function `secret` is private (defined in `sub/util.rue`)"]
+
+[[case]]
+name = "flat_multifile_pub_fn_cross_dir_allowed"
+description = "Positive control for uniform privacy (RUE-180): a pub function in another never-imported file is callable unqualified with no import — the flat namespace still resolves names (spec 10.3:8)."
+args = ["main.rue", "sub/util.rue", "-o", "prog"]
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    open()
+}
+""" },
+    { path = "sub/util.rue", source = """
+pub fn open() -> i32 {
+    42
+}
+""" },
+]
+exit_code = 42
+
+[[case]]
+name = "flat_multifile_private_fn_same_dir_allowed"
+description = "Control: intra-directory visibility (ADR-0026) is unchanged by RUE-180 — a private function in another listed file in the SAME directory is still callable."
+args = ["main.rue", "util.rue", "-o", "prog"]
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    secret()
+}
+""" },
+    { path = "util.rue", source = """
 fn secret() -> i32 {
     42
 }
