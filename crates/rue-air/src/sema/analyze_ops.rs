@@ -33,6 +33,7 @@ use crate::sema::context::ConstValue;
 use rue_span::Span;
 
 use super::Sema;
+use super::analysis::move_out_of_inout_error;
 use super::context::{AnalysisContext, AnalysisResult, LocalVar};
 use crate::inst::{
     Air, AirCallArg, AirInst, AirInstData, AirPattern, AirPlaceBase, AirPlaceRef, AirProjection,
@@ -1526,24 +1527,37 @@ impl<'a> Sema<'a> {
                 }
             }
 
-            // Handle move semantics based on parameter mode
+            // Handle move semantics based on parameter mode.
+            // A use as a by-ref call argument is a borrow, not a move
+            // (`analyze_call_args` sets `byref_arg_root`), so it neither marks
+            // the parameter moved nor counts as moving out of it. This is what
+            // permits forwarding an inout parameter: `f(inout v)` inside
+            // `fn g(inout v: T)`.
+            let is_byref_arg_use = ctx.byref_arg_root == Some(name);
             if !self.is_type_copy(ty) {
                 match param_info.mode {
                     // Normal and comptime parameters behave similarly for moves
                     // (comptime params are substituted at compile time)
                     RirParamMode::Normal | RirParamMode::Comptime => {
-                        ctx.moved_vars
-                            .entry(name)
-                            .or_default()
-                            .mark_path_moved(&[], span);
+                        if !is_byref_arg_use {
+                            ctx.moved_vars
+                                .entry(name)
+                                .or_default()
+                                .mark_path_moved(&[], span);
+                        }
                     }
                     RirParamMode::Inout => {
-                        ctx.moved_vars
-                            .entry(name)
-                            .or_default()
-                            .mark_path_moved(&[], span);
+                        // Moving out of an inout parameter would leave the
+                        // CALLER's variable moved-from after the call returns,
+                        // so it is rejected outright (RUE-127).
+                        if !is_byref_arg_use {
+                            return Err(move_out_of_inout_error(name_str, span));
+                        }
                     }
                     RirParamMode::Borrow => {
+                        // Note: this also rejects by-ref forwarding of a borrow
+                        // parameter (`f(borrow v)` inside `fn g(borrow v: T)`),
+                        // a pre-existing limitation kept as-is for now.
                         let name_str = self.interner.resolve(&name);
                         return Err(CompileError::new(
                             ErrorKind::MoveOutOfBorrow {
@@ -1584,8 +1598,9 @@ impl<'a> Sema<'a> {
                 }
             }
 
-            // If type is not Copy, mark as moved
-            if !self.is_type_copy(ty) {
+            // If type is not Copy, mark as moved — unless this use is a by-ref
+            // call argument, which borrows the variable rather than moving it.
+            if !self.is_type_copy(ty) && ctx.byref_arg_root != Some(name) {
                 ctx.moved_vars
                     .entry(name)
                     .or_default()
@@ -2090,6 +2105,40 @@ impl<'a> Sema<'a> {
         Ok(AnalysisResult::new(air_ref, struct_type))
     }
 
+    /// Reject a move (full or partial) whose root is a by-ref parameter.
+    ///
+    /// Moving a non-Copy value out of an `inout` or `borrow` parameter would
+    /// leave the CALLER's variable (partially) moved-from after the call
+    /// returns, so both are rejected outright (RUE-127); reinitialization
+    /// before exit is not tracked yet.
+    fn reject_move_out_of_byref_param(
+        &self,
+        root_var: Spur,
+        ctx: &AnalysisContext,
+        span: Span,
+    ) -> CompileResult<()> {
+        if let Some(param_info) = ctx.params.iter().find(|p| p.name == root_var) {
+            match param_info.mode {
+                RirParamMode::Inout => {
+                    return Err(move_out_of_inout_error(
+                        self.interner.resolve(&root_var),
+                        span,
+                    ));
+                }
+                RirParamMode::Borrow => {
+                    return Err(CompileError::new(
+                        ErrorKind::MoveOutOfBorrow {
+                            variable: self.interner.resolve(&root_var).to_string(),
+                        },
+                        span,
+                    ));
+                }
+                RirParamMode::Normal | RirParamMode::Comptime => {}
+            }
+        }
+        Ok(())
+    }
+
     /// Analyze a field access.
     ///
     /// Uses place-based analysis (ADR-0030) when possible for efficient code generation.
@@ -2149,12 +2198,14 @@ impl<'a> Sema<'a> {
             // Move checking using the trace
             if is_linear {
                 // For linear types, field access consumes the entire struct
+                self.reject_move_out_of_byref_param(trace.root_var, ctx, span)?;
                 ctx.moved_vars
                     .entry(trace.root_var)
                     .or_default()
                     .mark_path_moved(&[], span);
             } else if !self.is_type_copy(field_type) {
                 // For non-linear types, check if accessing a non-Copy field
+                self.reject_move_out_of_byref_param(trace.root_var, ctx, span)?;
                 let field_path = trace.field_path();
 
                 // Check if this field path is already moved (partial moves)

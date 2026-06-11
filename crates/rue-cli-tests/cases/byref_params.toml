@@ -1,0 +1,254 @@
+# By-ref (inout/borrow) parameter soundness (RUE-127 items 3 and 4).
+#
+# Item 3: passing a struct field or array element as an `inout`/`borrow`
+# argument used to panic codegen ("by-ref argument must be a variable" ICE in
+# cfg_lower). Codegen takes the address of a variable's slot directly and
+# cannot address a projection yet, so sema now rejects these with E0438.
+#
+# Item 4: moving a non-Copy value out of an `inout` parameter (whole variable
+# or a field) compiled but left the CALLER's variable moved-from after the
+# call — a use-after-move the caller's own move checker could not see. Sema
+# now rejects any move out of an inout parameter with E0437. The rule is
+# deliberately conservative (reject-valid): reinitialization before exit is
+# not tracked, so moving out and reassigning before returning still errors.
+# Field-level moves out of `borrow` parameters are likewise rejected (E0429),
+# matching the existing whole-variable rule.
+#
+# Forwarding an inout parameter to another function's by-ref parameter
+# (`g(inout v)` inside `fn f(inout v: T)`) is a re-borrow, not a move, and
+# must keep working.
+
+[section]
+id = "cli.byref_params"
+name = "By-ref parameter soundness"
+description = "Field/element by-ref arguments and moves out of inout parameters (RUE-127)."
+
+# ---------------------------------------------------------------------------
+# Item 3: by-ref arguments must be plain variables
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "borrow_field_arg_rejected"
+description = "Passing a struct field as a borrow argument errors (E0438) instead of the former cfg_lower ICE."
+files = [{ path = "main.rue", source = """
+struct Inner { x: i32 }
+struct Outer { f: Inner }
+fn peek(borrow v: Inner) -> i32 { v.x }
+fn main() -> i32 { let o = Outer { f: Inner { x: 7 } }; peek(borrow o.f) }
+""" }]
+compile_fail = true
+error_contains = ["E0438", "by-ref argument must be a plain variable"]
+
+[[case]]
+name = "inout_field_arg_rejected"
+description = "The inout variant of the same shape is rejected too."
+files = [{ path = "main.rue", source = """
+struct Inner { x: i32 }
+struct Outer { f: Inner }
+fn bump(inout v: Inner) { v.x = v.x + 1; }
+fn main() -> i32 {
+    let mut o = Outer { f: Inner { x: 7 } };
+    bump(inout o.f);
+    o.f.x
+}
+""" }]
+compile_fail = true
+error_contains = ["E0438", "by-ref argument must be a plain variable"]
+
+[[case]]
+name = "borrow_array_element_arg_rejected"
+description = "Array elements cannot be passed by reference either (same codegen limitation)."
+files = [{ path = "main.rue", source = """
+struct D { x: i32 }
+fn peek(borrow v: D) -> i32 { v.x }
+fn main() -> i32 {
+    let a = [D { x: 3 }, D { x: 4 }];
+    peek(borrow a[0])
+}
+""" }]
+compile_fail = true
+error_contains = ["E0438", "by-ref argument must be a plain variable"]
+
+[[case]]
+name = "borrow_whole_variable_still_works"
+description = "Control: borrowing a whole local variable compiles and the value stays usable after the call."
+files = [{ path = "main.rue", source = """
+struct D { x: i32 }
+fn peek(borrow v: D) -> i32 { v.x }
+fn main() -> i32 {
+    let d = D { x: 7 };
+    let a = peek(borrow d);
+    let b = peek(borrow d);
+    a + b
+}
+""" }]
+exit_code = 14
+
+[[case]]
+name = "inout_whole_variable_still_works"
+description = "Control: passing a whole local as inout mutates it in place."
+files = [{ path = "main.rue", source = """
+struct D { x: i32 }
+fn bump(inout v: D) { v.x = v.x + 1; }
+fn main() -> i32 {
+    let mut d = D { x: 41 };
+    bump(inout d);
+    d.x
+}
+""" }]
+exit_code = 42
+
+# ---------------------------------------------------------------------------
+# Item 4: moves out of inout parameters are rejected
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "move_out_of_inout_rejected"
+description = "Moving an inout parameter into a by-value call left the caller's variable moved-from (returned garbage before the fix)."
+files = [{ path = "main.rue", source = """
+struct D { x: i32 }
+fn consume(d: D) -> i32 { d.x }
+fn steal(inout o: D) -> i32 { consume(o) }
+fn main() -> i32 {
+    let mut d = D { x: 7 };
+    let a = steal(inout d);
+    let b = consume(d);
+    a + b
+}
+""" }]
+compile_fail = true
+error_contains = ["E0437", "cannot move out of inout parameter"]
+
+[[case]]
+name = "move_out_of_inout_via_let_rejected"
+description = "A let-binding move out of an inout parameter is rejected the same way."
+files = [{ path = "main.rue", source = """
+struct D { x: i32 }
+fn steal(inout o: D) -> i32 {
+    let taken = o;
+    taken.x
+}
+fn main() -> i32 { let mut d = D { x: 7 }; steal(inout d) }
+""" }]
+compile_fail = true
+error_contains = ["E0437", "cannot move out of inout parameter"]
+
+[[case]]
+name = "move_out_of_inout_field_rejected"
+description = "Moving a non-Copy FIELD out of an inout parameter would leave the caller's variable partially moved-from."
+files = [{ path = "main.rue", source = """
+struct D { x: i32 }
+struct P { f: D }
+fn consume(d: D) -> i32 { d.x }
+fn steal(inout p: P) -> i32 { consume(p.f) }
+fn main() -> i32 { let mut p = P { f: D { x: 7 } }; steal(inout p) }
+""" }]
+compile_fail = true
+error_contains = ["E0437", "cannot move out of inout parameter"]
+
+[[case]]
+name = "move_out_of_borrow_field_rejected"
+description = "Moving a non-Copy field out of a borrow parameter is rejected (E0429), matching the whole-variable rule."
+files = [{ path = "main.rue", source = """
+struct D { x: i32 }
+struct P { f: D }
+fn consume(d: D) -> i32 { d.x }
+fn peek(borrow p: P) -> i32 { consume(p.f) }
+fn main() -> i32 { let p = P { f: D { x: 7 } }; peek(borrow p) }
+""" }]
+compile_fail = true
+error_contains = ["E0429", "cannot move out of borrowed value"]
+
+[[case]]
+name = "move_out_of_inout_in_loop_rejected"
+description = "The rejection also fires for moves inside a loop body (composes with the loop back-edge recheck)."
+files = [{ path = "main.rue", source = """
+struct D { x: i32 }
+fn consume(d: D) -> i32 { d.x }
+fn steal(inout o: D) -> i32 {
+    let mut i = 0;
+    let mut acc = 0;
+    while i < 2 {
+        acc = acc + consume(o);
+        i = i + 1;
+    }
+    acc
+}
+fn main() -> i32 { let mut d = D { x: 7 }; steal(inout d) }
+""" }]
+compile_fail = true
+error_contains = ["E0437", "cannot move out of inout parameter"]
+
+[[case]]
+name = "move_out_of_inout_with_reinit_still_rejected"
+description = "Reject-valid by design: reinitialization before exit is not tracked yet, so move-then-reassign still errors (see the E0437 help text)."
+files = [{ path = "main.rue", source = """
+struct D { x: i32 }
+fn consume(d: D) -> i32 { d.x }
+fn steal_and_reinit(inout o: D) -> i32 {
+    let v = consume(o);
+    o = D { x: 0 };
+    v
+}
+fn main() -> i32 { let mut d = D { x: 7 }; steal_and_reinit(inout d) }
+""" }]
+compile_fail = true
+error_contains = ["E0437", "cannot move out of inout parameter"]
+
+[[case]]
+name = "inout_forwarding_still_works"
+description = "Control: forwarding an inout parameter to another inout parameter is a re-borrow, not a move."
+files = [{ path = "main.rue", source = """
+struct D { x: i32 }
+fn g(inout v: D) -> i32 { v.x = v.x + 1; v.x }
+fn f(inout v: D) -> i32 { g(inout v) }
+fn main() -> i32 { let mut d = D { x: 7 }; f(inout d) }
+""" }]
+exit_code = 8
+
+[[case]]
+name = "inout_reassign_without_move_still_works"
+description = "Control: reassigning an inout parameter (without moving out of it) is the normal supported use."
+files = [{ path = "main.rue", source = """
+struct D { x: i32 }
+fn replace(inout o: D) {
+    o = D { x: 42 };
+}
+fn main() -> i32 {
+    let mut d = D { x: 7 };
+    replace(inout d);
+    d.x
+}
+""" }]
+exit_code = 42
+
+[[case]]
+name = "inout_copy_field_read_still_works"
+description = "Control: reading a Copy field through an inout parameter is not a move."
+files = [{ path = "main.rue", source = """
+struct D { x: i32 }
+fn get(inout v: D) -> i32 { v.x }
+fn main() -> i32 { let mut d = D { x: 7 }; get(inout d) }
+""" }]
+exit_code = 7
+
+[[case]]
+name = "move_out_of_inout_rejected_in_imported_module"
+description = "The lazy (import-driven) analysis path enforces the same rule as the single-file path."
+args = ["main.rue", "lib.rue", "-o", "prog"]
+files = [
+    { path = "main.rue", source = """
+const lib = @import("lib.rue");
+fn main() -> i32 {
+    let mut d = lib.D { x: 7 };
+    lib.steal(inout d)
+}
+""" },
+    { path = "lib.rue", source = """
+struct D { x: i32 }
+fn consume(d: D) -> i32 { d.x }
+fn steal(inout o: D) -> i32 { consume(o) }
+""" },
+]
+compile_fail = true
+error_contains = ["E0437", "cannot move out of inout parameter"]
