@@ -1589,6 +1589,7 @@ impl<'a> Sema<'a> {
                         value: air_ref,
                         slot: param_info.abi_slot,
                         is_param: true,
+                        field: None,
                     },
                     ty,
                     span,
@@ -1644,6 +1645,7 @@ impl<'a> Sema<'a> {
                         value: air_ref,
                         slot,
                         is_param: false,
+                        field: None,
                     },
                     ty,
                     span,
@@ -2228,7 +2230,11 @@ impl<'a> Sema<'a> {
                 .map(|id| self.type_pool.struct_def(id).is_linear)
                 .unwrap_or(false);
 
-            // Move checking using the trace
+            // Move checking using the trace. `move_field` is the MarkMoved
+            // marker's field component: None for a whole-struct (linear)
+            // move, Some(index) for a single top-level field move (RUE-62).
+            let mut emit_move_marker = false;
+            let mut move_field: Option<u32> = None;
             if is_linear {
                 // For linear types, field access consumes the entire struct
                 self.reject_move_out_of_byref_param(trace.root_var, ctx, span)?;
@@ -2236,6 +2242,7 @@ impl<'a> Sema<'a> {
                     .entry(trace.root_var)
                     .or_default()
                     .mark_path_moved(&[], span);
+                emit_move_marker = true;
             } else if !self.is_type_copy(field_type) {
                 // For non-linear types, check if accessing a non-Copy field
                 self.reject_move_out_of_byref_param(trace.root_var, ctx, span)?;
@@ -2264,6 +2271,28 @@ impl<'a> Sema<'a> {
                     .entry(trace.root_var)
                     .or_default()
                     .mark_path_moved(&field_path, span);
+
+                // Export single-level field moves (`o.a`, not `o.a.b` or
+                // `arr[i].a`) to drop elaboration so the field's drop inside
+                // the struct's scope-exit drop is suppressed (RUE-62).
+                // Deeper paths get no marker: drop elaboration keeps the
+                // whole-slot drop (conservative double drop of the moved
+                // part, never a leak). Only Normal params occupy a real ABI
+                // slot that drop elaboration would drop.
+                if trace.projections.len() == 1 {
+                    if let AirProjection::Field { field_index, .. } = trace.projections[0].proj {
+                        let is_droppable_param_base = match trace.base {
+                            AirPlaceBase::Local(_) => true,
+                            AirPlaceBase::Param(_) => ctx.params.iter().any(|p| {
+                                p.name == trace.root_var && p.mode == RirParamMode::Normal
+                            }),
+                        };
+                        if is_droppable_param_base {
+                            emit_move_marker = true;
+                            move_field = Some(field_index);
+                        }
+                    }
+                }
             }
 
             // Emit PlaceRead instruction
@@ -2273,9 +2302,9 @@ impl<'a> Sema<'a> {
                 ty: field_type,
                 span,
             });
-            if is_linear {
-                // Field access on a linear type consumes the whole struct
-                // (marked above): export the full move to drop elaboration.
+            if emit_move_marker {
+                // Export the move (whole struct for linear types, one
+                // top-level field for partial moves) to drop elaboration.
                 let (slot, is_param) = match trace.base {
                     AirPlaceBase::Local(slot) => (slot, false),
                     AirPlaceBase::Param(slot) => (slot, true),
@@ -2285,6 +2314,7 @@ impl<'a> Sema<'a> {
                         value: air_ref,
                         slot,
                         is_param,
+                        field: move_field,
                     },
                     ty: field_type,
                     span,

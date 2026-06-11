@@ -107,6 +107,34 @@ fn main() -> i32 {
 exit_code = 0
 expected_stdout = "100\n5\n"
 
+[[case]]
+name = "partially_moved_struct_drops_remaining_fields_once"
+spec = ["3.9:1", "3.9:2"]
+description = "Moving one field out of a struct: the field drops at its destination (the callee), and the struct's scope-exit drop covers only the remaining fields (RUE-62)"
+source = """
+struct Inner { v: i32 }
+
+drop fn Inner(self) {
+    @dbg(self.v);
+}
+
+struct Outer { a: Inner, b: Inner }
+
+fn eat(i: Inner) -> i32 {
+    @dbg(800);
+    0
+}
+
+fn main() -> i32 {
+    let o = Outer { a: Inner { v: 1 }, b: Inner { v: 2 } };
+    eat(o.a);     // a drops inside eat (800, then 1)...
+    @dbg(777);
+    0             // ...and only b (2) drops at main's exit
+}
+"""
+exit_code = 0
+expected_stdout = "800\n1\n777\n2\n"
+
 # =============================================================================
 # Drop Order
 # =============================================================================

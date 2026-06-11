@@ -11,12 +11,15 @@
 # These cases pin EXACT destructor output via @dbg markers so both the count
 # and the order of drops are regression-tested.
 #
-# Known residuals (conservative "moved on ALL paths" analysis):
-# - A value moved in only one branch of an if/match is still dropped at scope
-#   exit (double-drop on the moving path). A full fix needs runtime drop
-#   flags, like Rust.
-# - Partial (per-field) moves don't suppress the field's drop inside the
-#   whole-struct drop at scope exit — see the RUE-62 known_bug case below.
+# Partial (per-field) moves are field-granular (RUE-62): moving one field out
+# of a struct (`eat(o.a)`) suppresses ONLY that field's drop at the struct's
+# scope exit — the struct's own destructor still runs, and the remaining
+# droppable fields are dropped individually in declaration order.
+#
+# Known residual (conservative "moved on ALL paths" analysis): a value moved
+# in only one branch of an if/match is still dropped at scope exit
+# (double-drop on the moving path). A full fix needs runtime drop flags, like
+# Rust.
 
 [section]
 id = "cli.drop_moves"
@@ -256,8 +259,7 @@ exit_code = 0
 
 [[case]]
 name = "partial_field_move_suppresses_field_drop"
-description = "RUE-62: moving o.a into a call must suppress field a's drop inside o's scope-exit drop (o's own destructor still runs). Currently the whole-struct drop glue re-drops the moved field."
-known_bug = "RUE-62"
+description = "RUE-62: moving o.a into a call suppresses field a's drop inside o's scope-exit drop (o's own destructor still runs)."
 files = [{ path = "main.rue", source = """
 struct A { x: i32 }
 struct O { a: A, b: i32 }
@@ -282,4 +284,141 @@ fn main() -> i32 {
 }
 """ }]
 stdout = "1\n100\n800\n"
+exit_code = 0
+
+[[case]]
+name = "partial_field_move_remaining_field_still_drops"
+description = "RUE-62 original repro: with both fields droppable, the moved field drops in the callee and ONLY the remaining field drops at main's exit."
+files = [{ path = "main.rue", source = """
+struct Inner { v: i32 }
+
+drop fn Inner(self) {
+    @dbg(self.v);
+}
+
+struct Outer { a: Inner, b: Inner }
+
+fn eat(i: Inner) -> i32 {
+    @dbg(800);
+    0
+}
+
+fn main() -> i32 {
+    let o = Outer { a: Inner { v: 1 }, b: Inner { v: 2 } };
+    eat(o.a);
+    @dbg(777);
+    0
+}
+""" }]
+stdout = "800\n1\n777\n2\n"
+exit_code = 0
+
+[[case]]
+name = "partial_field_move_out_of_byvalue_param"
+description = "RUE-62 for owned params: a field moved out of a pass-by-value struct param is not re-dropped by the callee's param drop at exit."
+files = [{ path = "main.rue", source = """
+struct Inner { v: i32 }
+
+drop fn Inner(self) {
+    @dbg(self.v);
+}
+
+struct Outer { a: Inner, b: Inner }
+
+fn eat(i: Inner) -> i32 {
+    @dbg(800);
+    0
+}
+
+fn f(o: Outer) -> i32 {
+    eat(o.a);
+    @dbg(500);
+    0
+}
+
+fn main() -> i32 {
+    let o = Outer { a: Inner { v: 1 }, b: Inner { v: 2 } };
+    f(o);
+    @dbg(777);
+    0
+}
+""" }]
+stdout = "800\n1\n500\n2\n777\n"
+exit_code = 0
+
+[[case]]
+name = "moved_field_reassigned_drops_new_value"
+description = "Writing a fresh value into a moved-out field re-initializes it: the NEW value drops at scope exit (the moved-out one only in the callee)."
+files = [{ path = "main.rue", source = """
+struct Inner { v: i32 }
+
+drop fn Inner(self) {
+    @dbg(self.v);
+}
+
+struct Outer { a: Inner, b: Inner }
+
+fn eat(i: Inner) -> i32 {
+    @dbg(800);
+    0
+}
+
+fn main() -> i32 {
+    let mut o = Outer { a: Inner { v: 1 }, b: Inner { v: 2 } };
+    eat(o.a);
+    o.a = Inner { v: 3 };
+    @dbg(777);
+    0
+}
+""" }]
+stdout = "800\n1\n777\n3\n2\n"
+exit_code = 0
+
+[[case]]
+name = "partial_string_field_move_no_double_free"
+description = "RUE-62 with a heap type: moving one String field out of a struct must not double-free it at the struct's scope-exit drop."
+files = [{ path = "main.rue", source = """
+struct Holder { name: String, tag: String }
+
+fn eat(s: String) -> i32 {
+    0
+}
+
+fn main() -> i32 {
+    let h = Holder { name: String::with_capacity(8), tag: String::with_capacity(8) };
+    eat(h.name);
+    @dbg(777);
+    0
+}
+""" }]
+stdout = "777\n"
+exit_code = 0
+
+[[case]]
+name = "branch_divergent_field_move_no_leak"
+description = "Known residual pinned: a field moved in only ONE branch is conservatively still dropped at scope exit (double-drop of 1 on the moving path), and nothing is leaked."
+files = [{ path = "main.rue", source = """
+struct Inner { v: i32 }
+
+drop fn Inner(self) {
+    @dbg(self.v);
+}
+
+struct Outer { a: Inner, b: Inner }
+
+fn eat(i: Inner) -> i32 {
+    0
+}
+
+fn main() -> i32 {
+    let o = Outer { a: Inner { v: 1 }, b: Inner { v: 2 } };
+    let c = true;
+    if c {
+        eat(o.a);
+    }
+    @dbg(777);
+    0
+}
+""" }]
+stdout = "1\n777\n1\n2\n"
 exit_code = 0

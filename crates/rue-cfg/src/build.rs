@@ -67,6 +67,72 @@ enum MovedSlot {
     Param(u32),
 }
 
+/// Move-out state for drop elaboration: whole slots and individual
+/// top-level struct fields whose contents were moved out.
+///
+/// `slots` tracks whole-value moves (`let t = s;`). `fields` tracks partial
+/// moves of a single top-level struct field (`eat(o.a)`, RUE-62) — the slot
+/// itself stays live, but its scope-exit drop must skip the moved field.
+#[derive(Debug, Clone, Default)]
+struct MoveState {
+    /// Slots whose ENTIRE contents were moved out.
+    slots: std::collections::HashSet<MovedSlot>,
+    /// `(slot, field_index)` pairs for top-level struct fields moved out of
+    /// a slot that is itself still live.
+    fields: std::collections::HashSet<(MovedSlot, u32)>,
+}
+
+impl MoveState {
+    /// Record that the slot's whole value moved out.
+    fn mark_slot(&mut self, slot: MovedSlot) {
+        self.slots.insert(slot);
+        // Whole-value move subsumes any per-field moves.
+        self.fields.retain(|(s, _)| *s != slot);
+    }
+
+    /// Record that one top-level struct field of the slot moved out.
+    fn mark_field(&mut self, slot: MovedSlot, field: u32) {
+        self.fields.insert((slot, field));
+    }
+
+    /// The slot was (re)initialized with a fresh value: clear all move-out
+    /// state for it (whole-slot and per-field), so the new occupant is
+    /// dropped at scope exit.
+    fn clear_slot(&mut self, slot: MovedSlot) {
+        self.slots.remove(&slot);
+        self.fields.retain(|(s, _)| *s != slot);
+    }
+
+    /// One top-level field of the slot was reassigned: that field holds a
+    /// fresh value again and must be dropped at scope exit.
+    fn clear_field(&mut self, slot: MovedSlot, field: u32) {
+        self.fields.remove(&(slot, field));
+    }
+
+    /// Was the slot's whole value moved out (on every tracked path)?
+    fn is_slot_moved(&self, slot: MovedSlot) -> bool {
+        self.slots.contains(&slot)
+    }
+
+    /// Declaration indices of the top-level fields moved out of `slot`.
+    fn moved_fields_of(&self, slot: MovedSlot) -> std::collections::HashSet<u32> {
+        self.fields
+            .iter()
+            .filter(|(s, _)| *s == slot)
+            .map(|(_, f)| *f)
+            .collect()
+    }
+
+    /// Join two path states: state is kept only if present in BOTH
+    /// ("moved on ALL paths" — see the `moved` field docs).
+    fn intersect(&self, other: &MoveState) -> MoveState {
+        MoveState {
+            slots: self.slots.intersection(&other.slots).copied().collect(),
+            fields: self.fields.intersection(&other.fields).copied().collect(),
+        }
+    }
+}
+
 /// Builder that converts AIR to CFG.
 pub struct CfgBuilder<'a> {
     air: &'a Air,
@@ -87,9 +153,10 @@ pub struct CfgBuilder<'a> {
     /// Each scope contains the slots that became live in that scope.
     /// Used to emit StorageDead (and Drop if needed) at scope exit.
     scope_stack: Vec<Vec<LiveSlot>>,
-    /// Slots whose contents have definitely been moved out on every path
-    /// reaching the current lowering position. Drop elaboration skips these
-    /// (the new owner of the value is responsible for dropping it).
+    /// Slots (and individual top-level struct fields, RUE-62) whose contents
+    /// have definitely been moved out on every path reaching the current
+    /// lowering position. Drop elaboration skips these (the new owner of the
+    /// value is responsible for dropping it).
     ///
     /// Maintained path-sensitively: each branch of an if/match is lowered
     /// starting from the pre-branch state, and the post-construct state is
@@ -98,7 +165,7 @@ pub struct CfgBuilder<'a> {
     /// — that conservatively keeps today's double-drop for branch-divergent
     /// moves (proper fix needs runtime drop flags), but never leaks a value
     /// that was not moved.
-    moved_slots: std::collections::HashSet<MovedSlot>,
+    moved: MoveState,
 }
 
 impl<'a> CfgBuilder<'a> {
@@ -131,7 +198,7 @@ impl<'a> CfgBuilder<'a> {
             value_cache: vec![None; air.len()],
             warnings: Vec::new(),
             scope_stack: vec![Vec::new()], // Start with one scope for the function body
-            moved_slots: std::collections::HashSet::new(),
+            moved: MoveState::default(),
         };
 
         // Create entry block
@@ -449,7 +516,7 @@ impl<'a> CfgBuilder<'a> {
                 // The rhs only runs on one of the two paths into the join, so
                 // moves inside it are not "moved on all paths": restore the
                 // pre-rhs move state afterwards.
-                let moved_before_rhs = self.moved_slots.clone();
+                let moved_before_rhs = self.moved.clone();
                 self.current_block = rhs_block;
                 if let Some(rhs_val) = self.lower_value(*rhs) {
                     let (args_start, args_len) = self.cfg.push_extra(std::iter::once(rhs_val));
@@ -464,7 +531,7 @@ impl<'a> CfgBuilder<'a> {
                 }
 
                 // Continue in join block
-                self.moved_slots = moved_before_rhs;
+                self.moved = moved_before_rhs;
                 self.current_block = join_block;
                 self.cache(air_ref, result_param);
                 ExprResult {
@@ -511,7 +578,7 @@ impl<'a> CfgBuilder<'a> {
                 // propagate divergence (which would leave the join unterminated).
                 // The rhs only runs on one of the two paths into the join:
                 // restore the pre-rhs move state afterwards (see And above).
-                let moved_before_rhs = self.moved_slots.clone();
+                let moved_before_rhs = self.moved.clone();
                 self.current_block = rhs_block;
                 if let Some(rhs_val) = self.lower_value(*rhs) {
                     let (args_start, args_len) = self.cfg.push_extra(std::iter::once(rhs_val));
@@ -526,7 +593,7 @@ impl<'a> CfgBuilder<'a> {
                 }
 
                 // Continue in join block
-                self.moved_slots = moved_before_rhs;
+                self.moved = moved_before_rhs;
                 self.current_block = join_block;
                 self.cache(air_ref, result_param);
                 ExprResult {
@@ -671,7 +738,7 @@ impl<'a> CfgBuilder<'a> {
                 );
                 // Initialization fills the slot with a fresh value: any
                 // moved-out state from a previous occupant is stale.
-                self.moved_slots.remove(&MovedSlot::Local(*slot));
+                self.moved.clear_slot(MovedSlot::Local(*slot));
                 ExprResult {
                     value: None,
                     continuation: Continuation::Continues,
@@ -702,7 +769,7 @@ impl<'a> CfgBuilder<'a> {
                 // Assigning to the slot re-initializes it: a previously
                 // moved-out value has been replaced, so it must be dropped
                 // again at scope exit.
-                self.moved_slots.remove(&MovedSlot::Local(*slot));
+                self.moved.clear_slot(MovedSlot::Local(*slot));
                 ExprResult {
                     value: None,
                     continuation: Continuation::Continues,
@@ -722,7 +789,7 @@ impl<'a> CfgBuilder<'a> {
                     span,
                 );
                 // Re-initialization: see the Store arm above.
-                self.moved_slots.remove(&MovedSlot::Param(*param_slot));
+                self.moved.clear_slot(MovedSlot::Param(*param_slot));
                 ExprResult {
                     value: None,
                     continuation: Continuation::Continues,
@@ -1101,14 +1168,14 @@ impl<'a> CfgBuilder<'a> {
                 );
 
                 // Each branch starts move tracking from the pre-branch state.
-                let moved_before = self.moved_slots.clone();
+                let moved_before = self.moved.clone();
 
                 // Lower then branch
                 self.current_block = then_block;
                 let then_result = self.lower_inst(*then_value);
                 let then_exit_block = self.current_block;
                 let then_diverged = matches!(then_result.continuation, Continuation::Diverged);
-                let moved_then = std::mem::replace(&mut self.moved_slots, moved_before);
+                let moved_then = std::mem::replace(&mut self.moved, moved_before);
 
                 // Lower else branch
                 self.current_block = else_block;
@@ -1129,17 +1196,13 @@ impl<'a> CfgBuilder<'a> {
                 // the if only when it is moved on every path reaching the
                 // join. A diverged branch contributes no path to the join,
                 // so only the other branch's state matters.
-                // (self.moved_slots currently holds the else-branch state.)
+                // (self.moved currently holds the else-branch state.)
                 match (then_diverged, else_diverged) {
                     (true, true) => {}  // join unreachable; state is irrelevant
                     (true, false) => {} // keep else state
-                    (false, true) => self.moved_slots = moved_then,
+                    (false, true) => self.moved = moved_then,
                     (false, false) => {
-                        self.moved_slots = self
-                            .moved_slots
-                            .intersection(&moved_then)
-                            .copied()
-                            .collect();
+                        self.moved = self.moved.intersect(&moved_then);
                     }
                 }
 
@@ -1232,7 +1295,7 @@ impl<'a> CfgBuilder<'a> {
                 // (Sema's back-edge move recheck already rejects moving an
                 // outer variable inside a loop, so this conservatism cannot
                 // actually reintroduce a double-drop in accepted programs.)
-                let moved_before_loop = self.moved_slots.clone();
+                let moved_before_loop = self.moved.clone();
 
                 // Jump to header
                 let (args_start, args_len) = self.cfg.push_extra(std::iter::empty());
@@ -1302,7 +1365,7 @@ impl<'a> CfgBuilder<'a> {
                 }
 
                 self.loop_stack.pop();
-                self.moved_slots = moved_before_loop;
+                self.moved = moved_before_loop;
 
                 // Continue after loop
                 self.current_block = exit_block;
@@ -1331,7 +1394,7 @@ impl<'a> CfgBuilder<'a> {
                 // The exit is only reached via break, and different breaks
                 // may have different move states; conservatively restore the
                 // pre-loop state after lowering (see the Loop arm above).
-                let moved_before_loop = self.moved_slots.clone();
+                let moved_before_loop = self.moved.clone();
 
                 // Jump to body
                 let (args_start, args_len) = self.cfg.push_extra(std::iter::empty());
@@ -1371,7 +1434,7 @@ impl<'a> CfgBuilder<'a> {
                 }
 
                 self.loop_stack.pop();
-                self.moved_slots = moved_before_loop;
+                self.moved = moved_before_loop;
 
                 // Continue after loop (only reachable via break).
                 // Set Unreachable as the initial terminator. If there's code after the loop
@@ -1472,15 +1535,15 @@ impl<'a> CfgBuilder<'a> {
                 // Each arm starts move tracking from the pre-match state; the
                 // state after the match is the intersection of the exit
                 // states of the arms that reach the join ("moved on ALL
-                // paths" — see the moved_slots field docs).
+                // paths" — see the `moved` field docs).
                 let mut all_diverged = true;
                 let mut arm_results = Vec::new();
-                let moved_before = self.moved_slots.clone();
-                let mut moved_join: Option<std::collections::HashSet<MovedSlot>> = None;
+                let moved_before = self.moved.clone();
+                let mut moved_join: Option<MoveState> = None;
 
                 for (i, (_, body)) in arms.iter().enumerate() {
                     self.current_block = arm_blocks[i];
-                    self.moved_slots = moved_before.clone();
+                    self.moved = moved_before.clone();
                     let body_result = self.lower_inst(*body);
                     let exit_block = self.current_block;
                     let diverged = matches!(body_result.continuation, Continuation::Diverged);
@@ -1488,15 +1551,15 @@ impl<'a> CfgBuilder<'a> {
                     if !diverged {
                         all_diverged = false;
                         moved_join = Some(match moved_join.take() {
-                            None => self.moved_slots.clone(),
-                            Some(acc) => acc.intersection(&self.moved_slots).copied().collect(),
+                            None => self.moved.clone(),
+                            Some(acc) => acc.intersect(&self.moved),
                         });
                     }
 
                     arm_results.push((exit_block, body_result, diverged));
                 }
 
-                self.moved_slots = moved_join.unwrap_or(moved_before);
+                self.moved = moved_join.unwrap_or(moved_before);
 
                 // If all arms diverge, mark join block unreachable
                 if all_diverged {
@@ -1810,12 +1873,25 @@ impl<'a> CfgBuilder<'a> {
                 // A whole-variable write (no projections) re-initializes the
                 // slot, so a previously moved-out value must be dropped again
                 // at scope exit. Projected writes (one field/element) don't
-                // restore a fully moved-out variable.
+                // restore a fully moved-out variable — but a write to exactly
+                // one top-level field (`o.a = ...`) does re-initialize that
+                // field, so its per-field moved state is cleared (RUE-62).
                 let air_place = self.air.get_place(*place);
                 if let Some(slot) = air_place.as_local() {
-                    self.moved_slots.remove(&MovedSlot::Local(slot));
+                    self.moved.clear_slot(MovedSlot::Local(slot));
                 } else if let Some(slot) = air_place.as_param() {
-                    self.moved_slots.remove(&MovedSlot::Param(slot));
+                    self.moved.clear_slot(MovedSlot::Param(slot));
+                } else if air_place.projections_len == 1 {
+                    let base = match air_place.base {
+                        AirPlaceBase::Local(slot) => MovedSlot::Local(slot),
+                        AirPlaceBase::Param(slot) => MovedSlot::Param(slot),
+                    };
+                    if let [AirProjection::Field { field_index, .. }] = self
+                        .air
+                        .get_projections(air_place.projections_start, air_place.projections_len)
+                    {
+                        self.moved.clear_field(base, *field_index);
+                    }
                 }
                 ExprResult {
                     value: None,
@@ -1894,7 +1970,7 @@ impl<'a> CfgBuilder<'a> {
                 // Fresh storage holds a fresh (not-moved-out) value.
                 // Slots are not currently reused, so this is a no-op today,
                 // but it keeps the moved-slot state correct if reuse lands.
-                self.moved_slots.remove(&MovedSlot::Local(*slot));
+                self.moved.clear_slot(MovedSlot::Local(*slot));
 
                 // Record this slot as live in the current scope for drop elaboration
                 if let Some(scope) = self.scope_stack.last_mut() {
@@ -1925,10 +2001,13 @@ impl<'a> CfgBuilder<'a> {
                 value,
                 slot,
                 is_param,
+                field,
             } => {
                 // Pure passthrough at runtime: lower the wrapped use and
-                // record that the slot's contents were moved out on this
-                // path, so drop elaboration skips the slot at scope exit.
+                // record that the slot's contents (or one top-level field of
+                // them, RUE-62) were moved out on this path, so drop
+                // elaboration skips the slot (or just that field) at scope
+                // exit.
                 let result = self.lower_inst(*value);
                 if !matches!(result.continuation, Continuation::Diverged) {
                     let place = if *is_param {
@@ -1936,7 +2015,10 @@ impl<'a> CfgBuilder<'a> {
                     } else {
                         MovedSlot::Local(*slot)
                     };
-                    self.moved_slots.insert(place);
+                    match field {
+                        Some(field_index) => self.moved.mark_field(place, *field_index),
+                        None => self.moved.mark_slot(place),
+                    }
                 }
                 if let Some(val) = result.value {
                     self.cache(air_ref, val);
@@ -2069,10 +2151,11 @@ impl<'a> CfgBuilder<'a> {
         // path reaching this exit). The list is empty for destructors and
         // drop-glue functions, which must not re-drop their own parameter.
         for &(abi_slot, ty) in self.air.param_drops().to_vec().iter().rev() {
-            if self.moved_slots.contains(&MovedSlot::Param(abi_slot)) {
+            let key = MovedSlot::Param(abi_slot);
+            if self.moved.is_slot_moved(key) {
                 continue;
             }
-            if self.type_needs_drop(ty) {
+            if self.type_needs_drop(ty) && !self.emit_partial_struct_drop(key, ty, span) {
                 let param_val = self.emit(CfgInstData::Param { index: abi_slot }, ty, span);
                 self.emit(CfgInstData::Drop { value: param_val }, Type::UNIT, span);
             }
@@ -2101,20 +2184,23 @@ impl<'a> CfgBuilder<'a> {
     /// Emit Drop and StorageDead for a single slot.
     /// The Drop is suppressed when the slot's value was moved out on every
     /// path reaching this point (the new owner drops it); the StorageDead
-    /// is still emitted to end the slot's storage lifetime.
+    /// is still emitted to end the slot's storage lifetime. A struct slot
+    /// with moved-out FIELDS is dropped field-granularly instead (RUE-62).
     fn emit_drop_for_slot(&mut self, live_slot: &LiveSlot, span: rue_span::Span) {
         // Emit Drop if the type needs it and the value wasn't moved out
-        if !self.moved_slots.contains(&MovedSlot::Local(live_slot.slot))
-            && self.type_needs_drop(live_slot.ty)
-        {
-            let slot_val = self.emit(
-                CfgInstData::Load {
-                    slot: live_slot.slot,
-                },
-                live_slot.ty,
-                span,
-            );
-            self.emit(CfgInstData::Drop { value: slot_val }, Type::UNIT, span);
+        let key = MovedSlot::Local(live_slot.slot);
+        if !self.moved.is_slot_moved(key) && self.type_needs_drop(live_slot.ty) {
+            // Fast path: nothing partially moved — drop the whole value.
+            if !self.emit_partial_struct_drop(key, live_slot.ty, span) {
+                let slot_val = self.emit(
+                    CfgInstData::Load {
+                        slot: live_slot.slot,
+                    },
+                    live_slot.ty,
+                    span,
+                );
+                self.emit(CfgInstData::Drop { value: slot_val }, Type::UNIT, span);
+            }
         }
         self.emit(
             CfgInstData::StorageDead {
@@ -2123,6 +2209,84 @@ impl<'a> CfgBuilder<'a> {
             Type::UNIT,
             span,
         );
+    }
+
+    /// Field-granular drop of a partially-moved struct (RUE-62).
+    ///
+    /// When one or more top-level fields of a struct slot were moved out
+    /// (`eat(o.a)`), the whole-value `Drop` (destructor + drop glue over ALL
+    /// fields) would re-drop the moved field. Instead this emits:
+    ///
+    /// 1. a plain call to the struct's own destructor (if any) — the
+    ///    destructor is an ordinary `{Type}.__drop` function taking `self`
+    ///    by value, and the CFG `Call` machinery already passes struct
+    ///    arguments flattened, so no dedicated codegen op is needed; the
+    ///    drop GLUE (which would re-walk every field) is deliberately NOT
+    ///    called;
+    /// 2. a `Drop` of each still-owned droppable field, read individually
+    ///    via `PlaceRead`, in declaration order (matching glue order),
+    ///    skipping moved-out fields.
+    ///
+    /// Returns `false` (caller emits the normal whole-value drop) when the
+    /// slot has no moved-out fields or is not a struct. Note the destructor
+    /// still receives the WHOLE struct, including the moved-out field's
+    /// stale slots — reading a moved field in a destructor is a
+    /// use-after-move just like any other.
+    fn emit_partial_struct_drop(&mut self, key: MovedSlot, ty: Type, span: rue_span::Span) -> bool {
+        let moved_fields = self.moved.moved_fields_of(key);
+        if moved_fields.is_empty() {
+            return false;
+        }
+        let TypeKind::Struct(struct_id) = ty.kind() else {
+            // Per-field move markers are only emitted for struct fields, so
+            // this is unreachable today; fall back to the whole-value drop.
+            return false;
+        };
+        let struct_def = self.type_pool.struct_def(struct_id);
+
+        // 1. Run the struct's own destructor (without the field glue).
+        if let Some(ref destructor_name) = struct_def.destructor {
+            let whole_val = match key {
+                MovedSlot::Local(slot) => self.emit(CfgInstData::Load { slot }, ty, span),
+                MovedSlot::Param(index) => self.emit(CfgInstData::Param { index }, ty, span),
+            };
+            let name = self.interner.get_or_intern(destructor_name);
+            let (args_start, args_len) = self.cfg.push_call_args(std::iter::once(CfgCallArg {
+                value: whole_val,
+                mode: CfgArgMode::Normal,
+            }));
+            self.emit(
+                CfgInstData::Call {
+                    name,
+                    args_start,
+                    args_len,
+                },
+                Type::UNIT,
+                span,
+            );
+        }
+
+        // 2. Drop the still-owned droppable fields in declaration order.
+        let base = match key {
+            MovedSlot::Local(slot) => PlaceBase::Local(slot),
+            MovedSlot::Param(slot) => PlaceBase::Param(slot),
+        };
+        for (field_index, field) in struct_def.fields.iter().enumerate() {
+            let field_index = field_index as u32;
+            if moved_fields.contains(&field_index) || !self.type_needs_drop(field.ty) {
+                continue;
+            }
+            let place = self.cfg.make_place(
+                base,
+                std::iter::once(Projection::Field {
+                    struct_id,
+                    field_index,
+                }),
+            );
+            let field_val = self.emit(CfgInstData::PlaceRead { place }, field.ty, span);
+            self.emit(CfgInstData::Drop { value: field_val }, Type::UNIT, span);
+        }
+        true
     }
 
     // ============================================================================
@@ -2292,6 +2456,25 @@ mod tests {
     /// Build the CFG for the `index`-th analyzed function in `source`
     /// (functions are analyzed in declaration order).
     fn build_cfg_for(source: &str, index: usize) -> Cfg {
+        build_cfg_select(source, |functions| &functions[index])
+    }
+
+    /// Build the CFG for the analyzed function called `name` in `source`
+    /// (robust to analysis order, unlike `build_cfg_for`).
+    fn build_cfg_named(source: &str, name: &str) -> Cfg {
+        build_cfg_select(source, |functions| {
+            functions
+                .iter()
+                .find(|f| f.name == name)
+                .unwrap_or_else(|| panic!("no analyzed function named '{}'", name))
+        })
+    }
+
+    /// Build the CFG for the analyzed function of `source` chosen by `select`.
+    fn build_cfg_select(
+        source: &str,
+        select: impl for<'f> Fn(&'f [rue_air::AnalyzedFunction]) -> &'f rue_air::AnalyzedFunction,
+    ) -> Cfg {
         let lexer = Lexer::new(source);
         let (tokens, interner) = lexer.tokenize().unwrap();
         let parser = Parser::new(tokens, interner);
@@ -2303,7 +2486,7 @@ mod tests {
         let mut sema = Sema::new(&rir, &mut interner, PreviewFeatures::new());
         let output = sema.analyze_all().unwrap();
 
-        let func = &output.functions[index];
+        let func = select(&output.functions);
         CfgBuilder::build(
             &func.air,
             func.num_locals,
@@ -2322,6 +2505,15 @@ mod tests {
             .iter()
             .flat_map(|b| b.insts.iter())
             .filter(|v| matches!(cfg.get_inst(**v).data, CfgInstData::Drop { .. }))
+            .count()
+    }
+
+    /// Count the Call instructions in a CFG.
+    fn count_calls(cfg: &Cfg) -> usize {
+        cfg.blocks()
+            .iter()
+            .flat_map(|b| b.insts.iter())
+            .filter(|v| matches!(cfg.get_inst(**v).data, CfgInstData::Call { .. }))
             .count()
     }
 
@@ -2524,6 +2716,89 @@ mod tests {
             count_drops(&main_cfg),
             0,
             "s is moved on every path; main must not drop it"
+        );
+    }
+
+    #[test]
+    fn test_partial_field_move_drops_only_remaining_field() {
+        // RUE-62: moving ONE field out of a struct makes the scope-exit drop
+        // field-granular — only the still-owned droppable field is dropped
+        // (one Drop), not the whole struct (which would re-drop the moved
+        // field via the drop glue).
+        let source = "fn eat(s: String) -> i32 { 0 }\n\
+             struct H { a: String, b: String }\n\
+             fn main() -> i32 {\n\
+                 let h = H { a: String::with_capacity(8), b: String::with_capacity(8) };\n\
+                 eat(h.a);\n\
+                 0\n\
+             }";
+        let main_cfg = build_cfg_named(source, "main");
+        assert_eq!(
+            count_drops(&main_cfg),
+            1,
+            "moved field a is skipped; only field b drops at exit"
+        );
+    }
+
+    #[test]
+    fn test_partial_field_move_still_calls_struct_destructor() {
+        // RUE-62: the struct's OWN destructor still runs for a partially
+        // moved struct — emitted as a plain call (without the field glue).
+        // main contains exactly two calls: eat(o.a) and O.__drop(o); and
+        // zero Drops (field a moved out, field b is a trivially-droppable
+        // i32, and field-granular dropping replaces the whole-struct Drop).
+        let source = "struct A { x: i32 }\n\
+             struct O { a: A, b: i32 }\n\
+             drop fn A(self) { }\n\
+             drop fn O(self) { }\n\
+             fn eat(a: A) -> i32 { 0 }\n\
+             fn main() -> i32 {\n\
+                 let o = O { a: A { x: 1 }, b: 2 };\n\
+                 eat(o.a);\n\
+                 0\n\
+             }";
+        let main_cfg = build_cfg_named(source, "main");
+        assert_eq!(count_drops(&main_cfg), 0, "no whole-struct or field Drop");
+        assert_eq!(
+            count_calls(&main_cfg),
+            2,
+            "eat(o.a) plus the destructor-only call O.__drop(o)"
+        );
+        assert_all_blocks_terminated(&main_cfg);
+    }
+
+    #[test]
+    fn test_field_reassignment_restores_whole_struct_drop() {
+        // Writing a fresh value into a moved-out field re-initializes it:
+        // the per-field moved state is cleared by the projected PlaceWrite,
+        // so scope exit is back on the whole-struct fast path — ONE Drop
+        // whose operand is a whole-slot Load (covering both fields via the
+        // drop glue), not a field-granular PlaceRead drop of just field b.
+        let source = "fn eat(s: String) -> i32 { 0 }\n\
+             struct H { a: String, b: String }\n\
+             fn main() -> i32 {\n\
+                 let mut h = H { a: String::with_capacity(8), b: String::with_capacity(8) };\n\
+                 eat(h.a);\n\
+                 h.a = String::with_capacity(4);\n\
+                 0\n\
+             }";
+        let main_cfg = build_cfg_named(source, "main");
+        let dropped_values: Vec<_> = main_cfg
+            .blocks()
+            .iter()
+            .flat_map(|b| b.insts.iter())
+            .filter_map(|v| match main_cfg.get_inst(*v).data {
+                CfgInstData::Drop { value } => Some(value),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(dropped_values.len(), 1, "exactly one whole-struct drop");
+        assert!(
+            matches!(
+                main_cfg.get_inst(dropped_values[0]).data,
+                CfgInstData::Load { slot: 0 }
+            ),
+            "the drop covers the whole re-initialized struct, not one field"
         );
     }
 }

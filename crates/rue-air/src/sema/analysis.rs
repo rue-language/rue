@@ -1297,11 +1297,50 @@ fn analyze_destructor_function_parallel(
         vec![(self_sym, struct_type, RirParamMode::Normal)];
 
     let mut result = analyze_function_with_context(ctx, full_name, Type::UNIT, &param_info, body)?;
+    reject_self_move_in_destructor(&result.0.air, full_name)?;
     // The destructor consumes `self`; the drop glue (not the destructor
     // itself) drops the fields afterwards, so the destructor must not
     // re-drop its own parameter — that would recurse forever.
     result.0.air.clear_param_drops();
     Ok(result)
+}
+
+/// Reject moving `self` out of a destructor body (RUE-139).
+///
+/// Dropping a value runs its destructor and then the drop glue; if the
+/// destructor moves `self` to a new owner (`consume(self)`, `let x = self`,
+/// a by-value method call, ...), that owner drops the value again at ITS
+/// scope exit — re-entering the destructor in infinite recursion. This is
+/// the spirit of Rust's E0509 (cannot move out of a type implementing Drop).
+///
+/// Detection: sema wraps every surviving whole-value move of a pass-by-value
+/// parameter in an [`AirInstData::MarkMoved`] marker (uses that turn out to
+/// be borrows are cancelled in place and leave no marker). A destructor's
+/// only parameter is `self` at ABI slot 0, so any whole-value param marker
+/// in the analyzed AIR is a move of `self`. Partial field moves
+/// (`field: Some(_)`) are not rejected here: they don't re-enter the
+/// destructor (the drop-glue double drop of such a field is a separate,
+/// pre-existing issue).
+fn reject_self_move_in_destructor(air: &Air, full_name: &str) -> CompileResult<()> {
+    for (_, inst) in air.iter() {
+        if let AirInstData::MarkMoved {
+            slot: 0,
+            is_param: true,
+            field: None,
+            ..
+        } = inst.data
+        {
+            let type_name = full_name.strip_suffix(".__drop").unwrap_or(full_name);
+            return Err(CompileError::new(
+                ErrorKind::MoveSelfOutOfDestructor {
+                    type_name: type_name.to_string(),
+                },
+                inst.span,
+            )
+            .with_label("`self` is moved out here", inst.span));
+        }
+    }
+    Ok(())
 }
 
 /// Resolve a type symbol using the shared context.
@@ -2755,6 +2794,7 @@ fn analyze_var_ref_ctx(
                     value: air_ref,
                     slot: param_info.abi_slot,
                     is_param: true,
+                    field: None,
                 },
                 ty,
                 span,
@@ -2908,6 +2948,7 @@ fn analyze_var_ref_ctx(
                 value: air_ref,
                 slot,
                 is_param: false,
+                field: None,
             },
             ty,
             span,
@@ -4155,8 +4196,10 @@ fn analyze_field_get_ctx(
 
     // For linear types, field access consumes the entire struct.
     // Remember the consumed root so the FieldGet below can be wrapped in a
-    // MarkMoved marker for drop elaboration.
-    let mut linear_move_root: Option<(u32, bool)> = None;
+    // MarkMoved marker for drop elaboration. The marker's `field` component
+    // is None for a whole-struct (linear) move and Some(index) for a
+    // single top-level field move (RUE-62).
+    let mut move_root: Option<(u32, bool, Option<u32>)> = None;
     if is_linear {
         if let Some(root_var) = extract_root_variable_ctx(ctx, inst_ref) {
             reject_move_out_of_byref_param_ctx(ctx, analysis_ctx, root_var, span)?;
@@ -4166,9 +4209,9 @@ fn analyze_field_get_ctx(
                 .or_default()
                 .mark_path_moved(&[], span);
             if let Some(local) = analysis_ctx.locals.get(&root_var) {
-                linear_move_root = Some((local.slot, false));
+                move_root = Some((local.slot, false, None));
             } else if let Some(param) = analysis_ctx.params.iter().find(|p| p.name == root_var) {
-                linear_move_root = Some((param.abi_slot, true));
+                move_root = Some((param.abi_slot, true, None));
             }
         }
     }
@@ -4200,6 +4243,24 @@ fn analyze_field_get_ctx(
                 .entry(root_var)
                 .or_default()
                 .mark_path_moved(&field_path, span);
+
+            // Export single-level field moves (`o.a`, not `o.a.b`) to drop
+            // elaboration so the field's drop inside the struct's scope-exit
+            // drop is suppressed (RUE-62). Deeper paths get no marker: drop
+            // elaboration keeps the whole-slot drop (conservative double
+            // drop of the moved part, never a leak). Only Normal params
+            // occupy a real ABI slot that drop elaboration would drop.
+            if field_path.len() == 1 {
+                if let Some(local) = analysis_ctx.locals.get(&root_var) {
+                    move_root = Some((local.slot, false, Some(field_index as u32)));
+                } else if let Some(param) = analysis_ctx
+                    .params
+                    .iter()
+                    .find(|p| p.name == root_var && p.mode == RirParamMode::Normal)
+                {
+                    move_root = Some((param.abi_slot, true, Some(field_index as u32)));
+                }
+            }
         }
     }
 
@@ -4212,13 +4273,15 @@ fn analyze_field_get_ctx(
         ty: field_type,
         span,
     });
-    if let Some((slot, is_param)) = linear_move_root {
-        // Export the linear-type full move to drop elaboration.
+    if let Some((slot, is_param, field)) = move_root {
+        // Export the move (whole struct for linear types, one top-level
+        // field for partial moves) to drop elaboration.
         air_ref = air.add_inst(AirInst {
             data: AirInstData::MarkMoved {
                 value: air_ref,
                 slot,
                 is_param,
+                field,
             },
             ty: field_type,
             span,
@@ -6728,6 +6791,8 @@ impl<'a> Sema<'a> {
             ref_fns,
             ref_meths,
         ) = self.analyze_function(infer_ctx, Type::UNIT, &param_info, body)?;
+
+        reject_self_move_in_destructor(&air, full_name)?;
 
         // The destructor consumes `self`; the drop glue (not the destructor
         // itself) drops the fields afterwards, so the destructor must not
