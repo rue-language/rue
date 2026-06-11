@@ -137,3 +137,38 @@ fn main() -> i32 {
 aux_files = { "foo.rue" = "pub fn a() -> i32 { 1 }", "foo/_foo.rue" = "pub fn b() -> i32 { 2 }" }
 compile_fail = true
 error_contains = "ambiguous module"
+
+[[case]]
+name = "const_module_reexport_member_chain"
+spec = ["4.13:81"]
+description = "A pub const holding a module (ADR-0026 re-export idiom) is accessible as a member; chained access reaches the inner module's functions (RUE-136)"
+source = """
+fn main() -> i32 {
+    let outer = @import("outer");
+    outer.inner.value()
+}
+"""
+aux_files = { "outer/_outer.rue" = """
+pub const inner = @import("outer/inner.rue");
+""", "outer/inner.rue" = """
+pub fn value() -> i32 { 42 }
+""" }
+exit_code = 42
+
+[[case]]
+name = "private_const_reexport_not_visible"
+spec = ["4.13:86"]
+description = "A non-pub const module re-export is not accessible from outside the directory"
+source = """
+fn main() -> i32 {
+    let outer = @import("outer");
+    outer.inner.value()
+}
+"""
+aux_files = { "outer/_outer.rue" = """
+const inner = @import("outer/inner.rue");
+""", "outer/inner.rue" = """
+pub fn value() -> i32 { 42 }
+""" }
+compile_fail = true
+error_contains = "private"
