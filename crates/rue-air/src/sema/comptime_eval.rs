@@ -756,4 +756,160 @@ impl Sema<'_> {
             _ => Ok(None),
         }
     }
+
+    /// Pre-resolve `let`-bound compile-time type aliases in a function body,
+    /// before HM inference runs (RUE-170, RUE-164).
+    ///
+    /// A binding like `let P = F();` (where `F` returns `type`) only gets a
+    /// concrete type during sema's analysis pass — but inference runs first,
+    /// so every use of `P` as a type name (`P { ... }`, `let p: P = ...`,
+    /// methods on a `P`-typed receiver) used to fall through to `<error>` or
+    /// an unconstrained variable. This walk finds such bindings and evaluates
+    /// their initializers eagerly so the constraint generator can route them
+    /// through the same paths as named structs.
+    ///
+    /// The walk is opportunistic: initializers that can't be evaluated at
+    /// compile time are simply skipped (sema diagnoses them later). Like
+    /// `AnalysisContext::comptime_type_vars`, the resulting map is flat
+    /// (not scope-aware); a shadowed alias resolves to the type value, which
+    /// matches the analysis pass's behavior.
+    ///
+    /// `type_subst` / `value_subst` carry the enclosing comptime parameter
+    /// substitutions (specialized generic bodies), so aliases like
+    /// `let P = Pair(T)` resolve. Discovered aliases also feed back into the
+    /// evaluation environment, so chains (`let Q = Wrap(P)`) resolve too.
+    pub(crate) fn precompute_comptime_type_locals(
+        &mut self,
+        body: InstRef,
+        type_subst: Option<&HashMap<Spur, Type>>,
+        value_subst: Option<&HashMap<Spur, ConstValue>>,
+    ) -> HashMap<Spur, Type> {
+        let mut discovered: HashMap<Spur, Type> = HashMap::new();
+        let mut eval_types: HashMap<Spur, Type> = type_subst.cloned().unwrap_or_default();
+        let eval_values: HashMap<Spur, ConstValue> = value_subst.cloned().unwrap_or_default();
+        self.walk_comptime_type_locals(body, &mut discovered, &mut eval_types, &eval_values);
+        discovered
+    }
+
+    /// In-order walk over statement positions for
+    /// [`precompute_comptime_type_locals`]. Only containers that can hold
+    /// `let` statements are entered; everything else is left alone.
+    fn walk_comptime_type_locals(
+        &mut self,
+        inst_ref: InstRef,
+        discovered: &mut HashMap<Spur, Type>,
+        eval_types: &mut HashMap<Spur, Type>,
+        eval_values: &HashMap<Spur, ConstValue>,
+    ) {
+        match &self.rir.get(inst_ref).data {
+            InstData::Block { extra_start, len } => {
+                let stmts: Vec<InstRef> = self
+                    .rir
+                    .get_extra(*extra_start, *len)
+                    .iter()
+                    .map(|&raw| InstRef::from_raw(raw))
+                    .collect();
+                for stmt in stmts {
+                    self.walk_comptime_type_locals(stmt, discovered, eval_types, eval_values);
+                }
+            }
+            InstData::Alloc { name, init, .. } => {
+                let (name, init) = (*name, *init);
+                if let Some(name) = name {
+                    if let Some(ty) = self.try_eval_type_alias_init(init, eval_types, eval_values) {
+                        discovered.insert(name, ty);
+                        eval_types.insert(name, ty);
+                    }
+                }
+            }
+            InstData::Branch {
+                then_block,
+                else_block,
+                ..
+            } => {
+                let (then_block, else_block) = (*then_block, *else_block);
+                self.walk_comptime_type_locals(then_block, discovered, eval_types, eval_values);
+                if let Some(else_block) = else_block {
+                    self.walk_comptime_type_locals(else_block, discovered, eval_types, eval_values);
+                }
+            }
+            InstData::Loop { body, .. } | InstData::InfiniteLoop { body } => {
+                let body = *body;
+                self.walk_comptime_type_locals(body, discovered, eval_types, eval_values);
+            }
+            InstData::Match {
+                arms_start,
+                arms_len,
+                ..
+            } => {
+                let bodies: Vec<InstRef> = self
+                    .rir
+                    .get_match_arms(*arms_start, *arms_len)
+                    .iter()
+                    .map(|(_, body)| *body)
+                    .collect();
+                for body in bodies {
+                    self.walk_comptime_type_locals(body, discovered, eval_types, eval_values);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Evaluate a `let` initializer as a compile-time type value, if it is
+    /// one. Handles calls to type-returning functions (`F()`, `Pair(i32)`,
+    /// `FixedBuffer(8)` — mirroring `analyze_call`'s implicit-comptime gate)
+    /// and direct type expressions (`let P = Q;`, `let P = struct { .. };`).
+    /// Returns `None` for anything else.
+    fn try_eval_type_alias_init(
+        &mut self,
+        init: InstRef,
+        eval_types: &HashMap<Spur, Type>,
+        eval_values: &HashMap<Spur, ConstValue>,
+    ) -> Option<Type> {
+        if let InstData::Call {
+            name,
+            args_start,
+            args_len,
+        } = &self.rir.get(init).data
+        {
+            let fn_info = self.functions.get(name)?;
+            if fn_info.return_type != Type::COMPTIME_TYPE {
+                return None;
+            }
+            let fn_body = fn_info.body;
+            let params = fn_info.params;
+            let param_names = self.param_arena.names(params).to_vec();
+            let param_comptime = self.param_arena.comptime(params).to_vec();
+            let args = self.rir.get_call_args(*args_start, *args_len).to_vec();
+            // Same gate as `analyze_call`: only no-arg or all-comptime-param
+            // type constructors are implicitly comptime-evaluated.
+            if args.len() != param_names.len()
+                || !(args.is_empty() || param_comptime.iter().all(|&c| c))
+            {
+                return None;
+            }
+            let mut callee_types: HashMap<Spur, Type> = HashMap::new();
+            let mut callee_values: HashMap<Spur, ConstValue> = HashMap::new();
+            for (i, arg) in args.iter().enumerate() {
+                match self.try_evaluate_const_with_subst(arg.value, eval_types, eval_values)? {
+                    ConstValue::Type(t) => {
+                        callee_types.insert(param_names[i], t);
+                    }
+                    value => {
+                        callee_values.insert(param_names[i], value);
+                    }
+                }
+            }
+            match self.try_evaluate_const_with_subst(fn_body, &callee_types, &callee_values) {
+                Some(ConstValue::Type(t)) => Some(t),
+                _ => None,
+            }
+        } else {
+            match self.try_evaluate_const_with_subst(init, eval_types, eval_values) {
+                Some(ConstValue::Type(t)) => Some(t),
+                _ => None,
+            }
+        }
+    }
 }
