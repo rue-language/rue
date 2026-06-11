@@ -674,3 +674,200 @@ fn secret() -> i32 {
 """ },
 ]
 exit_code = 42
+
+# ---------------------------------------------------------------------------
+# Nested module member access (RUE-122 regression coverage).
+#
+# RUE-122 reported `std.math.abs()` failing with E0707; the RUE-136 rework
+# (module members resolved member-by-member, const re-exports visible as
+# module-typed members) fixed the chain. These cases pin every shape of the
+# nested resolution so it can't regress silently.
+# ---------------------------------------------------------------------------
+
+# The exact RUE-122 repro: a std/ facade re-exporting math with an
+# extensionless, facade-relative import path.
+[[case]]
+name = "nested_member_std_facade_relative_import"
+files = [
+    { path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    std.math.abs(0 - 7)
+}
+""" },
+    { path = "std/_std.rue", source = """
+pub const math = @import("math");
+""" },
+    { path = "std/math.rue", source = """
+pub fn abs(x: i32) -> i32 {
+    if x < 0 { 0 - x } else { x }
+}
+""" },
+]
+exit_code = 7
+
+# Three levels deep: each facade re-exports the next directory module.
+[[case]]
+name = "nested_member_three_levels"
+files = [
+    { path = "main.rue", source = """
+const a = @import("a");
+
+fn main() -> i32 {
+    a.b.c.f()
+}
+""" },
+    { path = "a/_a.rue", source = """
+pub const b = @import("b");
+""" },
+    { path = "a/b/_b.rue", source = """
+pub const c = @import("c");
+""" },
+    { path = "a/b/c.rue", source = """
+pub fn f() -> i32 { 42 }
+""" },
+]
+exit_code = 42
+
+# A nested module is a first-class value: bind it with let, then call through.
+[[case]]
+name = "nested_member_via_let_binding"
+files = [
+    { path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let m = std.math;
+    m.abs(0 - 9)
+}
+""" },
+    { path = "std/_std.rue", source = """
+pub const math = @import("math");
+""" },
+    { path = "std/math.rue", source = """
+pub fn abs(x: i32) -> i32 {
+    if x < 0 { 0 - x } else { x }
+}
+""" },
+]
+exit_code = 9
+
+# Chaining member access directly on the @import expression itself.
+[[case]]
+name = "nested_member_direct_on_import_expr"
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    @import("std").math.abs(0 - 11)
+}
+""" },
+    { path = "std/_std.rue", source = """
+pub const math = @import("math");
+""" },
+    { path = "std/math.rue", source = """
+pub fn abs(x: i32) -> i32 {
+    if x < 0 { 0 - x } else { x }
+}
+""" },
+]
+exit_code = 11
+
+# Types resolve through the nested chain too: struct construction and a
+# qualified enum path on a module two levels in.
+[[case]]
+name = "nested_member_struct_and_enum_types"
+files = [
+    { path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let p = std.geo.Point { x: 3, y: 4 };
+    let s = std.geo.Sign::Pos;
+    match s {
+        std.geo.Sign::Pos => p.x + p.y,
+        _ => 0,
+    }
+}
+""" },
+    { path = "std/_std.rue", source = """
+pub const geo = @import("geo");
+""" },
+    { path = "std/geo.rue", source = """
+pub struct Point { x: i32, y: i32 }
+pub enum Sign { Neg, Zero, Pos }
+""" },
+]
+exit_code = 7
+
+# A non-pub re-export const is NOT a member from outside the directory.
+[[case]]
+name = "nested_member_private_facade_reexport_rejected"
+files = [
+    { path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    std.math.abs(0 - 7)
+}
+""" },
+    { path = "std/_std.rue", source = """
+const math = @import("math");
+""" },
+    { path = "std/math.rue", source = """
+pub fn abs(x: i32) -> i32 {
+    if x < 0 { 0 - x } else { x }
+}
+""" },
+]
+compile_fail = true
+error_contains = ["E0706", "const `math` is private"]
+
+# Privacy is enforced at EVERY level of the chain, not just the first hop:
+# here the middle facade's re-export is private.
+[[case]]
+name = "nested_member_private_mid_level_reexport_rejected"
+files = [
+    { path = "main.rue", source = """
+const a = @import("a");
+
+fn main() -> i32 {
+    a.b.c.f()
+}
+""" },
+    { path = "a/_a.rue", source = """
+pub const b = @import("b");
+""" },
+    { path = "a/b/_b.rue", source = """
+const c = @import("c");
+""" },
+    { path = "a/b/c.rue", source = """
+pub fn f() -> i32 { 42 }
+""" },
+]
+compile_fail = true
+error_contains = ["E0706", "const `c` is private"]
+
+# An unknown member at the SECOND level names the inner module (`math`),
+# not the outer one (`std`) — the chain resolved member-by-member.
+[[case]]
+name = "nested_member_unknown_names_inner_module"
+files = [
+    { path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    std.math.nosuch(1)
+}
+""" },
+    { path = "std/_std.rue", source = """
+pub const math = @import("math");
+""" },
+    { path = "std/math.rue", source = """
+pub fn abs(x: i32) -> i32 {
+    if x < 0 { 0 - x } else { x }
+}
+""" },
+]
+compile_fail = true
+error_contains = ["E0707", "module `math` has no member `nosuch`"]
