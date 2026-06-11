@@ -121,13 +121,14 @@ compile_fail = true
 error_contains = ["type mismatch: expected bool, found i32"]
 
 [[case]]
-name = "const_unannotated_defaults_to_i32"
-description = "Unannotated integer consts still infer i32 from the literal."
+name = "const_unannotated_rejected"
+description = "Value consts require a type annotation (E0475, RUE-179)."
 files = [{ path = "main.rue", source = """
 const N = 41;
 fn main() -> i32 { N + 1 }
 """ }]
-exit_code = 42
+compile_fail = true
+error_contains = ["E0475", "missing type annotation on constant 'N'"]
 
 # ============================================================================
 # RUE-155: let annotations are validated against the shared type table

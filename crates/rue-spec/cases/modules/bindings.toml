@@ -250,7 +250,7 @@ fn main() -> i32 {
     if cfg.BIG / 1000000000 == 5 { 9 } else { 1 }
 }
 """
-aux_files = { "cfg.rue" = "pub const BIG = 5000000000;" }
+aux_files = { "cfg.rue" = "pub const BIG: i64 = 5000000000;" }
 exit_code = 9
 
 [[case]]
@@ -259,7 +259,7 @@ spec = ["10.4:12", "10.4:14"]
 description = "Member access to a value const is itself compile-time evaluable"
 source = """
 const math = @import("math");
-const COPY = math.ANSWER;
+const COPY: i32 = math.ANSWER;
 
 fn main() -> i32 {
     math.ANSWER + COPY

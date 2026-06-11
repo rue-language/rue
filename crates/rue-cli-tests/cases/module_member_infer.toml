@@ -187,7 +187,7 @@ error_contains = ["E0707", "no member `nope`"]
 [[case]]
 name = "const_int_arithmetic_operand"
 files = [{ path = "main.rue", source = """
-const N = 41;
+const N: i32 = 41;
 fn main() -> i32 { N + 1 }
 """ }]
 exit_code = 42

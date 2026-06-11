@@ -1925,7 +1925,7 @@ impl<'a> Sema<'a> {
             return Ok(AnalysisResult::new(air_ref, ty));
         }
 
-        // Check if it's a value constant (e.g., `const VALUE = -42;`).
+        // Check if it's a value constant (e.g., `const VALUE: i32 = -42;`).
         // Module-typed constants never appear here: module bindings AND
         // aliases (`const m2 = std.math;`) live in `module_bindings`,
         // checked above. The value was evaluated once during declaration

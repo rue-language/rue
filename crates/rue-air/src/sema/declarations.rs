@@ -1124,7 +1124,7 @@ impl<'a> Sema<'a> {
                         p.span,
                     ));
                 }
-                let ty = self.const_type_for_value(value, p.ty_sym, p.init, p.span)?;
+                let ty = self.const_type_for_value(value, p.ty_sym, p.init, p.span, &name_str)?;
                 self.constants.insert(
                     name,
                     ConstInfo {
@@ -1294,7 +1294,7 @@ impl<'a> Sema<'a> {
 
             // Member access: `base.member` where `base` is a module —
             // `const math = std.math;` (alias of a re-export, RUE-160) or
-            // `const X = m.ANSWER;` (a member value constant).
+            // `const X: i32 = m.ANSWER;` (a member value constant).
             InstData::FieldGet { base, field } => {
                 let (base, field) = (*base, *field);
                 match self.eval_const_initializer(base, file_id, st)? {
@@ -1334,7 +1334,8 @@ impl<'a> Sema<'a> {
     /// The engine runs without HM type information here (a file-level const
     /// has no enclosing function), so arithmetic uses the checked-`i64`
     /// fallback semantics; the result is range-checked against the declared
-    /// or inferred type in [`Self::const_type_for_value`].
+    /// type in [`Self::const_type_for_value`] (which also rejects a missing
+    /// annotation, E0475).
     fn eval_const_value_expr(
         &mut self,
         init: InstRef,
@@ -1570,19 +1571,22 @@ impl<'a> Sema<'a> {
     }
 
     /// Determine a value constant's type from its evaluated value and
-    /// optional annotation.
+    /// annotation.
     ///
-    /// Unannotated integer constants infer the smallest fitting type out of
-    /// `i32` -> `i64` -> `u64` (spec 6.5:4), so `const BIG = 5000000000;` is
-    /// an `i64`, not a truncated `i32`. An annotated integer constant adopts
-    /// any integer annotation its value fits in (RUE-161); a value out of
-    /// range of the annotation is rejected at the declaration (E0800).
+    /// A value constant **requires** a type annotation (spec 6.5:4, RUE-179);
+    /// an unannotated one is E0475, with a help suggesting the annotation
+    /// that would have been inferred (smallest of `i32`/`i64`/`u64` for
+    /// integers, `bool`/`()` otherwise). Only module bindings — which never
+    /// take this path — are exempt. An annotated integer constant adopts any
+    /// integer annotation its value fits in (RUE-161); a value out of range
+    /// of the annotation is rejected at the declaration (E0800).
     fn const_type_for_value(
         &mut self,
         value: ConstValue,
         ty_sym: Option<Spur>,
         init: InstRef,
         span: Span,
+        name: &str,
     ) -> CompileResult<Type> {
         use super::comptime_eval::const_int_fits;
 
@@ -1605,7 +1609,23 @@ impl<'a> Sema<'a> {
         };
 
         let Some(ty_sym) = ty_sym else {
-            return Ok(inferred);
+            // Type values are not annotatable (no syntax names them), so a
+            // hypothetical unannotated type-valued constant is not an
+            // annotation error; today they are rejected upstream anyway.
+            if matches!(value, ConstValue::Type(_)) {
+                return Ok(inferred);
+            }
+            return Err(CompileError::new(
+                ErrorKind::ConstMissingTypeAnnotation {
+                    name: name.to_string(),
+                },
+                span,
+            )
+            .with_help(format!(
+                "add a type annotation: `const {}: {} = ...;`",
+                name,
+                inferred.safe_name_with_pool(Some(&self.type_pool))
+            )));
         };
         // The annotation resolves like any signature type (unknown names are
         // E0204) and the value is validated against it.

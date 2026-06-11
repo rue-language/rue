@@ -31,10 +31,10 @@ fn main() -> i32 {
 }
 """
 aux_files = { "left.rue" = """
-pub const LIMIT = 1;
+pub const LIMIT: i32 = 1;
 pub fn go() -> i32 { LIMIT }
 """, "right.rue" = """
-pub const LIMIT = 2;
+pub const LIMIT: i32 = 2;
 pub fn go2() -> i32 { LIMIT }
 """ }
 compile_fail = true

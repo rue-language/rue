@@ -139,6 +139,7 @@ impl ErrorCode {
     pub const CONST_INITIALIZER_CYCLE: Self = Self(461);
     // 462-473 are reserved by in-flight work.
     pub const LINEAR_FIELD_DROPPED_BY_DESTRUCTURE: Self = Self(474);
+    pub const CONST_MISSING_TYPE_ANNOTATION: Self = Self(475);
 
     // ========================================================================
     // Control flow errors (E0500-E0599)
@@ -986,6 +987,11 @@ pub enum ErrorKind {
     /// being defined, so no evaluation order exists.
     #[error("cycle detected in constant initializers: {cycle}")]
     ConstInitializerCycle { cycle: String },
+    /// A value constant declared without a type annotation. Annotations are
+    /// required on value constants (spec 6.5:4, RUE-179); only module
+    /// bindings (`const m = @import(...)` and aliases) are exempt.
+    #[error("missing type annotation on constant '{name}'")]
+    ConstMissingTypeAnnotation { name: String },
 
     // Enum errors
     #[error("duplicate variant '{variant_name}' in enum '{enum_name}'")]
@@ -1233,6 +1239,9 @@ impl ErrorKind {
             ErrorKind::DuplicateConstant { .. } => ErrorCode::DUPLICATE_CONSTANT,
             ErrorKind::ConstExprNotSupported { .. } => ErrorCode::CONST_EXPR_NOT_SUPPORTED,
             ErrorKind::ConstInitializerCycle { .. } => ErrorCode::CONST_INITIALIZER_CYCLE,
+            ErrorKind::ConstMissingTypeAnnotation { .. } => {
+                ErrorCode::CONST_MISSING_TYPE_ANNOTATION
+            }
             ErrorKind::DuplicateVariant { .. } => ErrorCode::DUPLICATE_VARIANT,
             ErrorKind::UnknownVariant { .. } => ErrorCode::UNKNOWN_VARIANT,
             ErrorKind::UnknownEnumType(_) => ErrorCode::UNKNOWN_ENUM_TYPE,

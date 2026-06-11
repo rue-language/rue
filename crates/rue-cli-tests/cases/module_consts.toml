@@ -35,7 +35,7 @@ name = "member_const_in_const_initializer"
 files = [
     { path = "main.rue", source = """
 const math = @import("math");
-const COPY = math.ANSWER;
+const COPY: i32 = math.ANSWER;
 
 fn main() -> i32 {
     COPY + math.ANSWER
@@ -60,7 +60,7 @@ fn main() -> i32 {
 }
 """ },
     { path = "cfg.rue", source = """
-pub const BIG = 5000000000;
+pub const BIG: i64 = 5000000000;
 """ },
 ]
 exit_code = 9
@@ -145,7 +145,7 @@ name = "private_member_const_rejected_in_const_context"
 files = [
     { path = "main.rue", source = """
 const lib = @import("sub/lib");
-const S = lib.SECRET;
+const S: i32 = lib.SECRET;
 
 fn main() -> i32 { S }
 """ },
@@ -201,7 +201,7 @@ name = "unknown_member_still_e0707"
 files = [
     { path = "main.rue", source = """
 const math = @import("math");
-const X = math.NOPE;
+const X: i32 = math.NOPE;
 
 fn main() -> i32 { 0 }
 """ },
