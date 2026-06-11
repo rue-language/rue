@@ -27,11 +27,10 @@ pub fn triple(x: i32) -> i32 {
 ]
 exit_code = 0
 
-# ...but actually CALLING into the imported module fails: the resolved file
-# is never loaded/compiled. "undefined function 'triple'" (RUE-14).
+# Calling into the imported module: the driver discovers @import references
+# and loads the resolved files from disk transitively (RUE-14).
 [[case]]
 name = "import_call_through_local_let"
-known_bug = "RUE-14"
 files = [
     { path = "main.rue", source = """
 fn main() -> i32 {
@@ -49,10 +48,9 @@ pub fn triple(x: i32) -> i32 {
 stdout = "42\n"
 
 # Top-level `const utils = @import("utils")` — the idiomatic form from
-# ADR-0026 — fails outright with "cannot find module" (RUE-14).
+# ADR-0026.
 [[case]]
 name = "import_call_through_top_level_const"
-known_bug = "RUE-14"
 files = [
     { path = "main.rue", source = """
 const utils = @import("utils");
@@ -91,7 +89,6 @@ exit_code = 0
 # Directory module: _utils.rue alongside a utils/ directory (ADR-0026).
 [[case]]
 name = "import_directory_module_call"
-known_bug = "RUE-14"
 files = [
     { path = "main.rue", source = """
 const utils = @import("utils");
@@ -117,7 +114,7 @@ stdout = "42\n"
 # The standard library via a std/ directory adjacent to the source.
 [[case]]
 name = "import_std_adjacent_dir"
-known_bug = "RUE-14"
+known_bug = "RUE-136"
 files = [
     { path = "main.rue", source = """
 const std = @import("std");
@@ -141,7 +138,7 @@ stdout = "5\n"
 # The standard library via RUE_STD_PATH pointing at the repo's real std/.
 [[case]]
 name = "import_std_via_env_var"
-known_bug = "RUE-14"
+known_bug = "RUE-136"
 files = [{ path = "main.rue", source = """
 const std = @import("std");
 
@@ -199,3 +196,52 @@ fn main() -> i32 {
 ]
 args = ["color.rue", "main.rue", "-o", "prog"]
 exit_code = 2
+
+# Transitive discovery: main imports a, a imports b — only main.rue is on
+# the command line; the driver's import scan must load both (RUE-14).
+[[case]]
+name = "import_transitive_chain"
+files = [
+    { path = "main.rue", source = """
+const a = @import("a");
+
+fn main() -> i32 {
+    @dbg(a.double(21));
+    0
+}
+""" },
+    { path = "a.rue", source = """
+const b = @import("b");
+
+pub fn double(x: i32) -> i32 {
+    b.add(x, x)
+}
+""" },
+    { path = "b.rue", source = """
+pub fn add(x: i32, y: i32) -> i32 {
+    x + y
+}
+""" },
+]
+stdout = "42\n"
+
+# Direct member access on a loaded std (no const re-export chain): proves
+# std loading itself works; the re-export chain is RUE-136.
+[[case]]
+name = "import_std_direct_member"
+files = [
+    { path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    @dbg(std.abs(0 - 5));
+    0
+}
+""" },
+    { path = "std/_std.rue", source = """
+pub fn abs(x: i32) -> i32 {
+    if x < 0 { 0 - x } else { x }
+}
+""" },
+]
+stdout = "5\n"

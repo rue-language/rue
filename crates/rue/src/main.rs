@@ -15,7 +15,7 @@ mod timing;
 
 use rue_compiler::{
     CompileOptions, FileId, Lexer, LinkerMode, MultiFileFormatter, OptLevel, ParsedProgram,
-    PreviewFeature, PreviewFeatures, SourceFile, SourceInfo,
+    PreviewFeature, PreviewFeatures, SourceFile, SourceInfo, TokenKind,
     compile_frontend_from_ast_with_options, compile_multi_file_with_options, generate_emitted_asm,
     generate_liveness_info, generate_lowering_info, generate_mir, generate_regalloc_info,
     generate_stack_frame_info, merge_symbols, parse_all_files,
@@ -735,6 +735,115 @@ fn get_peak_memory_bytes() -> Option<u64> {
     }
 }
 
+/// Discover `@import("...")` references in the given sources and load the
+/// referenced module files from disk, transitively, appending them to
+/// `sources` as if the user had listed them on the command line.
+///
+/// Sema resolves import paths only against loaded files (see
+/// `resolve_import_path_for_const`), so this is the step that makes
+/// `@import` work without hand-listing every module (RUE-14).
+///
+/// Imports are found by scanning the token stream (so comments and string
+/// contents are handled correctly) for the `@import ( "<path>" )` shape.
+/// Resolution mirrors sema's `ModulePath` order, probing the filesystem:
+///
+/// - `"std"`: `$RUE_STD_PATH/_std.rue`, then `std/_std.rue` relative to the
+///   importing file, then relative to the first (root) source file
+/// - `"foo.rue"`: exact path relative to the importing file, then the root
+/// - `"foo"` / `"a/b"`: `{path}.rue` then the `_{basename}.rue` facade,
+///   relative to the importing file, then the root
+///
+/// Unresolvable imports are left for sema to report (E0704 with candidate
+/// context); this function only loads what it can find.
+fn discover_and_load_imports(sources: &mut Vec<(String, String)>) {
+    use std::collections::HashSet;
+    use std::path::PathBuf;
+
+    let root_dir = Path::new(&sources[0].0)
+        .parent()
+        .map(PathBuf::from)
+        .unwrap_or_default();
+
+    // Canonical paths of everything already loaded (for dedupe and cycles).
+    let mut loaded: HashSet<PathBuf> = sources
+        .iter()
+        .filter_map(|(p, _)| fs::canonicalize(p).ok())
+        .collect();
+
+    let mut i = 0;
+    while i < sources.len() {
+        let (importer_path, content) = (sources[i].0.clone(), sources[i].1.clone());
+        i += 1;
+
+        let lexer = Lexer::new(&content);
+        let Ok((tokens, interner)) = lexer.tokenize() else {
+            // Lex errors will be reported properly during compilation.
+            continue;
+        };
+
+        for w in tokens.windows(4) {
+            let (
+                TokenKind::AtImport(_),
+                TokenKind::LParen,
+                TokenKind::String(s),
+                TokenKind::RParen,
+            ) = (&w[0].kind, &w[1].kind, &w[2].kind, &w[3].kind)
+            else {
+                continue;
+            };
+            let import_str = interner.resolve(s);
+
+            let importer_dir = Path::new(&importer_path)
+                .parent()
+                .map(PathBuf::from)
+                .unwrap_or_default();
+
+            let mut candidates: Vec<PathBuf> = Vec::new();
+            if import_str == "std" {
+                if let Ok(std_path) = env::var("RUE_STD_PATH") {
+                    candidates.push(Path::new(&std_path).join("_std.rue"));
+                }
+                candidates.push(importer_dir.join("std/_std.rue"));
+                candidates.push(root_dir.join("std/_std.rue"));
+            } else if import_str.ends_with(".rue") {
+                candidates.push(importer_dir.join(import_str));
+                candidates.push(root_dir.join(import_str));
+            } else {
+                let rel = Path::new(import_str);
+                let facade = match rel.parent() {
+                    Some(parent) if parent != Path::new("") => parent.join(format!(
+                        "_{}.rue",
+                        rel.file_name().unwrap_or_default().to_string_lossy()
+                    )),
+                    _ => PathBuf::from(format!("_{}.rue", import_str)),
+                };
+                candidates.push(importer_dir.join(format!("{import_str}.rue")));
+                candidates.push(importer_dir.join(&facade));
+                candidates.push(root_dir.join(format!("{import_str}.rue")));
+                candidates.push(root_dir.join(&facade));
+            }
+
+            for candidate in candidates {
+                let Ok(canonical) = fs::canonicalize(&candidate) else {
+                    continue;
+                };
+                if !canonical.is_file() {
+                    continue;
+                }
+                if loaded.contains(&canonical) {
+                    break; // already loaded (or a cycle) — nothing to do
+                }
+                let Ok(module_content) = fs::read_to_string(&candidate) else {
+                    continue;
+                };
+                loaded.insert(canonical);
+                sources.push((candidate.to_string_lossy().into_owned(), module_content));
+                break; // first match wins, matching ModulePath's order
+            }
+        }
+    }
+}
+
 fn main() {
     let options = match parse_args() {
         Some(opts) => opts,
@@ -751,7 +860,7 @@ fn main() {
     );
 
     // Read all source files into memory
-    let sources: Vec<(String, String)> = options
+    let mut sources: Vec<(String, String)> = options
         .source_paths
         .iter()
         .map(|path| {
@@ -762,6 +871,13 @@ fn main() {
             (path.clone(), content)
         })
         .collect();
+
+    // Discover and load @import-ed modules from disk, transitively. Sema
+    // resolves imports only against already-loaded files, so without this
+    // step `const utils = @import("utils")` fails with E0704 unless the
+    // user hand-lists every module on the command line (RUE-14).
+    discover_and_load_imports(&mut sources);
+    let sources = sources;
 
     // Build SourceFile structs for multi-file compilation
     let source_files: Vec<SourceFile<'_>> = sources

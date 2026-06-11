@@ -91,8 +91,11 @@ impl ModulePath {
     {
         match self {
             ModulePath::Std => {
-                // Standard library not supported yet
-                None
+                // The standard library's entry point is std/_std.rue. The
+                // driver loads it from $RUE_STD_PATH or an adjacent std/
+                // directory (see discover_and_load_imports in the rue crate);
+                // here we just match it among the loaded files.
+                self.resolve_explicit("_std.rue", loaded_paths)
             }
             ModulePath::ExplicitRue { path } => self.resolve_explicit(path, loaded_paths),
             ModulePath::Simple { path } => self.resolve_simple(path, loaded_paths),
