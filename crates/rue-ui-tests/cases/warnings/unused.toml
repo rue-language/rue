@@ -197,6 +197,126 @@ warning_contains = ["unused variable 'x' (line", "line 2)", "line 4)"]
 expected_warning_count = 2
 
 # =============================================================================
+# Place reads mark the base variable as used (RUE-135)
+# =============================================================================
+
+[[case]]
+name = "field_read_in_tail_position_no_warning"
+description = "A tail-position field read uses the base variable (RUE-135)"
+source = """
+struct S { a: i32 }
+
+fn main() -> i32 {
+    let s = S { a: 5 };
+    s.a
+}
+"""
+exit_code = 5
+no_warnings = true
+
+[[case]]
+name = "method_call_on_field_receiver_no_warning"
+description = "A method call on a field receiver uses the base variable (RUE-135)"
+source = """
+struct H { s: String }
+
+fn main() -> i32 {
+    let h = H { s: "hello" };
+    let n = h.s.len();
+    if n == 5 { 5 } else { 0 }
+}
+"""
+exit_code = 5
+no_warnings = true
+
+[[case]]
+name = "field_read_as_call_argument_no_warning"
+description = "Passing a field read as a call argument uses the base variable (RUE-135)"
+source = """
+struct S { a: i32 }
+
+fn g(x: i32) -> i32 { x }
+
+fn main() -> i32 {
+    let s = S { a: 5 };
+    g(s.a)
+}
+"""
+exit_code = 5
+no_warnings = true
+
+[[case]]
+name = "array_index_read_no_warning"
+description = "Indexing an array uses the base variable (RUE-135)"
+source = """
+fn main() -> i32 {
+    let a = [7, 2, 3];
+    a[0]
+}
+"""
+exit_code = 7
+no_warnings = true
+
+[[case]]
+name = "dbg_field_operand_no_warning"
+description = "A field read as a @dbg operand uses the base variable (RUE-135)"
+source = """
+struct S { a: i32 }
+
+fn main() -> i32 {
+    let s = S { a: 5 };
+    @dbg(s.a);
+    0
+}
+"""
+exit_code = 0
+no_warnings = true
+
+[[case]]
+name = "field_write_counts_as_use"
+description = "Writing through a projection (s.a = ...) uses the base variable"
+source = """
+struct S { a: i32 }
+
+fn main() -> i32 {
+    let mut s = S { a: 5 };
+    s.a = 7;
+    0
+}
+"""
+exit_code = 0
+no_warnings = true
+
+[[case]]
+name = "unused_struct_variable_still_warns"
+description = "A struct variable that is never read or projected still warns"
+source = """
+struct S { a: i32 }
+
+fn main() -> i32 {
+    let s = S { a: 5 };
+    0
+}
+"""
+exit_code = 0
+warning_contains = ["unused variable", "'s'"]
+expected_warning_count = 1
+
+[[case]]
+name = "direct_assignment_only_still_warns"
+description = "Assigning directly to a variable (not through a projection) does not count as a use"
+source = """
+fn main() -> i32 {
+    let mut x = 5;
+    x = 6;
+    0
+}
+"""
+exit_code = 0
+warning_contains = ["unused variable", "'x'"]
+expected_warning_count = 1
+
+# =============================================================================
 # Unused Functions
 # =============================================================================
 

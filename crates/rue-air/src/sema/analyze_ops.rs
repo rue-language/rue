@@ -137,7 +137,19 @@ impl<'a> Sema<'a> {
         air: &mut Air,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<Option<PlaceTrace>> {
-        self.try_trace_place_inner(inst_ref, air, ctx)
+        let trace = self.try_trace_place_inner(inst_ref, air, ctx)?;
+        if let Some(trace) = &trace {
+            // Any place access through a projection (field read `s.a`, array
+            // index `a[i]`, method receiver `h.s.len()`, field/index write
+            // `s.a = ...`) uses its root variable. Mark it here, at the single
+            // shared tracing point, so the unused-variable lint doesn't fire
+            // on variables that are only accessed through projections
+            // (RUE-135). Direct assignment to the variable itself (`x = 5`)
+            // does not go through place tracing and intentionally still
+            // counts as unused.
+            ctx.used_locals.insert(trace.root_var);
+        }
+        Ok(trace)
     }
 
     /// Inner implementation that accumulates projections.
