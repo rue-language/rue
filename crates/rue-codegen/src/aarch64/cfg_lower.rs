@@ -1443,49 +1443,12 @@ impl<'a> CfgLower<'a> {
                     let arg_value = arg.value;
                     let arg_type = self.ctx.cfg.get_inst(arg_value).ty;
 
-                    // For by-ref args (inout or borrow), pass address instead of value
+                    // For by-ref args (inout or borrow), pass the address of
+                    // the argument place — a variable, field, or array
+                    // element (RUE-143). Single shared implementation — see
+                    // crate::byref_args.
                     if arg.is_by_ref() {
-                        let arg_data = &self.ctx.cfg.get_inst(arg_value).data;
-                        let addr_vreg = self.mir.alloc_vreg();
-
-                        match arg_data {
-                            CfgInstData::Load { slot } => {
-                                // Emit add to calculate the address of the local variable
-                                // add addr_vreg, fp, #offset
-                                let offset = self.ctx.local_offset(*slot);
-                                self.mir.push(Aarch64Inst::AddImm {
-                                    dst: Operand::Virtual(addr_vreg),
-                                    src: Operand::Physical(Reg::Fp),
-                                    imm: offset,
-                                });
-                            }
-                            CfgInstData::Param { index } => {
-                                // Check if this param is itself a by-ref param (forwarding case)
-                                if self.ctx.cfg.is_param_inout(*index) {
-                                    // For by-ref param, just pass the pointer we received
-                                    // Use ensure_inout_param_ptr in case the param was never accessed via Param instruction
-                                    let ptr_vreg = self.ensure_inout_param_ptr(*index);
-                                    self.mir.push(Aarch64Inst::MovRR {
-                                        dst: Operand::Virtual(addr_vreg),
-                                        src: Operand::Virtual(ptr_vreg),
-                                    });
-                                } else {
-                                    // Normal param: emit add to get its address
-                                    let param_slot = self.ctx.num_locals + *index;
-                                    let offset = self.ctx.local_offset(param_slot);
-                                    self.mir.push(Aarch64Inst::AddImm {
-                                        dst: Operand::Virtual(addr_vreg),
-                                        src: Operand::Physical(Reg::Fp),
-                                        imm: offset,
-                                    });
-                                }
-                            }
-                            _ => {
-                                // For other sources (StructInit, Call result, etc.),
-                                // we can't take an address - this should have been caught earlier
-                                panic!("by-ref argument must be a variable, not {:?}", arg_data);
-                            }
-                        }
+                        let addr_vreg = crate::byref_args::lower_byref_arg_addr(self, arg_value);
                         flattened_vregs.push(addr_vreg);
                         continue;
                     }
@@ -3990,9 +3953,13 @@ impl<'a> CfgLower<'a> {
         total_offset_vreg.expect("compute_index_offset called with empty levels")
     }
 
-    /// Compute the address of a place (for @raw intrinsic).
+    /// Compute the address of a place (for the @raw intrinsic and for by-ref
+    /// call arguments via `crate::byref_args`, RUE-143).
     ///
-    /// This is similar to lower_place_read but returns the address instead of loading.
+    /// This is similar to lower_place_read but returns the address instead of
+    /// loading. Index projections are NOT bounds-checked here (@raw is
+    /// deliberately unchecked); by-ref arguments bounds-check first in
+    /// `byref_args::lower_byref_arg_addr`.
     fn lower_place_addr(&mut self, dst: VReg, place: &Place) {
         let projections = self.ctx.cfg.get_place_projections(place);
 
@@ -4168,6 +4135,26 @@ impl crate::agg_slots::SlotBackend for CfgLower<'_> {
             base: ptr,
             offset: byte_offset,
         });
+    }
+}
+
+impl crate::byref_args::ByrefAddrBackend for CfgLower<'_> {
+    fn ensure_inout_param_ptr(&mut self, param_slot: u32) -> VReg {
+        CfgLower::ensure_inout_param_ptr(self, param_slot)
+    }
+    fn emit_frame_addr(&mut self, dst: VReg, slot: u32) {
+        let offset = self.ctx.local_offset(slot);
+        self.mir.push(Aarch64Inst::AddImm {
+            dst: Operand::Virtual(dst),
+            src: Operand::Physical(Reg::Fp),
+            imm: offset,
+        });
+    }
+    fn emit_bounds_check(&mut self, index_vreg: VReg, length: u64) {
+        CfgLower::emit_bounds_check(self, index_vreg, length)
+    }
+    fn emit_place_addr(&mut self, dst: VReg, place: &Place) {
+        CfgLower::lower_place_addr(self, dst, place)
     }
 }
 

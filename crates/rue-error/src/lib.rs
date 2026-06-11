@@ -126,7 +126,8 @@ impl ErrorCode {
     pub const RESERVED_FUNCTION_NAME: Self = Self(435);
     pub const DUPLICATE_FUNCTION_DEFINITION: Self = Self(436);
     pub const MOVE_OUT_OF_INOUT: Self = Self(437);
-    pub const BY_REF_ARG_NOT_PLAIN_VARIABLE: Self = Self(438);
+    // 438 (BY_REF_ARG_NOT_PLAIN_VARIABLE) is retired: by-ref arguments may
+    // now be field/index projections (RUE-143). Do not reuse the number.
     // 439-441 are reserved by in-flight work; next free code is 444.
     pub const MOVE_SELF_OUT_OF_DESTRUCTOR: Self = Self(442);
     pub const LINEAR_VALUE_NOT_CONSUMED_ON_ALL_PATHS: Self = Self(443);
@@ -1000,10 +1001,6 @@ pub enum ErrorKind {
     /// Argument to borrow parameter is missing `borrow` keyword at call site
     #[error("argument to borrow parameter must use 'borrow' keyword")]
     BorrowKeywordMissing,
-    /// By-ref (inout/borrow) argument is a field or element projection, which
-    /// codegen cannot take the address of yet (RUE-127)
-    #[error("a by-ref argument must be a plain variable; passing a field is not yet supported")]
-    ByRefArgNotPlainVariable,
     /// Cannot move a value out of an inout parameter (would leave the caller's
     /// variable moved-from)
     #[error("cannot move out of inout parameter '{variable}'")]
@@ -1196,7 +1193,6 @@ impl ErrorKind {
             ErrorKind::BorrowInoutConflict { .. } => ErrorCode::BORROW_INOUT_CONFLICT,
             ErrorKind::InoutKeywordMissing => ErrorCode::INOUT_KEYWORD_MISSING,
             ErrorKind::BorrowKeywordMissing => ErrorCode::BORROW_KEYWORD_MISSING,
-            ErrorKind::ByRefArgNotPlainVariable => ErrorCode::BY_REF_ARG_NOT_PLAIN_VARIABLE,
             ErrorKind::MoveOutOfInout { .. } => ErrorCode::MOVE_OUT_OF_INOUT,
             ErrorKind::MoveSelfOutOfDestructor { .. } => ErrorCode::MOVE_SELF_OUT_OF_DESTRUCTOR,
 

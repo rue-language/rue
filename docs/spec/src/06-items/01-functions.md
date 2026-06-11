@@ -68,9 +68,9 @@ An argument to an `inout` parameter **MUST** be an lvalue (a variable, field acc
 {{ rule(id="6.1:18", cat="dynamic-semantics") }}
 
 When a function is called with an `inout` argument:
-1. The address of the argument is passed to the callee
+1. The address of the argument place is passed to the callee. For a field access or array index argument, this is the address of that field or element (an out-of-bounds index causes a runtime panic before the call); for a place rooted at a by-ref parameter of the caller, it is computed from the pointer the caller received
 2. The callee reads and writes to the argument through this address
-3. After the call returns, the original variable holds the updated value
+3. After the call returns, the original place holds the updated value, visible to the caller
 
 {{ rule(id="6.1:19", cat="example") }}
 
@@ -88,7 +88,7 @@ fn main() -> i32 {
 
 {{ rule(id="6.1:20", cat="legality-rule") }}
 
-A single function call **MUST NOT** pass the same variable to multiple `inout` parameters. This prevents aliasing of mutable references within a single call.
+A single function call **MUST NOT** pass the same variable to multiple `inout` parameters. This prevents aliasing of mutable references within a single call. The rule applies to the argument's root variable: two arguments that project different fields or elements of the same variable (such as `o.a` and `o.b`) are likewise rejected.
 
 {{ rule(id="6.1:21", cat="example") }}
 
@@ -122,6 +122,7 @@ The body of a function **MUST NOT** mutate a `borrow` parameter. This includes:
 - Assignment to the parameter itself
 - Assignment to fields of the parameter
 - Assignment to array elements of the parameter
+- Passing the parameter, or any field or element of it, as an `inout` argument
 
 {{ rule(id="6.1:25", cat="legality-rule") }}
 
@@ -130,9 +131,9 @@ The body of a function **MUST NOT** move out of a `borrow` parameter. A borrowed
 {{ rule(id="6.1:26", cat="dynamic-semantics") }}
 
 When a function is called with a `borrow` argument:
-1. The address of the argument is passed to the callee
+1. The address of the argument place is passed to the callee. For a field access or array index argument, this is the address of that field or element (an out-of-bounds index causes a runtime panic before the call); for a place rooted at a by-ref parameter of the caller, it is computed from the pointer the caller received
 2. The callee reads from the argument through this address
-3. After the call returns, the original variable is unchanged and still valid
+3. After the call returns, the original variable is unchanged and still valid; a borrowed place is not moved out of its owner
 
 {{ rule(id="6.1:27", cat="example") }}
 
@@ -169,7 +170,7 @@ fn main() -> i32 {
 
 {{ rule(id="6.1:30", cat="legality-rule") }}
 
-A single function call **MUST NOT** pass the same variable to both a `borrow` parameter and an `inout` parameter. This enforces the law of exclusivity: either one `inout` or any number of `borrow` accesses, but never both simultaneously.
+A single function call **MUST NOT** pass the same variable to both a `borrow` parameter and an `inout` parameter. This enforces the law of exclusivity: either one `inout` or any number of `borrow` accesses, but never both simultaneously. As with rule 6.1:20, the rule applies to the argument's root variable: a `borrow` of one field and an `inout` of another field of the same variable are likewise rejected.
 
 {{ rule(id="6.1:31", cat="example") }}
 

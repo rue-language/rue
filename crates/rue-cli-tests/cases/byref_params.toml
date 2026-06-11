@@ -1,9 +1,20 @@
-# By-ref (inout/borrow) parameter soundness (RUE-127 items 3 and 4).
+# By-ref (inout/borrow) parameter soundness and projection arguments
+# (RUE-127 items 3 and 4; RUE-143).
 #
-# Item 3: passing a struct field or array element as an `inout`/`borrow`
-# argument used to panic codegen ("by-ref argument must be a variable" ICE in
-# cfg_lower). Codegen takes the address of a variable's slot directly and
-# cannot address a projection yet, so sema now rejects these with E0438.
+# Item 3 (superseded by RUE-143): passing a struct field or array element as
+# an `inout`/`borrow` argument used to panic codegen ("by-ref argument must
+# be a variable" ICE in cfg_lower), then was rejected in sema with E0438.
+# RUE-143 implemented place-address formation for by-ref arguments (shared
+# logic in rue-codegen's `byref_args` module), so field and index projections
+# are now accepted: the callee reads/writes the projected place in the
+# caller's frame through its address. E0438 is retired. What remains
+# rejected:
+#   - non-lvalue arguments (call results, literals, ...) — E0425/E0427
+#   - `inout` arguments rooted at a `borrow` parameter (a mutable view of
+#     read-only memory) — E0428
+#   - two by-ref arguments sharing a ROOT variable where at least one is
+#     inout (exclusive access is per root, conservatively: even disjoint
+#     fields conflict) — E0426/E0430
 #
 # Item 4: moving a non-Copy value out of an `inout` parameter (whole variable
 # or a field) compiled but left the CALLER's variable moved-from after the
@@ -14,60 +25,206 @@
 # Field-level moves out of `borrow` parameters are likewise rejected (E0429),
 # matching the existing whole-variable rule.
 #
-# Forwarding an inout parameter to another function's by-ref parameter
-# (`g(inout v)` inside `fn f(inout v: T)`) is a re-borrow, not a move, and
+# Forwarding a by-ref parameter to another function's by-ref parameter
+# (`g(inout v)` inside `fn f(inout v: T)`, and since RUE-143 also
+# `g(borrow v)` inside `fn f(borrow v: T)`) is a re-borrow, not a move, and
 # must keep working.
 
 [section]
 id = "cli.byref_params"
 name = "By-ref parameter soundness"
-description = "Field/element by-ref arguments and moves out of inout parameters (RUE-127)."
+description = "Field/element by-ref arguments and moves out of inout parameters (RUE-127, RUE-143)."
 
 # ---------------------------------------------------------------------------
-# Item 3: by-ref arguments must be plain variables
+# By-ref arguments accept place projections (RUE-143): the callee must see
+# the projected place AND inout writes must land in the caller's variable.
 # ---------------------------------------------------------------------------
 
 [[case]]
-name = "borrow_field_arg_rejected"
-description = "Passing a struct field as a borrow argument errors (E0438) instead of the former cfg_lower ICE."
+name = "borrow_field_arg_reads_place"
+description = "Passing a struct field as a borrow argument reads the field in place (formerly E0438, before that a cfg_lower ICE); the owner stays usable."
 files = [{ path = "main.rue", source = """
 struct Inner { x: i32 }
 struct Outer { f: Inner }
 fn peek(borrow v: Inner) -> i32 { v.x }
-fn main() -> i32 { let o = Outer { f: Inner { x: 7 } }; peek(borrow o.f) }
+fn main() -> i32 {
+    let o = Outer { f: Inner { x: 7 } };
+    let a = peek(borrow o.f);
+    a + peek(borrow o.f) + o.f.x
+}
 """ }]
-compile_fail = true
-error_contains = ["E0438", "by-ref argument must be a plain variable"]
+exit_code = 21
 
 [[case]]
-name = "inout_field_arg_rejected"
-description = "The inout variant of the same shape is rejected too."
+name = "inout_field_arg_writes_back"
+description = "The inout variant: the callee's writes through the field's address are visible in the caller's struct."
 files = [{ path = "main.rue", source = """
 struct Inner { x: i32 }
 struct Outer { f: Inner }
 fn bump(inout v: Inner) { v.x = v.x + 1; }
 fn main() -> i32 {
-    let mut o = Outer { f: Inner { x: 7 } };
+    let mut o = Outer { f: Inner { x: 40 } };
+    bump(inout o.f);
     bump(inout o.f);
     o.f.x
 }
 """ }]
-compile_fail = true
-error_contains = ["E0438", "by-ref argument must be a plain variable"]
+exit_code = 42
 
 [[case]]
-name = "borrow_array_element_arg_rejected"
-description = "Array elements cannot be passed by reference either (same codegen limitation)."
+name = "borrow_array_element_arg_reads_place"
+description = "A non-Copy array element can be borrowed in place (no move out of the array)."
 files = [{ path = "main.rue", source = """
 struct D { x: i32 }
 fn peek(borrow v: D) -> i32 { v.x }
 fn main() -> i32 {
     let a = [D { x: 3 }, D { x: 4 }];
-    peek(borrow a[0])
+    peek(borrow a[0]) + peek(borrow a[1])
+}
+""" }]
+exit_code = 7
+
+[[case]]
+name = "inout_array_element_arg_in_loop"
+description = "Dynamic-index inout element arguments: each loop iteration's bounds check and address point at the right element."
+files = [{ path = "main.rue", source = """
+struct D { x: i32 }
+fn bump(inout v: D) { v.x = v.x + 1; }
+fn main() -> i32 {
+    let mut a = [D { x: 0 }, D { x: 0 }, D { x: 0 }];
+    let mut i = 0;
+    while i < 3 {
+        bump(inout a[i]);
+        bump(inout a[i]);
+        i = i + 1;
+    }
+    a[0].x * 100 + a[1].x * 10 + a[2].x
+}
+""" }]
+exit_code = 222
+
+[[case]]
+name = "inout_array_element_out_of_bounds_traps"
+description = "The address of an out-of-bounds element is never formed: the call site bounds-checks and panics first."
+files = [{ path = "main.rue", source = """
+struct D { x: i32 }
+fn bump(inout v: D) { v.x = v.x + 1; }
+fn main() -> i32 {
+    let mut a = [D { x: 1 }, D { x: 2 }];
+    let i = 5;
+    bump(inout a[i]);
+    a[0].x
+}
+""" }]
+exit_code = 101
+runtime_error_contains = ["index out of bounds"]
+
+[[case]]
+name = "inout_field_through_inout_param"
+description = "A field of an inout parameter can be re-passed inout: the address is computed from the received pointer (descending slot offsets); the write surfaces in main's variable."
+files = [{ path = "main.rue", source = """
+struct Inner { x: i32, y: i32 }
+struct Outer { a: i32, f: Inner }
+fn bump(inout v: Inner) { v.x = v.x + 1; v.y = v.y + 2; }
+fn through(inout o: Outer) { bump(inout o.f); }
+fn main() -> i32 {
+    let mut o = Outer { a: 9, f: Inner { x: 10, y: 20 } };
+    through(inout o);
+    o.f.x + o.f.y + o.a
+}
+""" }]
+exit_code = 42
+
+[[case]]
+name = "borrow_forward_of_borrow_param"
+description = "Re-borrowing a borrow parameter (whole or a field of it) is a sound read-only re-borrow and now compiles (RUE-143)."
+files = [{ path = "main.rue", source = """
+struct Inner { x: i32 }
+struct Outer { f: Inner }
+fn peek(borrow v: Inner) -> i32 { v.x }
+fn whole(borrow v: Inner) -> i32 { peek(borrow v) }
+fn through(borrow o: Outer) -> i32 { peek(borrow o.f) }
+fn main() -> i32 {
+    let o = Outer { f: Inner { x: 21 } };
+    whole(borrow o.f) + through(borrow o)
+}
+""" }]
+exit_code = 42
+
+[[case]]
+name = "inout_arg_rooted_at_borrow_param_rejected"
+description = "An inout argument rooted at a borrow parameter would hand the callee a mutable view of read-only memory (E0428)."
+files = [{ path = "main.rue", source = """
+struct Inner { x: i32 }
+struct Outer { f: Inner }
+fn bump(inout v: Inner) { v.x = v.x + 1; }
+fn evil(borrow o: Outer) { bump(inout o.f); }
+fn main() -> i32 {
+    let o = Outer { f: Inner { x: 1 } };
+    evil(borrow o);
+    o.f.x
 }
 """ }]
 compile_fail = true
-error_contains = ["E0438", "by-ref argument must be a plain variable"]
+error_contains = ["E0428", "cannot mutate borrowed value"]
+
+[[case]]
+name = "byref_arg_non_lvalue_still_rejected"
+description = "A call result still cannot be passed by reference: there is no caller-visible place to point at (E0427)."
+files = [{ path = "main.rue", source = """
+struct D { x: i32 }
+fn mk() -> D { D { x: 1 } }
+fn peek(borrow v: D) -> i32 { v.x }
+fn main() -> i32 { peek(borrow mk()) }
+""" }]
+compile_fail = true
+error_contains = ["E0427", "borrow argument must be a variable"]
+
+[[case]]
+name = "inout_projections_same_root_rejected"
+description = "Exclusive access is per ROOT variable: two inout arguments projecting different fields of the same struct are rejected (E0426)."
+files = [{ path = "main.rue", source = """
+struct O { a: i32, b: i32 }
+fn swap(inout x: i32, inout y: i32) { let t = x; x = y; y = t; }
+fn main() -> i32 {
+    let mut o = O { a: 1, b: 2 };
+    swap(inout o.a, inout o.b);
+    o.a
+}
+""" }]
+compile_fail = true
+error_contains = ["E0426", "same variable 'o' to multiple inout parameters"]
+
+[[case]]
+name = "borrow_inout_projections_same_root_rejected"
+description = "Law of exclusivity by root: borrowing one field while inout-passing another field of the same struct is rejected (E0430)."
+files = [{ path = "main.rue", source = """
+struct O { a: i32, b: i32 }
+fn obs(borrow x: i32, inout y: i32) -> i32 { x + y }
+fn main() -> i32 {
+    let mut o = O { a: 1, b: 2 };
+    obs(borrow o.a, inout o.b)
+}
+""" }]
+compile_fail = true
+error_contains = ["E0430", "cannot borrow 'o' while it is mutably borrowed"]
+
+[[case]]
+name = "borrow_of_moved_field_rejected"
+description = "Borrowing a field whose value was already moved out is a use-after-move (E0205)."
+files = [{ path = "main.rue", source = """
+struct D { x: i32 }
+struct O { f: D }
+fn consume(d: D) -> i32 { d.x }
+fn peek(borrow v: D) -> i32 { v.x }
+fn main() -> i32 {
+    let o = O { f: D { x: 1 } };
+    let a = consume(o.f);
+    a + peek(borrow o.f)
+}
+""" }]
+compile_fail = true
+error_contains = ["E0205", "use of moved value 'o.f'"]
 
 [[case]]
 name = "borrow_whole_variable_still_works"
