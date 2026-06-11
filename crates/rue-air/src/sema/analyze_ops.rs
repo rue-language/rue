@@ -3236,6 +3236,17 @@ impl<'a> Sema<'a> {
             .get(&name)
             .ok_or_compile_error(ErrorKind::UndefinedFunction(fn_name_str.clone()), span)?;
 
+        // Visibility: an unqualified call must not reach a private function
+        // in a module's file from outside that module's directory (E0460,
+        // RUE-37) — otherwise dropping the `module.` qualifier would bypass
+        // the E0706 privacy check on `module.f()`.
+        self.check_unqualified_call_visibility(
+            &fn_name_str,
+            fn_info.file_id,
+            fn_info.is_pub,
+            span,
+        )?;
+
         // Track this function as referenced (for lazy analysis)
         ctx.referenced_functions.insert(name);
 

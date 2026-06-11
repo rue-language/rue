@@ -375,3 +375,130 @@ pub fn abs(x: i32) -> i32 {
 ]
 compile_fail = true
 error_contains = ["E0707", "has no member `abs`"]
+
+# ---------------------------------------------------------------------------
+# Module privacy (RUE-114 + RUE-37).
+#
+# Visibility boundaries are DIRECTORIES (ADR-0026, spec 10.3): a private item
+# is reachable from files in the same directory — including through a module
+# object — and rejected from any other directory, whether the call is
+# qualified (E0706) or unqualified (E0460). Files that are never imported
+# keep the transitional flat namespace (spec 10.3:8 / 10.5:2).
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "private_fn_cross_dir_qualified_rejected"
+description = "Qualified access to a private function of a module in another directory is E0706 (RUE-114)."
+files = [
+    { path = "main.rue", source = """
+const lib = @import("sub/lib.rue");
+
+fn main() -> i32 {
+    lib.secret()
+}
+""" },
+    { path = "sub/lib.rue", source = """
+fn secret() -> i32 {
+    99
+}
+""" },
+]
+compile_fail = true
+error_contains = ["E0706", "function `secret` is private"]
+
+[[case]]
+name = "private_fn_cross_dir_unqualified_rejected"
+description = "Dropping the module qualifier must not bypass privacy: unqualified call to the same private function is E0460 (RUE-37)."
+files = [
+    { path = "main.rue", source = """
+const lib = @import("sub/lib.rue");
+
+fn main() -> i32 {
+    secret()
+}
+""" },
+    { path = "sub/lib.rue", source = """
+fn secret() -> i32 {
+    99
+}
+""" },
+]
+compile_fail = true
+error_contains = ["E0460", "private to module `sub/lib.rue`"]
+
+[[case]]
+name = "private_fn_cross_dir_unqualified_rejected_when_also_listed"
+description = "Privacy is keyed on being imported, not on how the file was loaded: a file both listed on the CLI and imported is still a module (E0460)."
+args = ["main.rue", "sub/lib.rue", "-o", "prog"]
+files = [
+    { path = "main.rue", source = """
+const lib = @import("sub/lib.rue");
+
+fn main() -> i32 {
+    secret()
+}
+""" },
+    { path = "sub/lib.rue", source = """
+fn secret() -> i32 {
+    99
+}
+""" },
+]
+compile_fail = true
+error_contains = ["E0460", "private to module `sub/lib.rue`"]
+
+[[case]]
+name = "private_fn_same_dir_module_access_allowed"
+description = "Control: a private function IS reachable through a module from the same directory (intra-directory visibility, ADR-0026 / spec 10.3:2)."
+files = [
+    { path = "main.rue", source = """
+const lib = @import("lib.rue");
+
+fn main() -> i32 {
+    lib.secret()
+}
+""" },
+    { path = "lib.rue", source = """
+fn secret() -> i32 {
+    99
+}
+""" },
+]
+exit_code = 99
+
+[[case]]
+name = "pub_fn_cross_dir_both_forms_allowed"
+description = "Control: a pub function in another directory is callable qualified and (transitionally) unqualified."
+files = [
+    { path = "main.rue", source = """
+const lib = @import("sub/lib.rue");
+
+fn main() -> i32 {
+    lib.open() + open()
+}
+""" },
+    { path = "sub/lib.rue", source = """
+pub fn open() -> i32 {
+    7
+}
+""" },
+]
+exit_code = 14
+
+[[case]]
+name = "flat_multifile_private_fn_cross_dir_allowed"
+description = "A never-imported file listed explicitly keeps the flat namespace: cross-directory unqualified private call still works (spec 10.3:8)."
+args = ["main.rue", "sub/util.rue", "-o", "prog"]
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    secret()
+}
+""" },
+    { path = "sub/util.rue", source = """
+fn secret() -> i32 {
+    42
+}
+""" },
+]
+exit_code = 42

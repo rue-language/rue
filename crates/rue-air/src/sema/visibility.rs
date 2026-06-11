@@ -55,6 +55,59 @@ impl Sema<'_> {
         }
     }
 
+    /// Check that an *unqualified* call may reach the callee (RUE-37).
+    ///
+    /// All loaded files share one flat global function namespace (spec
+    /// 10.5:2, transitional), so a plain `secret()` call would otherwise
+    /// resolve a private function from any file — bypassing the E0706 check
+    /// that qualified `module.secret()` access gets. The rule (spec 10.3:7):
+    ///
+    /// - If the callee is accessible per [`Sema::is_accessible`] (it is
+    ///   `pub`, or the caller is in the callee's directory), the call is fine.
+    /// - Otherwise, if the callee's file was loaded *as a module* (it is the
+    ///   target of a resolved `@import` in the program), the call is an error
+    ///   (E0460): module privacy must not be escapable by dropping the
+    ///   qualifier.
+    /// - Files that are never imported (only listed explicitly on the
+    ///   command line) keep the flat namespace: no error.
+    ///
+    /// Module-ness is read from the module registry, which is populated for
+    /// top-level `const m = @import(...)` bindings during Phase 2.5, before
+    /// any function body is analyzed. (A file imported *only* by a
+    /// function-local `let m = @import(...)` is registered when that body is
+    /// analyzed, so calls analyzed earlier may not yet see it as a module —
+    /// an accepted gap of the transitional flat namespace.)
+    pub(crate) fn check_unqualified_call_visibility(
+        &self,
+        fn_name: &str,
+        callee_file_id: FileId,
+        is_pub: bool,
+        span: rue_span::Span,
+    ) -> CompileResult<()> {
+        if self.is_accessible(span.file_id, callee_file_id, is_pub) {
+            return Ok(());
+        }
+
+        // Inaccessible — but only enforce if the callee's file is a module.
+        let Some(callee_path) = self.get_file_path(callee_file_id) else {
+            return Ok(());
+        };
+        let Some(import_path) = self.module_registry.import_path_for_file(callee_path) else {
+            return Ok(());
+        };
+
+        Err(CompileError::new(
+            ErrorKind::PrivateUnqualifiedAccess {
+                name: fn_name.to_string(),
+                module_path: import_path,
+            },
+            span,
+        )
+        .with_help(format!(
+            "`{fn_name}` is not marked `pub`; private items are only visible within their own directory"
+        )))
+    }
+
     /// Resolve an enum type through a module reference.
     ///
     /// Used for qualified enum paths like `module.EnumName::Variant` in match patterns.
