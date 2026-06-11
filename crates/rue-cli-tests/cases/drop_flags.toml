@@ -1,0 +1,119 @@
+# Runtime drop flags for branch-divergent moves (RUE-108). A value moved on
+# only SOME paths used to be conservatively dropped at scope exit anyway —
+# a double-drop on the moving path. The exit drop is now guarded by a
+# runtime flag: drop exactly once on every path.
+
+[section]
+id = "cli.drop_flags"
+name = "Runtime drop flags"
+description = "Branch-divergent moves drop exactly once on every path."
+
+[[case]]
+name = "if_branch_move_drops_once_each_path"
+files = [{ path = "main.rue", source = """
+struct D { v: i32 }
+drop fn D(self) { @dbg(self.v); }
+fn consume(d: D) -> i32 { d.v }
+fn run(c: i32) -> i32 {
+    let d = D { v: 7 };
+    if c == 1 { consume(d) } else { 0 }
+}
+fn main() -> i32 {
+    @dbg(100);
+    run(1);
+    @dbg(200);
+    run(0);
+    @dbg(300);
+    0
+}
+""" }]
+stdout = "100\n7\n200\n7\n300\n"
+
+[[case]]
+name = "match_arm_move_drops_once_each_path"
+files = [{ path = "main.rue", source = """
+struct D { v: i32 }
+drop fn D(self) { @dbg(self.v); }
+fn consume(d: D) -> i32 { d.v }
+fn run(c: i32) -> i32 {
+    let d = D { v: 9 };
+    match c {
+        1 => consume(d),
+        _ => 0,
+    }
+}
+fn main() -> i32 {
+    run(1);
+    @dbg(555);
+    run(2);
+    0
+}
+""" }]
+stdout = "9\n555\n9\n"
+
+[[case]]
+name = "loop_break_move_drops_once"
+description = "Conservative loop joins are also corrected at runtime by the flag."
+files = [{ path = "main.rue", source = """
+struct D { v: i32 }
+drop fn D(self) { @dbg(self.v); }
+fn consume(d: D) -> i32 { d.v }
+fn main() -> i32 {
+    let d = D { v: 3 };
+    let mut i = 0;
+    while i < 5 {
+        if i == 2 {
+            consume(d);
+            break;
+        }
+        i = i + 1;
+    }
+    @dbg(777);
+    0
+}
+""" }]
+stdout = "3\n777\n"
+
+[[case]]
+name = "divergent_move_then_reassign_drops_new_value"
+description = "Reassignment after a divergent move re-arms the flag."
+files = [{ path = "main.rue", source = """
+struct D { v: i32 }
+drop fn D(self) { @dbg(self.v); }
+fn consume(d: D) -> i32 { d.v }
+fn run(c: i32) -> i32 {
+    let mut d = D { v: 1 };
+    if c == 1 {
+        consume(d);
+        d = D { v: 2 };
+    }
+    @dbg(50);
+    0
+}
+fn main() -> i32 {
+    run(1);
+    @dbg(60);
+    run(0);
+    0
+}
+""" }]
+stdout = "1\n50\n2\n60\n50\n1\n"
+
+[[case]]
+name = "param_divergent_move_drops_once_each_path"
+description = "Owned by-value params get the same flag treatment."
+files = [{ path = "main.rue", source = """
+struct D { v: i32 }
+drop fn D(self) { @dbg(self.v); }
+fn consume(d: D) -> i32 { d.v }
+fn taker(d: D, c: i32) -> i32 {
+    if c == 1 { consume(d) } else { 0 }
+}
+fn main() -> i32 {
+    taker(D { v: 4 }, 1);
+    @dbg(888);
+    taker(D { v: 5 }, 0);
+    0
+}
+""" }]
+stdout = "4\n888\n5\n"
