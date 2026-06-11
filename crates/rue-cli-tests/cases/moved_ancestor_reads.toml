@@ -1,0 +1,148 @@
+# Copy reads through a moved ancestor path (RUE-127 item 6).
+#
+# `let a = consume(o.f); let b = o.f.x;` used to be accepted: the Copy-field
+# branch of field-get analysis never consulted the move state, so a Copy leaf
+# could be read through a MOVED ancestor. With move-aware drops the moved
+# field's memory is logically dead, so that read is a use-after-free in
+# waiting. The Copy branch now runs the same is_path_moved ancestor check the
+# non-Copy branch always had (in both sema pipelines).
+#
+# Also pinned here: assigning a fresh value to a moved field REINITIALIZES it
+# (the spec 3.8:55 control), and sibling fields stay readable after a partial
+# move.
+
+[section]
+id = "cli.moved_ancestor_reads"
+name = "Copy reads through moved ancestors"
+description = "Reading Copy fields through moved ancestor paths is rejected (RUE-127 item 6)."
+
+[[case]]
+name = "copy_read_through_moved_ancestor_rejected"
+description = "Reading a Copy field of a moved-out field is a use of dead memory."
+files = [{ path = "main.rue", source = """
+struct Inner { x: i32 }
+struct Outer { f: Inner }
+fn consume(i: Inner) -> i32 { i.x }
+fn main() -> i32 {
+    let o = Outer { f: Inner { x: 14 } };
+    let a = consume(o.f);
+    let b = o.f.x;
+    a + b
+}
+""" }]
+compile_fail = true
+error_contains = ["E0205", "use of moved value 'o.f.x'"]
+
+[[case]]
+name = "copy_read_through_deep_moved_ancestor_rejected"
+description = "The check walks every ancestor prefix, not just the direct parent."
+files = [{ path = "main.rue", source = """
+struct Leaf { x: i32 }
+struct Mid { leaf: Leaf }
+struct Top { mid: Mid }
+fn consume(m: Mid) -> i32 { m.leaf.x }
+fn main() -> i32 {
+    let t = Top { mid: Mid { leaf: Leaf { x: 9 } } };
+    let a = consume(t.mid);
+    let b = t.mid.leaf.x;
+    a + b
+}
+""" }]
+compile_fail = true
+error_contains = ["E0205", "use of moved value 't.mid.leaf.x'"]
+
+[[case]]
+name = "sibling_field_after_partial_move_control"
+description = "Control: a partial move of o.a leaves o.b (and its Copy fields) fully usable."
+files = [{ path = "main.rue", source = """
+struct Inner { x: i32 }
+struct Outer { a: Inner, b: Inner }
+fn eat(i: Inner) -> i32 { i.x }
+fn main() -> i32 {
+    let o = Outer { a: Inner { x: 1 }, b: Inner { x: 2 } };
+    let r = eat(o.a);
+    let s = o.b.x;
+    r + s
+}
+""" }]
+exit_code = 3
+
+[[case]]
+name = "reassign_moved_field_then_read_control"
+description = "Control: assigning a fresh value to the moved field reinitializes it (spec 3.8:55)."
+files = [{ path = "main.rue", source = """
+struct Inner { x: i32 }
+struct Outer { f: Inner }
+fn consume(i: Inner) -> i32 { i.x }
+fn main() -> i32 {
+    let mut o = Outer { f: Inner { x: 14 } };
+    let a = consume(o.f);
+    o.f = Inner { x: 5 };
+    let b = o.f.x;
+    a + b
+}
+""" }]
+exit_code = 19
+
+[[case]]
+name = "reassign_moved_field_then_remove_control"
+description = "Control: a reinitialized field can be moved out again (compose with field-granular state)."
+files = [{ path = "main.rue", source = """
+struct Inner { x: i32 }
+struct Outer { f: Inner }
+fn consume(i: Inner) -> i32 { i.x }
+fn main() -> i32 {
+    let mut o = Outer { f: Inner { x: 14 } };
+    let a = consume(o.f);
+    o.f = Inner { x: 5 };
+    let b = consume(o.f);
+    a + b
+}
+""" }]
+exit_code = 19
+
+[[case]]
+name = "copy_read_after_prior_iteration_move_rejected"
+description = "Composes with loop re-move analysis: an ancestor moved on a previous iteration blocks the read."
+files = [{ path = "main.rue", source = """
+struct Inner { x: i32 }
+struct Outer { f: Inner }
+fn consume(i: Inner) -> i32 { i.x }
+fn main() -> i32 {
+    let o = Outer { f: Inner { x: 3 } };
+    let mut i = 0;
+    let mut total = 0;
+    while i < 2 {
+        if i == 1 {
+            total = total + o.f.x;
+        } else {
+            total = total + consume(o.f);
+        }
+        i = i + 1;
+    }
+    total
+}
+""" }]
+compile_fail = true
+error_contains = ["E0205", "use of moved value 'o.f.x'"]
+
+[[case]]
+name = "reassign_in_loop_makes_remove_legal_control"
+description = "Control: reinitializing the field at the end of the body makes the per-iteration move legal."
+files = [{ path = "main.rue", source = """
+struct Inner { x: i32 }
+struct Outer { f: Inner }
+fn consume(i: Inner) -> i32 { i.x }
+fn main() -> i32 {
+    let mut o = Outer { f: Inner { x: 1 } };
+    let mut i = 0;
+    let mut total = 0;
+    while i < 3 {
+        total = total + consume(o.f);
+        o.f = Inner { x: total };
+        i = i + 1;
+    }
+    total
+}
+""" }]
+exit_code = 4
