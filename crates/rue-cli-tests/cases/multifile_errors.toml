@@ -1,0 +1,78 @@
+# Multi-file error attribution (RUE-115).
+#
+# Parse errors produced by the chumsky error-conversion path used to drop the
+# FileId (defaulting to FileId::DEFAULT), so in a multi-file compile the
+# diagnostic renderer fell back to an ARBITRARY source file: the error could be
+# rendered with a caret on perfectly valid code in the wrong file. These cases
+# pin that a parse error in one file is attributed to THAT file regardless of
+# argument order, and that the other (valid) file is never named in stderr.
+
+[section]
+id = "cli.multifile_errors"
+name = "Multi-file error attribution"
+description = "Parse errors must name the file that actually contains them (RUE-115)."
+
+[[case]]
+name = "parse_error_in_second_file"
+description = """
+RUE-115: the E0100 (unexpected token) conversion path lost the FileId. The
+error lives in bad.rue, passed second; stderr must point at bad.rue:1:9 and
+must not mention good.rue at all.
+"""
+files = [
+    { path = "good.rue", source = """
+fn good() -> i32 { 1 }
+""" },
+    { path = "bad.rue", source = """
+fn bad( -> i32 { 2 }
+fn main() -> i32 { 0 }
+""" },
+]
+args = ["good.rue", "bad.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0100", "bad.rue:1:9"]
+compile_stderr_not_contains = ["good.rue"]
+
+[[case]]
+name = "parse_error_in_first_file"
+description = """
+RUE-115, swapped order: before the fix the rendered file depended on hash-map
+iteration order, so the same error could land on either file. With bad.rue
+passed first, stderr must still point at bad.rue and never at good.rue.
+"""
+files = [
+    { path = "good.rue", source = """
+fn good() -> i32 { 1 }
+""" },
+    { path = "bad.rue", source = """
+fn bad( -> i32 { 2 }
+fn main() -> i32 { 0 }
+""" },
+]
+args = ["bad.rue", "good.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0100", "bad.rue:1:9"]
+compile_stderr_not_contains = ["good.rue"]
+
+[[case]]
+name = "missing_semicolon_error_in_second_file"
+description = """
+Control for RUE-115: the E0102 (expected semicolon) path already threaded the
+FileId correctly via the parser state. Pin it so it stays correct.
+"""
+files = [
+    { path = "good.rue", source = """
+fn good() -> i32 { 1 }
+""" },
+    { path = "bad.rue", source = """
+fn other() -> i32 {
+    let s = 1;
+    s s
+}
+fn main() -> i32 { 0 }
+""" },
+]
+args = ["good.rue", "bad.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0102", "bad.rue:3:5"]
+compile_stderr_not_contains = ["good.rue"]
