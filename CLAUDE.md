@@ -31,59 +31,14 @@ Rue is a systems programming language aiming for memory safety without garbage c
 
 ## Build System
 
-This project uses Buck2 (via `./buck2` wrapper script), not Cargo.
-
-### Common Commands
+Buck2 via the `./buck2` wrapper (NOT Cargo). The Quickstart commands above cover
+most work; the long-form invocations they wrap:
 
 ```bash
-# Build the compiler
-./buck2 build //crates/rue:rue
-
-# Build everything
-./buck2 build //...
-
-# Run all tests (unit + spec)
-./test.sh
-
-# Run unit tests only
-./buck2 test //...
-
-# Run spec tests only
-./buck2 run //crates/rue-spec:rue-spec
-
-# Run a specific crate's tests
-./buck2 test //crates/rue-lexer:rue-lexer-test
-
-# Filter spec tests by pattern
-./buck2 run //crates/rue-spec:rue-spec -- "1.1"  # Section 1.1
-./buck2 run //crates/rue-spec:rue-spec -- "zero" # Tests matching "zero"
-
-# Compile and run a program (single file)
-./buck2 run //crates/rue:rue -- source.rue output
-./output
-
-# Compile multiple files into one program
-./buck2 run //crates/rue:rue -- main.rue utils.rue math.rue -o program
-./program
-
-# With shell glob expansion
-./buck2 run //crates/rue:rue -- src/*.rue -o program
-
-# Note: -o is required when compiling multiple files
-./buck2 run //crates/rue:rue -- a.rue b.rue          # Error!
-./buck2 run //crates/rue:rue -- a.rue b.rue -o out   # OK
-
-# Emit intermediate representations (can specify multiple stages)
-./buck2 run //crates/rue:rue -- --emit tokens source.rue  # Lexer tokens
-./buck2 run //crates/rue:rue -- --emit ast source.rue     # Abstract syntax tree
-./buck2 run //crates/rue:rue -- --emit rir source.rue     # Untyped IR
-./buck2 run //crates/rue:rue -- --emit air source.rue     # Typed IR
-./buck2 run //crates/rue:rue -- --emit cfg source.rue     # Control flow graph
-./buck2 run //crates/rue:rue -- --emit mir source.rue     # Machine IR (virtual registers)
-./buck2 run //crates/rue:rue -- --emit asm source.rue     # Assembly (physical registers)
-
-# Chain multiple stages to see the full pipeline
-./buck2 run //crates/rue:rue -- --emit tokens --emit ast --emit rir source.rue
+./buck2 build //crates/rue:rue          # build the compiler
+./buck2 test //...                      # all unit + suite tests (sh_test targets)
+./buck2 run //crates/rue:rue -- a.rue b.rue -o prog   # real CLI (-o required for multi-file)
+./buck2 run //crates/rue:rue -- --emit <stage> src.rue # tokens|ast|rir|air|cfg|mir|asm (repeatable)
 ```
 
 ## Architecture
@@ -166,27 +121,13 @@ listed explicitly and never imported keep the flat namespace above.
 
 ### Built-in Types Architecture
 
-Built-in types (currently just `String`, future `Vec<T>`, etc.) are implemented as "synthetic structs" — the compiler injects them before processing user code. This architecture:
-
-- **Eliminates special-casing**: Built-in types flow through the same code paths as user-defined structs
-- **Centralizes metadata**: All type information (fields, methods, operators) lives in `rue-builtins`
-- **Scales to new types**: Adding `Vec<T>` or `HashMap<K,V>` becomes "add an entry to `BUILTIN_TYPES`"
-
-**Key components:**
-
-| Component | Location | Purpose |
-|-----------|----------|---------|
-| Type definitions | `rue-builtins/src/lib.rs` | `BuiltinTypeDef` constants describing fields, methods, operators |
-| Injection point | `rue-air/src/sema.rs` | `inject_builtin_types()` creates synthetic `StructDef` entries |
-| Runtime functions | `rue-runtime/src/lib.rs` | Actual implementations (e.g., `String__len`, `__rue_drop_String`) |
-
-**Adding a new built-in type:**
-
-1. Define a `BuiltinTypeDef` in `rue-builtins/src/lib.rs`
-2. Add it to the `BUILTIN_TYPES` slice
-3. Implement runtime functions in `rue-runtime`
-
-See the module documentation in `rue-builtins` for a detailed example with hypothetical `Vec` type.
+Built-in types (`String`, future `Vec<T>`) are "synthetic structs" injected
+before user code, so they flow through the same paths as user structs
+(see [ADR-0020](docs/designs/0020-builtin-types-as-structs.md)). To add one:
+define a `BuiltinTypeDef` in `rue-builtins/src/lib.rs`, add it to
+`BUILTIN_TYPES`, implement runtime functions in `rue-runtime`. The module docs
+in `rue-builtins` walk through a full hypothetical `Vec` example. Injection
+point: `inject_builtin_types()` in `rue-air/src/sema.rs`.
 
 ## Testing
 
@@ -233,72 +174,17 @@ Add to relevant crate's source file with `#[cfg(test)]` modules. Ensure crate ha
 
 The `rue-compiler` crate includes integration unit tests that test the full pipeline without execution. Use `compile_to_air()` and `compile_to_cfg()` helpers to test compilation without spawning processes.
 
+
 ### UI Tests
 
-UI tests verify compiler behavior that is **not** part of the language specification, such as:
-- Warning messages (unused variables, unreachable code)
-- Diagnostic quality and formatting
-- Compiler flags and options
-- Error message wording
-
-#### UI Test Directory Structure
-
-UI tests are in `crates/rue-ui-tests/cases/`:
-
-```
-cases/
-├── warnings/         # Warning detection tests
-│   ├── unused.toml   # Unused variable/function warnings
-│   └── unreachable.toml  # Unreachable code warnings
-└── diagnostics/      # Error message quality tests (future)
-```
-
-#### UI Test Format
-
-```toml
-[section]
-id = "warnings.unused"
-name = "Unused Variable Warnings"
-description = "Tests for detection of unused variables."
-
-[[case]]
-name = "unused_variable_warning"
-source = """
-fn main() -> i32 {
-    let x = 42;
-    0
-}
-"""
-exit_code = 0
-warning_contains = ["unused variable", "'x'"]
-expected_warning_count = 1
-
-[[case]]
-name = "no_warnings_expected"
-source = """
-fn main() -> i32 {
-    let x = 42;
-    x
-}
-"""
-exit_code = 42
-no_warnings = true
-```
-
-#### Running UI Tests
+UI tests (`crates/rue-ui-tests/cases/`) verify compiler behavior **not** in the
+spec: warnings, diagnostic quality, flags, message wording. Spec tests carry
+`spec = [...]` traceability references; UI tests don't. Full TOML format
+reference: `crates/rue-ui-tests/README.md`.
 
 ```bash
-# Run all UI tests
-./buck2 run //crates/rue-ui-tests:rue-ui-tests
-
-# Filter by pattern
-./buck2 run //crates/rue-ui-tests:rue-ui-tests -- "unused"
+./buck2 run //crates/rue-ui-tests:rue-ui-tests -- "pattern"
 ```
-
-#### When to Add UI Tests vs Spec Tests
-
-- **Spec tests** (`crates/rue-spec/cases/`): Language semantics defined in the specification. These tests have `spec = [...]` references linking to spec paragraphs.
-- **UI tests** (`crates/rue-ui-tests/cases/`): Compiler quality-of-life features not in the spec (warnings, diagnostics, CLI behavior).
 
 ### CLI Integration Tests
 
@@ -320,245 +206,30 @@ Key conventions (see the doc comment in `crates/rue-cli-tests/src/main.rs` for t
 - `known_bug_on = ["x86-64-linux"]` scopes the xfail to specific platforms (for ABI bugs that manifest differently per target); on other platforms the case runs as a normal test. Platform names match `get_host_target()`: `x86-64-linux`, `aarch64-linux`, `aarch64-macos`
 - Prefer adding a CLI case (not just a spec test) for any bug that involves the driver, the ABI, multiple files, or runtime I/O
 
+
 ### Specification Tests
 
-The specification test system provides traceability between the language specification and tests.
+Spec tests (`crates/rue-spec/cases/`, organized by feature area) link tests to
+spec paragraphs via `spec = ["X.Y:Z"]` (chapter.section:paragraph). The
+traceability check in `./test.sh` enforces 100% coverage of normative
+paragraphs and rejects dangling references. The spec source lives in
+`docs/spec/src/` with `{{ rule(id="X.Y:Z", cat="category") }}` paragraph
+markers; categories `normative`/`legality-rule`/`dynamic-semantics`/`syntax`/
+`undefined-behavior` are normative and need test coverage.
 
-#### Test Directory Structure
-
-Tests are organized in `crates/rue-spec/cases/` by language feature:
-
-```
-cases/
-├── lexical/          # Tokens, comments, whitespace
-├── types/            # Integer, boolean, unit, never types
-├── expressions/      # Literals, operators, control flow
-├── statements/       # Let, assignment, expression statements
-├── items/            # Functions, structs
-├── arrays/           # Fixed-size arrays
-├── runtime/          # Intrinsics, runtime behavior
-├── golden/           # IR dump tests
-└── errors/           # Compile-time error tests
-```
-
-#### Test Format
-
-```toml
-[section]
-id = "expressions.arithmetic"
-spec_chapter = "4.2"           # Links to spec chapter
-name = "Arithmetic Operators"
-
-# Run-pass test with spec traceability
-[[case]]
-name = "addition_basic"
-spec = ["4.2:1", "4.2:2"]      # Spec paragraphs this test covers
-source = "fn main() -> i32 { 1 + 2 }"
-exit_code = 3
-
-# Compile-fail test
-[[case]]
-name = "type_mismatch"
-spec = ["4.2:5"]
-source = "fn main() -> i32 { 1 + true }"
-compile_fail = true
-error_contains = "type mismatch"
-
-# Golden test (exact IR output)
-[[case]]
-name = "simple_add_air"
-spec = ["4.2:1"]
-source = "fn main() -> i32 { 42 }"
-expected_air = """
-function main:
-air (return_type: i32) {
-    %0 : i32 = const 42
-    %1 : i32 = ret %0
-}
-"""
-
-# Preview feature test (allowed to fail)
-[[case]]
-name = "some_preview_feature"
-spec = ["X.Y:Z"]
-preview = "test_infra"           # Requires --preview test_infra
-source = "..."
-exit_code = 0
-
-# Preview feature test (must pass)
-[[case]]
-name = "some_preview_feature_basic"
-spec = ["X.Y:Z"]
-preview = "test_infra"
-preview_should_pass = true       # Fails CI if this test fails
-source = "..."
-exit_code = 0
-```
-
-#### Preview Feature Tests
-
-Tests for preview features use two fields:
-- `preview = "feature_name"` - Marks the test as requiring a preview feature. The test runs with `--preview feature_name` and is allowed to fail (shows as "ignored" in output).
-- `preview_should_pass = true` - When combined with `preview`, makes the test required to pass. Use this for portions of preview features that are already implemented.
-
-**Workflow for preview features:**
-1. Initially, add tests with just `preview = "feature_name"` (allowed to fail)
-2. As you implement parts of the feature, add `preview_should_pass = true` to tests that should now pass
-3. When stabilizing the feature, remove both `preview` and `preview_should_pass` fields
-
-The `preview` field must match a valid `PreviewFeature` variant name. The test runner validates all preview feature names on startup and will fail with a clear error if an unknown feature name is used.
-
-#### Spec Paragraph References
-
-The `spec` field links tests to specification paragraphs using the format `{chapter}.{section}:{paragraph}`:
-- `3.1:1` - Chapter 3, Section 1, Paragraph 1
-- `4.2:5` - Chapter 4, Section 2, Paragraph 5
-
-### Language Specification
-
-The formal language specification is in `docs/spec/src/`. It is integrated into the website via Zola.
-
-#### Building the Spec
-
-The spec is built as part of the website:
+Full format reference (case TOML, golden tests, preview-feature tests, spec
+authoring, traceability reports): `crates/rue-spec/README.md`.
 
 ```bash
-./website/build.sh
-# Output in website/public/spec/
+./buck2 run //crates/rue-spec:rue-spec -- "4.2"             # filter by pattern
+./buck2 run //crates/rue-spec:rue-spec -- --traceability    # coverage report
 ```
-
-#### Spec Structure
-
-```
-docs/spec/src/
-├── _index.md               # Spec root (Zola section)
-├── 01-introduction.md      # Conformance, definitions
-├── 02-lexical-structure/   # Tokens, comments, keywords
-├── 03-types/               # Type system
-├── 04-expressions/         # All expression forms
-├── 05-statements/          # Statement forms
-├── 06-items/               # Functions, structs
-├── 07-arrays/              # Array types
-├── 08-runtime-behavior/    # Overflow, bounds checking
-└── appendices/             # Grammar, UB summary
-```
-
-#### Spec Paragraph Format
-
-Each paragraph has an ID using the Zola shortcode format `{{ rule(id="X.Y:Z", cat="category") }}`:
-
-```markdown
-{{ rule(id="3.1:1", cat="normative") }}
-A signed integer type is one of: `i8`, `i16`, `i32`, or `i64`.
-
-{{ rule(id="3.1:2", cat="normative") }}
-Signed integer arithmetic that overflows causes a runtime panic.
-
-{{ rule(id="3.1:3", cat="example") }}
-```rue
-let x: i32 = 42;
-```
-```
-
-The format is `{{ rule(id="X.Y:Z") }}` or `{{ rule(id="X.Y:Z", cat="category") }}` where:
-- `X.Y` is the chapter and section (e.g., `3.1` for Chapter 3, Section 1)
-- `Z` is the paragraph number within that section
-- The colon (`:`) separates the structural location from the paragraph number
-- `cat` is optional (defaults to `informative` if omitted)
-
-**Paragraph categories:**
-- `normative` - General normative rule (requires test coverage)
-- `legality-rule` - Compile-time requirements (normative)
-- `dynamic-semantics` - Runtime behavior (normative)
-- `syntax` - Grammar rules (normative)
-- `undefined-behavior` - UB conditions (normative)
-- `example` - Code examples (informative)
-- `informative` - Explanatory text (informative, default)
-
-#### Traceability Report
-
-Generate a report showing test coverage of spec paragraphs:
-
-```bash
-# Summary report
-./buck2 run //crates/rue-spec:rue-spec -- --traceability
-
-# Detailed matrix (shows all paragraphs and their covering tests)
-./buck2 run //crates/rue-spec:rue-spec -- --traceability --detailed
-```
-
-The traceability check is run as part of `./test.sh` and fails if:
-- Any spec paragraph has no covering test (coverage < 100%)
-- Any test references a non-existent spec paragraph ID
 
 ### Fuzz Testing
 
-The project has comprehensive fuzz testing infrastructure in `crates/rue-fuzz` that tests the compiler for crashes, panics, and security issues using both mutation-based and property-based fuzzing.
-
-#### Available Fuzz Targets
-
-```bash
-# List all fuzz targets
-./buck2 run //crates/rue-fuzz:rue-fuzz -- --list
-
-# Available targets:
-# - lexer: Tokenization only (~27,000 exec/s)
-# - parser: Lexing + parsing (~6,500 exec/s)
-# - sema: Semantic analysis (~4,000-8,000 exec/s)
-# - compiler: Full frontend (~4,000-8,000 exec/s)
-# - emitter: x86-64 instruction encoding (~15,000 exec/s)
-# - emitter_sequence: Instruction sequences with labels/jumps (~10,000 exec/s)
-```
-
-#### Running Fuzz Tests
-
-```bash
-# Initialize corpus from spec tests
-./buck2 run //crates/rue-fuzz:rue-fuzz -- --init-corpus crates/rue-fuzz/corpus
-
-# Run a fuzz target with mutations
-./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate lexer crates/rue-fuzz/corpus
-
-# Run for a specific duration (300 seconds = 5 minutes)
-./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 parser crates/rue-fuzz/corpus
-
-# Run for a specific number of iterations
-./buck2 run //crates/rue-fuzz:rue-fuzz -- --max-runs=10000 sema crates/rue-fuzz/corpus
-
-# Run all fuzz targets for 5 minutes each
-for target in lexer parser sema compiler emitter emitter_sequence; do
-    ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 $target crates/rue-fuzz/corpus
-done
-```
-
-#### Property-Based Testing
-
-The fuzzer includes proptest-based generators that create syntactically valid Rue programs:
-
-```bash
-# Run proptest-based fuzz tests
-./buck2 test //crates/rue-fuzz:rue-fuzz-test
-```
-
-These generators create valid identifiers, types, expressions, statements, functions, and complete programs. This enables deeper testing than random byte mutation since the inputs exercise semantic analysis and type checking.
-
-#### CI Integration
-
-Fuzzing runs automatically in CI via `.github/workflows/fuzz.yml`. Each target runs for 5 minutes daily. Any crashes trigger a non-zero exit code and create an issue with the `fuzz-crash` label.
-
-#### When a Crash is Found
-
-If fuzzing finds a crash, the input is saved to `crates/rue-fuzz/crashes/`:
-
-```bash
-# Reproduce the crash
-./buck2 run //crates/rue:rue -- crates/rue-fuzz/crashes/crash-*.txt output
-
-# Or just tokenize to see the issue
-./buck2 run //crates/rue:rue -- --emit tokens crates/rue-fuzz/crashes/crash-*.txt
-```
-
-See `crates/rue-fuzz/README.md` for complete documentation.
+Mutation + property-based fuzzing over lexer/parser/sema/compiler/emitter
+targets, run daily in CI (`.github/workflows/fuzz.yml`); crashes land in
+`crates/rue-fuzz/crashes/`. Full documentation: `crates/rue-fuzz/README.md`.
 
 ## Modifying the Language
 
@@ -746,117 +417,14 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 - Standard Rust formatting (rustfmt)
 - Rust edition 2024
 
-## Logging Guidelines
+## Logging
 
-Rue uses the `tracing` crate for structured logging, following the **"wide events"** philosophy from [loggingsucks.com](https://loggingsucks.com/). This means:
-
-1. **Canonical log lines** - One rich, structured log per operation containing all debugging context
-2. **Structured format** - Key-value pairs instead of plain strings for queryability
-3. **High-cardinality data** - Include contextual data like function names, counts, sizes
-
-### Using the Logging
-
-```bash
-# Normal compilation (no logging by default)
-rue source.rue output
-
-# Show timing per pass
-rue --time-passes source.rue output
-
-# Enable debug logging
-rue --log-level=debug source.rue output
-RUST_LOG=debug rue source.rue output
-
-# JSON format for tooling integration
-rue --log-format=json --log-level=debug source.rue output
-
-# Filter to specific module
-RUST_LOG=rue_compiler::sema=trace rue source.rue output
-```
-
-### Adding Instrumentation
-
-Each compilation pass should have a tracing span wrapping the work:
-
-```rust
-use tracing::{info_span, info};
-
-pub fn my_pass(input: &Input) -> Result<Output> {
-    // Create a span for the pass - includes timing automatically
-    let _span = info_span!("my_pass").entered();
-
-    // Do the work...
-    let result = process(input)?;
-
-    // Log completion with useful metrics
-    info!(
-        item_count = result.items.len(),
-        "pass complete"
-    );
-
-    Ok(result)
-}
-```
-
-### Logging Levels
-
-| Level | Use for | Example |
-|-------|---------|---------|
-| `error` | Compilation failures, internal compiler errors | ICE, unrecoverable errors |
-| `warn` | Suspicious patterns (surfaced via diagnostics) | Deprecated feature usage |
-| `info` | Per-pass completion with summary metrics | "lexing complete", token counts |
-| `debug` | Decision points, intermediate state | "resolving symbol X to Y" |
-| `trace` | Detailed internal state, individual instructions | Instruction-by-instruction output |
-
-### Good vs Bad Examples
-
-**Good: Wide event with context**
-```rust
-let _span = info_span!(
-    "codegen",
-    arch = "x86_64",
-    function_count = functions.len()
-).entered();
-
-// ... do code generation ...
-
-info!(
-    code_bytes = total_bytes,
-    "code generation complete"
-);
-```
-
-**Bad: Scattered debug statements**
-```rust
-println!("Starting codegen...");
-for func in functions {
-    println!("Generating function: {:?}", func.name);
-    // ...
-}
-println!("Done!");
-```
-
-**Good: Structured key-value data**
-```rust
-info!(
-    token_count = tokens.len(),
-    source_bytes = source.len(),
-    "lexing complete"
-);
-```
-
-**Bad: String interpolation**
-```rust
-println!("Lexed {} tokens from {} bytes", tokens.len(), source.len());
-```
-
-### Key Principles
-
-1. **Spans for timing**: Wrap passes in `info_span!()` - this enables `--time-passes`
-2. **Events for outcomes**: Use `info!()` after completing work with metrics
-3. **Context in spans**: Include high-level context (file, function count) in span fields
-4. **Metrics in events**: Include computed metrics (instruction counts, sizes) in events
-5. **Zero-cost when off**: Tracing has no overhead when no subscriber is active
+Rue uses `tracing` with a "wide events" philosophy: one `info_span!()` per
+compilation pass (this powers `--time-passes`), one structured `info!()` event
+with metrics on completion, key-value fields over interpolated strings, and
+zero cost when no subscriber is active. `--log-level=debug`,
+`--log-format=json`, and `RUST_LOG` module filters are supported.
+Full guidelines and examples: `docs/process/logging.md`.
 
 ## Issue Tracking with Linear
 
