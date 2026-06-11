@@ -99,6 +99,7 @@ impl<'a> GatherOutput<'a> {
             param_arena: self.param_arena,
             anon_struct_method_sigs: HashMap::new(),
             anon_struct_captured_values: HashMap::new(),
+            destructor_spans: HashMap::new(),
         }
     }
 }

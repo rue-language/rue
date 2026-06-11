@@ -1,0 +1,176 @@
+# Moving a field out of a value whose type has a user-defined destructor is
+# a compile error (RUE-158, the spirit of Rust's E0509).
+#
+# The destructor always runs on the WHOLE value when it is dropped: it would
+# observe the moved-out field (a use-after-free for heap fields), and the
+# automatic field cleanup after the destructor would drop the field a second
+# time. Before the fix, `drop fn Outer(self) { take(self.f) }` printed the
+# field's destructor output twice (the field glue re-dropped the moved
+# field), and moving a field out of a dtor-having local let the destructor
+# read the moved-out field at scope exit.
+#
+# Whole-value moves and `borrow`/`inout` access of fields (RUE-143) remain
+# legal, as do field moves out of structs WITHOUT their own destructor even
+# when the field's type has one (the RUE-62 shape, see drop_moves.toml).
+
+[section]
+id = "cli.destructor_field_move"
+name = "Cannot move a field out of a value with a destructor"
+description = "Field moves out of destructor-having values are rejected at compile time (RUE-158)."
+
+[[case]]
+name = "destructor_moves_own_field_rejected"
+description = "RUE-158 facet 1: a destructor that moves a field out of `self` is rejected (the automatic field glue would re-drop the moved field; this printed 7, 7, 7 before the fix)."
+files = [{ path = "main.rue", source = """
+struct Inner { v: i32 }
+
+drop fn Inner(self) {
+    @dbg(self.v);
+}
+
+struct Outer { f: Inner }
+
+fn take(i: Inner) -> i32 {
+    i.v
+}
+
+drop fn Outer(self) {
+    @dbg(take(self.f));
+}
+
+fn main() -> i32 {
+    let _o = Outer { f: Inner { v: 7 } };
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0456", "cannot move field `f` out of a value of type 'Outer'"]
+
+[[case]]
+name = "field_move_out_of_destructor_type_rejected"
+description = "RUE-158 facet 2: moving a field out of any value whose type has a `drop fn` is rejected (the destructor would observe the moved-out field at scope exit; this printed 800, 7, 100, 7 before the fix)."
+files = [{ path = "main.rue", source = """
+struct Inner { v: i32 }
+
+drop fn Inner(self) {
+    @dbg(self.v);
+}
+
+struct Outer { f: Inner }
+
+drop fn Outer(self) {
+    @dbg(self.f.v);
+}
+
+fn eat(i: Inner) -> i32 {
+    @dbg(800);
+    0
+}
+
+fn main() -> i32 {
+    let o = Outer { f: Inner { v: 7 } };
+    eat(o.f);
+    @dbg(100);
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0456", "cannot move field `f` out of a value of type 'Outer'", "destructor"]
+
+[[case]]
+name = "deep_field_move_through_destructor_type_rejected"
+description = "A deep move (`t.a.b`) is rejected when ANY enclosing value's type has a destructor — here the intermediate Mid, even though the root Top has none."
+files = [{ path = "main.rue", source = """
+struct Inner { v: i32 }
+
+drop fn Inner(self) {
+    @dbg(self.v);
+}
+
+struct Mid { b: Inner }
+
+drop fn Mid(self) {
+    @dbg(800);
+}
+
+struct Top { a: Mid }
+
+fn eat(i: Inner) -> i32 {
+    i.v
+}
+
+fn main() -> i32 {
+    let t = Top { a: Mid { b: Inner { v: 7 } } };
+    eat(t.a.b);
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0456", "cannot move field `b` out of a value of type 'Mid'"]
+
+[[case]]
+name = "borrow_and_inout_field_of_destructor_type_stay_legal"
+description = "Control: borrow/inout access to a field of a destructor-having value is not a move and stays legal; the whole value still drops exactly once, in order."
+files = [{ path = "main.rue", source = """
+struct Inner { v: i32 }
+
+drop fn Inner(self) {
+    @dbg(self.v);
+}
+
+struct Outer { f: Inner }
+
+drop fn Outer(self) {
+    @dbg(800);
+}
+
+fn peek(borrow i: Inner) -> i32 {
+    i.v
+}
+
+fn bump(inout i: Inner) -> i32 {
+    i.v = i.v + 1;
+    0
+}
+
+fn main() -> i32 {
+    let mut o = Outer { f: Inner { v: 7 } };
+    @dbg(peek(borrow o.f));
+    bump(inout o.f);
+    @dbg(100);
+    0
+}
+""" }]
+stdout = "7\n100\n800\n8\n"
+exit_code = 0
+
+[[case]]
+name = "whole_value_move_of_destructor_type_stays_legal"
+description = "Control: moving the WHOLE value (not a field) of a destructor-having type stays legal; the destructor runs once, at the destination."
+files = [{ path = "main.rue", source = """
+struct Inner { v: i32 }
+
+drop fn Inner(self) {
+    @dbg(self.v);
+}
+
+struct Outer { f: Inner }
+
+drop fn Outer(self) {
+    @dbg(800);
+}
+
+fn eat(o: Outer) -> i32 {
+    @dbg(900);
+    0
+}
+
+fn main() -> i32 {
+    let o = Outer { f: Inner { v: 7 } };
+    eat(o);
+    @dbg(100);
+    0
+}
+""" }]
+stdout = "900\n800\n7\n100\n"
+exit_code = 0

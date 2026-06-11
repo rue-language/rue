@@ -1,0 +1,74 @@
+# A `@copy` type cannot have a user-defined destructor (RUE-159, the spirit
+# of Rust's E0184).
+#
+# Copies of a `@copy` value are implicit and untracked, so each copy would
+# run the destructor again — double cleanup of the same logical resource.
+# Before the fix, `@copy struct P` + `drop fn P` compiled and ran the
+# destructor once per copy (the repro printed the field twice).
+#
+# The linear+@copy conflict is already rejected (E0407); this mirrors it for
+# destructors. The diagnostic points at both the `@copy` attribute and the
+# `drop fn`.
+
+[section]
+id = "cli.copy_destructor"
+name = "@copy types cannot have destructors"
+description = "Declaring a `drop fn` for a `@copy` struct is rejected at compile time (RUE-159)."
+
+[[case]]
+name = "copy_struct_with_destructor_rejected"
+description = "RUE-159 original repro: `@copy struct P` + `drop fn P` used to compile and run the destructor once per copy (printed 5 twice)."
+files = [{ path = "main.rue", source = """
+@copy
+struct P { x: i32 }
+
+drop fn P(self) {
+    @dbg(self.x);
+}
+
+fn main() -> i32 {
+    let p = P { x: 5 };
+    let _q = p;
+    @dbg(100);
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0457", "cannot define a destructor for 'P'", "@copy"]
+
+[[case]]
+name = "drop_fn_before_copy_struct_decl_rejected"
+description = "Declaration order does not matter: a `drop fn` appearing before the `@copy` struct declaration is rejected the same way."
+files = [{ path = "main.rue", source = """
+drop fn P(self) {
+    @dbg(self.x);
+}
+
+@copy
+struct P { x: i32 }
+
+fn main() -> i32 {
+    let _p = P { x: 5 };
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0457", "cannot define a destructor for 'P'"]
+
+[[case]]
+name = "copy_struct_without_destructor_copies_freely"
+description = "Control: a `@copy` struct without a destructor is duplicated implicitly with no drops at all."
+files = [{ path = "main.rue", source = """
+@copy
+struct P { x: i32 }
+
+fn main() -> i32 {
+    let p = P { x: 5 };
+    let q = p;
+    @dbg(p.x);
+    @dbg(q.x);
+    0
+}
+""" }]
+stdout = "5\n5\n"
+exit_code = 0
