@@ -7,6 +7,10 @@
 //! 2. For each unique (func_name, type_args) combination, creating a specialized function
 //! 3. Rewriting `CallGeneric` to `Call` with the specialized function name
 //!
+//! Specialized bodies can contain further `CallGeneric` instructions (a generic
+//! function forwarding its type parameter to another generic), so these steps
+//! repeat until no new specializations are discovered.
+//!
 //! # Architecture
 //!
 //! The specialization pass runs after semantic analysis but before CFG building.
@@ -41,63 +45,101 @@ struct SpecializationInfo {
     call_site_span: Span,
 }
 
+/// Maximum number of specialization rounds before giving up.
+///
+/// Each round creates the bodies for the specializations discovered in the
+/// previous round, so this bounds the nesting depth of generic-to-generic
+/// calls. Unbounded growth is possible when a generic function instantiates
+/// itself with an ever-growing type (e.g. `f(Pair(T), ...)` inside `f`).
+const MAX_SPECIALIZATION_ROUNDS: usize = 64;
+
 /// Perform the specialization pass on the sema output.
 ///
 /// This collects all `CallGeneric` instructions, creates specialized functions,
 /// and rewrites calls to point to the specialized versions.
+///
+/// Specialized function bodies can themselves contain `CallGeneric` instructions
+/// (a generic function forwarding its type parameter to another generic call),
+/// so the pass iterates to a fixpoint: each round scans the functions created in
+/// the previous round for new specialization requests (RUE-102).
 pub fn specialize(
     output: &mut SemaOutput,
     sema: &mut Sema<'_>,
     infer_ctx: &InferenceContext,
     interner: &ThreadedRodeo,
 ) -> CompileResult<()> {
-    // Phase 1: Collect all specialization requests
+    // All specializations ever requested, used to deduplicate across rounds.
     let mut specializations: HashMap<SpecializationKey, SpecializationInfo> = HashMap::new();
+    // Index of the first function not yet scanned for CallGeneric instructions.
+    let mut next_unscanned = 0;
+    let mut rounds = 0;
 
-    for func in &output.functions {
-        collect_specializations(&func.air, interner, &mut specializations);
+    loop {
+        // Phase 1: Collect specialization requests from not-yet-scanned functions
+        let mut pending: Vec<SpecializationKey> = Vec::new();
+        for func in &output.functions[next_unscanned..] {
+            collect_specializations(&func.air, interner, &mut specializations, &mut pending);
+        }
+
+        // Phase 2: Rewrite CallGeneric to Call in the newly scanned functions
+        // (previously scanned functions have no CallGeneric left)
+        for func in &mut output.functions[next_unscanned..] {
+            rewrite_call_generic(&mut func.air, &specializations);
+        }
+        next_unscanned = output.functions.len();
+
+        if pending.is_empty() {
+            return Ok(());
+        }
+
+        rounds += 1;
+        if rounds > MAX_SPECIALIZATION_ROUNDS {
+            let key = &pending[0];
+            return Err(CompileError::new(
+                ErrorKind::ComptimeEvaluationFailed {
+                    reason: format!(
+                        "generic specialization of '{}' exceeded the maximum nesting depth ({}); \
+                         is a generic function recursively instantiating itself with new types?",
+                        interner.resolve(&key.base_name),
+                        MAX_SPECIALIZATION_ROUNDS
+                    ),
+                },
+                specializations[key].call_site_span,
+            ));
+        }
+
+        // Phase 3: Create specialized function bodies by re-analyzing with type
+        // substitution. These new functions are scanned in the next round.
+        for key in &pending {
+            let info = &specializations[key];
+            let base_info = match sema.functions.get(&key.base_name) {
+                Some(info) => info.clone(),
+                None => {
+                    let func_name = interner.resolve(&key.base_name);
+                    return Err(CompileError::new(
+                        ErrorKind::UndefinedFunction(func_name.to_string()),
+                        info.call_site_span,
+                    ));
+                }
+            };
+            let specialized_func = create_specialized_function(
+                sema,
+                infer_ctx,
+                key,
+                info.mangled_name,
+                &base_info,
+                interner,
+            )?;
+            output.functions.push(specialized_func);
+        }
     }
-
-    if specializations.is_empty() {
-        // No generic calls, nothing to do
-        return Ok(());
-    }
-
-    // Phase 2: Rewrite CallGeneric to Call in all functions
-    for func in &mut output.functions {
-        rewrite_call_generic(&mut func.air, &specializations);
-    }
-
-    // Phase 3: Create specialized function bodies by re-analyzing with type substitution
-    for (key, info) in &specializations {
-        let base_info = match sema.functions.get(&key.base_name) {
-            Some(info) => info.clone(),
-            None => {
-                let func_name = interner.resolve(&key.base_name);
-                return Err(CompileError::new(
-                    ErrorKind::UndefinedFunction(func_name.to_string()),
-                    info.call_site_span,
-                ));
-            }
-        };
-        let specialized_func = create_specialized_function(
-            sema,
-            infer_ctx,
-            key,
-            info.mangled_name,
-            &base_info,
-            interner,
-        )?;
-        output.functions.push(specialized_func);
-    }
-
-    Ok(())
 }
 
 fn collect_specializations(
     air: &Air,
     interner: &ThreadedRodeo,
     specializations: &mut HashMap<SpecializationKey, SpecializationInfo>,
+    pending: &mut Vec<SpecializationKey>,
 ) {
     for inst in air.instructions() {
         if let AirInstData::CallGeneric {
@@ -122,6 +164,7 @@ fn collect_specializations(
                 let base_name = interner.resolve(name);
                 let mangled = mangle_specialized_name(base_name, &entry.key().type_args);
                 let mangled_sym = interner.get_or_intern(&mangled);
+                pending.push(entry.key().clone());
                 entry.insert(SpecializationInfo {
                     mangled_name: mangled_sym,
                     call_site_span: inst.span,
@@ -180,9 +223,28 @@ fn mangle_specialized_name(base_name: &str, type_args: &[Type]) -> String {
     let mut mangled = base_name.to_string();
     for ty in type_args {
         mangled.push_str("__");
-        mangled.push_str(ty.name());
+        mangled.push_str(&mangle_type(*ty));
     }
     mangled
+}
+
+/// Mangle a single type argument into a unique string.
+///
+/// Scalar types use their source-level name. Aggregate types must encode their
+/// identity (the struct/enum/array/pointer ID): `Type::name()` returns a generic
+/// placeholder like `"<struct>"` for them, which made every struct instantiation
+/// of a generic function collide on a single specialized symbol (RUE-100).
+fn mangle_type(ty: Type) -> String {
+    use crate::types::TypeKind;
+    match ty.kind() {
+        TypeKind::Struct(id) => format!("struct{}", id.0),
+        TypeKind::Enum(id) => format!("enum{}", id.0),
+        TypeKind::Array(id) => format!("array{}", id.0),
+        TypeKind::PtrConst(id) => format!("ptr_const{}", id.0),
+        TypeKind::PtrMut(id) => format!("ptr_mut{}", id.0),
+        TypeKind::Module(id) => format!("module{}", id.0),
+        _ => ty.name().to_string(),
+    }
 }
 
 /// Create a specialized function by re-analyzing the body with type substitution.

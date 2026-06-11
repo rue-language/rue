@@ -1,0 +1,192 @@
+# Comptime generic function calls: argument type checking, specialization
+# symbol mangling, and type-parameter forwarding (RUE-109 epic).
+#
+# Generic calls used to bypass argument type checking entirely (RUE-73,
+# RUE-101): an i64 silently truncated into T=i32, a struct A was accepted
+# where T=B and the callee read B-shaped fields out of an A-sized allocation
+# (RUE-99, an out-of-bounds read). All struct/enum type arguments also mangled
+# to the same specialized symbol (RUE-100), and forwarding a comptime type
+# parameter to a nested generic call ICEd in the CFG builder (RUE-102).
+
+[section]
+id = "cli.generics"
+name = "Comptime generic calls"
+description = "Argument type checking, symbol mangling, and forwarding for comptime generics."
+
+# =============================================================================
+# Argument type checking (RUE-73, RUE-101)
+# =============================================================================
+
+[[case]]
+name = "generic_arg_i64_into_i32_rejected"
+description = "Passing an i64 where T = i32 is a type error, not a silent truncation (RUE-73)."
+files = [{ path = "main.rue", source = """
+fn identity(comptime T: type, x: T) -> T {
+    x
+}
+fn main() -> i32 {
+    let big: i64 = 4294967296;
+    let t = identity(i32, big);
+    if t == 0 { 1 } else { 2 }
+}
+""" }]
+compile_fail = true
+error_contains = ["type mismatch"]
+
+[[case]]
+name = "generic_arg_bool_into_i32_rejected"
+description = "Passing a bool where T = i32 is a type error (RUE-101)."
+files = [{ path = "main.rue", source = """
+fn identity(comptime T: type, x: T) -> T {
+    x
+}
+fn main() -> i32 {
+    identity(i32, true)
+}
+""" }]
+compile_fail = true
+error_contains = ["type mismatch"]
+
+[[case]]
+name = "generic_arg_negative_into_u32_rejected"
+description = "A negative literal where T = u32 is rejected instead of wrapping (RUE-101)."
+files = [{ path = "main.rue", source = """
+fn identity(comptime T: type, x: T) -> T {
+    x
+}
+fn main() -> i32 {
+    let r = identity(u32, -1);
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["cannot apply unary operator"]
+
+[[case]]
+name = "generic_arg_literal_ranged_against_t"
+description = "Integer literal arguments are range-checked against T, not against i32 (RUE-101)."
+files = [{ path = "main.rue", source = """
+fn identity(comptime T: type, x: T) -> T {
+    x
+}
+fn main() -> i32 {
+    let big = identity(i64, 4294967296);
+    if big == 4294967296 { 42 } else { 1 }
+}
+""" }]
+exit_code = 42
+
+# =============================================================================
+# Aggregate argument type checking (RUE-99: was an out-of-bounds read)
+# =============================================================================
+
+[[case]]
+name = "generic_arg_wrong_struct_rejected"
+description = "Passing struct A where T = B is a type error; previously the callee read B-sized fields from an A-sized allocation (RUE-99)."
+files = [{ path = "main.rue", source = """
+struct A { x: i32 }
+struct B { x: i32, y: i32, z: i32 }
+
+fn get_z(comptime T: type, v: T) -> i32 {
+    v.z
+}
+
+fn main() -> i32 {
+    let a = A { x: 7 };
+    get_z(B, a)
+}
+""" }]
+compile_fail = true
+error_contains = ["type mismatch"]
+
+# =============================================================================
+# Specialization symbol mangling (RUE-100)
+# =============================================================================
+
+[[case]]
+name = "generic_two_struct_instantiations_link"
+description = "Two struct instantiations of one generic produce distinct symbols; this used to fail to link with 'duplicate symbol' (RUE-100)."
+files = [{ path = "main.rue", source = """
+struct A { x: i32 }
+struct B { y: i32 }
+
+fn one(comptime T: type, v: T) -> i32 {
+    1
+}
+
+fn main() -> i32 {
+    let a = A { x: 7 };
+    let b = B { y: 9 };
+    one(A, a) + one(B, b)
+}
+""" }]
+exit_code = 2
+
+[[case]]
+name = "generic_two_struct_instantiations_distinct_bodies"
+description = "Each struct instantiation gets its own specialized body reading its own layout (RUE-100: they silently shared one body when the link happened to succeed)."
+files = [{ path = "main.rue", source = """
+struct Pair { x: i32, y: i32 }
+struct Triple { x: i32, y: i32, z: i32 }
+
+fn pick(comptime T: type, v: T, second: bool) -> i32 {
+    if second { v.y } else { v.x }
+}
+
+fn main() -> i32 {
+    let p = Pair { x: 2, y: 4 };
+    let t = Triple { x: 10, y: 30, z: 50 };
+    pick(Pair, p, false) + pick(Triple, t, true)
+}
+""" }]
+exit_code = 32
+
+# =============================================================================
+# Type parameter forwarding to nested generic calls (RUE-102)
+# =============================================================================
+
+[[case]]
+name = "generic_forwarding_t_return"
+description = "Forwarding T to a nested generic call whose return type is T; used to fail with a spurious type mismatch (RUE-102)."
+files = [{ path = "main.rue", source = """
+fn inner(comptime T: type, x: T) -> T { x }
+fn outer(comptime T: type, x: T) -> T {
+    inner(T, x)
+}
+fn main() -> i32 {
+    outer(i32, 42)
+}
+""" }]
+exit_code = 42
+
+[[case]]
+name = "generic_forwarding_concrete_return"
+description = "Forwarding T to a nested generic call with a concrete return type; used to ICE in the CFG builder because specialization did not iterate (RUE-102)."
+files = [{ path = "main.rue", source = """
+fn inner(comptime T: type, x: T) -> i32 { 1 }
+fn outer(comptime T: type, x: T) -> i32 {
+    inner(T, x)
+}
+fn main() -> i32 {
+    if outer(i32, 41) == 1 { 42 } else { 0 }
+}
+""" }]
+exit_code = 42
+
+[[case]]
+name = "generic_forwarding_multiple_types"
+description = "Forwarding T through a relay for two different instantiations, with values exercising the full 64-bit width (RUE-102)."
+files = [{ path = "main.rue", source = """
+fn pick(comptime T: type, a: T, b: T, first: bool) -> T {
+    if first { a } else { b }
+}
+fn relay(comptime T: type, a: T, b: T) -> T {
+    pick(T, a, b, false)
+}
+fn main() -> i32 {
+    let x = relay(i32, 1, 40);
+    let y: i64 = relay(i64, 2, 9000000000);
+    if y == 9000000000 { x + 2 } else { 0 }
+}
+""" }]
+exit_code = 42
