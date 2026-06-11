@@ -1559,6 +1559,7 @@ fn run_type_inference_with_context(
 
     // Phase 2: Solve constraints via unification
     let mut unifier = Unifier::with_capacity(type_var_count);
+    unifier.mark_int_literal_vars(&int_literal_vars);
     let errors = unifier.solve_constraints(&constraints);
 
     // Convert unification errors to compile errors
@@ -1566,8 +1567,8 @@ fn run_type_inference_with_context(
         let error_kind = match &err.kind {
             UnifyResult::Ok => unreachable!("UnificationError should never contain Ok"),
             UnifyResult::TypeMismatch { expected, found } => ErrorKind::TypeMismatch {
-                expected: expected.to_string(),
-                found: found.to_string(),
+                expected: expected.name_with_pool(&ctx.type_pool),
+                found: found.name_with_pool(&ctx.type_pool),
             },
             UnifyResult::IntLiteralNonInteger { found } => ErrorKind::TypeMismatch {
                 expected: "integer type".to_string(),
@@ -1663,7 +1664,7 @@ fn analyze_inst_with_context(
                 return Err(CompileError::new(
                     ErrorKind::LiteralOutOfRange {
                         value: *value,
-                        ty: ty.name().to_string(),
+                        ty: ty.safe_name_with_pool(Some(&ctx.type_pool)),
                     },
                     inst.span,
                 ));
@@ -1908,7 +1909,7 @@ fn analyze_inst_with_context(
             // Check if trying to negate an unsigned type.
             if ty.is_unsigned() {
                 return Err(CompileError::new(
-                    ErrorKind::CannotNegateUnsigned(ty.name().to_string()),
+                    ErrorKind::CannotNegateUnsigned(ty.safe_name_with_pool(Some(&ctx.type_pool))),
                     inst.span,
                 )
                 .with_note("unsigned values cannot be negated"));
@@ -1967,7 +1968,7 @@ fn analyze_inst_with_context(
                 return Err(CompileError::new(
                     ErrorKind::TypeMismatch {
                         expected: "integer type".to_string(),
-                        found: ty.name().to_string(),
+                        found: ty.safe_name_with_pool(Some(&ctx.type_pool)),
                     },
                     inst.span,
                 ));
@@ -2292,7 +2293,7 @@ fn analyze_inst_with_context(
                         return Err(CompileError::new(
                             ErrorKind::LiteralOutOfRange {
                                 value: unsigned_value,
-                                ty: ty.name().to_string(),
+                                ty: ty.safe_name_with_pool(Some(&ctx.type_pool)),
                             },
                             inst.span,
                         ));
@@ -2541,8 +2542,10 @@ fn analyze_return_ctx(
         {
             return Err(CompileError::new(
                 ErrorKind::TypeMismatch {
-                    expected: analysis_ctx.return_type.name().to_string(),
-                    found: inner_ty.name().to_string(),
+                    expected: analysis_ctx
+                        .return_type
+                        .safe_name_with_pool(Some(&ctx.type_pool)),
+                    found: inner_ty.safe_name_with_pool(Some(&ctx.type_pool)),
                 },
                 span,
             ));
@@ -2553,7 +2556,9 @@ fn analyze_return_ctx(
         if analysis_ctx.return_type != Type::UNIT && !analysis_ctx.return_type.is_error() {
             return Err(CompileError::new(
                 ErrorKind::TypeMismatch {
-                    expected: analysis_ctx.return_type.name().to_string(),
+                    expected: analysis_ctx
+                        .return_type
+                        .safe_name_with_pool(Some(&ctx.type_pool)),
                     found: "()".to_string(),
                 },
                 span,
@@ -3041,13 +3046,17 @@ fn analyze_alloc_ctx(
                 .unwrap_or_else(|| "unknown".to_string());
             return Err(CompileError::new(
                 ErrorKind::TypeMismatch {
-                    expected: ty.name().to_string(),
-                    found: init_result.ty.name().to_string(),
+                    expected: ty.safe_name_with_pool(Some(&ctx.type_pool)),
+                    found: init_result.ty.safe_name_with_pool(Some(&ctx.type_pool)),
                 },
                 span,
             )
             .with_label(
-                format!("type annotation '{}' resolved to {}", type_name, ty.name()),
+                format!(
+                    "type annotation '{}' resolved to {}",
+                    type_name,
+                    ty.safe_name_with_pool(Some(&ctx.type_pool))
+                ),
                 span,
             ));
         }
@@ -3168,7 +3177,7 @@ fn analyze_assign_ctx(
                     "consider making parameter `{}` inout: `inout {}: {}`",
                     name_str,
                     name_str,
-                    param_info.ty.name()
+                    param_info.ty.safe_name_with_pool(Some(&ctx.type_pool))
                 )));
             }
             RirParamMode::Inout => {
@@ -3299,12 +3308,18 @@ fn analyze_branch_ctx(
                 if then_type != else_type && !then_type.is_error() && !else_type.is_error() {
                     return Err(CompileError::new(
                         ErrorKind::TypeMismatch {
-                            expected: then_type.name().to_string(),
-                            found: else_type.name().to_string(),
+                            expected: then_type.safe_name_with_pool(Some(&ctx.type_pool)),
+                            found: else_type.safe_name_with_pool(Some(&ctx.type_pool)),
                         },
                         else_span,
                     )
-                    .with_label(format!("this is of type `{}`", then_type.name()), then_span)
+                    .with_label(
+                        format!(
+                            "this is of type `{}`",
+                            then_type.safe_name_with_pool(Some(&ctx.type_pool))
+                        ),
+                        then_span,
+                    )
                     .with_note("if and else branches must have compatible types"));
                 }
                 then_type
@@ -3338,7 +3353,7 @@ fn analyze_branch_ctx(
             return Err(CompileError::new(
                 ErrorKind::TypeMismatch {
                     expected: "()".to_string(),
-                    found: then_type.name().to_string(),
+                    found: then_type.safe_name_with_pool(Some(&ctx.type_pool)),
                 },
                 ctx.rir.get(then_block).span,
             )
@@ -3507,7 +3522,7 @@ fn analyze_match_ctx(
     // Validate that we can match on this type (integers, booleans, and enums)
     if !scrutinee_type.is_integer() && scrutinee_type != Type::BOOL && !scrutinee_type.is_enum() {
         return Err(CompileError::new(
-            ErrorKind::InvalidMatchType(scrutinee_type.name().to_string()),
+            ErrorKind::InvalidMatchType(scrutinee_type.safe_name_with_pool(Some(&ctx.type_pool))),
             span,
         ));
     }
@@ -3570,7 +3585,7 @@ fn analyze_match_ctx(
                 if !scrutinee_type.is_integer() {
                     return Err(CompileError::new(
                         ErrorKind::TypeMismatch {
-                            expected: scrutinee_type.name().to_string(),
+                            expected: scrutinee_type.safe_name_with_pool(Some(&ctx.type_pool)),
                             found: "integer".to_string(),
                         },
                         pattern_span,
@@ -3598,7 +3613,7 @@ fn analyze_match_ctx(
                 if scrutinee_type != Type::BOOL {
                     return Err(CompileError::new(
                         ErrorKind::TypeMismatch {
-                            expected: scrutinee_type.name().to_string(),
+                            expected: scrutinee_type.safe_name_with_pool(Some(&ctx.type_pool)),
                             found: "bool".to_string(),
                         },
                         pattern_span,
@@ -3648,7 +3663,7 @@ fn analyze_match_ctx(
                 if scrutinee_type != Type::new_enum(enum_id) {
                     return Err(CompileError::new(
                         ErrorKind::TypeMismatch {
-                            expected: scrutinee_type.name().to_string(),
+                            expected: scrutinee_type.safe_name_with_pool(Some(&ctx.type_pool)),
                             found: enum_def.name.clone(),
                         },
                         pattern_span,
@@ -3711,8 +3726,8 @@ fn analyze_match_ctx(
                 } else if prev != body_type && !prev.is_error() && !body_type.is_error() {
                     return Err(CompileError::new(
                         ErrorKind::TypeMismatch {
-                            expected: prev.name().to_string(),
-                            found: body_type.name().to_string(),
+                            expected: prev.safe_name_with_pool(Some(&ctx.type_pool)),
+                            found: body_type.safe_name_with_pool(Some(&ctx.type_pool)),
                         },
                         ctx.rir.get(*body).span,
                     ));
@@ -3783,7 +3798,22 @@ fn analyze_match_ctx(
     };
 
     if !is_exhaustive {
-        return Err(CompileError::new(ErrorKind::NonExhaustiveMatch, span));
+        // Name what's missing: the enum definition is in scope here, so list
+        // the uncovered variants instead of just "not exhaustive" (RUE-133).
+        let enum_def = pattern_enum_id
+            .or_else(|| match scrutinee_type.try_kind() {
+                Some(crate::types::TypeKind::Enum(id)) => Some(id),
+                _ => None,
+            })
+            .map(|id| ctx.get_enum_def(id));
+        return Err(non_exhaustive_match_error(
+            span,
+            scrutinee_type,
+            enum_def.as_ref(),
+            |i| covered_variants.contains(&i),
+            bool_true_covered,
+            bool_false_covered,
+        ));
     }
 
     let final_type = result_type.unwrap_or(Type::UNIT);
@@ -3836,7 +3866,7 @@ fn analyze_struct_init_ctx(
                 return Err(CompileError::new(
                     ErrorKind::TypeMismatch {
                         expected: "struct type".to_string(),
-                        found: ty.name().to_string(),
+                        found: ty.safe_name_with_pool(Some(&ctx.type_pool)),
                     },
                     span,
                 ));
@@ -4022,7 +4052,7 @@ fn analyze_inst_for_projection_ctx(
                 _ => {
                     return Err(CompileError::new(
                         ErrorKind::FieldAccessOnNonStruct {
-                            found: base_type.name().to_string(),
+                            found: base_type.safe_name_with_pool(Some(&ctx.type_pool)),
                         },
                         inst.span,
                     ));
@@ -4070,7 +4100,7 @@ fn analyze_inst_for_projection_ctx(
                 _ => {
                     return Err(CompileError::new(
                         ErrorKind::IndexOnNonArray {
-                            found: base_type.name().to_string(),
+                            found: base_type.safe_name_with_pool(Some(&ctx.type_pool)),
                         },
                         inst.span,
                     ));
@@ -4173,7 +4203,7 @@ fn analyze_field_get_ctx(
         _ => {
             return Err(CompileError::new(
                 ErrorKind::FieldAccessOnNonStruct {
-                    found: base_type.name().to_string(),
+                    found: base_type.safe_name_with_pool(Some(&ctx.type_pool)),
                 },
                 span,
             ));
@@ -4426,7 +4456,7 @@ fn analyze_field_set_ctx(
                         "consider making parameter `{}` inout: `inout {}: {}`",
                         var_name,
                         var_name,
-                        root_type.name()
+                        root_type.safe_name_with_pool(Some(&ctx.type_pool))
                     )));
                 }
                 RirParamMode::Inout => {
@@ -4453,7 +4483,7 @@ fn analyze_field_set_ctx(
             _ => {
                 return Err(CompileError::new(
                     ErrorKind::FieldAccessOnNonStruct {
-                        found: current_type.name().to_string(),
+                        found: current_type.safe_name_with_pool(Some(&ctx.type_pool)),
                     },
                     span,
                 ));
@@ -4482,7 +4512,7 @@ fn analyze_field_set_ctx(
         _ => {
             return Err(CompileError::new(
                 ErrorKind::FieldAccessOnNonStruct {
-                    found: current_type.name().to_string(),
+                    found: current_type.safe_name_with_pool(Some(&ctx.type_pool)),
                 },
                 span,
             ));
@@ -4557,7 +4587,7 @@ fn analyze_array_init_ctx(
             return Err(CompileError::new(
                 ErrorKind::InternalError(format!(
                     "Array literal inferred as non-array type: {}",
-                    array_type.name()
+                    array_type.safe_name_with_pool(Some(&ctx.type_pool))
                 )),
                 span,
             ));
@@ -4639,7 +4669,7 @@ fn analyze_index_get_ctx(
         _ => {
             return Err(CompileError::new(
                 ErrorKind::IndexOnNonArray {
-                    found: base_type.name().to_string(),
+                    found: base_type.safe_name_with_pool(Some(&ctx.type_pool)),
                 },
                 span,
             ));
@@ -4663,7 +4693,7 @@ fn analyze_index_get_ctx(
     if !ctx.is_type_copy(elem_type) {
         return Err(CompileError::new(
             ErrorKind::MoveOutOfIndex {
-                element_type: elem_type.name().to_string(),
+                element_type: elem_type.safe_name_with_pool(Some(&ctx.type_pool)),
             },
             span,
         )
@@ -4805,7 +4835,7 @@ fn analyze_index_set_ctx(
                     "consider making parameter `{}` inout: `inout {}: {}`",
                     var_name,
                     var_name,
-                    base_type.name()
+                    base_type.safe_name_with_pool(Some(&ctx.type_pool))
                 )));
             }
             (true, abi_slot)
@@ -4821,7 +4851,7 @@ fn analyze_index_set_ctx(
         _ => {
             return Err(CompileError::new(
                 ErrorKind::IndexOnNonArray {
-                    found: base_type.name().to_string(),
+                    found: base_type.safe_name_with_pool(Some(&ctx.type_pool)),
                 },
                 span,
             ));
@@ -5174,6 +5204,48 @@ pub(crate) fn move_out_of_inout_error(name: &str, span: Span) -> CompileError {
     )
 }
 
+/// Build the diagnostic for a non-exhaustive `match` (E0600), naming exactly
+/// what is missing (RUE-133).
+///
+/// - enum scrutinee: lists the uncovered variants ("missing variants: Blue, Green")
+/// - bool scrutinee: names the uncovered literal pattern(s)
+/// - integer scrutinee: suggests the required wildcard arm
+pub(crate) fn non_exhaustive_match_error(
+    span: Span,
+    scrutinee_type: Type,
+    enum_def: Option<&crate::types::EnumDef>,
+    variant_covered: impl Fn(u32) -> bool,
+    bool_true_covered: bool,
+    bool_false_covered: bool,
+) -> CompileError {
+    let err = CompileError::new(ErrorKind::NonExhaustiveMatch, span);
+    if scrutinee_type == Type::BOOL {
+        let missing = match (bool_true_covered, bool_false_covered) {
+            (false, false) => "patterns `true` and `false` are",
+            (false, true) => "pattern `true` is",
+            (true, false) => "pattern `false` is",
+            // Both covered means the match was exhaustive; we only get here
+            // because callers check exhaustiveness first.
+            (true, true) => return err,
+        };
+        err.with_help(format!("{missing} not covered"))
+    } else if let Some(def) = enum_def {
+        let missing: Vec<&str> = def
+            .variants
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !variant_covered(*i as u32))
+            .map(|(_, v)| v.as_str())
+            .collect();
+        if missing.is_empty() {
+            return err;
+        }
+        err.with_help(format!("missing variants: {}", missing.join(", ")))
+    } else {
+        err.with_help("integer matches must include a wildcard arm: `_ => ...`")
+    }
+}
+
 /// Validate that a by-ref (`inout`/`borrow`) call argument is a plain variable
 /// and return its symbol.
 ///
@@ -5276,7 +5348,7 @@ fn analyze_method_call_ctx(
             return Err(CompileError::new(
                 ErrorKind::MethodCallOnNonStruct {
                     method_name: method_name.to_string(),
-                    found: receiver_type.name().to_string(),
+                    found: receiver_type.safe_name_with_pool(Some(&ctx.type_pool)),
                 },
                 span,
             ));
@@ -5876,7 +5948,7 @@ fn analyze_intrinsic_ctx(
                 ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
                     name: "dbg".to_string(),
                     expected: "integer, bool, or String".to_string(),
-                    found: arg_type.name().to_string(),
+                    found: arg_type.safe_name_with_pool(Some(&ctx.type_pool)),
                 })),
                 span,
             ));
@@ -5917,7 +5989,7 @@ fn analyze_intrinsic_ctx(
                 ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
                     name: "cast".to_string(),
                     expected: "integer type".to_string(),
-                    found: source_type.name().to_string(),
+                    found: source_type.safe_name_with_pool(Some(&ctx.type_pool)),
                 })),
                 span,
             ));
@@ -5927,7 +5999,7 @@ fn analyze_intrinsic_ctx(
                 ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
                     name: "cast".to_string(),
                     expected: "integer target type".to_string(),
-                    found: target_type.name().to_string(),
+                    found: target_type.safe_name_with_pool(Some(&ctx.type_pool)),
                 })),
                 span,
             ));
@@ -6148,7 +6220,7 @@ fn analyze_intrinsic_ctx(
                     ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
                         name: "ptr_read".to_string(),
                         expected: "ptr const T or ptr mut T".to_string(),
-                        found: ptr_type.name().to_string(),
+                        found: ptr_type.safe_name_with_pool(Some(&ctx.type_pool)),
                     })),
                     span,
                 ));
@@ -6192,7 +6264,7 @@ fn analyze_intrinsic_ctx(
                     ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
                         name: "ptr_write".to_string(),
                         expected: "ptr mut T (cannot write through ptr const)".to_string(),
-                        found: ptr_type.name().to_string(),
+                        found: ptr_type.safe_name_with_pool(Some(&ctx.type_pool)),
                     })),
                     span,
                 ));
@@ -6202,7 +6274,7 @@ fn analyze_intrinsic_ctx(
                     ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
                         name: "ptr_write".to_string(),
                         expected: "ptr mut T".to_string(),
-                        found: ptr_type.name().to_string(),
+                        found: ptr_type.safe_name_with_pool(Some(&ctx.type_pool)),
                     })),
                     span,
                 ));
@@ -6213,8 +6285,8 @@ fn analyze_intrinsic_ctx(
         if value_type != pointee_type && !value_type.is_error() && !value_type.is_never() {
             return Err(CompileError::new(
                 ErrorKind::TypeMismatch {
-                    expected: pointee_type.name().to_string(),
-                    found: value_type.name().to_string(),
+                    expected: pointee_type.safe_name_with_pool(Some(&ctx.type_pool)),
+                    found: value_type.safe_name_with_pool(Some(&ctx.type_pool)),
                 },
                 span,
             ));
@@ -6256,7 +6328,7 @@ fn analyze_intrinsic_ctx(
                 ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
                     name: "ptr_offset".to_string(),
                     expected: "ptr const T or ptr mut T".to_string(),
-                    found: ptr_type.name().to_string(),
+                    found: ptr_type.safe_name_with_pool(Some(&ctx.type_pool)),
                 })),
                 span,
             ));
@@ -6268,7 +6340,7 @@ fn analyze_intrinsic_ctx(
                 ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
                     name: "ptr_offset".to_string(),
                     expected: "integer offset".to_string(),
-                    found: offset_type.name().to_string(),
+                    found: offset_type.safe_name_with_pool(Some(&ctx.type_pool)),
                 })),
                 span,
             ));
@@ -6308,7 +6380,7 @@ fn analyze_intrinsic_ctx(
                 ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
                     name: "ptr_to_int".to_string(),
                     expected: "ptr const T or ptr mut T".to_string(),
-                    found: ptr_type.name().to_string(),
+                    found: ptr_type.safe_name_with_pool(Some(&ctx.type_pool)),
                 })),
                 span,
             ));
@@ -6347,7 +6419,7 @@ fn analyze_intrinsic_ctx(
                 ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
                     name: "int_to_ptr".to_string(),
                     expected: "u64".to_string(),
-                    found: addr_type.name().to_string(),
+                    found: addr_type.safe_name_with_pool(Some(&ctx.type_pool)),
                 })),
                 span,
             ));
@@ -6363,7 +6435,7 @@ fn analyze_intrinsic_ctx(
                 ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
                     name: "int_to_ptr".to_string(),
                     expected: "ptr mut T".to_string(),
-                    found: result_type.name().to_string(),
+                    found: result_type.safe_name_with_pool(Some(&ctx.type_pool)),
                 })),
                 span,
             ));
@@ -6444,7 +6516,7 @@ fn analyze_intrinsic_ctx(
                     ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
                         name: "syscall".to_string(),
                         expected: format!("u64 for argument {}", i),
-                        found: arg_type.name().to_string(),
+                        found: arg_type.safe_name_with_pool(Some(&ctx.type_pool)),
                     })),
                     span,
                 ));
@@ -6624,7 +6696,6 @@ impl<'a> Sema<'a> {
     /// # Returns
     /// A CompileError with properly formatted type names
     #[inline]
-    #[allow(dead_code)] // TODO: Use this helper throughout the codebase
     pub(crate) fn type_mismatch_error(
         &self,
         expected: Type,
@@ -7129,6 +7200,7 @@ impl<'a> Sema<'a> {
         // Phase 2: Solve constraints via unification
         // Pre-size the substitution for better performance on large functions
         let mut unifier = Unifier::with_capacity(type_var_count);
+        unifier.mark_int_literal_vars(&int_literal_vars);
         let errors = unifier.solve_constraints(&constraints);
 
         // Convert unification errors to compile errors
@@ -7139,27 +7211,27 @@ impl<'a> Sema<'a> {
             let error_kind = match &err.kind {
                 UnifyResult::Ok => unreachable!("UnificationError should never contain Ok"),
                 UnifyResult::TypeMismatch { expected, found } => ErrorKind::TypeMismatch {
-                    expected: expected.to_string(),
-                    found: found.to_string(),
+                    expected: expected.name_with_pool(&self.type_pool),
+                    found: found.name_with_pool(&self.type_pool),
                 },
                 UnifyResult::IntLiteralNonInteger { found } => ErrorKind::TypeMismatch {
                     expected: "integer type".to_string(),
-                    found: found.name().to_string(),
+                    found: found.safe_name_with_pool(Some(&self.type_pool)),
                 },
                 UnifyResult::OccursCheck { var, ty } => ErrorKind::TypeMismatch {
                     expected: "non-recursive type".to_string(),
                     found: format!("{var} = {ty} (infinite type)"),
                 },
                 UnifyResult::NotSigned { ty } => {
-                    ErrorKind::CannotNegateUnsigned(ty.name().to_string())
+                    ErrorKind::CannotNegateUnsigned(ty.safe_name_with_pool(Some(&self.type_pool)))
                 }
                 UnifyResult::NotInteger { ty } => ErrorKind::TypeMismatch {
                     expected: "integer type".to_string(),
-                    found: ty.name().to_string(),
+                    found: ty.safe_name_with_pool(Some(&self.type_pool)),
                 },
                 UnifyResult::NotUnsigned { ty } => ErrorKind::TypeMismatch {
                     expected: "unsigned integer type".to_string(),
-                    found: ty.name().to_string(),
+                    found: ty.safe_name_with_pool(Some(&self.type_pool)),
                 },
                 UnifyResult::ArrayLengthMismatch { expected, found } => {
                     ErrorKind::ArrayLengthMismatch {
@@ -7294,7 +7366,7 @@ impl<'a> Sema<'a> {
                 _ => {
                     return Err(CompileError::new(
                         ErrorKind::FieldAccessOnNonStruct {
-                            found: base_type.name().to_string(),
+                            found: base_type.safe_name_with_pool(Some(&self.type_pool)),
                         },
                         inst.span,
                     ));
@@ -7340,7 +7412,7 @@ impl<'a> Sema<'a> {
                 _ => {
                     return Err(CompileError::new(
                         ErrorKind::IndexOnNonArray {
-                            found: base_type.name().to_string(),
+                            found: base_type.safe_name_with_pool(Some(&self.type_pool)),
                         },
                         inst.span,
                     ));
@@ -7355,7 +7427,7 @@ impl<'a> Sema<'a> {
                 return Err(CompileError::new(
                     ErrorKind::TypeMismatch {
                         expected: "unsigned integer type".to_string(),
-                        found: index_result.ty.name().to_string(),
+                        found: index_result.ty.safe_name_with_pool(Some(&self.type_pool)),
                     },
                     self.rir.get(*index).span,
                 ));
@@ -7594,7 +7666,7 @@ impl<'a> Sema<'a> {
                             return Err(CompileError::new(
                                 ErrorKind::LiteralOutOfRange {
                                     value: unsigned_value,
-                                    ty: ty.name().to_string(),
+                                    ty: ty.safe_name_with_pool(Some(&self.type_pool)),
                                 },
                                 inst.span,
                             ));
@@ -7781,7 +7853,7 @@ impl<'a> Sema<'a> {
                             "consider making parameter `{}` inout: `inout {}: {}`",
                             root_name,
                             root_name,
-                            root_type.name()
+                            root_type.safe_name_with_pool(Some(&self.type_pool))
                         )));
                     }
                     AirPlaceBase::Local(_) => {
@@ -7800,7 +7872,7 @@ impl<'a> Sema<'a> {
                 None => {
                     return Err(CompileError::new(
                         ErrorKind::FieldAccessOnNonStruct {
-                            found: base_type.name().to_string(),
+                            found: base_type.safe_name_with_pool(Some(&self.type_pool)),
                         },
                         span,
                     ));
@@ -7902,7 +7974,7 @@ impl<'a> Sema<'a> {
                             "consider making parameter `{}` inout: `inout {}: {}`",
                             root_name,
                             root_name,
-                            root_type.name()
+                            root_type.safe_name_with_pool(Some(&self.type_pool))
                         )));
                     }
                     AirPlaceBase::Local(_) => {
@@ -7924,7 +7996,7 @@ impl<'a> Sema<'a> {
                 None => {
                     return Err(CompileError::new(
                         ErrorKind::IndexOnNonArray {
-                            found: base_type.name().to_string(),
+                            found: base_type.safe_name_with_pool(Some(&self.type_pool)),
                         },
                         span,
                     ));
@@ -7937,7 +8009,7 @@ impl<'a> Sema<'a> {
                 return Err(CompileError::new(
                     ErrorKind::TypeMismatch {
                         expected: "unsigned integer type".to_string(),
-                        found: index_result.ty.name().to_string(),
+                        found: index_result.ty.safe_name_with_pool(Some(&self.type_pool)),
                     },
                     self.rir.get(index).span,
                 ));
@@ -8027,7 +8099,7 @@ impl<'a> Sema<'a> {
             _ => {
                 return Err(CompileError::new(
                     ErrorKind::MethodCallOnNonStruct {
-                        found: receiver_type.name().to_string(),
+                        found: receiver_type.safe_name_with_pool(Some(&self.type_pool)),
                         method_name: method_name_str,
                     },
                     span,
@@ -8260,7 +8332,7 @@ impl<'a> Sema<'a> {
                     return Err(CompileError::new(
                         ErrorKind::TypeMismatch {
                             expected: "struct type".to_string(),
-                            found: ty.name().to_string(),
+                            found: ty.safe_name_with_pool(Some(&self.type_pool)),
                         },
                         span,
                     ));
@@ -8473,7 +8545,7 @@ impl<'a> Sema<'a> {
                 ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
                     name: "dbg".to_string(),
                     expected: "integer, bool, or String".to_string(),
-                    found: arg_type.name().to_string(),
+                    found: arg_type.safe_name_with_pool(Some(&self.type_pool)),
                 })),
                 span,
             ));
@@ -8523,7 +8595,7 @@ impl<'a> Sema<'a> {
                 ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
                     name: "cast".to_string(),
                     expected: "integer type".to_string(),
-                    found: source_type.name().to_string(),
+                    found: source_type.safe_name_with_pool(Some(&self.type_pool)),
                 })),
                 span,
             ));
@@ -8533,7 +8605,7 @@ impl<'a> Sema<'a> {
                 ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
                     name: "cast".to_string(),
                     expected: "integer target type".to_string(),
-                    found: target_type.name().to_string(),
+                    found: target_type.safe_name_with_pool(Some(&self.type_pool)),
                 })),
                 span,
             ));
@@ -8675,7 +8747,7 @@ impl<'a> Sema<'a> {
                 ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
                     name: intrinsic_name.to_string(),
                     expected: "integer".to_string(),
-                    found: from_ty.name().to_string(),
+                    found: from_ty.safe_name_with_pool(Some(&self.type_pool)),
                 })),
                 span,
             ));
@@ -8693,7 +8765,7 @@ impl<'a> Sema<'a> {
                     ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
                         name: intrinsic_name.to_string(),
                         expected: "integer".to_string(),
-                        found: ty.name().to_string(),
+                        found: ty.safe_name_with_pool(Some(&self.type_pool)),
                     })),
                     span,
                 ));
@@ -8820,7 +8892,7 @@ impl<'a> Sema<'a> {
                 ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
                     name: format!("@{}", intrinsic_name_str),
                     expected: "String".to_string(),
-                    found: arg_type.name().to_string(),
+                    found: arg_type.safe_name_with_pool(Some(&self.type_pool)),
                 })),
                 span,
             ));
@@ -9169,7 +9241,7 @@ impl<'a> Sema<'a> {
             return Err(CompileError::new(
                 ErrorKind::TypeMismatch {
                     expected: "integer type".to_string(),
-                    found: lhs_result.ty.name().to_string(),
+                    found: lhs_result.ty.safe_name_with_pool(Some(&self.type_pool)),
                 },
                 span,
             ));
@@ -9239,7 +9311,7 @@ impl<'a> Sema<'a> {
                 return Err(CompileError::new(
                     ErrorKind::TypeMismatch {
                         expected: "integer, bool, string, unit, or struct".to_string(),
-                        found: lhs_type.name().to_string(),
+                        found: lhs_type.safe_name_with_pool(Some(&self.type_pool)),
                     },
                     self.rir.get(lhs).span,
                 ));
@@ -9248,7 +9320,7 @@ impl<'a> Sema<'a> {
             return Err(CompileError::new(
                 ErrorKind::TypeMismatch {
                     expected: "integer".to_string(),
-                    found: lhs_type.name().to_string(),
+                    found: lhs_type.safe_name_with_pool(Some(&self.type_pool)),
                 },
                 self.rir.get(lhs).span,
             ));
@@ -10040,8 +10112,8 @@ impl<'a> Sema<'a> {
             if arg_result.ty != expected_ty && !arg_result.ty.is_error() {
                 return Err(CompileError::new(
                     ErrorKind::TypeMismatch {
-                        expected: expected_ty.name().to_string(),
-                        found: arg_result.ty.name().to_string(),
+                        expected: expected_ty.safe_name_with_pool(Some(&self.type_pool)),
+                        found: arg_result.ty.safe_name_with_pool(Some(&self.type_pool)),
                     },
                     span,
                 ));
@@ -10167,8 +10239,8 @@ impl<'a> Sema<'a> {
             {
                 return Err(CompileError::new(
                     ErrorKind::TypeMismatch {
-                        expected: expected_ty.name().to_string(),
-                        found: arg_result.ty.name().to_string(),
+                        expected: expected_ty.safe_name_with_pool(Some(&self.type_pool)),
+                        found: arg_result.ty.safe_name_with_pool(Some(&self.type_pool)),
                     },
                     method_ctx.span,
                 ));

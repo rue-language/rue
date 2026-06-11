@@ -275,6 +275,22 @@ impl<'a> ConstraintGenerator<'a> {
         self.type_vars.fresh()
     }
 
+    /// Check whether an instruction is a comparison operator.
+    ///
+    /// Mirrors `Sema::is_comparison`; used to recognize chained comparisons
+    /// (`a < b < c`) during constraint generation.
+    fn is_comparison(&self, inst_ref: InstRef) -> bool {
+        matches!(
+            self.rir.get(inst_ref).data,
+            InstData::Lt { .. }
+                | InstData::Gt { .. }
+                | InstData::Le { .. }
+                | InstData::Ge { .. }
+                | InstData::Eq { .. }
+                | InstData::Ne { .. }
+        )
+    }
+
     /// Add a constraint.
     pub fn add_constraint(&mut self, constraint: Constraint) {
         self.constraints.push(constraint);
@@ -335,17 +351,17 @@ impl<'a> ConstraintGenerator<'a> {
 
         let ty = match &inst.data {
             InstData::IntConst(_) => {
-                // Integer literals get a fresh type variable that we immediately
-                // bind to IntLiteral. This allows unification to track when the
-                // literal is constrained to a specific integer type.
+                // Integer literals get a fresh type variable, recorded in
+                // `int_literal_vars`. The unifier is told about these variables
+                // (via `mark_int_literal_vars`) so that binding one to a
+                // non-integer type is rejected at the offending constraint, and
+                // any that remain unbound after solving default to i32 (via
+                // `default_int_literal_vars`).
                 //
                 // Example: `let x: i64 = 42` generates:
                 //   - type_var(?0) for the literal 42
-                //   - substitution: ?0 -> IntLiteral
                 //   - constraint: Equal(Var(?0), Concrete(i64))
-                //
-                // During unification, Equal(IntLiteral, Concrete(i64)) succeeds
-                // and rebinds ?0 -> Concrete(i64) via rebind_int_literal_to_concrete.
+                // which binds ?0 -> Concrete(i64) during unification.
                 let var = self.fresh_var();
                 self.int_literal_vars.push(var);
                 InferType::Var(var)
@@ -393,8 +409,15 @@ impl<'a> ConstraintGenerator<'a> {
             | InstData::Ge { lhs, rhs } => {
                 let lhs_info = self.generate(*lhs, ctx);
                 let rhs_info = self.generate(*rhs, ctx);
-                // Operands must have the same type
-                self.add_constraint(Constraint::equal(lhs_info.ty, rhs_info.ty, span));
+                // A chained comparison (`a < b < c`, left-associative, so the
+                // LHS is itself a comparison) is always rejected by sema with a
+                // dedicated error. Skip the operand-equality constraint in that
+                // case so inference doesn't mask it with a generic type
+                // mismatch (e.g. bool vs integer literal).
+                if !self.is_comparison(*lhs) {
+                    // Operands must have the same type
+                    self.add_constraint(Constraint::equal(lhs_info.ty, rhs_info.ty, span));
+                }
                 InferType::Concrete(Type::BOOL)
             }
 
@@ -1278,7 +1301,10 @@ impl<'a> ConstraintGenerator<'a> {
             // Comptime block: the type depends on whether evaluation succeeds at compile time.
             // For type inference, we use a fresh type variable that can unify with
             // whatever type is expected from the context (e.g., a let binding's type annotation).
-            // Similar to integer literals, comptime blocks can adapt to their context.
+            // Note: the variable is NOT registered in `int_literal_vars` — a comptime
+            // block can have any type (bool, type, ...). If the inner expression is an
+            // integer literal, the Equal constraint chains this variable to the
+            // literal's variable, so i32-defaulting still applies transitively.
             InstData::Comptime { expr } => {
                 // Generate constraints for the inner expression
                 let inner_info = self.generate(*expr, ctx);
@@ -1286,7 +1312,6 @@ impl<'a> ConstraintGenerator<'a> {
                 // Use a fresh variable so comptime can unify with expected type from context.
                 // The actual evaluation happens in sema where we know the final type.
                 let var = self.fresh_var();
-                self.int_literal_vars.push(var);
                 // Add constraint that this var equals the inner expression's type
                 self.add_constraint(Constraint::equal(InferType::Var(var), inner_info.ty, span));
                 InferType::Var(var)

@@ -114,6 +114,24 @@ impl InferType {
             _ => None,
         }
     }
+
+    /// Render this type for an error message, resolving struct/enum names
+    /// through the type pool.
+    ///
+    /// The plain `Display` impl falls back to `Type`'s pool-less placeholders
+    /// (`<struct>`, `<enum>`), which makes diagnostics like
+    /// "expected <enum>, found <enum>" useless. Use this in any user-facing
+    /// message (RUE-133).
+    pub fn name_with_pool(&self, pool: &crate::intern_pool::TypeInternPool) -> String {
+        match self {
+            InferType::Concrete(ty) => ty.safe_name_with_pool(Some(pool)),
+            InferType::Var(id) => id.to_string(),
+            InferType::IntLiteral => "{integer}".to_string(),
+            InferType::Array { element, length } => {
+                format!("[{}; {}]", element.name_with_pool(pool), length)
+            }
+        }
+    }
 }
 
 impl std::fmt::Display for InferType {

@@ -21,9 +21,10 @@ fn main() -> i32 {
 }
 """
 compile_fail = true
-# With HM inference, the error now points to the scrutinee literal that
-# can't be the type inferred from the pattern
-error_contains = "2:11"
+# Points at the offending `true` pattern: the integer-literal scrutinee can
+# never have type bool, and the error should blame the pattern that demanded
+# it, not the scrutinee (RUE-133).
+error_contains = ["3:9", "expected integer type, found bool"]
 
 [[case]]
 name = "pattern_type_mismatch_bool_vs_int"

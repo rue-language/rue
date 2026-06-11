@@ -573,7 +573,8 @@ impl Type {
     /// Get a human-readable type name, safely handling anonymous structs and missing definitions.
     ///
     /// Unlike `name()`, this method can access the type pool to get actual struct/enum names
-    /// instead of returning generic placeholders like `"<struct>"`.
+    /// and array shapes (`[i32; 3]`) instead of returning generic placeholders like
+    /// `"<struct>"` or `"<array>"`.
     ///
     /// This is primarily used for error messages where we want to show meaningful type names
     /// even if the type pool lookup fails (returns safe fallback in that case).
@@ -597,6 +598,13 @@ impl Type {
                     return def.name.clone();
                 }
                 format!("<enum#{}>", enum_id.0)
+            }
+            Some(TypeKind::Array(array_id)) => {
+                if let Some(pool) = pool {
+                    let (element, len) = pool.array_def(array_id);
+                    return format!("[{}; {}]", element.safe_name_with_pool(Some(pool)), len);
+                }
+                format!("<array#{}>", array_id.0)
             }
             Some(_kind) => self.name().to_string(),
             None => format!("<invalid type encoding: {:#x}>", self.0),

@@ -1,0 +1,80 @@
+[section]
+id = "diagnostics.type_names"
+name = "Real type names in diagnostics"
+description = """
+Type errors must render the user's struct/enum names, not internal
+placeholders like '<struct>' and '<enum>' (RUE-133). The names are resolved
+through the type pool at every diagnostic site.
+"""
+
+[[case]]
+name = "enum_return_mismatch_names_both_enums"
+description = "Used to print 'expected <enum>, found <enum>'."
+source = """
+enum Color { Red, Blue }
+enum Shape { Circle, Square }
+fn f() -> Color { Shape::Circle }
+fn main() -> i32 { 0 }
+"""
+exit_code = 1
+compile_fail = true
+error_contains = ["expected Color, found Shape"]
+
+[[case]]
+name = "struct_return_mismatch_names_struct"
+description = "Used to print 'expected i32, found <struct>'."
+source = """
+struct Point { x: i32, y: i32 }
+fn f() -> i32 { Point { x: 1, y: 2 } }
+fn main() -> i32 { 0 }
+"""
+exit_code = 1
+compile_fail = true
+error_contains = ["expected i32, found Point"]
+
+[[case]]
+name = "generic_arg_mismatch_names_both_structs"
+description = """
+Wrong struct passed for a generic type argument used to print
+'expected <struct>, found <struct>'.
+"""
+source = """
+struct A { x: i32 }
+struct B { y: i32 }
+fn id(comptime T: type, v: T) -> T { v }
+fn main() -> i32 {
+    let b = B { y: 1 };
+    let a = id(A, b);
+    0
+}
+"""
+exit_code = 1
+compile_fail = true
+error_contains = ["expected A, found B"]
+
+[[case]]
+name = "match_on_struct_names_struct"
+description = "E0602 used to print \"cannot match on type '<struct>'\"."
+source = """
+struct P { x: i32 }
+fn main() -> i32 {
+    let p = P { x: 1 };
+    match p {
+        _ => 0,
+    }
+}
+"""
+exit_code = 1
+compile_fail = true
+error_contains = ["cannot match on type 'P'"]
+
+[[case]]
+name = "array_literal_for_scalar_names_array_shape"
+description = "Used to print the '<array>' placeholder."
+source = """
+fn f() -> [i32; 3] { 5 }
+fn main() -> i32 { 0 }
+"""
+exit_code = 1
+compile_fail = true
+error_contains = ["[i32; 3]"]
