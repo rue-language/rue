@@ -616,8 +616,12 @@ impl Linker {
 
         // Calculate offsets within data segment (data, then bss)
         let data_offset_in_data = 0u64;
+        // bss begins right after the (8-aligned) initialized data within the
+        // __DATA segment. The old formula also added bss_offset_in_data —
+        // which IS merged_data.len() — double-counting the data length, so
+        // every bss symbol pointed past its real storage. (RUE-131 item 4)
         let bss_vaddr = if bss_size > 0 {
-            data_vaddr + align_up(merged_data.len() as u64, 8) + bss_offset_in_data
+            data_vaddr + align_up(merged_data.len() as u64, 8)
         } else {
             0
         };

@@ -697,7 +697,16 @@ impl ObjectFile {
                 } else {
                     // Local/section relocation: r_symbolnum is 1-indexed section number
                     // Find the function symbol for this section (should be at offset 0)
-                    let target_section = (r_symbolnum - 1) as usize;
+                    // r_symbolnum == 0 is invalid for a non-extern relocation;
+                    // the subtraction used to wrap to usize::MAX and index OOB
+                    // (a panic on malformed input). (RUE-131 item 6)
+                    let Some(section_number) = r_symbolnum.checked_sub(1) else {
+                        return Err(ParseError::InvalidSymbol(format!(
+                            "non-extern relocation at 0x{:x} has r_symbolnum 0",
+                            r_address
+                        )));
+                    };
+                    let target_section = section_number as usize;
                     let idx = symbols
                         .iter()
                         .position(|s| {
