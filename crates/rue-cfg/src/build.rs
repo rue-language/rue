@@ -417,20 +417,24 @@ impl<'a> CfgBuilder<'a> {
                     },
                 );
 
-                // In rhs_block, evaluate rhs and go to join
+                // In rhs_block, evaluate rhs and go to join.
+                // If the rhs diverges (e.g. `true && return 5`), its block already
+                // ends in the diverging terminator and contributes no edge to the
+                // join — but the join is STILL reachable via the short-circuit
+                // (lhs-false) edge, so we must continue lowering there rather than
+                // propagate divergence (which would leave the join unterminated).
                 self.current_block = rhs_block;
-                let Some(rhs_val) = self.lower_value(*rhs) else {
-                    return Self::diverged();
-                };
-                let (args_start, args_len) = self.cfg.push_extra(std::iter::once(rhs_val));
-                self.cfg.set_terminator(
-                    self.current_block,
-                    Terminator::Goto {
-                        target: join_block,
-                        args_start,
-                        args_len,
-                    },
-                );
+                if let Some(rhs_val) = self.lower_value(*rhs) {
+                    let (args_start, args_len) = self.cfg.push_extra(std::iter::once(rhs_val));
+                    self.cfg.set_terminator(
+                        self.current_block,
+                        Terminator::Goto {
+                            target: join_block,
+                            args_start,
+                            args_len,
+                        },
+                    );
+                }
 
                 // Continue in join block
                 self.current_block = join_block;
@@ -471,20 +475,24 @@ impl<'a> CfgBuilder<'a> {
                     },
                 );
 
-                // In rhs_block, evaluate rhs and go to join
+                // In rhs_block, evaluate rhs and go to join.
+                // If the rhs diverges (e.g. `false || return 7`), its block already
+                // ends in the diverging terminator and contributes no edge to the
+                // join — but the join is STILL reachable via the short-circuit
+                // (lhs-true) edge, so we must continue lowering there rather than
+                // propagate divergence (which would leave the join unterminated).
                 self.current_block = rhs_block;
-                let Some(rhs_val) = self.lower_value(*rhs) else {
-                    return Self::diverged();
-                };
-                let (args_start, args_len) = self.cfg.push_extra(std::iter::once(rhs_val));
-                self.cfg.set_terminator(
-                    self.current_block,
-                    Terminator::Goto {
-                        target: join_block,
-                        args_start,
-                        args_len,
-                    },
-                );
+                if let Some(rhs_val) = self.lower_value(*rhs) {
+                    let (args_start, args_len) = self.cfg.push_extra(std::iter::once(rhs_val));
+                    self.cfg.set_terminator(
+                        self.current_block,
+                        Terminator::Goto {
+                            target: join_block,
+                            args_start,
+                            args_len,
+                        },
+                    );
+                }
 
                 // Continue in join block
                 self.current_block = join_block;
@@ -971,7 +979,15 @@ impl<'a> CfgBuilder<'a> {
                             }
                         }
                         // Note: drops were already emitted by the diverging statement
-                        // (break/continue/return handle their own drops)
+                        // (break/continue/return handle their own drops), so we pop
+                        // our scope WITHOUT emitting cleanup. Popping is still
+                        // required: a leaked entry unbalances the LIFO pairing, so a
+                        // still-reachable enclosing block (e.g. the loop-exit path
+                        // after a `break`) would later pop THIS scope instead of its
+                        // own and re-drop these slots on a live path.
+                        if !is_storage_live_wrapper {
+                            self.scope_stack.pop();
+                        }
                         return ExprResult {
                             value: None,
                             continuation: Continuation::Diverged,
@@ -2209,5 +2225,65 @@ mod tests {
 
         // The function should return from within the loop
         assert!(cfg.block_count() >= 2);
+    }
+
+    /// Assert that every block in the CFG has a terminator. A `Terminator::None`
+    /// left behind by the builder is the "block has no terminator" codegen ICE.
+    fn assert_all_blocks_terminated(cfg: &Cfg) {
+        for block in cfg.blocks() {
+            assert!(
+                !matches!(block.terminator, Terminator::None),
+                "block {} has no terminator",
+                block.id.0
+            );
+        }
+    }
+
+    #[test]
+    fn test_andand_diverging_rhs_join_terminated() {
+        // RUE-128: `true && return 5` — the rhs diverges, but the join block
+        // (where the short-circuit value materializes) is still reachable via
+        // the lhs-false edge and must be terminated.
+        let cfg = build_cfg("fn main() -> i32 { let c = true && return 5; 3 }");
+        assert_all_blocks_terminated(&cfg);
+    }
+
+    #[test]
+    fn test_oror_diverging_rhs_join_terminated() {
+        // RUE-128: `false || return 7` — same shape as the && case above.
+        let cfg = build_cfg("fn main() -> i32 { let c = false || return 7; 3 }");
+        assert_all_blocks_terminated(&cfg);
+    }
+
+    #[test]
+    fn test_diverged_statement_mid_block_keeps_scope_stack_balanced() {
+        // RUE-128: a statement diverging mid-block (here: `break` followed by
+        // another statement) used to leak its block's scope_stack entry. The
+        // enclosing block's pop then drained the LEAKED scope instead of its
+        // own, re-emitting Drop/StorageDead for the inner slot on the loop-exit
+        // path — a same-path double drop. With the leak fixed, each droppable
+        // local (s and t) is dropped exactly once.
+        let cfg = build_cfg(
+            "fn main() -> i32 {\n\
+                 let mut s = String::with_capacity(8);\n\
+                 loop {\n\
+                     let mut t = String::with_capacity(8);\n\
+                     break;\n\
+                     let unreachable_tail = 0;\n\
+                 }\n\
+                 0\n\
+             }",
+        );
+        let drop_count = cfg
+            .blocks()
+            .iter()
+            .flat_map(|b| b.insts.iter())
+            .filter(|v| matches!(cfg.get_inst(**v).data, CfgInstData::Drop { .. }))
+            .count();
+        assert_eq!(
+            drop_count, 2,
+            "expected exactly one Drop per droppable local (s, t)"
+        );
+        assert_all_blocks_terminated(&cfg);
     }
 }
