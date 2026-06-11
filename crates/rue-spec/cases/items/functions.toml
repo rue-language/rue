@@ -547,6 +547,88 @@ params = [
 ]
 
 # =============================================================================
+# By-ref arguments that are field / array-element projections (RUE-143)
+# =============================================================================
+
+[[case]]
+name = "inout_field_arg_mutates_in_place"
+spec = ["6.1:17", "6.1:18"]
+description = "A struct field passed inout is mutated in place; the change is visible through the caller's variable"
+source = """
+struct Inner { x: i32 }
+struct Outer { f: Inner }
+fn bump(inout v: Inner) {
+    v.x = v.x + 1;
+}
+fn main() -> i32 {
+    let mut o = Outer { f: Inner { x: 41 } };
+    bump(inout o.f);
+    o.f.x
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "inout_array_element_arg_dynamic_index"
+spec = ["6.1:17", "6.1:18"]
+description = "An array element selected by a runtime index can be passed inout; the write lands in the right element"
+source = """
+struct D { x: i32 }
+fn bump(inout v: D) {
+    v.x = v.x + 1;
+}
+fn main() -> i32 {
+    let mut a = [D { x: 10 }, D { x: 20 }];
+    let i = 1;
+    bump(inout a[i]);
+    a[0].x + a[1].x * 2
+}
+"""
+exit_code = 52
+
+[[case]]
+name = "inout_field_through_inout_param"
+spec = ["6.1:17", "6.1:18"]
+description = "A field of an inout parameter can itself be passed inout (address computed from the received pointer)"
+source = """
+struct Inner { x: i32, y: i32 }
+struct Outer { a: i32, f: Inner }
+fn bump(inout v: Inner) {
+    v.x = v.x + 1;
+    v.y = v.y + 2;
+}
+fn through(inout o: Outer) {
+    bump(inout o.f);
+}
+fn main() -> i32 {
+    let mut o = Outer { a: 9, f: Inner { x: 10, y: 20 } };
+    through(inout o);
+    o.f.x + o.f.y + o.a
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "inout_exclusive_access_same_root_fields"
+spec = ["6.1:20"]
+description = "Two inout arguments projecting different fields of the same variable share a root and are rejected"
+source = """
+struct O { a: i32, b: i32 }
+fn swap(inout x: i32, inout y: i32) {
+    let t = x;
+    x = y;
+    y = t;
+}
+fn main() -> i32 {
+    let mut o = O { a: 1, b: 2 };
+    swap(inout o.a, inout o.b);
+    o.a
+}
+"""
+compile_fail = true
+error_contains = "same variable"
+
+# =============================================================================
 # Borrow parameters
 # =============================================================================
 
@@ -601,6 +683,64 @@ compile_fail = true
 error_contains = "cannot move out of borrowed"
 
 [[case]]
+name = "borrow_field_arg_reads_in_place"
+spec = ["6.1:26"]
+description = "A struct field passed borrow is read through its address; the owner is not moved and stays usable"
+source = """
+struct D { x: i32 }
+struct O { f: D }
+fn peek(borrow v: D) -> i32 {
+    v.x
+}
+fn main() -> i32 {
+    let o = O { f: D { x: 14 } };
+    let a = peek(borrow o.f);
+    let b = peek(borrow o.f);
+    a + b + o.f.x
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "borrow_array_element_arg"
+spec = ["6.1:26"]
+description = "An array element of non-Copy type can be borrowed in place (no move out of the array)"
+source = """
+struct D { x: i32 }
+fn peek(borrow v: D) -> i32 {
+    v.x
+}
+fn main() -> i32 {
+    let a = [D { x: 40 }, D { x: 2 }];
+    let i = 0;
+    peek(borrow a[i]) + peek(borrow a[1])
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "borrow_param_field_inout_arg_rejected"
+spec = ["6.1:24"]
+description = "Passing a field of a borrow parameter as an inout argument is a mutation of the borrow and is rejected"
+source = """
+struct Inner { x: i32 }
+struct Outer { f: Inner }
+fn bump(inout v: Inner) {
+    v.x = v.x + 1;
+}
+fn evil(borrow o: Outer) {
+    bump(inout o.f);
+}
+fn main() -> i32 {
+    let o = Outer { f: Inner { x: 1 } };
+    evil(borrow o);
+    o.f.x
+}
+"""
+compile_fail = true
+error_contains = "cannot mutate borrowed"
+
+[[case]]
 name = "borrow_inout_conflict"
 spec = ["6.1:30"]
 description = "Cannot borrow and inout the same variable in one call"
@@ -612,6 +752,24 @@ fn main() -> i32 {
     let mut x = 41;
     conflict(borrow x, inout x);
     x
+}
+"""
+compile_fail = true
+error_contains = "borrow"
+
+[[case]]
+name = "borrow_inout_conflict_same_root_fields"
+spec = ["6.1:30"]
+description = "Borrowing one field while passing another field of the same variable inout shares a root and is rejected"
+source = """
+struct O { a: i32, b: i32 }
+fn conflict(borrow x: i32, inout y: i32) {
+    y = x + 1;
+}
+fn main() -> i32 {
+    let mut o = O { a: 1, b: 2 };
+    conflict(borrow o.a, inout o.b);
+    o.b
 }
 """
 compile_fail = true

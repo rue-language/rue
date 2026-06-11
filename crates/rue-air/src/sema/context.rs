@@ -251,11 +251,13 @@ pub(crate) struct AnalysisContext<'a> {
     /// Methods referenced during analysis of this function.
     /// Each entry is (struct_id, method_name) matching the key format in methods map.
     pub referenced_methods: HashSet<(StructId, Spur)>,
-    /// While analyzing the value of an `inout`/`borrow` call argument, the root
-    /// variable being passed by reference (set by `analyze_call_args`). A by-ref
-    /// argument is a borrow, not a move, so the variable-reference analysis must
-    /// not mark the variable as moved — and must not reject forwarding an inout
-    /// parameter to another function's inout/borrow parameter.
+    /// While analyzing the value of an `inout`/`borrow` call argument, the ROOT
+    /// variable of the place being passed by reference (set by
+    /// `analyze_call_args`; for `f(borrow o.f)` this is `o`). A by-ref argument
+    /// is a borrow, not a move, so the variable-reference and place analyses
+    /// must not mark the root (or the projected path) as moved — and must not
+    /// reject forwarding a by-ref parameter to another function's by-ref
+    /// parameter (RUE-143).
     pub byref_arg_root: Option<Spur>,
     /// True while re-running a loop's condition/body to validate the loop's
     /// back edge (see [`AnalysisContext::fork_for_loop_recheck`]). The recheck
@@ -329,9 +331,12 @@ impl<'a> AnalysisContext<'a> {
             comptime_value_vars: self.comptime_value_vars.clone(),
             referenced_functions: HashSet::new(),
             referenced_methods: HashSet::new(),
-            // A by-ref argument's value is always a plain variable (enforced in
-            // analyze_call_args), so a loop can never be analyzed while this is
-            // set; the fork starts between whole-expression analyses.
+            // A by-ref argument's value is a place — a variable or a
+            // field/index projection chain (enforced in analyze_call_args) —
+            // and index subexpressions are analyzed with the root cleared
+            // (see try_trace_place_inner), so a loop can never be analyzed
+            // while this is set; the fork starts between whole-expression
+            // analyses.
             byref_arg_root: None,
             in_loop_move_recheck: true,
         }

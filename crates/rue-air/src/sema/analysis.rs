@@ -883,30 +883,27 @@ pub(crate) fn non_exhaustive_match_error(
     }
 }
 
-/// Validate that a by-ref (`inout`/`borrow`) call argument is a plain variable
-/// and return its symbol.
+/// Validate that a by-ref (`inout`/`borrow`) call argument is a place — a
+/// variable, or a field/index projection chain rooted at one — and return
+/// the root variable symbol (RUE-143).
 ///
-/// Codegen passes a by-ref argument by taking the address of the variable's
-/// slot, so fields and array elements cannot be passed by reference yet
-/// (RUE-127); reject them here rather than panicking during lowering.
-fn require_plain_byref_arg(rir: &Rir, arg: &RirCallArg) -> CompileResult<Spur> {
-    let inst = rir.get(arg.value);
-    match &inst.data {
-        InstData::VarRef { name } | InstData::ParamRef { name, .. } => Ok(*name),
-        InstData::FieldGet { .. } | InstData::IndexGet { .. } => Err(CompileError::new(
-            ErrorKind::ByRefArgNotPlainVariable,
-            inst.span,
-        )
-        .with_help("bind the value to a local variable first and pass that variable by reference")),
-        _ => Err(CompileError::new(
+/// Codegen passes a by-ref argument by address: place-address formation
+/// (frame slot + static field offsets + dynamic index offsets, or a received
+/// by-ref pointer minus descending offsets) lives in `rue-codegen`'s shared
+/// `byref_args` module. Anything that is not a place (a call result, literal,
+/// struct-init expression, arithmetic, ...) has no caller-visible storage to
+/// point at and is rejected as a non-lvalue.
+fn require_byref_place_arg(rir: &Rir, arg: &RirCallArg) -> CompileResult<Spur> {
+    root_variable_of(rir, arg.value).ok_or_else(|| {
+        CompileError::new(
             if arg.is_inout() {
                 ErrorKind::InoutNonLvalue
             } else {
                 ErrorKind::BorrowNonLvalue
             },
-            inst.span,
-        )),
-    }
+            rir.get(arg.value).span,
+        )
+    })
 }
 
 /// Build the use-after-move error for a field access whose path (or one of
@@ -979,9 +976,12 @@ fn root_variable_of(rir: &Rir, inst_ref: InstRef) -> Option<Spur> {
 ///
 /// This is the shared implementation behind [`Sema::check_exclusive_access`].
 /// It enforces three rules:
-/// 1. Inout/borrow arguments must be lvalues (refer to a variable)
-/// 2. Same variable cannot be passed to multiple inout parameters (prevents aliasing)
-/// 3. Same variable cannot be passed to both inout and borrow (law of exclusivity)
+/// 1. Inout/borrow arguments must be lvalues (a variable, or a field/index
+///    projection chain rooted at one — RUE-143)
+/// 2. Same ROOT variable cannot be passed to multiple inout parameters
+///    (prevents aliasing; conservatively, even disjoint fields conflict)
+/// 3. Same root variable cannot be passed to both inout and borrow (law of
+///    exclusivity)
 ///
 /// The law of exclusivity: either one mutable (inout) access OR any number of
 /// immutable (borrow) accesses, never both simultaneously.
@@ -5038,11 +5038,15 @@ impl<'a> Sema<'a> {
     /// Analyze a list of call arguments, enforcing by-ref argument rules.
     ///
     /// Inout/borrow arguments are borrows, not moves: `ctx.byref_arg_root` is
-    /// set while the argument value is analyzed so the variable-reference
-    /// analysis skips move tracking (and permits forwarding an inout parameter
-    /// to another function's by-ref parameter). By-ref arguments must also be
-    /// plain variables: codegen takes the address of the variable's slot
-    /// directly, and field/element projections are not supported yet (RUE-127).
+    /// set to the argument's ROOT variable while the argument value is
+    /// analyzed, so the variable-reference and place analyses skip move
+    /// tracking for it (and permit forwarding an inout parameter to another
+    /// function's by-ref parameter). A by-ref argument must be a place — a
+    /// variable, or a field/index projection chain rooted at one (`borrow
+    /// o.f`, `inout a[i]`, RUE-143); codegen forms the place's address.
+    ///
+    /// An `inout` argument rooted at a `borrow` parameter is rejected here:
+    /// it would hand the callee a mutable view of read-only memory.
     pub(crate) fn analyze_call_args(
         &mut self,
         air: &mut Air,
@@ -5052,7 +5056,21 @@ impl<'a> Sema<'a> {
         let mut air_args = Vec::new();
         for arg in args.iter() {
             let byref_root = if arg.is_inout() || arg.is_borrow() {
-                Some(require_plain_byref_arg(self.rir, arg)?)
+                let root = require_byref_place_arg(self.rir, arg)?;
+                if arg.is_inout()
+                    && ctx
+                        .params
+                        .iter()
+                        .any(|p| p.name == root && p.mode == RirParamMode::Borrow)
+                {
+                    return Err(CompileError::new(
+                        ErrorKind::MutateBorrowedValue {
+                            variable: self.interner.resolve(&root).to_string(),
+                        },
+                        self.rir.get(arg.value).span,
+                    ));
+                }
+                Some(root)
             } else {
                 None
             };

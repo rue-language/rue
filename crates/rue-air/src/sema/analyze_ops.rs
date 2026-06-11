@@ -272,8 +272,16 @@ impl<'a> Sema<'a> {
                             None => return Ok(None), // Not an array
                         };
 
-                        // Analyze the index expression to get an AirRef
-                        let index_result = self.analyze_inst(air, *index, ctx)?;
+                        // Analyze the index expression to get an AirRef. The
+                        // index is an rvalue of its own, not part of the
+                        // place: a surrounding by-ref argument's borrow
+                        // (`byref_arg_root`, RUE-143) must not leak into it
+                        // (in `f(inout a[take(x)])` the call `take(x)` moves
+                        // x normally, even if x happens to be the root).
+                        let saved_byref_root = ctx.byref_arg_root.take();
+                        let index_result = self.analyze_inst(air, *index, ctx);
+                        ctx.byref_arg_root = saved_byref_root;
+                        let index_result = index_result?;
 
                         // Add this projection (no field name for indices)
                         trace.projections.push(ProjectionInfo {
@@ -1598,16 +1606,22 @@ impl<'a> Sema<'a> {
                         }
                     }
                     RirParamMode::Borrow => {
-                        // Note: this also rejects by-ref forwarding of a borrow
-                        // parameter (`f(borrow v)` inside `fn g(borrow v: T)`),
-                        // a pre-existing limitation kept as-is for now.
-                        let name_str = self.interner.resolve(&name);
-                        return Err(CompileError::new(
-                            ErrorKind::MoveOutOfBorrow {
-                                variable: name_str.to_string(),
-                            },
-                            span,
-                        ));
+                        // A by-ref argument use re-borrows the parameter:
+                        // `f(borrow v)` inside `fn g(borrow v: T)` is a sound
+                        // read-only re-borrow and is allowed (RUE-143).
+                        // `f(inout v)` — a mutable view of read-only memory —
+                        // was already rejected in `analyze_call_args` (E0428),
+                        // so a by-ref use reaching here is borrow-mode.
+                        // Anything else moves out of the borrow: rejected.
+                        if !is_byref_arg_use {
+                            let name_str = self.interner.resolve(&name);
+                            return Err(CompileError::new(
+                                ErrorKind::MoveOutOfBorrow {
+                                    variable: name_str.to_string(),
+                                },
+                                span,
+                            ));
+                        }
                     }
                 }
             }
@@ -2272,9 +2286,29 @@ impl<'a> Sema<'a> {
             // Move checking using the trace. `move_field` is the MarkMoved
             // marker's field component: None for a whole-struct (linear)
             // move, Some(index) for a single top-level field move (RUE-62).
+            //
+            // A use as a by-ref call argument (`f(borrow o.f)`, `f(inout
+            // o.f)`) borrows the place rather than moving out of it
+            // (RUE-143): no move is recorded and the by-ref-param move
+            // rejections don't apply — but reading through an already-moved
+            // path is still a use-after-move.
+            let is_byref_arg_use = ctx.byref_arg_root == Some(trace.root_var);
             let mut emit_move_marker = false;
             let mut move_field: Option<u32> = None;
-            if is_linear {
+            if is_byref_arg_use {
+                let field_path = trace.field_path();
+                if let Some(state) = ctx.moved_vars.get(&trace.root_var) {
+                    if let Some(moved_span) = state.is_path_moved(&field_path) {
+                        return Err(super::analysis::use_after_move_path_error(
+                            self.interner,
+                            trace.root_var,
+                            &field_path,
+                            span,
+                            moved_span,
+                        ));
+                    }
+                }
+            } else if is_linear {
                 // For linear types, field access consumes the entire struct
                 self.reject_move_out_of_byref_param(trace.root_var, ctx, span)?;
                 ctx.moved_vars
@@ -2820,8 +2854,28 @@ impl<'a> Sema<'a> {
                 }
             }
 
-            // Prevent moving non-Copy elements out of arrays.
-            if !self.is_type_copy(elem_type) {
+            // A use as a by-ref call argument (`f(borrow a[i])`, `f(inout
+            // a[i])`) borrows the element in place rather than moving it out
+            // of the array (RUE-143), so the non-Copy rejection below does
+            // not apply — but indexing an already-moved array is still a
+            // use-after-move (`field_path()` of an index-terminated trace is
+            // empty, so this checks the root's full move).
+            let is_byref_arg_use = ctx.byref_arg_root == Some(trace.root_var);
+            if is_byref_arg_use {
+                let field_path = trace.field_path();
+                if let Some(state) = ctx.moved_vars.get(&trace.root_var) {
+                    if let Some(moved_span) = state.is_path_moved(&field_path) {
+                        return Err(super::analysis::use_after_move_path_error(
+                            self.interner,
+                            trace.root_var,
+                            &field_path,
+                            span,
+                            moved_span,
+                        ));
+                    }
+                }
+            } else if !self.is_type_copy(elem_type) {
+                // Prevent moving non-Copy elements out of arrays.
                 return Err(CompileError::new(
                     ErrorKind::MoveOutOfIndex {
                         element_type: elem_type.safe_name_with_pool(Some(&self.type_pool)),
