@@ -330,7 +330,7 @@ impl<'a> Sema<'a> {
                     return Err(CompileError::new(
                         ErrorKind::LiteralOutOfRange {
                             value: *value,
-                            ty: ty.name().to_string(),
+                            ty: ty.safe_name_with_pool(Some(&self.type_pool)),
                         },
                         inst.span,
                     ));
@@ -412,7 +412,9 @@ impl<'a> Sema<'a> {
                 // Check if trying to negate an unsigned type.
                 if ty.is_unsigned() {
                     return Err(CompileError::new(
-                        ErrorKind::CannotNegateUnsigned(ty.name().to_string()),
+                        ErrorKind::CannotNegateUnsigned(
+                            ty.safe_name_with_pool(Some(&self.type_pool)),
+                        ),
                         inst.span,
                     )
                     .with_note("unsigned values cannot be negated"));
@@ -470,7 +472,7 @@ impl<'a> Sema<'a> {
                     return Err(CompileError::new(
                         ErrorKind::TypeMismatch {
                             expected: "integer type".to_string(),
-                            found: ty.name().to_string(),
+                            found: ty.safe_name_with_pool(Some(&self.type_pool)),
                         },
                         inst.span,
                     ));
@@ -699,12 +701,18 @@ impl<'a> Sema<'a> {
                     if then_type != else_type && !then_type.is_error() && !else_type.is_error() {
                         return Err(CompileError::new(
                             ErrorKind::TypeMismatch {
-                                expected: then_type.name().to_string(),
-                                found: else_type.name().to_string(),
+                                expected: then_type.safe_name_with_pool(Some(&self.type_pool)),
+                                found: else_type.safe_name_with_pool(Some(&self.type_pool)),
                             },
                             else_span,
                         )
-                        .with_label(format!("this is of type `{}`", then_type.name()), then_span)
+                        .with_label(
+                            format!(
+                                "this is of type `{}`",
+                                then_type.safe_name_with_pool(Some(&self.type_pool))
+                            ),
+                            then_span,
+                        )
                         .with_note("if and else branches must have compatible types"));
                     }
                     then_type
@@ -738,7 +746,7 @@ impl<'a> Sema<'a> {
                 return Err(CompileError::new(
                     ErrorKind::TypeMismatch {
                         expected: "()".to_string(),
-                        found: then_type.name().to_string(),
+                        found: then_type.safe_name_with_pool(Some(&self.type_pool)),
                     },
                     self.rir.get(then_block).span,
                 )
@@ -907,7 +915,9 @@ impl<'a> Sema<'a> {
         if !scrutinee_type.is_integer() && scrutinee_type != Type::BOOL && !scrutinee_type.is_enum()
         {
             return Err(CompileError::new(
-                ErrorKind::InvalidMatchType(scrutinee_type.name().to_string()),
+                ErrorKind::InvalidMatchType(
+                    scrutinee_type.safe_name_with_pool(Some(&self.type_pool)),
+                ),
                 span,
             ));
         }
@@ -976,7 +986,7 @@ impl<'a> Sema<'a> {
                     if !scrutinee_type.is_integer() {
                         return Err(CompileError::new(
                             ErrorKind::TypeMismatch {
-                                expected: scrutinee_type.name().to_string(),
+                                expected: scrutinee_type.safe_name_with_pool(Some(&self.type_pool)),
                                 found: "integer".to_string(),
                             },
                             pattern_span,
@@ -1004,7 +1014,7 @@ impl<'a> Sema<'a> {
                     if scrutinee_type != Type::BOOL {
                         return Err(CompileError::new(
                             ErrorKind::TypeMismatch {
-                                expected: scrutinee_type.name().to_string(),
+                                expected: scrutinee_type.safe_name_with_pool(Some(&self.type_pool)),
                                 found: "bool".to_string(),
                             },
                             pattern_span,
@@ -1058,7 +1068,7 @@ impl<'a> Sema<'a> {
                     if scrutinee_type != Type::new_enum(enum_id) {
                         return Err(CompileError::new(
                             ErrorKind::TypeMismatch {
-                                expected: scrutinee_type.name().to_string(),
+                                expected: scrutinee_type.safe_name_with_pool(Some(&self.type_pool)),
                                 found: enum_def.name.clone(),
                             },
                             pattern_span,
@@ -1121,11 +1131,10 @@ impl<'a> Sema<'a> {
                     } else if body_type.is_never() {
                         prev
                     } else if prev != body_type && !prev.is_error() && !body_type.is_error() {
-                        return Err(CompileError::new(
-                            ErrorKind::TypeMismatch {
-                                expected: prev.name().to_string(),
-                                found: body_type.name().to_string(),
-                            },
+                        // Point at the offending arm's body, not the whole match.
+                        return Err(self.type_mismatch_error(
+                            prev,
+                            body_type,
                             self.rir.get(*body).span,
                         ));
                     } else {
@@ -1195,7 +1204,22 @@ impl<'a> Sema<'a> {
         };
 
         if !is_exhaustive {
-            return Err(CompileError::new(ErrorKind::NonExhaustiveMatch, span));
+            // Name what's missing: the enum definition is in scope here, so list
+            // the uncovered variants instead of just "not exhaustive" (RUE-133).
+            let enum_def = pattern_enum_id
+                .or_else(|| match scrutinee_type.try_kind() {
+                    Some(TypeKind::Enum(id)) => Some(id),
+                    _ => None,
+                })
+                .map(|id| self.type_pool.enum_def(id));
+            return Err(super::analysis::non_exhaustive_match_error(
+                span,
+                scrutinee_type,
+                enum_def.as_ref(),
+                |i| covered_variants.contains_key(&i),
+                bool_true_covered,
+                bool_false_covered,
+            ));
         }
 
         let final_type = result_type.unwrap_or(Type::UNIT);
@@ -1240,8 +1264,8 @@ impl<'a> Sema<'a> {
             {
                 return Err(CompileError::new(
                     ErrorKind::TypeMismatch {
-                        expected: ctx.return_type.name().to_string(),
-                        found: inner_ty.name().to_string(),
+                        expected: ctx.return_type.safe_name_with_pool(Some(&self.type_pool)),
+                        found: inner_ty.safe_name_with_pool(Some(&self.type_pool)),
                     },
                     span,
                 ));
@@ -1252,7 +1276,7 @@ impl<'a> Sema<'a> {
             if ctx.return_type != Type::UNIT && !ctx.return_type.is_error() {
                 return Err(CompileError::new(
                     ErrorKind::TypeMismatch {
-                        expected: ctx.return_type.name().to_string(),
+                        expected: ctx.return_type.safe_name_with_pool(Some(&self.type_pool)),
                         found: "()".to_string(),
                     },
                     span,
@@ -1829,7 +1853,7 @@ impl<'a> Sema<'a> {
                         "consider making parameter `{}` inout: `inout {}: {}`",
                         name_str,
                         name_str,
-                        param_info.ty.name()
+                        param_info.ty.safe_name_with_pool(Some(&self.type_pool))
                     )));
                 }
                 RirParamMode::Inout => {
@@ -1983,7 +2007,7 @@ impl<'a> Sema<'a> {
                     return Err(CompileError::new(
                         ErrorKind::TypeMismatch {
                             expected: "struct type".to_string(),
-                            found: ty.name().to_string(),
+                            found: ty.safe_name_with_pool(Some(&self.type_pool)),
                         },
                         span,
                     ));
@@ -2073,7 +2097,7 @@ impl<'a> Sema<'a> {
                     return Err(CompileError::new(
                         ErrorKind::LiteralOutOfRange {
                             value: *value,
-                            ty: expected_field_type.name().to_string(),
+                            ty: expected_field_type.safe_name_with_pool(Some(&self.type_pool)),
                         },
                         field_inst.span,
                     ));
@@ -2093,8 +2117,8 @@ impl<'a> Sema<'a> {
             if field_result.ty != expected_field_type {
                 return Err(CompileError::new(
                     ErrorKind::TypeMismatch {
-                        expected: expected_field_type.name().to_string(),
-                        found: field_result.ty.name().to_string(),
+                        expected: expected_field_type.safe_name_with_pool(Some(&self.type_pool)),
+                        found: field_result.ty.safe_name_with_pool(Some(&self.type_pool)),
                     },
                     span,
                 )
@@ -2102,7 +2126,7 @@ impl<'a> Sema<'a> {
                     format!(
                         "field '{}' expects type {}",
                         init_name,
-                        expected_field_type.name()
+                        expected_field_type.safe_name_with_pool(Some(&self.type_pool))
                     ),
                     span,
                 ));
@@ -2309,7 +2333,7 @@ impl<'a> Sema<'a> {
             None => {
                 return Err(CompileError::new(
                     ErrorKind::FieldAccessOnNonStruct {
-                        found: base_type.name().to_string(),
+                        found: base_type.safe_name_with_pool(Some(&self.type_pool)),
                     },
                     span,
                 ));
@@ -2588,7 +2612,7 @@ impl<'a> Sema<'a> {
                 return Err(CompileError::new(
                     ErrorKind::InternalError(format!(
                         "Array literal inferred as non-array type: {}",
-                        array_type.name()
+                        array_type.safe_name_with_pool(Some(&self.type_pool))
                     )),
                     span,
                 ));
@@ -2665,7 +2689,7 @@ impl<'a> Sema<'a> {
                     // This shouldn't happen if try_trace_place worked correctly
                     return Err(CompileError::new(
                         ErrorKind::IndexOnNonArray {
-                            found: parent_type.name().to_string(),
+                            found: parent_type.safe_name_with_pool(Some(&self.type_pool)),
                         },
                         span,
                     ));
@@ -2689,7 +2713,7 @@ impl<'a> Sema<'a> {
             if !self.is_type_copy(elem_type) {
                 return Err(CompileError::new(
                     ErrorKind::MoveOutOfIndex {
-                        element_type: elem_type.name().to_string(),
+                        element_type: elem_type.safe_name_with_pool(Some(&self.type_pool)),
                     },
                     span,
                 )
@@ -2722,7 +2746,7 @@ impl<'a> Sema<'a> {
             None => {
                 return Err(CompileError::new(
                     ErrorKind::IndexOnNonArray {
-                        found: base_type.name().to_string(),
+                        found: base_type.safe_name_with_pool(Some(&self.type_pool)),
                     },
                     span,
                 ));
@@ -2746,7 +2770,7 @@ impl<'a> Sema<'a> {
         if !self.is_type_copy(elem_type) {
             return Err(CompileError::new(
                 ErrorKind::MoveOutOfIndex {
-                    element_type: elem_type.name().to_string(),
+                    element_type: elem_type.safe_name_with_pool(Some(&self.type_pool)),
                 },
                 span,
             )

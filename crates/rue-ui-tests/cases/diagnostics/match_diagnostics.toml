@@ -1,0 +1,109 @@
+[section]
+id = "diagnostics.match"
+name = "Match diagnostics quality"
+description = """
+Match-related errors must point at the offending arm (not the whole
+function) and non-exhaustive matches must name what is missing (RUE-133).
+"""
+
+[[case]]
+name = "arm_result_conflict_points_at_arm"
+description = """
+The arm result-type conflict between the integer arm and the bool arm used to
+surface at the body-to-return-type constraint, whose span is the WHOLE
+function body. It must point at the offending arm. The source-snippet line in
+stderr proves the span: the arm's line is quoted, the `fn main` line is not
+quoted as the primary span (a multi-line span starting at the fn body renders
+'fn main() -> i32 {' with an underline marker).
+"""
+source = """
+enum Color { Red, Blue }
+fn main() -> i32 {
+    let c = Color::Red;
+    match c {
+        Color::Red => 1,
+        Color::Blue => true,
+    }
+}
+"""
+exit_code = 1
+compile_fail = true
+error_contains = ["expected integer type, found bool", "6:24", "Color::Blue => true"]
+
+[[case]]
+name = "arm_result_conflict_concrete_arms_points_at_arm"
+source = """
+enum Color { Red, Blue }
+fn main() -> i32 {
+    let c = Color::Red;
+    let n: i32 = 5;
+    let r = match c {
+        Color::Red => n,
+        Color::Blue => true,
+    };
+    0
+}
+"""
+exit_code = 1
+compile_fail = true
+error_contains = ["expected i32, found bool", "7:24"]
+
+[[case]]
+name = "non_exhaustive_enum_lists_missing_variants"
+description = "E0600 must name the uncovered variants, which are known at the error site."
+source = """
+enum Color { Red, Blue, Green }
+fn main() -> i32 {
+    let c = Color::Red;
+    match c {
+        Color::Red => 1,
+    }
+}
+"""
+exit_code = 1
+compile_fail = true
+error_contains = ["match is not exhaustive", "missing variants: Blue, Green"]
+
+[[case]]
+name = "non_exhaustive_bool_names_missing_pattern"
+source = """
+fn main() -> i32 {
+    let b = true;
+    match b {
+        true => 1,
+    }
+}
+"""
+exit_code = 1
+compile_fail = true
+error_contains = ["match is not exhaustive", "pattern `false` is not covered"]
+
+[[case]]
+name = "non_exhaustive_integer_suggests_wildcard"
+source = """
+fn main() -> i32 {
+    let n: i32 = 1;
+    match n {
+        1 => 1,
+        2 => 2,
+    }
+}
+"""
+exit_code = 1
+compile_fail = true
+error_contains = ["match is not exhaustive", "wildcard arm"]
+
+[[case]]
+name = "exhaustive_enum_match_still_compiles"
+source = """
+enum Color { Red, Blue }
+fn main() -> i32 {
+    let c = Color::Blue;
+    match c {
+        Color::Red => 1,
+        Color::Blue => 42,
+    }
+}
+"""
+exit_code = 42
+no_warnings = true

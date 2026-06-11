@@ -102,6 +102,13 @@ impl UnificationError {
 pub struct Unifier {
     /// The current substitution being built.
     pub substitution: Substitution,
+    /// Type variables that stand for integer literals (plus any variables they
+    /// were bound to during unification). Binding one of these to a concrete
+    /// non-integer type is rejected eagerly in [`Unifier::bind`], so the error
+    /// points at the constraint that introduced the conflict (e.g. the
+    /// offending match arm) instead of surfacing later at an unrelated, wider
+    /// span like the whole function body (RUE-133).
+    int_literal_vars: std::collections::HashSet<TypeVarId>,
 }
 
 impl Default for Unifier {
@@ -115,6 +122,7 @@ impl Unifier {
     pub fn new() -> Self {
         Unifier {
             substitution: Substitution::new(),
+            int_literal_vars: std::collections::HashSet::new(),
         }
     }
 
@@ -125,7 +133,18 @@ impl Unifier {
     pub fn with_capacity(type_var_count: u32) -> Self {
         Unifier {
             substitution: Substitution::with_capacity(type_var_count as usize),
+            int_literal_vars: std::collections::HashSet::new(),
         }
+    }
+
+    /// Register the type variables that stand for integer literals.
+    ///
+    /// Call this before [`Unifier::solve_constraints`] so that binding one of
+    /// these variables (or a variable it gets chained to) to a non-integer
+    /// type is reported at the constraint that caused it. See the
+    /// `int_literal_vars` field documentation.
+    pub fn mark_int_literal_vars(&mut self, vars: &[TypeVarId]) {
+        self.int_literal_vars.extend(vars.iter().copied());
     }
 
     /// Unify two types.
@@ -221,12 +240,29 @@ impl Unifier {
             // Array with non-array: type mismatch
             // Note: This also handles Array with IntLiteral since the IntLiteral
             // cases with Concrete and IntLiteral are already handled above.
+            // Same (actual, expected) convention as TypeMismatch above: the RHS
+            // is what the context expects, the LHS is what was found (RUE-133).
             (InferType::Array { .. }, _) | (_, InferType::Array { .. }) => {
                 UnifyResult::TypeMismatch {
-                    expected: lhs_resolved,
-                    found: rhs_resolved,
+                    expected: self.render_for_error(&rhs_resolved),
+                    found: self.render_for_error(&lhs_resolved),
                 }
             }
+        }
+    }
+
+    /// Prepare a type for inclusion in an error message: variables that stand
+    /// for integer literals render as `{integer}` rather than a bare `?N`
+    /// (e.g. "expected i32, found [{integer}; 3]"). Recurses into array
+    /// element types. Display only — the substitution is not modified.
+    fn render_for_error(&self, ty: &InferType) -> InferType {
+        match ty {
+            InferType::Var(v) if self.int_literal_vars.contains(v) => InferType::IntLiteral,
+            InferType::Array { element, length } => InferType::Array {
+                element: Box::new(self.render_for_error(element)),
+                length: *length,
+            },
+            _ => ty.clone(),
         }
     }
 
@@ -261,6 +297,29 @@ impl Unifier {
                 var,
                 ty: ty.clone(),
             };
+        }
+
+        // Integer-literal tracking: an integer literal can only become an
+        // integer type. Rejecting the bind here (instead of letting the
+        // literal's variable silently absorb a non-integer type) reports the
+        // error at the constraint that introduced the conflict, with its
+        // narrow span (RUE-133).
+        if self.int_literal_vars.contains(&var) {
+            match ty {
+                // Chaining to another variable: that variable now also stands
+                // for an integer literal, so propagate the marker.
+                InferType::Var(other) => {
+                    self.int_literal_vars.insert(*other);
+                }
+                InferType::Concrete(t) => {
+                    if !t.is_integer() && !t.is_error() && !t.is_never() {
+                        return UnifyResult::IntLiteralNonInteger { found: *t };
+                    }
+                }
+                // IntLiteral keeps the variable a literal; arrays are reported
+                // by the Array-vs-non-array case in `unify`.
+                InferType::IntLiteral | InferType::Array { .. } => {}
+            }
         }
 
         self.substitution.insert(var, ty.clone());
