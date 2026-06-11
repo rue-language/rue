@@ -195,7 +195,7 @@ error_contains = "private"
 # =============================================================================
 # Nested Submodule Access
 # =============================================================================
-# Tests for the _foo.rue + foo/ directory module pattern.
+# Tests for the foo/_foo.rue directory module pattern (facade inside, RUE-137).
 
 [[case]]
 name = "directory_module_intra_access"
@@ -206,7 +206,7 @@ fn main() -> i32 {
     utils.format()
 }
 """
-aux_files = { "_utils.rue" = """
+aux_files = { "utils/_utils.rue" = """
 // Re-export the strings module functions
 const strings = @import("utils/strings");
 

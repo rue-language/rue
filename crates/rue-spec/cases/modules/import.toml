@@ -119,3 +119,21 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = "cannot find module"
+
+# =============================================================================
+# Ambiguous module forms (RUE-137)
+# =============================================================================
+
+[[case]]
+name = "ambiguous_module_both_forms_error"
+spec = ["4.13:89"]
+description = "Both foo.rue and foo/_foo.rue existing is a compile error, not a precedence question"
+source = """
+fn main() -> i32 {
+    let m = @import("foo");
+    0
+}
+"""
+aux_files = { "foo.rue" = "pub fn a() -> i32 { 1 }", "foo/_foo.rue" = "pub fn b() -> i32 { 2 }" }
+compile_fail = true
+error_contains = "ambiguous module"
