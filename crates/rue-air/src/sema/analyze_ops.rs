@@ -763,6 +763,11 @@ impl<'a> Sema<'a> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
+        // Snapshot move state before the loop: the condition and body
+        // re-execute on every iteration, so a value moved in either is already
+        // moved when the back edge re-enters the loop (see the recheck below).
+        let moves_before_loop = ctx.moved_vars.clone();
+
         // While loop: condition must be bool, result is Unit
         let cond_result = self.analyze_inst(air, cond, ctx)?;
 
@@ -772,6 +777,26 @@ impl<'a> Sema<'a> {
         let body_result = self.analyze_inst(air, body, ctx)?;
         ctx.loop_depth -= 1;
         ctx.pop_scope();
+
+        // Loop back-edge move check: if the loop changed any move state,
+        // re-run the analysis once with the post-body state as the starting
+        // state. Any use of a value moved by a previous iteration then errors.
+        // The scratch Air and context are discarded - this pass exists only
+        // for the checks.
+        if !ctx.in_loop_move_recheck && ctx.moved_vars != moves_before_loop {
+            let mut scratch_air = air.clone();
+            let mut scratch_ctx = ctx.fork_for_loop_recheck();
+            (|| -> CompileResult<()> {
+                self.analyze_inst(&mut scratch_air, cond, &mut scratch_ctx)?;
+                scratch_ctx.push_scope();
+                scratch_ctx.loop_depth += 1;
+                self.analyze_inst(&mut scratch_air, body, &mut scratch_ctx)?;
+                scratch_ctx.loop_depth -= 1;
+                scratch_ctx.pop_scope();
+                Ok(())
+            })()
+            .map_err(|e| e.with_note("value was moved in a previous iteration of the loop"))?;
+        }
 
         let air_ref = air.add_inst(AirInst {
             data: AirInstData::Loop {
@@ -794,11 +819,28 @@ impl<'a> Sema<'a> {
     ) -> CompileResult<AnalysisResult> {
         // Infinite loop: `loop { body }` - always produces Never type
 
+        // Snapshot move state before the body for the back-edge recheck below.
+        let moves_before_loop = ctx.moved_vars.clone();
+
         ctx.push_scope();
         ctx.loop_depth += 1;
         let body_result = self.analyze_inst(air, body, ctx)?;
         ctx.loop_depth -= 1;
         ctx.pop_scope();
+
+        // Loop back-edge move check (see analyze_while_loop for details).
+        // Note: like Rust, this is conservative - a body that unconditionally
+        // breaks after the move still errors.
+        if !ctx.in_loop_move_recheck && ctx.moved_vars != moves_before_loop {
+            let mut scratch_air = air.clone();
+            let mut scratch_ctx = ctx.fork_for_loop_recheck();
+            scratch_ctx.push_scope();
+            scratch_ctx.loop_depth += 1;
+            self.analyze_inst(&mut scratch_air, body, &mut scratch_ctx)
+                .map_err(|e| e.with_note("value was moved in a previous iteration of the loop"))?;
+            scratch_ctx.loop_depth -= 1;
+            scratch_ctx.pop_scope();
+        }
 
         let air_ref = air.add_inst(AirInst {
             data: AirInstData::InfiniteLoop {
