@@ -635,8 +635,15 @@ pub enum Aarch64Inst {
         imm: u64,
     },
 
-    /// `mvn dst, src` - Bitwise NOT.
+    /// `mvn dst, src` - Bitwise NOT, 64-bit.
     MvnRR { dst: Operand, src: Operand },
+
+    /// `mvn wd, wm` - Bitwise NOT, 32-bit.
+    ///
+    /// Used for sub-64-bit BitNot: the w-form zeroes the upper 32 bits,
+    /// matching the invariant (shared with the x86-64 backend) that
+    /// sub-64-bit results don't leak set bits above their width (RUE-59).
+    Mvn32RR { dst: Operand, src: Operand },
 
     /// `lsl dst, src1, src2` - Logical shift left 64-bit by register.
     LslRR {
@@ -940,6 +947,7 @@ impl fmt::Display for Aarch64Inst {
             }
             Aarch64Inst::EorImm { dst, src, imm } => write!(f, "eor {}, {}, #{}", dst, src, imm),
             Aarch64Inst::MvnRR { dst, src } => write!(f, "mvn {}, {}", dst, src),
+            Aarch64Inst::Mvn32RR { dst, src } => write!(f, "mvnl {}, {}", dst, src),
             Aarch64Inst::LslRR { dst, src1, src2 } => {
                 write!(f, "lslq {}, {}, {}", dst, src1, src2)
             }

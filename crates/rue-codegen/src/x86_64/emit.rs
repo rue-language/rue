@@ -676,6 +676,11 @@ impl<'a> Emitter<'a> {
                 self.emit_not(dst.as_physical());
                 end_inst!(self, "not {}", dst.as_physical());
             }
+            X86Inst::Not64R { dst } => {
+                self.begin_inst();
+                self.emit_not64(dst.as_physical());
+                end_inst!(self, "notq {}", dst.as_physical());
+            }
             X86Inst::ShlRCl { dst } => {
                 self.begin_inst();
                 self.emit_shl_cl(dst.as_physical());
@@ -1962,6 +1967,24 @@ impl<'a> Emitter<'a> {
         self.code.push(modrm);
     }
 
+    /// Emit `not r64`.
+    ///
+    /// Encoding: REX.W F7 /2 (not r/m64)
+    fn emit_not64(&mut self, dst: Reg) {
+        let dst_enc = dst.encoding();
+
+        // REX.W prefix (plus REX.B for extended registers)
+        let rex = 0x48 | if dst.needs_rex() { 0x01 } else { 0x00 };
+        self.code.push(rex);
+
+        // Opcode: F7 (group 3 operations)
+        self.code.push(0xF7);
+
+        // ModR/M: mod=11, reg=2 (NOT), r/m=dst
+        let modrm = 0xC0 | (2 << 3) | (dst_enc & 7);
+        self.code.push(modrm);
+    }
+
     /// Emit `shl r64, imm8`.
     ///
     /// Encoding: REX.W C1 /4 imm8 (shl r/m64, imm8)
@@ -3192,6 +3215,24 @@ mod tests {
         });
         // not r10d -> 41 F7 D2 (REX.B F7 /2)
         assert_eq!(code, vec![0x41, 0xF7, 0xD2]);
+    }
+
+    #[test]
+    fn test_not64_rax() {
+        let code = emit_single(X86Inst::Not64R {
+            dst: Operand::Physical(Reg::Rax),
+        });
+        // not rax -> 48 F7 D0 (REX.W F7 /2)
+        assert_eq!(code, vec![0x48, 0xF7, 0xD0]);
+    }
+
+    #[test]
+    fn test_not64_r10() {
+        let code = emit_single(X86Inst::Not64R {
+            dst: Operand::Physical(Reg::R10),
+        });
+        // not r10 -> 49 F7 D2 (REX.W+B F7 /2)
+        assert_eq!(code, vec![0x49, 0xF7, 0xD2]);
     }
 
     // --- Shift instructions ---

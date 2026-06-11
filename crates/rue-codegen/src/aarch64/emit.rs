@@ -153,6 +153,8 @@ const OPCODE_EOR_X: u32 = 0xCA000000;
 const OPCODE_EOR_IMM_X: u32 = 0xD2400000;
 /// MVN Xd, Xm - Bitwise NOT (alias for ORN Xd, XZR, Xm)
 const OPCODE_ORN_X: u32 = 0xAA200000;
+/// MVN Wd, Wm - Bitwise NOT (alias for ORN Wd, WZR, Wm) (32-bit)
+const OPCODE_ORN_W: u32 = 0x2A200000;
 /// LSLV Xd, Xn, Xm - Logical shift left variable (64-bit)
 const OPCODE_LSLV_X: u32 = 0x9AC02000;
 /// LSLV Wd, Wn, Wm - Logical shift left variable (32-bit)
@@ -897,6 +899,14 @@ impl<'a> Emitter<'a> {
                 self.begin_inst();
                 self.emit_mvn_rr(rd, rm);
                 end_inst!(self, "mvn {}, {}", rd, rm);
+            }
+
+            Aarch64Inst::Mvn32RR { dst, src } => {
+                let rd = dst.as_physical();
+                let rm = src.as_physical();
+                self.begin_inst();
+                self.emit_mvn32_rr(rd, rm);
+                end_inst!(self, "mvn(w) {}, {}", rd, rm);
             }
 
             Aarch64Inst::LslRR { dst, src1, src2 } => {
@@ -1849,6 +1859,16 @@ impl<'a> Emitter<'a> {
         self.emit_u32(inst);
     }
 
+    fn emit_mvn32_rr(&mut self, rd: Reg, rm: Reg) {
+        // MVN Wd, Wm (alias for ORN Wd, WZR, Wm); zero-extends into the
+        // upper 32 bits of Xd.
+        let inst = OPCODE_ORN_W
+            | (rm.encoding() as u32) << 16
+            | (Reg::Xzr.encoding() as u32) << 5
+            | rd.encoding() as u32;
+        self.emit_u32(inst);
+    }
+
     fn emit_lslv_rr(&mut self, rd: Reg, rn: Reg, rm: Reg) {
         // LSLV Xd, Xn, Xm - Logical shift left variable (64-bit)
         let inst = OPCODE_LSLV_X
@@ -2603,6 +2623,25 @@ mod tests {
         assert_eq!(inst & 0xFF200000, 0xAA200000, "Should be ORN pattern");
         // Rn (bits 5-9) should be XZR (31)
         assert_eq!((inst >> 5) & 0x1F, 31, "Rn should be XZR");
+    }
+
+    #[test]
+    fn test_mvn32_rr() {
+        let code = emit_single(Aarch64Inst::Mvn32RR {
+            dst: Operand::Physical(Reg::X0),
+            src: Operand::Physical(Reg::X1),
+        });
+        // mvn w0, w1 -> orn w0, wzr, w1 (sf=0)
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        assert_eq!(
+            inst & 0xFF200000,
+            0x2A200000,
+            "Should be 32-bit ORN pattern"
+        );
+        // Rn (bits 5-9) should be WZR (31)
+        assert_eq!((inst >> 5) & 0x1F, 31, "Rn should be WZR");
+        // Rm (bits 16-20) should be W1
+        assert_eq!((inst >> 16) & 0x1F, 1, "Rm should be W1");
     }
 
     // --- Shift instructions ---

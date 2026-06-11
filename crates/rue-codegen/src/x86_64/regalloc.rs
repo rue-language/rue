@@ -384,6 +384,10 @@ impl RegAlloc {
                 self.emit_unop(mir, dst, |d| X86Inst::NotR { dst: d });
             }
 
+            X86Inst::Not64R { dst } => {
+                self.emit_unop(mir, dst, |d| X86Inst::Not64R { dst: d });
+            }
+
             X86Inst::ShlRCl { dst } => {
                 self.emit_unop(mir, dst, |d| X86Inst::ShlRCl { dst: d });
             }

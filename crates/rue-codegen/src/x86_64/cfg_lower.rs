@@ -1099,8 +1099,16 @@ impl<'a> CfgLower<'a> {
                     dst: Operand::Virtual(vreg),
                     src: Operand::Virtual(operand_vreg),
                 });
-                self.mir.push(X86Inst::NotR {
-                    dst: Operand::Virtual(vreg),
+                // 64-bit operands need a REX.W `not`; the 32-bit form would
+                // zero the high 32 bits of the result (RUE-59).
+                self.mir.push(if ty.is_64_bit() {
+                    X86Inst::Not64R {
+                        dst: Operand::Virtual(vreg),
+                    }
+                } else {
+                    X86Inst::NotR {
+                        dst: Operand::Virtual(vreg),
+                    }
                 });
             }
 

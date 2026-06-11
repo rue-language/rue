@@ -1,0 +1,196 @@
+# Constant-folding width regression tests (RUE-59).
+#
+# Constfold's BitNot used to compute `!v` on the u64 constant storage without
+# truncating to the operand type's width, so `~0u32` folded to the 64-bit !0
+# (printed as 18446744073709551615 instead of 4294967295) and -O0 vs -O1+
+# diverged. The same fix made all folds produce the canonical representation
+# (zero-extended for unsigned, sign-extended for signed): fold_shift used to
+# leave signed results masked-but-not-extended, which broke Eq folding against
+# sign-extended constants. Finally, the runtime BitNot lowering used the
+# 32-bit `not`/64-bit `mvn` on both backends, mangling i64/u64 (x86-64) and
+# u32 (aarch64) results for non-folded operands.
+#
+# Each scenario is pinned at -O0 and at -O2 so the two can never diverge again.
+
+[section]
+id = "cli.constfold"
+name = "Constant folding width correctness"
+description = "Folded constants must match runtime results at the operand's width at every opt level."
+
+# ~0 as u32 must be 4294967295, not the unmasked 64-bit !0 (the RUE-59 repro).
+[[case]]
+name = "bitnot_unsigned_widths_O2"
+description = "Folded ~ on u8/u16/u32/u64 is truncated to the operand width at -O2."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: u8 = ~0;
+    let b: u16 = ~0;
+    let c: u32 = ~0;
+    let d: u32 = ~5;
+    let e: u64 = ~0;
+    @dbg(a);
+    @dbg(b);
+    @dbg(c);
+    @dbg(d);
+    @dbg(e);
+    0
+}
+""" }]
+args = ["main.rue", "-O2", "-o", "prog"]
+exit_code = 0
+stdout = """255
+65535
+4294967295
+4294967290
+18446744073709551615
+"""
+
+# Control: the same program at -O0 (runtime bitnot) must agree.
+[[case]]
+name = "bitnot_unsigned_widths_O0"
+description = "Runtime ~ on u8/u16/u32/u64 matches the folded results at -O0."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: u8 = ~0;
+    let b: u16 = ~0;
+    let c: u32 = ~0;
+    let d: u32 = ~5;
+    let e: u64 = ~0;
+    @dbg(a);
+    @dbg(b);
+    @dbg(c);
+    @dbg(d);
+    @dbg(e);
+    0
+}
+""" }]
+args = ["main.rue", "-O0", "-o", "prog"]
+exit_code = 0
+stdout = """255
+65535
+4294967295
+4294967290
+18446744073709551615
+"""
+
+[[case]]
+name = "bitnot_signed_widths_O2"
+description = "Folded ~ on i8/i16/i32/i64 produces the two's-complement value at the operand width."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: i8 = ~0;
+    let b: i16 = ~5;
+    let c: i32 = ~0;
+    let d: i64 = ~5;
+    @dbg(a);
+    @dbg(b);
+    @dbg(c);
+    @dbg(d);
+    0
+}
+""" }]
+args = ["main.rue", "-O2", "-o", "prog"]
+exit_code = 0
+stdout = """-1
+-6
+-1
+-6
+"""
+
+# ~5i64 used to print 4294967290 at -O0: the x86-64 runtime lowering emitted a
+# 32-bit `not`, zeroing the high bits of 64-bit results.
+[[case]]
+name = "bitnot_signed_widths_O0"
+description = "Runtime ~ on i8/i16/i32/i64 is computed at full operand width at -O0."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: i8 = ~0;
+    let b: i16 = ~5;
+    let c: i32 = ~0;
+    let d: i64 = ~5;
+    @dbg(a);
+    @dbg(b);
+    @dbg(c);
+    @dbg(d);
+    0
+}
+""" }]
+args = ["main.rue", "-O0", "-o", "prog"]
+exit_code = 0
+stdout = """-1
+-6
+-1
+-6
+"""
+
+# Non-constant operands defeat constfold, so these exercise the runtime
+# BitNot lowering even at -O2 (x86-64: `not r64` for 64-bit; aarch64: w-form
+# `mvn` for sub-64-bit).
+[[case]]
+name = "bitnot_runtime_operands_O2"
+description = "Runtime (non-folded) ~ is width-correct for u32/u64/i64 at -O2."
+files = [{ path = "main.rue", source = """
+fn id_u32(x: u32) -> u32 { x }
+fn id_u64(x: u64) -> u64 { x }
+fn id_i64(x: i64) -> i64 { x }
+fn main() -> i32 {
+    let a: u32 = ~id_u32(5);
+    let b: u64 = ~id_u64(0);
+    let c: i64 = ~id_i64(5);
+    @dbg(a);
+    @dbg(b);
+    @dbg(c);
+    0
+}
+""" }]
+args = ["main.rue", "-O2", "-o", "prog"]
+exit_code = 0
+stdout = """4294967290
+18446744073709551615
+-6
+"""
+
+# Folded signed shift results must be canonical (sign-extended), or Eq folding
+# (raw u64 comparison) disagrees with the runtime: ((0-8) >> 2) == (0-2) used
+# to fold to false at -O2 while -O0 correctly computed true.
+[[case]]
+name = "folded_signed_shift_eq_O2"
+description = "Eq fold of a folded negative shift result against a negative constant."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    if ((0 - 8) >> 2) == (0 - 2) { 1 } else { 0 }
+}
+""" }]
+args = ["main.rue", "-O2", "-o", "prog"]
+exit_code = 1
+
+[[case]]
+name = "folded_signed_shift_eq_O0"
+description = "Control: the same comparison computed at runtime at -O0."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    if ((0 - 8) >> 2) == (0 - 2) { 1 } else { 0 }
+}
+""" }]
+args = ["main.rue", "-O0", "-o", "prog"]
+exit_code = 1
+
+# Adjacent constructs: double-not round-trips, and a folded ~ result composes
+# with folded arithmetic and comparisons.
+[[case]]
+name = "bitnot_composes_with_folds_O2"
+description = "~~x round-trips and folded ~ feeds arithmetic/comparison folds."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: u32 = ~~7;
+    let b: u32 = ~0 - 4294967290;
+    @dbg(a);
+    @dbg(b);
+    if ~5 == (0 - 6) { 1 } else { 0 }
+}
+""" }]
+args = ["main.rue", "-O2", "-o", "prog"]
+exit_code = 1
+stdout = """7
+5
+"""

@@ -240,8 +240,14 @@ pub enum X86Inst {
     /// `xor dst, src` - Bitwise XOR, 64-bit (dst = dst ^ src).
     Xor64RR { dst: Operand, src: Operand },
 
-    /// `not dst` - Bitwise NOT (dst = ~dst).
+    /// `not dst` - Bitwise NOT, 32-bit (dst = ~dst).
     NotR { dst: Operand },
+
+    /// `not dst` (64-bit) - Bitwise NOT treating operand as 64-bit (dst = ~dst).
+    ///
+    /// Used for i64/u64 BitNot where the 32-bit form would zero the high
+    /// 32 bits of the result (RUE-59).
+    Not64R { dst: Operand },
 
     /// `shl dst, cl` - Shift left 64-bit by count in CL register (dst = dst << CL).
     ShlRCl { dst: Operand },
@@ -556,6 +562,7 @@ impl fmt::Display for X86Inst {
             X86Inst::Or64RR { dst, src } => write!(f, "orq {}, {}", dst, src),
             X86Inst::Xor64RR { dst, src } => write!(f, "xorq {}, {}", dst, src),
             X86Inst::NotR { dst } => write!(f, "not {}", dst),
+            X86Inst::Not64R { dst } => write!(f, "notq {}", dst),
             X86Inst::ShlRCl { dst } => write!(f, "shlq {}, cl", dst),
             X86Inst::Shl32RCl { dst } => write!(f, "shll {}, cl", dst),
             X86Inst::ShlRI { dst, imm } => write!(f, "shlq {}, {}", dst, imm),
