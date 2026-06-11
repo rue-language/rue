@@ -254,13 +254,9 @@ pub fn uses(inst: &X86Inst) -> Vec<VReg> {
         X86Inst::Push { src } => {
             add_if_virtual(src, &mut result);
         }
-        X86Inst::Lea { index, .. } => {
+        X86Inst::Lea { .. } => {
             // LEA only defines dst, it does not read dst's previous value.
-            // base is physical register (Reg), so no vreg use.
-            // index is an optional VReg that IS used if present.
-            if let Some(idx) = index {
-                result.push(*idx);
-            }
+            // base is a physical register (Reg), so no vreg use.
         }
         X86Inst::Shl { dst, count } => {
             add_if_virtual(dst, &mut result);
@@ -717,8 +713,6 @@ mod tests {
         mir.push(X86Inst::Lea {
             dst: Operand::Virtual(v0),
             base: Reg::Rbp,
-            index: None,
-            scale: 1,
             disp: -8,
         });
 

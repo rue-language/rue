@@ -428,13 +428,7 @@ pub enum X86Inst {
     Push { src: Operand },
 
     /// `lea dst, [base + disp]` - Load effective address.
-    Lea {
-        dst: Operand,
-        base: Reg,
-        index: Option<VReg>,
-        scale: u8,
-        disp: i32,
-    },
+    Lea { dst: Operand, base: Reg, disp: i32 },
 
     /// `shl dst, count` - Shift left (multiply by 2^count).
     Shl { dst: Operand, count: Operand },
@@ -619,21 +613,8 @@ impl fmt::Display for X86Inst {
             X86Inst::Ret => write!(f, "ret"),
             X86Inst::Pop { dst } => write!(f, "pop {}", dst),
             X86Inst::Push { src } => write!(f, "push {}", src),
-            X86Inst::Lea {
-                dst,
-                base,
-                index,
-                scale: _,
-                disp,
-            } => {
-                if let Some(_idx) = index {
-                    // With index register
-                    if *disp >= 0 {
-                        write!(f, "lea {}, [{}+{}]", dst, base, disp)
-                    } else {
-                        write!(f, "lea {}, [{}-{}]", dst, base, -disp)
-                    }
-                } else if *disp >= 0 {
+            X86Inst::Lea { dst, base, disp } => {
+                if *disp >= 0 {
                     write!(f, "lea {}, [{}+{}]", dst, base, disp)
                 } else {
                     write!(f, "lea {}, [{}-{}]", dst, base, -disp)

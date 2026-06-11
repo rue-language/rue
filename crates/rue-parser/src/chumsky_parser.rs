@@ -1865,7 +1865,11 @@ fn process_block_items(items: Vec<BlockItem>, block_span: Span) -> (Vec<Statemen
     (statements, expr)
 }
 
-/// Parser for blocks that may end without a final expression (for if/while bodies)
+/// Parser for `{ statements... [expr] }` blocks, producing a [`BlockExpr`].
+///
+/// The final expression is optional: a block without one evaluates to unit
+/// (see [`process_block_items`], which also promotes a trailing diverging
+/// statement like `break`/`continue`/`return` to the final expression).
 fn maybe_unit_block_parser<'src, I>(
     expr: impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone + 'src,
 ) -> impl Parser<'src, I, BlockExpr, ParserExtras<'src>> + Clone
@@ -1887,26 +1891,15 @@ where
         })
 }
 
-/// Parser for blocks that require a final expression: { statements... expr }
+/// Same as [`maybe_unit_block_parser`], but wraps the result in [`Expr::Block`]
+/// for positions that need an expression (function bodies, standalone blocks).
 fn block_parser<'src, I>(
     expr: impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone + 'src,
 ) -> impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    block_item_parser(expr)
-        .repeated()
-        .collect::<Vec<_>>()
-        .delimited_by(just(TokenKind::LBrace), just(TokenKind::RBrace))
-        .map_with(|items, e| {
-            let span = span_from_extra(e);
-            let (statements, final_expr) = process_block_items(items, span);
-            Expr::Block(BlockExpr {
-                statements,
-                expr: Box::new(final_expr),
-                span,
-            })
-        })
+    maybe_unit_block_parser(expr).map(Expr::Block)
 }
 
 /// Parser for function definitions: [@directive]* [pub] [unchecked] fn name(params) -> Type { body }

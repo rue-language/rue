@@ -533,8 +533,6 @@ pub struct BasicBlock {
     pub insts: Vec<CfgValue>,
     /// How this block exits
     pub terminator: Terminator,
-    /// Predecessor blocks (filled in after construction)
-    pub preds: Vec<BlockId>,
 }
 
 impl BasicBlock {
@@ -545,7 +543,6 @@ impl BasicBlock {
             params: Vec::new(),
             insts: Vec::new(),
             terminator: Terminator::None,
-            preds: Vec::new(),
         }
     }
 }
@@ -903,27 +900,26 @@ impl Cfg {
         (0..self.blocks.len() as u32).map(BlockId)
     }
 
-    /// Compute predecessor lists for all blocks.
-    pub fn compute_predecessors(&mut self) {
-        // Clear existing predecessors
-        for block in &mut self.blocks {
-            block.preds.clear();
-        }
+    /// Compute predecessor lists for all blocks, indexed by block id.
+    ///
+    /// Predecessors are computed on demand from the current terminators
+    /// (rather than cached on each block) so the result is always in sync
+    /// with the CFG, even after optimization passes rewrite terminators.
+    pub fn compute_predecessors(&self) -> Vec<Vec<BlockId>> {
+        let mut preds: Vec<Vec<BlockId>> = vec![Vec::new(); self.blocks.len()];
 
-        // Collect edges
-        let mut edges: Vec<(BlockId, BlockId)> = Vec::new();
         for block in &self.blocks {
             match &block.terminator {
                 Terminator::Goto { target, .. } => {
-                    edges.push((block.id, *target));
+                    preds[target.0 as usize].push(block.id);
                 }
                 Terminator::Branch {
                     then_block,
                     else_block,
                     ..
                 } => {
-                    edges.push((block.id, *then_block));
-                    edges.push((block.id, *else_block));
+                    preds[then_block.0 as usize].push(block.id);
+                    preds[else_block.0 as usize].push(block.id);
                 }
                 Terminator::Switch {
                     cases_start,
@@ -932,18 +928,15 @@ impl Cfg {
                     ..
                 } => {
                     for (_, target) in self.get_switch_cases(*cases_start, *cases_len) {
-                        edges.push((block.id, *target));
+                        preds[target.0 as usize].push(block.id);
                     }
-                    edges.push((block.id, *default));
+                    preds[default.0 as usize].push(block.id);
                 }
                 Terminator::Return { .. } | Terminator::Unreachable | Terminator::None => {}
             }
         }
 
-        // Add predecessors
-        for (from, to) in edges {
-            self.blocks[to.0 as usize].preds.push(from);
-        }
+        preds
     }
 }
 
@@ -955,6 +948,7 @@ impl fmt::Display for Cfg {
             self.fn_name,
             self.return_type.name()
         )?;
+        let all_preds = self.compute_predecessors();
         for block in &self.blocks {
             write!(f, "  {}:", block.id)?;
             if !block.params.is_empty() {
@@ -970,9 +964,10 @@ impl fmt::Display for Cfg {
             writeln!(f)?;
 
             // Print predecessors
-            if !block.preds.is_empty() {
+            let preds = &all_preds[block.id.0 as usize];
+            if !preds.is_empty() {
                 write!(f, "    ; preds: ")?;
-                for (i, pred) in block.preds.iter().enumerate() {
+                for (i, pred) in preds.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
                     }

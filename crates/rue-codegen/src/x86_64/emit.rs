@@ -1038,15 +1038,9 @@ impl<'a> Emitter<'a> {
                 self.emit_push(src.as_physical());
                 end_inst!(self, "push {}", src.as_physical());
             }
-            X86Inst::Lea {
-                dst,
-                base,
-                index: _,
-                scale: _,
-                disp,
-            } => {
+            X86Inst::Lea { dst, base, disp } => {
                 let adjusted_disp = self.adjust_fp_offset(*base, *disp);
-                // Simplified: LEA dst, [base + disp] without index
+                // LEA dst, [base + disp]
                 self.begin_inst();
                 self.emit_lea_simple(dst.as_physical(), *base, adjusted_disp);
                 end_inst!(
@@ -1082,27 +1076,11 @@ impl<'a> Emitter<'a> {
                 end_inst!(self, "shl {}, cl", dst_reg);
             }
 
-            X86Inst::MovRMIndexed { dst, base, offset } => {
-                // MOV dst, [base_vreg + offset] - but base is VReg
-                // After regalloc, base should be in a physical register
-                // We emit MOV r64, [r64 + offset] where base has already been loaded
-                // For now use a simple indirect load. The regalloc phase should ensure
-                // base is already in a register.
-                let _ = base;
-                let _ = offset;
-                // This is handled specially - after regalloc the base VReg is in Rax
-                self.begin_inst();
-                self.emit_mov_rm(dst.as_physical(), Reg::Rax, 0);
-                end_inst!(self, "mov {}, [rax]", dst.as_physical());
-            }
-            X86Inst::MovMRIndexed { base, offset, src } => {
-                // MOV [base_vreg + offset], src
-                let _ = base;
-                let _ = offset;
-                // Same as above - base should be in Rax after regalloc
-                self.begin_inst();
-                self.emit_mov_mr(Reg::Rax, 0, src.as_physical());
-                end_inst!(self, "mov [rax], {}", src.as_physical());
+            X86Inst::MovRMIndexed { .. } | X86Inst::MovMRIndexed { .. } => {
+                // Regalloc lowers these into MovRM/MovMR (or the SIB variants), and
+                // emit_internal() verifies none survive before this dispatch loop runs,
+                // returning an ICE instead of ever reaching this arm.
+                unreachable!("MovRMIndexed/MovMRIndexed rejected by pre-emission verification")
             }
 
             X86Inst::MovRMSib {
@@ -3816,8 +3794,6 @@ mod tests {
         let code = emit_single(X86Inst::Lea {
             dst: Operand::Physical(Reg::Rax),
             base: Reg::Rbp,
-            index: None,
-            scale: 1,
             disp: -8,
         });
         // lea rax, [rbp-8] -> 48 8D 45 F8 (REX.W 8D /r)
@@ -4318,8 +4294,6 @@ mod tests {
         let code = emit_single(X86Inst::Lea {
             dst: Operand::Physical(Reg::R10),
             base: Reg::Rbp,
-            index: None,
-            scale: 1,
             disp: -16,
         });
         // lea r10, [rbp-16] -> 4C 8D 55 F0 (REX.WR 8D /r)
@@ -4333,8 +4307,6 @@ mod tests {
         let code = emit_single(X86Inst::Lea {
             dst: Operand::Physical(Reg::Rax),
             base: Reg::R12,
-            index: None,
-            scale: 1,
             disp: 8,
         });
         // lea rax, [r12+8] -> 49 8D 44 24 08 (REX.WB 8D ModRM SIB disp8)
@@ -4347,8 +4319,6 @@ mod tests {
         let code = emit_single(X86Inst::Lea {
             dst: Operand::Physical(Reg::R10),
             base: Reg::R13,
-            index: None,
-            scale: 1,
             disp: 0,
         });
         // lea r10, [r13] -> 4D 8D 55 00 (REX.WRB 8D mod=01 reg=r10 r/m=r13 disp8=0)

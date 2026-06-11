@@ -144,9 +144,6 @@ impl<'a> CfgBuilder<'a> {
             builder.lower_inst(root);
         }
 
-        // Compute predecessor lists
-        builder.cfg.compute_predecessors();
-
         CfgOutput {
             cfg: builder.cfg,
             warnings: builder.warnings,

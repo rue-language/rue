@@ -2179,106 +2179,26 @@ impl<'a> Emitter<'a> {
 mod tests {
     use super::*;
 
-    /// Test helper struct that owns the MIR to avoid lifetime issues
-    struct TestEmitter {
-        code: Vec<u8>,
-    }
-
-    impl TestEmitter {
-        fn new() -> Self {
-            TestEmitter { code: Vec::new() }
-        }
-
-        fn emit_u32(&mut self, inst: u32) {
-            self.code.extend_from_slice(&inst.to_le_bytes());
-        }
-
-        /// Emit a mov immediate using the same logic as Emitter
-        fn emit_mov_imm(&mut self, rd: Reg, imm: i64) {
-            let uimm = imm as u64;
-
-            let chunks = [
-                (uimm >> 0) & 0xFFFF,
-                (uimm >> 16) & 0xFFFF,
-                (uimm >> 32) & 0xFFFF,
-                (uimm >> 48) & 0xFFFF,
-            ];
-
-            let zeros = chunks.iter().filter(|&&c| c == 0).count();
-            let ones = chunks.iter().filter(|&&c| c == 0xFFFF).count();
-
-            if ones > zeros {
-                let inverted = !uimm;
-                let inv_chunks = [
-                    (inverted >> 0) & 0xFFFF,
-                    (inverted >> 16) & 0xFFFF,
-                    (inverted >> 32) & 0xFFFF,
-                    (inverted >> 48) & 0xFFFF,
-                ];
-
-                let (first_idx, first_val) = inv_chunks
-                    .iter()
-                    .enumerate()
-                    .find(|&(_, &v)| v != 0)
-                    .map(|(i, &v)| (i, v))
-                    .unwrap_or((0, 0));
-
-                let hw = first_idx as u32;
-                let inst =
-                    OPCODE_MOVN_X | (hw << 21) | ((first_val as u32) << 5) | rd.encoding() as u32;
-                self.emit_u32(inst);
-
-                for (i, &chunk) in chunks.iter().enumerate() {
-                    if i != first_idx && chunk != 0xFFFF {
-                        let base = match i {
-                            0 => OPCODE_MOVK_X_LSL0,
-                            1 => OPCODE_MOVK_X_LSL16,
-                            2 => OPCODE_MOVK_X_LSL32,
-                            3 => OPCODE_MOVK_X_LSL48,
-                            _ => unreachable!(),
-                        };
-                        let inst = base | ((chunk as u32) << 5) | rd.encoding() as u32;
-                        self.emit_u32(inst);
-                    }
-                }
-            } else {
-                let inst = OPCODE_MOVZ_X | ((uimm & 0xFFFF) << 5) as u32 | rd.encoding() as u32;
-                self.emit_u32(inst);
-
-                if (uimm >> 16) & 0xFFFF != 0 {
-                    let inst = OPCODE_MOVK_X_LSL16
-                        | (((uimm >> 16) & 0xFFFF) << 5) as u32
-                        | rd.encoding() as u32;
-                    self.emit_u32(inst);
-                }
-                if (uimm >> 32) & 0xFFFF != 0 {
-                    let inst = OPCODE_MOVK_X_LSL32
-                        | (((uimm >> 32) & 0xFFFF) << 5) as u32
-                        | rd.encoding() as u32;
-                    self.emit_u32(inst);
-                }
-                if (uimm >> 48) & 0xFFFF != 0 {
-                    let inst = OPCODE_MOVK_X_LSL48
-                        | (((uimm >> 48) & 0xFFFF) << 5) as u32
-                        | rd.encoding() as u32;
-                    self.emit_u32(inst);
-                }
-            }
-        }
+    /// Encode `mov rd, #imm` through the real encoder (via [`Aarch64Inst::MovImm`])
+    /// and return the emitted bytes.
+    fn emit_mov_imm(rd: Reg, imm: i64) -> Vec<u8> {
+        emit_single(Aarch64Inst::MovImm {
+            dst: Operand::Physical(rd),
+            imm,
+        })
     }
 
     #[test]
     fn test_movn_for_minus_one() {
         // -1 should use MOVN for efficient encoding
-        let mut emitter = TestEmitter::new();
-        emitter.emit_mov_imm(Reg::X0, -1);
+        let code = emit_mov_imm(Reg::X0, -1);
 
         // -1 (0xFFFFFFFFFFFFFFFF) should be encoded as MOVN X0, #0
         // MOVN: 0x92800000, with rd=0
         // Since all chunks are 0xFFFF, we use MOVN with the first inverted chunk (0)
-        assert_eq!(emitter.code.len(), 4, "MOVN -1 should be 1 instruction");
+        assert_eq!(code.len(), 4, "MOVN -1 should be 1 instruction");
 
-        let inst = u32::from_le_bytes(emitter.code[0..4].try_into().unwrap());
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
         // Check it's a MOVN instruction (top bits 0x92800000)
         assert_eq!(inst & 0xFF800000, 0x92800000, "Should be MOVN");
         // Check destination is X0
@@ -2288,16 +2208,11 @@ mod tests {
     #[test]
     fn test_movz_for_small_positive() {
         // Small positive numbers should use MOVZ
-        let mut emitter = TestEmitter::new();
-        emitter.emit_mov_imm(Reg::X1, 42);
+        let code = emit_mov_imm(Reg::X1, 42);
 
-        assert_eq!(
-            emitter.code.len(),
-            4,
-            "Small immediate should be 1 instruction"
-        );
+        assert_eq!(code.len(), 4, "Small immediate should be 1 instruction");
 
-        let inst = u32::from_le_bytes(emitter.code[0..4].try_into().unwrap());
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
         // MOVZ: 0xD2800000
         assert_eq!(inst & 0xFF800000, 0xD2800000, "Should be MOVZ");
         // Check destination is X1
@@ -2311,31 +2226,25 @@ mod tests {
         // -256 = 0xFFFFFFFFFFFFFF00
         // This has 3 chunks as 0xFFFF and one as 0xFF00
         // MOVN should be more efficient
-        let mut emitter = TestEmitter::new();
-        emitter.emit_mov_imm(Reg::X2, -256);
+        let code = emit_mov_imm(Reg::X2, -256);
 
         // Should use MOVN followed by MOVK for the 0xFF00 chunk
         // The inverted value is 0x00000000000000FF
         // First chunk inverted is 0xFF, so MOVN X2, #0xFF
-        let inst = u32::from_le_bytes(emitter.code[0..4].try_into().unwrap());
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
         assert_eq!(inst & 0xFF800000, 0x92800000, "Should be MOVN");
     }
 
     #[test]
     fn test_movz_movk_for_large_positive() {
         // 0x1234_5678 requires MOVZ + MOVK
-        let mut emitter = TestEmitter::new();
-        emitter.emit_mov_imm(Reg::X3, 0x12345678);
+        let code = emit_mov_imm(Reg::X3, 0x12345678);
 
         // Should be MOVZ for low 16 bits + MOVK for high 16 bits
-        assert_eq!(
-            emitter.code.len(),
-            8,
-            "Large positive should be 2 instructions"
-        );
+        assert_eq!(code.len(), 8, "Large positive should be 2 instructions");
 
-        let inst1 = u32::from_le_bytes(emitter.code[0..4].try_into().unwrap());
-        let inst2 = u32::from_le_bytes(emitter.code[4..8].try_into().unwrap());
+        let inst1 = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        let inst2 = u32::from_le_bytes(code[4..8].try_into().unwrap());
 
         // First instruction: MOVZ X3, #0x5678
         // MOVZ uses top bits 0xD28 (sf=1, opc=10, hw=00)
@@ -2356,12 +2265,11 @@ mod tests {
 
     #[test]
     fn test_zero_immediate() {
-        let mut emitter = TestEmitter::new();
-        emitter.emit_mov_imm(Reg::X4, 0);
+        let code = emit_mov_imm(Reg::X4, 0);
 
-        assert_eq!(emitter.code.len(), 4, "Zero should be 1 instruction");
+        assert_eq!(code.len(), 4, "Zero should be 1 instruction");
 
-        let inst = u32::from_le_bytes(emitter.code[0..4].try_into().unwrap());
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
         // MOVZ X4, #0
         assert_eq!(inst & 0xFF800000, 0xD2800000, "Should be MOVZ");
         assert_eq!((inst >> 5) & 0xFFFF, 0, "Immediate should be 0");
