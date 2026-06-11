@@ -1,6 +1,6 @@
 # ADR-0034: Per-Target Runtime Archives for Cross-Compilation
 
-**Status:** Proposed (stopgap implemented: cross-target links are refused with a clear error)
+**Status:** Accepted (ratified by Steve 2026-06-11: option B now, option A acknowledged as the probable eventual destination; stopgap C shipped in #978)
 **Tracking:** RUE-36 (cross-compilation embeds the host runtime), RUE-144 item 7 (build-graph root cause), RUE-85 (Mach-O cross-linking)
 
 ## Problem
