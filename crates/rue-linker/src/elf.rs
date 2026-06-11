@@ -143,6 +143,10 @@ pub struct ObjectFile {
     pub symbols: Vec<Symbol>,
     /// Section name to index mapping.
     pub section_map: HashMap<String, usize>,
+    /// The machine architecture this object was compiled for. The linker
+    /// validates this against the link target — without it, an "aarch64"
+    /// binary could silently embed x86 code (RUE-131 item 10, RUE-36).
+    pub machine: ElfMachine,
 }
 
 /// A section from an object file.
@@ -732,6 +736,8 @@ impl ObjectFile {
             sections,
             symbols,
             section_map,
+            // The Mach-O parser only accepts CPU_TYPE_ARM64 objects.
+            machine: ElfMachine::Aarch64,
         })
     }
 
@@ -1102,6 +1108,7 @@ impl ObjectFile {
             sections,
             symbols,
             section_map,
+            machine,
         })
     }
 

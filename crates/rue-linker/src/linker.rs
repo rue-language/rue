@@ -104,6 +104,11 @@ pub enum LinkError {
     UndefinedSymbol(String),
     /// Duplicate symbol definition.
     DuplicateSymbol(String),
+    /// Object architecture doesn't match the link target.
+    ArchMismatch {
+        object_machine: String,
+        target: String,
+    },
     /// Unsupported relocation type.
     UnsupportedRelocation(String),
     /// Relocation overflow (value doesn't fit).
@@ -135,6 +140,14 @@ impl std::fmt::Display for LinkError {
         match self {
             LinkError::UndefinedSymbol(s) => write!(f, "undefined symbol: {}", s),
             LinkError::DuplicateSymbol(s) => write!(f, "duplicate symbol: {}", s),
+            LinkError::ArchMismatch {
+                object_machine,
+                target,
+            } => write!(
+                f,
+                "object architecture mismatch: object is {}, link target is {}",
+                object_machine, target
+            ),
             LinkError::UnsupportedRelocation(s) => write!(f, "unsupported relocation: {}", s),
             LinkError::RelocationOverflow { symbol, rel_type } => {
                 write!(f, "relocation overflow for {} ({})", symbol, rel_type)
@@ -224,6 +237,21 @@ impl Linker {
 
     /// Add an object file to be linked.
     pub fn add_object(&mut self, obj: ObjectFile) -> Result<(), LinkError> {
+        // Refuse objects compiled for a different architecture — without this
+        // check an "aarch64" binary could silently embed x86 machine code
+        // (confirmed during the linker review: 22 x86 syscalls linked into an
+        // aarch64 output without complaint). (RUE-131 item 10, RUE-36)
+        let expected = match self.target {
+            Target::X86_64Linux => crate::elf::ElfMachine::X86_64,
+            Target::Aarch64Linux | Target::Aarch64Macos => crate::elf::ElfMachine::Aarch64,
+        };
+        if obj.machine != expected {
+            return Err(LinkError::ArchMismatch {
+                object_machine: format!("{:?}", obj.machine),
+                target: format!("{:?}", self.target),
+            });
+        }
+
         let obj_index = self.objects.len();
 
         // Collect global symbols
@@ -233,13 +261,17 @@ impl Linker {
                 && !sym.name.is_empty()
             {
                 if let Some((_, existing)) = self.global_symbols.get(&sym.name) {
-                    // Allow weak symbols to be overridden
+                    // Two strong definitions collide; weak symbols defer.
                     if existing.binding != SymbolBinding::Weak && sym.binding != SymbolBinding::Weak
                     {
                         return Err(LinkError::DuplicateSymbol(sym.name.clone()));
                     }
-                    // Keep the non-weak one
-                    if existing.binding == SymbolBinding::Weak {
+                    // A strong definition overrides a weak one. Among weak
+                    // definitions the FIRST wins (standard linker semantics;
+                    // this used to keep the last). (RUE-131 item 9)
+                    if existing.binding == SymbolBinding::Weak
+                        && sym.binding == SymbolBinding::Global
+                    {
                         self.global_symbols
                             .insert(sym.name.clone(), (obj_index, sym.clone()));
                     }
@@ -1152,6 +1184,14 @@ impl Linker {
                         sym_name, sec_idx
                     )));
                 }
+            } else if self.objects[obj_idx]
+                .find_symbol(&sym_name)
+                .is_some_and(|s| s.binding == SymbolBinding::Weak)
+            {
+                // An undefined WEAK symbol resolves to address 0 rather than
+                // erroring — standard ELF semantics, lets code do null checks
+                // against optional symbols. (RUE-131 item 9)
+                0
             } else {
                 return Err(LinkError::UndefinedSymbol(format!(
                     "{} (no section, rel_type={:?})",
@@ -1888,6 +1928,7 @@ mod tests {
             sections: vec![text, extra],
             symbols,
             section_map,
+            machine: crate::elf::ElfMachine::X86_64,
         }
     }
 
@@ -1958,6 +1999,149 @@ mod tests {
             slot, main_vaddr,
             "Abs64 relocation in .data must be applied (was silently dropped)"
         );
+    }
+
+    /// RUE-131 item 9: among multiple WEAK definitions, the first wins; a
+    /// strong definition overrides a weak one in either order.
+    #[test]
+    fn test_weak_symbol_first_wins_strong_overrides() {
+        use crate::elf::{Relocation, Section, SymbolType};
+        let make_obj = |name: &str, code: Vec<u8>, binding: SymbolBinding| ObjectFile {
+            sections: vec![Section {
+                name: ".text".into(),
+                data: code,
+                size: 1,
+                flags: SectionFlags::ALLOC | SectionFlags::EXEC,
+                relocations: vec![],
+                align: 16,
+            }],
+            symbols: vec![Symbol {
+                name: name.into(),
+                section_index: Some(0),
+                value: 0,
+                size: 1,
+                binding,
+                sym_type: SymbolType::Func,
+            }],
+            section_map: HashMap::from([(".text".into(), 0)]),
+            machine: crate::elf::ElfMachine::X86_64,
+        };
+        let _ = Relocation {
+            offset: 0,
+            symbol_index: 0,
+            rel_type: RelocationType::Abs64,
+            addend: 0,
+        };
+
+        // weak then weak: first wins
+        let mut linker = Linker::new(ELF_TARGET);
+        linker
+            .add_object(make_obj("f", vec![0xC3], SymbolBinding::Weak))
+            .unwrap();
+        linker
+            .add_object(make_obj("f", vec![0x90], SymbolBinding::Weak))
+            .unwrap();
+        let (obj_idx, _) = linker.global_symbols.get("f").unwrap();
+        assert_eq!(*obj_idx, 0, "first weak definition must win");
+
+        // weak then strong: strong overrides
+        let mut linker = Linker::new(ELF_TARGET);
+        linker
+            .add_object(make_obj("f", vec![0xC3], SymbolBinding::Weak))
+            .unwrap();
+        linker
+            .add_object(make_obj("f", vec![0x90], SymbolBinding::Global))
+            .unwrap();
+        let (obj_idx, sym) = linker.global_symbols.get("f").unwrap();
+        assert_eq!(*obj_idx, 1, "strong definition must override weak");
+        assert_eq!(sym.binding, SymbolBinding::Global);
+
+        // strong then weak: strong kept
+        let mut linker = Linker::new(ELF_TARGET);
+        linker
+            .add_object(make_obj("f", vec![0xC3], SymbolBinding::Global))
+            .unwrap();
+        linker
+            .add_object(make_obj("f", vec![0x90], SymbolBinding::Weak))
+            .unwrap();
+        let (obj_idx, _) = linker.global_symbols.get("f").unwrap();
+        assert_eq!(
+            *obj_idx, 0,
+            "strong definition must be kept over later weak"
+        );
+    }
+
+    /// RUE-131 item 9: a relocation against an UNDEFINED weak symbol resolves
+    /// to address 0 instead of an undefined-symbol error.
+    #[test]
+    fn test_undefined_weak_resolves_to_zero() {
+        use crate::elf::{Relocation, Section, SymbolType};
+        let obj = ObjectFile {
+            sections: vec![Section {
+                name: ".text".into(),
+                // mov rax, imm64 (placeholder patched by Abs64); ret
+                data: vec![0x48, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0, 0xC3],
+                size: 11,
+                flags: SectionFlags::ALLOC | SectionFlags::EXEC,
+                relocations: vec![Relocation {
+                    offset: 2,
+                    symbol_index: 1,
+                    rel_type: RelocationType::Abs64,
+                    addend: 0,
+                }],
+                align: 16,
+            }],
+            symbols: vec![
+                Symbol {
+                    name: "main".into(),
+                    section_index: Some(0),
+                    value: 0,
+                    size: 11,
+                    binding: SymbolBinding::Global,
+                    sym_type: SymbolType::Func,
+                },
+                Symbol {
+                    name: "optional_hook".into(),
+                    section_index: None, // undefined
+                    value: 0,
+                    size: 0,
+                    binding: SymbolBinding::Weak,
+                    sym_type: SymbolType::None,
+                },
+            ],
+            section_map: HashMap::from([(".text".into(), 0)]),
+            machine: crate::elf::ElfMachine::X86_64,
+        };
+
+        let mut linker = Linker::new(ELF_TARGET);
+        linker.add_object(obj).unwrap();
+        let elf = linker.link("main").unwrap();
+
+        // The link must not error, and the mov's imm64 (the bytes following
+        // the 0x48 0xB8 opcode in the output) must be 0 — the weak resolution.
+        let opcode_pos = elf
+            .windows(2)
+            .position(|w| w == [0x48, 0xB8])
+            .expect("mov rax, imm64 opcode present in linked output");
+        let imm = u64::from_le_bytes(elf[opcode_pos + 2..opcode_pos + 10].try_into().unwrap());
+        assert_eq!(imm, 0, "undefined weak symbol must resolve to address 0");
+    }
+
+    /// RUE-131 item 10: an object compiled for a different architecture must
+    /// be refused — before this check, an "aarch64" output could silently
+    /// embed x86 machine code.
+    #[test]
+    fn test_arch_mismatch_rejected() {
+        let obj_bytes = ObjectBuilder::new(ELF_TARGET, "main")
+            .code(vec![0xC3])
+            .build();
+        let mut obj = ObjectFile::parse(&obj_bytes).unwrap();
+        // Simulate an object built for the other architecture.
+        obj.machine = crate::elf::ElfMachine::Aarch64;
+
+        let mut linker = Linker::new(ELF_TARGET);
+        let result = linker.add_object(obj);
+        assert!(matches!(result, Err(LinkError::ArchMismatch { .. })));
     }
 
     #[test]
@@ -2288,6 +2472,7 @@ mod tests {
             sections: vec![text_section],
             symbols: vec![null_symbol, bad_symbol, main_symbol],
             section_map: HashMap::from([(".text".into(), 0)]),
+            machine: crate::elf::ElfMachine::X86_64,
         };
 
         let mut linker = Linker::new(ELF_TARGET);
@@ -2360,6 +2545,7 @@ mod tests {
             sections: vec![text_section],
             symbols: vec![null_symbol, main_symbol], // Only 2 symbols, but relocation references index 999
             section_map: HashMap::from([(".text".into(), 0)]),
+            machine: crate::elf::ElfMachine::X86_64,
         };
 
         let mut linker = Linker::new(ELF_TARGET);
@@ -3267,6 +3453,7 @@ mod tests {
             sections: vec![text_section],
             symbols: vec![main_symbol],
             section_map: [("__text".to_string(), 0)].into_iter().collect(),
+            machine: crate::elf::ElfMachine::Aarch64,
         };
 
         let mut linker = Linker::new(Target::Aarch64Macos);
@@ -3325,6 +3512,7 @@ mod tests {
             sections: vec![text_section],
             symbols: vec![main_symbol],
             section_map: [("__text".to_string(), 0)].into_iter().collect(),
+            machine: crate::elf::ElfMachine::Aarch64,
         };
 
         let mut linker = Linker::new(Target::Aarch64Macos);
@@ -3363,6 +3551,7 @@ mod tests {
             sections: vec![text_section],
             symbols: vec![other_symbol],
             section_map: [("__text".to_string(), 0)].into_iter().collect(),
+            machine: crate::elf::ElfMachine::Aarch64,
         };
 
         let mut linker = Linker::new(Target::Aarch64Macos);
