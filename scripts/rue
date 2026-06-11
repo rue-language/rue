@@ -12,6 +12,7 @@
 #   scripts/rue cli [pattern]      CLI integration tests, optional filter
 #   scripts/rue ui [pattern]       UI/diagnostics tests, optional filter
 #   scripts/rue fmt                Format the code (./fmt.sh)
+#   scripts/rue gc                 Reclaim disk: drop buck-out artifacts unused for 1+ week
 #   scripts/rue path               Print the absolute binary path (build if needed)
 #
 set -euo pipefail
@@ -76,8 +77,15 @@ case "$cmd" in
     fmt)
         ./fmt.sh "$@"
         ;;
+    gc)
+        # buck-out grows without bound; drop artifacts not used in the last
+        # week. An optional argument overrides the window: scripts/rue gc 1d
+        ./buck2 clean --stale "${1:-1w}"
+        ;;
     ""|-h|--help|help)
-        sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+        # Print the header comment block (everything between the shebang and
+        # the first non-comment line), so new subcommands show up automatically.
+        awk 'NR > 1 { if (!/^#/) exit; sub(/^# ?/, ""); print }' "${BASH_SOURCE[0]}"
         ;;
     *)
         echo "scripts/rue: unknown command '$cmd' (try: scripts/rue help)" >&2

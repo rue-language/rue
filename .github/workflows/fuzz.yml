@@ -14,15 +14,17 @@ jobs:
       - name: Install dotslash
         uses: facebook/install-dotslash@latest
 
-      - name: Cache Buck2 outputs
+      # Cache the dotslash-downloaded buck2 binary. The previous cache of
+      # buck-out/v2/gen + ~/.cache/buck2 was inert — OSS buck2 has no
+      # persistent action cache across daemon restarts, and ~/.cache/buck2
+      # is not a path buck2 uses. (RUE-144)
+      - name: Cache dotslash artifacts
         uses: actions/cache@v4
         with:
-          path: |
-            buck-out/v2/gen
-            ~/.cache/buck2
-          key: buck2-fuzz-${{ hashFiles('**/BUCK', 'toolchains/rust/defs.bzl') }}
+          path: ~/.cache/dotslash
+          key: dotslash-linux-x64-${{ hashFiles('buck2') }}
           restore-keys: |
-            buck2-fuzz-
+            dotslash-linux-x64-
 
       - name: Create seed corpus
         run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --init-corpus crates/rue-fuzz/corpus

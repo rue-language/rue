@@ -48,16 +48,21 @@ jobs:
       - name: Install dotslash
         uses: facebook/install-dotslash@latest
 
-      # Cache Buck2 outputs including downloaded Rust toolchain
-      - name: Cache Buck2 outputs
+      # Cache the dotslash-downloaded buck2 binary (~/.cache/dotslash on
+      # Linux, ~/Library/Caches/dotslash on macOS; actions/cache skips paths
+      # that don't exist). The previous cache of buck-out/v2/gen +
+      # ~/.cache/buck2 was inert: OSS buck2 has no persistent action cache
+      # across daemon restarts, and ~/.cache/buck2 is not a path buck2 uses —
+      # multi-GB saved/restored for zero hits. (RUE-144)
+      - name: Cache dotslash artifacts
         uses: actions/cache@v4
         with:
           path: |
-            buck-out/v2/gen
-            ~/.cache/buck2
-          key: buck2-${{ matrix.name }}-${{ hashFiles('**/BUCK', 'toolchains/rust/defs.bzl') }}
+            ~/.cache/dotslash
+            ~/Library/Caches/dotslash
+          key: dotslash-${{ matrix.name }}-${{ hashFiles('buck2') }}
           restore-keys: |
-            buck2-${{ matrix.name }}-
+            dotslash-${{ matrix.name }}-
 
       # Uses hermetic Rust toolchain downloaded by Buck2
       # First verify everything builds (catches issues tests might miss)
