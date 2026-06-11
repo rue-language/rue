@@ -31,6 +31,7 @@ mod analysis;
 mod analyze_ops;
 mod anon_structs;
 mod builtins;
+mod comptime_eval;
 mod context;
 mod declarations;
 mod file_paths;

@@ -989,3 +989,256 @@ fn main() -> i32 {
 }
 """
 exit_code = 42
+
+# =============================================================================
+# Typed Comptime Evaluation (RUE-68/69/70/71, RUE-163)
+# =============================================================================
+# The comptime evaluator mirrors runtime semantics exactly: arithmetic is
+# checked at the operands' type, shifts mask/truncate per 4.3a:10, the full
+# range of every integer type is representable, and would-panic operations
+# are compile-time errors (4.14:4).
+
+[[case]]
+name = "comptime_intermediate_overflow_i32_error"
+spec = ["4.14:4"]
+description = "Intermediate i32 overflow inside comptime is a compile error (runtime would panic) - RUE-68"
+source = """
+fn main() -> i32 {
+    comptime { 100000 * 100000 / 100000 }
+}
+"""
+compile_fail = true
+error_contains = "integer overflow"
+
+[[case]]
+name = "comptime_intermediate_overflow_u8_error"
+spec = ["4.14:4"]
+description = "Intermediate u8 overflow inside comptime is a compile error even when the final result fits - RUE-68"
+source = """
+fn main() -> i32 {
+    let x: u8 = comptime { 200 + 100 - 100 };
+    0
+}
+"""
+compile_fail = true
+error_contains = "integer overflow"
+
+[[case]]
+name = "comptime_overflow_i64_boundary_error"
+spec = ["4.14:4"]
+description = "i64 overflow inside comptime is still rejected"
+source = """
+fn main() -> i32 {
+    let x: i64 = comptime { 9223372036854775807 + 1 };
+    0
+}
+"""
+compile_fail = true
+error_contains = "integer overflow"
+
+[[case]]
+name = "comptime_division_by_zero_error"
+spec = ["4.14:4"]
+description = "Constant division by zero inside comptime is a compile error (runtime would panic)"
+source = """
+fn main() -> i32 {
+    comptime { 1 / 0 }
+}
+"""
+compile_fail = true
+error_contains = "division by zero"
+
+[[case]]
+name = "comptime_remainder_by_zero_error"
+spec = ["4.14:4"]
+description = "Constant remainder by zero inside comptime is a compile error (runtime would panic)"
+source = """
+fn main() -> i32 {
+    comptime { 5 % 0 }
+}
+"""
+compile_fail = true
+error_contains = "remainder by zero"
+
+[[case]]
+name = "comptime_signed_min_div_neg_one_error"
+spec = ["4.14:4"]
+description = "MIN / -1 overflows at runtime (8.1:3), so it is a comptime error"
+source = """
+fn main() -> i32 {
+    let x: i64 = comptime { (0 - 9223372036854775807 - 1) / (0 - 1) };
+    0
+}
+"""
+compile_fail = true
+error_contains = "integer overflow"
+
+[[case]]
+name = "comptime_negative_result"
+spec = ["4.14:2"]
+description = "Comptime expressions may evaluate to negative values - RUE-71"
+source = """
+fn main() -> i32 {
+    let x: i32 = comptime { 0 - 1 };
+    x + 43
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_unary_negation"
+spec = ["4.14:2"]
+description = "Unary negation is supported in comptime blocks"
+source = """
+fn main() -> i32 {
+    let x: i32 = comptime { -(2 + 3) };
+    x + 47
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_negative_i8_min"
+spec = ["4.14:2"]
+description = "The most negative i8 value is representable in comptime"
+source = """
+fn main() -> i32 {
+    let x: i8 = comptime { -128 };
+    if x < 0 { 42 } else { 1 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_bitnot_width_aware"
+spec = ["4.14:2"]
+description = "Bitwise NOT truncates to the operand width: ~0 as u8 is 255"
+source = """
+fn main() -> i32 {
+    let x: u8 = comptime { ~0 };
+    if x == 255 { 42 } else { 1 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_shift_large_amount"
+spec = ["4.14:2"]
+description = "Constant shifts with amount >= 8 fold at comptime - RUE-69"
+source = """
+fn main() -> i32 {
+    if comptime { 1 << 10 } == 1024 { 42 } else { 1 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_shift_amount_masked"
+spec = ["4.14:2"]
+description = "Shift amounts mask modulo the bit width (4.3a:10): i32 << 33 == i32 << 1"
+source = """
+fn main() -> i32 {
+    comptime { 1 << 33 }
+}
+"""
+exit_code = 2
+
+[[case]]
+name = "comptime_shift_truncates_to_width"
+spec = ["4.14:2"]
+description = "Shift results truncate to the operand width, matching runtime: 3 << 7 as u8 is 128"
+source = """
+fn main() -> i32 {
+    let x: u8 = comptime { 3 << 7 };
+    if x == 128 { 42 } else { 1 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_u64_max_literal"
+spec = ["4.14:2"]
+description = "The full u64 range is representable in comptime - RUE-70"
+source = """
+fn main() -> i32 {
+    let x: u64 = comptime { 18446744073709551615 };
+    if x == 18446744073709551615 { 42 } else { 1 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_u64_above_i64_max_arith"
+spec = ["4.14:2"]
+description = "u64 arithmetic above i64::MAX evaluates at comptime - RUE-70"
+source = """
+fn main() -> i32 {
+    let x: u64 = comptime { 4611686018427387904 * 2 };
+    if x == 9223372036854775808 { 42 } else { 1 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_let_bindings_in_block"
+spec = ["4.14:2"]
+description = "Comptime blocks support let statements followed by a tail expression"
+source = """
+fn main() -> i32 {
+    comptime { let a = 2; let b = a + 1; a * b * 7 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_file_level_const"
+spec = ["4.14:2"]
+description = "File-level constants are usable inside comptime blocks"
+source = """
+const N = 7;
+fn main() -> i32 {
+    comptime { N * 6 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_logical_short_circuit"
+spec = ["4.14:2"]
+description = "&& short-circuits at comptime, mirroring runtime (the would-panic RHS is never evaluated)"
+source = """
+fn main() -> i32 {
+    if comptime { false && 1 / 0 == 1 } { 1 } else { 42 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_param_forwarding"
+spec = ["4.14:5"]
+description = "A comptime parameter may be forwarded to another function's comptime parameter"
+source = """
+fn g(comptime m: i32) -> i32 { m * 2 }
+fn f(comptime n: i32) -> i32 { g(n) }
+fn main() -> i32 {
+    f(21)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_param_forward_shadowed_rejected"
+spec = ["4.14:6"]
+description = "A runtime local shadowing a comptime parameter is not comptime-known"
+source = """
+fn g(comptime m: i32) -> i32 { m * 2 }
+fn f(comptime n: i32, x: i32) -> i32 {
+    let n = x;
+    g(n)
+}
+fn main() -> i32 {
+    f(5, 1)
+}
+"""
+compile_fail = true
+error_contains = "comptime parameter requires a compile-time known value"

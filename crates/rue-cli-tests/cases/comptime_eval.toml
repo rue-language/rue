@@ -1,0 +1,63 @@
+# Typed comptime evaluation (RUE-68/69/70/71, RUE-163).
+#
+# The comptime const evaluator mirrors runtime semantics exactly: arithmetic
+# is checked at the operand type, shifts mask the amount modulo the bit width
+# and truncate the result to the operand width (matching RUE-29's runtime
+# semantics), and the full range of every integer type is representable
+# (negative results, u64 above i64::MAX). These cases pin the *emitted
+# values* end-to-end through the driver, codegen, and the runtime printer.
+
+[section]
+id = "cli.comptime_eval"
+name = "Typed comptime evaluation"
+description = "Comptime results agree with runtime values at every width."
+
+[[case]]
+name = "comptime_values_match_runtime"
+description = "Comptime-evaluated constants print identically to their runtime-computed twins."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    // RUE-71: negative results
+    let a: i32 = comptime { 0 - 1 };
+    // RUE-70: full u64 range
+    let b: u64 = comptime { 18446744073709551615 };
+    let c: u64 = comptime { 4611686018427387904 * 2 };
+    // RUE-69: large shift amounts fold; masking modulo bit width
+    let d: i32 = comptime { 1 << 10 };
+    let e: i32 = comptime { 1 << 33 };
+    // shift result truncates to the operand width
+    let f: u8 = comptime { 3 << 7 };
+    // width-aware bitwise NOT
+    let g: u8 = comptime { ~0 };
+    @dbg(a);
+    @dbg(b);
+    @dbg(c);
+    @dbg(d);
+    @dbg(e);
+    @dbg(f);
+    @dbg(g);
+    0
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+exit_code = 0
+stdout = """-1
+18446744073709551615
+9223372036854775808
+1024
+2
+128
+255
+"""
+
+[[case]]
+name = "comptime_intermediate_overflow_rejected"
+description = "An intermediate overflow at the operand type inside comptime is a compile error (RUE-68); the runtime equivalent panics."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    comptime { 100000 * 100000 / 100000 }
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E1200", "integer overflow", "i32"]

@@ -279,11 +279,13 @@ fn create_specialized_function(
         base_info.return_type
     };
 
-    let specialized_params: Vec<(Spur, Type, RirParamMode)> = sema
+    let specialized_params: Vec<(Spur, Type, RirParamMode, bool)> = sema
         .param_arena
         .iter(base_info.params)
         .filter(|(_, _, _, is_comptime)| !**is_comptime)
         .map(|(name, ty, mode, _)| {
+            // Comptime parameters were filtered out above, so every
+            // surviving parameter carries is_comptime = false.
             let concrete_ty = if *ty == Type::COMPTIME_TYPE {
                 substitute_param_type(sema, base_info, *name, &type_subst).unwrap_or_else(|| {
                     debug_assert!(false, "type substitution failed for param");
@@ -292,7 +294,7 @@ fn create_specialized_function(
             } else {
                 *ty
             };
-            (*name, concrete_ty, *mode)
+            (*name, concrete_ty, *mode, false)
         })
         .collect();
 
