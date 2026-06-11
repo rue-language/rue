@@ -273,3 +273,105 @@ pub fn abs(x: i32) -> i32 {
 """ },
 ]
 stdout = "5\n"
+
+# ---------------------------------------------------------------------------
+# Module membership is per-file (RUE-140, spec 4.13:90).
+#
+# The function table is a flat global namespace, so the member-call path used
+# to resolve `utils.sneaky()` to ANY pub function named `sneaky` anywhere in
+# the compilation — even one defined in an unrelated file.
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "module_member_call_other_files_fn_rejected"
+description = "A pub function from another compiled file is not a member of an unrelated module (RUE-140)."
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    let utils = @import("utils");
+    let other = @import("other");
+    let _ = other.sneaky();
+    utils.sneaky()
+}
+""" },
+    { path = "utils.rue", source = """
+pub fn real() -> i32 {
+    1
+}
+""" },
+    { path = "other.rue", source = """
+pub fn sneaky() -> i32 {
+    99
+}
+""" },
+]
+compile_fail = true
+error_contains = ["E0707", "module `utils` has no member `sneaky`"]
+
+[[case]]
+name = "module_member_call_same_file_control"
+description = "Control: a pub function defined in the imported file is still callable as a member."
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    let utils = @import("utils");
+    let other = @import("other");
+    let _ = other.sneaky();
+    utils.real()
+}
+""" },
+    { path = "utils.rue", source = """
+pub fn real() -> i32 {
+    7
+}
+""" },
+    { path = "other.rue", source = """
+pub fn sneaky() -> i32 {
+    99
+}
+""" },
+]
+exit_code = 7
+
+[[case]]
+name = "module_member_call_facade_chain_control"
+description = "Control: the facade re-export chain (RUE-136) still resolves — inner functions are members of the inner module, reached member-by-member."
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    let mylib = @import("mylib");
+    mylib.math.abs(0 - 42)
+}
+""" },
+    { path = "mylib/_mylib.rue", source = """
+pub const math = @import("math.rue");
+""" },
+    { path = "mylib/math.rue", source = """
+pub fn abs(x: i32) -> i32 {
+    if x < 0 { 0 - x } else { x }
+}
+""" },
+]
+exit_code = 42
+
+[[case]]
+name = "module_member_call_facade_fn_not_member_of_inner"
+description = "A facade-file function is not a member through the re-exported inner module (and vice versa: inner fns are not facade members)."
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    let mylib = @import("mylib");
+    mylib.abs(42)
+}
+""" },
+    { path = "mylib/_mylib.rue", source = """
+pub const math = @import("math.rue");
+""" },
+    { path = "mylib/math.rue", source = """
+pub fn abs(x: i32) -> i32 {
+    if x < 0 { 0 - x } else { x }
+}
+""" },
+]
+compile_fail = true
+error_contains = ["E0707", "has no member `abs`"]

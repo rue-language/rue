@@ -658,3 +658,11 @@ fn main() -> i32 {
 It is a compile-time error if a module path resolves to both a file module
 `{path}.rue` and a directory module `{path}/_{basename}.rue` — the import is
 ambiguous, and neither form takes precedence.
+
+{{ rule(id="4.13:90", cat="legality-rule") }}
+
+It is a compile-time error to access a member of a module that is not
+declared in the imported file. Module membership is per-file: even though all
+compiled files share one global function namespace, a declaration from some
+other file is not a member of the module and **MUST NOT** be reachable
+through it.
