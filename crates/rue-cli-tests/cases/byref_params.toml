@@ -252,3 +252,101 @@ fn steal(inout o: D) -> i32 { consume(o) }
 ]
 compile_fail = true
 error_contains = ["E0437", "cannot move out of inout parameter"]
+
+# ---------------------------------------------------------------------------
+# Exclusive-access checks are uniform across call shapes and pipelines
+# (RUE-141). Module member calls (`m.f(...)`) used to skip the exclusive-
+# access check entirely, and the lazy (import-driven) pipeline's check had
+# drifted to cover less than the single-file one (no borrow/inout conflict
+# detection, no lvalue check). Both now share one implementation.
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "module_member_call_double_inout_rejected"
+description = "Passing the same variable to two inout parameters of a module member call errors (previously accepted)."
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    let m = @import("mod_swap");
+    let mut x = 1;
+    m.swap(inout x, inout x);
+    0
+}
+""" },
+    { path = "mod_swap.rue", source = """
+pub fn swap(inout a: i32, inout b: i32) {
+    let tmp = a;
+    a = b;
+    b = tmp;
+}
+""" },
+]
+compile_fail = true
+error_contains = ["E0426", "same variable 'x' to multiple inout parameters"]
+
+[[case]]
+name = "module_member_call_borrow_inout_conflict_rejected"
+description = "Passing the same variable as both borrow and inout to a module member call violates the law of exclusivity (previously accepted)."
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    let m = @import("mod_obs");
+    let mut x = 1;
+    m.observe(borrow x, inout x)
+}
+""" },
+    { path = "mod_obs.rue", source = """
+pub fn observe(borrow a: i32, inout b: i32) -> i32 {
+    a + b
+}
+""" },
+]
+compile_fail = true
+error_contains = ["E0430", "cannot borrow 'x' while it is mutably borrowed"]
+
+[[case]]
+name = "regular_call_borrow_inout_conflict_rejected_with_import"
+description = "With an import present (lazy pipeline), a regular call mixing borrow and inout of the same variable is still rejected."
+files = [
+    { path = "main.rue", source = """
+fn observe(borrow a: i32, inout b: i32) -> i32 {
+    a + b
+}
+fn main() -> i32 {
+    let m = @import("helper");
+    let _ = m.one();
+    let mut x = 5;
+    observe(borrow x, inout x)
+}
+""" },
+    { path = "helper.rue", source = """
+pub fn one() -> i32 {
+    1
+}
+""" },
+]
+compile_fail = true
+error_contains = ["E0430", "cannot borrow 'x' while it is mutably borrowed"]
+
+[[case]]
+name = "module_member_call_distinct_byref_vars_control"
+description = "Control: distinct variables passed by-ref to a module member call keep working."
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    let m = @import("mod_swap");
+    let mut x = 1;
+    let mut y = 41;
+    m.swap(inout x, inout y);
+    x
+}
+""" },
+    { path = "mod_swap.rue", source = """
+pub fn swap(inout a: i32, inout b: i32) {
+    let tmp = a;
+    a = b;
+    b = tmp;
+}
+""" },
+]
+exit_code = 41

@@ -172,3 +172,19 @@ pub fn value() -> i32 { 42 }
 """ }
 compile_fail = true
 error_contains = "private"
+
+[[case]]
+name = "module_member_call_per_file_membership"
+spec = ["4.13:90"]
+description = "A pub function from a different file in the same compilation is not a member of an unrelated module (RUE-140)"
+source = """
+fn main() -> i32 {
+    let utils = @import("utils");
+    let other = @import("other");
+    let _ = other.sneaky();
+    utils.sneaky()
+}
+"""
+aux_files = { "utils.rue" = "pub fn real() -> i32 { 1 }", "other.rue" = "pub fn sneaky() -> i32 { 99 }" }
+compile_fail = true
+error_contains = "has no member"

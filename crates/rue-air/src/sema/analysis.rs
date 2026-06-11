@@ -16,7 +16,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use lasso::Spur;
+use lasso::{Spur, ThreadedRodeo};
 use rayon::prelude::*;
 use rue_builtins::{BuiltinReturnType, BuiltinTypeDef};
 use rue_error::{
@@ -45,7 +45,7 @@ use crate::inst::{
 };
 use crate::scope::ScopedContext;
 use crate::sema_context::SemaContext;
-use crate::types::{EnumId, StructField, StructId, Type, TypeKind};
+use crate::types::{EnumId, ModuleId, StructField, StructId, Type, TypeKind};
 
 /// Try to evaluate an RIR expression as a compile-time constant.
 ///
@@ -5141,44 +5141,104 @@ fn analyze_call_ctx(
     }
 }
 
-/// Check for exclusive access violations in call arguments.
+/// Check for exclusive access violations in call arguments (lazy-pipeline
+/// adapter over the shared [`check_exclusive_access_in`]).
+///
+/// Historically this had its own implementation that only caught duplicate
+/// `inout` arguments — it missed borrow/inout conflicts and the lvalue
+/// checks the eager pipeline enforced (RUE-141). Both pipelines now share
+/// one implementation.
 fn check_exclusive_access_ctx(
     ctx: &SemaContext<'_>,
     args: &[RirCallArg],
-    _span: Span,
+    span: Span,
 ) -> CompileResult<()> {
-    let mut inout_vars: HashMap<Spur, Span> = HashMap::new();
+    check_exclusive_access_in(ctx.rir, ctx.interner, args, span)
+}
+
+/// Extract the root variable symbol from an expression, if it refers to a
+/// variable. Canonical, pipeline-agnostic implementation; see
+/// [`Sema::extract_root_variable`] for the full contract.
+fn root_variable_of(rir: &Rir, inst_ref: InstRef) -> Option<Spur> {
+    let inst = rir.get(inst_ref);
+    match &inst.data {
+        InstData::VarRef { name } => Some(*name),
+        InstData::ParamRef { name, .. } => Some(*name),
+        InstData::FieldGet { base, .. } => root_variable_of(rir, *base),
+        InstData::IndexGet { base, .. } => root_variable_of(rir, *base),
+        _ => None,
+    }
+}
+
+/// Check exclusivity rules for inout and borrow parameters in a call.
+///
+/// This is the single shared implementation used by BOTH sema pipelines
+/// (via [`Sema::check_exclusive_access`] and [`check_exclusive_access_ctx`]).
+/// It enforces three rules:
+/// 1. Inout/borrow arguments must be lvalues (refer to a variable)
+/// 2. Same variable cannot be passed to multiple inout parameters (prevents aliasing)
+/// 3. Same variable cannot be passed to both inout and borrow (law of exclusivity)
+///
+/// The law of exclusivity: either one mutable (inout) access OR any number of
+/// immutable (borrow) accesses, never both simultaneously.
+fn check_exclusive_access_in(
+    rir: &Rir,
+    interner: &ThreadedRodeo,
+    args: &[RirCallArg],
+    call_span: Span,
+) -> CompileResult<()> {
+    let mut inout_vars: HashSet<Spur> = HashSet::new();
+    let mut borrow_vars: HashSet<Spur> = HashSet::new();
 
     for arg in args {
-        if arg.mode == RirArgMode::Inout {
-            // Extract the variable name from the argument
-            if let Some(var_name) = extract_arg_var_name_ctx(ctx, arg.value) {
-                if let Some(first_span) = inout_vars.get(&var_name) {
-                    let var_name_str = ctx.interner.resolve(&var_name);
+        let maybe_var_symbol = root_variable_of(rir, arg.value);
+
+        // Check that inout/borrow arguments are lvalues
+        if arg.is_inout() && maybe_var_symbol.is_none() {
+            return Err(CompileError::new(
+                ErrorKind::InoutNonLvalue,
+                rir.get(arg.value).span,
+            ));
+        }
+        if arg.is_borrow() && maybe_var_symbol.is_none() {
+            return Err(CompileError::new(
+                ErrorKind::BorrowNonLvalue,
+                rir.get(arg.value).span,
+            ));
+        }
+
+        if let Some(var_symbol) = maybe_var_symbol {
+            if arg.is_inout() {
+                // Check for duplicate inout access
+                if !inout_vars.insert(var_symbol) {
+                    let var_name = interner.resolve(&var_symbol).to_string();
                     return Err(CompileError::new(
-                        ErrorKind::InoutExclusiveAccess {
-                            variable: var_name_str.to_string(),
-                        },
-                        ctx.rir.get(arg.value).span,
-                    )
-                    .with_label("first inout borrow here", *first_span)
-                    .with_note("a variable can only be passed as inout once per function call"));
+                        ErrorKind::InoutExclusiveAccess { variable: var_name },
+                        call_span,
+                    ));
                 }
-                inout_vars.insert(var_name, ctx.rir.get(arg.value).span);
+                // Check for borrow/inout conflict
+                if borrow_vars.contains(&var_symbol) {
+                    let var_name = interner.resolve(&var_symbol).to_string();
+                    return Err(CompileError::new(
+                        ErrorKind::BorrowInoutConflict { variable: var_name },
+                        call_span,
+                    ));
+                }
+            } else if arg.is_borrow() {
+                borrow_vars.insert(var_symbol);
+                // Check for borrow/inout conflict
+                if inout_vars.contains(&var_symbol) {
+                    let var_name = interner.resolve(&var_symbol).to_string();
+                    return Err(CompileError::new(
+                        ErrorKind::BorrowInoutConflict { variable: var_name },
+                        call_span,
+                    ));
+                }
             }
         }
     }
     Ok(())
-}
-
-/// Extract the variable name from an argument expression.
-fn extract_arg_var_name_ctx(ctx: &SemaContext<'_>, inst_ref: InstRef) -> Option<Spur> {
-    let inst = ctx.rir.get(inst_ref);
-    match &inst.data {
-        InstData::VarRef { name } => Some(*name),
-        InstData::ParamRef { name, .. } => Some(*name),
-        _ => None,
-    }
 }
 
 /// Build the diagnostic for a move out of an `inout` parameter.
@@ -5328,10 +5388,11 @@ fn analyze_method_call_ctx(
     let receiver_type = receiver_result.ty;
 
     // Handle module member access: module.function() becomes a direct function call
-    if receiver_type.is_module() {
+    if let Some(module_id) = receiver_type.as_module() {
         return analyze_module_member_call_ctx(
             ctx,
             air,
+            module_id,
             method,
             args_start,
             args_len,
@@ -5431,29 +5492,28 @@ fn analyze_method_call_ctx(
     Ok(AnalysisResult::new(air_ref, return_type))
 }
 
-/// Analyze a module member call: `module.function(args)` becomes a direct function call.
-///
-/// In Phase 1 of the module system, modules are virtual namespaces. When you import
-/// a module with `@import("foo.rue")`, all of foo.rue's functions are already in the
-/// global function table (via multi-file compilation). The module just provides a
-/// namespace at the source level.
-///
-/// This function looks up the function by name in the global function table and
-/// generates a direct call to it. Visibility is checked based on directory:
-/// - `pub` functions are always accessible
-/// - Private functions are only accessible from the same directory
 /// Shared checks for a module-member function call, used by BOTH sema
 /// pipelines (the eager `Sema`-method path and the lazy `SemaContext` path).
-/// Validates visibility, arity, and argument modes against the callee.
+/// Validates module membership, visibility, arity, and argument modes
+/// against the callee.
+///
+/// Membership (spec 4.13:90, RUE-140): a module's type contains only the
+/// declarations from the imported file, but the function table is a flat
+/// global namespace, so a name-only lookup would resolve a function from
+/// any file in the compilation. The callee must be defined in the receiver
+/// module's file: `member_file_path` (the callee's source file) must equal
+/// `module_file_path`, otherwise the call is rejected as an unknown member
+/// of `module_name`.
 ///
 /// Two operations deliberately stay per-pipeline at the call sites: argument
 /// analysis (it recurses into the owning pipeline) and the exclusive-access
-/// check (the two pipelines' checks have drifted, RUE-141). Known looseness
-/// shared by both pipelines: the lookup is global by name, never verifying
-/// the function belongs to the receiver module's file (RUE-140) — fix it
-/// HERE when ratified, and it fixes both pipelines at once.
+/// check (whose shared core is `check_exclusive_access_in`, RUE-141).
+#[allow(clippy::too_many_arguments)]
 fn check_module_member_call(
     rir: &Rir,
+    module_name: &str,
+    module_file_path: &str,
+    member_file_path: Option<&str>,
     fn_name_str: &str,
     param_types: &[Type],
     param_modes: &[RirParamMode],
@@ -5461,6 +5521,19 @@ fn check_module_member_call(
     accessible: bool,
     span: Span,
 ) -> CompileResult<()> {
+    // Check membership: the function must be defined in the module's file.
+    // (Strict path equality, mirroring the struct/enum/const member-access
+    // checks in analyze_module_type_member_access.)
+    if member_file_path != Some(module_file_path) {
+        return Err(CompileError::new(
+            ErrorKind::UnknownModuleMember {
+                module_name: module_name.to_string(),
+                member_name: fn_name_str.to_string(),
+            },
+            span,
+        ));
+    }
+
     // Check visibility: private functions are only accessible from the same directory
     if !accessible {
         return Err(CompileError::new(
@@ -5542,20 +5615,29 @@ fn emit_module_member_call(
     AnalysisResult::new(air_ref, return_type)
 }
 
+/// Analyze a module member call: `module.function(args)` becomes a direct
+/// function call. See `check_module_member_call` for the rules enforced.
 fn analyze_module_member_call_ctx(
     ctx: &SemaContext<'_>,
     air: &mut Air,
+    module_id: ModuleId,
     function_name: Spur,
     args_start: u32,
     args_len: u32,
     span: Span,
     analysis_ctx: &mut AnalysisContext,
 ) -> CompileResult<AnalysisResult> {
-    // Look up the function in the global function table
+    // Look up the function in the global function table. Not finding it
+    // there means the module certainly has no such member.
     let fn_name_str = ctx.interner.resolve(&function_name).to_string();
-    let fn_info = ctx
-        .get_function(function_name)
-        .ok_or_compile_error(ErrorKind::UndefinedFunction(fn_name_str.clone()), span)?;
+    let module_def = ctx.get_module_def(module_id);
+    let fn_info = ctx.get_function(function_name).ok_or_compile_error(
+        ErrorKind::UnknownModuleMember {
+            module_name: module_def.import_path.clone(),
+            member_name: fn_name_str.clone(),
+        },
+        span,
+    )?;
 
     // Track this function as referenced (for lazy analysis)
     analysis_ctx.referenced_functions.insert(function_name);
@@ -5566,6 +5648,9 @@ fn analyze_module_member_call_ctx(
     let accessible = ctx.is_accessible(span.file_id, fn_info.file_id, fn_info.is_pub);
     check_module_member_call(
         ctx.rir,
+        &module_def.import_path,
+        &module_def.file_path,
+        ctx.get_file_path(fn_info.file_id),
         &fn_name_str,
         param_types,
         param_modes,
@@ -5574,8 +5659,7 @@ fn analyze_module_member_call_ctx(
         span,
     )?;
 
-    // Check for exclusive access violation (pipeline-specific seam; this
-    // check has drifted from the eager pipeline's richer one — RUE-141)
+    // Check for exclusive access violation
     check_exclusive_access_ctx(ctx, &args, span)?;
 
     // Analyze arguments (the per-pipeline recursion seam)
@@ -8132,9 +8216,10 @@ impl<'a> Sema<'a> {
         let receiver_type = receiver_result.ty;
 
         // Handle module member access: module.function() becomes a direct function call
-        if receiver_type.is_module() {
-            return self
-                .analyze_module_member_call_impl(air, method, args_start, args_len, span, ctx);
+        if let Some(module_id) = receiver_type.as_module() {
+            return self.analyze_module_member_call_impl(
+                air, module_id, method, args_start, args_len, span, ctx,
+            );
         }
 
         // Check that receiver is a struct type
@@ -8246,23 +8331,34 @@ impl<'a> Sema<'a> {
     ///
     /// In Phase 1 of the module system, modules are virtual namespaces. When you import
     /// a module with `@import("foo.rue")`, all of foo.rue's functions are already in the
-    /// global function table (via multi-file compilation). The module just provides a
-    /// namespace at the source level.
+    /// global function table (via multi-file compilation). The module provides a
+    /// namespace at the source level; `check_module_member_call` enforces that only
+    /// functions defined in the imported file resolve as members.
+    #[allow(clippy::too_many_arguments)]
     fn analyze_module_member_call_impl(
         &mut self,
         air: &mut Air,
+        module_id: ModuleId,
         function_name: Spur,
         args_start: u32,
         args_len: u32,
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        // Look up the function in the global function table
+        // Look up the function in the global function table. Not finding it
+        // there means the module certainly has no such member.
         let fn_name_str = self.interner.resolve(&function_name).to_string();
+        let module_def = self.module_registry.get_def(module_id);
         let fn_info = self
             .functions
             .get(&function_name)
-            .ok_or_compile_error(ErrorKind::UndefinedFunction(fn_name_str.clone()), span)?
+            .ok_or_compile_error(
+                ErrorKind::UnknownModuleMember {
+                    module_name: module_def.import_path.clone(),
+                    member_name: fn_name_str.clone(),
+                },
+                span,
+            )?
             .clone();
 
         // Track this function as referenced (for lazy analysis)
@@ -8274,6 +8370,9 @@ impl<'a> Sema<'a> {
         let accessible = self.is_accessible(span.file_id, fn_info.file_id, fn_info.is_pub);
         check_module_member_call(
             self.rir,
+            &module_def.import_path,
+            &module_def.file_path,
+            self.get_file_path(fn_info.file_id),
             &fn_name_str,
             &param_types,
             &param_modes,
@@ -8282,10 +8381,8 @@ impl<'a> Sema<'a> {
             span,
         )?;
 
-        // Check for exclusive access violation (pipeline-specific seam; this
-        // pipeline's check also covers borrow duplicates and lvalue-ness —
-        // the lazy pipeline's has drifted and checks less, RUE-141). The old
-        // copy of this function skipped the check entirely.
+        // Check for exclusive access violation. (The old, pre-deduplication
+        // copy of this function skipped this check entirely.)
         self.check_exclusive_access(&args, span)?;
 
         // Analyze arguments (the per-pipeline recursion seam)
@@ -10509,82 +10606,18 @@ impl<'a> Sema<'a> {
     ///
     /// Returns None for expressions that don't refer to a variable (literals, calls, etc.)
     pub(crate) fn extract_root_variable(&self, inst_ref: InstRef) -> Option<Spur> {
-        let inst = self.rir.get(inst_ref);
-        match &inst.data {
-            InstData::VarRef { name } => Some(*name),
-            InstData::ParamRef { name, .. } => Some(*name),
-            InstData::FieldGet { base, .. } => self.extract_root_variable(*base),
-            InstData::IndexGet { base, .. } => self.extract_root_variable(*base),
-            _ => None,
-        }
+        root_variable_of(self.rir, inst_ref)
     }
 
-    /// Check exclusivity rules for inout and borrow parameters in a call.
-    ///
-    /// This enforces two rules:
-    /// 1. Same variable cannot be passed to multiple inout parameters (prevents aliasing)
-    /// 2. Same variable cannot be passed to both inout and borrow (law of exclusivity)
-    ///
-    /// The law of exclusivity: either one mutable (inout) access OR any number of
-    /// immutable (borrow) accesses, never both simultaneously.
+    /// Check exclusivity rules for inout and borrow parameters in a call
+    /// (eager-pipeline adapter over the shared [`check_exclusive_access_in`],
+    /// which both pipelines use — RUE-141).
     pub(crate) fn check_exclusive_access(
         &self,
         args: &[RirCallArg],
         call_span: Span,
     ) -> CompileResult<()> {
-        use std::collections::HashSet;
-        let mut inout_vars: HashSet<Spur> = HashSet::new();
-        let mut borrow_vars: HashSet<Spur> = HashSet::new();
-
-        for arg in args {
-            let maybe_var_symbol = self.extract_root_variable(arg.value);
-
-            // Check that inout/borrow arguments are lvalues
-            if arg.is_inout() && maybe_var_symbol.is_none() {
-                return Err(CompileError::new(
-                    ErrorKind::InoutNonLvalue,
-                    self.rir.get(arg.value).span,
-                ));
-            }
-            if arg.is_borrow() && maybe_var_symbol.is_none() {
-                return Err(CompileError::new(
-                    ErrorKind::BorrowNonLvalue,
-                    self.rir.get(arg.value).span,
-                ));
-            }
-
-            if let Some(var_symbol) = maybe_var_symbol {
-                if arg.is_inout() {
-                    // Check for duplicate inout access
-                    if !inout_vars.insert(var_symbol) {
-                        let var_name = self.interner.resolve(&var_symbol).to_string();
-                        return Err(CompileError::new(
-                            ErrorKind::InoutExclusiveAccess { variable: var_name },
-                            call_span,
-                        ));
-                    }
-                    // Check for borrow/inout conflict
-                    if borrow_vars.contains(&var_symbol) {
-                        let var_name = self.interner.resolve(&var_symbol).to_string();
-                        return Err(CompileError::new(
-                            ErrorKind::BorrowInoutConflict { variable: var_name },
-                            call_span,
-                        ));
-                    }
-                } else if arg.is_borrow() {
-                    borrow_vars.insert(var_symbol);
-                    // Check for borrow/inout conflict
-                    if inout_vars.contains(&var_symbol) {
-                        let var_name = self.interner.resolve(&var_symbol).to_string();
-                        return Err(CompileError::new(
-                            ErrorKind::BorrowInoutConflict { variable: var_name },
-                            call_span,
-                        ));
-                    }
-                }
-            }
-        }
-        Ok(())
+        check_exclusive_access_in(self.rir, self.interner, args, call_span)
     }
 
     /// Analyze a list of call arguments, enforcing by-ref argument rules.
