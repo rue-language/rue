@@ -685,7 +685,13 @@ fn build_dep_graph(instructions: &[X86Inst], start: usize, end: usize) -> Vec<Sc
             }
         }
 
-        // Update tracking
+        // Update tracking. Clobbers count as writes here: a later instruction
+        // that writes (WAW) or reads (RAW) a clobbered register must not be
+        // scheduled above the clobberer, or the clobber destroys its value.
+        for &clobbered in inst.clobbers() {
+            last_writer.insert(clobbered, i);
+            last_readers.remove(&clobbered);
+        }
         for reg in writes {
             last_writer.insert(reg, i);
             last_readers.remove(&reg);
@@ -906,6 +912,44 @@ mod tests {
             dst: Operand::Physical(Reg::Rax),
             src: Operand::Physical(Reg::Rbx),
         }));
+    }
+
+    #[test]
+    fn test_clobber_orders_later_write() {
+        // A later write to a clobbered register must depend on the clobberer
+        // (WAW through the clobber set): if `mov rdx, 7` were hoisted above
+        // CQO, the sign-extension would destroy the 7.
+        let insts = vec![
+            X86Inst::Cqo, // clobbers RDX
+            X86Inst::MovRI32 {
+                dst: Operand::Physical(Reg::Rdx),
+                imm: 7,
+            },
+        ];
+        let nodes = build_dep_graph(&insts, 0, insts.len());
+        assert!(
+            nodes[1].deps.contains(&0),
+            "write to clobbered RDX must depend on the clobbering CQO"
+        );
+    }
+
+    #[test]
+    fn test_clobber_orders_later_read() {
+        // A later read of a clobbered register must depend on the clobberer
+        // (RAW through the clobber set): reading RDX after CQO must observe
+        // the sign-extension result, not the pre-CQO value.
+        let insts = vec![
+            X86Inst::Cqo, // clobbers RDX
+            X86Inst::MovRR {
+                dst: Operand::Physical(Reg::Rbx),
+                src: Operand::Physical(Reg::Rdx),
+            },
+        ];
+        let nodes = build_dep_graph(&insts, 0, insts.len());
+        assert!(
+            nodes[1].deps.contains(&0),
+            "read of clobbered RDX must depend on the clobbering CQO"
+        );
     }
 
     #[test]
