@@ -40,6 +40,10 @@ pub struct PrimitiveTypeSpurs {
     pub bool: Spur,
     /// Self type keyword - used in methods to refer to the containing struct type
     pub self_type: Spur,
+    /// The identifier `as` — not a Rue keyword, but recognized after an
+    /// expression to give Rust users a targeted "no 'as' operator" error
+    /// instead of a generic parse error. (RUE-133)
+    pub as_kw: Spur,
 }
 
 impl PrimitiveTypeSpurs {
@@ -56,6 +60,7 @@ impl PrimitiveTypeSpurs {
             u64: interner.get_or_intern("u64"),
             bool: interner.get_or_intern("bool"),
             self_type: interner.get_or_intern("Self"),
+            as_kw: interner.get_or_intern("as"),
         }
     }
 }
@@ -326,32 +331,53 @@ where
     })
 }
 
-/// Parser for parameter mode: inout, borrow, or comptime
+/// Parser for parameter mode: comptime, inout, or borrow
 fn param_mode_parser<'src, I>() -> impl Parser<'src, I, ParamMode, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
     choice((
+        just(TokenKind::Comptime).to(ParamMode::Comptime),
         just(TokenKind::Inout).to(ParamMode::Inout),
         just(TokenKind::Borrow).to(ParamMode::Borrow),
-        just(TokenKind::Comptime).to(ParamMode::Comptime),
     ))
 }
 
-/// Parser for function parameters: [comptime] [inout|borrow] name: type
+/// Parser for function parameters: [comptime|inout|borrow] name: type
+///
+/// A parameter takes at most one mode keyword. Repeated (`comptime comptime
+/// T`) or conflicting (`comptime inout x`) modifiers used to be silently
+/// accepted — the duplicate landed in a vestigial `is_comptime` flag next to
+/// `ParamMode` — and are now rejected with a targeted error. (RUE-133)
 fn param_parser<'src, I>() -> impl Parser<'src, I, Param, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    just(TokenKind::Comptime)
-        .or_not()
-        .then(param_mode_parser().or_not())
+    param_mode_parser()
+        .map_with(|mode, e| (mode, e.span()))
+        .repeated()
+        .collect::<Vec<_>>()
+        .try_map(|modes, _span| match modes.as_slice() {
+            [] => Ok(ParamMode::Normal),
+            [(mode, _)] => Ok(*mode),
+            [(first, _), (second, second_span), ..] => {
+                let msg = if first == second {
+                    format!("duplicate parameter modifier '{}'", first.keyword())
+                } else {
+                    format!(
+                        "conflicting parameter modifiers '{}' and '{}'; a parameter takes at most one of 'comptime', 'inout', or 'borrow'",
+                        first.keyword(),
+                        second.keyword()
+                    )
+                };
+                Err(Rich::custom(*second_span, msg))
+            }
+        })
         .then(ident_parser())
         .then_ignore(just(TokenKind::Colon))
         .then(type_parser())
-        .map_with(|(((is_comptime, mode), name), ty), e| Param {
-            is_comptime: is_comptime.is_some(),
-            mode: mode.unwrap_or(ParamMode::Normal),
+        .map_with(|((mode, name), ty), e| Param {
+            mode,
             name,
             ty,
             span: span_from_extra(e),
@@ -571,8 +597,20 @@ where
         // Atom parser - primary expressions
         let atom = atom_parser(expr.clone());
 
+        // Rust-refugee diagnostic: `expr as T` is not Rue syntax (`as` is an
+        // ordinary identifier, so `5 as i64` used to die with a generic
+        // "expected semicolon" error). An expression directly followed by the
+        // identifier `as` is never valid Rue, so consume it and report a
+        // targeted error pointing at the `as`. (RUE-133)
+        let as_misuse = select! { TokenKind::Ident(name) => name }
+            .map_with(|name, e: &mut MapExtra<'src, '_, I, ParserExtras<'src>>| {
+                (name, e.state().syms.as_kw, e.span())
+            })
+            .filter(|(name, as_kw, _)| name == as_kw)
+            .map(|(_, _, span)| span);
+
         // Build Pratt parser with precedence levels (see `precedence` module)
-        atom.pratt((
+        let pratt = atom.pratt((
             // Prefix operators
             prefix(
                 precedence::UNARY,
@@ -688,7 +726,18 @@ where
                 just(TokenKind::PipePipe),
                 |l, _, r, _| make_binary(l, BinaryOp::Or, r),
             ),
-        ))
+        ));
+
+        pratt
+            .then(as_misuse.or_not())
+            .try_map(|(parsed, as_span), _span| match as_span {
+                None => Ok(parsed),
+                Some(span) => Err(Rich::custom(
+                    span,
+                    "Rue has no 'as' cast operator; use '@intCast(T, value)' or give the target \
+                     type on the binding: 'let x: i64 = value'",
+                )),
+            })
     })
 }
 
@@ -2379,7 +2428,17 @@ impl ChumskyParser {
                 CompileErrors::from(errors)
             });
 
-        result.map(|ast| (ast, self.interner))
+        let ast = result?;
+
+        // Post-parse validation that needs the interner (e.g. resolving
+        // directive names so the diagnostic can say which directive is
+        // unknown). See the `validate` module.
+        let validation_errors = crate::validate::check_directives(&ast, &self.interner);
+        if !validation_errors.is_empty() {
+            return Err(CompileErrors::from(validation_errors));
+        }
+
+        Ok((ast, self.interner))
     }
 }
 
@@ -2661,15 +2720,82 @@ mod tests {
 
     #[test]
     fn test_struct_method_with_directive() {
-        let result = parse("struct Foo { @inline fn bar(self) -> i32 { 42 } }").unwrap();
+        // Must use a KNOWN directive: unknown ones are rejected post-parse
+        // by `validate::check_directives` (RUE-133).
+        let result = parse("struct Foo { @allow(something) fn bar(self) -> i32 { 42 } }").unwrap();
         match &result.ast.items[0] {
             Item::Struct(struct_decl) => {
                 let method = &struct_decl.methods[0];
                 assert_eq!(method.directives.len(), 1);
-                assert_eq!(result.get(method.directives[0].name.name), "inline");
+                assert_eq!(result.get(method.directives[0].name.name), "allow");
             }
             _ => panic!("expected Struct"),
         }
+    }
+
+    #[test]
+    fn test_unknown_directive_rejected() {
+        // RUE-133: unknown @-directives in item position used to be silently
+        // accepted and ignored (e.g. `@typo_allow` compiling as a no-op).
+        let err = parse("@important\nfn main() -> i32 { 42 }").unwrap_err();
+        let msg = format!("{}", err.first().expect("expected at least one error"));
+        assert!(
+            msg.contains("unknown directive '@important'"),
+            "unexpected message: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_unknown_directive_on_nested_let_rejected() {
+        let err = parse(
+            "fn main() -> i32 { if true { @alllow(unused_variable) let x = 1; x } else { 0 } }",
+        )
+        .unwrap_err();
+        let msg = format!("{}", err.first().expect("expected at least one error"));
+        assert!(
+            msg.contains("unknown directive '@alllow'"),
+            "unexpected message: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_duplicate_comptime_modifier_rejected() {
+        // RUE-133: `comptime comptime T: type` used to parse, with the second
+        // `comptime` landing in the (now removed) ParamMode::Comptime duality.
+        let err = parse("fn id(comptime comptime T: type, x: T) -> T { x }").unwrap_err();
+        let msg = format!("{}", err.first().expect("expected at least one error"));
+        assert!(
+            msg.contains("duplicate parameter modifier 'comptime'"),
+            "unexpected message: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_conflicting_param_modifiers_rejected() {
+        let err = parse("fn f(comptime inout x: i32) -> i32 { x }").unwrap_err();
+        let msg = format!("{}", err.first().expect("expected at least one error"));
+        assert!(
+            msg.contains("conflicting parameter modifiers 'comptime' and 'inout'"),
+            "unexpected message: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_as_cast_targeted_error() {
+        // RUE-133: `5 as i64` used to die with a generic "expected semicolon".
+        let err = parse("fn main() -> i32 { let x = 5 as i64; 0 }").unwrap_err();
+        let msg = format!("{}", err.first().expect("expected at least one error"));
+        assert!(
+            msg.contains("Rue has no 'as' cast operator"),
+            "unexpected message: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_as_still_usable_as_identifier() {
+        // `as` is not a keyword; only `expr as ...` is special-cased.
+        let result = parse("fn main() -> i32 { let as = 3; as + 2 }");
+        assert!(result.is_ok(), "{:?}", result.err());
     }
 
     // ==================== Method Call Parsing Tests ====================

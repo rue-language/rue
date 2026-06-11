@@ -1,0 +1,168 @@
+# Directive validation (RUE-133).
+#
+# Unknown @-directives in item/statement position used to be silently
+# accepted and ignored, so a typo like `@alllow(...)` was a no-op. They are
+# now a compile error naming the directive. The known set lives in
+# rue-parser's `validate::KNOWN_DIRECTIVES` (allow, copy, handle); the cases
+# below pin both the rejection and that every known directive still works.
+# (Expression-position intrinsics like @dbg/@intCast and the fused @import
+# token are separate mechanisms and unaffected.)
+#
+# This file also covers parameter-modifier validation: `comptime comptime T`
+# used to be silently accepted via a vestigial is_comptime/ParamMode duality.
+
+[section]
+id = "diagnostics.directives"
+name = "Directive and parameter-modifier validation"
+description = "Unknown directives and repeated parameter modifiers are rejected; known ones still work."
+
+[[case]]
+name = "unknown_directive_on_function"
+source = """
+@important
+fn main() -> i32 { 42 }
+"""
+compile_fail = true
+error_contains = ["unknown directive '@important'", "@allow, @copy and @handle"]
+
+[[case]]
+name = "unknown_directive_typo_of_allow"
+description = "The motivating case: a typo'd @allow must not silently disable nothing."
+source = """
+fn main() -> i32 {
+    @alllow(unused_variable)
+    let x = 1;
+    0
+}
+"""
+compile_fail = true
+error_contains = ["unknown directive '@alllow'"]
+
+[[case]]
+name = "unknown_directive_on_struct"
+source = """
+@frozen
+struct P { x: i32 }
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["unknown directive '@frozen'"]
+
+[[case]]
+name = "unknown_directive_on_nested_let"
+description = "Directives on let statements nested inside control flow are validated too."
+source = """
+fn main() -> i32 {
+    if true {
+        @nope
+        let x = 1;
+        x
+    } else {
+        0
+    }
+}
+"""
+compile_fail = true
+error_contains = ["unknown directive '@nope'"]
+
+[[case]]
+name = "known_directive_allow_still_works"
+source = """
+fn main() -> i32 {
+    @allow(unused_variable)
+    let unused = 1;
+    0
+}
+"""
+exit_code = 0
+no_warnings = true
+
+[[case]]
+name = "known_directive_copy_still_works"
+source = """
+@copy
+struct P { x: i32 }
+
+fn main() -> i32 {
+    let p = P { x: 21 };
+    let q = p;
+    p.x + q.x
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "known_directive_handle_still_works"
+source = """
+@handle
+struct Counter {
+    count: i32,
+
+    fn handle(self) -> Counter {
+        Counter { count: self.count }
+    }
+}
+
+fn main() -> i32 {
+    let a = Counter { count: 42 };
+    let b = a.handle();
+    b.count
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "intrinsics_unaffected_by_directive_validation"
+description = "@dbg/@size_of are expression-position intrinsics, not directives."
+source = """
+fn main() -> i32 {
+    @dbg(1);
+    @size_of(i32)
+}
+"""
+exit_code = 8
+
+[[case]]
+name = "duplicate_comptime_modifier_rejected"
+description = """
+RUE-133 item 8: `comptime comptime T: type` was silently accepted (the second
+`comptime` landed in a vestigial ParamMode::Comptime next to the is_comptime
+flag; the duality is now collapsed and duplicates are parse errors).
+"""
+source = """
+fn id(comptime comptime T: type, x: T) -> T { x }
+
+fn main() -> i32 { id(i32, 42) }
+"""
+compile_fail = true
+error_contains = ["duplicate parameter modifier 'comptime'"]
+
+[[case]]
+name = "repeated_inout_modifier_rejected"
+source = """
+fn f(inout inout x: i32) { x = x + 1; }
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["duplicate parameter modifier 'inout'"]
+
+[[case]]
+name = "conflicting_param_modifiers_rejected"
+source = """
+fn f(comptime inout x: i32) -> i32 { x }
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["conflicting parameter modifiers 'comptime' and 'inout'", "at most one"]
+
+[[case]]
+name = "single_comptime_param_still_works"
+source = """
+fn id(comptime T: type, x: T) -> T { x }
+
+fn main() -> i32 { id(i32, 42) }
+"""
+exit_code = 42

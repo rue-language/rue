@@ -4,6 +4,9 @@
 
 pub mod ast;
 mod chumsky_parser;
+mod validate;
+
+pub use validate::KNOWN_DIRECTIVES;
 
 pub use ast::{
     ArgMode,

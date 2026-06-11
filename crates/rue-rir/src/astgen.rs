@@ -232,7 +232,7 @@ impl<'a> AstGen<'a> {
                 name: p.name.name, // Already a Spur
                 ty: self.intern_type(&p.ty),
                 mode: self.convert_param_mode(p.mode),
-                is_comptime: p.is_comptime,
+                is_comptime: p.mode == ParamMode::Comptime,
             })
             .collect();
         let (params_start, params_len) = self.rir.add_params(&params);
@@ -284,13 +284,19 @@ impl<'a> AstGen<'a> {
             .collect()
     }
 
-    /// Convert AST ParamMode to RIR RirParamMode
+    /// Convert AST ParamMode to RIR RirParamMode.
+    ///
+    /// The AST has a single `ParamMode` (RUE-133 collapsed the old
+    /// `is_comptime` flag into it), but the RIR keeps `mode` and
+    /// `is_comptime` as separate fields. A comptime parameter lowers to
+    /// `mode: Normal, is_comptime: true` — exactly the RIR shape sema has
+    /// always consumed — so `RirParamMode::Comptime` is never constructed
+    /// here.
     fn convert_param_mode(&self, mode: ParamMode) -> RirParamMode {
         match mode {
-            ParamMode::Normal => RirParamMode::Normal,
+            ParamMode::Normal | ParamMode::Comptime => RirParamMode::Normal,
             ParamMode::Inout => RirParamMode::Inout,
             ParamMode::Borrow => RirParamMode::Borrow,
-            ParamMode::Comptime => RirParamMode::Comptime,
         }
     }
 
@@ -331,7 +337,7 @@ impl<'a> AstGen<'a> {
                 name: p.name.name, // Already a Spur
                 ty: self.intern_type(&p.ty),
                 mode: self.convert_param_mode(p.mode),
-                is_comptime: p.is_comptime,
+                is_comptime: p.mode == ParamMode::Comptime,
             })
             .collect();
         let (params_start, params_len) = self.rir.add_params(&params);

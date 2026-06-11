@@ -49,7 +49,12 @@ pub enum RirParamMode {
     Inout,
     /// Borrow parameter - immutable borrow without ownership transfer
     Borrow,
-    /// Comptime parameter - evaluated at compile time (used for type parameters)
+    /// Comptime parameter - evaluated at compile time (used for type parameters).
+    ///
+    /// NOTE: astgen never constructs this variant — a `comptime` parameter
+    /// lowers to `mode: Normal, is_comptime: true` on [`RirParam`] (that is
+    /// the shape sema consumes). The variant is kept for the stability of
+    /// the packed encode/decode in `add_params`/`get_params`.
     Comptime,
 }
 
@@ -62,7 +67,9 @@ pub struct RirParam {
     pub ty: Spur,
     /// Parameter passing mode
     pub mode: RirParamMode,
-    /// Whether this parameter is evaluated at compile time
+    /// Whether this parameter is evaluated at compile time (declared with
+    /// the `comptime` modifier; carried separately from `mode`, which stays
+    /// `Normal` for comptime parameters)
     pub is_comptime: bool,
 }
 
