@@ -108,11 +108,21 @@ impl<'a> Sema<'a> {
         // to `<error>`, poisoning the other operand's literal-range check. (RUE-95)
         self.register_builtin_method_sigs(&mut method_sigs);
 
+        // Constant types (resolved during declaration gathering) so a const
+        // reference in a function body infers to its declared type instead of
+        // `<error>` (RUE-142).
+        let const_types: HashMap<Spur, Type> = self
+            .constants
+            .iter()
+            .map(|(name, info)| (*name, info.ty))
+            .collect();
+
         InferenceContext {
             func_sigs,
             struct_types,
             enum_types,
             method_sigs,
+            const_types,
         }
     }
     /// Check if a directive list contains the @copy directive

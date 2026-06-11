@@ -173,6 +173,12 @@ pub struct ConstraintGenerator<'a> {
     /// Type substitutions for Self and type parameters (used in method bodies).
     /// Maps type names (like "Self") to their concrete types.
     type_subst: Option<&'a HashMap<Spur, Type>>,
+    /// File-level constant types (name -> declared type), resolved during
+    /// declaration gathering. Consulted by `VarRef` after locals and params so
+    /// a const reference infers to its declared type instead of `<error>`
+    /// (RUE-142). `None` only in unit tests; production passes the map via
+    /// [`Self::with_const_types`].
+    const_types: Option<&'a HashMap<Spur, Type>>,
     /// Type intern pool for creating pointer and array types during constraint generation.
     type_pool: &'a TypeInternPool,
 }
@@ -221,8 +227,16 @@ impl<'a> ConstraintGenerator<'a> {
             methods,
             int_literal_vars: Vec::new(),
             type_subst,
+            const_types: None,
             type_pool,
         }
+    }
+
+    /// Provide file-level constant types (name -> declared type) for `VarRef`
+    /// resolution. See the `const_types` field for details (RUE-142).
+    pub fn with_const_types(mut self, const_types: &'a HashMap<Spur, Type>) -> Self {
+        self.const_types = Some(const_types);
+        self
     }
 
     /// Get the type variables allocated for integer literals.
@@ -474,6 +488,14 @@ impl<'a> ConstraintGenerator<'a> {
                     local.ty.clone()
                 } else if let Some(param) = ctx.params.get(name) {
                     param.ty.clone()
+                } else if let Some(const_ty) = self.const_types.and_then(|consts| consts.get(name))
+                {
+                    // File-level constant: its type was resolved during
+                    // declaration gathering (i32/bool/unit literals, module
+                    // types for `const m = @import(...)`). Yielding it here
+                    // anchors expressions like `N + 1` and `m.go() + 1` that
+                    // previously decayed to `<error>` (RUE-142).
+                    self.type_to_infer(*const_ty)
                 } else {
                     // Unknown variable - will be caught during semantic analysis
                     InferType::Concrete(Type::ERROR)
@@ -840,6 +862,19 @@ impl<'a> ConstraintGenerator<'a> {
                     } else {
                         InferType::Concrete(Type::ERROR)
                     }
+                } else if intrinsic_name == "import" {
+                    // @import("path"): a module value. Resolving the path to a
+                    // real ModuleId needs the registry, which inference doesn't
+                    // have, so use the documented sentinel id — inference only
+                    // needs module-ness (member-call lookup is global by name,
+                    // RUE-140) and sema assigns the real id during analysis.
+                    // Returning Unit here (the old catch-all) made a member
+                    // call on the binding unresolvable (RUE-142) and let a
+                    // bare module expression coerce to `()` silently.
+                    for arg_ref in args.iter() {
+                        self.generate(*arg_ref, ctx);
+                    }
+                    InferType::Concrete(Type::new_module(crate::types::ModuleId::UNRESOLVED))
                 } else {
                     // Generate constraints for arguments (they need to be processed)
                     for arg_ref in args.iter() {
@@ -1212,46 +1247,110 @@ impl<'a> ConstraintGenerator<'a> {
                 let receiver_info = self.generate(*receiver, ctx);
                 let args = self.rir.get_call_args(*args_start, *args_len);
 
-                // Get struct name from receiver type if it's a struct
-                // If we can't determine the struct type, we still generate constraints
-                // for the arguments and return a type variable (actual error is in sema)
-                let result_type = if let InferType::Concrete(ty) = &receiver_info.ty {
-                    if let Some(struct_id) = ty.as_struct() {
-                        // Use StructId directly for method lookup
-                        let method_key = (struct_id, *method);
-                        if let Some(method_sig) = self.methods.get(&method_key) {
-                            // Generate constraints for arguments
-                            for (arg, param_type) in args.iter().zip(method_sig.param_types.iter())
-                            {
-                                let arg_info = self.generate(arg.value, ctx);
-                                self.add_constraint(Constraint::equal(
-                                    arg_info.ty,
-                                    param_type.clone(),
-                                    arg_info.span,
-                                ));
+                // Resolve the call's result type from the receiver's type.
+                // When the receiver can't be resolved RIGHT NOW but sema will
+                // resolve it later, yield a fresh variable rather than ERROR:
+                // a Concrete(ERROR) here flowed into sibling constraints and
+                // produced bogus "literal out of range for '<error>'" failures
+                // that masked (or preempted) sema's real analysis (RUE-126
+                // treats FieldGet the same way).
+                let result_type = match &receiver_info.ty {
+                    // Module receiver: `m.go(...)` is a module member call.
+                    // Mirror sema's `check_module_member_call`: the lookup is
+                    // global by name, never verifying the function belongs to
+                    // the receiver module's file (known looseness, RUE-140 —
+                    // when that is ratified, narrow this lookup too). Yielding
+                    // the callee's return type anchors uses like `m.go() + 1`
+                    // that previously decayed to `<error>` (RUE-142).
+                    InferType::Concrete(ty) if ty.is_module() => {
+                        if let Some(func) = self.functions.get(method) {
+                            if !func.is_generic && args.len() == func.param_types.len() {
+                                // Constrain each argument against its declared
+                                // parameter type (same as a direct Call).
+                                for (arg, param_ty) in args.iter().zip(func.param_types.iter()) {
+                                    let arg_info = self.generate(arg.value, ctx);
+                                    self.add_constraint(Constraint::equal(
+                                        arg_info.ty,
+                                        param_ty.clone(),
+                                        arg_info.span,
+                                    ));
+                                }
+                            } else {
+                                // Generic callee or arity mismatch: just
+                                // process the arguments; sema checks the rest.
+                                for arg in args.iter() {
+                                    self.generate(arg.value, ctx);
+                                }
                             }
-                            method_sig.return_type.clone()
+                            if func.return_type == InferType::Concrete(Type::COMPTIME_TYPE) {
+                                // Generic return type that can't be resolved
+                                // here; sema specialization determines it.
+                                InferType::Var(self.fresh_var())
+                            } else {
+                                func.return_type.clone()
+                            }
                         } else {
-                            // Method not found - sema will report the error
-                            // Still generate arg types to catch errors in arguments
+                            // Unknown member - sema reports UndefinedFunction
                             for arg in args.iter() {
                                 self.generate(arg.value, ctx);
                             }
                             InferType::Concrete(Type::ERROR)
                         }
-                    } else {
-                        // Non-struct receiver - sema will report the error
+                    }
+                    // Receiver of an unresolved comptime-generic type: e.g.
+                    // `pick(t, x).get()` where `t` is a local holding a type
+                    // value, so the generic Call arm couldn't substitute the
+                    // return type. Sema's comptime evaluation resolves the
+                    // receiver and types the call during analysis; an ERROR
+                    // here poisoned inference first (RUE-119 family).
+                    InferType::Concrete(ty) if *ty == Type::COMPTIME_TYPE => {
                         for arg in args.iter() {
                             self.generate(arg.value, ctx);
                         }
-                        InferType::Concrete(Type::ERROR)
+                        InferType::Var(self.fresh_var())
                     }
-                } else {
-                    // Non-concrete type - generate args and return error
-                    for arg in args.iter() {
-                        self.generate(arg.value, ctx);
+                    InferType::Concrete(ty) => {
+                        if let Some(struct_id) = ty.as_struct() {
+                            // Use StructId directly for method lookup
+                            let method_key = (struct_id, *method);
+                            if let Some(method_sig) = self.methods.get(&method_key) {
+                                // Generate constraints for arguments
+                                for (arg, param_type) in
+                                    args.iter().zip(method_sig.param_types.iter())
+                                {
+                                    let arg_info = self.generate(arg.value, ctx);
+                                    self.add_constraint(Constraint::equal(
+                                        arg_info.ty,
+                                        param_type.clone(),
+                                        arg_info.span,
+                                    ));
+                                }
+                                method_sig.return_type.clone()
+                            } else {
+                                // Method not found - sema will report the error
+                                // Still generate arg types to catch errors in arguments
+                                for arg in args.iter() {
+                                    self.generate(arg.value, ctx);
+                                }
+                                InferType::Concrete(Type::ERROR)
+                            }
+                        } else {
+                            // Non-struct receiver - sema will report the error
+                            for arg in args.iter() {
+                                self.generate(arg.value, ctx);
+                            }
+                            InferType::Concrete(Type::ERROR)
+                        }
                     }
-                    InferType::Concrete(Type::ERROR)
+                    // Receiver still a type variable: sema resolves the
+                    // receiver and diagnoses later (mirrors FieldGet's
+                    // fallback, RUE-126/RUE-119).
+                    _ => {
+                        for arg in args.iter() {
+                            self.generate(arg.value, ctx);
+                        }
+                        InferType::Var(self.fresh_var())
+                    }
                 };
 
                 result_type
