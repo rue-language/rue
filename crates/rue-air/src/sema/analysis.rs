@@ -2651,6 +2651,58 @@ fn analyze_block_ctx(
     }
 }
 
+/// Build the use-after-move error for a field access whose path (or one of
+/// its ancestor prefixes) was moved at `moved_span`.
+pub(crate) fn use_after_move_path_error(
+    interner: &lasso::ThreadedRodeo,
+    root_var: Spur,
+    field_path: &[Spur],
+    span: Span,
+    moved_span: Span,
+) -> CompileError {
+    let root_name = interner.resolve(&root_var);
+    let path_str = if field_path.is_empty() {
+        root_name.to_string()
+    } else {
+        let field_names: Vec<_> = field_path
+            .iter()
+            .map(|s| interner.resolve(s).to_string())
+            .collect();
+        format!("{}.{}", root_name, field_names.join("."))
+    };
+    CompileError::new(ErrorKind::UseAfterMove(path_str), span)
+        .with_label("value moved here", moved_span)
+}
+
+/// Build the error for a linear value that goes out of scope without being
+/// consumed on every path.
+///
+/// `consumed_on_some_path` is the span of a consumption that happened on only
+/// SOME paths (if any); when present it selects the more precise "not
+/// consumed on all paths" diagnostic over the plain "dropped" one.
+pub(crate) fn linear_not_consumed_error(
+    name: &str,
+    decl_span: Span,
+    consumed_on_some_path: Option<Span>,
+) -> CompileError {
+    match consumed_on_some_path {
+        Some(consumed_span) => CompileError::new(
+            ErrorKind::LinearValueNotConsumedOnAllPaths(name.to_string()),
+            decl_span,
+        )
+        .with_label("consumed here, but not on every path", consumed_span)
+        .with_help(
+            "a linear value must be consumed on every path; \
+             consume it in the other branches too (paths that diverge, \
+             e.g. by returning, are exempt)",
+        ),
+        None => CompileError::new(
+            ErrorKind::LinearValueNotConsumed(name.to_string()),
+            decl_span,
+        ),
+    }
+}
+
 /// Check for unconsumed linear values at scope exit.
 fn check_unconsumed_linear_values_ctx(
     ctx: &SemaContext<'_>,
@@ -2663,18 +2715,17 @@ fn check_unconsumed_linear_values_ctx(
                 let ty = local.ty;
                 // Check if this is a linear type
                 if ctx.is_type_linear(ty) {
-                    // Check if it's been consumed (moved)
-                    let is_consumed = analysis_ctx
-                        .moved_vars
-                        .get(symbol)
-                        .map(|state| state.full_move.is_some())
-                        .unwrap_or(false);
-
-                    if !is_consumed {
+                    // Consumption must hold on EVERY path (must-consume).
+                    // `full_move` alone is may-move (union at branch joins):
+                    // a value consumed in only one branch of an if/match
+                    // still leaks on the other paths.
+                    let state = analysis_ctx.moved_vars.get(symbol);
+                    if !state.is_some_and(|s| s.full_move_on_all_paths) {
                         let name = ctx.interner.resolve(symbol);
-                        return Err(CompileError::new(
-                            ErrorKind::LinearValueNotConsumed(name.to_string()),
+                        return Err(linear_not_consumed_error(
+                            name,
                             local.span,
+                            state.and_then(|s| s.full_move),
                         ));
                     }
                 }
@@ -3546,6 +3597,13 @@ fn analyze_match_ctx(
     let mut air_arms = Vec::new();
     let mut result_type: Option<Type> = None;
 
+    // Move state before any arm runs (after the scrutinee, whose moves
+    // happen on every path). Arms are alternatives, not a sequence: each is
+    // analyzed from this state and the per-arm results are merged after the
+    // loop (see merge_arm_moves).
+    let moves_before_arms = analysis_ctx.moved_vars.clone();
+    let mut arm_move_states = Vec::with_capacity(arms.len());
+
     for (pattern, body) in arms.iter() {
         let pattern_span = pattern.span();
 
@@ -3706,7 +3764,9 @@ fn analyze_match_ctx(
             }
         }
 
-        // Each arm gets its own scope
+        // Each arm gets its own scope and starts from the pre-match move
+        // state (only one arm executes at runtime).
+        analysis_ctx.moved_vars = moves_before_arms.clone();
         analysis_ctx.push_scope();
 
         // Analyze arm body
@@ -3714,6 +3774,10 @@ fn analyze_match_ctx(
         let body_type = body_result.ty;
 
         analysis_ctx.pop_scope();
+        arm_move_states.push((
+            std::mem::take(&mut analysis_ctx.moved_vars),
+            body_type.is_never(),
+        ));
 
         // Update result type (handle Never type coercion)
         result_type = Some(match result_type {
@@ -3782,6 +3846,11 @@ fn analyze_match_ctx(
 
         air_arms.push((air_pattern, body_result.air_ref));
     }
+
+    // Join the arms' move states (union of non-diverging arms;
+    // `full_move_on_all_paths` intersects for the linear must-consume
+    // check). Matches are exhaustive, so the arms cover every path.
+    analysis_ctx.merge_arm_moves(arm_move_states);
 
     // Exhaustiveness checking
     let has_wildcard = wildcard_span.is_some();
@@ -4252,18 +4321,13 @@ fn analyze_field_get_ctx(
             // Check if this field path is already moved
             if let Some(state) = analysis_ctx.moved_vars.get(&root_var) {
                 if let Some(moved_span) = state.is_path_moved(&field_path) {
-                    let root_name = ctx.interner.resolve(&root_var);
-                    let path_str = if field_path.is_empty() {
-                        root_name.to_string()
-                    } else {
-                        let field_names: Vec<_> = field_path
-                            .iter()
-                            .map(|s| ctx.interner.resolve(s).to_string())
-                            .collect();
-                        format!("{}.{}", root_name, field_names.join("."))
-                    };
-                    return Err(CompileError::new(ErrorKind::UseAfterMove(path_str), span)
-                        .with_label("value moved here", moved_span));
+                    return Err(use_after_move_path_error(
+                        ctx.interner,
+                        root_var,
+                        &field_path,
+                        span,
+                        moved_span,
+                    ));
                 }
             }
 
@@ -4290,6 +4354,23 @@ fn analyze_field_get_ctx(
                 {
                     move_root = Some((param.abi_slot, true, Some(field_index as u32)));
                 }
+            }
+        }
+    }
+    // Copy fields are read, not moved — but reading one THROUGH a moved
+    // ancestor (`o.f.x` after `o.f` was moved out) reads memory whose owner
+    // is gone: drops are move-aware, so the moved part is logically dead.
+    // `is_path_moved` checks the exact path and every ancestor prefix.
+    else if let Some((root_var, field_path)) = extract_field_path_ctx(ctx, inst_ref) {
+        if let Some(state) = analysis_ctx.moved_vars.get(&root_var) {
+            if let Some(moved_span) = state.is_path_moved(&field_path) {
+                return Err(use_after_move_path_error(
+                    ctx.interner,
+                    root_var,
+                    &field_path,
+                    span,
+                    moved_span,
+                ));
             }
         }
     }
@@ -4343,15 +4424,17 @@ fn analyze_field_set_ctx(
         Param { abi_slot: u32, mode: RirParamMode },
     }
 
-    let (var_name, root_kind, root_type, _root_symbol) = loop {
+    let (var_name, root_kind, root_type, root_symbol) = loop {
         let current_inst = ctx.rir.get(current_base);
         match &current_inst.data {
             InstData::VarRef { name } => {
                 let name_str = ctx.interner.resolve(&*name);
 
-                // Check if this variable has been moved
+                // Check if this variable has been fully moved. Partial moves
+                // don't block the write: assigning to a field is how a moved
+                // field is reinitialized (see mark_path_reinitialized below).
                 if let Some(move_state) = analysis_ctx.moved_vars.get(name) {
-                    if let Some(moved_span) = move_state.is_any_part_moved() {
+                    if let Some(moved_span) = move_state.full_move {
                         return Err(CompileError::new(
                             ErrorKind::UseAfterMove(name_str.to_string()),
                             span,
@@ -4400,9 +4483,10 @@ fn analyze_field_set_ctx(
                         span,
                     )?;
 
-                // Check if this parameter has been moved
+                // Check if this parameter has been fully moved (as above,
+                // partial moves don't block a reinitializing write)
                 if let Some(move_state) = analysis_ctx.moved_vars.get(name) {
-                    if let Some(moved_span) = move_state.is_any_part_moved() {
+                    if let Some(moved_span) = move_state.full_move {
                         return Err(CompileError::new(
                             ErrorKind::UseAfterMove(name_str.to_string()),
                             span,
@@ -4532,6 +4616,23 @@ fn analyze_field_set_ctx(
 
     // Analyze the value
     let value_result = analyze_inst_with_context(ctx, air, value, analysis_ctx)?;
+
+    // The write reinitializes its destination: the assigned path (and any
+    // moved sub-paths under it) is no longer moved, so `o.f = ...` after
+    // `consume(o.f)` makes `o.f` usable again. `field_symbols` was collected
+    // walking leaf-to-root, so reverse it to get the root-to-leaf path.
+    let assigned_path: Vec<Spur> = field_symbols
+        .iter()
+        .rev()
+        .copied()
+        .chain(std::iter::once(field))
+        .collect();
+    if let Some(state) = analysis_ctx.moved_vars.get_mut(&root_symbol) {
+        state.mark_path_reinitialized(&assigned_path);
+        if state.is_empty() {
+            analysis_ctx.moved_vars.remove(&root_symbol);
+        }
+    }
 
     // Emit the appropriate instruction based on whether root is a local or param
     let air_ref = match root_kind {
@@ -7950,6 +8051,27 @@ impl<'a> Sema<'a> {
             // Analyze the value
             let value_result = self.analyze_inst(air, value, ctx)?;
 
+            // The write reinitializes its destination: the assigned path
+            // (and any moved sub-paths under it) is no longer moved, so
+            // `o.f = ...` after `consume(o.f)` makes `o.f` usable again.
+            // Index projections are skipped: `arr[i].f` records its moves
+            // under the index-agnostic path `f` (see PlaceTrace::field_path),
+            // so unmarking on a write to `arr[0].f` would wrongly forget a
+            // move out of `arr[1].f`.
+            if !trace
+                .projections
+                .iter()
+                .any(|p| matches!(p.proj, AirProjection::Index { .. }))
+            {
+                let assigned_path = trace.field_path();
+                if let Some(state) = ctx.moved_vars.get_mut(&trace.root_var) {
+                    state.mark_path_reinitialized(&assigned_path);
+                    if state.is_empty() {
+                        ctx.moved_vars.remove(&trace.root_var);
+                    }
+                }
+            }
+
             // Emit PlaceWrite instruction
             let place_ref = Self::build_place_ref(air, &trace);
             let air_ref = air.add_inst(AirInst {
@@ -10478,17 +10600,17 @@ impl<'a> Sema<'a> {
                 continue;
             }
 
-            // Check if this variable was moved (consumed)
-            let was_consumed = ctx
-                .moved_vars
-                .get(symbol)
-                .is_some_and(|state| state.full_move.is_some());
-
-            if !was_consumed {
+            // Consumption must hold on EVERY path (must-consume).
+            // `full_move` alone is may-move (union at branch joins): a value
+            // consumed in only one branch of an if/match still leaks on the
+            // other paths.
+            let state = ctx.moved_vars.get(symbol);
+            if !state.is_some_and(|s| s.full_move_on_all_paths) {
                 let name = self.interner.resolve(&*symbol);
-                return Err(CompileError::new(
-                    ErrorKind::LinearValueNotConsumed(name.to_string()),
+                return Err(linear_not_consumed_error(
+                    name,
                     local.span,
+                    state.and_then(|s| s.full_move),
                 ));
             }
         }

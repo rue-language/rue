@@ -169,6 +169,31 @@ A linear struct **MUST NOT** be marked with `@copy`. Linear types cannot be impl
 linear struct Invalid { value: i32 }  // ERROR: linear types cannot be @copy
 ```
 
+{{ rule(id="3.8:50", cat="legality-rule") }}
+
+A linear value **MUST** be consumed on every control-flow path on which it goes out of scope. It is a compile-time error for a linear value to be consumed in only some branches of a conditional (`if`/`else` or `match`): the paths that do not consume it would drop it implicitly.
+
+{{ rule(id="3.8:51", cat="normative") }}
+
+A control-flow path that diverges (for example, by executing a `return` expression) does not reach the end of the value's scope, and so is exempt from the consumption requirement on that path.
+
+{{ rule(id="3.8:52", cat="example") }}
+
+```rue
+linear struct MustUse { value: i32 }
+
+fn consume(m: MustUse) -> i32 { m.value }
+
+fn main() -> i32 {
+    let m = MustUse { value: 1 };
+    if true {
+        consume(m)   // ERROR: 'm' is not consumed on the else path
+    } else {
+        0
+    }
+}
+```
+
 {{ rule(id="3.8:39", cat="informative") }}
 
 Linear types are useful for:
@@ -382,6 +407,47 @@ fn main() -> i32 {
     let y = s.a;   // s.a can be copied again
     let z = s.b;   // s.b is also valid
     x + y + z      // 4
+}
+```
+
+{{ rule(id="3.8:53", cat="legality-rule") }}
+
+Accessing a field through a moved ancestor path is a compile-time error even when the accessed field is itself a Copy type. The moved ancestor's storage is no longer owned by the variable, so nothing within it may be read.
+
+{{ rule(id="3.8:54", cat="example") }}
+
+```rue
+struct Inner { x: i32 }
+struct Outer { f: Inner }
+
+fn consume(i: Inner) -> i32 { i.x }
+
+fn main() -> i32 {
+    let o = Outer { f: Inner { x: 1 } };
+    let a = consume(o.f);  // o.f is moved
+    let b = o.f.x;         // ERROR: use of moved value 'o.f.x'
+    a + b
+}
+```
+
+{{ rule(id="3.8:55", cat="normative") }}
+
+Assigning a new value to a moved field reinitializes it. After the assignment, the field (and any of its subfields) may be used again.
+
+{{ rule(id="3.8:56", cat="example") }}
+
+```rue
+struct Inner { x: i32 }
+struct Outer { f: Inner }
+
+fn consume(i: Inner) -> i32 { i.x }
+
+fn main() -> i32 {
+    let mut o = Outer { f: Inner { x: 1 } };
+    let a = consume(o.f);     // o.f is moved
+    o.f = Inner { x: 2 };     // o.f is reinitialized
+    let b = o.f.x;            // OK: o.f is valid again
+    a + b                     // 3
 }
 ```
 

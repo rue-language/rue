@@ -126,8 +126,9 @@ impl ErrorCode {
     pub const DUPLICATE_FUNCTION_DEFINITION: Self = Self(436);
     pub const MOVE_OUT_OF_INOUT: Self = Self(437);
     pub const BY_REF_ARG_NOT_PLAIN_VARIABLE: Self = Self(438);
-    // 439-441 are reserved by in-flight work; next free code is 442.
+    // 439-441 are reserved by in-flight work; next free code is 444.
     pub const MOVE_SELF_OUT_OF_DESTRUCTOR: Self = Self(442);
+    pub const LINEAR_VALUE_NOT_CONSUMED_ON_ALL_PATHS: Self = Self(443);
 
     // ========================================================================
     // Control flow errors (E0500-E0599)
@@ -872,6 +873,9 @@ pub enum ErrorKind {
     /// Linear value was not consumed before going out of scope
     #[error("linear value '{0}' must be consumed but was dropped")]
     LinearValueNotConsumed(String),
+    /// Linear value was consumed on some control-flow paths but not all of them
+    #[error("linear value '{0}' is not consumed on all paths")]
+    LinearValueNotConsumedOnAllPaths(String),
     /// Linear struct cannot be marked @copy
     #[error("linear struct '{0}' cannot be marked @copy")]
     LinearStructCopy(String),
@@ -1146,6 +1150,9 @@ impl ErrorKind {
                 ErrorCode::DUPLICATE_FUNCTION_DEFINITION
             }
             ErrorKind::LinearValueNotConsumed(_) => ErrorCode::LINEAR_VALUE_NOT_CONSUMED,
+            ErrorKind::LinearValueNotConsumedOnAllPaths(_) => {
+                ErrorCode::LINEAR_VALUE_NOT_CONSUMED_ON_ALL_PATHS
+            }
             ErrorKind::LinearStructCopy(_) => ErrorCode::LINEAR_STRUCT_COPY,
             ErrorKind::HandleStructMissingMethod { .. } => ErrorCode::HANDLE_STRUCT_MISSING_METHOD,
             ErrorKind::HandleMethodWrongSignature { .. } => {

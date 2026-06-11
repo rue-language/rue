@@ -40,7 +40,18 @@ pub(crate) type FieldPath = Vec<Spur>;
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct VariableMoveState {
     /// If Some, the entire variable has been fully moved at this span.
+    ///
+    /// This is MAY-move (union) information: after a branch join it is set if
+    /// the variable was moved on ANY path, which is what the use-after-move
+    /// check needs (a value that might be moved cannot be used).
     pub full_move: Option<Span>,
+    /// True when the full move happened on EVERY non-diverging path reaching
+    /// this point (intersection at branch joins). The linear must-consume
+    /// check needs MUST-move information: a linear value consumed in only one
+    /// branch of an `if`/`match` is still dropped on the other paths.
+    /// Diverging branches (return/break/panic) never reach the join, so they
+    /// don't participate in the intersection.
+    pub full_move_on_all_paths: bool,
     /// Partial moves: maps field paths to the span where they were moved.
     /// For example, if `s.a` was moved, this contains ([sym("a")], span).
     pub partial_moves: HashMap<FieldPath, Span>,
@@ -52,6 +63,9 @@ impl VariableMoveState {
         if path.is_empty() {
             // Moving the whole variable
             self.full_move = Some(span);
+            // A move on the straight-line path holds on every path until a
+            // branch join intersects it away (see `merge_union`).
+            self.full_move_on_all_paths = true;
             // Clear partial moves since the whole thing is moved
             self.partial_moves.clear();
         } else {
@@ -60,6 +74,17 @@ impl VariableMoveState {
                 self.partial_moves.insert(path.to_vec(), span);
             }
         }
+    }
+
+    /// Mark a field path as reinitialized (assigned a fresh value): the exact
+    /// path and any moved sub-paths under it are no longer moved.
+    ///
+    /// Does not affect `full_move`: writing one field back does not resurrect
+    /// a fully moved variable (and assignment through a fully moved root is
+    /// rejected before this is called).
+    pub fn mark_path_reinitialized(&mut self, path: &[Spur]) {
+        self.partial_moves
+            .retain(|moved, _| !(moved.len() >= path.len() && moved[..path.len()] == *path));
     }
 
     /// Check if a field path is moved.
@@ -103,6 +128,10 @@ impl VariableMoveState {
     /// Merge move states from two branches (union semantics).
     /// A variable is considered moved after a branch if it was moved in EITHER branch.
     /// This prevents use-after-move when a value might have been moved.
+    ///
+    /// The one intersection: `full_move_on_all_paths` survives only if BOTH
+    /// branches fully moved the value (must-move, for the linear
+    /// must-consume check).
     pub fn merge_union(branch1: &Self, branch2: &Self) -> Self {
         // If either branch has a full move, the result is a full move
         // (use the span from whichever branch has it, preferring branch1)
@@ -116,9 +145,36 @@ impl VariableMoveState {
 
         Self {
             full_move,
+            full_move_on_all_paths: branch1.full_move_on_all_paths
+                && branch2.full_move_on_all_paths,
             partial_moves,
         }
     }
+}
+
+/// Union-merge two branch move-state maps (see [`VariableMoveState::merge_union`]).
+///
+/// A variable with state in only one map is merged against the default
+/// (no-moves) state, which correctly clears `full_move_on_all_paths`: the
+/// other branch did not move it.
+pub(crate) fn union_move_maps(
+    branch1: &HashMap<Spur, VariableMoveState>,
+    branch2: &HashMap<Spur, VariableMoveState>,
+) -> HashMap<Spur, VariableMoveState> {
+    let default = VariableMoveState::default();
+    let mut merged = HashMap::new();
+    for symbol in branch1.keys().chain(branch2.keys()) {
+        if merged.contains_key(symbol) {
+            continue;
+        }
+        let state1 = branch1.get(symbol).unwrap_or(&default);
+        let state2 = branch2.get(symbol).unwrap_or(&default);
+        let merged_state = VariableMoveState::merge_union(state1, state2);
+        if !merged_state.is_empty() {
+            merged.insert(*symbol, merged_state);
+        }
+    }
+    merged
 }
 
 /// Information about a function parameter.
@@ -325,35 +381,47 @@ impl<'a> AnalysisContext<'a> {
             }
             (false, false) => {
                 // Neither diverges - merge the moves (union).
-                // A variable is moved after if-else if moved in EITHER branch.
-                let mut merged = HashMap::new();
-
-                // Include all moves from then-branch
-                for (symbol, then_state) in &then_moves {
-                    if let Some(else_state) = else_moves.get(symbol) {
-                        // Variable has state in both branches - merge them
-                        let merged_state = VariableMoveState::merge_union(then_state, else_state);
-                        if !merged_state.is_empty() {
-                            merged.insert(*symbol, merged_state);
-                        }
-                    } else {
-                        // Variable only moved in then-branch
-                        if !then_state.is_empty() {
-                            merged.insert(*symbol, then_state.clone());
-                        }
-                    }
-                }
-
-                // Include moves that only appear in else-branch
-                for (symbol, else_state) in &else_moves {
-                    if !then_moves.contains_key(symbol) && !else_state.is_empty() {
-                        merged.insert(*symbol, else_state.clone());
-                    }
-                }
-
-                self.moved_vars = merged;
+                // A variable is moved after if-else if moved in EITHER branch
+                // (and fully-moved-on-all-paths only if moved in BOTH).
+                self.moved_vars = union_move_maps(&then_moves, &else_moves);
             }
         }
+    }
+
+    /// Merge move states captured from the arms of a `match`.
+    ///
+    /// Exactly one arm executes, so this is [`Self::merge_branch_moves`]
+    /// generalized to N branches: a value is moved after the match if it was
+    /// moved in ANY non-diverging arm (union), and a linear value counts as
+    /// consumed on all paths only if EVERY non-diverging arm consumed it
+    /// (`full_move_on_all_paths` intersects in `merge_union`). Diverging arms
+    /// never reach the join, so they are excluded; if every arm diverges the
+    /// match itself diverges and any arm's state will do (code after the
+    /// match is unreachable).
+    ///
+    /// Each entry is the `moved_vars` snapshot after analyzing one arm
+    /// (starting from the same pre-match state), paired with whether that
+    /// arm's body diverges.
+    pub fn merge_arm_moves(&mut self, arm_moves: Vec<(HashMap<Spur, VariableMoveState>, bool)>) {
+        let mut live = arm_moves
+            .iter()
+            .filter(|(_, diverges)| !diverges)
+            .map(|(moves, _)| moves);
+
+        let Some(first) = live.next() else {
+            // Every arm diverges (or there are no arms, which is rejected
+            // earlier as an empty match).
+            if let Some((moves, _)) = arm_moves.into_iter().next() {
+                self.moved_vars = moves;
+            }
+            return;
+        };
+
+        let mut merged = first.clone();
+        for arm in live {
+            merged = union_move_maps(&merged, arm);
+        }
+        self.moved_vars = merged;
     }
 
     /// Add a string to the local string table, returning its local index.
@@ -746,6 +814,67 @@ mod tests {
         // Should have the span from the first state
         assert_eq!(merged.partial_moves.len(), 1);
         assert_eq!(merged.is_path_moved(&[field_x]), Some(span1));
+    }
+
+    #[test]
+    fn full_move_on_all_paths_intersects_at_merge() {
+        let span = Span::new(10, 20);
+
+        // Moved in both branches: still moved on all paths.
+        let mut both1 = VariableMoveState::default();
+        let mut both2 = VariableMoveState::default();
+        both1.mark_path_moved(&[], span);
+        both2.mark_path_moved(&[], span);
+        assert!(both1.full_move_on_all_paths);
+        let merged = VariableMoveState::merge_union(&both1, &both2);
+        assert!(merged.full_move_on_all_paths);
+
+        // Moved in only one branch: may-move stays (full_move set), but
+        // must-move is intersected away.
+        let mut one = VariableMoveState::default();
+        one.mark_path_moved(&[], span);
+        let merged = VariableMoveState::merge_union(&one, &VariableMoveState::default());
+        assert_eq!(merged.full_move, Some(span));
+        assert!(!merged.full_move_on_all_paths);
+    }
+
+    #[test]
+    fn union_move_maps_clears_all_paths_for_one_sided_entries() {
+        let interner = ThreadedRodeo::new();
+        let var = interner.get_or_intern("m");
+        let span = Span::new(10, 20);
+
+        let mut then_state = VariableMoveState::default();
+        then_state.mark_path_moved(&[], span);
+        let mut then_moves = HashMap::new();
+        then_moves.insert(var, then_state);
+        let else_moves = HashMap::new();
+
+        let merged = union_move_maps(&then_moves, &else_moves);
+        let state = merged.get(&var).expect("var should be may-moved");
+        assert_eq!(state.full_move, Some(span));
+        assert!(!state.full_move_on_all_paths);
+    }
+
+    #[test]
+    fn mark_path_reinitialized_clears_path_and_subpaths_only() {
+        let interner = ThreadedRodeo::new();
+        let field_f = interner.get_or_intern("f");
+        let field_x = interner.get_or_intern("x");
+        let field_g = interner.get_or_intern("g");
+        let span = Span::new(10, 20);
+
+        let mut state = VariableMoveState::default();
+        state.mark_path_moved(&[field_f], span);
+        state.mark_path_moved(&[field_f, field_x], span);
+        state.mark_path_moved(&[field_g], span);
+
+        state.mark_path_reinitialized(&[field_f]);
+
+        // f and f.x are reinitialized; sibling g stays moved.
+        assert!(state.is_path_moved(&[field_f]).is_none());
+        assert!(state.is_path_moved(&[field_f, field_x]).is_none());
+        assert_eq!(state.is_path_moved(&[field_g]), Some(span));
     }
 
     // =========================================================================

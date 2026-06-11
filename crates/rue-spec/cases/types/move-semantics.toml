@@ -789,6 +789,114 @@ fn main() -> i32 {
 compile_fail = true
 error_contains = "use of moved value"
 
+[[case]]
+name = "copy_field_through_moved_ancestor_error"
+spec = ["3.8:53", "3.8:54"]
+description = "Reading a Copy field through a moved ancestor path is an error"
+source = """
+struct Inner { x: i32 }
+struct Outer { f: Inner }
+
+fn consume(i: Inner) -> i32 { i.x }
+
+fn main() -> i32 {
+    let o = Outer { f: Inner { x: 14 } };
+    let a = consume(o.f);
+    let b = o.f.x;
+    a + b
+}
+"""
+compile_fail = true
+error_contains = "use of moved value"
+
+[[case]]
+name = "copy_field_through_deep_moved_ancestor_error"
+spec = ["3.8:53"]
+description = "Reading a Copy field through a deeply nested moved ancestor is an error"
+source = """
+struct Leaf { x: i32 }
+struct Mid { leaf: Leaf }
+struct Top { mid: Mid }
+
+fn consume(m: Mid) -> i32 { m.leaf.x }
+
+fn main() -> i32 {
+    let t = Top { mid: Mid { leaf: Leaf { x: 9 } } };
+    let a = consume(t.mid);
+    let b = t.mid.leaf.x;
+    a + b
+}
+"""
+compile_fail = true
+error_contains = "use of moved value"
+
+[[case]]
+name = "copy_field_sibling_after_partial_move"
+spec = ["3.8:53", "3.8:22"]
+description = "Reading a field of a sibling that was NOT moved is still legal after a partial move"
+source = """
+struct Inner { x: i32 }
+struct Outer { a: Inner, b: Inner }
+
+fn eat(i: Inner) -> i32 { i.x }
+
+fn main() -> i32 {
+    let o = Outer { a: Inner { x: 1 }, b: Inner { x: 2 } };
+    let r = eat(o.a);
+    let s = o.b.x;
+    r + s
+}
+"""
+exit_code = 3
+
+[[case]]
+name = "copy_field_through_moved_ancestor_in_loop_error"
+spec = ["3.8:53"]
+description = "An ancestor moved on a previous loop iteration (or sibling branch) blocks Copy-field reads"
+source = """
+struct Inner { x: i32 }
+struct Outer { f: Inner }
+
+fn consume(i: Inner) -> i32 { i.x }
+
+fn main() -> i32 {
+    let o = Outer { f: Inner { x: 3 } };
+    let mut i = 0;
+    let mut total = 0;
+    while i < 2 {
+        if i == 1 {
+            total = total + o.f.x;
+        } else {
+            total = total + consume(o.f);
+        }
+        i = i + 1;
+    }
+    total
+}
+"""
+compile_fail = true
+error_contains = "use of moved value"
+
+[[case]]
+name = "moved_field_reassign_then_read"
+spec = ["3.8:55", "3.8:56"]
+description = "Assigning a new value to a moved field reinitializes it"
+source = """
+struct Inner { x: i32 }
+struct Outer { f: Inner }
+
+fn consume(i: Inner) -> i32 { i.x }
+
+fn main() -> i32 {
+    let mut o = Outer { f: Inner { x: 14 } };
+    let a = consume(o.f);
+    o.f = Inner { x: 5 };
+    let b = o.f.x;
+    a + b
+}
+"""
+exit_code = 19
+
 # =============================================================================
 # Linear Types
 # =============================================================================
@@ -840,6 +948,132 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = "linear value"
+
+[[case]]
+name = "linear_consumed_one_branch_error"
+spec = ["3.8:50", "3.8:52"]
+description = "Linear value consumed in only one branch of an if is an error (must-consume on every path)"
+source = """
+linear struct MustUse { value: i32 }
+
+fn consume(m: MustUse) -> i32 { m.value }
+
+fn main() -> i32 {
+    let m = MustUse { value: 1 };
+    if true {
+        consume(m)
+    } else {
+        0
+    }
+}
+"""
+compile_fail = true
+error_contains = "not consumed on all paths"
+
+[[case]]
+name = "linear_consumed_one_match_arm_error"
+spec = ["3.8:50"]
+description = "Linear value consumed in only one match arm is an error"
+source = """
+linear struct MustUse { value: i32 }
+
+fn consume(m: MustUse) -> i32 { m.value }
+
+fn main() -> i32 {
+    let m = MustUse { value: 1 };
+    let c = 1;
+    match c {
+        0 => consume(m),
+        _ => 0,
+    }
+}
+"""
+compile_fail = true
+error_contains = "not consumed on all paths"
+
+[[case]]
+name = "linear_consumed_both_branches"
+spec = ["3.8:50"]
+description = "Linear value consumed in both branches of an if satisfies must-consume"
+source = """
+linear struct MustUse { value: i32 }
+
+fn consume(m: MustUse) -> i32 { m.value }
+
+fn main() -> i32 {
+    let m = MustUse { value: 42 };
+    if true {
+        consume(m)
+    } else {
+        consume(m)
+    }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "linear_consumed_all_match_arms"
+spec = ["3.8:50"]
+description = "Linear value consumed in every match arm satisfies must-consume (arms are alternatives, not a sequence)"
+source = """
+linear struct MustUse { value: i32 }
+
+fn consume(m: MustUse) -> i32 { m.value }
+
+fn main() -> i32 {
+    let m = MustUse { value: 7 };
+    let c = 1;
+    match c {
+        0 => consume(m) + 1,
+        _ => consume(m),
+    }
+}
+"""
+exit_code = 7
+
+[[case]]
+name = "linear_diverging_branch_exempt"
+spec = ["3.8:51"]
+description = "A branch that returns never reaches the end of scope, so it is exempt from consumption"
+source = """
+linear struct MustUse { value: i32 }
+
+fn consume(m: MustUse) -> i32 { m.value }
+
+fn main() -> i32 {
+    let m = MustUse { value: 5 };
+    if false {
+        return 0;
+    }
+    consume(m)
+}
+"""
+exit_code = 5
+
+[[case]]
+name = "linear_one_branch_in_loop_error"
+spec = ["3.8:50"]
+description = "Must-consume-on-all-paths also applies to linear values declared inside a loop body"
+source = """
+linear struct MustUse { value: i32 }
+
+fn consume(m: MustUse) -> i32 { m.value }
+
+fn main() -> i32 {
+    let mut i = 0;
+    let mut total = 0;
+    while i < 3 {
+        let m = MustUse { value: i };
+        if i == 0 {
+            total = total + consume(m);
+        }
+        i = i + 1;
+    }
+    total
+}
+"""
+compile_fail = true
+error_contains = "not consumed on all paths"
 
 [[case]]
 name = "linear_struct_copy_error"

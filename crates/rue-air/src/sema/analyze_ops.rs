@@ -944,6 +944,13 @@ impl<'a> Sema<'a> {
         let mut air_arms = Vec::new();
         let mut result_type: Option<Type> = None;
 
+        // Move state before any arm runs (after the scrutinee, whose moves
+        // happen on every path). Arms are alternatives, not a sequence:
+        // each is analyzed from this state and the per-arm results are
+        // merged after the loop (see merge_arm_moves).
+        let moves_before_arms = ctx.moved_vars.clone();
+        let mut arm_move_states = Vec::with_capacity(arms.len());
+
         for (pattern, body) in arms.iter() {
             let pattern_span = pattern.span();
 
@@ -1113,7 +1120,9 @@ impl<'a> Sema<'a> {
                 }
             }
 
-            // Each arm gets its own scope
+            // Each arm gets its own scope and starts from the pre-match
+            // move state (only one arm executes at runtime).
+            ctx.moved_vars = moves_before_arms.clone();
             ctx.push_scope();
 
             // Analyze arm body
@@ -1121,6 +1130,7 @@ impl<'a> Sema<'a> {
             let body_type = body_result.ty;
 
             ctx.pop_scope();
+            arm_move_states.push((std::mem::take(&mut ctx.moved_vars), body_type.is_never()));
 
             // Update result type (handle Never type coercion)
             result_type = Some(match result_type {
@@ -1188,6 +1198,11 @@ impl<'a> Sema<'a> {
 
             air_arms.push((air_pattern, body_result.air_ref));
         }
+
+        // Join the arms' move states (union of non-diverging arms;
+        // `full_move_on_all_paths` intersects for the linear must-consume
+        // check). Matches are exhaustive, so the arms cover every path.
+        ctx.merge_arm_moves(arm_move_states);
 
         // Exhaustiveness checking
         let has_wildcard = wildcard_span.is_some();
@@ -2275,18 +2290,13 @@ impl<'a> Sema<'a> {
                 // Check if this field path is already moved (partial moves)
                 if let Some(state) = ctx.moved_vars.get(&trace.root_var) {
                     if let Some(moved_span) = state.is_path_moved(&field_path) {
-                        let root_name = self.interner.resolve(&trace.root_var);
-                        let path_str = if field_path.is_empty() {
-                            root_name.to_string()
-                        } else {
-                            let field_names: Vec<_> = field_path
-                                .iter()
-                                .map(|s| self.interner.resolve(s).to_string())
-                                .collect();
-                            format!("{}.{}", root_name, field_names.join("."))
-                        };
-                        return Err(CompileError::new(ErrorKind::UseAfterMove(path_str), span)
-                            .with_label("value moved here", moved_span));
+                        return Err(super::analysis::use_after_move_path_error(
+                            self.interner,
+                            trace.root_var,
+                            &field_path,
+                            span,
+                            moved_span,
+                        ));
                     }
                 }
 
@@ -2315,6 +2325,25 @@ impl<'a> Sema<'a> {
                             emit_move_marker = true;
                             move_field = Some(field_index);
                         }
+                    }
+                }
+            } else {
+                // Copy fields are read, not moved — but reading one THROUGH
+                // a moved ancestor (`o.f.x` after `o.f` was moved out) reads
+                // memory whose owner is gone: drops are move-aware, so the
+                // moved part is logically dead. `is_path_moved` checks the
+                // exact path and every ancestor prefix (the full-move case
+                // was already rejected above).
+                let field_path = trace.field_path();
+                if let Some(state) = ctx.moved_vars.get(&trace.root_var) {
+                    if let Some(moved_span) = state.is_path_moved(&field_path) {
+                        return Err(super::analysis::use_after_move_path_error(
+                            self.interner,
+                            trace.root_var,
+                            &field_path,
+                            span,
+                            moved_span,
+                        ));
                     }
                 }
             }
