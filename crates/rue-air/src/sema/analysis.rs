@@ -5442,6 +5442,106 @@ fn analyze_method_call_ctx(
 /// generates a direct call to it. Visibility is checked based on directory:
 /// - `pub` functions are always accessible
 /// - Private functions are only accessible from the same directory
+/// Shared checks for a module-member function call, used by BOTH sema
+/// pipelines (the eager `Sema`-method path and the lazy `SemaContext` path).
+/// Validates visibility, arity, and argument modes against the callee.
+///
+/// Two operations deliberately stay per-pipeline at the call sites: argument
+/// analysis (it recurses into the owning pipeline) and the exclusive-access
+/// check (the two pipelines' checks have drifted, RUE-141). Known looseness
+/// shared by both pipelines: the lookup is global by name, never verifying
+/// the function belongs to the receiver module's file (RUE-140) — fix it
+/// HERE when ratified, and it fixes both pipelines at once.
+fn check_module_member_call(
+    rir: &Rir,
+    fn_name_str: &str,
+    param_types: &[Type],
+    param_modes: &[RirParamMode],
+    args: &[RirCallArg],
+    accessible: bool,
+    span: Span,
+) -> CompileResult<()> {
+    // Check visibility: private functions are only accessible from the same directory
+    if !accessible {
+        return Err(CompileError::new(
+            ErrorKind::PrivateMemberAccess {
+                item_kind: "function".to_string(),
+                name: fn_name_str.to_string(),
+            },
+            span,
+        ));
+    }
+
+    // Check argument count
+    if args.len() != param_types.len() {
+        return Err(CompileError::new(
+            ErrorKind::WrongArgumentCount {
+                expected: param_types.len(),
+                found: args.len(),
+            },
+            span,
+        ));
+    }
+
+    // Check that call-site argument modes match function parameter modes
+    for (arg, expected_mode) in args.iter().zip(param_modes.iter()) {
+        match expected_mode {
+            RirParamMode::Inout => {
+                if arg.mode != RirArgMode::Inout {
+                    return Err(CompileError::new(
+                        ErrorKind::InoutKeywordMissing,
+                        rir.get(arg.value).span,
+                    ));
+                }
+            }
+            RirParamMode::Borrow => {
+                if arg.mode != RirArgMode::Borrow {
+                    return Err(CompileError::new(
+                        ErrorKind::BorrowKeywordMissing,
+                        rir.get(arg.value).span,
+                    ));
+                }
+            }
+            RirParamMode::Normal => {
+                // Normal params accept any mode
+            }
+            RirParamMode::Comptime => {
+                // Comptime params - handled elsewhere
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Encode the analyzed arguments and emit the Call instruction for a
+/// module-member function call (shared tail of both pipelines).
+fn emit_module_member_call(
+    air: &mut Air,
+    function_name: Spur,
+    air_args: &[AirCallArg],
+    return_type: Type,
+    span: Span,
+) -> AnalysisResult {
+    let mut extra_data = Vec::with_capacity(air_args.len() * 2);
+    for arg in air_args {
+        extra_data.push(arg.value.as_u32());
+        extra_data.push(arg.mode.as_u32());
+    }
+    let call_args_start = air.add_extra(&extra_data);
+    let call_args_len = air_args.len() as u32;
+
+    let air_ref = air.add_inst(AirInst {
+        data: AirInstData::Call {
+            name: function_name,
+            args_start: call_args_start,
+            args_len: call_args_len,
+        },
+        ty: return_type,
+        span,
+    });
+    AnalysisResult::new(air_ref, return_type)
+}
+
 fn analyze_module_member_call_ctx(
     ctx: &SemaContext<'_>,
     air: &mut Air,
@@ -5460,90 +5560,34 @@ fn analyze_module_member_call_ctx(
     // Track this function as referenced (for lazy analysis)
     analysis_ctx.referenced_functions.insert(function_name);
 
-    // Check visibility: private functions are only accessible from the same directory
-    let accessing_file_id = span.file_id;
-    let target_file_id = fn_info.file_id;
-    if !ctx.is_accessible(accessing_file_id, target_file_id, fn_info.is_pub) {
-        return Err(CompileError::new(
-            ErrorKind::PrivateMemberAccess {
-                item_kind: "function".to_string(),
-                name: fn_name_str,
-            },
-            span,
-        ));
-    }
-
-    // Get parameter data from the arena
     let param_types = ctx.param_arena.types(fn_info.params);
     let param_modes = ctx.param_arena.modes(fn_info.params);
-
     let args = ctx.rir.get_call_args(args_start, args_len);
+    let accessible = ctx.is_accessible(span.file_id, fn_info.file_id, fn_info.is_pub);
+    check_module_member_call(
+        ctx.rir,
+        &fn_name_str,
+        param_types,
+        param_modes,
+        &args,
+        accessible,
+        span,
+    )?;
 
-    // Check argument count
-    if args.len() != param_types.len() {
-        let expected = param_types.len();
-        let found = args.len();
-        return Err(CompileError::new(
-            ErrorKind::WrongArgumentCount { expected, found },
-            span,
-        ));
-    }
-
-    // Check for exclusive access violation
+    // Check for exclusive access violation (pipeline-specific seam; this
+    // check has drifted from the eager pipeline's richer one — RUE-141)
     check_exclusive_access_ctx(ctx, &args, span)?;
 
-    // Check that call-site argument modes match function parameter modes
-    for (i, (arg, expected_mode)) in args.iter().zip(param_modes.iter()).enumerate() {
-        match expected_mode {
-            RirParamMode::Inout => {
-                if arg.mode != RirArgMode::Inout {
-                    return Err(CompileError::new(
-                        ErrorKind::InoutKeywordMissing,
-                        ctx.rir.get(args[i].value).span,
-                    ));
-                }
-            }
-            RirParamMode::Borrow => {
-                if arg.mode != RirArgMode::Borrow {
-                    return Err(CompileError::new(
-                        ErrorKind::BorrowKeywordMissing,
-                        ctx.rir.get(args[i].value).span,
-                    ));
-                }
-            }
-            RirParamMode::Normal => {
-                // Normal params accept any mode
-            }
-            RirParamMode::Comptime => {
-                // Comptime params - handled elsewhere
-            }
-        }
-    }
-
-    // Analyze arguments
+    // Analyze arguments (the per-pipeline recursion seam)
     let air_args = analyze_call_args_ctx(ctx, air, &args, analysis_ctx)?;
 
-    let return_type = fn_info.return_type;
-
-    // Encode call args
-    let mut extra_data = Vec::with_capacity(air_args.len() * 2);
-    for arg in &air_args {
-        extra_data.push(arg.value.as_u32());
-        extra_data.push(arg.mode.as_u32());
-    }
-    let call_args_start = air.add_extra(&extra_data);
-    let call_args_len = air_args.len() as u32;
-
-    let air_ref = air.add_inst(AirInst {
-        data: AirInstData::Call {
-            name: function_name,
-            args_start: call_args_start,
-            args_len: call_args_len,
-        },
-        ty: return_type,
+    Ok(emit_module_member_call(
+        air,
+        function_name,
+        &air_args,
+        fn_info.return_type,
         span,
-    });
-    Ok(AnalysisResult::new(air_ref, return_type))
+    ))
 }
 
 /// Analyze a builtin method call using the shared context.
@@ -8224,87 +8268,36 @@ impl<'a> Sema<'a> {
         // Track this function as referenced (for lazy analysis)
         ctx.referenced_functions.insert(function_name);
 
-        // Check visibility: private functions are only accessible from the same directory
-        let accessing_file_id = span.file_id;
-        let target_file_id = fn_info.file_id;
-        if !self.is_accessible(accessing_file_id, target_file_id, fn_info.is_pub) {
-            return Err(CompileError::new(
-                ErrorKind::PrivateMemberAccess {
-                    item_kind: "function".to_string(),
-                    name: fn_name_str,
-                },
-                span,
-            ));
-        }
-
-        // Get parameter data from the arena
-        let param_types = self.param_arena.types(fn_info.params);
-        let param_modes = self.param_arena.modes(fn_info.params);
-
+        let param_types = self.param_arena.types(fn_info.params).to_vec();
+        let param_modes = self.param_arena.modes(fn_info.params).to_vec();
         let args = self.rir.get_call_args(args_start, args_len);
+        let accessible = self.is_accessible(span.file_id, fn_info.file_id, fn_info.is_pub);
+        check_module_member_call(
+            self.rir,
+            &fn_name_str,
+            &param_types,
+            &param_modes,
+            &args,
+            accessible,
+            span,
+        )?;
 
-        // Check argument count
-        if args.len() != param_types.len() {
-            let expected = param_types.len();
-            let found = args.len();
-            return Err(CompileError::new(
-                ErrorKind::WrongArgumentCount { expected, found },
-                span,
-            ));
-        }
+        // Check for exclusive access violation (pipeline-specific seam; this
+        // pipeline's check also covers borrow duplicates and lvalue-ness —
+        // the lazy pipeline's has drifted and checks less, RUE-141). The old
+        // copy of this function skipped the check entirely.
+        self.check_exclusive_access(&args, span)?;
 
-        // Check that call-site argument modes match function parameter modes
-        for (i, (arg, expected_mode)) in args.iter().zip(param_modes.iter()).enumerate() {
-            match expected_mode {
-                RirParamMode::Inout => {
-                    if arg.mode != RirArgMode::Inout {
-                        return Err(CompileError::new(
-                            ErrorKind::InoutKeywordMissing,
-                            self.rir.get(args[i].value).span,
-                        ));
-                    }
-                }
-                RirParamMode::Borrow => {
-                    if arg.mode != RirArgMode::Borrow {
-                        return Err(CompileError::new(
-                            ErrorKind::BorrowKeywordMissing,
-                            self.rir.get(args[i].value).span,
-                        ));
-                    }
-                }
-                RirParamMode::Normal => {
-                    // Normal params accept any mode
-                }
-                RirParamMode::Comptime => {
-                    // Comptime params - handled elsewhere
-                }
-            }
-        }
-
-        // Analyze arguments
+        // Analyze arguments (the per-pipeline recursion seam)
         let air_args = self.analyze_call_args(air, &args, ctx)?;
 
-        let return_type = fn_info.return_type;
-
-        // Encode call args
-        let mut extra_data = Vec::with_capacity(air_args.len() * 2);
-        for arg in &air_args {
-            extra_data.push(arg.value.as_u32());
-            extra_data.push(arg.mode.as_u32());
-        }
-        let call_args_start = air.add_extra(&extra_data);
-        let call_args_len = air_args.len() as u32;
-
-        let air_ref = air.add_inst(AirInst {
-            data: AirInstData::Call {
-                name: function_name,
-                args_start: call_args_start,
-                args_len: call_args_len,
-            },
-            ty: return_type,
+        Ok(emit_module_member_call(
+            air,
+            function_name,
+            &air_args,
+            fn_info.return_type,
             span,
-        });
-        Ok(AnalysisResult::new(air_ref, return_type))
+        ))
     }
 
     /// Implementation for AssocFnCall.
