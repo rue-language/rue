@@ -495,7 +495,10 @@ fn regs_written(inst: &X86Inst) -> Vec<Reg> {
 }
 
 /// Check if an instruction writes to FLAGS.
-fn writes_flags(inst: &X86Inst) -> bool {
+///
+/// Shared with the peephole pass, which must not change or drop a flags
+/// write that a later reader observes (RUE-152).
+pub(super) fn writes_flags(inst: &X86Inst) -> bool {
     matches!(
         inst,
         // Arithmetic (set OF, SF, ZF, CF, PF, AF)
@@ -547,7 +550,9 @@ fn writes_flags(inst: &X86Inst) -> bool {
 }
 
 /// Check if an instruction reads FLAGS.
-fn reads_flags(inst: &X86Inst) -> bool {
+///
+/// Shared with the peephole pass (see [`writes_flags`]).
+pub(super) fn reads_flags(inst: &X86Inst) -> bool {
     matches!(
         inst,
         // Conditional set

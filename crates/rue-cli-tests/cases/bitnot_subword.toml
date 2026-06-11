@@ -1,0 +1,99 @@
+# Runtime sub-word bitwise-NOT regression tests (RUE-162).
+#
+# The runtime BitNot lowering on both backends flipped all 32 register bits
+# (`not r32` / `mvn w`) and never narrowed the result back to a sub-word
+# (8/16-bit) operand's width, so `~0u8` left 0xFFFFFFFF in the register —
+# 32-bit comparisons against the canonical 255 then failed. The constant-
+# folded form was already correct (RUE-59), masking the bug at -O1+ for
+# literal operands; routing the operand through a function call exposes the
+# runtime path at every opt level. Fixed by narrowing the NOT result with
+# the same sign-/zero-extension used for left shifts (RUE-29).
+
+[section]
+id = "cli.bitnot_subword"
+name = "Sub-word runtime bitwise NOT"
+description = "Runtime ~ on u8/u16/i8/i16 must be truncated to the operand's width."
+
+[[case]]
+name = "u8_runtime_bitnot"
+description = "~0u8 through a call operand is 255, not 0xFFFFFFFF (the RUE-162 repro)."
+files = [{ path = "main.rue", source = """
+fn id(v: u8) -> u8 { v }
+fn main() -> i32 {
+    let x: u8 = ~id(0);
+    if x == 255 { 0 } else { 1 }
+}
+""" }]
+exit_code = 0
+
+[[case]]
+name = "u16_runtime_bitnot"
+files = [{ path = "main.rue", source = """
+fn id(v: u16) -> u16 { v }
+fn main() -> i32 {
+    let x: u16 = ~id(0);
+    if x == 65535 { 0 } else { 1 }
+}
+""" }]
+exit_code = 0
+
+[[case]]
+name = "i8_runtime_bitnot"
+description = "~0i8 is -1 (sign-extended), and ~5i8 is -6."
+files = [{ path = "main.rue", source = """
+fn id(v: i8) -> i8 { v }
+fn main() -> i32 {
+    let x: i8 = ~id(0);
+    if x != 0 - 1 { return 1; }
+    let y: i8 = ~id(5);
+    if y != 0 - 6 { return 2; }
+    0
+}
+""" }]
+exit_code = 0
+
+[[case]]
+name = "i16_runtime_bitnot"
+files = [{ path = "main.rue", source = """
+fn id(v: i16) -> i16 { v }
+fn main() -> i32 {
+    let x: i16 = ~id(0);
+    if x != 0 - 1 { return 1; }
+    let y: i16 = ~id(5);
+    if y != 0 - 6 { return 2; }
+    0
+}
+""" }]
+exit_code = 0
+
+[[case]]
+name = "u8_bitnot_roundtrip_O2"
+description = "~~v restores v for sub-word operands at -O2 (runtime path through calls)."
+files = [{ path = "main.rue", source = """
+fn id(v: u8) -> u8 { v }
+fn main() -> i32 {
+    let x: u8 = ~id(255);
+    if x != 0 { return 1; }
+    let y: u8 = ~x;
+    if y != 255 { return 2; }
+    0
+}
+""" }]
+args = ["main.rue", "-O2", "-o", "prog"]
+exit_code = 0
+
+# Control: the constant form folds at -O1 (constfold was already
+# width-correct per RUE-59); the folded and runtime paths must agree.
+[[case]]
+name = "constant_form_control_O1"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: u8 = ~0;
+    if a != 255 { return 1; }
+    let b: i16 = ~5;
+    if b != 0 - 6 { return 2; }
+    0
+}
+""" }]
+args = ["main.rue", "-O1", "-o", "prog"]
+exit_code = 0

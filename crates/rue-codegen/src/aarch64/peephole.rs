@@ -17,8 +17,25 @@
 //! - `add r, r, #a` + `add r, r, #b` → `add r, r, #(a+b)` (when sum fits in i32)
 //!
 //! The pass operates in-place on the instruction vector for efficiency.
+//!
+//! ## NZCV invariant (RUE-152)
+//!
+//! A rewrite may not change the flag values a later reader observes.
+//! `cmp r, #0` and `tst r, r` produce the same N, Z and V (V=0 for both)
+//! but OPPOSITE C: `cmp` with 0 never borrows (C=1) while `tst` clears C.
+//! The rewrite is therefore only applied when every reader of the resulting
+//! flags — every `b.cond`/`cset` before the next flags writer — uses a
+//! C-free condition (eq/ne and the signed lt/gt/le/ge, which read N, Z and
+//! V only). If the flags escape this straight-line window (a label or an
+//! unconditional branch is reached first), the rewrite is skipped. See
+//! [`cmp_zero_to_tst_safe`].
+//!
+//! The removals and the add/sub combining here only touch non-flag-setting
+//! instructions (`add`/`sub`/`mov`/shifts/`eor` without the S suffix), so
+//! they need no flags gate.
 
-use super::mir::{Aarch64Inst, Operand, Reg};
+use super::mir::{Aarch64Inst, Cond, Operand, Reg};
+use super::schedule::writes_flags;
 
 /// Apply peephole optimizations to the instruction stream.
 ///
@@ -28,9 +45,9 @@ pub fn optimize(instructions: &mut Vec<Aarch64Inst>) -> usize {
     let mut changes = 0;
 
     // Pass 1: Single-instruction transforms (mov 0 -> mov xzr, cmp 0 -> tst)
-    for inst in instructions.iter_mut() {
-        if let Some(new_inst) = transform_single(inst) {
-            *inst = new_inst;
+    for i in 0..instructions.len() {
+        if let Some(new_inst) = transform_single(instructions, i) {
+            instructions[i] = new_inst;
             changes += 1;
         }
     }
@@ -46,24 +63,64 @@ pub fn optimize(instructions: &mut Vec<Aarch64Inst>) -> usize {
     changes
 }
 
-/// Transform a single instruction to a more efficient form.
+/// Check whether `cmp r, #0` at `idx` may be rewritten to `tst r, r`.
 ///
-/// Returns `Some(new_inst)` if a transformation was applied, `None` otherwise.
-fn transform_single(inst: &Aarch64Inst) -> Option<Aarch64Inst> {
-    match inst {
+/// The two differ only in C (cmp sets it, tst clears it), so the rewrite is
+/// safe iff no reader of these flags consumes C. Scans forward from
+/// `idx + 1`:
+/// - `b.cond` / `cset` with a C-reading condition (hs/lo/hi/ls) → unsafe
+/// - `b.cond` / `cset` with a C-free condition, or `b.vs`/`b.vc` (V is 0
+///   after both forms) → fine; keep scanning for more readers
+/// - a flags writer → safe (flags overwritten before any further read)
+/// - call/svc/ret → safe (NZCV is not live across these per the AAPCS)
+/// - label or unconditional branch → conservatively unsafe (flags escape)
+/// - end of stream → safe
+fn cmp_zero_to_tst_safe(instructions: &[Aarch64Inst], idx: usize) -> bool {
+    for inst in &instructions[idx + 1..] {
+        match inst {
+            Aarch64Inst::BCond { cond, .. } | Aarch64Inst::Cset { cond, .. } => {
+                if cond_reads_carry(*cond) {
+                    return false;
+                }
+            }
+            // V is 0 after both cmp r, #0 and tst r, r.
+            Aarch64Inst::Bvs { .. } | Aarch64Inst::Bvc { .. } => {}
+            Aarch64Inst::B { .. } | Aarch64Inst::Label { .. } => return false,
+            Aarch64Inst::Bl { .. } | Aarch64Inst::Svc { .. } | Aarch64Inst::Ret => return true,
+            inst if writes_flags(inst) => return true,
+            _ => {}
+        }
+    }
+    true
+}
+
+/// Conditions that read the carry flag — exactly the unsigned comparisons.
+fn cond_reads_carry(cond: Cond) -> bool {
+    matches!(cond, Cond::Hs | Cond::Lo | Cond::Hi | Cond::Ls)
+}
+
+/// Transform the instruction at `idx` to a more efficient form.
+///
+/// Returns `Some(new_inst)` if a transformation applies, `None` otherwise.
+fn transform_single(instructions: &[Aarch64Inst], idx: usize) -> Option<Aarch64Inst> {
+    match &instructions[idx] {
         // mov r, #0 → mov r, xzr (use zero register)
         // On AArch64, using the zero register is often more efficient.
+        // Neither form touches NZCV, so no flags gate is needed.
         Aarch64Inst::MovImm { dst, imm: 0 } => Some(Aarch64Inst::MovRR {
             dst: *dst,
             src: Operand::Physical(Reg::Xzr),
         }),
 
-        // cmp r, #0 → tst r, r (same flags, sometimes faster)
-        // tst sets ZF=1 if r==0, same as cmp r, 0
-        Aarch64Inst::CmpImm { src, imm: 0 } => Some(Aarch64Inst::TstRR {
-            src1: *src,
-            src2: *src,
-        }),
+        // cmp r, #0 → tst r, r (same N/Z/V, sometimes faster)
+        // C FLIPS (cmp sets it, tst clears it), so only legal when no
+        // consumer reads C — see cmp_zero_to_tst_safe (RUE-152).
+        Aarch64Inst::CmpImm { src, imm: 0 } if cmp_zero_to_tst_safe(instructions, idx) => {
+            Some(Aarch64Inst::TstRR {
+                src1: *src,
+                src2: *src,
+            })
+        }
 
         _ => None,
     }
@@ -744,6 +801,153 @@ mod tests {
         ));
         assert!(matches!(instructions[2], Aarch64Inst::TstRR { .. }));
         assert!(matches!(instructions[3], Aarch64Inst::Ret));
+    }
+
+    // ==================== NZCV Hazard Tests (RUE-152) ====================
+
+    use crate::aarch64::mir::{Cond, LabelId};
+
+    #[test]
+    fn test_cmp_zero_to_tst_fires_with_carry_free_consumer() {
+        // b.eq reads only Z, identical under tst: the rewrite STILL fires.
+        let mut instructions = vec![
+            Aarch64Inst::CmpImm {
+                src: Operand::Physical(Reg::X0),
+                imm: 0,
+            },
+            Aarch64Inst::BCond {
+                cond: Cond::Eq,
+                label: LabelId::new(0),
+            },
+            Aarch64Inst::Ret,
+        ];
+
+        let changes = optimize(&mut instructions);
+
+        assert_eq!(changes, 1);
+        assert!(matches!(instructions[0], Aarch64Inst::TstRR { .. }));
+    }
+
+    #[test]
+    fn test_cmp_zero_to_tst_fires_with_signed_consumer() {
+        // Signed conditions read N/Z/V, all identical under tst (V=0 both).
+        let mut instructions = vec![
+            Aarch64Inst::CmpImm {
+                src: Operand::Physical(Reg::X0),
+                imm: 0,
+            },
+            Aarch64Inst::Cset {
+                dst: Operand::Physical(Reg::X1),
+                cond: Cond::Lt,
+            },
+            Aarch64Inst::Ret,
+        ];
+
+        let changes = optimize(&mut instructions);
+
+        assert_eq!(changes, 1);
+        assert!(matches!(instructions[0], Aarch64Inst::TstRR { .. }));
+    }
+
+    #[test]
+    fn test_cmp_zero_to_tst_blocked_by_unsigned_branch() {
+        // b.hs reads C, which cmp #0 sets (no borrow) but tst clears: the
+        // rewrite would flip the branch. It must NOT fire.
+        let mut instructions = vec![
+            Aarch64Inst::CmpImm {
+                src: Operand::Physical(Reg::X0),
+                imm: 0,
+            },
+            Aarch64Inst::BCond {
+                cond: Cond::Hs,
+                label: LabelId::new(0),
+            },
+            Aarch64Inst::Ret,
+        ];
+
+        let changes = optimize(&mut instructions);
+
+        assert_eq!(changes, 0);
+        assert!(matches!(
+            instructions[0],
+            Aarch64Inst::CmpImm { imm: 0, .. }
+        ));
+    }
+
+    #[test]
+    fn test_cmp_zero_to_tst_blocked_by_unsigned_cset() {
+        let mut instructions = vec![
+            Aarch64Inst::CmpImm {
+                src: Operand::Physical(Reg::X0),
+                imm: 0,
+            },
+            Aarch64Inst::Cset {
+                dst: Operand::Physical(Reg::X1),
+                cond: Cond::Lo,
+            },
+            Aarch64Inst::Ret,
+        ];
+
+        let changes = optimize(&mut instructions);
+
+        assert_eq!(changes, 0);
+        assert!(matches!(
+            instructions[0],
+            Aarch64Inst::CmpImm { imm: 0, .. }
+        ));
+    }
+
+    #[test]
+    fn test_cmp_zero_to_tst_blocked_by_label() {
+        // Flags escape into a join point; conservatively keep the cmp.
+        let mut instructions = vec![
+            Aarch64Inst::CmpImm {
+                src: Operand::Physical(Reg::X0),
+                imm: 0,
+            },
+            Aarch64Inst::Label {
+                id: LabelId::new(0),
+            },
+            Aarch64Inst::BCond {
+                cond: Cond::Eq,
+                label: LabelId::new(1),
+            },
+            Aarch64Inst::Ret,
+        ];
+
+        let changes = optimize(&mut instructions);
+
+        assert_eq!(changes, 0);
+        assert!(matches!(
+            instructions[0],
+            Aarch64Inst::CmpImm { imm: 0, .. }
+        ));
+    }
+
+    #[test]
+    fn test_cmp_zero_to_tst_unsigned_consumer_after_writer_ok() {
+        // The unsigned consumer reads flags from the LATER cmp, not ours:
+        // the rewrite fires.
+        let mut instructions = vec![
+            Aarch64Inst::CmpImm {
+                src: Operand::Physical(Reg::X0),
+                imm: 0,
+            },
+            Aarch64Inst::CmpRR {
+                src1: Operand::Physical(Reg::X1),
+                src2: Operand::Physical(Reg::X2),
+            },
+            Aarch64Inst::BCond {
+                cond: Cond::Hs,
+                label: LabelId::new(0),
+            },
+            Aarch64Inst::Ret,
+        ];
+
+        let changes = optimize(&mut instructions);
+
+        assert_eq!(changes, 1);
+        assert!(matches!(instructions[0], Aarch64Inst::TstRR { .. }));
     }
 
     #[test]
