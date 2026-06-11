@@ -2569,6 +2569,58 @@ impl<'a> Sema<'a> {
             }
         }
 
+        // Next, try a const defined in the module's file. The headline case is
+        // ADR-0026's re-export idiom — `pub const math = @import("...")` in a
+        // facade — where the const's type is itself a module: accessing it
+        // yields that module, so chains like `std.math.abs(...)` resolve
+        // member-by-member (RUE-136). Const lookup is by name in the flat
+        // constants table, filtered to the module's file via the declaration
+        // span (consts carry no file_id of their own).
+        if let Some(const_info) = self.constants.get(&member_name) {
+            let const_file_path = self
+                .get_file_path(const_info.span.file_id)
+                .map(|s| s.to_string());
+            if const_file_path.as_deref() == Some(module_file_path.as_str()) {
+                if !const_info.is_pub {
+                    let same_dir = match &accessing_file_path {
+                        Some(accessing) => {
+                            let accessing_dir = std::path::Path::new(accessing).parent();
+                            let module_dir = std::path::Path::new(&module_file_path).parent();
+                            accessing_dir == module_dir
+                        }
+                        None => true, // Be permissive if we can't determine the path
+                    };
+                    if !same_dir {
+                        return Err(CompileError::new(
+                            ErrorKind::PrivateMemberAccess {
+                                item_kind: "const".to_string(),
+                                name: member_name_str,
+                            },
+                            span,
+                        ));
+                    }
+                }
+
+                if const_info.ty.is_module() {
+                    // AIR doesn't have a ModuleConst instruction, so we use
+                    // UnitConst as a placeholder — the type is what matters
+                    // (mirrors how @import itself is lowered).
+                    let module_ty = const_info.ty;
+                    let air_ref = air.add_inst(AirInst {
+                        data: AirInstData::UnitConst,
+                        ty: module_ty,
+                        span,
+                    });
+                    return Ok(AnalysisResult::new(air_ref, module_ty));
+                }
+                // A value const (e.g. `pub const PI = ...`) accessed as a
+                // module member needs const evaluation through the member
+                // path — not supported yet; fall through to the unknown-
+                // member error below so the user gets a module-scoped
+                // message rather than a confusing type error.
+            }
+        }
+
         // Member not found in the module
         Err(CompileError::new(
             ErrorKind::UnknownModuleMember {
