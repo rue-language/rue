@@ -1,0 +1,191 @@
+# Aggregate values through branch joins (RUE-167).
+#
+# An aggregate produced in the arms of an `if`/`else` or `match` flows to the
+# join block as a block parameter. Block-param lowering only flattened STRUCT
+# params into per-slot vregs; array-typed params got a single vreg — and an
+# array's primary vreg is just a zero placeholder — so every element was
+# dropped at the join (silent miscompile: a[i] read 0 at every opt level, both
+# backends). Structs and String (a synthetic struct) already crossed joins
+# intact; these cases pin them as regressions alongside the array fixes.
+#
+# Conditions go through a function call so constant folding can't delete the
+# join. Runs on both backends — the aarch64 runtime path is exercised in CI.
+
+[section]
+id = "cli.join_aggregates"
+name = "Aggregate values through branch joins"
+description = "Every slot of an aggregate must survive an if/match join, both backends."
+
+# Array selected by a match — previously printed 0 0 0.
+[[case]]
+name = "array_through_match_join"
+files = [{ path = "main.rue", source = """
+fn pick(n: i32) -> i32 { n }
+fn main() -> i32 {
+    let a = match pick(1) { 1 => [10, 20, 30], _ => [40, 50, 60] };
+    @dbg(a[0]);
+    @dbg(a[1]);
+    @dbg(a[2]);
+    0
+}
+""" }]
+stdout = "10\n20\n30\n"
+exit_code = 0
+
+# Array selected by if/else with a runtime condition — previously 0 0 0.
+[[case]]
+name = "array_through_if_join"
+files = [{ path = "main.rue", source = """
+fn cond(n: i32) -> bool { n > 0 }
+fn main() -> i32 {
+    let a = if cond(1) { [10, 20, 30] } else { [40, 50, 60] };
+    @dbg(a[0]);
+    @dbg(a[1]);
+    @dbg(a[2]);
+    0
+}
+""" }]
+stdout = "10\n20\n30\n"
+exit_code = 0
+
+# Else arm taken: the join must carry the else slots, not the then slots.
+[[case]]
+name = "array_through_if_join_else_arm"
+files = [{ path = "main.rue", source = """
+fn cond(n: i32) -> bool { n > 0 }
+fn main() -> i32 {
+    let a = if cond(0) { [10, 20, 30] } else { [40, 50, 60] };
+    @dbg(a[0]);
+    @dbg(a[1]);
+    @dbg(a[2]);
+    0
+}
+""" }]
+stdout = "40\n50\n60\n"
+exit_code = 0
+
+# Same join under -O2: optimization passes must not re-lose the slots.
+[[case]]
+name = "array_through_match_join_o2"
+files = [{ path = "main.rue", source = """
+fn pick(n: i32) -> i32 { n }
+fn main() -> i32 {
+    let a = match pick(1) { 1 => [10, 20, 30], _ => [40, 50, 60] };
+    @dbg(a[0]);
+    @dbg(a[1]);
+    @dbg(a[2]);
+    0
+}
+""" }]
+args = ["main.rue", "-O2", "-o", "prog"]
+stdout = "10\n20\n30\n"
+exit_code = 0
+
+# Nested (2D) array through a join: all four scalar slots must arrive.
+[[case]]
+name = "nested_array_through_join"
+files = [{ path = "main.rue", source = """
+fn cond(n: i32) -> bool { n > 0 }
+fn main() -> i32 {
+    let m = if cond(1) { [[1, 2], [3, 4]] } else { [[5, 6], [7, 8]] };
+    @dbg(m[0][0]);
+    @dbg(m[0][1]);
+    @dbg(m[1][0]);
+    @dbg(m[1][1]);
+    0
+}
+""" }]
+stdout = "1\n2\n3\n4\n"
+exit_code = 0
+
+# Array of structs through a join (else arm taken).
+[[case]]
+name = "array_of_structs_through_join"
+files = [{ path = "main.rue", source = """
+struct P { x: i32, y: i32 }
+fn cond(n: i32) -> bool { n > 0 }
+fn main() -> i32 {
+    let a = if cond(0) { [P { x: 1, y: 2 }, P { x: 3, y: 4 }] }
+            else { [P { x: 5, y: 6 }, P { x: 7, y: 8 }] };
+    @dbg(a[0].x);
+    @dbg(a[0].y);
+    @dbg(a[1].x);
+    @dbg(a[1].y);
+    0
+}
+""" }]
+stdout = "5\n6\n7\n8\n"
+exit_code = 0
+
+# Struct containing an array field through a join: the array slots ride
+# inside the struct's flattened slot list.
+[[case]]
+name = "struct_with_array_field_through_join"
+files = [{ path = "main.rue", source = """
+struct Q { v: [i32; 3], tag: i32 }
+fn cond(n: i32) -> bool { n > 0 }
+fn main() -> i32 {
+    let q = if cond(1) { Q { v: [9, 8, 7], tag: 1 } } else { Q { v: [6, 5, 4], tag: 2 } };
+    @dbg(q.v[0]);
+    @dbg(q.v[1]);
+    @dbg(q.v[2]);
+    @dbg(q.tag);
+    0
+}
+""" }]
+stdout = "9\n8\n7\n1\n"
+exit_code = 0
+
+# Match arms mixing array literals with an array-typed variable: the
+# variable arm's slots come from a Load, not an ArrayInit cache hit.
+[[case]]
+name = "match_arms_mix_literal_and_variable_arrays"
+files = [{ path = "main.rue", source = """
+fn pick(n: i32) -> i32 { n }
+fn main() -> i32 {
+    let pre = [70, 80, 90];
+    let a = match pick(2) { 1 => [10, 20, 30], 2 => pre, _ => [40, 50, 60] };
+    @dbg(a[0]);
+    @dbg(a[1]);
+    @dbg(a[2]);
+    let b = if pick(0) > 0 { [1, 2, 3] } else { pre };
+    @dbg(b[0]);
+    @dbg(b[1]);
+    @dbg(b[2]);
+    0
+}
+""" }]
+stdout = "70\n80\n90\n70\n80\n90\n"
+exit_code = 0
+
+# Plain struct through a join — worked before RUE-167; pinned as a regression
+# guard for the shared block-param machinery.
+[[case]]
+name = "struct_through_if_join"
+files = [{ path = "main.rue", source = """
+struct P { x: i32, y: i32 }
+fn cond(n: i32) -> bool { n > 0 }
+fn main() -> i32 {
+    let s = if cond(5) { P { x: 1, y: 2 } } else { P { x: 3, y: 4 } };
+    @dbg(s.x);
+    @dbg(s.y);
+    s.x + s.y
+}
+""" }]
+stdout = "1\n2\n"
+exit_code = 3
+
+# String (3-slot fat pointer) through a join — also pinned as a regression
+# guard; String is a synthetic struct so it used the working struct path.
+[[case]]
+name = "string_through_if_join"
+files = [{ path = "main.rue", source = """
+fn cond(n: i32) -> bool { n > 0 }
+fn main() -> i32 {
+    let s = if cond(0) { "hello" } else { "worldly" };
+    @dbg(s);
+    0
+}
+""" }]
+stdout = "worldly\n"
+exit_code = 0
