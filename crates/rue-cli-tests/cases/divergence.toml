@@ -1,0 +1,207 @@
+# Divergence in short-circuit operators and mid-block statements (RUE-128).
+#
+# Two sibling bugs of the diverging-let-initializer miscompile, both in the
+# CFG builder (rue-cfg/src/build.rs):
+#
+# 1. `&&` / `||` with a diverging rhs (e.g. `true && return 5`) left the join
+#    block unterminated. The join is still reachable via the short-circuit
+#    edge from the lhs, so lowering must continue there instead of propagating
+#    divergence. Previously: codegen ICE "block has no terminator".
+#
+# 2. A statement diverging mid-block (e.g. `break;` followed by another
+#    statement) leaked its block's scope_stack entry. The enclosing block's
+#    scope pop then drained the LEAKED scope instead of its own, re-emitting
+#    Drop/StorageDead for the inner local on the loop-exit path — a same-path
+#    double drop. (Runtime-silent today because heap::free is a no-op bump
+#    allocator, but pinned by a CFG unit test in rue-cfg; the cases here guard
+#    the construct end-to-end so a future real allocator stays safe.)
+
+[section]
+id = "cli.divergence"
+name = "Short-circuit and mid-block divergence"
+description = "Diverging rhs of && / || and diverged statements mid-block (RUE-128)."
+
+# ── (a) && / || with a diverging rhs ─────────────────────────────────────────
+
+# lhs true: rhs evaluates and diverges — main returns 5.
+[[case]]
+name = "and_true_rhs_return"
+description = "true && return 5: rhs runs and diverges; exits with the return value."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let c = true && return 5;
+    3
+}
+""" }]
+exit_code = 5
+
+# lhs false: rhs never runs, c = false, execution continues past the let.
+[[case]]
+name = "and_false_rhs_never_runs"
+description = "false && return 5: short-circuit skips the diverging rhs; falls through."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let c = false && return 5;
+    3
+}
+""" }]
+exit_code = 3
+
+# lhs true: || short-circuits, rhs never runs, c = true, continues.
+[[case]]
+name = "or_true_rhs_never_runs"
+description = "true || return 7: short-circuit skips the diverging rhs; falls through."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let c = true || return 7;
+    3
+}
+""" }]
+exit_code = 3
+
+# lhs false: rhs evaluates and diverges — main returns 7.
+[[case]]
+name = "or_false_rhs_return"
+description = "false || return 7: rhs runs and diverges; exits with the return value."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let c = false || return 7;
+    3
+}
+""" }]
+exit_code = 7
+
+# The short-circuit value must actually materialize in the join block.
+[[case]]
+name = "and_short_circuit_value_usable"
+description = "The c produced by the skipped-rhs path is a usable false."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let c = false && return 5;
+    if c { 1 } else { 2 }
+}
+""" }]
+exit_code = 2
+
+[[case]]
+name = "or_short_circuit_value_usable"
+description = "The c produced by the skipped-rhs path is a usable true."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let c = true || return 7;
+    if c { 4 } else { 1 }
+}
+""" }]
+exit_code = 4
+
+# Nested: the inner || diverges, making the outer && rhs diverge.
+[[case]]
+name = "nested_or_in_and_rhs_diverges"
+description = "true && (false || return 9): inner divergence propagates through both joins."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let c = true && (false || return 9);
+    3
+}
+""" }]
+exit_code = 9
+
+[[case]]
+name = "nested_or_in_and_short_circuits"
+description = "false && (false || return 9): outer short-circuit skips everything."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let c = false && (false || return 9);
+    3
+}
+""" }]
+exit_code = 3
+
+# Diverging rhs directly in an if condition (no let binding).
+[[case]]
+name = "and_diverging_rhs_in_if_condition"
+description = "if true && return 4: the condition diverges before the branch."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    if true && return 4 { 1 } else { 2 }
+}
+""" }]
+exit_code = 4
+
+# rhs diverging via break instead of return.
+[[case]]
+name = "and_rhs_break_exits_loop"
+description = "true && break inside a loop: divergence via break, loop exits."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut i = 0;
+    loop {
+        let c = true && break;
+        i = 99;
+    }
+    6 + i
+}
+""" }]
+exit_code = 6
+
+[[case]]
+name = "or_rhs_break_exits_loop"
+description = "false || break inside a loop: divergence via break, loop exits."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    loop {
+        let c = false || break;
+    }
+    6
+}
+""" }]
+exit_code = 6
+
+# ── (b) diverged statement mid-block: scope_stack stays balanced ─────────────
+
+# The original leak shape: break followed by another statement, with droppable
+# (String) locals both inside and outside the loop. Before the fix the CFG
+# re-dropped `t` on the loop-exit path (after `break` had already dropped it).
+# The program must run to completion with both strings intact.
+[[case]]
+name = "break_mid_block_no_double_drop"
+description = "Diverged statement mid-block must not re-drop the inner local on the exit path."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut s = String::with_capacity(8);
+    s.push_str("outer");
+    loop {
+        let mut t = String::with_capacity(8);
+        t.push_str("inner");
+        break;
+        let unreachable_tail = 0;
+    }
+    let intact = s == "outer";
+    @dbg(s);
+    if intact { 0 } else { 1 }
+}
+""" }]
+exit_code = 0
+stdout = "outer\n"
+
+# Same shape via early return in an if-branch: the leaked scope used to make
+# the enclosing block drop the never-initialized inner local on the
+# fall-through path.
+[[case]]
+name = "return_mid_block_in_untaken_branch"
+description = "Mid-block return in an untaken branch: fall-through path must not touch the inner local."
+files = [{ path = "main.rue", source = """
+fn check(flag: bool) -> i32 {
+    if flag {
+        let mut t = String::with_capacity(8);
+        t.push_str("taken");
+        return 1;
+        let unreachable_tail = 0;
+    }
+    0
+}
+fn main() -> i32 {
+    check(false) + check(true)
+}
+""" }]
+exit_code = 1
