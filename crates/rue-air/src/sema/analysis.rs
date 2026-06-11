@@ -1667,7 +1667,8 @@ impl<'a> Sema<'a> {
             &self.type_pool,
             type_subst,
         )
-        .with_const_types(&infer_ctx.const_types);
+        .with_const_types(&infer_ctx.const_types)
+        .with_module_binding_types(&infer_ctx.module_binding_types);
 
         // Build parameter map for constraint context.
         // Convert Type to InferType so arrays are represented structurally.

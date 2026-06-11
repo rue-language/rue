@@ -30,6 +30,18 @@ impl<'a> Sema<'a> {
         self.file_paths.get(&file_id).map(|s| s.as_str())
     }
 
+    /// Reverse lookup: find the FileId for a given source file path.
+    ///
+    /// Used by module member access to key into per-file tables (e.g. the
+    /// module-binding consts of a facade file) when only the module's
+    /// resolved path is known.
+    pub(crate) fn get_file_id(&self, path: &str) -> Option<FileId> {
+        self.file_paths
+            .iter()
+            .find(|(_, p)| p.as_str() == path)
+            .map(|(id, _)| *id)
+    }
+
     /// Check if the compilation involves imports (multi-file compilation).
     ///
     /// When imports are present, lazy analysis is used to only analyze

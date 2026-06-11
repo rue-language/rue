@@ -1761,7 +1761,21 @@ impl<'a> Sema<'a> {
             }
         }
 
-        // Check if it's a constant (e.g., `const VALUE = 42` or `const math = @import("math")`)
+        // Check if it's a module binding declared in this file (`const math =
+        // @import("math")`). Module bindings are per-file scoped (RUE-113),
+        // so the lookup is keyed by the reference's own file and takes
+        // precedence over the global value-const table.
+        if let Some(binding) = self.module_bindings.get(&(span.file_id, name)) {
+            let ty = binding.ty;
+            let air_ref = air.add_inst(AirInst {
+                data: AirInstData::TypeConst(ty),
+                ty,
+                span,
+            });
+            return Ok(AnalysisResult::new(air_ref, ty));
+        }
+
+        // Check if it's a constant (e.g., `const VALUE = 42`)
         if let Some(const_info) = self.constants.get(&name).cloned() {
             let ty = const_info.ty;
             // For module constants, produce a TypeConst with the module type.
@@ -1813,16 +1827,6 @@ impl<'a> Sema<'a> {
                 span,
             });
             return Ok(AnalysisResult::new(air_ref, Type::COMPTIME_TYPE));
-        }
-
-        // Check if this is a module-level constant (e.g., `const utils = @import("utils")`)
-        // Constants are stored in self.constants and their initializers need to be analyzed
-        // on first access to determine their type (lazy evaluation per ADR-0026).
-        if let Some(const_info) = self.constants.get(&name).cloned() {
-            // Analyze the constant's initializer to get the actual type
-            // This is where @import expressions get resolved into Type::Module
-            let init_result = self.analyze_inst(air, const_info.init, ctx)?;
-            return Ok(init_result);
         }
 
         // Not a parameter, local, type, or constant - undefined variable
@@ -2706,52 +2710,56 @@ impl<'a> Sema<'a> {
         // ADR-0026's re-export idiom — `pub const math = @import("...")` in a
         // facade — where the const's type is itself a module: accessing it
         // yields that module, so chains like `std.math.abs(...)` resolve
-        // member-by-member (RUE-136). Const lookup is by name in the flat
-        // constants table, filtered to the module's file via the declaration
-        // span (consts carry no file_id of their own).
-        if let Some(const_info) = self.constants.get(&member_name) {
-            let const_file_path = self
-                .get_file_path(const_info.span.file_id)
-                .map(|s| s.to_string());
-            if const_file_path.as_deref() == Some(module_file_path.as_str()) {
-                if !const_info.is_pub {
-                    let same_dir = match &accessing_file_path {
-                        Some(accessing) => {
-                            let accessing_dir = std::path::Path::new(accessing).parent();
-                            let module_dir = std::path::Path::new(&module_file_path).parent();
-                            accessing_dir == module_dir
-                        }
-                        None => true, // Be permissive if we can't determine the path
-                    };
-                    if !same_dir {
-                        return Err(CompileError::new(
-                            ErrorKind::PrivateMemberAccess {
-                                item_kind: "const".to_string(),
-                                name: member_name_str,
-                            },
-                            span,
-                        ));
+        // member-by-member (RUE-136). Module bindings live in the per-file
+        // `module_bindings` table keyed by the facade's FileId (RUE-113);
+        // value consts are found by name in the flat constants table,
+        // filtered to the module's file via the declaration span.
+        let member_const = self
+            .get_file_id(&module_file_path)
+            .and_then(|file_id| self.module_bindings.get(&(file_id, member_name)))
+            .or_else(|| {
+                self.constants.get(&member_name).filter(|const_info| {
+                    self.get_file_path(const_info.span.file_id) == Some(module_file_path.as_str())
+                })
+            });
+        if let Some(const_info) = member_const {
+            if !const_info.is_pub {
+                let same_dir = match &accessing_file_path {
+                    Some(accessing) => {
+                        let accessing_dir = std::path::Path::new(accessing).parent();
+                        let module_dir = std::path::Path::new(&module_file_path).parent();
+                        accessing_dir == module_dir
                     }
-                }
-
-                if const_info.ty.is_module() {
-                    // AIR doesn't have a ModuleConst instruction, so we use
-                    // UnitConst as a placeholder — the type is what matters
-                    // (mirrors how @import itself is lowered).
-                    let module_ty = const_info.ty;
-                    let air_ref = air.add_inst(AirInst {
-                        data: AirInstData::UnitConst,
-                        ty: module_ty,
+                    None => true, // Be permissive if we can't determine the path
+                };
+                if !same_dir {
+                    return Err(CompileError::new(
+                        ErrorKind::PrivateMemberAccess {
+                            item_kind: "const".to_string(),
+                            name: member_name_str,
+                        },
                         span,
-                    });
-                    return Ok(AnalysisResult::new(air_ref, module_ty));
+                    ));
                 }
-                // A value const (e.g. `pub const PI = ...`) accessed as a
-                // module member needs const evaluation through the member
-                // path — not supported yet; fall through to the unknown-
-                // member error below so the user gets a module-scoped
-                // message rather than a confusing type error.
             }
+
+            if const_info.ty.is_module() {
+                // AIR doesn't have a ModuleConst instruction, so we use
+                // UnitConst as a placeholder — the type is what matters
+                // (mirrors how @import itself is lowered).
+                let module_ty = const_info.ty;
+                let air_ref = air.add_inst(AirInst {
+                    data: AirInstData::UnitConst,
+                    ty: module_ty,
+                    span,
+                });
+                return Ok(AnalysisResult::new(air_ref, module_ty));
+            }
+            // A value const (e.g. `pub const PI = ...`) accessed as a
+            // module member needs const evaluation through the member
+            // path — not supported yet; fall through to the unknown-
+            // member error below so the user gets a module-scoped
+            // message rather than a confusing type error.
         }
 
         // Member not found in the module

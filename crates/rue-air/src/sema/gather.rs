@@ -58,8 +58,11 @@ pub struct GatherOutput<'a> {
     pub functions: HashMap<Spur, FunctionInfo>,
     /// Method lookup: maps (struct_id, method_name) to info.
     pub methods: HashMap<(StructId, Spur), MethodInfo>,
-    /// Constant lookup: maps const name to info.
+    /// Constant lookup: maps const name to info (value constants only).
     pub constants: HashMap<Spur, ConstInfo>,
+    /// Module-binding constants (`const m = @import(...)`), keyed by the
+    /// declaring file — per-file scoped (RUE-113).
+    pub module_bindings: HashMap<(rue_span::FileId, Spur), ConstInfo>,
     /// Enabled preview features.
     pub preview_features: PreviewFeatures,
     /// StructId of the synthetic String type.
@@ -88,6 +91,7 @@ impl<'a> GatherOutput<'a> {
             enums: self.enums,
             methods: self.methods,
             constants: self.constants,
+            module_bindings: self.module_bindings,
             preview_features: self.preview_features,
             builtin_string_id: self.builtin_string_id,
             builtin_arch_id: self.builtin_arch_id,

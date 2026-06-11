@@ -377,6 +377,178 @@ compile_fail = true
 error_contains = ["E0707", "has no member `abs`"]
 
 # ---------------------------------------------------------------------------
+# Per-file import bindings (RUE-113)
+#
+# `const utils = @import("...")` is THE idiom (ADR-0026): every file writes
+# its own imports. Module-binding consts are therefore per-file scoped — two
+# files binding the same name must not collide, unlike value constants which
+# share the flat global namespace.
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "per_file_import_bindings_same_module"
+description = "Two files each bind `const utils = @import(...)` to the same module; all files hand-listed on the CLI (the original RUE-113 repro)."
+files = [
+    { path = "main.rue", source = """
+const a = @import("a.rue");
+const b = @import("b.rue");
+
+fn main() -> i32 {
+    a.from_a() + b.from_b()
+}
+""" },
+    { path = "a.rue", source = """
+const utils = @import("utils.rue");
+
+pub fn from_a() -> i32 {
+    utils.one()
+}
+""" },
+    { path = "b.rue", source = """
+const utils = @import("utils.rue");
+
+pub fn from_b() -> i32 {
+    utils.one() + 1
+}
+""" },
+    { path = "utils.rue", source = """
+pub fn one() -> i32 {
+    1
+}
+""" },
+]
+args = ["main.rue", "a.rue", "b.rue", "utils.rue", "-o", "prog"]
+exit_code = 3
+
+[[case]]
+name = "per_file_import_bindings_driver_discovery"
+description = "Same shape, but only main.rue on the CLI: the driver discovers and loads the imports transitively."
+files = [
+    { path = "main.rue", source = """
+const a = @import("a.rue");
+const b = @import("b.rue");
+
+fn main() -> i32 {
+    a.from_a() + b.from_b()
+}
+""" },
+    { path = "a.rue", source = """
+const utils = @import("utils.rue");
+
+pub fn from_a() -> i32 {
+    utils.one()
+}
+""" },
+    { path = "b.rue", source = """
+const utils = @import("utils.rue");
+
+pub fn from_b() -> i32 {
+    utils.one() + 1
+}
+""" },
+    { path = "utils.rue", source = """
+pub fn one() -> i32 {
+    1
+}
+""" },
+]
+exit_code = 3
+
+[[case]]
+name = "per_file_import_bindings_different_modules"
+description = "Two files bind the SAME name to DIFFERENT modules: each file sees its own binding."
+files = [
+    { path = "main.rue", source = """
+const a = @import("a.rue");
+const b = @import("b.rue");
+
+fn main() -> i32 {
+    a.from_a() + b.from_b()
+}
+""" },
+    { path = "a.rue", source = """
+const helper = @import("m1.rue");
+
+pub fn from_a() -> i32 {
+    helper.ten()
+}
+""" },
+    { path = "b.rue", source = """
+const helper = @import("m2.rue");
+
+pub fn from_b() -> i32 {
+    helper.twenty()
+}
+""" },
+    { path = "m1.rue", source = """
+pub fn ten() -> i32 {
+    10
+}
+""" },
+    { path = "m2.rue", source = """
+pub fn twenty() -> i32 {
+    20
+}
+""" },
+]
+exit_code = 30
+
+[[case]]
+name = "duplicate_import_binding_same_file_still_errors"
+description = "Per-file scoping does not excuse a duplicate binding WITHIN one file: still E0418."
+files = [
+    { path = "main.rue", source = """
+const m = @import("m1.rue");
+const m = @import("m2.rue");
+
+fn main() -> i32 {
+    m.ten()
+}
+""" },
+    { path = "m1.rue", source = """
+pub fn ten() -> i32 {
+    10
+}
+""" },
+    { path = "m2.rue", source = """
+pub fn twenty() -> i32 {
+    20
+}
+""" },
+]
+compile_fail = true
+error_contains = ["E0418", "duplicate constant 'm'"]
+
+# ---------------------------------------------------------------------------
+# Boundary-aware import path matching (RUE-39)
+#
+# Regression test: `@import("til.rue")` must NOT silently bind to a
+# pre-loaded `util.rue` via a bare suffix match. Matches must be exact or
+# end at a path separator (ModulePath enforces the boundary check).
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "typo_import_is_not_suffix_matched"
+description = "A typo'd import that is a suffix of another loaded file's name is E0704, not a silent bind."
+files = [
+    { path = "typo.rue", source = """
+const m = @import("til.rue");
+
+fn main() -> i32 {
+    m.forty_two()
+}
+""" },
+    { path = "util.rue", source = """
+pub fn forty_two() -> i32 {
+    42
+}
+""" },
+]
+args = ["typo.rue", "util.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0704", "til.rue"]
+
+# ---------------------------------------------------------------------------
 # Module privacy (RUE-114 + RUE-37).
 #
 # Visibility boundaries are DIRECTORIES (ADR-0026, spec 10.3): a private item
