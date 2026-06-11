@@ -384,6 +384,12 @@ pub struct Air {
     /// Storage for places (ADR-0030 Phase 8).
     /// AirPlaceRef values are indices into this array.
     places: Vec<AirPlace>,
+    /// Owned (pass-by-value) parameters of this function: (ABI slot, type).
+    /// Ownership of a by-value argument transfers to the callee, so the CFG
+    /// builder drops these at function exit unless they were moved out
+    /// (see [`AirInstData::MarkMoved`]). Empty for destructors (a destructor
+    /// must not re-drop `self`) and for synthesized drop-glue functions.
+    param_drops: Vec<(u32, Type)>,
 }
 
 impl Air {
@@ -395,6 +401,7 @@ impl Air {
             return_type,
             projections: Vec::new(),
             places: Vec::new(),
+            param_drops: Vec::new(),
         }
     }
 
@@ -409,6 +416,41 @@ impl Air {
     #[inline]
     pub fn get(&self, inst_ref: AirRef) -> &AirInst {
         &self.instructions[inst_ref.0 as usize]
+    }
+
+    /// Set the owned-parameter drop list: (ABI slot, type) for each
+    /// pass-by-value parameter that the callee owns (and must drop at exit
+    /// unless moved out).
+    pub fn set_param_drops(&mut self, param_drops: Vec<(u32, Type)>) {
+        self.param_drops = param_drops;
+    }
+
+    /// Clear the owned-parameter drop list. Used for destructors: the
+    /// destructor consumes `self`, and the drop glue (not the destructor
+    /// itself) is responsible for dropping the fields afterwards, so the
+    /// destructor must not re-drop its own parameter.
+    pub fn clear_param_drops(&mut self) {
+        self.param_drops.clear();
+    }
+
+    /// Owned (pass-by-value) parameters dropped by the callee at function
+    /// exit: (ABI slot, type).
+    #[inline]
+    pub fn param_drops(&self) -> &[(u32, Type)] {
+        &self.param_drops
+    }
+
+    /// Cancel a [`AirInstData::MarkMoved`] marker, turning it back into a
+    /// plain use of the value. Used when a use that was initially treated as
+    /// a move turns out to be a borrow (e.g. the receiver of a builtin query
+    /// method like `String.len`). The marker instruction is rewritten in
+    /// place to a copy of the wrapped instruction, preserving the value it
+    /// produces. No-op when `inst_ref` is not a `MarkMoved`.
+    pub fn cancel_move_marker(&mut self, inst_ref: AirRef) {
+        if let AirInstData::MarkMoved { value, .. } = self.instructions[inst_ref.0 as usize].data {
+            self.instructions[inst_ref.0 as usize].data =
+                self.instructions[value.0 as usize].data.clone();
+        }
     }
 
     /// The return type of this function.
@@ -990,6 +1032,23 @@ pub enum AirInstData {
         /// The slot that becomes dead
         slot: u32,
     },
+
+    /// Marks that the value produced by `value` was moved out of its home
+    /// slot on this control-flow path (passed by value to a call, bound to
+    /// another variable, returned, ...). A pure passthrough at runtime: it
+    /// produces the same value as `value`. Drop elaboration in the CFG
+    /// builder uses these markers to suppress the scope-exit drop of slots
+    /// whose contents were moved out (the new owner is responsible for the
+    /// drop). Emitted by sema wherever the move checker marks a whole
+    /// variable as moved.
+    MarkMoved {
+        /// The use of the variable that constitutes the move
+        value: AirRef,
+        /// The local slot (or parameter ABI slot when `is_param`) moved from
+        slot: u32,
+        /// True when `slot` refers to a parameter ABI slot
+        is_param: bool,
+    },
 }
 
 impl fmt::Display for AirRef {
@@ -1284,6 +1343,14 @@ impl fmt::Display for Air {
                 }
                 AirInstData::StorageDead { slot } => {
                     writeln!(f, "storage_dead ${}", slot)?;
+                }
+                AirInstData::MarkMoved {
+                    value,
+                    slot,
+                    is_param,
+                } => {
+                    let prefix = if *is_param { "param%" } else { "$" };
+                    writeln!(f, "mark_moved {} (from {}{})", value, prefix, slot)?;
                 }
             }
         }

@@ -1296,7 +1296,12 @@ fn analyze_destructor_function_parallel(
     let param_info: Vec<(Spur, Type, RirParamMode)> =
         vec![(self_sym, struct_type, RirParamMode::Normal)];
 
-    analyze_function_with_context(ctx, full_name, Type::UNIT, &param_info, body)
+    let mut result = analyze_function_with_context(ctx, full_name, Type::UNIT, &param_info, body)?;
+    // The destructor consumes `self`; the drop glue (not the destructor
+    // itself) drops the fields afterwards, so the destructor must not
+    // re-drop its own parameter — that would recurse forever.
+    result.0.air.clear_param_drops();
+    Ok(result)
 }
 
 /// Resolve a type symbol using the shared context.
@@ -1400,6 +1405,18 @@ fn analyze_function_with_context(
         next_abi_slot += slot_count;
     }
     let num_param_slots = next_abi_slot;
+
+    // The callee owns its pass-by-value (Normal) parameters and must drop
+    // them at exit unless they are moved out (RUE-61). Inout/borrow params
+    // stay owned by the caller; comptime params are substituted away.
+    // Destructors clear this list after analysis (see the destructor path).
+    air.set_param_drops(
+        param_vec
+            .iter()
+            .filter(|p| p.mode == RirParamMode::Normal)
+            .map(|p| (p.abi_slot, p.ty))
+            .collect(),
+    );
 
     // Run Hindley-Milner type inference
     let resolved_types = run_type_inference_with_context(ctx, return_type, params, body)?;
@@ -2684,6 +2701,7 @@ fn analyze_var_ref_ctx(
         // permits forwarding an inout parameter: `f(inout v)` inside
         // `fn g(inout v: T)`.
         let is_byref_arg_use = analysis_ctx.byref_arg_root == Some(name);
+        let mut moves_out = false;
         if !ctx.is_type_copy(ty) {
             match param_info.mode {
                 RirParamMode::Normal | RirParamMode::Comptime => {
@@ -2693,6 +2711,9 @@ fn analyze_var_ref_ctx(
                             .entry(name)
                             .or_default()
                             .mark_path_moved(&[], span);
+                        // Only Normal params occupy a real ABI slot that
+                        // drop elaboration would otherwise drop at exit.
+                        moves_out = param_info.mode == RirParamMode::Normal;
                     }
                 }
                 RirParamMode::Inout => {
@@ -2718,13 +2739,27 @@ fn analyze_var_ref_ctx(
             }
         }
 
-        let air_ref = air.add_inst(AirInst {
+        let mut air_ref = air.add_inst(AirInst {
             data: AirInstData::Param {
                 index: param_info.abi_slot,
             },
             ty,
             span,
         });
+        if moves_out {
+            // Export the move to drop elaboration: the callee-side drop of
+            // this parameter is suppressed on paths where its value moved
+            // out (RUE-61).
+            air_ref = air.add_inst(AirInst {
+                data: AirInstData::MarkMoved {
+                    value: air_ref,
+                    slot: param_info.abi_slot,
+                    is_param: true,
+                },
+                ty,
+                span,
+            });
+        }
         return Ok(AnalysisResult::new(air_ref, ty));
     }
 
@@ -2846,7 +2881,8 @@ fn analyze_var_ref_ctx(
 
     // If type is not Copy, mark as moved — unless this use is a by-ref call
     // argument, which borrows the variable rather than moving it.
-    if !ctx.is_type_copy(ty) && analysis_ctx.byref_arg_root != Some(name) {
+    let moves_out = !ctx.is_type_copy(ty) && analysis_ctx.byref_arg_root != Some(name);
+    if moves_out {
         analysis_ctx
             .moved_vars
             .entry(name)
@@ -2858,11 +2894,25 @@ fn analyze_var_ref_ctx(
     analysis_ctx.used_locals.insert(name);
 
     // Load the variable
-    let air_ref = air.add_inst(AirInst {
+    let mut air_ref = air.add_inst(AirInst {
         data: AirInstData::Load { slot },
         ty,
         span,
     });
+    if moves_out {
+        // Export the move to drop elaboration so the scope-exit drop of
+        // this slot is suppressed on paths where its value moved out
+        // (RUE-61).
+        air_ref = air.add_inst(AirInst {
+            data: AirInstData::MarkMoved {
+                value: air_ref,
+                slot,
+                is_param: false,
+            },
+            ty,
+            span,
+        });
+    }
     Ok(AnalysisResult::new(air_ref, ty))
 }
 
@@ -4104,6 +4154,9 @@ fn analyze_field_get_ctx(
     let field_type = struct_field.ty;
 
     // For linear types, field access consumes the entire struct.
+    // Remember the consumed root so the FieldGet below can be wrapped in a
+    // MarkMoved marker for drop elaboration.
+    let mut linear_move_root: Option<(u32, bool)> = None;
     if is_linear {
         if let Some(root_var) = extract_root_variable_ctx(ctx, inst_ref) {
             reject_move_out_of_byref_param_ctx(ctx, analysis_ctx, root_var, span)?;
@@ -4112,6 +4165,11 @@ fn analyze_field_get_ctx(
                 .entry(root_var)
                 .or_default()
                 .mark_path_moved(&[], span);
+            if let Some(local) = analysis_ctx.locals.get(&root_var) {
+                linear_move_root = Some((local.slot, false));
+            } else if let Some(param) = analysis_ctx.params.iter().find(|p| p.name == root_var) {
+                linear_move_root = Some((param.abi_slot, true));
+            }
         }
     }
     // For non-linear types, check if accessing a non-Copy field
@@ -4145,7 +4203,7 @@ fn analyze_field_get_ctx(
         }
     }
 
-    let air_ref = air.add_inst(AirInst {
+    let mut air_ref = air.add_inst(AirInst {
         data: AirInstData::FieldGet {
             base: base_result.air_ref,
             struct_id,
@@ -4154,6 +4212,18 @@ fn analyze_field_get_ctx(
         ty: field_type,
         span,
     });
+    if let Some((slot, is_param)) = linear_move_root {
+        // Export the linear-type full move to drop elaboration.
+        air_ref = air.add_inst(AirInst {
+            data: AirInstData::MarkMoved {
+                value: air_ref,
+                slot,
+                is_param,
+            },
+            ty: field_type,
+            span,
+        });
+    }
     Ok(AnalysisResult::new(air_ref, field_type))
 }
 
@@ -5380,6 +5450,14 @@ fn analyze_builtin_method_ctx(
 
     // Resolve return type
     let return_type = resolve_builtin_return_type_ctx(ctx, builtin_method.return_ty, struct_id);
+
+    // Borrow (ByRef) / mutation (ByMutRef) receivers are not consumed:
+    // cancel the move marker the receiver analysis may have emitted so drop
+    // elaboration doesn't treat this borrow as a move. (The serial path also
+    // un-moves the variable in `moved_vars`.)
+    if builtin_method.receiver_mode != ReceiverMode::ByValue {
+        air.cancel_move_marker(receiver_air_ref);
+    }
 
     // For mutation methods, we need to handle the storage update
     if builtin_method.receiver_mode == ReceiverMode::ByMutRef {
@@ -6641,7 +6719,7 @@ impl<'a> Sema<'a> {
             vec![(self_sym, struct_type, RirParamMode::Normal)];
 
         let (
-            air,
+            mut air,
             num_locals,
             num_param_slots,
             param_modes,
@@ -6650,6 +6728,11 @@ impl<'a> Sema<'a> {
             ref_fns,
             ref_meths,
         ) = self.analyze_function(infer_ctx, Type::UNIT, &param_info, body)?;
+
+        // The destructor consumes `self`; the drop glue (not the destructor
+        // itself) drops the fields afterwards, so the destructor must not
+        // re-drop its own parameter — that would recurse forever.
+        air.clear_param_drops();
 
         Ok((
             AnalyzedFunction {
@@ -6745,6 +6828,18 @@ impl<'a> Sema<'a> {
             next_abi_slot += slot_count;
         }
         let num_param_slots = next_abi_slot;
+
+        // The callee owns its pass-by-value (Normal) parameters and must drop
+        // them at exit unless they are moved out (RUE-61). Inout/borrow params
+        // stay owned by the caller; comptime params are substituted away.
+        // Destructors clear this list after analysis (see the destructor path).
+        air.set_param_drops(
+            param_vec
+                .iter()
+                .filter(|p| p.mode == RirParamMode::Normal)
+                .map(|p| (p.abi_slot, p.ty))
+                .collect(),
+        );
 
         // ======================================================================
         // Phase 1-2: Hindley-Milner Type Inference
@@ -9946,17 +10041,15 @@ impl<'a> Sema<'a> {
 
         // Handle receiver mode (borrow vs mutation vs consume)
         match method.receiver_mode {
-            ReceiverMode::ByRef => {
-                // Borrow semantics - "unmove" the variable since it's not consumed
+            ReceiverMode::ByRef | ReceiverMode::ByMutRef => {
+                // Borrow (ByRef) / mutation (ByMutRef) semantics - "unmove"
+                // the variable since it's not consumed, and cancel the move
+                // marker the receiver analysis emitted so drop elaboration
+                // doesn't treat this borrow as a move.
                 if let Some(var_symbol) = receiver.var {
                     ctx.moved_vars.remove(&var_symbol);
                 }
-            }
-            ReceiverMode::ByMutRef => {
-                // Mutation semantics - variable remains valid after
-                if let Some(var_symbol) = receiver.var {
-                    ctx.moved_vars.remove(&var_symbol);
-                }
+                air.cancel_move_marker(receiver.result.air_ref);
             }
             ReceiverMode::ByValue => {
                 // Consume semantics - variable is moved (already handled by analyze_inst)

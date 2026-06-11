@@ -1,0 +1,285 @@
+# Drop elaboration vs move semantics (RUE-61 / RUE-62, fixed by RUE-108).
+#
+# Spec 3.9:2: a value is dropped exactly once — moved values are dropped at
+# their final destination, not at their original binding. Before the fix,
+# sema's move analysis was discarded before AIR, so drop elaboration dropped
+# every live slot at scope exit: a value moved into a callee / another local /
+# out via return ran its destructor TWICE, and a callee never dropped its
+# owned pass-by-value parameters at all (the caller's spurious drop masked
+# that leak).
+#
+# These cases pin EXACT destructor output via @dbg markers so both the count
+# and the order of drops are regression-tested.
+#
+# Known residuals (conservative "moved on ALL paths" analysis):
+# - A value moved in only one branch of an if/match is still dropped at scope
+#   exit (double-drop on the moving path). A full fix needs runtime drop
+#   flags, like Rust.
+# - Partial (per-field) moves don't suppress the field's drop inside the
+#   whole-struct drop at scope exit — see the RUE-62 known_bug case below.
+
+[section]
+id = "cli.drop_moves"
+name = "Drop suppression for moved-out values"
+description = "Moved values are dropped exactly once, at their destination (RUE-61/RUE-62)."
+
+[[case]]
+name = "control_unmoved_value_drops_exactly_once"
+description = "Control: a value that is never moved drops exactly once, at scope exit."
+files = [{ path = "main.rue", source = """
+struct D { v: i32 }
+
+drop fn D(self) {
+    @dbg(self.v);
+}
+
+fn main() -> i32 {
+    let d = D { v: 7 };
+    @dbg(100);
+    0
+}
+""" }]
+stdout = "100\n7\n"
+exit_code = 0
+
+[[case]]
+name = "control_destructor_then_field_drop_order"
+description = "Control: dropping a struct runs its destructor, then drops its droppable fields."
+files = [{ path = "main.rue", source = """
+struct A { x: i32 }
+struct O { a: A, b: i32 }
+
+drop fn A(self) {
+    @dbg(self.x);
+}
+
+drop fn O(self) {
+    @dbg(800);
+}
+
+fn main() -> i32 {
+    let o = O { a: A { x: 1 }, b: 2 };
+    @dbg(100);
+    0
+}
+""" }]
+stdout = "100\n800\n1\n"
+exit_code = 0
+
+[[case]]
+name = "move_into_call_drops_once_in_callee"
+description = "RUE-61: a value moved into a call is dropped by the callee (param drop at callee exit), not again by the caller."
+files = [{ path = "main.rue", source = """
+struct D { v: i32 }
+
+drop fn D(self) {
+    @dbg(self.v);
+}
+
+fn take(d: D) -> i32 {
+    d.v
+}
+
+fn main() -> i32 {
+    let d = D { v: 7 };
+    let x = take(d);
+    @dbg(100);
+    x - 7
+}
+""" }]
+stdout = "7\n100\n"
+exit_code = 0
+
+[[case]]
+name = "move_param_to_local_drops_once"
+description = "RUE-61 original repro: callee re-binds its param to a local; destructor runs once (in the callee), not again in main."
+files = [{ path = "main.rue", source = """
+struct D { v: i32 }
+
+drop fn D(self) {
+    @dbg(self.v);
+}
+
+fn consume(d: D) -> i32 {
+    let held = d;
+    held.v
+}
+
+fn main() -> i32 {
+    let d = D { v: 7 };
+    consume(d);
+    @dbg(100);
+    0
+}
+""" }]
+stdout = "7\n100\n"
+exit_code = 0
+
+[[case]]
+name = "move_to_local_drops_once_lifo"
+description = "Chained let-moves: only the final binding drops the value; LIFO order unaffected for other slots."
+files = [{ path = "main.rue", source = """
+struct D { v: i32 }
+
+drop fn D(self) {
+    @dbg(self.v);
+}
+
+fn main() -> i32 {
+    let a = D { v: 7 };
+    let other = D { v: 50 };
+    let b = a;
+    let c = b;
+    @dbg(100);
+    0
+}
+""" }]
+stdout = "100\n7\n50\n"
+exit_code = 0
+
+[[case]]
+name = "move_out_via_return_not_dropped_in_returning_fn"
+description = "RUE-61 return path: a returned value is not dropped in the returning function; the caller's binding drops it."
+files = [{ path = "main.rue", source = """
+struct D { v: i32 }
+
+drop fn D(self) {
+    @dbg(self.v);
+}
+
+fn make() -> D {
+    let d = D { v: 5 };
+    d
+}
+
+fn main() -> i32 {
+    let m = make();
+    @dbg(100);
+    0
+}
+""" }]
+stdout = "100\n5\n"
+exit_code = 0
+
+[[case]]
+name = "method_consumes_receiver_drops_once"
+description = "A by-value self receiver is moved into the method, which drops it at method exit."
+files = [{ path = "main.rue", source = """
+struct D {
+    v: i32,
+
+    fn get(self) -> i32 {
+        self.v
+    }
+}
+
+drop fn D(self) {
+    @dbg(self.v);
+}
+
+fn main() -> i32 {
+    let d = D { v: 9 };
+    let x = d.get();
+    @dbg(100);
+    x - 9
+}
+""" }]
+stdout = "9\n100\n"
+exit_code = 0
+
+[[case]]
+name = "reassignment_after_move_drops_new_value"
+description = "Assigning to a moved-from variable re-initializes it: the new value drops at scope exit, the old one only at its destination."
+files = [{ path = "main.rue", source = """
+struct D { v: i32 }
+
+drop fn D(self) {
+    @dbg(self.v);
+}
+
+fn consume(d: D) -> i32 { d.v }
+
+fn main() -> i32 {
+    let mut d = D { v: 1 };
+    consume(d);
+    d = D { v: 2 };
+    @dbg(100);
+    0
+}
+""" }]
+stdout = "1\n100\n2\n"
+exit_code = 0
+
+[[case]]
+name = "moved_array_drops_once"
+description = "Moving an array of droppable elements suppresses the source binding's drops."
+files = [{ path = "main.rue", source = """
+struct D { v: i32 }
+
+drop fn D(self) {
+    @dbg(self.v);
+}
+
+fn main() -> i32 {
+    let arr: [D; 2] = [D { v: 1 }, D { v: 2 }];
+    let arr2 = arr;
+    @dbg(100);
+    0
+}
+""" }]
+stdout = "100\n1\n2\n"
+exit_code = 0
+
+[[case]]
+name = "borrow_arg_caller_still_drops"
+description = "A borrow argument is not a move: the caller keeps ownership and drops at its own scope exit, the callee does not."
+files = [{ path = "main.rue", source = """
+struct D { v: i32 }
+
+drop fn D(self) {
+    @dbg(self.v);
+}
+
+fn peek(borrow d: D) -> i32 {
+    d.v
+}
+
+fn main() -> i32 {
+    let d = D { v: 7 };
+    let x = peek(borrow d);
+    @dbg(100);
+    x - 7
+}
+""" }]
+stdout = "100\n7\n"
+exit_code = 0
+
+[[case]]
+name = "partial_field_move_suppresses_field_drop"
+description = "RUE-62: moving o.a into a call must suppress field a's drop inside o's scope-exit drop (o's own destructor still runs). Currently the whole-struct drop glue re-drops the moved field."
+known_bug = "RUE-62"
+files = [{ path = "main.rue", source = """
+struct A { x: i32 }
+struct O { a: A, b: i32 }
+
+drop fn A(self) {
+    @dbg(self.x);
+}
+
+drop fn O(self) {
+    @dbg(800);
+}
+
+fn eat(a: A) -> i32 {
+    a.x
+}
+
+fn main() -> i32 {
+    let o = O { a: A { x: 1 }, b: 2 };
+    eat(o.a);
+    @dbg(100);
+    0
+}
+""" }]
+stdout = "1\n100\n800\n"
+exit_code = 0

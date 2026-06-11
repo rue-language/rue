@@ -57,6 +57,16 @@ struct LiveSlot {
     span: rue_span::Span,
 }
 
+/// A storage location whose contents may have been moved out.
+/// Used by drop elaboration to suppress drops of moved-out values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum MovedSlot {
+    /// A local variable slot
+    Local(u32),
+    /// A parameter ABI slot
+    Param(u32),
+}
+
 /// Builder that converts AIR to CFG.
 pub struct CfgBuilder<'a> {
     air: &'a Air,
@@ -77,6 +87,18 @@ pub struct CfgBuilder<'a> {
     /// Each scope contains the slots that became live in that scope.
     /// Used to emit StorageDead (and Drop if needed) at scope exit.
     scope_stack: Vec<Vec<LiveSlot>>,
+    /// Slots whose contents have definitely been moved out on every path
+    /// reaching the current lowering position. Drop elaboration skips these
+    /// (the new owner of the value is responsible for dropping it).
+    ///
+    /// Maintained path-sensitively: each branch of an if/match is lowered
+    /// starting from the pre-branch state, and the post-construct state is
+    /// the intersection of the branch exit states ("moved on ALL paths").
+    /// A value moved on only SOME paths therefore stays in the drop schedule
+    /// — that conservatively keeps today's double-drop for branch-divergent
+    /// moves (proper fix needs runtime drop flags), but never leaks a value
+    /// that was not moved.
+    moved_slots: std::collections::HashSet<MovedSlot>,
 }
 
 impl<'a> CfgBuilder<'a> {
@@ -109,6 +131,7 @@ impl<'a> CfgBuilder<'a> {
             value_cache: vec![None; air.len()],
             warnings: Vec::new(),
             scope_stack: vec![Vec::new()], // Start with one scope for the function body
+            moved_slots: std::collections::HashSet::new(),
         };
 
         // Create entry block
@@ -423,6 +446,10 @@ impl<'a> CfgBuilder<'a> {
                 // join — but the join is STILL reachable via the short-circuit
                 // (lhs-false) edge, so we must continue lowering there rather than
                 // propagate divergence (which would leave the join unterminated).
+                // The rhs only runs on one of the two paths into the join, so
+                // moves inside it are not "moved on all paths": restore the
+                // pre-rhs move state afterwards.
+                let moved_before_rhs = self.moved_slots.clone();
                 self.current_block = rhs_block;
                 if let Some(rhs_val) = self.lower_value(*rhs) {
                     let (args_start, args_len) = self.cfg.push_extra(std::iter::once(rhs_val));
@@ -437,6 +464,7 @@ impl<'a> CfgBuilder<'a> {
                 }
 
                 // Continue in join block
+                self.moved_slots = moved_before_rhs;
                 self.current_block = join_block;
                 self.cache(air_ref, result_param);
                 ExprResult {
@@ -481,6 +509,9 @@ impl<'a> CfgBuilder<'a> {
                 // join — but the join is STILL reachable via the short-circuit
                 // (lhs-true) edge, so we must continue lowering there rather than
                 // propagate divergence (which would leave the join unterminated).
+                // The rhs only runs on one of the two paths into the join:
+                // restore the pre-rhs move state afterwards (see And above).
+                let moved_before_rhs = self.moved_slots.clone();
                 self.current_block = rhs_block;
                 if let Some(rhs_val) = self.lower_value(*rhs) {
                     let (args_start, args_len) = self.cfg.push_extra(std::iter::once(rhs_val));
@@ -495,6 +526,7 @@ impl<'a> CfgBuilder<'a> {
                 }
 
                 // Continue in join block
+                self.moved_slots = moved_before_rhs;
                 self.current_block = join_block;
                 self.cache(air_ref, result_param);
                 ExprResult {
@@ -637,6 +669,9 @@ impl<'a> CfgBuilder<'a> {
                     Type::UNIT,
                     span,
                 );
+                // Initialization fills the slot with a fresh value: any
+                // moved-out state from a previous occupant is stale.
+                self.moved_slots.remove(&MovedSlot::Local(*slot));
                 ExprResult {
                     value: None,
                     continuation: Continuation::Continues,
@@ -664,6 +699,10 @@ impl<'a> CfgBuilder<'a> {
                     Type::UNIT,
                     span,
                 );
+                // Assigning to the slot re-initializes it: a previously
+                // moved-out value has been replaced, so it must be dropped
+                // again at scope exit.
+                self.moved_slots.remove(&MovedSlot::Local(*slot));
                 ExprResult {
                     value: None,
                     continuation: Continuation::Continues,
@@ -682,6 +721,8 @@ impl<'a> CfgBuilder<'a> {
                     Type::UNIT,
                     span,
                 );
+                // Re-initialization: see the Store arm above.
+                self.moved_slots.remove(&MovedSlot::Param(*param_slot));
                 ExprResult {
                     value: None,
                     continuation: Continuation::Continues,
@@ -1016,28 +1057,8 @@ impl<'a> CfgBuilder<'a> {
                         // Only emit scope cleanup if the value didn't diverge
                         if !matches!(result.continuation, Continuation::Diverged) {
                             for live_slot in scope_slots.into_iter().rev() {
-                                // Emit Drop for types that need cleanup (e.g., heap-allocated String)
-                                if self.type_needs_drop(live_slot.ty) {
-                                    let slot_val = self.emit(
-                                        CfgInstData::Load {
-                                            slot: live_slot.slot,
-                                        },
-                                        live_slot.ty,
-                                        live_slot.span,
-                                    );
-                                    self.emit(
-                                        CfgInstData::Drop { value: slot_val },
-                                        Type::UNIT,
-                                        live_slot.span,
-                                    );
-                                }
-                                self.emit(
-                                    CfgInstData::StorageDead {
-                                        slot: live_slot.slot,
-                                    },
-                                    Type::UNIT,
-                                    live_slot.span,
-                                );
+                                let slot_span = live_slot.span;
+                                self.emit_drop_for_slot(&live_slot, slot_span);
                             }
                         }
                     }
@@ -1079,11 +1100,15 @@ impl<'a> CfgBuilder<'a> {
                     },
                 );
 
+                // Each branch starts move tracking from the pre-branch state.
+                let moved_before = self.moved_slots.clone();
+
                 // Lower then branch
                 self.current_block = then_block;
                 let then_result = self.lower_inst(*then_value);
                 let then_exit_block = self.current_block;
                 let then_diverged = matches!(then_result.continuation, Continuation::Diverged);
+                let moved_then = std::mem::replace(&mut self.moved_slots, moved_before);
 
                 // Lower else branch
                 self.current_block = else_block;
@@ -1099,6 +1124,24 @@ impl<'a> CfgBuilder<'a> {
                 };
                 let else_exit_block = self.current_block;
                 let else_diverged = matches!(else_result.continuation, Continuation::Diverged);
+
+                // Merge move state at the join: a slot counts as moved after
+                // the if only when it is moved on every path reaching the
+                // join. A diverged branch contributes no path to the join,
+                // so only the other branch's state matters.
+                // (self.moved_slots currently holds the else-branch state.)
+                match (then_diverged, else_diverged) {
+                    (true, true) => {}  // join unreachable; state is irrelevant
+                    (true, false) => {} // keep else state
+                    (false, true) => self.moved_slots = moved_then,
+                    (false, false) => {
+                        self.moved_slots = self
+                            .moved_slots
+                            .intersection(&moved_then)
+                            .copied()
+                            .collect();
+                    }
+                }
 
                 // If both branches diverge, mark join block as unreachable and diverge
                 if then_diverged && else_diverged {
@@ -1183,6 +1226,14 @@ impl<'a> CfgBuilder<'a> {
                 let body_block = self.cfg.new_block();
                 let exit_block = self.cfg.new_block();
 
+                // The body may execute zero times, so moves inside the
+                // condition/body are not "moved on all paths" at the loop
+                // exit: restore the pre-loop move state after lowering.
+                // (Sema's back-edge move recheck already rejects moving an
+                // outer variable inside a loop, so this conservatism cannot
+                // actually reintroduce a double-drop in accepted programs.)
+                let moved_before_loop = self.moved_slots.clone();
+
                 // Jump to header
                 let (args_start, args_len) = self.cfg.push_extra(std::iter::empty());
                 self.cfg.set_terminator(
@@ -1251,6 +1302,7 @@ impl<'a> CfgBuilder<'a> {
                 }
 
                 self.loop_stack.pop();
+                self.moved_slots = moved_before_loop;
 
                 // Continue after loop
                 self.current_block = exit_block;
@@ -1275,6 +1327,11 @@ impl<'a> CfgBuilder<'a> {
                 // entry point and the continue target.
                 let body_block = self.cfg.new_block();
                 let exit_block = self.cfg.new_block();
+
+                // The exit is only reached via break, and different breaks
+                // may have different move states; conservatively restore the
+                // pre-loop state after lowering (see the Loop arm above).
+                let moved_before_loop = self.moved_slots.clone();
 
                 // Jump to body
                 let (args_start, args_len) = self.cfg.push_extra(std::iter::empty());
@@ -1314,6 +1371,7 @@ impl<'a> CfgBuilder<'a> {
                 }
 
                 self.loop_stack.pop();
+                self.moved_slots = moved_before_loop;
 
                 // Continue after loop (only reachable via break).
                 // Set Unreachable as the initial terminator. If there's code after the loop
@@ -1410,22 +1468,35 @@ impl<'a> CfgBuilder<'a> {
                     },
                 );
 
-                // Lower each arm and wire to join block
+                // Lower each arm and wire to join block.
+                // Each arm starts move tracking from the pre-match state; the
+                // state after the match is the intersection of the exit
+                // states of the arms that reach the join ("moved on ALL
+                // paths" — see the moved_slots field docs).
                 let mut all_diverged = true;
                 let mut arm_results = Vec::new();
+                let moved_before = self.moved_slots.clone();
+                let mut moved_join: Option<std::collections::HashSet<MovedSlot>> = None;
 
                 for (i, (_, body)) in arms.iter().enumerate() {
                     self.current_block = arm_blocks[i];
+                    self.moved_slots = moved_before.clone();
                     let body_result = self.lower_inst(*body);
                     let exit_block = self.current_block;
                     let diverged = matches!(body_result.continuation, Continuation::Diverged);
 
                     if !diverged {
                         all_diverged = false;
+                        moved_join = Some(match moved_join.take() {
+                            None => self.moved_slots.clone(),
+                            Some(acc) => acc.intersection(&self.moved_slots).copied().collect(),
+                        });
                     }
 
                     arm_results.push((exit_block, body_result, diverged));
                 }
+
+                self.moved_slots = moved_join.unwrap_or(moved_before);
 
                 // If all arms diverge, mark join block unreachable
                 if all_diverged {
@@ -1736,6 +1807,16 @@ impl<'a> CfgBuilder<'a> {
                     Type::UNIT,
                     span,
                 );
+                // A whole-variable write (no projections) re-initializes the
+                // slot, so a previously moved-out value must be dropped again
+                // at scope exit. Projected writes (one field/element) don't
+                // restore a fully moved-out variable.
+                let air_place = self.air.get_place(*place);
+                if let Some(slot) = air_place.as_local() {
+                    self.moved_slots.remove(&MovedSlot::Local(slot));
+                } else if let Some(slot) = air_place.as_param() {
+                    self.moved_slots.remove(&MovedSlot::Param(slot));
+                }
                 ExprResult {
                     value: None,
                     continuation: Continuation::Continues,
@@ -1810,6 +1891,11 @@ impl<'a> CfgBuilder<'a> {
                 // Emit StorageLive to CFG
                 self.emit(CfgInstData::StorageLive { slot: *slot }, Type::UNIT, span);
 
+                // Fresh storage holds a fresh (not-moved-out) value.
+                // Slots are not currently reused, so this is a no-op today,
+                // but it keeps the moved-slot state correct if reuse lands.
+                self.moved_slots.remove(&MovedSlot::Local(*slot));
+
                 // Record this slot as live in the current scope for drop elaboration
                 if let Some(scope) = self.scope_stack.last_mut() {
                     scope.push(LiveSlot {
@@ -1833,6 +1919,29 @@ impl<'a> CfgBuilder<'a> {
                     value: None,
                     continuation: Continuation::Continues,
                 }
+            }
+
+            AirInstData::MarkMoved {
+                value,
+                slot,
+                is_param,
+            } => {
+                // Pure passthrough at runtime: lower the wrapped use and
+                // record that the slot's contents were moved out on this
+                // path, so drop elaboration skips the slot at scope exit.
+                let result = self.lower_inst(*value);
+                if !matches!(result.continuation, Continuation::Diverged) {
+                    let place = if *is_param {
+                        MovedSlot::Param(*slot)
+                    } else {
+                        MovedSlot::Local(*slot)
+                    };
+                    self.moved_slots.insert(place);
+                }
+                if let Some(val) = result.value {
+                    self.cache(air_ref, val);
+                }
+                result
             }
         }
     }
@@ -1941,6 +2050,8 @@ impl<'a> CfgBuilder<'a> {
 
     /// Emit drops for all live slots in all scopes (for return).
     /// Drops are emitted in reverse order (LIFO) across all scopes.
+    /// Owned (pass-by-value) parameters are dropped after all locals, in
+    /// reverse declaration order — the callee owns its by-value arguments.
     fn emit_drops_for_all_scopes(&mut self, span: rue_span::Span) {
         // Collect all live slots in reverse order across all scopes
         let all_slots: Vec<LiveSlot> = self
@@ -1952,6 +2063,19 @@ impl<'a> CfgBuilder<'a> {
 
         for live_slot in all_slots {
             self.emit_drop_for_slot(&live_slot, span);
+        }
+
+        // Drop owned parameters (unless their value was moved out on every
+        // path reaching this exit). The list is empty for destructors and
+        // drop-glue functions, which must not re-drop their own parameter.
+        for &(abi_slot, ty) in self.air.param_drops().to_vec().iter().rev() {
+            if self.moved_slots.contains(&MovedSlot::Param(abi_slot)) {
+                continue;
+            }
+            if self.type_needs_drop(ty) {
+                let param_val = self.emit(CfgInstData::Param { index: abi_slot }, ty, span);
+                self.emit(CfgInstData::Drop { value: param_val }, Type::UNIT, span);
+            }
         }
     }
 
@@ -1975,9 +2099,14 @@ impl<'a> CfgBuilder<'a> {
     }
 
     /// Emit Drop and StorageDead for a single slot.
+    /// The Drop is suppressed when the slot's value was moved out on every
+    /// path reaching this point (the new owner drops it); the StorageDead
+    /// is still emitted to end the slot's storage lifetime.
     fn emit_drop_for_slot(&mut self, live_slot: &LiveSlot, span: rue_span::Span) {
-        // Emit Drop if the type needs it
-        if self.type_needs_drop(live_slot.ty) {
+        // Emit Drop if the type needs it and the value wasn't moved out
+        if !self.moved_slots.contains(&MovedSlot::Local(live_slot.slot))
+            && self.type_needs_drop(live_slot.ty)
+        {
             let slot_val = self.emit(
                 CfgInstData::Load {
                     slot: live_slot.slot,
@@ -2157,6 +2286,12 @@ mod tests {
     use rue_rir::AstGen;
 
     fn build_cfg(source: &str) -> Cfg {
+        build_cfg_for(source, 0)
+    }
+
+    /// Build the CFG for the `index`-th analyzed function in `source`
+    /// (functions are analyzed in declaration order).
+    fn build_cfg_for(source: &str, index: usize) -> Cfg {
         let lexer = Lexer::new(source);
         let (tokens, interner) = lexer.tokenize().unwrap();
         let parser = Parser::new(tokens, interner);
@@ -2168,7 +2303,7 @@ mod tests {
         let mut sema = Sema::new(&rir, &mut interner, PreviewFeatures::new());
         let output = sema.analyze_all().unwrap();
 
-        let func = &output.functions[0];
+        let func = &output.functions[index];
         CfgBuilder::build(
             &func.air,
             func.num_locals,
@@ -2179,6 +2314,15 @@ mod tests {
             &interner,
         )
         .cfg
+    }
+
+    /// Count the Drop instructions in a CFG.
+    fn count_drops(cfg: &Cfg) -> usize {
+        cfg.blocks()
+            .iter()
+            .flat_map(|b| b.insts.iter())
+            .filter(|v| matches!(cfg.get_inst(**v).data, CfgInstData::Drop { .. }))
+            .count()
     }
 
     #[test]
@@ -2285,16 +2429,101 @@ mod tests {
                  0\n\
              }",
         );
-        let drop_count = cfg
-            .blocks()
-            .iter()
-            .flat_map(|b| b.insts.iter())
-            .filter(|v| matches!(cfg.get_inst(**v).data, CfgInstData::Drop { .. }))
-            .count();
+        let drop_count = count_drops(&cfg);
         assert_eq!(
             drop_count, 2,
             "expected exactly one Drop per droppable local (s, t)"
         );
         assert_all_blocks_terminated(&cfg);
+    }
+
+    #[test]
+    fn test_moved_local_not_dropped_at_source() {
+        // RUE-61: `let t = s;` moves s into t — only t's slot is dropped at
+        // scope exit; s's drop is suppressed by the MarkMoved marker.
+        let cfg = build_cfg(
+            "fn main() -> i32 {\n\
+                 let s = String::with_capacity(8);\n\
+                 let t = s;\n\
+                 0\n\
+             }",
+        );
+        assert_eq!(count_drops(&cfg), 1, "moved-out s must not be dropped");
+    }
+
+    #[test]
+    fn test_owned_param_dropped_at_exit() {
+        // The callee owns its pass-by-value parameters and drops them at
+        // function exit (unless moved out).
+        let cfg = build_cfg_for(
+            "fn f(s: String) -> i32 { 0 }\n\
+             fn main() -> i32 { 0 }",
+            0,
+        );
+        assert_eq!(count_drops(&cfg), 1, "owned String param must be dropped");
+    }
+
+    #[test]
+    fn test_moved_param_not_dropped_at_exit() {
+        // A param moved into a local is dropped via the local, not again as
+        // a param at exit.
+        let cfg = build_cfg_for(
+            "fn f(s: String) -> i32 { let t = s; 0 }\n\
+             fn main() -> i32 { 0 }",
+            0,
+        );
+        assert_eq!(count_drops(&cfg), 1, "moved param must drop only via t");
+    }
+
+    #[test]
+    fn test_branch_divergent_move_keeps_drop() {
+        // A value moved on only ONE path is NOT "moved on all paths": the
+        // scope-exit drop is conservatively kept (documented residual — the
+        // moving path double-drops until drop flags exist; the non-moving
+        // path must not leak).
+        let cfg = build_cfg(
+            "fn main() -> i32 {\n\
+                 let s = String::with_capacity(8);\n\
+                 let c = true;\n\
+                 if c {\n\
+                     let t = s;\n\
+                 }\n\
+                 0\n\
+             }",
+        );
+        // One drop for t inside the branch, one (conservative) for s at exit.
+        assert_eq!(
+            count_drops(&cfg),
+            2,
+            "branch-divergent move keeps the exit drop"
+        );
+    }
+
+    #[test]
+    fn test_move_on_both_branches_suppresses_drop() {
+        // Moved in BOTH branches => moved on all paths => exit drop suppressed.
+        let source = "fn consume(s: String) -> i32 { 0 }\n\
+             fn main() -> i32 {\n\
+                 let s = String::with_capacity(8);\n\
+                 let c = true;\n\
+                 if c {\n\
+                     consume(s);\n\
+                 } else {\n\
+                     consume(s);\n\
+                 }\n\
+                 0\n\
+             }";
+        let consume_cfg = build_cfg_for(source, 0);
+        let main_cfg = build_cfg_for(source, 1);
+        assert_eq!(
+            count_drops(&consume_cfg),
+            1,
+            "consume drops its owned param once"
+        );
+        assert_eq!(
+            count_drops(&main_cfg),
+            0,
+            "s is moved on every path; main must not drop it"
+        );
     }
 }
