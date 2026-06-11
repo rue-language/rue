@@ -126,6 +126,8 @@ impl ErrorCode {
     pub const DUPLICATE_FUNCTION_DEFINITION: Self = Self(436);
     pub const MOVE_OUT_OF_INOUT: Self = Self(437);
     pub const BY_REF_ARG_NOT_PLAIN_VARIABLE: Self = Self(438);
+    // 439-441 are reserved by in-flight work; next free code is 442.
+    pub const MOVE_SELF_OUT_OF_DESTRUCTOR: Self = Self(442);
 
     // ========================================================================
     // Control flow errors (E0500-E0599)
@@ -989,6 +991,15 @@ pub enum ErrorKind {
     /// variable moved-from)
     #[error("cannot move out of inout parameter '{variable}'")]
     MoveOutOfInout { variable: String },
+    /// Cannot move `self` out of a destructor body (RUE-139). The compiler
+    /// drops a value by running its destructor and THEN dropping its fields;
+    /// moving `self` to a new owner (a call argument, another binding, ...)
+    /// would make that owner drop it again — re-entering the destructor in
+    /// infinite recursion.
+    #[error(
+        "cannot move `self` out of the destructor for '{type_name}': the new owner would drop it again, re-entering this destructor"
+    )]
+    MoveSelfOutOfDestructor { type_name: String },
 
     // Control flow errors
     #[error("'break' outside of loop")]
@@ -1166,6 +1177,7 @@ impl ErrorKind {
             ErrorKind::BorrowKeywordMissing => ErrorCode::BORROW_KEYWORD_MISSING,
             ErrorKind::ByRefArgNotPlainVariable => ErrorCode::BY_REF_ARG_NOT_PLAIN_VARIABLE,
             ErrorKind::MoveOutOfInout { .. } => ErrorCode::MOVE_OUT_OF_INOUT,
+            ErrorKind::MoveSelfOutOfDestructor { .. } => ErrorCode::MOVE_SELF_OUT_OF_DESTRUCTOR,
 
             // Control flow errors (E0500-E0599)
             ErrorKind::BreakOutsideLoop => ErrorCode::BREAK_OUTSIDE_LOOP,

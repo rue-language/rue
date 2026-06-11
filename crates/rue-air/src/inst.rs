@@ -1040,14 +1040,22 @@ pub enum AirInstData {
     /// builder uses these markers to suppress the scope-exit drop of slots
     /// whose contents were moved out (the new owner is responsible for the
     /// drop). Emitted by sema wherever the move checker marks a whole
-    /// variable as moved.
+    /// variable as moved, and — with `field` set — wherever it marks a
+    /// single top-level struct field as moved (a partial move, RUE-62).
     MarkMoved {
-        /// The use of the variable that constitutes the move
+        /// The use of the variable (or field) that constitutes the move
         value: AirRef,
         /// The local slot (or parameter ABI slot when `is_param`) moved from
         slot: u32,
         /// True when `slot` refers to a parameter ABI slot
         is_param: bool,
+        /// `None`: the slot's whole value moved out. `Some(i)`: only the
+        /// top-level struct field with declaration index `i` moved out;
+        /// drop elaboration then drops the rest of the struct field by
+        /// field, skipping this one. Moves of deeper paths (`o.a.b`) are
+        /// NOT exported (no marker), conservatively keeping the whole-slot
+        /// drop (a double drop of the moved part, never a leak).
+        field: Option<u32>,
     },
 }
 
@@ -1348,9 +1356,17 @@ impl fmt::Display for Air {
                     value,
                     slot,
                     is_param,
+                    field,
                 } => {
                     let prefix = if *is_param { "param%" } else { "$" };
-                    writeln!(f, "mark_moved {} (from {}{})", value, prefix, slot)?;
+                    match field {
+                        Some(idx) => writeln!(
+                            f,
+                            "mark_moved {} (from {}{} field {})",
+                            value, prefix, slot, idx
+                        )?,
+                        None => writeln!(f, "mark_moved {} (from {}{})", value, prefix, slot)?,
+                    }
                 }
             }
         }
