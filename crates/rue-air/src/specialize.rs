@@ -270,33 +270,40 @@ fn create_specialized_function(
         }
     }
 
+    // Resolve the return type, substituting type parameters - bare (`-> T`)
+    // or inside a composite (`-> [T; 3]`, RUE-172).
     let return_type = if base_info.return_type == Type::COMPTIME_TYPE {
-        type_subst
-            .get(&base_info.return_type_sym)
-            .copied()
+        sema.resolve_type_for_comptime_with_subst(base_info.return_type_sym, &type_subst)
             .unwrap_or(Type::UNIT)
     } else {
         base_info.return_type
     };
 
-    let specialized_params: Vec<(Spur, Type, RirParamMode, bool)> = sema
+    // Copy out the param data first: substitution needs `&mut Sema` (composite
+    // types like `[T; 3]` may intern new array types), which can't overlap a
+    // borrow of the param arena.
+    let base_params: Vec<(Spur, Type, RirParamMode, bool)> = sema
         .param_arena
         .iter(base_info.params)
-        .filter(|(_, _, _, is_comptime)| !**is_comptime)
-        .map(|(name, ty, mode, _)| {
-            // Comptime parameters were filtered out above, so every
-            // surviving parameter carries is_comptime = false.
-            let concrete_ty = if *ty == Type::COMPTIME_TYPE {
-                substitute_param_type(sema, base_info, *name, &type_subst).unwrap_or_else(|| {
-                    debug_assert!(false, "type substitution failed for param");
-                    *ty
-                })
-            } else {
-                *ty
-            };
-            (*name, concrete_ty, *mode, false)
-        })
+        .map(|(name, ty, mode, is_comptime)| (*name, *ty, *mode, *is_comptime))
         .collect();
+    let mut specialized_params: Vec<(Spur, Type, RirParamMode, bool)> =
+        Vec::with_capacity(base_params.len());
+    for (name, ty, mode, is_comptime) in base_params {
+        if is_comptime {
+            // Comptime parameters are erased from the specialized signature.
+            continue;
+        }
+        let concrete_ty = if ty == Type::COMPTIME_TYPE {
+            substitute_param_type(sema, base_info, name, &type_subst).unwrap_or_else(|| {
+                debug_assert!(false, "type substitution failed for param");
+                ty
+            })
+        } else {
+            ty
+        };
+        specialized_params.push((name, concrete_ty, mode, false));
+    }
 
     let (
         air,
@@ -324,20 +331,20 @@ fn create_specialized_function(
     })
 }
 
-/// Look up a parameter's concrete type from the type substitution map.
+/// Resolve a parameter's concrete type by substituting type parameters into
+/// its declared type symbol - bare (`x: T`) or inside a composite
+/// (`a: [T; 3]`, `p: ptr const T`; RUE-172).
 fn substitute_param_type(
-    sema: &Sema<'_>,
+    sema: &mut Sema<'_>,
     base_info: &FunctionInfo,
     param_name: Spur,
     type_subst: &HashMap<Spur, Type>,
 ) -> Option<Type> {
-    let params = sema
+    let type_sym = sema
         .rir
-        .get_params(base_info.rir_params_start, base_info.rir_params_len);
-    for param in params {
-        if param.name == param_name {
-            return type_subst.get(&param.ty).copied();
-        }
-    }
-    None
+        .get_params(base_info.rir_params_start, base_info.rir_params_len)
+        .iter()
+        .find(|param| param.name == param_name)
+        .map(|param| param.ty)?;
+    sema.resolve_type_for_comptime_with_subst(type_sym, type_subst)
 }

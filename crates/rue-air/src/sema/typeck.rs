@@ -234,6 +234,38 @@ impl<'a> Sema<'a> {
         }
     }
 
+    /// Check whether a signature type symbol mentions any of the given comptime
+    /// type parameters, looking through composite syntax: `[T; N]`,
+    /// `ptr const T`, `ptr mut T`, and nestings thereof (RUE-172).
+    ///
+    /// Used when collecting a generic function's signature to decide whether a
+    /// parameter/return type must be deferred (as `Type::COMPTIME_TYPE`) until
+    /// specialization instead of resolved eagerly.
+    pub(crate) fn type_mentions_type_param(&self, type_sym: Spur, type_params: &[Spur]) -> bool {
+        if type_params.contains(&type_sym) {
+            return true;
+        }
+        self.type_name_mentions_type_param(self.interner.resolve(&type_sym), type_params)
+    }
+
+    fn type_name_mentions_type_param(&self, type_name: &str, type_params: &[Spur]) -> bool {
+        if let Some((element_type, _length)) = parse_array_type_syntax(type_name) {
+            return self.type_name_mentions_type_param(&element_type, type_params);
+        }
+        if let Some(pointee) = type_name
+            .strip_prefix("ptr const ")
+            .or_else(|| type_name.strip_prefix("ptr mut "))
+        {
+            return self.type_name_mentions_type_param(pointee, type_params);
+        }
+        // Leaf name: only a match against an already-interned symbol counts
+        // (type parameter names are interned by the parser).
+        match self.interner.get(type_name) {
+            Some(sym) => type_params.contains(&sym),
+            None => false,
+        }
+    }
+
     /// Get or create an array type for the given element type and length.
     pub(crate) fn get_or_create_array_type(
         &mut self,

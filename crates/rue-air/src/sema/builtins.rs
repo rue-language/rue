@@ -179,4 +179,21 @@ impl<'a> Sema<'a> {
             _ => false,
         }
     }
+
+    /// Check if a type carries a linear value when stored by value: a linear
+    /// struct itself, or an array whose element type carries one.
+    ///
+    /// Used by infectious linearity (RUE-40): a struct with such a field must
+    /// itself be linear, and destructuring a linear struct must not implicitly
+    /// drop such a field. Pointers don't own their pointee and don't carry.
+    pub(crate) fn type_carries_linear(&self, ty: Type) -> bool {
+        match ty.kind() {
+            TypeKind::Struct(_) => self.is_type_linear(ty),
+            TypeKind::Array(array_id) => {
+                let (element_type, _length) = self.type_pool.array_def(array_id);
+                self.type_carries_linear(element_type)
+            }
+            _ => false,
+        }
+    }
 }

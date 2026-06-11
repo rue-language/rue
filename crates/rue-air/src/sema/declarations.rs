@@ -311,8 +311,47 @@ impl<'a> Sema<'a> {
     /// body analysis.
     pub(crate) fn resolve_declarations(&mut self) -> CompileResult<()> {
         self.resolve_struct_fields()?;
+        self.propagate_field_linearity();
         self.resolve_remaining_declarations()?;
         Ok(())
+    }
+
+    /// Propagate linearity from fields to containing structs (infectious
+    /// linearity, spec 3.8:57 / RUE-40).
+    ///
+    /// A struct with a field whose type carries a linear value (directly,
+    /// through an array, or through a nested struct) must itself be linear:
+    /// if the container could be implicitly dropped, the linear field would
+    /// be silently dropped with it. Runs to a fixpoint so linearity flows
+    /// through arbitrarily deep nestings. The causing field is recorded in
+    /// [`Sema::infectious_linear`] for diagnostics.
+    pub(crate) fn propagate_field_linearity(&mut self) {
+        let struct_ids: Vec<StructId> = self.structs.values().copied().collect();
+        loop {
+            let mut changed = false;
+            for &struct_id in &struct_ids {
+                let def = self.type_pool.struct_def(struct_id);
+                if def.is_linear {
+                    continue;
+                }
+                let Some(cause) = def
+                    .fields
+                    .iter()
+                    .find(|field| self.type_carries_linear(field.ty))
+                else {
+                    continue;
+                };
+                let cause = (cause.name.clone(), self.format_type_name(cause.ty));
+                let mut def = def;
+                def.is_linear = true;
+                self.type_pool.update_struct_def(struct_id, def);
+                self.infectious_linear.insert(struct_id, cause);
+                changed = true;
+            }
+            if !changed {
+                break;
+            }
+        }
     }
 
     /// Resolve struct field types. Must run before @copy validation.
@@ -843,9 +882,11 @@ impl<'a> Sema<'a> {
                 if p.is_comptime && p.ty == type_sym {
                     // For comptime TYPE parameters (comptime T: type), the type is `type`
                     Ok(Type::COMPTIME_TYPE)
-                } else if type_param_names.contains(&p.ty) {
-                    // This parameter's type is a type parameter (e.g., `x: T` where T is comptime)
-                    // Use ComptimeType as a placeholder - actual type determined at specialization
+                } else if self.type_mentions_type_param(p.ty, &type_param_names) {
+                    // This parameter's type is a type parameter (`x: T`) or a
+                    // composite mentioning one (`a: [T; 3]`, `p: ptr const T`;
+                    // RUE-172). Use ComptimeType as a placeholder - the actual
+                    // type is determined at specialization.
                     Ok(Type::COMPTIME_TYPE)
                 } else {
                     // Regular params OR comptime VALUE params (comptime n: i32)
@@ -856,9 +897,10 @@ impl<'a> Sema<'a> {
         let param_comptime: Vec<bool> = params.iter().map(|p| p.is_comptime).collect();
 
         // For generic functions, we can't resolve the return type yet if it references
-        // a type parameter. For now, check if it matches any type parameter name.
-        let ret_type = if type_param_names.contains(&return_type_sym) {
-            // Return type is a type parameter - use placeholder
+        // a type parameter - either directly (`-> T`) or inside a composite
+        // (`-> [T; 3]`, RUE-172).
+        let ret_type = if self.type_mentions_type_param(return_type_sym, &type_param_names) {
+            // Return type references a type parameter - use placeholder
             Type::COMPTIME_TYPE
         } else {
             self.resolve_type(return_type_sym, span)?

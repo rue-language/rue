@@ -2351,6 +2351,56 @@ impl<'a> Sema<'a> {
         Ok(())
     }
 
+    /// Reject a field access that consumes (destructures) a linear struct
+    /// when the destructure would implicitly drop a *different* field that
+    /// itself carries a linear value (E0474, spec 3.8:58, RUE-40).
+    ///
+    /// Destructuring consumption (spec 3.8:33) extracts the accessed leaf
+    /// field and drops everything else in the value. That implicit drop must
+    /// not lose a linear value. Every struct level along the projection
+    /// chain is checked: at each level, all fields other than the projected
+    /// one are dropped.
+    fn reject_linear_destructure_dropping_linear_field(
+        &self,
+        trace: &PlaceTrace,
+        span: Span,
+    ) -> CompileResult<()> {
+        let mut current_ty = trace.base_type;
+        for proj in &trace.projections {
+            if let AirProjection::Field {
+                struct_id,
+                field_index,
+            } = proj.proj
+            {
+                let def = self.type_pool.struct_def(struct_id);
+                for (i, field) in def.fields.iter().enumerate() {
+                    if i as u32 != field_index && self.type_carries_linear(field.ty) {
+                        let accessed = def.fields[field_index as usize].name.clone();
+                        let err = CompileError::new(
+                            ErrorKind::LinearFieldDroppedByDestructure(Box::new(
+                                rue_error::LinearFieldDroppedByDestructureError {
+                                    struct_name: def.name.clone(),
+                                    accessed,
+                                    dropped: field.name.clone(),
+                                },
+                            )),
+                            span,
+                        )
+                        .with_help(
+                            "destructuring consumption extracts one field and drops \
+                             the rest; access the linear field instead and consume \
+                             its value, or consume the whole value by passing it to \
+                             a function",
+                        );
+                        return Err(self.attach_infectious_linear_note(err, current_ty));
+                    }
+                }
+            }
+            current_ty = proj.result_type;
+        }
+        Ok(())
+    }
+
     /// Reject moving a field out of a value whose struct type has a
     /// destructor (RUE-158, the spirit of Rust's E0509).
     ///
@@ -2501,6 +2551,7 @@ impl<'a> Sema<'a> {
                 }
             } else if is_linear {
                 // For linear types, field access consumes the entire struct
+                self.reject_linear_destructure_dropping_linear_field(&trace, span)?;
                 self.reject_move_out_of_byref_param(trace.root_var, ctx, span)?;
                 ctx.moved_vars
                     .entry(trace.root_var)
@@ -3575,13 +3626,16 @@ impl<'a> Sema<'a> {
                     continue;
                 }
                 let expected = if declared == Type::COMPTIME_TYPE {
-                    // Generic parameter like `x: T` - substitute T. If the type
-                    // parameter wasn't resolved, an error was already reported.
-                    match rir_param_type_syms
-                        .get(i)
-                        .and_then(|sym| type_subst.get(sym))
+                    // Generic parameter like `x: T` or a composite mentioning a
+                    // type parameter like `a: [T; 3]` (RUE-172) - substitute T.
+                    // If the type parameter wasn't resolved (e.g. it's a local
+                    // bound to a type value), the check happens after
+                    // specialization instead.
+                    let sym = rir_param_type_syms.get(i).copied();
+                    match sym
+                        .and_then(|sym| self.resolve_type_for_comptime_with_subst(sym, &type_subst))
                     {
-                        Some(&ty) => ty,
+                        Some(ty) => ty,
                         None => continue,
                     }
                 } else {
@@ -3603,12 +3657,13 @@ impl<'a> Sema<'a> {
                 }
             }
 
-            // Determine the actual return type by substituting type parameters
+            // Determine the actual return type by substituting type parameters.
+            // Handles bare type parameters (`-> T`), composites mentioning one
+            // (`-> [T; 3]`, RUE-172), and the literal `type` return (which
+            // resolves back to COMPTIME_TYPE and is comptime-evaluated below).
             let return_type = if base_return_type == Type::COMPTIME_TYPE {
-                // Return type is a type parameter - look it up in substitutions
-                *type_subst
-                    .get(&return_type_sym)
-                    .unwrap_or(&base_return_type)
+                self.resolve_type_for_comptime_with_subst(return_type_sym, &type_subst)
+                    .unwrap_or(base_return_type)
             } else {
                 base_return_type
             };

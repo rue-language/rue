@@ -730,13 +730,13 @@ impl<'a> ConstraintGenerator<'a> {
                             }
                             let expected = if *declared == InferType::Concrete(Type::COMPTIME_TYPE)
                             {
-                                // Generic parameter like `x: T` - substitute T
-                                match func
-                                    .param_type_syms
-                                    .get(i)
-                                    .and_then(|sym| type_subst.get(sym))
-                                {
-                                    Some(&ty) => InferType::Concrete(ty),
+                                // Generic parameter like `x: T`, or a composite
+                                // mentioning a type parameter like `a: [T; 3]`
+                                // (RUE-172) - substitute T
+                                match func.param_type_syms.get(i).and_then(|sym| {
+                                    self.resolve_type_sym_with_subst(*sym, &type_subst)
+                                }) {
+                                    Some(ty) => ty,
                                     // Unknown type parameter - checked in sema
                                     None => continue,
                                 }
@@ -750,15 +750,13 @@ impl<'a> ConstraintGenerator<'a> {
                             ));
                         }
 
-                        // Compute the actual return type by substituting type parameters
+                        // Compute the actual return type by substituting type
+                        // parameters - bare (`-> T`) or inside a composite
+                        // (`-> [T; 3]`, RUE-172).
                         let return_type =
                             if func.return_type == InferType::Concrete(Type::COMPTIME_TYPE) {
-                                // Return type is a type parameter - look it up in substitutions
-                                if let Some(&concrete_ty) = type_subst.get(&func.return_type_sym) {
-                                    InferType::Concrete(concrete_ty)
-                                } else {
-                                    func.return_type.clone()
-                                }
+                                self.resolve_type_sym_with_subst(func.return_type_sym, &type_subst)
+                                    .unwrap_or_else(|| func.return_type.clone())
                             } else {
                                 func.return_type.clone()
                             };
@@ -1664,6 +1662,67 @@ impl<'a> ConstraintGenerator<'a> {
             }
             _ => None,
         }
+    }
+
+    /// Resolve a signature type symbol with type-parameter substitution,
+    /// looking through composite syntax (RUE-172).
+    ///
+    /// Like [`Self::resolve_type_name`], but substitutes comptime type
+    /// parameters (e.g. `T` with `T=i32` resolves `[T; 3]` to `[i32; 3]`).
+    /// Returns `None` when a mentioned type parameter isn't in `subst` (the
+    /// check then happens in sema / after specialization).
+    fn resolve_type_sym_with_subst(
+        &self,
+        sym: Spur,
+        subst: &HashMap<Spur, Type>,
+    ) -> Option<InferType> {
+        if let Some(&ty) = subst.get(&sym) {
+            return Some(InferType::Concrete(ty));
+        }
+        self.resolve_type_name_with_subst(self.interner.resolve(&sym), subst)
+    }
+
+    fn resolve_type_name_with_subst(
+        &self,
+        name: &str,
+        subst: &HashMap<Spur, Type>,
+    ) -> Option<InferType> {
+        if let Some(name_spur) = self.interner.get(name) {
+            if let Some(&ty) = subst.get(&name_spur) {
+                return Some(InferType::Concrete(ty));
+            }
+        }
+
+        // Array syntax: [T; N] - recurse so substituted element types work.
+        if let Some((element_type_str, length)) = parse_array_type_syntax(name) {
+            let element_ty = self.resolve_type_name_with_subst(&element_type_str, subst)?;
+            return Some(InferType::Array {
+                element: Box::new(element_ty),
+                length,
+            });
+        }
+
+        // Pointer syntax: ptr mut T / ptr const T - recurse on the pointee.
+        if let Some((pointee_type_str, mutability)) = parse_pointer_type_syntax(name) {
+            let pointee_infer_ty = self.resolve_type_name_with_subst(&pointee_type_str, subst)?;
+            // Only concrete pointees can be interned during constraint generation
+            // (same limitation as resolve_type_name).
+            let pointee_ty = match pointee_infer_ty {
+                InferType::Concrete(ty) => ty,
+                _ => return None,
+            };
+            let ptr_ty = match mutability {
+                PtrMutability::Mut => {
+                    Type::new_ptr_mut(self.type_pool.intern_ptr_mut_from_type(pointee_ty))
+                }
+                PtrMutability::Const => {
+                    Type::new_ptr_const(self.type_pool.intern_ptr_const_from_type(pointee_ty))
+                }
+            };
+            return Some(InferType::Concrete(ptr_ty));
+        }
+
+        self.resolve_type_name(name)
     }
 
     fn resolve_type_name(&self, name: &str) -> Option<InferType> {

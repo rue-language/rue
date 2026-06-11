@@ -117,6 +117,11 @@ pub struct Sema<'a> {
     /// (E0456 field-move-out-of-destructor-type, E0457 @copy-with-destructor).
     /// Builtin destructors (e.g. String's) have no entry.
     pub(crate) destructor_spans: HashMap<StructId, Span>,
+    /// Structs that became linear via infectious linearity (RUE-40): not
+    /// declared `linear`, but containing a field that carries a linear value.
+    /// Maps the struct to the (field name, field type name) that caused it,
+    /// for diagnostics explaining why the container is linear.
+    pub(crate) infectious_linear: HashMap<StructId, (String, String)>,
 }
 
 impl<'a> Sema<'a> {
@@ -147,6 +152,7 @@ impl<'a> Sema<'a> {
             anon_struct_method_sigs: HashMap::new(),
             anon_struct_captured_values: HashMap::new(),
             destructor_spans: HashMap::new(),
+            infectious_linear: HashMap::new(),
         }
     }
 

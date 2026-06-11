@@ -104,6 +104,7 @@ impl<'a> GatherOutput<'a> {
             anon_struct_method_sigs: HashMap::new(),
             anon_struct_captured_values: HashMap::new(),
             destructor_spans: HashMap::new(),
+            infectious_linear: HashMap::new(),
         }
     }
 }

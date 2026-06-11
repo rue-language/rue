@@ -4402,15 +4402,34 @@ impl<'a> Sema<'a> {
             let state = ctx.moved_vars.get(symbol);
             if !state.is_some_and(|s| s.full_move_on_all_paths) {
                 let name = self.interner.resolve(&*symbol);
-                return Err(linear_not_consumed_error(
-                    name,
-                    local.span,
-                    state.and_then(|s| s.full_move),
-                ));
+                let err =
+                    linear_not_consumed_error(name, local.span, state.and_then(|s| s.full_move));
+                return Err(self.attach_infectious_linear_note(err, local.ty));
             }
         }
 
         Ok(())
+    }
+
+    /// If `ty` is a struct that is linear only because a field made it so
+    /// (infectious linearity, RUE-40), attach a note explaining the cause.
+    pub(crate) fn attach_infectious_linear_note(
+        &self,
+        err: rue_error::CompileError,
+        ty: Type,
+    ) -> rue_error::CompileError {
+        let Some(struct_id) = ty.as_struct() else {
+            return err;
+        };
+        match self.infectious_linear.get(&struct_id) {
+            Some((field_name, field_type)) => err.with_note(format!(
+                "'{}' is linear because field '{}' of type '{}' carries a linear value",
+                self.type_pool.struct_def(struct_id).name,
+                field_name,
+                field_type
+            )),
+            None => err,
+        }
     }
 
     /// Extract the root variable symbol from an expression, if it refers to a variable.

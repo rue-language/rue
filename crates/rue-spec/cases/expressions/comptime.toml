@@ -1242,3 +1242,108 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = "comptime parameter requires a compile-time known value"
+
+# =============================================================================
+# Type Parameters in Composite Signature Types (RUE-172)
+# =============================================================================
+
+[[case]]
+name = "type_param_in_array_param"
+spec = ["4.14:16"]
+description = "A comptime type parameter may be the element type of an array parameter"
+source = """
+fn first(comptime T: type, a: [T; 3]) -> T {
+    a[0]
+}
+fn main() -> i32 {
+    let xs = [10, 20, 30];
+    first(i32, xs)
+}
+"""
+exit_code = 10
+
+[[case]]
+name = "type_param_in_array_return"
+spec = ["4.14:16"]
+description = "A comptime type parameter may be the element type of an array return type"
+source = """
+fn pair(comptime T: type, x: T) -> [T; 2] {
+    [x, x]
+}
+fn main() -> i32 {
+    let p = pair(i32, 21);
+    p[0] + p[1]
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "type_param_in_nested_array"
+spec = ["4.14:16"]
+description = "A comptime type parameter substitutes through nested array composites"
+source = """
+fn corner(comptime T: type, grid: [[T; 2]; 2]) -> T {
+    grid[1][1]
+}
+fn main() -> i32 {
+    let g = [[1, 2], [3, 40]];
+    corner(i32, g)
+}
+"""
+exit_code = 40
+
+[[case]]
+name = "type_param_in_ptr_param_and_return"
+spec = ["4.14:16"]
+description = "A comptime type parameter may be a pointer pointee in param and return position"
+source = """
+fn id_ptr(comptime T: type, p: ptr const T) -> ptr const T { p }
+fn main() -> i32 { 0 }
+"""
+exit_code = 0
+
+[[case]]
+name = "type_param_array_two_specializations"
+spec = ["4.14:16"]
+description = "Composite signatures specialize independently per type argument"
+source = """
+fn first(comptime T: type, a: [T; 2]) -> T {
+    a[0]
+}
+fn main() -> i32 {
+    let xs = [11, 22];
+    let bs = [true, false];
+    let n = first(i32, xs);
+    let b = first(bool, bs);
+    if b { n } else { 0 }
+}
+"""
+exit_code = 11
+
+[[case]]
+name = "type_param_array_forwarded_to_nested_generic"
+spec = ["4.14:16"]
+description = "A composite signature works when the type parameter is forwarded from an outer generic"
+source = """
+fn first(comptime T: type, a: [T; 2]) -> T { a[0] }
+fn outer(comptime T: type, a: [T; 2]) -> T { first(T, a) }
+fn main() -> i32 {
+    let xs = [7, 8];
+    outer(i32, xs)
+}
+"""
+exit_code = 7
+
+[[case]]
+name = "type_param_array_element_mismatch_rejected"
+spec = ["4.14:16"]
+description = "Passing an array with the wrong element type for [T; N] is rejected"
+source = """
+fn first(comptime T: type, a: [T; 3]) -> T { a[0] }
+fn main() -> i32 {
+    let bs = [true, false, true];
+    first(i32, bs)
+}
+"""
+compile_fail = true
+error_contains = "type mismatch"
