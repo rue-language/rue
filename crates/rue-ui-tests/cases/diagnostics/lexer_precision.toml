@@ -28,11 +28,14 @@ description = """
 RUE-133: a directive whose name merely starts with "import" used to die in
 the LEXER with "unexpected character: @" because the fused @import token
 matched and failed its word-boundary check without backtracking. It must lex
-as an ordinary @-directive (At + Ident) — currently unknown directives are
-accepted silently, so this compiles, matching @other-style directives.
+as an ordinary @-directive (At + Ident). Unknown directives are now rejected
+post-parse (see diagnostics/directives.toml), so the proof that lexing
+succeeded is that the error NAMES the directive instead of being the lexer's
+"unexpected character: @".
 """
 source = """
 @important
 fn main() -> i32 { 5 }
 """
-exit_code = 5
+compile_fail = true
+error_contains = ["unknown directive '@important'"]

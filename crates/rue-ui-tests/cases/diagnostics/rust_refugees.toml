@@ -1,0 +1,110 @@
+# Targeted diagnostics for common Rust-isms (RUE-133 item 9).
+#
+# `5 as i64` and `0xFF` are both valid Rust but not valid Rue; they used to
+# die with generic parse errors ("expected semicolon after expression" /
+# "expected '.' or '[' or '*', found identifier"). They now get targeted
+# diagnostics that say what Rue offers instead.
+
+[section]
+id = "diagnostics.rust_refugees"
+name = "Rust-refugee diagnostics"
+description = "Targeted errors for `as` casts and 0x/0b/0o integer literals."
+
+[[case]]
+name = "as_cast_targeted_error"
+description = """
+RUE-133: `as` is an ordinary identifier in Rue, so `5 as i64` used to be a
+generic "expected semicolon after expression" error pointing at the `5`. It
+must name the missing operator and suggest the Rue alternatives.
+"""
+source = """
+fn main() -> i32 {
+    let x = 5 as i64;
+    0
+}
+"""
+compile_fail = true
+error_contains = ["Rue has no 'as' cast operator", "@intCast", "let x: i64 = value"]
+
+[[case]]
+name = "as_cast_in_expression_statement"
+source = """
+fn main() -> i32 {
+    5 as i64;
+    0
+}
+"""
+compile_fail = true
+error_contains = ["Rue has no 'as' cast operator"]
+
+[[case]]
+name = "as_still_valid_as_identifier"
+description = "`as` is NOT reserved; only `expr as ...` is special-cased."
+source = """
+fn main() -> i32 {
+    let as = 40;
+    as + 2
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "hex_literal_targeted_error"
+description = """
+RUE-133: `0xFF` used to lex as `0` + identifier `xFF` and die with
+"expected '.' or '[' or '*', found identifier". The lexer now rejects the
+whole literal, names the base, and suggests the decimal value.
+"""
+source = """
+fn main() -> i32 {
+    let x = 0xFF;
+    0
+}
+"""
+compile_fail = true
+error_contains = ["hexadecimal integer literals are not supported", "decimal only", "write `255` instead"]
+
+[[case]]
+name = "binary_literal_targeted_error"
+source = """
+fn main() -> i32 {
+    let x = 0b101;
+    0
+}
+"""
+compile_fail = true
+error_contains = ["binary integer literals are not supported", "write `5` instead"]
+
+[[case]]
+name = "octal_literal_targeted_error"
+source = """
+fn main() -> i32 {
+    let x = 0o17;
+    0
+}
+"""
+compile_fail = true
+error_contains = ["octal integer literals are not supported", "write `15` instead"]
+
+[[case]]
+name = "hex_literal_bad_digits_no_hint"
+description = "A prefix whose digits don't parse in that base still errors, just without the decimal suggestion."
+source = """
+fn main() -> i32 {
+    let x = 0b234;
+    0
+}
+"""
+compile_fail = true
+error_contains = ["binary integer literals are not supported"]
+
+[[case]]
+name = "decimal_literals_unaffected"
+source = """
+fn main() -> i32 {
+    let x = 0;
+    let y = 42;
+    x + y
+}
+"""
+exit_code = 42

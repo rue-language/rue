@@ -25,6 +25,15 @@ pub enum LexError {
         escape: char,
     },
     UnterminatedString,
+    /// A non-decimal integer literal prefix: `0x`/`0X` (hex), `0b`/`0B`
+    /// (binary), or `0o`/`0O` (octal). Rue integer literals are decimal only
+    /// (spec 2.1). Without this rule, `0xFF` lexes as `0` + identifier `xFF`
+    /// and dies later with a generic parse error; lexing the whole literal as
+    /// one error token lets the diagnostic name the base and suggest the
+    /// decimal value. Carries the base prefix character, lowercased. (RUE-133)
+    UnsupportedIntegerBase {
+        prefix: char,
+    },
 }
 
 /// Process a string literal starting from an opening quote.
@@ -116,6 +125,20 @@ fn process_string_from_quote(lex: &mut logos::Lexer<'_, LogosTokenKind>) -> Resu
     Ok(spur)
 }
 
+/// Callback for the hex/binary/octal literal rule on [`LogosTokenKind::Int`]:
+/// always rejects, carrying the (lowercased) base prefix character so the
+/// diagnostic can name the base. See the comment on the rule. (RUE-133)
+fn reject_non_decimal_base(lex: &mut logos::Lexer<'_, LogosTokenKind>) -> Result<u64, LexError> {
+    let prefix = lex
+        .slice()
+        .chars()
+        .nth(1)
+        .expect("regex guarantees a prefix char");
+    Err(LexError::UnsupportedIntegerBase {
+        prefix: prefix.to_ascii_lowercase(),
+    })
+}
+
 /// Token kinds in the Rue language, using logos derive macro.
 #[derive(Logos, Debug, Clone, PartialEq, Eq)]
 #[logos(error = LexError)]
@@ -204,7 +227,16 @@ pub enum LogosTokenKind {
     Underscore,
 
     // Integer literals
+    //
+    // The second rule rejects hex/binary/octal prefixes (`0xFF`, `0b101`,
+    // `0o7`) as a unit: Rue integer literals are decimal only (spec 2.1),
+    // and without it the input would lex as `0` + identifier and surface as
+    // a confusing generic parse error. Matching the whole literal here lets
+    // the diagnostic name the base and suggest the decimal value. This can
+    // never reject a valid program: no grammar production allows an integer
+    // literal directly abutting an identifier character. (RUE-133)
     #[regex(r"[0-9]+", |lex| lex.slice().parse::<u64>().map_err(|_| LexError::InvalidInteger))]
+    #[regex(r"0[xXbBoO][0-9a-zA-Z_]*", reject_non_decimal_base)]
     Int(u64),
 
     // String literals - match opening quote and process content manually
@@ -544,6 +576,31 @@ impl<'a> LogosLexer<'a> {
                                         span.end as u32,
                                     ),
                                 ),
+                                LexError::UnsupportedIntegerBase { prefix } => {
+                                    let (base, radix) = match prefix {
+                                        'x' => ("hexadecimal", 16),
+                                        'b' => ("binary", 2),
+                                        _ => ("octal", 8),
+                                    };
+                                    // Suggest the decimal spelling when the
+                                    // digits actually parse in the named base
+                                    // (they may not, e.g. `0b2` or `0x`).
+                                    let digits = &slice[2..];
+                                    let hint = match u64::from_str_radix(digits, radix) {
+                                        Ok(value) if !digits.is_empty() => {
+                                            format!("; write `{}` instead", value).into()
+                                        }
+                                        _ => std::borrow::Cow::Borrowed(""),
+                                    };
+                                    (
+                                        ErrorKind::UnsupportedIntegerBase { base, hint },
+                                        Span::with_file(
+                                            self.file_id,
+                                            span.start as u32,
+                                            span.end as u32,
+                                        ),
+                                    )
+                                }
                             };
                             return Err(CompileError::new(kind, rue_span));
                         }
@@ -905,6 +962,51 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(matches!(err.kind, ErrorKind::InvalidInteger));
+    }
+
+    #[test]
+    fn test_logos_non_decimal_bases_rejected() {
+        // RUE-133: 0x/0b/0o literals are not Rue syntax (integer literals are
+        // decimal only). They must be rejected as a unit with a targeted
+        // diagnostic, not split into `0` + identifier.
+        for (src, base, hint) in [
+            ("0xFF", "hexadecimal", "; write `255` instead"),
+            ("0X1f", "hexadecimal", "; write `31` instead"),
+            ("0b101", "binary", "; write `5` instead"),
+            ("0o17", "octal", "; write `15` instead"),
+        ] {
+            let err = LogosLexer::new(src).tokenize().unwrap_err();
+            match &err.kind {
+                ErrorKind::UnsupportedIntegerBase { base: b, hint: h } => {
+                    assert_eq!(*b, base, "base for {src}");
+                    assert_eq!(h.as_ref(), hint, "hint for {src}");
+                }
+                other => panic!("expected UnsupportedIntegerBase for {src}, got {other:?}"),
+            }
+            // The error span must cover the whole literal.
+            let span = err.span().expect("lexer errors carry a span");
+            assert_eq!(span.start, 0, "span start for {src}");
+            assert_eq!(span.end as usize, src.len(), "span end for {src}");
+        }
+
+        // Digits that don't parse in the named base get no decimal hint.
+        let err = LogosLexer::new("0b2").tokenize().unwrap_err();
+        match &err.kind {
+            ErrorKind::UnsupportedIntegerBase { base, hint } => {
+                assert_eq!(*base, "binary");
+                assert_eq!(hint.as_ref(), "");
+            }
+            other => panic!("expected UnsupportedIntegerBase, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_logos_decimal_zero_unaffected() {
+        // Plain `0` and decimal literals still lex normally.
+        let (tokens, _) = LogosLexer::new("0 10 0123").tokenize().unwrap();
+        assert!(matches!(tokens[0].kind, TokenKind::Int(0)));
+        assert!(matches!(tokens[1].kind, TokenKind::Int(10)));
+        assert!(matches!(tokens[2].kind, TokenKind::Int(123)));
     }
 
     #[test]

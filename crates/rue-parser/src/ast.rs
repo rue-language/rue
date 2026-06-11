@@ -239,6 +239,12 @@ pub struct Function {
 }
 
 /// Parameter passing mode.
+///
+/// A parameter takes at most ONE mode keyword; the parser rejects repeated
+/// or conflicting modifiers (e.g. `comptime comptime T` or `comptime inout
+/// x`) with a targeted error. `ParamMode` is the single AST representation
+/// of the `comptime` modifier — there is deliberately no separate
+/// `is_comptime` flag (RUE-133 removed that dead duality).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParamMode {
     /// Normal pass-by-value parameter
@@ -247,7 +253,8 @@ pub enum ParamMode {
     Inout,
     /// Borrow parameter - immutable borrow without ownership transfer
     Borrow,
-    /// Comptime parameter - evaluated at compile time (used for type parameters)
+    /// Comptime parameter - evaluated at compile time (used for type
+    /// parameters like `comptime T: type`)
     Comptime,
 }
 
@@ -257,12 +264,22 @@ impl Default for ParamMode {
     }
 }
 
+impl ParamMode {
+    /// The source keyword for this mode (empty for `Normal`).
+    pub fn keyword(self) -> &'static str {
+        match self {
+            ParamMode::Normal => "",
+            ParamMode::Inout => "inout",
+            ParamMode::Borrow => "borrow",
+            ParamMode::Comptime => "comptime",
+        }
+    }
+}
+
 /// A function parameter.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Param {
-    /// Whether this parameter is evaluated at compile time
-    pub is_comptime: bool,
-    /// Parameter passing mode (normal or inout)
+    /// Parameter passing mode (normal, inout, borrow, or comptime)
     pub mode: ParamMode,
     /// Parameter name
     pub name: Ident,
