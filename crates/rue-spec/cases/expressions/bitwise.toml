@@ -139,6 +139,37 @@ fn main() -> i32 {
 """
 exit_code = 4
 
+# Pin the full Rust-style ladder (4.3a:13) via runtime results:
+# arithmetic binds tighter than shifts, shifts tighter than &, bitwise
+# tighter than comparisons.
+[[case]]
+name = "precedence_ladder_{variant}"
+spec = ["4.3a:13"]
+source = "fn main() -> i32 { {expr} }"
+params = [
+  { variant = "shift_vs_add", expr = "1 << 2 + 1", exit_code = 8 },       # 1 << (2 + 1)
+  { variant = "add_vs_shift", expr = "1 + 2 << 1", exit_code = 6 },       # (1 + 2) << 1
+  { variant = "shift_vs_mul", expr = "2 * 3 << 1", exit_code = 12 },      # (2 * 3) << 1
+  { variant = "shift_vs_mod", expr = "1 << 4 % 3", exit_code = 2 },       # 1 << (4 % 3)
+  { variant = "shr_vs_add", expr = "16 >> 1 + 1", exit_code = 4 },        # 16 >> (1 + 1)
+]
+
+[[case]]
+name = "precedence_ladder_cmp_{variant}"
+spec = ["4.3a:13"]
+source = """
+fn main() -> i32 {
+    if {expr} { 1 } else { 0 }
+}
+"""
+exit_code = 1
+params = [
+  { variant = "shift_vs_lt", expr = "1 << 2 < 10" },    # (1 << 2) < 10
+  { variant = "and_vs_eq", expr = "6 & 2 == 2" },       # (6 & 2) == 2
+  { variant = "xor_vs_eq", expr = "5 ^ 1 == 4" },       # (5 ^ 1) == 4
+  { variant = "or_vs_eq", expr = "4 | 2 == 6" },        # (4 | 2) == 6
+]
+
 [[case]]
 name = "precedence_parentheses"
 spec = ["4.3a:14"]

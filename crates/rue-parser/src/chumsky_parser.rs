@@ -565,19 +565,25 @@ fn make_unary(op: UnaryOp, operand: Expr, op_span: SimpleSpan) -> Expr {
 ///
 /// Example: `1 + 2 * 3` parses as `1 + (2 * 3)` because
 /// MULTIPLICATIVE (9) > ADDITIVE (8).
+///
+/// This ladder deliberately matches Rust's operator precedence
+/// (spec rule 4.3a:13): shifts bind looser than `+`/`-` but tighter
+/// than `&`, and the bitwise operators all bind tighter than
+/// comparisons. So `a << b + c` is `a << (b + c)` and `a & b == c`
+/// is `(a & b) == c`.
 mod precedence {
     /// Logical OR: `||`
     pub const LOGICAL_OR: u16 = 1;
     /// Logical AND: `&&`
     pub const LOGICAL_AND: u16 = 2;
-    /// Bitwise OR: `|`
-    pub const BITWISE_OR: u16 = 3;
-    /// Bitwise XOR: `^`
-    pub const BITWISE_XOR: u16 = 4;
-    /// Bitwise AND: `&`
-    pub const BITWISE_AND: u16 = 5;
     /// Comparison: `==`, `!=`, `<`, `>`, `<=`, `>=`
-    pub const COMPARISON: u16 = 6;
+    pub const COMPARISON: u16 = 3;
+    /// Bitwise OR: `|`
+    pub const BITWISE_OR: u16 = 4;
+    /// Bitwise XOR: `^`
+    pub const BITWISE_XOR: u16 = 5;
+    /// Bitwise AND: `&`
+    pub const BITWISE_AND: u16 = 6;
     /// Shift: `<<`, `>>`
     pub const SHIFT: u16 = 7;
     /// Additive: `+`, `-`

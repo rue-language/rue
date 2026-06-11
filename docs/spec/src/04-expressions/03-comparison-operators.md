@@ -90,7 +90,7 @@ fn main() -> i32 {
 
 {{ rule(id="4.3:8", cat="normative") }}
 
-Comparison operators have lower precedence than arithmetic operators.
+Comparison operators have lower precedence than arithmetic, shift, and bitwise operators, and higher precedence than the logical operators `&&` and `||`. (The complete precedence ladder, which matches Rust's, is given in rule 4.3a:13.)
 
 {{ rule(id="4.3:9") }}
 
