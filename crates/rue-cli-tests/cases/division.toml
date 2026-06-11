@@ -113,3 +113,134 @@ fn main() -> i32 {
 }
 """ }]
 exit_code = 14
+
+# =============================================================================
+# Signed MIN / -1 overflow (RUE-30)
+# =============================================================================
+# The quotient -MIN is unrepresentable, so MIN / -1 and MIN % -1 must panic
+# with "integer overflow" (exit 101) at every signed width. Before the fix,
+# i32/i64 raised SIGFPE (exit 136, x86 #DE) and i8/i16 silently produced the
+# out-of-range quotient +2^(w-1); aarch64 SDIV silently wrapped.
+
+[[case]]
+name = "i8_min_div_neg1_overflows"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: i8 = -128;
+    let b: i8 = -1;
+    let c: i8 = a / b;
+    @intCast(c)
+}
+""" }]
+exit_code = 101
+runtime_error_contains = ["integer overflow"]
+
+[[case]]
+name = "i16_min_div_neg1_overflows"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: i16 = -32768;
+    let b: i16 = -1;
+    let c: i16 = a / b;
+    @intCast(c)
+}
+""" }]
+exit_code = 101
+runtime_error_contains = ["integer overflow"]
+
+[[case]]
+name = "i32_min_div_neg1_overflows"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: i32 = -2147483648;
+    let b: i32 = -1;
+    a / b
+}
+""" }]
+exit_code = 101
+runtime_error_contains = ["integer overflow"]
+
+[[case]]
+name = "i64_min_div_neg1_overflows"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: i64 = -9223372036854775808;
+    let b: i64 = -1;
+    let c: i64 = a / b;
+    @intCast(c)
+}
+""" }]
+exit_code = 101
+runtime_error_contains = ["integer overflow"]
+
+[[case]]
+name = "i32_min_mod_neg1_overflows"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: i32 = -2147483648;
+    let b: i32 = -1;
+    a % b
+}
+""" }]
+exit_code = 101
+runtime_error_contains = ["integer overflow"]
+
+[[case]]
+name = "i64_min_mod_neg1_overflows"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: i64 = -9223372036854775808;
+    let b: i64 = -1;
+    let c: i64 = a % b;
+    @intCast(c)
+}
+""" }]
+exit_code = 101
+runtime_error_contains = ["integer overflow"]
+
+# Near-miss controls: representable quotients around MIN / -1 must not trap.
+[[case]]
+name = "i32_min_div_one_ok"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: i32 = -2147483648;
+    let b: i32 = 1;
+    if a / b == -2147483648 { 42 } else { 7 }
+}
+""" }]
+exit_code = 42
+
+[[case]]
+name = "i32_min_plus_one_div_neg1_ok"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: i32 = -2147483647;
+    let b: i32 = -1;
+    if a / b == 2147483647 { 42 } else { 7 }
+}
+""" }]
+exit_code = 42
+
+[[case]]
+name = "i8_min_mod_neg1_overflows"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: i8 = -128;
+    let b: i8 = -1;
+    let c: i8 = a % b;
+    @intCast(c)
+}
+""" }]
+exit_code = 101
+runtime_error_contains = ["integer overflow"]
+
+[[case]]
+name = "i32_neg_mod_neg1_ok"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: i32 = -2147483647;
+    let b: i32 = -1;
+    if a % b == 0 { 42 } else { 7 }
+}
+""" }]
+exit_code = 42

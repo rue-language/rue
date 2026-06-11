@@ -242,6 +242,58 @@ impl<'a> CfgLower<'a> {
         }
     }
 
+    /// Emit the signed-division overflow guard: `MIN / -1` (and `MIN % -1`)
+    /// overflows because the quotient `-MIN` is unrepresentable. The hardware
+    /// gives no usable trap: 32/64-bit IDIV raises #DE (SIGFPE, exit 136) and
+    /// sub-word divisions — performed as 32-bit IDIV on sign-extended
+    /// operands — silently produce the out-of-range quotient +2^(w-1). Check
+    /// `dividend == MIN && divisor == -1` explicitly and call the overflow
+    /// panic handler (RUE-30, spec 8.1:3).
+    ///
+    /// For 32-bit-and-narrower types the compares run at 32-bit width:
+    /// sub-word values are kept sign-extended in the low 32 bits of their
+    /// registers, so comparing against the type's MIN there is exact.
+    fn emit_signed_div_overflow_check(&mut self, ty: Type, lhs_vreg: VReg, rhs_vreg: VReg) {
+        let ok_label = self.new_label();
+        if ty.is_64_bit() {
+            // divisor == -1?
+            self.mir.push(X86Inst::Cmp64RI {
+                src: Operand::Virtual(rhs_vreg),
+                imm: -1,
+            });
+            self.mir.push(X86Inst::Jnz { label: ok_label });
+            // dividend == i64::MIN? (doesn't fit imm32; materialize it)
+            let min_vreg = self.mir.alloc_vreg();
+            self.mir.push(X86Inst::MovRI64 {
+                dst: Operand::Virtual(min_vreg),
+                imm: i64::MIN,
+            });
+            self.mir.push(X86Inst::Cmp64RR {
+                src1: Operand::Virtual(lhs_vreg),
+                src2: Operand::Virtual(min_vreg),
+            });
+        } else {
+            let (min_val, _) = Self::type_range(ty);
+            // divisor == -1?
+            self.mir.push(X86Inst::CmpRI {
+                src: Operand::Virtual(rhs_vreg),
+                imm: -1,
+            });
+            self.mir.push(X86Inst::Jnz { label: ok_label });
+            // dividend == MIN?
+            self.mir.push(X86Inst::CmpRI {
+                src: Operand::Virtual(lhs_vreg),
+                imm: min_val as i32,
+            });
+        }
+        self.mir.push(X86Inst::Jnz { label: ok_label });
+
+        // Overflow - call panic handler
+        let symbol_id = self.intern_symbol("__rue_overflow");
+        self.mir.push(X86Inst::CallRel { symbol_id });
+        self.mir.push(X86Inst::Label { id: ok_label });
+    }
+
     /// The AND mask (bit_width - 1) applied to a shift count, since the count
     /// is taken modulo the operand's bit width (spec 4.3a:10).
     fn shift_count_mask(ty: Type) -> u64 {
@@ -917,6 +969,37 @@ impl<'a> CfgLower<'a> {
                     let symbol_id = self.intern_symbol("__rue_overflow");
                     self.mir.push(X86Inst::CallRel { symbol_id });
                     self.mir.push(X86Inst::Label { id: ok_label });
+                } else if matches!(ty.kind(), TypeKind::U32 | TypeKind::U64) {
+                    // Unsigned 32/64-bit: two-operand IMUL's OF/CF report
+                    // *signed* overflow, which both misses real unsigned
+                    // overflows and falsely fires on valid products with the
+                    // high bit set (RUE-148). Use the one-operand MUL
+                    // ((R/E)DX:(R/E)AX = (R/E)AX * src), whose CF/OF are set
+                    // exactly when the high half is non-zero — i.e. on
+                    // unsigned overflow — matching emit_overflow_check's JAE.
+                    let rhs_vreg = self.get_vreg(*rhs);
+
+                    self.mir.push(X86Inst::MovRR {
+                        dst: Operand::Physical(Reg::Rax),
+                        src: Operand::Virtual(lhs_vreg),
+                    });
+                    self.mir.push(if ty.is_64_bit() {
+                        X86Inst::Mul64R {
+                            src: Operand::Virtual(rhs_vreg),
+                        }
+                    } else {
+                        X86Inst::MulR {
+                            src: Operand::Virtual(rhs_vreg),
+                        }
+                    });
+                    self.mir.push(X86Inst::MovRR {
+                        dst: Operand::Virtual(vreg),
+                        src: Operand::Physical(Reg::Rax),
+                    });
+
+                    // MOV does not modify flags, so MUL's CF still drives the
+                    // JAE check here.
+                    self.emit_overflow_check(ty, vreg);
                 } else {
                     // Fall back to IMUL for non-power-of-2 constants
                     let rhs_vreg = self.get_vreg(*rhs);
@@ -939,9 +1022,13 @@ impl<'a> CfgLower<'a> {
                         });
                     }
 
-                    // Overflow check - use appropriate flag based on signedness
-                    // Note: IMUL sets both OF and CF to the same value, so this works
-                    // for both signed and unsigned multiplication
+                    // Overflow check. IMUL's OF/CF mean *signed* overflow,
+                    // which is correct for i32/i64. Sub-word types (i8/i16/
+                    // u8/u16) ignore the flags entirely: the 32-bit IMUL of
+                    // (sign- or zero-extended) sub-word operands yields the
+                    // exact product mod 2^32, and emit_overflow_check
+                    // range-checks that value against the type's bounds.
+                    // (u32/u64 take the one-operand MUL branch above.)
                     self.emit_overflow_check(ty, vreg);
                 }
             }
@@ -974,6 +1061,11 @@ impl<'a> CfgLower<'a> {
                 let symbol_id = self.intern_symbol("__rue_div_by_zero");
                 self.mir.push(X86Inst::CallRel { symbol_id });
                 self.mir.push(X86Inst::Label { id: ok_label });
+
+                // Signed MIN / -1 overflows; trap it explicitly (RUE-30).
+                if ty.is_signed() {
+                    self.emit_signed_div_overflow_check(ty, lhs_vreg, rhs_vreg);
+                }
 
                 self.mir.push(X86Inst::MovRR {
                     dst: Operand::Physical(Reg::Rax),
@@ -1015,6 +1107,12 @@ impl<'a> CfgLower<'a> {
                 let symbol_id = self.intern_symbol("__rue_div_by_zero");
                 self.mir.push(X86Inst::CallRel { symbol_id });
                 self.mir.push(X86Inst::Label { id: ok_label });
+
+                // Signed MIN % -1 overflows like MIN / -1 (the implied
+                // quotient -MIN is unrepresentable); trap it (RUE-30).
+                if ty.is_signed() {
+                    self.emit_signed_div_overflow_check(ty, lhs_vreg, rhs_vreg);
+                }
 
                 self.mir.push(X86Inst::MovRR {
                     dst: Operand::Physical(Reg::Rax),
@@ -2772,7 +2870,11 @@ impl<'a> CfgLower<'a> {
     ///
     /// For 32/64-bit types, we can use the CPU flags directly:
     /// - Signed (i32, i64): Use OF (overflow flag) via JNO
-    /// - Unsigned (u32, u64): Use CF (carry flag) via JAE (= JNC)
+    /// - Unsigned (u32, u64): Use CF (carry flag) via JAE (= JNC). The
+    ///   preceding op must set CF on *unsigned* overflow: ADD/SUB do, and
+    ///   multiplication must use the one-operand MUL (CF = high half
+    ///   non-zero), NOT two-operand IMUL whose CF means signed overflow
+    ///   (RUE-148).
     ///
     /// For sub-word types (8/16-bit), the arithmetic is done in 32/64-bit registers,
     /// so we need to check if the result fits in the original type's range.

@@ -21,6 +21,10 @@ The following operations **MAY** overflow:
 - Subtraction (`-`)
 - Multiplication (`*`)
 - Negation (`-` unary)
+- Division (`/`) and remainder (`%`), exactly when the dividend is the
+  signed type's minimum value and the divisor is `-1` (the quotient
+  `-MIN` is not representable; the remainder operation overflows in the
+  same case even though its mathematical result would be `0`)
 
 {{ rule(id="8.1:4") }}
 

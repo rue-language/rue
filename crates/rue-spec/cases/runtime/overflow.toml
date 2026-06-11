@@ -88,3 +88,58 @@ fn main() -> i32 {
 }
 """
 exit_code = 101
+
+# Division and remainder overflow exactly for MIN / -1 (RUE-30): the quotient
+# -MIN is unrepresentable. Hardware gives no clean trap (x86 IDIV raises
+# SIGFPE, ARM SDIV silently wraps), so the compiler must emit an explicit
+# guard.
+
+[[case]]
+name = "overflow_division_min_by_neg1"
+spec = ["8.1:2", "8.1:3"]
+source = """
+fn main() -> i32 {
+    let x: i32 = -2147483648;
+    let y: i32 = -1;
+    x / y
+}
+"""
+exit_code = 101
+
+[[case]]
+name = "overflow_remainder_min_by_neg1"
+spec = ["8.1:2", "8.1:3"]
+source = """
+fn main() -> i32 {
+    let x: i32 = -2147483648;
+    let y: i32 = -1;
+    x % y
+}
+"""
+exit_code = 101
+
+# Near-miss controls: MIN / 1 and (MIN + 1) / -1 are representable and must
+# NOT trap.
+[[case]]
+name = "division_min_by_one_no_overflow"
+spec = ["8.1:3"]
+source = """
+fn main() -> i32 {
+    let x: i32 = -2147483648;
+    let y: i32 = 1;
+    if x / y == -2147483648 { 42 } else { 7 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "division_min_plus_one_by_neg1_no_overflow"
+spec = ["8.1:3"]
+source = """
+fn main() -> i32 {
+    let x: i32 = -2147483647;
+    let y: i32 = -1;
+    if x / y == 2147483647 { 42 } else { 7 }
+}
+"""
+exit_code = 42

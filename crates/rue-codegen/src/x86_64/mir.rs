@@ -307,6 +307,16 @@ pub enum X86Inst {
     /// Quotient in RAX, remainder in RDX.
     Div64R { src: Operand },
 
+    /// `mul src` - Unsigned multiply EAX by src (32-bit).
+    /// Product in EDX:EAX; CF and OF are set iff EDX (the high half) is
+    /// non-zero, i.e. exactly on unsigned overflow (RUE-148).
+    MulR { src: Operand },
+
+    /// `mul src` - Unsigned multiply RAX by src (64-bit).
+    /// Product in RDX:RAX; CF and OF are set iff RDX (the high half) is
+    /// non-zero, i.e. exactly on unsigned overflow (RUE-148).
+    Mul64R { src: Operand },
+
     // Comparison and control flow
     /// `cmp src1, src2` - Compare 32-bit (subtract and set flags, discard result).
     CmpRR { src1: Operand, src2: Operand },
@@ -492,11 +502,14 @@ impl X86Inst {
     /// virtual registers to physical registers that would be clobbered.
     pub fn clobbers(&self) -> &'static [Reg] {
         match self {
-            // Division clobbers RAX (quotient) and RDX (remainder)
+            // Division clobbers RAX (quotient) and RDX (remainder); one-operand
+            // MUL clobbers RAX (low half) and RDX (high half)
             X86Inst::IdivR { .. }
             | X86Inst::DivR { .. }
             | X86Inst::Idiv64R { .. }
-            | X86Inst::Div64R { .. } => &[Reg::Rax, Reg::Rdx],
+            | X86Inst::Div64R { .. }
+            | X86Inst::MulR { .. }
+            | X86Inst::Mul64R { .. } => &[Reg::Rax, Reg::Rdx],
             // CDQ/CQO sign-extends (E/R)AX into (E/R)DX, clobbering RDX
             X86Inst::Cdq | X86Inst::Cqo => &[Reg::Rdx],
             // Function calls clobber all caller-saved registers per System V AMD64 ABI
@@ -575,6 +588,8 @@ impl fmt::Display for X86Inst {
             X86Inst::DivR { src } => write!(f, "div {}", src),
             X86Inst::Idiv64R { src } => write!(f, "idivq {}", src),
             X86Inst::Div64R { src } => write!(f, "divq {}", src),
+            X86Inst::MulR { src } => write!(f, "mul {}", src),
+            X86Inst::Mul64R { src } => write!(f, "mulq {}", src),
             X86Inst::CmpRR { src1, src2 } => write!(f, "cmp {}, {}", src1, src2),
             X86Inst::Cmp64RR { src1, src2 } => write!(f, "cmpq {}, {}", src1, src2),
             X86Inst::CmpRI { src, imm } => write!(f, "cmp {}, {}", src, imm),
