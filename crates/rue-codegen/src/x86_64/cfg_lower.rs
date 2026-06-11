@@ -1717,8 +1717,6 @@ impl<'a> CfgLower<'a> {
                                 self.mir.push(X86Inst::Lea {
                                     dst: Operand::Virtual(addr_vreg),
                                     base: Reg::Rbp,
-                                    index: None,
-                                    scale: 1,
                                     disp: offset,
                                 });
                             }
@@ -1739,8 +1737,6 @@ impl<'a> CfgLower<'a> {
                                     self.mir.push(X86Inst::Lea {
                                         dst: Operand::Virtual(addr_vreg),
                                         base: Reg::Rbp,
-                                        index: None,
-                                        scale: 1,
                                         disp: offset,
                                     });
                                 }
@@ -2340,8 +2336,6 @@ impl<'a> CfgLower<'a> {
                         self.mir.push(X86Inst::Lea {
                             dst: Operand::Virtual(result_vreg),
                             base: Reg::Rbp,
-                            index: None,
-                            scale: 1,
                             disp: offset,
                         });
                         self.value_map.insert(value, result_vreg);
@@ -2463,8 +2457,6 @@ impl<'a> CfgLower<'a> {
                     self.mir.push(X86Inst::Lea {
                         dst: Operand::Virtual(base_vreg),
                         base: Reg::Rbp,
-                        index: None,
-                        scale: 1,
                         disp: base_offset,
                     });
 
@@ -2497,8 +2489,6 @@ impl<'a> CfgLower<'a> {
                     self.mir.push(X86Inst::Lea {
                         dst: Operand::Virtual(addr_vreg),
                         base: Reg::Rbp,
-                        index: None,
-                        scale: 1,
                         disp: base_offset,
                     });
                     self.mir.push(X86Inst::SubRR64 {
@@ -3668,8 +3658,6 @@ impl<'a> CfgLower<'a> {
                     self.mir.push(X86Inst::Lea {
                         dst: Operand::Virtual(addr_vreg),
                         base: Reg::Rbp,
-                        index: None,
-                        scale: 1,
                         disp: base_offset,
                     });
                     self.mir.push(X86Inst::SubRR64 {
@@ -3741,8 +3729,6 @@ impl<'a> CfgLower<'a> {
                         self.mir.push(X86Inst::Lea {
                             dst: Operand::Virtual(addr_vreg),
                             base: Reg::Rbp,
-                            index: None,
-                            scale: 1,
                             disp: base_offset,
                         });
                         self.mir.push(X86Inst::SubRR64 {
@@ -3857,8 +3843,6 @@ impl<'a> CfgLower<'a> {
                     self.mir.push(X86Inst::Lea {
                         dst: Operand::Virtual(addr_vreg),
                         base: Reg::Rbp,
-                        index: None,
-                        scale: 1,
                         disp: base_offset,
                     });
                     self.mir.push(X86Inst::SubRR64 {
@@ -3914,8 +3898,6 @@ impl<'a> CfgLower<'a> {
                         self.mir.push(X86Inst::Lea {
                             dst: Operand::Virtual(addr_vreg),
                             base: Reg::Rbp,
-                            index: None,
-                            scale: 1,
                             disp: base_offset,
                         });
                         self.mir.push(X86Inst::SubRR64 {
@@ -4033,8 +4015,6 @@ impl<'a> CfgLower<'a> {
                 self.mir.push(X86Inst::Lea {
                     dst: Operand::Virtual(dst),
                     base: Reg::Rbp,
-                    index: None,
-                    scale: 1,
                     disp: base_offset,
                 });
 
@@ -4080,8 +4060,6 @@ impl<'a> CfgLower<'a> {
                     self.mir.push(X86Inst::Lea {
                         dst: Operand::Virtual(dst),
                         base: Reg::Rbp,
-                        index: None,
-                        scale: 1,
                         disp: base_offset,
                     });
 

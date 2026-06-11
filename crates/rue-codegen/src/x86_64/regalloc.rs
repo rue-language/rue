@@ -19,8 +19,7 @@ use crate::alloc_dst;
 use crate::index_map::IndexMap;
 use crate::regalloc::{
     Allocation, CoalesceCandidate, CoalesceResult, CostModel, LoopInfo, RegAllocDebugInfo,
-    SplitInfo, SplitReason, coalesce, find_loop_split_points, linear_scan_with_cost_model,
-    linear_scan_with_cost_model_and_debug,
+    coalesce, linear_scan_with_cost_model, linear_scan_with_cost_model_and_debug,
 };
 
 /// Available registers for allocation.
@@ -53,9 +52,6 @@ pub struct RegAlloc {
     liveness: LivenessInfo,
     /// Loop information for each instruction.
     loop_info: LoopInfo,
-    /// Split points detected at loop boundaries.
-    #[allow(dead_code)]
-    split_info: SplitInfo,
     /// Result of register coalescing.
     coalesce_result: CoalesceResult,
     /// Number of spill slots used.
@@ -77,9 +73,6 @@ impl RegAlloc {
 
         // Compute loop information for loop-aware allocation
         let loop_info = liveness::analyze_loops(&mir);
-
-        // Find split points at loop boundaries
-        let split_info = find_loop_split_points(&liveness, &loop_info, ALLOCATABLE_REGS.len());
 
         // Collect coalescing candidates: MovRR where both src and dst are virtual
         let candidates: Vec<CoalesceCandidate> = mir
@@ -114,7 +107,6 @@ impl RegAlloc {
             allocation,
             liveness,
             loop_info,
-            split_info,
             coalesce_result,
             num_spills: 0,
             used_callee_saved: Vec::new(),
@@ -658,16 +650,10 @@ impl RegAlloc {
                 mir.push(X86Inst::Push { src: src_op });
             }
 
-            X86Inst::Lea {
-                dst,
-                base,
-                index,
-                scale,
-                disp,
-            } => {
+            X86Inst::Lea { dst, base, disp } => {
                 alloc_dst!(self.get_allocation(dst), dst, Reg::Rax =>
                     emit |dst_op| {
-                        mir.push(X86Inst::Lea { dst: dst_op, base, index, scale, disp });
+                        mir.push(X86Inst::Lea { dst: dst_op, base, disp });
                     },
                     store |offset| {
                         mir.push(X86Inst::MovMR {
