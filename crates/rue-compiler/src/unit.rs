@@ -193,151 +193,26 @@ impl<'src> CompilationUnit<'src> {
         files: &[ParsedFileData],
         interner: &ThreadedRodeo,
     ) -> MultiErrorResult<Ast> {
-        use crate::{Item, Span};
-
-        /// Information about a symbol definition for duplicate detection.
-        struct SymbolDef {
-            span: Span,
-            file_path: String,
-        }
-
         let _span = info_span!("merge_symbols", file_count = files.len()).entered();
 
-        let mut functions: HashMap<String, SymbolDef> = HashMap::new();
-        let mut structs: HashMap<String, SymbolDef> = HashMap::new();
-        let mut enums: HashMap<String, SymbolDef> = HashMap::new();
-        let mut all_items = Vec::new();
-        let mut errors = Vec::new();
+        let check = crate::detect_duplicate_symbols(
+            files.iter().map(|f| (f.path.as_str(), &f.ast)),
+            interner,
+        );
 
-        for file in files {
-            for item in &file.ast.items {
-                match item {
-                    Item::Function(func) => {
-                        let name = interner.resolve(&func.name.name).to_string();
-                        if let Some(first) = functions.get(&name) {
-                            errors.push(
-                                CompileError::new(
-                                    ErrorKind::DuplicateTypeDefinition {
-                                        type_name: format!("function `{}`", name),
-                                    },
-                                    func.span,
-                                )
-                                .with_label(
-                                    format!("first defined in {}", first.file_path),
-                                    first.span,
-                                ),
-                            );
-                        } else {
-                            functions.insert(
-                                name,
-                                SymbolDef {
-                                    span: func.span,
-                                    file_path: file.path.clone(),
-                                },
-                            );
-                        }
-                    }
-                    Item::Struct(s) => {
-                        let name = interner.resolve(&s.name.name).to_string();
-                        if let Some(first) = structs.get(&name) {
-                            errors.push(
-                                CompileError::new(
-                                    ErrorKind::DuplicateTypeDefinition {
-                                        type_name: format!("struct `{}`", name),
-                                    },
-                                    s.span,
-                                )
-                                .with_label(
-                                    format!("first defined in {}", first.file_path),
-                                    first.span,
-                                ),
-                            );
-                        } else if let Some(first) = enums.get(&name) {
-                            errors.push(
-                                CompileError::new(
-                                    ErrorKind::DuplicateTypeDefinition {
-                                        type_name: format!(
-                                            "struct `{}` (conflicts with enum)",
-                                            name
-                                        ),
-                                    },
-                                    s.span,
-                                )
-                                .with_label(
-                                    format!("enum first defined in {}", first.file_path),
-                                    first.span,
-                                ),
-                            );
-                        } else {
-                            structs.insert(
-                                name,
-                                SymbolDef {
-                                    span: s.span,
-                                    file_path: file.path.clone(),
-                                },
-                            );
-                        }
-                    }
-                    Item::Enum(e) => {
-                        let name = interner.resolve(&e.name.name).to_string();
-                        if let Some(first) = enums.get(&name) {
-                            errors.push(
-                                CompileError::new(
-                                    ErrorKind::DuplicateTypeDefinition {
-                                        type_name: format!("enum `{}`", name),
-                                    },
-                                    e.span,
-                                )
-                                .with_label(
-                                    format!("first defined in {}", first.file_path),
-                                    first.span,
-                                ),
-                            );
-                        } else if let Some(first) = structs.get(&name) {
-                            errors.push(
-                                CompileError::new(
-                                    ErrorKind::DuplicateTypeDefinition {
-                                        type_name: format!(
-                                            "enum `{}` (conflicts with struct)",
-                                            name
-                                        ),
-                                    },
-                                    e.span,
-                                )
-                                .with_label(
-                                    format!("struct first defined in {}", first.file_path),
-                                    first.span,
-                                ),
-                            );
-                        } else {
-                            enums.insert(
-                                name,
-                                SymbolDef {
-                                    span: e.span,
-                                    file_path: file.path.clone(),
-                                },
-                            );
-                        }
-                    }
-                    Item::DropFn(_) | Item::Const(_) => {
-                        // Validated in Sema
-                    }
-                    Item::Error(_) => {
-                        // Error nodes from parser recovery are skipped
-                    }
-                }
-                all_items.push(item.clone());
-            }
+        if !check.errors.is_empty() {
+            return Err(CompileErrors::from(check.errors));
         }
 
-        if !errors.is_empty() {
-            return Err(CompileErrors::from(errors));
-        }
+        let all_items: Vec<_> = files
+            .iter()
+            .flat_map(|file| file.ast.items.iter().cloned())
+            .collect();
 
         info!(
-            function_count = functions.len(),
-            struct_count = structs.len(),
-            enum_count = enums.len(),
+            function_count = check.function_count,
+            struct_count = check.struct_count,
+            enum_count = check.enum_count,
             "symbol merging complete"
         );
 

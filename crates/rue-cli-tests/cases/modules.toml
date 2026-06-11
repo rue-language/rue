@@ -164,3 +164,38 @@ fn main() -> i32 {
 """ }]
 compile_fail = true
 error_contains = ["E0704", "does_not_exist"]
+
+# Multi-file compile where a NON-FIRST file matches on a module-qualified
+# enum path (`m.Color::Green`). The Path match-arm pattern embeds a module
+# InstRef that Rir::merge must renumber along with everything else; it used
+# to be left pointing into the first file's instruction space (RUE-130
+# item 9 — latent today because Sema resolves the enum globally, but this
+# pins the user-visible behavior).
+[[case]]
+name = "qualified_enum_pattern_in_second_file"
+files = [
+    { path = "color.rue", source = """
+pub enum Color {
+    Red,
+    Green,
+    Blue,
+}
+
+pub fn pick() -> Color {
+    Color::Green
+}
+""" },
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    let m = @import("color.rue");
+    let c = m.pick();
+    match c {
+        m.Color::Red => 1,
+        m.Color::Green => 2,
+        m.Color::Blue => 3,
+    }
+}
+""" },
+]
+args = ["color.rue", "main.rue", "-o", "prog"]
+exit_code = 2

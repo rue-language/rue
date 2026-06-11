@@ -1164,6 +1164,7 @@ impl Rir {
     /// - Call args (value field of each arg)
     /// - Field inits (value field of each init)
     /// - Match arm bodies (last field of each arm)
+    /// - Match arm Path pattern module refs (u32::MAX = None sentinel is kept)
     fn renumber_extra_inst_refs(
         extra: &mut [u32],
         instructions: &[Inst],
@@ -1281,6 +1282,13 @@ impl Rir {
                             k if k == PatternKind::Path as u32 => PATTERN_PATH_SIZE as usize,
                             _ => panic!("Unknown pattern kind during merge: {}", kind),
                         };
+                        // Path patterns also embed a module InstRef at offset 3
+                        // (u32::MAX encodes None); it must be renumbered like
+                        // every other InstRef or it would point into the wrong
+                        // file's instruction space after merging.
+                        if kind == PatternKind::Path as u32 && extra[pos + 3] != u32::MAX {
+                            extra[pos + 3] += inst_offset;
+                        }
                         // The body InstRef is always the last element of each pattern
                         extra[pos + pattern_size - 1] += inst_offset;
                         pos += pattern_size;
@@ -4119,6 +4127,152 @@ mod tests {
             merged.get(InstRef::from_raw(2)).data,
             InstData::IntConst(3)
         ));
+    }
+
+    #[test]
+    fn test_merge_renumbers_path_pattern_module_ref() {
+        // Regression test (RUE-130): the module InstRef embedded in a Path
+        // match-arm pattern must be renumbered by Rir::merge, just like the
+        // arm's body InstRef. Before the fix it was left untouched, so for any
+        // file after the first it pointed into the wrong file's instructions.
+        let interner = ThreadedRodeo::new();
+        let type_name = interner.get_or_intern("Color");
+        let variant = interner.get_or_intern("Red");
+        let module_name = interner.get_or_intern("m");
+
+        // RIR 1: a single instruction, so RIR 2 gets inst_offset = 1
+        let mut rir1 = Rir::new();
+        rir1.add_inst(Inst {
+            data: InstData::IntConst(0),
+            span: Span::new(0, 1),
+        });
+
+        // RIR 2: match with a module-qualified Path pattern and a wildcard
+        let mut rir2 = Rir::new();
+        let module = rir2.add_inst(Inst {
+            data: InstData::VarRef { name: module_name },
+            span: Span::new(10, 11),
+        });
+        let scrutinee = rir2.add_inst(Inst {
+            data: InstData::IntConst(1),
+            span: Span::new(12, 13),
+        });
+        let body1 = rir2.add_inst(Inst {
+            data: InstData::IntConst(2),
+            span: Span::new(14, 15),
+        });
+        let body2 = rir2.add_inst(Inst {
+            data: InstData::IntConst(3),
+            span: Span::new(16, 17),
+        });
+        let (arms_start, arms_len) = rir2.add_match_arms(&[
+            (
+                RirPattern::Path {
+                    module: Some(module),
+                    type_name,
+                    variant,
+                    span: Span::new(10, 13),
+                },
+                body1,
+            ),
+            (RirPattern::Wildcard(Span::new(18, 19)), body2),
+        ]);
+        rir2.add_inst(Inst {
+            data: InstData::Match {
+                scrutinee,
+                arms_start,
+                arms_len,
+            },
+            span: Span::new(10, 20),
+        });
+
+        let merged = Rir::merge(&[rir1, rir2]);
+        assert_eq!(merged.len(), 6);
+
+        // The match from rir2 is now at %5
+        let InstData::Match {
+            scrutinee,
+            arms_start,
+            arms_len,
+        } = &merged.get(InstRef::from_raw(5)).data
+        else {
+            panic!("Expected Match instruction at index 5");
+        };
+        assert_eq!(scrutinee.as_u32(), 2); // Was %1, now %1 + 1
+
+        let arms = merged.get_match_arms(*arms_start, *arms_len);
+        assert_eq!(arms.len(), 2);
+
+        let (pattern, body) = &arms[0];
+        let RirPattern::Path { module, .. } = pattern else {
+            panic!("Expected Path pattern in first arm");
+        };
+        // The module ref was %0 in rir2; after merging it must be %1
+        assert_eq!(module.map(|r| r.as_u32()), Some(1));
+        assert_eq!(body.as_u32(), 3); // Was %2, now %2 + 1
+
+        // The wildcard arm has no module ref; its body is still renumbered
+        let (pattern, body) = &arms[1];
+        assert!(matches!(pattern, RirPattern::Wildcard(_)));
+        assert_eq!(body.as_u32(), 4); // Was %3, now %3 + 1
+    }
+
+    #[test]
+    fn test_merge_renumbers_path_pattern_keeps_none_module() {
+        // The u32::MAX sentinel for "no module" must NOT be renumbered.
+        let interner = ThreadedRodeo::new();
+        let type_name = interner.get_or_intern("Color");
+        let variant = interner.get_or_intern("Red");
+
+        let mut rir1 = Rir::new();
+        rir1.add_inst(Inst {
+            data: InstData::IntConst(0),
+            span: Span::new(0, 1),
+        });
+
+        let mut rir2 = Rir::new();
+        let scrutinee = rir2.add_inst(Inst {
+            data: InstData::IntConst(1),
+            span: Span::new(10, 11),
+        });
+        let body = rir2.add_inst(Inst {
+            data: InstData::IntConst(2),
+            span: Span::new(12, 13),
+        });
+        let (arms_start, arms_len) = rir2.add_match_arms(&[(
+            RirPattern::Path {
+                module: None,
+                type_name,
+                variant,
+                span: Span::new(10, 13),
+            },
+            body,
+        )]);
+        rir2.add_inst(Inst {
+            data: InstData::Match {
+                scrutinee,
+                arms_start,
+                arms_len,
+            },
+            span: Span::new(10, 14),
+        });
+
+        let merged = Rir::merge(&[rir1, rir2]);
+
+        let InstData::Match {
+            arms_start,
+            arms_len,
+            ..
+        } = &merged.get(InstRef::from_raw(3)).data
+        else {
+            panic!("Expected Match instruction at index 3");
+        };
+        let arms = merged.get_match_arms(*arms_start, *arms_len);
+        let RirPattern::Path { module, .. } = &arms[0].0 else {
+            panic!("Expected Path pattern");
+        };
+        assert_eq!(*module, None);
+        assert_eq!(arms[0].1.as_u32(), 2); // Body was %1, now %1 + 1
     }
 
     #[test]

@@ -335,12 +335,161 @@ pub struct ValidatedProgram {
 /// Information about a symbol definition for duplicate detection.
 #[derive(Debug, Clone)]
 struct SymbolDef {
-    /// Name of the symbol (function, struct, or enum name).
-    name: String,
     /// Span of the first definition.
     span: Span,
     /// File path where the first definition was found.
     file_path: String,
+}
+
+/// Outcome of scanning parsed files for duplicate symbol definitions.
+///
+/// Produced by [`detect_duplicate_symbols`]; carries the errors (one per
+/// duplicate) plus the unique-symbol counts used for logging.
+pub(crate) struct DuplicateSymbolCheck {
+    /// One error per duplicate definition found.
+    pub(crate) errors: Vec<CompileError>,
+    /// Number of unique functions seen.
+    pub(crate) function_count: usize,
+    /// Number of unique structs seen.
+    pub(crate) struct_count: usize,
+    /// Number of unique enums seen.
+    pub(crate) enum_count: usize,
+}
+
+/// Detect duplicate symbol definitions across parsed files.
+///
+/// All functions, structs, and enums share a single flat global namespace
+/// (no modules yet), so each name may be defined only once across all files;
+/// structs and enums also conflict with each other. Every duplicate produces
+/// one error pointing at the redefinition, with a label at the first
+/// definition.
+///
+/// This is the single source of truth for duplicate-symbol detection — it is
+/// shared by [`merge_symbols`], [`validate_and_generate_rir_parallel`], and
+/// `CompilationUnit::parse`.
+pub(crate) fn detect_duplicate_symbols<'a>(
+    files: impl IntoIterator<Item = (&'a str, &'a Ast)>,
+    interner: &ThreadedRodeo,
+) -> DuplicateSymbolCheck {
+    use std::collections::HashMap;
+
+    let mut functions: HashMap<String, SymbolDef> = HashMap::new();
+    let mut structs: HashMap<String, SymbolDef> = HashMap::new();
+    let mut enums: HashMap<String, SymbolDef> = HashMap::new();
+    let mut errors: Vec<CompileError> = Vec::new();
+
+    for (file_path, ast) in files {
+        for item in &ast.items {
+            match item {
+                Item::Function(func) => {
+                    let name = interner.resolve(&func.name.name).to_string();
+                    if let Some(first) = functions.get(&name) {
+                        // Duplicate function definition
+                        let err = CompileError::new(
+                            ErrorKind::DuplicateFunctionDefinition {
+                                function_name: name,
+                            },
+                            func.span,
+                        )
+                        .with_label(format!("first defined in {}", first.file_path), first.span);
+                        errors.push(err);
+                    } else {
+                        functions.insert(
+                            name,
+                            SymbolDef {
+                                span: func.span,
+                                file_path: file_path.to_string(),
+                            },
+                        );
+                    }
+                }
+                Item::Struct(s) => {
+                    let name = interner.resolve(&s.name.name).to_string();
+                    if let Some(first) = structs.get(&name) {
+                        // Duplicate struct definition
+                        let err = CompileError::new(
+                            ErrorKind::DuplicateTypeDefinition {
+                                type_name: format!("struct `{}`", name),
+                            },
+                            s.span,
+                        )
+                        .with_label(format!("first defined in {}", first.file_path), first.span);
+                        errors.push(err);
+                    } else if let Some(first) = enums.get(&name) {
+                        // Struct name conflicts with enum
+                        let err = CompileError::new(
+                            ErrorKind::DuplicateTypeDefinition {
+                                type_name: format!("struct `{}` (conflicts with enum)", name),
+                            },
+                            s.span,
+                        )
+                        .with_label(
+                            format!("enum first defined in {}", first.file_path),
+                            first.span,
+                        );
+                        errors.push(err);
+                    } else {
+                        structs.insert(
+                            name,
+                            SymbolDef {
+                                span: s.span,
+                                file_path: file_path.to_string(),
+                            },
+                        );
+                    }
+                }
+                Item::Enum(e) => {
+                    let name = interner.resolve(&e.name.name).to_string();
+                    if let Some(first) = enums.get(&name) {
+                        // Duplicate enum definition
+                        let err = CompileError::new(
+                            ErrorKind::DuplicateTypeDefinition {
+                                type_name: format!("enum `{}`", name),
+                            },
+                            e.span,
+                        )
+                        .with_label(format!("first defined in {}", first.file_path), first.span);
+                        errors.push(err);
+                    } else if let Some(first) = structs.get(&name) {
+                        // Enum name conflicts with struct
+                        let err = CompileError::new(
+                            ErrorKind::DuplicateTypeDefinition {
+                                type_name: format!("enum `{}` (conflicts with struct)", name),
+                            },
+                            e.span,
+                        )
+                        .with_label(
+                            format!("struct first defined in {}", first.file_path),
+                            first.span,
+                        );
+                        errors.push(err);
+                    } else {
+                        enums.insert(
+                            name,
+                            SymbolDef {
+                                span: e.span,
+                                file_path: file_path.to_string(),
+                            },
+                        );
+                    }
+                }
+                Item::DropFn(_) | Item::Const(_) => {
+                    // Drop fns and const declarations are validated in Sema, not here.
+                    // Const declarations are checked for duplicates in the declarations phase.
+                }
+                Item::Error(_) => {
+                    // Error nodes from parser recovery are skipped - errors were already reported
+                }
+            }
+        }
+    }
+
+    DuplicateSymbolCheck {
+        errors,
+        function_count: functions.len(),
+        struct_count: structs.len(),
+        enum_count: enums.len(),
+    }
 }
 
 /// Merge symbols from all parsed files into a unified program.
@@ -373,145 +522,28 @@ struct SymbolDef {
 /// // merged.ast now contains both functions
 /// ```
 pub fn merge_symbols(program: ParsedProgram) -> MultiErrorResult<MergedProgram> {
-    use std::collections::HashMap;
-
     let _span = info_span!("merge_symbols", file_count = program.files.len()).entered();
 
-    // Track seen symbols for duplicate detection.
-    // Key: symbol name (resolved string), Value: first definition info
-    let mut functions: HashMap<String, SymbolDef> = HashMap::new();
-    let mut structs: HashMap<String, SymbolDef> = HashMap::new();
-    let mut enums: HashMap<String, SymbolDef> = HashMap::new();
-
-    // Collect all items and detect duplicates
-    let mut all_items = Vec::new();
-    let mut errors: Vec<CompileError> = Vec::new();
-
-    // Use the shared interner for resolving all symbol names
-    let interner = &program.interner;
-
-    for file in &program.files {
-        for item in &file.ast.items {
-            match item {
-                Item::Function(func) => {
-                    // Use shared interner for consistent Spur resolution
-                    let name = interner.resolve(&func.name.name).to_string();
-                    if let Some(first) = functions.get(&name) {
-                        // Duplicate function definition
-                        let err = CompileError::new(
-                            ErrorKind::DuplicateTypeDefinition {
-                                type_name: format!("function `{}`", name),
-                            },
-                            func.span,
-                        )
-                        .with_label(format!("first defined in {}", first.file_path), first.span);
-                        errors.push(err);
-                    } else {
-                        functions.insert(
-                            name.clone(),
-                            SymbolDef {
-                                name,
-                                span: func.span,
-                                file_path: file.path.clone(),
-                            },
-                        );
-                    }
-                }
-                Item::Struct(s) => {
-                    // Use shared interner for consistent Spur resolution
-                    let name = interner.resolve(&s.name.name).to_string();
-                    if let Some(first) = structs.get(&name) {
-                        // Duplicate struct definition
-                        let err = CompileError::new(
-                            ErrorKind::DuplicateTypeDefinition {
-                                type_name: format!("struct `{}`", name),
-                            },
-                            s.span,
-                        )
-                        .with_label(format!("first defined in {}", first.file_path), first.span);
-                        errors.push(err);
-                    } else if let Some(first) = enums.get(&name) {
-                        // Struct name conflicts with enum
-                        let err = CompileError::new(
-                            ErrorKind::DuplicateTypeDefinition {
-                                type_name: format!("struct `{}` (conflicts with enum)", name),
-                            },
-                            s.span,
-                        )
-                        .with_label(
-                            format!("enum first defined in {}", first.file_path),
-                            first.span,
-                        );
-                        errors.push(err);
-                    } else {
-                        structs.insert(
-                            name.clone(),
-                            SymbolDef {
-                                name,
-                                span: s.span,
-                                file_path: file.path.clone(),
-                            },
-                        );
-                    }
-                }
-                Item::Enum(e) => {
-                    // Use shared interner for consistent Spur resolution
-                    let name = interner.resolve(&e.name.name).to_string();
-                    if let Some(first) = enums.get(&name) {
-                        // Duplicate enum definition
-                        let err = CompileError::new(
-                            ErrorKind::DuplicateTypeDefinition {
-                                type_name: format!("enum `{}`", name),
-                            },
-                            e.span,
-                        )
-                        .with_label(format!("first defined in {}", first.file_path), first.span);
-                        errors.push(err);
-                    } else if let Some(first) = structs.get(&name) {
-                        // Enum name conflicts with struct
-                        let err = CompileError::new(
-                            ErrorKind::DuplicateTypeDefinition {
-                                type_name: format!("enum `{}` (conflicts with struct)", name),
-                            },
-                            e.span,
-                        )
-                        .with_label(
-                            format!("struct first defined in {}", first.file_path),
-                            first.span,
-                        );
-                        errors.push(err);
-                    } else {
-                        enums.insert(
-                            name.clone(),
-                            SymbolDef {
-                                name,
-                                span: e.span,
-                                file_path: file.path.clone(),
-                            },
-                        );
-                    }
-                }
-                Item::DropFn(_) | Item::Const(_) => {
-                    // Drop fns and const declarations are validated in Sema, not here.
-                    // Const declarations are checked for duplicates in the declarations phase.
-                }
-                Item::Error(_) => {
-                    // Error nodes from parser recovery are skipped - errors were already reported
-                }
-            }
-            all_items.push(item.clone());
-        }
-    }
+    let check = detect_duplicate_symbols(
+        program.files.iter().map(|f| (f.path.as_str(), &f.ast)),
+        &program.interner,
+    );
 
     // If there are any duplicate definitions, return all errors
-    if !errors.is_empty() {
-        return Err(CompileErrors::from(errors));
+    if !check.errors.is_empty() {
+        return Err(CompileErrors::from(check.errors));
     }
 
+    let all_items: Vec<Item> = program
+        .files
+        .iter()
+        .flat_map(|file| file.ast.items.iter().cloned())
+        .collect();
+
     info!(
-        function_count = functions.len(),
-        struct_count = structs.len(),
-        enum_count = enums.len(),
+        function_count = check.function_count,
+        struct_count = check.struct_count,
+        enum_count = check.enum_count,
         "symbol merging complete"
     );
 
@@ -558,124 +590,19 @@ pub fn validate_and_generate_rir_parallel(
         .collect();
 
     // Step 1: Validate symbols for duplicates (same logic as merge_symbols)
-    let mut functions: HashMap<String, SymbolDef> = HashMap::new();
-    let mut structs: HashMap<String, SymbolDef> = HashMap::new();
-    let mut enums: HashMap<String, SymbolDef> = HashMap::new();
-    let mut errors: Vec<CompileError> = Vec::new();
+    let check = detect_duplicate_symbols(
+        program.files.iter().map(|f| (f.path.as_str(), &f.ast)),
+        &program.interner,
+    );
 
-    let interner = &program.interner;
-
-    for file in &program.files {
-        for item in &file.ast.items {
-            match item {
-                Item::Function(func) => {
-                    let name = interner.resolve(&func.name.name).to_string();
-                    if let Some(first) = functions.get(&name) {
-                        let err = CompileError::new(
-                            ErrorKind::DuplicateTypeDefinition {
-                                type_name: format!("function `{}`", name),
-                            },
-                            func.span,
-                        )
-                        .with_label(format!("first defined in {}", first.file_path), first.span);
-                        errors.push(err);
-                    } else {
-                        functions.insert(
-                            name.clone(),
-                            SymbolDef {
-                                name,
-                                span: func.span,
-                                file_path: file.path.clone(),
-                            },
-                        );
-                    }
-                }
-                Item::Struct(s) => {
-                    let name = interner.resolve(&s.name.name).to_string();
-                    if let Some(first) = structs.get(&name) {
-                        let err = CompileError::new(
-                            ErrorKind::DuplicateTypeDefinition {
-                                type_name: format!("struct `{}`", name),
-                            },
-                            s.span,
-                        )
-                        .with_label(format!("first defined in {}", first.file_path), first.span);
-                        errors.push(err);
-                    } else if let Some(first) = enums.get(&name) {
-                        let err = CompileError::new(
-                            ErrorKind::DuplicateTypeDefinition {
-                                type_name: format!("struct `{}` (conflicts with enum)", name),
-                            },
-                            s.span,
-                        )
-                        .with_label(
-                            format!("enum first defined in {}", first.file_path),
-                            first.span,
-                        );
-                        errors.push(err);
-                    } else {
-                        structs.insert(
-                            name.clone(),
-                            SymbolDef {
-                                name,
-                                span: s.span,
-                                file_path: file.path.clone(),
-                            },
-                        );
-                    }
-                }
-                Item::Enum(e) => {
-                    let name = interner.resolve(&e.name.name).to_string();
-                    if let Some(first) = enums.get(&name) {
-                        let err = CompileError::new(
-                            ErrorKind::DuplicateTypeDefinition {
-                                type_name: format!("enum `{}`", name),
-                            },
-                            e.span,
-                        )
-                        .with_label(format!("first defined in {}", first.file_path), first.span);
-                        errors.push(err);
-                    } else if let Some(first) = structs.get(&name) {
-                        let err = CompileError::new(
-                            ErrorKind::DuplicateTypeDefinition {
-                                type_name: format!("enum `{}` (conflicts with struct)", name),
-                            },
-                            e.span,
-                        )
-                        .with_label(
-                            format!("struct first defined in {}", first.file_path),
-                            first.span,
-                        );
-                        errors.push(err);
-                    } else {
-                        enums.insert(
-                            name.clone(),
-                            SymbolDef {
-                                name,
-                                span: e.span,
-                                file_path: file.path.clone(),
-                            },
-                        );
-                    }
-                }
-                Item::DropFn(_) | Item::Const(_) => {
-                    // Validated in Sema
-                }
-                Item::Error(_) => {
-                    // Error nodes from parser recovery are skipped
-                }
-            }
-        }
-    }
-
-    if !errors.is_empty() {
-        return Err(CompileErrors::from(errors));
+    if !check.errors.is_empty() {
+        return Err(CompileErrors::from(check.errors));
     }
 
     info!(
-        function_count = functions.len(),
-        struct_count = structs.len(),
-        enum_count = enums.len(),
+        function_count = check.function_count,
+        struct_count = check.struct_count,
+        enum_count = check.enum_count,
         "symbol validation complete"
     );
 
@@ -2025,8 +1952,9 @@ mod tests {
         assert_eq!(errors.len(), 1, "should have 1 error");
         let err_msg = errors.first().unwrap().to_string();
         assert!(
-            err_msg.contains("function `foo`"),
-            "error should mention the function name"
+            err_msg.contains("duplicate function definition") && err_msg.contains("`foo`"),
+            "error should mention the duplicate function name: {}",
+            err_msg
         );
     }
 
