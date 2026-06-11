@@ -108,6 +108,21 @@ impl<'de> Deserialize<'de> for ErrorContains {
 }
 
 /// A single test case.
+///
+/// # Golden-IR assertions vs execution assertions
+///
+/// Golden-IR assertions (`expected_tokens`, `expected_ast`, `expected_rir`,
+/// `expected_air`, `expected_cfg`, `expected_mir`) are checked by running
+/// `rue --emit <stage>` and comparing the dump. Execution assertions
+/// (`exit_code`, `expected_stdout`, `runtime_error`, warning checks, ...)
+/// are checked by compiling and running the program.
+///
+/// A case may combine both: ALL of its assertions are verified — the golden
+/// comparisons run first, then the program is compiled and executed for the
+/// execution assertions. (Previously the execution assertions were silently
+/// skipped when a golden assertion was present; see RUE-132.)
+/// `compile_fail` cannot be combined with golden-IR assertions, since a
+/// program that fails to compile has no IR to dump.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Case {
@@ -234,6 +249,38 @@ pub struct Case {
     /// If not specified, the test runs on all platforms.
     #[serde(default)]
     pub only_on: Vec<String>,
+}
+
+impl Case {
+    /// Whether this case carries any golden-IR assertions (checked against
+    /// `rue --emit <stage>` output).
+    pub fn has_golden_ir_assertions(&self) -> bool {
+        self.expected_tokens.is_some()
+            || self.expected_ast.is_some()
+            || self.expected_rir.is_some()
+            || self.expected_air.is_some()
+            || self.expected_cfg.is_some()
+            || self.expected_mir.is_some()
+    }
+
+    /// Whether this case carries assertions that require actually compiling
+    /// the program to a binary (and, unless `compile_only`, running it).
+    ///
+    /// Used so a case combining golden-IR assertions with execution
+    /// assertions verifies BOTH, instead of silently skipping the execution
+    /// half (RUE-132).
+    pub fn has_execution_assertions(&self) -> bool {
+        self.exit_code.is_some()
+            || self.expected_stdout.is_some()
+            || self.runtime_error.is_some()
+            || self.runtime_exit_code.is_some()
+            || self.stdin.is_some()
+            || self.stderr_contains.is_some()
+            || self.compile_only
+            || self.no_warnings
+            || self.expected_warning_count.is_some()
+            || self.warning_contains.is_some()
+    }
 }
 
 /// A test file containing a section and its cases.
@@ -693,6 +740,9 @@ pub fn check_golden(actual: &str, expected: &str, label: &str) -> TestResult {
 
 /// Map emit stage flag to the header name used in the compiler output.
 /// For example, "rir" -> "RIR", "tokens" -> "Tokens"
+///
+/// Only stages with a corresponding `expected_*` field on [`Case`] are
+/// listed; if an `expected_asm` field is ever added, extend this mapping.
 fn stage_to_header_name(stage: &str) -> &'static str {
     match stage {
         "tokens" => "Tokens",
@@ -701,7 +751,6 @@ fn stage_to_header_name(stage: &str) -> &'static str {
         "air" => "AIR",
         "cfg" => "CFG",
         "mir" => "MIR",
-        "asm" => "ASM",
         _ => panic!("Unknown stage: {}", stage),
     }
 }
@@ -888,13 +937,16 @@ pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
     };
 
     // Check for golden IR tests (tokens, AST, RIR, AIR, CFG, MIR)
-    if case.expected_tokens.is_some()
-        || case.expected_ast.is_some()
-        || case.expected_rir.is_some()
-        || case.expected_air.is_some()
-        || case.expected_cfg.is_some()
-        || case.expected_mir.is_some()
-    {
+    if case.has_golden_ir_assertions() {
+        // A program that fails to compile has no IR to dump, so this
+        // combination can never be satisfied — reject it loudly rather than
+        // letting one half of the case go unchecked.
+        if case.compile_fail {
+            return Err("golden IR assertions cannot be combined with compile_fail \
+                 (use expected_error / error_contains for diagnostics instead)"
+                .to_string());
+        }
+
         // Run dump commands and check golden output
         if let Some(ref expected) = case.expected_tokens {
             run_golden_ir_test(rue_binary, &source_path, "tokens", expected, &build_command)?;
@@ -927,7 +979,13 @@ pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
             run_golden_ir_test(rue_binary, &source_path, "mir", expected, &build_command)?;
         }
 
-        return Ok(());
+        // A case may combine golden-IR assertions with execution assertions
+        // (exit_code, expected_stdout, ...). When it does, fall through and
+        // verify those too — returning here would silently skip them
+        // (RUE-132). A pure golden case is done at this point.
+        if !case.has_execution_assertions() {
+            return Ok(());
+        }
     }
 
     // Compile with rue
@@ -1811,6 +1869,45 @@ mod tests {
         assert_eq!(errors.len(), 2);
         assert_eq!(errors[0].feature_name, "unknown1");
         assert_eq!(errors[1].feature_name, "unknown2");
+    }
+
+    // Tests for golden-IR / execution assertion classification (RUE-132)
+
+    #[test]
+    fn test_has_golden_ir_assertions() {
+        let mut case = make_test_case("golden", None);
+        case.exit_code = None;
+        assert!(!case.has_golden_ir_assertions());
+        case.expected_cfg = Some("cfg main {}".to_string());
+        assert!(case.has_golden_ir_assertions());
+    }
+
+    #[test]
+    fn test_has_execution_assertions_exit_code() {
+        // make_test_case sets exit_code = Some(0)
+        let case = make_test_case("exec", None);
+        assert!(case.has_execution_assertions());
+    }
+
+    #[test]
+    fn test_has_execution_assertions_stdout_only() {
+        let mut case = make_test_case("exec", None);
+        case.exit_code = None;
+        assert!(!case.has_execution_assertions());
+        case.expected_stdout = Some("1\n2\n".to_string());
+        assert!(
+            case.has_execution_assertions(),
+            "expected_stdout must force the program to actually run"
+        );
+    }
+
+    #[test]
+    fn test_pure_golden_case_has_no_execution_assertions() {
+        let mut case = make_test_case("golden", None);
+        case.exit_code = None;
+        case.expected_air = Some("air".to_string());
+        assert!(case.has_golden_ir_assertions());
+        assert!(!case.has_execution_assertions());
     }
 
     #[test]

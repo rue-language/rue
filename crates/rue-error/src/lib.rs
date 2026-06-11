@@ -1486,6 +1486,91 @@ mod tests {
         );
     }
 
+    /// `ErrorKind::code()` must be injective: no two ErrorKind variants may
+    /// map to the same ErrorCode constant, and every constant must be used by
+    /// exactly one variant (a constant nobody maps to is dead, and usually a
+    /// sign that a variant was repointed at someone else's code).
+    ///
+    /// `test_error_codes_are_unique` (above) guards constant *values*; this
+    /// test guards the variant -> constant *mapping*. It scans the body of
+    /// `fn code()` in this file's source, so it can't go stale as variants
+    /// are added. It deliberately pins uniqueness, not specific code values.
+    #[test]
+    fn test_error_kind_to_code_mapping_is_injective() {
+        let src = include_str!("lib.rs");
+
+        // Collect all declared ErrorCode constant names.
+        let mut declared: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for line in src.lines() {
+            let Some(rest) = line.trim().strip_prefix("pub const ") else {
+                continue;
+            };
+            if let Some((name, _)) = rest.split_once(": Self = Self(") {
+                declared.insert(name);
+            }
+        }
+        assert!(
+            declared.len() > 50,
+            "expected to find the ErrorCode constants (found {})",
+            declared.len()
+        );
+
+        // Extract the body of `fn code()` by brace matching.
+        let start = src
+            .find("pub fn code(&self) -> ErrorCode {")
+            .expect("fn code() not found in lib.rs");
+        let open = start + src[start..].find('{').unwrap();
+        let mut depth = 0usize;
+        let mut end = open;
+        for (i, ch) in src[open..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = open + i;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let body = &src[open..=end];
+
+        // Count every `ErrorCode::CONST` reference in the match arms.
+        let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+        let mut rest = body;
+        while let Some(pos) = rest.find("ErrorCode::") {
+            rest = &rest[pos + "ErrorCode::".len()..];
+            let name_len = rest
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .unwrap_or(rest.len());
+            let name = &rest[..name_len];
+            *counts.entry(name).or_insert(0) += 1;
+        }
+
+        let duplicates: Vec<_> = counts.iter().filter(|&(_, &c)| c > 1).collect();
+        assert!(
+            duplicates.is_empty(),
+            "ErrorCode constants mapped by more than one ErrorKind variant in code(): {:?}",
+            duplicates
+        );
+
+        let referenced: std::collections::HashSet<&str> = counts.keys().copied().collect();
+        let orphans: Vec<_> = declared.difference(&referenced).collect();
+        assert!(
+            orphans.is_empty(),
+            "ErrorCode constants declared but never mapped by any ErrorKind variant: {:?}",
+            orphans
+        );
+        let undeclared: Vec<_> = referenced.difference(&declared).collect();
+        assert!(
+            undeclared.is_empty(),
+            "code() references ErrorCode constants that are not declared: {:?}",
+            undeclared
+        );
+    }
+
     #[test]
     fn test_error_with_span() {
         let span = Span::new(10, 20);

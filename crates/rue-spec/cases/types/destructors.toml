@@ -45,9 +45,13 @@ exit_code = 42
 [[case]]
 name = "drop_order_reverse_declaration"
 spec = ["3.9:4", "3.9:5", "3.9:6"]
-description = "Multiple values dropped in reverse declaration order (LIFO)"
+description = "Multiple values dropped in reverse declaration order (LIFO); expected_stdout pins the ORDER, not just that drops happen"
 source = """
 struct Data { value: i32 }
+
+drop fn Data(self) {
+    @dbg(self.value);
+}
 
 fn main() -> i32 {
     let a = Data { value: 1 };  // declared first
@@ -56,6 +60,7 @@ fn main() -> i32 {
 }  // b dropped first, then a dropped
 """
 exit_code = 3
+expected_stdout = "2\n1\n"
 
 # =============================================================================
 # Trivially Droppable Types
@@ -208,9 +213,13 @@ exit_code = 42
 [[case]]
 name = "drop_before_early_return"
 spec = ["3.9:18", "3.9:20"]
-description = "Values are dropped before early return"
+description = "Values are dropped before early return; expected_stdout pins that the destructor actually runs on the early-return path"
 source = """
 struct Data { value: i32 }
+
+drop fn Data(self) {
+    @dbg(self.value);
+}
 
 fn example(condition: bool) -> i32 {
     let a = Data { value: 1 };
@@ -225,13 +234,18 @@ fn main() -> i32 {
 }
 """
 exit_code = 42
+expected_stdout = "1\n"
 
 [[case]]
 name = "drop_in_each_branch"
 spec = ["3.9:19", "3.9:20"]
-description = "Each branch independently drops its bindings"
+description = "Each branch independently drops its bindings; expected_stdout pins LIFO order (b before a) on the taken branch"
 source = """
 struct Data { value: i32 }
+
+drop fn Data(self) {
+    @dbg(self.value);
+}
 
 fn example(condition: bool) -> i32 {
     let a = Data { value: 1 };
@@ -248,6 +262,7 @@ fn main() -> i32 {
 }
 """
 exit_code = 3
+expected_stdout = "2\n1\n"
 
 # =============================================================================
 # Types with Destructors (String)
@@ -319,7 +334,31 @@ exit_code = 42
 [[case]]
 name = "field_drop_order"
 spec = ["3.9:13"]
-description = "Fields dropped in declaration order"
+description = "Fields dropped in declaration order; the field destructors' @dbg output pins the ORDER (first, then second), so inverted field-drop order fails"
+source = """
+struct Member { id: i32 }
+
+drop fn Member(self) {
+    @dbg(self.id);
+}
+
+struct Pair {
+    first: Member,
+    second: Member,
+}
+
+fn main() -> i32 {
+    let p = Pair { first: Member { id: 1 }, second: Member { id: 2 } };
+    p.first.id - 1
+}  // Pair dropped: first field dropped (prints 1), then second field (prints 2)
+"""
+exit_code = 0
+expected_stdout = "1\n2\n"
+
+[[case]]
+name = "struct_with_string_fields_dropped"
+spec = ["3.9:13"]
+description = "Struct whose String fields require cleanup drops each field (heap buffers freed)"
 source = """
 struct TwoStrings {
     first: String,
@@ -368,7 +407,9 @@ cfg main (return_type: i32) {
 
 [[case]]
 name = "cfg_multiple_variables_drop_order"
-description = "CFG shows StorageDead in reverse declaration order (LIFO)"
+# This case combines a golden assertion with exit_code on purpose: the runner
+# must verify BOTH (regression test for the silent execution-skip, RUE-132).
+description = "CFG shows StorageDead in reverse declaration order (LIFO), and the program runs with the expected result"
 source = """
 fn main() -> i32 {
     let a = 1;
@@ -376,6 +417,7 @@ fn main() -> i32 {
     a + b
 }
 """
+exit_code = 3
 expected_cfg = """
 cfg main (return_type: i32) {
   bb0:
