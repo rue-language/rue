@@ -1201,47 +1201,24 @@ pub fn find_dir(env_var: &str, possible_paths: &[&str], fallback: &str) -> PathB
 /// this function selects the most recently modified binary to avoid using
 /// stale binaries from previous builds.
 pub fn find_rue_binary() -> PathBuf {
-    std::env::var("RUE_BINARY")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            // Try to find it in common buck output locations
-            // First try the buck2 output (has UUID in path)
-            let buck_root = Path::new("buck-out/v2/gen/root");
-            if buck_root.exists() {
-                if let Ok(entries) = std::fs::read_dir(buck_root) {
-                    // Collect all valid rue binaries with their modification times
-                    let mut candidates: Vec<(PathBuf, std::time::SystemTime)> = entries
-                        .flatten()
-                        .filter_map(|entry| {
-                            let rue_path = entry.path().join("crates/rue/__rue__/rue");
-                            if rue_path.exists() {
-                                // Get modification time; skip if we can't read it
-                                rue_path.metadata().ok().and_then(|meta| {
-                                    meta.modified().ok().map(|mtime| (rue_path, mtime))
-                                })
-                            } else {
-                                None
-                            }
-                        })
-                        .collect();
-
-                    // Sort by modification time (newest first) and return the most recent
-                    candidates.sort_by(|a, b| b.1.cmp(&a.1));
-                    if let Some((path, _)) = candidates.into_iter().next() {
-                        return path;
-                    }
-                }
-            }
-            let possible_paths = ["../rue/rue", "./rue"];
-            for path in possible_paths {
-                let p = Path::new(path);
-                if p.exists() {
-                    return p.to_path_buf();
-                }
-            }
-            // Default - will likely fail but with a clear error
-            Path::new("rue").to_path_buf()
-        })
+    // 1. Explicit override — what test.sh and scripts/rue always set.
+    if let Ok(p) = std::env::var("RUE_BINARY") {
+        return PathBuf::from(p);
+    }
+    // 2. The stable symlink maintained by `scripts/rue build`.
+    let bin_rue = Path::new("bin/rue");
+    if bin_rue.exists() {
+        return bin_rue.to_path_buf();
+    }
+    // 3. Refuse to guess. The old fallback globbed every buck-out config-hash
+    // directory and picked the NEWEST binary by mtime — with debug/release/
+    // historical configs side by side, that silently selected the wrong
+    // compiler and produced false test failures (a real incident). Guessing
+    // wrong silently is strictly worse than failing loudly.
+    panic!(
+        "cannot locate the rue compiler: set RUE_BINARY to an explicit path, \
+         or run `scripts/rue build` to refresh the bin/rue symlink"
+    );
 }
 
 #[cfg(test)]

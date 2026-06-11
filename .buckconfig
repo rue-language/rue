@@ -23,3 +23,11 @@ execution_platforms = prelude//platforms:default
 
 [buck2]
 materializations = deferred
+
+[project]
+# Keep buck2 from parsing/watching non-source trees inside the project root:
+# .claude/worktrees holds agent worktrees (each with its own buck-out, whose
+# vendored prelude BUCK files break `//...` patterns and whose churn
+# continuously invalidates the root daemon's graph), and .jj's op store
+# writes on every command in this colocated repo.
+ignore = .claude, .jj
