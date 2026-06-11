@@ -1869,10 +1869,15 @@ impl<'a> Sema<'a> {
 
             // Look up the variable in locals
             let name_str = self.interner.resolve(&*name);
-            let local = ctx.locals.get(name).ok_or_compile_error(
-                ErrorKind::UndefinedVariable(name_str.to_string()),
-                inst.span,
-            )?;
+            let Some(local) = ctx.locals.get(name) else {
+                // Not a param or local: fall back to the main VarRef path so
+                // file-level constants (and comptime vars/type names) resolve
+                // in projection positions too — e.g. `N == 1` routes its
+                // operands through here (RUE-165). Constants inline a fresh
+                // value, so there is no move state to preserve, and unknown
+                // names still get E0201 from the fallback.
+                return self.analyze_var_ref(air, *name, inst.span, ctx);
+            };
 
             let ty = local.ty;
             let slot = local.slot;

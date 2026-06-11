@@ -1,0 +1,251 @@
+# Declaration/annotation typing regression tests (RUE-161, RUE-155, RUE-165).
+#
+# RUE-161: a `const` item's type annotation used to be parsed but ignored —
+# every integer const was stored as i32, so `const BIG: i64 = 5000000000;`
+# silently truncated to 705032704 at runtime (a miscompile). The annotation
+# now types the stored const and the initializer is validated against it.
+#
+# RUE-155: unknown type names in let-annotation position were silently
+# ignored (inference fell back to the initializer's type), so
+# `let x: zzz_bogus = 5;` compiled. Annotations are now resolved against the
+# single shared type table and unknown names are E0204 like signature
+# positions.
+#
+# RUE-165: the projection-analysis VarRef path (used for comparison operands)
+# lacked the file-level-constant fallback, so `if N == 1` was a bogus E0201
+# even though `N` resolved fine in return/arithmetic position.
+
+[section]
+id = "cli.decl_annotations"
+name = "Declaration annotation typing"
+description = "const/let type annotations are respected and validated; consts resolve in every operand position."
+
+# ============================================================================
+# RUE-161: const annotations are respected
+# ============================================================================
+
+# The original repro's computation: BIG must be a real i64 5000000000, so
+# dividing by 1e9 yields 5 — not 0 from the silent i32 truncation.
+[[case]]
+name = "const_i64_annotation_not_truncated"
+description = "const BIG: i64 holds the full 64-bit value at runtime (RUE-161 repro)."
+files = [{ path = "main.rue", source = """
+const BIG: i64 = 5000000000;
+fn main() -> i32 {
+    @dbg(BIG);
+    @dbg(BIG / 1000000000);
+    if BIG / 1000000000 == 5 { 5 } else { 1 }
+}
+""" }]
+stdout = """5000000000
+5
+"""
+exit_code = 5
+
+# The exact RUE-161 repro program is now a compile error (i64 cannot flow to
+# main's i32 return), identical to its let-annotated equivalent — never a
+# silently truncated exit 0.
+[[case]]
+name = "const_i64_annotation_blocks_narrowing"
+description = "Returning an i64-typed const computation from main() -> i32 is E0206, not truncation."
+files = [{ path = "main.rue", source = """
+const BIG: i64 = 5000000000;
+fn main() -> i32 {
+    let x = BIG;
+    let y = x / 1000000000;
+    y
+}
+""" }]
+compile_fail = true
+error_contains = ["type mismatch: expected i32, found i64"]
+
+[[case]]
+name = "const_i64_across_fn_boundary"
+description = "An i64-annotated const is usable at its declared type as a call argument."
+files = [{ path = "main.rue", source = """
+const M: i64 = 1;
+fn f(x: i64) -> i64 { x + 1 }
+fn main() -> i32 {
+    @dbg(f(M));
+    if f(M) == 2 { 2 } else { 1 }
+}
+""" }]
+stdout = "2\n"
+exit_code = 2
+
+[[case]]
+name = "const_u64_annotation_full_range"
+description = "const X: u64 holds u64::MAX exactly."
+files = [{ path = "main.rue", source = """
+const HUGE: u64 = 18446744073709551615;
+fn main() -> i32 {
+    @dbg(HUGE);
+    if HUGE > 18446744073709551614 { 3 } else { 1 }
+}
+""" }]
+stdout = "18446744073709551615\n"
+exit_code = 3
+
+[[case]]
+name = "const_u8_annotation_across_fn_boundary"
+description = "const X: u8 is passed at its declared narrow type."
+files = [{ path = "main.rue", source = """
+const SMALL: u8 = 7;
+fn f(x: u8) -> u8 { x }
+fn main() -> i32 {
+    @dbg(f(SMALL));
+    if f(SMALL) == 7 { 7 } else { 1 }
+}
+""" }]
+stdout = "7\n"
+exit_code = 7
+
+[[case]]
+name = "const_annotation_out_of_range"
+description = "An initializer that doesn't fit the annotated type is E0800."
+files = [{ path = "main.rue", source = """
+const X: u8 = 300;
+fn main() -> i32 { 0 }
+""" }]
+compile_fail = true
+error_contains = ["literal value 300 is out of range for type 'u8'"]
+
+[[case]]
+name = "const_annotation_type_mismatch"
+description = "A non-integer annotation must match the initializer's type exactly."
+files = [{ path = "main.rue", source = """
+const X: bool = 5;
+fn main() -> i32 { 0 }
+""" }]
+compile_fail = true
+error_contains = ["type mismatch: expected bool, found i32"]
+
+[[case]]
+name = "const_unannotated_defaults_to_i32"
+description = "Unannotated integer consts still infer i32 from the literal."
+files = [{ path = "main.rue", source = """
+const N = 41;
+fn main() -> i32 { N + 1 }
+""" }]
+exit_code = 42
+
+# ============================================================================
+# RUE-155: let annotations are validated against the shared type table
+# ============================================================================
+
+[[case]]
+name = "let_unknown_annotation_rejected"
+description = "Unknown type names in let position are E0204, not silently ignored."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let x: zzz_bogus = 5;
+    x
+}
+""" }]
+compile_fail = true
+error_contains = ["unknown type 'zzz_bogus'"]
+
+[[case]]
+name = "let_never_annotation_rejected"
+description = "`!` in let position is a real type now: an integer initializer can't fit it."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let x: ! = 5;
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["out of range for type '!'"]
+
+[[case]]
+name = "let_type_annotation_value_mismatch"
+description = "`type` in let position constrains the initializer (5 is not a type value)."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let x: type = 5;
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["type mismatch"]
+
+[[case]]
+name = "const_unknown_annotation_rejected"
+description = "Unknown type names on const items are E0204 too."
+files = [{ path = "main.rue", source = """
+const X: zzz_bogus = 5;
+fn main() -> i32 { 0 }
+""" }]
+compile_fail = true
+error_contains = ["unknown type 'zzz_bogus'"]
+
+[[case]]
+name = "let_known_annotations_still_accepted"
+description = "Control: every primitive let annotation still resolves (shared table)."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: i8 = 1;
+    let b: i16 = 2;
+    let c: i32 = 3;
+    let d: i64 = 4;
+    let e: u8 = 5;
+    let f: u16 = 6;
+    let g: u32 = 7;
+    let h: u64 = 8;
+    let i: usize = 9;
+    let j: isize = 10;
+    let k: bool = true;
+    if k { c } else { 0 }
+}
+""" }]
+exit_code = 3
+
+# ============================================================================
+# RUE-165: consts resolve in projection/comparison operand positions
+# ============================================================================
+
+[[case]]
+name = "const_as_comparison_operand"
+description = "A file-level const is a valid comparison operand (was bogus E0201)."
+files = [{ path = "main.rue", source = """
+const N: i32 = 7;
+fn main() -> i32 {
+    if N == 1 { 1 } else { 2 }
+}
+""" }]
+exit_code = 2
+
+[[case]]
+name = "const_comparison_into_let"
+description = "Comparison of a const bound through a let works too."
+files = [{ path = "main.rue", source = """
+const N: i32 = 7;
+fn main() -> i32 {
+    let b = N == 7;
+    if b { 6 } else { 1 }
+}
+""" }]
+exit_code = 6
+
+[[case]]
+name = "const_comparison_both_sides"
+description = "Consts resolve on both sides of a comparison."
+files = [{ path = "main.rue", source = """
+const A: i32 = 7;
+const B: i32 = 7;
+fn main() -> i32 {
+    if A == B { 4 } else { 1 }
+}
+""" }]
+exit_code = 4
+
+[[case]]
+name = "unknown_name_in_comparison_still_e0201"
+description = "Control: a genuinely undefined name in comparison position is still E0201."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    if nope == 1 { 1 } else { 2 }
+}
+""" }]
+compile_fail = true
+error_contains = ["undefined variable 'nope'"]

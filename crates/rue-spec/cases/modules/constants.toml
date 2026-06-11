@@ -26,6 +26,51 @@ fn main() -> i32 { 0 }
 exit_code = 0
 
 # =============================================================================
+# Typed Const Declarations (RUE-161)
+# =============================================================================
+
+[[case]]
+name = "const_i64_annotation_respected"
+description = "An i64 annotation types the const's value; no truncation to i32"
+source = """
+const BIG: i64 = 5000000000;
+fn main() -> i32 {
+    if BIG / 1000000000 == 5 { 5 } else { 1 }
+}
+"""
+exit_code = 5
+
+[[case]]
+name = "const_annotation_value_out_of_range"
+description = "A const initializer must fit the annotated integer type"
+source = """
+const X: u8 = 300;
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = "out of range"
+
+[[case]]
+name = "const_annotation_kind_mismatch"
+description = "A non-integer const annotation must match the initializer's type"
+source = """
+const X: bool = 5;
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = "type mismatch"
+
+[[case]]
+name = "const_annotation_unknown_type"
+description = "Unknown type names on const items are rejected"
+source = """
+const X: zzz_bogus = 5;
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = "unknown type"
+
+# =============================================================================
 # Public Const Declarations
 # =============================================================================
 

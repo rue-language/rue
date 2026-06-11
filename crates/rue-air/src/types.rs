@@ -624,6 +624,41 @@ impl Type {
         }
     }
 
+    /// Resolve a primitive type name to its `Type`.
+    ///
+    /// This is the **single source of truth** for the primitive-name table.
+    /// Every type-name resolution path (signature resolution, let-annotation
+    /// validation, HM inference, comptime/const evaluation) must consult this
+    /// function instead of keeping its own `match` — there used to be seven
+    /// duplicated copies, which is how `usize`/`isize` ended up accepted in
+    /// some positions and rejected in others (RUE-151, RUE-155).
+    ///
+    /// Returns `None` for non-primitive names (struct/enum names, array and
+    /// pointer syntax), which callers resolve against their own tables.
+    #[must_use]
+    pub fn from_primitive_name(name: &str) -> Option<Type> {
+        Some(match name {
+            "i8" => Type::I8,
+            "i16" => Type::I16,
+            "i32" => Type::I32,
+            "i64" => Type::I64,
+            "u8" => Type::U8,
+            "u16" => Type::U16,
+            "u32" => Type::U32,
+            "u64" => Type::U64,
+            // Pointer-width integers. All supported targets are 64-bit, so
+            // these resolve to the 64-bit types (RUE-151).
+            "usize" => Type::U64,
+            "isize" => Type::I64,
+            "bool" => Type::BOOL,
+            "()" => Type::UNIT,
+            "!" => Type::NEVER,
+            // The type of types - used for comptime type parameters
+            "type" => Type::COMPTIME_TYPE,
+            _ => return None,
+        })
+    }
+
     /// Check if this type is an integer type.
     /// Optimized: checks tag range directly (0-7 are integer types).
     #[inline]
@@ -1287,6 +1322,37 @@ mod tests {
         // Struct and Array are move types (String is a builtin struct now)
         assert!(!Type::new_struct(StructId(0)).is_copy());
         assert!(!Type::new_array(ArrayTypeId(0)).is_copy());
+    }
+
+    // ========== Type::from_primitive_name() tests ==========
+
+    #[test]
+    fn test_from_primitive_name_all_primitives() {
+        assert_eq!(Type::from_primitive_name("i8"), Some(Type::I8));
+        assert_eq!(Type::from_primitive_name("i16"), Some(Type::I16));
+        assert_eq!(Type::from_primitive_name("i32"), Some(Type::I32));
+        assert_eq!(Type::from_primitive_name("i64"), Some(Type::I64));
+        assert_eq!(Type::from_primitive_name("u8"), Some(Type::U8));
+        assert_eq!(Type::from_primitive_name("u16"), Some(Type::U16));
+        assert_eq!(Type::from_primitive_name("u32"), Some(Type::U32));
+        assert_eq!(Type::from_primitive_name("u64"), Some(Type::U64));
+        // Pointer-width names alias the 64-bit types (RUE-151).
+        assert_eq!(Type::from_primitive_name("usize"), Some(Type::U64));
+        assert_eq!(Type::from_primitive_name("isize"), Some(Type::I64));
+        assert_eq!(Type::from_primitive_name("bool"), Some(Type::BOOL));
+        assert_eq!(Type::from_primitive_name("()"), Some(Type::UNIT));
+        assert_eq!(Type::from_primitive_name("!"), Some(Type::NEVER));
+        assert_eq!(Type::from_primitive_name("type"), Some(Type::COMPTIME_TYPE));
+    }
+
+    #[test]
+    fn test_from_primitive_name_non_primitives() {
+        // Struct/enum names, array and pointer syntax are resolved by callers.
+        assert_eq!(Type::from_primitive_name("String"), None);
+        assert_eq!(Type::from_primitive_name("zzz_bogus"), None);
+        assert_eq!(Type::from_primitive_name("[i32; 3]"), None);
+        assert_eq!(Type::from_primitive_name("ptr const i32"), None);
+        assert_eq!(Type::from_primitive_name(""), None);
     }
 
     // ========== Type::can_coerce_to() tests ==========

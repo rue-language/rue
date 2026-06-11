@@ -1413,7 +1413,7 @@ impl<'a> Sema<'a> {
                 directives_len,
                 name,
                 is_mut,
-                ty: _,
+                ty,
                 init,
             } => self.analyze_alloc(
                 air,
@@ -1421,6 +1421,7 @@ impl<'a> Sema<'a> {
                 *directives_len,
                 *name,
                 *is_mut,
+                *ty,
                 *init,
                 inst.span,
                 ctx,
@@ -1454,10 +1455,25 @@ impl<'a> Sema<'a> {
         directives_len: u32,
         name: Option<Spur>,
         is_mut: bool,
+        ty: Option<Spur>,
         init: InstRef,
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
+        // Validate the type annotation, if any. Inference treats an
+        // unresolvable annotation name as "no constraint" and silently falls
+        // back to the initializer's type, so `let x: zzz_bogus = 5;` used to
+        // compile (RUE-155). Resolve the name here so unknown annotations get
+        // the same E0204 as signature positions. Comptime type variables
+        // (e.g. `let P = Pair(i32); let p: P = ...`) and substituted type
+        // parameters live in ctx, not in the type tables, so accept those
+        // first.
+        if let Some(ty_sym) = ty {
+            if !ctx.comptime_type_vars.contains_key(&ty_sym) {
+                self.resolve_type(ty_sym, span)?;
+            }
+        }
+
         // Analyze the initializer
         let init_result = self.analyze_inst(air, init, ctx)?;
         let var_type = init_result.ty;
@@ -1551,7 +1567,7 @@ impl<'a> Sema<'a> {
     }
 
     /// Analyze a variable reference.
-    fn analyze_var_ref(
+    pub(crate) fn analyze_var_ref(
         &mut self,
         air: &mut Air,
         name: Spur,
