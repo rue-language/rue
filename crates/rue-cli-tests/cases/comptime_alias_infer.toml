@@ -1,0 +1,188 @@
+# Comptime type aliases must be visible to inference (RUE-170, RUE-164).
+#
+# A `let P = F();` binding (where `F` returns `type`) only got a concrete type
+# during sema's analysis pass, but HM inference runs first. Every use of `P`
+# as a type name therefore fell through inference's named-struct paths:
+#
+#  - `P { a: -1 }` returned Concrete(ERROR) without visiting the field
+#    initializers, so compound initializers kept unresolved inference
+#    variables and sema reported an internal compiler error (E9000);
+#  - `p.x` yielded a fresh variable instead of the declared field type, so a
+#    comparison literal defaulted to i32 (bogus E0800 against i64 fields);
+#  - `let x: P = ...` annotations were unenforced — any value typechecked;
+#  - `b.get()` on a `P`-typed receiver resolved to `<error>` and poisoned
+#    sibling constraints (`b.get() + 7` -> bogus E0800, RUE-164).
+#
+# Sema now pre-resolves such aliases before inference (and feeds the lazily
+# registered anonymous-struct method signatures in), so all four shapes route
+# through the same concrete paths as named structs. Named-struct controls are
+# included to pin that the two stay in sync.
+
+[section]
+id = "cli.comptime_alias_infer"
+name = "Comptime type aliases in inference"
+description = "let-bound type aliases must behave like named structs during inference."
+
+[[case]]
+name = "alias_struct_init_compound_field_initializer"
+description = "RUE-170 facet 1: compound initializers in an alias struct literal used to ICE (E9000)."
+files = [{ path = "main.rue", source = """
+fn F() -> type { struct { a: i32, b: i32 } }
+fn main() -> i32 {
+    let P = F();
+    let p: P = P { a: -1, b: 1 + 2 };
+    p.a + p.b + 40
+}
+""" }]
+exit_code = 42
+
+[[case]]
+name = "alias_field_type_anchors_comparison_literal"
+description = "RUE-170 facet 2: p.x must yield the declared i64 field type, not an i32-defaulted variable."
+files = [{ path = "main.rue", source = """
+fn F() -> type { struct { x: i64 } }
+fn main() -> i32 {
+    let P = F();
+    let p: P = P { x: 5000000000 };
+    if p.x == 5000000000 { 0 } else { 1 }
+}
+""" }]
+exit_code = 0
+
+[[case]]
+name = "alias_let_annotation_enforced"
+description = "RUE-170 facet 3: a let annotation naming a comptime type alias must reject mismatched values."
+files = [{ path = "main.rue", source = """
+fn F() -> type { struct { a: i32 } }
+fn main() -> i32 {
+    let P = F();
+    let x: P = true;
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["type mismatch", "found bool"]
+
+[[case]]
+name = "alias_method_result_in_arithmetic"
+description = "RUE-164: a method-call result on an alias-typed receiver must anchor sibling constraints."
+files = [{ path = "main.rue", source = """
+fn F() -> type {
+    struct {
+        v: i64,
+        fn get(self) -> i64 { self.v }
+    }
+}
+fn main() -> i32 {
+    let B = F();
+    let b: B = B { v: 35 };
+    let r = b.get() + 7;
+    if r == 42 { 0 } else { 1 }
+}
+""" }]
+exit_code = 0
+
+[[case]]
+name = "alias_of_generic_type_constructor"
+description = "Alias of a generic type constructor: field types come from the substituted parameter."
+files = [{ path = "main.rue", source = """
+fn Pair(comptime T: type) -> type { struct { a: T, b: T } }
+fn main() -> i32 {
+    let P = Pair(i64);
+    let p: P = P { a: 5000000000, b: 1 };
+    if p.a == 5000000000 { 0 } else { 1 }
+}
+""" }]
+exit_code = 0
+
+[[case]]
+name = "alias_with_captured_comptime_value_method"
+description = "Captured comptime values flow through alias method calls used in arithmetic."
+files = [{ path = "main.rue", source = """
+fn FixedBuffer(comptime N: i32) -> type {
+    struct {
+        v: i32,
+        fn capacity(self) -> i32 { N }
+    }
+}
+fn main() -> i32 {
+    let B = FixedBuffer(40);
+    let b: B = B { v: 0 };
+    b.capacity() + 2
+}
+""" }]
+exit_code = 42
+
+[[case]]
+name = "alias_of_alias_chain"
+description = "An alias of an alias (`let Q = P;`) resolves through the chain."
+files = [{ path = "main.rue", source = """
+fn F() -> type { struct { a: i32 } }
+fn main() -> i32 {
+    let P = F();
+    let Q = P;
+    let q: Q = Q { a: 1 + 2 };
+    q.a + 39
+}
+""" }]
+exit_code = 42
+
+[[case]]
+name = "alias_duplicate_method_still_rejected"
+description = "The pre-pass must not swallow lazy duplicate-method errors (registration is atomic now)."
+files = [{ path = "main.rue", source = """
+fn Bad() -> type {
+    struct {
+        x: i32,
+        fn get(self) -> i32 { self.x }
+        fn get(self) -> i32 { 0 }
+    }
+}
+fn main() -> i32 {
+    let B = Bad();
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["comptime evaluation failed"]
+
+[[case]]
+name = "named_struct_control_compound_initializer"
+description = "Named-struct control for facet 1: compound field initializers."
+files = [{ path = "main.rue", source = """
+struct P { a: i32, b: i32 }
+fn main() -> i32 {
+    let p: P = P { a: -1, b: 1 + 2 };
+    p.a + p.b + 40
+}
+""" }]
+exit_code = 42
+
+[[case]]
+name = "named_struct_control_annotation_enforced"
+description = "Named-struct control for facet 3: annotations reject mismatched values."
+files = [{ path = "main.rue", source = """
+struct P { a: i32 }
+fn main() -> i32 {
+    let x: P = true;
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["type mismatch: expected P, found bool"]
+
+[[case]]
+name = "named_struct_control_method_arithmetic"
+description = "Named-struct control for RUE-164: method result anchors arithmetic."
+files = [{ path = "main.rue", source = """
+struct B {
+    v: i64,
+    fn get(self) -> i64 { self.v }
+}
+fn main() -> i32 {
+    let b: B = B { v: 35 };
+    let r = b.get() + 7;
+    if r == 42 { 0 } else { 1 }
+}
+""" }]
+exit_code = 0

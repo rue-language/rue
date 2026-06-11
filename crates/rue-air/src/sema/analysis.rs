@@ -1679,6 +1679,44 @@ impl<'a> Sema<'a> {
         type_subst: Option<&HashMap<Spur, Type>>,
         value_subst: Option<&HashMap<Spur, ConstValue>>,
     ) -> CompileResult<HashMap<InstRef, Type>> {
+        // Pre-resolve `let`-bound comptime type aliases (`let P = F();` where
+        // `F` returns `type`) so inference can see the concrete anonymous
+        // struct types behind them. Without this, `P { ... }`, `let p: P`,
+        // and methods on `P`-typed receivers all fell through to `<error>`
+        // or unconstrained variables (RUE-170, RUE-164). This may create the
+        // anonymous structs (idempotently — analysis re-evaluates the same
+        // initializers later and structural equality dedups them).
+        let comptime_local_types =
+            self.precompute_comptime_type_locals(body, type_subst, value_subst);
+
+        // Anonymous-struct methods are registered lazily (during comptime
+        // evaluation, including the pre-pass above), after the shared
+        // `InferenceContext` was built — so collect the signatures it doesn't
+        // know about. Without these, a method call on an anonymous-struct
+        // receiver inferred to `<error>` and poisoned sibling constraints
+        // (RUE-164).
+        let extra_method_sigs: HashMap<(StructId, Spur), crate::inference::MethodSig> = self
+            .methods
+            .iter()
+            .filter(|(key, _)| !infer_ctx.method_sigs.contains_key(*key))
+            .map(|(key, info)| {
+                (
+                    *key,
+                    crate::inference::MethodSig {
+                        struct_type: info.struct_type,
+                        has_self: info.has_self,
+                        param_types: self
+                            .param_arena
+                            .types(info.params)
+                            .iter()
+                            .map(|t| self.type_to_infer_type(*t))
+                            .collect(),
+                        return_type: self.type_to_infer_type(info.return_type),
+                    },
+                )
+            })
+            .collect();
+
         // Create constraint generator using pre-computed inference context
         let mut cgen = ConstraintGenerator::with_type_subst(
             self.rir,
@@ -1691,7 +1729,9 @@ impl<'a> Sema<'a> {
             type_subst,
         )
         .with_const_types(&infer_ctx.const_types)
-        .with_module_binding_types(&infer_ctx.module_binding_types);
+        .with_module_binding_types(&infer_ctx.module_binding_types)
+        .with_comptime_local_types(&comptime_local_types)
+        .with_extra_method_sigs(&extra_method_sigs);
 
         // Build parameter map for constraint context.
         // Convert Type to InferType so arrays are represented structurally.
@@ -4650,6 +4690,14 @@ impl<'a> Sema<'a> {
         // Track method names in this registration batch to detect duplicates
         let mut seen_methods: std::collections::HashSet<Spur> = std::collections::HashSet::new();
 
+        // Stage registrations and commit only if the whole batch validates.
+        // Inserting one-by-one left earlier methods registered when a later
+        // one failed (e.g. a duplicate name), so re-evaluating the same
+        // AnonStructType — which happens since the RUE-170 inference pre-pass
+        // evaluates type aliases before analysis does — saw the methods as
+        // "already registered", skipped this check, and silently succeeded.
+        let mut staged: Vec<((StructId, Spur), MethodInfo)> = Vec::new();
+
         for method_ref in method_refs {
             let method_inst = self.rir.get(method_ref);
             if let InstData::FnDecl {
@@ -4704,7 +4752,7 @@ impl<'a> Sema<'a> {
                     .param_arena
                     .alloc_method(param_names.into_iter(), param_types.into_iter());
 
-                self.methods.insert(
+                staged.push((
                     key,
                     MethodInfo {
                         struct_type,
@@ -4714,9 +4762,10 @@ impl<'a> Sema<'a> {
                         body: *body,
                         span: method_inst.span,
                     },
-                );
+                ));
             }
         }
+        self.methods.extend(staged);
         Some(())
     }
 

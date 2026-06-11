@@ -185,6 +185,23 @@ pub struct ConstraintGenerator<'a> {
     /// `None` only in unit tests; production passes the map via
     /// [`Self::with_module_binding_types`].
     module_binding_types: Option<&'a HashMap<(FileId, Spur), Type>>,
+    /// Compile-time type aliases bound by `let` in the current function body
+    /// (`let P = F();` where `F` returns `type`), pre-resolved by sema before
+    /// constraint generation. Consulted after `type_subst` when resolving
+    /// struct-literal type names and `let` annotations, so anonymous-struct
+    /// aliases route through the same concrete paths as named structs
+    /// (RUE-170). Like sema's `comptime_type_vars`, the map is flat (not
+    /// scope-aware). `None` only in unit tests; production passes the map via
+    /// [`Self::with_comptime_local_types`].
+    comptime_local_types: Option<&'a HashMap<Spur, Type>>,
+    /// Method signatures registered after the shared `InferenceContext` was
+    /// built: anonymous-struct methods are registered lazily during comptime
+    /// evaluation, so they're absent from `methods`. Consulted when a method
+    /// key misses `methods`, so a call on an anonymous-struct receiver yields
+    /// its declared return type instead of `<error>` (RUE-164). `None` only
+    /// in unit tests; production passes the map via
+    /// [`Self::with_extra_method_sigs`].
+    extra_method_sigs: Option<&'a HashMap<(StructId, Spur), MethodSig>>,
     /// Type intern pool for creating pointer and array types during constraint generation.
     type_pool: &'a TypeInternPool,
 }
@@ -235,6 +252,8 @@ impl<'a> ConstraintGenerator<'a> {
             type_subst,
             const_types: None,
             module_binding_types: None,
+            comptime_local_types: None,
+            extra_method_sigs: None,
             type_pool,
         }
     }
@@ -253,6 +272,28 @@ impl<'a> ConstraintGenerator<'a> {
         module_binding_types: &'a HashMap<(FileId, Spur), Type>,
     ) -> Self {
         self.module_binding_types = Some(module_binding_types);
+        self
+    }
+
+    /// Provide pre-resolved comptime type aliases (local name -> concrete
+    /// type) for struct-literal and `let`-annotation resolution. See the
+    /// `comptime_local_types` field (RUE-170).
+    pub fn with_comptime_local_types(
+        mut self,
+        comptime_local_types: &'a HashMap<Spur, Type>,
+    ) -> Self {
+        self.comptime_local_types = Some(comptime_local_types);
+        self
+    }
+
+    /// Provide late-registered method signatures (anonymous-struct methods)
+    /// for method-call resolution. See the `extra_method_sigs` field
+    /// (RUE-164).
+    pub fn with_extra_method_sigs(
+        mut self,
+        extra_method_sigs: &'a HashMap<(StructId, Spur), MethodSig>,
+    ) -> Self {
+        self.extra_method_sigs = Some(extra_method_sigs);
         self
     }
 
@@ -286,6 +327,14 @@ impl<'a> ConstraintGenerator<'a> {
             }
             _ => InferType::Concrete(ty),
         }
+    }
+
+    /// Look up a method signature, falling back to the late-registered
+    /// (anonymous-struct) signatures when the shared map misses (RUE-164).
+    fn method_sig(&self, key: &(StructId, Spur)) -> Option<&'a MethodSig> {
+        self.methods
+            .get(key)
+            .or_else(|| self.extra_method_sigs.and_then(|sigs| sigs.get(key)))
     }
 
     /// Resolve a field's declared type on a concrete struct type.
@@ -548,9 +597,18 @@ impl<'a> ConstraintGenerator<'a> {
                 let init_info = self.generate(*init, ctx);
 
                 let var_ty = if let Some(ty_sym) = type_annotation {
-                    // Explicit type annotation - use it and constrain init to match
-                    let ty_name = self.interner.resolve(ty_sym);
-                    if let Some(annotated_ty) = self.resolve_type_name(ty_name) {
+                    // Explicit type annotation - use it and constrain init to
+                    // match. Comptime type aliases (`let P = F(); let p: P =
+                    // ...`) resolve first, mirroring sema's annotation
+                    // validation order (`comptime_type_vars` before the type
+                    // tables); without this the annotation was unenforced and
+                    // any value typechecked against it (RUE-170).
+                    let annotated = self
+                        .comptime_local_types
+                        .and_then(|aliases| aliases.get(ty_sym).copied())
+                        .map(|ty| self.type_to_infer(ty))
+                        .or_else(|| self.resolve_type_name(self.interner.resolve(ty_sym)));
+                    if let Some(annotated_ty) = annotated {
                         self.add_constraint(Constraint::equal(
                             init_info.ty,
                             annotated_ty.clone(),
@@ -1111,14 +1169,22 @@ impl<'a> ConstraintGenerator<'a> {
                 fields_len,
                 ..
             } => {
-                // Check type_subst first (for Self and type parameters in method bodies)
+                // Check type_subst first (for Self and type parameters in
+                // method bodies), then comptime type aliases (`let P = F();
+                // P { ... }`, RUE-170) — mirroring sema, which consults
+                // `comptime_type_vars` before the struct table — then named
+                // structs.
                 let struct_ty = self
                     .type_subst
                     .and_then(|subst| subst.get(type_name).copied())
+                    .or_else(|| {
+                        self.comptime_local_types
+                            .and_then(|aliases| aliases.get(type_name).copied())
+                    })
                     .or_else(|| self.structs.get(type_name).copied());
 
+                let fields = self.rir.get_field_inits(*fields_start, *fields_len);
                 if let Some(struct_ty) = struct_ty {
-                    let fields = self.rir.get_field_inits(*fields_start, *fields_len);
                     // Constrain each initializer against its field's declared
                     // type, so literal initializers are range-checked at the
                     // field's width instead of silently wrapping
@@ -1133,6 +1199,14 @@ impl<'a> ConstraintGenerator<'a> {
                     }
                     InferType::Concrete(struct_ty)
                 } else {
+                    // Unknown type name — sema reports the error. Still visit
+                    // the initializers so every sub-expression gets a type;
+                    // skipping them left compound initializers (`-1`, `1+2`)
+                    // with unresolved variables, which sema then reported as
+                    // an internal compiler error (RUE-170).
+                    for (_, value_ref) in fields.iter() {
+                        self.generate(*value_ref, ctx);
+                    }
                     InferType::Concrete(Type::ERROR)
                 }
             }
@@ -1336,9 +1410,11 @@ impl<'a> ConstraintGenerator<'a> {
                     }
                     InferType::Concrete(ty) => {
                         if let Some(struct_id) = ty.as_struct() {
-                            // Use StructId directly for method lookup
+                            // Use StructId directly for method lookup (falls
+                            // back to late-registered anonymous-struct
+                            // signatures, RUE-164)
                             let method_key = (struct_id, *method);
-                            if let Some(method_sig) = self.methods.get(&method_key) {
+                            if let Some(method_sig) = self.method_sig(&method_key) {
                                 // Generate constraints for arguments
                                 for (arg, param_type) in
                                     args.iter().zip(method_sig.param_types.iter())
