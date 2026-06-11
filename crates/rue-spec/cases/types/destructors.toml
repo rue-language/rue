@@ -820,3 +820,133 @@ fn main() -> i32 { 0 }
 compile_fail = true
 error_contains = "unknown type"
 
+
+[[case]]
+name = "assignment_drops_overwritten_value"
+spec = ["3.9:18"]
+description = "Assignment drops the destination's old value after the RHS is evaluated, before the store (RUE-64)"
+source = """
+struct Data { value: i32 }
+
+drop fn Data(self) {
+    @dbg(self.value);
+}
+
+fn main() -> i32 {
+    let mut d = Data { value: 1 };
+    d = Data { value: 2 };  // old value (1) dropped here
+    @dbg(100);
+    0
+}  // new value (2) dropped here
+"""
+exit_code = 0
+expected_stdout = "1\n100\n2\n"
+
+[[case]]
+name = "field_assignment_drops_overwritten_value"
+spec = ["3.9:18"]
+description = "Field assignment drops the field's old value before storing the new one (RUE-64)"
+source = """
+struct Data { value: i32 }
+
+drop fn Data(self) {
+    @dbg(self.value);
+}
+
+struct Holder { d: Data }
+
+fn main() -> i32 {
+    let mut h = Holder { d: Data { value: 1 } };
+    h.d = Data { value: 2 };  // old field value (1) dropped here
+    @dbg(100);
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "1\n100\n2\n"
+
+[[case]]
+name = "element_assignment_drops_overwritten_value"
+spec = ["3.9:18"]
+description = "Array element assignment drops the overwritten element before storing the new one (RUE-64)"
+source = """
+struct Data { value: i32 }
+
+drop fn Data(self) {
+    @dbg(self.value);
+}
+
+fn main() -> i32 {
+    let mut arr = [Data { value: 1 }, Data { value: 2 }];
+    arr[0] = Data { value: 10 };  // old element (1) dropped here
+    @dbg(100);
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "1\n100\n10\n2\n"
+
+[[case]]
+name = "assignment_after_move_does_not_drop"
+spec = ["3.9:18", "3.9:2"]
+description = "Assignment to a moved-out variable drops nothing: the RHS consumed the old value (no double drop)"
+source = """
+struct Data { value: i32 }
+
+drop fn Data(self) {
+    @dbg(self.value);
+}
+
+fn bump(d: Data) -> Data {
+    Data { value: d.value + 10 }
+}
+
+fn main() -> i32 {
+    let mut d = Data { value: 1 };
+    d = bump(d);  // RHS moves d out; only bump's parameter drop (1) runs
+    @dbg(100);
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "1\n100\n11\n"
+
+[[case]]
+name = "discarded_temporary_dropped_at_statement_end"
+spec = ["3.9:18"]
+description = "A discarded expression-statement result is dropped at the end of the statement (RUE-65)"
+source = """
+struct Data { value: i32 }
+
+drop fn Data(self) {
+    @dbg(self.value);
+}
+
+fn main() -> i32 {
+    Data { value: 77 };  // temporary dropped here
+    @dbg(100);
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "77\n100\n"
+
+[[case]]
+name = "let_underscore_drops_value"
+spec = ["3.9:18"]
+description = "`let _ = value` drops the value at the end of the statement (RUE-66)"
+source = """
+struct Data { value: i32 }
+
+drop fn Data(self) {
+    @dbg(self.value);
+}
+
+fn main() -> i32 {
+    let _ = Data { value: 88 };  // dropped here
+    @dbg(100);
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "88\n100\n"

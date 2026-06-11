@@ -865,6 +865,10 @@ impl<'a> CfgBuilder<'a> {
                 let Some(val) = self.lower_value(*value) else {
                     return Self::diverged();
                 };
+                // The old value, if still owned, is dropped before being
+                // overwritten (RUE-64): evaluate RHS, drop old, store new.
+                let val_ty = self.air.get(*value).ty;
+                self.emit_overwrite_drop(MovedSlot::Local(*slot), val_ty, span);
                 self.emit(
                     CfgInstData::Store {
                         slot: *slot,
@@ -888,6 +892,10 @@ impl<'a> CfgBuilder<'a> {
                 let Some(val) = self.lower_value(*value) else {
                     return Self::diverged();
                 };
+                // Drop the overwritten old value first (RUE-64); for an
+                // `inout` param this is the caller's value being replaced.
+                let val_ty = self.air.get(*value).ty;
+                self.emit_overwrite_drop(MovedSlot::Param(*param_slot), val_ty, span);
                 self.emit(
                     CfgInstData::ParamStore {
                         param_slot: *param_slot,
@@ -1218,6 +1226,22 @@ impl<'a> CfgBuilder<'a> {
                             value: None,
                             continuation: Continuation::Diverged,
                         };
+                    }
+
+                    // A statement's discarded result is a temporary the
+                    // statement owns (`D { v: 7 };`, `make();`, `let _ = …`,
+                    // a discarded if/match result): drop it at the end of
+                    // the statement (RUE-65, RUE-66). Values forwarded into
+                    // calls are NOT affected — the callee owns and drops
+                    // those; only the statement's own result is dropped
+                    // here. Moves out of locals (`d;`) were already marked
+                    // by MarkMoved, so this drop is the move's destination.
+                    if let Some(temp_val) = result.value {
+                        let stmt_ty = self.air.get(*stmt).ty;
+                        if self.type_needs_drop(stmt_ty) {
+                            let stmt_span = self.air.get(*stmt).span;
+                            self.emit(CfgInstData::Drop { value: temp_val }, Type::UNIT, stmt_span);
+                        }
                     }
                 }
 
@@ -1904,6 +1928,25 @@ impl<'a> CfgBuilder<'a> {
                 let Some(val) = self.lower_value(*value) else {
                     return Self::diverged();
                 };
+                // The overwritten element, if still owned, is dropped before
+                // the store (RUE-64). (Element assignment currently reaches
+                // CFG as PlaceWrite; kept correct here too.)
+                let elem_ty = self.air.get(*value).ty;
+                let elem_place = self.cfg.make_place(
+                    PlaceBase::Local(*slot),
+                    std::iter::once(Projection::Index {
+                        array_type: *array_type,
+                        index: index_val,
+                    }),
+                );
+                self.emit_projected_overwrite_drop(
+                    MovedSlot::Local(*slot),
+                    elem_place,
+                    elem_ty,
+                    false,
+                    None,
+                    span,
+                );
                 self.emit(
                     CfgInstData::IndexSet {
                         slot: *slot,
@@ -1932,6 +1975,24 @@ impl<'a> CfgBuilder<'a> {
                 let Some(val) = self.lower_value(*value) else {
                     return Self::diverged();
                 };
+                // See the IndexSet arm: drop the overwritten element first
+                // (RUE-64).
+                let elem_ty = self.air.get(*value).ty;
+                let elem_place = self.cfg.make_place(
+                    PlaceBase::Param(*param_slot),
+                    std::iter::once(Projection::Index {
+                        array_type: *array_type,
+                        index: index_val,
+                    }),
+                );
+                self.emit_projected_overwrite_drop(
+                    MovedSlot::Param(*param_slot),
+                    elem_place,
+                    elem_ty,
+                    false,
+                    None,
+                    span,
+                );
                 self.emit(
                     CfgInstData::ParamIndexSet {
                         param_slot: *param_slot,
@@ -1971,6 +2032,54 @@ impl<'a> CfgBuilder<'a> {
                 let Some(cfg_place) = self.lower_air_place(*place) else {
                     return Self::diverged();
                 };
+                // The destination's old value, if still owned, is dropped
+                // before being overwritten (RUE-64): evaluate RHS, drop old,
+                // store new. A whole-variable write reuses the slot-overwrite
+                // drop (partial-move aware); a projected write (one field or
+                // array element) reads the old value through the place. A
+                // top-level field whose contents were statically moved out
+                // (RUE-62) holds nothing to drop.
+                let air_place = self.air.get_place(*place);
+                let val_ty = self.air.get(*value).ty;
+                let base_key = match air_place.base {
+                    AirPlaceBase::Local(slot) => MovedSlot::Local(slot),
+                    AirPlaceBase::Param(slot) => MovedSlot::Param(slot),
+                };
+                if air_place.projections_len == 0 {
+                    self.emit_overwrite_drop(base_key, val_ty, span);
+                } else {
+                    // A single top-level field write: skip the old-value
+                    // drop when the field was definitely moved out, and guard
+                    // it with the field's runtime drop flag when the move was
+                    // path-dependent (RUE-156 x RUE-64 interaction).
+                    let mut field_flag: Option<u32> = None;
+                    let field_moved = match self
+                        .air
+                        .get_projections(air_place.projections_start, air_place.projections_len)
+                    {
+                        [AirProjection::Field { field_index, .. }] => {
+                            let path = vec![*field_index];
+                            if self.moved.moved_paths_of(base_key).contains(&path) {
+                                true
+                            } else {
+                                if self.moved.maybe_moved_paths_of(base_key).contains(&path) {
+                                    field_flag =
+                                        self.field_drop_flags.get(&(base_key, path)).copied();
+                                }
+                                false
+                            }
+                        }
+                        _ => false,
+                    };
+                    self.emit_projected_overwrite_drop(
+                        base_key,
+                        cfg_place,
+                        val_ty,
+                        field_moved,
+                        field_flag,
+                        span,
+                    );
+                }
                 self.emit(
                     CfgInstData::PlaceWrite {
                         place: cfg_place,
@@ -1985,7 +2094,6 @@ impl<'a> CfgBuilder<'a> {
                 // restore a fully moved-out variable — but a write to exactly
                 // one top-level field (`o.a = ...`) does re-initialize that
                 // field, so its per-field moved state is cleared (RUE-62).
-                let air_place = self.air.get_place(*place);
                 if let Some(slot) = air_place.as_local() {
                     self.moved.clear_slot(MovedSlot::Local(slot));
                     self.update_drop_flag(MovedSlot::Local(slot), true, span);
@@ -1993,15 +2101,15 @@ impl<'a> CfgBuilder<'a> {
                     self.moved.clear_slot(MovedSlot::Param(slot));
                     self.update_drop_flag(MovedSlot::Param(slot), true, span);
                 } else if air_place.projections_len == 1 {
-                    let base = match air_place.base {
-                        AirPlaceBase::Local(slot) => MovedSlot::Local(slot),
-                        AirPlaceBase::Param(slot) => MovedSlot::Param(slot),
-                    };
                     if let [AirProjection::Field { field_index, .. }] = self
                         .air
                         .get_projections(air_place.projections_start, air_place.projections_len)
                     {
-                        self.moved.clear_field(base, *field_index);
+                        self.moved.clear_field(base_key, *field_index);
+                        // The field is re-initialized: re-arm its runtime
+                        // drop flag so scope-exit (and later overwrite)
+                        // drops fire again (RUE-156).
+                        self.update_field_drop_flag(base_key, &[*field_index], true, span);
                     }
                 }
                 ExprResult {
@@ -2533,6 +2641,65 @@ impl<'a> CfgBuilder<'a> {
             Type::UNIT,
             span,
         );
+    }
+
+    /// Drop the live value about to be overwritten by a whole-slot
+    /// assignment (RUE-64). Assignment semantics follow Rust: the RHS is
+    /// fully evaluated first, then the destination's old value is dropped,
+    /// then the new value is stored — so callers invoke this after lowering
+    /// the RHS and before emitting the store.
+    ///
+    /// The drop is skipped when the old value was moved out on every path
+    /// (`d = f(d)` — the RHS itself consumed it); path-dependent moves are
+    /// handled at runtime by the drop-flag guard. A slot with moved-out
+    /// FIELDS is dropped field-granularly (RUE-62), like at scope exit.
+    fn emit_overwrite_drop(&mut self, key: MovedSlot, ty: Type, span: rue_span::Span) {
+        if self.moved.is_slot_moved(key) || !self.type_needs_drop(ty) {
+            return;
+        }
+        self.emit_guarded(key, span, |b| {
+            if !b.emit_partial_struct_drop(key, ty, span) {
+                let old_val = match key {
+                    MovedSlot::Local(slot) => b.emit(CfgInstData::Load { slot }, ty, span),
+                    MovedSlot::Param(index) => b.emit(CfgInstData::Param { index }, ty, span),
+                };
+                b.emit(CfgInstData::Drop { value: old_val }, Type::UNIT, span);
+            }
+        });
+    }
+
+    /// Drop the live value about to be overwritten through a PROJECTED place
+    /// (field or array-element assignment, RUE-64). Same ordering contract
+    /// as [`emit_overwrite_drop`]. `base_key` is the place's base slot: a
+    /// statically moved-out base means the old projected value is gone, and
+    /// a path-dependent whole-base move is guarded by the base's drop flag.
+    /// `field_moved` lets the caller suppress the drop when this exact
+    /// top-level field was statically moved out (RUE-62).
+    fn emit_projected_overwrite_drop(
+        &mut self,
+        base_key: MovedSlot,
+        place: Place,
+        ty: Type,
+        field_moved: bool,
+        field_flag: Option<u32>,
+        span: rue_span::Span,
+    ) {
+        if self.moved.is_slot_moved(base_key) || field_moved || !self.type_needs_drop(ty) {
+            return;
+        }
+        self.emit_guarded(base_key, span, |b| {
+            if let Some(flag) = field_flag {
+                // The exact field was moved on some paths only: its per-path
+                // runtime flag (RUE-156) says whether the old value is live.
+                let cont = b.begin_flag_guard(flag, span);
+                let old_val = b.emit(CfgInstData::PlaceRead { place }, ty, span);
+                b.emit(CfgInstData::Drop { value: old_val }, Type::UNIT, span);
+                b.end_flag_guard(cont);
+            } else {
+                let old_val = b.emit(CfgInstData::PlaceRead { place }, ty, span);
+                b.emit(CfgInstData::Drop { value: old_val }, Type::UNIT, span);
+            }
+        });
     }
 
     /// Field-granular drop of a partially-moved struct (RUE-62, RUE-156,
