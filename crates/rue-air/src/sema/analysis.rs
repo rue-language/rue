@@ -1410,6 +1410,7 @@ fn analyze_function_with_context(
         params: &param_vec,
         next_slot: 0,
         loop_depth: 0,
+        loop_break_stack: Vec::new(),
         used_locals: HashSet::new(),
         return_type,
         scope_stack: Vec::new(),
@@ -1926,10 +1927,21 @@ fn analyze_inst_with_context(
         }
 
         // Control flow: Break and Continue
-        InstData::Break => {
+        InstData::Break { value } => {
             // Validate that we're inside a loop
             if analysis_ctx.loop_depth == 0 {
                 return Err(CompileError::new(ErrorKind::BreakOutsideLoop, inst.span));
+            }
+
+            // Break does not carry a value (spec 4.8:21)
+            if value.is_some() {
+                return Err(CompileError::new(ErrorKind::BreakWithValue, inst.span));
+            }
+
+            // Record the break against the innermost enclosing loop, so the
+            // loop can be typed `()` instead of `!` (spec 4.8:17).
+            if let Some(broke) = analysis_ctx.loop_break_stack.last_mut() {
+                *broke = true;
             }
 
             // Break has the never type - it diverges
@@ -3278,10 +3290,14 @@ fn analyze_while_loop_ctx(
     // While loop: condition must be bool, result is Unit
     let cond_result = analyze_inst_with_context(ctx, air, cond, analysis_ctx)?;
 
-    // Analyze body with its own scope
+    // Analyze body with its own scope. The loop_break_stack entry makes
+    // breaks inside the body target this while loop, not an outer loop; the
+    // flag itself is unused because a while loop is always `()`.
     analysis_ctx.push_scope();
     analysis_ctx.loop_depth += 1;
+    analysis_ctx.loop_break_stack.push(false);
     let body_result = analyze_inst_with_context(ctx, air, body, analysis_ctx)?;
+    analysis_ctx.loop_break_stack.pop();
     analysis_ctx.loop_depth -= 1;
     analysis_ctx.pop_scope();
 
@@ -3296,7 +3312,9 @@ fn analyze_while_loop_ctx(
             analyze_inst_with_context(ctx, &mut scratch_air, cond, &mut scratch_ctx)?;
             scratch_ctx.push_scope();
             scratch_ctx.loop_depth += 1;
+            scratch_ctx.loop_break_stack.push(false);
             analyze_inst_with_context(ctx, &mut scratch_air, body, &mut scratch_ctx)?;
+            scratch_ctx.loop_break_stack.pop();
             scratch_ctx.loop_depth -= 1;
             scratch_ctx.pop_scope();
             Ok(())
@@ -3323,14 +3341,18 @@ fn analyze_infinite_loop_ctx(
     span: Span,
     analysis_ctx: &mut AnalysisContext,
 ) -> CompileResult<AnalysisResult> {
-    // Infinite loop: `loop { body }` - always produces Never type
+    // Infinite loop: `loop { body }` - type `()` if the body contains a break
+    // targeting this loop (the loop can exit), `!` otherwise
+    // (spec 4.8:17 / 4.8:21).
 
     // Snapshot move state before the body for the back-edge recheck below.
     let moves_before_loop = analysis_ctx.moved_vars.clone();
 
     analysis_ctx.push_scope();
     analysis_ctx.loop_depth += 1;
+    analysis_ctx.loop_break_stack.push(false);
     let body_result = analyze_inst_with_context(ctx, air, body, analysis_ctx)?;
+    let has_break = analysis_ctx.loop_break_stack.pop().unwrap_or(false);
     analysis_ctx.loop_depth -= 1;
     analysis_ctx.pop_scope();
 
@@ -3342,20 +3364,23 @@ fn analyze_infinite_loop_ctx(
         let mut scratch_ctx = analysis_ctx.fork_for_loop_recheck();
         scratch_ctx.push_scope();
         scratch_ctx.loop_depth += 1;
+        scratch_ctx.loop_break_stack.push(false);
         analyze_inst_with_context(ctx, &mut scratch_air, body, &mut scratch_ctx)
             .map_err(|e| e.with_note("value was moved in a previous iteration of the loop"))?;
+        scratch_ctx.loop_break_stack.pop();
         scratch_ctx.loop_depth -= 1;
         scratch_ctx.pop_scope();
     }
 
+    let loop_ty = if has_break { Type::UNIT } else { Type::NEVER };
     let air_ref = air.add_inst(AirInst {
         data: AirInstData::InfiniteLoop {
             body: body_result.air_ref,
         },
-        ty: Type::NEVER,
+        ty: loop_ty,
         span,
     });
-    Ok(AnalysisResult::new(air_ref, Type::NEVER))
+    Ok(AnalysisResult::new(air_ref, loop_ty))
 }
 
 /// Analyze a match expression using the shared context.
@@ -6631,6 +6656,7 @@ impl<'a> Sema<'a> {
             params: &param_vec,
             next_slot: 0,
             loop_depth: 0,
+            loop_break_stack: Vec::new(),
             used_locals: HashSet::new(),
             return_type,
             scope_stack: Vec::new(),
@@ -7226,7 +7252,7 @@ impl<'a> Sema<'a> {
             | InstData::Loop { .. }
             | InstData::InfiniteLoop { .. }
             | InstData::Match { .. }
-            | InstData::Break
+            | InstData::Break { .. }
             | InstData::Continue
             | InstData::Ret(_)
             | InstData::Block { .. } => self.analyze_control_flow(air, inst_ref, ctx),

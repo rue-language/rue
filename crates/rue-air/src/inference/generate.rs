@@ -89,6 +89,10 @@ pub struct ConstraintContext<'a> {
     pub return_type: Type,
     /// How many loops we're nested inside (for break/continue validation).
     pub loop_depth: u32,
+    /// One entry per enclosing loop (innermost last); set to `true` when a
+    /// `break` targeting that loop is seen. An infinite loop containing a
+    /// break has type `()`; without one it has type `!` (see spec 4.8).
+    pub loop_break_stack: Vec<bool>,
     /// Scope stack for efficient scope management.
     scope_stack: Vec<Vec<(Spur, Option<LocalVarInfo>)>>,
 }
@@ -101,6 +105,7 @@ impl<'a> ConstraintContext<'a> {
             params,
             return_type,
             loop_depth: 0,
+            loop_break_stack: Vec::new(),
             scope_stack: Vec::new(),
         }
     }
@@ -888,7 +893,9 @@ impl<'a> ConstraintGenerator<'a> {
                 ));
 
                 ctx.loop_depth += 1;
+                ctx.loop_break_stack.push(false);
                 self.generate(*body, ctx);
+                ctx.loop_break_stack.pop();
                 ctx.loop_depth -= 1;
 
                 // Loops produce unit
@@ -898,15 +905,42 @@ impl<'a> ConstraintGenerator<'a> {
             // Infinite loop
             InstData::InfiniteLoop { body } => {
                 ctx.loop_depth += 1;
+                ctx.loop_break_stack.push(false);
                 self.generate(*body, ctx);
+                let has_break = ctx.loop_break_stack.pop().unwrap_or(false);
                 ctx.loop_depth -= 1;
 
-                // Infinite loop without break never returns
-                InferType::Concrete(Type::NEVER)
+                // An infinite loop with a break targeting it exits with unit;
+                // without one it never returns (see spec 4.8:17 / 4.8:21).
+                if has_break {
+                    InferType::Concrete(Type::UNIT)
+                } else {
+                    InferType::Concrete(Type::NEVER)
+                }
             }
 
             // Break/Continue
-            InstData::Break | InstData::Continue => InferType::Concrete(Type::NEVER),
+            InstData::Break { value } => {
+                match value {
+                    None => {
+                        // Record the break against the innermost enclosing loop.
+                        if let Some(broke) = ctx.loop_break_stack.last_mut() {
+                            *broke = true;
+                        }
+                    }
+                    Some(v) => {
+                        // A value operand is always rejected by sema (spec
+                        // 4.8:21). Don't count it as a loop exit here: keeping
+                        // the loop `!`-typed lets sema report the dedicated
+                        // break-with-value error instead of inference masking
+                        // it with a type mismatch. Still generate constraints
+                        // for the operand so inference stays total.
+                        self.generate(*v, ctx);
+                    }
+                }
+                InferType::Concrete(Type::NEVER)
+            }
+            InstData::Continue => InferType::Concrete(Type::NEVER),
 
             // Match expression
             InstData::Match {
@@ -1820,7 +1854,7 @@ mod tests {
         let methods: HashMap<(StructId, Spur), MethodSig> = HashMap::new();
 
         let break_inst = rir.add_inst(rue_rir::Inst {
-            data: InstData::Break,
+            data: InstData::Break { value: None },
             span: Span::new(0, 5),
         });
 

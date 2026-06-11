@@ -58,7 +58,7 @@ loop_expr = "loop" "{" block "}" ;
 
 {{ rule(id="4.8:17", cat="normative") }}
 
-A loop expression has type `!` (never), because it never produces a value. Even when `break` is present, the loop expression itself does not yield a result.
+A loop expression that contains no `break` targeting it has type `!` (never), because it never produces a value.
 
 {{ rule(id="4.8:18", cat="normative") }}
 
@@ -115,7 +115,11 @@ Both `break` and `continue` have the never type `!`.
 
 {{ rule(id="4.8:21", cat="normative") }}
 
-Currently, `break` does not carry a value. A `loop` expression has type `!` regardless of whether `break` is reachable, because the loop itself does not produce a value.
+A `loop` expression that contains a `break` targeting it has type `()`: executing the `break` exits the loop, which then evaluates to `()`. This holds even if the `break` is unreachable.
+
+{{ rule(id="4.8:22", cat="legality-rule") }}
+
+Currently, `break` does not carry a value. A `break` expression **MUST NOT** have a value operand; `break expr` is a compile-time error.
 
 {{ rule(id="4.8:11") }}
 

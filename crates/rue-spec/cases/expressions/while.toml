@@ -258,9 +258,9 @@ fn main() -> i32 {
 exit_code = 42
 
 [[case]]
-name = "loop_has_never_type_even_with_break"
-spec = ["4.8:17", "4.8:21"]
-description = "loop expression type remains ! even when break is present; break does not carry a value"
+name = "loop_with_break_has_unit_type"
+spec = ["4.8:21"]
+description = "a loop containing a break has type (), so it is fine as a statement"
 source = """
 fn main() -> i32 {
     let mut x = 0;
@@ -272,6 +272,59 @@ fn main() -> i32 {
 }
 """
 exit_code = 5
+
+[[case]]
+name = "loop_with_break_not_usable_as_i32_value"
+spec = ["4.8:21"]
+description = "a loop containing a break has type (), so binding it to an i32 is a type error (RUE-76)"
+source = """
+fn main() -> i32 {
+    let x: i32 = loop { break; };
+    x
+}
+"""
+compile_fail = true
+error_contains = "type mismatch"
+
+[[case]]
+name = "loop_with_break_not_usable_as_i32_tail"
+spec = ["4.8:21"]
+description = "a loop containing a break has type (), so it cannot be the tail of an i32 function (RUE-76)"
+source = """
+fn main() -> i32 {
+    loop { break; }
+}
+"""
+compile_fail = true
+error_contains = "type mismatch"
+
+[[case]]
+name = "break_with_value_is_error"
+spec = ["4.8:22"]
+description = "break does not carry a value; a value operand is a compile-time error (RUE-56)"
+source = """
+fn main() -> i32 {
+    loop {
+        break 42;
+    }
+}
+"""
+compile_fail = true
+error_contains = "'break' with a value is not supported"
+
+[[case]]
+name = "break_with_value_in_while_is_error"
+spec = ["4.8:22"]
+source = """
+fn main() -> i32 {
+    while true {
+        break 1;
+    }
+    0
+}
+"""
+compile_fail = true
+error_contains = "'break' with a value is not supported"
 
 [[case]]
 name = "loop_nested_break"

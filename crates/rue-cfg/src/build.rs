@@ -1324,8 +1324,10 @@ impl<'a> CfgBuilder<'a> {
                 self.cfg
                     .set_terminator(self.current_block, Terminator::Unreachable);
 
-                // Infinite loops have Never type, but if we reach exit_block via break,
-                // we need a dummy unit value for the loop expression result.
+                // A loop containing a break has type () (a loop without one is
+                // !, and its exit block is unreachable). Either way, emit a
+                // unit value as the loop expression's result for the
+                // reached-via-break path.
                 let unit_val = self.emit(CfgInstData::Const(0), Type::UNIT, span);
                 ExprResult {
                     value: Some(unit_val),

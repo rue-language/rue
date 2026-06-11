@@ -796,7 +796,6 @@ impl Rir {
             InstData::BoolConst(v) => InstData::BoolConst(*v),
             InstData::StringConst(s) => InstData::StringConst(*s),
             InstData::UnitConst => InstData::UnitConst,
-            InstData::Break => InstData::Break,
             InstData::Continue => InstData::Continue,
             InstData::VarRef { name } => InstData::VarRef { name: *name },
             InstData::ParamRef { index, name } => InstData::ParamRef {
@@ -920,6 +919,9 @@ impl Rir {
                 body: renumber(*body),
             },
             InstData::Ret(value) => InstData::Ret(renumber_opt(*value)),
+            InstData::Break { value } => InstData::Break {
+                value: renumber_opt(*value),
+            },
 
             // Match - InstRefs in extra are handled separately
             InstData::Match {
@@ -1314,7 +1316,7 @@ impl Rir {
                 | InstData::Branch { .. }
                 | InstData::Loop { .. }
                 | InstData::InfiniteLoop { .. }
-                | InstData::Break
+                | InstData::Break { .. }
                 | InstData::Continue
                 | InstData::Ret(_)
                 | InstData::VarRef { .. }
@@ -1439,8 +1441,11 @@ pub enum InstData {
         arms_len: u32,
     },
 
-    /// Break: exits the innermost loop
-    Break,
+    /// Break: exits the innermost loop.
+    /// `value` is a value operand (e.g. `break 42`); it is carried through
+    /// for diagnostics but always rejected by sema - break does not carry a
+    /// value (see spec 4.8).
+    Break { value: Option<InstRef> },
 
     /// Continue: jumps to the next iteration of the innermost loop
     Continue,
@@ -1883,7 +1888,10 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                         .collect();
                     writeln!(out, "match {} {{ {} }}", scrutinee, arms_str.join(", ")).unwrap();
                 }
-                InstData::Break => writeln!(out, "break").unwrap(),
+                InstData::Break { value } => match value {
+                    Some(v) => writeln!(out, "break {}", v).unwrap(),
+                    None => writeln!(out, "break").unwrap(),
+                },
                 InstData::Continue => writeln!(out, "continue").unwrap(),
 
                 // Functions
@@ -2685,7 +2693,7 @@ mod tests {
     fn test_printer_break_continue() {
         let (mut rir, interner) = create_printer_test_rir();
         rir.add_inst(Inst {
-            data: InstData::Break,
+            data: InstData::Break { value: None },
             span: Span::new(0, 5),
         });
         rir.add_inst(Inst {

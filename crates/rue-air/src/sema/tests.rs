@@ -392,17 +392,34 @@ mod tests {
             "fn main() -> i32 {
                 let mut i = 0;
                 loop {
-                    let inner = 10;
-                    i = i + 1;
+                    let inner = 1;
+                    i = i + inner;
                     if i > 5 {
-                        break inner;
+                        break;
                     }
                 }
+                i
             }",
         );
 
         // This should compile successfully
         assert!(result.is_ok());
+
+        // Using the loop-local variable after the loop is an error
+        let result = compile_to_air(
+            "fn main() -> i32 {
+                let mut i = 0;
+                loop {
+                    let inner = 1;
+                    i = i + inner;
+                    if i > 5 {
+                        break;
+                    }
+                }
+                inner
+            }",
+        );
+        assert!(result.is_err());
     }
 
     // =========================================================================

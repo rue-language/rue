@@ -569,10 +569,21 @@ impl<'a> Sema<'a> {
                 arms_len,
             } => self.analyze_match(air, *scrutinee, *arms_start, *arms_len, inst.span, ctx),
 
-            InstData::Break => {
+            InstData::Break { value } => {
                 // Validate that we're inside a loop
                 if ctx.loop_depth == 0 {
                     return Err(CompileError::new(ErrorKind::BreakOutsideLoop, inst.span));
+                }
+
+                // Break does not carry a value (spec 4.8:21)
+                if value.is_some() {
+                    return Err(CompileError::new(ErrorKind::BreakWithValue, inst.span));
+                }
+
+                // Record the break against the innermost enclosing loop, so
+                // the loop can be typed `()` instead of `!` (spec 4.8:17).
+                if let Some(broke) = ctx.loop_break_stack.last_mut() {
+                    *broke = true;
                 }
 
                 // Break has the never type - it diverges
@@ -771,10 +782,14 @@ impl<'a> Sema<'a> {
         // While loop: condition must be bool, result is Unit
         let cond_result = self.analyze_inst(air, cond, ctx)?;
 
-        // Analyze body with its own scope
+        // Analyze body with its own scope. The loop_break_stack entry makes
+        // breaks inside the body target this while loop, not an outer loop;
+        // the flag itself is unused because a while loop is always `()`.
         ctx.push_scope();
         ctx.loop_depth += 1;
+        ctx.loop_break_stack.push(false);
         let body_result = self.analyze_inst(air, body, ctx)?;
+        ctx.loop_break_stack.pop();
         ctx.loop_depth -= 1;
         ctx.pop_scope();
 
@@ -790,7 +805,9 @@ impl<'a> Sema<'a> {
                 self.analyze_inst(&mut scratch_air, cond, &mut scratch_ctx)?;
                 scratch_ctx.push_scope();
                 scratch_ctx.loop_depth += 1;
+                scratch_ctx.loop_break_stack.push(false);
                 self.analyze_inst(&mut scratch_air, body, &mut scratch_ctx)?;
+                scratch_ctx.loop_break_stack.pop();
                 scratch_ctx.loop_depth -= 1;
                 scratch_ctx.pop_scope();
                 Ok(())
@@ -817,14 +834,18 @@ impl<'a> Sema<'a> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        // Infinite loop: `loop { body }` - always produces Never type
+        // Infinite loop: `loop { body }` - type `()` if the body contains a
+        // break targeting this loop (the loop can exit), `!` otherwise
+        // (spec 4.8:17 / 4.8:21).
 
         // Snapshot move state before the body for the back-edge recheck below.
         let moves_before_loop = ctx.moved_vars.clone();
 
         ctx.push_scope();
         ctx.loop_depth += 1;
+        ctx.loop_break_stack.push(false);
         let body_result = self.analyze_inst(air, body, ctx)?;
+        let has_break = ctx.loop_break_stack.pop().unwrap_or(false);
         ctx.loop_depth -= 1;
         ctx.pop_scope();
 
@@ -836,20 +857,23 @@ impl<'a> Sema<'a> {
             let mut scratch_ctx = ctx.fork_for_loop_recheck();
             scratch_ctx.push_scope();
             scratch_ctx.loop_depth += 1;
+            scratch_ctx.loop_break_stack.push(false);
             self.analyze_inst(&mut scratch_air, body, &mut scratch_ctx)
                 .map_err(|e| e.with_note("value was moved in a previous iteration of the loop"))?;
+            scratch_ctx.loop_break_stack.pop();
             scratch_ctx.loop_depth -= 1;
             scratch_ctx.pop_scope();
         }
 
+        let loop_ty = if has_break { Type::UNIT } else { Type::NEVER };
         let air_ref = air.add_inst(AirInst {
             data: AirInstData::InfiniteLoop {
                 body: body_result.air_ref,
             },
-            ty: Type::NEVER,
+            ty: loop_ty,
             span,
         });
-        Ok(AnalysisResult::new(air_ref, Type::NEVER))
+        Ok(AnalysisResult::new(air_ref, loop_ty))
     }
 
     /// Analyze a match expression.
