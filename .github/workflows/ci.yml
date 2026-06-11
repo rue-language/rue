@@ -17,7 +17,7 @@ jobs:
   fmt:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install dotslash
         uses: facebook/install-dotslash@latest
@@ -39,7 +39,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     name: test (${{ matrix.name }})
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Select Xcode 16.2
         if: runner.os == 'macOS'
@@ -55,7 +55,7 @@ jobs:
       # across daemon restarts, and ~/.cache/buck2 is not a path buck2 uses —
       # multi-GB saved/restored for zero hits. (RUE-144)
       - name: Cache dotslash artifacts
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cache/dotslash
