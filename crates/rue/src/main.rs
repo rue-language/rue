@@ -16,9 +16,9 @@ mod timing;
 use rue_compiler::{
     CompileOptions, FileId, Lexer, LinkerMode, MultiFileFormatter, OptLevel, ParsedProgram,
     PreviewFeature, PreviewFeatures, SourceFile, SourceInfo, TokenKind,
-    compile_frontend_from_ast_with_options, compile_multi_file_with_options, generate_emitted_asm,
-    generate_liveness_info, generate_lowering_info, generate_mir, generate_regalloc_info,
-    generate_stack_frame_info, merge_symbols, parse_all_files,
+    compile_multi_file_with_options, generate_emitted_asm, generate_liveness_info,
+    generate_lowering_info, generate_mir, generate_regalloc_info, generate_stack_frame_info,
+    merge_symbols, parse_all_files,
 };
 use rue_rir::RirPrinter;
 use rue_target::Target;
@@ -452,6 +452,12 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
     let (source_paths, final_output_path) = if let Some(out) = output_path {
         // -o was specified: all positional args are source files
         (positional, out)
+    } else if !emit_stages.is_empty() {
+        // --emit produces no executable, so there is no output positional:
+        // every positional arg is a source file. Without this, the legacy
+        // two-positional mode claimed the second FILE as the output path and
+        // `--emit air a.rue b.rue` was impossible (RUE-130).
+        (positional, "a.out".to_string())
     } else if positional.len() == 1 {
         // Single source file, no -o: default output to a.out
         (positional, "a.out".to_string())
@@ -845,6 +851,19 @@ fn discover_and_load_imports(sources: &mut Vec<(String, String)>) {
 }
 
 fn main() {
+    // Present compiler panics as internal compiler errors with a report
+    // banner instead of a raw Rust backtrace pointer (RUE-130). The default
+    // hook still runs first so RUST_BACKTRACE=1 output is preserved.
+    let default_panic_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        default_panic_hook(info);
+        eprintln!();
+        eprintln!("error: internal compiler error: the compiler panicked; this is a bug in rue");
+        eprintln!("note: rue version {}", VERSION);
+        eprintln!("note: please report this at https://github.com/rue-language/rue/issues");
+        eprintln!("note: re-run with RUST_BACKTRACE=1 for a backtrace");
+    }));
+
     let options = match parse_args() {
         Some(opts) => opts,
         None => std::process::exit(1),
@@ -901,21 +920,26 @@ fn main() {
         .collect();
     let formatter = MultiFileFormatter::new(source_infos);
 
-    // Also keep a single-file formatter for the primary file (for source metrics)
-    let (_primary_path, primary_source) = &sources[0];
-
     // Compute source metrics if benchmark JSON is requested
     let source_metrics = if options.benchmark_json {
-        // We need token count, so do a quick lex
-        let lexer = Lexer::new(primary_source);
-        let token_count = match lexer.tokenize() {
-            Ok((tokens, _interner)) => tokens.len(),
-            Err(_) => 0, // If lexing fails, we'll get the error during compilation anyway
-        };
+        // Sum metrics across ALL files — measuring only the first file made
+        // multi-file benchmark numbers meaningless (RUE-130).
+        let mut bytes = 0usize;
+        let mut lines = 0usize;
+        let mut tokens = 0usize;
+        for (_, content) in &sources {
+            bytes += content.len();
+            lines += content.lines().count();
+            let lexer = Lexer::new(content);
+            if let Ok((toks, _interner)) = lexer.tokenize() {
+                tokens += toks.len();
+            }
+            // If lexing fails, we'll get the error during compilation anyway
+        }
         Some(timing::SourceMetrics {
-            bytes: primary_source.len(),
-            lines: primary_source.lines().count(),
-            tokens: token_count,
+            bytes,
+            lines,
+            tokens,
         })
     } else {
         None
@@ -1127,11 +1151,18 @@ fn handle_emit_multi_file(
             }
         };
 
-        let state = match compile_frontend_from_ast_with_options(
+        // Thread file paths through so @import resolution works under --emit
+        // exactly as in a normal build (RUE-130).
+        let file_paths: std::collections::HashMap<FileId, String> = sources
+            .iter()
+            .map(|s| (s.file_id, s.path.to_string()))
+            .collect();
+        let state = match rue_compiler::compile_frontend_from_ast_with_file_paths(
             merged.ast,
             merged.interner,
             options.opt_level,
             &options.preview_features,
+            file_paths,
         ) {
             Ok(state) => state,
             Err(errors) => {
@@ -1139,6 +1170,11 @@ fn handle_emit_multi_file(
                 return Err(());
             }
         };
+
+        // Warnings used to be silently dropped in all --emit modes (RUE-130).
+        if !state.warnings.is_empty() {
+            eprintln!("{}", formatter.format_warnings(&state.warnings));
+        }
 
         Some(state)
     } else {
@@ -1742,6 +1778,10 @@ mod tests {
 
     #[test]
     fn parse_all_options_combined() {
+        // Under --emit no executable is produced, so there is no output
+        // positional: every positional is a source file (RUE-130). The old
+        // behavior claimed the second positional as a (dead) output path,
+        // which made multi-file --emit impossible.
         let opts = unwrap_options(parse_args_from(&[
             "--target",
             "x86_64-linux",
@@ -1751,10 +1791,9 @@ mod tests {
             "--emit",
             "air",
             "source.rue",
-            "output",
+            "other.rue",
         ]));
-        assert_eq!(opts.source_paths, vec!["source.rue"]);
-        assert_eq!(opts.output_path, "output");
+        assert_eq!(opts.source_paths, vec!["source.rue", "other.rue"]);
         assert_eq!(opts.target, Target::X86_64Linux);
         assert_eq!(opts.linker, LinkerMode::System("clang".to_string()));
         assert_eq!(opts.opt_level, OptLevel::O2);
