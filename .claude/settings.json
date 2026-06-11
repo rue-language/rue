@@ -4,8 +4,10 @@
       "Bash(./buck2 build:*)",
       "Bash(./buck2 test:*)",
       "Bash(./buck2 run:*)",
+      "Bash(./buck2 uquery:*)",
       "Bash(./scripts/rue:*)",
       "Bash(./scripts/rue-bin:*)",
+      "Bash(bash scripts/rue:*)",
       "Bash(./test.sh:*)",
       "Bash(./quick-test.sh:*)",
       "Bash(./fmt.sh:*)",
@@ -20,10 +22,14 @@
       "Bash(jj file show:*)",
       "Bash(jj config get:*)",
       "Bash(jj config list:*)",
+      "Bash(jj git fetch:*)",
+      "Bash(jj new:*)",
       "Bash(gh run view:*)",
       "Bash(gh run list:*)",
       "Bash(gh pr view:*)",
+      "Bash(gh pr list:*)",
       "Bash(gh pr checks:*)",
+      "Bash(python3:*)",
       "Bash(grep:*)",
       "Bash(rg:*)",
       "Bash(find:*)",
@@ -31,6 +37,19 @@
       "Bash(wc:*)",
       "Bash(head:*)",
       "Bash(tail:*)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/bookmark-guard.sh"
+          }
+        ]
+      }
     ]
   }
 }
