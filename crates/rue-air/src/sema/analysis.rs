@@ -793,7 +793,7 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
 /// be borrows are cancelled in place and leave no marker). A destructor's
 /// only parameter is `self` at ABI slot 0, so any whole-value param marker
 /// in the analyzed AIR is a move of `self`. Partial field moves
-/// (`field: Some(_)`) are not rejected here: they don't re-enter the
+/// (`place: Some(_)`) are not rejected here: they don't re-enter the
 /// destructor (the drop-glue double drop of such a field is a separate,
 /// pre-existing issue).
 fn reject_self_move_in_destructor(air: &Air, full_name: &str) -> CompileResult<()> {
@@ -801,7 +801,7 @@ fn reject_self_move_in_destructor(air: &Air, full_name: &str) -> CompileResult<(
         if let AirInstData::MarkMoved {
             slot: 0,
             is_param: true,
-            field: None,
+            place: None,
             ..
         } = inst.data
         {

@@ -1040,8 +1040,8 @@ pub enum AirInstData {
     /// builder uses these markers to suppress the scope-exit drop of slots
     /// whose contents were moved out (the new owner is responsible for the
     /// drop). Emitted by sema wherever the move checker marks a whole
-    /// variable as moved, and — with `field` set — wherever it marks a
-    /// single top-level struct field as moved (a partial move, RUE-62).
+    /// variable as moved, and — with `place` set — wherever it marks a
+    /// struct field path as moved (a partial move, RUE-62/RUE-157).
     MarkMoved {
         /// The use of the variable (or field) that constitutes the move
         value: AirRef,
@@ -1049,13 +1049,15 @@ pub enum AirInstData {
         slot: u32,
         /// True when `slot` refers to a parameter ABI slot
         is_param: bool,
-        /// `None`: the slot's whole value moved out. `Some(i)`: only the
-        /// top-level struct field with declaration index `i` moved out;
-        /// drop elaboration then drops the rest of the struct field by
-        /// field, skipping this one. Moves of deeper paths (`o.a.b`) are
-        /// NOT exported (no marker), conservatively keeping the whole-slot
-        /// drop (a double drop of the moved part, never a leak).
-        field: Option<u32>,
+        /// `None`: the slot's whole value moved out. `Some(place)`: only
+        /// the field path named by the place's projections moved out — a
+        /// pure `Field` projection chain of any depth (`o.a`, `o.a.b`);
+        /// drop elaboration then drops the struct field-granularly,
+        /// skipping the moved path. Paths through an array index
+        /// (`arr[i].a`) are NOT exported (no marker), keeping the
+        /// whole-slot drop — which re-drops the moved element (a known
+        /// gap: array-element moves aren't tracked by drop elaboration).
+        place: Option<AirPlaceRef>,
     },
 }
 
@@ -1356,15 +1358,23 @@ impl fmt::Display for Air {
                     value,
                     slot,
                     is_param,
-                    field,
+                    place,
                 } => {
                     let prefix = if *is_param { "param%" } else { "$" };
-                    match field {
-                        Some(idx) => writeln!(
-                            f,
-                            "mark_moved {} (from {}{} field {})",
-                            value, prefix, slot, idx
-                        )?,
+                    match place {
+                        Some(place_ref) => {
+                            write!(f, "mark_moved {} (from {}{} fields", value, prefix, slot)?;
+                            let p = self.get_place(*place_ref);
+                            for proj in self.get_place_projections(p) {
+                                match proj {
+                                    AirProjection::Field { field_index, .. } => {
+                                        write!(f, " .{}", field_index)?
+                                    }
+                                    AirProjection::Index { .. } => write!(f, " [_]")?,
+                                }
+                            }
+                            writeln!(f, ")")?;
+                        }
                         None => writeln!(f, "mark_moved {} (from {}{})", value, prefix, slot)?,
                     }
                 }
