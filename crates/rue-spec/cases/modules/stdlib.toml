@@ -7,10 +7,15 @@ description = "Resolution and usage of @import(\"std\") for the standard library
 # =============================================================================
 # @import("std") Resolution
 # =============================================================================
+# Spec 10.2:6 has two halves: the adjacent std/_std.rue directory-module form
+# (covered here) and the $RUE_STD_PATH form with its precedence. The spec
+# harness cannot set per-case environment variables, so the env-var half is
+# exercised by the CLI integration test `import_std_via_env_var`
+# (crates/rue-cli-tests/cases/modules.toml).
 
 [[case]]
 name = "import_std_resolves"
-spec = ["4.13:82"]
+spec = ["4.13:82", "10.2:6"]
 description = "@import(\"std\") resolves to the standard library root when std/ exists"
 source = """
 fn main() -> i32 {
@@ -47,7 +52,7 @@ error_contains = "standard library not found"
 
 [[case]]
 name = "import_std_with_submodule"
-spec = ["4.13:81", "4.13:82"]
+spec = ["4.13:81", "4.13:82", "10.2:6"]
 description = "std library with submodules can be imported"
 source = """
 fn main() -> i32 {

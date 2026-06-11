@@ -13,7 +13,7 @@ description = "The @import builtin for importing modules."
 
 [[case]]
 name = "import_basic_syntax"
-spec = ["4.13:79", "4.13:80", "4.13:82"]
+spec = ["4.13:79", "4.13:80", "4.13:82", "10.2:1"]
 description = "@import with string argument is accepted"
 source = """
 fn main() -> i32 {
@@ -140,7 +140,7 @@ error_contains = "ambiguous module"
 
 [[case]]
 name = "const_module_reexport_member_chain"
-spec = ["4.13:81"]
+spec = ["4.13:81", "10.4:3"]
 description = "A pub const holding a module (ADR-0026 re-export idiom) is accessible as a member; chained access reaches the inner module's functions (RUE-136)"
 source = """
 fn main() -> i32 {
@@ -157,7 +157,7 @@ exit_code = 42
 
 [[case]]
 name = "private_const_reexport_not_visible"
-spec = ["4.13:86"]
+spec = ["4.13:86", "10.4:4"]
 description = "A non-pub const module re-export is not accessible from outside the directory"
 source = """
 fn main() -> i32 {

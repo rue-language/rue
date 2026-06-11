@@ -1,0 +1,116 @@
+[section]
+id = "modules.resolution"
+spec_chapter = "10.2"
+name = "Import Resolution Order"
+description = "Base-directory search order, transitive loading, and cycle behavior (spec chapter 10.2)."
+
+# =============================================================================
+# Base directory order (10.2:2): importing file's directory first, then the
+# root file's directory; nearer wins.
+# =============================================================================
+
+[[case]]
+name = "importer_relative_beats_root_relative"
+spec = ["10.2:2"]
+description = "A module found relative to the importing file shadows one at the same relative path next to the root file"
+source = """
+fn main() -> i32 {
+    let m = @import("sub/mod");
+    m.go()
+}
+"""
+aux_files = { "sub/mod.rue" = """
+const helper = @import("helper");
+pub fn go() -> i32 { helper.h() }
+""", "sub/helper.rue" = """
+pub fn h() -> i32 { 42 }
+""", "helper.rue" = """
+pub fn h() -> i32 { 7 }
+""" }
+exit_code = 42
+
+[[case]]
+name = "root_relative_fallback"
+spec = ["10.2:2"]
+description = "When the importing file's directory has no match, resolution falls back to the root file's directory"
+source = """
+fn main() -> i32 {
+    let m = @import("sub/mod");
+    m.go()
+}
+"""
+aux_files = { "sub/mod.rue" = """
+const helper = @import("helper");
+pub fn go() -> i32 { helper.h() }
+""", "helper.rue" = """
+pub fn h() -> i32 { 42 }
+""" }
+exit_code = 42
+
+# =============================================================================
+# Transitive loading (10.2:3)
+# =============================================================================
+
+[[case]]
+name = "transitive_import_loads_indirect_module"
+spec = ["10.2:3"]
+description = "Importing a module loads that module's own imports without the user listing them"
+source = """
+fn main() -> i32 {
+    let outer = @import("outer");
+    outer.go()
+}
+"""
+aux_files = { "outer.rue" = """
+const inner = @import("inner");
+pub fn go() -> i32 { inner.value() }
+""", "inner.rue" = """
+pub fn value() -> i32 { 42 }
+""" }
+exit_code = 42
+
+# =============================================================================
+# Dedupe and cycles (10.2:4)
+# =============================================================================
+
+[[case]]
+name = "import_cycle_is_legal"
+spec = ["10.2:4"]
+description = "Two modules importing each other compile and run; each file is loaded once"
+source = """
+fn main() -> i32 {
+    let a = @import("a");
+    a.a_uses_b()
+}
+"""
+aux_files = { "a.rue" = """
+const b = @import("b");
+pub fn from_a() -> i32 { 1 }
+pub fn a_uses_b() -> i32 { b.from_b() }
+""", "b.rue" = """
+const a = @import("a");
+pub fn from_b() -> i32 { 42 }
+""" }
+exit_code = 42
+
+[[case]]
+name = "diamond_import_loads_once"
+spec = ["10.2:4"]
+description = "Two importers of the same module refer to the same single loaded file (no duplicate-definition error from loading it twice)"
+source = """
+fn main() -> i32 {
+    let left = @import("left");
+    let _right = @import("right");
+    left.go()
+}
+"""
+aux_files = { "left.rue" = """
+const shared = @import("shared");
+pub fn go() -> i32 { shared.value() }
+""", "right.rue" = """
+const shared2 = @import("shared");
+pub fn go2() -> i32 { shared2.value() }
+""", "shared.rue" = """
+pub fn value() -> i32 { 42 }
+""" }
+exit_code = 42
