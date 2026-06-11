@@ -1,34 +1,16 @@
-rust_library(
-    name = "rue-air",
-    srcs = glob(["src/**/*.rs"]),
-    rustc_flags = ["-Dwarnings"],
-    deps = [
-        "//crates/rue-builtins:rue-builtins",
-        "//crates/rue-error:rue-error",
-        "//third-party:lasso",
-        "//crates/rue-lexer:rue-lexer",
-        "//crates/rue-parser:rue-parser",
-        "//crates/rue-rir:rue-rir",
-        "//crates/rue-span:rue-span",
-        "//crates/rue-target:rue-target",
-        "//third-party:rayon",
-    ],
-    visibility = ["PUBLIC"],
-)
+load("//crates:defs.bzl", "rue_crate")
 
-rust_test(
-    name = "rue-air-test",
-    srcs = glob(["src/**/*.rs"]),
-    rustc_flags = ["-Dwarnings"],
+rue_crate(
+    name = "rue-air",
     deps = [
         "//crates/rue-builtins:rue-builtins",
         "//crates/rue-error:rue-error",
-        "//third-party:lasso",
         "//crates/rue-lexer:rue-lexer",
         "//crates/rue-parser:rue-parser",
         "//crates/rue-rir:rue-rir",
         "//crates/rue-span:rue-span",
         "//crates/rue-target:rue-target",
+        "//third-party:lasso",
         "//third-party:rayon",
     ],
 )

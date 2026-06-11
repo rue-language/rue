@@ -1,22 +1,11 @@
-rust_library(
-    name = "rue-lexer",
-    srcs = glob(["src/**/*.rs"]),
-    deps = [
-        "//crates/rue-error:rue-error",
-        "//third-party:lasso",
-        "//crates/rue-span:rue-span",
-        "//third-party:logos",
-    ],
-    visibility = ["PUBLIC"],
-)
+load("//crates:defs.bzl", "rue_crate")
 
-rust_test(
-    name = "rue-lexer-test",
-    srcs = glob(["src/**/*.rs"]),
+rue_crate(
+    name = "rue-lexer",
     deps = [
         "//crates/rue-error:rue-error",
-        "//third-party:lasso",
         "//crates/rue-span:rue-span",
+        "//third-party:lasso",
         "//third-party:logos",
     ],
 )

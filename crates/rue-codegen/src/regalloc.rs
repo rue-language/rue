@@ -1976,7 +1976,7 @@ mod tests {
             (3, 3, 6),  // v3 - overlaps v0
         ]);
 
-        let (allocation, num_slots, _) = linear_scan(4, &liveness, &allocatable, 0);
+        let (_, num_slots, _) = linear_scan(4, &liveness, &allocatable, 0);
 
         // We need to check that slot reuse happens appropriately
         // The exact number depends on spill decisions, but should be <= 2

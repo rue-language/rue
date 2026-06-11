@@ -8,7 +8,7 @@ use rue_air::{
     Air, AirArgMode, AirInstData, AirPattern, AirPlaceBase, AirPlaceRef, AirProjection, AirRef,
     Type, TypeInternPool, TypeKind,
 };
-use rue_error::{CompileWarning, WarningKind, ice_error};
+use rue_error::{CompileWarning, WarningKind};
 
 use crate::CfgOutput;
 use crate::inst::{
@@ -2164,9 +2164,6 @@ impl<'a> CfgBuilder<'a> {
 
             // Module types don't need drop (compile-time only)
             TypeKind::Module(_) => false,
-
-            // Pointer types are trivially droppable (just addresses)
-            TypeKind::PtrConst(_) | TypeKind::PtrMut(_) => false,
         }
     }
 
@@ -2589,7 +2586,6 @@ impl<'a> CfgBuilder<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lasso::ThreadedRodeo;
     use rue_air::Sema;
     use rue_error::PreviewFeatures;
     use rue_lexer::Lexer;
@@ -2630,7 +2626,7 @@ mod tests {
         let astgen = AstGen::new(&ast, &mut interner);
         let rir = astgen.generate();
 
-        let mut sema = Sema::new(&rir, &mut interner, PreviewFeatures::new());
+        let sema = Sema::new(&rir, &mut interner, PreviewFeatures::new());
         let output = sema.analyze_all().unwrap();
 
         let func = select(&output.functions);

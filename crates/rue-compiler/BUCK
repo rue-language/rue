@@ -1,33 +1,8 @@
-# The runtime staticlib is mapped into src/ so it can be embedded with include_bytes!
-rust_library(
-    name = "rue-compiler",
-    srcs = glob(["src/**/*.rs"]),
-    mapped_srcs = {
-        "//crates/rue-runtime:rue-runtime[staticlib]": "src/librue_runtime.a",
-    },
-    deps = [
-        "//crates/rue-air:rue-air",
-        "//crates/rue-cfg:rue-cfg",
-        "//crates/rue-codegen:rue-codegen",
-        "//crates/rue-error:rue-error",
-        "//third-party:lasso",
-        "//crates/rue-lexer:rue-lexer",
-        "//crates/rue-linker:rue-linker",
-        "//crates/rue-parser:rue-parser",
-        "//crates/rue-rir:rue-rir",
-        "//crates/rue-span:rue-span",
-        "//crates/rue-target:rue-target",
-        "//third-party:annotate-snippets",
-        "//third-party:rayon",
-        "//third-party:serde_json",
-        "//third-party:tracing",
-    ],
-    visibility = ["PUBLIC"],
-)
+load("//crates:defs.bzl", "rue_crate")
 
-rust_test(
-    name = "rue-compiler-test",
-    srcs = glob(["src/**/*.rs"]),
+# The runtime staticlib is mapped into src/ so it can be embedded with include_bytes!
+rue_crate(
+    name = "rue-compiler",
     mapped_srcs = {
         "//crates/rue-runtime:rue-runtime[staticlib]": "src/librue_runtime.a",
     },
@@ -36,7 +11,6 @@ rust_test(
         "//crates/rue-cfg:rue-cfg",
         "//crates/rue-codegen:rue-codegen",
         "//crates/rue-error:rue-error",
-        "//third-party:lasso",
         "//crates/rue-lexer:rue-lexer",
         "//crates/rue-linker:rue-linker",
         "//crates/rue-parser:rue-parser",
@@ -44,6 +18,7 @@ rust_test(
         "//crates/rue-span:rue-span",
         "//crates/rue-target:rue-target",
         "//third-party:annotate-snippets",
+        "//third-party:lasso",
         "//third-party:rayon",
         "//third-party:serde_json",
         "//third-party:tracing",

@@ -109,11 +109,11 @@
 //! - Caller-saved: RAX, RCX, RDX, RSI, RDI, R8-R11, XMM0-XMM15
 //! - Callee-saved: RBX, RBP, R12-R15
 
-use rue_error::{CompileError, CompileResult, ErrorKind, ice_error};
+use rue_error::{CompileResult, ice_error};
 
 use super::mir::{LabelId, Reg, X86Inst, X86Mir};
 use crate::vreg::BLOCK_LABEL_BASE;
-use crate::{EmittedCode, EmittedInst, EmittedRelocation, end_inst, format_offset};
+use crate::{EmittedCode, EmittedInst, EmittedRelocation, format_offset};
 
 /// Kind of jump fixup.
 ///
@@ -152,11 +152,6 @@ struct LabelOffsets {
 }
 
 impl LabelOffsets {
-    /// Create a new empty label offset map.
-    fn new() -> Self {
-        Self::default()
-    }
-
     /// Create a new label offset map with pre-allocated capacity.
     ///
     /// - `inline_capacity`: Expected number of inline labels (overflow checks, etc.)

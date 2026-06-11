@@ -1,25 +1,16 @@
-rust_library(
-    name = "rue-cfg",
-    srcs = glob(["src/**/*.rs"]),
-    deps = [
-        "//crates/rue-air:rue-air",
-        "//crates/rue-error:rue-error",
-        "//third-party:lasso",
-        "//crates/rue-span:rue-span",
-    ],
-    visibility = ["PUBLIC"],
-)
+load("//crates:defs.bzl", "rue_crate")
 
-rust_test(
-    name = "rue-cfg-test",
-    srcs = glob(["src/**/*.rs"]),
+rue_crate(
+    name = "rue-cfg",
     deps = [
         "//crates/rue-air:rue-air",
         "//crates/rue-error:rue-error",
+        "//crates/rue-span:rue-span",
         "//third-party:lasso",
+    ],
+    test_deps = [
         "//crates/rue-lexer:rue-lexer",
         "//crates/rue-parser:rue-parser",
         "//crates/rue-rir:rue-rir",
-        "//crates/rue-span:rue-span",
     ],
 )

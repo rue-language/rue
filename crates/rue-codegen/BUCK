@@ -1,33 +1,20 @@
-rust_library(
+load("//crates:defs.bzl", "rue_crate")
+
+rue_crate(
     name = "rue-codegen",
-    srcs = glob(["src/**/*.rs"]),
     deps = [
         "//crates/rue-air:rue-air",
         "//crates/rue-builtins:rue-builtins",
         "//crates/rue-cfg:rue-cfg",
         "//crates/rue-error:rue-error",
-        "//third-party:fixedbitset",
-        "//third-party:lasso",
         "//crates/rue-span:rue-span",
         "//crates/rue-target:rue-target",
-    ],
-    visibility = ["PUBLIC"],
-)
-
-rust_test(
-    name = "rue-codegen-test",
-    srcs = glob(["src/**/*.rs"]),
-    deps = [
-        "//crates/rue-air:rue-air",
-        "//crates/rue-builtins:rue-builtins",
-        "//crates/rue-cfg:rue-cfg",
-        "//crates/rue-error:rue-error",
         "//third-party:fixedbitset",
         "//third-party:lasso",
+    ],
+    test_deps = [
         "//crates/rue-lexer:rue-lexer",
         "//crates/rue-parser:rue-parser",
         "//crates/rue-rir:rue-rir",
-        "//crates/rue-span:rue-span",
-        "//crates/rue-target:rue-target",
     ],
 )

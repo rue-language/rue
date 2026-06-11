@@ -22,7 +22,7 @@ use std::fmt;
 use lasso::Key;
 use rue_air::{StructId, TypeInternPool, TypeKind};
 use rue_builtins::{BinOp, get_builtin_type};
-use rue_cfg::{BlockId, Cfg, CfgInstData, CfgValue, Type};
+use rue_cfg::{BlockId, Cfg, CfgValue, Type};
 
 use crate::types;
 

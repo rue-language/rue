@@ -468,7 +468,6 @@ mod tests {
         Use { src: u32 },
         Move { dst: u32, src: u32 },
         Label { id: LabelId },
-        Jump { label: LabelId },
         Branch { label: LabelId },
         Ret,
     }
@@ -487,7 +486,6 @@ mod tests {
         num_insts: usize,
     ) -> Vec<usize> {
         match inst {
-            TestInst::Jump { label } => label_to_idx.get(label).copied().into_iter().collect(),
             TestInst::Branch { label } => {
                 let mut succs = Vec::new();
                 if idx + 1 < num_insts {

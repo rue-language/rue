@@ -492,18 +492,6 @@ mod tests {
         )
     }
 
-    fn add_bool_const(cfg: &mut Cfg, val: bool) -> CfgValue {
-        let entry = cfg.entry;
-        cfg.add_inst_to_block(
-            entry,
-            CfgInst {
-                data: CfgInstData::BoolConst(val),
-                ty: Type::BOOL,
-                span: Span::new(0, 0),
-            },
-        )
-    }
-
     fn add_add(cfg: &mut Cfg, lhs: CfgValue, rhs: CfgValue, ty: Type) -> CfgValue {
         let entry = cfg.entry;
         cfg.add_inst_to_block(

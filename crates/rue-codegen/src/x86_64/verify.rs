@@ -34,7 +34,7 @@
 use std::collections::HashMap;
 
 use super::mir::{LabelId, Operand, Reg, X86Inst, X86Mir};
-use rue_error::{CompileError, CompileResult, ErrorKind, ice_error};
+use rue_error::{CompileError, CompileResult, ice_error};
 
 /// Verifies that the stack is properly aligned throughout function execution.
 ///

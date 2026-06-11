@@ -1254,7 +1254,6 @@ fn handle_emit_multi_file(
                         let lowering_info = generate_lowering_info(
                             &func.cfg,
                             &state.type_pool,
-                            &state.strings,
                             &state.interner,
                             options.target,
                         );
@@ -1270,7 +1269,6 @@ fn handle_emit_multi_file(
                         let mir = generate_mir(
                             &func.cfg,
                             &state.type_pool,
-                            &state.strings,
                             &state.interner,
                             options.target,
                         );
@@ -1288,7 +1286,6 @@ fn handle_emit_multi_file(
                         let liveness_info = generate_liveness_info(
                             &func.cfg,
                             &state.type_pool,
-                            &state.strings,
                             &state.interner,
                             options.target,
                         );
@@ -1305,7 +1302,6 @@ fn handle_emit_multi_file(
                         let regalloc_info = match generate_regalloc_info(
                             &func.cfg,
                             &state.type_pool,
-                            &state.strings,
                             &state.interner,
                             options.target,
                         ) {
@@ -1351,7 +1347,6 @@ fn handle_emit_multi_file(
                             &func.cfg,
                             &func.analyzed.name,
                             &state.type_pool,
-                            &state.strings,
                             &state.interner,
                             options.target,
                         ) {

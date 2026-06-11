@@ -13,12 +13,12 @@ use crate::constants::{
     LC_DYSYMTAB, LC_SEGMENT_64, LC_SYMTAB, MACHO64_BUILD_VERSION_CMD_SIZE,
     MACHO64_DYSYMTAB_CMD_SIZE, MACHO64_HEADER_SIZE, MACHO64_NLIST_SIZE, MACHO64_RELOC_SIZE,
     MACHO64_SECTION_SIZE, MACHO64_SEGMENT_CMD_SIZE, MACHO64_SYMTAB_CMD_SIZE, MH_MAGIC_64,
-    MH_OBJECT, N_EXT, N_PEXT, N_SECT, N_UNDF, PLATFORM_MACOS, R_AARCH64_ABS64,
-    R_AARCH64_ADD_ABS_LO12_NC, R_AARCH64_ADR_PREL_PG_HI21, R_AARCH64_CALL26, R_AARCH64_JUMP26,
-    R_X86_64_32, R_X86_64_32S, R_X86_64_64, R_X86_64_GOTPCREL, R_X86_64_GOTPCRELX, R_X86_64_PC32,
-    R_X86_64_PLT32, R_X86_64_REX_GOTPCRELX, S_ATTR_PURE_INSTRUCTIONS, S_ATTR_SOME_INSTRUCTIONS,
-    SHF_ALLOC, SHF_EXECINSTR, SHF_INFO_LINK, SHT_PROGBITS, SHT_RELA, SHT_STRTAB, SHT_SYMTAB,
-    STB_GLOBAL, STB_LOCAL, STT_FUNC, STT_NOTYPE, STT_SECTION, elf_st_info,
+    MH_OBJECT, N_EXT, N_SECT, N_UNDF, PLATFORM_MACOS, R_AARCH64_ABS64, R_AARCH64_ADD_ABS_LO12_NC,
+    R_AARCH64_ADR_PREL_PG_HI21, R_AARCH64_CALL26, R_AARCH64_JUMP26, R_X86_64_32, R_X86_64_32S,
+    R_X86_64_64, R_X86_64_GOTPCREL, R_X86_64_GOTPCRELX, R_X86_64_PC32, R_X86_64_PLT32,
+    R_X86_64_REX_GOTPCRELX, S_ATTR_PURE_INSTRUCTIONS, S_ATTR_SOME_INSTRUCTIONS, SHF_ALLOC,
+    SHF_EXECINSTR, SHF_INFO_LINK, SHT_PROGBITS, SHT_RELA, SHT_STRTAB, SHT_SYMTAB, STB_GLOBAL,
+    STB_LOCAL, STT_FUNC, STT_NOTYPE, STT_SECTION, elf_st_info,
 };
 
 /// ELF section layout with explicit indices.
@@ -951,11 +951,10 @@ impl ObjectBuilder {
         macho.extend_from_slice(&0_u16.to_le_bytes()); // n_desc
         macho.extend_from_slice(&0_u64.to_le_bytes()); // n_value (function start; __text is at addr 0)
 
-        // Symbols 1..N: String constant symbols (private external, defined in rodata section)
-        // Note: We mark these as N_PEXT | N_EXT because ARM64_RELOC_PAGE21/PAGEOFF12
-        // relocations with r_extern=1 require the target symbol to be external.
-        // N_PEXT makes them private (not exported), avoiding duplicate symbol errors
-        // when linking multiple object files that each have their own string constants.
+        // Symbols 1..N: String constant symbols, defined in the rodata section.
+        // These are plain N_SECT (truly local) symbols, so they are not exported,
+        // avoiding duplicate symbol errors when linking multiple object files
+        // that each have their own string constants.
         // IMPORTANT: Only emit symbols for non-empty strings (ones that have actual content).
         let mut sym_name_idx = 0;
         for (i, s) in self.strings.iter().enumerate() {

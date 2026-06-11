@@ -32,13 +32,10 @@ use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 
 use super::mir::{Aarch64Inst, Aarch64Mir, Operand, Reg};
-use crate::vreg::LabelId;
 
 /// A node in the scheduling dependency graph.
 #[derive(Debug)]
 struct SchedNode {
-    /// Index of this instruction in the original sequence.
-    inst_idx: usize,
     /// Instructions this depends on (must execute before this).
     deps: Vec<usize>,
     /// Instructions that depend on this (must execute after this).
@@ -50,9 +47,8 @@ struct SchedNode {
 }
 
 impl SchedNode {
-    fn new(inst_idx: usize, latency: u32) -> Self {
+    fn new(latency: u32) -> Self {
         Self {
-            inst_idx,
             deps: Vec::new(),
             users: Vec::new(),
             priority: 0,
@@ -478,8 +474,7 @@ fn build_dep_graph(instructions: &[Aarch64Inst], start: usize, end: usize) -> Ve
     let block_len = end - start;
     let mut nodes: Vec<SchedNode> = instructions[start..end]
         .iter()
-        .enumerate()
-        .map(|(i, inst)| SchedNode::new(i, get_latency(inst)))
+        .map(|inst| SchedNode::new(get_latency(inst)))
         .collect();
 
     // Track last writer of each register
@@ -765,6 +760,7 @@ pub fn schedule(mir: &mut Aarch64Mir) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vreg::LabelId;
 
     #[test]
     fn test_clobber_orders_later_write_and_read() {

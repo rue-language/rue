@@ -29,9 +29,9 @@ use rayon::prelude::*;
 use tracing::{info, info_span};
 
 use crate::{
-    AnalyzedFunction, Ast, AstGen, CfgBuilder, CompileError, CompileErrors, CompileOptions,
-    CompileOutput, CompileWarning, ErrorKind, FunctionWithCfg, Lexer, MultiErrorResult, Parser,
-    Rir, Sema, SourceFile, Type, TypeInternPool, compile_backend,
+    AnalyzedFunction, Ast, AstGen, CfgBuilder, CompileErrors, CompileOptions, CompileOutput,
+    CompileWarning, FunctionWithCfg, Lexer, MultiErrorResult, Parser, Rir, Sema, SourceFile, Type,
+    TypeInternPool, compile_backend,
 };
 use rue_span::FileId;
 
@@ -40,8 +40,6 @@ use rue_span::FileId;
 struct ParsedFileData {
     /// Path to the source file.
     path: String,
-    /// File identifier for error reporting.
-    file_id: FileId,
     /// The parsed abstract syntax tree.
     ast: Ast,
 }
@@ -172,7 +170,6 @@ impl<'src> CompilationUnit<'src> {
 
             parsed_files.push(ParsedFileData {
                 path: source.path.to_string(),
-                file_id: source.file_id,
                 ast,
             });
         }
