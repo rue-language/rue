@@ -1,22 +1,18 @@
 # By-value aggregate ABI stress tests (RUE-13).
 #
-# Aggregates passed/returned by value are exploded into per-slot arguments
-# (x86-64: 6 integer arg registers, 2 return registers; aarch64/AAPCS: 8 arg
-# registers, and large aggregates passed indirectly). This matrix probes sizes
-# around those boundaries in every pass/return combination for structs, bare
-# arrays, and methods. The per-case `known_bug` / `known_bug_on` markers are
-# the source of truth for exactly what fails where.
+# Aggregates passed/returned by value are exploded into per-slot arguments.
+# This matrix probes sizes around the register boundaries in every pass/return
+# combination for structs, bare arrays, and methods.
 #
-# State after RUE-118 (route every aggregate consumer through the slot
-# accessor): aarch64 now handles struct pass/return and bare-array pass-only at
-# all tested sizes (5/7/9 slots). The remaining failures are:
-#   - x86-64's spill of aggregate args/returns past its 6 int arg-registers /
-#     2 return-registers — the 9-slot struct cases, scoped
-#     known_bug_on = ["x86-64-linux"] (they still pass on aarch64). See RUE-91.
-#   - the value-method self-update idiom (method_self_update_5/9_slots) and the
-#     8-element array round-trip (bare_array_8_pass_and_return), which still
-#     drop slots on BOTH backends (known_bug, unscoped).
-# Locals and borrow/inout large aggregates are correct on both backends.
+# The convention (RUE-106, see crate::cfg_lower::type_uses_sret_return in
+# rue-codegen):
+#   - Args: one 8-byte ABI slot per aggregate slot; slots past the arg
+#     registers (x86-64: 6, aarch64: 8) go on the caller's stack, and the
+#     callee prologue copies them into its frame param area.
+#   - Returns: aggregates that fit the return registers (x86-64: 6, aarch64:
+#     8) use them; larger aggregates — and String always — return via a
+#     caller-allocated sret buffer whose address is a hidden first argument.
+# All sizes here (5/7/9 slots) pass and return correctly on both backends.
 
 [section]
 id = "cli.abi"
@@ -46,8 +42,6 @@ stdout = "4\n"
 
 [[case]]
 name = "struct_9_slots_pass_only"
-known_bug = "RUE-13"
-known_bug_on = ["x86-64-linux"]
 files = [{ path = "main.rue", source = """
 struct S {
     items: [i32; 8],
@@ -68,8 +62,6 @@ stdout = "8\n"
 
 [[case]]
 name = "struct_9_slots_return_only"
-known_bug = "RUE-13"
-known_bug_on = ["x86-64-linux"]
 files = [{ path = "main.rue", source = """
 struct S {
     items: [i32; 8],
@@ -111,8 +103,6 @@ stdout = "6\n"
 
 [[case]]
 name = "struct_9_slots_pass_and_return"
-known_bug = "RUE-13"
-known_bug_on = ["x86-64-linux"]
 files = [{ path = "main.rue", source = """
 struct S {
     items: [i32; 8],
@@ -133,10 +123,9 @@ fn main() -> i32 {
 stdout = "8\n"
 
 # The value-oriented method idiom (self in, Self out) on a >6-slot struct —
-# the way this bug actually bites users writing ordinary code.
+# the way RUE-13 actually bit users writing ordinary code.
 [[case]]
 name = "method_self_update_9_slots"
-known_bug = "RUE-13"
 files = [{ path = "main.rue", source = """
 @copy
 struct Stack {
@@ -165,9 +154,8 @@ fn main() -> i32 {
 """ }]
 stdout = "20\n"
 
-# The same stack at 5 slots compiles and runs but MISCOMPILES: the len
-# field write is lost through the by-value return, so len stays 0 and
-# top() underflows (runtime "integer overflow"). Part of RUE-13.
+# The same stack at 5 slots (fits the return registers on both backends,
+# so it takes the register-return path rather than sret).
 [[case]]
 name = "method_self_update_5_slots"
 files = [{ path = "main.rue", source = """
@@ -200,8 +188,6 @@ stdout = "20\n"
 
 [[case]]
 name = "bare_array_7_pass_only"
-known_bug = "RUE-13"
-known_bug_on = ["x86-64-linux"]
 files = [{ path = "main.rue", source = """
 fn sum_ends(a: [i32; 7]) -> i32 {
     a[0] + a[6]
@@ -217,8 +203,6 @@ stdout = "8\n"
 
 [[case]]
 name = "bare_array_8_pass_and_return"
-known_bug = "RUE-13"
-known_bug_on = ["x86-64-linux"]
 files = [{ path = "main.rue", source = """
 fn through(a: [i32; 8]) -> [i32; 8] {
     a
@@ -232,6 +216,80 @@ fn main() -> i32 {
 }
 """ }]
 stdout = "8\n"
+
+# RUE-92: a user function returning String by value. The caller has always
+# used the sret convention (buffer pointer as hidden first argument) for
+# String-returning calls, but the callee used to return the three slots in
+# registers and never write the buffer — len/cap arrived as garbage.
+[[case]]
+name = "string_return_by_value"
+files = [{ path = "main.rue", source = """
+fn make() -> String {
+    "hello"
+}
+
+fn main() -> i32 {
+    let s = make();
+    @dbg(s.len());
+    @dbg(s);
+    0
+}
+""" }]
+stdout = """
+5
+hello
+"""
+
+# sret + user args: the hidden sret pointer shifts every user argument by one
+# ABI slot; callee and caller must agree on the shift.
+[[case]]
+name = "string_return_with_args"
+files = [{ path = "main.rue", source = """
+fn pick(a: String, b: String, n: i32) -> String {
+    if n > 0 { a } else { b }
+}
+
+fn main() -> i32 {
+    let s = pick("first", "second", 1);
+    @dbg(s.len());
+    @dbg(s);
+    0
+}
+""" }]
+stdout = """
+5
+first
+"""
+
+# sret + stack-passed args together: a 9-slot struct argument (slots past the
+# arg registers spill to the caller's stack, shifted by the hidden sret
+# pointer) to a function that also returns a 9-slot struct via sret.
+[[case]]
+name = "struct_9_slots_sret_with_stack_args"
+files = [{ path = "main.rue", source = """
+struct S {
+    items: [i32; 8],
+    len: u32,
+}
+
+fn bump_last(s: S, by: i32) -> S {
+    let mut t = s;
+    t.items[7] = t.items[7] + by;
+    t
+}
+
+fn main() -> i32 {
+    let s = S { items: [1, 2, 3, 4, 5, 6, 7, 8], len: 8 };
+    let t = bump_last(s, 100);
+    @dbg(t.items[7]);
+    @dbg(t.len);
+    0
+}
+""" }]
+stdout = """
+108
+8
+"""
 
 # Borrow/inout large aggregates should always work (by reference).
 [[case]]

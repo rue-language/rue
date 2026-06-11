@@ -39,11 +39,18 @@ use crate::cfg_lower::{CfgLowerContext, IndexLevel};
 use crate::types;
 use crate::vreg::BLOCK_LABEL_BASE;
 
-/// Argument passing registers per System V AMD64 ABI.
-const ARG_REGS: [Reg; 6] = [Reg::Rdi, Reg::Rsi, Reg::Rdx, Reg::Rcx, Reg::R8, Reg::R9];
+/// Argument passing registers per System V AMD64 ABI. ABI arg slots beyond
+/// these are passed on the caller's stack (slot `k >= 6` at `[rbp+16+(k-6)*8]`
+/// in the callee); the callee prologue copies them into its frame param area
+/// so the body addresses every param slot uniformly (see `emit_prologue`).
+pub(super) const ARG_REGS: [Reg; 6] = [Reg::Rdi, Reg::Rsi, Reg::Rdx, Reg::Rcx, Reg::R8, Reg::R9];
 
-/// Return value registers per System V AMD64 ABI.
-const RET_REGS: [Reg; 6] = [Reg::Rax, Reg::Rdx, Reg::Rcx, Reg::R8, Reg::R9, Reg::R10];
+/// Return value registers for the internal Rue convention (SysV only defines
+/// rax/rdx; the rest are caller-saved scratch regs we extend the convention
+/// with for multi-slot aggregate returns). Aggregates with more slots than
+/// this — and builtin String always — return via sret instead; see
+/// `crate::cfg_lower::type_uses_sret_return`. (RUE-106)
+pub(super) const RET_REGS: [Reg; 6] = [Reg::Rax, Reg::Rdx, Reg::Rcx, Reg::R8, Reg::R9, Reg::R10];
 
 /// CFG to X86Mir lowering.
 pub struct CfgLower<'a> {
@@ -153,25 +160,17 @@ impl<'a> CfgLower<'a> {
             return ptr_vreg;
         }
 
-        // Load the pointer from the param slot
+        // Load the pointer from the param slot. The prologue copies every ABI
+        // arg slot — register- and stack-passed alike — into the contiguous
+        // frame param area, so this is uniform regardless of param count.
         let ptr_vreg = self.mir.alloc_vreg();
-
-        if (param_slot as usize) < ARG_REGS.len() {
-            let slot = self.ctx.num_locals + param_slot;
-            let offset = self.ctx.local_offset(slot);
-            self.mir.push(X86Inst::MovRM {
-                dst: Operand::Virtual(ptr_vreg),
-                base: Reg::Rbp,
-                offset,
-            });
-        } else {
-            let stack_offset = 16 + ((param_slot as i32) - 6) * 8;
-            self.mir.push(X86Inst::MovRM {
-                dst: Operand::Virtual(ptr_vreg),
-                base: Reg::Rbp,
-                offset: stack_offset,
-            });
-        }
+        let slot = self.ctx.num_locals + param_slot;
+        let offset = self.ctx.local_offset(slot);
+        self.mir.push(X86Inst::MovRM {
+            dst: Operand::Virtual(ptr_vreg),
+            base: Reg::Rbp,
+            offset,
+        });
 
         // Cache it for future use
         self.inout_param_ptrs.insert(param_slot, ptr_vreg);
@@ -567,13 +566,22 @@ impl<'a> CfgLower<'a> {
             CfgInstData::Param { index } => {
                 if self.ctx.cfg.is_param_inout(*index) {
                     Some("Inout param: load pointer then dereference".to_string())
-                } else if (*index as usize) < ARG_REGS.len() {
-                    Some(format!(
-                        "From register {} (SysV ABI)",
-                        ARG_REGS[*index as usize]
-                    ))
                 } else {
-                    Some("From stack (SysV ABI, args > 6)".to_string())
+                    // ABI slot: shifted by one when a hidden sret pointer
+                    // occupies the first arg register.
+                    let abi_index =
+                        *index as usize + self.ctx.uses_sret_return(RET_REGS.len() as u32) as usize;
+                    if abi_index < ARG_REGS.len() {
+                        Some(format!(
+                            "From frame param slot (arrived in {}, spilled by prologue)",
+                            ARG_REGS[abi_index]
+                        ))
+                    } else {
+                        Some(
+                            "From frame param slot (stack-passed arg, copied by prologue)"
+                                .to_string(),
+                        )
+                    }
                 }
             }
             CfgInstData::Const(v) => {
@@ -701,6 +709,13 @@ impl<'a> CfgLower<'a> {
                 // Check if this is an inout parameter
                 let is_inout = self.ctx.cfg.is_param_inout(*index);
 
+                // The prologue copies every ABI arg slot — register- and
+                // stack-passed alike — into the contiguous frame param area
+                // (slots num_locals..num_locals+num_params), so all param
+                // reads are uniform frame-slot loads. Previously slots past
+                // the 6 arg registers were read from [rbp+16+...], which the
+                // frame-slot-based aggregate and write paths didn't mirror,
+                // dropping slots of >6-slot aggregate args. (RUE-13/79/91)
                 if is_inout {
                     // For inout params, the slot contains a POINTER to the caller's memory.
                     // Load the pointer, then dereference to get the value.
@@ -708,22 +723,13 @@ impl<'a> CfgLower<'a> {
                     let val_vreg = self.mir.alloc_vreg();
 
                     // Load the pointer from the param slot
-                    if (*index as usize) < ARG_REGS.len() {
-                        let slot = self.ctx.num_locals + *index;
-                        let offset = self.ctx.local_offset(slot);
-                        self.mir.push(X86Inst::MovRM {
-                            dst: Operand::Virtual(ptr_vreg),
-                            base: Reg::Rbp,
-                            offset,
-                        });
-                    } else {
-                        let stack_offset = 16 + ((*index as i32) - 6) * 8;
-                        self.mir.push(X86Inst::MovRM {
-                            dst: Operand::Virtual(ptr_vreg),
-                            base: Reg::Rbp,
-                            offset: stack_offset,
-                        });
-                    }
+                    let slot = self.ctx.num_locals + *index;
+                    let offset = self.ctx.local_offset(slot);
+                    self.mir.push(X86Inst::MovRM {
+                        dst: Operand::Virtual(ptr_vreg),
+                        base: Reg::Rbp,
+                        offset,
+                    });
 
                     // Store the pointer vreg for later use by Store
                     self.inout_param_ptrs.insert(*index, ptr_vreg);
@@ -741,22 +747,13 @@ impl<'a> CfgLower<'a> {
                     let vreg = self.mir.alloc_vreg();
                     self.value_map.insert(value, vreg);
 
-                    if (*index as usize) < ARG_REGS.len() {
-                        let slot = self.ctx.num_locals + *index;
-                        let offset = self.ctx.local_offset(slot);
-                        self.mir.push(X86Inst::MovRM {
-                            dst: Operand::Virtual(vreg),
-                            base: Reg::Rbp,
-                            offset,
-                        });
-                    } else {
-                        let stack_offset = 16 + ((*index as i32) - 6) * 8;
-                        self.mir.push(X86Inst::MovRM {
-                            dst: Operand::Virtual(vreg),
-                            base: Reg::Rbp,
-                            offset: stack_offset,
-                        });
-                    }
+                    let slot = self.ctx.num_locals + *index;
+                    let offset = self.ctx.local_offset(slot);
+                    self.mir.push(X86Inst::MovRM {
+                        dst: Operand::Virtual(vreg),
+                        base: Reg::Rbp,
+                        offset,
+                    });
                 }
             }
 
@@ -1666,16 +1663,28 @@ impl<'a> CfgLower<'a> {
                 let result_vreg = self.mir.alloc_vreg();
                 self.value_map.insert(value, result_vreg);
 
-                // Check if this call returns a builtin String (uses sret convention)
-                let is_sret_call = self.ctx.is_builtin_string(ty);
+                // Does this call return via the sret convention? Builtin
+                // String always does (runtime fns take an out-pointer first
+                // param); other aggregates do when their slots exceed the
+                // return registers. See crate::cfg_lower::type_uses_sret_return.
+                let is_sret_call = self.ctx.type_uses_sret(ty, RET_REGS.len() as u32);
+                let ret_slot_count =
+                    if matches!(ty.kind(), TypeKind::Struct(_) | TypeKind::Array(_)) {
+                        self.ctx.type_slot_count(ty)
+                    } else {
+                        1
+                    };
+                // Caller-allocated return buffer: one 8-byte slot per
+                // aggregate slot, padded to keep rsp 16-byte aligned.
+                let sret_bytes = ((ret_slot_count as i32 * 8) + 15) / 16 * 16;
 
-                // For sret calls, allocate 32 bytes on stack for the return value (24 bytes + padding for 16-byte alignment)
-                // We'll pass a pointer to this space as the first argument
+                // For sret calls, allocate the return buffer on the stack;
+                // we'll pass a pointer to this space as the first argument.
                 // Use add with negative offset (no SubRI in MIR)
                 if is_sret_call {
                     self.mir.push(X86Inst::AddRI {
                         dst: Operand::Physical(Reg::Rsp),
-                        imm: -32,
+                        imm: -sret_bytes,
                     });
                 }
 
@@ -1830,12 +1839,12 @@ impl<'a> CfgLower<'a> {
                 }
 
                 // Handle struct and string returns (multi-slot types)
-                // Check builtin String first - it uses sret convention
-                if self.ctx.is_builtin_string(ty) {
-                    // Builtin String uses sret convention: result was written to [rsp]
-                    // Load ptr, len, cap from stack
+                // sret calls first: the callee wrote the slots to the buffer
+                // at [rsp]. (String always; big aggregates per RUE-106.)
+                if is_sret_call {
+                    // Load every slot from the return buffer
                     let mut slot_vregs = Vec::new();
-                    for slot_idx in 0..3 {
+                    for slot_idx in 0..ret_slot_count {
                         let slot_vreg = self.mir.alloc_vreg();
                         let offset = (slot_idx * 8) as i32;
                         self.mir.push(X86Inst::MovRM {
@@ -1845,10 +1854,10 @@ impl<'a> CfgLower<'a> {
                         });
                         slot_vregs.push(slot_vreg);
                     }
-                    // Pop the sret space (32 bytes including alignment padding)
+                    // Pop the sret space (including alignment padding)
                     self.mir.push(X86Inst::AddRI {
                         dst: Operand::Physical(Reg::Rsp),
-                        imm: 32,
+                        imm: sret_bytes,
                     });
                     self.struct_slot_vregs.insert(value, slot_vregs.clone());
                     self.mir.push(X86Inst::MovRR {
@@ -1856,10 +1865,10 @@ impl<'a> CfgLower<'a> {
                         src: Operand::Virtual(slot_vregs[0]),
                     });
                 } else if matches!(ty.kind(), TypeKind::Struct(_) | TypeKind::Array(_)) {
-                    // Non-builtin structs and arrays return in registers. Capture
+                    // Aggregates that fit return in registers. Capture
                     // every slot from RET_REGS, not just rax — arrays previously fell
                     // to the scalar path and lost all elements but the first. (RUE-78)
-                    let slot_count = self.ctx.type_slot_count(ty);
+                    let slot_count = ret_slot_count;
                     let mut slot_vregs = Vec::new();
                     for slot_idx in 0..slot_count {
                         let slot_vreg = self.mir.alloc_vreg();
@@ -3496,7 +3505,7 @@ impl<'a> CfgLower<'a> {
                     let symbol_id = self.intern_symbol("__rue_exit");
                     self.mir.push(X86Inst::CallRel { symbol_id });
                 } else if return_type.as_struct().is_some() || return_type.is_array() {
-                    // Return a multi-slot aggregate (struct or array) in registers.
+                    // Return a multi-slot aggregate (struct or array).
                     // Gather all slots through the single accessor, regardless of source
                     // (StructInit/ArrayInit/Call/BlockParam cache-hit; Load/Param/
                     // PlaceRead materialize). Previously the `_` arm returned only slot 0
@@ -3505,15 +3514,27 @@ impl<'a> CfgLower<'a> {
                     let slot_vregs = self
                         .get_or_compute_field_vregs(*value)
                         .unwrap_or_else(|| vec![self.get_vreg(*value)]);
-                    // Move slot values to return registers in REVERSE order: regalloc
-                    // uses Rax as scratch when loading spilled values, so moving to Rax
-                    // (RET_REGS[0]) last avoids clobbering it with later slots' loads.
-                    for (i, slot_vreg) in slot_vregs.iter().enumerate().rev() {
-                        if i < RET_REGS.len() {
-                            self.mir.push(X86Inst::MovRR {
-                                dst: Operand::Physical(RET_REGS[i]),
-                                src: Operand::Virtual(*slot_vreg),
-                            });
+                    if self.ctx.uses_sret_return(RET_REGS.len() as u32) {
+                        // sret return (String always; aggregates that don't fit
+                        // the return registers): the caller passed a buffer
+                        // pointer as a hidden first argument, which the
+                        // prologue saved at the dedicated frame slot one past
+                        // the param area. Store every slot through it.
+                        // Previously String returns took the register path
+                        // here while the caller read the (never-written) sret
+                        // buffer — len/cap arrived as garbage. (RUE-92)
+                        crate::agg_slots::store_slots_to_sret(self, &slot_vregs);
+                    } else {
+                        // Move slot values to return registers in REVERSE order: regalloc
+                        // uses Rax as scratch when loading spilled values, so moving to Rax
+                        // (RET_REGS[0]) last avoids clobbering it with later slots' loads.
+                        for (i, slot_vreg) in slot_vregs.iter().enumerate().rev() {
+                            if i < RET_REGS.len() {
+                                self.mir.push(X86Inst::MovRR {
+                                    dst: Operand::Physical(RET_REGS[i]),
+                                    src: Operand::Virtual(*slot_vreg),
+                                });
+                            }
                         }
                     }
 

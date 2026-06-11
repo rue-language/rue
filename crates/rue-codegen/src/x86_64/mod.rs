@@ -48,13 +48,17 @@ pub fn generate(
 ) -> CompileResult<MachineCode> {
     let num_locals = cfg.num_locals();
     let num_params = cfg.num_params();
+    // sret returns reserve one extra frame slot (one past the param area)
+    // for the incoming buffer pointer; see crate::cfg_lower::type_uses_sret_return.
+    let has_sret =
+        crate::cfg_lower::fn_uses_sret_return(cfg, type_pool, cfg_lower::RET_REGS.len() as u32);
 
     // Lower CFG to X86Mir with virtual registers
     let mir = CfgLower::new(cfg, type_pool, strings, interner).lower();
 
     // Allocate physical registers (may add spill slots)
-    // Spill slots go after both locals AND parameters to avoid conflicts
-    let existing_slots = num_locals + num_params;
+    // Spill slots go after locals, parameters AND the sret pointer slot to avoid conflicts
+    let existing_slots = num_locals + num_params + has_sret as u32;
     let (mut mir, num_spills, used_callee_saved) =
         RegAlloc::new(mir, existing_slots).allocate_with_spills()?;
 
@@ -81,6 +85,7 @@ pub fn generate(
         &used_callee_saved,
         strings,
     )
+    .with_sret(has_sret)
     .emit()?;
 
     Ok(MachineCode {
@@ -102,12 +107,14 @@ pub fn generate_with_asm(
 ) -> CompileResult<(MachineCode, String)> {
     let num_locals = cfg.num_locals();
     let num_params = cfg.num_params();
+    let has_sret =
+        crate::cfg_lower::fn_uses_sret_return(cfg, type_pool, cfg_lower::RET_REGS.len() as u32);
 
     // Lower CFG to X86Mir with virtual registers
     let mir = CfgLower::new(cfg, type_pool, strings, interner).lower();
 
     // Allocate physical registers (may add spill slots)
-    let existing_slots = num_locals + num_params;
+    let existing_slots = num_locals + num_params + has_sret as u32;
     let (mut mir, num_spills, used_callee_saved) =
         RegAlloc::new(mir, existing_slots).allocate_with_spills()?;
 
@@ -131,6 +138,7 @@ pub fn generate_with_asm(
         &used_callee_saved,
         strings,
     )
+    .with_sret(has_sret)
     .emit_all()?;
 
     let asm = emitted.to_asm();
@@ -155,12 +163,14 @@ pub fn generate_regalloc_info(
 ) -> CompileResult<RegAllocDebugInfo<Reg>> {
     let num_locals = cfg.num_locals();
     let num_params = cfg.num_params();
+    let has_sret =
+        crate::cfg_lower::fn_uses_sret_return(cfg, type_pool, cfg_lower::RET_REGS.len() as u32);
 
     // Lower CFG to X86Mir with virtual registers
     let mir = CfgLower::new(cfg, type_pool, strings, interner).lower();
 
     // Allocate physical registers with debug info
-    let existing_slots = num_locals + num_params;
+    let existing_slots = num_locals + num_params + has_sret as u32;
     let (_mir, _num_spills, _used_callee_saved, debug_info) =
         RegAlloc::new(mir, existing_slots).allocate_with_debug()?;
 

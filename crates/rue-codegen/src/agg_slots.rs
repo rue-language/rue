@@ -19,8 +19,12 @@
 //! [`lower_struct_init`]/[`lower_array_init`]. Phase 3 moved the consumer-side
 //! store loops here as [`store_slots`]/[`store_slots_through_ptr`] — every
 //! site that writes an aggregate's slots (Alloc, Store, PlaceWrite, inout
-//! writeback) iterates via these two primitives. Remaining per-backend:
-//! call-arg/return marshalling and the scheduler/liveness tables.
+//! writeback) iterates via these two primitives. Phase 4 (RUE-106) added the
+//! callee side of the sret return as [`store_slots_to_sret`]; the convention
+//! *decision* (which returns use sret) is shared in
+//! `crate::cfg_lower::type_uses_sret_return`. Remaining per-backend: the
+//! physical-register/stack marshalling of call args and sret readback (truly
+//! arch-specific: push vs str, rsp vs sp) and the scheduler/liveness tables.
 
 use std::collections::HashMap;
 
@@ -253,6 +257,22 @@ pub fn store_slots_through_ptr<B: SlotBackend>(
 ) {
     for (i, val) in vals.iter().enumerate() {
         b.emit_store_through_ptr(*val, ptr, -static_byte_offset - (i as i32) * 8);
+    }
+}
+
+/// Callee side of the sret return convention (RUE-106): load the sret buffer
+/// pointer the prologue saved at the frame slot one past the param area, then
+/// store every slot of the return value through it at ascending byte offsets
+/// (`vals[i]` to `ptr + i*8` — the buffer is caller-allocated and addressed
+/// upward, unlike the descending inout frame-slot writes).
+///
+/// See `crate::cfg_lower::type_uses_sret_return` for when returns use sret.
+pub fn store_slots_to_sret<B: SlotBackend>(b: &mut B, vals: &[VReg]) {
+    let ptr = b.alloc_vreg();
+    let sret_slot = b.ctx().sret_ptr_slot();
+    b.emit_load_slot(ptr, sret_slot);
+    for (i, val) in vals.iter().enumerate() {
+        b.emit_store_through_ptr(*val, ptr, (i as i32) * 8);
     }
 }
 

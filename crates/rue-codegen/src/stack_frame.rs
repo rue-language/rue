@@ -282,18 +282,23 @@ fn generate_x86_64_stack_frame(
 
     let num_locals = cfg.num_locals();
     let num_params = cfg.num_params();
+    // sret returns reserve one extra frame slot for the incoming buffer
+    // pointer and shift user args by one ABI slot (RUE-106).
+    let has_sret = crate::cfg_lower::fn_uses_sret_return(cfg, type_pool, 6);
+    let sret_slots = has_sret as u32;
 
     // Lower CFG to X86Mir with virtual registers
     let mir = CfgLower::new(cfg, type_pool, strings, interner).lower();
 
     // Allocate physical registers (may add spill slots)
-    let existing_slots = num_locals + num_params;
+    let existing_slots = num_locals + num_params + sret_slots;
     let (_mir, num_spills, used_callee_saved) =
         RegAlloc::new(mir, existing_slots).allocate_with_spills()?;
 
-    // Calculate stack layout
+    // Calculate stack layout (ALL params get frame slots: the prologue copies
+    // stack-passed args into the frame param area)
     let callee_saved_size = used_callee_saved.len() * 8;
-    let total_slots = num_locals + num_spills + num_params.min(6);
+    let total_slots = num_locals + num_spills + num_params + sret_slots;
     let needed_bytes = total_slots as i32 * 8;
     let current_offset = callee_saved_size as i32;
     let total_needed = current_offset + needed_bytes;
@@ -327,10 +332,11 @@ fn generate_x86_64_stack_frame(
         });
     }
 
-    // Add parameter spill slots (for first 6 register params)
+    // Add parameter spill slots (ALL params: stack-passed args are copied
+    // into the frame param area by the prologue)
     #[allow(unused_variables)]
     let arg_regs = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"];
-    for i in 0..num_params.min(6) {
+    for i in 0..num_params {
         let slot = num_locals + i;
         let slot_offset = -callee_saved_size_i32 - ((slot as i32 + 1) * 8);
         slots.push(StackSlot {
@@ -342,9 +348,22 @@ fn generate_x86_64_stack_frame(
         });
     }
 
+    // Add the sret pointer slot (one past the param area)
+    if has_sret {
+        let slot = num_locals + num_params;
+        let slot_offset = -callee_saved_size_i32 - ((slot as i32 + 1) * 8);
+        slots.push(StackSlot {
+            name: Some("sret ptr".to_string()),
+            offset: slot_offset,
+            size: 8,
+            ty: "ptr".to_string(),
+            kind: StackSlotKind::Parameter,
+        });
+    }
+
     // Add spill slots
     for i in 0..num_spills {
-        let slot = num_locals + num_params.min(6) + i;
+        let slot = num_locals + num_params + sret_slots + i;
         let slot_offset = -callee_saved_size_i32 - ((slot as i32 + 1) * 8);
         slots.push(StackSlot {
             name: None,
@@ -355,15 +374,17 @@ fn generate_x86_64_stack_frame(
         });
     }
 
-    // Build argument locations
+    // Build argument locations (the hidden sret pointer occupies the first
+    // ABI slot when present, shifting user args by one)
     let mut arguments = Vec::new();
     for i in 0..num_params as usize {
-        let location = if i < 6 {
-            ArgPassingLocation::Register(arg_regs[i].to_string())
+        let abi_index = i + has_sret as usize;
+        let location = if abi_index < 6 {
+            ArgPassingLocation::Register(arg_regs[abi_index].to_string())
         } else {
             // Stack arguments are at positive offsets from rbp
-            // arg7 at [rbp+16], arg8 at [rbp+24], etc.
-            let offset = 16 + ((i - 6) as i32) * 8;
+            // ABI slot 6 at [rbp+16], slot 7 at [rbp+24], etc.
+            let offset = 16 + ((abi_index - 6) as i32) * 8;
             ArgPassingLocation::Stack { offset }
         };
         arguments.push(ArgumentLocation {
@@ -374,11 +395,16 @@ fn generate_x86_64_stack_frame(
         });
     }
 
-    // Return location
+    // Return location (sret returns go through the caller-allocated buffer
+    // whose address arrived in rdi)
     let return_ty = format!("{:?}", cfg.return_type());
     let return_location = ReturnLocation {
         ty: return_ty,
-        registers: vec!["rax".to_string()],
+        registers: if has_sret {
+            vec!["sret buffer (via rdi)".to_string()]
+        } else {
+            vec!["rax".to_string()]
+        },
     };
 
     Ok(StackFrameInfo {
@@ -405,12 +431,16 @@ fn generate_aarch64_stack_frame(
 
     let num_locals = cfg.num_locals();
     let num_params = cfg.num_params();
+    // sret returns reserve one extra frame slot for the incoming buffer
+    // pointer and shift user args by one ABI slot (RUE-106).
+    let has_sret = crate::cfg_lower::fn_uses_sret_return(cfg, type_pool, 8);
+    let sret_slots = has_sret as u32;
 
     // Lower CFG to Aarch64Mir with virtual registers
     let mir = CfgLower::new(cfg, type_pool, strings, interner, target).lower();
 
     // Allocate physical registers (may add spill slots)
-    let existing_slots = num_locals + num_params;
+    let existing_slots = num_locals + num_params + sret_slots;
     let (_mir, num_spills, used_callee_saved) =
         RegAlloc::new(mir, existing_slots).allocate_with_spills()?;
 
@@ -423,7 +453,9 @@ fn generate_aarch64_stack_frame(
     // FP and LR are saved separately (16 bytes)
     let fp_lr_size = 16;
 
-    let total_slots = num_locals + num_spills + num_params.min(8);
+    // ALL params get frame slots: the prologue copies stack-passed args into
+    // the frame param area
+    let total_slots = num_locals + num_spills + num_params + sret_slots;
     let locals_size = ((total_slots as i32 * 8 + 15) / 16) * 16;
 
     let frame_size = fp_lr_size + callee_saved_size + locals_size as usize;
@@ -478,8 +510,9 @@ fn generate_aarch64_stack_frame(
         });
     }
 
-    // Add parameter spill slots (for first 8 register params on AArch64)
-    for i in 0..num_params.min(8) {
+    // Add parameter spill slots (ALL params: stack-passed args are copied
+    // into the frame param area by the prologue)
+    for i in 0..num_params {
         let slot = num_locals + i;
         let slot_offset = locals_base_offset - ((slot as i32 + 1) * 8);
         slots.push(StackSlot {
@@ -491,9 +524,22 @@ fn generate_aarch64_stack_frame(
         });
     }
 
+    // Add the sret pointer slot (one past the param area)
+    if has_sret {
+        let slot = num_locals + num_params;
+        let slot_offset = locals_base_offset - ((slot as i32 + 1) * 8);
+        slots.push(StackSlot {
+            name: Some("sret ptr".to_string()),
+            offset: slot_offset,
+            size: 8,
+            ty: "ptr".to_string(),
+            kind: StackSlotKind::Parameter,
+        });
+    }
+
     // Add spill slots
     for i in 0..num_spills {
-        let slot = num_locals + num_params.min(8) + i;
+        let slot = num_locals + num_params + sret_slots + i;
         let slot_offset = locals_base_offset - ((slot as i32 + 1) * 8);
         slots.push(StackSlot {
             name: None,
@@ -504,15 +550,17 @@ fn generate_aarch64_stack_frame(
         });
     }
 
-    // Build argument locations (x0-x7 for first 8 args on AArch64)
+    // Build argument locations (x0-x7 for first 8 ABI slots on AArch64; the
+    // hidden sret pointer occupies the first slot when present)
     let arg_regs = ["x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7"];
     let mut arguments = Vec::new();
     for i in 0..num_params as usize {
-        let location = if i < 8 {
-            ArgPassingLocation::Register(arg_regs[i].to_string())
+        let abi_index = i + has_sret as usize;
+        let location = if abi_index < 8 {
+            ArgPassingLocation::Register(arg_regs[abi_index].to_string())
         } else {
             // Stack arguments on AArch64
-            let offset = ((i - 8) as i32) * 8;
+            let offset = ((abi_index - 8) as i32) * 8;
             ArgPassingLocation::Stack { offset }
         };
         arguments.push(ArgumentLocation {
@@ -523,11 +571,16 @@ fn generate_aarch64_stack_frame(
         });
     }
 
-    // Return location
+    // Return location (sret returns go through the caller-allocated buffer
+    // whose address arrived in x0)
     let return_ty = format!("{:?}", cfg.return_type());
     let return_location = ReturnLocation {
         ty: return_ty,
-        registers: vec!["x0".to_string()],
+        registers: if has_sret {
+            vec!["sret buffer (via x0)".to_string()]
+        } else {
+            vec!["x0".to_string()]
+        },
     };
 
     Ok(StackFrameInfo {
