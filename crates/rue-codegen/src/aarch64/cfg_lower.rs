@@ -772,6 +772,12 @@ impl<'a> CfgLower<'a> {
                 self.mir.push(Aarch64Inst::Bl { symbol_id });
                 self.mir.push(Aarch64Inst::Label { id: ok_label });
 
+                // Signed MIN / -1 overflows; SDIV silently wraps per the ARM
+                // architecture, so trap it explicitly (RUE-30).
+                if ty.is_signed() {
+                    self.emit_signed_div_overflow_check(ty, lhs_vreg, rhs_vreg);
+                }
+
                 // Use SDIV for signed types, UDIV for unsigned types, selecting
                 // 64-bit (X-register) forms for 64-bit operands — the 32-bit
                 // (W-register) forms only divide the low 32 bits (RUE-26).
@@ -823,6 +829,13 @@ impl<'a> CfgLower<'a> {
                 let symbol_id = self.intern_symbol("__rue_div_by_zero");
                 self.mir.push(Aarch64Inst::Bl { symbol_id });
                 self.mir.push(Aarch64Inst::Label { id: ok_label });
+
+                // Signed MIN % -1 overflows like MIN / -1 (the implied
+                // quotient -MIN is unrepresentable); SDIV silently wraps per
+                // the ARM architecture, so trap it explicitly (RUE-30).
+                if ty.is_signed() {
+                    self.emit_signed_div_overflow_check(ty, lhs_vreg, rhs_vreg);
+                }
 
                 // Compute quotient first using SDIV or UDIV based on signedness,
                 // selecting 64-bit forms for 64-bit operands (RUE-26).
@@ -2758,6 +2771,70 @@ impl<'a> CfgLower<'a> {
             _ => return,
         }
 
+        let symbol_id = self.intern_symbol("__rue_overflow");
+        self.mir.push(Aarch64Inst::Bl { symbol_id });
+        self.mir.push(Aarch64Inst::Label { id: ok_label });
+    }
+
+    /// Emit the signed-division overflow guard: `MIN / -1` (and `MIN % -1`)
+    /// overflows because the quotient `-MIN` is unrepresentable. The ARM
+    /// architecture defines SDIV to silently wrap (MIN / -1 = MIN) with no
+    /// flag or trap, so check `dividend == MIN && divisor == -1` explicitly
+    /// and call the overflow panic handler (RUE-30, spec 8.1:3).
+    ///
+    /// For 32-bit-and-narrower types the compares run at W-register width:
+    /// sub-word values are kept sign-extended in the low 32 bits of their
+    /// registers, so comparing against the type's MIN there is exact.
+    fn emit_signed_div_overflow_check(&mut self, ty: Type, lhs_vreg: VReg, rhs_vreg: VReg) {
+        let ok_label = self.mir.alloc_label();
+        let is_64 = ty.is_64_bit();
+
+        // divisor == -1? (-1 doesn't fit CMP's imm12; materialize it)
+        let neg1_vreg = self.mir.alloc_vreg();
+        self.mir.push(Aarch64Inst::MovImm {
+            dst: Operand::Virtual(neg1_vreg),
+            imm: -1,
+        });
+        self.mir.push(if is_64 {
+            Aarch64Inst::Cmp64RR {
+                src1: Operand::Virtual(rhs_vreg),
+                src2: Operand::Virtual(neg1_vreg),
+            }
+        } else {
+            Aarch64Inst::CmpRR {
+                src1: Operand::Virtual(rhs_vreg),
+                src2: Operand::Virtual(neg1_vreg),
+            }
+        });
+        self.mir.push(Aarch64Inst::BCond {
+            cond: Cond::Ne,
+            label: ok_label,
+        });
+
+        // dividend == MIN?
+        let (min_val, _) = Self::type_range(ty);
+        let min_vreg = self.mir.alloc_vreg();
+        self.mir.push(Aarch64Inst::MovImm {
+            dst: Operand::Virtual(min_vreg),
+            imm: min_val,
+        });
+        self.mir.push(if is_64 {
+            Aarch64Inst::Cmp64RR {
+                src1: Operand::Virtual(lhs_vreg),
+                src2: Operand::Virtual(min_vreg),
+            }
+        } else {
+            Aarch64Inst::CmpRR {
+                src1: Operand::Virtual(lhs_vreg),
+                src2: Operand::Virtual(min_vreg),
+            }
+        });
+        self.mir.push(Aarch64Inst::BCond {
+            cond: Cond::Ne,
+            label: ok_label,
+        });
+
+        // Overflow - call panic handler
         let symbol_id = self.intern_symbol("__rue_overflow");
         self.mir.push(Aarch64Inst::Bl { symbol_id });
         self.mir.push(Aarch64Inst::Label { id: ok_label });

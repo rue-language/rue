@@ -839,6 +839,16 @@ impl<'a> Emitter<'a> {
                 self.emit_div64(src.as_physical());
                 end_inst!(self, "divq {}", src.as_physical());
             }
+            X86Inst::MulR { src } => {
+                self.begin_inst();
+                self.emit_mul(src.as_physical());
+                end_inst!(self, "mul {}", src.as_physical());
+            }
+            X86Inst::Mul64R { src } => {
+                self.begin_inst();
+                self.emit_mul64(src.as_physical());
+                end_inst!(self, "mulq {}", src.as_physical());
+            }
             X86Inst::CmpRR { src1, src2 } => {
                 self.begin_inst();
                 self.emit_cmp_rr(src1.as_physical(), src2.as_physical());
@@ -2292,6 +2302,43 @@ impl<'a> Emitter<'a> {
         self.code.push(modrm);
     }
 
+    /// Emit `mul r32` - Unsigned multiply EAX by r32 (EDX:EAX = EAX * r32).
+    ///
+    /// Encoding: [REX] F7 /4 (mul r/m32)
+    fn emit_mul(&mut self, src: Reg) {
+        let src_enc = src.encoding();
+
+        // REX prefix if needed
+        if src.needs_rex() {
+            self.code.push(0x41); // REX.B
+        }
+
+        // Opcode: F7 (group 3 operations)
+        self.code.push(0xF7);
+
+        // ModR/M: mod=11, reg=4 (MUL), r/m=src
+        let modrm = 0xC0 | (4 << 3) | (src_enc & 7);
+        self.code.push(modrm);
+    }
+
+    /// Emit `mul r64` - Unsigned multiply RAX by r64 (RDX:RAX = RAX * r64).
+    ///
+    /// Encoding: REX.W F7 /4 (mul r/m64)
+    fn emit_mul64(&mut self, src: Reg) {
+        let src_enc = src.encoding();
+
+        // REX.W (+ REX.B for r8-r15)
+        let rex = 0x48 | if src.needs_rex() { 0x01 } else { 0x00 };
+        self.code.push(rex);
+
+        // Opcode: F7 (group 3 operations)
+        self.code.push(0xF7);
+
+        // ModR/M: mod=11, reg=4 (MUL), r/m=src
+        let modrm = 0xC0 | (4 << 3) | (src_enc & 7);
+        self.code.push(modrm);
+    }
+
     /// Emit `test r32, r32`.
     ///
     /// Encoding: [REX] 85 /r (test r/m32, r32)
@@ -2935,6 +2982,33 @@ mod tests {
         });
         // div rcx -> 48 F7 F1
         assert_eq!(code, vec![0x48, 0xF7, 0xF1]);
+    }
+
+    #[test]
+    fn test_mul_rcx() {
+        let code = emit_single(X86Inst::MulR {
+            src: Operand::Physical(Reg::Rcx),
+        });
+        // mul ecx -> F7 E1
+        assert_eq!(code, vec![0xF7, 0xE1]);
+    }
+
+    #[test]
+    fn test_mul64_rcx() {
+        let code = emit_single(X86Inst::Mul64R {
+            src: Operand::Physical(Reg::Rcx),
+        });
+        // mul rcx -> 48 F7 E1
+        assert_eq!(code, vec![0x48, 0xF7, 0xE1]);
+    }
+
+    #[test]
+    fn test_mul64_r10() {
+        let code = emit_single(X86Inst::Mul64R {
+            src: Operand::Physical(Reg::R10),
+        });
+        // mul r10 -> 49 F7 E2  (REX.W + REX.B)
+        assert_eq!(code, vec![0x49, 0xF7, 0xE2]);
     }
 
     #[test]

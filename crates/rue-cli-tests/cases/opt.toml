@@ -67,3 +67,55 @@ fn main() -> i32 {
 """ }]
 args = ["main.rue", "-O2", "-o", "prog"]
 exit_code = 45
+
+# RUE-147: constfold folded signed MIN / -1 (and MIN % -1) to an out-of-range
+# constant instead of refusing, eliding the mandatory overflow trap at -O1+
+# (printed -2147483648 / 0 instead of panicking). The fold must be refused so
+# the runtime guard (RUE-30) still fires.
+[[case]]
+name = "constfold_keeps_min_div_neg1_trap_at_O1"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let r: i32 = -2147483648 / -1;
+    if r == 0 { 7 } else { 8 }
+}
+""" }]
+args = ["main.rue", "-O1", "-o", "prog"]
+exit_code = 101
+runtime_error_contains = ["integer overflow"]
+
+[[case]]
+name = "constfold_keeps_min_mod_neg1_trap_at_O2"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let r: i32 = -2147483648 % -1;
+    if r == 0 { 7 } else { 8 }
+}
+""" }]
+args = ["main.rue", "-O2", "-o", "prog"]
+exit_code = 101
+runtime_error_contains = ["integer overflow"]
+
+[[case]]
+name = "constfold_keeps_i64_min_div_neg1_trap_at_O2"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let r: i64 = -9223372036854775808 / -1;
+    if r == 0 { 7 } else { 8 }
+}
+""" }]
+args = ["main.rue", "-O2", "-o", "prog"]
+exit_code = 101
+runtime_error_contains = ["integer overflow"]
+
+# Control: a representable constant division still folds and runs correctly.
+[[case]]
+name = "constfold_min_plus_one_div_neg1_value_at_O2"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let r: i32 = -2147483647 / -1;
+    if r == 2147483647 { 42 } else { 7 }
+}
+""" }]
+args = ["main.rue", "-O2", "-o", "prog"]
+exit_code = 42

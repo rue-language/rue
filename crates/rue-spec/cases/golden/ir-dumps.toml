@@ -526,6 +526,12 @@ function main:
     jnz .L0
     call __rue_div_by_zero
     .L0:
+    cmp v1, -1
+    jnz .L1
+    cmp v0, -2147483648
+    jnz .L1
+    call __rue_overflow
+    .L1:
     mov rax, v0
     cdq
     idiv v1
@@ -546,6 +552,14 @@ function main:
     cbnz v1, .L0
     bl __rue_div_by_zero
     .L0:
+    mov v3, #-1
+    cmp v1, v3
+    b.ne .L1
+    mov v4, #-2147483648
+    cmp v0, v4
+    b.ne .L1
+    bl __rue_overflow
+    .L1:
     sdiv v2, v0, v1
     mov x0, v2
     bl __rue_exit
@@ -591,6 +605,12 @@ function main:
     jnz .L0
     call __rue_div_by_zero
     .L0:
+    cmp v1, -1
+    jnz .L1
+    cmp v0, -2147483648
+    jnz .L1
+    call __rue_overflow
+    .L1:
     mov rax, v0
     cdq
     idiv v1
@@ -611,8 +631,16 @@ function main:
     cbnz v1, .L0
     bl __rue_div_by_zero
     .L0:
-    sdiv v3, v0, v1
-    msub v2, v3, v1, v0
+    mov v3, #-1
+    cmp v1, v3
+    b.ne .L1
+    mov v4, #-2147483648
+    cmp v0, v4
+    b.ne .L1
+    bl __rue_overflow
+    .L1:
+    sdiv v5, v0, v1
+    msub v2, v5, v1, v0
     mov x0, v2
     bl __rue_exit
 """

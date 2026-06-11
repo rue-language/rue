@@ -213,9 +213,11 @@ pub fn uses(inst: &X86Inst) -> Vec<VReg> {
         X86Inst::IdivR { src }
         | X86Inst::DivR { src }
         | X86Inst::Idiv64R { src }
-        | X86Inst::Div64R { src } => {
+        | X86Inst::Div64R { src }
+        | X86Inst::MulR { src }
+        | X86Inst::Mul64R { src } => {
             add_if_virtual(src, &mut result);
-            // Also implicitly uses RAX and RDX (physical)
+            // Div/Idiv also implicitly use RAX and RDX, Mul uses RAX (physical)
         }
         X86Inst::TestRR { src1, src2 } | X86Inst::Test64RR { src1, src2 } => {
             add_if_virtual(src1, &mut result);
@@ -372,8 +374,11 @@ pub fn defs(inst: &X86Inst) -> Vec<VReg> {
         X86Inst::IdivR { .. }
         | X86Inst::DivR { .. }
         | X86Inst::Idiv64R { .. }
-        | X86Inst::Div64R { .. } => {
-            // Implicitly defines RAX (quotient) and RDX (remainder), but those are physical
+        | X86Inst::Div64R { .. }
+        | X86Inst::MulR { .. }
+        | X86Inst::Mul64R { .. } => {
+            // Implicitly defines RAX (quotient / product low) and RDX
+            // (remainder / product high), but those are physical
         }
         X86Inst::TestRR { .. }
         | X86Inst::Test64RR { .. }

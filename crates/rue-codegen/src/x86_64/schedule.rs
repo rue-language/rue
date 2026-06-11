@@ -103,7 +103,10 @@ fn get_latency(inst: &X86Inst) -> u32 {
         | X86Inst::SubRR64 { .. } => 1,
 
         // Multiply: 3 cycles
-        X86Inst::ImulRR { .. } | X86Inst::ImulRR64 { .. } => 3,
+        X86Inst::ImulRR { .. }
+        | X86Inst::ImulRR64 { .. }
+        | X86Inst::MulR { .. }
+        | X86Inst::Mul64R { .. } => 3,
 
         // Division: 20-80 cycles (highly variable)
         X86Inst::IdivR { .. }
@@ -311,6 +314,11 @@ fn regs_read(inst: &X86Inst) -> Vec<Reg> {
             result.push(Reg::Rax);
             result.push(Reg::Rdx);
         }
+        X86Inst::MulR { src } | X86Inst::Mul64R { src } => {
+            // One-operand MUL reads RAX (and src); RDX is write-only (high half)
+            add_if_phys(src, &mut result);
+            result.push(Reg::Rax);
+        }
         X86Inst::Cdq | X86Inst::Cqo => result.push(Reg::Rax),
         X86Inst::CmpRR { src1, src2 }
         | X86Inst::Cmp64RR { src1, src2 }
@@ -432,7 +440,9 @@ fn regs_written(inst: &X86Inst) -> Vec<Reg> {
         X86Inst::IdivR { .. }
         | X86Inst::DivR { .. }
         | X86Inst::Idiv64R { .. }
-        | X86Inst::Div64R { .. } => {
+        | X86Inst::Div64R { .. }
+        | X86Inst::MulR { .. }
+        | X86Inst::Mul64R { .. } => {
             result.push(Reg::Rax);
             result.push(Reg::Rdx);
         }
@@ -500,6 +510,8 @@ fn writes_flags(inst: &X86Inst) -> bool {
             | X86Inst::DivR { .. }
             | X86Inst::Idiv64R { .. }
             | X86Inst::Div64R { .. }
+            | X86Inst::MulR { .. }
+            | X86Inst::Mul64R { .. }
             | X86Inst::Neg { .. }
             | X86Inst::Neg64 { .. }
             // Logical (set SF, ZF, PF; clear OF, CF)

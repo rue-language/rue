@@ -1,0 +1,132 @@
+# Unsigned multiplication overflow-check regression tests (RUE-148).
+#
+# The x86-64 backend lowered `*` with two-operand IMUL for ALL integer types
+# and checked CF (JAE) for u32/u64 — but IMUL's CF/OF mean *signed* overflow,
+# so valid unsigned products with the high bit set falsely panicked (e.g.
+# 3u64 * 5127633258697909153 fits u64 but exited 101), and the check's polarity
+# was simply wrong for unsigned. Now lowered with the one-operand MUL, whose
+# CF is set exactly when the high half of the product is non-zero. The aarch64
+# backend already used UMULL/UMULH and was unaffected.
+
+[section]
+id = "cli.mul_overflow"
+name = "Unsigned multiplication overflow checks"
+description = "u32/u64 products must panic exactly when the true product exceeds the type's range."
+
+# The RUE-148 repro: a valid u64 product with the high bit set.
+[[case]]
+name = "u64_big_valid_product_no_false_panic"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: u64 = 3;
+    let b: u64 = 5127633258697909153;
+    let c: u64 = a * b;
+    if c == 15382899776093727459 { 0 } else { 1 }
+}
+""" }]
+exit_code = 0
+
+[[case]]
+name = "u32_big_valid_product_no_false_panic"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: u32 = 65536;
+    let b: u32 = 65535;
+    let c: u32 = a * b;
+    if c == 4294901760 { 0 } else { 1 }
+}
+""" }]
+exit_code = 0
+
+[[case]]
+name = "u32_max_times_one_no_false_panic"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: u32 = 4294967295;
+    let b: u32 = 1;
+    let c: u32 = a * b;
+    if c == 4294967295 { 0 } else { 1 }
+}
+""" }]
+exit_code = 0
+
+# Genuine unsigned overflows must still trap.
+[[case]]
+name = "u64_genuine_mul_overflow_traps"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: u64 = 4294967296;
+    let b: u64 = 4294967296;
+    let c: u64 = a * b;
+    if c == 0 { 1 } else { 2 }
+}
+""" }]
+exit_code = 101
+runtime_error_contains = ["integer overflow"]
+
+[[case]]
+name = "u32_genuine_mul_overflow_traps"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: u32 = 65536;
+    let b: u32 = 65536;
+    let c: u32 = a * b;
+    if c == 0 { 1 } else { 2 }
+}
+""" }]
+exit_code = 101
+runtime_error_contains = ["integer overflow"]
+
+# Wraparound-to-small-value overflow (low half looks innocent): 2^32 * 2^32
+# has a zero low half; also check one where the low half is non-zero.
+[[case]]
+name = "u64_overflow_nonzero_low_half_traps"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: u64 = 6148914691236517205;
+    let b: u64 = 5;
+    let c: u64 = a * b;
+    if c == 0 { 1 } else { 2 }
+}
+""" }]
+exit_code = 101
+runtime_error_contains = ["integer overflow"]
+
+# Signed multiplication is unaffected: products near the boundaries.
+[[case]]
+name = "i64_signed_mul_still_correct"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: i64 = -3037000499;
+    let b: i64 = 3037000499;
+    let c: i64 = a * b;
+    if c == -9223372030926249001 { 0 } else { 1 }
+}
+""" }]
+exit_code = 0
+
+# Sub-word unsigned widths keep their range-check semantics.
+[[case]]
+name = "u16_valid_product_high_bit_ok"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: u16 = 255;
+    let b: u16 = 257;
+    let c: u16 = a * b;
+    if c == 65535 { 0 } else { 1 }
+}
+""" }]
+exit_code = 0
+
+[[case]]
+name = "u16_genuine_mul_overflow_traps"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: u16 = 256;
+    let b: u16 = 256;
+    let c: u16 = a * b;
+    if c == 0 { 1 } else { 2 }
+}
+""" }]
+exit_code = 101
+runtime_error_contains = ["integer overflow"]

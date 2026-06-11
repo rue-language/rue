@@ -388,8 +388,15 @@ fn checked_div(a: u64, b: u64, ty: Type) -> Option<u64> {
     }
     if is_signed(ty) {
         let (a, b) = sign_extend_operands(a, b, ty);
-        // Check for i64::MIN / -1 which overflows
+        // MIN / -1 overflows: the quotient -MIN is unrepresentable.
+        // checked_div only catches the i64 case; for narrower types the
+        // quotient (e.g. i32::MIN / -1 = 2^31) is a valid i64 that is merely
+        // out of range, so verify it fits like checked_mul does. Refusing to
+        // fold preserves the mandatory runtime overflow trap (RUE-147).
         let result = (a as i64).checked_div(b as i64)?;
+        if !fits_in_signed_type(result, ty) {
+            return None;
+        }
         Some(result as u64)
     } else {
         Some(a / b)
@@ -402,7 +409,15 @@ fn checked_mod(a: u64, b: u64, ty: Type) -> Option<u64> {
     }
     if is_signed(ty) {
         let (a, b) = sign_extend_operands(a, b, ty);
-        // Check for i64::MIN % -1 which overflows
+        // MIN % -1 overflows just like MIN / -1 (the implied quotient -MIN is
+        // unrepresentable), even though the remainder itself would be 0.
+        // checked_rem only catches the i64 case, so verify the quotient fits
+        // the target type; refusing to fold preserves the runtime overflow
+        // trap (RUE-147).
+        let quotient = (a as i64).checked_div(b as i64)?;
+        if !fits_in_signed_type(quotient, ty) {
+            return None;
+        }
         let result = (a as i64).checked_rem(b as i64)?;
         Some(result as u64)
     } else {
@@ -822,5 +837,34 @@ mod tests {
             }
             other => panic!("Expected Const, got {:?}", other),
         }
+    }
+
+    // MIN / -1 and MIN % -1 overflow (the quotient -MIN is unrepresentable)
+    // and must NOT fold, so the runtime trap survives -O1+ (RUE-147).
+    #[test]
+    fn test_checked_div_min_by_neg1_refuses_fold() {
+        for (min, ty) in [
+            (i8::MIN as i64 as u64, Type::I8),
+            (i16::MIN as i64 as u64, Type::I16),
+            (i32::MIN as i64 as u64, Type::I32),
+            (i64::MIN as u64, Type::I64),
+        ] {
+            let neg1 = -1i64 as u64;
+            assert_eq!(checked_div(min, neg1, ty), None, "div MIN/-1 for {ty:?}");
+            assert_eq!(checked_mod(min, neg1, ty), None, "mod MIN/-1 for {ty:?}");
+        }
+    }
+
+    #[test]
+    fn test_checked_div_mod_near_min_still_folds() {
+        // MIN / 1, (MIN+1) / -1, and MIN % 2 are all representable.
+        let min = i32::MIN as i64 as u64;
+        let neg1 = -1i64 as u64;
+        assert_eq!(checked_div(min, 1, Type::I32), Some(min));
+        assert_eq!(
+            checked_div(min.wrapping_add(1), neg1, Type::I32),
+            Some(i32::MAX as u64)
+        );
+        assert_eq!(checked_mod(min, 2, Type::I32), Some(0));
     }
 }
