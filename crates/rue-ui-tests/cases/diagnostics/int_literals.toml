@@ -1,0 +1,111 @@
+# Diagnostics for malformed integer literals (RUE-177).
+#
+# 0x/0o/0b literals and `_` separators are valid Rue syntax (spec 2.1,
+# copying Rust). Malformed forms keep targeted lexer errors instead of
+# splitting into `0` + identifier and dying with a generic parse error:
+#
+# - E0006: uppercase base prefix (`0XFF`) — friendlier than Rust, which
+#   lexes `0XFF` as `0` followed by the identifier `XFF`
+# - E0007: a base prefix with no digits (`0x`, `0b_`)
+# - E0008: a digit invalid in the base (`0b2`, `0o9`, `0xG`)
+#
+# These cases pin the *wording* of the diagnostics; the legality rules
+# themselves are spec-tested (2.1:20-2.1:22).
+
+[section]
+id = "diagnostics.int_literals"
+name = "Malformed integer literal diagnostics"
+description = "Targeted errors for malformed 0x/0o/0b literals."
+
+[[case]]
+name = "uppercase_hex_prefix_targeted_error"
+source = """
+fn main() -> i32 {
+    let x = 0XFF;
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0006", "invalid base prefix `0X`", "base prefixes are lowercase", "`0x`"]
+
+[[case]]
+name = "uppercase_octal_prefix_targeted_error"
+source = """
+fn main() -> i32 {
+    let x = 0O17;
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0006", "invalid base prefix `0O`"]
+
+[[case]]
+name = "empty_hex_literal_targeted_error"
+source = """
+fn main() -> i32 {
+    let x = 0x;
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0007", "missing digits after base prefix", "hexadecimal"]
+
+[[case]]
+name = "underscores_only_binary_literal_targeted_error"
+description = "Underscores alone don't satisfy the at-least-one-digit rule."
+source = """
+fn main() -> i32 {
+    let x = 0b__;
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0007", "missing digits after base prefix", "binary"]
+
+[[case]]
+name = "invalid_binary_digit_targeted_error"
+description = "The error names the offending digit; the bad-digit span is exercised in lexer unit tests."
+source = """
+fn main() -> i32 {
+    let x = 0b234;
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0008", "invalid digit `2` in binary integer literal"]
+
+[[case]]
+name = "invalid_hex_digit_targeted_error"
+description = "A based literal swallows its alphanumeric tail, so `0x12g4` errors on `g` as one unit."
+source = """
+fn main() -> i32 {
+    let x = 0x12g4;
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0008", "invalid digit `g` in hexadecimal integer literal"]
+
+[[case]]
+name = "based_literal_overflow_invalid_integer"
+description = "One past u64::MAX overflows the literal's magnitude (E0002, same as decimal)."
+source = """
+fn main() -> i32 {
+    let x: u64 = 0x1_0000_0000_0000_0000;
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0002", "invalid integer literal"]
+
+[[case]]
+name = "valid_literals_unaffected"
+source = """
+fn main() -> i32 {
+    let x = 0;
+    let y = 4_2;
+    let z = 0x0;
+    x + y + z
+}
+"""
+exit_code = 42

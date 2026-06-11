@@ -25,14 +25,27 @@ pub enum LexError {
         escape: char,
     },
     UnterminatedString,
-    /// A non-decimal integer literal prefix: `0x`/`0X` (hex), `0b`/`0B`
-    /// (binary), or `0o`/`0O` (octal). Rue integer literals are decimal only
-    /// (spec 2.1). Without this rule, `0xFF` lexes as `0` + identifier `xFF`
-    /// and dies later with a generic parse error; lexing the whole literal as
-    /// one error token lets the diagnostic name the base and suggest the
-    /// decimal value. Carries the base prefix character, lowercased. (RUE-133)
-    UnsupportedIntegerBase {
+    /// An uppercase base prefix (`0X`/`0B`/`0O`). Base prefixes are lowercase
+    /// (`0x`/`0b`/`0o`, spec 2.1); rejecting the whole literal with a targeted
+    /// error is friendlier than Rust's behavior of lexing `0XFF` as `0` plus
+    /// an identifier. Carries the offending (uppercase) prefix character.
+    /// (RUE-177)
+    UppercaseBasePrefix {
         prefix: char,
+    },
+    /// A based integer literal with no digits after the prefix (`0x`, `0b_`).
+    /// Carries the base name ("hexadecimal"/"octal"/"binary"). (RUE-177)
+    EmptyBasedLiteral {
+        base: &'static str,
+    },
+    /// A digit that is not valid in the literal's base (`0b2`, `0o9`, `0xG`).
+    /// Carries the offending character, the base name, and the character's
+    /// byte offset within the token so the diagnostic can point at it.
+    /// (RUE-177)
+    InvalidDigitForBase {
+        digit: char,
+        base: &'static str,
+        offset: u32,
     },
 }
 
@@ -125,18 +138,81 @@ fn process_string_from_quote(lex: &mut logos::Lexer<'_, LogosTokenKind>) -> Resu
     Ok(spur)
 }
 
-/// Callback for the hex/binary/octal literal rule on [`LogosTokenKind::Int`]:
-/// always rejects, carrying the (lowercased) base prefix character so the
-/// diagnostic can name the base. See the comment on the rule. (RUE-133)
-fn reject_non_decimal_base(lex: &mut logos::Lexer<'_, LogosTokenKind>) -> Result<u64, LexError> {
-    let prefix = lex
-        .slice()
+/// Callback for the decimal integer literal rule on [`LogosTokenKind::Int`]:
+/// computes the value, skipping `_` separators (`1_000_000`, trailing `1_`).
+/// The regex guarantees the literal starts with a digit (`_1` is an
+/// identifier), so every non-underscore character is a decimal digit; the
+/// only failure mode is overflow past `u64::MAX`. (RUE-177)
+fn parse_decimal_literal(lex: &mut logos::Lexer<'_, LogosTokenKind>) -> Result<u64, LexError> {
+    let mut value: u64 = 0;
+    for c in lex.slice().chars() {
+        if c == '_' {
+            continue;
+        }
+        let digit = c.to_digit(10).expect("regex guarantees decimal digits");
+        value = value
+            .checked_mul(10)
+            .and_then(|v| v.checked_add(u64::from(digit)))
+            .ok_or(LexError::InvalidInteger)?;
+    }
+    Ok(value)
+}
+
+/// Callback for the based integer literal rule on [`LogosTokenKind::Int`]:
+/// `0x` (hexadecimal), `0o` (octal), and `0b` (binary) literals, copying
+/// Rust's rules (RUE-177):
+///
+/// - prefixes are lowercase; an uppercase prefix (`0XFF`) is a targeted
+///   error rather than Rust's lex-as-`0`-plus-identifier
+/// - hex digits are case-insensitive (`0xff` == `0xFF`)
+/// - `_` separators are legal anywhere among the digits, including
+///   immediately after the prefix (`0x_FF`) and trailing (`0xFF_`)
+/// - a prefix with no digits (`0x`, `0b_`) is an error
+/// - a digit outside the base (`0b2`, `0o9`, `0xG`) is an error
+///
+/// The rule's regex deliberately swallows every alphanumeric/underscore
+/// character after the prefix so malformed forms error as one unit instead
+/// of splitting into literal + identifier and dying with a generic parse
+/// error downstream.
+fn parse_based_literal(lex: &mut logos::Lexer<'_, LogosTokenKind>) -> Result<u64, LexError> {
+    let slice = lex.slice();
+    let prefix = slice
         .chars()
         .nth(1)
         .expect("regex guarantees a prefix char");
-    Err(LexError::UnsupportedIntegerBase {
-        prefix: prefix.to_ascii_lowercase(),
-    })
+    let (base, radix) = match prefix.to_ascii_lowercase() {
+        'x' => ("hexadecimal", 16u32),
+        'o' => ("octal", 8),
+        'b' => ("binary", 2),
+        _ => unreachable!("regex only matches 0x/0o/0b prefixes"),
+    };
+    if prefix.is_ascii_uppercase() {
+        return Err(LexError::UppercaseBasePrefix { prefix });
+    }
+
+    let mut value: u64 = 0;
+    let mut seen_digit = false;
+    // The regex is ASCII-only, so byte offsets == char offsets here; +2
+    // skips the `0x` prefix.
+    for (i, c) in slice[2..].char_indices() {
+        if c == '_' {
+            continue;
+        }
+        let digit = c.to_digit(radix).ok_or(LexError::InvalidDigitForBase {
+            digit: c,
+            base,
+            offset: (2 + i) as u32,
+        })?;
+        value = value
+            .checked_mul(u64::from(radix))
+            .and_then(|v| v.checked_add(u64::from(digit)))
+            .ok_or(LexError::InvalidInteger)?;
+        seen_digit = true;
+    }
+    if !seen_digit {
+        return Err(LexError::EmptyBasedLiteral { base });
+    }
+    Ok(value)
 }
 
 /// Token kinds in the Rue language, using logos derive macro.
@@ -226,17 +302,19 @@ pub enum LogosTokenKind {
     #[token("_")]
     Underscore,
 
-    // Integer literals
+    // Integer literals (spec 2.1): decimal (`42`, `1_000`), hexadecimal
+    // (`0xFF`), octal (`0o17`), and binary (`0b101`), with `_` separators
+    // legal anywhere among the digits. (RUE-177)
     //
-    // The second rule rejects hex/binary/octal prefixes (`0xFF`, `0b101`,
-    // `0o7`) as a unit: Rue integer literals are decimal only (spec 2.1),
-    // and without it the input would lex as `0` + identifier and surface as
-    // a confusing generic parse error. Matching the whole literal here lets
-    // the diagnostic name the base and suggest the decimal value. This can
-    // never reject a valid program: no grammar production allows an integer
-    // literal directly abutting an identifier character. (RUE-133)
-    #[regex(r"[0-9]+", |lex| lex.slice().parse::<u64>().map_err(|_| LexError::InvalidInteger))]
-    #[regex(r"0[xXbBoO][0-9a-zA-Z_]*", reject_non_decimal_base)]
+    // The second rule matches based literals as a unit, deliberately
+    // swallowing any alphanumeric/underscore tail (`0xG`, `0b2`) so
+    // malformed forms get a targeted diagnostic instead of splitting into
+    // `0` + identifier and surfacing as a confusing generic parse error.
+    // This can never reject a valid program: no grammar production allows
+    // an integer literal directly abutting an identifier character.
+    // (RUE-133, RUE-177)
+    #[regex(r"[0-9][0-9_]*", parse_decimal_literal)]
+    #[regex(r"0[xXbBoO][0-9a-zA-Z_]*", parse_based_literal)]
     Int(u64),
 
     // String literals - match opening quote and process content manually
@@ -576,28 +654,36 @@ impl<'a> LogosLexer<'a> {
                                         span.end as u32,
                                     ),
                                 ),
-                                LexError::UnsupportedIntegerBase { prefix } => {
-                                    let (base, radix) = match prefix {
-                                        'x' => ("hexadecimal", 16),
-                                        'b' => ("binary", 2),
-                                        _ => ("octal", 8),
-                                    };
-                                    // Suggest the decimal spelling when the
-                                    // digits actually parse in the named base
-                                    // (they may not, e.g. `0b2` or `0x`).
-                                    let digits = &slice[2..];
-                                    let hint = match u64::from_str_radix(digits, radix) {
-                                        Ok(value) if !digits.is_empty() => {
-                                            format!("; write `{}` instead", value).into()
-                                        }
-                                        _ => std::borrow::Cow::Borrowed(""),
-                                    };
+                                LexError::UppercaseBasePrefix { prefix } => (
+                                    ErrorKind::UppercaseBasePrefix(prefix),
+                                    Span::with_file(
+                                        self.file_id,
+                                        span.start as u32,
+                                        span.end as u32,
+                                    ),
+                                ),
+                                LexError::EmptyBasedLiteral { base } => (
+                                    ErrorKind::EmptyBasedLiteral { base },
+                                    Span::with_file(
+                                        self.file_id,
+                                        span.start as u32,
+                                        span.end as u32,
+                                    ),
+                                ),
+                                LexError::InvalidDigitForBase {
+                                    digit,
+                                    base,
+                                    offset,
+                                } => {
+                                    // Point at the offending digit itself
+                                    // (`0b2`'s `2`), not the whole literal.
+                                    let digit_start = span.start as u32 + offset;
                                     (
-                                        ErrorKind::UnsupportedIntegerBase { base, hint },
+                                        ErrorKind::InvalidDigitForBase { digit, base },
                                         Span::with_file(
                                             self.file_id,
-                                            span.start as u32,
-                                            span.end as u32,
+                                            digit_start,
+                                            digit_start + digit.len_utf8() as u32,
                                         ),
                                     )
                                 }
@@ -964,40 +1050,144 @@ mod tests {
         assert!(matches!(err.kind, ErrorKind::InvalidInteger));
     }
 
-    #[test]
-    fn test_logos_non_decimal_bases_rejected() {
-        // RUE-133: 0x/0b/0o literals are not Rue syntax (integer literals are
-        // decimal only). They must be rejected as a unit with a targeted
-        // diagnostic, not split into `0` + identifier.
-        for (src, base, hint) in [
-            ("0xFF", "hexadecimal", "; write `255` instead"),
-            ("0X1f", "hexadecimal", "; write `31` instead"),
-            ("0b101", "binary", "; write `5` instead"),
-            ("0o17", "octal", "; write `15` instead"),
-        ] {
-            let err = LogosLexer::new(src).tokenize().unwrap_err();
-            match &err.kind {
-                ErrorKind::UnsupportedIntegerBase { base: b, hint: h } => {
-                    assert_eq!(*b, base, "base for {src}");
-                    assert_eq!(h.as_ref(), hint, "hint for {src}");
-                }
-                other => panic!("expected UnsupportedIntegerBase for {src}, got {other:?}"),
+    /// Helper: lex a single integer literal and return its value.
+    fn lex_int(src: &str) -> u64 {
+        let (tokens, _) = LogosLexer::new(src).tokenize().unwrap();
+        match tokens[0].kind {
+            TokenKind::Int(n) => {
+                // The literal must lex as ONE token (no `0` + ident split).
+                assert!(
+                    matches!(tokens[1].kind, TokenKind::Eof),
+                    "{src} split into multiple tokens"
+                );
+                assert_eq!(tokens[0].span, Span::new(0, src.len() as u32));
+                n
             }
-            // The error span must cover the whole literal.
+            ref other => panic!("expected Int for {src}, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_logos_based_literal_values() {
+        // RUE-177: hex/octal/binary literals, copying Rust's syntax.
+        assert_eq!(lex_int("0xFF"), 255);
+        assert_eq!(lex_int("0xff"), 255); // hex digits case-insensitive
+        assert_eq!(lex_int("0xDeadBeef"), 0xDEAD_BEEF);
+        assert_eq!(lex_int("0x0"), 0);
+        assert_eq!(lex_int("0o17"), 15);
+        assert_eq!(lex_int("0o0"), 0);
+        assert_eq!(lex_int("0b101"), 5);
+        assert_eq!(lex_int("0b0"), 0);
+        // u64 extremes
+        assert_eq!(lex_int("0xFFFF_FFFF_FFFF_FFFF"), u64::MAX);
+        assert_eq!(lex_int("0o1777777777777777777777"), u64::MAX);
+        assert_eq!(
+            lex_int("0b11111111_11111111_11111111_11111111_11111111_11111111_11111111_11111111"),
+            u64::MAX
+        );
+    }
+
+    #[test]
+    fn test_logos_underscore_separators() {
+        // RUE-177: underscores are legal anywhere among the digits,
+        // including immediately after the prefix and trailing.
+        assert_eq!(lex_int("1_000_000"), 1_000_000);
+        assert_eq!(lex_int("1_"), 1);
+        assert_eq!(lex_int("1__2"), 12);
+        assert_eq!(lex_int("0_"), 0);
+        assert_eq!(lex_int("0xFF_FF"), 0xFFFF);
+        assert_eq!(lex_int("0x_FF"), 255);
+        assert_eq!(lex_int("0xFF_"), 255);
+        assert_eq!(lex_int("0b1010_1010"), 0xAA);
+        assert_eq!(lex_int("0o_7_7_"), 0o77);
+    }
+
+    #[test]
+    fn test_logos_leading_underscore_is_identifier() {
+        // `_1` is an identifier, not an integer literal (RUE-177).
+        let (tokens, interner) = LogosLexer::new("_1").tokenize().unwrap();
+        assert_eq!(get_ident_str(&tokens[0].kind, &interner), Some("_1"));
+    }
+
+    #[test]
+    fn test_logos_uppercase_base_prefix_rejected() {
+        // RUE-177: uppercase prefixes get a targeted error (friendlier than
+        // Rust's lex-as-`0`-plus-identifier).
+        for (src, prefix) in [("0XFF", 'X'), ("0B101", 'B'), ("0O17", 'O')] {
+            let err = LogosLexer::new(src).tokenize().unwrap_err();
+            match err.kind {
+                ErrorKind::UppercaseBasePrefix(p) => assert_eq!(p, prefix, "prefix for {src}"),
+                other => panic!("expected UppercaseBasePrefix for {src}, got {other:?}"),
+            }
+            // Span covers the whole literal.
             let span = err.span().expect("lexer errors carry a span");
             assert_eq!(span.start, 0, "span start for {src}");
             assert_eq!(span.end as usize, src.len(), "span end for {src}");
         }
+    }
 
-        // Digits that don't parse in the named base get no decimal hint.
-        let err = LogosLexer::new("0b2").tokenize().unwrap_err();
-        match &err.kind {
-            ErrorKind::UnsupportedIntegerBase { base, hint } => {
-                assert_eq!(*base, "binary");
-                assert_eq!(hint.as_ref(), "");
+    #[test]
+    fn test_logos_empty_based_literal_rejected() {
+        // A bare prefix with no digits is an error, even with underscores.
+        for (src, base) in [
+            ("0x", "hexadecimal"),
+            ("0b", "binary"),
+            ("0o", "octal"),
+            ("0b_", "binary"),
+            ("0x__", "hexadecimal"),
+        ] {
+            let err = LogosLexer::new(src).tokenize().unwrap_err();
+            match err.kind {
+                ErrorKind::EmptyBasedLiteral { base: b } => assert_eq!(b, base, "base for {src}"),
+                other => panic!("expected EmptyBasedLiteral for {src}, got {other:?}"),
             }
-            other => panic!("expected UnsupportedIntegerBase, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_logos_invalid_digit_for_base_rejected() {
+        // Digits must match the base; the span points at the bad digit.
+        for (src, digit, base, offset) in [
+            ("0b2", '2', "binary", 2u32),
+            ("0b012", '2', "binary", 4),
+            ("0o9", '9', "octal", 2),
+            ("0o787", '8', "octal", 3),
+            ("0xG", 'G', "hexadecimal", 2),
+            ("0x12fg", 'g', "hexadecimal", 5),
+            ("0b1_2", '2', "binary", 4),
+        ] {
+            let err = LogosLexer::new(src).tokenize().unwrap_err();
+            match err.kind {
+                ErrorKind::InvalidDigitForBase { digit: d, base: b } => {
+                    assert_eq!(d, digit, "digit for {src}");
+                    assert_eq!(b, base, "base for {src}");
+                }
+                other => panic!("expected InvalidDigitForBase for {src}, got {other:?}"),
+            }
+            let span = err.span().expect("lexer errors carry a span");
+            assert_eq!(span.start, offset, "span start for {src}");
+            assert_eq!(span.end, offset + 1, "span end for {src}");
+        }
+    }
+
+    #[test]
+    fn test_logos_based_literal_overflow() {
+        // One past u64::MAX in each base is InvalidInteger.
+        for src in [
+            "0x1_0000_0000_0000_0000",
+            "0o2000000000000000000000",
+            "0b1_00000000_00000000_00000000_00000000_00000000_00000000_00000000_00000000",
+            "18_446_744_073_709_551_616",
+        ] {
+            let err = LogosLexer::new(src).tokenize().unwrap_err();
+            assert!(
+                matches!(err.kind, ErrorKind::InvalidInteger),
+                "expected InvalidInteger for {src}, got {:?}",
+                err.kind
+            );
+        }
+        // ... while u64::MAX itself is fine.
+        assert_eq!(lex_int("18_446_744_073_709_551_615"), u64::MAX);
     }
 
     #[test]

@@ -64,7 +64,11 @@ impl ErrorCode {
     pub const INVALID_INTEGER: Self = Self(2);
     pub const INVALID_STRING_ESCAPE: Self = Self(3);
     pub const UNTERMINATED_STRING: Self = Self(4);
-    pub const UNSUPPORTED_INTEGER_BASE: Self = Self(5);
+    // E0005 (UNSUPPORTED_INTEGER_BASE) is retired: 0x/0o/0b literals are now
+    // valid Rue syntax (RUE-177). Do not reuse the code.
+    pub const UPPERCASE_BASE_PREFIX: Self = Self(6);
+    pub const EMPTY_BASED_LITERAL: Self = Self(7);
+    pub const INVALID_DIGIT_FOR_BASE: Self = Self(8);
 
     // ========================================================================
     // Parser errors (E0100-E0199)
@@ -824,18 +828,20 @@ pub enum ErrorKind {
     InvalidStringEscape(char),
     #[error("unterminated string literal")]
     UnterminatedString,
-    /// A non-decimal integer literal prefix (`0x`/`0b`/`0o`). Rue integer
-    /// literals are decimal only (spec 2.1), so these are rejected with a
-    /// targeted diagnostic instead of splitting into `0` + identifier and
-    /// dying with a generic parse error. (RUE-133)
-    ///
-    /// `hint` is either empty or a pre-rendered ", write `N` instead"
-    /// suggestion containing the decimal value of the literal.
-    #[error("{base} integer literals are not supported; integer literals are decimal only{hint}")]
-    UnsupportedIntegerBase {
-        base: &'static str,
-        hint: Cow<'static, str>,
-    },
+    /// An uppercase integer-literal base prefix (`0X`/`0B`/`0O`). Base
+    /// prefixes are lowercase (spec 2.1); a targeted error is friendlier
+    /// than splitting into `0` + identifier and dying with a generic parse
+    /// error. (RUE-177)
+    #[error("invalid base prefix `0{0}`: base prefixes are lowercase (`0x`, `0o`, `0b`)")]
+    UppercaseBasePrefix(char),
+    /// A based integer literal with no digits after the prefix (`0x`,
+    /// `0b_`). (RUE-177)
+    #[error("missing digits after base prefix in {base} integer literal")]
+    EmptyBasedLiteral { base: &'static str },
+    /// A digit that is not valid for the literal's base (`0b2`, `0o9`,
+    /// `0xG`). (RUE-177)
+    #[error("invalid digit `{digit}` in {base} integer literal")]
+    InvalidDigitForBase { digit: char, base: &'static str },
 
     // Parser errors
     #[error("expected {expected}, found {found}")]
@@ -1187,7 +1193,9 @@ impl ErrorKind {
             ErrorKind::InvalidInteger => ErrorCode::INVALID_INTEGER,
             ErrorKind::InvalidStringEscape(_) => ErrorCode::INVALID_STRING_ESCAPE,
             ErrorKind::UnterminatedString => ErrorCode::UNTERMINATED_STRING,
-            ErrorKind::UnsupportedIntegerBase { .. } => ErrorCode::UNSUPPORTED_INTEGER_BASE,
+            ErrorKind::UppercaseBasePrefix(_) => ErrorCode::UPPERCASE_BASE_PREFIX,
+            ErrorKind::EmptyBasedLiteral { .. } => ErrorCode::EMPTY_BASED_LITERAL,
+            ErrorKind::InvalidDigitForBase { .. } => ErrorCode::INVALID_DIGIT_FOR_BASE,
 
             // Parser errors (E0100-E0199)
             ErrorKind::UnexpectedToken { .. } => ErrorCode::UNEXPECTED_TOKEN,
