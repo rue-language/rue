@@ -49,8 +49,9 @@ pub struct FunctionSig {
     /// Return type, as InferType for uniform handling.
     pub return_type: InferType,
     /// Whether this is a generic function (has comptime type parameters).
-    /// Generic functions skip type checking during constraint generation -
-    /// they'll be checked during specialization.
+    /// Generic calls substitute the comptime type arguments into the parameter
+    /// types before constraining arguments; type parameters that can't be
+    /// resolved during constraint generation are checked in sema instead.
     pub is_generic: bool,
     /// Parameter modes (Normal, Inout, Borrow, Comptime).
     pub param_modes: Vec<rue_rir::RirParamMode>,
@@ -60,6 +61,10 @@ pub struct FunctionSig {
     pub param_comptime: Vec<bool>,
     /// Parameter names, needed for type substitution in generic returns.
     pub param_names: Vec<lasso::Spur>,
+    /// Each parameter's declared type, as the source-level type name symbol
+    /// (e.g. the symbol for "T" in `x: T`). Used to look up which comptime
+    /// type parameter a generic parameter refers to.
+    pub param_type_syms: Vec<lasso::Spur>,
     /// The return type as a symbol (used for substitution lookup).
     pub return_type_sym: lasso::Spur,
 }
@@ -550,47 +555,71 @@ impl<'a> ConstraintGenerator<'a> {
             } => {
                 let args = self.rir.get_call_args(*args_start, *args_len);
                 if let Some(func) = self.functions.get(name) {
-                    // For generic functions, skip constraint generation for arguments.
-                    // The types will be checked during specialization when we know
-                    // the concrete type substitutions.
+                    // For generic functions, build the type substitution map from the
+                    // comptime type arguments, then constrain each runtime argument
+                    // against its (substituted) parameter type. When a type parameter
+                    // can't be resolved here (e.g. it's a local variable holding a
+                    // type value), the constraint is skipped and the check happens in
+                    // semantic analysis instead (RUE-73, RUE-99).
                     if func.is_generic {
-                        // Process all arguments and build type substitution map
+                        // Process all arguments once, collecting their inferred types
+                        let arg_infos: Vec<ExprInfo> = args
+                            .iter()
+                            .map(|arg| self.generate(arg.value, ctx))
+                            .collect();
+
+                        // Build the type substitution map from comptime type arguments
                         let mut type_subst: std::collections::HashMap<lasso::Spur, Type> =
                             std::collections::HashMap::new();
-
                         for (i, arg) in args.iter().enumerate() {
-                            let arg_info = self.generate(arg.value, ctx);
-
-                            // If this is a comptime parameter, extract the type for substitution
-                            if i < func.param_comptime.len() && func.param_comptime[i] {
-                                // The argument should be a TypeConst - extract the concrete type
-                                if let InferType::Concrete(Type::COMPTIME_TYPE) = &arg_info.ty {
-                                    // This is a type value - get the actual type from the RIR
-                                    let arg_inst = self.rir.get(arg.value);
-                                    if let rue_rir::InstData::TypeConst { type_name } =
-                                        &arg_inst.data
-                                    {
-                                        // Resolve type_name to a concrete Type
-                                        let type_name_str = self.interner.resolve(type_name);
-                                        let concrete_ty = match type_name_str {
-                                            "i8" => Type::I8,
-                                            "i16" => Type::I16,
-                                            "i32" => Type::I32,
-                                            "i64" => Type::I64,
-                                            "u8" => Type::U8,
-                                            "u16" => Type::U16,
-                                            "u32" => Type::U32,
-                                            "u64" => Type::U64,
-                                            "bool" => Type::BOOL,
-                                            "()" => Type::UNIT,
-                                            _ => Type::ERROR, // Unknown type
-                                        };
-                                        if i < func.param_names.len() {
-                                            type_subst.insert(func.param_names[i], concrete_ty);
-                                        }
-                                    }
+                            if i < func.param_comptime.len()
+                                && func.param_comptime[i]
+                                && func.param_types.get(i)
+                                    == Some(&InferType::Concrete(Type::COMPTIME_TYPE))
+                                && i < func.param_names.len()
+                            {
+                                if let Some(concrete_ty) =
+                                    self.extract_type_argument(arg.value, ctx)
+                                {
+                                    type_subst.insert(func.param_names[i], concrete_ty);
                                 }
                             }
+                        }
+
+                        // Constrain each runtime argument to its parameter type, with
+                        // type parameters substituted. Comptime type parameters (the
+                        // `T: type` arguments themselves) are validated in sema.
+                        for (i, arg_info) in arg_infos.iter().enumerate() {
+                            if i >= func.param_types.len() || i >= func.param_comptime.len() {
+                                break;
+                            }
+                            let declared = &func.param_types[i];
+                            if func.param_comptime[i]
+                                && *declared == InferType::Concrete(Type::COMPTIME_TYPE)
+                            {
+                                // Comptime TYPE parameter - the argument is a type value
+                                continue;
+                            }
+                            let expected = if *declared == InferType::Concrete(Type::COMPTIME_TYPE)
+                            {
+                                // Generic parameter like `x: T` - substitute T
+                                match func
+                                    .param_type_syms
+                                    .get(i)
+                                    .and_then(|sym| type_subst.get(sym))
+                                {
+                                    Some(&ty) => InferType::Concrete(ty),
+                                    // Unknown type parameter - checked in sema
+                                    None => continue,
+                                }
+                            } else {
+                                declared.clone()
+                            };
+                            self.add_constraint(Constraint::equal(
+                                arg_info.ty.clone(),
+                                expected,
+                                arg_info.span,
+                            ));
                         }
 
                         // Compute the actual return type by substituting type parameters
@@ -1341,6 +1370,59 @@ impl<'a> ConstraintGenerator<'a> {
     ///
     /// Handles primitive types, array syntax `[T; N]`, pointer syntax `ptr mut T` / `ptr const T`,
     /// and struct/enum types.
+    /// Resolve a call argument used as a comptime type value (e.g. the `i32` in
+    /// `identity(i32, 42)`) to a concrete type, if it can be determined during
+    /// constraint generation.
+    ///
+    /// Handles type literals (`i32`, `bool`, ...), named struct/enum types, and
+    /// forwarded type parameters (a reference to `T` inside a specialized generic
+    /// body, resolved via `self.type_subst`). Returns `None` for type values that
+    /// are only known to semantic analysis (e.g. a local variable bound to an
+    /// anonymous struct type) - those are type-checked in sema instead.
+    fn extract_type_argument(&self, arg: InstRef, ctx: &ConstraintContext) -> Option<Type> {
+        let resolve_sym = |sym: &Spur| -> Option<Type> {
+            if let Some(subst) = self.type_subst {
+                if let Some(&ty) = subst.get(sym) {
+                    return Some(ty);
+                }
+            }
+            if let Some(&ty) = self.structs.get(sym) {
+                return Some(ty);
+            }
+            if let Some(&ty) = self.enums.get(sym) {
+                return Some(ty);
+            }
+            None
+        };
+
+        match &self.rir.get(arg).data {
+            InstData::TypeConst { type_name } => {
+                if let Some(ty) = resolve_sym(type_name) {
+                    return Some(ty);
+                }
+                match self.resolve_type_name(self.interner.resolve(type_name)) {
+                    Some(InferType::Concrete(ty)) => Some(ty),
+                    _ => None,
+                }
+            }
+            // A struct/enum name or forwarded type parameter used as a value
+            // parses as a variable reference, not a type literal.
+            InstData::VarRef { name } | InstData::ParamRef { name, .. } => {
+                // A local or parameter shadows any same-named struct/enum. A local
+                // bound to a type value (e.g. `let P = Pair(i32)`) only has a
+                // concrete type during sema's comptime evaluation, so don't
+                // resolve it here. Forwarded type parameters (`T` inside a
+                // specialized generic body) are not in scope as runtime
+                // params/locals and resolve via `self.type_subst` above.
+                if ctx.locals.contains_key(name) || ctx.params.contains_key(name) {
+                    return None;
+                }
+                resolve_sym(name)
+            }
+            _ => None,
+        }
+    }
+
     fn resolve_type_name(&self, name: &str) -> Option<InferType> {
         // Check for array syntax first: [T; N]
         if let Some((element_type_str, length)) = parse_array_type_syntax(name) {
@@ -1796,6 +1878,7 @@ mod tests {
             param_modes: vec![rue_rir::RirParamMode::Normal; num_params],
             param_comptime: vec![false; num_params],
             param_names: vec![],
+            param_type_syms: vec![],
             return_type_sym: lasso::Spur::default(),
         }
     }

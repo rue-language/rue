@@ -54,6 +54,12 @@ impl<'a> Sema<'a> {
                         param_modes: self.param_arena.modes(info.params).to_vec(),
                         param_comptime: self.param_arena.comptime(info.params).to_vec(),
                         param_names: self.param_arena.names(info.params).to_vec(),
+                        param_type_syms: self
+                            .rir
+                            .get_params(info.rir_params_start, info.rir_params_len)
+                            .iter()
+                            .map(|p| p.ty)
+                            .collect(),
                         return_type_sym: info.return_type_sym,
                     },
                 )

@@ -3036,6 +3036,8 @@ impl<'a> Sema<'a> {
         let return_type_sym = fn_info.return_type_sym;
         let base_return_type = fn_info.return_type;
         let fn_body = fn_info.body;
+        let rir_params_start = fn_info.rir_params_start;
+        let rir_params_len = fn_info.rir_params_len;
 
         // Special case: functions that return `type` with no parameters or only comptime parameters
         // are implicitly comptime and should be evaluated at compile time.
@@ -3142,6 +3144,55 @@ impl<'a> Sema<'a> {
                     }
                 } else {
                     runtime_args.push(air_arg.clone());
+                }
+            }
+
+            // Type-check the runtime arguments against their (substituted)
+            // parameter types. Generic calls bypass the inference-based argument
+            // checking when the type parameter isn't resolvable during constraint
+            // generation, so this is the check that rejects e.g. passing a `B`
+            // where `T == A` - without it the callee would read B-shaped fields
+            // out of an A-sized allocation (RUE-99, RUE-73).
+            let rir_param_type_syms: Vec<Spur> = self
+                .rir
+                .get_params(rir_params_start, rir_params_len)
+                .iter()
+                .map(|p| p.ty)
+                .collect();
+            for (i, (air_arg, &is_comptime)) in
+                air_args.iter().zip(param_comptime.iter()).enumerate()
+            {
+                let declared = param_types[i];
+                if is_comptime && declared == Type::COMPTIME_TYPE {
+                    // The comptime type argument itself - already validated above.
+                    continue;
+                }
+                let expected = if declared == Type::COMPTIME_TYPE {
+                    // Generic parameter like `x: T` - substitute T. If the type
+                    // parameter wasn't resolved, an error was already reported.
+                    match rir_param_type_syms
+                        .get(i)
+                        .and_then(|sym| type_subst.get(sym))
+                    {
+                        Some(&ty) => ty,
+                        None => continue,
+                    }
+                } else {
+                    declared
+                };
+                let found = air.get(air_arg.value).ty;
+                if found != expected
+                    && !found.is_error()
+                    && !found.is_never()
+                    && !expected.is_error()
+                {
+                    return Err(CompileError::new(
+                        ErrorKind::TypeMismatch {
+                            expected: expected.safe_name_with_pool(Some(&self.type_pool)),
+                            found: found.safe_name_with_pool(Some(&self.type_pool)),
+                        },
+                        self.rir.get(args[i].value).span,
+                    ));
                 }
             }
 
