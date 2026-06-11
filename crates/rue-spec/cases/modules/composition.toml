@@ -1,0 +1,43 @@
+[section]
+id = "modules.composition"
+spec_chapter = "10.5"
+name = "Program Composition"
+description = "Cross-file name collisions in the (transitional) flat namespace (spec chapter 10.5)."
+
+[[case]]
+name = "duplicate_symbol_across_imported_files_error"
+spec = ["10.5:1"]
+description = "Two loaded files defining the same top-level function name collide, even though each is only accessed through its own module"
+source = """
+fn main() -> i32 {
+    let a = @import("a");
+    let _b = @import("b");
+    a.shared()
+}
+"""
+aux_files = { "a.rue" = "pub fn shared() -> i32 { 1 }", "b.rue" = "pub fn shared() -> i32 { 2 }" }
+compile_fail = true
+error_contains = "duplicate"
+
+[[case]]
+name = "duplicate_const_across_imported_files_error"
+spec = ["10.5:1"]
+description = "Top-level const bindings (including module re-exports) also collide across files"
+source = """
+fn main() -> i32 {
+    let left = @import("left");
+    let _right = @import("right");
+    left.go()
+}
+"""
+aux_files = { "left.rue" = """
+const shared = @import("shared");
+pub fn go() -> i32 { shared.value() }
+""", "right.rue" = """
+const shared = @import("shared");
+pub fn go2() -> i32 { shared.value() }
+""", "shared.rue" = """
+pub fn value() -> i32 { 42 }
+""" }
+compile_fail = true
+error_contains = "duplicate"

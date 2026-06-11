@@ -9,6 +9,7 @@ description = "Pub visibility modifier for functions, structs, and enums."
 
 [[case]]
 name = "pub_fn_basic"
+spec = ["10.3:1"]
 description = "Basic pub function declaration"
 source = """
 pub fn helper() -> i32 { 42 }
@@ -31,6 +32,7 @@ exit_code = 42
 
 [[case]]
 name = "pub_struct_basic"
+spec = ["10.3:1"]
 description = "Basic pub struct declaration"
 source = """
 pub struct Point { x: i32, y: i32 }
@@ -47,6 +49,7 @@ exit_code = 42
 
 [[case]]
 name = "pub_enum_basic"
+spec = ["10.3:1"]
 description = "Basic pub enum declaration"
 source = """
 pub enum Color { Red, Green, Blue }
@@ -67,6 +70,7 @@ exit_code = 42
 
 [[case]]
 name = "mixed_pub_and_private"
+spec = ["10.3:1"]
 description = "Mix of public and private declarations"
 source = """
 pub fn public_fn() -> i32 { 10 }

@@ -1,17 +1,16 @@
 [section]
 id = "modules.directory"
+spec_chapter = "10.1"
 name = "Directory Module Resolution"
-description = "Directory module resolution using the _foo.rue + foo/ pattern. Per ADR-0026, @import('foo') resolves to _foo.rue when foo.rue doesn't exist."
+description = "Module forms (spec chapter 10.1): file modules, directory modules with an in-directory _foo.rue facade, and resolution between them."
 
 # =============================================================================
 # Simple File Module Resolution
 # =============================================================================
-# Note: Module resolution is implemented, but module member access is not yet.
-# These tests verify the path resolution logic by checking that the correct
-# file is found (no "module not found" error).
 
 [[case]]
 name = "import_simple_file_resolves"
+spec = ["10.1:2"]
 description = "@import('foo') resolves to foo.rue when it exists (verifies file is found)"
 source = """
 fn main() -> i32 {
@@ -28,6 +27,7 @@ exit_code = 0
 
 [[case]]
 name = "import_simple_file_with_extension_resolves"
+spec = ["10.2:1"]
 description = "@import('foo.rue') resolves to foo.rue directly"
 source = """
 fn main() -> i32 {
@@ -48,6 +48,7 @@ exit_code = 0
 
 [[case]]
 name = "import_directory_module_resolves"
+spec = ["10.1:3"]
 description = "@import('utils') resolves to the in-directory facade utils/_utils.rue (RUE-137)"
 source = """
 fn main() -> i32 {
@@ -64,6 +65,7 @@ exit_code = 0
 
 [[case]]
 name = "import_directory_module_with_subdir_resolves"
+spec = ["10.1:3"]
 description = "@import('utils') finds utils/_utils.rue alongside other files in the directory"
 source = """
 fn main() -> i32 {
@@ -86,6 +88,7 @@ exit_code = 0
 
 [[case]]
 name = "import_simple_file_with_stray_sibling_underscore_file"
+spec = ["10.1:4"]
 description = "A sibling _math.rue is just a file, not a facade: math.rue resolves cleanly (the pre-RUE-137 sibling layout has no special meaning)"
 source = """
 fn main() -> i32 {
@@ -122,6 +125,7 @@ error_contains = "cannot find module"
 
 [[case]]
 name = "import_nested_path_resolves"
+spec = ["10.2:1"]
 description = "@import('foo/bar') resolves to foo/bar.rue"
 source = """
 fn main() -> i32 {
@@ -133,3 +137,53 @@ aux_files = { "sub/helper.rue" = """
 fn value() -> i32 { 123 }
 """ }
 exit_code = 0
+
+# =============================================================================
+# Module Forms (spec 10.1): membership and facade calls
+# =============================================================================
+
+[[case]]
+name = "module_members_are_top_level_items"
+spec = ["10.1:1", "10.1:2"]
+description = "A file's top-level items are the imported module's members"
+source = """
+fn main() -> i32 {
+    let math = @import("math");
+    math.add(40, 2)
+}
+"""
+aux_files = { "math.rue" = """
+pub fn add(a: i32, b: i32) -> i32 { a + b }
+""" }
+exit_code = 42
+
+[[case]]
+name = "directory_module_call_through_facade"
+spec = ["10.1:3"]
+description = "Importing a directory yields the module defined by its in-directory facade"
+source = """
+fn main() -> i32 {
+    let utils = @import("utils");
+    utils.answer()
+}
+"""
+aux_files = { "utils/_utils.rue" = """
+pub fn answer() -> i32 { 42 }
+""" }
+exit_code = 42
+
+[[case]]
+name = "sibling_underscore_file_not_importable_as_module"
+spec = ["10.1:4"]
+description = "A lone sibling _foo.rue does not make 'foo' importable: it is not a facade outside a foo/ directory"
+source = """
+fn main() -> i32 {
+    let m = @import("foo");
+    0
+}
+"""
+aux_files = { "_foo.rue" = """
+pub fn f() -> i32 { 1 }
+""" }
+compile_fail = true
+error_contains = "cannot find module"

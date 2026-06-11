@@ -1,0 +1,112 @@
+[section]
+id = "modules.bindings"
+spec_chapter = "10.4"
+name = "Module Bindings and Re-exports"
+description = "Binding forms for @import, const re-exports, and modules not being runtime values (spec chapter 10.4)."
+
+# =============================================================================
+# Binding forms (10.4:1): top-level const and local let are equivalent
+# =============================================================================
+
+[[case]]
+name = "const_and_let_bindings_equivalent"
+spec = ["10.4:1"]
+description = "A module bound by top-level const and by local let supports the same member access"
+source = """
+const math = @import("math");
+
+fn main() -> i32 {
+    let m = @import("math");
+    math.add(40, m.add(1, 1))
+}
+"""
+aux_files = { "math.rue" = "pub fn add(a: i32, b: i32) -> i32 { a + b }" }
+exit_code = 42
+
+# =============================================================================
+# Re-exports (10.4:3, 10.4:4)
+# =============================================================================
+
+[[case]]
+name = "reexport_chain_two_levels"
+spec = ["10.4:3"]
+description = "Member access chains through two levels of pub const re-export (directory facades)"
+source = """
+fn main() -> i32 {
+    let a = @import("a");
+    a.b.value()
+}
+"""
+aux_files = { "a/_a.rue" = """
+pub const b = @import("a/b");
+""", "a/b/_b.rue" = """
+pub fn value() -> i32 { 42 }
+""" }
+exit_code = 42
+
+[[case]]
+name = "private_reexport_visible_within_directory"
+spec = ["10.4:4"]
+description = "A non-pub const re-export is accessible from a file in the same directory as its definer"
+source = """
+fn main() -> i32 {
+    let m = @import("mod");
+    m.helper.h()
+}
+"""
+aux_files = { "mod.rue" = """
+const helper = @import("sub/helper");
+""", "sub/helper.rue" = """
+pub fn h() -> i32 { 42 }
+""" }
+exit_code = 42
+
+# =============================================================================
+# Modules are not runtime values (10.4:6)
+# =============================================================================
+
+[[case]]
+name = "module_as_function_argument_error"
+spec = ["10.4:6"]
+description = "Passing a module binding as a function argument is a compile error"
+source = """
+fn takes(m: i32) -> i32 { m }
+fn main() -> i32 {
+    let math = @import("math");
+    takes(math)
+}
+"""
+aux_files = { "math.rue" = "pub fn add(a: i32, b: i32) -> i32 { a + b }" }
+compile_fail = true
+error_contains = "type mismatch"
+
+[[case]]
+name = "module_as_struct_field_error"
+spec = ["10.4:6"]
+description = "Using a module binding as a struct field value is a compile error"
+source = """
+struct Holder { m: i32 }
+fn main() -> i32 {
+    let math = @import("math");
+    let h = Holder { m: math };
+    0
+}
+"""
+aux_files = { "math.rue" = "pub fn add(a: i32, b: i32) -> i32 { a + b }" }
+compile_fail = true
+error_contains = "type mismatch"
+
+[[case]]
+name = "module_comparison_error"
+spec = ["10.4:6"]
+description = "Comparing module bindings with == is a compile error"
+source = """
+fn main() -> i32 {
+    let a = @import("math");
+    let b = @import("math");
+    if a == b { 1 } else { 0 }
+}
+"""
+aux_files = { "math.rue" = "pub fn add(a: i32, b: i32) -> i32 { a + b }" }
+compile_fail = true
+error_contains = "type mismatch"
