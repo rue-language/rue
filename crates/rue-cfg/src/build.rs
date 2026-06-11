@@ -1603,6 +1603,16 @@ impl<'a> CfgBuilder<'a> {
                 let arms: Vec<(AirPattern, AirRef)> =
                     self.air.get_match_arms(*arms_start, *arms_len).collect();
 
+                // `match v {}` on a zero-variant enum (RUE-169): the scrutinee
+                // type is uninhabited, so this point can never be reached with
+                // a value. Sema verified exhaustiveness (vacuously); no switch
+                // is needed and control diverges.
+                if arms.is_empty() {
+                    self.cfg
+                        .set_terminator(self.current_block, Terminator::Unreachable);
+                    return Self::diverged();
+                }
+
                 // Create blocks for each arm and a join block
                 let arm_blocks: Vec<_> = arms.iter().map(|_| self.cfg.new_block()).collect();
                 let join_block = self.cfg.new_block();

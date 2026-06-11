@@ -1,0 +1,176 @@
+# Match pattern literal range checks and empty matches (RUE-74, RUE-169).
+#
+# Pattern literals used to be converted to i64 with a raw `as` cast before any
+# range check against the scrutinee type, so out-of-range patterns silently
+# wrapped/truncated and then MATCHED the wrapped value at runtime
+# (miscompile-grade): `9223372036854775808` matched i64::MIN, `-1` matched
+# u64::MAX, `4294967296` matched u32 0. Patterns are now range-checked like
+# `let` bindings (E0800) and negative patterns on unsigned scrutinees are
+# rejected (E0801), per spec 4.7:23/4.7:24.
+#
+# `match v {}` on a zero-variant enum is legal (spec 4.7:26) and the braces
+# are the empty arm list, not a struct literal `v {}` (spec 4.7:28).
+
+[section]
+id = "cli.match_patterns"
+name = "Match pattern range checks and empty matches"
+description = "Out-of-range pattern literals are compile errors, not wrap-and-match; empty match works on uninhabited enums."
+
+[[case]]
+name = "pattern_2_to_63_does_not_wrap_match_i64_min"
+description = "Pattern 2^63 used to wrap to i64::MIN and match it at runtime (RUE-74)."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let x: i64 = -9223372036854775808;
+    match x {
+        9223372036854775808 => 1,
+        _ => 0,
+    }
+}
+""" }]
+compile_fail = true
+error_contains = ["E0800", "out of range", "i64"]
+
+[[case]]
+name = "negative_pattern_does_not_match_u64_max"
+description = "Pattern -1 used to wrap to the u64::MAX bit pattern and match it (RUE-74)."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let x: u64 = 18446744073709551615;
+    match x {
+        -1 => 1,
+        _ => 0,
+    }
+}
+""" }]
+compile_fail = true
+error_contains = ["E0801"]
+
+[[case]]
+name = "negative_pattern_on_u8_is_not_a_silent_dead_arm"
+description = "Pattern -1 on a u8 scrutinee used to compile to an arm that could never match (RUE-74)."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let x: u8 = 255;
+    match x {
+        -1 => 1,
+        _ => 0,
+    }
+}
+""" }]
+compile_fail = true
+error_contains = ["E0801"]
+
+[[case]]
+name = "pattern_2_to_32_does_not_truncate_match_u32_zero"
+description = "Pattern 4294967296 used to truncate (compounded by a 32-bit compare) and match u32 0 (RUE-74)."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let x: u32 = 0;
+    match x {
+        4294967296 => 1,
+        _ => 0,
+    }
+}
+""" }]
+compile_fail = true
+error_contains = ["E0800", "u32"]
+
+[[case]]
+name = "pattern_out_of_range_i8_does_not_truncate"
+description = "Pattern 4294967340 used to truncate to i8 44 and match it (RUE-74)."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let x: i8 = 44;
+    match x {
+        4294967340 => 1,
+        _ => 0,
+    }
+}
+""" }]
+compile_fail = true
+error_contains = ["E0800", "i8"]
+
+[[case]]
+name = "below_i64_min_pattern_does_not_wrap_to_i64_max"
+description = "Pattern -9223372036854775809 used to wrap to i64::MAX and match it (RUE-74)."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let x: i64 = 9223372036854775807;
+    match x {
+        -9223372036854775809 => 1,
+        _ => 0,
+    }
+}
+""" }]
+compile_fail = true
+error_contains = ["E0800"]
+
+[[case]]
+name = "i64_min_pattern_still_legal_and_matches"
+description = "The i64::MIN literal edge: -9223372036854775808 must remain a valid pattern."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let x: i64 = -9223372036854775808;
+    match x {
+        -9223372036854775808 => 42,
+        _ => 0,
+    }
+}
+""" }]
+exit_code = 42
+
+[[case]]
+name = "u64_max_pattern_still_legal_and_matches"
+description = "u64 patterns above i64::MAX are in range for the scrutinee and must keep matching."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let x: u64 = 18446744073709551615;
+    match x {
+        18446744073709551615 => 42,
+        _ => 0,
+    }
+}
+""" }]
+exit_code = 42
+
+[[case]]
+name = "u32_max_pattern_matches_at_32_bit_width"
+description = "In-range u32 boundary value compares correctly at 32-bit width."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let x: u32 = 4294967295;
+    match x {
+        4294967295 => 42,
+        _ => 0,
+    }
+}
+""" }]
+exit_code = 42
+
+[[case]]
+name = "empty_match_on_zero_variant_enum_unparenthesized"
+description = "`match v {}` parses the braces as the arm list, not a struct literal `v {}` (RUE-169)."
+files = [{ path = "main.rue", source = """
+enum Never {}
+
+fn absurd(n: Never) -> i32 {
+    match n {}
+}
+
+fn main() -> i32 {
+    7
+}
+""" }]
+exit_code = 7
+
+[[case]]
+name = "empty_match_on_integer_still_rejected"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let x: i32 = 0;
+    match x {}
+}
+""" }]
+compile_fail = true
+error_contains = ["E0601"]

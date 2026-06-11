@@ -793,9 +793,20 @@ impl<'a> AstGen<'a> {
     fn gen_pattern(&mut self, pattern: &Pattern) -> RirPattern {
         match pattern {
             Pattern::Wildcard(span) => RirPattern::Wildcard(*span),
-            Pattern::Int(lit) => RirPattern::Int(lit.value as i64, lit.span),
-            // Use wrapping_neg to handle i64::MIN correctly (where value is 9223372036854775808)
-            Pattern::NegInt(lit) => RirPattern::Int((lit.value as i64).wrapping_neg(), lit.span),
+            // Keep the raw u64 magnitude and sign: Sema range-checks the
+            // literal against the scrutinee type (E0800/E0801) before
+            // converting it to a comparison value, so out-of-range patterns
+            // are rejected instead of silently wrapping (RUE-74).
+            Pattern::Int(lit) => RirPattern::Int {
+                value: lit.value,
+                negative: false,
+                span: lit.span,
+            },
+            Pattern::NegInt(lit) => RirPattern::Int {
+                value: lit.value,
+                negative: true,
+                span: lit.span,
+            },
             Pattern::Bool(lit) => RirPattern::Bool(lit.value, lit.span),
             Pattern::Path(path) => {
                 // If there's a base expression (module reference), generate it first
@@ -1438,8 +1449,22 @@ mod tests {
             } => {
                 let arms = rir.get_match_arms(*arms_start, *arms_len);
                 assert_eq!(arms.len(), 3);
-                assert!(matches!(arms[0].0, RirPattern::Int(1, _)));
-                assert!(matches!(arms[1].0, RirPattern::Int(2, _)));
+                assert!(matches!(
+                    arms[0].0,
+                    RirPattern::Int {
+                        value: 1,
+                        negative: false,
+                        ..
+                    }
+                ));
+                assert!(matches!(
+                    arms[1].0,
+                    RirPattern::Int {
+                        value: 2,
+                        negative: false,
+                        ..
+                    }
+                ));
                 assert!(matches!(arms[2].0, RirPattern::Wildcard(_)));
             }
             _ => panic!("expected Match"),
@@ -1474,8 +1499,22 @@ mod tests {
             } => {
                 let arms = rir.get_match_arms(*arms_start, *arms_len);
                 assert_eq!(arms.len(), 3);
-                assert!(matches!(arms[0].0, RirPattern::Int(-5, _)));
-                assert!(matches!(arms[1].0, RirPattern::Int(-10, _)));
+                assert!(matches!(
+                    arms[0].0,
+                    RirPattern::Int {
+                        value: 5,
+                        negative: true,
+                        ..
+                    }
+                ));
+                assert!(matches!(
+                    arms[1].0,
+                    RirPattern::Int {
+                        value: 10,
+                        negative: true,
+                        ..
+                    }
+                ));
                 assert!(matches!(arms[2].0, RirPattern::Wildcard(_)));
             }
             _ => panic!("expected Match"),

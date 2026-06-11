@@ -419,8 +419,8 @@ impl<'a> AnalysisContext<'a> {
             .map(|(moves, _)| moves);
 
         let Some(first) = live.next() else {
-            // Every arm diverges (or there are no arms, which is rejected
-            // earlier as an empty match).
+            // Every arm diverges. (A zero-arm match on a zero-variant enum
+            // returns early in analyze_match and never reaches this merge.)
             if let Some((moves, _)) = arm_moves.into_iter().next() {
                 self.moved_vars = moves;
             }

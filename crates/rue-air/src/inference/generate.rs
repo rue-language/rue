@@ -1503,7 +1503,7 @@ impl<'a> ConstraintGenerator<'a> {
                 let var = self.fresh_var();
                 InferType::Var(var)
             }
-            rue_rir::RirPattern::Int(_, _) => InferType::IntLiteral,
+            rue_rir::RirPattern::Int { .. } => InferType::IntLiteral,
             rue_rir::RirPattern::Bool(_, _) => InferType::Concrete(Type::BOOL),
             rue_rir::RirPattern::Path { type_name, .. } => {
                 if let Some(&enum_ty) = self.enums.get(type_name) {
@@ -2355,14 +2355,22 @@ mod tests {
             data: InstData::IntConst(10),
             span: Span::new(15, 17),
         });
-        let pattern1 = rue_rir::RirPattern::Int(1, Span::new(10, 11));
+        let pattern1 = rue_rir::RirPattern::Int {
+            value: 1,
+            negative: false,
+            span: Span::new(10, 11),
+        };
 
         // Arm 2: 2 => 20
         let body2 = rir.add_inst(rue_rir::Inst {
             data: InstData::IntConst(20),
             span: Span::new(25, 27),
         });
-        let pattern2 = rue_rir::RirPattern::Int(2, Span::new(20, 21));
+        let pattern2 = rue_rir::RirPattern::Int {
+            value: 2,
+            negative: false,
+            span: Span::new(20, 21),
+        };
 
         // Arm 3: _ => 30
         let body3 = rir.add_inst(rue_rir::Inst {
