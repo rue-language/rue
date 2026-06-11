@@ -123,8 +123,9 @@ impl ErrorCode {
     pub const BORROW_KEYWORD_MISSING: Self = Self(432);
     pub const EMPTY_STRUCT: Self = Self(433);
     pub const RESERVED_FUNCTION_NAME: Self = Self(435);
-    pub const BY_REF_ARG_NOT_PLAIN_VARIABLE: Self = Self(438);
+    pub const DUPLICATE_FUNCTION_DEFINITION: Self = Self(436);
     pub const MOVE_OUT_OF_INOUT: Self = Self(437);
+    pub const BY_REF_ARG_NOT_PLAIN_VARIABLE: Self = Self(438);
 
     // ========================================================================
     // Control flow errors (E0500-E0599)
@@ -853,6 +854,9 @@ pub enum ErrorKind {
     /// Duplicate type definition
     #[error("duplicate type definition: `{type_name}` is already defined")]
     DuplicateTypeDefinition { type_name: String },
+    /// Duplicate function definition
+    #[error("duplicate function definition: `{function_name}` is already defined")]
+    DuplicateFunctionDefinition { function_name: String },
     /// Linear value was not consumed before going out of scope
     #[error("linear value '{0}' must be consumed but was dropped")]
     LinearValueNotConsumed(String),
@@ -1115,6 +1119,9 @@ impl ErrorKind {
             ErrorKind::ReservedTypeName { .. } => ErrorCode::RESERVED_TYPE_NAME,
             ErrorKind::ReservedFunctionName { .. } => ErrorCode::RESERVED_FUNCTION_NAME,
             ErrorKind::DuplicateTypeDefinition { .. } => ErrorCode::DUPLICATE_TYPE_DEFINITION,
+            ErrorKind::DuplicateFunctionDefinition { .. } => {
+                ErrorCode::DUPLICATE_FUNCTION_DEFINITION
+            }
             ErrorKind::LinearValueNotConsumed(_) => ErrorCode::LINEAR_VALUE_NOT_CONSUMED,
             ErrorKind::LinearStructCopy(_) => ErrorCode::LINEAR_STRUCT_COPY,
             ErrorKind::HandleStructMissingMethod { .. } => ErrorCode::HANDLE_STRUCT_MISSING_METHOD,

@@ -599,9 +599,21 @@ impl<'a> AstGen<'a> {
                 let args: Vec<_> = intrinsic
                     .args
                     .iter()
-                    .filter_map(|a| match a {
-                        IntrinsicArg::Expr(expr) => Some(self.gen_expr(expr)),
-                        IntrinsicArg::Type(_) => None, // This shouldn't happen for expr intrinsics
+                    .map(|a| match a {
+                        IntrinsicArg::Expr(expr) => self.gen_expr(expr),
+                        // A type argument to an expression intrinsic (e.g. the
+                        // `()` in `@syscall(a, (), b)`) is invalid, but it must
+                        // NOT be dropped: that would shift the later arguments
+                        // into earlier slots and silently miscompile. Lower it
+                        // to a TypeConst placeholder so the argument count is
+                        // preserved and Sema reports a proper type error.
+                        IntrinsicArg::Type(ty) => {
+                            let type_name = self.intern_type(ty);
+                            self.rir.add_inst(Inst {
+                                data: InstData::TypeConst { type_name },
+                                span: ty.span(),
+                            })
+                        }
                     })
                     .collect();
                 let (args_start, args_len) = self.rir.add_inst_refs(&args);
