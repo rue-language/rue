@@ -1,0 +1,113 @@
+# Loop/break never-type soundness (RUE-76, RUE-56).
+#
+# A `loop` expression used to be typed `!` unconditionally, even when its body
+# contained a `break`. Consuming that "never" value (let initializer or
+# function tail) compiled cleanly and then segfaulted at runtime: the break
+# exit path produced no value and no `ret` (the binary fell off the end of the
+# function or loaded an uninitialized slot).
+#
+# Fixed in sema/inference: a `loop` containing a `break` targeting it now has
+# type `()` (spec 4.8:21), so consuming it as an i32 is a type error. A loop
+# with no break keeps type `!` (spec 4.8:17).
+#
+# Separately, `break 42` (a value operand on break) used to parse as `break`
+# followed by an unreachable expression statement and segfault the same way.
+# It is now parsed as a break-with-value and rejected by sema with E0502
+# (spec 4.8:22).
+
+[section]
+id = "cli.loop_break"
+name = "Loop/break never-type soundness"
+description = "loop-with-break is (), break-with-value is rejected (RUE-76, RUE-56)."
+
+# ── RUE-76: loop-with-break is no longer a usable `!` value ─────────────────
+
+[[case]]
+name = "loop_break_as_let_init_is_type_error"
+description = "let x: i32 = loop { break; } used to segfault (uninit load); now a type error."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let x: i32 = loop { break; };
+    x
+}
+""" }]
+compile_fail = true
+error_contains = ["type mismatch"]
+
+[[case]]
+name = "loop_break_as_fn_tail_is_type_error"
+description = "fn -> i32 with a loop { break; } tail used to fall off the function; now a type error."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    loop { break; }
+}
+""" }]
+compile_fail = true
+error_contains = ["type mismatch"]
+
+# Control: a loop with a break used as a statement is still fine.
+[[case]]
+name = "loop_break_as_statement_still_runs"
+description = "loop { break } as a statement has type () and compiles and runs."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut x = 0;
+    loop {
+        x = x + 1;
+        if x == 5 { break; }
+    }
+    x
+}
+""" }]
+exit_code = 5
+
+# Control: a loop with NO break keeps type ! and still coerces.
+[[case]]
+name = "loop_without_break_keeps_never_type"
+description = "loop {} still types as ! (a diverging tail needs no value)."
+files = [{ path = "main.rue", source = """
+fn never_returns() -> ! {
+    loop {}
+}
+
+fn main() -> i32 {
+    let mut x = 0;
+    loop {
+        x = x + 2;
+        if x > 5 { break; }
+    }
+    x
+}
+""" }]
+exit_code = 6
+
+# ── RUE-56: break with a value is rejected ──────────────────────────────────
+
+[[case]]
+name = "break_with_value_is_rejected"
+description = "break 42 used to compile (warning only) and segfault; now rejected with E0502."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    loop {
+        break 42;
+    }
+}
+""" }]
+compile_fail = true
+error_contains = ["E0502", "'break' with a value is not supported"]
+
+[[case]]
+name = "break_with_value_in_while_is_rejected"
+description = "break with a value inside while is rejected too."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut i = 0;
+    while i < 3 {
+        i = i + 1;
+        break i;
+    }
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0502", "'break' with a value is not supported"]

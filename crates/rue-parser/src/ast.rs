@@ -853,6 +853,9 @@ pub struct LoopExpr {
 /// A break expression (exits the innermost loop).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BreakExpr {
+    /// A value operand (e.g. `break 42`). Parsed for diagnostics, but always
+    /// rejected by semantic analysis: break does not carry a value.
+    pub value: Option<Box<Expr>>,
     pub span: Span,
 }
 
@@ -1193,7 +1196,14 @@ fn fmt_expr(f: &mut fmt::Formatter<'_>, expr: &Expr, level: usize) -> fmt::Resul
             }
             Ok(())
         }
-        Expr::Break(_) => writeln!(f, "Break"),
+        Expr::Break(brk) => {
+            if let Some(ref value) = brk.value {
+                writeln!(f, "Break")?;
+                fmt_expr(f, value, level + 1)
+            } else {
+                writeln!(f, "Break")
+            }
+        }
         Expr::Continue(_) => writeln!(f, "Continue"),
         Expr::Return(ret) => {
             if let Some(ref value) = ret.value {

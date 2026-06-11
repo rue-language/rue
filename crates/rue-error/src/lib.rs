@@ -129,6 +129,7 @@ impl ErrorCode {
     // ========================================================================
     pub const BREAK_OUTSIDE_LOOP: Self = Self(500);
     pub const CONTINUE_OUTSIDE_LOOP: Self = Self(501);
+    pub const BREAK_WITH_VALUE: Self = Self(502);
 
     // ========================================================================
     // Match errors (E0600-E0699)
@@ -970,6 +971,9 @@ pub enum ErrorKind {
     BreakOutsideLoop,
     #[error("'continue' outside of loop")]
     ContinueOutsideLoop,
+    /// `break` with a value operand (e.g. `break 42`); break does not carry a value
+    #[error("'break' with a value is not supported")]
+    BreakWithValue,
 
     // Match errors
     #[error("match is not exhaustive")]
@@ -1135,6 +1139,7 @@ impl ErrorKind {
             // Control flow errors (E0500-E0599)
             ErrorKind::BreakOutsideLoop => ErrorCode::BREAK_OUTSIDE_LOOP,
             ErrorKind::ContinueOutsideLoop => ErrorCode::CONTINUE_OUTSIDE_LOOP,
+            ErrorKind::BreakWithValue => ErrorCode::BREAK_WITH_VALUE,
 
             // Match errors (E0600-E0699)
             ErrorKind::NonExhaustiveMatch => ErrorCode::NON_EXHAUSTIVE_MATCH,
@@ -2178,6 +2183,10 @@ mod tests {
         assert_eq!(
             ErrorKind::ContinueOutsideLoop.code(),
             ErrorCode::CONTINUE_OUTSIDE_LOOP
+        );
+        assert_eq!(
+            ErrorKind::BreakWithValue.code(),
+            ErrorCode::BREAK_WITH_VALUE
         );
     }
 

@@ -149,6 +149,10 @@ pub(crate) struct AnalysisContext<'a> {
     pub next_slot: u32,
     /// How many loops we're nested inside (for break/continue validation)
     pub loop_depth: u32,
+    /// One entry per enclosing loop (innermost last); set to `true` when a
+    /// `break` targeting that loop is analyzed. An infinite loop containing a
+    /// break has type `()`; without one it has type `!` (see spec 4.8).
+    pub loop_break_stack: Vec<bool>,
     /// Local variables that have been read (for unused variable detection)
     pub used_locals: HashSet<Spur>,
     /// Return type of the current function (for explicit return validation)
@@ -250,6 +254,7 @@ impl<'a> AnalysisContext<'a> {
             params: self.params,
             next_slot: self.next_slot,
             loop_depth: self.loop_depth,
+            loop_break_stack: self.loop_break_stack.clone(),
             used_locals: self.used_locals.clone(),
             return_type: self.return_type,
             scope_stack: self.scope_stack.clone(),

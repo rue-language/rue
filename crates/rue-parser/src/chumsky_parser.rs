@@ -885,10 +885,17 @@ fn control_flow_parser<'src, I>(
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    // Break
-    let break_expr = select! {
-        TokenKind::Break = e => Expr::Break(BreakExpr { span: span_from_extra(e) }),
-    };
+    // Break: break <expr>? (a value operand parses, but sema always rejects
+    // it - break does not carry a value; parsing it gives a better diagnostic
+    // than treating the operand as a separate, unreachable statement)
+    let break_expr = just(TokenKind::Break)
+        .ignore_then(expr.clone().or_not())
+        .map_with(|value, e| {
+            Expr::Break(BreakExpr {
+                value: value.map(Box::new),
+                span: span_from_extra(e),
+            })
+        });
 
     // Continue
     let continue_expr = select! {
@@ -1698,6 +1705,10 @@ fn is_control_flow_expr(e: &Expr) -> bool {
 /// Returns true if the expression diverges (has the Never type).
 /// These expressions can be promoted to the final expression of a block
 /// since Never coerces to any type.
+///
+/// `loop` is included even though a loop containing a `break` has type `()`
+/// rather than `!`: promotion is still transparent, because the block's value
+/// becomes exactly the loop expression's value either way.
 fn is_diverging_expr(e: &Expr) -> bool {
     matches!(
         e,
