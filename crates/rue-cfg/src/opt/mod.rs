@@ -21,6 +21,7 @@
 //! ```
 
 mod constfold;
+mod constprop;
 mod dce;
 
 use crate::Cfg;
@@ -134,8 +135,19 @@ pub fn optimize(cfg: &mut Cfg, level: OptLevel) {
             // No optimization
         }
         OptLevel::O1 | OptLevel::O2 | OptLevel::O3 => {
-            // Constant folding: fold operations on compile-time constants
-            constfold::run(cfg);
+            // Interleave constant folding with store-to-load constant
+            // propagation until a fixpoint: folding a let's initializer can
+            // expose a constant store, and propagating it into Loads can
+            // expose new foldable operations (chains of single-assignment
+            // lets, RUE-154). Terminates because every change replaces a
+            // non-constant instruction with a constant.
+            loop {
+                let folded = constfold::run(cfg);
+                let propagated = constprop::run(cfg);
+                if !folded && !propagated {
+                    break;
+                }
+            }
 
             // Dead code elimination: remove unused values and unreachable blocks
             dce::run(cfg);

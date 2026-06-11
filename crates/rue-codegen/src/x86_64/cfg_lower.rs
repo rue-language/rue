@@ -1197,6 +1197,10 @@ impl<'a> CfgLower<'a> {
                         dst: Operand::Virtual(vreg),
                     }
                 });
+                // NOT flips all 32 register bits, setting bits above a
+                // sub-word operand's width (e.g. ~0u8 leaves 0xFFFFFFFF, not
+                // 0xFF); narrow back to the operand's type (RUE-162).
+                self.emit_subword_narrow(vreg, ty);
             }
 
             CfgInstData::BitAnd(lhs, rhs) => {

@@ -438,7 +438,10 @@ fn regs_written(inst: &Aarch64Inst) -> Vec<Reg> {
 }
 
 /// Check if an instruction writes to NZCV flags.
-fn writes_flags(inst: &Aarch64Inst) -> bool {
+///
+/// Shared with the peephole pass, which must not change flags that a later
+/// reader observes (RUE-152).
+pub(super) fn writes_flags(inst: &Aarch64Inst) -> bool {
     matches!(
         inst,
         // Flag-setting arithmetic

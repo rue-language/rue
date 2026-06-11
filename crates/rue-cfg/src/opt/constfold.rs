@@ -23,20 +23,25 @@ use rue_air::{EnumId, Type, TypeKind};
 /// Run constant folding on the CFG.
 ///
 /// This iterates over all instructions and replaces operations on
-/// constants with constant results.
-pub fn run(cfg: &mut Cfg) {
+/// constants with constant results. Returns `true` if anything was folded
+/// (the optimize driver interleaves this with constprop until neither
+/// changes anything).
+pub fn run(cfg: &mut Cfg) -> bool {
     // We iterate by index since we need to look up other instructions
     // while potentially modifying the current one.
     let value_count = cfg.value_count();
 
+    let mut changed = false;
     for i in 0..value_count {
         let value = CfgValue::from_raw(i as u32);
-        fold_instruction(cfg, value);
+        changed |= fold_instruction(cfg, value);
     }
+    changed
 }
 
 /// Try to fold a single instruction if it operates on constants.
-fn fold_instruction(cfg: &mut Cfg, value: CfgValue) {
+/// Returns `true` if the instruction was replaced by a constant.
+fn fold_instruction(cfg: &mut Cfg, value: CfgValue) -> bool {
     // Get the instruction data and type
     let inst = cfg.get_inst(value);
     let ty = inst.ty;
@@ -115,6 +120,9 @@ fn fold_instruction(cfg: &mut Cfg, value: CfgValue) {
         let inst = cfg.get_inst_mut(value);
         inst.data = new_data;
         inst.span = span; // Preserve original span
+        true
+    } else {
+        false
     }
 }
 

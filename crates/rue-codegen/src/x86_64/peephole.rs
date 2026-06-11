@@ -17,8 +17,25 @@
 //! - `add r, a` + `add r, b` → `add r, a+b` (when sum fits in i32)
 //!
 //! The pass operates in-place on the instruction vector for efficiency.
+//!
+//! ## FLAGS invariant (RUE-152)
+//!
+//! A rewrite that changes what an instruction does to FLAGS — adding a
+//! flags write (`mov r, 0` → `xor r, r`), dropping one (removing
+//! `add r, 0` / `xor r, 0`), or changing the flag values an instruction
+//! produces (combining add chains alters CF/OF) — is only applied when the
+//! FLAGS state at that point is provably dead: scanning forward, the next
+//! flags READER must be preceded by another flags WRITER (or a call/ret,
+//! which clobbers FLAGS per the ABI). If the scan reaches a label or an
+//! unconditional jump first, the flags state escapes this straight-line
+//! window and the rewrite is skipped. See [`flags_dead_after`].
+//!
+//! `cmp r, 0` → `test r, r` needs no gate on x86: both set CF=0, OF=0 and
+//! identical ZF/SF/PF from the same value (only undefined AF differs, and
+//! no consumer reads AF).
 
 use super::mir::{Operand, X86Inst};
+use super::schedule::{reads_flags, writes_flags};
 
 /// Apply peephole optimizations to the instruction stream.
 ///
@@ -28,9 +45,9 @@ pub fn optimize(instructions: &mut Vec<X86Inst>) -> usize {
     let mut changes = 0;
 
     // Pass 1: Single-instruction transforms (mov 0 -> xor, cmp 0 -> test)
-    for inst in instructions.iter_mut() {
-        if let Some(new_inst) = transform_single(inst) {
-            *inst = new_inst;
+    for i in 0..instructions.len() {
+        if let Some(new_inst) = transform_single(instructions, i) {
+            instructions[i] = new_inst;
             changes += 1;
         }
     }
@@ -39,27 +56,100 @@ pub fn optimize(instructions: &mut Vec<X86Inst>) -> usize {
     changes += combine_adjacent(instructions);
 
     // Pass 3: Remove identity instructions
-    let before = instructions.len();
-    instructions.retain(|inst| !is_redundant(inst));
-    changes += before - instructions.len();
+    let mut i = 0;
+    while i < instructions.len() {
+        if is_redundant(&instructions[i]) && removal_preserves_flags(instructions, i) {
+            instructions.remove(i);
+            changes += 1;
+        } else {
+            i += 1;
+        }
+    }
 
     changes
 }
 
-/// Transform a single instruction to a more efficient form.
+/// Check whether the FLAGS state produced at position `idx` is dead: no
+/// instruction can observe it before it is overwritten.
 ///
-/// Returns `Some(new_inst)` if a transformation was applied, `None` otherwise.
-fn transform_single(inst: &X86Inst) -> Option<X86Inst> {
-    match inst {
+/// Scans forward from `idx + 1`:
+/// - a flags reader first → live (return false)
+/// - a flags writer first → dead (overwritten before any read)
+/// - call/syscall/ret → dead (FLAGS are clobbered/never live across these
+///   per the ABI; our codegen never branches on flags set before a call)
+/// - label or unconditional jump → conservatively live (the flags state
+///   merges with or flows into code outside this straight-line window)
+/// - end of stream → dead
+///
+/// Shift-by-zero immediates leave FLAGS untouched, so they are skipped even
+/// though [`writes_flags`] reports the non-zero forms as writers.
+fn flags_dead_after(instructions: &[X86Inst], idx: usize) -> bool {
+    for inst in &instructions[idx + 1..] {
+        if is_shift_by_zero(inst) {
+            continue;
+        }
+        if reads_flags(inst) {
+            return false;
+        }
+        if writes_flags(inst) {
+            return true;
+        }
+        match inst {
+            X86Inst::CallRel { .. } | X86Inst::Syscall | X86Inst::Ret => return true,
+            X86Inst::Jmp { .. } | X86Inst::Label { .. } => return false,
+            _ => {}
+        }
+    }
+    true
+}
+
+/// Shift-immediate-by-zero forms: architecturally, a shift count of 0
+/// leaves FLAGS unmodified, so these are neither flag writers (despite
+/// [`writes_flags`] reporting the non-zero forms) nor unsafe to remove.
+fn is_shift_by_zero(inst: &X86Inst) -> bool {
+    matches!(
+        inst,
+        X86Inst::ShlRI { imm: 0, .. }
+            | X86Inst::Shl32RI { imm: 0, .. }
+            | X86Inst::ShrRI { imm: 0, .. }
+            | X86Inst::Shr32RI { imm: 0, .. }
+            | X86Inst::SarRI { imm: 0, .. }
+            | X86Inst::Sar32RI { imm: 0, .. }
+    )
+}
+
+/// Check that removing the (redundant) instruction at `idx` does not drop a
+/// FLAGS write that a later reader observes (RUE-152).
+///
+/// `add r, 0` and `xor r, 0` are register no-ops but still set FLAGS;
+/// shift-by-zero and `mov r, r` touch no flags at all.
+fn removal_preserves_flags(instructions: &[X86Inst], idx: usize) -> bool {
+    let inst = &instructions[idx];
+    if !writes_flags(inst) || is_shift_by_zero(inst) {
+        return true;
+    }
+    flags_dead_after(instructions, idx)
+}
+
+/// Transform the instruction at `idx` to a more efficient form.
+///
+/// Returns `Some(new_inst)` if a transformation applies, `None` otherwise.
+fn transform_single(instructions: &[X86Inst], idx: usize) -> Option<X86Inst> {
+    match &instructions[idx] {
         // mov r, 0 → xor r, r (smaller encoding: 5 bytes → 2 bytes)
         // Also breaks false dependencies on modern CPUs.
-        X86Inst::MovRI32 { dst, imm: 0 } => Some(X86Inst::XorRR {
-            dst: *dst,
-            src: *dst,
-        }),
+        // XOR writes FLAGS where MOV does not, so this is only legal where
+        // the flags state at this point is dead (RUE-152).
+        X86Inst::MovRI32 { dst, imm: 0 } if flags_dead_after(instructions, idx) => {
+            Some(X86Inst::XorRR {
+                dst: *dst,
+                src: *dst,
+            })
+        }
 
         // cmp r, 0 → test r, r (same flags, often faster)
-        // test sets ZF=1 if r==0, same as cmp r, 0
+        // Flag-equivalent for every consumed flag: both set CF=0, OF=0 and
+        // ZF/SF/PF from the operand value itself (see module docs).
         X86Inst::CmpRI { src, imm: 0 } => Some(X86Inst::TestRR {
             src1: *src,
             src2: *src,
@@ -81,6 +171,10 @@ fn transform_single(inst: &X86Inst) -> Option<X86Inst> {
 ///
 /// Currently handles:
 /// - `add r, a` followed by `add r, b` → `add r, a+b`
+///
+/// The combined add produces the same final register value but can set
+/// CF/OF differently than the second original add, so combining is gated on
+/// the flags at that point being dead (RUE-152).
 ///
 /// Returns the number of combinations made.
 fn combine_adjacent(instructions: &mut Vec<X86Inst>) -> usize {
@@ -104,7 +198,7 @@ fn combine_adjacent(instructions: &mut Vec<X86Inst>) -> usize {
             },
         ) = (&instructions[i], &instructions[i + 1])
         {
-            if operands_equal(dst1, dst2) {
+            if operands_equal(dst1, dst2) && flags_dead_after(instructions, i + 1) {
                 // Check for overflow when combining immediates
                 if let Some(combined) = imm1.checked_add(*imm2) {
                     // Replace first instruction with combined add
@@ -648,6 +742,200 @@ mod tests {
         assert!(matches!(instructions[1], X86Inst::AddRI { imm: 30, .. }));
         assert!(matches!(instructions[2], X86Inst::TestRR { .. }));
         assert!(matches!(instructions[3], X86Inst::Ret));
+    }
+
+    // ==================== FLAGS Hazard Tests (RUE-152) ====================
+
+    use crate::x86_64::mir::LabelId;
+
+    #[test]
+    fn test_mov_zero_to_xor_blocked_by_live_flags() {
+        // cmp sets flags; jz reads them. The mov in between must NOT become
+        // xor (which would clobber the flags jz consumes).
+        let mut instructions = vec![
+            X86Inst::CmpRI {
+                src: Operand::Physical(Reg::Rbx),
+                imm: 42,
+            },
+            X86Inst::MovRI32 {
+                dst: Operand::Physical(Reg::Rax),
+                imm: 0,
+            },
+            X86Inst::Jz {
+                label: LabelId::new(0),
+            },
+            X86Inst::Ret,
+        ];
+
+        optimize(&mut instructions);
+
+        assert!(
+            matches!(instructions[1], X86Inst::MovRI32 { imm: 0, .. }),
+            "mov r, 0 must not become xor while flags are live, got {:?}",
+            instructions[1]
+        );
+    }
+
+    #[test]
+    fn test_mov_zero_to_xor_fires_when_flags_rewritten_first() {
+        // A flags writer (test) sits between the mov and the reader, so the
+        // xor's flags are dead and the rewrite STILL fires.
+        let mut instructions = vec![
+            X86Inst::MovRI32 {
+                dst: Operand::Physical(Reg::Rax),
+                imm: 0,
+            },
+            X86Inst::TestRR {
+                src1: Operand::Physical(Reg::Rbx),
+                src2: Operand::Physical(Reg::Rbx),
+            },
+            X86Inst::Jz {
+                label: LabelId::new(0),
+            },
+            X86Inst::Ret,
+        ];
+
+        optimize(&mut instructions);
+
+        assert!(
+            matches!(instructions[0], X86Inst::XorRR { .. }),
+            "mov r, 0 should become xor when a writer precedes the reader, got {:?}",
+            instructions[0]
+        );
+    }
+
+    #[test]
+    fn test_mov_zero_to_xor_blocked_by_label() {
+        // Flags state escapes into a join point; conservatively keep the mov.
+        let mut instructions = vec![
+            X86Inst::MovRI32 {
+                dst: Operand::Physical(Reg::Rax),
+                imm: 0,
+            },
+            X86Inst::Label {
+                id: LabelId::new(0),
+            },
+            X86Inst::Jz {
+                label: LabelId::new(1),
+            },
+            X86Inst::Ret,
+        ];
+
+        optimize(&mut instructions);
+
+        assert!(
+            matches!(instructions[0], X86Inst::MovRI32 { imm: 0, .. }),
+            "mov r, 0 must not become xor across a label, got {:?}",
+            instructions[0]
+        );
+    }
+
+    #[test]
+    fn test_add_zero_kept_when_flags_consumed() {
+        // add r, 0 is a register no-op but writes FLAGS; a following jz
+        // consumes them, so the add must stay.
+        let mut instructions = vec![
+            X86Inst::AddRI {
+                dst: Operand::Physical(Reg::Rax),
+                imm: 0,
+            },
+            X86Inst::Jz {
+                label: LabelId::new(0),
+            },
+            X86Inst::Ret,
+        ];
+
+        let changes = optimize(&mut instructions);
+
+        assert_eq!(changes, 0);
+        assert!(matches!(instructions[0], X86Inst::AddRI { imm: 0, .. }));
+    }
+
+    #[test]
+    fn test_xor_zero_kept_when_flags_consumed() {
+        let mut instructions = vec![
+            X86Inst::XorRI {
+                dst: Operand::Physical(Reg::Rax),
+                imm: 0,
+            },
+            X86Inst::Jae {
+                label: LabelId::new(0),
+            },
+            X86Inst::Ret,
+        ];
+
+        let changes = optimize(&mut instructions);
+
+        assert_eq!(changes, 0);
+        assert!(matches!(instructions[0], X86Inst::XorRI { imm: 0, .. }));
+    }
+
+    #[test]
+    fn test_combine_adds_blocked_by_flags_reader() {
+        // Combining changes CF/OF; jae reads CF, so the adds must not merge.
+        let mut instructions = vec![
+            X86Inst::AddRI {
+                dst: Operand::Physical(Reg::Rax),
+                imm: 10,
+            },
+            X86Inst::AddRI {
+                dst: Operand::Physical(Reg::Rax),
+                imm: 20,
+            },
+            X86Inst::Jae {
+                label: LabelId::new(0),
+            },
+            X86Inst::Ret,
+        ];
+
+        let changes = optimize(&mut instructions);
+
+        assert_eq!(changes, 0);
+        assert_eq!(instructions.len(), 4);
+        assert!(matches!(instructions[0], X86Inst::AddRI { imm: 10, .. }));
+        assert!(matches!(instructions[1], X86Inst::AddRI { imm: 20, .. }));
+    }
+
+    #[test]
+    fn test_cmp_zero_to_test_fires_with_flags_reader() {
+        // cmp -> test is flag-equivalent on x86 and must still fire even
+        // with a consumer right after.
+        let mut instructions = vec![
+            X86Inst::CmpRI {
+                src: Operand::Physical(Reg::Rax),
+                imm: 0,
+            },
+            X86Inst::Jz {
+                label: LabelId::new(0),
+            },
+            X86Inst::Ret,
+        ];
+
+        let changes = optimize(&mut instructions);
+
+        assert_eq!(changes, 1);
+        assert!(matches!(instructions[0], X86Inst::TestRR { .. }));
+    }
+
+    #[test]
+    fn test_flags_dead_after_call() {
+        // FLAGS never live across a call: the xor rewrite fires even though
+        // a reader follows the call (it must consume flags set after it).
+        let mut instructions = vec![
+            X86Inst::MovRI32 {
+                dst: Operand::Physical(Reg::Rax),
+                imm: 0,
+            },
+            X86Inst::CallRel { symbol_id: 0 },
+            X86Inst::Jz {
+                label: LabelId::new(0),
+            },
+            X86Inst::Ret,
+        ];
+
+        optimize(&mut instructions);
+
+        assert!(matches!(instructions[0], X86Inst::XorRR { .. }));
     }
 
     #[test]

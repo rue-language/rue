@@ -1,0 +1,157 @@
+# Store-to-load constant propagation tests (RUE-154).
+#
+# CfgBuilder materializes every `let` as a stack slot, so constfold (which
+# only sees literal Const operands) never folded `let a = -2147483648;
+# a / -1` — only the direct-literal form. Constprop now forwards
+# single-assignment let-bound constants into their Loads, interleaved with
+# constfold to a fixpoint.
+#
+# The MIN/-1 cases pin the interaction with RUE-30/RUE-147: constfold
+# REFUSES to fold MIN/-1 (the quotient is unrepresentable), so even with
+# propagation the division stays a runtime op and the mandatory overflow
+# trap must fire at every opt level.
+
+[section]
+id = "cli.constprop"
+name = "Let-bound constant propagation"
+description = "Single-assignment let-bound constants reach div/mod; the MIN/-1 trap survives at every opt level."
+
+[[case]]
+name = "letbound_min_div_neg1_traps_O0"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: i32 = -2147483648;
+    let q = a / -1;
+    q
+}
+""" }]
+args = ["main.rue", "-O0", "-o", "prog"]
+runtime_error_contains = ["integer overflow"]
+exit_code = 101
+
+[[case]]
+name = "letbound_min_div_neg1_traps_O1"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: i32 = -2147483648;
+    let q = a / -1;
+    q
+}
+""" }]
+args = ["main.rue", "-O1", "-o", "prog"]
+runtime_error_contains = ["integer overflow"]
+exit_code = 101
+
+[[case]]
+name = "letbound_min_div_neg1_traps_O2"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: i32 = -2147483648;
+    let q = a / -1;
+    q
+}
+""" }]
+args = ["main.rue", "-O2", "-o", "prog"]
+runtime_error_contains = ["integer overflow"]
+exit_code = 101
+
+[[case]]
+name = "letbound_min_mod_neg1_traps_O2"
+description = "MIN % -1 overflows like MIN / -1; the trap survives propagation."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: i64 = -9223372036854775808;
+    let r = a % -1;
+    @intCast(r)
+}
+""" }]
+args = ["main.rue", "-O2", "-o", "prog"]
+runtime_error_contains = ["integer overflow"]
+exit_code = 101
+
+[[case]]
+name = "letbound_div_mod_value_O1"
+description = "Let-bound constants propagate into div/mod and fold to the right values."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: i32 = 84;
+    let b: i32 = 2;
+    let q = a / b;     // 42
+    let r = a % 5;     // 4
+    q + r
+}
+""" }]
+args = ["main.rue", "-O1", "-o", "prog"]
+exit_code = 46
+
+[[case]]
+name = "letbound_div_mod_value_O0"
+description = "Control: the unoptimized runtime path computes the same values."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: i32 = 84;
+    let b: i32 = 2;
+    let q = a / b;     // 42
+    let r = a % 5;     // 4
+    q + r
+}
+""" }]
+args = ["main.rue", "-O0", "-o", "prog"]
+exit_code = 46
+
+[[case]]
+name = "letbound_chain_folds_O1"
+description = "Constants flow through chains of single-assignment lets (fold/prop fixpoint)."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: i32 = 5;
+    let b: i32 = a + 2;    // 7
+    let c: i32 = b * 6;    // 42
+    c / a                  // 8
+}
+""" }]
+args = ["main.rue", "-O1", "-o", "prog"]
+exit_code = 8
+
+[[case]]
+name = "mutated_let_not_mispropagated_O1"
+description = "A reassigned variable has two stores; its loads must NOT be replaced by the initializer."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut a: i32 = 10;
+    a = 20;
+    a / 2
+}
+""" }]
+args = ["main.rue", "-O1", "-o", "prog"]
+exit_code = 10
+
+[[case]]
+name = "inout_arg_not_mispropagated_O1"
+description = "A let whose address is passed inout may be rewritten by the callee; do not propagate."
+files = [{ path = "main.rue", source = """
+fn bump(inout v: i32) {
+    v = v + 1;
+}
+fn main() -> i32 {
+    let a: i32 = 41;
+    bump(inout a);
+    a
+}
+""" }]
+args = ["main.rue", "-O1", "-o", "prog"]
+exit_code = 42
+
+[[case]]
+name = "letbound_div_by_zero_traps_O2"
+description = "Propagation must not fold away the division-by-zero trap (constfold refuses b == 0)."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: i32 = 7;
+    let b: i32 = 0;
+    a / b
+}
+""" }]
+args = ["main.rue", "-O2", "-o", "prog"]
+runtime_error_contains = ["division by zero"]
+exit_code = 101

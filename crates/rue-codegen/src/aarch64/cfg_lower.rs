@@ -1034,6 +1034,10 @@ impl<'a> CfgLower<'a> {
                         src: Operand::Virtual(operand_vreg),
                     }
                 });
+                // MVN flips all 32 w-register bits, setting bits above a
+                // sub-word operand's width (e.g. ~0u8 leaves 0xFFFFFFFF, not
+                // 0xFF); narrow back to the operand's type (RUE-162).
+                self.emit_subword_narrow(vreg, ty);
             }
 
             CfgInstData::BitAnd(lhs, rhs) => {
