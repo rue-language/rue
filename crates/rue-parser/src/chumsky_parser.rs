@@ -1378,8 +1378,14 @@ where
             .then(just(TokenKind::RParen))
             .map_with(|_, e| IntrinsicArg::Type(TypeExpr::Unit(span_from_extra(e))));
 
-        // Never type: !
+        // Never type: ! — but only when the `!` is the entire argument (the
+        // next token is `,` or `)`). A `!` followed by anything else is the
+        // logical-not operator (e.g. `@dbg(!flag)`), which must fall through
+        // to the expression branch; committing to the never-type parse here
+        // used to reject those arguments (RUE-150). The lookahead is
+        // non-consuming (`rewind`) so the delimiter is still parsed normally.
         let never_type = just(TokenKind::Bang)
+            .then_ignore(one_of([TokenKind::Comma, TokenKind::RParen]).rewind())
             .map_with(|_, e| IntrinsicArg::Type(TypeExpr::Never(span_from_extra(e))));
 
         // Array type: [T; N]
