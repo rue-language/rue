@@ -153,6 +153,17 @@ pub struct CfgBuilder<'a> {
     /// Each scope contains the slots that became live in that scope.
     /// Used to emit StorageDead (and Drop if needed) at scope exit.
     scope_stack: Vec<Vec<LiveSlot>>,
+    /// Runtime drop flags (RUE-108): one hidden i32 frame slot per droppable
+    /// slot that is moved ANYWHERE in the function. The flag is 1 while the
+    /// slot owns its value and 0 after a move; scope-exit drops for flagged
+    /// slots are emitted behind an `if flag != 0` guard, which makes
+    /// branch-divergent moves (moved in one arm only), conservative loop
+    /// joins, and short-circuit edges drop-exactly-once at RUNTIME even
+    /// where the static all-paths analysis must stay conservative.
+    drop_flags: std::collections::HashMap<MovedSlot, u32>,
+    /// Slots with a whole-value MarkMoved anywhere in the AIR (pre-scanned),
+    /// i.e. candidates for a drop flag.
+    ever_moved: std::collections::HashSet<MovedSlot>,
     /// Slots (and individual top-level struct fields, RUE-62) whose contents
     /// have definitely been moved out on every path reaching the current
     /// lowering position. Drop elaboration skips these (the new owner of the
@@ -161,10 +172,10 @@ pub struct CfgBuilder<'a> {
     /// Maintained path-sensitively: each branch of an if/match is lowered
     /// starting from the pre-branch state, and the post-construct state is
     /// the intersection of the branch exit states ("moved on ALL paths").
-    /// A value moved on only SOME paths therefore stays in the drop schedule
-    /// — that conservatively keeps today's double-drop for branch-divergent
-    /// moves (proper fix needs runtime drop flags), but never leaks a value
-    /// that was not moved.
+    /// A value moved on only SOME paths stays in the drop schedule, but its
+    /// scope-exit drop is emitted behind a runtime drop-flag guard (see
+    /// `drop_flags`), so the moving path skips it at runtime — drop exactly
+    /// once on every path, and never a leak.
     moved: MoveState,
 }
 
@@ -198,12 +209,41 @@ impl<'a> CfgBuilder<'a> {
             value_cache: vec![None; air.len()],
             warnings: Vec::new(),
             scope_stack: vec![Vec::new()], // Start with one scope for the function body
+            drop_flags: std::collections::HashMap::new(),
+            ever_moved: std::collections::HashSet::new(),
             moved: MoveState::default(),
         };
 
         // Create entry block
         builder.current_block = builder.cfg.new_block();
         builder.cfg.entry = builder.current_block;
+
+        // Pre-scan for whole-value moves so drop flags can be initialized at
+        // the value's init site, before the move is reached (RUE-108).
+        for i in 0..air.len() {
+            if let AirInstData::MarkMoved {
+                slot,
+                is_param,
+                field: None,
+                ..
+            } = &air.get(AirRef::from_raw(i as u32)).data
+            {
+                builder.ever_moved.insert(if *is_param {
+                    MovedSlot::Param(*slot)
+                } else {
+                    MovedSlot::Local(*slot)
+                });
+            }
+        }
+
+        // Owned by-value params are "initialized" at entry: arm their drop
+        // flags here so a flag is live before any move site is reached.
+        for &(abi_slot, ty) in &builder.air.param_drops().to_vec() {
+            let key = MovedSlot::Param(abi_slot);
+            if builder.ever_moved.contains(&key) && builder.type_needs_drop(ty) {
+                builder.set_drop_flag(key, true, rue_span::Span::default());
+            }
+        }
 
         // Find the root (should be Ret as last instruction)
         if air.len() > 0 {
@@ -736,6 +776,8 @@ impl<'a> CfgBuilder<'a> {
                 // Initialization fills the slot with a fresh value: any
                 // moved-out state from a previous occupant is stale.
                 self.moved.clear_slot(MovedSlot::Local(*slot));
+                let init_ty = self.air.get(*init).ty;
+                self.arm_drop_flag_if_needed(MovedSlot::Local(*slot), init_ty, span);
                 ExprResult {
                     value: None,
                     continuation: Continuation::Continues,
@@ -767,6 +809,7 @@ impl<'a> CfgBuilder<'a> {
                 // moved-out value has been replaced, so it must be dropped
                 // again at scope exit.
                 self.moved.clear_slot(MovedSlot::Local(*slot));
+                self.update_drop_flag(MovedSlot::Local(*slot), true, span);
                 ExprResult {
                     value: None,
                     continuation: Continuation::Continues,
@@ -787,6 +830,7 @@ impl<'a> CfgBuilder<'a> {
                 );
                 // Re-initialization: see the Store arm above.
                 self.moved.clear_slot(MovedSlot::Param(*param_slot));
+                self.update_drop_flag(MovedSlot::Param(*param_slot), true, span);
                 ExprResult {
                     value: None,
                     continuation: Continuation::Continues,
@@ -1876,8 +1920,10 @@ impl<'a> CfgBuilder<'a> {
                 let air_place = self.air.get_place(*place);
                 if let Some(slot) = air_place.as_local() {
                     self.moved.clear_slot(MovedSlot::Local(slot));
+                    self.update_drop_flag(MovedSlot::Local(slot), true, span);
                 } else if let Some(slot) = air_place.as_param() {
                     self.moved.clear_slot(MovedSlot::Param(slot));
+                    self.update_drop_flag(MovedSlot::Param(slot), true, span);
                 } else if air_place.projections_len == 1 {
                     let base = match air_place.base {
                         AirPlaceBase::Local(slot) => MovedSlot::Local(slot),
@@ -2014,7 +2060,13 @@ impl<'a> CfgBuilder<'a> {
                     };
                     match field {
                         Some(field_index) => self.moved.mark_field(place, *field_index),
-                        None => self.moved.mark_slot(place),
+                        None => {
+                            self.moved.mark_slot(place);
+                            // Clear the runtime drop flag on this path; if
+                            // another path doesn't move the value, its flag
+                            // stays 1 and the guarded exit drop still runs.
+                            self.update_drop_flag(place, false, span);
+                        }
                     }
                 }
                 if let Some(val) = result.value {
@@ -2131,6 +2183,51 @@ impl<'a> CfgBuilder<'a> {
     /// Drops are emitted in reverse order (LIFO) across all scopes.
     /// Owned (pass-by-value) parameters are dropped after all locals, in
     /// reverse declaration order — the callee owns its by-value arguments.
+    /// Set a slot's runtime drop flag (RUE-108), allocating the hidden flag
+    /// slot on first use. `live = true` (1) when the slot owns its value,
+    /// `false` (0) after a move. Only slots in `ever_moved` get flags, and
+    /// only when their type actually needs dropping — callers pass the type
+    /// when known; `set_drop_flag` is the allocate-or-update primitive.
+    fn set_drop_flag(&mut self, key: MovedSlot, live: bool, span: rue_span::Span) {
+        let flag_slot = match self.drop_flags.get(&key) {
+            Some(&f) => f,
+            None => {
+                let f = self.cfg.alloc_temp_local();
+                self.drop_flags.insert(key, f);
+                f
+            }
+        };
+        let val = self.emit(
+            CfgInstData::Const(if live { 1 } else { 0 }),
+            Type::I32,
+            span,
+        );
+        self.emit(
+            CfgInstData::Store {
+                slot: flag_slot,
+                value: val,
+            },
+            Type::UNIT,
+            span,
+        );
+    }
+
+    /// Update an EXISTING drop flag; no-op when the slot has none (its type
+    /// needs no drop, or it is never moved).
+    fn update_drop_flag(&mut self, key: MovedSlot, live: bool, span: rue_span::Span) {
+        if self.drop_flags.contains_key(&key) {
+            self.set_drop_flag(key, live, span);
+        }
+    }
+
+    /// Arm the drop flag at a value's (re)initialization site, when the slot
+    /// is moved somewhere in this function and its type needs dropping.
+    fn arm_drop_flag_if_needed(&mut self, key: MovedSlot, ty: Type, span: rue_span::Span) {
+        if self.ever_moved.contains(&key) && self.type_needs_drop(ty) {
+            self.set_drop_flag(key, true, span);
+        }
+    }
+
     fn emit_drops_for_all_scopes(&mut self, span: rue_span::Span) {
         // Collect all live slots in reverse order across all scopes
         let all_slots: Vec<LiveSlot> = self
@@ -2152,9 +2249,13 @@ impl<'a> CfgBuilder<'a> {
             if self.moved.is_slot_moved(key) {
                 continue;
             }
-            if self.type_needs_drop(ty) && !self.emit_partial_struct_drop(key, ty, span) {
-                let param_val = self.emit(CfgInstData::Param { index: abi_slot }, ty, span);
-                self.emit(CfgInstData::Drop { value: param_val }, Type::UNIT, span);
+            if self.type_needs_drop(ty) {
+                self.emit_guarded(key, span, |b| {
+                    if !b.emit_partial_struct_drop(key, ty, span) {
+                        let param_val = b.emit(CfgInstData::Param { index: abi_slot }, ty, span);
+                        b.emit(CfgInstData::Drop { value: param_val }, Type::UNIT, span);
+                    }
+                });
             }
         }
     }
@@ -2178,6 +2279,58 @@ impl<'a> CfgBuilder<'a> {
         }
     }
 
+    /// Emit the drop body produced by `emit_body` behind an `if flag != 0`
+    /// guard when `key` has a runtime drop flag and its move-out is not
+    /// already statically decided (RUE-108). Returns true if a guard was
+    /// emitted (the body ran in its own block).
+    fn emit_guarded(
+        &mut self,
+        key: MovedSlot,
+        span: rue_span::Span,
+        emit_body: impl FnOnce(&mut Self),
+    ) {
+        let Some(&flag_slot) = self.drop_flags.get(&key) else {
+            emit_body(self);
+            return;
+        };
+        // Statically moved-on-all-paths is filtered by the callers; reaching
+        // here with a flag means the move is path-dependent (or downstream of
+        // a conservative join), so test the flag at runtime.
+        let flag_val = self.emit(CfgInstData::Load { slot: flag_slot }, Type::I32, span);
+        let zero = self.emit(CfgInstData::Const(0), Type::I32, span);
+        let cond = self.emit(CfgInstData::Ne(flag_val, zero), Type::BOOL, span);
+
+        let drop_block = self.cfg.new_block();
+        let cont_block = self.cfg.new_block();
+        let (then_args_start, then_args_len) = self.cfg.push_extra(std::iter::empty());
+        let (else_args_start, else_args_len) = self.cfg.push_extra(std::iter::empty());
+        self.cfg.set_terminator(
+            self.current_block,
+            Terminator::Branch {
+                cond,
+                then_block: drop_block,
+                then_args_start,
+                then_args_len,
+                else_block: cont_block,
+                else_args_start,
+                else_args_len,
+            },
+        );
+
+        self.current_block = drop_block;
+        emit_body(self);
+        let (args_start, args_len) = self.cfg.push_extra(std::iter::empty());
+        self.cfg.set_terminator(
+            self.current_block,
+            Terminator::Goto {
+                target: cont_block,
+                args_start,
+                args_len,
+            },
+        );
+        self.current_block = cont_block;
+    }
+
     /// Emit Drop and StorageDead for a single slot.
     /// The Drop is suppressed when the slot's value was moved out on every
     /// path reaching this point (the new owner drops it); the StorageDead
@@ -2187,17 +2340,14 @@ impl<'a> CfgBuilder<'a> {
         // Emit Drop if the type needs it and the value wasn't moved out
         let key = MovedSlot::Local(live_slot.slot);
         if !self.moved.is_slot_moved(key) && self.type_needs_drop(live_slot.ty) {
-            // Fast path: nothing partially moved — drop the whole value.
-            if !self.emit_partial_struct_drop(key, live_slot.ty, span) {
-                let slot_val = self.emit(
-                    CfgInstData::Load {
-                        slot: live_slot.slot,
-                    },
-                    live_slot.ty,
-                    span,
-                );
-                self.emit(CfgInstData::Drop { value: slot_val }, Type::UNIT, span);
-            }
+            let (slot, ty) = (live_slot.slot, live_slot.ty);
+            self.emit_guarded(key, span, |b| {
+                // Fast path: nothing partially moved — drop the whole value.
+                if !b.emit_partial_struct_drop(key, ty, span) {
+                    let slot_val = b.emit(CfgInstData::Load { slot }, ty, span);
+                    b.emit(CfgInstData::Drop { value: slot_val }, Type::UNIT, span);
+                }
+            });
         }
         self.emit(
             CfgInstData::StorageDead {
@@ -2665,11 +2815,12 @@ mod tests {
     }
 
     #[test]
-    fn test_branch_divergent_move_keeps_drop() {
+    fn test_branch_divergent_move_emits_guarded_drop() {
         // A value moved on only ONE path is NOT "moved on all paths": the
-        // scope-exit drop is conservatively kept (documented residual — the
-        // moving path double-drops until drop flags exist; the non-moving
-        // path must not leak).
+        // scope-exit drop is kept, but behind a runtime drop-flag guard
+        // (RUE-108), so the moving path skips it at runtime. Statically the
+        // CFG still contains both drops (t's, and s's guarded one) plus the
+        // flag plumbing: a conditional branch on the flag around s's drop.
         let cfg = build_cfg(
             "fn main() -> i32 {\n\
                  let s = String::with_capacity(8);\n\
@@ -2680,12 +2831,21 @@ mod tests {
                  0\n\
              }",
         );
-        // One drop for t inside the branch, one (conservative) for s at exit.
+        // One drop for t inside the branch, one (flag-guarded) for s at exit.
         assert_eq!(
             count_drops(&cfg),
             2,
-            "branch-divergent move keeps the exit drop"
+            "branch-divergent move keeps a guarded exit drop"
         );
+        // The guard exists: at least one Ne comparison against the flag
+        // feeding a conditional branch (the if itself uses the bool directly,
+        // so an Ne is distinctive of the drop guard).
+        let has_flag_compare = cfg
+            .blocks()
+            .iter()
+            .flat_map(|b| b.insts.iter())
+            .any(|i| matches!(cfg.get_inst(*i).data, CfgInstData::Ne(..)));
+        assert!(has_flag_compare, "exit drop must be guarded by a flag test");
     }
 
     #[test]
