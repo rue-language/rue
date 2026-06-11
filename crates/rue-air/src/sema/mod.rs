@@ -20,7 +20,6 @@
 //! - [`visibility`] - Module visibility checking
 //! - [`imports`] - Import resolution and const evaluation
 //! - [`anon_structs`] - Anonymous struct structural equality
-//! - [`sema_ctx_builder`] - SemaContext builder for parallel analysis
 //! - [`file_paths`] - File path management for multi-file compilation
 //!
 //! The main entry points are:

@@ -10,8 +10,6 @@
 //!
 //! Inspired by Zig's AIR (Analyzed Intermediate Representation).
 
-mod analysis_state;
-mod function_analyzer;
 mod inference;
 mod inst;
 mod intern_pool;
@@ -22,10 +20,6 @@ mod sema_context;
 pub mod specialize;
 mod types;
 
-pub use analysis_state::{AnalysisStateRemapping, FunctionAnalysisState, MergedAnalysisState};
-pub use function_analyzer::{
-    FunctionAnalyzer, FunctionAnalyzerOutput, FunctionOutputRemapping, MergedFunctionOutput,
-};
 pub use inference::{
     Constraint, ConstraintContext, ConstraintGenerator, ExprInfo, FunctionSig, InferType,
     LocalVarInfo, MethodSig, ParamVarInfo, Substitution, TypeVarAllocator, TypeVarId,
@@ -42,11 +36,7 @@ pub use param_arena::{ParamArena, ParamRange};
 pub use sema::{
     AnalyzedFunction, ConstValue, FunctionInfo, GatherOutput, MethodInfo, Sema, SemaOutput,
 };
-// Note: FunctionInfo and MethodInfo are defined in sema and re-exported by sema_context.
-// We export InferenceContext and SemaContext from sema_context.
-pub use sema_context::{
-    InferenceContext as SemaContextInferenceContext, ModuleRegistry, SemaContext,
-};
+pub use sema_context::ModuleRegistry;
 pub use types::{
     ArrayTypeId, EnumDef, EnumId, ModuleDef, ModuleId, PtrConstTypeId, PtrMutTypeId, StructDef,
     StructField, StructId, Type, TypeKind, parse_array_type_syntax,
