@@ -97,6 +97,13 @@ const add = @import("math.rue").add;
 add(1, 2)
 ```
 
+> **Implementation status:** chained member access works, including through
+> nested directory modules (`std.math.abs(-7)` resolves member-by-member,
+> RUE-136/RUE-122). The last form above — binding a *member* in a top-level
+> `const` initializer (`const add = @import("math.rue").add`) — is **not yet
+> supported**: member access is not const-evaluable (E0434). Value `const`s
+> are also not yet reachable as module members (`m.ANSWER` is E0707).
+
 The key insight: `@import("foo.rue")` is equivalent to a struct containing the file's contents:
 
 ```rue
