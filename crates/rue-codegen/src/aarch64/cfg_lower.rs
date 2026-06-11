@@ -212,34 +212,44 @@ impl<'a> CfgLower<'a> {
         crate::agg_slots::get_or_compute_field_vregs(self, value)
     }
 
-    /// Copy a struct value's field vregs to a block parameter's field vregs.
-    fn copy_struct_to_block_param(&mut self, arg: CfgValue, target_block: BlockId, param_idx: u32) {
+    /// Copy an aggregate value's slot vregs to a block parameter's slot vregs.
+    /// Covers structs, builtin String, and fixed-size arrays — every slot must
+    /// cross the join edge, not just the primary vreg (RUE-167).
+    fn copy_aggregate_to_block_param(
+        &mut self,
+        arg: CfgValue,
+        target_block: BlockId,
+        param_idx: u32,
+    ) {
         let target_param = self.ctx.cfg.get_block(target_block).params[param_idx as usize].0;
 
-        let src_fields = self.get_or_compute_field_vregs(arg);
-        let dst_fields = self.struct_slot_vregs.get(&target_param).cloned();
-
-        debug_assert!(
-            src_fields.is_some(),
-            "struct arg should have field vregs available"
-        );
-        debug_assert!(
-            dst_fields.is_some(),
-            "struct block param should have field vregs pre-allocated"
-        );
-
-        if let (Some(src), Some(dst)) = (src_fields, dst_fields) {
-            debug_assert_eq!(
-                src.len(),
-                dst.len(),
-                "source and destination struct field counts must match"
-            );
-            for (dst_vreg, src_vreg) in dst.iter().zip(src.iter()) {
-                self.mir.push(Aarch64Inst::MovRR {
-                    dst: Operand::Virtual(*dst_vreg),
-                    src: Operand::Virtual(*src_vreg),
-                });
+        // The accessor covers StructInit/ArrayInit/Call/BlockParam (cache
+        // hits) and Load/Param/static PlaceRead; fall back to the recursive
+        // flatteners for anything it doesn't model (mirrors Alloc lowering).
+        let src_slots = self.get_or_compute_field_vregs(arg).unwrap_or_else(|| {
+            let arg_ty = self.ctx.cfg.get_inst(arg).ty;
+            if arg_ty.is_array() {
+                self.collect_array_scalar_vregs(arg)
+            } else {
+                self.collect_struct_scalar_vregs(arg)
             }
+        });
+        let dst_slots = self
+            .struct_slot_vregs
+            .get(&target_param)
+            .cloned()
+            .expect("aggregate block param should have slot vregs pre-allocated");
+
+        debug_assert_eq!(
+            src_slots.len(),
+            dst_slots.len(),
+            "source and destination aggregate slot counts must match"
+        );
+        for (dst_vreg, src_vreg) in dst_slots.iter().zip(src_slots.iter()) {
+            self.mir.push(Aarch64Inst::MovRR {
+                dst: Operand::Virtual(*dst_vreg),
+                src: Operand::Virtual(*src_vreg),
+            });
         }
     }
 
@@ -253,9 +263,12 @@ impl<'a> CfgLower<'a> {
                     .insert((block.id, param_idx as u32), vreg);
                 self.value_map.insert(*param_val, vreg);
 
-                // For struct types, also allocate vregs for each slot
-                if let Some(struct_id) = ty.as_struct() {
-                    let slot_count = self.ctx.type_slot_count(Type::new_struct(struct_id));
+                // For aggregate types (structs, builtin String, fixed-size
+                // arrays), also allocate vregs for each slot. Arrays included:
+                // their primary vreg is just a placeholder, so without slot
+                // vregs every element would be dropped at the join (RUE-167).
+                if ty.is_struct() || ty.is_array() {
+                    let slot_count = self.ctx.type_slot_count(*ty);
                     let mut slot_vregs = vec![vreg]; // First slot uses main vreg
                     for _ in 1..slot_count {
                         slot_vregs.push(self.mir.alloc_vreg());
@@ -297,8 +310,8 @@ impl<'a> CfgLower<'a> {
                     .insert((block.id, param_idx as u32), vreg);
                 self.value_map.insert(*param_val, vreg);
 
-                if let Some(struct_id) = ty.as_struct() {
-                    let slot_count = self.ctx.type_slot_count(Type::new_struct(struct_id));
+                if ty.is_struct() || ty.is_array() {
+                    let slot_count = self.ctx.type_slot_count(*ty);
                     let mut slot_vregs = vec![vreg];
                     for _ in 1..slot_count {
                         slot_vregs.push(self.mir.alloc_vreg());
@@ -3432,9 +3445,9 @@ impl<'a> CfgLower<'a> {
                 let args = self.ctx.cfg.get_extra(*args_start, *args_len);
                 for (i, &arg) in args.iter().enumerate() {
                     let arg_type = self.ctx.cfg.get_inst(arg).ty;
-                    if arg_type.is_struct() {
-                        // For struct args, copy all field vregs
-                        self.copy_struct_to_block_param(arg, *target, i as u32);
+                    if arg_type.is_struct() || arg_type.is_array() {
+                        // For aggregate args (structs, String, arrays), copy all slot vregs
+                        self.copy_aggregate_to_block_param(arg, *target, i as u32);
                     } else {
                         // For scalar args, just copy the single vreg
                         let arg_vreg = self.get_vreg(arg);
@@ -3479,9 +3492,9 @@ impl<'a> CfgLower<'a> {
                 let then_args = self.ctx.cfg.get_extra(*then_args_start, *then_args_len);
                 for (i, &arg) in then_args.iter().enumerate() {
                     let arg_type = self.ctx.cfg.get_inst(arg).ty;
-                    if arg_type.is_struct() {
-                        // For struct args, copy all field vregs
-                        self.copy_struct_to_block_param(arg, *then_block, i as u32);
+                    if arg_type.is_struct() || arg_type.is_array() {
+                        // For aggregate args (structs, String, arrays), copy all slot vregs
+                        self.copy_aggregate_to_block_param(arg, *then_block, i as u32);
                     } else {
                         // For scalar args, just copy the single vreg
                         let arg_vreg = self.get_vreg(arg);
@@ -3505,9 +3518,9 @@ impl<'a> CfgLower<'a> {
                 let else_args = self.ctx.cfg.get_extra(*else_args_start, *else_args_len);
                 for (i, &arg) in else_args.iter().enumerate() {
                     let arg_type = self.ctx.cfg.get_inst(arg).ty;
-                    if arg_type.is_struct() {
-                        // For struct args, copy all field vregs
-                        self.copy_struct_to_block_param(arg, *else_block, i as u32);
+                    if arg_type.is_struct() || arg_type.is_array() {
+                        // For aggregate args (structs, String, arrays), copy all slot vregs
+                        self.copy_aggregate_to_block_param(arg, *else_block, i as u32);
                     } else {
                         // For scalar args, just copy the single vreg
                         let arg_vreg = self.get_vreg(arg);
