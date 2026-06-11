@@ -1,16 +1,18 @@
-# Constant initializer evaluation (RUE-171).
+# Constant initializer evaluation (RUE-171) and required annotations (RUE-179).
 #
 # Const initializers go through the comptime engine: negated literals,
 # arithmetic, comptime blocks, and references to other constants are legal.
-# Unannotated integer constants infer the smallest fitting type out of
-# i32 -> i64 -> u64 (spec 6.5:4); annotated values are range-checked at the
-# declaration (E0800). Initializers are evaluated in dependency order across
-# files; cycles are E0461.
+# Value constants REQUIRE a type annotation (spec 6.5:4): an unannotated one
+# is E0475 (the value-based i32 -> i64 -> u64 inference that #980 shipped was
+# removed by RUE-179). Module bindings (`const m = @import(...)` and aliases)
+# are exempt. Annotated values are range-checked at the declaration (E0800).
+# Initializers are evaluated in dependency order across files; cycles are
+# E0461.
 
 [section]
 id = "cli.const_init"
 name = "Constant initializer evaluation"
-description = "Comptime-evaluated const initializers, inferred integer types, dependency ordering, cycle detection (RUE-171)."
+description = "Comptime-evaluated const initializers, required type annotations (E0475), dependency ordering, cycle detection (RUE-171, RUE-179)."
 
 # A negated literal — the headline RUE-171 repro (used to be E0434).
 [[case]]
@@ -40,9 +42,9 @@ exit_code = 7
 [[case]]
 name = "arithmetic_and_const_refs"
 files = [{ path = "main.rue", source = """
-const AREA = 6 * 7;
-const DOUBLE = AREA + AREA;
-const FLAG = !false;
+const AREA: i32 = 6 * 7;
+const DOUBLE: i32 = AREA + AREA;
+const FLAG: bool = !false;
 
 fn main() -> i32 {
     if FLAG { DOUBLE - AREA } else { 0 }
@@ -54,7 +56,7 @@ exit_code = 42
 [[case]]
 name = "comptime_block_initializer"
 files = [{ path = "main.rue", source = """
-const X = comptime { 6 * 7 };
+const X: i32 = comptime { 6 * 7 };
 
 fn main() -> i32 {
     X
@@ -62,12 +64,48 @@ fn main() -> i32 {
 """ }]
 exit_code = 42
 
-# Unannotated const whose literal does not fit i32 infers i64 (spec 6.5:4) —
-# previously it silently defaulted to i32 and errored at the USE site.
+# An unannotated value constant is E0475, with a help suggesting the
+# annotation the removed inference would have chosen (RUE-179).
 [[case]]
-name = "unannotated_big_literal_infers_i64"
+name = "unannotated_const_rejected_with_help"
+files = [{ path = "main.rue", source = """
+const X = 5;
+
+fn main() -> i32 {
+    X
+}
+""" }]
+compile_fail = true
+error_contains = ["E0475", "missing type annotation on constant 'X'", "add a type annotation: `const X: i32 = ...;`"]
+
+# The E0475 help suggests i64 for a literal that does not fit i32 (this
+# pinned inference under #980; the chain now only feeds the suggestion).
+[[case]]
+name = "unannotated_big_literal_rejected_suggests_i64"
 files = [{ path = "main.rue", source = """
 const BIG = 5000000000;
+
+fn main() -> i32 { 0 }
+""" }]
+compile_fail = true
+error_contains = ["E0475", "missing type annotation on constant 'BIG'", "`const BIG: i64 = ...;`"]
+
+# ... and u64 beyond i64::MAX.
+[[case]]
+name = "unannotated_huge_literal_rejected_suggests_u64"
+files = [{ path = "main.rue", source = """
+const HUGE = 18446744073709551615;
+
+fn main() -> i32 { 0 }
+""" }]
+compile_fail = true
+error_contains = ["E0475", "missing type annotation on constant 'HUGE'", "`const HUGE: u64 = ...;`"]
+
+# The annotated equivalents of the old inference chain keep working.
+[[case]]
+name = "annotated_big_literal_i64"
+files = [{ path = "main.rue", source = """
+const BIG: i64 = 5000000000;
 
 fn main() -> i32 {
     if BIG / 1000000000 == 5 { 5 } else { 1 }
@@ -75,17 +113,50 @@ fn main() -> i32 {
 """ }]
 exit_code = 5
 
-# Unannotated const beyond i64::MAX infers u64.
 [[case]]
-name = "unannotated_huge_literal_infers_u64"
+name = "annotated_huge_literal_u64"
 files = [{ path = "main.rue", source = """
-const HUGE = 18446744073709551615;
+const HUGE: u64 = 18446744073709551615;
 
 fn main() -> i32 {
     if HUGE > 18446744073709551614 { 3 } else { 1 }
 }
 """ }]
 exit_code = 3
+
+# Module bindings are NOT value constants: no annotation required (RUE-179
+# carve-out), and member access through one still works annotated.
+[[case]]
+name = "module_binding_exempt_from_annotation"
+files = [
+    { path = "main.rue", source = """
+const cfg = @import("cfg");
+const X: i32 = cfg.ANSWER;
+
+fn main() -> i32 {
+    X
+}
+""" },
+    { path = "cfg.rue", source = """
+pub const ANSWER: i32 = 42;
+""" },
+]
+exit_code = 42
+
+# A type-valued initializer is still E0434 (not E0475): type aliases are not
+# value constants, and fn-call initializers are not const-evaluable today
+# (fn-valued constants are RUE-173). If type aliases become legal they stay
+# exempt from the annotation requirement.
+[[case]]
+name = "type_alias_initializer_still_e0434"
+files = [{ path = "main.rue", source = """
+fn MakeT() -> type { i32 }
+const T = MakeT();
+
+fn main() -> i32 { 0 }
+""" }]
+compile_fail = true
+error_contains = ["E0434", "not supported in const context"]
 
 # Annotated out-of-range value is rejected AT THE DECLARATION (E0800).
 [[case]]
@@ -113,9 +184,9 @@ error_contains = ["value -5 is out of range for type u8"]
 [[case]]
 name = "forward_reference_same_file"
 files = [{ path = "main.rue", source = """
-const A = B + 1;
-const B = C * 2;
-const C = 10;
+const A: i32 = B + 1;
+const B: i32 = C * 2;
+const C: i32 = 10;
 
 fn main() -> i32 {
     A
@@ -130,14 +201,14 @@ name = "cross_file_chain_definer_second"
 args = ["main.rue", "config.rue", "-o", "prog"]
 files = [
     { path = "main.rue", source = """
-const FROM_CONFIG = LIMIT + 1;
+const FROM_CONFIG: i32 = LIMIT + 1;
 
 fn main() -> i32 {
     FROM_CONFIG
 }
 """ },
     { path = "config.rue", source = """
-pub const LIMIT = 41;
+pub const LIMIT: i32 = 41;
 """ },
 ]
 exit_code = 42
@@ -148,10 +219,10 @@ name = "cross_file_chain_definer_first"
 args = ["config.rue", "main.rue", "-o", "prog"]
 files = [
     { path = "config.rue", source = """
-pub const LIMIT = 41;
+pub const LIMIT: i32 = 41;
 """ },
     { path = "main.rue", source = """
-const FROM_CONFIG = LIMIT + 1;
+const FROM_CONFIG: i32 = LIMIT + 1;
 
 fn main() -> i32 {
     FROM_CONFIG
@@ -164,8 +235,8 @@ exit_code = 42
 [[case]]
 name = "cycle_is_error_not_hang"
 files = [{ path = "main.rue", source = """
-const A = B;
-const B = A;
+const A: i32 = B;
+const B: i32 = A;
 
 fn main() -> i32 { 0 }
 """ }]
@@ -176,7 +247,7 @@ error_contains = ["E0461", "cycle detected in constant initializers", "A -> B ->
 [[case]]
 name = "self_cycle_is_error"
 files = [{ path = "main.rue", source = """
-const SELF = SELF;
+const SELF: i32 = SELF;
 
 fn main() -> i32 { 0 }
 """ }]
@@ -189,7 +260,7 @@ error_contains = ["E0461", "SELF -> SELF"]
 name = "runtime_call_initializer_still_rejected"
 files = [{ path = "main.rue", source = """
 fn get() -> i32 { 42 }
-const X = get();
+const X: i32 = get();
 
 fn main() -> i32 { 0 }
 """ }]

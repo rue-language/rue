@@ -1195,7 +1195,7 @@ name = "comptime_file_level_const"
 spec = ["4.14:2"]
 description = "File-level constants are usable inside comptime blocks"
 source = """
-const N = 7;
+const N: i32 = 7;
 fn main() -> i32 {
     comptime { N * 6 }
 }

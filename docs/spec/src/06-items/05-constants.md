@@ -27,41 +27,53 @@ compile-time error (E0434).
 
 ```rue
 const NEG: i32 = -5;             // negated literal
-const AREA = 6 * 7;              // constant arithmetic
-const DOUBLE = AREA + AREA;      // references another constant
-const FLAG = !false;             // boolean operators
+const AREA: i32 = 6 * 7;         // constant arithmetic
+const DOUBLE: i32 = AREA + AREA; // references another constant
+const FLAG: bool = !false;       // boolean operators
 ```
 
 {{ rule(id="6.5:10", cat="informative") }}
 
 In the current implementation, a module member access (`m.CONST`, 10.4:12)
 is compile-time evaluable only as a whole initializer, not as the operand of
-an operator: write `const BASE = m.LIMIT; const N = BASE + 1;` rather than
-`const N = m.LIMIT + 1;`. This restriction is an implementation artifact,
-not a language guarantee.
+an operator: write `const BASE: i32 = m.LIMIT; const N: i32 = BASE + 1;`
+rather than `const N: i32 = m.LIMIT + 1;`. This restriction is an
+implementation artifact, not a language guarantee.
 
 ## Types of Constants
 
-{{ rule(id="6.5:4", cat="normative") }}
+{{ rule(id="6.5:4", cat="legality-rule") }}
 
-An integer constant without a type annotation has the smallest of the types
-`i32`, `i64`, `u64` that can represent its value. A boolean constant has
-type `bool`; a unit constant has type `()`.
+A *value constant* — a constant whose initializer evaluates to a value
+rather than a module — **MUST** have a type annotation. A value constant
+declared without one is a compile-time error (E0475). Module bindings
+(`const m = @import(...)`, aliases of module bindings, and re-exports —
+chapter 10) are not value constants: they take no annotation (no type
+annotation can name a module type) and require none.
+
+{{ rule(id="6.5:11", cat="informative") }}
+
+Earlier drafts inferred an unannotated integer constant's type from its
+value (the smallest of `i32`, `i64`, `u64` that could represent it). That
+inference was removed in favor of explicit annotations; some form of
+inference for constants may be revisited in a future revision. The E0475
+diagnostic suggests the annotation the removed inference would have chosen.
 
 {{ rule(id="6.5:5", cat="legality-rule") }}
 
-An integer constant with a type annotation has the annotated type; its value
-**MUST** be representable in that type, and a value out of range is a
-compile-time error reported at the declaration. A non-integer annotation
-**MUST** match the type of the initializer's value exactly.
+An integer constant's value **MUST** be representable in its annotated
+type; a value out of range is a compile-time error reported at the
+declaration. A non-integer annotation **MUST** match the type of the
+initializer's value exactly.
 
 {{ rule(id="6.5:6", cat="example") }}
 
 ```rue
-const BIG = 5000000000;          // i64: does not fit i32
-const HUGE = 18446744073709551615; // u64: does not fit i64
+const BIG: i64 = 5000000000;     // i64: annotation required and adopted
+const HUGE: u64 = 18446744073709551615; // u64: largest u64 value
 const SMALL: u8 = 200;           // u8: annotation adopted, value fits
 // const BAD: u8 = 300;          // error: out of range for u8 (E0800)
+// const NONE = 5;               // error: missing type annotation (E0475)
 ```
 
 ## Evaluation Order
@@ -81,7 +93,7 @@ including a constant that references itself — is a compile-time error
 {{ rule(id="6.5:9", cat="example") }}
 
 ```rue
-const A = B + 1;                 // forward reference: fine
-const B = 2;
-// const X = Y; const Y = X;     // error: cycle X -> Y -> X (E0461)
+const A: i32 = B + 1;            // forward reference: fine
+const B: i32 = 2;
+// const X: i32 = Y; const Y: i32 = X; // error: cycle X -> Y -> X (E0461)
 ```

@@ -2,7 +2,7 @@
 id = "items.constants"
 spec_chapter = "6.5"
 name = "Constant Items"
-description = "Constant declarations: comptime-evaluated initializers, inferred and annotated types, dependency-ordered evaluation (spec chapter 6.5)."
+description = "Constant declarations: comptime-evaluated initializers, required type annotations, dependency-ordered evaluation (spec chapter 6.5)."
 
 # =============================================================================
 # Declaration form (6.5:1)
@@ -11,10 +11,10 @@ description = "Constant declarations: comptime-evaluated initializers, inferred 
 [[case]]
 name = "const_declaration_forms"
 spec = ["6.5:1"]
-description = "pub/non-pub, annotated/unannotated const items all declare usable constants"
+description = "pub and non-pub annotated const items declare usable constants"
 source = """
 pub const A: i32 = 30;
-const B = 12;
+const B: i32 = 12;
 
 fn main() -> i32 { A + B }
 """
@@ -40,9 +40,9 @@ name = "operator_and_const_ref_initializers"
 spec = ["6.5:2", "6.5:3"]
 description = "Arithmetic, boolean operators, and references to other constants"
 source = """
-const AREA = 6 * 7;
-const DOUBLE = AREA + AREA;
-const FLAG = !false;
+const AREA: i32 = 6 * 7;
+const DOUBLE: i32 = AREA + AREA;
+const FLAG: bool = !false;
 
 fn main() -> i32 {
     if FLAG { DOUBLE - AREA } else { 0 }
@@ -55,7 +55,7 @@ name = "comptime_block_initializer"
 spec = ["6.5:2"]
 description = "A comptime block is a legal const initializer"
 source = """
-const X = comptime { 40 + 2 };
+const X: i32 = comptime { 40 + 2 };
 
 fn main() -> i32 { X }
 """
@@ -67,7 +67,7 @@ spec = ["6.5:2"]
 description = "A runtime function call is not compile-time evaluable (E0434)"
 source = """
 fn get() -> i32 { 42 }
-const X = get();
+const X: i32 = get();
 
 fn main() -> i32 { 0 }
 """
@@ -75,58 +75,56 @@ compile_fail = true
 error_contains = "not supported in const context"
 
 # =============================================================================
-# Inferred types (6.5:4)
+# Required type annotations (6.5:4)
 # =============================================================================
 
 [[case]]
-name = "unannotated_small_literal_is_i32"
-spec = ["6.5:4"]
-description = "A fitting literal infers i32 (usable where i32 is expected)"
+name = "unannotated_integer_const_rejected"
+spec = ["6.5:4", "6.5:11"]
+description = "A value constant without a type annotation is E0475"
 source = """
 const N = 42;
 
-fn takes_i32(x: i32) -> i32 { x }
-
-fn main() -> i32 { takes_i32(N) }
+fn main() -> i32 { 0 }
 """
-exit_code = 42
+compile_fail = true
+error_contains = ["E0475", "missing type annotation on constant 'N'"]
 
 [[case]]
-name = "unannotated_big_literal_is_i64"
+name = "unannotated_bool_const_rejected"
 spec = ["6.5:4"]
-description = "A literal that does not fit i32 infers i64; no truncation, no use-site error"
-source = """
-const BIG = 5000000000;
-
-fn main() -> i32 {
-    if BIG / 1000000000 == 5 { 5 } else { 1 }
-}
-"""
-exit_code = 5
-
-[[case]]
-name = "unannotated_huge_literal_is_u64"
-spec = ["6.5:4"]
-description = "A literal beyond i64::MAX infers u64"
-source = """
-const HUGE = 18446744073709551615;
-
-fn main() -> i32 {
-    if HUGE > 18446744073709551614 { 3 } else { 1 }
-}
-"""
-exit_code = 3
-
-[[case]]
-name = "unannotated_bool_const"
-spec = ["6.5:4"]
-description = "Boolean constants have type bool"
+description = "Boolean value constants require an annotation too"
 source = """
 const FLAG = true;
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0475", "missing type annotation on constant 'FLAG'"]
+
+[[case]]
+name = "annotated_bool_const"
+spec = ["6.5:4"]
+description = "An annotated boolean constant has type bool"
+source = """
+const FLAG: bool = true;
 
 fn main() -> i32 { if FLAG { 7 } else { 1 } }
 """
 exit_code = 7
+
+[[case]]
+name = "module_binding_needs_no_annotation"
+spec = ["6.5:4"]
+description = "Module bindings are not value constants: no annotation required"
+source = """
+const cfg = @import("cfg");
+const X: i32 = cfg.LIMIT;
+
+fn main() -> i32 { X }
+"""
+aux_files = { "cfg.rue" = "pub const LIMIT: i32 = 42;" }
+exit_code = 42
 
 # =============================================================================
 # Annotated types (6.5:5)
@@ -144,6 +142,32 @@ fn takes_u8(x: u8) -> i32 { 1 }
 fn main() -> i32 { takes_u8(SMALL) }
 """
 exit_code = 1
+
+[[case]]
+name = "big_literal_with_i64_annotation"
+spec = ["6.5:5", "6.5:6"]
+description = "A literal that does not fit i32 works with an i64 annotation"
+source = """
+const BIG: i64 = 5000000000;
+
+fn main() -> i32 {
+    if BIG / 1000000000 == 5 { 5 } else { 1 }
+}
+"""
+exit_code = 5
+
+[[case]]
+name = "huge_literal_with_u64_annotation"
+spec = ["6.5:5", "6.5:6"]
+description = "A literal beyond i64::MAX works with a u64 annotation"
+source = """
+const HUGE: u64 = 18446744073709551615;
+
+fn main() -> i32 {
+    if HUGE > 18446744073709551614 { 3 } else { 1 }
+}
+"""
+exit_code = 3
 
 [[case]]
 name = "annotation_out_of_range_rejected_at_declaration"
@@ -190,9 +214,9 @@ name = "forward_reference_same_file"
 spec = ["6.5:7", "6.5:9"]
 description = "A const may reference a const declared later in the file"
 source = """
-const A = B + 1;
-const B = C * 2;
-const C = 10;
+const A: i32 = B + 1;
+const B: i32 = C * 2;
+const C: i32 = 10;
 
 fn main() -> i32 { A }
 """
@@ -200,16 +224,16 @@ exit_code = 21
 
 [[case]]
 name = "forward_reference_across_files"
-spec = ["6.5:7"]
+spec = ["6.5:7", "6.5:10"]
 description = "A const may reference a const declared in another (imported) file"
 source = """
 const cfg = @import("cfg");
-const BASE = cfg.LIMIT;
-const DERIVED = BASE + 1;
+const BASE: i32 = cfg.LIMIT;
+const DERIVED: i32 = BASE + 1;
 
 fn main() -> i32 { DERIVED }
 """
-aux_files = { "cfg.rue" = "pub const LIMIT = 41;" }
+aux_files = { "cfg.rue" = "pub const LIMIT: i32 = 41;" }
 exit_code = 42
 
 [[case]]
@@ -217,8 +241,8 @@ name = "initializer_cycle_is_error"
 spec = ["6.5:8", "6.5:9"]
 description = "A reference cycle between const initializers is a compile error, not a hang"
 source = """
-const A = B;
-const B = A;
+const A: i32 = B;
+const B: i32 = A;
 
 fn main() -> i32 { 0 }
 """
@@ -230,7 +254,7 @@ name = "self_referential_const_is_error"
 spec = ["6.5:8"]
 description = "A self-referential const is the smallest cycle"
 source = """
-const SELF = SELF;
+const SELF: i32 = SELF;
 
 fn main() -> i32 { 0 }
 """

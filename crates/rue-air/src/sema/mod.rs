@@ -77,7 +77,7 @@ pub struct Sema<'a> {
     /// Method table: maps (struct_id, method_name) to method info
     pub(crate) methods: HashMap<(StructId, Spur), MethodInfo>,
     /// Constant table: maps const name symbol to const info.
-    /// Holds value constants only (e.g. `const MAX = 10`); module bindings
+    /// Holds value constants only (e.g. `const MAX: i32 = 10`); module bindings
     /// live in [`Self::module_bindings`].
     pub(crate) constants: HashMap<Spur, ConstInfo>,
     /// Module-binding constants (`const utils = @import("...")`), keyed by

@@ -17,13 +17,14 @@ fn main() -> i32 { 0 }
 exit_code = 0
 
 [[case]]
-name = "const_without_type"
-description = "Const declaration without explicit type annotation"
+name = "const_without_type_rejected"
+description = "A value const without a type annotation is E0475 (RUE-179)"
 source = """
 const VALUE = 42;
 fn main() -> i32 { 0 }
 """
-exit_code = 0
+compile_fail = true
+error_contains = ["E0475", "missing type annotation on constant 'VALUE'"]
 
 # =============================================================================
 # Typed Const Declarations (RUE-161)

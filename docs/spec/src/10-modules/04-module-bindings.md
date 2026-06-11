@@ -129,11 +129,11 @@ constant is private to the directory of its defining file (E0706).
 ```rue
 // math.rue
 pub const ANSWER: i32 = 42;
-const SECRET = 99;               // private outside math.rue's directory
+const SECRET: i32 = 99;          // private outside math.rue's directory
 
 // main.rue (same directory)
 const math = @import("math");
-const COPY = math.ANSWER;        // const-evaluable member access
+const COPY: i32 = math.ANSWER;   // const-evaluable member access
 
 fn main() -> i32 { math.ANSWER + COPY }   // 84
 ```
