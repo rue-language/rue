@@ -161,7 +161,7 @@ impl<'a> Sema<'a> {
         // Phase 1: Register type names
         // Phase 2: Resolve all declarations (const initializers — including
         // `const x = @import(...)` module bindings — are evaluated as they
-        // are collected, see `collect_const_declaration`)
+        // are collected, see `collect_const_by_key`)
         self.register_type_names().map_err(CompileErrors::from)?;
         self.resolve_declarations().map_err(CompileErrors::from)?;
 

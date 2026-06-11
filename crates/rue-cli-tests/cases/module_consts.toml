@@ -1,0 +1,231 @@
+# Value constants as module members + const-evaluable member access (RUE-160).
+#
+# `m.CONST` yields the member constant's value (typed as declared), both at
+# use sites and inside another const's initializer. A const initializer that
+# resolves to a module (`const math = std.math;`, `const m2 = m;`) is a
+# module alias — itself a per-file module binding. Visibility matches other
+# items: pub everywhere, non-pub same-directory only (E0706).
+
+[section]
+id = "cli.module_consts"
+name = "Module member constants"
+description = "Value consts as module members, module aliases, and const-context member access (RUE-160)."
+
+# The headline RUE-160 repro: a value const reached through a module binding
+# (used to be E0707 "no member").
+[[case]]
+name = "value_const_as_module_member"
+files = [
+    { path = "main.rue", source = """
+const math = @import("math");
+
+fn main() -> i32 {
+    math.ANSWER
+}
+""" },
+    { path = "math.rue", source = """
+pub const ANSWER: i32 = 42;
+""" },
+]
+exit_code = 42
+
+# Member access in const context: another const's initializer.
+[[case]]
+name = "member_const_in_const_initializer"
+files = [
+    { path = "main.rue", source = """
+const math = @import("math");
+const COPY = math.ANSWER;
+
+fn main() -> i32 {
+    COPY + math.ANSWER
+}
+""" },
+    { path = "math.rue", source = """
+pub const ANSWER: i32 = 21;
+""" },
+]
+exit_code = 42
+
+# The member const's declared width survives the access: an i64 member used
+# in arithmetic must be anchored to i64 by inference, not mis-defaulted.
+[[case]]
+name = "i64_member_const_keeps_width"
+files = [
+    { path = "main.rue", source = """
+const cfg = @import("cfg");
+
+fn main() -> i32 {
+    if cfg.BIG / 1000000000 == 5 { 9 } else { 1 }
+}
+""" },
+    { path = "cfg.rue", source = """
+pub const BIG = 5000000000;
+""" },
+]
+exit_code = 9
+
+# Module alias: `const math = std.math;` (the ADR-0026 nested-alias form,
+# previously E0434), plus an alias of the alias.
+[[case]]
+name = "module_alias_of_std_submodule"
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const math = std.math;
+const m2 = math;
+
+fn main() -> i32 {
+    @dbg(math.abs(-5) + m2.abs(-2));
+    0
+}
+""" }]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+stdout = "7\n"
+
+# Module alias through local files: alias a re-export, then call through it.
+[[case]]
+name = "module_alias_of_local_reexport"
+files = [
+    { path = "main.rue", source = """
+const outer = @import("outer");
+const inner = outer.inner;
+
+fn main() -> i32 {
+    inner.value()
+}
+""" },
+    { path = "outer/_outer.rue", source = """
+pub const inner = @import("inner");
+""" },
+    { path = "outer/inner.rue", source = """
+pub fn value() -> i32 { 42 }
+""" },
+]
+exit_code = 42
+
+# pub const members are visible across directories...
+[[case]]
+name = "pub_member_const_across_directories"
+files = [
+    { path = "main.rue", source = """
+const lib = @import("sub/lib");
+
+fn main() -> i32 {
+    lib.LIMIT
+}
+""" },
+    { path = "sub/lib.rue", source = """
+pub const LIMIT: i32 = 17;
+""" },
+]
+exit_code = 17
+
+# ...non-pub members are not (E0706), at a use site...
+[[case]]
+name = "private_member_const_rejected_at_use"
+files = [
+    { path = "main.rue", source = """
+const lib = @import("sub/lib");
+
+fn main() -> i32 {
+    lib.SECRET
+}
+""" },
+    { path = "sub/lib.rue", source = """
+const SECRET: i32 = 99;
+pub fn touch() -> i32 { SECRET }
+""" },
+]
+compile_fail = true
+error_contains = ["E0706", "SECRET", "private"]
+
+# ...and in const context.
+[[case]]
+name = "private_member_const_rejected_in_const_context"
+files = [
+    { path = "main.rue", source = """
+const lib = @import("sub/lib");
+const S = lib.SECRET;
+
+fn main() -> i32 { S }
+""" },
+    { path = "sub/lib.rue", source = """
+const SECRET: i32 = 99;
+pub fn touch() -> i32 { SECRET }
+""" },
+]
+compile_fail = true
+error_contains = ["E0706", "SECRET", "private"]
+
+# Non-pub members ARE visible from the same directory (directory privacy).
+[[case]]
+name = "private_member_const_same_directory_ok"
+files = [
+    { path = "main.rue", source = """
+const lib = @import("lib");
+
+fn main() -> i32 {
+    lib.SECRET
+}
+""" },
+    { path = "lib.rue", source = """
+const SECRET: i32 = 33;
+pub fn touch() -> i32 { SECRET }
+""" },
+]
+exit_code = 33
+
+# Binding a FUNCTION member in a const is a type-system gap (RUE-173): it
+# must be diagnosed precisely (E0434 "a function reference"), not as a
+# bogus "no member" (E0707).
+[[case]]
+name = "fn_member_in_const_precise_error"
+files = [
+    { path = "main.rue", source = """
+const abs = @import("math").abs;
+
+fn main() -> i32 { 0 }
+""" },
+    { path = "math.rue", source = """
+pub fn abs(x: i32) -> i32 {
+    if x < 0 { 0 - x } else { x }
+}
+""" },
+]
+compile_fail = true
+error_contains = ["E0434", "a function reference is not supported in const context"]
+
+# An actually-unknown member is still E0707.
+[[case]]
+name = "unknown_member_still_e0707"
+files = [
+    { path = "main.rue", source = """
+const math = @import("math");
+const X = math.NOPE;
+
+fn main() -> i32 { 0 }
+""" },
+    { path = "math.rue", source = """
+pub const ANSWER: i32 = 42;
+""" },
+]
+compile_fail = true
+error_contains = ["E0707", "has no member `NOPE`"]
+
+# Member consts also resolve through a local `let` binding (and the binding
+# counts as used — no spurious unused-variable warning).
+[[case]]
+name = "value_const_member_through_local_let"
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    let m = @import("math");
+    @dbg(m.ANSWER);
+    0
+}
+""" },
+    { path = "math.rue", source = """
+pub const ANSWER: i32 = 42;
+""" },
+]
+stdout = "42\n"

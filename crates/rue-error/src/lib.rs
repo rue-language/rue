@@ -136,6 +136,7 @@ impl ErrorCode {
     pub const COPY_STRUCT_WITH_DESTRUCTOR: Self = Self(457);
     // 458-459 are reserved by in-flight work.
     pub const PRIVATE_UNQUALIFIED_ACCESS: Self = Self(460);
+    pub const CONST_INITIALIZER_CYCLE: Self = Self(461);
 
     // ========================================================================
     // Control flow errors (E0500-E0599)
@@ -962,6 +963,10 @@ pub enum ErrorKind {
     /// Expression not supported in const context
     #[error("{expr_kind} is not supported in const context")]
     ConstExprNotSupported { expr_kind: String },
+    /// A constant initializer (transitively) refers back to the constant
+    /// being defined, so no evaluation order exists.
+    #[error("cycle detected in constant initializers: {cycle}")]
+    ConstInitializerCycle { cycle: String },
 
     // Enum errors
     #[error("duplicate variant '{variant_name}' in enum '{enum_name}'")]
@@ -1205,6 +1210,7 @@ impl ErrorKind {
             ErrorKind::DestructorUnknownType { .. } => ErrorCode::DESTRUCTOR_UNKNOWN_TYPE,
             ErrorKind::DuplicateConstant { .. } => ErrorCode::DUPLICATE_CONSTANT,
             ErrorKind::ConstExprNotSupported { .. } => ErrorCode::CONST_EXPR_NOT_SUPPORTED,
+            ErrorKind::ConstInitializerCycle { .. } => ErrorCode::CONST_INITIALIZER_CYCLE,
             ErrorKind::DuplicateVariant { .. } => ErrorCode::DUPLICATE_VARIANT,
             ErrorKind::UnknownVariant { .. } => ErrorCode::UNKNOWN_VARIANT,
             ErrorKind::UnknownEnumType(_) => ErrorCode::UNKNOWN_ENUM_TYPE,

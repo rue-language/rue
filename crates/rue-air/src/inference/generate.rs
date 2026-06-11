@@ -1151,7 +1151,25 @@ impl<'a> ConstraintGenerator<'a> {
                 // (RUE-89, RUE-126)
                 match self.known_field_type(&base_info.ty, *field) {
                     Some(field_ty) => self.type_to_infer(field_ty),
-                    None => InferType::Var(self.fresh_var()),
+                    None => {
+                        // Module receiver: `m.CONST` resolves to a module
+                        // member value-constant; yield its declared type so
+                        // uses like `m.CONST + 1` are anchored (RUE-160).
+                        // The lookup is global by name, never verifying the
+                        // constant belongs to the receiver module's file —
+                        // the same known looseness as member calls (RUE-140).
+                        let member_const_ty = match &base_info.ty {
+                            InferType::Concrete(ty) if ty.is_module() => self
+                                .const_types
+                                .and_then(|consts| consts.get(field))
+                                .copied(),
+                            _ => None,
+                        };
+                        match member_const_ty {
+                            Some(const_ty) => self.type_to_infer(const_ty),
+                            None => InferType::Var(self.fresh_var()),
+                        }
+                    }
                 }
             }
 

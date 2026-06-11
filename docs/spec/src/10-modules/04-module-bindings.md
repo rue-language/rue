@@ -87,6 +87,57 @@ fn main() -> i32 {
 }
 ```
 
+## Module Aliases
+
+{{ rule(id="10.4:10", cat="normative") }}
+
+A top-level `const` whose initializer *evaluates to* a module — an alias of
+another module binding in the same file (`const m2 = m;`) or a member-access
+chain ending at a module (`const math = std.math;`) — is itself a module
+binding, with the same per-file scoping (10.4:8) and re-export semantics
+(10.4:3) as a direct `@import` binding.
+
+{{ rule(id="10.4:11", cat="example") }}
+
+```rue
+const std = @import("std");
+const math = std.math;          // alias of a nested re-export
+const m2 = math;                // alias of an alias
+
+fn main() -> i32 {
+    math.abs(-7) - m2.abs(7)    // 0: all three name the same module
+}
+```
+
+## Value Constants as Module Members
+
+{{ rule(id="10.4:12", cat="normative") }}
+
+A value constant declared at the top level of a module's file is a member of
+that module. Accessing it through the module yields the constant's value,
+with the constant's declared (or inferred, 6.5:4) type. The access is itself
+compile-time evaluable, so it may appear in another constant's initializer.
+
+{{ rule(id="10.4:13", cat="normative") }}
+
+A value constant member follows the same visibility rules as any other item
+(10.3): a `pub const` is accessible from any directory, while a non-`pub`
+constant is private to the directory of its defining file (E0706).
+
+{{ rule(id="10.4:14", cat="example") }}
+
+```rue
+// math.rue
+pub const ANSWER: i32 = 42;
+const SECRET = 99;               // private outside math.rue's directory
+
+// main.rue (same directory)
+const math = @import("math");
+const COPY = math.ANSWER;        // const-evaluable member access
+
+fn main() -> i32 { math.ANSWER + COPY }   // 84
+```
+
 ## Modules Are Not Runtime Values
 
 {{ rule(id="10.4:6", cat="legality-rule") }}

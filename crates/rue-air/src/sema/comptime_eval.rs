@@ -729,23 +729,16 @@ impl Sema<'_> {
                 if let Some(&v) = env.value_subst.get(name) {
                     return Ok(Some(v));
                 }
-                // 4. File-level constants: evaluate the initializer in a
-                //    fresh file-scope environment.
-                if let Some(info) = self.constants.get(name).cloned() {
-                    if info.ty.is_module() {
-                        // Module constants are namespaces, not values.
-                        return Ok(None);
-                    }
-                    let mut const_env = ComptimeEnv::new();
-                    let value = self.eval_const_expr(info.init, &mut const_env)?;
-                    // Backstop: an integer constant must fit its declared
-                    // type (declaration checking owns the diagnostic).
-                    if let (Some(ConstValue::Integer(v)), Some(_)) = (value, info.ty.int_min()) {
-                        if !const_int_fits(v, info.ty) {
-                            return Ok(None);
-                        }
-                    }
-                    return Ok(value);
+                // 4. File-level constants: the value was evaluated once
+                //    (and range-checked against the declared type) during
+                //    declaration gathering — use it directly. Re-evaluating
+                //    the initializer here would fail for forms only the
+                //    declaration collector can resolve (module member
+                //    access, RUE-160) and was exponential for const chains.
+                //    Module-typed constants never appear in this table
+                //    (module bindings live in `Sema::module_bindings`).
+                if let Some(info) = self.constants.get(name) {
+                    return Ok(Some(info.value));
                 }
                 // 5. Type names used as values (e.g. `Point` in
                 //    `fn make_type() -> type { Point }`)

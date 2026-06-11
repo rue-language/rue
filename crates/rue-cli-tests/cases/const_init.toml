@@ -1,0 +1,197 @@
+# Constant initializer evaluation (RUE-171).
+#
+# Const initializers go through the comptime engine: negated literals,
+# arithmetic, comptime blocks, and references to other constants are legal.
+# Unannotated integer constants infer the smallest fitting type out of
+# i32 -> i64 -> u64 (spec 6.5:4); annotated values are range-checked at the
+# declaration (E0800). Initializers are evaluated in dependency order across
+# files; cycles are E0461.
+
+[section]
+id = "cli.const_init"
+name = "Constant initializer evaluation"
+description = "Comptime-evaluated const initializers, inferred integer types, dependency ordering, cycle detection (RUE-171)."
+
+# A negated literal — the headline RUE-171 repro (used to be E0434).
+[[case]]
+name = "negated_literal_initializer"
+files = [{ path = "main.rue", source = """
+const NEG: i32 = -5;
+
+fn main() -> i32 {
+    NEG + 47
+}
+""" }]
+exit_code = 42
+
+# Negative consts materialize sign-extended at i64 width too.
+[[case]]
+name = "negated_literal_i64_initializer"
+files = [{ path = "main.rue", source = """
+const NEG: i64 = -5000000000;
+
+fn main() -> i32 {
+    if NEG / 1000000000 == -5 { 7 } else { 1 }
+}
+""" }]
+exit_code = 7
+
+# Arithmetic, boolean operators, and const-to-const references.
+[[case]]
+name = "arithmetic_and_const_refs"
+files = [{ path = "main.rue", source = """
+const AREA = 6 * 7;
+const DOUBLE = AREA + AREA;
+const FLAG = !false;
+
+fn main() -> i32 {
+    if FLAG { DOUBLE - AREA } else { 0 }
+}
+""" }]
+exit_code = 42
+
+# A comptime block initializer.
+[[case]]
+name = "comptime_block_initializer"
+files = [{ path = "main.rue", source = """
+const X = comptime { 6 * 7 };
+
+fn main() -> i32 {
+    X
+}
+""" }]
+exit_code = 42
+
+# Unannotated const whose literal does not fit i32 infers i64 (spec 6.5:4) —
+# previously it silently defaulted to i32 and errored at the USE site.
+[[case]]
+name = "unannotated_big_literal_infers_i64"
+files = [{ path = "main.rue", source = """
+const BIG = 5000000000;
+
+fn main() -> i32 {
+    if BIG / 1000000000 == 5 { 5 } else { 1 }
+}
+""" }]
+exit_code = 5
+
+# Unannotated const beyond i64::MAX infers u64.
+[[case]]
+name = "unannotated_huge_literal_infers_u64"
+files = [{ path = "main.rue", source = """
+const HUGE = 18446744073709551615;
+
+fn main() -> i32 {
+    if HUGE > 18446744073709551614 { 3 } else { 1 }
+}
+""" }]
+exit_code = 3
+
+# Annotated out-of-range value is rejected AT THE DECLARATION (E0800).
+[[case]]
+name = "annotated_out_of_range_at_declaration"
+files = [{ path = "main.rue", source = """
+const X: u8 = 300;
+
+fn main() -> i32 { 0 }
+""" }]
+compile_fail = true
+error_contains = ["E0800", "out of range", "u8"]
+
+# A negative value can't adopt an unsigned annotation.
+[[case]]
+name = "negative_value_unsigned_annotation_rejected"
+files = [{ path = "main.rue", source = """
+const N: u8 = -5;
+
+fn main() -> i32 { 0 }
+""" }]
+compile_fail = true
+error_contains = ["value -5 is out of range for type u8"]
+
+# Forward reference within a file: declaration order does not matter.
+[[case]]
+name = "forward_reference_same_file"
+files = [{ path = "main.rue", source = """
+const A = B + 1;
+const B = C * 2;
+const C = 10;
+
+fn main() -> i32 {
+    A
+}
+""" }]
+exit_code = 21
+
+# Cross-file const chain: the defining file comes SECOND on the command
+# line, so collection must be dependency-ordered, not file-ordered.
+[[case]]
+name = "cross_file_chain_definer_second"
+args = ["main.rue", "config.rue", "-o", "prog"]
+files = [
+    { path = "main.rue", source = """
+const FROM_CONFIG = LIMIT + 1;
+
+fn main() -> i32 {
+    FROM_CONFIG
+}
+""" },
+    { path = "config.rue", source = """
+pub const LIMIT = 41;
+""" },
+]
+exit_code = 42
+
+# Same chain with the defining file first (both orders must agree).
+[[case]]
+name = "cross_file_chain_definer_first"
+args = ["config.rue", "main.rue", "-o", "prog"]
+files = [
+    { path = "config.rue", source = """
+pub const LIMIT = 41;
+""" },
+    { path = "main.rue", source = """
+const FROM_CONFIG = LIMIT + 1;
+
+fn main() -> i32 {
+    FROM_CONFIG
+}
+""" },
+]
+exit_code = 42
+
+# A reference cycle is a compile error (E0461), not a hang.
+[[case]]
+name = "cycle_is_error_not_hang"
+files = [{ path = "main.rue", source = """
+const A = B;
+const B = A;
+
+fn main() -> i32 { 0 }
+""" }]
+compile_fail = true
+error_contains = ["E0461", "cycle detected in constant initializers", "A -> B -> A"]
+
+# Self-reference is the smallest cycle.
+[[case]]
+name = "self_cycle_is_error"
+files = [{ path = "main.rue", source = """
+const SELF = SELF;
+
+fn main() -> i32 { 0 }
+""" }]
+compile_fail = true
+error_contains = ["E0461", "SELF -> SELF"]
+
+# A genuinely non-evaluable initializer is still E0434 (function calls are
+# not const-evaluable; fn-valued constants are RUE-173).
+[[case]]
+name = "runtime_call_initializer_still_rejected"
+files = [{ path = "main.rue", source = """
+fn get() -> i32 { 42 }
+const X = get();
+
+fn main() -> i32 { 0 }
+""" }]
+compile_fail = true
+error_contains = ["E0434", "not supported in const context"]
