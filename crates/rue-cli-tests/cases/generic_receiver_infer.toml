@@ -1,0 +1,117 @@
+# Method calls on comptime-generic receivers must not poison inference (RUE-119).
+#
+# The MethodCall inference arm can only RESOLVE a method when the receiver type
+# is a concrete struct. When the receiver's type is a comptime-generic `T`:
+#  - if `T` is substitutable at the call site (a type literal argument, #937's
+#    fix), the receiver is already concrete and resolution works;
+#  - if it genuinely can't be known pre-specialization (e.g. the type argument
+#    is a LOCAL holding a type value), the arm used to return Concrete(ERROR),
+#    which decayed every sibling expression to '<error>' (bogus E0800) before
+#    sema's comptime evaluation could type the call. It now yields a fresh
+#    inference variable instead — the same treatment FieldGet got in RUE-126 —
+#    and sema's specialization types the call correctly.
+#
+# Note: RUE-119's literal repro (`pick(Wrap, ...)` then `w.get() == 5`) was
+# already fixed on trunk by the generics call-site substitution (#937); the
+# cases below pin both that shape and the still-live local-type-value shape.
+
+[section]
+id = "cli.generic_receiver_infer"
+name = "Method calls on comptime-generic receivers"
+description = "Method-call results on generic receivers must anchor (or at least not poison) inference."
+
+[[case]]
+name = "method_on_generic_return_comparison"
+description = "RUE-119's original repro: receiver typed by a generic call's substituted return."
+files = [{ path = "main.rue", source = """
+struct Wrap { n: u64, fn get(self) -> u64 { self.n } }
+fn pick(comptime T: type, x: T) -> T { x }
+fn main() -> i32 {
+    let w = pick(Wrap, Wrap { n: 5 });
+    if w.get() == 5 { 0 } else { 1 }
+}
+""" }]
+exit_code = 0
+
+[[case]]
+name = "method_in_generic_body_arithmetic"
+description = "Method call on a T-typed parameter inside the generic body, result in arithmetic."
+files = [{ path = "main.rue", source = """
+struct Wrap { n: i32, fn get(self) -> i32 { self.n } }
+fn bump(comptime T: type, x: T) -> i32 {
+    x.get() + 1
+}
+fn main() -> i32 {
+    bump(Wrap, Wrap { n: 41 })
+}
+""" }]
+exit_code = 42
+
+[[case]]
+name = "method_in_two_layer_generic_body"
+description = "T flows through two generic layers before the method call."
+files = [{ path = "main.rue", source = """
+struct Wrap { n: u64, fn get(self) -> u64 { self.n } }
+fn inner(comptime T: type, x: T) -> u64 { x.get() }
+fn outer(comptime T: type, x: T) -> u64 { inner(T, x) }
+fn main() -> i32 {
+    if outer(Wrap, Wrap { n: 5 }) == 5 { 0 } else { 1 }
+}
+""" }]
+exit_code = 0
+
+[[case]]
+name = "method_on_receiver_typed_via_local_type_value"
+description = "The type argument is a local holding a type value — unsubstitutable during inference; sema's comptime evaluation must type the call (the previously-failing shape)."
+files = [{ path = "main.rue", source = """
+struct Wrap { n: u64, fn get(self) -> u64 { self.n } }
+fn pick(comptime T: type, x: T) -> T { x }
+fn main() -> i32 {
+    let t = Wrap;
+    let w = pick(t, Wrap { n: 5 });
+    if w.get() == 5 { 0 } else { 1 }
+}
+""" }]
+exit_code = 0
+
+[[case]]
+name = "let_bound_method_result_via_local_type_value"
+description = "Same shape, with the method result let-bound before the comparison."
+files = [{ path = "main.rue", source = """
+struct Wrap { n: u64, fn get(self) -> u64 { self.n } }
+fn pick(comptime T: type, x: T) -> T { x }
+fn main() -> i32 {
+    let t = Wrap;
+    let w = pick(t, Wrap { n: 5 });
+    let v = w.get();
+    if v == 5 { 0 } else { 1 }
+}
+""" }]
+exit_code = 0
+
+[[case]]
+name = "field_access_via_local_type_value_control"
+description = "Control: field access on the same receiver already worked (RUE-126 fresh-var fallback)."
+files = [{ path = "main.rue", source = """
+struct Wrap { n: u64, fn get(self) -> u64 { self.n } }
+fn pick(comptime T: type, x: T) -> T { x }
+fn main() -> i32 {
+    let t = Wrap;
+    let w = pick(t, Wrap { n: 5 });
+    if w.n == 5 { 0 } else { 1 }
+}
+""" }]
+exit_code = 0
+
+[[case]]
+name = "unknown_method_on_concrete_struct_still_errors"
+description = "The fresh-var fallback must not swallow real method-resolution errors."
+files = [{ path = "main.rue", source = """
+struct Wrap { n: u64, fn get(self) -> u64 { self.n } }
+fn main() -> i32 {
+    let w = Wrap { n: 5 };
+    if w.missing() == 5 { 0 } else { 1 }
+}
+""" }]
+compile_fail = true
+error_contains = ["no method named 'missing'"]

@@ -33,4 +33,11 @@ pub struct InferenceContext {
     pub enum_types: HashMap<Spur, Type>,
     /// Method signatures with InferType: (struct_id, method_name) -> MethodSig.
     pub method_sigs: HashMap<(StructId, Spur), MethodSig>,
+    /// File-level constant types: name -> declared type (e.g. `Type::I32` for
+    /// `const N = 41`, a module type for `const m = @import(...)`). Constant
+    /// types are fully resolved during declaration gathering, before any
+    /// function body is inferred, so they can be consulted like params here.
+    /// Without this map a const reference inferred to `<error>` and poisoned
+    /// every expression it touched (RUE-142).
+    pub const_types: HashMap<Spur, Type>,
 }

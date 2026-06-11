@@ -1,0 +1,268 @@
+# Module member-call results must anchor type inference (RUE-142), and module
+# values must not silently coerce to `()` (modules are compile-time namespaces,
+# not runtime values).
+#
+# Before the fix, the inference generator typed `@import(...)` as `()` (the
+# intrinsic catch-all) and had no module arm in MethodCall, so `m.go()` decayed
+# to `<error>`: `m.go() + 1` failed E0800 ("literal out of range for '<error>'")
+# even though the same call worked as a statement, let-initializer, or tail
+# expression. File-level consts (`const m = @import(...)`, `const N = 41`) were
+# invisible to inference entirely — same decay. The `()` typing also let a bare
+# module expression pass where `()` was required, silently.
+
+[section]
+id = "cli.module_member_infer"
+name = "Module member-call return-type inference"
+description = "A module member-call result must anchor inference in operand positions; module values must not coerce to ()."
+
+# ---------------------------------------------------------------------------
+# RUE-142: member-call result in operand positions (local `let` binding)
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "member_call_arithmetic_operand_let"
+description = "m.go() + 1 with a let-bound module (the originally failing shape)."
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    let m = @import("m");
+    m.go() + 1
+}
+""" },
+    { path = "m.rue", source = """
+pub fn go() -> i32 { 41 }
+""" },
+]
+exit_code = 42
+
+[[case]]
+name = "member_call_arithmetic_operand_const"
+description = "m.go() + 1 with a file-level const module (RUE-142's exact repro)."
+files = [
+    { path = "main.rue", source = """
+const m = @import("m");
+fn main() -> i32 { m.go() + 1 }
+""" },
+    { path = "m.rue", source = """
+pub fn go() -> i32 { 41 }
+""" },
+]
+exit_code = 42
+
+[[case]]
+name = "member_call_comparison_operand"
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    let m = @import("m");
+    if m.go() == 41 { 7 } else { 1 }
+}
+""" },
+    { path = "m.rue", source = """
+pub fn go() -> i32 { 41 }
+""" },
+]
+exit_code = 7
+
+[[case]]
+name = "member_call_in_call_argument"
+files = [
+    { path = "main.rue", source = """
+fn twice(x: i32) -> i32 { x * 2 }
+fn main() -> i32 {
+    let m = @import("m");
+    twice(m.go()) - 40
+}
+""" },
+    { path = "m.rue", source = """
+pub fn go() -> i32 { 41 }
+""" },
+]
+exit_code = 42
+
+[[case]]
+name = "member_call_u64_result_anchors_literal"
+description = "The member's u64 return must anchor the literal it is compared with."
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    let m = @import("m");
+    if m.big() == 5 { 3 } else { 1 }
+}
+""" },
+    { path = "m.rue", source = """
+pub fn big() -> u64 { 5 }
+""" },
+]
+exit_code = 3
+
+[[case]]
+name = "member_call_literal_args_anchored_to_params"
+description = "Untyped literal arguments are constrained against the member's parameter types."
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    let m = @import("m");
+    m.add(40, 2)
+}
+""" },
+    { path = "m.rue", source = """
+pub fn add(a: i32, b: i32) -> i32 { a + b }
+""" },
+]
+exit_code = 42
+
+# Controls: positions that already worked must keep working.
+[[case]]
+name = "member_call_tail_position_control"
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    let m = @import("m");
+    m.go()
+}
+""" },
+    { path = "m.rue", source = """
+pub fn go() -> i32 { 41 }
+""" },
+]
+exit_code = 41
+
+[[case]]
+name = "member_call_statement_and_let_init_control"
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    let m = @import("m");
+    m.go();
+    let x = m.go();
+    x + 1
+}
+""" },
+    { path = "m.rue", source = """
+pub fn go() -> i32 { 41 }
+""" },
+]
+exit_code = 42
+
+# Error paths must stay intact (the module arm's lookup is global by name,
+# RUE-140; unknown members are still sema's UndefinedFunction).
+[[case]]
+name = "member_call_arg_type_mismatch_still_errors"
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    let m = @import("m");
+    m.add(true, 2)
+}
+""" },
+    { path = "m.rue", source = """
+pub fn add(a: i32, b: i32) -> i32 { a + b }
+""" },
+]
+compile_fail = true
+error_contains = ["type mismatch"]
+
+[[case]]
+name = "unknown_member_still_errors"
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    let m = @import("m");
+    m.nope()
+}
+""" },
+    { path = "m.rue", source = """
+pub fn go() -> i32 { 41 }
+""" },
+]
+compile_fail = true
+error_contains = ["E0707", "no member `nope`"]
+
+# ---------------------------------------------------------------------------
+# Const references must reach inference too (RUE-142 sibling: any file-level
+# const used as an operand decayed to '<error>', not just module consts).
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "const_int_arithmetic_operand"
+files = [{ path = "main.rue", source = """
+const N = 41;
+fn main() -> i32 { N + 1 }
+""" }]
+exit_code = 42
+
+# ---------------------------------------------------------------------------
+# Modules are not runtime values: a bare module expression must not silently
+# coerce to `()`. (Statement position stays legal — a discarded value.)
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "module_expr_does_not_coerce_to_unit_tail"
+description = "A module as the tail of a ()-returning function was silently accepted."
+files = [
+    { path = "main.rue", source = """
+fn side() -> () {
+    let m = @import("m");
+    m
+}
+fn main() -> i32 { side(); 0 }
+""" },
+    { path = "m.rue", source = """
+pub fn go() -> i32 { 41 }
+""" },
+]
+compile_fail = true
+error_contains = ["expected (), found <module>"]
+
+[[case]]
+name = "module_expr_does_not_coerce_to_unit_let"
+description = "let u: () = m was silently accepted."
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    let m = @import("m");
+    let _u: () = m;
+    0
+}
+""" },
+    { path = "m.rue", source = """
+pub fn go() -> i32 { 41 }
+""" },
+]
+compile_fail = true
+error_contains = ["expected (), found <module>"]
+
+[[case]]
+name = "module_expr_in_i32_position_names_module_type"
+description = "The mismatch must name '<module>', not misreport the found type as '()'."
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    let m = @import("m");
+    m
+}
+""" },
+    { path = "m.rue", source = """
+pub fn go() -> i32 { 41 }
+""" },
+]
+compile_fail = true
+error_contains = ["expected i32, found <module>"]
+
+[[case]]
+name = "module_expr_statement_position_stays_legal"
+description = "A bare `m;` statement is a discarded value — still a no-op, still legal."
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    let m = @import("m");
+    m;
+    5
+}
+""" },
+    { path = "m.rue", source = """
+pub fn go() -> i32 { 41 }
+""" },
+]
+exit_code = 5

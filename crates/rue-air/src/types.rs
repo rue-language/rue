@@ -135,6 +135,19 @@ impl ModuleId {
     pub fn index(self) -> u32 {
         self.0
     }
+
+    /// Sentinel meaning "a module whose identity is not resolved yet".
+    ///
+    /// Type inference uses this for `@import(...)` in expression position:
+    /// resolving an import to a real `ModuleId` needs the module registry and
+    /// file-path resolution, which the constraint generator doesn't have.
+    /// Inference only needs module-NESS — module member-call lookup is global
+    /// by name (see RUE-140 in `check_module_member_call`) — and sema assigns
+    /// the real id when it analyzes the expression, so the sentinel id itself
+    /// is never consulted. The value is the maximum id representable in
+    /// `Type`'s 24-bit id field, which the registry's sequential allocation
+    /// never reaches in practice.
+    pub const UNRESOLVED: ModuleId = ModuleId(0xFF_FFFF);
 }
 
 /// The kind of a type - used for pattern matching.
