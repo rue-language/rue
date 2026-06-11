@@ -868,7 +868,8 @@ In Claude Code, use the Linear MCP tools (`list_issues`, `get_issue`, `save_issu
 
 ### Quick Start
 
-- **Find ready work**: list issues in the Rue team with state `Todo` or `Backlog`, ordered by priority; skip issues blocked by open issues
+- **Find ready work**: list issues in the Rue team with state `Todo`, ordered by priority; skip issues blocked by open issues
+- **State semantics (Steve's process ruling, 2026-06-11)**: `Todo` = actionable now; `Backlog` = do NOT action yet (not ready, or awaiting Steve's input — design rulings, new syntax, ADR ratifications go to Backlog instead of being decided autonomously). Only pull work from `Todo`.
 - **Create an issue**: `save_issue` with `team: "Rue"`, a clear title, and a Markdown description
 - **Claim**: `save_issue` with `state: "In Progress"` and `assignee: "me"`
 - **Complete**: `save_issue` with `state: "Done"`
@@ -882,7 +883,7 @@ In Claude Code, use the Linear MCP tools (`list_issues`, `get_issue`, `save_issu
 
 ### Workflow for AI Agents
 
-1. **Check ready work**: list `Todo`/`Backlog` issues in the Rue team
+1. **Check ready work**: list `Todo` issues in the Rue team (`Backlog` is off-limits — see state semantics above)
 2. **Claim your task**: set state to `In Progress`
 3. **Describe the working commit**: `jj describe -m "WIP: RUE-42 - short description"`
    - This makes it easy to see what's being worked on in each workspace
@@ -899,6 +900,7 @@ The Linear ↔ GitHub integration is connected to both `steveklabnik/rue` (the f
 - **One issue per line** for a PR that fixes several issues — `Fixes RUE-28` / `Fixes RUE-60` / `Fixes RUE-98`, each on its own line. A bare comma list (`Fixes RUE-28, RUE-60`) only closes the first.
 - The branch name (`steveklabnik/push-<changeid>`) does **not** carry the issue ID, so rely on the PR-body keywords, not branch-name linking. This also handles multi-issue PRs, which a branch name can't.
 - On merge, the integration links the PR as an attachment on each issue **and** transitions it to `Done`. Marking `Done` manually is an optional backstop (e.g. for a PR that merged before the integration existed, which it won't retroactively process).
+- **Stranded `In Progress` hazard**: the integration moves an issue to `In Progress` when any PR/branch references it, but only closing keywords transition it out — a "Part of RUE-NN" PR strands the issue in `In Progress` forever. After each integration round, sweep `In Progress`: anything without an active worker goes back to `Todo` (work remains) or `Done` (it doesn't). The integration can also flip a manually-closed issue back to `In Progress` when an older PR attaches — re-close it.
 
 ### Important Rules
 
