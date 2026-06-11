@@ -1,0 +1,38 @@
+# Lexer diagnostic precision (RUE-133 items 5 and 6).
+
+[section]
+id = "diagnostics.lexer_precision"
+name = "Lexer diagnostic precision"
+description = "Escape-sequence errors point at the escape; @import-prefixed directive names lex as ordinary directives."
+
+[[case]]
+name = "invalid_escape_points_at_escape"
+description = """
+RUE-133: the invalid-escape diagnostic used to span from the start of the
+string literal and could even name an EARLIER, valid escape. It must report
+the rejected escape and the caret must sit on it (line 2 column 23 = the
+backslash of \\q), not on the opening quote (column 13).
+"""
+source = """
+fn main() -> i32 {
+    let s = "hello \\n \\q";
+    0
+}
+"""
+compile_fail = true
+error_contains = ["invalid escape sequence: \\q", "2:23"]
+
+[[case]]
+name = "at_import_prefixed_directive_lexes"
+description = """
+RUE-133: a directive whose name merely starts with "import" used to die in
+the LEXER with "unexpected character: @" because the fused @import token
+matched and failed its word-boundary check without backtracking. It must lex
+as an ordinary @-directive (At + Ident) — currently unknown directives are
+accepted silently, so this compiles, matching @other-style directives.
+"""
+source = """
+@important
+fn main() -> i32 { 5 }
+"""
+exit_code = 5
