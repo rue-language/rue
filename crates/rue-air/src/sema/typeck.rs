@@ -147,6 +147,10 @@ impl<'a> Sema<'a> {
             "u16" => return Ok(Type::U16),
             "u32" => return Ok(Type::U32),
             "u64" => return Ok(Type::U64),
+            // Pointer-width integers. All supported targets are 64-bit, so
+            // these resolve to the 64-bit types (RUE-151).
+            "usize" => return Ok(Type::U64),
+            "isize" => return Ok(Type::I64),
             "bool" => return Ok(Type::BOOL),
             "()" => return Ok(Type::UNIT),
             "!" => return Ok(Type::NEVER),
@@ -224,6 +228,9 @@ impl<'a> Sema<'a> {
             "u16" => return Some(Type::U16),
             "u32" => return Some(Type::U32),
             "u64" => return Some(Type::U64),
+            // Pointer-width integers (64-bit on all supported targets, RUE-151).
+            "usize" => return Some(Type::U64),
+            "isize" => return Some(Type::I64),
             "bool" => return Some(Type::BOOL),
             "()" => return Some(Type::UNIT),
             "!" => return Some(Type::NEVER),

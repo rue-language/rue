@@ -70,6 +70,29 @@ The type `u64` represents unsigned integers in the range [0, 1844674407370955161
 
 Unsigned integer arithmetic that overflows **MUST** cause a runtime panic.
 
+## Pointer-Width Integer Types
+
+{{ rule(id="3.1:21", cat="normative") }}
+
+A pointer-width integer type is one of: `usize` (unsigned) or `isize` (signed). These types have the width of a machine address on the target platform.
+
+{{ rule(id="3.1:22", cat="normative") }}
+
+All supported targets are 64-bit, so `usize` has the same representation, range, and overflow behavior as `u64`, and `isize` has the same representation, range, and overflow behavior as `i64`. The names resolve to the same types and may be used interchangeably wherever a type is named (let bindings, function parameters, return types, struct fields).
+
+{{ rule(id="3.1:23") }}
+
+```rue
+fn get(a: [i32; 3], i: usize) -> i32 { a[i] }
+
+fn main() -> i32 {
+    let arr: [i32; 3] = [4, 5, 6];
+    let i: usize = 2;
+    let d: isize = -1;
+    if d == -1 { get(arr, i) } else { 0 }
+}
+```
+
 ## Integer Literal Type Inference
 
 {{ rule(id="3.1:14", cat="normative") }}
