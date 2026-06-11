@@ -65,8 +65,10 @@ fn transform_single(inst: &X86Inst) -> Option<X86Inst> {
             src2: *src,
         }),
 
-        // cmp64 r, 0 → test r, r (64-bit version)
-        X86Inst::Cmp64RI { src, imm: 0 } => Some(X86Inst::TestRR {
+        // cmp64 r, 0 → test64 r, r (64-bit version)
+        // Must stay 64-bit: the 32-bit `test` only sets SF/ZF from the low
+        // 32 bits, which broke @intCast i64->u64 range checks (RUE-146).
+        X86Inst::Cmp64RI { src, imm: 0 } => Some(X86Inst::Test64RR {
             src1: *src,
             src2: *src,
         }),
@@ -410,12 +412,14 @@ mod tests {
 
         assert_eq!(changes, 1);
         assert_eq!(instructions.len(), 2);
+        // Must be the 64-bit test: a 32-bit `test` would only set SF/ZF from
+        // the low 32 bits (RUE-146).
         match &instructions[0] {
-            X86Inst::TestRR { src1, src2 } => {
+            X86Inst::Test64RR { src1, src2 } => {
                 assert!(operands_equal(src1, src2));
                 assert!(matches!(src1, Operand::Physical(Reg::Rbx)));
             }
-            other => panic!("Expected TestRR, got {:?}", other),
+            other => panic!("Expected Test64RR, got {:?}", other),
         }
     }
 

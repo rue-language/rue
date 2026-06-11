@@ -105,3 +105,35 @@ exit_code = 101
 runtime_error_contains = ["integer cast overflow"]
 known_bug = "RUE-31"
 known_bug_on = ["aarch64-linux", "aarch64-macos"]
+
+# RUE-146: the x86-64 peephole rewrote the signed->unsigned negativity check
+# (`cmp64 r, 0`) into the 32-bit `test r, r`, so SF came from the low 32 bits
+# of the 64-bit source. Both directions broke: a negative i64 whose low 32
+# bits are non-negative skipped the mandatory trap, and a positive i64 whose
+# low 32 bits are negative trapped falsely. Values are produced via a function
+# call so constant folding cannot elide the runtime check.
+
+[[case]]
+name = "i64_negative_high_bits_to_u64_traps"
+files = [{ path = "main.rue", source = """
+fn g() -> i64 { 0 - 4294967296 }    // low 32 bits are all zero
+fn main() -> i32 {
+    let x: i64 = g();
+    let y: u64 = @intCast(x);       // negative -> must trap
+    if y == 0 { 1 } else { 2 }
+}
+""" }]
+exit_code = 101
+runtime_error_contains = ["integer cast overflow"]
+
+[[case]]
+name = "i64_positive_low_sign_bit_to_u64_ok"
+files = [{ path = "main.rue", source = """
+fn g() -> i64 { 2147483648 }        // bit 31 set, but positive as i64
+fn main() -> i32 {
+    let x: i64 = g();
+    let y: u64 = @intCast(x);       // in range -> must NOT trap
+    if y == 2147483648 { 0 } else { 1 }
+}
+""" }]
+exit_code = 0
