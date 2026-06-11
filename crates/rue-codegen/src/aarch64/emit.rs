@@ -335,6 +335,11 @@ pub struct Emitter<'a> {
     num_locals_original: u32,
     /// Number of function parameters.
     num_params: u32,
+    /// Whether the function returns via sret: a hidden buffer pointer arrives
+    /// as the first ABI argument (shifting user params by one register) and is
+    /// saved to the frame slot one past the param area. See
+    /// `crate::cfg_lower::type_uses_sret_return`. (RUE-106)
+    has_sret: bool,
     /// Callee-saved registers that need to be preserved.
     callee_saved: Vec<Reg>,
     /// Whether a stack frame was emitted (prologue was executed).
@@ -378,12 +383,21 @@ impl<'a> Emitter<'a> {
             num_locals,
             num_locals_original,
             num_params,
+            has_sret: false,
             callee_saved: callee_saved.to_vec(),
             has_frame: false,
             strings,
             inst_start: 0,
             emit_asm: false,
         }
+    }
+
+    /// Mark the function as returning via sret (hidden buffer pointer as the
+    /// first ABI argument). Affects the prologue's frame size, the param spill
+    /// register assignment, and reserves the sret pointer frame slot.
+    pub fn with_sret(mut self, has_sret: bool) -> Self {
+        self.has_sret = has_sret;
+        self
     }
 
     // ==================== Instruction recording helpers ====================
@@ -482,7 +496,11 @@ impl<'a> Emitter<'a> {
             }
         }
 
-        if self.num_locals > 0 || self.num_params > 0 || !self.callee_saved.is_empty() {
+        if self.num_locals > 0
+            || self.num_params > 0
+            || self.has_sret
+            || !self.callee_saved.is_empty()
+        {
             self.has_frame = true;
             self.emit_prologue();
         }
@@ -532,8 +550,11 @@ impl<'a> Emitter<'a> {
             end_inst!(self, "str {}, [sp, #-16]!", callee_saved[i]);
         }
 
-        // Allocate space for locals and spilled params
-        let total_slots = self.num_locals + self.num_params.min(8);
+        // Allocate space for locals (including regalloc spills), ALL params
+        // (stack-passed args are copied into the frame param area below so
+        // the body can address every param slot uniformly), and the incoming
+        // sret pointer slot, if any.
+        let total_slots = self.num_locals + self.num_params + self.has_sret as u32;
         if total_slots > 0 {
             let stack_size = ((total_slots as i32 * 8 + 15) / 16) * 16;
             if stack_size > 0 {
@@ -543,7 +564,12 @@ impl<'a> Emitter<'a> {
             }
         }
 
-        // Save incoming parameters from registers to the stack.
+        // Save ALL incoming ABI arguments into the contiguous frame param
+        // area: register args are stored directly, stack-passed args (ABI
+        // slot >= 8) are copied down from [fp+16+...] via x9 (a caller-saved
+        // temporary, dead at entry). After this the body addresses every
+        // param slot as a frame slot. (RUE-13/79/91)
+        //
         // Parameters are stored after locals AND after callee-saved registers:
         //   [fp-16] = first callee-saved pair (or single reg)
         //   [fp-16-callee_saved_size-8] = local 0
@@ -551,7 +577,9 @@ impl<'a> Emitter<'a> {
         //   ...
         //   [fp-16-callee_saved_size-(num_locals+1)*8] = param 0
         //
-        // AAPCS64: first 8 args in x0-x7
+        // AAPCS64: first 8 args in x0-x7. When the function returns via sret,
+        // the hidden buffer pointer is the first ABI argument, shifting every
+        // user param by one slot.
         let param_regs = [
             Reg::X0,
             Reg::X1,
@@ -563,16 +591,41 @@ impl<'a> Emitter<'a> {
             Reg::X7,
         ];
         let callee_saved_size = self.callee_saved_stack_size();
-        for i in 0..self.num_params.min(8) as usize {
+        let abi_shift = self.has_sret as u32;
+        for i in 0..self.num_params {
             // Use num_locals_original (not num_locals, which includes spill
             // slots): CfgLower generated the body's param reads against the
             // pre-spill count. (RUE-129)
-            let slot = self.num_locals_original + i as u32;
+            let slot = self.num_locals_original + i;
             // Skip past callee-saved registers in the offset calculation
             let offset = -callee_saved_size - ((slot as i32 + 1) * 8);
+            let abi_index = (i + abi_shift) as usize;
+
+            if abi_index < param_regs.len() {
+                self.begin_inst();
+                self.emit_str(param_regs[abi_index], Reg::Fp, offset);
+                end_inst!(self, "str {}, [x29, #{}]", param_regs[abi_index], offset);
+            } else {
+                // Stack-passed arg: copy from above the frame into the param area
+                let src_offset = 16 + (abi_index as i32 - param_regs.len() as i32) * 8;
+                self.begin_inst();
+                self.emit_ldr(Reg::X9, Reg::Fp, src_offset);
+                end_inst!(self, "ldr x9, [x29, #{}]", src_offset);
+                self.begin_inst();
+                self.emit_str(Reg::X9, Reg::Fp, offset);
+                end_inst!(self, "str x9, [x29, #{}]", offset);
+            }
+        }
+
+        // Save the incoming sret pointer (hidden first argument, x0) to its
+        // dedicated frame slot, one past the param area. The return path
+        // loads it back to store the result through.
+        if self.has_sret {
+            let slot = self.num_locals_original + self.num_params;
+            let offset = -callee_saved_size - ((slot as i32 + 1) * 8);
             self.begin_inst();
-            self.emit_str(param_regs[i], Reg::Fp, offset);
-            end_inst!(self, "str {}, [x29, #{}]", param_regs[i], offset);
+            self.emit_str(param_regs[0], Reg::Fp, offset);
+            end_inst!(self, "str {}, [x29, #{}] ; sret ptr", param_regs[0], offset);
         }
     }
 
@@ -1248,8 +1301,10 @@ impl<'a> Emitter<'a> {
 
         // Add to SP to deallocate locals (restore SP to FP - callee_saved_size)
         // which is where SP was right after pushing all callee-saved registers
-        if self.num_locals > 0 || self.num_params > 0 {
-            let total_slots = self.num_locals + self.num_params.min(8);
+        if self.num_locals > 0 || self.num_params > 0 || self.has_sret {
+            // Must mirror the prologue's allocation exactly: locals + ALL
+            // params + the sret pointer slot.
+            let total_slots = self.num_locals + self.num_params + self.has_sret as u32;
             let stack_size = ((total_slots as i32 * 8 + 15) / 16) * 16;
             if stack_size > 0 {
                 self.begin_inst();

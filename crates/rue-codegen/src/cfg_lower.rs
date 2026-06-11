@@ -331,6 +331,51 @@ pub fn format_terminator(cfg: &rue_cfg::Cfg, terminator: &rue_cfg::Terminator) -
 }
 
 // ============================================================================
+// Internal calling convention helpers
+// ============================================================================
+
+/// Does a by-value return of `ty` use the sret convention (caller-allocated
+/// return buffer, pointer passed as a hidden first argument) instead of
+/// return registers?
+///
+/// The internal Rue calling convention for aggregate returns (RUE-106):
+///
+/// - Aggregates whose flattened slot count fits in the backend's return
+///   registers (`ret_reg_budget`: 6 on x86-64, 8 on aarch64) are returned
+///   with one slot per return register.
+/// - Builtin `String` *always* returns via sret, regardless of fitting in
+///   registers: the runtime implementations (`String__clone`,
+///   `__rue_read_line`, ...) are `extern "C"` functions taking an
+///   `out: *mut StringResult` first parameter, so the convention is fixed
+///   by the runtime ABI. (RUE-92)
+/// - Any other aggregate with more slots than `ret_reg_budget` also returns
+///   via sret: the caller allocates `slot_count * 8` bytes (16-aligned) on
+///   its stack and passes the buffer address as a hidden first argument
+///   (shifting all user arguments by one ABI slot); the callee stores every
+///   slot through that pointer before returning. (RUE-13/78/91)
+///
+/// Scalars and unit never use sret.
+pub fn type_uses_sret_return(type_pool: &TypeInternPool, ty: Type, ret_reg_budget: u32) -> bool {
+    match ty.kind() {
+        TypeKind::Struct(struct_id) => {
+            let struct_def = type_pool.struct_def(struct_id);
+            if struct_def.is_builtin && struct_def.name == "String" {
+                return true;
+            }
+            types::type_slot_count(type_pool, ty) > ret_reg_budget
+        }
+        TypeKind::Array(_) => types::type_slot_count(type_pool, ty) > ret_reg_budget,
+        _ => false,
+    }
+}
+
+/// Does this function return its value via the sret convention?
+/// See [`type_uses_sret_return`] for the convention.
+pub fn fn_uses_sret_return(cfg: &Cfg, type_pool: &TypeInternPool, ret_reg_budget: u32) -> bool {
+    type_uses_sret_return(type_pool, cfg.return_type(), ret_reg_budget)
+}
+
+// ============================================================================
 // Shared CFG Lowering Context
 // ============================================================================
 
@@ -433,6 +478,26 @@ impl<'a> CfgLowerContext<'a> {
         builtin
             .find_operator(op)
             .map(|op_def| (op_def.runtime_fn, op_def.invert_result))
+    }
+
+    /// Does a by-value return of `ty` use the sret convention for the
+    /// backend's return-register budget? See [`type_uses_sret_return`].
+    pub fn type_uses_sret(&self, ty: Type, ret_reg_budget: u32) -> bool {
+        type_uses_sret_return(self.type_pool, ty, ret_reg_budget)
+    }
+
+    /// Does the function being lowered return via the sret convention?
+    pub fn uses_sret_return(&self, ret_reg_budget: u32) -> bool {
+        self.type_uses_sret(self.cfg.return_type(), ret_reg_budget)
+    }
+
+    /// The frame slot holding the incoming sret pointer, one past the param
+    /// area (only meaningful when [`Self::uses_sret_return`] is true). The
+    /// prologue stores the hidden first argument here; the return path loads
+    /// it back to write the result through. Register-allocator spill slots
+    /// start after this slot.
+    pub fn sret_ptr_slot(&self) -> u32 {
+        self.num_locals + self.num_params
     }
 
     // ========================================================================

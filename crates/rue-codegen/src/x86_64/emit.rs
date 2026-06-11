@@ -30,8 +30,13 @@
 //! ├────────────────────────┤
 //! │ param 0 spill slot     │ [rbp - callee_saved_size - (num_locals+1)*8]
 //! │ param 1 spill slot     │ [rbp - callee_saved_size - (num_locals+2)*8]
-//! │ ...                    │
-//! │ param 5 spill slot     │ [rbp - callee_saved_size - (num_locals+6)*8]
+//! │ ...                    │ (ALL params: stack-passed args are copied
+//! │ param P-1 spill slot   │  down here by the prologue too)
+//! ├────────────────────────┤
+//! │ sret pointer slot      │ [rbp - callee_saved_size - (num_locals+P+1)*8]
+//! │ (only for sret fns)    │
+//! ├────────────────────────┤
+//! │ regalloc spill slots   │ (after locals, params, and sret slot)
 //! ├────────────────────────┤
 //! │ (alignment padding)    │   ← Ensures RSP is 16-byte aligned
 //! └────────────────────────┘
@@ -48,10 +53,12 @@
 //! push r12                 ; Save callee-saved registers (if used)
 //! push r13
 //! ...
-//! sub rsp, N               ; Allocate space for locals + params (16-aligned)
-//! mov [rbp-X], rdi         ; Spill register params to stack (first 6 args)
+//! sub rsp, N               ; Allocate space for locals + ALL params (+ sret slot)
+//! mov [rbp-X], rdi         ; Spill register params to the frame param area
 //! mov [rbp-X], rsi
 //! ...
+//! mov rax, [rbp+16]        ; Copy stack-passed args (ABI slot >= 6) down
+//! mov [rbp-X], rax         ;   into the same param area
 //! ```
 //!
 //! ## Epilogue Sequence
@@ -68,9 +75,11 @@
 //!
 //! ## Key Invariants
 //!
-//! 1. **RBP-relative stack arguments**: Stack arguments (7th argument and beyond)
-//!    are accessed at fixed positive offsets from RBP (`[rbp + 16]`, `[rbp + 24]`, etc.).
-//!    These offsets are stable regardless of callee-saved register usage.
+//! 1. **RBP-relative stack arguments**: Stack arguments (7th ABI slot and beyond)
+//!    sit at fixed positive offsets from RBP (`[rbp + 16]`, `[rbp + 24]`, etc.).
+//!    These offsets are stable regardless of callee-saved register usage. The
+//!    prologue copies them into the frame param area; the body only reads the
+//!    frame copies.
 //!
 //! 2. **Offset adjustment for locals**: CfgLower generates local variable offsets
 //!    assuming `[rbp - 8]` is slot 0. The emit phase adjusts all negative RBP-relative
@@ -87,11 +96,16 @@
 //!    (variable number), then allocates remaining space via `sub rsp, N`. This allows
 //!    calculating the exact alignment padding needed.
 //!
-//! ## Calling Convention (System V AMD64 ABI)
+//! ## Calling Convention (System V AMD64 ABI, extended internally)
 //!
-//! - Arguments 1-6: RDI, RSI, RDX, RCX, R8, R9
+//! - Arguments 1-6: RDI, RSI, RDX, RCX, R8, R9 (aggregates are flattened to
+//!   one 8-byte ABI slot per aggregate slot)
 //! - Arguments 7+: Pushed right-to-left onto stack (arg7 at [rbp+16])
-//! - Return value: RAX (second value in RDX for 128-bit returns)
+//! - Return value: RAX; multi-slot aggregates that fit use the internal
+//!   RET_REGS extension (rax, rdx, rcx, r8, r9, r10)
+//! - sret returns (String always; aggregates over the RET_REGS budget): the
+//!   caller allocates a buffer and passes its address as a hidden first
+//!   argument in RDI; the callee writes all slots through it (RUE-106)
 //! - Caller-saved: RAX, RCX, RDX, RSI, RDI, R8-R11, XMM0-XMM15
 //! - Callee-saved: RBX, RBP, R12-R15
 
@@ -209,6 +223,11 @@ pub struct Emitter<'a> {
     num_locals_original: u32,
     /// Number of function parameters.
     num_params: u32,
+    /// Whether the function returns via sret: a hidden buffer pointer arrives
+    /// as the first ABI argument (shifting user params by one register) and is
+    /// saved to the frame slot one past the param area. See
+    /// `crate::cfg_lower::type_uses_sret_return`. (RUE-106)
+    has_sret: bool,
     /// Callee-saved registers that need to be preserved.
     callee_saved: Vec<Reg>,
     /// String table (indexed by string_id in StringConstPtr/StringConstLen).
@@ -257,12 +276,21 @@ impl<'a> Emitter<'a> {
             num_locals,
             num_locals_original,
             num_params,
+            has_sret: false,
             callee_saved: callee_saved.to_vec(),
             strings,
             has_frame: false,
             inst_start: 0,
             emit_asm: false,
         }
+    }
+
+    /// Mark the function as returning via sret (hidden buffer pointer as the
+    /// first ABI argument). Affects the prologue's frame size, the param spill
+    /// register assignment, and reserves the sret pointer frame slot.
+    pub fn with_sret(mut self, has_sret: bool) -> Self {
+        self.has_sret = has_sret;
+        self
     }
 
     // ==================== Instruction recording helpers ====================
@@ -359,8 +387,13 @@ impl<'a> Emitter<'a> {
             }
         }
 
-        // Emit function prologue if we have local variables, parameters, or callee-saved regs
-        if self.num_locals > 0 || self.num_params > 0 || !self.callee_saved.is_empty() {
+        // Emit function prologue if we have local variables, parameters,
+        // an sret pointer to save, or callee-saved regs
+        if self.num_locals > 0
+            || self.num_params > 0
+            || self.has_sret
+            || !self.callee_saved.is_empty()
+        {
             self.has_frame = true;
             self.emit_prologue();
         }
@@ -374,12 +407,12 @@ impl<'a> Emitter<'a> {
     /// Emit function prologue to set up the stack frame.
     ///
     /// This sets up RBP-based stack frame, then saves callee-saved registers AFTER
-    /// setting up RBP. This ensures that stack arguments (beyond the first 6) can
-    /// be accessed at fixed offsets from RBP:
+    /// setting up RBP. This ensures that stack arguments (ABI slots beyond the
+    /// first 6) can be accessed at fixed offsets from RBP:
     /// - [rbp+0]  = saved rbp
     /// - [rbp+8]  = return address
-    /// - [rbp+16] = arg7 (first stack argument, if present)
-    /// - [rbp+24] = arg8, etc.
+    /// - [rbp+16] = first stack-passed ABI slot (if present)
+    /// - [rbp+24] = second, etc.
     ///
     /// ```asm
     /// push rbp
@@ -387,10 +420,12 @@ impl<'a> Emitter<'a> {
     /// push r12             ; save callee-saved registers AFTER rbp setup
     /// push r13
     /// ...
-    /// sub rsp, N           ; N = (num_locals + num_params) * 8, aligned to 16
-    /// mov [rbp-X], rdi     ; save param 0
+    /// sub rsp, N           ; N = (num_locals + num_params [+ sret]) * 8, 16-aligned
+    /// mov [rbp-X], rdi     ; save param 0 (or the sret ptr shifts params by one)
     /// mov [rbp-X], rsi     ; save param 1
     /// ...
+    /// mov rax, [rbp+16]    ; copy stack-passed args into the param area
+    /// mov [rbp-X], rax
     /// ```
     ///
     /// The corresponding epilogue (generated by lower.rs, augmented by emitter) is:
@@ -424,10 +459,13 @@ impl<'a> Emitter<'a> {
         }
 
         // Calculate stack space needed:
-        // - num_locals slots for local variables
-        // - num_params slots for saved parameters (for the first 6 params only)
+        // - num_locals slots for local variables (including regalloc spills)
+        // - num_params slots for saved parameters (ALL of them: stack-passed
+        //   args are copied into the frame param area below so the body can
+        //   address every param slot uniformly)
+        // - one slot for the incoming sret pointer, if any
         // Each slot is 8 bytes, total aligned to 16
-        let total_slots = self.num_locals + self.num_params.min(6);
+        let total_slots = self.num_locals + self.num_params + self.has_sret as u32;
         let needed_bytes = total_slots as i32 * 8;
         // Account for callee-saved pushes for alignment calculation
         let pushes_so_far = callee_saved.len() as i32;
@@ -448,29 +486,60 @@ impl<'a> Emitter<'a> {
             end_inst!(self, "sub rsp, {}", stack_size);
         }
 
-        // Save incoming parameters from registers to the stack.
+        // Save ALL incoming ABI arguments into the contiguous frame param
+        // area: register args are spilled directly, stack-passed args (ABI
+        // slot >= 6) are copied down from [rbp+16+...] via rax (dead at
+        // entry). After this the body addresses every param slot as a frame
+        // slot — there is no separate ">6 params" read path. (RUE-13/79/91)
+        //
         // cfg_lower generates offsets assuming [rbp-8] is the first slot, but
         // callee-saved registers are pushed after rbp, shifting everything down.
         // The emit phase adjusts all rbp-relative negative offsets to account
         // for this (see MovRM and MovMR handlers).
         //
-        // System V AMD64 ABI: first 6 args in rdi, rsi, rdx, rcx, r8, r9
+        // System V AMD64 ABI: first 6 args in rdi, rsi, rdx, rcx, r8, r9.
+        // When the function returns via sret, the hidden buffer pointer is
+        // the first ABI argument, shifting every user param by one slot.
         const ARG_REGS: [Reg; 6] = [Reg::Rdi, Reg::Rsi, Reg::Rdx, Reg::Rcx, Reg::R8, Reg::R9];
 
         let callee_saved_size = self.callee_saved_size();
+        let abi_shift = self.has_sret as u32;
 
-        for i in 0..self.num_params.min(6) {
+        for i in 0..self.num_params {
             // Use num_locals_original (not num_locals which includes spills)
             // because CfgLower generates param offsets based on the original count
             let slot = self.num_locals_original + i;
             // Skip past callee-saved registers in the offset calculation
             let offset = -callee_saved_size - ((slot as i32 + 1) * 8);
-            let reg = ARG_REGS[i as usize];
+            let abi_index = i + abi_shift;
 
-            // Emit: mov [rbp + offset], reg
+            if (abi_index as usize) < ARG_REGS.len() {
+                let reg = ARG_REGS[abi_index as usize];
+                // Emit: mov [rbp + offset], reg
+                self.begin_inst();
+                self.emit_mov_mr(Reg::Rbp, offset, reg);
+                end_inst!(self, "mov [rbp{}], {}", offset, reg);
+            } else {
+                // Stack-passed arg: copy from above the frame into the param area
+                let src_offset = 16 + (abi_index as i32 - ARG_REGS.len() as i32) * 8;
+                self.begin_inst();
+                self.emit_mov_rm(Reg::Rax, Reg::Rbp, src_offset);
+                end_inst!(self, "mov rax, [rbp+{}]", src_offset);
+                self.begin_inst();
+                self.emit_mov_mr(Reg::Rbp, offset, Reg::Rax);
+                end_inst!(self, "mov [rbp{}], rax", offset);
+            }
+        }
+
+        // Save the incoming sret pointer (hidden first argument) to its
+        // dedicated frame slot, one past the param area. The return path
+        // loads it back to store the result through.
+        if self.has_sret {
+            let slot = self.num_locals_original + self.num_params;
+            let offset = -callee_saved_size - ((slot as i32 + 1) * 8);
             self.begin_inst();
-            self.emit_mov_mr(Reg::Rbp, offset, reg);
-            end_inst!(self, "mov [rbp{}], {}", offset, reg);
+            self.emit_mov_mr(Reg::Rbp, offset, ARG_REGS[0]);
+            end_inst!(self, "mov [rbp{}], {} ; sret ptr", offset, ARG_REGS[0]);
         }
     }
 
@@ -488,7 +557,11 @@ impl<'a> Emitter<'a> {
 
         // Point RSP at the callee-saved area (skip locals and alignment padding)
         let size = self.callee_saved_size();
-        if !self.callee_saved.is_empty() || self.num_locals > 0 || self.num_params > 0 {
+        if !self.callee_saved.is_empty()
+            || self.num_locals > 0
+            || self.num_params > 0
+            || self.has_sret
+        {
             self.begin_inst();
             self.emit_lea_rsp_rbp_offset(-size);
             end_inst!(self, "lea rsp, [rbp{}]", format_offset(-size));
