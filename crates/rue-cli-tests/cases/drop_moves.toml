@@ -16,10 +16,15 @@
 # scope exit — the struct's own destructor still runs, and the remaining
 # droppable fields are dropped individually in declaration order.
 #
-# Known residual (conservative "moved on ALL paths" analysis): a value moved
-# in only one branch of an if/match is still dropped at scope exit
-# (double-drop on the moving path). A full fix needs runtime drop flags, like
-# Rust.
+# Branch-divergent moves are handled with runtime drop flags (RUE-108 for
+# whole slots, RUE-156 for individual field paths): a value moved in only
+# one branch drops exactly once on every path. Field moves are tracked as
+# full paths of any depth (`eat(o.a.b)`, RUE-157), with each affected
+# field's scope-exit drop guarded by its own flag.
+#
+# Known residual: assigning over a still-owned struct FIELD does not drop
+# the old field value (pre-existing drop-on-overwrite gap, tracked
+# separately); these cases avoid pinning that behavior.
 
 [section]
 id = "cli.drop_moves"
@@ -395,8 +400,31 @@ stdout = "777\n"
 exit_code = 0
 
 [[case]]
-name = "branch_divergent_field_move_no_leak"
-description = "Known residual pinned: a field moved in only ONE branch is conservatively still dropped at scope exit (double-drop of 1 on the moving path), and nothing is leaked."
+name = "branch_divergent_string_field_move_no_double_free"
+description = "RUE-156 with a heap type: a String field moved in only ONE branch must not be freed again by the struct's scope-exit drop on the moving path."
+files = [{ path = "main.rue", source = """
+struct Holder { name: String, tag: String }
+
+fn eat(s: String) -> i32 {
+    0
+}
+
+fn main() -> i32 {
+    let h = Holder { name: String::with_capacity(8), tag: String::with_capacity(8) };
+    let c = true;
+    if c {
+        eat(h.name);
+    }
+    @dbg(777);
+    0
+}
+""" }]
+stdout = "777\n"
+exit_code = 0
+
+[[case]]
+name = "branch_divergent_field_move_drops_once_taken"
+description = "RUE-156: a field moved in only ONE branch drops exactly once when the branch IS taken — in the callee, with the field's guarded scope-exit drop skipped at runtime."
 files = [{ path = "main.rue", source = """
 struct Inner { v: i32 }
 
@@ -420,5 +448,241 @@ fn main() -> i32 {
     0
 }
 """ }]
-stdout = "1\n777\n1\n2\n"
+stdout = "1\n777\n2\n"
+exit_code = 0
+
+[[case]]
+name = "branch_divergent_field_move_drops_once_not_taken"
+description = "RUE-156: when the moving branch is NOT taken, the field's guarded scope-exit drop still runs — both fields drop at exit, nothing leaks."
+files = [{ path = "main.rue", source = """
+struct Inner { v: i32 }
+
+drop fn Inner(self) {
+    @dbg(self.v);
+}
+
+struct Outer { a: Inner, b: Inner }
+
+fn eat(i: Inner) -> i32 {
+    0
+}
+
+fn main() -> i32 {
+    let o = Outer { a: Inner { v: 1 }, b: Inner { v: 2 } };
+    let c = false;
+    if c {
+        eat(o.a);
+    }
+    @dbg(777);
+    0
+}
+""" }]
+stdout = "777\n1\n2\n"
+exit_code = 0
+
+[[case]]
+name = "different_field_moved_per_branch_drops_once"
+description = "RUE-156: each branch moves a DIFFERENT field; per-field flags keep exactly the not-moved field's exit drop on each path."
+files = [{ path = "main.rue", source = """
+struct Inner { v: i32 }
+
+drop fn Inner(self) {
+    @dbg(self.v);
+}
+
+struct Outer { a: Inner, b: Inner }
+
+fn eat(i: Inner) -> i32 {
+    0
+}
+
+fn main() -> i32 {
+    let o = Outer { a: Inner { v: 1 }, b: Inner { v: 2 } };
+    let c = true;
+    if c {
+        eat(o.a);
+    } else {
+        eat(o.b);
+    }
+    @dbg(777);
+    0
+}
+""" }]
+stdout = "1\n777\n2\n"
+exit_code = 0
+
+[[case]]
+name = "branch_divergent_field_move_then_reinit_drops_new_value"
+description = "RUE-156: a conditionally moved field that is reassigned afterwards is statically owned again — the fresh value drops at exit (no guard, no double drop of the moved one)."
+files = [{ path = "main.rue", source = """
+struct Inner { v: i32 }
+
+drop fn Inner(self) {
+    @dbg(self.v);
+}
+
+struct Outer { a: Inner, b: Inner }
+
+fn eat(i: Inner) -> i32 {
+    0
+}
+
+fn main() -> i32 {
+    let mut o = Outer { a: Inner { v: 1 }, b: Inner { v: 2 } };
+    let c = true;
+    if c {
+        eat(o.a);
+    }
+    o.a = Inner { v: 9 };
+    @dbg(777);
+    0
+}
+""" }]
+stdout = "1\n777\n9\n2\n"
+exit_code = 0
+
+[[case]]
+name = "deep_field_move_drops_once"
+description = "RUE-157: moving a depth-2 field path (`t.mid.leaf`) exports a path marker — the leaf drops only in the callee, and the exit drop walks the structs field-granularly."
+files = [{ path = "main.rue", source = """
+struct Leaf { v: i32 }
+struct Mid { leaf: Leaf, other: Leaf }
+struct Top { mid: Mid }
+
+drop fn Leaf(self) {
+    @dbg(self.v);
+}
+
+fn eat(l: Leaf) -> i32 {
+    0
+}
+
+fn main() -> i32 {
+    let t = Top { mid: Mid { leaf: Leaf { v: 5 }, other: Leaf { v: 6 } } };
+    eat(t.mid.leaf);
+    @dbg(777);
+    0
+}
+""" }]
+stdout = "5\n777\n6\n"
+exit_code = 0
+
+[[case]]
+name = "deep_field_move_out_of_byvalue_param_drops_once"
+description = "RUE-157: a depth-2 path moved out of a by-value PARAM suppresses just that path in the callee's param exit drop."
+files = [{ path = "main.rue", source = """
+struct Leaf { v: i32 }
+struct Mid { leaf: Leaf, other: Leaf }
+struct Top { mid: Mid }
+
+drop fn Leaf(self) {
+    @dbg(self.v);
+}
+
+fn eat(l: Leaf) -> i32 {
+    0
+}
+
+fn consume(t: Top) -> i32 {
+    eat(t.mid.leaf)
+}
+
+fn main() -> i32 {
+    let t = Top { mid: Mid { leaf: Leaf { v: 5 }, other: Leaf { v: 6 } } };
+    consume(t);
+    @dbg(777);
+    0
+}
+""" }]
+stdout = "5\n6\n777\n"
+exit_code = 0
+
+[[case]]
+name = "branch_divergent_deep_field_move_taken"
+description = "RUE-156 + RUE-157 combined: a conditionally moved depth-2 path drops once when the branch is taken (callee drop only; guarded exit drop skipped)."
+files = [{ path = "main.rue", source = """
+struct Leaf { v: i32 }
+struct Mid { leaf: Leaf, other: Leaf }
+struct Top { mid: Mid }
+
+drop fn Leaf(self) {
+    @dbg(self.v);
+}
+
+fn eat(l: Leaf) -> i32 {
+    0
+}
+
+fn main() -> i32 {
+    let t = Top { mid: Mid { leaf: Leaf { v: 5 }, other: Leaf { v: 6 } } };
+    let c = true;
+    if c {
+        eat(t.mid.leaf);
+    }
+    @dbg(777);
+    0
+}
+""" }]
+stdout = "5\n777\n6\n"
+exit_code = 0
+
+[[case]]
+name = "branch_divergent_deep_field_move_not_taken"
+description = "RUE-156 + RUE-157 combined: when the moving branch is NOT taken, the depth-2 path's guarded exit drop runs — everything drops exactly once."
+files = [{ path = "main.rue", source = """
+struct Leaf { v: i32 }
+struct Mid { leaf: Leaf, other: Leaf }
+struct Top { mid: Mid }
+
+drop fn Leaf(self) {
+    @dbg(self.v);
+}
+
+fn eat(l: Leaf) -> i32 {
+    0
+}
+
+fn main() -> i32 {
+    let t = Top { mid: Mid { leaf: Leaf { v: 5 }, other: Leaf { v: 6 } } };
+    let c = false;
+    if c {
+        eat(t.mid.leaf);
+    }
+    @dbg(777);
+    0
+}
+""" }]
+stdout = "777\n5\n6\n"
+exit_code = 0
+
+[[case]]
+name = "nested_destructor_runs_for_partially_moved_inner_struct"
+description = "RUE-157: an inner struct with its own destructor that lost a field still runs its destructor (without glue) during the field-granular exit walk, then its remaining field drops."
+files = [{ path = "main.rue", source = """
+struct Leaf { v: i32 }
+struct Mid { leaf: Leaf, other: Leaf }
+
+drop fn Leaf(self) {
+    @dbg(self.v);
+}
+
+drop fn Mid(self) {
+    @dbg(100);
+}
+
+fn eat(l: Leaf) -> i32 {
+    0
+}
+
+fn main() -> i32 {
+    let m = Mid { leaf: Leaf { v: 5 }, other: Leaf { v: 6 } };
+    let c = true;
+    if c {
+        eat(m.leaf);
+    }
+    @dbg(777);
+    0
+}
+""" }]
+stdout = "5\n777\n100\n6\n"
 exit_code = 0

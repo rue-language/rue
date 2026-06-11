@@ -6,7 +6,7 @@
 use lasso::ThreadedRodeo;
 use rue_air::{
     Air, AirArgMode, AirInstData, AirPattern, AirPlaceBase, AirPlaceRef, AirProjection, AirRef,
-    Type, TypeInternPool, TypeKind,
+    StructId, Type, TypeInternPool, TypeKind,
 };
 use rue_error::{CompileWarning, WarningKind};
 
@@ -67,32 +67,48 @@ enum MovedSlot {
     Param(u32),
 }
 
-/// Move-out state for drop elaboration: whole slots and individual
-/// top-level struct fields whose contents were moved out.
+/// A struct field path inside a slot, as declaration indices from the
+/// outermost struct inward: `o.a` → `[0]`, `o.a.b` → `[0, 1]` (for `a` and
+/// `b` at declaration index 0 and 1 of their respective structs).
+type FieldPath = Vec<u32>;
+
+/// Move-out state for drop elaboration: whole slots and struct field paths
+/// whose contents were moved out.
 ///
 /// `slots` tracks whole-value moves (`let t = s;`). `fields` tracks partial
-/// moves of a single top-level struct field (`eat(o.a)`, RUE-62) — the slot
-/// itself stays live, but its scope-exit drop must skip the moved field.
+/// moves of a struct field path of any depth (`eat(o.a)`, `eat(o.a.b)`,
+/// RUE-62/RUE-157) — the slot itself stays live, but its scope-exit drop
+/// must skip the moved path. `maybe_fields` additionally remembers paths
+/// moved on only SOME tracked path: those drops stay in the schedule but
+/// run behind a per-path runtime drop flag (RUE-156).
 #[derive(Debug, Clone, Default)]
 struct MoveState {
     /// Slots whose ENTIRE contents were moved out.
     slots: std::collections::HashSet<MovedSlot>,
-    /// `(slot, field_index)` pairs for top-level struct fields moved out of
-    /// a slot that is itself still live.
-    fields: std::collections::HashSet<(MovedSlot, u32)>,
+    /// `(slot, path)` pairs for field paths moved out (on EVERY tracked
+    /// path) of a slot that is itself still live. Join: intersection.
+    fields: std::collections::HashSet<(MovedSlot, FieldPath)>,
+    /// `(slot, path)` pairs for field paths moved out on SOME tracked path.
+    /// Always a superset of `fields`. Join: union. A path here but not in
+    /// `fields` is path-dependent: its scope-exit drop is emitted behind
+    /// that path's runtime drop flag.
+    maybe_fields: std::collections::HashSet<(MovedSlot, FieldPath)>,
 }
 
 impl MoveState {
     /// Record that the slot's whole value moved out.
     fn mark_slot(&mut self, slot: MovedSlot) {
         self.slots.insert(slot);
-        // Whole-value move subsumes any per-field moves.
+        // Whole-value move subsumes any per-field moves (and the slot's
+        // whole-value drop flag takes over at runtime).
         self.fields.retain(|(s, _)| *s != slot);
+        self.maybe_fields.retain(|(s, _)| *s != slot);
     }
 
-    /// Record that one top-level struct field of the slot moved out.
-    fn mark_field(&mut self, slot: MovedSlot, field: u32) {
-        self.fields.insert((slot, field));
+    /// Record that one struct field path of the slot moved out.
+    fn mark_path(&mut self, slot: MovedSlot, path: FieldPath) {
+        self.fields.insert((slot, path.clone()));
+        self.maybe_fields.insert((slot, path));
     }
 
     /// The slot was (re)initialized with a fresh value: clear all move-out
@@ -101,12 +117,17 @@ impl MoveState {
     fn clear_slot(&mut self, slot: MovedSlot) {
         self.slots.remove(&slot);
         self.fields.retain(|(s, _)| *s != slot);
+        self.maybe_fields.retain(|(s, _)| *s != slot);
     }
 
-    /// One top-level field of the slot was reassigned: that field holds a
-    /// fresh value again and must be dropped at scope exit.
+    /// One top-level field of the slot was reassigned: that field (and
+    /// everything nested inside it) holds a fresh value again and must be
+    /// dropped at scope exit.
     fn clear_field(&mut self, slot: MovedSlot, field: u32) {
-        self.fields.remove(&(slot, field));
+        self.fields
+            .retain(|(s, p)| *s != slot || p.first() != Some(&field));
+        self.maybe_fields
+            .retain(|(s, p)| *s != slot || p.first() != Some(&field));
     }
 
     /// Was the slot's whole value moved out (on every tracked path)?
@@ -114,21 +135,38 @@ impl MoveState {
         self.slots.contains(&slot)
     }
 
-    /// Declaration indices of the top-level fields moved out of `slot`.
-    fn moved_fields_of(&self, slot: MovedSlot) -> std::collections::HashSet<u32> {
+    /// Field paths moved out of `slot` on EVERY tracked path.
+    fn moved_paths_of(&self, slot: MovedSlot) -> std::collections::HashSet<FieldPath> {
         self.fields
             .iter()
             .filter(|(s, _)| *s == slot)
-            .map(|(_, f)| *f)
+            .map(|(_, p)| p.clone())
             .collect()
     }
 
-    /// Join two path states: state is kept only if present in BOTH
-    /// ("moved on ALL paths" — see the `moved` field docs).
+    /// Field paths moved out of `slot` on SOME tracked path (superset of
+    /// `moved_paths_of`).
+    fn maybe_moved_paths_of(&self, slot: MovedSlot) -> std::collections::HashSet<FieldPath> {
+        self.maybe_fields
+            .iter()
+            .filter(|(s, _)| *s == slot)
+            .map(|(_, p)| p.clone())
+            .collect()
+    }
+
+    /// Join two path states: definite state (`slots`, `fields`) is kept
+    /// only if present in BOTH ("moved on ALL paths" — see the `moved`
+    /// field docs); possible state (`maybe_fields`) is kept if present in
+    /// EITHER ("moved on SOME path").
     fn intersect(&self, other: &MoveState) -> MoveState {
         MoveState {
             slots: self.slots.intersection(&other.slots).copied().collect(),
-            fields: self.fields.intersection(&other.fields).copied().collect(),
+            fields: self.fields.intersection(&other.fields).cloned().collect(),
+            maybe_fields: self
+                .maybe_fields
+                .union(&other.maybe_fields)
+                .cloned()
+                .collect(),
         }
     }
 }
@@ -161,21 +199,33 @@ pub struct CfgBuilder<'a> {
     /// joins, and short-circuit edges drop-exactly-once at RUNTIME even
     /// where the static all-paths analysis must stay conservative.
     drop_flags: std::collections::HashMap<MovedSlot, u32>,
+    /// Per-field-path runtime drop flags (RUE-156): like `drop_flags`, but
+    /// one flag per `(slot, field path)` with a field-level MarkMoved
+    /// anywhere in the function. Armed when the slot is (re)initialized,
+    /// cleared at the path's move site; `emit_partial_struct_drop` guards
+    /// each possibly-moved field's drop with its flag.
+    field_drop_flags: std::collections::HashMap<(MovedSlot, FieldPath), u32>,
     /// Slots with a whole-value MarkMoved anywhere in the AIR (pre-scanned),
     /// i.e. candidates for a drop flag.
     ever_moved: std::collections::HashSet<MovedSlot>,
-    /// Slots (and individual top-level struct fields, RUE-62) whose contents
-    /// have definitely been moved out on every path reaching the current
-    /// lowering position. Drop elaboration skips these (the new owner of the
-    /// value is responsible for dropping it).
+    /// `(slot, field path)` pairs with a field-level MarkMoved anywhere in
+    /// the AIR whose moved type needs drop (pre-scanned), i.e. candidates
+    /// for a per-field drop flag.
+    ever_field_moved: std::collections::HashSet<(MovedSlot, FieldPath)>,
+    /// Slots (and struct field paths of any depth, RUE-62/RUE-157) whose
+    /// contents have definitely been moved out on every path reaching the
+    /// current lowering position. Drop elaboration skips these (the new
+    /// owner of the value is responsible for dropping it).
     ///
     /// Maintained path-sensitively: each branch of an if/match is lowered
     /// starting from the pre-branch state, and the post-construct state is
     /// the intersection of the branch exit states ("moved on ALL paths").
     /// A value moved on only SOME paths stays in the drop schedule, but its
     /// scope-exit drop is emitted behind a runtime drop-flag guard (see
-    /// `drop_flags`), so the moving path skips it at runtime — drop exactly
-    /// once on every path, and never a leak.
+    /// `drop_flags` for whole slots, `field_drop_flags` plus the
+    /// union-joined `MoveState::maybe_fields` for field paths), so the
+    /// moving path skips it at runtime — drop exactly once on every path,
+    /// and never a leak.
     moved: MoveState,
 }
 
@@ -210,7 +260,9 @@ impl<'a> CfgBuilder<'a> {
             warnings: Vec::new(),
             scope_stack: vec![Vec::new()], // Start with one scope for the function body
             drop_flags: std::collections::HashMap::new(),
+            field_drop_flags: std::collections::HashMap::new(),
             ever_moved: std::collections::HashSet::new(),
+            ever_field_moved: std::collections::HashSet::new(),
             moved: MoveState::default(),
         };
 
@@ -218,21 +270,36 @@ impl<'a> CfgBuilder<'a> {
         builder.current_block = builder.cfg.new_block();
         builder.cfg.entry = builder.current_block;
 
-        // Pre-scan for whole-value moves so drop flags can be initialized at
-        // the value's init site, before the move is reached (RUE-108).
+        // Pre-scan for moves so drop flags can be initialized at the
+        // value's init site, before the move is reached (RUE-108).
+        // Whole-value MarkMoveds nominate the slot for a whole-slot flag;
+        // field-level MarkMoveds nominate their (slot, field path) for a
+        // per-field flag (RUE-156) when the moved type needs dropping.
         for i in 0..air.len() {
+            let inst = air.get(AirRef::from_raw(i as u32));
             if let AirInstData::MarkMoved {
                 slot,
                 is_param,
-                field: None,
+                place,
                 ..
-            } = &air.get(AirRef::from_raw(i as u32)).data
+            } = &inst.data
             {
-                builder.ever_moved.insert(if *is_param {
+                let key = if *is_param {
                     MovedSlot::Param(*slot)
                 } else {
                     MovedSlot::Local(*slot)
-                });
+                };
+                match place {
+                    None => {
+                        builder.ever_moved.insert(key);
+                    }
+                    Some(place_ref) => {
+                        if builder.type_needs_drop(inst.ty) {
+                            let path = builder.moved_field_path(*place_ref);
+                            builder.ever_field_moved.insert((key, path));
+                        }
+                    }
+                }
             }
         }
 
@@ -243,6 +310,7 @@ impl<'a> CfgBuilder<'a> {
             if builder.ever_moved.contains(&key) && builder.type_needs_drop(ty) {
                 builder.set_drop_flag(key, true, rue_span::Span::default());
             }
+            builder.arm_field_drop_flags(key, rue_span::Span::default());
         }
 
         // Find the root (should be Ret as last instruction)
@@ -2044,28 +2112,36 @@ impl<'a> CfgBuilder<'a> {
                 value,
                 slot,
                 is_param,
-                field,
+                place,
             } => {
                 // Pure passthrough at runtime: lower the wrapped use and
-                // record that the slot's contents (or one top-level field of
-                // them, RUE-62) were moved out on this path, so drop
-                // elaboration skips the slot (or just that field) at scope
-                // exit.
+                // record that the slot's contents (or one field path of
+                // them, RUE-62/RUE-157) were moved out on this path, so
+                // drop elaboration skips the slot (or just that path) at
+                // scope exit.
                 let result = self.lower_inst(*value);
                 if !matches!(result.continuation, Continuation::Diverged) {
-                    let place = if *is_param {
+                    let key = if *is_param {
                         MovedSlot::Param(*slot)
                     } else {
                         MovedSlot::Local(*slot)
                     };
-                    match field {
-                        Some(field_index) => self.moved.mark_field(place, *field_index),
+                    match place {
+                        Some(place_ref) => {
+                            let path = self.moved_field_path(*place_ref);
+                            // Clear the path's runtime drop flag on this
+                            // path (RUE-156); if another path doesn't move
+                            // the field, its flag stays 1 and the guarded
+                            // per-field exit drop still runs.
+                            self.update_field_drop_flag(key, &path, false, span);
+                            self.moved.mark_path(key, path);
+                        }
                         None => {
-                            self.moved.mark_slot(place);
+                            self.moved.mark_slot(key);
                             // Clear the runtime drop flag on this path; if
                             // another path doesn't move the value, its flag
                             // stays 1 and the guarded exit drop still runs.
-                            self.update_drop_flag(place, false, span);
+                            self.update_drop_flag(key, false, span);
                         }
                     }
                 }
@@ -2210,19 +2286,109 @@ impl<'a> CfgBuilder<'a> {
     }
 
     /// Update an EXISTING drop flag; no-op when the slot has none (its type
-    /// needs no drop, or it is never moved).
+    /// needs no drop, or it is never moved). Arming (`live = true`) marks a
+    /// whole-slot (re)initialization, which re-initializes every field too,
+    /// so the slot's per-field drop flags (RUE-156) are re-armed as well.
+    /// Clearing (`live = false`) marks a whole-slot move-out and leaves the
+    /// per-field flags alone: the per-field exit drops only run inside the
+    /// whole-slot flag's guard, which the cleared flag already skips.
     fn update_drop_flag(&mut self, key: MovedSlot, live: bool, span: rue_span::Span) {
         if self.drop_flags.contains_key(&key) {
             self.set_drop_flag(key, live, span);
         }
+        if live {
+            self.arm_field_drop_flags(key, span);
+        }
     }
 
     /// Arm the drop flag at a value's (re)initialization site, when the slot
-    /// is moved somewhere in this function and its type needs dropping.
+    /// is moved somewhere in this function and its type needs dropping. The
+    /// slot's per-field drop flags (RUE-156) are armed too: a fresh whole
+    /// value owns all of its fields.
     fn arm_drop_flag_if_needed(&mut self, key: MovedSlot, ty: Type, span: rue_span::Span) {
         if self.ever_moved.contains(&key) && self.type_needs_drop(ty) {
             self.set_drop_flag(key, true, span);
         }
+        self.arm_field_drop_flags(key, span);
+    }
+
+    /// Arm (allocating on first use) the per-field drop flags for every
+    /// field path of `key` that is moved somewhere in this function
+    /// (RUE-156). Called at the slot's (re)initialization sites.
+    fn arm_field_drop_flags(&mut self, key: MovedSlot, span: rue_span::Span) {
+        let paths: Vec<FieldPath> = self
+            .ever_field_moved
+            .iter()
+            .filter(|(s, _)| *s == key)
+            .map(|(_, p)| p.clone())
+            .collect();
+        for path in paths {
+            self.set_field_drop_flag(key, path, true, span);
+        }
+    }
+
+    /// Set a field path's runtime drop flag (RUE-156), allocating the hidden
+    /// flag slot on first use. The per-field analogue of `set_drop_flag`.
+    fn set_field_drop_flag(
+        &mut self,
+        key: MovedSlot,
+        path: FieldPath,
+        live: bool,
+        span: rue_span::Span,
+    ) {
+        let flag_slot = match self.field_drop_flags.get(&(key, path.clone())) {
+            Some(&f) => f,
+            None => {
+                let f = self.cfg.alloc_temp_local();
+                self.field_drop_flags.insert((key, path), f);
+                f
+            }
+        };
+        let val = self.emit(
+            CfgInstData::Const(if live { 1 } else { 0 }),
+            Type::I32,
+            span,
+        );
+        self.emit(
+            CfgInstData::Store {
+                slot: flag_slot,
+                value: val,
+            },
+            Type::UNIT,
+            span,
+        );
+    }
+
+    /// Update an EXISTING per-field drop flag; no-op when the path has none
+    /// (its type needs no drop). The flag is allocated and armed at the
+    /// slot's initialization site, which always precedes the move.
+    fn update_field_drop_flag(
+        &mut self,
+        key: MovedSlot,
+        path: &[u32],
+        live: bool,
+        span: rue_span::Span,
+    ) {
+        if self.field_drop_flags.contains_key(&(key, path.to_vec())) {
+            self.set_field_drop_flag(key, path.to_vec(), live, span);
+        }
+    }
+
+    /// The field path (declaration indices, outermost first) named by a
+    /// field-level MarkMoved's place. Sema only exports markers for pure
+    /// `Field` projection chains.
+    fn moved_field_path(&self, place_ref: AirPlaceRef) -> FieldPath {
+        let place = self.air.get_place(place_ref);
+        self.air
+            .get_place_projections(place)
+            .iter()
+            .map(|proj| match proj {
+                AirProjection::Field { field_index, .. } => *field_index,
+                AirProjection::Index { .. } => {
+                    unreachable!("MarkMoved place contains a non-field projection")
+                }
+            })
+            .collect()
     }
 
     fn emit_drops_for_all_scopes(&mut self, span: rue_span::Span) {
@@ -2293,6 +2459,15 @@ impl<'a> CfgBuilder<'a> {
         // Statically moved-on-all-paths is filtered by the callers; reaching
         // here with a flag means the move is path-dependent (or downstream of
         // a conservative join), so test the flag at runtime.
+        let cont_block = self.begin_flag_guard(flag_slot, span);
+        emit_body(self);
+        self.end_flag_guard(cont_block);
+    }
+
+    /// Open an `if flag != 0` diamond: emits the flag test and branch,
+    /// leaves the current block positioned at the guarded body block, and
+    /// returns the continuation block to pass to [`Self::end_flag_guard`].
+    fn begin_flag_guard(&mut self, flag_slot: u32, span: rue_span::Span) -> BlockId {
         let flag_val = self.emit(CfgInstData::Load { slot: flag_slot }, Type::I32, span);
         let zero = self.emit(CfgInstData::Const(0), Type::I32, span);
         let cond = self.emit(CfgInstData::Ne(flag_val, zero), Type::BOOL, span);
@@ -2313,9 +2488,14 @@ impl<'a> CfgBuilder<'a> {
                 else_args_len,
             },
         );
-
         self.current_block = drop_block;
-        emit_body(self);
+        cont_block
+    }
+
+    /// Close a diamond opened by [`Self::begin_flag_guard`]: terminate the
+    /// guarded body block with a jump to the continuation block and continue
+    /// building there.
+    fn end_flag_guard(&mut self, cont_block: BlockId) {
         let (args_start, args_len) = self.cfg.push_extra(std::iter::empty());
         self.cfg.set_terminator(
             self.current_block,
@@ -2355,11 +2535,14 @@ impl<'a> CfgBuilder<'a> {
         );
     }
 
-    /// Field-granular drop of a partially-moved struct (RUE-62).
+    /// Field-granular drop of a partially-moved struct (RUE-62, RUE-156,
+    /// RUE-157).
     ///
-    /// When one or more top-level fields of a struct slot were moved out
-    /// (`eat(o.a)`), the whole-value `Drop` (destructor + drop glue over ALL
-    /// fields) would re-drop the moved field. Instead this emits:
+    /// When one or more field paths of a struct slot were (or may have
+    /// been) moved out (`eat(o.a)`, `eat(o.a.b)`, `if c { eat(o.a) }`), the
+    /// whole-value `Drop` (destructor + drop glue over ALL fields) would
+    /// re-drop the moved part. Instead this emits, recursively per struct
+    /// level:
     ///
     /// 1. a plain call to the struct's own destructor (if any) — the
     ///    destructor is an ordinary `{Type}.__drop` function taking `self`
@@ -2367,18 +2550,25 @@ impl<'a> CfgBuilder<'a> {
     ///    arguments flattened, so no dedicated codegen op is needed; the
     ///    drop GLUE (which would re-walk every field) is deliberately NOT
     ///    called;
-    /// 2. a `Drop` of each still-owned droppable field, read individually
-    ///    via `PlaceRead`, in declaration order (matching glue order),
-    ///    skipping moved-out fields.
+    /// 2. per droppable field, in declaration order (matching glue order):
+    ///    - moved out on EVERY path: nothing (the new owner drops it);
+    ///    - moved out on SOME path (RUE-156): its drop behind the field
+    ///      path's runtime drop-flag guard;
+    ///    - holding a deeper moved path (RUE-157): a recursive
+    ///      field-granular drop of the field instead of a whole `Drop`;
+    ///    - untouched: a plain `Drop` of the field read via `PlaceRead`.
     ///
     /// Returns `false` (caller emits the normal whole-value drop) when the
-    /// slot has no moved-out fields or is not a struct. Note the destructor
-    /// still receives the WHOLE struct, including the moved-out field's
-    /// stale slots — reading a moved field in a destructor is a
-    /// use-after-move just like any other.
+    /// slot has no (possibly-)moved-out field paths or is not a struct.
+    /// Note each destructor still receives the WHOLE struct, including the
+    /// moved-out part's stale slots — reading a moved field in a destructor
+    /// is a use-after-move just like any other.
     fn emit_partial_struct_drop(&mut self, key: MovedSlot, ty: Type, span: rue_span::Span) -> bool {
-        let moved_fields = self.moved.moved_fields_of(key);
-        if moved_fields.is_empty() {
+        // `maybe` ⊇ `definite`: paths possibly vs. definitely moved out on
+        // the paths reaching this exit.
+        let definite = self.moved.moved_paths_of(key);
+        let maybe = self.moved.maybe_moved_paths_of(key);
+        if maybe.is_empty() && definite.is_empty() {
             return false;
         }
         let TypeKind::Struct(struct_id) = ty.kind() else {
@@ -2386,13 +2576,50 @@ impl<'a> CfgBuilder<'a> {
             // this is unreachable today; fall back to the whole-value drop.
             return false;
         };
-        let struct_def = self.type_pool.struct_def(struct_id);
+        self.emit_partial_struct_drop_level(
+            key,
+            struct_id,
+            ty,
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &definite,
+            &maybe,
+            span,
+        );
+        true
+    }
 
-        // 1. Run the struct's own destructor (without the field glue).
+    /// One struct level of [`Self::emit_partial_struct_drop`]: destructor
+    /// (without glue) plus per-field drops for the struct at field path
+    /// `path` (projections `projs`) inside slot `key`.
+    #[allow(clippy::too_many_arguments)]
+    fn emit_partial_struct_drop_level(
+        &mut self,
+        key: MovedSlot,
+        struct_id: StructId,
+        ty: Type,
+        path: &mut FieldPath,
+        projs: &mut Vec<Projection>,
+        definite: &std::collections::HashSet<FieldPath>,
+        maybe: &std::collections::HashSet<FieldPath>,
+        span: rue_span::Span,
+    ) {
+        let struct_def = self.type_pool.struct_def(struct_id);
+        let base = match key {
+            MovedSlot::Local(slot) => PlaceBase::Local(slot),
+            MovedSlot::Param(slot) => PlaceBase::Param(slot),
+        };
+
+        // 1. Run this struct's own destructor (without the field glue).
         if let Some(ref destructor_name) = struct_def.destructor {
-            let whole_val = match key {
-                MovedSlot::Local(slot) => self.emit(CfgInstData::Load { slot }, ty, span),
-                MovedSlot::Param(index) => self.emit(CfgInstData::Param { index }, ty, span),
+            let whole_val = if projs.is_empty() {
+                match key {
+                    MovedSlot::Local(slot) => self.emit(CfgInstData::Load { slot }, ty, span),
+                    MovedSlot::Param(index) => self.emit(CfgInstData::Param { index }, ty, span),
+                }
+            } else {
+                let place = self.cfg.make_place(base, projs.iter().copied());
+                self.emit(CfgInstData::PlaceRead { place }, ty, span)
             };
             let name = self.interner.get_or_intern(destructor_name);
             let (args_start, args_len) = self.cfg.push_call_args(std::iter::once(CfgCallArg {
@@ -2410,27 +2637,74 @@ impl<'a> CfgBuilder<'a> {
             );
         }
 
-        // 2. Drop the still-owned droppable fields in declaration order.
-        let base = match key {
-            MovedSlot::Local(slot) => PlaceBase::Local(slot),
-            MovedSlot::Param(slot) => PlaceBase::Param(slot),
-        };
+        // 2. Handle the droppable fields in declaration order.
         for (field_index, field) in struct_def.fields.iter().enumerate() {
             let field_index = field_index as u32;
-            if moved_fields.contains(&field_index) || !self.type_needs_drop(field.ty) {
+            if !self.type_needs_drop(field.ty) {
                 continue;
             }
-            let place = self.cfg.make_place(
-                base,
-                std::iter::once(Projection::Field {
-                    struct_id,
-                    field_index,
-                }),
-            );
-            let field_val = self.emit(CfgInstData::PlaceRead { place }, field.ty, span);
-            self.emit(CfgInstData::Drop { value: field_val }, Type::UNIT, span);
+            path.push(field_index);
+            projs.push(Projection::Field {
+                struct_id,
+                field_index,
+            });
+
+            if definite.contains(path) {
+                // Moved out on every path: the new owner drops it.
+                path.pop();
+                projs.pop();
+                continue;
+            }
+            // A strictly deeper (possibly-)moved path means this field
+            // can't take a whole `Drop`; recurse instead.
+            let has_deeper_move = maybe
+                .iter()
+                .any(|p| p.len() > path.len() && p.starts_with(path));
+            // Possibly (but not definitely) moved: guard the drop with the
+            // field path's runtime drop flag (RUE-156). The flag exists
+            // whenever a droppable path has a move site (armed at the
+            // slot's init); a missing flag falls through to an unguarded
+            // drop as a defensive default.
+            let guard_flag = if maybe.contains(path) {
+                self.field_drop_flags.get(&(key, path.clone())).copied()
+            } else {
+                None
+            };
+
+            let cont_block = guard_flag.map(|flag| self.begin_flag_guard(flag, span));
+            let recursed = if has_deeper_move {
+                if let TypeKind::Struct(field_struct_id) = field.ty.kind() {
+                    self.emit_partial_struct_drop_level(
+                        key,
+                        field_struct_id,
+                        field.ty,
+                        path,
+                        projs,
+                        definite,
+                        maybe,
+                        span,
+                    );
+                    true
+                } else {
+                    // Deeper paths only exist through struct fields; keep a
+                    // whole drop as a defensive fallback.
+                    false
+                }
+            } else {
+                false
+            };
+            if !recursed {
+                let place = self.cfg.make_place(base, projs.iter().copied());
+                let field_val = self.emit(CfgInstData::PlaceRead { place }, field.ty, span);
+                self.emit(CfgInstData::Drop { value: field_val }, Type::UNIT, span);
+            }
+            if let Some(cont_block) = cont_block {
+                self.end_flag_guard(cont_block);
+            }
+
+            path.pop();
+            projs.pop();
         }
-        true
     }
 
     // ============================================================================
@@ -2953,5 +3227,65 @@ mod tests {
             ),
             "the drop covers the whole re-initialized struct, not one field"
         );
+    }
+
+    #[test]
+    fn test_deep_field_move_skips_only_moved_leaf() {
+        // RUE-157: a depth-2 field path move (`eat(t.mid.leaf)`) is exported
+        // to drop elaboration. The exit drop recurses field-granularly: the
+        // moved leaf is skipped and only the sibling leaf gets a Drop.
+        let source = "struct Leaf { v: i32 }\n\
+             struct Mid { leaf: Leaf, other: Leaf }\n\
+             struct Top { mid: Mid }\n\
+             drop fn Leaf(self) { }\n\
+             fn eat(l: Leaf) -> i32 { 0 }\n\
+             fn main() -> i32 {\n\
+                 let t = Top { mid: Mid { leaf: Leaf { v: 5 }, other: Leaf { v: 6 } } };\n\
+                 eat(t.mid.leaf);\n\
+                 0\n\
+             }";
+        let main_cfg = build_cfg_named(source, "main");
+        assert_eq!(
+            count_drops(&main_cfg),
+            1,
+            "moved t.mid.leaf is skipped; only t.mid.other drops at exit"
+        );
+        assert_all_blocks_terminated(&main_cfg);
+    }
+
+    #[test]
+    fn test_branch_divergent_field_move_emits_guarded_field_drop() {
+        // RUE-156: a field moved in only ONE branch keeps its scope-exit
+        // drop, but behind a per-field-path runtime drop flag. Statically
+        // the CFG contains the guarded drop of field a plus the plain drop
+        // of field b, and a distinctive Ne flag test.
+        let source = "struct Inner { v: i32 }\n\
+             struct Outer { a: Inner, b: Inner }\n\
+             drop fn Inner(self) { }\n\
+             fn eat(i: Inner) -> i32 { 0 }\n\
+             fn main() -> i32 {\n\
+                 let o = Outer { a: Inner { v: 1 }, b: Inner { v: 2 } };\n\
+                 let c = true;\n\
+                 if c {\n\
+                     eat(o.a);\n\
+                 }\n\
+                 0\n\
+             }";
+        let main_cfg = build_cfg_named(source, "main");
+        assert_eq!(
+            count_drops(&main_cfg),
+            2,
+            "guarded drop of conditionally moved a, plain drop of b"
+        );
+        let has_flag_compare = main_cfg
+            .blocks()
+            .iter()
+            .flat_map(|b| b.insts.iter())
+            .any(|i| matches!(main_cfg.get_inst(*i).data, CfgInstData::Ne(..)));
+        assert!(
+            has_flag_compare,
+            "field a's exit drop must be guarded by a flag test"
+        );
+        assert_all_blocks_terminated(&main_cfg);
     }
 }
