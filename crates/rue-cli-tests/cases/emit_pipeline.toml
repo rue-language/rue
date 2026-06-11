@@ -43,3 +43,23 @@ args = ["--emit", "air", "main.rue", "utils.rue"]
 compile_only = true
 compile_stdout_contains = ["=== AIR ==="]
 compile_stderr_not_contains = ["E0704"]
+
+# A lex error in the SECOND file used to be reported with the first file's
+# path and source snippet, because the --emit tokens path lexed every file
+# with FileId::DEFAULT (RUE-38).
+[[case]]
+name = "emit_tokens_lex_error_attributed_to_correct_file"
+description = "Lex errors under multi-file --emit tokens name the file that actually contains the error."
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 { 0 }
+""" },
+    { path = "bad.rue", source = """
+fn ok() -> i32 { 1 }
+let # = 3;
+""" },
+]
+args = ["--emit", "tokens", "main.rue", "bad.rue"]
+compile_fail = true
+compile_stderr_contains = ["bad.rue:", "let # = 3;"]
+compile_stderr_not_contains = ["main.rue:"]
