@@ -56,3 +56,36 @@ fn main() -> i32 {
     //                          // private to the utils/ directory
 }
 ```
+
+{{ rule(id="10.3:7", cat="legality-rule") }}
+
+Privacy cannot be escaped by dropping the module qualifier. It is a
+compile-time error to call a private function of a *module-loaded* source
+file — a file that is the target of a resolved `@import` anywhere in the
+program — by its unqualified name from a source file in a different
+directory (error E0460).
+
+{{ rule(id="10.3:8") }}
+
+Source files that are only listed explicitly in the compilation and are
+never imported retain the transitional flat namespace (10.5:2): unqualified
+references to their items are permitted regardless of visibility. This
+exemption is expected to be removed together with rule 10.5:2 when
+top-level names become module-scoped.
+
+{{ rule(id="10.3:9", cat="example") }}
+
+```rue
+// sub/lib.rue
+fn secret() -> i32 { 99 }   // private to sub/
+pub fn open() -> i32 { 7 }
+
+// main.rue — a different directory
+const lib = @import("sub/lib.rue");
+
+fn main() -> i32 {
+    // lib.secret()          // error E0706: private member access
+    // secret()              // error E0460: same privacy, unqualified
+    open()                   // OK (transitional flat namespace, 10.5:2)
+}
+```

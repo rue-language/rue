@@ -134,6 +134,8 @@ impl ErrorCode {
     // 444-455 are reserved by in-flight work; next free code is 458.
     pub const MOVE_FIELD_OUT_OF_DESTRUCTOR_TYPE: Self = Self(456);
     pub const COPY_STRUCT_WITH_DESTRUCTOR: Self = Self(457);
+    // 458-459 are reserved by in-flight work.
+    pub const PRIVATE_UNQUALIFIED_ACCESS: Self = Self(460);
 
     // ========================================================================
     // Control flow errors (E0500-E0599)
@@ -1081,6 +1083,8 @@ pub enum ErrorKind {
     StdLibNotFound,
     #[error("{item_kind} `{name}` is private")]
     PrivateMemberAccess { item_kind: String, name: String },
+    #[error("function `{name}` is private to module `{module_path}`")]
+    PrivateUnqualifiedAccess { name: String, module_path: String },
     #[error("module `{module_name}` has no member `{member_name}`")]
     UnknownModuleMember {
         module_name: String,
@@ -1241,6 +1245,7 @@ impl ErrorKind {
             ErrorKind::AmbiguousModule { .. } => ErrorCode::AMBIGUOUS_MODULE,
             ErrorKind::StdLibNotFound => ErrorCode::STD_LIB_NOT_FOUND,
             ErrorKind::PrivateMemberAccess { .. } => ErrorCode::PRIVATE_MEMBER_ACCESS,
+            ErrorKind::PrivateUnqualifiedAccess { .. } => ErrorCode::PRIVATE_UNQUALIFIED_ACCESS,
             ErrorKind::UnknownModuleMember { .. } => ErrorCode::UNKNOWN_MODULE_MEMBER,
 
             // Literal/operator errors (E0800-E0899)

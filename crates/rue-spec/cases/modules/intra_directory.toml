@@ -232,3 +232,83 @@ fn internal_format() -> i32 {
 """ }
 pass_aux_files = true
 exit_code = 42
+
+# =============================================================================
+# Unqualified Access to Module-Loaded Files (RUE-37)
+# =============================================================================
+# The flat global namespace (10.5:2) must not bypass module privacy: a
+# private function in an imported file in another directory is rejected even
+# when called WITHOUT the module qualifier (E0460). Files that are only
+# listed explicitly and never imported keep the flat namespace (10.3:8).
+
+[[case]]
+name = "cross_dir_unqualified_private_fn_error"
+spec = ["10.3:7"]
+description = "Unqualified call to a private function of an imported module in another directory is rejected"
+source = """
+const utils = @import("subdir/utils");
+
+fn main() -> i32 {
+    internal_fn()
+}
+"""
+aux_files = { "subdir/utils.rue" = """
+fn internal_fn() -> i32 {
+    42
+}
+""" }
+compile_fail = true
+error_contains = "private to module"
+
+[[case]]
+name = "cross_dir_unqualified_pub_fn_allowed"
+spec = ["10.3:7", "10.5:2"]
+description = "Unqualified call to a pub function of an imported module still resolves (transitional flat namespace)"
+source = """
+const utils = @import("subdir/utils");
+
+fn main() -> i32 {
+    public_fn()
+}
+"""
+aux_files = { "subdir/utils.rue" = """
+pub fn public_fn() -> i32 {
+    42
+}
+""" }
+exit_code = 42
+
+[[case]]
+name = "same_dir_unqualified_private_fn_allowed"
+spec = ["10.3:2", "10.3:7"]
+description = "Unqualified call to a private function of an imported file in the SAME directory is allowed (intra-directory visibility)"
+source = """
+const utils = @import("utils");
+
+fn main() -> i32 {
+    internal_fn()
+}
+"""
+aux_files = { "utils.rue" = """
+fn internal_fn() -> i32 {
+    42
+}
+""" }
+exit_code = 42
+
+[[case]]
+name = "flat_multifile_unqualified_private_fn_allowed"
+spec = ["10.3:8"]
+description = "A never-imported file listed explicitly keeps the flat namespace: cross-directory unqualified private call is allowed"
+source = """
+fn main() -> i32 {
+    internal_fn()
+}
+"""
+aux_files = { "subdir/utils.rue" = """
+fn internal_fn() -> i32 {
+    42
+}
+""" }
+pass_aux_files = true
+exit_code = 42

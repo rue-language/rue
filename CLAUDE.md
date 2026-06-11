@@ -134,7 +134,7 @@ graph LR
 Rue supports compiling multiple source files into a single executable:
 
 ```bash
-# All files share a flat global namespace (no modules yet)
+# Explicitly listed files share a flat global namespace (transitional, spec 10.5:2)
 rue main.rue utils.rue lib.rue -o program
 ```
 
@@ -144,11 +144,17 @@ rue main.rue utils.rue lib.rue -o program
 - `main()` must exist in exactly one file
 - Files are parsed in parallel, then merged for semantic analysis
 
-**Current limitations (will be addressed by the module system):**
-- No visibility control (`pub`/private)
-- No namespacing - all symbols share global scope
-- No `mod` or `use` syntax
-- Must list all files explicitly on command line
+**Module interaction:** files loaded via `@import` (the module system, spec
+chapter 10) get directory-based privacy enforcement — private items of an
+imported file are rejected from other directories whether accessed through
+the module object (E0706) or unqualified (E0460). Files that are only
+listed explicitly and never imported keep the flat namespace above.
+
+**Current limitations (transitional, see spec 10.5:2):**
+- Top-level names are not yet module-scoped — all symbols share one global
+  scope, so names collide program-wide and `pub` items remain callable
+  unqualified across files
+- No `mod` or `use` syntax (`@import` + `pub const` re-exports instead)
 
 ### Key Design Decisions
 
