@@ -112,8 +112,18 @@ impl RirCallArg {
 pub enum RirPattern {
     /// Wildcard pattern `_` - matches anything
     Wildcard(Span),
-    /// Integer literal pattern (can be positive or negative)
-    Int(i64, Span),
+    /// Integer literal pattern. The magnitude and sign are kept separate so
+    /// Sema can range-check the literal against the scrutinee type exactly
+    /// like `let` bindings (E0800/E0801) instead of silently wrapping
+    /// (RUE-74). `negative` means the source had a leading `-`.
+    Int {
+        /// Magnitude of the literal as written (e.g. 128 for `-128`).
+        value: u64,
+        /// True if the pattern was written with a leading minus sign.
+        negative: bool,
+        /// Span of the pattern (including the minus sign, if any).
+        span: Span,
+    },
     /// Boolean literal pattern
     Bool(bool, Span),
     /// Path pattern for enum variants (e.g., `Color::Red` or `module.Color::Red`)
@@ -134,7 +144,7 @@ impl RirPattern {
     pub fn span(&self) -> Span {
         match self {
             RirPattern::Wildcard(span) => *span,
-            RirPattern::Int(_, span) => *span,
+            RirPattern::Int { span, .. } => *span,
             RirPattern::Bool(_, span) => *span,
             RirPattern::Path { span, .. } => *span,
         }
@@ -173,7 +183,7 @@ pub enum PatternKind {
 
 /// Size of each pattern kind in the extra array (including body InstRef)
 const PATTERN_WILDCARD_SIZE: u32 = 4; // kind, span_start, span_len, body
-const PATTERN_INT_SIZE: u32 = 6; // kind, span_start, span_len, value_lo, value_hi, body
+const PATTERN_INT_SIZE: u32 = 7; // kind, span_start, span_len, value_lo, value_hi, negative, body
 const PATTERN_BOOL_SIZE: u32 = 5; // kind, span_start, span_len, value, body
 const PATTERN_PATH_SIZE: u32 = 7; // kind, span_start, span_len, module, type_name, variant, body
 
@@ -390,13 +400,18 @@ impl Rir {
                     self.extra.push(span.len());
                     self.extra.push(body.as_u32());
                 }
-                RirPattern::Int(value, span) => {
+                RirPattern::Int {
+                    value,
+                    negative,
+                    span,
+                } => {
                     self.extra.push(PatternKind::Int as u32);
                     self.extra.push(span.start());
                     self.extra.push(span.len());
-                    // Store i64 as two u32s (little-endian)
+                    // Store u64 magnitude as two u32s (little-endian) plus sign flag
                     self.extra.push(*value as u32);
                     self.extra.push((*value >> 32) as u32);
+                    self.extra.push(u32::from(*negative));
                     self.extra.push(body.as_u32());
                 }
                 RirPattern::Bool(value, span) => {
@@ -446,11 +461,19 @@ impl Rir {
                     let span_start = self.extra[pos + 1];
                     let span_len = self.extra[pos + 2];
                     let span = Span::new(span_start, span_start + span_len);
-                    let value_lo = self.extra[pos + 3] as i64;
-                    let value_hi = self.extra[pos + 4] as i64;
+                    let value_lo = self.extra[pos + 3] as u64;
+                    let value_hi = self.extra[pos + 4] as u64;
                     let value = value_lo | (value_hi << 32);
-                    let body = InstRef::from_raw(self.extra[pos + 5]);
-                    arms.push((RirPattern::Int(value, span), body));
+                    let negative = self.extra[pos + 5] != 0;
+                    let body = InstRef::from_raw(self.extra[pos + 6]);
+                    arms.push((
+                        RirPattern::Int {
+                            value,
+                            negative,
+                            span,
+                        },
+                        body,
+                    ));
                     pos += PATTERN_INT_SIZE as usize;
                 }
                 k if k == PatternKind::Bool as u32 => {
@@ -1670,7 +1693,15 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
     fn format_pattern(&self, pat: &RirPattern) -> String {
         match pat {
             RirPattern::Wildcard(_) => "_".to_string(),
-            RirPattern::Int(n, _) => n.to_string(),
+            RirPattern::Int {
+                value, negative, ..
+            } => {
+                if *negative {
+                    format!("-{}", value)
+                } else {
+                    value.to_string()
+                }
+            }
             RirPattern::Bool(b, _) => b.to_string(),
             RirPattern::Path {
                 module,
@@ -2228,11 +2259,19 @@ mod tests {
     #[test]
     fn test_rir_pattern_int_span() {
         let span = Span::new(20, 22);
-        let pattern = RirPattern::Int(42, span);
+        let pattern = RirPattern::Int {
+            value: 42,
+            negative: false,
+            span,
+        };
         assert_eq!(pattern.span(), span);
 
         // Test negative int
-        let pattern_neg = RirPattern::Int(-100, span);
+        let pattern_neg = RirPattern::Int {
+            value: 100,
+            negative: true,
+            span,
+        };
         assert_eq!(pattern_neg.span(), span);
     }
 
@@ -3536,8 +3575,22 @@ mod tests {
         });
 
         let (arms_start, arms_len) = rir.add_match_arms(&[
-            (RirPattern::Int(1, Span::new(0, 1)), body1),
-            (RirPattern::Int(-5, Span::new(0, 2)), body2),
+            (
+                RirPattern::Int {
+                    value: 1,
+                    negative: false,
+                    span: Span::new(0, 1),
+                },
+                body1,
+            ),
+            (
+                RirPattern::Int {
+                    value: 5,
+                    negative: true,
+                    span: Span::new(0, 2),
+                },
+                body2,
+            ),
             (RirPattern::Wildcard(Span::new(0, 1)), body_default),
         ]);
 

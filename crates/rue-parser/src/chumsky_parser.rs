@@ -1019,6 +1019,14 @@ where
         .boxed();
 
     // Match expression: match scrutinee { pattern => expr, ... }
+    //
+    // The arm block is `.or_not()` because of a brace ambiguity: in
+    // `match v {}` the expression parser greedily parses `v {}` as a
+    // zero-field struct literal, swallowing the braces that were meant to be
+    // the (empty) arm list. Per spec 4.7:28 a struct literal may not appear
+    // unparenthesized as the scrutinee, so the `try_map_with` below
+    // reinterprets that case as an empty arm list and rejects any other bare
+    // struct-literal scrutinee with a targeted diagnostic (RUE-169).
     let match_expr = just(TokenKind::Match)
         .ignore_then(expr.clone())
         .then(
@@ -1026,14 +1034,39 @@ where
                 .separated_by(just(TokenKind::Comma))
                 .allow_trailing()
                 .collect::<Vec<_>>()
-                .delimited_by(just(TokenKind::LBrace), just(TokenKind::RBrace)),
+                .delimited_by(just(TokenKind::LBrace), just(TokenKind::RBrace))
+                .or_not(),
         )
-        .map_with(|(scrutinee, arms), e| {
-            Expr::Match(MatchExpr {
-                scrutinee: Box::new(scrutinee),
-                arms,
-                span: span_from_extra(e),
-            })
+        .try_map_with(|(scrutinee, arms), e| {
+            let span = {
+                let file_id = e.state().0.file_id;
+                to_rue_span_with_file(e.span(), file_id)
+            };
+            match (scrutinee, arms) {
+                // `match v {}`: reclaim the struct literal's braces as the
+                // match's empty arm list; the scrutinee is the bare identifier.
+                (Expr::StructLit(lit), None) if lit.base.is_none() && lit.fields.is_empty() => {
+                    Ok(Expr::Match(MatchExpr {
+                        scrutinee: Box::new(Expr::Ident(lit.name)),
+                        arms: Vec::new(),
+                        span,
+                    }))
+                }
+                (Expr::StructLit(_), _) => Err(Rich::custom(
+                    e.span(),
+                    "struct literals are not allowed as a bare match scrutinee; \
+                     wrap the scrutinee in parentheses",
+                )),
+                (scrutinee, Some(arms)) => Ok(Expr::Match(MatchExpr {
+                    scrutinee: Box::new(scrutinee),
+                    arms,
+                    span,
+                })),
+                (_, None) => Err(Rich::custom(
+                    e.span(),
+                    "expected '{' and match arms after the match scrutinee",
+                )),
+            }
         })
         .boxed();
 

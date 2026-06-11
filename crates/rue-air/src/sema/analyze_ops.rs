@@ -905,6 +905,50 @@ impl<'a> Sema<'a> {
         Ok(AnalysisResult::new(air_ref, loop_ty))
     }
 
+    /// Validate an integer pattern literal against the scrutinee type and
+    /// return the value it compares as at runtime (the scrutinee-typed value,
+    /// held as an i64 bit pattern).
+    ///
+    /// Mirrors the `let`-binding literal checks (RUE-74): out-of-range
+    /// literals are E0800 (`LiteralOutOfRange`) and negative literals on
+    /// unsigned scrutinees are E0801 (`CannotNegateUnsigned`) instead of
+    /// silently wrapping into a different (or unmatchable) value.
+    fn check_pattern_int(
+        &self,
+        value: u64,
+        negative: bool,
+        scrutinee_type: Type,
+        span: Span,
+    ) -> CompileResult<i64> {
+        let ty_name = scrutinee_type.safe_name_with_pool(Some(&self.type_pool));
+        if negative {
+            if scrutinee_type.is_unsigned() {
+                return Err(
+                    CompileError::new(ErrorKind::CannotNegateUnsigned(ty_name), span).with_note(
+                        "unsigned values are never negative, so this pattern could never match",
+                    ),
+                );
+            }
+            if !scrutinee_type.negated_literal_fits(value) {
+                return Err(CompileError::new(
+                    ErrorKind::LiteralOutOfRange { value, ty: ty_name },
+                    span,
+                )
+                .with_note(format!("the pattern value is -{}", value)));
+            }
+            // wrapping_neg handles the i64::MIN magnitude (9223372036854775808).
+            Ok((value as i64).wrapping_neg())
+        } else {
+            if !scrutinee_type.literal_fits(value) {
+                return Err(CompileError::new(
+                    ErrorKind::LiteralOutOfRange { value, ty: ty_name },
+                    span,
+                ));
+            }
+            Ok(value as i64)
+        }
+    }
+
     /// Analyze a match expression.
     fn analyze_match(
         &mut self,
@@ -931,9 +975,29 @@ impl<'a> Sema<'a> {
         }
 
         let arms = self.rir.get_match_arms(arms_start, arms_len);
-        // Check for empty match
+        // An empty match is only legal on a zero-variant (uninhabited) enum,
+        // where zero arms vacuously satisfy exhaustiveness because the type
+        // has no values (spec 4.7:26, RUE-169). The match can never be
+        // reached with a value, so its type is `!` (spec 4.7:27).
         if arms.is_empty() {
-            return Err(CompileError::new(ErrorKind::EmptyMatch, span));
+            let is_uninhabited_enum = match scrutinee_type.try_kind() {
+                Some(TypeKind::Enum(id)) => self.type_pool.enum_def(id).variant_count() == 0,
+                _ => false,
+            };
+            if !is_uninhabited_enum {
+                return Err(CompileError::new(ErrorKind::EmptyMatch, span));
+            }
+            let arms_start = air.add_extra(&[]);
+            let air_ref = air.add_inst(AirInst {
+                data: AirInstData::Match {
+                    scrutinee: scrutinee_result.air_ref,
+                    arms_start,
+                    arms_len: 0,
+                },
+                ty: Type::NEVER,
+                span,
+            });
+            return Ok(AnalysisResult::new(air_ref, Type::NEVER));
         }
 
         // Track patterns for exhaustiveness checking and duplicate detection
@@ -966,7 +1030,15 @@ impl<'a> Sema<'a> {
             if let Some(first_wildcard_span) = wildcard_span {
                 let pat_str = match pattern {
                     RirPattern::Wildcard(_) => "_".to_string(),
-                    RirPattern::Int(n, _) => n.to_string(),
+                    RirPattern::Int {
+                        value, negative, ..
+                    } => {
+                        if *negative {
+                            format!("-{}", value)
+                        } else {
+                            value.to_string()
+                        }
+                    }
                     RirPattern::Bool(b, _) => b.to_string(),
                     RirPattern::Path {
                         type_name, variant, ..
@@ -993,11 +1065,35 @@ impl<'a> Sema<'a> {
             // Validate pattern against scrutinee type and check for duplicates
             match pattern {
                 RirPattern::Wildcard(_) => {
+                    // A `_` arm after the preceding arms already cover every
+                    // value (both bools, or every enum variant) is unreachable
+                    // (spec 4.7:17 / 4.7:20, RUE-168).
                     if wildcard_span.is_none() {
+                        let fully_covered = if scrutinee_type == Type::BOOL {
+                            bool_true_span.is_some() && bool_false_span.is_some()
+                        } else if let Some(enum_id) = pattern_enum_id {
+                            covered_variants.len()
+                                == self.type_pool.enum_def(enum_id).variant_count()
+                        } else {
+                            false
+                        };
+                        if fully_covered {
+                            ctx.warnings.push(
+                                CompileWarning::new(
+                                    WarningKind::UnreachablePattern("_".to_string()),
+                                    pattern_span,
+                                )
+                                .with_note(
+                                    "this pattern will never be matched because the arms above already cover every possible value",
+                                ),
+                            );
+                        }
                         wildcard_span = Some(pattern_span);
                     }
                 }
-                RirPattern::Int(n, _) => {
+                RirPattern::Int {
+                    value, negative, ..
+                } => {
                     if !scrutinee_type.is_integer() {
                         return Err(CompileError::new(
                             ErrorKind::TypeMismatch {
@@ -1007,12 +1103,24 @@ impl<'a> Sema<'a> {
                             pattern_span,
                         ));
                     }
+                    // Range-check the literal against the scrutinee type
+                    // (E0800/E0801, like `let` bindings) and get the value it
+                    // compares as at runtime. Previously the literal wrapped to
+                    // i64 untyped, so e.g. `4294967296` on a u32 scrutinee
+                    // truncated and matched 0 (RUE-74).
+                    let n =
+                        self.check_pattern_int(*value, *negative, scrutinee_type, pattern_span)?;
                     // Check for duplicate integer pattern
-                    if let Some(first_span) = seen_ints.get(n) {
+                    if let Some(first_span) = seen_ints.get(&n) {
                         if wildcard_span.is_none() {
+                            let pat_str = if *negative {
+                                format!("-{}", value)
+                            } else {
+                                value.to_string()
+                            };
                             ctx.warnings.push(
                                 CompileWarning::new(
-                                    WarningKind::UnreachablePattern(n.to_string()),
+                                    WarningKind::UnreachablePattern(pat_str),
                                     pattern_span,
                                 )
                                 .with_label("first occurrence of this pattern", *first_span)
@@ -1022,7 +1130,7 @@ impl<'a> Sema<'a> {
                             );
                         }
                     } else {
-                        seen_ints.insert(*n, pattern_span);
+                        seen_ints.insert(n, pattern_span);
                     }
                 }
                 RirPattern::Bool(b, _) => {
@@ -1164,7 +1272,18 @@ impl<'a> Sema<'a> {
             // Convert pattern to AIR pattern
             let air_pattern = match pattern {
                 RirPattern::Wildcard(_) => AirPattern::Wildcard,
-                RirPattern::Int(n, _) => AirPattern::Int(*n),
+                RirPattern::Int {
+                    value, negative, ..
+                } => {
+                    // Already range-checked above; wrapping_neg handles the
+                    // i64::MIN magnitude (9223372036854775808).
+                    let n = if *negative {
+                        (*value as i64).wrapping_neg()
+                    } else {
+                        *value as i64
+                    };
+                    AirPattern::Int(n)
+                }
                 RirPattern::Bool(b, _) => AirPattern::Bool(*b),
                 RirPattern::Path {
                     module,

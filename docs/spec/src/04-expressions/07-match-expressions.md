@@ -15,7 +15,7 @@ A match expression provides multi-way branching based on pattern matching.
 ```ebnf
 match_expr = "match" expression "{" { match_arm "," } [ match_arm ] "}" ;
 match_arm = pattern "=>" expression ;
-pattern = "_" | INTEGER | BOOL | enum_variant_pattern ;
+pattern = "_" | [ "-" ] INTEGER | BOOL | enum_variant_pattern ;
 enum_variant_pattern = IDENT "::" IDENT ;
 ```
 
@@ -157,5 +157,66 @@ fn main() -> i32 {
         1 => 20,  // warning: unreachable pattern '1'
         _ => 0,
     }
+}
+```
+
+## Pattern Range Requirements
+
+{{ rule(id="4.7:23", cat="legality-rule") }}
+
+An integer literal pattern **MUST** denote a value representable in the
+scrutinee's type. A pattern whose value is out of range for the scrutinee type
+is rejected with a compile-time error, exactly as an out-of-range integer
+literal in any other position (3.1:17). A negated literal that denotes the
+minimum value of a signed scrutinee type remains valid (3.1:18).
+
+{{ rule(id="4.7:24", cat="legality-rule") }}
+
+A negative integer literal pattern **MUST NOT** be used with a scrutinee of
+unsigned type. Such a pattern is rejected with a compile-time error; unsigned
+values are never negative, so the arm could never match.
+
+{{ rule(id="4.7:25", cat="example") }}
+
+```rue
+fn main() -> i32 {
+    let x: u32 = 0;
+    match x {
+        4294967296 => 1,  // error: out of range for u32
+        -1 => 2,          // error: negative pattern on unsigned scrutinee
+        _ => 0,
+    }
+}
+```
+
+## Empty Match Expressions
+
+{{ rule(id="4.7:26", cat="normative") }}
+
+A match expression with zero arms is legal if and only if the scrutinee's type
+is an enum with zero variants. Such a type has no values, so the empty pattern
+set vacuously satisfies exhaustiveness (4.7:8). A match expression with zero
+arms on any other type is rejected with a compile-time error.
+
+{{ rule(id="4.7:27", cat="normative") }}
+
+The type of a match expression with zero arms is `!` (the never type): the
+expression can never be reached with a scrutinee value, so it never produces
+a value.
+
+{{ rule(id="4.7:28", cat="normative") }}
+
+A struct literal **MUST NOT** appear as the outermost expression of a match
+scrutinee; a program that requires one parenthesizes the scrutinee.
+Consequently, in `match v {}` the braces denote the match expression's empty
+arm list, not a struct literal `v {}`.
+
+{{ rule(id="4.7:29", cat="example") }}
+
+```rue
+enum Never {}
+
+fn absurd(n: Never) -> i32 {
+    match n {}  // legal: zero arms cover the zero values of `Never`
 }
 ```

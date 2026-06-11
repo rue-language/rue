@@ -727,3 +727,204 @@ fn main() -> i32 {
 }
 """
 exit_code = 10
+# =============================================================================
+# Pattern Range Requirements (4.7:23, 4.7:24)
+# =============================================================================
+
+[[case]]
+name = "pattern_out_of_range_u32"
+spec = ["4.7:23"]
+source = """
+fn main() -> i32 {
+    let x: u32 = 0;
+    match x {
+        4294967296 => 1,
+        _ => 0,
+    }
+}
+"""
+compile_fail = true
+error_contains = "out of range"
+
+[[case]]
+name = "pattern_out_of_range_i64_positive"
+spec = ["4.7:23"]
+source = """
+fn main() -> i32 {
+    let x: i64 = -9223372036854775808;
+    match x {
+        9223372036854775808 => 1,
+        _ => 0,
+    }
+}
+"""
+compile_fail = true
+error_contains = "out of range"
+
+[[case]]
+name = "pattern_out_of_range_i8_negative"
+spec = ["4.7:23"]
+source = """
+fn main() -> i32 {
+    let x: i8 = 0;
+    match x {
+        -129 => 1,
+        _ => 0,
+    }
+}
+"""
+compile_fail = true
+error_contains = "out of range"
+
+[[case]]
+name = "pattern_i64_min_negated_literal_is_legal"
+spec = ["4.7:23"]
+source = """
+fn main() -> i32 {
+    let x: i64 = -9223372036854775808;
+    match x {
+        -9223372036854775808 => 42,
+        _ => 0,
+    }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "pattern_i8_min_negated_literal_is_legal"
+spec = ["4.7:23"]
+source = """
+fn main() -> i32 {
+    let x: i8 = -128;
+    match x {
+        -128 => 42,
+        _ => 0,
+    }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "pattern_u64_max_is_legal"
+spec = ["4.7:23"]
+source = """
+fn main() -> i32 {
+    let x: u64 = 18446744073709551615;
+    match x {
+        18446744073709551615 => 42,
+        _ => 0,
+    }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "negative_pattern_on_unsigned_scrutinee"
+spec = ["4.7:24"]
+source = """
+fn main() -> i32 {
+    let x: u64 = 18446744073709551615;
+    match x {
+        -1 => 1,
+        _ => 0,
+    }
+}
+"""
+compile_fail = true
+error_contains = "unary operator"
+
+[[case]]
+name = "negative_pattern_on_u8_scrutinee"
+spec = ["4.7:24"]
+source = """
+fn main() -> i32 {
+    let x: u8 = 0;
+    match x {
+        -1 => 1,
+        _ => 0,
+    }
+}
+"""
+compile_fail = true
+
+# =============================================================================
+# Empty Match Expressions (4.7:26, 4.7:27, 4.7:28)
+# =============================================================================
+
+[[case]]
+name = "empty_match_on_zero_variant_enum"
+spec = ["4.7:26", "4.7:28"]
+source = """
+enum Never {}
+
+fn absurd(n: Never) -> i32 {
+    match n {}
+}
+
+fn main() -> i32 {
+    7
+}
+"""
+exit_code = 7
+
+[[case]]
+name = "empty_match_has_never_type"
+spec = ["4.7:26", "4.7:27"]
+source = """
+enum Never {}
+
+fn pick(n: Never) -> bool {
+    match (n) {}
+}
+
+fn main() -> i32 {
+    3
+}
+"""
+exit_code = 3
+
+[[case]]
+name = "empty_match_on_integer_is_error"
+spec = ["4.7:26"]
+source = """
+fn main() -> i32 {
+    let x: i32 = 0;
+    match x {}
+}
+"""
+compile_fail = true
+error_contains = "no arms"
+
+[[case]]
+name = "empty_match_on_inhabited_enum_is_error"
+spec = ["4.7:26"]
+source = """
+enum Color {
+    Red,
+    Green,
+}
+
+fn main() -> i32 {
+    let c = Color::Red;
+    match c {}
+}
+"""
+compile_fail = true
+error_contains = "no arms"
+
+[[case]]
+name = "struct_literal_scrutinee_requires_parens"
+spec = ["4.7:28"]
+source = """
+struct Point {
+    x: i32,
+}
+
+fn main() -> i32 {
+    match Point { x: 1 } {
+        _ => 0,
+    }
+}
+"""
+compile_fail = true
+error_contains = "parentheses"

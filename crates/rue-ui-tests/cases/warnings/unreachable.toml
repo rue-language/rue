@@ -289,3 +289,70 @@ fn main() -> i32 {
 """
 exit_code = 3
 no_warnings = true
+
+# RUE-168: a `_` arm is unreachable when the preceding arms already cover
+# every possible value (both bools, or every enum variant). Spec 4.7:17 and
+# 4.7:20 mandate the warning; it previously only fired after an earlier `_`.
+[[case]]
+name = "wildcard_after_full_enum_coverage"
+source = """
+enum Color { Red, Green }
+fn main() -> i32 {
+    match Color::Red {
+        Color::Red => 1,
+        Color::Green => 2,
+        _ => 3,
+    }
+}
+"""
+exit_code = 1
+warning_contains = ["unreachable pattern", "'_'", "already cover every possible value"]
+expected_warning_count = 1
+
+[[case]]
+name = "wildcard_after_full_bool_coverage"
+source = """
+fn main() -> i32 {
+    match false {
+        true => 1,
+        false => 2,
+        _ => 3,
+    }
+}
+"""
+exit_code = 2
+warning_contains = ["unreachable pattern", "'_'", "already cover every possible value"]
+expected_warning_count = 1
+
+# Negative control: a `_` arm with enum variants still missing is load-bearing
+# and must NOT warn.
+[[case]]
+name = "wildcard_covering_missing_enum_variant_no_warning"
+source = """
+enum Color { Red, Green, Blue }
+fn main() -> i32 {
+    match Color::Blue {
+        Color::Red => 1,
+        Color::Green => 2,
+        _ => 3,
+    }
+}
+"""
+exit_code = 3
+no_warnings = true
+
+# Negative control: integers are never exhausted by literal arms, so the
+# wildcard is always reachable there.
+[[case]]
+name = "wildcard_after_int_literals_no_warning"
+source = """
+fn main() -> i32 {
+    match 7 {
+        1 => 1,
+        2 => 2,
+        _ => 3,
+    }
+}
+"""
+exit_code = 3
+no_warnings = true
