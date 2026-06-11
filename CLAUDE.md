@@ -673,7 +673,7 @@ Adding a variant (e.g. a 64-bit `Cqo`, `And64RR`, or aarch64 `Sdiv64RR`) touches
 
 Tip: `grep -n <SiblingVariant> crates/rue-codegen/src/<arch>/*.rs` lists every site you need to mirror.
 
-**Testing across backends**: x86-64 is verifiable locally (build + run). aarch64 is **not runnable locally** — you can only `--emit asm` and read it (cross-compiled binaries also embed the host runtime, RUE-36). But CI's `test (linux-arm64)` and `test (macos)` jobs build `rue` *natively* on arm64 and run the binaries, so an aarch64-only bug **will fail CI**. Therefore: **apply the parallel aarch64 change in the SAME PR** — never ship an x86-only fix expecting to follow up, or CI will bounce it. Use `known_bug` / `known_bug_on` in CLI tests only when a *separate, tracked* bug makes a case fail on one platform.
+**Testing across backends**: x86-64 is verifiable locally (build + run). aarch64 is **not runnable locally** — you can only `--emit asm` and read it (cross-target *links* are refused outright because only the host runtime is embedded; RUE-36 / ADR-0034). But CI's `test (linux-arm64)` and `test (macos)` jobs build `rue` *natively* on arm64 and run the binaries, so an aarch64-only bug **will fail CI**. Therefore: **apply the parallel aarch64 change in the SAME PR** — never ship an x86-only fix expecting to follow up, or CI will bounce it. Use `known_bug` / `known_bug_on` in CLI tests only when a *separate, tracked* bug makes a case fail on one platform.
 
 ## Version Control
 
