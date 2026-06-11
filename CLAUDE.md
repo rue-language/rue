@@ -94,16 +94,13 @@ rue main.rue utils.rue lib.rue -o program
 ```
 
 **Key semantics:**
-- All functions, structs, and enums are globally visible across files
+- All top-level names resolve across files without imports (flat namespace),
+  but privacy is uniform (spec 10.3:7): a function is callable outside its
+  defining directory only if `pub`, whether its file is imported or just
+  listed (E0460 otherwise; through a module object it's E0706)
 - Duplicate definitions (same name in multiple files) cause a compile error
 - `main()` must exist in exactly one file
 - Files are parsed in parallel, then merged for semantic analysis
-
-**Module interaction:** files loaded via `@import` (the module system, spec
-chapter 10) get directory-based privacy enforcement — private items of an
-imported file are rejected from other directories whether accessed through
-the module object (E0706) or unqualified (E0460). Files that are only
-listed explicitly and never imported keep the flat namespace above.
 
 **Current limitations (transitional, see spec 10.5:2):**
 - Top-level names are not yet module-scoped — all symbols share one global

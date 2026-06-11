@@ -1113,8 +1113,8 @@ pub enum ErrorKind {
     StdLibNotFound,
     #[error("{item_kind} `{name}` is private")]
     PrivateMemberAccess { item_kind: String, name: String },
-    #[error("function `{name}` is private to module `{module_path}`")]
-    PrivateUnqualifiedAccess { name: String, module_path: String },
+    #[error("function `{name}` is private (defined in `{defining_file}`)")]
+    PrivateUnqualifiedAccess { name: String, defining_file: String },
     #[error("module `{module_name}` has no member `{member_name}`")]
     UnknownModuleMember {
         module_name: String,

@@ -3418,10 +3418,11 @@ impl<'a> Sema<'a> {
             .get(&name)
             .ok_or_compile_error(ErrorKind::UndefinedFunction(fn_name_str.clone()), span)?;
 
-        // Visibility: an unqualified call must not reach a private function
-        // in a module's file from outside that module's directory (E0460,
-        // RUE-37) — otherwise dropping the `module.` qualifier would bypass
-        // the E0706 privacy check on `module.f()`.
+        // Visibility (E0460, RUE-37/RUE-180): an unqualified call must not
+        // reach a private function defined in another directory — privacy is
+        // uniform in every multi-file compilation, imports or not (spec
+        // 10.3:7), so the flat namespace resolves the name but the callee
+        // must be `pub` (or in the caller's directory).
         self.check_unqualified_call_visibility(
             &fn_name_str,
             fn_info.file_id,
