@@ -14,7 +14,16 @@ pub enum LexError {
     #[default]
     UnexpectedCharacter,
     InvalidInteger,
-    InvalidStringEscape,
+    /// An invalid escape sequence in a string literal. Carries the byte
+    /// offset of the backslash within the token (the opening quote is byte 0)
+    /// and the offending escape character, so the diagnostic can point at the
+    /// exact escape rather than the start of the string — and report the
+    /// right character even when a valid escape appears earlier in the
+    /// literal. (RUE-133)
+    InvalidStringEscape {
+        offset: u32,
+        escape: char,
+    },
     UnterminatedString,
 }
 
@@ -37,7 +46,9 @@ fn process_string_from_quote(lex: &mut logos::Lexer<'_, LogosTokenKind>) -> Resu
             found_close = true;
             break;
         } else if c == '\\' {
-            // Escape sequence
+            // Escape sequence. +1 for the opening quote: `consumed` counts
+            // content bytes only, but the error offset is within the token.
+            let backslash_offset = consumed as u32 + 1;
             consumed += c.len_utf8();
             match chars.next() {
                 Some('\\') => {
@@ -65,10 +76,14 @@ fn process_string_from_quote(lex: &mut logos::Lexer<'_, LogosTokenKind>) -> Resu
                     result.push('\0');
                 }
                 Some(other) => {
-                    // Invalid escape - consume the char to get better error position
+                    // Invalid escape - consume the char so the token covers it,
+                    // and record exactly where it is for the diagnostic span.
                     consumed += other.len_utf8();
                     lex.bump(consumed);
-                    return Err(LexError::InvalidStringEscape);
+                    return Err(LexError::InvalidStringEscape {
+                        offset: backslash_offset,
+                        escape: other,
+                    });
                 }
                 None => {
                     // Backslash at end of input
@@ -277,19 +292,20 @@ pub enum LogosTokenKind {
     #[token("@")]
     At,
 
-    // Builtins - use callback to ensure @import is not followed by identifier chars
-    // This prevents @importx from being tokenized as @import + x
-    #[token("@import", at_import_callback)]
+    // Builtins. Exactly "@import" is its own token; the regex below wins the
+    // longest-match for "@import" followed by more identifier chars (e.g.
+    // "@important"), which tokenize() splits into At + Ident. Without it,
+    // logos would fail the fused-token match and report a confusing
+    // "unexpected character: @" lex error instead of letting the parser see
+    // an ordinary @-directive. (RUE-133)
+    #[token("@import")]
     AtImport,
-}
 
-/// Callback for @import token to ensure word boundary.
-/// Returns Some(()) if @import is NOT followed by identifier chars, None otherwise.
-fn at_import_callback(lex: &mut logos::Lexer<'_, LogosTokenKind>) -> Option<()> {
-    match lex.remainder().chars().next() {
-        Some(c) if c.is_ascii_alphanumeric() || c == '_' => None,
-        _ => Some(()),
-    }
+    // "@import" with identifier chars attached: an ordinary @-directive whose
+    // name merely starts with "import". The callback interns the name (the
+    // slice minus '@'); tokenize() emits At + Ident.
+    #[regex(r"@import[a-zA-Z0-9_]+", |lex| lex.extras.get_or_intern(&lex.slice()[1..]))]
+    AtImportPrefixedIdent(Spur),
 }
 
 use crate::{Token, TokenKind};
@@ -374,6 +390,10 @@ impl From<LogosTokenKind> for TokenKind {
             LogosTokenKind::At => TokenKind::At,
             // AtImport is handled specially in tokenize() to provide the interned "import" Spur
             LogosTokenKind::AtImport => unreachable!("AtImport should be handled specially"),
+            // AtImportPrefixedIdent is split into At + Ident in tokenize()
+            LogosTokenKind::AtImportPrefixedIdent(_) => {
+                unreachable!("AtImportPrefixedIdent should be handled specially")
+            }
         }
     }
 }
@@ -443,11 +463,34 @@ impl<'a> LogosLexer<'a> {
                         Ok(logos_kind) => {
                             // Convert LogosTokenKind to TokenKind, handling @import specially
                             // because it needs to carry the interned "import" symbol
-                            let token_kind = if matches!(logos_kind, LogosTokenKind::AtImport) {
-                                let import_spur = lexer.extras.get_or_intern("import");
-                                TokenKind::AtImport(import_spur)
-                            } else {
-                                logos_kind.into()
+                            let token_kind = match logos_kind {
+                                LogosTokenKind::AtImport => {
+                                    let import_spur = lexer.extras.get_or_intern("import");
+                                    TokenKind::AtImport(import_spur)
+                                }
+                                LogosTokenKind::AtImportPrefixedIdent(name) => {
+                                    // An @-directive whose name starts with "import"
+                                    // (e.g. @important): split into At + Ident so the
+                                    // parser sees an ordinary directive. (RUE-133)
+                                    tokens.push(Token {
+                                        kind: TokenKind::At,
+                                        span: Span::with_file(
+                                            self.file_id,
+                                            span.start as u32,
+                                            span.start as u32 + 1,
+                                        ),
+                                    });
+                                    tokens.push(Token {
+                                        kind: TokenKind::Ident(name),
+                                        span: Span::with_file(
+                                            self.file_id,
+                                            span.start as u32 + 1,
+                                            span.end as u32,
+                                        ),
+                                    });
+                                    continue;
+                                }
+                                _ => logos_kind.into(),
                             };
                             tokens.push(Token {
                                 kind: token_kind,
@@ -459,24 +502,48 @@ impl<'a> LogosLexer<'a> {
                             });
                         }
                         Err(lex_error) => {
-                            let rue_span =
-                                Span::with_file(self.file_id, span.start as u32, span.end as u32);
                             let slice = lexer.slice();
                             let error_char = slice.chars().next().unwrap_or('?');
-                            let kind = match lex_error {
-                                LexError::InvalidInteger => ErrorKind::InvalidInteger,
-                                LexError::UnexpectedCharacter => {
-                                    ErrorKind::UnexpectedCharacter(error_char)
+                            let (kind, rue_span) = match lex_error {
+                                LexError::InvalidInteger => (
+                                    ErrorKind::InvalidInteger,
+                                    Span::with_file(
+                                        self.file_id,
+                                        span.start as u32,
+                                        span.end as u32,
+                                    ),
+                                ),
+                                LexError::UnexpectedCharacter => (
+                                    ErrorKind::UnexpectedCharacter(error_char),
+                                    Span::with_file(
+                                        self.file_id,
+                                        span.start as u32,
+                                        span.end as u32,
+                                    ),
+                                ),
+                                LexError::InvalidStringEscape { offset, escape } => {
+                                    // Point at the offending escape itself (`\q`),
+                                    // not the whole string-so-far — and report the
+                                    // escape the scanner actually rejected, not
+                                    // whichever backslash comes first. (RUE-133)
+                                    let esc_start = span.start as u32 + offset;
+                                    (
+                                        ErrorKind::InvalidStringEscape(escape),
+                                        Span::with_file(
+                                            self.file_id,
+                                            esc_start,
+                                            esc_start + 1 + escape.len_utf8() as u32,
+                                        ),
+                                    )
                                 }
-                                LexError::InvalidStringEscape => {
-                                    // Find the escape character after backslash
-                                    let escape_char = slice
-                                        .find('\\')
-                                        .and_then(|pos| slice[pos + 1..].chars().next())
-                                        .unwrap_or('?');
-                                    ErrorKind::InvalidStringEscape(escape_char)
-                                }
-                                LexError::UnterminatedString => ErrorKind::UnterminatedString,
+                                LexError::UnterminatedString => (
+                                    ErrorKind::UnterminatedString,
+                                    Span::with_file(
+                                        self.file_id,
+                                        span.start as u32,
+                                        span.end as u32,
+                                    ),
+                                ),
                             };
                             return Err(CompileError::new(kind, rue_span));
                         }
@@ -597,14 +664,38 @@ mod tests {
     }
 
     #[test]
-    fn test_logos_at_import_suffix_is_error() {
-        // @importx is an invalid token - @import followed by x cannot be a valid construct
-        // The lexer produces an error because @import matches but is followed by 'x'
-        // which makes it an invalid token sequence
+    fn test_logos_at_import_prefixed_ident_splits() {
+        // A directive whose name merely starts with "import" (@importx,
+        // @important) is an ordinary @-directive: At + Ident. It used to be a
+        // confusing "unexpected character: @" lex error because the fused
+        // @import token matched and then failed its word-boundary check
+        // without backtracking. (RUE-133)
         let lexer = LogosLexer::new("@importx");
-        let result = lexer.tokenize();
-        // This should error because @importx is neither @import nor @ followed by a space
-        assert!(result.is_err());
+        let (tokens, interner) = lexer.tokenize().unwrap();
+        assert!(matches!(tokens[0].kind, TokenKind::At));
+        assert_eq!(tokens[0].span, Span::new(0, 1));
+        assert_eq!(get_ident_str(&tokens[1].kind, &interner), Some("importx"));
+        assert_eq!(tokens[1].span, Span::new(1, 8));
+
+        let lexer = LogosLexer::new("@important");
+        let (tokens, interner) = lexer.tokenize().unwrap();
+        assert!(matches!(tokens[0].kind, TokenKind::At));
+        assert_eq!(get_ident_str(&tokens[1].kind, &interner), Some("important"));
+    }
+
+    #[test]
+    fn test_logos_invalid_escape_span_points_at_escape() {
+        // The diagnostic must point at the offending escape (`\q`), not the
+        // string-so-far, and must report the rejected escape even when a
+        // valid escape appears earlier in the literal. (RUE-133)
+        let source = r#""hello \n world \q tail""#;
+        let lexer = LogosLexer::new(source);
+        let err = lexer.tokenize().unwrap_err();
+        assert!(matches!(err.kind, ErrorKind::InvalidStringEscape('q')));
+        let backslash_q = source.find(r"\q").unwrap() as u32;
+        let span = err.span().expect("escape error must carry a span");
+        assert_eq!(span.start, backslash_q);
+        assert_eq!(span.end, backslash_q + 2);
     }
 
     #[test]
