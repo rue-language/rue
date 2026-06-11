@@ -477,9 +477,13 @@ impl<'a> Sema<'a> {
                 }
 
                 InstData::ConstDecl {
-                    is_pub, name, init, ..
+                    is_pub,
+                    name,
+                    ty,
+                    init,
+                    ..
                 } => {
-                    self.collect_const_declaration(*name, *is_pub, *init, inst.span)?;
+                    self.collect_const_declaration(*name, *is_pub, *ty, *init, inst.span)?;
                 }
 
                 _ => {}
@@ -983,6 +987,7 @@ impl<'a> Sema<'a> {
         &mut self,
         name: Spur,
         is_pub: bool,
+        ty: Option<Spur>,
         init: InstRef,
         span: Span,
     ) -> CompileResult<()> {
@@ -1029,10 +1034,26 @@ impl<'a> Sema<'a> {
             ));
         }
 
-        // Evaluate the initializer at compile time to determine the constant type.
-        // Currently we only handle @import(...) - other constant expressions will
-        // be supported as part of the broader comptime feature (ADR-0025).
-        let const_type = self.evaluate_const_init(init, span)?;
+        // Evaluate the initializer at compile time to determine the constant's
+        // natural type (this also performs @import resolution side effects).
+        // Currently we only handle @import(...) and literals - other constant
+        // expressions will be supported as part of the broader comptime
+        // feature (ADR-0025).
+        let inferred_type = self.evaluate_const_init(init, span)?;
+
+        // An explicit annotation overrides the literal's default type:
+        // `const BIG: i64 = 5000000000;` must store an i64, not a silently
+        // truncated i32 (RUE-161). The annotation resolves like any signature
+        // type (unknown names are E0204) and the initializer is validated
+        // against it.
+        let const_type = match ty {
+            Some(ty_sym) => {
+                let declared = self.resolve_type(ty_sym, span)?;
+                self.check_const_init_matches_annotation(declared, inferred_type, init, span)?;
+                declared
+            }
+            None => inferred_type,
+        };
 
         let info = ConstInfo {
             is_pub,
@@ -1118,9 +1139,10 @@ impl<'a> Sema<'a> {
                 }
             }
 
-            // Integer literals evaluate to i32 (the default integer type)
-            // Note: RIR doesn't distinguish between integer types at this level;
-            // type inference happens later. For now, we treat all integer consts as i32.
+            // Integer literals evaluate to i32 (the default integer type).
+            // Note: RIR doesn't distinguish between integer types at this level.
+            // An explicit annotation (`const BIG: i64 = ...`) overrides this
+            // default in collect_const_declaration (RUE-161).
             InstData::IntConst(_) => Ok(Type::I32),
 
             // Boolean literals
@@ -1149,5 +1171,48 @@ impl<'a> Sema<'a> {
                 span,
             )),
         }
+    }
+
+    /// Validate a constant initializer against the declared (annotated) type.
+    ///
+    /// Integer literals are range-checked against the declared integer type
+    /// (E0800), mirroring how annotated `let` literals are checked. Any other
+    /// initializer must match the annotation exactly (E0206).
+    fn check_const_init_matches_annotation(
+        &self,
+        declared: Type,
+        inferred: Type,
+        init: InstRef,
+        span: Span,
+    ) -> CompileResult<()> {
+        let init_inst = self.rir.get(init);
+
+        // An integer literal adopts any integer annotation it fits in.
+        if let InstData::IntConst(value) = &init_inst.data {
+            if declared.is_integer() {
+                if !declared.literal_fits(*value) {
+                    return Err(CompileError::new(
+                        ErrorKind::LiteralOutOfRange {
+                            value: *value,
+                            ty: declared.safe_name_with_pool(Some(&self.type_pool)),
+                        },
+                        init_inst.span,
+                    ));
+                }
+                return Ok(());
+            }
+        }
+
+        if declared == inferred {
+            return Ok(());
+        }
+
+        Err(CompileError::new(
+            ErrorKind::TypeMismatch {
+                expected: declared.safe_name_with_pool(Some(&self.type_pool)),
+                found: inferred.safe_name_with_pool(Some(&self.type_pool)),
+            },
+            span,
+        ))
     }
 }

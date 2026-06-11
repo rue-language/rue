@@ -136,27 +136,10 @@ impl<'a> Sema<'a> {
     pub(crate) fn resolve_type(&mut self, type_sym: Spur, span: Span) -> CompileResult<Type> {
         let type_name = self.interner.resolve(&type_sym);
 
-        // Check primitive types first.
+        // Check primitive types first (single shared table, RUE-155).
         // Note: String is handled below via struct lookup (it's a builtin struct).
-        match type_name {
-            "i8" => return Ok(Type::I8),
-            "i16" => return Ok(Type::I16),
-            "i32" => return Ok(Type::I32),
-            "i64" => return Ok(Type::I64),
-            "u8" => return Ok(Type::U8),
-            "u16" => return Ok(Type::U16),
-            "u32" => return Ok(Type::U32),
-            "u64" => return Ok(Type::U64),
-            // Pointer-width integers. All supported targets are 64-bit, so
-            // these resolve to the 64-bit types (RUE-151).
-            "usize" => return Ok(Type::U64),
-            "isize" => return Ok(Type::I64),
-            "bool" => return Ok(Type::BOOL),
-            "()" => return Ok(Type::UNIT),
-            "!" => return Ok(Type::NEVER),
-            // The type of types - used for comptime type parameters
-            "type" => return Ok(Type::COMPTIME_TYPE),
-            _ => {}
+        if let Some(ty) = Type::from_primitive_name(type_name) {
+            return Ok(ty);
         }
 
         if let Some(&struct_id) = self.structs.get(&type_sym) {
@@ -218,24 +201,9 @@ impl<'a> Sema<'a> {
 
         let type_name = self.interner.resolve(&type_sym);
 
-        // Check primitive types first
-        match type_name {
-            "i8" => return Some(Type::I8),
-            "i16" => return Some(Type::I16),
-            "i32" => return Some(Type::I32),
-            "i64" => return Some(Type::I64),
-            "u8" => return Some(Type::U8),
-            "u16" => return Some(Type::U16),
-            "u32" => return Some(Type::U32),
-            "u64" => return Some(Type::U64),
-            // Pointer-width integers (64-bit on all supported targets, RUE-151).
-            "usize" => return Some(Type::U64),
-            "isize" => return Some(Type::I64),
-            "bool" => return Some(Type::BOOL),
-            "()" => return Some(Type::UNIT),
-            "!" => return Some(Type::NEVER),
-            "type" => return Some(Type::COMPTIME_TYPE),
-            _ => {}
+        // Check primitive types first (single shared table, RUE-155)
+        if let Some(ty) = Type::from_primitive_name(type_name) {
+            return Some(ty);
         }
 
         if let Some(&struct_id) = self.structs.get(&type_sym) {

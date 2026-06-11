@@ -1609,35 +1609,21 @@ impl<'a> ConstraintGenerator<'a> {
             return Some(InferType::Concrete(ptr_ty));
         }
 
-        // Check primitives
-        let ty = match name {
-            "i8" => Type::I8,
-            "i16" => Type::I16,
-            "i32" => Type::I32,
-            "i64" => Type::I64,
-            "u8" => Type::U8,
-            "u16" => Type::U16,
-            "u32" => Type::U32,
-            "u64" => Type::U64,
-            // Pointer-width integers (64-bit on all supported targets, RUE-151).
-            "usize" => Type::U64,
-            "isize" => Type::I64,
-            "bool" => Type::BOOL,
-            "()" => Type::UNIT,
-            _ => {
-                // Check for struct types (including builtin String)
-                if let Some(name_spur) = self.interner.get(name) {
-                    if let Some(&struct_ty) = self.structs.get(&name_spur) {
-                        return Some(InferType::Concrete(struct_ty));
-                    }
-                    if let Some(&enum_ty) = self.enums.get(&name_spur) {
-                        return Some(InferType::Concrete(enum_ty));
-                    }
-                }
-                return None;
+        // Check primitives (single shared table, RUE-155)
+        if let Some(ty) = Type::from_primitive_name(name) {
+            return Some(InferType::Concrete(ty));
+        }
+
+        // Check for struct types (including builtin String)
+        if let Some(name_spur) = self.interner.get(name) {
+            if let Some(&struct_ty) = self.structs.get(&name_spur) {
+                return Some(InferType::Concrete(struct_ty));
             }
-        };
-        Some(InferType::Concrete(ty))
+            if let Some(&enum_ty) = self.enums.get(&name_spur) {
+                return Some(InferType::Concrete(enum_ty));
+            }
+        }
+        None
     }
 }
 

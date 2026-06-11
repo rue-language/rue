@@ -269,22 +269,11 @@ impl Sema<'_> {
     /// Resolve a name to a type value (primitive type names, structs, enums).
     fn resolve_named_type_value(&self, name: &Spur) -> Option<Type> {
         let name_str = self.interner.resolve(name);
-        let ty = match name_str {
-            "i8" => Type::I8,
-            "i16" => Type::I16,
-            "i32" => Type::I32,
-            "i64" => Type::I64,
-            "u8" => Type::U8,
-            "u16" => Type::U16,
-            "u32" => Type::U32,
-            "u64" => Type::U64,
-            // Pointer-width integers (64-bit on all supported targets, RUE-151).
-            "usize" => Type::U64,
-            "isize" => Type::I64,
-            "bool" => Type::BOOL,
-            "()" => Type::UNIT,
-            "!" => Type::NEVER,
-            _ => {
+        // Primitive names come from the single shared table (RUE-155) so the
+        // evaluator can never drift from the resolver.
+        let ty = match Type::from_primitive_name(name_str) {
+            Some(t) => t,
+            None => {
                 if let Some(&struct_id) = self.structs.get(name) {
                     Type::new_struct(struct_id)
                 } else if let Some(&enum_id) = self.enums.get(name) {
