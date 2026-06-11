@@ -16,7 +16,7 @@ use crate::types::{
 };
 use lasso::{Spur, ThreadedRodeo};
 use rue_rir::{InstData, InstRef, Rir};
-use rue_span::Span;
+use rue_span::{FileId, Span};
 use std::collections::HashMap;
 
 /// Information about a local variable during constraint generation.
@@ -179,6 +179,12 @@ pub struct ConstraintGenerator<'a> {
     /// (RUE-142). `None` only in unit tests; production passes the map via
     /// [`Self::with_const_types`].
     const_types: Option<&'a HashMap<Spur, Type>>,
+    /// Module-binding types (`const utils = @import(...)`): (declaring file,
+    /// name) -> module type. Per-file scoped (RUE-113), so `VarRef` consults
+    /// this with the reference's own `span.file_id` before `const_types`.
+    /// `None` only in unit tests; production passes the map via
+    /// [`Self::with_module_binding_types`].
+    module_binding_types: Option<&'a HashMap<(FileId, Spur), Type>>,
     /// Type intern pool for creating pointer and array types during constraint generation.
     type_pool: &'a TypeInternPool,
 }
@@ -228,6 +234,7 @@ impl<'a> ConstraintGenerator<'a> {
             int_literal_vars: Vec::new(),
             type_subst,
             const_types: None,
+            module_binding_types: None,
             type_pool,
         }
     }
@@ -236,6 +243,16 @@ impl<'a> ConstraintGenerator<'a> {
     /// resolution. See the `const_types` field for details (RUE-142).
     pub fn with_const_types(mut self, const_types: &'a HashMap<Spur, Type>) -> Self {
         self.const_types = Some(const_types);
+        self
+    }
+
+    /// Provide per-file module-binding types ((file, name) -> module type)
+    /// for `VarRef` resolution. See the `module_binding_types` field (RUE-113).
+    pub fn with_module_binding_types(
+        mut self,
+        module_binding_types: &'a HashMap<(FileId, Spur), Type>,
+    ) -> Self {
+        self.module_binding_types = Some(module_binding_types);
         self
     }
 
@@ -488,6 +505,14 @@ impl<'a> ConstraintGenerator<'a> {
                     local.ty.clone()
                 } else if let Some(param) = ctx.params.get(name) {
                     param.ty.clone()
+                } else if let Some(binding_ty) = self
+                    .module_binding_types
+                    .and_then(|bindings| bindings.get(&(span.file_id, *name)))
+                {
+                    // Module binding declared in this file (`const m =
+                    // @import(...)`): per-file scoped, checked before the
+                    // global value-const table (RUE-113).
+                    self.type_to_infer(*binding_ty)
                 } else if let Some(const_ty) = self.const_types.and_then(|consts| consts.get(name))
                 {
                     // File-level constant: its type was resolved during

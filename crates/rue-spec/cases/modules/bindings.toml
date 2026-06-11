@@ -110,3 +110,75 @@ fn main() -> i32 {
 aux_files = { "math.rue" = "pub fn add(a: i32, b: i32) -> i32 { a + b }" }
 compile_fail = true
 error_contains = "type mismatch"
+
+# =============================================================================
+# Per-file scoping of module bindings (10.4:8) — RUE-113
+# =============================================================================
+
+[[case]]
+name = "same_binding_name_in_two_files"
+spec = ["10.4:8"]
+description = "Two files each bind `const utils = @import(...)` to the same module without conflict"
+source = """
+const a = @import("a");
+const b = @import("b");
+
+fn main() -> i32 {
+    a.from_a() + b.from_b()
+}
+"""
+aux_files = { "a.rue" = """
+const utils = @import("utils");
+pub fn from_a() -> i32 { utils.one() }
+""", "b.rue" = """
+const utils = @import("utils");
+pub fn from_b() -> i32 { utils.one() + 1 }
+""", "utils.rue" = """
+pub fn one() -> i32 { 1 }
+""" }
+exit_code = 3
+
+[[case]]
+name = "same_binding_name_different_modules"
+spec = ["10.4:8"]
+description = "Two files bind the same name to different modules; each file sees its own binding"
+source = """
+const a = @import("a");
+const b = @import("b");
+
+fn main() -> i32 {
+    a.from_a() + b.from_b()
+}
+"""
+aux_files = { "a.rue" = """
+const helper = @import("m1");
+pub fn from_a() -> i32 { helper.ten() }
+""", "b.rue" = """
+const helper = @import("m2");
+pub fn from_b() -> i32 { helper.twenty() }
+""", "m1.rue" = """
+pub fn ten() -> i32 { 10 }
+""", "m2.rue" = """
+pub fn twenty() -> i32 { 20 }
+""" }
+exit_code = 30
+
+[[case]]
+name = "duplicate_binding_in_one_file_error"
+spec = ["10.4:8"]
+description = "Two module bindings with the same name in a single file are a duplicate-constant error"
+source = """
+const m = @import("m1");
+const m = @import("m2");
+
+fn main() -> i32 {
+    m.ten()
+}
+"""
+aux_files = { "m1.rue" = """
+pub fn ten() -> i32 { 10 }
+""", "m2.rue" = """
+pub fn twenty() -> i32 { 20 }
+""" }
+compile_fail = true
+error_contains = "duplicate constant 'm'"

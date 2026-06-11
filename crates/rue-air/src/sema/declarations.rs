@@ -15,7 +15,7 @@ use lasso::Spur;
 use rue_builtins::is_reserved_type_name;
 use rue_error::{CompileError, CompileResult, CopyStructNonCopyFieldError, ErrorKind, ice};
 use rue_rir::{InstData, InstRef, RirDirective, RirParamMode};
-use rue_span::Span;
+use rue_span::{FileId, Span};
 
 use super::{ConstInfo, FunctionInfo, InferenceContext, MethodInfo, Sema};
 use crate::inference::{FunctionSig, MethodSig};
@@ -117,12 +117,22 @@ impl<'a> Sema<'a> {
             .map(|(name, info)| (*name, info.ty))
             .collect();
 
+        // Module-binding types (`const utils = @import(...)`), keyed by the
+        // declaring file: bindings are per-file scoped (RUE-113), so a
+        // reference resolves against the file it appears in.
+        let module_binding_types: HashMap<(FileId, Spur), Type> = self
+            .module_bindings
+            .iter()
+            .map(|(key, info)| (*key, info.ty))
+            .collect();
+
         InferenceContext {
             func_sigs,
             struct_types,
             enum_types,
             method_sigs,
             const_types,
+            module_binding_types,
         }
     }
     /// Check if a directive list contains the @copy directive
@@ -953,14 +963,22 @@ impl<'a> Sema<'a> {
     /// Collect a constant declaration.
     ///
     /// Constants are compile-time values. In the module system, they're primarily
-    /// used for re-exports:
+    /// used for module bindings and re-exports:
     /// ```rue
+    /// const utils = @import("utils.rue");
     /// pub const strings = @import("utils/strings.rue");
     /// ```
     ///
     /// When the initializer is an `@import(...)`, we evaluate it at compile time
     /// to resolve the module and register it in the module registry. This enables
     /// subsequent member access via `const_name.function()` syntax.
+    ///
+    /// Module bindings are **per-file scoped** (ADR-0026: every file writes its
+    /// own imports), so they're stored in `module_bindings` keyed by the
+    /// declaring file — two files binding the same name, even to different
+    /// modules, is fine (RUE-113). Value constants keep the flat global
+    /// namespace shared with functions/types, so duplicates across files are
+    /// still E0418.
     fn collect_const_declaration(
         &mut self,
         name: Spur,
@@ -969,9 +987,28 @@ impl<'a> Sema<'a> {
         span: Span,
     ) -> CompileResult<()> {
         let name_str = self.interner.resolve(&name).to_string();
+        let file_id = span.file_id;
 
-        // Check for duplicate constant names
-        if self.constants.contains_key(&name) {
+        // A module binding is a const whose initializer is `@import(...)`.
+        let is_module_binding = matches!(
+            &self.rir.get(init).data,
+            InstData::Intrinsic { name: intrinsic, .. } if *intrinsic == self.known.import
+        );
+
+        // Duplicate checks. Module bindings only collide within their own
+        // file; value constants collide globally. Either kind collides with
+        // the other kind in the same file.
+        let duplicate = if is_module_binding {
+            self.module_bindings.contains_key(&(file_id, name))
+                || self
+                    .constants
+                    .get(&name)
+                    .is_some_and(|c| c.span.file_id == file_id)
+        } else {
+            self.constants.contains_key(&name)
+                || self.module_bindings.contains_key(&(file_id, name))
+        };
+        if duplicate {
             return Err(CompileError::new(
                 ErrorKind::DuplicateConstant {
                     name: name_str,
@@ -997,15 +1034,17 @@ impl<'a> Sema<'a> {
         // be supported as part of the broader comptime feature (ADR-0025).
         let const_type = self.evaluate_const_init(init, span)?;
 
-        self.constants.insert(
-            name,
-            ConstInfo {
-                is_pub,
-                ty: const_type,
-                init,
-                span,
-            },
-        );
+        let info = ConstInfo {
+            is_pub,
+            ty: const_type,
+            init,
+            span,
+        };
+        if is_module_binding {
+            self.module_bindings.insert((file_id, name), info);
+        } else {
+            self.constants.insert(name, info);
+        }
 
         Ok(())
     }

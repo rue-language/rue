@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 
 use lasso::Spur;
+use rue_span::FileId;
 
 use crate::inference::{FunctionSig, MethodSig};
 use crate::types::{StructId, Type};
@@ -40,4 +41,8 @@ pub struct InferenceContext {
     /// Without this map a const reference inferred to `<error>` and poisoned
     /// every expression it touched (RUE-142).
     pub const_types: HashMap<Spur, Type>,
+    /// Module-binding types (`const utils = @import(...)`): (declaring file,
+    /// name) -> module type. Module bindings are per-file scoped (RUE-113),
+    /// so they're keyed by file rather than living in `const_types`.
+    pub module_binding_types: HashMap<(FileId, Spur), Type>,
 }

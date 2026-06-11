@@ -30,6 +30,30 @@ fn main() -> i32 {
 }
 ```
 
+## Per-File Scoping
+
+{{ rule(id="10.4:8", cat="normative") }}
+
+A top-level `const` module binding is scoped to the file that declares it.
+Two files **MAY** bind the same name — whether to the same module or to
+different modules — without conflict; references in each file resolve to
+that file's own binding. This is an exception to the shared flat namespace
+of rule 10.5:1, because every file writes its own imports. Declaring two
+module bindings with the same name in one file remains a compile-time error
+(E0418).
+
+{{ rule(id="10.4:9", cat="example") }}
+
+```rue
+// a.rue
+const utils = @import("utils");        // fine
+pub fn from_a() -> i32 { utils.one() }
+
+// b.rue
+const utils = @import("utils");        // fine: per-file, no collision
+pub fn from_b() -> i32 { utils.one() }
+```
+
 ## Re-exports
 
 {{ rule(id="10.4:3", cat="normative") }}

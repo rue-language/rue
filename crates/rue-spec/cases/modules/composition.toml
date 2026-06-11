@@ -22,7 +22,7 @@ error_contains = "duplicate"
 [[case]]
 name = "duplicate_const_across_imported_files_error"
 spec = ["10.5:1"]
-description = "Top-level const bindings (including module re-exports) also collide across files"
+description = "Top-level value constants also collide across files (module bindings are exempt — see 10.4:8)"
 source = """
 fn main() -> i32 {
     let left = @import("left");
@@ -31,13 +31,11 @@ fn main() -> i32 {
 }
 """
 aux_files = { "left.rue" = """
-const shared = @import("shared");
-pub fn go() -> i32 { shared.value() }
+pub const LIMIT = 1;
+pub fn go() -> i32 { LIMIT }
 """, "right.rue" = """
-const shared = @import("shared");
-pub fn go2() -> i32 { shared.value() }
-""", "shared.rue" = """
-pub fn value() -> i32 { 42 }
+pub const LIMIT = 2;
+pub fn go2() -> i32 { LIMIT }
 """ }
 compile_fail = true
 error_contains = "duplicate"

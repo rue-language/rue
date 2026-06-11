@@ -17,7 +17,9 @@ analysis.
 It is a compile-time error for two loaded source files to define a top-level
 item with the same name (duplicate definition, E0436). This holds regardless
 of the items' visibility and regardless of whether the files are in the same
-directory.
+directory. Module-binding constants (`const m = @import(...)`) are the
+exception: they are scoped per file (rule 10.4:8) and do not collide across
+files.
 
 {{ rule(id="10.5:2") }}
 

@@ -746,7 +746,7 @@ fn get_peak_memory_bytes() -> Option<u64> {
 /// `sources` as if the user had listed them on the command line.
 ///
 /// Sema resolves import paths only against loaded files (see
-/// `resolve_import_path_for_const`), so this is the step that makes
+/// `resolve_import_path` in rue-air), so this is the step that makes
 /// `@import` work without hand-listing every module (RUE-14).
 ///
 /// Imports are found by scanning the token stream (so comments and string

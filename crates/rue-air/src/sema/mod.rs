@@ -18,7 +18,6 @@
 //! - [`output`] - Semantic analysis output types
 //! - [`inference_ctx`] - Pre-computed type information for inference
 //! - [`visibility`] - Module visibility checking
-//! - [`imports`] - Import resolution and const evaluation
 //! - [`anon_structs`] - Anonymous struct structural equality
 //! - [`file_paths`] - File path management for multi-file compilation
 //!
@@ -36,7 +35,6 @@ mod context;
 mod declarations;
 mod file_paths;
 mod gather;
-mod imports;
 mod inference_ctx;
 mod info;
 mod known_symbols;
@@ -77,8 +75,16 @@ pub struct Sema<'a> {
     pub(crate) enums: HashMap<Spur, EnumId>,
     /// Method table: maps (struct_id, method_name) to method info
     pub(crate) methods: HashMap<(StructId, Spur), MethodInfo>,
-    /// Constant table: maps const name symbol to const info
+    /// Constant table: maps const name symbol to const info.
+    /// Holds value constants only (e.g. `const MAX = 10`); module bindings
+    /// live in [`Self::module_bindings`].
     pub(crate) constants: HashMap<Spur, ConstInfo>,
+    /// Module-binding constants (`const utils = @import("...")`), keyed by
+    /// the declaring file. Unlike value constants, module bindings are
+    /// per-file scoped (ADR-0026): every file writes its own imports, so two
+    /// files binding the same name — even to different modules — must not
+    /// collide (RUE-113).
+    pub(crate) module_bindings: HashMap<(FileId, Spur), ConstInfo>,
     /// Enabled preview features
     pub(crate) preview_features: PreviewFeatures,
     /// StructId of the synthetic String type.
@@ -127,6 +133,7 @@ impl<'a> Sema<'a> {
             enums: HashMap::new(),
             methods: HashMap::new(),
             constants: HashMap::new(),
+            module_bindings: HashMap::new(),
             preview_features,
             builtin_string_id: None,
             builtin_arch_id: None,
@@ -151,13 +158,11 @@ impl<'a> Sema<'a> {
         self.inject_builtin_types();
 
         // Phase 1: Register type names
-        // Phase 2: Resolve all declarations
+        // Phase 2: Resolve all declarations (const initializers — including
+        // `const x = @import(...)` module bindings — are evaluated as they
+        // are collected, see `collect_const_declaration`)
         self.register_type_names().map_err(CompileErrors::from)?;
         self.resolve_declarations().map_err(CompileErrors::from)?;
-
-        // Phase 2.5: Evaluate const initializers (e.g., const x = @import(...))
-        self.evaluate_const_initializers()
-            .map_err(CompileErrors::from)?;
 
         // Delegate to the analysis module for function body analysis
         analysis::analyze_all_function_bodies(self)
