@@ -1111,7 +1111,9 @@ fn handle_emit_multi_file(
     let per_file_tokens: Option<Vec<(String, Vec<rue_compiler::Token>)>> = if needs_tokens {
         let mut file_tokens = Vec::with_capacity(sources.len());
         for source in sources {
-            let lexer = Lexer::new(source.source);
+            // Lex with the file's real FileId so a lex error in the Nth file
+            // is attributed to that file, not to the first one (RUE-38).
+            let lexer = Lexer::with_file_id(source.source, source.file_id);
             match lexer.tokenize() {
                 Ok((tokens, _interner)) => {
                     file_tokens.push((source.path.to_string(), tokens));
