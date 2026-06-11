@@ -99,7 +99,12 @@ fn fold_instruction(cfg: &mut Cfg, value: CfgValue) {
         // Unary
         CfgInstData::Neg(operand) => fold_unary_arith(cfg, *operand, ty, |v| checked_neg(v, ty)),
         CfgInstData::Not(operand) => fold_not(cfg, *operand),
-        CfgInstData::BitNot(operand) => fold_unary_arith(cfg, *operand, ty, |v| Some(!v)),
+        // `!v` flips all 64 stored bits, but the operation is defined at the
+        // operand's width; truncate so the folded constant matches what the
+        // runtime computes (RUE-59).
+        CfgInstData::BitNot(operand) => {
+            fold_unary_arith(cfg, *operand, ty, |v| Some(truncate_to_type(!v, ty)))
+        }
 
         // Everything else is not foldable
         _ => None,
@@ -223,8 +228,8 @@ fn fold_shift(
         lhs_val >> rhs_val
     };
 
-    // Mask to the type's bit width
-    let result = mask_to_type(result, ty);
+    // Truncate to the type's bit width (canonical representation)
+    let result = truncate_to_type(result, ty);
     Some(CfgInstData::Const(result))
 }
 
@@ -292,6 +297,25 @@ fn type_bits(ty: Type) -> u32 {
         TypeKind::I64 | TypeKind::U64 => 64,
         TypeKind::Bool => 1,
         _ => 64, // Default for other types
+    }
+}
+
+/// Truncate a value to a type's width, producing the canonical 64-bit
+/// representation: zero-extended for unsigned types, sign-extended for
+/// signed types.
+///
+/// All folds must produce canonical constants. The checked arithmetic
+/// helpers already do (signed results come out of an `i64 as u64` cast,
+/// i.e. sign-extended), and Eq/Ne folding compares raw u64 representations,
+/// so a non-canonical constant — an unmasked `!v`, or a masked-but-not-
+/// extended negative shift result — yields wrong folds and -O0 vs -O1+
+/// divergence (RUE-59).
+fn truncate_to_type(val: u64, ty: Type) -> u64 {
+    let masked = mask_to_type(val, ty);
+    if is_signed(ty) {
+        sign_extend(masked, ty)
+    } else {
+        masked
     }
 }
 
@@ -613,10 +637,15 @@ mod tests {
 
         run(&mut cfg);
 
-        // -1 >> 1 should be -1 (0xFF in i8)
+        // -1 >> 1 should be -1, stored canonically (sign-extended to 64 bits)
         match &cfg.get_inst(shr).data {
             CfgInstData::Const(val) => {
-                assert_eq!(*val, 0xFF, "Expected 0xFF (-1 as i8), got 0x{:X}", val);
+                assert_eq!(
+                    *val,
+                    (-1i64) as u64,
+                    "Expected -1 (sign-extended), got 0x{:X}",
+                    val
+                );
             }
             other => panic!("Expected Const, got {:?}", other),
         }
@@ -634,10 +663,15 @@ mod tests {
 
         run(&mut cfg);
 
-        // -8 >> 2 should be -2 (0xFE in i8)
+        // -8 >> 2 should be -2, stored canonically (sign-extended to 64 bits)
         match &cfg.get_inst(shr).data {
             CfgInstData::Const(val) => {
-                assert_eq!(*val, 0xFE, "Expected 0xFE (-2 as i8), got 0x{:X}", val);
+                assert_eq!(
+                    *val,
+                    (-2i64) as u64,
+                    "Expected -2 (sign-extended), got 0x{:X}",
+                    val
+                );
             }
             other => panic!("Expected Const, got {:?}", other),
         }
@@ -654,10 +688,15 @@ mod tests {
 
         run(&mut cfg);
 
-        // -1 >> 4 should be -1 (0xFFFF in i16)
+        // -1 >> 4 should be -1, stored canonically (sign-extended to 64 bits)
         match &cfg.get_inst(shr).data {
             CfgInstData::Const(val) => {
-                assert_eq!(*val, 0xFFFF, "Expected 0xFFFF (-1 as i16), got 0x{:X}", val);
+                assert_eq!(
+                    *val,
+                    (-1i64) as u64,
+                    "Expected -1 (sign-extended), got 0x{:X}",
+                    val
+                );
             }
             other => panic!("Expected Const, got {:?}", other),
         }
@@ -674,12 +713,13 @@ mod tests {
 
         run(&mut cfg);
 
-        // -1 >> 8 should be -1 (0xFFFFFFFF in i32)
+        // -1 >> 8 should be -1, stored canonically (sign-extended to 64 bits)
         match &cfg.get_inst(shr).data {
             CfgInstData::Const(val) => {
                 assert_eq!(
-                    *val, 0xFFFF_FFFF,
-                    "Expected 0xFFFFFFFF (-1 as i32), got 0x{:X}",
+                    *val,
+                    (-1i64) as u64,
+                    "Expected -1 (sign-extended), got 0x{:X}",
                     val
                 );
             }
@@ -702,6 +742,95 @@ mod tests {
         match &cfg.get_inst(shr).data {
             CfgInstData::Const(val) => {
                 assert_eq!(*val, 0x7F, "Expected 0x7F, got 0x{:X}", val);
+            }
+            other => panic!("Expected Const, got {:?}", other),
+        }
+    }
+
+    fn add_bitnot(cfg: &mut Cfg, operand: CfgValue, ty: Type) -> CfgValue {
+        let entry = cfg.entry;
+        cfg.add_inst_to_block(
+            entry,
+            CfgInst {
+                data: CfgInstData::BitNot(operand),
+                ty,
+                span: Span::new(0, 0),
+            },
+        )
+    }
+
+    #[test]
+    fn test_fold_bitnot_u32_masked() {
+        // ~0u32 must fold to 0xFFFF_FFFF, not the unmasked 64-bit !0 (RUE-59).
+        let mut cfg = make_cfg();
+        let c = add_const(&mut cfg, 0, Type::U32);
+        let not = add_bitnot(&mut cfg, c, Type::U32);
+        finalize_cfg(&mut cfg, not);
+
+        run(&mut cfg);
+
+        match &cfg.get_inst(not).data {
+            CfgInstData::Const(val) => {
+                assert_eq!(*val, 0xFFFF_FFFF, "Expected 0xFFFFFFFF, got 0x{:X}", val);
+            }
+            other => panic!("Expected Const, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_fold_bitnot_u8_masked() {
+        // ~5u8 = 250, masked to 8 bits.
+        let mut cfg = make_cfg();
+        let c = add_const(&mut cfg, 5, Type::U8);
+        let not = add_bitnot(&mut cfg, c, Type::U8);
+        finalize_cfg(&mut cfg, not);
+
+        run(&mut cfg);
+
+        match &cfg.get_inst(not).data {
+            CfgInstData::Const(val) => {
+                assert_eq!(*val, 250, "Expected 250, got {}", val);
+            }
+            other => panic!("Expected Const, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_fold_bitnot_i32_sign_extended() {
+        // ~5i32 = -6, stored canonically (sign-extended to 64 bits).
+        let mut cfg = make_cfg();
+        let c = add_const(&mut cfg, 5, Type::I32);
+        let not = add_bitnot(&mut cfg, c, Type::I32);
+        finalize_cfg(&mut cfg, not);
+
+        run(&mut cfg);
+
+        match &cfg.get_inst(not).data {
+            CfgInstData::Const(val) => {
+                assert_eq!(
+                    *val,
+                    (-6i64) as u64,
+                    "Expected -6 (sign-extended), got 0x{:X}",
+                    val
+                );
+            }
+            other => panic!("Expected Const, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_fold_bitnot_u64_full_width() {
+        // ~0u64 = u64::MAX; no truncation at full width.
+        let mut cfg = make_cfg();
+        let c = add_const(&mut cfg, 0, Type::U64);
+        let not = add_bitnot(&mut cfg, c, Type::U64);
+        finalize_cfg(&mut cfg, not);
+
+        run(&mut cfg);
+
+        match &cfg.get_inst(not).data {
+            CfgInstData::Const(val) => {
+                assert_eq!(*val, u64::MAX, "Expected u64::MAX, got 0x{:X}", val);
             }
             other => panic!("Expected Const, got {:?}", other),
         }

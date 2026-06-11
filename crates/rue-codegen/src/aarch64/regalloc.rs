@@ -555,6 +555,13 @@ impl RegAlloc {
                 self.emit_binop(mir, dst, src, |d, s| Aarch64Inst::MvnRR { dst: d, src: s })?;
             }
 
+            Aarch64Inst::Mvn32RR { dst, src } => {
+                self.emit_binop(mir, dst, src, |d, s| Aarch64Inst::Mvn32RR {
+                    dst: d,
+                    src: s,
+                })?;
+            }
+
             Aarch64Inst::LslRR { dst, src1, src2 } => {
                 self.emit_ternop(mir, dst, src1, src2, |d, s1, s2| Aarch64Inst::LslRR {
                     dst: d,

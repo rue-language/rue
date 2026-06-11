@@ -188,7 +188,7 @@ pub fn uses(inst: &X86Inst) -> Vec<VReg> {
             add_if_virtual(dst, &mut result);
             add_if_virtual(src, &mut result);
         }
-        X86Inst::NotR { dst } => {
+        X86Inst::NotR { dst } | X86Inst::Not64R { dst } => {
             // dst is both read and written
             add_if_virtual(dst, &mut result);
         }
@@ -358,6 +358,7 @@ pub fn defs(inst: &X86Inst) -> Vec<VReg> {
         | X86Inst::Or64RR { dst, .. }
         | X86Inst::Xor64RR { dst, .. }
         | X86Inst::NotR { dst }
+        | X86Inst::Not64R { dst }
         | X86Inst::ShlRCl { dst }
         | X86Inst::Shl32RCl { dst }
         | X86Inst::ShlRI { dst, .. }

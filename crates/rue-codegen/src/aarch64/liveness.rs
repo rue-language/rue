@@ -178,7 +178,7 @@ fn uses(inst: &Aarch64Inst) -> Vec<VReg> {
             add_if_virtual(src1, &mut result);
             add_if_virtual(src2, &mut result);
         }
-        Aarch64Inst::MvnRR { src, .. } => {
+        Aarch64Inst::MvnRR { src, .. } | Aarch64Inst::Mvn32RR { src, .. } => {
             add_if_virtual(src, &mut result);
         }
         Aarch64Inst::AddImm { src, .. }
@@ -328,6 +328,7 @@ fn defs(inst: &Aarch64Inst) -> Vec<VReg> {
         | Aarch64Inst::EorRR { dst, .. }
         | Aarch64Inst::EorImm { dst, .. }
         | Aarch64Inst::MvnRR { dst, .. }
+        | Aarch64Inst::Mvn32RR { dst, .. }
         | Aarch64Inst::LslRR { dst, .. }
         | Aarch64Inst::Lsl32RR { dst, .. }
         | Aarch64Inst::LsrRR { dst, .. }

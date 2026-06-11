@@ -128,7 +128,8 @@ fn get_latency(inst: &X86Inst) -> u32 {
         | X86Inst::Or64RR { .. }
         | X86Inst::Xor64RR { .. }
         | X86Inst::XorRI { .. }
-        | X86Inst::NotR { .. } => 1,
+        | X86Inst::NotR { .. }
+        | X86Inst::Not64R { .. } => 1,
 
         // Shifts: 1 cycle
         X86Inst::ShlRCl { .. }
@@ -284,7 +285,10 @@ fn regs_read(inst: &X86Inst) -> Vec<Reg> {
         X86Inst::AddRI { dst, .. } | X86Inst::XorRI { dst, .. } => {
             add_if_phys(dst, &mut result);
         }
-        X86Inst::Neg { dst } | X86Inst::Neg64 { dst } | X86Inst::NotR { dst } => {
+        X86Inst::Neg { dst }
+        | X86Inst::Neg64 { dst }
+        | X86Inst::NotR { dst }
+        | X86Inst::Not64R { dst } => {
             add_if_phys(dst, &mut result);
         }
         X86Inst::ShlRCl { dst }
@@ -415,6 +419,7 @@ fn regs_written(inst: &X86Inst) -> Vec<Reg> {
         | X86Inst::Or64RR { dst, .. }
         | X86Inst::Xor64RR { dst, .. }
         | X86Inst::NotR { dst }
+        | X86Inst::Not64R { dst }
         | X86Inst::ShlRCl { dst }
         | X86Inst::Shl32RCl { dst }
         | X86Inst::ShlRI { dst, .. }

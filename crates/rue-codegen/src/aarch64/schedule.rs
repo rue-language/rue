@@ -137,7 +137,8 @@ fn get_latency(inst: &Aarch64Inst) -> u32 {
         | Aarch64Inst::OrrRR { .. }
         | Aarch64Inst::EorRR { .. }
         | Aarch64Inst::EorImm { .. }
-        | Aarch64Inst::MvnRR { .. } => 1,
+        | Aarch64Inst::MvnRR { .. }
+        | Aarch64Inst::Mvn32RR { .. } => 1,
 
         // Shifts: 1 cycle
         Aarch64Inst::LslRR { .. }
@@ -306,6 +307,7 @@ fn regs_read(inst: &Aarch64Inst) -> Vec<Reg> {
         | Aarch64Inst::Negs { src, .. }
         | Aarch64Inst::Negs32 { src, .. }
         | Aarch64Inst::MvnRR { src, .. }
+        | Aarch64Inst::Mvn32RR { src, .. }
         | Aarch64Inst::Sxtb { src, .. }
         | Aarch64Inst::Sxth { src, .. }
         | Aarch64Inst::Sxtw { src, .. }
@@ -384,6 +386,7 @@ fn regs_written(inst: &Aarch64Inst) -> Vec<Reg> {
         | Aarch64Inst::EorRR { dst, .. }
         | Aarch64Inst::EorImm { dst, .. }
         | Aarch64Inst::MvnRR { dst, .. }
+        | Aarch64Inst::Mvn32RR { dst, .. }
         | Aarch64Inst::LslRR { dst, .. }
         | Aarch64Inst::Lsl32RR { dst, .. }
         | Aarch64Inst::LslImm { dst, .. }

@@ -1025,9 +1025,20 @@ impl<'a> CfgLower<'a> {
 
                 let operand_vreg = self.get_vreg(*operand);
 
-                self.mir.push(Aarch64Inst::MvnRR {
-                    dst: Operand::Virtual(vreg),
-                    src: Operand::Virtual(operand_vreg),
+                // Sub-64-bit operands need the 32-bit w-form so the result
+                // is zero-extended above the operand width; the 64-bit mvn
+                // would set the upper 32 bits (wrong for u32, whose consumers
+                // assume zero-extended registers) (RUE-59).
+                self.mir.push(if ty.is_64_bit() {
+                    Aarch64Inst::MvnRR {
+                        dst: Operand::Virtual(vreg),
+                        src: Operand::Virtual(operand_vreg),
+                    }
+                } else {
+                    Aarch64Inst::Mvn32RR {
+                        dst: Operand::Virtual(vreg),
+                        src: Operand::Virtual(operand_vreg),
+                    }
                 });
             }
 
