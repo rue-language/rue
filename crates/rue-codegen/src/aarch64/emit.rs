@@ -57,7 +57,7 @@
 //! For values that cannot be encoded as logical immediates, we materialize the constant
 //! in a scratch register (X9) using MOVZ/MOVK and then use the register-register form.
 
-use rue_error::{CompileError, CompileResult, ErrorKind};
+use rue_error::{CompileError, CompileResult, ErrorKind, ice_error};
 
 use super::mir::{Aarch64Inst, Aarch64Mir, BLOCK_LABEL_BASE, Cond, LabelId, Reg};
 use crate::{EmittedCode, EmittedInst, EmittedRelocation, end_inst};
@@ -1299,10 +1299,28 @@ impl<'a> Emitter<'a> {
                     fixup.label
                 )))
             })?;
+            debug_assert_eq!(
+                (target as i64 - fixup.offset as i64) % 4,
+                0,
+                "branch target/site must be 4-byte aligned"
+            );
             let offset = (target as i64 - fixup.offset as i64) / 4;
             match fixup.kind {
                 FixupKind::Branch => {
-                    // B instruction: imm26
+                    // B instruction: imm26 is a SIGNED instruction count. Masking an
+                    // out-of-range offset would silently branch somewhere else, so
+                    // ICE instead (mirrors the x86 emitter's rel32 range check).
+                    if !(-(1 << 25)..(1 << 25)).contains(&offset) {
+                        return Err(ice_error!(
+                            "branch offset exceeds imm26 range",
+                            phase: "codegen/emit",
+                            details: {
+                                "offset_insts" => offset.to_string(),
+                                "label" => fixup.label.to_string(),
+                                "range" => "-2^25..2^25 instructions"
+                            }
+                        ));
+                    }
                     let inst = u32::from_le_bytes(
                         self.code[fixup.offset..fixup.offset + 4]
                             .try_into()
@@ -1314,7 +1332,18 @@ impl<'a> Emitter<'a> {
                         .copy_from_slice(&new_inst.to_le_bytes());
                 }
                 FixupKind::CondBranch => {
-                    // Conditional branch: imm19
+                    // Conditional branch (B.cond/CBZ/CBNZ): imm19, also signed.
+                    if !(-(1 << 18)..(1 << 18)).contains(&offset) {
+                        return Err(ice_error!(
+                            "conditional branch offset exceeds imm19 range",
+                            phase: "codegen/emit",
+                            details: {
+                                "offset_insts" => offset.to_string(),
+                                "label" => fixup.label.to_string(),
+                                "range" => "-2^18..2^18 instructions"
+                            }
+                        ));
+                    }
                     let inst = u32::from_le_bytes(
                         self.code[fixup.offset..fixup.offset + 4]
                             .try_into()

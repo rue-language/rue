@@ -591,7 +591,13 @@ fn build_dep_graph(instructions: &[Aarch64Inst], start: usize, end: usize) -> Ve
             }
         }
 
-        // Update tracking
+        // Update tracking. Clobbers count as writes here: a later instruction
+        // that writes (WAW) or reads (RAW) a clobbered register must not be
+        // scheduled above the clobberer, or the clobber destroys its value.
+        for &clobbered in inst.clobbers() {
+            last_writer.insert(clobbered, i);
+            last_readers.remove(&clobbered);
+        }
         for reg in writes {
             last_writer.insert(reg, i);
             last_readers.remove(&reg);
@@ -759,6 +765,37 @@ pub fn schedule(mir: &mut Aarch64Mir) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_clobber_orders_later_write_and_read() {
+        // Clobbers must be recorded as writes in the dep graph: a later write
+        // to (WAW) or read of (RAW) a clobbered register must depend on the
+        // clobberer. Today every aarch64 clobberer (Bl, Svc) is also a
+        // scheduling barrier, so this is defense-in-depth at the dep-graph
+        // level — build_dep_graph itself must stay correct for any future
+        // non-barrier clobberer (and for the x86 backend, where CQO/IDIV
+        // clobber without being barriers).
+        let insts = vec![
+            Aarch64Inst::Svc { imm: 0 }, // clobbers X0, X8, X16
+            Aarch64Inst::MovImm {
+                dst: Operand::Physical(Reg::X0),
+                imm: 7,
+            },
+            Aarch64Inst::MovRR {
+                dst: Operand::Physical(Reg::X1),
+                src: Operand::Physical(Reg::X8),
+            },
+        ];
+        let nodes = build_dep_graph(&insts, 0, insts.len());
+        assert!(
+            nodes[1].deps.contains(&0),
+            "write to clobbered X0 must depend on the clobbering SVC"
+        );
+        assert!(
+            nodes[2].deps.contains(&0),
+            "read of clobbered X8 must depend on the clobbering SVC"
+        );
+    }
 
     #[test]
     fn test_latency_values() {

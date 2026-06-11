@@ -176,3 +176,53 @@ fn main() -> i32 {
 }
 """
 exit_code = 42
+
+# aarch64 mirror of syscall_returns_i64. The two result-READING tests above
+# were x86-only, which is exactly how the aarch64 scheduler bug that hoisted
+# the x0 result capture above `svc #0` shipped undetected (RUE-129 item 4):
+# every used @syscall result on aarch64 read garbage, and no test noticed.
+[[case]]
+name = "syscall_returns_i64_aarch64"
+spec = ["9.2:4"]
+only_on = ["aarch64-linux"]
+source = """
+fn main() -> i32 {
+    // getpid syscall (172 on Linux aarch64) returns the process ID
+    let syscall_num: u64 = 172;
+    let mut result: i64 = 0;
+    checked {
+        result = @syscall(syscall_num);
+    };
+    // PID should be positive
+    let zero: i64 = 0;
+    if result > zero {
+        42
+    } else {
+        1
+    }
+}
+"""
+exit_code = 42
+
+# aarch64 mirror of syscall_checked_block_expression (see note above).
+[[case]]
+name = "syscall_checked_block_expression_aarch64"
+spec = ["9.2:4"]
+only_on = ["aarch64-linux"]
+source = """
+fn main() -> i32 {
+    // getpid syscall (172 on Linux aarch64) returns the process ID
+    let syscall_num: u64 = 172;
+    let result: i64 = checked {
+        @syscall(syscall_num)
+    };
+    // PID should be positive
+    let zero: i64 = 0;
+    if result > zero {
+        42
+    } else {
+        1
+    }
+}
+"""
+exit_code = 42
