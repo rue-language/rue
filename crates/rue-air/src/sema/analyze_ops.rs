@@ -3330,7 +3330,9 @@ impl<'a> Sema<'a> {
             for (i, is_comptime) in param_comptime.iter().enumerate() {
                 if *is_comptime && param_types[i] != Type::COMPTIME_TYPE {
                     // This is a comptime VALUE parameter - extract its const value
-                    if let Some(const_val) = self.try_evaluate_const(args[i].value) {
+                    // (evaluated in the calling function's context so comptime
+                    // parameters in scope and resolved types are visible)
+                    if let Some(const_val) = self.try_evaluate_const_in_fn(args[i].value, ctx) {
                         value_subst.insert(param_names[i], const_val);
                     }
                 }
@@ -3359,9 +3361,13 @@ impl<'a> Sema<'a> {
             // Validate each comptime parameter receives a compile-time constant
             for (i, (&is_comptime, arg)) in param_comptime.iter().zip(args.iter()).enumerate() {
                 if is_comptime {
-                    // Try to evaluate the argument at compile time
-                    let is_comptime_known = self.try_evaluate_const(arg.value).is_some()
-                        || self.is_comptime_type_var(arg.value, ctx);
+                    // Try to evaluate the argument at compile time. A direct
+                    // reference to a comptime parameter of the *current*
+                    // function also counts: its value is compile-time known
+                    // at every call site, so it may be forwarded (spec 4.14:5).
+                    let is_comptime_known = self.try_evaluate_const_in_fn(arg.value, ctx).is_some()
+                        || self.is_comptime_type_var(arg.value, ctx)
+                        || self.is_comptime_param_forward(arg.value, ctx);
                     if !is_comptime_known {
                         let param_name = self.interner.resolve(&param_names[i]).to_string();
                         return Err(CompileError::new(
@@ -3499,7 +3505,8 @@ impl<'a> Sema<'a> {
                 for (i, is_comptime) in param_comptime.iter().enumerate() {
                     if *is_comptime && param_types[i] != Type::COMPTIME_TYPE {
                         // This is a comptime VALUE parameter - extract its const value
-                        if let Some(const_val) = self.try_evaluate_const(args[i].value) {
+                        // (evaluated in the calling function's context)
+                        if let Some(const_val) = self.try_evaluate_const_in_fn(args[i].value, ctx) {
                             value_subst.insert(param_names[i], const_val);
                         }
                     }

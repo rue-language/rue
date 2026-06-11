@@ -13,17 +13,22 @@ A compile-time expression is an expression marked with the `comptime` keyword th
 {{ rule(id="4.14:2", cat="normative") }}
 
 ```ebnf
-comptime_expr = "comptime" "{" expression "}" ;
+comptime_expr = "comptime" "{" block "}" ;
+block         = { statement } [ expression ] ;
 ```
 
-The expression inside a comptime block is evaluated during compilation. The following operations are supported within comptime blocks:
+The block inside a comptime expression is evaluated during compilation. It may contain `let` statements followed by a tail expression; the comptime expression evaluates to the value of the tail expression. The following operations are supported within comptime blocks:
 
 - Integer literals
 - Boolean literals (`true`, `false`)
-- Arithmetic operators (`+`, `-`, `*`, `/`, `%`)
+- Arithmetic operators (`+`, `-`, `*`, `/`, `%`) and unary negation (`-`)
 - Comparison operators (`==`, `!=`, `<`, `<=`, `>`, `>=`)
 - Logical operators (`&&`, `||`, `!`)
-- Bitwise operators (`&`, `|`, `^`, `<<`, `>>`)
+- Bitwise operators (`&`, `|`, `^`, `<<`, `>>`, `~`)
+- `let` bindings of comptime values
+- References to file-level constants and to `comptime` parameters in scope
+
+Evaluation follows runtime semantics exactly: arithmetic is checked at the operands' type (Chapter 8.1), the full value range of every integer type is supported (including negative results and `u64` values above `i64::MAX`), shift amounts are masked modulo the bit width and shift results truncate to the operand width (4.3a:10), and `&&`/`||` short-circuit.
 
 {{ rule(id="4.14:3", cat="normative") }}
 
@@ -44,7 +49,7 @@ It is a compile-time error if an expression inside a comptime block cannot be ev
 
 - References to runtime variables
 - Function calls (except to comptime-evaluable functions in future versions)
-- Operations that would panic at runtime
+- Operations that would panic at runtime: integer overflow at the operands' type (including in intermediate results), division by zero, and remainder by zero
 
 ```rue
 fn main() -> i32 {

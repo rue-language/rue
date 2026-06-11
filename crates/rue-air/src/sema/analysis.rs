@@ -298,18 +298,29 @@ fn analyze_all_function_bodies_sequential(sema: &mut Sema<'_>) -> MultiErrorResu
             let param_names = sema.param_arena.names(method_info.params);
             let param_types = sema.param_arena.types(method_info.params);
             let param_modes = sema.param_arena.modes(method_info.params);
+            let param_comptime = sema.param_arena.comptime(method_info.params);
 
-            let mut param_info: Vec<(Spur, Type, RirParamMode)> = Vec::new();
+            let mut param_info: Vec<(Spur, Type, RirParamMode, bool)> = Vec::new();
 
             if method_info.has_self {
                 // Add self parameter (Normal mode - passed by value)
                 let self_sym = sema.interner.get_or_intern("self");
-                param_info.push((self_sym, method_info.struct_type, RirParamMode::Normal));
+                param_info.push((
+                    self_sym,
+                    method_info.struct_type,
+                    RirParamMode::Normal,
+                    false,
+                ));
             }
 
             // Add regular parameters (convert from arena slices)
             for i in 0..param_names.len() {
-                param_info.push((param_names[i], param_types[i], param_modes[i]));
+                param_info.push((
+                    param_names[i],
+                    param_types[i],
+                    param_modes[i],
+                    param_comptime[i],
+                ));
             }
 
             // Retrieve captured comptime values from struct-level storage
@@ -562,18 +573,29 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
                 let param_names = sema.param_arena.names(method_info.params);
                 let param_types = sema.param_arena.types(method_info.params);
                 let param_modes = sema.param_arena.modes(method_info.params);
+                let param_comptime = sema.param_arena.comptime(method_info.params);
 
-                let mut param_info: Vec<(Spur, Type, RirParamMode)> = Vec::new();
+                let mut param_info: Vec<(Spur, Type, RirParamMode, bool)> = Vec::new();
 
                 if method_info.has_self {
                     // Add self parameter (Normal mode - passed by value)
                     let self_sym = sema.interner.get_or_intern("self");
-                    param_info.push((self_sym, method_info.struct_type, RirParamMode::Normal));
+                    param_info.push((
+                        self_sym,
+                        method_info.struct_type,
+                        RirParamMode::Normal,
+                        false,
+                    ));
                 }
 
                 // Add regular parameters (convert from arena slices)
                 for i in 0..param_names.len() {
-                    param_info.push((param_names[i], param_types[i], param_modes[i]));
+                    param_info.push((
+                        param_names[i],
+                        param_types[i],
+                        param_modes[i],
+                        param_comptime[i],
+                    ));
                 }
 
                 // Retrieve captured comptime values from struct-level storage
@@ -1251,11 +1273,11 @@ impl<'a> Sema<'a> {
         let ret_type = self.resolve_type(return_type, span)?;
 
         // Resolve parameter types and modes
-        let param_info: Vec<(Spur, Type, RirParamMode)> = params
+        let param_info: Vec<(Spur, Type, RirParamMode, bool)> = params
             .iter()
             .map(|p| {
                 let ty = self.resolve_type(p.ty, span)?;
-                Ok((p.name, ty, p.mode))
+                Ok((p.name, ty, p.mode, p.is_comptime))
             })
             .collect::<CompileResult<Vec<_>>>()?;
 
@@ -1310,18 +1332,18 @@ impl<'a> Sema<'a> {
         let ret_type = self.resolve_type(return_type, span)?;
 
         // Build parameter list, adding self as first parameter for methods
-        let mut param_info: Vec<(Spur, Type, RirParamMode)> = Vec::new();
+        let mut param_info: Vec<(Spur, Type, RirParamMode, bool)> = Vec::new();
 
         if has_self {
             // Add self parameter (Normal mode - passed by value)
             let self_sym = self.interner.get_or_intern("self");
-            param_info.push((self_sym, struct_type, RirParamMode::Normal));
+            param_info.push((self_sym, struct_type, RirParamMode::Normal, false));
         }
 
         // Add regular parameters with their modes
         for p in params.iter() {
             let ty = self.resolve_type(p.ty, span)?;
-            param_info.push((p.name, ty, p.mode));
+            param_info.push((p.name, ty, p.mode, p.is_comptime));
         }
 
         let (
@@ -1371,8 +1393,8 @@ impl<'a> Sema<'a> {
     )> {
         // Destructors take self parameter and return unit
         let self_sym = self.interner.get_or_intern("self");
-        let param_info: Vec<(Spur, Type, RirParamMode)> =
-            vec![(self_sym, struct_type, RirParamMode::Normal)];
+        let param_info: Vec<(Spur, Type, RirParamMode, bool)> =
+            vec![(self_sym, struct_type, RirParamMode::Normal, false)];
 
         let (
             mut air,
@@ -1417,7 +1439,7 @@ impl<'a> Sema<'a> {
         &mut self,
         infer_ctx: &InferenceContext,
         return_type: Type,
-        params: &[(Spur, Type, RirParamMode)], // (name, type, mode)
+        params: &[(Spur, Type, RirParamMode, bool)], // (name, type, mode, is_comptime)
         body: InstRef,
     ) -> CompileResult<(
         Air,
@@ -1441,7 +1463,7 @@ impl<'a> Sema<'a> {
         &mut self,
         infer_ctx: &InferenceContext,
         return_type: Type,
-        params: &[(Spur, Type, RirParamMode)],
+        params: &[(Spur, Type, RirParamMode, bool)],
         body: InstRef,
         type_subst: Option<&std::collections::HashMap<Spur, Type>>,
         value_subst: Option<&std::collections::HashMap<Spur, ConstValue>>,
@@ -1463,12 +1485,13 @@ impl<'a> Sema<'a> {
         // Each parameter starts at the next available ABI slot.
         // For struct parameters, the slot count is the number of fields.
         let mut next_abi_slot: u32 = 0;
-        for (pname, ptype, mode) in params.iter() {
+        for (pname, ptype, mode, is_comptime) in params.iter() {
             param_vec.push(ParamInfo {
                 name: *pname,
                 abi_slot: next_abi_slot,
                 ty: *ptype,
                 mode: *mode,
+                is_comptime: *is_comptime,
             });
             // Inout and Borrow parameters are passed by reference.
             // Comptime parameters are VALUE params (like `comptime n: i32`), passed by value.
@@ -1579,7 +1602,7 @@ impl<'a> Sema<'a> {
         &mut self,
         infer_ctx: &InferenceContext,
         return_type: Type,
-        params: &[(Spur, Type, RirParamMode)],
+        params: &[(Spur, Type, RirParamMode, bool)],
         body: InstRef,
         type_subst: &std::collections::HashMap<Spur, Type>,
     ) -> CompileResult<(
@@ -1607,7 +1630,7 @@ impl<'a> Sema<'a> {
         &mut self,
         infer_ctx: &InferenceContext,
         return_type: Type,
-        params: &[(Spur, Type, RirParamMode)],
+        params: &[(Spur, Type, RirParamMode, bool)],
         body: InstRef,
         self_type: Type,
         captured_comptime_values: &std::collections::HashMap<Spur, ConstValue>,
@@ -1651,7 +1674,7 @@ impl<'a> Sema<'a> {
         &mut self,
         infer_ctx: &InferenceContext,
         return_type: Type,
-        params: &[(Spur, Type, RirParamMode)],
+        params: &[(Spur, Type, RirParamMode, bool)],
         body: InstRef,
         type_subst: Option<&HashMap<Spur, Type>>,
         value_subst: Option<&HashMap<Spur, ConstValue>>,
@@ -1674,7 +1697,7 @@ impl<'a> Sema<'a> {
         // Convert Type to InferType so arrays are represented structurally.
         let mut param_vars: HashMap<Spur, ParamVarInfo> = params
             .iter()
-            .map(|(name, ty, _mode)| {
+            .map(|(name, ty, _mode, _is_comptime)| {
                 (
                     *name,
                     ParamVarInfo {
@@ -2167,37 +2190,54 @@ impl<'a> Sema<'a> {
 
             // Comptime block expression
             InstData::Comptime { expr } => {
-                // Try to evaluate the inner expression at compile time
-                match self.try_evaluate_const(*expr) {
+                // Evaluate the inner expression at compile time. The
+                // environment carries the comptime parameters in scope and
+                // the HM-resolved types, so arithmetic is checked at the
+                // operand type (spec 8.1 / 4.14:4) and comptime parameters
+                // are usable as constants (spec 4.14:5). A would-panic
+                // operation (overflow, division by zero) propagates as a
+                // compile error here.
+                let result = {
+                    let mut env = super::comptime_eval::ComptimeEnv::for_analysis(ctx);
+                    self.eval_const_expr(*expr, &mut env)?
+                };
+                match result {
                     Some(ConstValue::Integer(value)) => {
                         // Get the expected type from resolved types
                         let ty =
                             Self::get_resolved_type(ctx, inst_ref, inst.span, "comptime block")?;
 
-                        // Check if the value fits in the target type
-                        if value < 0 {
-                            return Err(CompileError::new(
-                                ErrorKind::ComptimeEvaluationFailed {
-                                    reason: "negative values not yet supported in comptime"
-                                        .to_string(),
-                                },
-                                inst.span,
-                            ));
+                        // Backstop range check: negative results are legal
+                        // for signed targets (RUE-71); the value just has to
+                        // be representable in the target type.
+                        if !super::comptime_eval::const_int_fits(value, ty) {
+                            return if value >= 0 {
+                                Err(CompileError::new(
+                                    ErrorKind::LiteralOutOfRange {
+                                        value: value as u64,
+                                        ty: ty.safe_name_with_pool(Some(&self.type_pool)),
+                                    },
+                                    inst.span,
+                                ))
+                            } else {
+                                Err(CompileError::new(
+                                    ErrorKind::ComptimeEvaluationFailed {
+                                        reason: format!(
+                                            "value {} is out of range for type {}",
+                                            value,
+                                            ty.safe_name_with_pool(Some(&self.type_pool))
+                                        ),
+                                    },
+                                    inst.span,
+                                ))
+                            };
                         }
 
-                        let unsigned_value = value as u64;
-                        if !ty.literal_fits(unsigned_value) {
-                            return Err(CompileError::new(
-                                ErrorKind::LiteralOutOfRange {
-                                    value: unsigned_value,
-                                    ty: ty.safe_name_with_pool(Some(&self.type_pool)),
-                                },
-                                inst.span,
-                            ));
-                        }
-
+                        // Two's-complement encoding: negative values are
+                        // sign-extended into the u64 payload, matching how
+                        // negative literals are emitted elsewhere.
                         let air_ref = air.add_inst(AirInst {
-                            data: AirInstData::Const(unsigned_value),
+                            data: AirInstData::Const(value as u64),
                             ty,
                             span: inst.span,
                         });
@@ -2291,7 +2331,7 @@ impl<'a> Sema<'a> {
                     self.find_or_create_anon_struct(&struct_fields, &method_sigs, &HashMap::new());
 
                 // DON'T register methods here - they should be registered during const evaluation
-                // (either try_evaluate_const for non-comptime, or try_evaluate_const_with_subst for comptime).
+                // (the comptime evaluator's AnonStructType arm in sema::comptime_eval).
                 // If we register here, we create a struct without captured comptime values, which is incorrect.
                 //
                 // if is_new && *methods_len > 0 {
@@ -3853,712 +3893,6 @@ impl<'a> Sema<'a> {
         Ok(AnalysisResult::new(air_ref, Type::BOOL))
     }
 
-    /// Try to evaluate an RIR expression as a compile-time constant.
-    ///
-    /// Returns `Some(value)` if the expression can be fully evaluated at compile time,
-    /// or `None` if evaluation requires runtime information (e.g., variable values,
-    /// function calls) or would cause overflow/panic.
-    ///
-    /// This is the foundation for compile-time bounds checking and can be extended
-    /// for future `comptime` features.
-    pub(crate) fn try_evaluate_const(&mut self, inst_ref: InstRef) -> Option<ConstValue> {
-        let inst = self.rir.get(inst_ref);
-        match &inst.data {
-            // Integer literals
-            InstData::IntConst(value) => i64::try_from(*value).ok().map(ConstValue::Integer),
-
-            // Boolean literals
-            InstData::BoolConst(value) => Some(ConstValue::Bool(*value)),
-
-            // Unary negation: -expr
-            InstData::Neg { operand } => {
-                match self.try_evaluate_const(*operand)? {
-                    ConstValue::Integer(n) => n.checked_neg().map(ConstValue::Integer),
-                    // Can't negate a boolean, type, or unit
-                    ConstValue::Bool(_) | ConstValue::Type(_) | ConstValue::Unit => None,
-                }
-            }
-
-            // Logical NOT: !expr
-            InstData::Not { operand } => {
-                match self.try_evaluate_const(*operand)? {
-                    ConstValue::Bool(b) => Some(ConstValue::Bool(!b)),
-                    // Can't logical-NOT an integer, type, or unit
-                    ConstValue::Integer(_) | ConstValue::Type(_) | ConstValue::Unit => None,
-                }
-            }
-
-            // Binary arithmetic operations
-            InstData::Add { lhs, rhs } => {
-                let l = self.try_evaluate_const(*lhs)?.as_integer()?;
-                let r = self.try_evaluate_const(*rhs)?.as_integer()?;
-                l.checked_add(r).map(ConstValue::Integer)
-            }
-            InstData::Sub { lhs, rhs } => {
-                let l = self.try_evaluate_const(*lhs)?.as_integer()?;
-                let r = self.try_evaluate_const(*rhs)?.as_integer()?;
-                l.checked_sub(r).map(ConstValue::Integer)
-            }
-            InstData::Mul { lhs, rhs } => {
-                let l = self.try_evaluate_const(*lhs)?.as_integer()?;
-                let r = self.try_evaluate_const(*rhs)?.as_integer()?;
-                l.checked_mul(r).map(ConstValue::Integer)
-            }
-            InstData::Div { lhs, rhs } => {
-                let l = self.try_evaluate_const(*lhs)?.as_integer()?;
-                let r = self.try_evaluate_const(*rhs)?.as_integer()?;
-                if r == 0 {
-                    None // Division by zero - defer to runtime
-                } else {
-                    l.checked_div(r).map(ConstValue::Integer)
-                }
-            }
-            InstData::Mod { lhs, rhs } => {
-                let l = self.try_evaluate_const(*lhs)?.as_integer()?;
-                let r = self.try_evaluate_const(*rhs)?.as_integer()?;
-                if r == 0 {
-                    None // Modulo by zero - defer to runtime
-                } else {
-                    l.checked_rem(r).map(ConstValue::Integer)
-                }
-            }
-
-            // Comparison operations
-            InstData::Eq { lhs, rhs } => {
-                let l = self.try_evaluate_const(*lhs)?;
-                let r = self.try_evaluate_const(*rhs)?;
-                match (l, r) {
-                    (ConstValue::Integer(a), ConstValue::Integer(b)) => {
-                        Some(ConstValue::Bool(a == b))
-                    }
-                    (ConstValue::Bool(a), ConstValue::Bool(b)) => Some(ConstValue::Bool(a == b)),
-                    _ => None, // Mixed types
-                }
-            }
-            InstData::Ne { lhs, rhs } => {
-                let l = self.try_evaluate_const(*lhs)?;
-                let r = self.try_evaluate_const(*rhs)?;
-                match (l, r) {
-                    (ConstValue::Integer(a), ConstValue::Integer(b)) => {
-                        Some(ConstValue::Bool(a != b))
-                    }
-                    (ConstValue::Bool(a), ConstValue::Bool(b)) => Some(ConstValue::Bool(a != b)),
-                    _ => None,
-                }
-            }
-            InstData::Lt { lhs, rhs } => {
-                let l = self.try_evaluate_const(*lhs)?.as_integer()?;
-                let r = self.try_evaluate_const(*rhs)?.as_integer()?;
-                Some(ConstValue::Bool(l < r))
-            }
-            InstData::Gt { lhs, rhs } => {
-                let l = self.try_evaluate_const(*lhs)?.as_integer()?;
-                let r = self.try_evaluate_const(*rhs)?.as_integer()?;
-                Some(ConstValue::Bool(l > r))
-            }
-            InstData::Le { lhs, rhs } => {
-                let l = self.try_evaluate_const(*lhs)?.as_integer()?;
-                let r = self.try_evaluate_const(*rhs)?.as_integer()?;
-                Some(ConstValue::Bool(l <= r))
-            }
-            InstData::Ge { lhs, rhs } => {
-                let l = self.try_evaluate_const(*lhs)?.as_integer()?;
-                let r = self.try_evaluate_const(*rhs)?.as_integer()?;
-                Some(ConstValue::Bool(l >= r))
-            }
-
-            // Logical operations
-            InstData::And { lhs, rhs } => {
-                let l = self.try_evaluate_const(*lhs)?.as_bool()?;
-                let r = self.try_evaluate_const(*rhs)?.as_bool()?;
-                Some(ConstValue::Bool(l && r))
-            }
-            InstData::Or { lhs, rhs } => {
-                let l = self.try_evaluate_const(*lhs)?.as_bool()?;
-                let r = self.try_evaluate_const(*rhs)?.as_bool()?;
-                Some(ConstValue::Bool(l || r))
-            }
-
-            // Bitwise operations
-            InstData::BitAnd { lhs, rhs } => {
-                let l = self.try_evaluate_const(*lhs)?.as_integer()?;
-                let r = self.try_evaluate_const(*rhs)?.as_integer()?;
-                Some(ConstValue::Integer(l & r))
-            }
-            InstData::BitOr { lhs, rhs } => {
-                let l = self.try_evaluate_const(*lhs)?.as_integer()?;
-                let r = self.try_evaluate_const(*rhs)?.as_integer()?;
-                Some(ConstValue::Integer(l | r))
-            }
-            InstData::BitXor { lhs, rhs } => {
-                let l = self.try_evaluate_const(*lhs)?.as_integer()?;
-                let r = self.try_evaluate_const(*rhs)?.as_integer()?;
-                Some(ConstValue::Integer(l ^ r))
-            }
-            InstData::Shl { lhs, rhs } => {
-                let l = self.try_evaluate_const(*lhs)?.as_integer()?;
-                let r = self.try_evaluate_const(*rhs)?.as_integer()?;
-                // Only constant-fold small shift amounts to avoid type-width issues.
-                // For shifts >= 8, defer to runtime where hardware handles masking correctly.
-                // This is conservative but safe - we don't know the operand type here.
-                if r < 0 || r >= 8 {
-                    return None;
-                }
-                Some(ConstValue::Integer(l << r))
-            }
-            InstData::Shr { lhs, rhs } => {
-                let l = self.try_evaluate_const(*lhs)?.as_integer()?;
-                let r = self.try_evaluate_const(*rhs)?.as_integer()?;
-                // Only constant-fold small shift amounts to avoid type-width issues.
-                // For shifts >= 8, defer to runtime where hardware handles masking correctly.
-                if r < 0 || r >= 8 {
-                    return None;
-                }
-                Some(ConstValue::Integer(l >> r))
-            }
-            InstData::BitNot { operand } => {
-                let n = self.try_evaluate_const(*operand)?.as_integer()?;
-                Some(ConstValue::Integer(!n))
-            }
-
-            // Comptime block: comptime { expr } is compile-time evaluable if its inner expr is
-            InstData::Comptime { expr } => self.try_evaluate_const(*expr),
-
-            // Block: evaluate the result expression (last expression in the block)
-            InstData::Block { extra_start, len } => {
-                // A block is comptime-evaluable if it has a single instruction
-                // (which is the result expression) OR if all statements are
-                // side-effect-free and the result is comptime-evaluable.
-                // For now, only handle the single-instruction case (common for
-                // simple type-returning functions like `fn make_type() -> type { i32 }`).
-                if *len == 1 {
-                    let inst_refs = self.rir.get_extra(*extra_start, *len);
-                    let result_ref = InstRef::from_raw(inst_refs[0]);
-                    self.try_evaluate_const(result_ref)
-                } else {
-                    None // Blocks with multiple instructions need full interpreter support
-                }
-            }
-
-            // Anonymous struct type: evaluate to a comptime type value
-            InstData::AnonStructType {
-                fields_start,
-                fields_len,
-                methods_start,
-                methods_len,
-            } => {
-                // Get the field declarations from the RIR
-                let field_decls = self.rir.get_field_decls(*fields_start, *fields_len);
-
-                // Resolve each field type and build the struct fields
-                let mut struct_fields = Vec::with_capacity(field_decls.len());
-                for (name_sym, type_sym) in field_decls {
-                    let name_str = self.interner.resolve(&name_sym).to_string();
-                    // Try to resolve the type - for anonymous structs in comptime context,
-                    // we need to be able to resolve the field types
-                    let field_ty = self.resolve_type_for_comptime(type_sym)?;
-                    struct_fields.push(StructField {
-                        name: name_str,
-                        ty: field_ty,
-                    });
-                }
-
-                // Extract method signatures for structural equality comparison
-                let method_sigs = self.extract_anon_method_sigs(*methods_start, *methods_len);
-
-                // Find or create the anonymous struct type
-                let (struct_ty, is_new) =
-                    self.find_or_create_anon_struct(&struct_fields, &method_sigs, &HashMap::new());
-
-                // Register methods if present and struct is new
-                // This handles non-comptime functions like `fn Counter() -> type { struct { fn get() {} } }`
-                // For comptime functions with captured values, use try_evaluate_const_with_subst instead
-                if is_new && *methods_len > 0 {
-                    let struct_id = struct_ty.as_struct()?;
-                    // Use comptime-safe method registration (no type subst, no value subst for non-comptime)
-                    self.register_anon_struct_methods_for_comptime_with_subst(
-                        struct_id,
-                        struct_ty,
-                        *methods_start,
-                        *methods_len,
-                        inst.span,
-                        &HashMap::new(), // Empty type substitution
-                        &HashMap::new(), // Empty value substitution (non-comptime)
-                    )?;
-                }
-                Some(ConstValue::Type(struct_ty))
-            }
-
-            // TypeConst: a type used as a value (e.g., `i32` in `identity(i32, 42)`)
-            InstData::TypeConst { type_name } => {
-                let type_name_str = self.interner.resolve(type_name);
-                let ty = match type_name_str {
-                    "i8" => Type::I8,
-                    "i16" => Type::I16,
-                    "i32" => Type::I32,
-                    "i64" => Type::I64,
-                    "u8" => Type::U8,
-                    "u16" => Type::U16,
-                    "u32" => Type::U32,
-                    "u64" => Type::U64,
-                    // Pointer-width integers (64-bit on all supported targets, RUE-151).
-                    "usize" => Type::U64,
-                    "isize" => Type::I64,
-                    "bool" => Type::BOOL,
-                    "()" => Type::UNIT,
-                    "!" => Type::NEVER,
-                    _ => {
-                        // Check for struct types
-                        if let Some(&struct_id) = self.structs.get(type_name) {
-                            Type::new_struct(struct_id)
-                        } else if let Some(&enum_id) = self.enums.get(type_name) {
-                            Type::new_enum(enum_id)
-                        } else {
-                            return None; // Unknown type
-                        }
-                    }
-                };
-                Some(ConstValue::Type(ty))
-            }
-
-            // VarRef: when a variable reference is actually a type name (e.g., `Point` in `fn make_type() -> type { Point }`)
-            InstData::VarRef { name } => {
-                // Try to resolve as a type - if it's a type name, return the type
-                let name_str = self.interner.resolve(name);
-                let ty = match name_str {
-                    "i8" => Type::I8,
-                    "i16" => Type::I16,
-                    "i32" => Type::I32,
-                    "i64" => Type::I64,
-                    "u8" => Type::U8,
-                    "u16" => Type::U16,
-                    "u32" => Type::U32,
-                    "u64" => Type::U64,
-                    // Pointer-width integers (64-bit on all supported targets, RUE-151).
-                    "usize" => Type::U64,
-                    "isize" => Type::I64,
-                    "bool" => Type::BOOL,
-                    "()" => Type::UNIT,
-                    "!" => Type::NEVER,
-                    _ => {
-                        // Check for struct types
-                        if let Some(&struct_id) = self.structs.get(name) {
-                            Type::new_struct(struct_id)
-                        } else if let Some(&enum_id) = self.enums.get(name) {
-                            Type::new_enum(enum_id)
-                        } else {
-                            return None; // Not a type name - can't evaluate at compile time
-                        }
-                    }
-                };
-                Some(ConstValue::Type(ty))
-            }
-
-            // Everything else requires runtime evaluation
-            _ => None,
-        }
-    }
-
-    /// Try to extract a constant integer value from an RIR index expression.
-    ///
-    /// This is used for compile-time bounds checking. Returns `Some(value)` if
-    /// the index can be evaluated to an integer constant at compile time.
-    pub(crate) fn try_get_const_index(&mut self, inst_ref: InstRef) -> Option<i64> {
-        self.try_evaluate_const(inst_ref)?.as_integer()
-    }
-
-    /// Try to evaluate an RIR instruction to a compile-time constant value with type substitution.
-    ///
-    /// This is used when evaluating generic functions that return `type`. For example,
-    /// when calling `fn Pair(comptime T: type) -> type { struct { first: T, second: T } }`
-    /// with `Pair(i32)`, we need to substitute `T -> i32` when evaluating the body.
-    ///
-    /// The `type_subst` map contains mappings from type parameter names to concrete types.
-    pub(crate) fn try_evaluate_const_with_subst(
-        &mut self,
-        inst_ref: InstRef,
-        type_subst: &std::collections::HashMap<Spur, Type>,
-        value_subst: &std::collections::HashMap<Spur, ConstValue>,
-    ) -> Option<ConstValue> {
-        let inst = self.rir.get(inst_ref);
-        match &inst.data {
-            // Integer literals
-            InstData::IntConst(value) => i64::try_from(*value).ok().map(ConstValue::Integer),
-
-            // Boolean literals
-            InstData::BoolConst(value) => Some(ConstValue::Bool(*value)),
-
-            // Unary negation: -expr
-            InstData::Neg { operand } => {
-                match self.try_evaluate_const_with_subst(*operand, type_subst, value_subst)? {
-                    ConstValue::Integer(n) => n.checked_neg().map(ConstValue::Integer),
-                    ConstValue::Bool(_) | ConstValue::Type(_) | ConstValue::Unit => None,
-                }
-            }
-
-            // Logical NOT: !expr
-            InstData::Not { operand } => {
-                match self.try_evaluate_const_with_subst(*operand, type_subst, value_subst)? {
-                    ConstValue::Bool(b) => Some(ConstValue::Bool(!b)),
-                    ConstValue::Integer(_) | ConstValue::Type(_) | ConstValue::Unit => None,
-                }
-            }
-
-            // Binary arithmetic operations
-            InstData::Add { lhs, rhs } => {
-                let l = self
-                    .try_evaluate_const_with_subst(*lhs, type_subst, value_subst)?
-                    .as_integer()?;
-                let r = self
-                    .try_evaluate_const_with_subst(*rhs, type_subst, value_subst)?
-                    .as_integer()?;
-                l.checked_add(r).map(ConstValue::Integer)
-            }
-            InstData::Sub { lhs, rhs } => {
-                let l = self
-                    .try_evaluate_const_with_subst(*lhs, type_subst, value_subst)?
-                    .as_integer()?;
-                let r = self
-                    .try_evaluate_const_with_subst(*rhs, type_subst, value_subst)?
-                    .as_integer()?;
-                l.checked_sub(r).map(ConstValue::Integer)
-            }
-            InstData::Mul { lhs, rhs } => {
-                let l = self
-                    .try_evaluate_const_with_subst(*lhs, type_subst, value_subst)?
-                    .as_integer()?;
-                let r = self
-                    .try_evaluate_const_with_subst(*rhs, type_subst, value_subst)?
-                    .as_integer()?;
-                l.checked_mul(r).map(ConstValue::Integer)
-            }
-            InstData::Div { lhs, rhs } => {
-                let l = self
-                    .try_evaluate_const_with_subst(*lhs, type_subst, value_subst)?
-                    .as_integer()?;
-                let r = self
-                    .try_evaluate_const_with_subst(*rhs, type_subst, value_subst)?
-                    .as_integer()?;
-                if r == 0 {
-                    None
-                } else {
-                    l.checked_div(r).map(ConstValue::Integer)
-                }
-            }
-            InstData::Mod { lhs, rhs } => {
-                let l = self
-                    .try_evaluate_const_with_subst(*lhs, type_subst, value_subst)?
-                    .as_integer()?;
-                let r = self
-                    .try_evaluate_const_with_subst(*rhs, type_subst, value_subst)?
-                    .as_integer()?;
-                if r == 0 {
-                    None
-                } else {
-                    l.checked_rem(r).map(ConstValue::Integer)
-                }
-            }
-
-            // Comparison operations
-            InstData::Eq { lhs, rhs } => {
-                let l = self.try_evaluate_const_with_subst(*lhs, type_subst, value_subst)?;
-                let r = self.try_evaluate_const_with_subst(*rhs, type_subst, value_subst)?;
-                match (l, r) {
-                    (ConstValue::Integer(a), ConstValue::Integer(b)) => {
-                        Some(ConstValue::Bool(a == b))
-                    }
-                    (ConstValue::Bool(a), ConstValue::Bool(b)) => Some(ConstValue::Bool(a == b)),
-                    _ => None,
-                }
-            }
-            InstData::Ne { lhs, rhs } => {
-                let l = self.try_evaluate_const_with_subst(*lhs, type_subst, value_subst)?;
-                let r = self.try_evaluate_const_with_subst(*rhs, type_subst, value_subst)?;
-                match (l, r) {
-                    (ConstValue::Integer(a), ConstValue::Integer(b)) => {
-                        Some(ConstValue::Bool(a != b))
-                    }
-                    (ConstValue::Bool(a), ConstValue::Bool(b)) => Some(ConstValue::Bool(a != b)),
-                    _ => None,
-                }
-            }
-            InstData::Lt { lhs, rhs } => {
-                let l = self
-                    .try_evaluate_const_with_subst(*lhs, type_subst, value_subst)?
-                    .as_integer()?;
-                let r = self
-                    .try_evaluate_const_with_subst(*rhs, type_subst, value_subst)?
-                    .as_integer()?;
-                Some(ConstValue::Bool(l < r))
-            }
-            InstData::Gt { lhs, rhs } => {
-                let l = self
-                    .try_evaluate_const_with_subst(*lhs, type_subst, value_subst)?
-                    .as_integer()?;
-                let r = self
-                    .try_evaluate_const_with_subst(*rhs, type_subst, value_subst)?
-                    .as_integer()?;
-                Some(ConstValue::Bool(l > r))
-            }
-            InstData::Le { lhs, rhs } => {
-                let l = self
-                    .try_evaluate_const_with_subst(*lhs, type_subst, value_subst)?
-                    .as_integer()?;
-                let r = self
-                    .try_evaluate_const_with_subst(*rhs, type_subst, value_subst)?
-                    .as_integer()?;
-                Some(ConstValue::Bool(l <= r))
-            }
-            InstData::Ge { lhs, rhs } => {
-                let l = self
-                    .try_evaluate_const_with_subst(*lhs, type_subst, value_subst)?
-                    .as_integer()?;
-                let r = self
-                    .try_evaluate_const_with_subst(*rhs, type_subst, value_subst)?
-                    .as_integer()?;
-                Some(ConstValue::Bool(l >= r))
-            }
-
-            // Logical operations
-            InstData::And { lhs, rhs } => {
-                let l = self
-                    .try_evaluate_const_with_subst(*lhs, type_subst, value_subst)?
-                    .as_bool()?;
-                let r = self
-                    .try_evaluate_const_with_subst(*rhs, type_subst, value_subst)?
-                    .as_bool()?;
-                Some(ConstValue::Bool(l && r))
-            }
-            InstData::Or { lhs, rhs } => {
-                let l = self
-                    .try_evaluate_const_with_subst(*lhs, type_subst, value_subst)?
-                    .as_bool()?;
-                let r = self
-                    .try_evaluate_const_with_subst(*rhs, type_subst, value_subst)?
-                    .as_bool()?;
-                Some(ConstValue::Bool(l || r))
-            }
-
-            // Bitwise operations
-            InstData::BitAnd { lhs, rhs } => {
-                let l = self
-                    .try_evaluate_const_with_subst(*lhs, type_subst, value_subst)?
-                    .as_integer()?;
-                let r = self
-                    .try_evaluate_const_with_subst(*rhs, type_subst, value_subst)?
-                    .as_integer()?;
-                Some(ConstValue::Integer(l & r))
-            }
-            InstData::BitOr { lhs, rhs } => {
-                let l = self
-                    .try_evaluate_const_with_subst(*lhs, type_subst, value_subst)?
-                    .as_integer()?;
-                let r = self
-                    .try_evaluate_const_with_subst(*rhs, type_subst, value_subst)?
-                    .as_integer()?;
-                Some(ConstValue::Integer(l | r))
-            }
-            InstData::BitXor { lhs, rhs } => {
-                let l = self
-                    .try_evaluate_const_with_subst(*lhs, type_subst, value_subst)?
-                    .as_integer()?;
-                let r = self
-                    .try_evaluate_const_with_subst(*rhs, type_subst, value_subst)?
-                    .as_integer()?;
-                Some(ConstValue::Integer(l ^ r))
-            }
-            InstData::Shl { lhs, rhs } => {
-                let l = self
-                    .try_evaluate_const_with_subst(*lhs, type_subst, value_subst)?
-                    .as_integer()?;
-                let r = self
-                    .try_evaluate_const_with_subst(*rhs, type_subst, value_subst)?
-                    .as_integer()?;
-                if r < 0 || r >= 8 {
-                    return None;
-                }
-                Some(ConstValue::Integer(l << r))
-            }
-            InstData::Shr { lhs, rhs } => {
-                let l = self
-                    .try_evaluate_const_with_subst(*lhs, type_subst, value_subst)?
-                    .as_integer()?;
-                let r = self
-                    .try_evaluate_const_with_subst(*rhs, type_subst, value_subst)?
-                    .as_integer()?;
-                if r < 0 || r >= 8 {
-                    return None;
-                }
-                Some(ConstValue::Integer(l >> r))
-            }
-            InstData::BitNot { operand } => {
-                let n = self
-                    .try_evaluate_const_with_subst(*operand, type_subst, value_subst)?
-                    .as_integer()?;
-                Some(ConstValue::Integer(!n))
-            }
-
-            // Comptime block: comptime { expr } is compile-time evaluable if its inner expr is
-            InstData::Comptime { expr } => {
-                self.try_evaluate_const_with_subst(*expr, type_subst, value_subst)
-            }
-
-            // Block: evaluate the result expression (last expression in the block)
-            InstData::Block { extra_start, len } => {
-                if *len == 1 {
-                    let inst_refs = self.rir.get_extra(*extra_start, *len);
-                    let result_ref = InstRef::from_raw(inst_refs[0]);
-                    self.try_evaluate_const_with_subst(result_ref, type_subst, value_subst)
-                } else {
-                    None
-                }
-            }
-
-            // Anonymous struct type: evaluate to a comptime type value with substitution
-            InstData::AnonStructType {
-                fields_start,
-                fields_len,
-                methods_start,
-                methods_len,
-            } => {
-                let field_decls = self.rir.get_field_decls(*fields_start, *fields_len);
-
-                let mut struct_fields = Vec::with_capacity(field_decls.len());
-                for (name_sym, type_sym) in field_decls {
-                    let name_str = self.interner.resolve(&name_sym).to_string();
-                    // Use the substitution-aware type resolution
-                    let field_ty =
-                        self.resolve_type_for_comptime_with_subst(type_sym, type_subst)?;
-                    struct_fields.push(StructField {
-                        name: name_str,
-                        ty: field_ty,
-                    });
-                }
-
-                // Extract method signatures for structural equality comparison
-                let method_sigs = self.extract_anon_method_sigs(*methods_start, *methods_len);
-
-                let (struct_ty, _is_new) =
-                    self.find_or_create_anon_struct(&struct_fields, &method_sigs, value_subst);
-
-                // Register methods if present.
-                // Register if either:
-                // 1. This is a newly created struct (is_new=true), OR
-                // 2. The struct exists but has no methods registered yet
-                if *methods_len > 0 {
-                    let struct_id = struct_ty.as_struct()?;
-
-                    // Check if methods are already registered for this struct
-                    let method_refs = self.rir.get_inst_refs(*methods_start, *methods_len);
-                    let first_method_ref = method_refs[0];
-                    let first_method_inst = self.rir.get(first_method_ref);
-                    if let InstData::FnDecl {
-                        name: method_name, ..
-                    } = &first_method_inst.data
-                    {
-                        let needs_registration =
-                            !self.methods.contains_key(&(struct_id, *method_name));
-
-                        if needs_registration {
-                            // Use comptime-safe method registration with type substitution
-                            self.register_anon_struct_methods_for_comptime_with_subst(
-                                struct_id,
-                                struct_ty,
-                                *methods_start,
-                                *methods_len,
-                                inst.span,
-                                type_subst,
-                                value_subst,
-                            )?;
-                        }
-                    }
-                }
-                Some(ConstValue::Type(struct_ty))
-            }
-
-            // TypeConst: a type used as a value
-            InstData::TypeConst { type_name } => {
-                // First check the substitution map
-                if let Some(&ty) = type_subst.get(type_name) {
-                    return Some(ConstValue::Type(ty));
-                }
-
-                let type_name_str = self.interner.resolve(type_name);
-                let ty = match type_name_str {
-                    "i8" => Type::I8,
-                    "i16" => Type::I16,
-                    "i32" => Type::I32,
-                    "i64" => Type::I64,
-                    "u8" => Type::U8,
-                    "u16" => Type::U16,
-                    "u32" => Type::U32,
-                    "u64" => Type::U64,
-                    // Pointer-width integers (64-bit on all supported targets, RUE-151).
-                    "usize" => Type::U64,
-                    "isize" => Type::I64,
-                    "bool" => Type::BOOL,
-                    "()" => Type::UNIT,
-                    "!" => Type::NEVER,
-                    _ => {
-                        if let Some(&struct_id) = self.structs.get(type_name) {
-                            Type::new_struct(struct_id)
-                        } else if let Some(&enum_id) = self.enums.get(type_name) {
-                            Type::new_enum(enum_id)
-                        } else {
-                            return None;
-                        }
-                    }
-                };
-                Some(ConstValue::Type(ty))
-            }
-
-            // VarRef: check substitution maps first, then try as a type name
-            InstData::VarRef { name } => {
-                // Check if this is a type parameter in the type substitution map
-                if let Some(&ty) = type_subst.get(name) {
-                    return Some(ConstValue::Type(ty));
-                }
-
-                // Check if this is a comptime value variable in the value substitution map
-                if let Some(value) = value_subst.get(name) {
-                    return Some(value.clone());
-                }
-
-                // Try to resolve as a type name
-                let name_str = self.interner.resolve(name);
-                let ty = match name_str {
-                    "i8" => Type::I8,
-                    "i16" => Type::I16,
-                    "i32" => Type::I32,
-                    "i64" => Type::I64,
-                    "u8" => Type::U8,
-                    "u16" => Type::U16,
-                    "u32" => Type::U32,
-                    "u64" => Type::U64,
-                    // Pointer-width integers (64-bit on all supported targets, RUE-151).
-                    "usize" => Type::U64,
-                    "isize" => Type::I64,
-                    "bool" => Type::BOOL,
-                    "()" => Type::UNIT,
-                    "!" => Type::NEVER,
-                    _ => {
-                        if let Some(&struct_id) = self.structs.get(name) {
-                            Type::new_struct(struct_id)
-                        } else if let Some(&enum_id) = self.enums.get(name) {
-                            Type::new_enum(enum_id)
-                        } else {
-                            return None;
-                        }
-                    }
-                };
-                Some(ConstValue::Type(ty))
-            }
-
-            // Everything else requires runtime evaluation
-            _ => None,
-        }
-    }
-
     /// Check if an RIR instruction is a VarRef to a comptime type variable.
     ///
     /// This is used when validating comptime arguments to detect variables
@@ -5296,7 +4630,7 @@ impl<'a> Sema<'a> {
     /// ```
     /// When `Wrapper(i32)` is called, the type_subst map will contain `T -> i32`, so the
     /// method's return type `T` is resolved to `i32`.
-    fn register_anon_struct_methods_for_comptime_with_subst(
+    pub(crate) fn register_anon_struct_methods_for_comptime_with_subst(
         &mut self,
         struct_id: StructId,
         struct_type: Type,
@@ -5404,7 +4738,7 @@ impl<'a> Sema<'a> {
     /// This extracts method signatures as type symbols (Spur), not resolved Types.
     /// This is intentional: for structural equality, we compare type symbols directly
     /// so that `Self` matches `Self` even before we know the concrete StructId.
-    fn extract_anon_method_sigs(
+    pub(crate) fn extract_anon_method_sigs(
         &self,
         methods_start: u32,
         methods_len: u32,

@@ -853,6 +853,46 @@ impl Type {
         }
     }
 
+    /// Get the bit width of this integer type (8, 16, 32, or 64).
+    ///
+    /// Returns `None` for non-integer types.
+    #[must_use]
+    pub fn int_bit_width(&self) -> Option<u32> {
+        if self.is_integer() {
+            // Tags 0..=3 are i8..i64, 4..=7 are u8..u64; the low two bits
+            // select the width in both groups.
+            Some(8 << (self.0 & 3))
+        } else {
+            None
+        }
+    }
+
+    /// Get the minimum representable value of this integer type.
+    ///
+    /// Returns `None` for non-integer types.
+    #[must_use]
+    pub fn int_min(&self) -> Option<i128> {
+        let width = self.int_bit_width()?;
+        if self.is_signed() {
+            Some(-(1i128 << (width - 1)))
+        } else {
+            Some(0)
+        }
+    }
+
+    /// Get the maximum representable value of this integer type.
+    ///
+    /// Returns `None` for non-integer types.
+    #[must_use]
+    pub fn int_max(&self) -> Option<i128> {
+        let width = self.int_bit_width()?;
+        if self.is_signed() {
+            Some((1i128 << (width - 1)) - 1)
+        } else {
+            Some((1i128 << width) - 1)
+        }
+    }
+
     /// Check if a u64 value can be negated to fit within the range of this signed integer type.
     ///
     /// This is used to allow literals like `2147483648` when negated to `-2147483648` (i32::MIN).
@@ -1748,5 +1788,25 @@ mod tests {
                 ty
             );
         }
+    }
+
+    #[test]
+    fn int_bit_width_min_max() {
+        assert_eq!(Type::I8.int_bit_width(), Some(8));
+        assert_eq!(Type::U16.int_bit_width(), Some(16));
+        assert_eq!(Type::I32.int_bit_width(), Some(32));
+        assert_eq!(Type::U64.int_bit_width(), Some(64));
+        assert_eq!(Type::BOOL.int_bit_width(), None);
+
+        assert_eq!(Type::I8.int_min(), Some(-128));
+        assert_eq!(Type::I8.int_max(), Some(127));
+        assert_eq!(Type::U8.int_min(), Some(0));
+        assert_eq!(Type::U8.int_max(), Some(255));
+        assert_eq!(Type::I64.int_min(), Some(i64::MIN as i128));
+        assert_eq!(Type::I64.int_max(), Some(i64::MAX as i128));
+        assert_eq!(Type::U64.int_min(), Some(0));
+        assert_eq!(Type::U64.int_max(), Some(u64::MAX as i128));
+        assert_eq!(Type::UNIT.int_min(), None);
+        assert_eq!(Type::UNIT.int_max(), None);
     }
 }

@@ -190,6 +190,11 @@ pub(crate) struct ParamInfo {
     pub ty: Type,
     /// Parameter passing mode
     pub mode: RirParamMode,
+    /// Whether the parameter is declared `comptime` (carried separately from
+    /// `mode`, which stays `Normal` for comptime parameters — see
+    /// `RirParam::is_comptime`). Used to allow forwarding a comptime
+    /// parameter to another function's comptime parameter (spec 4.14:5).
+    pub is_comptime: bool,
 }
 
 /// Context for analyzing instructions within a function.
@@ -473,8 +478,11 @@ impl AnalysisResult {
 /// the value of `N` is stored as a `ConstValue::Integer`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConstValue {
-    /// Integer value (signed to handle arithmetic correctly)
-    Integer(i64),
+    /// Integer value. Backed by `i128` so the full range of every Rue integer
+    /// type is representable (u64 values above `i64::MAX` as well as negative
+    /// signed values). Range checks against the expression's Rue type happen
+    /// in the comptime evaluator (see `sema::comptime_eval`).
+    Integer(i128),
     /// Boolean value
     Bool(bool),
     /// Type value - stores a concrete type for type parameters.
@@ -488,8 +496,22 @@ pub enum ConstValue {
 }
 
 impl ConstValue {
-    /// Try to extract an integer value.
+    /// Try to extract an integer value that fits in an `i64`.
+    ///
+    /// Returns `None` for non-integer values and for integers outside the
+    /// `i64` range (e.g. u64 values above `i64::MAX`). Use [`as_int_value`]
+    /// when the full `i128` backing value is needed.
+    ///
+    /// [`as_int_value`]: ConstValue::as_int_value
     pub fn as_integer(self) -> Option<i64> {
+        match self {
+            ConstValue::Integer(n) => i64::try_from(n).ok(),
+            _ => None,
+        }
+    }
+
+    /// Try to extract the full backing integer value.
+    pub fn as_int_value(self) -> Option<i128> {
         match self {
             ConstValue::Integer(n) => Some(n),
             _ => None,
