@@ -600,3 +600,48 @@ params = [
   { type = "u16", max_value = "65535" },
   { type = "u32", max_value = "4294967295" },
 ]
+
+# =============================================================================
+# Pointer-Width Integer Types (usize / isize, RUE-151)
+# =============================================================================
+
+[[case]]
+name = "usize_isize_named_in_all_type_positions"
+spec = ["3.1:21", "3.1:22"]
+description = "usize/isize resolve uniformly in let, param, and return positions"
+source = """
+fn idx() -> usize { 5 }
+fn off(d: isize) -> isize { d }
+fn main() -> i32 {
+    let i: usize = idx();
+    let s: isize = off(-3);
+    if i == 5 { if s == -3 { 1 } else { 0 } } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "usize_is_64_bit"
+spec = ["3.1:22"]
+description = "usize holds values above 2^32 (same range as u64 on 64-bit targets)"
+source = """
+fn big() -> usize { 4294967298 }
+fn main() -> i32 {
+    let x: usize = big();
+    if x > 4294967296 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "isize_is_64_bit"
+spec = ["3.1:22"]
+description = "isize holds values below -2^32 (same range as i64 on 64-bit targets)"
+source = """
+fn big_neg() -> isize { -4294967298 }
+fn main() -> i32 {
+    let x: isize = big_neg();
+    if x < -4294967296 { 1 } else { 0 }
+}
+"""
+exit_code = 1

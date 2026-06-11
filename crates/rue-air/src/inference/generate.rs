@@ -1594,6 +1594,9 @@ impl<'a> ConstraintGenerator<'a> {
             "u16" => Type::U16,
             "u32" => Type::U32,
             "u64" => Type::U64,
+            // Pointer-width integers (64-bit on all supported targets, RUE-151).
+            "usize" => Type::U64,
+            "isize" => Type::I64,
             "bool" => Type::BOOL,
             "()" => Type::UNIT,
             _ => {

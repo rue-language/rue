@@ -117,3 +117,31 @@ fn main() -> i32 {
 }
 """ }]
 stdout = "4\n888\n5\n"
+
+# RUE-67 regression: match arms are SIBLING paths for the move checker. A move
+# in one arm must not leak into the others — using `a` in the `_` arm after
+# arm 0 consumed it is valid (exactly one arm runs). At runtime the drop flag
+# makes each path drop exactly once: in the consuming arm the flag is cleared
+# (drop runs inside `consume`), in the non-consuming arm it stays armed and
+# the drop runs at scope exit.
+[[case]]
+name = "match_sibling_arm_use_after_move_accepted"
+files = [{ path = "main.rue", source = """
+struct D { v: i32 }
+drop fn D(self) { @dbg(self.v); }
+fn consume(d: D) -> i32 { d.v }
+fn pick(n: i32) -> i32 {
+    let a = D { v: n };
+    match n {
+        0 => consume(a),
+        _ => a.v,
+    }
+}
+fn main() -> i32 {
+    let x = pick(0);
+    let y = pick(9);
+    x + y
+}
+""" }]
+stdout = "0\n9\n"
+exit_code = 9

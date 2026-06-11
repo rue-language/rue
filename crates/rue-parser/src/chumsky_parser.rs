@@ -1132,7 +1132,8 @@ enum Suffix {
     /// Index expression with the inner expression and closing bracket position
     Index(Expr, u32),
     /// Qualified struct literal: .StructName { fields }
-    /// NOTE: Not yet wired up due to grammar ambiguity with field access + block
+    /// (Disambiguated from field access + block by the `{ }` / `{ ident :`
+    /// lookahead in `with_suffix_parser`.)
     QualifiedStructLit(Ident, Vec<FieldInit>, u32),
     /// Qualified path (enum variant): .EnumName::Variant
     QualifiedPath(Ident, Ident, u32),

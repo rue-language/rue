@@ -1,0 +1,63 @@
+# Pointer-width type names in signature positions (RUE-151).
+#
+# `usize` was accepted in let-binding type position but rejected with E0204
+# "unknown type" in fn param and return positions: the signature path resolves
+# through `resolve_type` (sema/typeck.rs) while the let path goes through the
+# inference table (inference/generate.rs), and only neither table knew the
+# name — the let "acceptance" was the annotation being silently ignored.
+# Both tables (and the comptime type-as-value tables) now resolve usize/isize
+# as the pointer-width integers (u64/i64 on all supported 64-bit targets).
+
+[section]
+id = "cli.pointer_width_names"
+name = "usize/isize type names"
+description = "usize and isize resolve uniformly in every type position (RUE-151)."
+
+[[case]]
+name = "usize_in_param_and_return_positions"
+description = "The original RUE-151 repro: usize in fn return and param positions."
+files = [{ path = "main.rue", source = """
+fn idx() -> usize { 5 }
+fn get(a: [i32; 3], i: usize) -> i32 { a[i] }
+fn main() -> i32 {
+    let arr: [i32; 3] = [4, 5, 6];
+    if idx() == 5 { get(arr, 2) } else { 0 }
+}
+""" }]
+exit_code = 6
+
+[[case]]
+name = "usize_is_pointer_width_across_fn_boundary"
+description = "A usize above 2^32 survives a fn call round-trip (really 64-bit, not i32)."
+files = [{ path = "main.rue", source = """
+fn through(x: usize) -> usize { x }
+fn main() -> i32 {
+    let big: usize = 4294967298;
+    if through(big) > 4294967296 { 1 } else { 0 }
+}
+""" }]
+exit_code = 1
+
+[[case]]
+name = "isize_in_signature_positions"
+description = "isize works in param/return positions and is 64-bit signed."
+files = [{ path = "main.rue", source = """
+fn neg(d: isize) -> isize { d }
+fn main() -> i32 {
+    let s: isize = -4294967298;
+    if neg(s) < -4294967296 { 1 } else { 0 }
+}
+""" }]
+exit_code = 1
+
+[[case]]
+name = "usize_isize_struct_fields"
+description = "Pointer-width names also resolve in struct field type position."
+files = [{ path = "main.rue", source = """
+struct S { n: usize, d: isize }
+fn main() -> i32 {
+    let s = S { n: 4294967298, d: -2 };
+    if s.n > 4294967296 { if s.d == -2 { 1 } else { 0 } } else { 0 }
+}
+""" }]
+exit_code = 1
