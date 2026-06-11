@@ -20,7 +20,7 @@ Rue tokens fall into the following categories:
 |----------|----------|
 | Keywords | `fn`, `let`, `mut`, `if`, `else`, `while`, `match`, `return`, `break`, `continue`, `true`, `false` |
 | Identifiers | `main`, `x`, `my_var`, `_unused` |
-| Integer literals | `0`, `42`, `255`, `2147483647` |
+| Integer literals | `0`, `42`, `1_000_000`, `0xFF`, `0o17`, `0b1010` |
 | String literals | `"hello"`, `"world"`, `"with \"escapes\""` |
 | Operators | `+`, `-`, `*`, `/`, `%`, `==`, `!=`, `<`, `>`, `<=`, `>=`, `&&`, `\|\|`, `!`, `&`, `\|`, `^`, `~`, `<<`, `>>` |
 | Delimiters | `(`, `)`, `{`, `}`, `[`, `]`, `,`, `;`, `:`, `->`, `=>` |
@@ -29,24 +29,52 @@ Rue tokens fall into the following categories:
 
 {{ rule(id="2.1:3", cat="normative") }}
 
-An integer literal is a sequence of decimal digits.
+An integer literal is a decimal literal, a hexadecimal literal (prefix `0x`), an octal literal (prefix `0o`), or a binary literal (prefix `0b`). A decimal literal begins with a decimal digit; a based literal begins with its lowercase base prefix and contains at least one digit of that base. Hexadecimal digits are case-insensitive: `0xff`, `0xFF`, and `0xfF` denote the same value.
 
 ```ebnf
-integer_literal = digit { digit } ;
-digit = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" ;
+integer_literal = dec_literal | hex_literal | oct_literal | bin_literal ;
+dec_literal = dec_digit { dec_digit | "_" } ;
+hex_literal = "0x" { hex_digit | "_" } ;   (* at least one hex_digit *)
+oct_literal = "0o" { oct_digit | "_" } ;   (* at least one oct_digit *)
+bin_literal = "0b" { bin_digit | "_" } ;   (* at least one bin_digit *)
+dec_digit = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" ;
+oct_digit = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" ;
+bin_digit = "0" | "1" ;
+hex_digit = dec_digit | "a" | ... | "f" | "A" | ... | "F" ;
 ```
 
 {{ rule(id="2.1:4", cat="normative") }}
 
 Integer literals **MUST** be representable in their target type. An unadorned integer literal defaults to type `i32`.
 
+{{ rule(id="2.1:19", cat="normative") }}
+
+Underscores (`_`) may appear as digit separators anywhere among the digits of an integer literal — including immediately after a base prefix and trailing — and have no effect on the literal's value. An integer literal cannot *begin* with an underscore: a token such as `_1` is an identifier, not a literal.
+
+{{ rule(id="2.1:20", cat="legality-rule") }}
+
+A base prefix with no digits after it (e.g. `0x`, `0b_`) is a compile-time error.
+
+{{ rule(id="2.1:21", cat="legality-rule") }}
+
+A digit that is not valid in the literal's base (e.g. `0b2`, `0o9`, `0xG`) is a compile-time error.
+
+{{ rule(id="2.1:22", cat="legality-rule") }}
+
+Base prefixes are lowercase. An uppercase base prefix (`0X`, `0O`, `0B`) is a compile-time error.
+
 {{ rule(id="2.1:5") }}
 
 ```rue
 fn main() -> i32 {
-    0        // zero
-    42       // decimal integer
-    255      // maximum u8 value
+    0            // zero
+    42           // decimal integer
+    255          // maximum u8 value
+    1_000_000    // underscore separators
+    0xFF         // hexadecimal, value 255
+    0x_FF_       // underscores legal after the prefix and trailing
+    0o17         // octal, value 15
+    0b1010       // binary, value 10
 }
 ```
 

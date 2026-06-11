@@ -161,8 +161,14 @@ field_init     = IDENT ":" expression ;
 
 (* Lexical elements *)
 IDENT          = ( letter | "_" ) { letter | digit | "_" } ;
-INTEGER        = digit { digit } ;   (* decimal only; 0x/0b/0o prefixes are
-                                        rejected with a dedicated diagnostic *)
+INTEGER        = dec_literal | hex_literal | oct_literal | bin_literal ;
+dec_literal    = digit { digit | "_" } ;
+hex_literal    = "0x" { hex_digit | "_" } ;   (* at least one hex_digit *)
+oct_literal    = "0o" { oct_digit | "_" } ;   (* at least one oct_digit *)
+bin_literal    = "0b" { bin_digit | "_" } ;   (* at least one bin_digit *)
+hex_digit      = digit | "a" | ... | "f" | "A" | ... | "F" ;
+oct_digit      = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" ;
+bin_digit      = "0" | "1" ;
 STRING         = '"' { string_char | escape } '"' ;
 escape         = "\\" ( "\\" | '"' | "n" | "t" | "r" | "0" ) ;
 BOOL           = "true" | "false" ;

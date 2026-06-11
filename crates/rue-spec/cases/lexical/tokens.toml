@@ -44,6 +44,130 @@ fn main() -> i32 {
 exit_code = 42
 
 # =============================================================================
+# Based Integer Literals and Underscore Separators (RUE-177)
+# =============================================================================
+
+[[case]]
+name = "integer_literal_hex"
+spec = ["2.1:3"]
+source = "fn main() -> i32 { 0x2A }"
+exit_code = 42
+
+[[case]]
+name = "integer_literal_hex_case_insensitive_digits"
+spec = ["2.1:3"]
+source = """
+fn main() -> i32 {
+    let lower = 0xff;
+    let upper = 0xFF;
+    let mixed = 0xfF;
+    if lower == upper && upper == mixed { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "integer_literal_octal"
+spec = ["2.1:3"]
+source = "fn main() -> i32 { 0o52 }"
+exit_code = 42
+
+[[case]]
+name = "integer_literal_binary"
+spec = ["2.1:3"]
+source = "fn main() -> i32 { 0b101010 }"
+exit_code = 42
+
+[[case]]
+name = "integer_literal_underscore_separators"
+spec = ["2.1:19"]
+source = """
+fn main() -> i32 {
+    let million = 1_000_000;
+    if million == 1000000 { 42 } else { 0 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "integer_literal_underscores_anywhere"
+spec = ["2.1:19"]
+source = """
+fn main() -> i32 {
+    let trailing = 4_2_;
+    let after_prefix = 0x_2A;
+    let trailing_hex = 0x2A_;
+    let doubled = 4__2;
+    if trailing == 42 && after_prefix == 42 && trailing_hex == 42 && doubled == 42 {
+        42
+    } else {
+        0
+    }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "integer_literal_leading_underscore_is_identifier"
+spec = ["2.1:19"]
+source = """
+fn main() -> i32 {
+    let _1 = 42;
+    _1
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "integer_literal_empty_base_prefix_error"
+spec = ["2.1:20"]
+source = "fn main() -> i32 { 0x }"
+compile_fail = true
+error_contains = "missing digits after base prefix"
+
+[[case]]
+name = "integer_literal_underscores_only_base_prefix_error"
+spec = ["2.1:20"]
+source = "fn main() -> i32 { 0b_ }"
+compile_fail = true
+error_contains = "missing digits after base prefix"
+
+[[case]]
+name = "integer_literal_invalid_binary_digit_error"
+spec = ["2.1:21"]
+source = "fn main() -> i32 { 0b2 }"
+compile_fail = true
+error_contains = "invalid digit `2` in binary integer literal"
+
+[[case]]
+name = "integer_literal_invalid_octal_digit_error"
+spec = ["2.1:21"]
+source = "fn main() -> i32 { 0o9 }"
+compile_fail = true
+error_contains = "invalid digit `9` in octal integer literal"
+
+[[case]]
+name = "integer_literal_invalid_hex_digit_error"
+spec = ["2.1:21"]
+source = "fn main() -> i32 { 0xG }"
+compile_fail = true
+error_contains = "invalid digit `G` in hexadecimal integer literal"
+
+[[case]]
+name = "integer_literal_uppercase_prefix_error"
+spec = ["2.1:22"]
+source = "fn main() -> i32 { 0XFF }"
+compile_fail = true
+error_contains = "base prefixes are lowercase"
+
+[[case]]
+name = "integer_literal_uppercase_binary_prefix_error"
+spec = ["2.1:22"]
+source = "fn main() -> i32 { 0B101 }"
+compile_fail = true
+error_contains = "base prefixes are lowercase"
+
+# =============================================================================
 # String Literals (syntax and legality)
 # =============================================================================
 

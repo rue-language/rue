@@ -145,3 +145,21 @@ fn main() -> i32 {
     0
 }
 ```
+
+## Literal Base Independence
+
+{{ rule(id="3.1:24", cat="normative") }}
+
+The written base of an integer literal (decimal, hexadecimal, octal, or binary; see 2.1) does not affect its semantics: the literal denotes the same value as its decimal spelling, and type inference (3.1:14, 3.1:15) and range validation (3.1:17) apply identically regardless of base.
+
+{{ rule(id="3.1:25") }}
+
+```rue
+fn main() -> i32 {
+    let a: u64 = 0xFFFF_FFFF_FFFF_FFFF;  // valid: u64 maximum value
+    let b: u8 = 0xFF;                    // valid: 255 fits in u8
+    let c = 0x10;                        // c has type i32 (default), value 16
+    let d: i32 = 0xFFFF_FFFF_FFFF_FFFF;  // error: out of range for i32
+    0
+}
+```
