@@ -110,12 +110,6 @@ fn to_rue_span_with_file(span: SimpleSpan, file_id: FileId) -> Span {
     Span::with_file(file_id, offset_to_u32(span.start), offset_to_u32(span.end))
 }
 
-/// Convert chumsky SimpleSpan to rue_span::Span using the default file ID.
-/// Only used for error conversion where we don't have access to the parser state.
-fn to_rue_span(span: SimpleSpan) -> Span {
-    Span::new(offset_to_u32(span.start), offset_to_u32(span.end))
-}
-
 /// Extract a Span with file ID from the parser extra.
 /// This is the primary way to create spans during parsing.
 #[inline]
@@ -2221,9 +2215,10 @@ where
                 .repeated()
                 .collect::<Vec<_>>(),
         )
-        .map(|(start_span, _): (SimpleSpan, Vec<TokenKind>)| {
-            // Convert SimpleSpan to Span
-            Item::Error(to_rue_span(start_span))
+        .map_with(|(start_span, _): (SimpleSpan, Vec<TokenKind>), extra| {
+            // Convert SimpleSpan to Span, tagging it with this file's ID
+            let file_id = extra.state().0.file_id;
+            Item::Error(to_rue_span_with_file(start_span, file_id))
         })
 }
 
@@ -2263,8 +2258,12 @@ fn format_pattern(pattern: &chumsky::error::RichPattern<'_, TokenKind>) -> Strin
 }
 
 /// Convert chumsky Rich error to CompileError, preserving rich context.
-fn convert_error(err: Rich<'_, TokenKind>) -> CompileError {
-    let span = to_rue_span(*err.span());
+///
+/// The `file_id` is threaded in from the parser so that error spans point at
+/// the file being parsed; without it, spans would default to `FileId::DEFAULT`
+/// and multi-file compilations would attribute errors to the wrong file.
+fn convert_error(err: Rich<'_, TokenKind>, file_id: FileId) -> CompileError {
+    let span = to_rue_span_with_file(*err.span(), file_id);
 
     // Build the base error from the reason
     let mut error = match err.reason() {
@@ -2304,7 +2303,7 @@ fn convert_error(err: Rich<'_, TokenKind>) -> CompileError {
     // Add labelled contexts as secondary labels
     for (pattern, ctx_span) in err.contexts() {
         let label_msg = format!("while parsing {}", format_pattern(pattern));
-        let label_span = to_rue_span(*ctx_span);
+        let label_span = to_rue_span_with_file(*ctx_span, file_id);
         error = error.with_label(label_msg, label_span);
     }
 
@@ -2369,7 +2368,10 @@ impl ChumskyParser {
             .parse_with_state(mapped, &mut state)
             .into_result()
             .map_err(|errs| {
-                let errors: Vec<CompileError> = errs.into_iter().map(convert_error).collect();
+                let errors: Vec<CompileError> = errs
+                    .into_iter()
+                    .map(|err| convert_error(err, self.file_id))
+                    .collect();
                 CompileErrors::from(errors)
             });
 
@@ -3216,11 +3218,13 @@ mod tests {
 
     #[test]
     fn test_to_rue_span_normal() {
-        // Normal spans should convert without issue
+        // Normal spans should convert without issue and carry the file ID
         let simple = SimpleSpan::new(10, 20);
-        let rue = to_rue_span(simple);
+        let file = FileId::new(3);
+        let rue = to_rue_span_with_file(simple, file);
         assert_eq!(rue.start, 10);
         assert_eq!(rue.end, 20);
+        assert_eq!(rue.file_id, file);
     }
 
     #[test]
