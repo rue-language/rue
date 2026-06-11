@@ -16,10 +16,11 @@
 //!
 //! Phase 1 covered the slot accessor. Phase 2 moved the StructInit/ArrayInit
 //! flattening (the eager population of the slot cache) here as
-//! [`lower_struct_init`]/[`lower_array_init`]. The consumer-side store loops
-//! still live per-backend; they migrate in later phases once their (currently
-//! subtly different) behaviors are reconciled deliberately rather than
-//! incidentally.
+//! [`lower_struct_init`]/[`lower_array_init`]. Phase 3 moved the consumer-side
+//! store loops here as [`store_slots`]/[`store_slots_through_ptr`] — every
+//! site that writes an aggregate's slots (Alloc, Store, PlaceWrite, inout
+//! writeback) iterates via these two primitives. Remaining per-backend:
+//! call-arg/return marshalling and the scheduler/liveness tables.
 
 use std::collections::HashMap;
 
@@ -62,6 +63,12 @@ pub trait SlotBackend {
     /// Recursively collect the scalar slot vregs of an array value
     /// (the backends' thin wrapper over `types::collect_array_scalar_vregs`).
     fn collect_array_scalars(&mut self, value: CfgValue) -> Vec<VReg>;
+
+    /// Emit a store of `src` to frame slot `slot`.
+    fn emit_store_slot(&mut self, src: VReg, slot: u32);
+
+    /// Emit a store of `src` through pointer `ptr` at `byte_offset` from it.
+    fn emit_store_through_ptr(&mut self, src: VReg, ptr: VReg, byte_offset: i32);
 }
 
 /// Get or compute the slot vregs for a multi-slot aggregate value
@@ -225,6 +232,28 @@ pub fn lower_array_init<B: SlotBackend>(
     b.slot_cache().insert(value, element_vregs);
 
     b.emit_load_zero(vreg);
+}
+
+/// Store `vals` to consecutive frame slots starting at `base_slot`
+/// (slot `base_slot + i` gets `vals[i]`).
+pub fn store_slots<B: SlotBackend>(b: &mut B, vals: &[VReg], base_slot: u32) {
+    for (i, val) in vals.iter().enumerate() {
+        b.emit_store_slot(*val, base_slot + i as u32);
+    }
+}
+
+/// Store `vals` through `ptr` at descending byte offsets: `vals[i]` goes to
+/// `ptr - static_byte_offset - i*8`. Caller-frame slots descend from an inout
+/// pointer (the stack grows down), matching the place-read path.
+pub fn store_slots_through_ptr<B: SlotBackend>(
+    b: &mut B,
+    vals: &[VReg],
+    ptr: VReg,
+    static_byte_offset: i32,
+) {
+    for (i, val) in vals.iter().enumerate() {
+        b.emit_store_through_ptr(*val, ptr, -static_byte_offset - (i as i32) * 8);
+    }
 }
 
 /// Load `count` consecutive frame slots starting at `base_slot`, returning the
