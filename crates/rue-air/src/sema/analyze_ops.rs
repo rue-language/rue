@@ -2227,6 +2227,70 @@ impl<'a> Sema<'a> {
         Ok(())
     }
 
+    /// Reject moving a field out of a value whose struct type has a
+    /// destructor (RUE-158, the spirit of Rust's E0509).
+    ///
+    /// The destructor always runs on the *whole* value when it is dropped:
+    /// it would observe the moved-out field (a use-after-free for heap
+    /// fields), and the automatic field cleanup after the destructor would
+    /// drop the field a second time. Inside `drop fn T(self)` this same rule
+    /// rejects `self.field` moves — `self` has type `T`, which has the very
+    /// destructor being defined (whole-`self` moves are E0442).
+    ///
+    /// Every container along the projection chain is checked (`o.a.b` moves
+    /// out of both `o` and `o.a`), mirroring Rust: a deep move leaves every
+    /// enclosing value partially moved. Whole-value moves and `borrow`/
+    /// `inout` access of fields (RUE-143) stay legal and never reach here.
+    fn reject_field_move_out_of_destructor_type(
+        &self,
+        trace: &PlaceTrace,
+        span: Span,
+    ) -> CompileResult<()> {
+        for (i, proj_info) in trace.projections.iter().enumerate() {
+            let container = if i == 0 {
+                trace.base_type
+            } else {
+                trace.projections[i - 1].result_type
+            };
+            let Some(struct_id) = container.as_struct() else {
+                continue;
+            };
+            let struct_def = self.type_pool.struct_def(struct_id);
+            if struct_def.destructor.is_none() {
+                continue;
+            }
+            let field_name = proj_info
+                .field_name
+                .map(|s| self.interner.resolve(&s).to_string())
+                .unwrap_or_default();
+            let mut err = CompileError::new(
+                ErrorKind::MoveFieldOutOfDestructorType {
+                    struct_name: struct_def.name.clone(),
+                    field_name: field_name.clone(),
+                },
+                span,
+            )
+            .with_label(format!("field `{field_name}` is moved out here"), span)
+            .with_note(format!(
+                "the destructor for '{}' runs on the whole value when it is dropped: it \
+                 would observe the moved-out field, and the automatic field cleanup after \
+                 the destructor would drop `{field_name}` a second time",
+                struct_def.name
+            ))
+            .with_help(format!(
+                "borrow the field instead (`borrow value.{field_name}`), or move the whole value"
+            ));
+            if let Some(drop_span) = self.destructor_spans.get(&struct_id) {
+                err = err.with_label(
+                    format!("destructor for '{}' is defined here", struct_def.name),
+                    *drop_span,
+                );
+            }
+            return Err(err);
+        }
+        Ok(())
+    }
+
     /// Analyze a field access.
     ///
     /// Uses place-based analysis (ADR-0030) when possible for efficient code generation.
@@ -2320,6 +2384,7 @@ impl<'a> Sema<'a> {
             } else if !self.is_type_copy(field_type) {
                 // For non-linear types, check if accessing a non-Copy field
                 self.reject_move_out_of_byref_param(trace.root_var, ctx, span)?;
+                self.reject_field_move_out_of_destructor_type(&trace, span)?;
                 let field_path = trace.field_path();
 
                 // Check if this field path is already moved (partial moves)

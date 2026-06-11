@@ -719,10 +719,60 @@ impl<'a> Sema<'a> {
             ));
         }
 
+        // A @copy struct cannot have a destructor (RUE-159, the spirit of
+        // Rust's E0184): copies are implicit and untracked, so every copy
+        // would run the destructor again — double cleanup of the same
+        // logical resource. `is_copy` is already set here: struct directives
+        // are processed in phase 1 (register_type_names), before this pass.
+        if struct_def.is_copy {
+            let mut err = CompileError::new(
+                ErrorKind::CopyStructWithDestructor {
+                    type_name: type_name_str,
+                },
+                span,
+            )
+            .with_label("destructor defined here", span)
+            .with_note(
+                "`@copy` values are duplicated implicitly, so the destructor would run \
+                 once per copy — cleaning up the same resource multiple times",
+            )
+            .with_help("remove the `@copy` attribute or remove the `drop fn`");
+            if let Some(copy_span) = self.find_copy_directive_span(type_name) {
+                err = err.with_label("type declared `@copy` here", copy_span);
+            }
+            return Err(err);
+        }
+
         let destructor_name = format!("{}.__drop", type_name_str);
         struct_def.destructor = Some(destructor_name);
         self.type_pool.update_struct_def(struct_id, struct_def);
+        self.destructor_spans.insert(struct_id, span);
         Ok(())
+    }
+
+    /// Find the span of the `@copy` directive on the struct declaration
+    /// named `type_name`, for diagnostics that point at the attribute.
+    fn find_copy_directive_span(&self, type_name: Spur) -> Option<Span> {
+        let copy_sym = self.interner.get("copy")?;
+        for (_, inst) in self.rir.iter() {
+            if let InstData::StructDecl {
+                name,
+                directives_start,
+                directives_len,
+                ..
+            } = &inst.data
+            {
+                if *name != type_name {
+                    continue;
+                }
+                let directives = self.rir.get_directives(*directives_start, *directives_len);
+                return directives
+                    .iter()
+                    .find(|d| d.name == copy_sym)
+                    .map(|d| d.span);
+            }
+        }
+        None
     }
 
     /// Collect a function signature for forward reference.

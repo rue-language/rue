@@ -13,8 +13,11 @@
 #
 # Partial (per-field) moves are field-granular (RUE-62): moving one field out
 # of a struct (`eat(o.a)`) suppresses ONLY that field's drop at the struct's
-# scope exit — the struct's own destructor still runs, and the remaining
-# droppable fields are dropped individually in declaration order.
+# scope exit, and the remaining droppable fields are dropped individually in
+# declaration order. This only applies to structs WITHOUT their own `drop fn`:
+# moving a field out of a value whose type has a user-defined destructor is a
+# compile error (E0456, RUE-158) — the destructor would observe the moved-out
+# field and the field glue would drop it a second time.
 #
 # Branch-divergent moves are handled with runtime drop flags (RUE-108 for
 # whole slots, RUE-156 for individual field paths): a value moved in only
@@ -263,8 +266,8 @@ stdout = "100\n7\n"
 exit_code = 0
 
 [[case]]
-name = "partial_field_move_suppresses_field_drop"
-description = "RUE-62: moving o.a into a call suppresses field a's drop inside o's scope-exit drop (o's own destructor still runs)."
+name = "partial_field_move_out_of_destructor_type_rejected"
+description = "RUE-158: moving o.a out of O is rejected because O has its own `drop fn` (which would observe the moved-out field). Before the fix this compiled and printed 1, 100, 800."
 files = [{ path = "main.rue", source = """
 struct A { x: i32 }
 struct O { a: A, b: i32 }
@@ -288,8 +291,8 @@ fn main() -> i32 {
     0
 }
 """ }]
-stdout = "1\n100\n800\n"
-exit_code = 0
+compile_fail = true
+error_contains = ["E0456", "cannot move field `a` out of a value of type 'O'"]
 
 [[case]]
 name = "partial_field_move_remaining_field_still_drops"
@@ -655,9 +658,14 @@ fn main() -> i32 {
 stdout = "777\n5\n6\n"
 exit_code = 0
 
+# This program exercised the field-granular exit walk for a dtor-having
+# intermediate struct (RUE-157) — a shape that E0456 (RUE-158, Rust's E0509
+# rule) now forbids outright: you cannot move a field out of a value whose
+# type has a destructor. The case is kept as a compile-fail pin of that rule
+# at depth >= 2.
 [[case]]
 name = "nested_destructor_runs_for_partially_moved_inner_struct"
-description = "RUE-157: an inner struct with its own destructor that lost a field still runs its destructor (without glue) during the field-granular exit walk, then its remaining field drops."
+description = "Moving a field out of a dtor-having intermediate struct is rejected with E0456 (formerly a runtime drop-order case, RUE-157 x RUE-158)."
 files = [{ path = "main.rue", source = """
 struct Leaf { v: i32 }
 struct Mid { leaf: Leaf, other: Leaf }
@@ -684,5 +692,5 @@ fn main() -> i32 {
     0
 }
 """ }]
-stdout = "5\n777\n100\n6\n"
-exit_code = 0
+compile_fail = true
+error_contains = ["E0456", "cannot move field `leaf` out of a value of type 'Mid'"]

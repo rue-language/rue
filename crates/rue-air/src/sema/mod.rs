@@ -59,7 +59,7 @@ use std::collections::HashMap;
 use lasso::{Spur, ThreadedRodeo};
 use rue_error::{CompileErrors, MultiErrorResult, PreviewFeatures};
 use rue_rir::Rir;
-use rue_span::FileId;
+use rue_span::{FileId, Span};
 
 use crate::intern_pool::TypeInternPool;
 use crate::param_arena::ParamArena;
@@ -105,6 +105,11 @@ pub struct Sema<'a> {
     /// stored here, keyed by StructId. These values become part of type identity:
     /// FixedBuffer(42) and FixedBuffer(100) are different types.
     pub(crate) anon_struct_captured_values: HashMap<StructId, HashMap<Spur, ConstValue>>,
+    /// Span of each user-defined `drop fn` declaration, keyed by the struct
+    /// it destructs. Used by diagnostics that point at the destructor
+    /// (E0456 field-move-out-of-destructor-type, E0457 @copy-with-destructor).
+    /// Builtin destructors (e.g. String's) have no entry.
+    pub(crate) destructor_spans: HashMap<StructId, Span>,
 }
 
 impl<'a> Sema<'a> {
@@ -133,6 +138,7 @@ impl<'a> Sema<'a> {
             param_arena: ParamArena::new(),
             anon_struct_method_sigs: HashMap::new(),
             anon_struct_captured_values: HashMap::new(),
+            destructor_spans: HashMap::new(),
         }
     }
 

@@ -131,6 +131,9 @@ impl ErrorCode {
     // 439-441 are reserved by in-flight work; next free code is 444.
     pub const MOVE_SELF_OUT_OF_DESTRUCTOR: Self = Self(442);
     pub const LINEAR_VALUE_NOT_CONSUMED_ON_ALL_PATHS: Self = Self(443);
+    // 444-455 are reserved by in-flight work; next free code is 458.
+    pub const MOVE_FIELD_OUT_OF_DESTRUCTOR_TYPE: Self = Self(456);
+    pub const COPY_STRUCT_WITH_DESTRUCTOR: Self = Self(457);
 
     // ========================================================================
     // Control flow errors (E0500-E0599)
@@ -1014,6 +1017,25 @@ pub enum ErrorKind {
         "cannot move `self` out of the destructor for '{type_name}': the new owner would drop it again, re-entering this destructor"
     )]
     MoveSelfOutOfDestructor { type_name: String },
+    /// Cannot move a field out of a value whose struct type has a
+    /// user-defined destructor (RUE-158, the spirit of Rust's E0509).
+    /// The destructor always runs on the whole value when it is dropped:
+    /// it would observe the moved-out field (use-after-free for heap
+    /// fields), and the automatic field cleanup after the destructor would
+    /// drop the field a second time.
+    #[error(
+        "cannot move field `{field_name}` out of a value of type '{struct_name}', which has a destructor"
+    )]
+    MoveFieldOutOfDestructorType {
+        struct_name: String,
+        field_name: String,
+    },
+    /// A `@copy` struct cannot have a user-defined destructor (RUE-159, the
+    /// spirit of Rust's E0184). Copies are implicit and untracked, so each
+    /// copy would run the destructor again — double cleanup of the same
+    /// logical resource.
+    #[error("cannot define a destructor for '{type_name}': `@copy` types cannot have destructors")]
+    CopyStructWithDestructor { type_name: String },
 
     // Control flow errors
     #[error("'break' outside of loop")]
@@ -1195,6 +1217,10 @@ impl ErrorKind {
             ErrorKind::BorrowKeywordMissing => ErrorCode::BORROW_KEYWORD_MISSING,
             ErrorKind::MoveOutOfInout { .. } => ErrorCode::MOVE_OUT_OF_INOUT,
             ErrorKind::MoveSelfOutOfDestructor { .. } => ErrorCode::MOVE_SELF_OUT_OF_DESTRUCTOR,
+            ErrorKind::MoveFieldOutOfDestructorType { .. } => {
+                ErrorCode::MOVE_FIELD_OUT_OF_DESTRUCTOR_TYPE
+            }
+            ErrorKind::CopyStructWithDestructor { .. } => ErrorCode::COPY_STRUCT_WITH_DESTRUCTOR,
 
             // Control flow errors (E0500-E0599)
             ErrorKind::BreakOutsideLoop => ErrorCode::BREAK_OUTSIDE_LOOP,

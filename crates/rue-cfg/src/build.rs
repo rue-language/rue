@@ -3092,15 +3092,6 @@ mod tests {
             .count()
     }
 
-    /// Count the Call instructions in a CFG.
-    fn count_calls(cfg: &Cfg) -> usize {
-        cfg.blocks()
-            .iter()
-            .flat_map(|b| b.insts.iter())
-            .filter(|v| matches!(cfg.get_inst(**v).data, CfgInstData::Call { .. }))
-            .count()
-    }
-
     #[test]
     fn test_simple_return() {
         let cfg = build_cfg("fn main() -> i32 { 42 }");
@@ -3335,12 +3326,13 @@ mod tests {
     }
 
     #[test]
-    fn test_partial_field_move_still_calls_struct_destructor() {
-        // RUE-62: the struct's OWN destructor still runs for a partially
-        // moved struct — emitted as a plain call (without the field glue).
-        // main contains exactly two calls: eat(o.a) and O.__drop(o); and
-        // zero Drops (field a moved out, field b is a trivially-droppable
-        // i32, and field-granular dropping replaces the whole-struct Drop).
+    fn test_partial_field_move_out_of_destructor_type_rejected_in_sema() {
+        // RUE-158 supersedes the RUE-62 scenario this test used to pin
+        // (destructor-only call O.__drop(o) for a partially moved struct
+        // with its own `drop fn`): sema now rejects moving a field out of
+        // a value whose type has a user-defined destructor (E0456), so
+        // that elaboration shape is unreachable from legal source. This
+        // pins the rejection so the CFG-level assumption stays valid.
         let source = "struct A { x: i32 }\n\
              struct O { a: A, b: i32 }\n\
              drop fn A(self) { }\n\
@@ -3351,14 +3343,20 @@ mod tests {
                  eat(o.a);\n\
                  0\n\
              }";
-        let main_cfg = build_cfg_named(source, "main");
-        assert_eq!(count_drops(&main_cfg), 0, "no whole-struct or field Drop");
-        assert_eq!(
-            count_calls(&main_cfg),
-            2,
-            "eat(o.a) plus the destructor-only call O.__drop(o)"
+        let lexer = Lexer::new(source);
+        let (tokens, interner) = lexer.tokenize().unwrap();
+        let parser = Parser::new(tokens, interner);
+        let (ast, mut interner) = parser.parse().unwrap();
+        let astgen = AstGen::new(&ast, &mut interner);
+        let rir = astgen.generate();
+        let sema = Sema::new(&rir, &mut interner, PreviewFeatures::new());
+        let err = sema
+            .analyze_all()
+            .expect_err("field move out of a destructor-having struct must be rejected");
+        assert!(
+            format!("{err}").contains("cannot move field"),
+            "unexpected error: {err}"
         );
-        assert_all_blocks_terminated(&main_cfg);
     }
 
     #[test]

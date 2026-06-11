@@ -204,3 +204,42 @@ drop fn FileHandle(self) {
 {{ rule(id="3.9:30", cat="informative") }}
 
 The `drop fn` syntax was chosen because it clearly indicates the purpose of the function while being distinct from regular functions and methods. The destructor is not part of any impl block because it has special calling semantics: it is invoked automatically by the compiler when values go out of scope.
+
+{{ rule(id="3.9:31", cat="legality-rule") }}
+
+A type declared `@copy` **MUST NOT** have a user-defined destructor. A compile-time error is raised if a `drop fn` is declared for a `@copy` type.
+
+{{ rule(id="3.9:32", cat="informative") }}
+
+Copies of a `@copy` value are implicit and untracked, so each copy would run the destructor again — cleaning up the same logical resource multiple times. This mirrors Rust, where a type cannot implement both `Copy` and `Drop`.
+
+{{ rule(id="3.9:33", cat="legality-rule") }}
+
+Within a user-defined destructor, `self` **MUST NOT** be moved out (to a call argument, a new binding, a by-value method receiver, or any other new owner). A compile-time error is raised if the destructor body moves `self`. The new owner would drop the value again at its own scope exit, re-entering the destructor.
+
+{{ rule(id="3.9:34", cat="legality-rule") }}
+
+A field **MUST NOT** be moved out of a value whose type has a user-defined destructor. This applies to every enclosing value along a field path (moving `t.a.b` moves out of both `t` and `t.a`), and includes `self` within the type's own destructor. A compile-time error is raised for such a move. Borrowing such a field (`borrow` or `inout`) is permitted, as is moving the whole value.
+
+{{ rule(id="3.9:35", cat="informative") }}
+
+The destructor always runs on the whole value when it is dropped: it would observe the moved-out field, and the automatic field cleanup that follows the destructor would drop the moved field a second time. Moving a field out of a struct *without* a user-defined destructor remains legal even when the field's own type has one — the field's drop at the struct's scope exit is simply suppressed.
+
+{{ rule(id="3.9:36", cat="example") }}
+
+```rue
+struct Inner { v: i32 }
+
+drop fn Inner(self) { @dbg(self.v); }
+
+struct Outer { f: Inner }
+
+drop fn Outer(self) { @dbg(self.f.v); }
+
+fn eat(i: Inner) -> i32 { i.v }
+
+fn main() -> i32 {
+    let o = Outer { f: Inner { v: 7 } };
+    eat(o.f)  // ERROR: cannot move field `f` out of a value of type 'Outer'
+}
+```
