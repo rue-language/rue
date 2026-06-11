@@ -12,6 +12,7 @@ use std::collections::HashMap;
 
 use crate::constants::{
     // Mach-O constants
+    ARM64_RELOC_ADDEND,
     ARM64_RELOC_BRANCH26,
     ARM64_RELOC_PAGE21,
     ARM64_RELOC_PAGEOFF12,
@@ -445,6 +446,12 @@ impl ObjectFile {
         // Track section info for relocations (offset, nreloc, reloff)
         let mut section_reloc_info: Vec<(usize, usize, usize)> = Vec::new();
 
+        // Each section's address within the object's VM layout. Mach-O symbol
+        // n_value fields and non-extern UNSIGNED patch-site contents are
+        // addresses in this layout, NOT section-relative offsets — we need the
+        // section addr to convert them.
+        let mut section_addrs: Vec<u64> = Vec::new();
+
         let mut cmd_offset = MACHO64_HEADER_SIZE;
         for _ in 0..ncmds {
             if cmd_offset + 8 > data.len() {
@@ -481,6 +488,7 @@ impl ObjectFile {
                         let full_name = format!("{},{}", segname, sectname);
 
                         // addr: u64 at offset 32
+                        let addr = read_u64(data, sect_offset + 32);
                         // size: u64 at offset 40
                         let size = read_u64(data, sect_offset + 40);
                         // offset: u32 at offset 48
@@ -518,6 +526,7 @@ impl ObjectFile {
 
                         let section_index = sections.len();
                         section_reloc_info.push((section_index, nreloc, reloff));
+                        section_addrs.push(addr);
                         section_map.insert(full_name.clone(), section_index);
 
                         sections.push(Section {
@@ -641,10 +650,26 @@ impl ObjectFile {
                     SymbolType::None
                 };
 
+                // Mach-O n_value for defined symbols is an address within the
+                // object's VM layout, not a section-relative offset (unlike
+                // ELF st_value in ET_REL files). Convert to section-relative
+                // by subtracting the owning section's addr, since the linker
+                // computes final addresses as merged-section-base + value.
+                // (Sections emitted at addr 0 — like our own __text — are
+                // unaffected.) Fall back to the raw value for malformed
+                // objects whose n_value is below the section start.
+                let value = match section_index {
+                    Some(idx) => {
+                        let sect_addr = section_addrs.get(idx).copied().unwrap_or(0);
+                        n_value.checked_sub(sect_addr).unwrap_or(n_value)
+                    }
+                    None => n_value,
+                };
+
                 symbols.push(Symbol {
                     name,
                     section_index,
-                    value: n_value,
+                    value,
                     size: 0, // Mach-O doesn't store symbol size
                     binding,
                     sym_type,
@@ -663,6 +688,15 @@ impl ObjectFile {
                 return Err(ParseError::RelocationOutOfBounds);
             }
 
+            // Mach-O ARM64 relocation_info has no addend field. Addends come
+            // from two places, both of which used to be ignored (the parser
+            // hardcoded addend 0, RUE-131 item 5b):
+            // - an ARM64_RELOC_ADDEND entry immediately PRECEDING the
+            //   relocation it modifies (used for BRANCH26/PAGE21/PAGEOFF12),
+            // - the bytes at the patch site for ARM64_RELOC_UNSIGNED
+            //   ("implicit" / embedded addend).
+            let mut pending_addend: i64 = 0;
+
             for i in 0..nreloc {
                 let rel_offset = reloff + i * MACHO64_RELOC_SIZE;
 
@@ -680,9 +714,17 @@ impl ObjectFile {
 
                 let r_symbolnum = r_info & 0x00FFFFFF;
                 let _r_pcrel = (r_info >> 24) & 1;
-                let _r_length = (r_info >> 25) & 3;
+                let r_length = (r_info >> 25) & 3;
                 let r_extern = (r_info >> 27) & 1;
                 let r_type = (r_info >> 28) & 0xF;
+
+                // ARM64_RELOC_ADDEND is not a relocation itself: its
+                // r_symbolnum field is a signed 24-bit addend that applies to
+                // the NEXT relocation entry.
+                if r_type == ARM64_RELOC_ADDEND {
+                    pending_addend = (((r_symbolnum << 8) as i32) >> 8) as i64;
+                    continue;
+                }
 
                 let symbol_index = if r_extern == 1 {
                     // External relocation: r_symbolnum is a symbol index
@@ -695,8 +737,10 @@ impl ObjectFile {
                     }
                     idx
                 } else {
-                    // Local/section relocation: r_symbolnum is 1-indexed section number
-                    // Find the function symbol for this section (should be at offset 0)
+                    // Non-extern relocation: r_symbolnum is a 1-indexed
+                    // section number; the target is an address inside that
+                    // section. We resolve it to a symbol at the section start
+                    // (offset folded into the addend below).
                     // r_symbolnum == 0 is invalid for a non-extern relocation;
                     // the subtraction used to wrap to usize::MAX and index OOB
                     // (a panic on malformed input). (RUE-131 item 6)
@@ -707,20 +751,36 @@ impl ObjectFile {
                         )));
                     };
                     let target_section = section_number as usize;
-                    let idx = symbols
+                    if target_section >= sections.len() {
+                        return Err(ParseError::InvalidSymbol(format!(
+                            "non-extern relocation at 0x{:x} references invalid section {}",
+                            r_address, target_section
+                        )));
+                    }
+                    // Reuse any named symbol at offset 0 of the section;
+                    // otherwise synthesize a local section anchor. (This used
+                    // to require a GLOBAL symbol at offset 0 and error out
+                    // otherwise — real objects routinely have only local
+                    // symbols, or none at all, at a section start.
+                    // RUE-131 item 5c)
+                    symbols
                         .iter()
                         .position(|s| {
                             s.section_index == Some(target_section)
                                 && s.value == 0
-                                && s.binding == SymbolBinding::Global
+                                && !s.name.is_empty()
                         })
-                        .ok_or_else(|| {
-                            ParseError::InvalidSymbol(format!(
-                                "no function symbol found for section {} (reloc at 0x{:x})",
-                                target_section, r_address
-                            ))
-                        })?;
-                    idx
+                        .unwrap_or_else(|| {
+                            symbols.push(Symbol {
+                                name: sections[target_section].name.clone(),
+                                section_index: Some(target_section),
+                                value: 0,
+                                size: 0,
+                                binding: SymbolBinding::Local,
+                                sym_type: SymbolType::Section,
+                            });
+                            symbols.len() - 1
+                        })
                 };
 
                 // Convert Mach-O relocation type to our type
@@ -732,11 +792,50 @@ impl ObjectFile {
                     _ => RelocationType::Unknown(r_type),
                 };
 
+                // ARM64_RELOC_UNSIGNED carries its addend embedded in the
+                // bytes at the patch site (4 or 8 bytes per r_length). For a
+                // non-extern UNSIGNED the stored value is the target's address
+                // in the object's VM layout; convert it to an offset from the
+                // section-start symbol we resolved to above.
+                let mut addend = pending_addend;
+                pending_addend = 0;
+                if r_type == ARM64_RELOC_UNSIGNED {
+                    let site = r_address as usize;
+                    let sec_data = &sections[section_index].data;
+                    let embedded = match r_length {
+                        2 => {
+                            if site + 4 > sec_data.len() {
+                                return Err(ParseError::RelocationOutOfBounds);
+                            }
+                            read_u32(sec_data, site) as i32 as i64
+                        }
+                        3 => {
+                            if site + 8 > sec_data.len() {
+                                return Err(ParseError::RelocationOutOfBounds);
+                            }
+                            read_i64(sec_data, site)
+                        }
+                        _ => {
+                            return Err(ParseError::InvalidSymbol(format!(
+                                "UNSIGNED relocation at 0x{:x} has unsupported length {}",
+                                r_address, r_length
+                            )));
+                        }
+                    };
+                    addend += embedded;
+                    if r_extern == 0 {
+                        // Stored value is target address in object VM layout;
+                        // re-base it onto the section anchor.
+                        let target_section = (r_symbolnum - 1) as usize;
+                        addend -= section_addrs.get(target_section).copied().unwrap_or(0) as i64;
+                    }
+                }
+
                 sections[section_index].relocations.push(Relocation {
                     offset: r_address,
                     symbol_index,
                     rel_type,
-                    addend: 0, // Mach-O ARM64 uses implicit addends (in instruction)
+                    addend,
                 });
             }
         }
@@ -1255,6 +1354,327 @@ mod tests {
         // The function should be defined in a section
         let sym = func_sym.unwrap();
         assert!(sym.section_index.is_some());
+    }
+
+    // ---------------------------------------------------------------------
+    // Hand-built Mach-O objects for parser tests (RUE-131 items 5b/5c).
+    // ObjectBuilder only emits extern relocations with zero addends, so these
+    // tests construct the raw bytes for the cases real (rustc/clang) objects
+    // produce: embedded addends, ARM64_RELOC_ADDEND pairs, and non-extern
+    // (section-based) relocations.
+    // ---------------------------------------------------------------------
+
+    struct TestMachoSection {
+        sectname: &'static str,
+        segname: &'static str,
+        addr: u64,
+        data: Vec<u8>,
+        /// Raw (r_address, r_info) relocation entries.
+        relocs: Vec<(u32, u32)>,
+    }
+
+    struct TestMachoSymbol {
+        name: &'static str,
+        n_type: u8,
+        /// 1-indexed section number (0 = NO_SECT).
+        n_sect: u8,
+        n_value: u64,
+    }
+
+    /// Pack a Mach-O relocation_info r_info word.
+    fn macho_r_info(symbolnum: u32, pcrel: bool, length: u32, ext: bool, rtype: u32) -> u32 {
+        (symbolnum & 0x00FF_FFFF)
+            | ((pcrel as u32) << 24)
+            | ((length & 0x3) << 25)
+            | ((ext as u32) << 27)
+            | ((rtype & 0xF) << 28)
+    }
+
+    /// Build a minimal Mach-O object: one LC_SEGMENT_64 holding `sections`,
+    /// plus an LC_SYMTAB with `symbols`.
+    fn build_test_macho(sections: &[TestMachoSection], symbols: &[TestMachoSymbol]) -> Vec<u8> {
+        let nsects = sections.len();
+        let seg_cmd_size = MACHO64_SEGMENT_CMD_SIZE + MACHO64_SECTION_SIZE * nsects;
+        let cmds_size = seg_cmd_size + crate::constants::MACHO64_SYMTAB_CMD_SIZE;
+        let header_end = MACHO64_HEADER_SIZE + cmds_size;
+
+        // Lay out: section data, then relocation entries, then symtab, then strtab
+        let align8 = |v: usize| (v + 7) & !7;
+        let mut cursor = header_end;
+        let mut data_offsets = Vec::new();
+        for s in sections {
+            cursor = align8(cursor);
+            data_offsets.push(cursor);
+            cursor += s.data.len();
+        }
+        let mut reloc_offsets = Vec::new();
+        for s in sections {
+            cursor = align8(cursor);
+            reloc_offsets.push(cursor);
+            cursor += s.relocs.len() * MACHO64_RELOC_SIZE;
+        }
+        let symtab_off = align8(cursor);
+        let strtab_off = symtab_off + symbols.len() * MACHO64_NLIST_SIZE;
+
+        let mut strtab = vec![0u8];
+        let mut name_offsets = Vec::new();
+        for sym in symbols {
+            name_offsets.push(strtab.len());
+            strtab.extend_from_slice(sym.name.as_bytes());
+            strtab.push(0);
+        }
+
+        let mut buf = Vec::new();
+        // Header
+        buf.extend_from_slice(&MH_MAGIC_64.to_le_bytes());
+        buf.extend_from_slice(&0x0100000C_u32.to_le_bytes()); // CPU_TYPE_ARM64
+        buf.extend_from_slice(&0_u32.to_le_bytes()); // cpusubtype
+        buf.extend_from_slice(&MH_OBJECT.to_le_bytes());
+        buf.extend_from_slice(&2_u32.to_le_bytes()); // ncmds
+        buf.extend_from_slice(&(cmds_size as u32).to_le_bytes());
+        buf.extend_from_slice(&0_u32.to_le_bytes()); // flags
+        buf.extend_from_slice(&0_u32.to_le_bytes()); // reserved
+
+        // LC_SEGMENT_64
+        buf.extend_from_slice(&LC_SEGMENT_64.to_le_bytes());
+        buf.extend_from_slice(&(seg_cmd_size as u32).to_le_bytes());
+        buf.extend_from_slice(&[0u8; 16]); // segname (empty for objects)
+        buf.extend_from_slice(&0_u64.to_le_bytes()); // vmaddr
+        buf.extend_from_slice(&0_u64.to_le_bytes()); // vmsize
+        buf.extend_from_slice(&0_u64.to_le_bytes()); // fileoff
+        buf.extend_from_slice(&0_u64.to_le_bytes()); // filesize
+        buf.extend_from_slice(&7_u32.to_le_bytes()); // maxprot
+        buf.extend_from_slice(&5_u32.to_le_bytes()); // initprot
+        buf.extend_from_slice(&(nsects as u32).to_le_bytes());
+        buf.extend_from_slice(&0_u32.to_le_bytes()); // flags
+
+        for (i, s) in sections.iter().enumerate() {
+            let mut sect = [0u8; 16];
+            sect[..s.sectname.len()].copy_from_slice(s.sectname.as_bytes());
+            let mut seg = [0u8; 16];
+            seg[..s.segname.len()].copy_from_slice(s.segname.as_bytes());
+            buf.extend_from_slice(&sect);
+            buf.extend_from_slice(&seg);
+            buf.extend_from_slice(&s.addr.to_le_bytes());
+            buf.extend_from_slice(&(s.data.len() as u64).to_le_bytes());
+            buf.extend_from_slice(&(data_offsets[i] as u32).to_le_bytes());
+            buf.extend_from_slice(&3_u32.to_le_bytes()); // align 2^3
+            buf.extend_from_slice(&(reloc_offsets[i] as u32).to_le_bytes());
+            buf.extend_from_slice(&(s.relocs.len() as u32).to_le_bytes());
+            let flags: u32 = if s.sectname == "__text" {
+                0x80000000 // S_ATTR_PURE_INSTRUCTIONS
+            } else {
+                0
+            };
+            buf.extend_from_slice(&flags.to_le_bytes());
+            buf.extend_from_slice(&0_u32.to_le_bytes()); // reserved1
+            buf.extend_from_slice(&0_u32.to_le_bytes()); // reserved2
+            buf.extend_from_slice(&0_u32.to_le_bytes()); // reserved3
+        }
+
+        // LC_SYMTAB
+        buf.extend_from_slice(&LC_SYMTAB.to_le_bytes());
+        buf.extend_from_slice(&(crate::constants::MACHO64_SYMTAB_CMD_SIZE as u32).to_le_bytes());
+        buf.extend_from_slice(&(symtab_off as u32).to_le_bytes());
+        buf.extend_from_slice(&(symbols.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&(strtab_off as u32).to_le_bytes());
+        buf.extend_from_slice(&(strtab.len() as u32).to_le_bytes());
+
+        // Section data
+        for (i, s) in sections.iter().enumerate() {
+            buf.resize(data_offsets[i], 0);
+            buf.extend_from_slice(&s.data);
+        }
+        // Relocations
+        for (i, s) in sections.iter().enumerate() {
+            buf.resize(reloc_offsets[i], 0);
+            for (r_address, r_info) in &s.relocs {
+                buf.extend_from_slice(&r_address.to_le_bytes());
+                buf.extend_from_slice(&r_info.to_le_bytes());
+            }
+        }
+        // Symbols
+        buf.resize(symtab_off, 0);
+        for (i, sym) in symbols.iter().enumerate() {
+            buf.extend_from_slice(&(name_offsets[i] as u32).to_le_bytes());
+            buf.push(sym.n_type);
+            buf.push(sym.n_sect);
+            buf.extend_from_slice(&0_u16.to_le_bytes());
+            buf.extend_from_slice(&sym.n_value.to_le_bytes());
+        }
+        // String table
+        buf.extend_from_slice(&strtab);
+        buf
+    }
+
+    /// RUE-131 item 5b: ARM64_RELOC_UNSIGNED carries its addend in the bytes
+    /// at the patch site; the parser used to hardcode addend 0.
+    #[test]
+    fn test_macho_unsigned_reads_embedded_addend() {
+        let mut slot = vec![0u8; 8];
+        slot[0] = 0x10; // embedded addend = 0x10
+        let obj_bytes = build_test_macho(
+            &[TestMachoSection {
+                sectname: "__const",
+                segname: "__TEXT",
+                addr: 0,
+                data: slot,
+                // extern UNSIGNED, 8 bytes, against symbol 0
+                relocs: vec![(0, macho_r_info(0, false, 3, true, ARM64_RELOC_UNSIGNED))],
+            }],
+            &[TestMachoSymbol {
+                name: "_foo",
+                n_type: N_EXT | N_UNDF,
+                n_sect: 0,
+                n_value: 0,
+            }],
+        );
+
+        let obj = ObjectFile::parse(&obj_bytes).expect("parse");
+        let relocs = &obj.sections[0].relocations;
+        assert_eq!(relocs.len(), 1);
+        assert_eq!(relocs[0].rel_type, RelocationType::Aarch64Abs64);
+        assert_eq!(
+            relocs[0].addend, 0x10,
+            "embedded addend must be read from the patch site"
+        );
+    }
+
+    /// RUE-131 item 5b: an ARM64_RELOC_ADDEND entry supplies the addend for
+    /// the relocation that follows it; it is not itself a relocation.
+    #[test]
+    fn test_macho_addend_reloc_pairs_with_next() {
+        let obj_bytes = build_test_macho(
+            &[TestMachoSection {
+                sectname: "__text",
+                segname: "__TEXT",
+                addr: 0,
+                data: vec![0u8; 8],
+                relocs: vec![
+                    // ADDEND +0x14 followed by BRANCH26 against symbol 0
+                    (0, macho_r_info(0x14, false, 2, false, ARM64_RELOC_ADDEND)),
+                    (0, macho_r_info(0, true, 2, true, ARM64_RELOC_BRANCH26)),
+                    // ADDEND -8 (sign-extended 24-bit) + PAGE21
+                    (
+                        4,
+                        macho_r_info(0x00FF_FFF8, false, 2, false, ARM64_RELOC_ADDEND),
+                    ),
+                    (4, macho_r_info(0, true, 2, true, ARM64_RELOC_PAGE21)),
+                ],
+            }],
+            &[TestMachoSymbol {
+                name: "_foo",
+                n_type: N_EXT | N_UNDF,
+                n_sect: 0,
+                n_value: 0,
+            }],
+        );
+
+        let obj = ObjectFile::parse(&obj_bytes).expect("parse");
+        let relocs = &obj.sections[0].relocations;
+        assert_eq!(relocs.len(), 2, "ADDEND entries are not relocations");
+        assert_eq!(relocs[0].rel_type, RelocationType::Call26);
+        assert_eq!(relocs[0].addend, 0x14);
+        assert_eq!(relocs[1].rel_type, RelocationType::AdrpPage21);
+        assert_eq!(relocs[1].addend, -8, "24-bit addend must be sign-extended");
+    }
+
+    /// RUE-131 item 5c: a non-extern relocation against a section with no
+    /// symbol at offset 0 used to fail with "no function symbol found". The
+    /// parser now synthesizes a local section anchor, and (item 5b) re-bases
+    /// the embedded target address onto it.
+    #[test]
+    fn test_macho_non_extern_unsigned_synthesizes_anchor() {
+        // __cstring lives at addr 0x10 in the object's VM layout; the pointer
+        // slot holds the address of byte 3 within it (0x13).
+        let mut slot = vec![0u8; 8];
+        slot[0] = 0x13;
+        let obj_bytes = build_test_macho(
+            &[
+                TestMachoSection {
+                    sectname: "__const",
+                    segname: "__TEXT",
+                    addr: 0,
+                    data: slot,
+                    // non-extern UNSIGNED against section 2 (__cstring)
+                    relocs: vec![(0, macho_r_info(2, false, 3, false, ARM64_RELOC_UNSIGNED))],
+                },
+                TestMachoSection {
+                    sectname: "__cstring",
+                    segname: "__TEXT",
+                    addr: 0x10,
+                    data: b"hi there".to_vec(),
+                    relocs: vec![],
+                },
+            ],
+            // No symbol at offset 0 of __cstring at all
+            &[TestMachoSymbol {
+                name: "_main",
+                n_type: N_EXT | N_SECT,
+                n_sect: 1,
+                n_value: 0,
+            }],
+        );
+
+        let obj = ObjectFile::parse(&obj_bytes).expect("parse must not require a Global at 0");
+        let relocs = &obj.sections[0].relocations;
+        assert_eq!(relocs.len(), 1);
+        let anchor = &obj.symbols[relocs[0].symbol_index];
+        assert_eq!(anchor.section_index, Some(1), "anchor must be in __cstring");
+        assert_eq!(anchor.value, 0);
+        assert_eq!(anchor.binding, SymbolBinding::Local);
+        assert_eq!(
+            relocs[0].addend, 3,
+            "embedded target address must be re-based onto the section anchor"
+        );
+    }
+
+    /// Mach-O n_value is an address in the object's VM layout, not a
+    /// section-relative offset; the parser must subtract the section's addr.
+    #[test]
+    fn test_macho_symbol_value_normalized_to_section_offset() {
+        let obj_bytes = build_test_macho(
+            &[
+                TestMachoSection {
+                    sectname: "__text",
+                    segname: "__TEXT",
+                    addr: 0,
+                    data: vec![0u8; 16],
+                    relocs: vec![],
+                },
+                TestMachoSection {
+                    sectname: "__cstring",
+                    segname: "__TEXT",
+                    addr: 0x10,
+                    data: vec![0u8; 8],
+                    relocs: vec![],
+                },
+            ],
+            &[
+                TestMachoSymbol {
+                    name: "_main",
+                    n_type: N_EXT | N_SECT,
+                    n_sect: 1,
+                    n_value: 4, // 4 into __text (addr 0)
+                },
+                TestMachoSymbol {
+                    name: "_str",
+                    n_type: N_SECT, // local
+                    n_sect: 2,
+                    n_value: 0x10 + 5, // 5 into __cstring (addr 0x10)
+                },
+            ],
+        );
+
+        let obj = ObjectFile::parse(&obj_bytes).expect("parse");
+        let main = obj.find_symbol("main").expect("main");
+        assert_eq!(main.value, 4);
+        let s = obj.find_symbol("str").expect("str");
+        assert_eq!(
+            s.value, 5,
+            "n_value must be converted to a section-relative offset"
+        );
+        assert_eq!(s.binding, SymbolBinding::Local);
     }
 
     #[test]
