@@ -1534,6 +1534,7 @@ impl<'a> Sema<'a> {
             // permits forwarding an inout parameter: `f(inout v)` inside
             // `fn g(inout v: T)`.
             let is_byref_arg_use = ctx.byref_arg_root == Some(name);
+            let mut moves_out = false;
             if !self.is_type_copy(ty) {
                 match param_info.mode {
                     // Normal and comptime parameters behave similarly for moves
@@ -1544,6 +1545,9 @@ impl<'a> Sema<'a> {
                                 .entry(name)
                                 .or_default()
                                 .mark_path_moved(&[], span);
+                            // Only Normal params occupy a real ABI slot that
+                            // drop elaboration would otherwise drop at exit.
+                            moves_out = param_info.mode == RirParamMode::Normal;
                         }
                     }
                     RirParamMode::Inout => {
@@ -1569,13 +1573,27 @@ impl<'a> Sema<'a> {
                 }
             }
 
-            let air_ref = air.add_inst(AirInst {
+            let mut air_ref = air.add_inst(AirInst {
                 data: AirInstData::Param {
                     index: param_info.abi_slot,
                 },
                 ty,
                 span,
             });
+            if moves_out {
+                // Export the move to drop elaboration: the callee-side drop
+                // of this parameter is suppressed on paths where its value
+                // moved out (RUE-61).
+                air_ref = air.add_inst(AirInst {
+                    data: AirInstData::MarkMoved {
+                        value: air_ref,
+                        slot: param_info.abi_slot,
+                        is_param: true,
+                    },
+                    ty,
+                    span,
+                });
+            }
             return Ok(AnalysisResult::new(air_ref, ty));
         }
 
@@ -1600,7 +1618,8 @@ impl<'a> Sema<'a> {
 
             // If type is not Copy, mark as moved — unless this use is a by-ref
             // call argument, which borrows the variable rather than moving it.
-            if !self.is_type_copy(ty) && ctx.byref_arg_root != Some(name) {
+            let moves_out = !self.is_type_copy(ty) && ctx.byref_arg_root != Some(name);
+            if moves_out {
                 ctx.moved_vars
                     .entry(name)
                     .or_default()
@@ -1611,11 +1630,25 @@ impl<'a> Sema<'a> {
             ctx.used_locals.insert(name);
 
             // Load the variable
-            let air_ref = air.add_inst(AirInst {
+            let mut air_ref = air.add_inst(AirInst {
                 data: AirInstData::Load { slot },
                 ty,
                 span,
             });
+            if moves_out {
+                // Export the move to drop elaboration so the scope-exit drop
+                // of this slot is suppressed on paths where its value moved
+                // out (RUE-61).
+                air_ref = air.add_inst(AirInst {
+                    data: AirInstData::MarkMoved {
+                        value: air_ref,
+                        slot,
+                        is_param: false,
+                    },
+                    ty,
+                    span,
+                });
+            }
             return Ok(AnalysisResult::new(air_ref, ty));
         }
 
@@ -2235,11 +2268,28 @@ impl<'a> Sema<'a> {
 
             // Emit PlaceRead instruction
             let place_ref = Self::build_place_ref(air, &trace);
-            let air_ref = air.add_inst(AirInst {
+            let mut air_ref = air.add_inst(AirInst {
                 data: AirInstData::PlaceRead { place: place_ref },
                 ty: field_type,
                 span,
             });
+            if is_linear {
+                // Field access on a linear type consumes the whole struct
+                // (marked above): export the full move to drop elaboration.
+                let (slot, is_param) = match trace.base {
+                    AirPlaceBase::Local(slot) => (slot, false),
+                    AirPlaceBase::Param(slot) => (slot, true),
+                };
+                air_ref = air.add_inst(AirInst {
+                    data: AirInstData::MarkMoved {
+                        value: air_ref,
+                        slot,
+                        is_param,
+                    },
+                    ty: field_type,
+                    span,
+                });
+            }
             return Ok(AnalysisResult::new(air_ref, field_type));
         }
 
