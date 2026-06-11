@@ -20,9 +20,9 @@ impl Sema<'_> {
     /// - `pub` items are always accessible
     /// - Private items are accessible if the files are in the same directory module
     ///
-    /// Directory module membership includes:
-    /// - Files directly in the directory (e.g., `utils/strings.rue` is in `utils`)
-    /// - Facade files for the directory (e.g., `_utils.rue` is in `utils` module)
+    /// Directory module membership is simply "files in the same directory" —
+    /// including the facade, which lives inside its directory
+    /// (`utils/_utils.rue` is in the `utils` module, RUE-137).
     ///
     /// Returns true if the item is accessible.
     pub(crate) fn is_accessible(
@@ -43,9 +43,8 @@ impl Sema<'_> {
         // If we can't determine the paths, be permissive (for single-file mode or tests)
         match (accessing_path, target_path) {
             (Some(acc), Some(tgt)) => {
-                // Get the "module identity" for each file.
-                // For a regular file like `utils/strings.rue`, the module is `utils/`
-                // For a facade file like `_utils.rue`, the module is `utils/` (the directory it represents)
+                // Get the "module identity" for each file: its parent
+                // directory (the facade included — it lives in-directory).
                 let acc_module = get_module_identity(Path::new(acc));
                 let tgt_module = get_module_identity(Path::new(tgt));
 
@@ -92,23 +91,12 @@ impl Sema<'_> {
     }
 }
 
-/// Get the module identity for a file path.
+/// Get the module identity for a file path: its parent directory.
 ///
-/// - For regular files: returns the parent directory
-/// - For facade files (`_foo.rue`): returns the corresponding directory (`foo/`)
-///
-/// This allows facade files to be treated as part of their corresponding directory module.
+/// Since RUE-137 the directory-module facade lives INSIDE its directory
+/// (`utils/_utils.rue`), so the facade's module is simply its parent — the
+/// same rule as every other file. (The old sibling layout needed a special
+/// case mapping `_utils.rue` to `utils/`; that layout no longer exists.)
 pub(crate) fn get_module_identity(path: &Path) -> Option<PathBuf> {
-    let parent = path.parent()?;
-    let file_stem = path.file_stem()?.to_str()?;
-
-    // Check if this is a facade file (starts with underscore)
-    if file_stem.starts_with('_') {
-        // Facade file: _utils.rue -> parent/utils
-        let module_name = &file_stem[1..]; // Strip the leading underscore
-        Some(parent.join(module_name))
-    } else {
-        // Regular file: the module is just the parent directory
-        Some(parent.to_path_buf())
-    }
+    path.parent().map(Path::to_path_buf)
 }

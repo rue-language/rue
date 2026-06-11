@@ -48,14 +48,14 @@ exit_code = 0
 
 [[case]]
 name = "import_directory_module_resolves"
-description = "@import('utils') resolves to _utils.rue when utils.rue doesn't exist"
+description = "@import('utils') resolves to the in-directory facade utils/_utils.rue (RUE-137)"
 source = """
 fn main() -> i32 {
     let utils = @import("utils");
     0
 }
 """
-aux_files = { "_utils.rue" = """
+aux_files = { "utils/_utils.rue" = """
 fn helper() -> i32 {
     42
 }
@@ -64,14 +64,14 @@ exit_code = 0
 
 [[case]]
 name = "import_directory_module_with_subdir_resolves"
-description = "@import('utils') finds _utils.rue even when utils/ directory exists"
+description = "@import('utils') finds utils/_utils.rue alongside other files in the directory"
 source = """
 fn main() -> i32 {
     let utils = @import("utils");
     0
 }
 """
-aux_files = { "_utils.rue" = """
+aux_files = { "utils/_utils.rue" = """
 fn helper() -> i32 {
     99
 }
@@ -81,12 +81,12 @@ fn inner_fn() -> i32 { 1 }
 exit_code = 0
 
 # =============================================================================
-# Resolution Priority (foo.rue before _foo.rue)
+# Ambiguity (foo.rue and foo/_foo.rue may not coexist — RUE-137)
 # =============================================================================
 
 [[case]]
-name = "import_prefers_simple_file_resolves"
-description = "foo.rue is preferred over _foo.rue if both exist (verifies resolution order)"
+name = "import_simple_file_with_stray_sibling_underscore_file"
+description = "A sibling _math.rue is just a file, not a facade: math.rue resolves cleanly (the pre-RUE-137 sibling layout has no special meaning)"
 source = """
 fn main() -> i32 {
     let math = @import("math");
@@ -96,7 +96,7 @@ fn main() -> i32 {
 aux_files = { "math.rue" = """
 fn value() -> i32 { 10 }
 """, "_math.rue" = """
-fn value() -> i32 { 20 }
+fn value2() -> i32 { 20 }
 """ }
 exit_code = 0
 

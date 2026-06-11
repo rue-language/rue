@@ -756,8 +756,10 @@ fn get_peak_memory_bytes() -> Option<u64> {
 /// - `"std"`: `$RUE_STD_PATH/_std.rue`, then `std/_std.rue` relative to the
 ///   importing file, then relative to the first (root) source file
 /// - `"foo.rue"`: exact path relative to the importing file, then the root
-/// - `"foo"` / `"a/b"`: `{path}.rue` then the `_{basename}.rue` facade,
-///   relative to the importing file, then the root
+/// - `"foo"` / `"a/b"`: `{path}.rue` then the directory-module facade
+///   `{path}/_{basename}.rue` (the facade lives INSIDE the directory, like
+///   `std/_std.rue` — ratified in RUE-137), relative to the importing file,
+///   then the root
 ///
 /// Unresolvable imports are left for sema to report (E0704 with candidate
 /// context); this function only loads what it can find.
@@ -804,47 +806,62 @@ fn discover_and_load_imports(sources: &mut Vec<(String, String)>) {
                 .map(PathBuf::from)
                 .unwrap_or_default();
 
-            let mut candidates: Vec<PathBuf> = Vec::new();
-            if import_str == "std" {
-                if let Ok(std_path) = env::var("RUE_STD_PATH") {
-                    candidates.push(Path::new(&std_path).join("_std.rue"));
-                }
-                candidates.push(importer_dir.join("std/_std.rue"));
-                candidates.push(root_dir.join("std/_std.rue"));
-            } else if import_str.ends_with(".rue") {
-                candidates.push(importer_dir.join(import_str));
-                candidates.push(root_dir.join(import_str));
+            // Candidate GROUPS, nearest base directory first. Within a
+            // group, EVERY existing candidate is loaded — if both `foo.rue`
+            // and `foo/_foo.rue` exist, loading both lets sema report the
+            // dual-entity ambiguity (E0708) instead of the driver silently
+            // picking one. Later groups are only probed when the nearer
+            // group had nothing.
+            let mut groups: Vec<Vec<PathBuf>> = Vec::new();
+            // "std" is the general directory-module rule (std/_std.rue) plus
+            // one extra candidate group: an installed stdlib via $RUE_STD_PATH.
+            if import_str == "std"
+                && let Ok(std_path) = env::var("RUE_STD_PATH")
+            {
+                groups.push(vec![Path::new(&std_path).join("_std.rue")]);
+            }
+            if import_str.ends_with(".rue") {
+                groups.push(vec![importer_dir.join(import_str)]);
+                groups.push(vec![root_dir.join(import_str)]);
             } else {
+                // Directory-module facade: foo/_foo.rue (inside the
+                // directory, mirroring std/_std.rue — RUE-137).
                 let rel = Path::new(import_str);
-                let facade = match rel.parent() {
-                    Some(parent) if parent != Path::new("") => parent.join(format!(
-                        "_{}.rue",
-                        rel.file_name().unwrap_or_default().to_string_lossy()
-                    )),
-                    _ => PathBuf::from(format!("_{}.rue", import_str)),
-                };
-                candidates.push(importer_dir.join(format!("{import_str}.rue")));
-                candidates.push(importer_dir.join(&facade));
-                candidates.push(root_dir.join(format!("{import_str}.rue")));
-                candidates.push(root_dir.join(&facade));
+                let basename = rel.file_name().unwrap_or_default().to_string_lossy();
+                let facade = rel.join(format!("_{basename}.rue"));
+                groups.push(vec![
+                    importer_dir.join(format!("{import_str}.rue")),
+                    importer_dir.join(&facade),
+                ]);
+                groups.push(vec![
+                    root_dir.join(format!("{import_str}.rue")),
+                    root_dir.join(&facade),
+                ]);
             }
 
-            for candidate in candidates {
-                let Ok(canonical) = fs::canonicalize(&candidate) else {
-                    continue;
-                };
-                if !canonical.is_file() {
-                    continue;
+            'groups: for group in groups {
+                let mut group_hit = false;
+                for candidate in group {
+                    let Ok(canonical) = fs::canonicalize(&candidate) else {
+                        continue;
+                    };
+                    if !canonical.is_file() {
+                        continue;
+                    }
+                    if loaded.contains(&canonical) {
+                        group_hit = true; // already loaded (or a cycle)
+                        continue;
+                    }
+                    let Ok(module_content) = fs::read_to_string(&candidate) else {
+                        continue;
+                    };
+                    loaded.insert(canonical);
+                    sources.push((candidate.to_string_lossy().into_owned(), module_content));
+                    group_hit = true;
                 }
-                if loaded.contains(&canonical) {
-                    break; // already loaded (or a cycle) — nothing to do
+                if group_hit {
+                    break 'groups;
                 }
-                let Ok(module_content) = fs::read_to_string(&candidate) else {
-                    continue;
-                };
-                loaded.insert(canonical);
-                sources.push((candidate.to_string_lossy().into_owned(), module_content));
-                break; // first match wins, matching ModulePath's order
             }
         }
     }

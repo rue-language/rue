@@ -8932,24 +8932,24 @@ impl<'a> Sema<'a> {
         }
 
         // Phase 1: Check if the import path matches an already-loaded file
-        // This handles unit tests and multi-file compilation where all files are pre-loaded
-        for (_file_id, path) in &self.file_paths {
-            // Check for exact match
-            if path == import_path {
-                return Ok(path.clone());
-            }
-            // Check if the file path ends with the import path (handles relative imports)
-            if path.ends_with(import_path) {
-                return Ok(path.clone());
-            }
-            // For imports like "math" or "math.rue", check if the file is named accordingly
-            let import_base = import_path.strip_suffix(".rue").unwrap_or(import_path);
-            let file_name = Path::new(path).file_stem().and_then(|s| s.to_str());
-            if let Some(name) = file_name {
-                if name == import_base {
-                    return Ok(path.clone());
-                }
-            }
+        // (unit tests, multi-file compilation, and files the driver's import
+        // discovery loaded). Delegates to the structured ModulePath resolver
+        // so loaded-path matching has exactly one implementation.
+        let module_path = super::module_path::ModulePath::parse(import_path);
+        if let Some((file_module, dir_module)) =
+            module_path.find_ambiguity(self.file_paths.values())
+        {
+            return Err(CompileError::new(
+                ErrorKind::AmbiguousModule(Box::new(rue_error::AmbiguousModuleData {
+                    path: import_path.to_string(),
+                    file_module,
+                    dir_module,
+                })),
+                span,
+            ));
+        }
+        if let Some(resolved) = module_path.resolve(self.file_paths.values()) {
+            return Ok(resolved);
         }
 
         // Phase 2: Try to find the file on disk (for directory modules and actual file imports)
@@ -8964,9 +8964,25 @@ impl<'a> Sema<'a> {
         // Strip .rue extension if present for base name calculation
         let base_name = import_path.strip_suffix(".rue").unwrap_or(import_path);
 
+        // Both module forms existing at once is ambiguous, not a precedence
+        // question — mirror Rust's E0761 and refuse (RUE-137).
+        let file_candidate = source_dir.join(format!("{}.rue", base_name));
+        let facade_candidate = source_dir
+            .join(base_name)
+            .join(format!("_{}.rue", base_name));
+        if !import_path.ends_with(".rue") && file_candidate.exists() && facade_candidate.exists() {
+            return Err(CompileError::new(
+                ErrorKind::AmbiguousModule(Box::new(rue_error::AmbiguousModuleData {
+                    path: import_path.to_string(),
+                    file_module: file_candidate.to_string_lossy().to_string(),
+                    dir_module: facade_candidate.to_string_lossy().to_string(),
+                })),
+                span,
+            ));
+        }
+
         // Resolution order:
         // 1. Try foo.rue (simple file module)
-        let file_candidate = source_dir.join(format!("{}.rue", base_name));
         candidates.push(file_candidate.display().to_string());
         if file_candidate.exists() {
             return Ok(file_candidate.to_string_lossy().to_string());
@@ -8983,18 +8999,11 @@ impl<'a> Sema<'a> {
             }
         }
 
-        // 3. Try _foo.rue + foo/ directory (directory module)
-        let dir_module_root = source_dir.join(format!("_{}.rue", base_name));
-        let dir_path = source_dir.join(base_name);
-        candidates.push(format!("{} + {}/", dir_module_root.display(), base_name));
-        if dir_module_root.exists() && dir_path.is_dir() {
-            return Ok(dir_module_root.to_string_lossy().to_string());
-        }
-
-        // 3b. Also try just _foo.rue without requiring foo/ directory
-        // (This allows directory modules where all submodules are re-exported)
-        if dir_module_root.exists() {
-            return Ok(dir_module_root.to_string_lossy().to_string());
+        // 3. Try the directory module: foo/ containing the facade foo/_foo.rue
+        // (the facade lives INSIDE the directory, like std/_std.rue — RUE-137).
+        candidates.push(facade_candidate.display().to_string());
+        if facade_candidate.exists() {
+            return Ok(facade_candidate.to_string_lossy().to_string());
         }
 
         // Module not found - report error with candidates tried

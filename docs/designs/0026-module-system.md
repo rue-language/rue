@@ -115,27 +115,39 @@ fn helper() -> i32 { 42 }  // private
 
 **Resolution order for `@import("foo")`:**
 1. Local file `foo.rue` (simple file module)
-2. Local file `_foo.rue` with directory `foo/` (directory module)
+2. Directory `foo/` containing the facade file `foo/_foo.rue` (directory module)
 3. (Future) Dependency named `foo` in `rue.toml`
+
+Having BOTH `foo.rue` and `foo/_foo.rue` is a compile error (E0708, ambiguous
+module) — mirroring Rust's E0761 rather than silently preferring one form.
 
 ### Directory Modules
 
-A directory becomes a module when it contains a `_` prefixed file with the same name:
+A directory becomes a module when it contains a `_` prefixed facade file with
+the same name as the directory — the facade lives **inside** the directory,
+exactly where Rust's `mod.rs` would (this is matklad's actual proposal: the
+underscore file is the `mod.rs` replacement, renamed so it sorts first and is
+fuzzy-findable):
 
 ```
 src/
   main.rue
   math.rue           # const math = @import("math.rue");
-  _utils.rue         # const utils = @import("utils"); — module root for utils/
   utils/
+    _utils.rue       # facade — the module root for utils/
     strings.rue      # Submodule
     internal.rue     # Submodule
 ```
 
-The `_utils.rue` file controls what the directory exports using Zig's `pub const` pattern for re-exports:
+> Decision history: an earlier revision of this ADR placed `_utils.rue` as a
+> sibling of `utils/`, misreading the cited article (and contradicting the
+> shipped `std/_std.rue`). RUE-137 ratified the in-directory placement.
+
+The `utils/_utils.rue` file controls what the directory exports using Zig's
+`pub const` pattern for re-exports:
 
 ```rue
-// _utils.rue — the module root for utils/
+// utils/_utils.rue — the module root for utils/
 
 // Re-export the entire strings module
 pub const strings = @import("utils/strings.rue");
@@ -161,9 +173,9 @@ utils.helper()
 ```
 
 **Why `_` prefix?**
-1. **Sorts first** — In file listings, `_utils.rue` appears before `utils/`, making the module entry point immediately visible
-2. **Unambiguous** — `_foo.rue` is always a directory module root; `foo.rue` is always a standalone file module
-3. **No dual-file confusion** — Rust's `foo.rs` + `foo/` pattern requires remembering that both exist; here the `_` makes it explicit
+1. **Sorts first** — Within the directory's listing, `_utils.rue` appears above the submodule files, making the module entry point the first thing you see when you open the directory
+2. **Unambiguous** — `foo.rue` is always a standalone file module; a directory `foo/` containing `_foo.rue` is always a directory module
+3. **Self-contained modules** — unlike Rust 2018's `foo.rs` + `foo/` split, everything about the module lives in one directory: moving, vendoring, or deleting a module is a single filesystem operation
 
 This follows matklad's suggestion from "Notes on Module System" for improving discoverability.
 
@@ -305,7 +317,7 @@ json = { path = "../json-lib" }
 
 The resolution order becomes:
 1. Local file `foo.rue` (simple file module)
-2. Local file `_foo.rue` with `foo/` directory (directory module)
+2. Directory `foo/` containing the facade `foo/_foo.rue` (directory module)
 3. Dependency `foo` from `rue.toml`
 
 The import syntax (`@import("foo")`) remains unchanged—the package manager just adds another resolution step.
@@ -335,9 +347,9 @@ All phases are complete. 40 spec tests pass.
 
 ### Phase 3: Directory Modules ✓
 
-**Goal:** `@import("foo")` can import `_foo.rue` which has submodules in `foo/`.
+**Goal:** `@import("foo")` can import the facade `foo/_foo.rue`, which re-exports submodules from `foo/`.
 
-- [x] Directory module resolution (`_foo.rue` + `foo/` pattern)
+- [x] Directory module resolution (`foo/_foo.rue` facade pattern)
 - [x] Re-exports via `pub const`
 - [x] Intra-directory visibility rules
 

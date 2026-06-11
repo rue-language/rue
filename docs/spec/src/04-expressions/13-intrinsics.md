@@ -593,7 +593,7 @@ The return type of `@import` is a module struct type containing all `pub` declar
 Module path resolution follows this order:
 1. Standard library: `@import("std")` resolves to the bundled standard library
 2. A file `{path}.rue` relative to the importing file's directory
-3. A directory module `_{path}.rue` with subdirectory `{path}/`
+3. A directory module: a directory `{path}/` containing the facade file `_{basename}.rue`, which is the module's root
 
 {{ rule(id="4.13:83", cat="legality-rule") }}
 
@@ -652,3 +652,9 @@ fn main() -> i32 {
     0
 }
 ```
+
+{{ rule(id="4.13:89", cat="legality-rule") }}
+
+It is a compile-time error if a module path resolves to both a file module
+`{path}.rue` and a directory module `{path}/_{basename}.rue` — the import is
+ambiguous, and neither form takes precedence.

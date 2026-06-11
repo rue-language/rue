@@ -11,9 +11,10 @@
 //! 1. **Standard library** - if the path is exactly "std"
 //! 2. **Exact path with extension** - if path includes ".rue" extension
 //! 3. **Simple file match** - look for `foo.rue` or path ending with `foo.rue`
-//! 4. **Facade module** - look for `_foo.rue` (directory module entry point)
+//! 4. **Facade module** - look for `foo/_foo.rue` (the directory module's entry point, inside the directory — RUE-137)
 //!
-//! The first match wins, so `foo.rue` takes precedence over `_foo.rue`.
+//! Both module forms existing at once (`foo.rue` AND `foo/_foo.rue`) is an
+//! ambiguity error (E0708), mirroring Rust's E0761 — see [`ModulePath::find_ambiguity`].
 
 use std::path::Path;
 
@@ -25,7 +26,8 @@ use std::path::Path;
 pub enum ModulePath {
     /// Standard library import: `@import("std")`
     ///
-    /// This is a special case that is currently not supported during const eval.
+    /// Resolves to the stdlib facade `_std.rue`, loaded by the driver from
+    /// `$RUE_STD_PATH` or an adjacent `std/` directory.
     Std,
 
     /// Import with explicit `.rue` extension: `@import("foo.rue")`
@@ -37,7 +39,7 @@ pub enum ModulePath {
     ///
     /// Resolution tries:
     /// 1. `{path}.rue` - standard file
-    /// 2. `_{basename}.rue` - facade file for directory modules
+    /// 2. `{path}/_{basename}.rue` - in-directory facade for directory modules
     ///
     /// For nested paths like `utils/strings`, we look for `utils/strings.rue`.
     Simple { path: String },
@@ -84,7 +86,7 @@ impl ModulePath {
     /// 1. Exact match (for ExplicitRue)
     /// 2. Standard file match (`{path}.rue`)
     /// 3. Path suffix match (for nested paths)
-    /// 4. Facade file match (`_{basename}.rue`)
+    /// 4. In-directory facade match (`{basename}/_{basename}.rue`)
     pub fn resolve<'a, I>(&self, loaded_paths: I) -> Option<String>
     where
         I: Iterator<Item = &'a String>,
@@ -100,6 +102,44 @@ impl ModulePath {
             ModulePath::ExplicitRue { path } => self.resolve_explicit(path, loaded_paths),
             ModulePath::Simple { path } => self.resolve_simple(path, loaded_paths),
         }
+    }
+
+    /// Detect the dual-entity ambiguity for a simple import: BOTH a file
+    /// module `{path}.rue` and a directory module `{path}/_{basename}.rue`
+    /// exist among the loaded files. Mirrors Rust's E0761 (module file found
+    /// at both locations): silently preferring one is a footgun, so callers
+    /// turn this into a hard error. Returns (file_module, dir_module).
+    pub fn find_ambiguity<'a, I>(&self, loaded_paths: I) -> Option<(String, String)>
+    where
+        I: Iterator<Item = &'a String>,
+    {
+        let ModulePath::Simple { path } = self else {
+            return None;
+        };
+        let import_with_rue = format!("{}.rue", path);
+        let basename = Path::new(path)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or(path);
+        let facade_suffix = format!("{}/_{}.rue", basename, basename);
+
+        let boundary_match = |candidate: &str, suffix: &str| -> bool {
+            candidate.ends_with(suffix) && {
+                let prefix_len = candidate.len() - suffix.len();
+                prefix_len == 0 || candidate.as_bytes()[prefix_len - 1] == b'/'
+            }
+        };
+
+        let mut file_module = None;
+        let mut dir_module = None;
+        for p in loaded_paths {
+            if file_module.is_none() && boundary_match(p, &import_with_rue) {
+                file_module = Some(p.clone());
+            } else if dir_module.is_none() && boundary_match(p, &facade_suffix) {
+                dir_module = Some(p.clone());
+            }
+        }
+        file_module.zip(dir_module)
     }
 
     /// Resolve an explicit `.rue` path.
@@ -139,12 +179,16 @@ impl ModulePath {
         let import_with_rue = format!("{}.rue", import_path);
         let collected: Vec<_> = loaded_paths.collect();
 
-        // Extract the basename for facade file matching
+        // The directory-module facade lives INSIDE the directory:
+        // `@import("utils")` -> `utils/_utils.rue`, like the stdlib's
+        // `std/_std.rue` (placement ratified in RUE-137). Matching the bare
+        // basename would let a stray sibling `_utils.rue` masquerade as a
+        // directory module.
         let basename = Path::new(import_path)
             .file_name()
             .and_then(|s| s.to_str())
             .unwrap_or(import_path);
-        let facade_name = format!("_{}.rue", basename);
+        let facade_suffix = format!("{}/_{}.rue", basename, basename);
 
         // Priority 1: Look for exact {path}.rue
         for file_path in &collected {
@@ -177,13 +221,12 @@ impl ModulePath {
             }
         }
 
-        // Priority 4: Look for facade file (_foo.rue)
+        // Priority 4: Look for the in-directory facade ({foo}/_{foo}.rue)
         for file_path in &collected {
-            if let Some(file_name) = Path::new(file_path.as_str())
-                .file_name()
-                .and_then(|s| s.to_str())
-            {
-                if file_name == facade_name {
+            if file_path.ends_with(&facade_suffix) {
+                // Verify it's a proper path boundary
+                let prefix_len = file_path.len() - facade_suffix.len();
+                if prefix_len == 0 || file_path.as_bytes()[prefix_len - 1] == b'/' {
                     return Some((*file_path).clone());
                 }
             }
@@ -348,21 +391,48 @@ mod tests {
 
     #[test]
     fn test_resolve_simple_facade_file() {
+        // The facade lives INSIDE the directory (RUE-137): utils/_utils.rue.
+        let paths = vec!["utils/_utils.rue".to_string()];
+        let module = ModulePath::Simple {
+            path: "utils".to_string(),
+        };
+        assert_eq!(
+            module.resolve(paths.iter()),
+            Some("utils/_utils.rue".to_string())
+        );
+    }
+
+    #[test]
+    fn test_resolve_simple_sibling_facade_rejected() {
+        // The pre-RUE-137 sibling layout is NOT a directory module.
         let paths = vec!["_utils.rue".to_string()];
         let module = ModulePath::Simple {
             path: "utils".to_string(),
         };
-        assert_eq!(module.resolve(paths.iter()), Some("_utils.rue".to_string()));
+        assert_eq!(module.resolve(paths.iter()), None);
     }
 
     #[test]
-    fn test_resolve_simple_prefers_regular_over_facade() {
-        // When both "foo.rue" and "_foo.rue" exist, prefer "foo.rue"
-        let paths = vec!["_foo.rue".to_string(), "foo.rue".to_string()];
+    fn test_find_ambiguity_both_forms() {
+        // Both "foo.rue" and "foo/_foo.rue" loaded: ambiguous, not a
+        // precedence question (callers raise E0708).
+        let paths = vec!["foo/_foo.rue".to_string(), "foo.rue".to_string()];
         let module = ModulePath::Simple {
             path: "foo".to_string(),
         };
-        assert_eq!(module.resolve(paths.iter()), Some("foo.rue".to_string()));
+        assert_eq!(
+            module.find_ambiguity(paths.iter()),
+            Some(("foo.rue".to_string(), "foo/_foo.rue".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_find_ambiguity_single_form_is_none() {
+        let paths = vec!["foo.rue".to_string()];
+        let module = ModulePath::Simple {
+            path: "foo".to_string(),
+        };
+        assert_eq!(module.find_ambiguity(paths.iter()), None);
     }
 
     #[test]

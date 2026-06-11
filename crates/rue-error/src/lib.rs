@@ -152,6 +152,7 @@ impl ErrorCode {
     pub const STD_LIB_NOT_FOUND: Self = Self(705);
     pub const PRIVATE_MEMBER_ACCESS: Self = Self(706);
     pub const UNKNOWN_MODULE_MEMBER: Self = Self(707);
+    pub const AMBIGUOUS_MODULE: Self = Self(708);
 
     // ========================================================================
     // Literal/operator errors (E0800-E0899)
@@ -780,6 +781,15 @@ fn format_array_length_mismatch(expected: u64, found: u64) -> String {
     }
 }
 
+/// Payload for [`ErrorKind::AmbiguousModule`], boxed to keep `ErrorKind`
+/// within its 64-byte size budget (three inline `String`s exceed it).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AmbiguousModuleData {
+    pub path: String,
+    pub file_module: String,
+    pub dir_module: String,
+}
+
 /// The kind of compilation error.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum ErrorKind {
@@ -1018,6 +1028,8 @@ pub enum ErrorKind {
         /// Candidates that were tried (for error message)
         candidates: Vec<String>,
     },
+    #[error("ambiguous module '{}': both '{}' and '{}' exist", .0.path, .0.file_module, .0.dir_module)]
+    AmbiguousModule(Box<AmbiguousModuleData>),
     #[error("standard library not found")]
     StdLibNotFound,
     #[error("{item_kind} `{name}` is private")]
@@ -1171,6 +1183,7 @@ impl ErrorKind {
             ErrorKind::IntrinsicTypeMismatch(_) => ErrorCode::INTRINSIC_TYPE_MISMATCH,
             ErrorKind::ImportRequiresStringLiteral => ErrorCode::IMPORT_REQUIRES_STRING_LITERAL,
             ErrorKind::ModuleNotFound { .. } => ErrorCode::MODULE_NOT_FOUND,
+            ErrorKind::AmbiguousModule { .. } => ErrorCode::AMBIGUOUS_MODULE,
             ErrorKind::StdLibNotFound => ErrorCode::STD_LIB_NOT_FOUND,
             ErrorKind::PrivateMemberAccess { .. } => ErrorCode::PRIVATE_MEMBER_ACCESS,
             ErrorKind::UnknownModuleMember { .. } => ErrorCode::UNKNOWN_MODULE_MEMBER,
