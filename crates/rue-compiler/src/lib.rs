@@ -154,7 +154,36 @@ impl Drop for TempLinkDir {
 
 /// The rue-runtime staticlib archive bytes, embedded at compile time.
 /// This is linked into every Rue executable.
+///
+/// NOTE: there is exactly one embedded archive and it is built for the
+/// *host* this compiler binary was built on. Linking an executable for any
+/// other target is therefore refused (see [`runtime_for_target`] and
+/// RUE-36 / ADR-0034) until per-target runtime archives are embedded.
 static RUNTIME_BYTES: &[u8] = include_bytes!("librue_runtime.a");
+
+/// Return the embedded rue-runtime archive for `target`, or a clear error
+/// if this compiler build doesn't carry a runtime for that target.
+///
+/// The build system embeds only the host-configuration staticlib, so any
+/// cross-target link would silently pull host machine code into the foreign
+/// binary (the original RUE-36 failure mode: an "AArch64" ELF whose entry
+/// point was x86-64 code). Refusing here turns that into an honest,
+/// actionable error while leaving cross-target code generation (`--emit
+/// asm`, `--emit mir`, ...) fully usable. ADR-0034 describes the full fix
+/// (per-target runtime archives selected at link time).
+fn runtime_for_target(target: Target) -> CompileResult<&'static [u8]> {
+    let host = Target::host();
+    if target == host {
+        Ok(RUNTIME_BYTES)
+    } else {
+        Err(CompileError::without_span(ErrorKind::LinkError(format!(
+            "cannot link an executable for {target}: this rue compiler was built for {host} \
+             and only embeds the {host} runtime library, so the result would not run on \
+             {target} (RUE-36). Cross-target code generation still works: use \
+             `--emit asm` to inspect {target} assembly.",
+        ))))
+    }
+}
 
 /// Validate that the embedded runtime archive is well-formed.
 ///
@@ -1178,6 +1207,10 @@ fn link_internal_with_warnings(
 ) -> MultiErrorResult<CompileOutput> {
     let _span = info_span!("linker", mode = "internal").entered();
 
+    // Refuse cross-target links up front: only the host runtime is embedded
+    // (RUE-36), and linking without a matching runtime is impossible.
+    let runtime_bytes = runtime_for_target(options.target).map_err(CompileErrors::from)?;
+
     let mut linker = Linker::new(options.target);
 
     // Add all object files to the linker
@@ -1206,7 +1239,7 @@ fn link_internal_with_warnings(
     linker.require_symbol(entry_point);
 
     // Add the runtime library
-    let runtime = Archive::parse(RUNTIME_BYTES)
+    let runtime = Archive::parse(runtime_bytes)
         .map_err(link_error)
         .map_err(CompileErrors::from)?;
     linker
@@ -1240,13 +1273,18 @@ fn link_system_with_warnings(
 ) -> MultiErrorResult<CompileOutput> {
     let _span = info_span!("linker", mode = "system", command = linker_cmd).entered();
 
+    // Refuse cross-target links up front: only the host runtime is embedded
+    // (RUE-36); a system linker would happily mix architectures (or fail
+    // with an opaque message), so catch it here with a clear error.
+    let runtime_bytes = runtime_for_target(options.target).map_err(CompileErrors::from)?;
+
     // Set up temporary directory with object files and runtime
     let mut temp_dir = TempLinkDir::new().map_err(CompileErrors::from)?;
     temp_dir
         .write_object_files(object_files)
         .map_err(CompileErrors::from)?;
     temp_dir
-        .write_runtime(RUNTIME_BYTES)
+        .write_runtime(runtime_bytes)
         .map_err(CompileErrors::from)?;
 
     // Build the linker command
@@ -1799,6 +1837,30 @@ mod tests {
     #[test]
     fn test_embedded_runtime_is_valid() {
         validate_runtime().expect("embedded runtime should be valid");
+    }
+
+    /// The embedded runtime is host-only (RUE-36 / ADR-0034): linking for
+    /// the host target must succeed; any other target must be refused with
+    /// an error that names both targets and points at `--emit asm`.
+    #[test]
+    fn test_runtime_only_available_for_host_target() {
+        assert!(runtime_for_target(Target::host()).is_ok());
+
+        for &target in Target::all() {
+            if target == Target::host() {
+                continue;
+            }
+            let err =
+                runtime_for_target(target).expect_err("cross-target link must be refused (RUE-36)");
+            let msg = err.to_string();
+            assert!(msg.contains(&target.to_string()), "names target: {msg}");
+            assert!(
+                msg.contains(&Target::host().to_string()),
+                "names host: {msg}"
+            );
+            assert!(msg.contains("RUE-36"), "references RUE-36: {msg}");
+            assert!(msg.contains("--emit asm"), "suggests --emit asm: {msg}");
+        }
     }
 
     #[test]

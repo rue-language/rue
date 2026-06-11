@@ -49,6 +49,9 @@
 //! - `known_bug = "RUE-NN"`: expected failure (xfail). The case runs; if it
 //!   fails, it is reported as ignored with the bug reference. If it PASSES,
 //!   the suite fails loudly so the marker gets removed when the bug is fixed.
+//! - `only_on = ["x86-64-linux", ...]`: run the case only on these hosts
+//!   (ignored elsewhere). For behavior that depends on the host platform,
+//!   e.g. whether `--target X` is a cross-compile or a native compile.
 //!
 //! # ICE detection
 //!
@@ -172,6 +175,12 @@ struct Case {
     /// test. Useful for ABI bugs that manifest differently per target.
     #[serde(default)]
     known_bug_on: Vec<String>,
+    /// Platforms this case runs on (e.g. ["x86-64-linux"]); elsewhere it is
+    /// reported as ignored. Empty means all platforms. Use when the expected
+    /// behavior itself depends on the host (e.g. `--target X` is a
+    /// cross-compile on some hosts and a native compile on others).
+    #[serde(default)]
+    only_on: Vec<String>,
     /// Skip this case entirely.
     #[serde(default)]
     skip: bool,
@@ -388,6 +397,19 @@ fn run_case_wrapper(
 ) -> Result<(), RunError> {
     if case.skip {
         return ctx.ignore_for("marked as skip");
+    }
+
+    // Host-dependent cases: only run on the listed platforms.
+    if !case.only_on.is_empty()
+        && !case
+            .only_on
+            .iter()
+            .any(|p| p == rue_test_runner::get_host_target())
+    {
+        return ctx.ignore_for(format!(
+            "not applicable on this host (only_on = {:?})",
+            case.only_on
+        ));
     }
 
     let result = run_case(case, rue_binary, real_std);

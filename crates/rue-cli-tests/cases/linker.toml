@@ -17,10 +17,13 @@ description = "Cross-compile and link-path behavior, including diagnostic cleanl
 # case and xfailed on the linux hosts:
 #   - macOS: aarch64-macos is the NATIVE target — it compiles & links cleanly,
 #     so this runs as a real regression test (DEBUG guard + successful compile).
-#   - linux (x86-64 / aarch64): aarch64-macos can't cross-link yet (RUE-85), so
-#     the compile fails. Marked known_bug RUE-85 on those platforms (xfail).
-#     When RUE-85 is fixed, drop `known_bug_on` and it becomes a real test on
-#     linux too.
+#   - linux (x86-64 / aarch64): aarch64-macos can't cross-link. Since the
+#     RUE-36 stopgap, the compile fails *by design* with the clear
+#     cross-target-runtime error (before that it failed deep in the Mach-O
+#     link path, RUE-85). Marked known_bug RUE-85 on those platforms (xfail).
+#     When cross-target runtimes land (RUE-36 / ADR-0034) and Mach-O
+#     cross-linking works (RUE-85), drop `known_bug_on` and this becomes a
+#     real test on linux too.
 [[case]]
 name = "aarch64_macos_link_no_debug_spew"
 files = [{ path = "main.rue", source = """
@@ -31,3 +34,100 @@ compile_only = true
 compile_stderr_not_contains = ["DEBUG"]
 known_bug = "RUE-85"
 known_bug_on = ["x86-64-linux", "aarch64-linux"]
+
+# ---------------------------------------------------------------------------
+# RUE-36 / ADR-0034: cross-target links are refused with a clear error.
+#
+# The compiler embeds exactly one rue-runtime staticlib, built for the HOST.
+# Before the stopgap, `--target <foreign>` happily linked host x86-64 machine
+# code into an "AArch64" ELF (objdump-verified) and reported success. Now the
+# driver refuses at link time with an error that names both targets, cites
+# RUE-36, and points the user at `--emit asm` (which still works for every
+# target on every host).
+#
+# Whether a given `--target` is foreign depends on the host, so each refusal
+# case is scoped with `only_on` to the hosts where the target is a true
+# cross-compile. When per-target runtimes land (ADR-0034), these flip into
+# "cross-compile succeeds and the ELF machine field is correct" cases.
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "cross_link_to_aarch64_linux_refused"
+description = "On non-aarch64-linux hosts, --target aarch64-linux must fail clearly instead of emitting an ELF with host machine code (RUE-36)."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 { 0 }
+""" }]
+args = ["main.rue", "--target", "aarch64-linux", "-o", "prog"]
+compile_fail = true
+error_contains = [
+    "cannot link an executable for aarch64-linux",
+    "only embeds",
+    "runtime library",
+    "RUE-36",
+    "--emit asm",
+]
+only_on = ["x86-64-linux", "aarch64-macos"]
+
+[[case]]
+name = "cross_link_to_x86_64_linux_refused"
+description = "On aarch64 hosts, --target x86-64-linux must fail clearly instead of emitting an ELF with host machine code (RUE-36)."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 { 0 }
+""" }]
+args = ["main.rue", "--target", "x86-64-linux", "-o", "prog"]
+compile_fail = true
+error_contains = [
+    "cannot link an executable for x86-64-linux",
+    "only embeds",
+    "runtime library",
+    "RUE-36",
+    "--emit asm",
+]
+only_on = ["aarch64-linux", "aarch64-macos"]
+
+[[case]]
+name = "cross_link_to_aarch64_macos_refused"
+description = "On linux hosts, --target aarch64-macos must fail with the RUE-36 cross-target-runtime error (not a deep Mach-O link failure)."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 { 0 }
+""" }]
+args = ["main.rue", "--target", "aarch64-macos", "-o", "prog"]
+compile_fail = true
+error_contains = [
+    "cannot link an executable for aarch64-macos",
+    "only embeds",
+    "runtime library",
+    "RUE-36",
+    "--emit asm",
+]
+only_on = ["x86-64-linux", "aarch64-linux"]
+
+# Cross-target CODEGEN must keep working everywhere: --emit asm doesn't link,
+# so it must not be affected by the RUE-36 refusal. These run on every host
+# (on the matching host they're a native emit, which must also work).
+[[case]]
+name = "emit_asm_for_aarch64_linux_works_everywhere"
+description = "--emit asm --target aarch64-linux prints aarch64 assembly on any host (no link, no RUE-36 refusal)."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 { 42 }
+""" }]
+args = ["--emit", "asm", "--target", "aarch64-linux", "main.rue"]
+compile_only = true
+compile_stdout_contains = [
+    "=== Assembly (aarch64-linux) ===",
+    "stp x29, x30",
+    "bl __rue_exit",
+]
+
+[[case]]
+name = "emit_asm_for_x86_64_linux_works_everywhere"
+description = "--emit asm --target x86-64-linux prints x86-64 assembly on any host (no link, no RUE-36 refusal)."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 { 42 }
+""" }]
+args = ["--emit", "asm", "--target", "x86-64-linux", "main.rue"]
+compile_only = true
+compile_stdout_contains = [
+    "=== Assembly (x86-64-linux) ===",
+    "call __rue_exit",
+]
