@@ -1,0 +1,337 @@
+# Assignment-overwrite drops (RUE-64) and statement-temporary drops
+# (RUE-65, RUE-66).
+#
+# Every assignment used to re-arm the destination's drop flag but never drop
+# the value being overwritten — `d = D{2}` leaked the old `D{1}` — and
+# discarded expression-statement results (`D{77};`, `make();`, `let _ = …`)
+# were never dropped at all. Assignment now follows Rust order: evaluate the
+# RHS, drop the destination's old value, store the new one; discarded
+# statement results drop at the end of their statement. All cases pin the
+# EXACT drop order via stdout.
+
+[section]
+id = "cli.overwrite_drops"
+name = "Overwrite and temporary drops"
+description = "Old values drop at assignment; discarded temporaries drop at statement end."
+
+# =============================================================================
+# RUE-64: the overwrite matrix
+# =============================================================================
+
+[[case]]
+name = "var_reassignment_drops_old_value"
+description = "d = D{2} drops the old D{1} after the RHS is built, before the store."
+files = [{ path = "main.rue", source = """
+struct D { v: i32 }
+drop fn D(self) { @dbg(self.v); }
+fn main() -> i32 {
+    let mut d = D { v: 1 };
+    d = D { v: 2 };
+    @dbg(100);
+    0
+}
+""" }]
+stdout = "1\n100\n2\n"
+
+[[case]]
+name = "field_assignment_drops_old_value"
+description = "b.f = D{2} drops the old field value."
+files = [{ path = "main.rue", source = """
+struct D { v: i32 }
+drop fn D(self) { @dbg(self.v); }
+struct B { f: D }
+fn main() -> i32 {
+    let mut b = B { f: D { v: 1 } };
+    b.f = D { v: 2 };
+    @dbg(100);
+    0
+}
+""" }]
+stdout = "1\n100\n2\n"
+
+[[case]]
+name = "element_assignment_drops_old_value"
+description = "arr[0] = D{10} drops the overwritten element; scope exit drops the rest."
+files = [{ path = "main.rue", source = """
+struct D { v: i32 }
+drop fn D(self) { @dbg(self.v); }
+fn main() -> i32 {
+    let mut arr = [D { v: 1 }, D { v: 2 }];
+    arr[0] = D { v: 10 };
+    @dbg(100);
+    0
+}
+""" }]
+stdout = "1\n100\n10\n2\n"
+
+[[case]]
+name = "inout_param_reassignment_drops_old_value"
+description = "Reassigning an inout param inside the callee drops the caller's old value."
+files = [{ path = "main.rue", source = """
+struct D { v: i32 }
+drop fn D(self) { @dbg(self.v); }
+fn replace(inout d: D) {
+    d = D { v: 99 };
+}
+fn main() -> i32 {
+    let mut d = D { v: 1 };
+    replace(inout d);
+    @dbg(100);
+    0
+}
+""" }]
+stdout = "1\n100\n99\n"
+
+[[case]]
+name = "reassignment_in_loop_drops_each_old_value"
+description = "Every loop-iteration store drops the previous occupant exactly once."
+files = [{ path = "main.rue", source = """
+struct D { v: i32 }
+drop fn D(self) { @dbg(self.v); }
+fn main() -> i32 {
+    let mut d = D { v: 1 };
+    let mut i = 0;
+    while i < 2 {
+        d = D { v: 10 + i };
+        i = i + 1;
+    }
+    @dbg(100);
+    0
+}
+""" }]
+stdout = "1\n10\n100\n11\n"
+
+# =============================================================================
+# RUE-64: no double drops where the RHS or a branch already consumed the value
+# =============================================================================
+
+[[case]]
+name = "self_move_assignment_no_double_drop"
+description = "d = bump(d): the RHS moves d out, so the assignment drops nothing (only bump's by-value param drop runs)."
+files = [{ path = "main.rue", source = """
+struct D { v: i32 }
+drop fn D(self) { @dbg(self.v); }
+fn bump(d: D) -> D { D { v: d.v + 10 } }
+fn main() -> i32 {
+    let mut d = D { v: 1 };
+    d = bump(d);
+    @dbg(100);
+    0
+}
+""" }]
+stdout = "1\n100\n11\n"
+
+[[case]]
+name = "assignment_after_full_move_drops_nothing"
+description = "After consume(d), the slot is empty: reassignment drops only at the next owner."
+files = [{ path = "main.rue", source = """
+struct D { v: i32 }
+drop fn D(self) { @dbg(self.v); }
+fn consume(d: D) -> i32 { d.v }
+fn main() -> i32 {
+    let mut d = D { v: 1 };
+    consume(d);
+    d = D { v: 2 };
+    @dbg(100);
+    0
+}
+""" }]
+stdout = "1\n100\n2\n"
+
+[[case]]
+name = "branch_divergent_move_then_assignment_guarded"
+description = "Conditionally moved value: the overwrite drop is guarded by the runtime drop flag — exactly one old-value drop on each path."
+files = [{ path = "main.rue", source = """
+struct D { v: i32 }
+drop fn D(self) { @dbg(self.v); }
+fn consume(d: D) -> i32 { d.v }
+fn run(c: i32) -> i32 {
+    let mut d = D { v: 1 };
+    if c == 1 { consume(d); }
+    d = D { v: 2 };
+    @dbg(100);
+    0
+}
+fn main() -> i32 {
+    run(1);
+    @dbg(500);
+    run(0);
+    0
+}
+""" }]
+stdout = "1\n100\n2\n500\n1\n100\n2\n"
+
+[[case]]
+name = "partially_moved_struct_overwrite_drops_remaining_fields"
+description = "Whole-struct overwrite after a field move drops only the still-owned fields of the old value (RUE-62 interaction)."
+files = [{ path = "main.rue", source = """
+struct D { v: i32 }
+drop fn D(self) { @dbg(self.v); }
+struct B { f: D, g: D }
+fn eat(d: D) -> i32 { d.v }
+fn main() -> i32 {
+    let mut b = B { f: D { v: 1 }, g: D { v: 2 } };
+    eat(b.f);
+    b = B { f: D { v: 3 }, g: D { v: 4 } };
+    @dbg(100);
+    0
+}
+""" }]
+stdout = "1\n2\n100\n3\n4\n"
+
+# =============================================================================
+# RUE-65/RUE-66: discarded temporaries
+# =============================================================================
+
+[[case]]
+name = "bare_struct_literal_statement_drops"
+description = "An unbound droppable literal drops at the end of its statement."
+files = [{ path = "main.rue", source = """
+struct D { v: i32 }
+drop fn D(self) { @dbg(self.v); }
+fn main() -> i32 {
+    D { v: 77 };
+    @dbg(100);
+    0
+}
+""" }]
+stdout = "77\n100\n"
+
+[[case]]
+name = "temporary_forwarded_into_call_drops_in_callee"
+description = "consume(D{77}) is NOT a statement temporary: the callee owns and drops its by-value argument exactly once."
+files = [{ path = "main.rue", source = """
+struct D { v: i32 }
+drop fn D(self) { @dbg(self.v); }
+fn consume(d: D) -> i32 { d.v }
+fn main() -> i32 {
+    consume(D { v: 77 });
+    @dbg(100);
+    0
+}
+""" }]
+stdout = "77\n100\n"
+
+[[case]]
+name = "discarded_call_result_drops"
+description = "A droppable call result used as a statement drops at statement end."
+files = [{ path = "main.rue", source = """
+struct D { v: i32 }
+drop fn D(self) { @dbg(self.v); }
+fn make() -> D { D { v: 44 } }
+fn main() -> i32 {
+    make();
+    @dbg(100);
+    0
+}
+""" }]
+stdout = "44\n100\n"
+
+[[case]]
+name = "discarded_if_result_drops"
+description = "A discarded if/else result drops at statement end."
+files = [{ path = "main.rue", source = """
+struct D { v: i32 }
+drop fn D(self) { @dbg(self.v); }
+fn pick(c: bool) -> i32 {
+    if c { D { v: 5 } } else { D { v: 6 } };
+    @dbg(100);
+    0
+}
+fn main() -> i32 {
+    pick(true);
+    pick(false);
+    0
+}
+""" }]
+stdout = "5\n100\n6\n100\n"
+
+[[case]]
+name = "let_underscore_drops_immediately"
+description = "let _ = value binds nothing and drops the value at the end of the statement."
+files = [{ path = "main.rue", source = """
+struct D { v: i32 }
+drop fn D(self) { @dbg(self.v); }
+fn main() -> i32 {
+    let _ = D { v: 88 };
+    @dbg(100);
+    0
+}
+""" }]
+stdout = "88\n100\n"
+
+[[case]]
+name = "bare_variable_statement_moves_and_drops"
+description = "`d;` moves d into a statement temporary, which drops there; no second drop at scope exit."
+files = [{ path = "main.rue", source = """
+struct D { v: i32 }
+drop fn D(self) { @dbg(self.v); }
+fn main() -> i32 {
+    let d = D { v: 9 };
+    d;
+    @dbg(100);
+    0
+}
+""" }]
+stdout = "9\n100\n"
+
+[[case]]
+name = "bare_field_statement_moves_field_and_drops"
+description = "`b.f;` partially moves the field into a dropped temporary; scope exit drops only the remaining field."
+files = [{ path = "main.rue", source = """
+struct D { v: i32 }
+drop fn D(self) { @dbg(self.v); }
+struct B { f: D, g: D }
+fn main() -> i32 {
+    let b = B { f: D { v: 1 }, g: D { v: 2 } };
+    b.f;
+    @dbg(100);
+    0
+}
+""" }]
+stdout = "1\n100\n2\n"
+
+# Interaction of per-field drop flags (RUE-156) with overwrite drops
+# (RUE-64): a field moved on only SOME paths must not be re-dropped by the
+# reassignment on the paths where it was moved, and must be dropped on the
+# paths where it wasn't. The reassignment re-arms the field's flag either
+# way, so the new value drops at scope exit exactly once.
+[[case]]
+name = "conditional_field_move_then_reassign_taken"
+files = [{ path = "main.rue", source = """
+struct Inner { x: i32 }
+struct S { a: Inner, b: Inner }
+drop fn Inner(self) { @dbg(self.x); }
+fn take(i: Inner) -> i32 { i.x }
+fn main() -> i32 {
+    let mut s = S { a: Inner { x: 1 }, b: Inner { x: 2 } };
+    let c = true;
+    if c {
+        take(s.a);
+    }
+    s.a = Inner { x: 9 };
+    @dbg(100);
+    0
+}
+""" }]
+stdout = "1\n100\n9\n2\n"
+
+[[case]]
+name = "conditional_field_move_then_reassign_not_taken"
+files = [{ path = "main.rue", source = """
+struct Inner { x: i32 }
+struct S { a: Inner, b: Inner }
+drop fn Inner(self) { @dbg(self.x); }
+fn take(i: Inner) -> i32 { i.x }
+fn main() -> i32 {
+    let mut s = S { a: Inner { x: 1 }, b: Inner { x: 2 } };
+    let c = false;
+    if c {
+        take(s.a);
+    }
+    s.a = Inner { x: 9 };
+    @dbg(100);
+    0
+}
+""" }]
+stdout = "1\n100\n9\n2\n"
