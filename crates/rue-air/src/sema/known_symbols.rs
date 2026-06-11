@@ -64,10 +64,6 @@ pub struct KnownSymbols {
     pub random_u64: Spur,
 
     // Type intrinsics
-    /// The `size_of` type intrinsic symbol.
-    pub size_of: Spur,
-    /// The `align_of` type intrinsic symbol.
-    pub align_of: Spur,
 
     // Pointer intrinsics (require unchecked block)
     /// The `ptr_read` intrinsic symbol - reads value through pointer.
@@ -92,14 +88,9 @@ pub struct KnownSymbols {
     pub target_arch: Spur,
     /// The `target_os` intrinsic symbol - returns target operating system.
     pub target_os: Spur,
-
     // Builtin type names
-    /// The `String` type name symbol.
-    pub string_type: Spur,
 
     // Special function names
-    /// The `main` function name symbol.
-    pub main_fn: Spur,
 }
 
 impl KnownSymbols {
@@ -125,8 +116,6 @@ impl KnownSymbols {
             random_u64: interner.get_or_intern_static("random_u64"),
 
             // Type intrinsics
-            size_of: interner.get_or_intern_static("size_of"),
-            align_of: interner.get_or_intern_static("align_of"),
 
             // Pointer intrinsics
             ptr_read: interner.get_or_intern_static("ptr_read"),
@@ -141,12 +130,9 @@ impl KnownSymbols {
             // Target platform intrinsics
             target_arch: interner.get_or_intern_static("target_arch"),
             target_os: interner.get_or_intern_static("target_os"),
-
             // Builtin type names
-            string_type: interner.get_or_intern_static("String"),
 
             // Special function names
-            main_fn: interner.get_or_intern_static("main"),
         }
     }
 
@@ -195,8 +181,6 @@ mod tests {
         assert_eq!(interner.resolve(&known.import), "import");
         assert_eq!(interner.resolve(&known.random_u32), "random_u32");
         assert_eq!(interner.resolve(&known.random_u64), "random_u64");
-        assert_eq!(interner.resolve(&known.size_of), "size_of");
-        assert_eq!(interner.resolve(&known.align_of), "align_of");
         assert_eq!(interner.resolve(&known.ptr_read), "ptr_read");
         assert_eq!(interner.resolve(&known.ptr_write), "ptr_write");
         assert_eq!(interner.resolve(&known.ptr_offset), "ptr_offset");
@@ -207,8 +191,6 @@ mod tests {
         assert_eq!(interner.resolve(&known.syscall), "syscall");
         assert_eq!(interner.resolve(&known.target_arch), "target_arch");
         assert_eq!(interner.resolve(&known.target_os), "target_os");
-        assert_eq!(interner.resolve(&known.string_type), "String");
-        assert_eq!(interner.resolve(&known.main_fn), "main");
     }
 
     #[test]
@@ -219,9 +201,6 @@ mod tests {
         // Interning the same string should return the same Spur
         let dbg_sym = interner.get_or_intern("dbg");
         assert_eq!(dbg_sym, known.dbg);
-
-        let main_sym = interner.get_or_intern("main");
-        assert_eq!(main_sym, known.main_fn);
     }
 
     #[test]
