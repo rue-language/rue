@@ -1,19 +1,10 @@
-rust_binary(
-    name = "rue-cli-tests",
-    srcs = glob(["src/**/*.rs"]),
-    deps = [
-        "//crates/rue-test-runner:rue-test-runner",
-        "//third-party:libtest2-mimic",
-        "//third-party:serde",
-        "//third-party:tempfile",
-        "//third-party:toml",
-    ],
-    visibility = ["PUBLIC"],
-)
+load("//crates:defs.bzl", "rue_binary")
 
-rust_test(
-    name = "rue-cli-tests-test",
-    srcs = glob(["src/**/*.rs"]),
+# tests = False: this binary IS the CLI integration test harness; its sources
+# contain no #[test] functions, so a rust_test target would be empty.
+rue_binary(
+    name = "rue-cli-tests",
+    tests = False,
     deps = [
         "//crates/rue-test-runner:rue-test-runner",
         "//third-party:libtest2-mimic",

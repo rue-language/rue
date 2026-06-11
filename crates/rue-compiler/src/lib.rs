@@ -1547,19 +1547,16 @@ impl Mir {
 pub fn generate_mir(
     cfg: &Cfg,
     type_pool: &TypeInternPool,
-    strings: &[String],
     interner: &ThreadedRodeo,
     target: Target,
 ) -> Mir {
     match target.arch() {
         Arch::X86_64 => {
-            let mir = rue_codegen::x86_64::CfgLower::new(cfg, type_pool, strings, interner).lower();
+            let mir = rue_codegen::x86_64::CfgLower::new(cfg, type_pool, interner).lower();
             Mir::X86_64(mir)
         }
         Arch::Aarch64 => {
-            let mir =
-                rue_codegen::aarch64::CfgLower::new(cfg, type_pool, strings, interner, target)
-                    .lower();
+            let mir = rue_codegen::aarch64::CfgLower::new(cfg, type_pool, interner, target).lower();
             Mir::Aarch64(mir)
         }
     }
@@ -1572,7 +1569,6 @@ pub fn generate_mir(
 pub fn generate_allocated_mir(
     cfg: &Cfg,
     type_pool: &TypeInternPool,
-    strings: &[String],
     interner: &ThreadedRodeo,
     target: Target,
 ) -> CompileResult<Mir> {
@@ -1583,7 +1579,7 @@ pub fn generate_allocated_mir(
     match target.arch() {
         Arch::X86_64 => {
             // Lower CFG to X86Mir with virtual registers
-            let mir = rue_codegen::x86_64::CfgLower::new(cfg, type_pool, strings, interner).lower();
+            let mir = rue_codegen::x86_64::CfgLower::new(cfg, type_pool, interner).lower();
 
             // Allocate physical registers
             let (mir, _num_spills, _used_callee_saved) =
@@ -1593,9 +1589,7 @@ pub fn generate_allocated_mir(
         }
         Arch::Aarch64 => {
             // Lower CFG to Aarch64Mir with virtual registers
-            let mir =
-                rue_codegen::aarch64::CfgLower::new(cfg, type_pool, strings, interner, target)
-                    .lower();
+            let mir = rue_codegen::aarch64::CfgLower::new(cfg, type_pool, interner, target).lower();
 
             // Allocate physical registers
             let (mir, _num_spills, _used_callee_saved) =
@@ -1615,19 +1609,16 @@ pub fn generate_allocated_mir(
 pub fn generate_liveness_info(
     cfg: &Cfg,
     type_pool: &TypeInternPool,
-    strings: &[String],
     interner: &ThreadedRodeo,
     target: Target,
 ) -> rue_codegen::LivenessDebugInfo {
     match target.arch() {
         Arch::X86_64 => {
-            let mir = rue_codegen::x86_64::CfgLower::new(cfg, type_pool, strings, interner).lower();
+            let mir = rue_codegen::x86_64::CfgLower::new(cfg, type_pool, interner).lower();
             rue_codegen::x86_64::liveness::analyze_debug(&mir)
         }
         Arch::Aarch64 => {
-            let mir =
-                rue_codegen::aarch64::CfgLower::new(cfg, type_pool, strings, interner, target)
-                    .lower();
+            let mir = rue_codegen::aarch64::CfgLower::new(cfg, type_pool, interner, target).lower();
             rue_codegen::aarch64::liveness::analyze_debug(&mir)
         }
     }
@@ -1642,20 +1633,18 @@ pub fn generate_liveness_info(
 pub fn generate_lowering_info(
     cfg: &Cfg,
     type_pool: &TypeInternPool,
-    strings: &[String],
     interner: &ThreadedRodeo,
     target: Target,
 ) -> rue_codegen::LoweringDebugInfo {
     match target.arch() {
         Arch::X86_64 => {
             let (_mir, debug_info) =
-                rue_codegen::x86_64::CfgLower::new(cfg, type_pool, strings, interner)
-                    .lower_with_debug();
+                rue_codegen::x86_64::CfgLower::new(cfg, type_pool, interner).lower_with_debug();
             debug_info
         }
         Arch::Aarch64 => {
             let (_mir, debug_info) =
-                rue_codegen::aarch64::CfgLower::new(cfg, type_pool, strings, interner, target)
+                rue_codegen::aarch64::CfgLower::new(cfg, type_pool, interner, target)
                     .lower_with_debug();
             debug_info
         }
@@ -1699,20 +1688,17 @@ pub fn generate_emitted_asm(
 pub fn generate_regalloc_info(
     cfg: &Cfg,
     type_pool: &TypeInternPool,
-    strings: &[String],
     interner: &ThreadedRodeo,
     target: Target,
 ) -> CompileResult<String> {
     match target.arch() {
         Arch::X86_64 => {
-            let debug_info =
-                rue_codegen::x86_64::generate_regalloc_info(cfg, type_pool, strings, interner)?;
+            let debug_info = rue_codegen::x86_64::generate_regalloc_info(cfg, type_pool, interner)?;
             Ok(debug_info.to_string())
         }
         Arch::Aarch64 => {
-            let debug_info = rue_codegen::aarch64::generate_regalloc_info(
-                cfg, type_pool, strings, interner, target,
-            )?;
+            let debug_info =
+                rue_codegen::aarch64::generate_regalloc_info(cfg, type_pool, interner, target)?;
             Ok(debug_info.to_string())
         }
     }

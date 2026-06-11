@@ -64,7 +64,7 @@
 
 use std::collections::HashMap;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
 
 use libtest2_mimic::{Harness, RunContext, RunError, Trial};

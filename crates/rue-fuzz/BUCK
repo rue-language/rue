@@ -1,23 +1,7 @@
-rust_binary(
-    name = "rue-fuzz",
-    srcs = glob(["src/**/*.rs"]),
-    rustc_flags = ["-Dwarnings"],
-    deps = [
-        "//crates/rue-codegen:rue-codegen",
-        "//crates/rue-compiler:rue-compiler",
-        "//crates/rue-lexer:rue-lexer",
-        "//crates/rue-parser:rue-parser",
-        "//third-party:anyhow",
-        "//third-party:proptest",
-        "//third-party:rayon",
-    ],
-    visibility = ["PUBLIC"],
-)
+load("//crates:defs.bzl", "rue_binary")
 
-rust_test(
-    name = "rue-fuzz-test",
-    srcs = glob(["src/**/*.rs"]),
-    rustc_flags = ["-Dwarnings"],
+rue_binary(
+    name = "rue-fuzz",
     deps = [
         "//crates/rue-codegen:rue-codegen",
         "//crates/rue-compiler:rue-compiler",
@@ -25,6 +9,5 @@ rust_test(
         "//crates/rue-parser:rue-parser",
         "//third-party:anyhow",
         "//third-party:proptest",
-        "//third-party:rayon",
     ],
 )

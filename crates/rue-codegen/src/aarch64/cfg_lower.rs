@@ -51,8 +51,6 @@ pub(super) const RET_REGS: [Reg; 8] = [
 pub struct CfgLower<'a> {
     /// Shared context with type helpers and chain tracing.
     ctx: CfgLowerContext<'a>,
-    /// String table from semantic analysis (indexed by StringId).
-    strings: &'a [String],
     /// Interner for resolving Spur to string
     interner: &'a ThreadedRodeo,
     /// Target platform (needed for syscall ABI differences between Linux/macOS).
@@ -77,7 +75,6 @@ impl<'a> CfgLower<'a> {
     pub fn new(
         cfg: &'a Cfg,
         type_pool: &'a TypeInternPool,
-        strings: &'a [String],
         interner: &'a ThreadedRodeo,
         target: Target,
     ) -> Self {
@@ -95,7 +92,6 @@ impl<'a> CfgLower<'a> {
 
         Self {
             ctx: CfgLowerContext::new(cfg, type_pool),
-            strings,
             interner,
             target,
             mir: Aarch64Mir::new(),
@@ -4178,8 +4174,7 @@ impl crate::agg_slots::SlotBackend for CfgLower<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lasso::ThreadedRodeo;
-    use rue_air::{ArrayTypeId, Sema};
+    use rue_air::Sema;
     use rue_cfg::CfgBuilder;
     use rue_error::PreviewFeatures;
     use rue_lexer::Lexer;
@@ -4200,7 +4195,6 @@ mod tests {
 
         let func = &output.functions[0];
         let type_pool = &output.type_pool;
-        let strings = &output.strings;
         let cfg_output = CfgBuilder::build(
             &func.air,
             func.num_locals,
@@ -4212,14 +4206,7 @@ mod tests {
         );
 
         // Use host target for tests
-        CfgLower::new(
-            &cfg_output.cfg,
-            type_pool,
-            strings,
-            &interner,
-            Target::host(),
-        )
-        .lower()
+        CfgLower::new(&cfg_output.cfg, type_pool, &interner, Target::host()).lower()
     }
 
     #[test]

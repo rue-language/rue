@@ -1,10 +1,5 @@
-rust_library(
-    name = "rue-span",
-    srcs = glob(["src/**/*.rs"]),
-    visibility = ["PUBLIC"],
-)
+load("//crates:defs.bzl", "rue_crate")
 
-rust_test(
-    name = "rue-span-test",
-    srcs = glob(["src/**/*.rs"]),
+rue_crate(
+    name = "rue-span",
 )

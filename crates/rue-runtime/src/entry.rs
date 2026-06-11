@@ -190,8 +190,8 @@ crate::define_for_all_platforms! {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    // Entry point tests would require process spawning, so we keep them minimal here.
-    // The main integration is tested via spec tests.
-}
+// No unit tests for this module: the `_start`/`_main` entry points and
+// `__rue_exit` cannot be exercised in-process (they require being the real
+// program entry point / terminate the process). They are covered end-to-end
+// by the spec and CLI integration suites, which run compiled Rue programs
+// and assert on their exit codes.

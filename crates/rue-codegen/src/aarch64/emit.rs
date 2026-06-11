@@ -60,7 +60,7 @@
 use rue_error::{CompileError, CompileResult, ErrorKind, ice_error};
 
 use super::mir::{Aarch64Inst, Aarch64Mir, BLOCK_LABEL_BASE, Cond, LabelId, Reg};
-use crate::{EmittedCode, EmittedInst, EmittedRelocation, end_inst};
+use crate::{EmittedCode, EmittedInst, EmittedRelocation};
 
 // ========== AArch64 Instruction Encoding Constants ==========
 //
@@ -260,11 +260,6 @@ struct LabelOffsets {
 }
 
 impl LabelOffsets {
-    /// Create a new empty label offset map.
-    fn new() -> Self {
-        Self::default()
-    }
-
     /// Create a new label offset map with pre-allocated capacity.
     ///
     /// - `inline_capacity`: Expected number of inline labels (overflow checks, etc.)

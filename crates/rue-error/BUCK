@@ -1,16 +1,7 @@
-rust_library(
-    name = "rue-error",
-    srcs = glob(["src/**/*.rs"]),
-    deps = [
-        "//crates/rue-span:rue-span",
-        "//third-party:thiserror",
-    ],
-    visibility = ["PUBLIC"],
-)
+load("//crates:defs.bzl", "rue_crate")
 
-rust_test(
-    name = "rue-error-test",
-    srcs = glob(["src/**/*.rs"]),
+rue_crate(
+    name = "rue-error",
     deps = [
         "//crates/rue-span:rue-span",
         "//third-party:thiserror",

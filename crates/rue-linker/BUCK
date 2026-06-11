@@ -1,16 +1,7 @@
-rust_library(
-    name = "rue-linker",
-    srcs = glob(["src/**/*.rs"]),
-    deps = [
-        "//crates/rue-target:rue-target",
-        "//third-party:tracing",
-    ],
-    visibility = ["PUBLIC"],
-)
+load("//crates:defs.bzl", "rue_crate")
 
-rust_test(
-    name = "rue-linker-test",
-    srcs = glob(["src/**/*.rs"]),
+rue_crate(
+    name = "rue-linker",
     deps = [
         "//crates/rue-target:rue-target",
         "//third-party:tracing",

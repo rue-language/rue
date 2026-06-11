@@ -1,23 +1,10 @@
-rust_binary(
-    name = "rue-spec",
-    srcs = glob(["src/**/*.rs"]),
-    deps = [
-        "//crates/rue-test-runner:rue-test-runner",
-        "//third-party:libtest2-mimic",
-        "//third-party:serde",
-        "//third-party:tempfile",
-        "//third-party:toml",
-    ],
-    visibility = ["PUBLIC"],
-)
+load("//crates:defs.bzl", "rue_binary")
 
-rust_test(
-    name = "rue-spec-test",
-    srcs = glob(["src/**/*.rs"]),
+rue_binary(
+    name = "rue-spec",
     deps = [
         "//crates/rue-test-runner:rue-test-runner",
         "//third-party:libtest2-mimic",
-        "//third-party:serde",
         "//third-party:tempfile",
         "//third-party:toml",
     ],

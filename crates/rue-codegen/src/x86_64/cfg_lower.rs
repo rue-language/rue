@@ -29,7 +29,7 @@ use std::collections::HashMap;
 
 use lasso::ThreadedRodeo;
 use rue_air::{StructId, TypeInternPool, TypeKind};
-use rue_builtins::{BinOp, get_builtin_type};
+use rue_builtins::BinOp;
 use rue_cfg::{
     BasicBlock, BlockId, Cfg, CfgInstData, CfgValue, Place, PlaceBase, Projection, Terminator, Type,
 };
@@ -56,8 +56,6 @@ pub(super) const RET_REGS: [Reg; 6] = [Reg::Rax, Reg::Rdx, Reg::Rcx, Reg::R8, Re
 pub struct CfgLower<'a> {
     /// Shared context with type helpers and chain tracing.
     ctx: CfgLowerContext<'a>,
-    /// String table from semantic analysis (indexed by StringId).
-    strings: &'a [String],
     /// Interner for resolving Spur to string
     interner: &'a ThreadedRodeo,
     mir: X86Mir,
@@ -82,12 +80,7 @@ pub struct CfgLower<'a> {
 
 impl<'a> CfgLower<'a> {
     /// Create a new CFG lowering pass.
-    pub fn new(
-        cfg: &'a Cfg,
-        type_pool: &'a TypeInternPool,
-        strings: &'a [String],
-        interner: &'a ThreadedRodeo,
-    ) -> Self {
+    pub fn new(cfg: &'a Cfg, type_pool: &'a TypeInternPool, interner: &'a ThreadedRodeo) -> Self {
         let num_params = cfg.num_params();
 
         // Pre-calculate capacity hints to reduce HashMap reallocations
@@ -102,7 +95,6 @@ impl<'a> CfgLower<'a> {
 
         Self {
             ctx: CfgLowerContext::new(cfg, type_pool),
-            strings,
             interner,
             mir: X86Mir::new(),
             value_map: HashMap::with_capacity(num_values),
@@ -4149,8 +4141,7 @@ impl crate::agg_slots::SlotBackend for CfgLower<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lasso::ThreadedRodeo;
-    use rue_air::{ArrayTypeId, Sema};
+    use rue_air::Sema;
     use rue_cfg::CfgBuilder;
     use rue_error::PreviewFeatures;
     use rue_lexer::Lexer;
@@ -4171,7 +4162,6 @@ mod tests {
 
         let func = &output.functions[0];
         let type_pool = &output.type_pool;
-        let strings = &output.strings;
         let cfg_output = CfgBuilder::build(
             &func.air,
             func.num_locals,
@@ -4182,7 +4172,7 @@ mod tests {
             &interner,
         );
 
-        CfgLower::new(&cfg_output.cfg, type_pool, strings, &interner).lower()
+        CfgLower::new(&cfg_output.cfg, type_pool, &interner).lower()
     }
 
     #[test]

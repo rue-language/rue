@@ -1,20 +1,7 @@
-rust_library(
-    name = "rue-test-runner",
-    srcs = glob(["src/**/*.rs"]),
-    rustc_flags = ["-Dwarnings"],
-    deps = [
-        "//crates/rue-error:rue-error",
-        "//third-party:serde",
-        "//third-party:tempfile",
-        "//third-party:toml",
-    ],
-    visibility = ["PUBLIC"],
-)
+load("//crates:defs.bzl", "rue_crate")
 
-rust_test(
-    name = "rue-test-runner-test",
-    srcs = glob(["src/**/*.rs"]),
-    rustc_flags = ["-Dwarnings"],
+rue_crate(
+    name = "rue-test-runner",
     deps = [
         "//crates/rue-error:rue-error",
         "//third-party:serde",

@@ -255,16 +255,15 @@ pub fn generate_stack_frame_info(
     cfg: &Cfg,
     function_name: &str,
     type_pool: &TypeInternPool,
-    strings: &[String],
     interner: &ThreadedRodeo,
     target: Target,
 ) -> CompileResult<StackFrameInfo> {
     match target.arch() {
         Arch::X86_64 => {
-            generate_x86_64_stack_frame(cfg, function_name, type_pool, strings, interner, target)
+            generate_x86_64_stack_frame(cfg, function_name, type_pool, interner, target)
         }
         Arch::Aarch64 => {
-            generate_aarch64_stack_frame(cfg, function_name, type_pool, strings, interner, target)
+            generate_aarch64_stack_frame(cfg, function_name, type_pool, interner, target)
         }
     }
 }
@@ -274,7 +273,6 @@ fn generate_x86_64_stack_frame(
     cfg: &Cfg,
     function_name: &str,
     type_pool: &TypeInternPool,
-    strings: &[String],
     interner: &ThreadedRodeo,
     target: Target,
 ) -> CompileResult<StackFrameInfo> {
@@ -288,7 +286,7 @@ fn generate_x86_64_stack_frame(
     let sret_slots = has_sret as u32;
 
     // Lower CFG to X86Mir with virtual registers
-    let mir = CfgLower::new(cfg, type_pool, strings, interner).lower();
+    let mir = CfgLower::new(cfg, type_pool, interner).lower();
 
     // Allocate physical registers (may add spill slots)
     let existing_slots = num_locals + num_params + sret_slots;
@@ -423,7 +421,6 @@ fn generate_aarch64_stack_frame(
     cfg: &Cfg,
     function_name: &str,
     type_pool: &TypeInternPool,
-    strings: &[String],
     interner: &ThreadedRodeo,
     target: Target,
 ) -> CompileResult<StackFrameInfo> {
@@ -437,7 +434,7 @@ fn generate_aarch64_stack_frame(
     let sret_slots = has_sret as u32;
 
     // Lower CFG to Aarch64Mir with virtual registers
-    let mir = CfgLower::new(cfg, type_pool, strings, interner, target).lower();
+    let mir = CfgLower::new(cfg, type_pool, interner, target).lower();
 
     // Allocate physical registers (may add spill slots)
     let existing_slots = num_locals + num_params + sret_slots;
@@ -628,8 +625,7 @@ mod tests {
         let (cfg, type_pool, interner) = create_simple_cfg();
         let target = Target::X86_64Linux;
 
-        let info =
-            generate_stack_frame_info(&cfg, "test", &type_pool, &[], &interner, target).unwrap();
+        let info = generate_stack_frame_info(&cfg, "test", &type_pool, &interner, target).unwrap();
 
         assert_eq!(info.function_name, "test");
         assert_eq!(info.alignment, 16);
