@@ -106,7 +106,19 @@ Bitwise operator precedence (highest to lowest within this group):
 
 {{ rule(id="4.3a:13", cat="normative") }}
 
-Shift operators have higher precedence than arithmetic operators. Bitwise AND, XOR, and OR have lower precedence than comparison operators.
+Rue uses the same operator precedence as Rust. Shift operators have lower precedence than the arithmetic operators, and the bitwise AND, XOR, and OR operators have higher precedence than the comparison operators. The complete binary operator precedence, from highest (binds tightest) to lowest:
+1. Unary `-`, `!`, `~`
+2. `*`, `/`, `%`
+3. `+`, `-`
+4. `<<`, `>>`
+5. `&`
+6. `^`
+7. `|`
+8. `==`, `!=`, `<`, `>`, `<=`, `>=`
+9. `&&`
+10. `||`
+
+For example, `a << b + c` parses as `a << (b + c)`, `a << b * c` parses as `a << (b * c)`, and `a & b == c` parses as `(a & b) == c`.
 
 {{ rule(id="4.3a:14", cat="normative") }}
 
