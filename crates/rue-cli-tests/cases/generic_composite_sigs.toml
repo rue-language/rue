@@ -1,0 +1,69 @@
+# Comptime type parameters inside composite signature types (RUE-172).
+#
+# `comptime T: type` used to work only as a *bare* signature type; `[T; N]`
+# or `ptr const T` in param/return position was rejected with E0204 unknown
+# type 'T'. The signature collector now defers any type mentioning a type
+# parameter to specialization, and the call-site/specialization resolvers
+# substitute recursively through composites.
+
+[section]
+id = "cli.generic_composite_sigs"
+name = "Generic composite signatures"
+description = "comptime T: type inside [T; N] / ptr T signature types (RUE-172)."
+
+[[case]]
+name = "array_of_t_param_and_return"
+description = "[T; N] works in parameter position and [T; 2] in return position; runs end-to-end."
+files = [{ path = "main.rue", source = """
+fn first(comptime T: type, a: [T; 2]) -> T { a[0] }
+fn pair(comptime T: type, x: T) -> [T; 2] { [x, x] }
+fn main() -> i32 {
+    let xs = [11, 22];
+    let p = pair(i32, 30);
+    let b = first(bool, [true, false]);
+    let mut r = first(i32, xs) + p[0];
+    if b { r = r + 1; }
+    r
+}
+""" }]
+exit_code = 42
+
+[[case]]
+name = "array_of_t_two_specializations"
+description = "The same composite-signature generic specializes for two different type arguments in one program."
+files = [{ path = "main.rue", source = """
+fn last(comptime T: type, a: [T; 3]) -> T { a[2] }
+fn main() -> i32 {
+    let ns = [1, 2, 40];
+    let bs = [false, false, true];
+    let n = last(i32, ns);
+    if last(bool, bs) { n + 2 } else { 0 }
+}
+""" }]
+exit_code = 42
+
+[[case]]
+name = "array_of_t_forwarded_type_param"
+description = "A forwarded type parameter reaches a nested generic with a composite signature."
+files = [{ path = "main.rue", source = """
+fn first(comptime T: type, a: [T; 2]) -> T { a[0] }
+fn outer(comptime T: type, a: [T; 2]) -> T { first(T, a) }
+fn main() -> i32 {
+    let xs = [7, 8];
+    outer(i32, xs)
+}
+""" }]
+exit_code = 7
+
+[[case]]
+name = "array_of_t_element_mismatch_rejected"
+description = "Passing [bool; 3] where [T; 3] with T=i32 is expected is a type error, not accepted or an ICE."
+files = [{ path = "main.rue", source = """
+fn first(comptime T: type, a: [T; 3]) -> T { a[0] }
+fn main() -> i32 {
+    let bs = [true, false, true];
+    first(i32, bs)
+}
+""" }]
+compile_fail = true
+error_contains = ["E0206", "type mismatch"]

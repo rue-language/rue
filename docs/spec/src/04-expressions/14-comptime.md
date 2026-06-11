@@ -96,6 +96,25 @@ fn main() -> i32 {
 
 When a function has a `comptime T: type` parameter, occurrences of `T` in parameter types and return types are substituted with the concrete type at each call site.
 
+{{ rule(id="4.14:16", cat="normative") }}
+
+A type parameter may appear anywhere within a composite parameter or return type — as an array element type (`[T; N]`), a pointer pointee (`ptr const T`, `ptr mut T`), or a nesting of these (`[[T; 2]; 3]`) — and is substituted recursively at each call site, in both parameter and return position.
+
+```rue
+fn first(comptime T: type, a: [T; 3]) -> T {
+    a[0]
+}
+
+fn pair(comptime T: type, x: T) -> [T; 2] {
+    [x, x]
+}
+
+fn main() -> i32 {
+    let xs = [10, 20, 30];
+    first(i32, xs) + pair(i32, 6)[0]  // 16
+}
+```
+
 {{ rule(id="4.14:6", cat="legality-rule") }}
 
 It is a compile-time error to pass a runtime value to a comptime parameter.

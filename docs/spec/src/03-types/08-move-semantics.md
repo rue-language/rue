@@ -194,6 +194,51 @@ fn main() -> i32 {
 }
 ```
 
+{{ rule(id="3.8:57", cat="normative") }}
+
+A type *carries a linear value* if it is a linear struct type, an array type whose element type carries a linear value, or a struct type with a field whose type carries a linear value. Pointer types do not carry a linear value (a pointer does not own its pointee).
+
+{{ rule(id="3.8:58", cat="normative") }}
+
+Linearity is infectious: a struct type that is not declared `linear` but has a field whose type carries a linear value is itself a linear type. If the containing struct could be implicitly dropped, the linear field would be silently dropped with it.
+
+{{ rule(id="3.8:59", cat="example") }}
+
+```rue
+linear struct MustUse { value: i32 }
+
+struct Wrap { m: MustUse }   // not declared linear, but linear by 3.8:58
+
+fn main() -> i32 {
+    let w = Wrap { m: MustUse { value: 1 } };  // ERROR: linear value 'w' dropped
+    0
+}
+```
+
+{{ rule(id="3.8:60", cat="legality-rule") }}
+
+It is a compile-time error for a field access that consumes a linear value (destructuring, 3.8:33) to implicitly drop a *different* field that carries a linear value. Every struct level along the access path is checked: at each level, all fields other than the accessed one are dropped by the destructure.
+
+{{ rule(id="3.8:61", cat="example") }}
+
+```rue
+linear struct MustUse { value: i32 }
+
+struct Container { inner: MustUse, tag: i32 }
+
+fn sink(m: MustUse) -> i32 { m.value }
+
+fn main() -> i32 {
+    let c = Container { inner: MustUse { value: 1 }, tag: 2 };
+    c.tag            // ERROR: would implicitly drop linear field 'inner'
+}
+
+fn ok() -> i32 {
+    let c = Container { inner: MustUse { value: 1 }, tag: 2 };
+    sink(c.inner)    // OK: extracts the linear field; 'tag' (non-linear) is dropped
+}
+```
+
 {{ rule(id="3.8:39", cat="informative") }}
 
 Linear types are useful for:

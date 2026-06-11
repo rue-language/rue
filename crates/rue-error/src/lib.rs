@@ -137,6 +137,8 @@ impl ErrorCode {
     // 458-459 are reserved by in-flight work.
     pub const PRIVATE_UNQUALIFIED_ACCESS: Self = Self(460);
     pub const CONST_INITIALIZER_CYCLE: Self = Self(461);
+    // 462-473 are reserved by in-flight work.
+    pub const LINEAR_FIELD_DROPPED_BY_DESTRUCTURE: Self = Self(474);
 
     // ========================================================================
     // Control flow errors (E0500-E0599)
@@ -275,6 +277,14 @@ pub struct CopyStructNonCopyFieldError {
     pub struct_name: String,
     pub field_name: String,
     pub field_type: String,
+}
+
+/// Payload for `ErrorKind::LinearFieldDroppedByDestructure`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinearFieldDroppedByDestructureError {
+    pub struct_name: String,
+    pub accessed: String,
+    pub dropped: String,
 }
 
 /// Payload for `ErrorKind::IntrinsicTypeMismatch`.
@@ -899,6 +909,15 @@ pub enum ErrorKind {
     /// Linear struct cannot be marked @copy
     #[error("linear struct '{0}' cannot be marked @copy")]
     LinearStructCopy(String),
+    /// Field access destructures a linear struct, implicitly dropping another
+    /// field that carries a linear value
+    #[error(
+        "accessing field '{accessed}' of linear struct '{struct_name}' would implicitly drop linear field '{dropped}'",
+        struct_name = .0.struct_name,
+        accessed = .0.accessed,
+        dropped = .0.dropped
+    )]
+    LinearFieldDroppedByDestructure(Box<LinearFieldDroppedByDestructureError>),
     /// @handle struct missing required .handle() method
     #[error("struct '{struct_name}' is marked @handle but has no `handle` method")]
     HandleStructMissingMethod { struct_name: String },
@@ -1196,6 +1215,9 @@ impl ErrorKind {
                 ErrorCode::LINEAR_VALUE_NOT_CONSUMED_ON_ALL_PATHS
             }
             ErrorKind::LinearStructCopy(_) => ErrorCode::LINEAR_STRUCT_COPY,
+            ErrorKind::LinearFieldDroppedByDestructure(_) => {
+                ErrorCode::LINEAR_FIELD_DROPPED_BY_DESTRUCTURE
+            }
             ErrorKind::HandleStructMissingMethod { .. } => ErrorCode::HANDLE_STRUCT_MISSING_METHOD,
             ErrorKind::HandleMethodWrongSignature { .. } => {
                 ErrorCode::HANDLE_METHOD_WRONG_SIGNATURE
