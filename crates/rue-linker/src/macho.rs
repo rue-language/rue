@@ -30,6 +30,21 @@ pub const PAGE_SIZE: u64 = 0x4000;
 /// Default VM base address for executables.
 pub const VM_BASE: u64 = 0x100000000;
 
+/// Computed file/VM layout for a dynamic executable — produced only by
+/// `compute_dynamic_layout` so relocation pre-pass and the actual build can
+/// never disagree.
+struct DynamicLayout {
+    text_file_offset: usize,
+    text_segment_file_size: usize,
+    has_data: bool,
+    data_file_offset: usize,
+    data_vm_addr: u64,
+    data_file_size: usize,
+    data_vm_size: u64,
+    linkedit_file_offset: usize,
+    linkedit_vm_addr: u64,
+}
+
 // =============================================================================
 // Load Command Trait
 // =============================================================================
@@ -728,21 +743,29 @@ impl MachOBuilder {
         buf
     }
 
-    /// Calculate the text file offset for a dynamic executable without building it.
+    /// The complete dynamic-executable layout, computed in ONE place.
     ///
-    /// This is needed to apply relocations before calling build_dynamic().
-    /// The calculation matches what build_dynamic() will produce.
-    pub fn calculate_text_file_offset_for_dynamic(&self) -> u64 {
+    /// `calculate_text_file_offset_for_dynamic` and `build_dynamic` used to
+    /// compute this independently and had drifted: the precompute counted ONE
+    /// data section where the builder counts up to three (__const, __data,
+    /// __bss), so with more than one data section every relocation was
+    /// patched against a text offset the binary didn't actually use.
+    /// (RUE-131; the drift is the same dual-implementation disease tracked
+    /// across the codebase.)
+    fn compute_dynamic_layout(&self) -> DynamicLayout {
         let has_data = !self.rodata.is_empty() || !self.data.is_empty() || self.bss_size > 0;
 
-        // Calculate initial load commands size (existing segments + dyld commands)
+        // Segment header + up to 3 sections (__const, __data, __bss)
         let data_segment_cmd_size = if has_data {
-            MACHO64_SEGMENT_CMD_SIZE + MACHO64_SECTION_SIZE
+            let num_sections = (!self.rodata.is_empty() as usize)
+                + (!self.data.is_empty() as usize)
+                + ((self.bss_size > 0) as usize);
+            MACHO64_SEGMENT_CMD_SIZE + MACHO64_SECTION_SIZE * num_sections
         } else {
             0
         };
 
-        let initial_cmd_size: usize = self
+        let existing_cmd_size: usize = self
             .segments
             .iter()
             .map(|s| s.cmdsize() as usize)
@@ -751,26 +774,91 @@ impl MachOBuilder {
                 .commands
                 .iter()
                 .map(|c: &Box<dyn LoadCommand>| c.cmdsize() as usize)
-                .sum::<usize>()
-            + data_segment_cmd_size;
+                .sum::<usize>();
 
-        // We'll add symtab, dysymtab, entry point, dylinker, and dylib
-        // LC_LOAD_DYLINKER for "/usr/lib/dyld" is 32 bytes
-        // LC_LOAD_DYLIB for "/usr/lib/libSystem.B.dylib" is 56 bytes
-        let dylinker_size = LoadDylinker::new().cmdsize() as usize;
-        let dylib_size = LoadDylib::libsystem().cmdsize() as usize;
-        let remaining_cmd_size = MACHO64_SYMTAB_CMD_SIZE
+        // build_dynamic adds a __LINKEDIT segment when one isn't present, so
+        // its header must be counted whether or not the caller pre-added it
+        // (the relocation pre-pass does, build_dynamic's own builder doesn't —
+        // counting it conditionally keeps the two layouts identical).
+        let linkedit_cmd_size = if self
+            .segments
+            .iter()
+            .any(|s| &s.segname[..10] == b"__LINKEDIT")
+        {
+            0
+        } else {
+            MACHO64_SEGMENT_CMD_SIZE
+        };
+
+        // Commands added during build: dylinker, dylib, symtab, dysymtab, entry
+        let added_cmd_size = LoadDylinker::new().cmdsize() as usize
+            + LoadDylib::libsystem().cmdsize() as usize
+            + MACHO64_SYMTAB_CMD_SIZE
             + MACHO64_DYSYMTAB_CMD_SIZE
-            + MACHO64_ENTRY_POINT_CMD_SIZE
-            + dylinker_size
-            + dylib_size;
+            + MACHO64_ENTRY_POINT_CMD_SIZE;
 
-        let load_commands_size = initial_cmd_size + remaining_cmd_size;
-        let header_size = MACHO64_HEADER_SIZE + load_commands_size;
+        let header_size = MACHO64_HEADER_SIZE
+            + existing_cmd_size
+            + linkedit_cmd_size
+            + added_cmd_size
+            + data_segment_cmd_size;
 
         // Leave extra padding for codesign to add LC_CODE_SIGNATURE
         let codesign_padding = 256;
-        align_up((header_size + codesign_padding) as u64, 16)
+        let text_file_offset = align_up((header_size + codesign_padding) as u64, 16) as usize;
+
+        // __TEXT spans file offset 0 through the first page boundary AFTER the
+        // code ends. It was hardcoded to exactly one page, so any program
+        // whose headers+code exceeded 16KB had its code spill past the
+        // declared segment — the data segment then overlapped it in the file
+        // and dyld mapped garbage. (RUE-131 item 3)
+        let text_segment_file_size =
+            align_up((text_file_offset + self.code.len()) as u64, PAGE_SIZE) as usize;
+
+        let (data_file_offset, data_vm_addr, data_file_size, data_vm_size) = if has_data {
+            // Data segment starts at the next page after __TEXT
+            let offset = text_segment_file_size;
+            let vm_addr = VM_BASE + offset as u64;
+            // File size: rodata + data (not bss)
+            let file_size =
+                align_up(self.rodata.len() as u64, 8) + align_up(self.data.len() as u64, 8);
+            // VM size includes bss
+            let vm_size = align_up(file_size + self.bss_size, PAGE_SIZE);
+            (offset, vm_addr, file_size as usize, vm_size)
+        } else {
+            (0, 0, 0, 0)
+        };
+
+        let linkedit_file_offset = if has_data {
+            align_up((data_file_offset + data_file_size) as u64, PAGE_SIZE) as usize
+        } else {
+            text_segment_file_size
+        };
+        let linkedit_vm_addr = if has_data {
+            data_vm_addr + data_vm_size
+        } else {
+            VM_BASE + text_segment_file_size as u64
+        };
+
+        DynamicLayout {
+            text_file_offset,
+            text_segment_file_size,
+            has_data,
+            data_file_offset,
+            data_vm_addr,
+            data_file_size,
+            data_vm_size,
+            linkedit_file_offset,
+            linkedit_vm_addr,
+        }
+    }
+
+    /// Calculate the text file offset for a dynamic executable without building it.
+    ///
+    /// This is needed to apply relocations before calling build_dynamic().
+    /// Delegates to the single shared layout computation.
+    pub fn calculate_text_file_offset_for_dynamic(&self) -> u64 {
+        self.compute_dynamic_layout().text_file_offset as u64
     }
 
     /// Build a dynamic executable (using LC_MAIN + dyld).
@@ -795,7 +883,19 @@ impl MachOBuilder {
         // - __DATA: after __TEXT, contains rodata/data/bss (if any)
         // - __LINKEDIT: after __DATA (or __TEXT), contains symbol tables
 
-        let has_data = !self.rodata.is_empty() || !self.data.is_empty() || self.bss_size > 0;
+        // Single source of truth for the layout — the same computation the
+        // relocation pre-pass used (see compute_dynamic_layout).
+        let DynamicLayout {
+            text_file_offset,
+            text_segment_file_size,
+            has_data,
+            data_file_offset,
+            data_vm_addr,
+            data_file_size,
+            data_vm_size,
+            linkedit_file_offset,
+            linkedit_vm_addr,
+        } = self.compute_dynamic_layout();
 
         // Add __LINKEDIT segment if not present
         let has_linkedit = self
@@ -807,78 +907,10 @@ impl MachOBuilder {
             self.segments.push(linkedit);
         }
 
-        // Add dyld and libSystem
+        // Add dyld and libSystem (their sizes are already accounted for in
+        // the layout's added-command size)
         self.add_command(LoadDylinker::new());
         self.add_command(LoadDylib::libsystem());
-
-        // We need to calculate load commands size accounting for __DATA segment
-        // that we'll add if there's data
-        let data_segment_cmd_size = if has_data {
-            // Segment header + up to 3 sections (const, data, bss)
-            let num_sections = (!self.rodata.is_empty() as usize)
-                + (!self.data.is_empty() as usize)
-                + ((self.bss_size > 0) as usize);
-            MACHO64_SEGMENT_CMD_SIZE + MACHO64_SECTION_SIZE * num_sections
-        } else {
-            0
-        };
-
-        // Calculate load commands size (before adding remaining commands)
-        let initial_cmd_size: usize = self
-            .segments
-            .iter()
-            .map(|s| s.cmdsize() as usize)
-            .sum::<usize>()
-            + self
-                .commands
-                .iter()
-                .map(|c| c.cmdsize() as usize)
-                .sum::<usize>()
-            + data_segment_cmd_size;
-
-        // We'll add symtab, dysymtab, and entry point
-        let remaining_cmd_size =
-            MACHO64_SYMTAB_CMD_SIZE + MACHO64_DYSYMTAB_CMD_SIZE + MACHO64_ENTRY_POINT_CMD_SIZE;
-
-        let load_commands_size = initial_cmd_size + remaining_cmd_size;
-        let header_size = MACHO64_HEADER_SIZE + load_commands_size;
-
-        // Leave extra padding for codesign to add LC_CODE_SIGNATURE
-        let codesign_padding = 256;
-        let text_file_offset = align_up((header_size + codesign_padding) as u64, 16) as usize;
-
-        // __TEXT segment spans from file offset 0 to the first page boundary after code
-        let text_segment_file_size = PAGE_SIZE as usize;
-
-        // Calculate data segment layout (if needed)
-        let (data_file_offset, data_vm_addr, data_file_size, data_vm_size) = if has_data {
-            // Data segment starts at the next page after __TEXT
-            let offset = text_segment_file_size;
-            let vm_addr = VM_BASE + offset as u64;
-
-            // Calculate file size (rodata + data, but not bss)
-            let file_size =
-                align_up(self.rodata.len() as u64, 8) + align_up(self.data.len() as u64, 8);
-            // VM size includes bss
-            let vm_size = align_up(file_size + self.bss_size, PAGE_SIZE);
-
-            (offset, vm_addr, file_size as usize, vm_size)
-        } else {
-            (0, 0, 0, 0)
-        };
-
-        // __LINKEDIT comes after __DATA (or __TEXT if no data)
-        let linkedit_file_offset = if has_data {
-            align_up((data_file_offset + data_file_size) as u64, PAGE_SIZE) as usize
-        } else {
-            text_segment_file_size
-        };
-        // LINKEDIT's VM address must come after DATA's VM region (including bss)
-        let linkedit_vm_addr = if has_data {
-            data_vm_addr + data_vm_size
-        } else {
-            VM_BASE + text_segment_file_size as u64
-        };
         // Minimal LINKEDIT content: just a string table with null byte
         let linkedit_file_size = 16usize;
         let linkedit_vm_size = PAGE_SIZE;
@@ -1107,6 +1139,87 @@ fn align_up(value: u64, align: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Mirrors link_macho's real usage: the relocation pre-pass builder has
+    /// __LINKEDIT manually added, the build builder doesn't (build_dynamic
+    /// adds it itself). The pre-computed text offset must equal the offset
+    /// the built binary actually uses — the macOS CI failure on the first
+    /// version of this refactor was exactly this asymmetry (strings printed
+    /// garbage because every relocation was patched for a different offset
+    /// than the binary's layout).
+    #[test]
+    fn test_precompute_matches_build_without_manual_linkedit() {
+        let make = |code: Vec<u8>| {
+            let mut b = MachOBuilder::new()
+                .with_code(code, 0)
+                .with_data(vec![7; 24])
+                .with_bss(16);
+            b.add_segment(Segment64::pagezero());
+            let mut text = Segment64::new("__TEXT").with_protection(VM_PROT_READ | VM_PROT_EXECUTE);
+            text.add_section(Section64::new("__text", "__TEXT").with_code_flags());
+            b.add_segment(text);
+            b
+        };
+
+        // Pre-pass shape: empty code, manual __LINKEDIT (as link_macho does)
+        let mut prepass = make(vec![]);
+        prepass.add_segment(Segment64::new("__LINKEDIT").with_protection(VM_PROT_READ));
+        let precomputed = prepass.calculate_text_file_offset_for_dynamic();
+
+        // Build shape: real code, NO manual __LINKEDIT
+        let build = make(vec![0xC3; 32]);
+        let (_bytes, built_offset, _data_vm) = build.build_dynamic();
+
+        assert_eq!(
+            precomputed, built_offset,
+            "relocation pre-pass and build_dynamic must agree on the text offset"
+        );
+    }
+
+    /// RUE-131 item 3: __TEXT was hardcoded to exactly one page; code larger
+    /// than (one page - headers) spilled past the declared segment and the
+    /// data segment overlapped it in the file.
+    #[test]
+    fn test_text_segment_grows_with_code() {
+        let big_code = vec![0x90u8; (PAGE_SIZE as usize) * 2]; // 2 pages of NOPs
+        let builder = MachOBuilder::new()
+            .with_code(big_code.clone(), 0)
+            .with_data(vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        let layout = builder.compute_dynamic_layout();
+
+        assert!(
+            layout.text_segment_file_size >= layout.text_file_offset + big_code.len(),
+            "__TEXT ({} bytes) must contain headers ({}) + code ({})",
+            layout.text_segment_file_size,
+            layout.text_file_offset,
+            big_code.len()
+        );
+        assert_eq!(
+            layout.text_segment_file_size % PAGE_SIZE as usize,
+            0,
+            "__TEXT file size must be page-aligned"
+        );
+        assert_eq!(
+            layout.data_file_offset, layout.text_segment_file_size,
+            "__DATA must start where __TEXT ends — no overlap"
+        );
+    }
+
+    /// RUE-131: the relocation pre-pass and the builder used to compute the
+    /// text offset independently and drifted (the pre-pass counted one data
+    /// section; the builder counts up to three). With rodata + data + bss all
+    /// present, the two must agree exactly.
+    #[test]
+    fn test_precompute_matches_layout_with_all_data_sections() {
+        let builder = MachOBuilder::new()
+            .with_code(vec![0xC3], 0)
+            .with_rodata(vec![1; 16])
+            .with_data(vec![2; 16])
+            .with_bss(32);
+        let precomputed = builder.calculate_text_file_offset_for_dynamic();
+        let layout = builder.compute_dynamic_layout();
+        assert_eq!(precomputed, layout.text_file_offset as u64);
+    }
 
     #[test]
     fn test_load_dylinker_size() {
