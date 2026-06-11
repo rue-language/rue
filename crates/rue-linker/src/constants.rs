@@ -302,6 +302,9 @@ pub const ARM64_RELOC_BRANCH26: u32 = 2;
 pub const ARM64_RELOC_PAGE21: u32 = 3;
 /// ARM64_RELOC_PAGEOFF12: Page offset
 pub const ARM64_RELOC_PAGEOFF12: u32 = 4;
+/// ARM64_RELOC_ADDEND: carries the addend for the *following* relocation
+/// entry (Mach-O ARM64 relocation_info has no addend field of its own)
+pub const ARM64_RELOC_ADDEND: u32 = 10;
 
 // Mach-O structure sizes
 

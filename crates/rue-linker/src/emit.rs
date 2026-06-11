@@ -7,18 +7,18 @@ use std::collections::HashMap;
 use rue_target::Target;
 
 use crate::constants::{
-    ARM64_RELOC_BRANCH26, ARM64_RELOC_PAGE21, ARM64_RELOC_PAGEOFF12, ARM64_RELOC_UNSIGNED,
-    CPU_SUBTYPE_ARM64_ALL, CPU_TYPE_ARM64, ELF_MAGIC, ELF64_EHDR_SIZE, ELF64_SHDR_SIZE,
-    ELF64_SYM_SIZE, ELFCLASS64, ELFDATA2LSB, ET_REL, EV_CURRENT, LC_BUILD_VERSION, LC_DYSYMTAB,
-    LC_SEGMENT_64, LC_SYMTAB, MACHO64_BUILD_VERSION_CMD_SIZE, MACHO64_DYSYMTAB_CMD_SIZE,
-    MACHO64_HEADER_SIZE, MACHO64_NLIST_SIZE, MACHO64_RELOC_SIZE, MACHO64_SECTION_SIZE,
-    MACHO64_SEGMENT_CMD_SIZE, MACHO64_SYMTAB_CMD_SIZE, MH_MAGIC_64, MH_OBJECT, N_EXT, N_PEXT,
-    N_SECT, N_UNDF, PLATFORM_MACOS, R_AARCH64_ABS64, R_AARCH64_ADD_ABS_LO12_NC,
-    R_AARCH64_ADR_PREL_PG_HI21, R_AARCH64_CALL26, R_AARCH64_JUMP26, R_X86_64_32, R_X86_64_32S,
-    R_X86_64_64, R_X86_64_GOTPCREL, R_X86_64_GOTPCRELX, R_X86_64_PC32, R_X86_64_PLT32,
-    R_X86_64_REX_GOTPCRELX, S_ATTR_PURE_INSTRUCTIONS, S_ATTR_SOME_INSTRUCTIONS, SHF_ALLOC,
-    SHF_EXECINSTR, SHF_INFO_LINK, SHT_PROGBITS, SHT_RELA, SHT_STRTAB, SHT_SYMTAB, STB_GLOBAL,
-    STB_LOCAL, STT_FUNC, STT_NOTYPE, STT_SECTION, elf_st_info,
+    ARM64_RELOC_ADDEND, ARM64_RELOC_BRANCH26, ARM64_RELOC_PAGE21, ARM64_RELOC_PAGEOFF12,
+    ARM64_RELOC_UNSIGNED, CPU_SUBTYPE_ARM64_ALL, CPU_TYPE_ARM64, ELF_MAGIC, ELF64_EHDR_SIZE,
+    ELF64_SHDR_SIZE, ELF64_SYM_SIZE, ELFCLASS64, ELFDATA2LSB, ET_REL, EV_CURRENT, LC_BUILD_VERSION,
+    LC_DYSYMTAB, LC_SEGMENT_64, LC_SYMTAB, MACHO64_BUILD_VERSION_CMD_SIZE,
+    MACHO64_DYSYMTAB_CMD_SIZE, MACHO64_HEADER_SIZE, MACHO64_NLIST_SIZE, MACHO64_RELOC_SIZE,
+    MACHO64_SECTION_SIZE, MACHO64_SEGMENT_CMD_SIZE, MACHO64_SYMTAB_CMD_SIZE, MH_MAGIC_64,
+    MH_OBJECT, N_EXT, N_PEXT, N_SECT, N_UNDF, PLATFORM_MACOS, R_AARCH64_ABS64,
+    R_AARCH64_ADD_ABS_LO12_NC, R_AARCH64_ADR_PREL_PG_HI21, R_AARCH64_CALL26, R_AARCH64_JUMP26,
+    R_X86_64_32, R_X86_64_32S, R_X86_64_64, R_X86_64_GOTPCREL, R_X86_64_GOTPCRELX, R_X86_64_PC32,
+    R_X86_64_PLT32, R_X86_64_REX_GOTPCRELX, S_ATTR_PURE_INSTRUCTIONS, S_ATTR_SOME_INSTRUCTIONS,
+    SHF_ALLOC, SHF_EXECINSTR, SHF_INFO_LINK, SHT_PROGBITS, SHT_RELA, SHT_STRTAB, SHT_SYMTAB,
+    STB_GLOBAL, STB_LOCAL, STT_FUNC, STT_NOTYPE, STT_SECTION, elf_st_info,
 };
 
 /// ELF section layout with explicit indices.
@@ -577,6 +577,10 @@ impl ObjectBuilder {
             0
         };
         let rodata_size = rodata.len();
+        // Address of __rodata within the object's VM layout (__text is at
+        // addr 0). Symbol n_value fields are addresses in this layout per the
+        // Mach-O spec, so rodata symbols are written as rodata_addr + offset.
+        let rodata_addr = align_up(text_size, 8);
 
         // Text relocations follow text and rodata sections
         let text_reloc_offset = if has_rodata {
@@ -612,7 +616,12 @@ impl ObjectBuilder {
                 }
             })
             .collect();
-        let num_text_relocs = text_relocs.len();
+        // Mach-O ARM64 relocation entries have no addend field: a non-zero
+        // addend is carried by an extra ARM64_RELOC_ADDEND entry immediately
+        // preceding the relocation it modifies. (Addends used to be silently
+        // dropped here; the parser side ignored them too — RUE-131 item 5b.)
+        let num_addend_entries = text_relocs.iter().filter(|r| r.addend != 0).count();
+        let num_text_relocs = text_relocs.len() + num_addend_entries;
 
         // On macOS, all external C symbols get a leading underscore prefix.
         // This applies to ALL symbols, regardless of their original name.
@@ -759,7 +768,7 @@ impl ObjectBuilder {
             segname[..6].copy_from_slice(b"__TEXT");
             macho.extend_from_slice(&segname);
 
-            macho.extend_from_slice(&(text_size as u64).to_le_bytes()); // addr (follows text)
+            macho.extend_from_slice(&(rodata_addr as u64).to_le_bytes()); // addr (follows text, 8-aligned)
             macho.extend_from_slice(&(rodata_size as u64).to_le_bytes()); // size
             macho.extend_from_slice(&(rodata_offset as u32).to_le_bytes()); // offset
             macho.extend_from_slice(&3_u32.to_le_bytes()); // align (2^3 = 8 byte alignment)
@@ -878,6 +887,22 @@ impl ObjectBuilder {
                 }
             };
 
+            // A non-zero addend is emitted as an ARM64_RELOC_ADDEND entry
+            // immediately preceding the relocation it modifies (Mach-O ARM64
+            // relocation entries have no addend field of their own).
+            if reloc.addend != 0 {
+                assert!(
+                    (-(1 << 23)..(1 << 23)).contains(&reloc.addend),
+                    "ARM64_RELOC_ADDEND only encodes signed 24-bit addends, got {}",
+                    reloc.addend
+                );
+                macho.extend_from_slice(&(reloc.offset as u32).to_le_bytes());
+                let addend_info: u32 = ((reloc.addend as u32) & 0x00FFFFFF)  // r_symbolnum = addend
+                    | (2 << 25)  // r_length (unused for ADDEND, match the reloc)
+                    | (ARM64_RELOC_ADDEND << 28);
+                macho.extend_from_slice(&addend_info.to_le_bytes());
+            }
+
             // r_address (4 bytes)
             macho.extend_from_slice(&(reloc.offset as u32).to_le_bytes());
 
@@ -924,7 +949,7 @@ impl ObjectBuilder {
         macho.push(N_EXT | N_SECT); // n_type: external, defined in section
         macho.push(1); // n_sect: section 1 (__text)
         macho.extend_from_slice(&0_u16.to_le_bytes()); // n_desc
-        macho.extend_from_slice(&0_u64.to_le_bytes()); // n_value (offset in section)
+        macho.extend_from_slice(&0_u64.to_le_bytes()); // n_value (function start; __text is at addr 0)
 
         // Symbols 1..N: String constant symbols (private external, defined in rodata section)
         // Note: We mark these as N_PEXT | N_EXT because ARM64_RELOC_PAGE21/PAGEOFF12
@@ -946,10 +971,13 @@ impl ObjectBuilder {
                 macho.push(0); // Should not happen, but defensive
             }
             macho.extend_from_slice(&0_u16.to_le_bytes()); // n_desc
-            // n_value is the offset within the section (not a VM address!)
-            // For relocatable object files, n_value is relative to the section start
-            let section_offset = string_offsets[i] as u64;
-            macho.extend_from_slice(&section_offset.to_le_bytes());
+            // n_value is an address within the object's VM layout (section
+            // addr + offset), per the Mach-O spec — the same convention
+            // rustc/clang objects use, and what our parser normalizes away.
+            // (This used to write the bare section offset, which only worked
+            // because the parser made the matching mistake.)
+            let value = (rodata_addr + string_offsets[i]) as u64;
+            macho.extend_from_slice(&value.to_le_bytes());
             sym_name_idx += 1;
         }
 
@@ -1401,6 +1429,55 @@ mod tests {
 
         // Check Mach-O magic
         assert_eq!(&obj[0..4], &0xFEEDFACF_u32.to_le_bytes());
+    }
+
+    /// RUE-131 item 5b: non-zero addends must round-trip through the Mach-O
+    /// object format (emitted as ARM64_RELOC_ADDEND entries, re-attached by
+    /// the parser). They used to be silently dropped on emit AND hardcoded to
+    /// zero on parse.
+    #[test]
+    fn test_macho_addend_roundtrip() {
+        let obj_bytes = ObjectBuilder::new(Target::Aarch64Macos, "main")
+            .code(vec![
+                0x00, 0x00, 0x00, 0x90, // adrp x0, <page>
+                0x00, 0x00, 0x00, 0x91, // add x0, x0, <offset>
+                0x00, 0x00, 0x00, 0x94, // bl other
+                0xC0, 0x03, 0x5F, 0xD6, // ret
+            ])
+            .relocation(CodeRelocation {
+                offset: 0,
+                symbol: "data".into(),
+                rel_type: RelocationType::AdrpPage21,
+                addend: 16,
+            })
+            .relocation(CodeRelocation {
+                offset: 4,
+                symbol: "data".into(),
+                rel_type: RelocationType::AddLo12,
+                addend: 16,
+            })
+            .relocation(CodeRelocation {
+                offset: 8,
+                symbol: "other".into(),
+                rel_type: RelocationType::Call26,
+                addend: 0, // no ADDEND entry for this one
+            })
+            .build();
+
+        let obj = ObjectFile::parse(&obj_bytes).expect("parse emitted Mach-O");
+        let text_idx = obj.section_map["__TEXT,__text"];
+        let relocs = &obj.sections[text_idx].relocations;
+        assert_eq!(
+            relocs.len(),
+            3,
+            "ADDEND entries must not surface as relocations"
+        );
+        assert_eq!(relocs[0].rel_type, RelocationType::AdrpPage21);
+        assert_eq!(relocs[0].addend, 16);
+        assert_eq!(relocs[1].rel_type, RelocationType::AddLo12);
+        assert_eq!(relocs[1].addend, 16);
+        assert_eq!(relocs[2].rel_type, RelocationType::Call26);
+        assert_eq!(relocs[2].addend, 0);
     }
 
     /// Test recursive self-calls (function calling itself).

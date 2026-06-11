@@ -32,17 +32,20 @@ pub const VM_BASE: u64 = 0x100000000;
 
 /// Computed file/VM layout for a dynamic executable — produced only by
 /// `compute_dynamic_layout` so relocation pre-pass and the actual build can
-/// never disagree.
-struct DynamicLayout {
-    text_file_offset: usize,
-    text_segment_file_size: usize,
-    has_data: bool,
-    data_file_offset: usize,
-    data_vm_addr: u64,
-    data_file_size: usize,
-    data_vm_size: u64,
-    linkedit_file_offset: usize,
-    linkedit_vm_addr: u64,
+/// never disagree. The linker consumes this (via [`MachOBuilder::dynamic_layout`])
+/// to place symbols *before* the binary is built; previously it hardcoded
+/// `VM_BASE + PAGE_SIZE` for the data segment, which broke as soon as
+/// __TEXT outgrew one page. (RUE-131)
+pub(crate) struct DynamicLayout {
+    pub(crate) text_file_offset: usize,
+    pub(crate) text_segment_file_size: usize,
+    pub(crate) has_data: bool,
+    pub(crate) data_file_offset: usize,
+    pub(crate) data_vm_addr: u64,
+    pub(crate) data_file_size: usize,
+    pub(crate) data_vm_size: u64,
+    pub(crate) linkedit_file_offset: usize,
+    pub(crate) linkedit_vm_addr: u64,
 }
 
 // =============================================================================
@@ -859,6 +862,15 @@ impl MachOBuilder {
     /// Delegates to the single shared layout computation.
     pub fn calculate_text_file_offset_for_dynamic(&self) -> u64 {
         self.compute_dynamic_layout().text_file_offset as u64
+    }
+
+    /// The full pre-build layout (text offset, data segment address, …).
+    ///
+    /// The linker needs the data segment's virtual address before building so
+    /// data/bss symbols can be placed and relocations applied against the
+    /// addresses the binary will actually use.
+    pub(crate) fn dynamic_layout(&self) -> DynamicLayout {
+        self.compute_dynamic_layout()
     }
 
     /// Build a dynamic executable (using LC_MAIN + dyld).
