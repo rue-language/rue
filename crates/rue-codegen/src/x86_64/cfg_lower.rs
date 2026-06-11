@@ -1725,23 +1725,41 @@ impl<'a> CfgLower<'a> {
                 param_slot,
                 value: val,
             } => {
-                // ParamStore is used for inout params - store through the pointer
-                let val_vreg = self.get_vreg(*val);
-
+                // ParamStore is used for inout params - store through the pointer.
+                //
                 // For inout params, param_slot is the first ABI slot for that param.
                 // For scalar params, param_slot = param_index.
                 // For struct params, param_slot is the first slot (same as param_index for first param).
                 // We use is_param_inout(param_slot) to check if this slot is inout.
-                if self.ctx.cfg.is_param_inout(*param_slot) {
-                    // Use ensure_inout_param_ptr in case the param was never accessed via Param instruction
-                    let ptr_vreg = self.ensure_inout_param_ptr(*param_slot);
+                if !self.ctx.cfg.is_param_inout(*param_slot) {
+                    panic!("ParamStore used on non-inout param slot {}", param_slot);
+                }
+
+                // Whole-value reassignment of a multi-slot aggregate (struct,
+                // builtin String, or array) through inout must write ALL slots
+                // through the pointer, not just the first — same shape as the
+                // aggregate branch of Store above. Caller slots descend from
+                // the pointer (stack grows down), so slot i lives at ptr - i*8.
+                // Unmodeled sources fall back to single-slot. (RUE-145)
+                let val_type = self.ctx.cfg.get_inst(*val).ty;
+                let aggregate_vregs =
+                    if matches!(val_type.kind(), TypeKind::Struct(_) | TypeKind::Array(_)) {
+                        self.get_or_compute_field_vregs(*val)
+                    } else {
+                        None
+                    };
+
+                // Use ensure_inout_param_ptr in case the param was never accessed via Param instruction
+                let ptr_vreg = self.ensure_inout_param_ptr(*param_slot);
+                if let Some(slot_vregs) = aggregate_vregs {
+                    crate::agg_slots::store_slots_through_ptr(self, &slot_vregs, ptr_vreg, 0);
+                } else {
+                    let val_vreg = self.get_vreg(*val);
                     self.mir.push(X86Inst::MovMRIndexed {
                         base: ptr_vreg,
                         offset: 0,
                         src: Operand::Virtual(val_vreg),
                     });
-                } else {
-                    panic!("ParamStore used on non-inout param slot {}", param_slot);
                 }
             }
 

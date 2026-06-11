@@ -507,3 +507,119 @@ pub fn swap(inout a: i32, inout b: i32) {
 """ },
 ]
 exit_code = 41
+
+# ---------------------------------------------------------------------------
+# Whole-value reassignment of a multi-slot aggregate through an inout
+# parameter (RUE-145): `v = T { ... }` inside `fn f(inout v: T)` used to
+# lower ParamStore as a single-slot store through the pointer, writing only
+# slot 0 and leaving the caller's remaining slots stale. Field-wise writes
+# were unaffected. The fix writes every slot through the pointer, matching
+# the aggregate branch of Store.
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "inout_whole_struct_reassign"
+description = "Whole-value reassignment of a 2-slot struct through inout writes back both slots (RUE-145; used to exit 9: 7 + stale 2)."
+files = [{ path = "main.rue", source = """
+struct Inner { x: i32, y: i32 }
+fn replace(inout v: Inner) { v = Inner { x: 7, y: 35 }; }
+fn main() -> i32 {
+    let mut f = Inner { x: 1, y: 2 };
+    replace(inout f);
+    f.x + f.y
+}
+""" }]
+exit_code = 42
+
+[[case]]
+name = "inout_whole_struct_reassign_three_slots"
+description = "Same for a 3-slot struct: every slot must be written through the inout pointer, not just the first."
+files = [{ path = "main.rue", source = """
+struct Triple { a: i32, b: i32, c: i32 }
+fn replace(inout v: Triple) { v = Triple { a: 10, b: 12, c: 20 }; }
+fn main() -> i32 {
+    let mut t = Triple { a: 1, b: 2, c: 3 };
+    replace(inout t);
+    t.a + t.b + t.c
+}
+""" }]
+exit_code = 42
+
+[[case]]
+name = "inout_whole_struct_reassign_nested"
+description = "Nested aggregate: reassigning a struct containing a struct through inout writes back all flattened slots."
+files = [{ path = "main.rue", source = """
+struct Inner { x: i32, y: i32 }
+struct Outer { a: i32, inner: Inner }
+fn replace(inout v: Outer) { v = Outer { a: 5, inner: Inner { x: 14, y: 23 } }; }
+fn main() -> i32 {
+    let mut o = Outer { a: 1, inner: Inner { x: 2, y: 3 } };
+    replace(inout o);
+    o.a + o.inner.x + o.inner.y
+}
+""" }]
+exit_code = 42
+
+[[case]]
+name = "inout_whole_array_reassign"
+description = "Whole-value reassignment of an array through inout writes back every element slot."
+files = [{ path = "main.rue", source = """
+fn replace(inout v: [i32; 3]) { v = [10, 12, 20]; }
+fn main() -> i32 {
+    let mut a = [1, 2, 3];
+    replace(inout a);
+    a[0] + a[1] + a[2]
+}
+""" }]
+exit_code = 42
+
+[[case]]
+name = "inout_whole_struct_reassign_i64_field"
+description = "Slot sizes: a struct with an i64 field reassigned through inout still writes back all slots."
+files = [{ path = "main.rue", source = """
+struct Mixed { a: i64, b: i32 }
+fn replace(inout v: Mixed) { v = Mixed { a: 40, b: 2 }; }
+fn main() -> i32 {
+    let mut m = Mixed { a: 1, b: 2 };
+    replace(inout m);
+    if m.a == 40 { m.b + 40 } else { m.b }
+}
+""" }]
+exit_code = 42
+
+[[case]]
+name = "inout_whole_string_reassign"
+description = "Whole-value reassignment of a String (3-slot fat pointer) through inout writes back ptr, len, and cap."
+files = [{ path = "main.rue", source = """
+fn replace(inout v: String) {
+    v = "hello rue!";
+}
+fn main() -> i32 {
+    let mut s: String = "xx";
+    replace(inout s);
+    @dbg(s.len());
+    @dbg(s);
+    0
+}
+""" }]
+stdout = """
+10
+hello rue!
+"""
+
+[[case]]
+name = "inout_fieldwise_writes_control"
+description = "Control: field-wise writes through inout (which always worked) keep working alongside the whole-value fix."
+files = [{ path = "main.rue", source = """
+struct Inner { x: i32, y: i32 }
+fn replace(inout v: Inner) {
+    v.x = 7;
+    v.y = 35;
+}
+fn main() -> i32 {
+    let mut f = Inner { x: 1, y: 2 };
+    replace(inout f);
+    f.x + f.y
+}
+""" }]
+exit_code = 42
