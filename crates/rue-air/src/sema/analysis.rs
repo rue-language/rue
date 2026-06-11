@@ -23,7 +23,7 @@ use rue_error::{
     CompileError, CompileErrors, CompileResult, CompileWarning, ErrorKind,
     IntrinsicTypeMismatchError, MultiErrorResult, OptionExt, PreviewFeature, WarningKind,
 };
-use rue_rir::{InstData, InstRef, RirArgMode, RirCallArg, RirDirective, RirParamMode};
+use rue_rir::{InstData, InstRef, Rir, RirArgMode, RirCallArg, RirDirective, RirParamMode};
 use rue_span::Span;
 use rue_target::{Arch, Os};
 
@@ -1423,6 +1423,7 @@ fn analyze_function_with_context(
         comptime_value_vars: HashMap::new(),
         referenced_functions: HashSet::new(),
         referenced_methods: HashSet::new(),
+        byref_arg_root: None,
         in_loop_move_recheck: false,
     };
 
@@ -2676,24 +2677,36 @@ fn analyze_var_ref_ctx(
             }
         }
 
-        // Handle move semantics based on parameter mode
+        // Handle move semantics based on parameter mode.
+        // A use as a by-ref call argument is a borrow, not a move
+        // (`analyze_call_args_ctx` sets `byref_arg_root`), so it neither marks
+        // the parameter moved nor counts as moving out of it. This is what
+        // permits forwarding an inout parameter: `f(inout v)` inside
+        // `fn g(inout v: T)`.
+        let is_byref_arg_use = analysis_ctx.byref_arg_root == Some(name);
         if !ctx.is_type_copy(ty) {
             match param_info.mode {
                 RirParamMode::Normal | RirParamMode::Comptime => {
-                    analysis_ctx
-                        .moved_vars
-                        .entry(name)
-                        .or_default()
-                        .mark_path_moved(&[], span);
+                    if !is_byref_arg_use {
+                        analysis_ctx
+                            .moved_vars
+                            .entry(name)
+                            .or_default()
+                            .mark_path_moved(&[], span);
+                    }
                 }
                 RirParamMode::Inout => {
-                    analysis_ctx
-                        .moved_vars
-                        .entry(name)
-                        .or_default()
-                        .mark_path_moved(&[], span);
+                    // Moving out of an inout parameter would leave the CALLER's
+                    // variable moved-from after the call returns, so it is
+                    // rejected outright (RUE-127).
+                    if !is_byref_arg_use {
+                        return Err(move_out_of_inout_error(name_str, span));
+                    }
                 }
                 RirParamMode::Borrow => {
+                    // Note: this also rejects by-ref forwarding of a borrow
+                    // parameter (`f(borrow v)` inside `fn g(borrow v: T)`),
+                    // a pre-existing limitation kept as-is for now.
                     let name_str = ctx.interner.resolve(&name);
                     return Err(CompileError::new(
                         ErrorKind::MoveOutOfBorrow {
@@ -2831,8 +2844,9 @@ fn analyze_var_ref_ctx(
         }
     }
 
-    // If type is not Copy, mark as moved
-    if !ctx.is_type_copy(ty) {
+    // If type is not Copy, mark as moved — unless this use is a by-ref call
+    // argument, which borrows the variable rather than moving it.
+    if !ctx.is_type_copy(ty) && analysis_ctx.byref_arg_root != Some(name) {
         analysis_ctx
             .moved_vars
             .entry(name)
@@ -4000,6 +4014,40 @@ fn extract_root_variable_ctx(ctx: &SemaContext<'_>, inst_ref: InstRef) -> Option
     }
 }
 
+/// Reject a move (full or partial) whose root is a by-ref parameter.
+///
+/// Moving a non-Copy value out of an `inout` or `borrow` parameter would leave
+/// the CALLER's variable (partially) moved-from after the call returns, so
+/// both are rejected outright (RUE-127); reinitialization before exit is not
+/// tracked yet. Counterpart of [`Sema::reject_move_out_of_byref_param`].
+fn reject_move_out_of_byref_param_ctx(
+    ctx: &SemaContext<'_>,
+    analysis_ctx: &AnalysisContext,
+    root_var: Spur,
+    span: Span,
+) -> CompileResult<()> {
+    if let Some(param_info) = analysis_ctx.params.iter().find(|p| p.name == root_var) {
+        match param_info.mode {
+            RirParamMode::Inout => {
+                return Err(move_out_of_inout_error(
+                    ctx.interner.resolve(&root_var),
+                    span,
+                ));
+            }
+            RirParamMode::Borrow => {
+                return Err(CompileError::new(
+                    ErrorKind::MoveOutOfBorrow {
+                        variable: ctx.interner.resolve(&root_var).to_string(),
+                    },
+                    span,
+                ));
+            }
+            RirParamMode::Normal | RirParamMode::Comptime => {}
+        }
+    }
+    Ok(())
+}
+
 /// Extract field path from a field access chain.
 fn extract_field_path_ctx(ctx: &SemaContext<'_>, inst_ref: InstRef) -> Option<(Spur, FieldPath)> {
     let inst = ctx.rir.get(inst_ref);
@@ -4058,6 +4106,7 @@ fn analyze_field_get_ctx(
     // For linear types, field access consumes the entire struct.
     if is_linear {
         if let Some(root_var) = extract_root_variable_ctx(ctx, inst_ref) {
+            reject_move_out_of_byref_param_ctx(ctx, analysis_ctx, root_var, span)?;
             analysis_ctx
                 .moved_vars
                 .entry(root_var)
@@ -4068,6 +4117,7 @@ fn analyze_field_get_ctx(
     // For non-linear types, check if accessing a non-Copy field
     else if !ctx.is_type_copy(field_type) {
         if let Some((root_var, field_path)) = extract_field_path_ctx(ctx, inst_ref) {
+            reject_move_out_of_byref_param_ctx(ctx, analysis_ctx, root_var, span)?;
             // Check if this field path is already moved
             if let Some(state) = analysis_ctx.moved_vars.get(&root_var) {
                 if let Some(moved_span) = state.is_path_moved(&field_path) {
@@ -4968,7 +5018,59 @@ fn extract_arg_var_name_ctx(ctx: &SemaContext<'_>, inst_ref: InstRef) -> Option<
     }
 }
 
+/// Build the diagnostic for a move out of an `inout` parameter.
+///
+/// Rule (RUE-127): moving out of an inout parameter is always rejected, even if
+/// the parameter is reassigned afterwards — reinitialization-before-exit is not
+/// tracked yet. Without this rule, the call would leave the caller's variable
+/// moved-from while the caller still considers it live.
+pub(crate) fn move_out_of_inout_error(name: &str, span: Span) -> CompileError {
+    CompileError::new(
+        ErrorKind::MoveOutOfInout {
+            variable: name.to_string(),
+        },
+        span,
+    )
+    .with_note(
+        "an `inout` parameter is a mutable borrow of the caller's variable; \
+         moving its value out would leave the caller's variable uninitialized",
+    )
+    .with_help(
+        "moves out of `inout` parameters are rejected even if the parameter is \
+         reassigned before returning (reinitialization is not tracked yet)",
+    )
+}
+
+/// Validate that a by-ref (`inout`/`borrow`) call argument is a plain variable
+/// and return its symbol.
+///
+/// Codegen passes a by-ref argument by taking the address of the variable's
+/// slot, so fields and array elements cannot be passed by reference yet
+/// (RUE-127); reject them here rather than panicking during lowering.
+fn require_plain_byref_arg(rir: &Rir, arg: &RirCallArg) -> CompileResult<Spur> {
+    let inst = rir.get(arg.value);
+    match &inst.data {
+        InstData::VarRef { name } | InstData::ParamRef { name, .. } => Ok(*name),
+        InstData::FieldGet { .. } | InstData::IndexGet { .. } => Err(CompileError::new(
+            ErrorKind::ByRefArgNotPlainVariable,
+            inst.span,
+        )
+        .with_help("bind the value to a local variable first and pass that variable by reference")),
+        _ => Err(CompileError::new(
+            if arg.is_inout() {
+                ErrorKind::InoutNonLvalue
+            } else {
+                ErrorKind::BorrowNonLvalue
+            },
+            inst.span,
+        )),
+    }
+}
+
 /// Analyze call arguments using the shared context.
+///
+/// See [`Sema::analyze_call_args`] for the by-ref argument rules enforced here
+/// (plain-variable shape, and borrow-not-move handling via `byref_arg_root`).
 fn analyze_call_args_ctx(
     ctx: &SemaContext<'_>,
     air: &mut Air,
@@ -4978,7 +5080,19 @@ fn analyze_call_args_ctx(
     let mut air_args = Vec::with_capacity(args.len());
 
     for arg in args {
-        let arg_result = analyze_inst_with_context(ctx, air, arg.value, analysis_ctx)?;
+        let byref_root = if arg.is_inout() || arg.is_borrow() {
+            Some(require_plain_byref_arg(ctx.rir, arg)?)
+        } else {
+            None
+        };
+
+        // Set while analyzing the argument so the use is treated as a borrow,
+        // not a move; restored afterwards.
+        let prev_byref_root = std::mem::replace(&mut analysis_ctx.byref_arg_root, byref_root);
+        let arg_result = analyze_inst_with_context(ctx, air, arg.value, analysis_ctx);
+        analysis_ctx.byref_arg_root = prev_byref_root;
+        let arg_result = arg_result?;
+
         let air_mode = match arg.mode {
             RirArgMode::Normal => AirArgMode::Normal,
             RirArgMode::Inout => AirArgMode::Inout,
@@ -6669,6 +6783,7 @@ impl<'a> Sema<'a> {
             comptime_value_vars,
             referenced_functions: HashSet::new(),
             referenced_methods: HashSet::new(),
+            byref_arg_root: None,
             in_loop_move_recheck: false,
         };
 
@@ -10240,10 +10355,14 @@ impl<'a> Sema<'a> {
         Ok(())
     }
 
-    /// Analyze a list of call arguments, handling inout unmove logic.
+    /// Analyze a list of call arguments, enforcing by-ref argument rules.
     ///
-    /// For inout arguments, the variable is "unmoving" after analysis - this is because
-    /// inout is a mutable borrow, not a move. The value stays valid after the call.
+    /// Inout/borrow arguments are borrows, not moves: `ctx.byref_arg_root` is
+    /// set while the argument value is analyzed so the variable-reference
+    /// analysis skips move tracking (and permits forwarding an inout parameter
+    /// to another function's by-ref parameter). By-ref arguments must also be
+    /// plain variables: codegen takes the address of the variable's slot
+    /// directly, and field/element projections are not supported yet (RUE-127).
     pub(crate) fn analyze_call_args(
         &mut self,
         air: &mut Air,
@@ -10252,21 +10371,18 @@ impl<'a> Sema<'a> {
     ) -> CompileResult<Vec<AirCallArg>> {
         let mut air_args = Vec::new();
         for arg in args.iter() {
-            // For inout/borrow arguments, extract the variable name before analysis
-            // so we can "unmove" it after - these are borrows, not moves
-            let borrowed_var = if arg.is_inout() || arg.is_borrow() {
-                self.extract_root_variable(arg.value)
+            let byref_root = if arg.is_inout() || arg.is_borrow() {
+                Some(require_plain_byref_arg(self.rir, arg)?)
             } else {
                 None
             };
 
-            let arg_result = self.analyze_inst(air, arg.value, ctx)?;
-
-            // If this was an inout/borrow argument, the variable shouldn't be marked as moved
-            // because these are borrows - the value stays valid after the call
-            if let Some(var_symbol) = borrowed_var {
-                ctx.moved_vars.remove(&var_symbol);
-            }
+            // Set while analyzing the argument so the use is treated as a
+            // borrow, not a move; restored afterwards.
+            let prev_byref_root = std::mem::replace(&mut ctx.byref_arg_root, byref_root);
+            let arg_result = self.analyze_inst(air, arg.value, ctx);
+            ctx.byref_arg_root = prev_byref_root;
+            let arg_result = arg_result?;
 
             air_args.push(AirCallArg {
                 value: arg_result.air_ref,

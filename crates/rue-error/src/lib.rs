@@ -123,6 +123,8 @@ impl ErrorCode {
     pub const BORROW_KEYWORD_MISSING: Self = Self(432);
     pub const EMPTY_STRUCT: Self = Self(433);
     pub const RESERVED_FUNCTION_NAME: Self = Self(435);
+    pub const BY_REF_ARG_NOT_PLAIN_VARIABLE: Self = Self(438);
+    pub const MOVE_OUT_OF_INOUT: Self = Self(437);
 
     // ========================================================================
     // Control flow errors (E0500-E0599)
@@ -965,6 +967,14 @@ pub enum ErrorKind {
     /// Argument to borrow parameter is missing `borrow` keyword at call site
     #[error("argument to borrow parameter must use 'borrow' keyword")]
     BorrowKeywordMissing,
+    /// By-ref (inout/borrow) argument is a field or element projection, which
+    /// codegen cannot take the address of yet (RUE-127)
+    #[error("a by-ref argument must be a plain variable; passing a field is not yet supported")]
+    ByRefArgNotPlainVariable,
+    /// Cannot move a value out of an inout parameter (would leave the caller's
+    /// variable moved-from)
+    #[error("cannot move out of inout parameter '{variable}'")]
+    MoveOutOfInout { variable: String },
 
     // Control flow errors
     #[error("'break' outside of loop")]
@@ -1135,6 +1145,8 @@ impl ErrorKind {
             ErrorKind::BorrowInoutConflict { .. } => ErrorCode::BORROW_INOUT_CONFLICT,
             ErrorKind::InoutKeywordMissing => ErrorCode::INOUT_KEYWORD_MISSING,
             ErrorKind::BorrowKeywordMissing => ErrorCode::BORROW_KEYWORD_MISSING,
+            ErrorKind::ByRefArgNotPlainVariable => ErrorCode::BY_REF_ARG_NOT_PLAIN_VARIABLE,
+            ErrorKind::MoveOutOfInout { .. } => ErrorCode::MOVE_OUT_OF_INOUT,
 
             // Control flow errors (E0500-E0599)
             ErrorKind::BreakOutsideLoop => ErrorCode::BREAK_OUTSIDE_LOOP,
