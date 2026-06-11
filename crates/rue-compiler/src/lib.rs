@@ -824,6 +824,26 @@ pub fn compile_frontend_from_ast_with_options(
     opt_level: OptLevel,
     preview_features: &PreviewFeatures,
 ) -> MultiErrorResult<CompileState> {
+    compile_frontend_from_ast_with_file_paths(
+        ast,
+        interner,
+        opt_level,
+        preview_features,
+        std::collections::HashMap::new(),
+    )
+}
+
+/// Like [`compile_frontend_from_ast_with_options`], but with the
+/// file_id -> path mapping sema needs for `@import` resolution. The `--emit`
+/// pipeline used to skip this, so module programs that built normally failed
+/// with E0704 under `--emit` (RUE-130).
+pub fn compile_frontend_from_ast_with_file_paths(
+    ast: Ast,
+    interner: ThreadedRodeo,
+    opt_level: OptLevel,
+    preview_features: &PreviewFeatures,
+    file_paths: std::collections::HashMap<FileId, String>,
+) -> MultiErrorResult<CompileState> {
     // AST to RIR (untyped IR)
     let (rir, interner) = {
         let _span = info_span!("astgen").entered();
@@ -836,7 +856,8 @@ pub fn compile_frontend_from_ast_with_options(
     // Semantic analysis (RIR to AIR) - this now collects multiple errors
     let sema_output = {
         let _span = info_span!("sema").entered();
-        let sema = Sema::new(&rir, &interner, preview_features.clone());
+        let mut sema = Sema::new(&rir, &interner, preview_features.clone());
+        sema.set_file_paths(file_paths);
         let output = sema.analyze_all()?;
         info!(
             function_count = output.functions.len(),

@@ -1,0 +1,45 @@
+# The --emit pipeline must behave like a normal build (RUE-130 items 3-4):
+# same module resolution, same warnings. It used to skip sema's file paths
+# (module programs failed E0704 only under --emit) and silently drop all
+# warnings.
+
+[section]
+id = "cli.emit_pipeline"
+name = "--emit pipeline parity"
+description = "--emit modes resolve modules and report warnings like a normal build."
+
+[[case]]
+name = "emit_air_warnings_not_dropped"
+description = "Warnings were silently dropped in all --emit modes (RUE-130 item 3)."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let unused = 1;
+    0
+}
+""" }]
+args = ["--emit", "air", "main.rue"]
+compile_only = true
+compile_stdout_contains = ["=== AIR ==="]
+compile_stderr_contains = ["unused variable", "'unused'"]
+
+[[case]]
+name = "emit_air_resolves_modules"
+description = "--emit skipped sema.set_file_paths, so module programs failed E0704 only under --emit (RUE-130 item 4)."
+files = [
+    { path = "main.rue", source = """
+const utils = @import("utils");
+
+fn main() -> i32 {
+    utils.triple(2)
+}
+""" },
+    { path = "utils.rue", source = """
+pub fn triple(x: i32) -> i32 {
+    x * 3
+}
+""" },
+]
+args = ["--emit", "air", "main.rue", "utils.rue"]
+compile_only = true
+compile_stdout_contains = ["=== AIR ==="]
+compile_stderr_not_contains = ["E0704"]
