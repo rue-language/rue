@@ -18,7 +18,9 @@ Setup & rules:
 - FULL ./test.sh must exit 0; bash scripts/rue fmt before finishing. No scope creep: fix exactly the listed issues. Update any comments your change makes stale — comments are source of truth here. Do not allocate error codes outside your reserved range.
 - OUTPUT: git add -A && git commit in the worktree; write git diff <base-commit> HEAD to your OUTFILE; write a meta summary (what you fixed, what you VERIFIED BY RUNNING, what you refuted, files touched, test counts, suggested PR Fixes/Part-of lines, discovered bugs worth filing) to OUTFILE.meta. Your final message: 5-10 lines.`
 
-const A = args || {}
+// args may arrive as an object or a JSON-encoded string depending on the
+// invocation path (Workflow tool vs Skill-suggested invoke) — accept both.
+const A = typeof args === 'string' ? JSON.parse(args || '{}') : (args || {})
 const cycle = A.cycle || 'X'
 const clusters = A.clusters || []
 if (!clusters.length) throw new Error('args.clusters is required: [{ key, prompt }...]')
