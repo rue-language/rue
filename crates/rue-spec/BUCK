@@ -9,3 +9,11 @@ rue_binary(
         "//third-party:toml",
     ],
 )
+
+# The spec test cases, as an input of the //:spec-tests suite (so a cases/
+# edit re-runs exactly that suite under `buck2 test //...`).
+filegroup(
+    name = "cases",
+    srcs = glob(["cases/**"]),
+    visibility = ["PUBLIC"],
+)

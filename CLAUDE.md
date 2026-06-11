@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Quickstart
 
-The 8 commands that cover ~90% of work here (all runnable from anywhere in the repo):
+The 9 commands that cover ~90% of work here (all runnable from anywhere in the repo):
 
 ```bash
 scripts/rue build                    # build the compiler -> refreshes bin/rue symlink
@@ -17,6 +17,7 @@ scripts/rue quick                    # unit tests only (~2-5s, fast inner loop)
 scripts/rue spec 4.2                 # run spec tests matching a pattern
 scripts/rue cli abi                  # run CLI integration tests matching a pattern
 scripts/rue fmt                      # format (= ./fmt.sh) before committing
+scripts/rue gc                       # reclaim disk (= buck2 clean --stale 1w)
 ```
 
 Key rules (details in the sections below):

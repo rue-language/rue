@@ -10,3 +10,11 @@ rue_binary(
         "//third-party:libtest2-mimic",
     ],
 )
+
+# The UI test cases, as an input of the //:ui-tests suite (so a cases/ edit
+# re-runs exactly that suite under `buck2 test //...`).
+filegroup(
+    name = "cases",
+    srcs = glob(["cases/**"]),
+    visibility = ["PUBLIC"],
+)
