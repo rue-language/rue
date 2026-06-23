@@ -3,10 +3,6 @@ name: Benchmarks
 on:
   push:
     branches: [trunk]
-  schedule:
-    # Run every 15 minutes to ensure benchmark coverage
-    # This provides predictable resource usage and handles high commit velocity
-    - cron: '*/15 * * * *'
   workflow_dispatch:
     inputs:
       iterations:
@@ -17,9 +13,7 @@ on:
 permissions:
   contents: write  # Needed to push to perf branch (used by collector job)
 
-# Time-based batching: Cancel older queued runs when new ones arrive
-# This handles high commit velocity by ensuring only the latest commit is benchmarked
-# Scheduled runs every 15 minutes ensure coverage even during quiet periods
+# Keep only the latest benchmark run when commits land quickly.
 concurrency:
   group: benchmarks
   cancel-in-progress: true
@@ -74,20 +68,9 @@ jobs:
             echo "should_run=false" >> $GITHUB_OUTPUT
             echo "reason=Queue depth ($queue_depth) exceeds threshold (20) - skipping to reduce backlog" >> $GITHUB_OUTPUT
             echo "⚠️  Queue depth too high ($queue_depth > 20) - skipping this run"
-          elif [ "$queue_depth" -gt 10 ]; then
-            # For medium queue depth, only run scheduled jobs (skip push-triggered ones)
-            if [ "${{ github.event_name }}" = "schedule" ]; then
-              echo "should_run=true" >> $GITHUB_OUTPUT
-              echo "reason=Moderate queue depth ($queue_depth) - running scheduled job only" >> $GITHUB_OUTPUT
-              echo "✓ Scheduled run with moderate queue ($queue_depth) - proceeding"
-            else
-              echo "should_run=false" >> $GITHUB_OUTPUT
-              echo "reason=Queue depth ($queue_depth) exceeds threshold (10) - skipping push-triggered run, waiting for scheduled run" >> $GITHUB_OUTPUT
-              echo "⚠️  Moderate queue depth ($queue_depth > 10) - skipping push-triggered run"
-            fi
           else
             echo "should_run=true" >> $GITHUB_OUTPUT
-            echo "reason=Queue depth acceptable ($queue_depth <= 10)" >> $GITHUB_OUTPUT
+            echo "reason=Queue depth acceptable ($queue_depth <= 20)" >> $GITHUB_OUTPUT
             echo "✓ Queue depth acceptable ($queue_depth) - proceeding"
           fi
 
@@ -103,7 +86,7 @@ jobs:
           echo "**Commit:** \`$(git rev-parse --short HEAD 2>/dev/null || echo 'unknown')\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "This run was skipped to prevent resource exhaustion during high commit velocity." >> $GITHUB_STEP_SUMMARY
-          echo "Scheduled runs every 15 minutes ensure benchmark coverage." >> $GITHUB_STEP_SUMMARY
+          echo "A newer push will trigger another benchmark run automatically." >> $GITHUB_STEP_SUMMARY
 
   benchmark:
     needs: check-queue
@@ -128,10 +111,10 @@ jobs:
     name: benchmark (${{ matrix.name }})
 
     steps:
-      - name: Checkout trunk
+      - name: Checkout commit
         uses: actions/checkout@v6
         with:
-          ref: trunk
+          ref: ${{ github.sha }}
           fetch-depth: 0  # Full history for commit info
 
       - name: Install dotslash
@@ -229,10 +212,10 @@ jobs:
     if: ${{ needs.check-queue.outputs.should_run == 'true' && !cancelled() && needs.benchmark.result != 'failure' }}
 
     steps:
-      - name: Checkout trunk for scripts
+      - name: Checkout commit for scripts
         uses: actions/checkout@v6
         with:
-          ref: trunk
+          ref: ${{ github.sha }}
           path: trunk
 
       - name: Get commit info and range
@@ -262,6 +245,13 @@ jobs:
           path: artifacts
           pattern: benchmark-results-${{ steps.commit.outputs.full_sha }}-*
           merge-multiple: false
+
+      - name: Validate downloaded artifacts
+        run: |
+          if ! ls artifacts/benchmark-results-* >/dev/null 2>&1; then
+            echo "::error::No benchmark artifacts found for commit ${{ steps.commit.outputs.full_sha }}"
+            exit 1
+          fi
 
       - name: List downloaded artifacts
         run: |
@@ -302,9 +292,7 @@ jobs:
       - name: Append results to history
         run: |
           # Determine benchmark reason based on trigger
-          if [ "${{ github.event_name }}" = "schedule" ]; then
-            benchmark_reason="scheduled"
-          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             benchmark_reason="manual"
           else
             benchmark_reason="push"
@@ -318,7 +306,7 @@ jobs:
 
             # Extract platform from directory name
             # Format: benchmark-results-{sha}-{platform}
-            platform=$(basename "$artifact_dir" | sed 's/benchmark-results-.*-//')
+            platform=$(basename "$artifact_dir" | sed 's/^benchmark-results-[^-]*-//')
             results_file="$artifact_dir/results.json"
 
             if [ ! -f "$results_file" ]; then
@@ -331,24 +319,24 @@ jobs:
             # Enhance results with commit range metadata (convert to version 2 schema)
             enhanced_file="$artifact_dir/results_enhanced.json"
             python3 << EOF
-import json
-import sys
+            import json
+            import sys
 
-with open('$results_file') as f:
-    data = json.load(f)
+            with open('$results_file') as f:
+                data = json.load(f)
 
-data['version'] = 2
-data['benchmark_reason'] = '$benchmark_reason'
+            data['version'] = 2
+            data['benchmark_reason'] = '$benchmark_reason'
 
-commit_range_str = '${{ steps.commit.outputs.commit_range }}'
-if commit_range_str:
-    data['commit_range'] = [c.strip() for c in commit_range_str.split(',') if c.strip()]
-else:
-    data['commit_range'] = ['${{ steps.commit.outputs.full_sha }}']
+            commit_range_str = '${{ steps.commit.outputs.commit_range }}'
+            if commit_range_str:
+                data['commit_range'] = [c.strip() for c in commit_range_str.split(',') if c.strip()]
+            else:
+                data['commit_range'] = ['${{ steps.commit.outputs.full_sha }}']
 
-with open('$enhanced_file', 'w') as f:
-    json.dump(data, f, indent=2)
-EOF
+            with open('$enhanced_file', 'w') as f:
+                json.dump(data, f, indent=2)
+            EOF
 
             # Create platform-specific history file if it doesn't exist
             history_file="perf-branch/benchmarks/history-$platform.json"
@@ -386,6 +374,7 @@ EOF
             # Push to perf branch (create if doesn't exist)
             # Only this job pushes, so no race conditions
             git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git HEAD:perf
+          fi
 
       - name: Summary
         run: |
@@ -397,7 +386,7 @@ EOF
           echo "" >> $GITHUB_STEP_SUMMARY
           for artifact_dir in artifacts/benchmark-results-*; do
             if [ -d "$artifact_dir" ]; then
-              platform=$(basename "$artifact_dir" | sed 's/benchmark-results-.*-//')
+              platform=$(basename "$artifact_dir" | sed 's/^benchmark-results-[^-]*-//')
               echo "- ✓ $platform" >> $GITHUB_STEP_SUMMARY
             fi
           done
