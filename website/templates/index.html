@@ -1,67 +1,130 @@
 {% extends "base.html" %}
 
 {% block content %}
-<section class="py-24 text-center">
-    <div class="max-w-5xl mx-auto px-6">
-        <h1 class="text-5xl md:text-6xl font-bold mb-4">{{ section.title }}</h1>
-        <p class="text-xl md:text-2xl text-muted mb-8">{{ section.extra.tagline }}</p>
-        <div class="flex flex-col sm:flex-row gap-4 justify-center">
-            <a href="{{ get_url(path='tutorial') }}" class="btn-primary">Get Started</a>
-<!-- Hardcoded path: spec is a static mdbook, not Zola content -->
-            <a href="/spec/" class="btn-secondary">Read the Spec</a>
+{% set status = load_data(path="static/status.json", format="json", required=false) %}
+
+<section class="hero max-w-5xl mx-auto px-6 pt-14 pb-12 grid grid-cols-1 md:grid-cols-12 gap-12 items-start">
+    <div class="md:col-span-7 reveal d1">
+        <h1 style="font-family: var(--font-display); font-weight: 420; font-size: clamp(2.1rem, 4.6vw, 3.2rem); line-height: 1.12; letter-spacing: -0.01em;" class="mb-6">
+            Rust proved memory safety without garbage collection is possible.<br>
+            <em style="font-weight: 460; color: var(--color-accent);">Can it also be easy?</em>
+        </h1>
+        <p class="text-lg mb-4" style="color: var(--color-muted); max-width: 30rem;">
+            <strong style="color: var(--color-fg);">We don’t know yet.</strong>
+            Rue is an early-stage research language exploring that question — a
+            systems language aiming for the same destination by a gentler path.
+            It is not ready for real projects, but the whole experiment runs in
+            the open, and you can watch.
+        </p>
+        <p class="mb-8" style="font-style: italic; color: var(--color-faint); max-width: 30rem; font-size: 0.95rem;">
+            Designed by <a href="https://steveklabnik.com" style="color: inherit;">Steve Klabnik</a>.
+            Implemented primarily by Claude, an AI. Every commit, spec rule, and
+            benchmark below is real and current.
+        </p>
+        <div class="flex gap-4 flex-wrap">
+            <a href="{{ get_url(path='tutorial') }}" class="btn-primary">Begin the tutorial</a>
+<!-- Hardcoded path: spec pages are copied into Zola content at build time -->
+            <a href="/spec/" class="btn-secondary">Read the spec</a>
         </div>
     </div>
-</section>
 
-<section class="py-16">
-    <div class="max-w-5xl mx-auto px-6 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {% for feature in section.extra.features %}
-        <div class="bg-surface border border-themed rounded-lg p-6">
-            <h2 class="text-lg font-semibold mb-2">{{ feature.title }}</h2>
-            <p class="text-muted text-sm leading-relaxed">{{ feature.description }}</p>
+    <aside class="md:col-span-5 field-report reveal d2" aria-label="Project status">
+        <span class="plate-no">Field Report</span>
+        <h2>The experiment, observed</h2>
+        {% if status %}
+        <p class="observed">as of trunk, {{ status.commit_date | default(value="today") | date(format="%-d %B %Y") }}</p>
+        <ul class="report-rows">
+            <li><span class="k">trunk</span><span class="leader"></span>
+                <span class="v">{{ status.commit | default(value="—") }} · commit {{ status.commit_count | default(value="—") }}</span></li>
+            {% if status.spec_rules %}
+            <li><span class="k">spec rules traced</span><span class="leader"></span>
+                <span class="v"><span class="ok">{{ status.spec_rules }} / {{ status.spec_rules }}</span></span></li>
+            {% endif %}
+            {% if status.spec_cases %}
+            <li><span class="k">spec test cases</span><span class="leader"></span>
+                <span class="v">{{ status.spec_cases }}</span></li>
+            {% endif %}
+            <li><span class="k">platforms</span><span class="leader"></span>
+                <span class="v">x86-64 · arm64 · macOS</span></li>
+        </ul>
+        {% if status.bench %}
+        <div class="sparkline-block">
+            <div class="spark-label"><b>compile time</b><span>benchmark suite · total ms{% if status.bench.n_runs > 1 %} · last {{ status.bench.n_runs }} runs{% endif %}</span></div>
+            <svg viewBox="0 0 300 52" preserveAspectRatio="none" role="img"
+                 aria-label="Compile time trend; latest total {{ status.bench.latest_ms }} milliseconds">
+                <polyline fill="none" stroke="var(--color-border-dark)" stroke-width="1" points="0,46 300,46"/>
+                {% if status.bench.n_runs > 1 %}
+                <polyline fill="none" stroke="var(--color-olive)" stroke-width="1.6"
+                          stroke-linejoin="round" points="{{ status.bench.points }}"/>
+                {% endif %}
+                <circle cx="{{ status.bench.last_x }}" cy="{{ status.bench.last_y }}" r="3" fill="var(--color-gold)"/>
+            </svg>
+            <div class="spark-label"><span></span><span>latest: <b style="color: var(--color-fg);">{{ status.bench.latest_ms }} ms</b></span></div>
         </div>
-        {% endfor %}
-    </div>
+        {% endif %}
+        {% else %}
+        <p class="observed">status data is generated at build time</p>
+        {% endif %}
+        <p class="report-foot">measurements taken on every commit — <a href="{{ get_url(path='performance') }}">full dashboard →</a></p>
+    </aside>
 </section>
 
-<section class="py-16 bg-surface">
-    <div class="max-w-4xl mx-auto px-6">
-        <h2 class="text-2xl font-semibold text-center mb-8">What is Rue?</h2>
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
-            <div>
-                <h3 class="text-lg font-semibold mb-3">The Question</h3>
-                <p class="text-muted text-sm leading-relaxed mb-4">
-                    Rust proved memory safety without garbage collection is possible.
-                    But its learning curve is steep. Can we find an easier path to the same destination?
-                </p>
-                <p class="text-muted text-sm leading-relaxed">
-                    We don't know yet. Rue is an early-stage research project exploring
-                    that question. It's not ready for real projects, but you can follow along
-                    as we figure it out.
-                </p>
+<section class="max-w-5xl mx-auto px-6 pb-14 grid grid-cols-1 md:grid-cols-12 gap-12 items-start">
+    <figure class="md:col-span-7 reveal d2" style="margin: 0;">
+        <div class="specimen">
+            <div class="specimen-head">
+                <span class="no">Specimen №&thinsp;1</span>
+                <span>fib.rue</span>
             </div>
-            <div>
-                <h3 class="text-lg font-semibold mb-3">The Experiment</h3>
-                <p class="text-muted text-sm leading-relaxed mb-4">
-                    Rue is also an experiment in human-AI collaboration. The language is designed
-                    by <a href="https://steveklabnik.com" class="text-accent hover:underline">Steve Klabnik</a>
-                    and implemented primarily by Claude, an AI assistant.
-                </p>
-                <p class="text-muted text-sm leading-relaxed">
-                    Read <a href="{{ get_url(path='blog/week-one') }}" class="text-accent hover:underline">the story</a>
-                    of how we went from zero to a working compiler in two weeks.
-                </p>
-            </div>
-        </div>
-    </div>
-</section>
-
-<section class="py-16">
-    <div class="max-w-3xl mx-auto px-6">
-        <h2 class="text-2xl font-semibold text-center mb-8">See It In Action</h2>
-        <div class="prose">
             {{ section.content | safe }}
         </div>
+        <figcaption class="specimen-caption">
+            <b>Fig. 1.</b> Compiles to a small static binary in well under a second.
+            No VM, no interpreter, no garbage collector.
+        </figcaption>
+    </figure>
+
+    <div class="md:col-span-5 reveal d3">
+        <h3 style="font-family: var(--font-display); font-weight: 480; font-size: 1.5rem;" class="mb-3">
+            Familiar on the surface, careful underneath.
+        </h3>
+        <p class="mb-4" style="color: var(--color-muted); font-size: 0.98rem;">
+            If you know Rust, Go, or C, the syntax will feel like home. Underneath,
+            Rue is exploring linear types, compile-time evaluation, and drop
+            tracking — the machinery of memory safety — while trying to keep the
+            learning curve shallow enough to walk up, not climb.
+        </p>
+        <p class="mb-5" style="color: var(--color-muted); font-size: 0.98rem;">
+            The compiler is written in Rust and emits x86-64 and ARM64 machine
+            code directly: no LLVM, direct syscalls, static ELF and Mach-O
+            executables.
+        </p>
+        <div class="run-line"><span class="prompt">$</span> rue fib.rue -o fib && ./fib</div>
     </div>
+</section>
+
+<div class="sprig-divider" role="presentation">
+    <svg viewBox="0 0 32 32"><use href="#rue-sprig"/></svg>
+</div>
+
+<section class="max-w-5xl mx-auto px-6 pt-12 pb-14">
+    <h2 class="section-title">Recent lab notes</h2>
+    {% set blog = get_section(path="blog/_index.md") %}
+    <ul class="note-list">
+        {% for post in blog.pages | slice(end=3) %}
+        <li>
+            <span class="note-date">{{ post.date | date(format="%Y · %m · %d") }}</span>
+            <div>
+                <a class="note-title" href="{{ post.permalink }}">{{ post.title }}</a>
+                {% if post.description %}
+                <p class="note-summary">{{ post.description }}</p>
+                {% elif post.summary %}
+                <p class="note-summary">{{ post.summary | striptags | truncate(length=180) }}</p>
+                {% endif %}
+            </div>
+        </li>
+        {% endfor %}
+    </ul>
+    <p class="mt-6" style="font-size: 0.9rem;"><a href="{{ get_url(path='blog') }}">All lab notes →</a></p>
 </section>
 {% endblock %}

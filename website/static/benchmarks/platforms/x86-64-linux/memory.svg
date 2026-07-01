@@ -1,12 +1,12 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 250" class="benchmark-chart">
   <style>
-    .chart-bg { fill: var(--chart-bg, #ffffff); }
-    .chart-text { fill: var(--chart-text, #6b7280); font-family: system-ui, sans-serif; }
-    .chart-title { fill: var(--chart-title, #1a1a1a); font-family: system-ui, sans-serif; font-weight: 600; }
+    .chart-bg { fill: var(--chart-bg, #f9f6ee); }
+    .chart-text { fill: var(--chart-text, #57543f); font-family: system-ui, sans-serif; }
+    .chart-title { fill: var(--chart-title, #23271c); font-family: system-ui, sans-serif; font-weight: 600; }
     .chart-line { stroke: var(--chart-memory, #10b981); fill: none; stroke-width: 2; }
     .chart-point { fill: var(--chart-memory, #10b981); }
-    .chart-grid { stroke: var(--chart-grid, #e5e7eb); stroke-width: 1; }
-    .chart-axis { stroke: var(--chart-axis, #9ca3af); stroke-width: 1; }
+    .chart-grid { stroke: var(--chart-grid, #d3cab0); stroke-width: 1; }
+    .chart-axis { stroke: var(--chart-axis, #8a8468); stroke-width: 1; }
     @media (prefers-color-scheme: dark) {
       .chart-bg { fill: #1a1a1a; }
       .chart-text { fill: #9ca3af; }

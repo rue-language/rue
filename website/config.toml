@@ -20,8 +20,8 @@ highlight_code = true
 highlight_theme = "css"
 extra_syntaxes_and_themes = ["syntaxes"]
 highlight_themes_css = [
-  { theme = "base16-ocean-dark", filename = "syntax-dark.css" },
-  { theme = "base16-ocean-light", filename = "syntax-light.css" },
+  { theme = "gruvbox-dark", filename = "syntax-dark.css" },
+  { theme = "gruvbox-light", filename = "syntax-light.css" },
 ]
 
 [extra]

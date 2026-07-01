@@ -46,13 +46,13 @@ COMPARISON_HEIGHT = 400
 
 # Colors for passes (consistent with website theme)
 PASS_COLORS = {
-    "lexer": "#4f6ddb",     # accent blue
-    "parser": "#7c9dff",    # lighter blue
-    "astgen": "#3b82f6",    # sky blue
-    "sema": "#06b6d4",      # cyan
-    "cfg": "#10b981",       # emerald
-    "codegen": "#f59e0b",   # amber
-    "linker": "#ef4444",    # red
+    "lexer": "#5c6b34",     # olive
+    "parser": "#7d8f4a",    # moss
+    "astgen": "#a3a25b",    # dry grass
+    "sema": "#c9970e",      # rue yellow
+    "cfg": "#8a6d2f",       # ochre
+    "codegen": "#a14e24",   # sienna
+    "linker": "#6b4788",    # plum
 }
 
 # Order of passes in the stack
@@ -60,9 +60,9 @@ PASS_ORDER = ["lexer", "parser", "astgen", "sema", "cfg", "codegen", "linker"]
 
 # Platform display names and colors
 PLATFORM_INFO = {
-    "x86-64-linux": {"name": "Linux x86-64", "color": "#4f6ddb"},
-    "aarch64-linux": {"name": "Linux ARM64", "color": "#10b981"},
-    "aarch64-macos": {"name": "macOS ARM64", "color": "#f59e0b"},
+    "x86-64-linux": {"name": "Linux x86-64", "color": "#5c6b34"},
+    "aarch64-linux": {"name": "Linux ARM64", "color": "#c9970e"},
+    "aarch64-macos": {"name": "macOS ARM64", "color": "#a14e24"},
 }
 
 
@@ -162,8 +162,8 @@ def generate_empty_chart(width: int, height: int, message: str) -> str:
     """Generate an SVG chart showing a message when no data is available."""
     return f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" class="benchmark-chart">
   <style>
-    .chart-bg {{ fill: var(--chart-bg, #ffffff); }}
-    .chart-text {{ fill: var(--chart-text, #6b7280); font-family: system-ui, sans-serif; }}
+    .chart-bg {{ fill: var(--chart-bg, #f9f6ee); }}
+    .chart-text {{ fill: var(--chart-text, #57543f); font-family: system-ui, sans-serif; }}
     @media (prefers-color-scheme: dark) {{
       .chart-bg {{ fill: #1a1a1a; }}
       .chart-text {{ fill: #9ca3af; }}
@@ -217,13 +217,13 @@ def generate_timeline_chart(runs: list[dict], platform: Optional[str] = None) ->
     svg_parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {TIMELINE_WIDTH} {TIMELINE_HEIGHT}" class="benchmark-chart">',
         '''  <style>
-    .chart-bg { fill: var(--chart-bg, #ffffff); }
-    .chart-text { fill: var(--chart-text, #6b7280); font-family: system-ui, sans-serif; }
-    .chart-title { fill: var(--chart-title, #1a1a1a); font-family: system-ui, sans-serif; font-weight: 600; }
-    .chart-line { stroke: var(--chart-accent, #4f6ddb); fill: none; stroke-width: 2; }
-    .chart-point { fill: var(--chart-accent, #4f6ddb); }
-    .chart-grid { stroke: var(--chart-grid, #e5e7eb); stroke-width: 1; }
-    .chart-axis { stroke: var(--chart-axis, #9ca3af); stroke-width: 1; }
+    .chart-bg { fill: var(--chart-bg, #f9f6ee); }
+    .chart-text { fill: var(--chart-text, #57543f); font-family: system-ui, sans-serif; }
+    .chart-title { fill: var(--chart-title, #23271c); font-family: system-ui, sans-serif; font-weight: 600; }
+    .chart-line { stroke: var(--chart-accent, #5c6b34); fill: none; stroke-width: 2; }
+    .chart-point { fill: var(--chart-accent, #5c6b34); }
+    .chart-grid { stroke: var(--chart-grid, #d3cab0); stroke-width: 1; }
+    .chart-axis { stroke: var(--chart-axis, #8a8468); stroke-width: 1; }
     @media (prefers-color-scheme: dark) {
       .chart-bg { fill: #1a1a1a; }
       .chart-text { fill: #9ca3af; }
@@ -360,11 +360,11 @@ def generate_multi_timeline_chart(runs: list[dict], benchmark_names: list[str]) 
     svg_parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {TIMELINE_WIDTH} {height}" class="benchmark-chart">',
         '''  <style>
-    .chart-bg { fill: var(--chart-bg, #ffffff); }
-    .chart-text { fill: var(--chart-text, #6b7280); font-family: system-ui, sans-serif; }
-    .chart-title { fill: var(--chart-title, #1a1a1a); font-family: system-ui, sans-serif; font-weight: 600; }
-    .chart-grid { stroke: var(--chart-grid, #e5e7eb); stroke-width: 1; }
-    .chart-axis { stroke: var(--chart-axis, #9ca3af); stroke-width: 1; }
+    .chart-bg { fill: var(--chart-bg, #f9f6ee); }
+    .chart-text { fill: var(--chart-text, #57543f); font-family: system-ui, sans-serif; }
+    .chart-title { fill: var(--chart-title, #23271c); font-family: system-ui, sans-serif; font-weight: 600; }
+    .chart-grid { stroke: var(--chart-grid, #d3cab0); stroke-width: 1; }
+    .chart-axis { stroke: var(--chart-axis, #8a8468); stroke-width: 1; }
     @media (prefers-color-scheme: dark) {
       .chart-bg { fill: #1a1a1a; }
       .chart-text { fill: #9ca3af; }
@@ -502,11 +502,11 @@ def generate_breakdown_chart(runs: list[dict], benchmark_name: Optional[str] = N
     svg_parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {BREAKDOWN_WIDTH} {BREAKDOWN_HEIGHT}" class="benchmark-chart">',
         '''  <style>
-    .chart-bg { fill: var(--chart-bg, #ffffff); }
-    .chart-text { fill: var(--chart-text, #6b7280); font-family: system-ui, sans-serif; }
-    .chart-title { fill: var(--chart-title, #1a1a1a); font-family: system-ui, sans-serif; font-weight: 600; }
-    .chart-grid { stroke: var(--chart-grid, #e5e7eb); stroke-width: 1; }
-    .chart-axis { stroke: var(--chart-axis, #9ca3af); stroke-width: 1; }
+    .chart-bg { fill: var(--chart-bg, #f9f6ee); }
+    .chart-text { fill: var(--chart-text, #57543f); font-family: system-ui, sans-serif; }
+    .chart-title { fill: var(--chart-title, #23271c); font-family: system-ui, sans-serif; font-weight: 600; }
+    .chart-grid { stroke: var(--chart-grid, #d3cab0); stroke-width: 1; }
+    .chart-axis { stroke: var(--chart-axis, #8a8468); stroke-width: 1; }
     @media (prefers-color-scheme: dark) {
       .chart-bg { fill: #1a1a1a; }
       .chart-text { fill: #9ca3af; }
@@ -608,13 +608,13 @@ def generate_memory_chart(runs: list[dict], platform: Optional[str] = None) -> s
     svg_parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {MEMORY_WIDTH} {MEMORY_HEIGHT}" class="benchmark-chart">',
         '''  <style>
-    .chart-bg { fill: var(--chart-bg, #ffffff); }
-    .chart-text { fill: var(--chart-text, #6b7280); font-family: system-ui, sans-serif; }
-    .chart-title { fill: var(--chart-title, #1a1a1a); font-family: system-ui, sans-serif; font-weight: 600; }
+    .chart-bg { fill: var(--chart-bg, #f9f6ee); }
+    .chart-text { fill: var(--chart-text, #57543f); font-family: system-ui, sans-serif; }
+    .chart-title { fill: var(--chart-title, #23271c); font-family: system-ui, sans-serif; font-weight: 600; }
     .chart-line { stroke: var(--chart-memory, #10b981); fill: none; stroke-width: 2; }
     .chart-point { fill: var(--chart-memory, #10b981); }
-    .chart-grid { stroke: var(--chart-grid, #e5e7eb); stroke-width: 1; }
-    .chart-axis { stroke: var(--chart-axis, #9ca3af); stroke-width: 1; }
+    .chart-grid { stroke: var(--chart-grid, #d3cab0); stroke-width: 1; }
+    .chart-axis { stroke: var(--chart-axis, #8a8468); stroke-width: 1; }
     @media (prefers-color-scheme: dark) {
       .chart-bg { fill: #1a1a1a; }
       .chart-text { fill: #9ca3af; }
@@ -716,13 +716,13 @@ def generate_binary_size_chart(runs: list[dict], platform: Optional[str] = None)
     svg_parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {BINARY_WIDTH} {BINARY_HEIGHT}" class="benchmark-chart">',
         '''  <style>
-    .chart-bg { fill: var(--chart-bg, #ffffff); }
-    .chart-text { fill: var(--chart-text, #6b7280); font-family: system-ui, sans-serif; }
-    .chart-title { fill: var(--chart-title, #1a1a1a); font-family: system-ui, sans-serif; font-weight: 600; }
+    .chart-bg { fill: var(--chart-bg, #f9f6ee); }
+    .chart-text { fill: var(--chart-text, #57543f); font-family: system-ui, sans-serif; }
+    .chart-title { fill: var(--chart-title, #23271c); font-family: system-ui, sans-serif; font-weight: 600; }
     .chart-line { stroke: var(--chart-binary, #f59e0b); fill: none; stroke-width: 2; }
     .chart-point { fill: var(--chart-binary, #f59e0b); }
-    .chart-grid { stroke: var(--chart-grid, #e5e7eb); stroke-width: 1; }
-    .chart-axis { stroke: var(--chart-axis, #9ca3af); stroke-width: 1; }
+    .chart-grid { stroke: var(--chart-grid, #d3cab0); stroke-width: 1; }
+    .chart-axis { stroke: var(--chart-axis, #8a8468); stroke-width: 1; }
     @media (prefers-color-scheme: dark) {
       .chart-bg { fill: #1a1a1a; }
       .chart-text { fill: #9ca3af; }
@@ -827,11 +827,11 @@ def generate_comparison_timeline_chart(platform_data: dict[str, list[dict]]) -> 
     svg_parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {COMPARISON_WIDTH} {COMPARISON_HEIGHT}" class="benchmark-chart">',
         '''  <style>
-    .chart-bg { fill: var(--chart-bg, #ffffff); }
-    .chart-text { fill: var(--chart-text, #6b7280); font-family: system-ui, sans-serif; }
-    .chart-title { fill: var(--chart-title, #1a1a1a); font-family: system-ui, sans-serif; font-weight: 600; }
-    .chart-grid { stroke: var(--chart-grid, #e5e7eb); stroke-width: 1; }
-    .chart-axis { stroke: var(--chart-axis, #9ca3af); stroke-width: 1; }
+    .chart-bg { fill: var(--chart-bg, #f9f6ee); }
+    .chart-text { fill: var(--chart-text, #57543f); font-family: system-ui, sans-serif; }
+    .chart-title { fill: var(--chart-title, #23271c); font-family: system-ui, sans-serif; font-weight: 600; }
+    .chart-grid { stroke: var(--chart-grid, #d3cab0); stroke-width: 1; }
+    .chart-axis { stroke: var(--chart-axis, #8a8468); stroke-width: 1; }
     @media (prefers-color-scheme: dark) {
       .chart-bg { fill: #1a1a1a; }
       .chart-text { fill: #9ca3af; }

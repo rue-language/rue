@@ -27,6 +27,11 @@ else
     find website/content/spec -name "*.md" -exec sed -i 's|@/\([0-9]\)|@/spec/\1|g' {} \;
 fi
 
+# Generate homepage status-board data (git info, spec rule counts, benchmark
+# sparkline). Degrades gracefully when inputs are missing.
+echo "Generating status data..."
+python3 "$ROOT/scripts/generate-site-status.py"
+
 # Generate benchmark charts for each platform
 echo "Generating benchmark charts..."
 BENCHMARKS_DIR="$ROOT/website/static/benchmarks"
