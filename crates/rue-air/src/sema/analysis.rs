@@ -123,7 +123,7 @@ fn analyze_all_function_bodies_sequential(sema: &mut Sema<'_>) -> MultiErrorResu
                 continue;
             }
 
-            // Skip generic functions - they'll be analyzed during specialization
+            // Skip functions with comptime parameters - they are analyzed per specialization
             if let Some(fn_info) = sema.functions.get(name) {
                 if fn_info.is_generic {
                     continue;
@@ -476,7 +476,7 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
                 None => continue, // Should not happen, but be defensive
             };
 
-            // Skip generic functions - they're analyzed during specialization
+            // Skip functions with comptime parameters - they are analyzed per specialization
             if fn_info.is_generic {
                 continue;
             }
@@ -1641,7 +1641,8 @@ impl<'a> Sema<'a> {
     ///
     /// This is similar to `analyze_function` but for generic function specialization.
     /// The `type_subst` map provides substitutions for type parameters to their
-    /// concrete types.
+    /// concrete types; the `value_subst` map provides the concrete values of the
+    /// comptime value parameters (RUE-166).
     ///
     /// For example, when specializing `fn identity<T>(x: T) -> T { x }` with `T = i32`,
     /// the `params` will be `[(x, i32, Normal)]` and `return_type` will be `i32`.
@@ -1652,6 +1653,7 @@ impl<'a> Sema<'a> {
         params: &[(Spur, Type, RirParamMode, bool)],
         body: InstRef,
         type_subst: &std::collections::HashMap<Spur, Type>,
+        value_subst: &std::collections::HashMap<Spur, ConstValue>,
     ) -> CompileResult<(
         Air,
         u32,
@@ -1664,14 +1666,17 @@ impl<'a> Sema<'a> {
     )> {
         // For specialized functions, we need to populate comptime_type_vars with the
         // type substitutions so that references to type parameters (like `P { ... }`)
-        // can be resolved in the function body.
+        // can be resolved in the function body, and comptime_value_vars with the
+        // value substitutions so comptime contexts (comptime blocks, arguments to
+        // further comptime parameters, comptime-known branch conditions) see the
+        // concrete values.
         self.analyze_function_internal(
             infer_ctx,
             return_type,
             params,
             body,
             Some(type_subst),
-            None,
+            Some(value_subst),
             false,
         )
     }
@@ -1805,6 +1810,12 @@ impl<'a> Sema<'a> {
 
         // Add comptime value variables as if they were parameters
         // This allows constraint generation to see captured comptime values
+        // (anonymous-struct methods capturing `comptime N` from the enclosing
+        // function). Real parameters keep their declared type: in a
+        // value-specialized body (RUE-166) the comptime value parameter is
+        // also a runtime parameter with a precise type (e.g. `comptime n:
+        // i64`), which the fallback below (i32 for any integer) must not
+        // clobber.
         if let Some(values) = value_subst {
             for (name, const_val) in values {
                 let ty = match const_val {
@@ -1813,12 +1824,9 @@ impl<'a> Sema<'a> {
                     ConstValue::Type(t) => *t,
                     ConstValue::Unit => Type::UNIT,
                 };
-                param_vars.insert(
-                    *name,
-                    ParamVarInfo {
-                        ty: self.type_to_infer_type(ty),
-                    },
-                );
+                param_vars.entry(*name).or_insert(ParamVarInfo {
+                    ty: self.type_to_infer_type(ty),
+                });
             }
         }
 
@@ -2944,6 +2952,15 @@ impl<'a> Sema<'a> {
             accessible,
             span,
         )?;
+
+        // Functions with comptime parameters need specialization: a plain
+        // Call to the base name would reference a body that is never
+        // analyzed (generic bodies are only materialized per specialization,
+        // RUE-166). Delegate to the unqualified call path, which emits
+        // CallGeneric; module membership and accessibility were checked above.
+        if fn_info.is_generic {
+            return self.analyze_call(air, function_name, args_start, args_len, span, ctx);
+        }
 
         // Check for exclusive access violation. (The old, pre-deduplication
         // copy of this function skipped this check entirely.)

@@ -818,12 +818,18 @@ pub enum AirInstData {
 
     /// Generic function call - requires specialization before codegen.
     ///
-    /// This is emitted when calling a function with `comptime T: type` parameters.
-    /// During a post-analysis specialization pass, this is rewritten to a regular
-    /// `Call` to a specialized version of the function (e.g., `identity__i32`).
+    /// This is emitted when calling a function with `comptime` parameters
+    /// (type parameters like `comptime T: type` or value parameters like
+    /// `comptime n: i32`, RUE-166). During a post-analysis specialization
+    /// pass, this is rewritten to a regular `Call` to a specialized version
+    /// of the function (e.g., `identity__i32`, `fact__v5`).
     ///
-    /// The type_args are encoded in the extra array as raw Type discriminant values.
-    /// The runtime args (non-comptime) are also in the extra array, after type_args.
+    /// The type_args are encoded in the extra array as raw Type discriminant
+    /// values. The comptime value arguments are encoded in the extra array as
+    /// a tagged word stream (see `specialize::encode_const_values`). The
+    /// runtime args are also in the extra array; comptime value arguments
+    /// remain part of the runtime argument list (they are still passed at
+    /// runtime), while type arguments are erased.
     CallGeneric {
         /// Base function name (interned symbol)
         name: Spur,
@@ -831,6 +837,10 @@ pub enum AirInstData {
         type_args_start: u32,
         /// Number of type arguments
         type_args_len: u32,
+        /// Start index into extra array for encoded comptime value arguments
+        value_args_start: u32,
+        /// Number of words (not values) in the encoded value-argument stream
+        value_args_len: u32,
         /// Start index into extra array for runtime arguments
         args_start: u32,
         /// Number of runtime arguments
@@ -1169,6 +1179,8 @@ impl fmt::Display for Air {
                     name,
                     type_args_start,
                     type_args_len,
+                    value_args_start,
+                    value_args_len,
                     args_start,
                     args_len,
                 } => {
@@ -1180,6 +1192,19 @@ impl fmt::Display for Air {
                         }
                         let type_val = self.extra[(*type_args_start + i) as usize];
                         write!(f, "type#{}", type_val)?;
+                    }
+                    // Show comptime value arguments (decoded from the tagged
+                    // word stream, see specialize::encode_const_values)
+                    for (i, value) in crate::specialize::decode_const_values(
+                        self.get_extra(*value_args_start, *value_args_len),
+                    )
+                    .iter()
+                    .enumerate()
+                    {
+                        if i > 0 || *type_args_len > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "value {:?}", value)?;
                     }
                     write!(f, ">(")?;
                     // Show runtime arguments

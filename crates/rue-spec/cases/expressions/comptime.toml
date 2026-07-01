@@ -1347,3 +1347,139 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = "type mismatch"
+
+# =============================================================================
+# Per-Value Specialization of Comptime Value Parameters (RUE-166)
+# =============================================================================
+# Each distinct comptime value argument creates its own specialized function
+# body, in which the parameter is a compile-time constant.
+
+[[case]]
+name = "comptime_param_usable_in_comptime_block"
+spec = ["4.14:5"]
+description = "A comptime value parameter is a compile-time constant inside the body's comptime blocks"
+source = """
+fn f(comptime n: i32) -> i32 {
+    comptime { n + 1 }
+}
+fn main() -> i32 {
+    f(41)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_param_two_distinct_values_specialize"
+spec = ["4.14:5"]
+description = "Two distinct comptime values produce two specializations with distinct symbols (no duplicate-symbol link error, RUE-100)"
+source = """
+fn f(comptime n: i32) -> i32 {
+    comptime { n * n }
+}
+fn main() -> i32 {
+    f(4) + f(5) + 1
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_param_same_value_deduplicated"
+spec = ["4.14:5"]
+description = "Repeated calls with the same comptime value share one specialization"
+source = """
+fn f(comptime n: i32) -> i32 {
+    comptime { n + 7 }
+}
+fn main() -> i32 {
+    f(14) + f(14)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_param_forward_derived_expression"
+spec = ["4.14:5"]
+description = "An expression over a comptime parameter is itself comptime-known and can be forwarded"
+source = """
+fn g(comptime m: i32) -> i32 { m * 2 }
+fn f(comptime n: i32) -> i32 { g(n + 1) }
+fn main() -> i32 {
+    f(20)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_param_i64_specialization"
+spec = ["4.14:5"]
+description = "Comptime value parameters keep their declared type in the specialized body (i64, not i32)"
+source = """
+fn double(comptime n: i64) -> i64 {
+    n * 2
+}
+fn main() -> i32 {
+    if double(3000000000) == 6000000000 { 42 } else { 0 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_if_selects_branch_recursion"
+spec = ["4.14:17"]
+description = "A comptime-known if selects its branch at compile time, letting comptime recursion terminate"
+source = """
+fn fact(comptime n: i32) -> i32 {
+    if n <= 1 { 1 } else { n * fact(n - 1) }
+}
+fn main() -> i32 {
+    if fact(5) == 120 { 42 } else { 0 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_if_false_branch_no_else"
+spec = ["4.14:17"]
+description = "A comptime-known false condition with no else contributes unit and compiles nothing"
+source = """
+fn f(comptime n: i32) -> i32 {
+    if n > 100 {
+        return 0;
+    }
+    n
+}
+fn main() -> i32 {
+    f(42)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_recursion_depth_limit"
+spec = ["4.14:18"]
+description = "Comptime recursion without a compile-time-known base case is diagnosed, not an infinite loop"
+source = """
+fn runaway(comptime n: i32) -> i32 {
+    runaway(n + 1)
+}
+fn main() -> i32 {
+    runaway(0)
+}
+"""
+compile_fail = true
+error_contains = "exceeded the maximum"
+
+[[case]]
+name = "comptime_recursion_depth_limit_deep_base_case"
+spec = ["4.14:18"]
+description = "A base case beyond the maximum specialization depth is diagnosed cleanly (no hang)"
+source = """
+fn count(comptime n: i32) -> i32 {
+    if n <= 0 { 0 } else { 1 + count(n - 1) }
+}
+fn main() -> i32 {
+    count(1000000)
+}
+"""
+compile_fail = true
+error_contains = "exceeded the maximum"
