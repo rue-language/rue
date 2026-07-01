@@ -36,7 +36,10 @@
       "Bash(ls:*)",
       "Bash(wc:*)",
       "Bash(head:*)",
-      "Bash(tail:*)"
+      "Bash(tail:*)",
+      "Bash(rm /tmp/*)",
+      "Bash(rm -f /tmp/*)",
+      "Bash(rm -rf /tmp/claude-1000/*)"
     ]
   },
   "hooks": {
