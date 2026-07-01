@@ -159,6 +159,17 @@ impl<'a> Sema<'a> {
             )?;
             Ok(Type::new_struct(struct_id))
         } else if let Some(&enum_id) = self.enums.get(&type_sym) {
+            // Privacy (E0460, RUE-185): same rule for enums — an unqualified
+            // type reference must not reach a private enum defined in another
+            // directory.
+            let enum_def = self.type_pool.enum_def(enum_id);
+            self.check_unqualified_visibility(
+                "enum",
+                type_name,
+                enum_def.file_id,
+                enum_def.is_pub,
+                span,
+            )?;
             Ok(Type::new_enum(enum_id))
         } else {
             // Check for array type syntax: [T; N]

@@ -181,11 +181,16 @@ pub enum PatternKind {
     Path = 3,
 }
 
-/// Size of each pattern kind in the extra array (including body InstRef)
-const PATTERN_WILDCARD_SIZE: u32 = 4; // kind, span_start, span_len, body
-const PATTERN_INT_SIZE: u32 = 7; // kind, span_start, span_len, value_lo, value_hi, negative, body
-const PATTERN_BOOL_SIZE: u32 = 5; // kind, span_start, span_len, value, body
-const PATTERN_PATH_SIZE: u32 = 7; // kind, span_start, span_len, module, type_name, variant, body
+/// Size of each pattern kind in the extra array (including body InstRef).
+///
+/// The span is stored as three words — start, len, AND file id — so pattern
+/// diagnostics in multi-file compilations attribute to the right file
+/// (dropping the file id here was why pattern-anchored errors reported
+/// "span has an unknown file id", RUE-185).
+const PATTERN_WILDCARD_SIZE: u32 = 5; // kind, span_start, span_len, span_file, body
+const PATTERN_INT_SIZE: u32 = 8; // kind, span_start, span_len, span_file, value_lo, value_hi, negative, body
+const PATTERN_BOOL_SIZE: u32 = 6; // kind, span_start, span_len, span_file, value, body
+const PATTERN_PATH_SIZE: u32 = 8; // kind, span_start, span_len, span_file, module, type_name, variant, body
 
 /// Stored representation of struct field initializer.
 /// Layout: [field_name: u32, value: u32] = 2 u32s per field
@@ -398,6 +403,7 @@ impl Rir {
                     self.extra.push(PatternKind::Wildcard as u32);
                     self.extra.push(span.start());
                     self.extra.push(span.len());
+                    self.extra.push(span.file_id.index());
                     self.extra.push(body.as_u32());
                 }
                 RirPattern::Int {
@@ -408,6 +414,7 @@ impl Rir {
                     self.extra.push(PatternKind::Int as u32);
                     self.extra.push(span.start());
                     self.extra.push(span.len());
+                    self.extra.push(span.file_id.index());
                     // Store u64 magnitude as two u32s (little-endian) plus sign flag
                     self.extra.push(*value as u32);
                     self.extra.push((*value >> 32) as u32);
@@ -418,6 +425,7 @@ impl Rir {
                     self.extra.push(PatternKind::Bool as u32);
                     self.extra.push(span.start());
                     self.extra.push(span.len());
+                    self.extra.push(span.file_id.index());
                     self.extra.push(if *value { 1 } else { 0 });
                     self.extra.push(body.as_u32());
                 }
@@ -430,6 +438,7 @@ impl Rir {
                     self.extra.push(PatternKind::Path as u32);
                     self.extra.push(span.start());
                     self.extra.push(span.len());
+                    self.extra.push(span.file_id.index());
                     // Store module as u32::MAX for None, otherwise the InstRef
                     self.extra.push(module.map_or(u32::MAX, |r| r.as_u32()));
                     self.extra.push(type_name.into_usize() as u32);
@@ -441,6 +450,16 @@ impl Rir {
         (start, arms.len() as u32)
     }
 
+    /// Decode a pattern's span from the extra array. Every pattern kind
+    /// stores its span as [start, len, file_id] at offsets 1..=3 after the
+    /// kind word (see the `PATTERN_*_SIZE` layout comments).
+    fn decode_pattern_span(extra: &[u32], pos: usize) -> Span {
+        let span_start = extra[pos + 1];
+        let span_len = extra[pos + 2];
+        let file_id = rue_span::FileId::new(extra[pos + 3]);
+        Span::with_file(file_id, span_start, span_start + span_len)
+    }
+
     /// Retrieve match arms from the extra array.
     pub fn get_match_arms(&self, start: u32, arm_count: u32) -> Vec<(RirPattern, InstRef)> {
         let mut arms = Vec::with_capacity(arm_count as usize);
@@ -450,22 +469,18 @@ impl Rir {
             let kind = self.extra[pos];
             match kind {
                 k if k == PatternKind::Wildcard as u32 => {
-                    let span_start = self.extra[pos + 1];
-                    let span_len = self.extra[pos + 2];
-                    let span = Span::new(span_start, span_start + span_len);
-                    let body = InstRef::from_raw(self.extra[pos + 3]);
+                    let span = Self::decode_pattern_span(&self.extra, pos);
+                    let body = InstRef::from_raw(self.extra[pos + 4]);
                     arms.push((RirPattern::Wildcard(span), body));
                     pos += PATTERN_WILDCARD_SIZE as usize;
                 }
                 k if k == PatternKind::Int as u32 => {
-                    let span_start = self.extra[pos + 1];
-                    let span_len = self.extra[pos + 2];
-                    let span = Span::new(span_start, span_start + span_len);
-                    let value_lo = self.extra[pos + 3] as u64;
-                    let value_hi = self.extra[pos + 4] as u64;
+                    let span = Self::decode_pattern_span(&self.extra, pos);
+                    let value_lo = self.extra[pos + 4] as u64;
+                    let value_hi = self.extra[pos + 5] as u64;
                     let value = value_lo | (value_hi << 32);
-                    let negative = self.extra[pos + 5] != 0;
-                    let body = InstRef::from_raw(self.extra[pos + 6]);
+                    let negative = self.extra[pos + 6] != 0;
+                    let body = InstRef::from_raw(self.extra[pos + 7]);
                     arms.push((
                         RirPattern::Int {
                             value,
@@ -477,28 +492,24 @@ impl Rir {
                     pos += PATTERN_INT_SIZE as usize;
                 }
                 k if k == PatternKind::Bool as u32 => {
-                    let span_start = self.extra[pos + 1];
-                    let span_len = self.extra[pos + 2];
-                    let span = Span::new(span_start, span_start + span_len);
-                    let value = self.extra[pos + 3] != 0;
-                    let body = InstRef::from_raw(self.extra[pos + 4]);
+                    let span = Self::decode_pattern_span(&self.extra, pos);
+                    let value = self.extra[pos + 4] != 0;
+                    let body = InstRef::from_raw(self.extra[pos + 5]);
                     arms.push((RirPattern::Bool(value, span), body));
                     pos += PATTERN_BOOL_SIZE as usize;
                 }
                 k if k == PatternKind::Path as u32 => {
-                    let span_start = self.extra[pos + 1];
-                    let span_len = self.extra[pos + 2];
-                    let span = Span::new(span_start, span_start + span_len);
+                    let span = Self::decode_pattern_span(&self.extra, pos);
                     // Decode module: u32::MAX means None
-                    let module_raw = self.extra[pos + 3];
+                    let module_raw = self.extra[pos + 4];
                     let module = if module_raw == u32::MAX {
                         None
                     } else {
                         Some(InstRef::from_raw(module_raw))
                     };
-                    let type_name = Spur::try_from_usize(self.extra[pos + 4] as usize).unwrap();
-                    let variant = Spur::try_from_usize(self.extra[pos + 5] as usize).unwrap();
-                    let body = InstRef::from_raw(self.extra[pos + 6]);
+                    let type_name = Spur::try_from_usize(self.extra[pos + 5] as usize).unwrap();
+                    let variant = Spur::try_from_usize(self.extra[pos + 6] as usize).unwrap();
+                    let body = InstRef::from_raw(self.extra[pos + 7]);
                     arms.push((
                         RirPattern::Path {
                             module,
@@ -1164,12 +1175,13 @@ impl Rir {
                             k if k == PatternKind::Path as u32 => PATTERN_PATH_SIZE as usize,
                             _ => panic!("Unknown pattern kind during merge: {}", kind),
                         };
-                        // Path patterns also embed a module InstRef at offset 3
-                        // (u32::MAX encodes None); it must be renumbered like
-                        // every other InstRef or it would point into the wrong
-                        // file's instruction space after merging.
-                        if kind == PatternKind::Path as u32 && extra[pos + 3] != u32::MAX {
-                            extra[pos + 3] += inst_offset;
+                        // Path patterns also embed a module InstRef at offset 4
+                        // (after kind + the 3-word span; u32::MAX encodes
+                        // None); it must be renumbered like every other
+                        // InstRef or it would point into the wrong file's
+                        // instruction space after merging.
+                        if kind == PatternKind::Path as u32 && extra[pos + 4] != u32::MAX {
+                            extra[pos + 4] += inst_offset;
                         }
                         // The body InstRef is always the last element of each pattern
                         extra[pos + pattern_size - 1] += inst_offset;

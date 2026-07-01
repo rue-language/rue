@@ -56,13 +56,13 @@ impl Sema<'_> {
     }
 
     /// Check that an *unqualified* reference may reach the item (RUE-37,
-    /// RUE-180, RUE-183).
+    /// RUE-180, RUE-183, RUE-185).
     ///
     /// All loaded files share one flat global namespace for *name
     /// resolution* (spec 10.5:2, transitional), but privacy is uniform in
     /// every multi-file compilation, imports or not (spec 10.3:7), and it
-    /// covers every item kind — functions, structs, and constants alike
-    /// (spec 10.3:1):
+    /// covers every item kind — functions, structs, enums, and constants
+    /// alike (spec 10.3:1):
     ///
     /// - If the item is accessible per [`Sema::is_accessible`] (it is
     ///   `pub`, or the reference is in the item's directory — ADR-0026
@@ -72,7 +72,7 @@ impl Sema<'_> {
     ///   listed on the command line makes no difference.
     ///
     /// `item_kind` names the kind in the diagnostic ("function", "struct",
-    /// "constant").
+    /// "enum", "constant").
     pub(crate) fn check_unqualified_visibility(
         &self,
         item_kind: &str,

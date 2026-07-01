@@ -95,7 +95,7 @@ rue main.rue utils.rue lib.rue -o program
 
 **Key semantics:**
 - All top-level names resolve across files without imports (flat namespace),
-  but privacy is uniform (spec 10.3:7): an item — function, struct, or
+  but privacy is uniform (spec 10.3:7): an item — function, struct, enum, or
   constant — is usable outside its defining directory only if `pub`, whether
   its file is imported or just listed (E0460 otherwise; through a module
   object it's E0706)

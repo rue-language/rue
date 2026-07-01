@@ -1188,12 +1188,29 @@ impl<'a> Sema<'a> {
                         self.resolve_enum_through_module(*module_ref, *type_name, pattern_span)?
                     } else {
                         // Unqualified access: EnumName::Variant
-                        *self.enums.get(type_name).ok_or_compile_error(
+                        let enum_id = *self.enums.get(type_name).ok_or_compile_error(
                             ErrorKind::UnknownEnumType(
                                 self.interner.resolve(&*type_name).to_string(),
                             ),
                             pattern_span,
-                        )?
+                        )?;
+                        // Privacy (E0460, RUE-185): a match pattern names the
+                        // enum unqualified, so a private enum from another
+                        // directory cannot be matched on — privacy is uniform
+                        // across item kinds (spec 10.3:1, 10.3:7). The
+                        // module-qualified branch above does its own check
+                        // (E0706). The pattern-to-AIR conversion later in
+                        // this loop re-resolves the same name but runs only
+                        // after this check has passed.
+                        let def = self.type_pool.enum_def(enum_id);
+                        self.check_unqualified_visibility(
+                            "enum",
+                            self.interner.resolve(&*type_name),
+                            def.file_id,
+                            def.is_pub,
+                            pattern_span,
+                        )?;
+                        enum_id
                     };
                     let enum_def = self.type_pool.enum_def(enum_id);
 
@@ -3351,10 +3368,25 @@ impl<'a> Sema<'a> {
                     self.resolve_enum_through_module(*module_ref, *type_name, inst.span)?
                 } else {
                     // Unqualified access: EnumName::Variant
-                    *self.enums.get(type_name).ok_or_compile_error(
+                    let enum_id = *self.enums.get(type_name).ok_or_compile_error(
                         ErrorKind::UnknownEnumType(self.interner.resolve(&*type_name).to_string()),
                         inst.span,
-                    )?
+                    )?;
+                    // Privacy (E0460, RUE-185): constructing a variant names
+                    // the enum unqualified, so a private enum from another
+                    // directory is not constructible here — privacy is
+                    // uniform across item kinds (spec 10.3:1, 10.3:7). The
+                    // module-qualified branch above does its own check
+                    // (E0706, `resolve_enum_through_module`).
+                    let def = self.type_pool.enum_def(enum_id);
+                    self.check_unqualified_visibility(
+                        "enum",
+                        self.interner.resolve(&*type_name),
+                        def.file_id,
+                        def.is_pub,
+                        inst.span,
+                    )?;
+                    enum_id
                 };
                 let enum_def = self.type_pool.enum_def(enum_id);
 
