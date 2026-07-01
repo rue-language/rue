@@ -2915,6 +2915,24 @@ impl<'a> CfgLower<'a> {
         self.mir.push(Aarch64Inst::Label { id: ok_label });
     }
 
+    /// Push a register-register compare at the width of the compared value:
+    /// `Cmp64RR` (x-registers) for 64-bit values, `CmpRR` (w-registers)
+    /// otherwise. Range checks on 64-bit sources must not use the 32-bit
+    /// form, which compares only the low half (RUE-31).
+    fn push_cmp_rr(&mut self, src1: VReg, src2: VReg, bits: u32) {
+        if bits > 32 {
+            self.mir.push(Aarch64Inst::Cmp64RR {
+                src1: Operand::Virtual(src1),
+                src2: Operand::Virtual(src2),
+            });
+        } else {
+            self.mir.push(Aarch64Inst::CmpRR {
+                src1: Operand::Virtual(src1),
+                src2: Operand::Virtual(src2),
+            });
+        }
+    }
+
     /// Emit integer cast range check.
     ///
     /// Checks if the source value can be represented in the target type.
@@ -2958,10 +2976,10 @@ impl<'a> CfgLower<'a> {
                         dst: Operand::Virtual(min_vreg),
                         imm: min_val,
                     });
-                    self.mir.push(Aarch64Inst::CmpRR {
-                        src1: Operand::Virtual(src_vreg),
-                        src2: Operand::Virtual(min_vreg),
-                    });
+                    // A 64-bit source needs a 64-bit compare: the 32-bit CmpRR
+                    // only sees the low half, so e.g. 2^32 would pass an i32
+                    // range check and silently truncate (RUE-31).
+                    self.push_cmp_rr(src_vreg, min_vreg, from_bits);
                     // For signed comparison, branch if greater or equal
                     self.mir.push(Aarch64Inst::BCond {
                         cond: Cond::Ge,
@@ -2980,10 +2998,7 @@ impl<'a> CfgLower<'a> {
                         dst: Operand::Virtual(max_vreg),
                         imm: max_val,
                     });
-                    self.mir.push(Aarch64Inst::CmpRR {
-                        src1: Operand::Virtual(src_vreg),
-                        src2: Operand::Virtual(max_vreg),
-                    });
+                    self.push_cmp_rr(src_vreg, max_vreg, from_bits);
                     // For signed comparison, branch if less or equal
                     self.mir.push(Aarch64Inst::BCond {
                         cond: Cond::Le,
@@ -3052,10 +3067,7 @@ impl<'a> CfgLower<'a> {
                         dst: Operand::Virtual(max_vreg),
                         imm: max_val,
                     });
-                    self.mir.push(Aarch64Inst::CmpRR {
-                        src1: Operand::Virtual(src_vreg),
-                        src2: Operand::Virtual(max_vreg),
-                    });
+                    self.push_cmp_rr(src_vreg, max_vreg, from_bits);
                     // Unsigned comparison for upper bound check
                     self.mir.push(Aarch64Inst::BCond {
                         cond: Cond::Ls, // Ls = unsigned less or same
@@ -3078,10 +3090,7 @@ impl<'a> CfgLower<'a> {
                     dst: Operand::Virtual(max_vreg),
                     imm: max_val,
                 });
-                self.mir.push(Aarch64Inst::CmpRR {
-                    src1: Operand::Virtual(src_vreg),
-                    src2: Operand::Virtual(max_vreg),
-                });
+                self.push_cmp_rr(src_vreg, max_vreg, from_bits);
                 // Unsigned comparison (Ls = below or same)
                 self.mir.push(Aarch64Inst::BCond {
                     cond: Cond::Ls,
@@ -3100,10 +3109,7 @@ impl<'a> CfgLower<'a> {
                         dst: Operand::Virtual(max_vreg),
                         imm: max_val,
                     });
-                    self.mir.push(Aarch64Inst::CmpRR {
-                        src1: Operand::Virtual(src_vreg),
-                        src2: Operand::Virtual(max_vreg),
-                    });
+                    self.push_cmp_rr(src_vreg, max_vreg, from_bits);
                     self.mir.push(Aarch64Inst::BCond {
                         cond: Cond::Ls,
                         label: ok_label,
