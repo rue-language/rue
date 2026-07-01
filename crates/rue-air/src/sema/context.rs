@@ -593,6 +593,13 @@ pub(crate) struct ReceiverInfo {
     /// The root variable symbol if the receiver is a variable reference.
     /// Used to track moves and "unmove" for borrow semantics.
     pub var: Option<Spur>,
+    /// The move state of `var` captured BEFORE the receiver expression was
+    /// analyzed (`None` = the variable had no move state). ByRef/ByMutRef
+    /// methods restore this snapshot to undo exactly the move the receiver
+    /// analysis recorded — a whole-map `remove` would also erase earlier,
+    /// unrelated moves of sibling fields (`consume(w.s); w.t.len()` must not
+    /// forget that `w.s` is moved — RUE-33).
+    pub move_state_before: Option<VariableMoveState>,
     /// Storage location for mutation methods that need to write back.
     /// Only set when the receiver is a mutable lvalue and the method mutates.
     pub storage: Option<StringReceiverStorage>,

@@ -822,6 +822,11 @@ impl<'a> Sema<'a> {
         ctx.loop_depth -= 1;
         ctx.pop_scope();
 
+        // A while loop discards its body's result value on every iteration;
+        // discarding a value that carries a linear value would implicitly
+        // drop it (RUE-176).
+        self.reject_discarded_linear_value(body_result.ty, body)?;
+
         // Loop back-edge move check: if the loop changed any move state,
         // re-run the analysis once with the post-body state as the starting
         // state. Any use of a value moved by a previous iteration then errors.
@@ -877,6 +882,11 @@ impl<'a> Sema<'a> {
         let has_break = ctx.loop_break_stack.pop().unwrap_or(false);
         ctx.loop_depth -= 1;
         ctx.pop_scope();
+
+        // The loop discards its body's result value on every iteration;
+        // discarding a value that carries a linear value would implicitly
+        // drop it (RUE-176).
+        self.reject_discarded_linear_value(body_result.ty, body)?;
 
         // Loop back-edge move check (see analyze_while_loop for details).
         // Note: like Rust, this is conservative - a body that unconditionally
@@ -1462,6 +1472,10 @@ impl<'a> Sema<'a> {
             if is_last {
                 last_result = Some(result);
             } else {
+                // A non-final statement's value is discarded. Discarding a
+                // value that carries a linear value would implicitly drop it
+                // (`make_linear();` — RUE-176), which linearity forbids.
+                self.reject_discarded_linear_value(result.ty, inst_ref)?;
                 statements.push(result.air_ref);
             }
         }
