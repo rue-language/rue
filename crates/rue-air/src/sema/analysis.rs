@@ -1405,7 +1405,15 @@ impl<'a> Sema<'a> {
             local_strings,
             ref_fns,
             ref_meths,
-        ) = self.analyze_function(infer_ctx, Type::UNIT, &param_info, body)?;
+        ) = self.analyze_function_internal(
+            infer_ctx,
+            Type::UNIT,
+            &param_info,
+            body,
+            None,
+            None,
+            /* is_destructor */ true,
+        )?;
 
         reject_self_move_in_destructor(&air, full_name)?;
 
@@ -1451,7 +1459,7 @@ impl<'a> Sema<'a> {
         HashSet<Spur>,
         HashSet<(StructId, Spur)>,
     )> {
-        self.analyze_function_internal(infer_ctx, return_type, params, body, None, None)
+        self.analyze_function_internal(infer_ctx, return_type, params, body, None, None, false)
     }
 
     /// Internal function analysis with optional type substitutions.
@@ -1459,6 +1467,13 @@ impl<'a> Sema<'a> {
     /// When `type_subst` is provided (for specialized generic functions), it populates
     /// `comptime_type_vars` so that type parameters can be resolved in struct initialization
     /// (e.g., `P { x: 1, y: 2 }` where `P` is a type parameter).
+    ///
+    /// `is_destructor` exempts the function from the linear-parameter
+    /// must-consume check: a destructor's `self` is disposed of by the drop
+    /// glue after the body runs, and moving it out is rejected anyway
+    /// (RUE-139), so requiring consumption would make destructors on linear
+    /// types impossible to write.
+    #[allow(clippy::too_many_arguments)]
     fn analyze_function_internal(
         &mut self,
         infer_ctx: &InferenceContext,
@@ -1467,6 +1482,7 @@ impl<'a> Sema<'a> {
         body: InstRef,
         type_subst: Option<&std::collections::HashMap<Spur, Type>>,
         value_subst: Option<&std::collections::HashMap<Spur, ConstValue>>,
+        is_destructor: bool,
     ) -> CompileResult<(
         Air,
         u32,
@@ -1569,6 +1585,37 @@ impl<'a> Sema<'a> {
         // Analyze the body expression, emitting AIR with resolved types
         let body_result = self.analyze_inst(&mut air, body, &mut ctx)?;
 
+        // Linear parameters: the callee owns its pass-by-value parameters and
+        // drops them at exit unless moved out (RUE-61), so a by-value
+        // parameter carrying a linear value must be consumed by the body on
+        // every path — exactly like a linear local (RUE-176). Inout/borrow
+        // parameters stay owned by the caller and comptime parameters are
+        // substituted away; destructors are exempt (see the doc comment).
+        if !is_destructor {
+            for p in &param_vec {
+                if p.mode != RirParamMode::Normal || p.is_comptime {
+                    continue;
+                }
+                if !self.type_carries_linear(p.ty) {
+                    continue;
+                }
+                let state = ctx.moved_vars.get(&p.name);
+                if !state.is_some_and(|s| s.full_move_on_all_paths) {
+                    let name = self.interner.resolve(&p.name);
+                    let err = linear_not_consumed_error(
+                        name,
+                        self.rir.get(body).span,
+                        state.and_then(|s| s.full_move),
+                    )
+                    .with_note(format!(
+                        "parameter '{name}' is passed by value, so this function owns it \
+                         and must consume it (pass it on, return it, or destructure it)"
+                    ));
+                    return Err(self.attach_infectious_linear_note(err, p.ty));
+                }
+            }
+        }
+
         // Add implicit return only if body doesn't already diverge (e.g., explicit return)
         if body_result.ty != Type::NEVER {
             air.add_inst(AirInst {
@@ -1618,7 +1665,15 @@ impl<'a> Sema<'a> {
         // For specialized functions, we need to populate comptime_type_vars with the
         // type substitutions so that references to type parameters (like `P { ... }`)
         // can be resolved in the function body.
-        self.analyze_function_internal(infer_ctx, return_type, params, body, Some(type_subst), None)
+        self.analyze_function_internal(
+            infer_ctx,
+            return_type,
+            params,
+            body,
+            Some(type_subst),
+            None,
+            false,
+        )
     }
 
     /// Analyze a method body with `Self` type resolution.
@@ -1656,6 +1711,7 @@ impl<'a> Sema<'a> {
             body,
             Some(&type_subst),
             Some(captured_comptime_values),
+            false,
         )
     }
 
@@ -2713,6 +2769,11 @@ impl<'a> Sema<'a> {
             None
         };
 
+        // Snapshot the receiver root's move state before analyzing the
+        // receiver expression: builtin ByRef/ByMutRef methods restore it to
+        // undo the move the receiver analysis records (see ReceiverInfo).
+        let receiver_move_state_before = receiver_var.and_then(|v| ctx.moved_vars.get(&v).cloned());
+
         // Analyze the receiver expression
         let receiver_result = self.analyze_inst(air, receiver, ctx)?;
         let receiver_type = receiver_result.ty;
@@ -2749,6 +2810,7 @@ impl<'a> Sema<'a> {
             let receiver_info = ReceiverInfo {
                 result: receiver_result,
                 var: receiver_var,
+                move_state_before: receiver_move_state_before,
                 storage: receiver_storage,
             };
             return self.analyze_builtin_method(air, ctx, &method_ctx, receiver_info, &args);
@@ -4099,11 +4161,23 @@ impl<'a> Sema<'a> {
         match method.receiver_mode {
             ReceiverMode::ByRef | ReceiverMode::ByMutRef => {
                 // Borrow (ByRef) / mutation (ByMutRef) semantics - "unmove"
-                // the variable since it's not consumed, and cancel the move
+                // the receiver since it's not consumed, and cancel the move
                 // marker the receiver analysis emitted so drop elaboration
                 // doesn't treat this borrow as a move.
+                //
+                // Restore the pre-receiver snapshot instead of removing the
+                // whole entry: earlier moves of sibling paths (`consume(w.s);
+                // w.t.len()`) must stay recorded, or a later use of the moved
+                // sibling compiles and double-frees (RUE-33).
                 if let Some(var_symbol) = receiver.var {
-                    ctx.moved_vars.remove(&var_symbol);
+                    match receiver.move_state_before.clone() {
+                        Some(state) => {
+                            ctx.moved_vars.insert(var_symbol, state);
+                        }
+                        None => {
+                            ctx.moved_vars.remove(&var_symbol);
+                        }
+                    }
                 }
                 air.cancel_move_marker(receiver.result.air_ref);
             }
@@ -4390,8 +4464,11 @@ impl<'a> Sema<'a> {
                 continue;
             };
 
-            // Only check linear types
-            if !self.is_type_linear(local.ty) {
+            // Only check types that carry a linear value: linear structs
+            // themselves, and arrays whose elements carry one (an array of
+            // linear values must be consumed as a whole; dropping it would
+            // silently drop every element).
+            if !self.type_carries_linear(local.ty) {
                 continue;
             }
 
@@ -4411,13 +4488,44 @@ impl<'a> Sema<'a> {
         Ok(())
     }
 
+    /// Reject a discarded expression value that carries a linear value
+    /// (RUE-176): an expression statement (`make_linear();`) or a loop body
+    /// result is dropped without being consumed, which linearity forbids.
+    ///
+    /// `inst_ref` is the RIR instruction whose span the error points at.
+    pub(crate) fn reject_discarded_linear_value(
+        &self,
+        ty: Type,
+        inst_ref: InstRef,
+    ) -> CompileResult<()> {
+        if !self.type_carries_linear(ty) {
+            return Ok(());
+        }
+        let err = CompileError::new(
+            ErrorKind::LinearValueDiscarded {
+                type_name: ty.safe_name_with_pool(Some(&self.type_pool)),
+            },
+            self.rir.get(inst_ref).span,
+        )
+        .with_help("bind the value with `let` and consume it, or pass it to a consumer");
+        Err(self.attach_infectious_linear_note(err, ty))
+    }
+
     /// If `ty` is a struct that is linear only because a field made it so
     /// (infectious linearity, RUE-40), attach a note explaining the cause.
+    /// For an array carrying linear elements, note that the array must be
+    /// consumed as a whole.
     pub(crate) fn attach_infectious_linear_note(
         &self,
         err: rue_error::CompileError,
         ty: Type,
     ) -> rue_error::CompileError {
+        if let TypeKind::Array(_) = ty.kind() {
+            return err.with_note(
+                "this is an array whose elements carry linear values; \
+                 the array must be consumed as a whole",
+            );
+        }
         let Some(struct_id) = ty.as_struct() else {
             return err;
         };

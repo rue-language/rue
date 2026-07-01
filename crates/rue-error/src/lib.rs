@@ -144,6 +144,8 @@ impl ErrorCode {
     // 462-473 are reserved by in-flight work.
     pub const LINEAR_FIELD_DROPPED_BY_DESTRUCTURE: Self = Self(474);
     pub const CONST_MISSING_TYPE_ANNOTATION: Self = Self(475);
+    // 476-477 are reserved by in-flight work.
+    pub const LINEAR_VALUE_DISCARDED: Self = Self(478);
 
     // ========================================================================
     // Control flow errors (E0500-E0599)
@@ -926,6 +928,10 @@ pub enum ErrorKind {
     /// Linear value was consumed on some control-flow paths but not all of them
     #[error("linear value '{0}' is not consumed on all paths")]
     LinearValueNotConsumedOnAllPaths(String),
+    /// A discarded expression value (e.g. an expression statement or a loop
+    /// body result) carries a linear value, which would be implicitly dropped
+    #[error("discarded value of type '{type_name}' carries a linear value and must be consumed")]
+    LinearValueDiscarded { type_name: String },
     /// Linear struct cannot be marked @copy
     #[error("linear struct '{0}' cannot be marked @copy")]
     LinearStructCopy(String),
@@ -1241,6 +1247,7 @@ impl ErrorKind {
             ErrorKind::LinearValueNotConsumedOnAllPaths(_) => {
                 ErrorCode::LINEAR_VALUE_NOT_CONSUMED_ON_ALL_PATHS
             }
+            ErrorKind::LinearValueDiscarded { .. } => ErrorCode::LINEAR_VALUE_DISCARDED,
             ErrorKind::LinearStructCopy(_) => ErrorCode::LINEAR_STRUCT_COPY,
             ErrorKind::LinearFieldDroppedByDestructure(_) => {
                 ErrorCode::LINEAR_FIELD_DROPPED_BY_DESTRUCTURE

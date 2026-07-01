@@ -239,6 +239,54 @@ fn ok() -> i32 {
 }
 ```
 
+{{ rule(id="3.8:62", cat="legality-rule") }}
+
+A function owns its pass-by-value parameters and drops them when it returns unless they are moved out. Therefore a pass-by-value parameter whose type carries a linear value **MUST** be consumed by the function body on every non-diverging control-flow path, exactly as for a linear local binding (3.8:32, 3.8:50). `borrow` and `inout` parameters are exempt: the caller retains ownership. A destructor's `self` parameter is also exempt: it is disposed of by the drop glue after the destructor body runs (see 3.9), and moving it out is rejected.
+
+{{ rule(id="3.8:63", cat="example") }}
+
+```rue
+linear struct MustUse { value: i32 }
+
+fn bad(m: MustUse) -> i32 { 0 }          // ERROR: 'm' is dropped, not consumed
+
+fn good(m: MustUse) -> i32 { m.value }   // OK: destructuring consumes 'm'
+```
+
+{{ rule(id="3.8:64", cat="legality-rule") }}
+
+It is a compile-time error to discard an expression value whose type carries a linear value. A value is discarded when it is the value of a non-final expression statement in a block, or the result value of a loop body (which is discarded on every iteration).
+
+{{ rule(id="3.8:65", cat="example") }}
+
+```rue
+linear struct MustUse { value: i32 }
+
+fn make_linear() -> MustUse { MustUse { value: 1 } }
+
+fn main() -> i32 {
+    make_linear();   // ERROR: discarded linear value
+    0
+}
+```
+
+{{ rule(id="3.8:66", cat="legality-rule") }}
+
+The consumption requirement (3.8:32) applies to every binding whose type carries a linear value (3.8:57), not only to bindings of linear struct type. In particular, an array whose element type carries a linear value **MUST** be consumed as a whole (for example, by passing the array to a function by value); dropping the array would silently drop every element.
+
+{{ rule(id="3.8:67", cat="example") }}
+
+```rue
+linear struct MustUse { value: i32 }
+
+fn make_linear() -> MustUse { MustUse { value: 1 } }
+
+fn main() -> i32 {
+    let a = [make_linear(), make_linear()];  // ERROR: 'a' is dropped, not consumed
+    0
+}
+```
+
 {{ rule(id="3.8:39", cat="informative") }}
 
 Linear types are useful for:

@@ -1515,3 +1515,239 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = "not consumed on all paths"
+
+[[case]]
+name = "linear_param_unconsumed_in_callee_error"
+spec = ["3.8:62", "3.8:63"]
+description = "A pass-by-value linear parameter dropped by the callee body is an error (RUE-176)"
+source = """
+linear struct MustUse { value: i32 }
+
+fn f(m: MustUse) -> i32 { 0 }
+
+fn main() -> i32 {
+    let m = MustUse { value: 1 };
+    f(m)
+}
+"""
+compile_fail = true
+error_contains = "linear value 'm' must be consumed"
+
+[[case]]
+name = "linear_param_consumed_on_one_path_only_error"
+spec = ["3.8:62"]
+description = "A linear parameter consumed on only one branch of the callee body is an error"
+source = """
+linear struct MustUse { value: i32 }
+
+fn consume(m: MustUse) -> i32 { m.value }
+
+fn f(m: MustUse, c: bool) -> i32 {
+    if c { consume(m) } else { 0 }
+}
+
+fn main() -> i32 {
+    f(MustUse { value: 1 }, true)
+}
+"""
+compile_fail = true
+error_contains = "not consumed on all paths"
+
+[[case]]
+name = "linear_param_returned_ok"
+spec = ["3.8:62"]
+description = "Returning a linear parameter consumes it (responsibility moves to the caller)"
+source = """
+linear struct MustUse { value: i32 }
+
+fn id(m: MustUse) -> MustUse { m }
+fn consume(m: MustUse) -> i32 { m.value }
+
+fn main() -> i32 {
+    consume(id(MustUse { value: 42 }))
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "linear_param_borrow_exempt"
+spec = ["3.8:62"]
+description = "A borrow parameter of linear type is exempt: the caller retains ownership"
+source = """
+linear struct MustUse { value: i32 }
+
+fn peek(borrow m: MustUse) -> i32 { 5 }
+fn consume(m: MustUse) -> i32 { m.value }
+
+fn main() -> i32 {
+    let m = MustUse { value: 44 };
+    let v = peek(borrow m);
+    consume(m) - v + 3
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "linear_param_destructor_self_exempt"
+spec = ["3.8:62"]
+description = "A destructor's self parameter is exempt from the linear must-consume rule"
+source = """
+linear struct MustUse { value: i32 }
+
+drop fn MustUse(self) { let _x = 1; }
+
+fn consume(m: MustUse) -> i32 { m.value }
+
+fn main() -> i32 {
+    let m = MustUse { value: 42 };
+    consume(m)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "linear_temporary_discarded_error"
+spec = ["3.8:64", "3.8:65"]
+description = "A linear value produced and discarded by an expression statement is an error (RUE-176)"
+source = """
+linear struct MustUse { value: i32 }
+
+fn make_linear() -> MustUse { MustUse { value: 1 } }
+
+fn main() -> i32 {
+    make_linear();
+    0
+}
+"""
+compile_fail = true
+error_contains = "carries a linear value and must be consumed"
+
+[[case]]
+name = "linear_loop_body_discarded_error"
+spec = ["3.8:64"]
+description = "A loop body whose result value is linear discards it on every iteration - error"
+source = """
+linear struct MustUse { value: i32 }
+
+fn make_linear() -> MustUse { MustUse { value: 1 } }
+
+fn main() -> i32 {
+    let mut i = 0;
+    while i < 2 { make_linear() }
+    0
+}
+"""
+compile_fail = true
+error_contains = "carries a linear value and must be consumed"
+
+[[case]]
+name = "linear_moved_binding_statement_discard_error"
+spec = ["3.8:64"]
+description = "A bare variable statement moving a linear binding discards (drops) the value - error"
+source = """
+linear struct MustUse { value: i32 }
+
+fn main() -> i32 {
+    let m = MustUse { value: 1 };
+    m;
+    0
+}
+"""
+compile_fail = true
+error_contains = "carries a linear value and must be consumed"
+
+[[case]]
+name = "linear_array_dropped_error"
+spec = ["3.8:66", "3.8:67"]
+description = "An array of linear values dropped without being consumed is an error (RUE-176)"
+source = """
+linear struct MustUse { value: i32 }
+
+fn make_linear() -> MustUse { MustUse { value: 1 } }
+
+fn main() -> i32 {
+    let a = [make_linear(), make_linear()];
+    0
+}
+"""
+compile_fail = true
+error_contains = "linear value 'a' must be consumed"
+
+[[case]]
+name = "linear_array_consumed_whole_ok"
+spec = ["3.8:66"]
+description = "An array of linear values consumed as a whole satisfies the requirement"
+source = """
+linear struct MustUse { value: i32 }
+
+fn make_linear() -> MustUse { MustUse { value: 21 } }
+
+fn eat(a: [MustUse; 2]) -> i32 { a[0].value * 2 }
+
+fn main() -> i32 {
+    let a = [make_linear(), make_linear()];
+    eat(a)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "borrow_method_preserves_sibling_field_move"
+spec = ["3.8:24"]
+description = "A builtin by-ref method call on a sibling field must not erase earlier move records (RUE-33)"
+source = """
+struct Wrap { s: String, t: String }
+
+fn consume(s: String) -> i32 { 1 }
+
+fn main() -> i32 {
+    let w = Wrap { s: "hello", t: "world" };
+    let _a = consume(w.s);
+    let _n = w.t.len();
+    let _b = consume(w.s);
+    0
+}
+"""
+compile_fail = true
+error_contains = "use of moved value 'w.s'"
+
+[[case]]
+name = "borrow_call_arg_preserves_sibling_field_move"
+spec = ["3.8:24"]
+description = "Passing a sibling field as a borrow argument must not erase earlier move records (RUE-33 site 2 regression pin)"
+source = """
+struct Wrap { s: String, t: String }
+
+fn consume(s: String) -> i32 { 1 }
+fn peek(borrow s: String) -> i32 { 2 }
+
+fn main() -> i32 {
+    let w = Wrap { s: "hello", t: "world" };
+    let _a = consume(w.s);
+    let _n = peek(borrow w.t);
+    let _b = consume(w.s);
+    0
+}
+"""
+compile_fail = true
+error_contains = "use of moved value 'w.s'"
+
+[[case]]
+name = "borrow_method_receiver_still_usable_after"
+spec = ["3.8:24"]
+description = "A by-ref builtin method call does not itself move its receiver: sibling and receiver stay usable"
+source = """
+struct Wrap { s: String, t: String }
+
+fn consume(s: String) -> i32 { 21 }
+
+fn main() -> i32 {
+    let w = Wrap { s: "hello", t: "world" };
+    let _a = consume(w.s);
+    let n = w.t.len();
+    let m = w.t.len();
+    let _b = consume(w.t);
+    if n == 5 { if m == 5 { 42 } else { 1 } } else { 0 }
+}
+"""
+exit_code = 42
