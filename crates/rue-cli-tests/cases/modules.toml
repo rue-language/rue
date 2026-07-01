@@ -713,6 +713,149 @@ fn secret() -> i32 {
 ]
 exit_code = 42
 
+# Structs and constants obey the same uniform rule (RUE-183): naming a
+# private struct (annotation or literal) or reading a private constant from
+# another directory is E0460, whether the file was imported or only listed.
+
+[[case]]
+name = "private_struct_cross_dir_unqualified_rejected"
+description = "Unqualified struct literal/annotation naming a private struct in another directory is E0460 (RUE-183) — fn-only privacy is not enough."
+files = [
+    { path = "main.rue", source = """
+const lib = @import("sub/lib.rue");
+
+fn main() -> i32 {
+    let p: Point = Point { x: 40, y: 2 };
+    p.x + p.y
+}
+""" },
+    { path = "sub/lib.rue", source = """
+struct Point {
+    x: i32,
+    y: i32,
+}
+""" },
+]
+compile_fail = true
+error_contains = ["E0460", "struct `Point` is private (defined in `sub/lib.rue`)"]
+
+[[case]]
+name = "private_const_cross_dir_unqualified_rejected"
+description = "Unqualified read of a private constant in another directory is E0460 (RUE-183)."
+files = [
+    { path = "main.rue", source = """
+const lib = @import("sub/lib.rue");
+
+fn main() -> i32 {
+    LIMIT
+}
+""" },
+    { path = "sub/lib.rue", source = """
+const LIMIT: i32 = 99;
+""" },
+]
+compile_fail = true
+error_contains = ["E0460", "constant `LIMIT` is private (defined in `sub/lib.rue`)"]
+
+[[case]]
+name = "flat_multifile_private_struct_cross_dir_rejected"
+description = "Uniform privacy for structs (RUE-183): a private struct in a never-imported listed file is not nameable cross-directory."
+args = ["main.rue", "sub/lib.rue", "-o", "prog"]
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    let p: Point = Point { x: 40, y: 2 };
+    p.x + p.y
+}
+""" },
+    { path = "sub/lib.rue", source = """
+struct Point {
+    x: i32,
+    y: i32,
+}
+""" },
+]
+compile_fail = true
+error_contains = ["E0460", "struct `Point` is private (defined in `sub/lib.rue`)"]
+
+[[case]]
+name = "flat_multifile_private_const_cross_dir_rejected"
+description = "Uniform privacy for constants (RUE-183): a private constant in a never-imported listed file is not readable cross-directory."
+args = ["main.rue", "sub/lib.rue", "-o", "prog"]
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    LIMIT
+}
+""" },
+    { path = "sub/lib.rue", source = """
+const LIMIT: i32 = 99;
+""" },
+]
+compile_fail = true
+error_contains = ["E0460", "constant `LIMIT` is private (defined in `sub/lib.rue`)"]
+
+[[case]]
+name = "flat_multifile_private_const_in_const_init_rejected"
+description = "A constant initializer is a reference site too (RUE-183): `const X = LIMIT;` reading a private cross-directory constant is E0460."
+args = ["main.rue", "sub/lib.rue", "-o", "prog"]
+files = [
+    { path = "main.rue", source = """
+const X: i32 = LIMIT;
+
+fn main() -> i32 {
+    X
+}
+""" },
+    { path = "sub/lib.rue", source = """
+const LIMIT: i32 = 99;
+""" },
+]
+compile_fail = true
+error_contains = ["E0460", "constant `LIMIT` is private (defined in `sub/lib.rue`)"]
+
+[[case]]
+name = "flat_multifile_pub_struct_and_const_cross_dir_allowed"
+description = "Positive control (RUE-183): pub structs and constants in another never-imported directory remain usable unqualified (spec 10.3:8)."
+args = ["main.rue", "sub/lib.rue", "-o", "prog"]
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    let p: Point = Point { x: 30, y: 2 };
+    p.x + p.y + BONUS
+}
+""" },
+    { path = "sub/lib.rue", source = """
+pub struct Point {
+    x: i32,
+    y: i32,
+}
+pub const BONUS: i32 = 10;
+""" },
+]
+exit_code = 42
+
+[[case]]
+name = "flat_multifile_private_struct_and_const_same_dir_allowed"
+description = "Control (RUE-183): intra-directory visibility is unchanged — private structs and constants in another listed file in the SAME directory are usable."
+args = ["main.rue", "lib.rue", "-o", "prog"]
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    let p: Point = Point { x: 30, y: 2 };
+    p.x + p.y + BONUS
+}
+""" },
+    { path = "lib.rue", source = """
+struct Point {
+    x: i32,
+    y: i32,
+}
+const BONUS: i32 = 10;
+""" },
+]
+exit_code = 42
+
 # ---------------------------------------------------------------------------
 # Nested module member access (RUE-122 regression coverage).
 #

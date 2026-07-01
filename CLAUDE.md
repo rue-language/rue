@@ -95,9 +95,10 @@ rue main.rue utils.rue lib.rue -o program
 
 **Key semantics:**
 - All top-level names resolve across files without imports (flat namespace),
-  but privacy is uniform (spec 10.3:7): a function is callable outside its
-  defining directory only if `pub`, whether its file is imported or just
-  listed (E0460 otherwise; through a module object it's E0706)
+  but privacy is uniform (spec 10.3:7): an item — function, struct, or
+  constant — is usable outside its defining directory only if `pub`, whether
+  its file is imported or just listed (E0460 otherwise; through a module
+  object it's E0706)
 - Duplicate definitions (same name in multiple files) cause a compile error
 - `main()` must exist in exactly one file
 - Files are parsed in parallel, then merged for semantic analysis

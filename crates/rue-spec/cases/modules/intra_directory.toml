@@ -347,3 +347,142 @@ fn internal_fn() -> i32 {
 """ }
 pass_aux_files = true
 exit_code = 42
+
+# =============================================================================
+# Unqualified Cross-Directory Access: Structs and Constants (RUE-183)
+# =============================================================================
+# The uniform privacy rule (10.3:7) covers every item kind, not just
+# functions: naming a private struct (annotation or literal) or reading a
+# private constant from another directory is E0460, imported or flat-listed.
+
+[[case]]
+name = "cross_dir_unqualified_private_struct_error"
+spec = ["10.3:7"]
+description = "Unqualified struct literal + annotation naming a private struct of an imported module in another directory is rejected"
+source = """
+const defs = @import("subdir/defs");
+
+fn main() -> i32 {
+    let p: Point = Point { x: 40, y: 2 };
+    p.x + p.y
+}
+"""
+aux_files = { "subdir/defs.rue" = """
+struct Point {
+    x: i32,
+    y: i32,
+}
+""" }
+compile_fail = true
+error_contains = "struct `Point` is private (defined in"
+
+[[case]]
+name = "cross_dir_unqualified_private_const_error"
+spec = ["10.3:7"]
+description = "Unqualified read of a private constant of an imported module in another directory is rejected"
+source = """
+const defs = @import("subdir/defs");
+
+fn main() -> i32 {
+    LIMIT
+}
+"""
+aux_files = { "subdir/defs.rue" = """
+const LIMIT: i32 = 42;
+""" }
+compile_fail = true
+error_contains = "constant `LIMIT` is private (defined in"
+
+[[case]]
+name = "flat_multifile_unqualified_private_struct_error"
+spec = ["10.3:7", "10.3:8"]
+description = "Uniform privacy: a private struct in a never-imported, explicitly listed file in another directory is not nameable unqualified"
+source = """
+fn main() -> i32 {
+    let p: Point = Point { x: 40, y: 2 };
+    p.x + p.y
+}
+"""
+aux_files = { "subdir/defs.rue" = """
+struct Point {
+    x: i32,
+    y: i32,
+}
+""" }
+pass_aux_files = true
+compile_fail = true
+error_contains = "struct `Point` is private (defined in"
+
+[[case]]
+name = "flat_multifile_unqualified_private_const_error"
+spec = ["10.3:7", "10.3:8"]
+description = "Uniform privacy: a private constant in a never-imported, explicitly listed file in another directory is not readable unqualified"
+source = """
+fn main() -> i32 {
+    LIMIT
+}
+"""
+aux_files = { "subdir/defs.rue" = """
+const LIMIT: i32 = 42;
+""" }
+pass_aux_files = true
+compile_fail = true
+error_contains = "constant `LIMIT` is private (defined in"
+
+[[case]]
+name = "cross_dir_const_initializer_private_const_error"
+spec = ["10.3:7"]
+description = "A constant initializer reading a private constant from another directory is rejected too"
+source = """
+const X: i32 = LIMIT;
+
+fn main() -> i32 {
+    X
+}
+"""
+aux_files = { "subdir/defs.rue" = """
+const LIMIT: i32 = 42;
+""" }
+pass_aux_files = true
+compile_fail = true
+error_contains = "constant `LIMIT` is private (defined in"
+
+[[case]]
+name = "flat_multifile_unqualified_pub_struct_and_const_allowed"
+spec = ["10.3:8", "10.5:2"]
+description = "The flat namespace still resolves pub structs and constants across directories without imports"
+source = """
+fn main() -> i32 {
+    let p: Point = Point { x: 30, y: 2 };
+    p.x + p.y + BONUS
+}
+"""
+aux_files = { "subdir/defs.rue" = """
+pub struct Point {
+    x: i32,
+    y: i32,
+}
+pub const BONUS: i32 = 10;
+""" }
+pass_aux_files = true
+exit_code = 42
+
+[[case]]
+name = "flat_multifile_same_dir_private_struct_and_const_allowed"
+spec = ["10.3:2", "10.3:8"]
+description = "Intra-directory visibility (ADR-0026) is unchanged: private structs and constants in another listed file in the same directory are usable unqualified"
+source = """
+fn main() -> i32 {
+    let p: Point = Point { x: 30, y: 2 };
+    p.x + p.y + BONUS
+}
+"""
+aux_files = { "defs.rue" = """
+struct Point {
+    x: i32,
+    y: i32,
+}
+const BONUS: i32 = 10;
+""" }
+pass_aux_files = true
+exit_code = 42

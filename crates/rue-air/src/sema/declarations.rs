@@ -1285,6 +1285,17 @@ impl<'a> Sema<'a> {
                     return Ok(ConstInit::Module(binding.ty));
                 }
                 if let Some(info) = self.constants.get(&name) {
+                    // Privacy (E0460, RUE-183): the value-constant table is
+                    // global, so this alias could otherwise read a private
+                    // constant from another directory. The initializer's own
+                    // span locates the referencing file.
+                    self.check_unqualified_visibility(
+                        "constant",
+                        self.interner.resolve(&name),
+                        info.span.file_id,
+                        info.is_pub,
+                        span,
+                    )?;
                     return Ok(ConstInit::Value(info.value));
                 }
                 // Not a constant: let the comptime engine decide (it rejects

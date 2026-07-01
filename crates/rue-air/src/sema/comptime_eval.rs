@@ -737,7 +737,20 @@ impl Sema<'_> {
                 //    access, RUE-160) and was exponential for const chains.
                 //    Module-typed constants never appear in this table
                 //    (module bindings live in `Sema::module_bindings`).
+                //    Privacy applies here too (E0460, RUE-183): the table is
+                //    global, so a const initializer in one directory could
+                //    otherwise read a private constant from another. The
+                //    VarRef's own span locates the referencing file;
+                //    speculative callers (`try_evaluate_const*`) swallow the
+                //    error and defer to runtime analysis, which re-checks.
                 if let Some(info) = self.constants.get(name) {
+                    self.check_unqualified_visibility(
+                        "constant",
+                        self.interner.resolve(name),
+                        info.span.file_id,
+                        info.is_pub,
+                        span,
+                    )?;
                     return Ok(Some(info.value));
                 }
                 // 5. Type names used as values (e.g. `Point` in
