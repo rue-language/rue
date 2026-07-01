@@ -60,7 +60,7 @@ Build and run a Rue program — first go to the repo root, then use scripts/rue-
   timeout 10 /tmp/hunt_${area}_N_out; echo "exit: $?"     # ALWAYS timeout-wrap — programs may loop forever
 Use a unique N per repro file so parallel finders don't collide.
 
-SHELL SAFETY (a permission firewall reviews every command; one flagged command STALLS the entire run waiting for a human who may be asleep): never build an rm/mv/redirect-truncate target from shell variables — `rm $DIR/$f.out` is flagged "dangerous on possibly-empty variable". Use literal /tmp paths, or empty-guards (`rm -f "${DIR:?}/${f:?}.out"`) if a variable is unavoidable. Best: don't delete scratch files at all — overwrite or leave them; /tmp is disposable. Never rm inside the repo checkout.
+SHELL SAFETY (a permission firewall reviews every command; one flagged command STALLS the entire run waiting for a human who may be asleep): never build an rm/mv/redirect-truncate target from shell variables — \`rm $DIR/$f.out\` is flagged "dangerous on possibly-empty variable". Use literal /tmp paths, or empty-guards (\`rm -f "\${DIR:?}/\${f:?}.out"\`) if a variable is unavoidable. Best: don't delete scratch files at all — overwrite or leave them; /tmp is disposable. Never rm inside the repo checkout.
 
 Optimization-bug pattern (diff outputs across opt levels):
   "$RUE" -O0 s.rue o0 && "$RUE" -O2 s.rue o2
