@@ -856,6 +856,188 @@ const BONUS: i32 = 10;
 ]
 exit_code = 42
 
+# Enums obey the same uniform rule (RUE-185): naming a private enum from
+# another directory — annotation, variant construction, or match pattern —
+# is E0460, whether the file was imported or merely listed.
+[[case]]
+name = "private_enum_cross_dir_unqualified_rejected"
+description = "Unqualified annotation/construction naming a private enum in another directory is E0460 (RUE-185), imported or not."
+files = [
+    { path = "main.rue", source = """
+const lib = @import("sub/lib.rue");
+
+fn main() -> i32 {
+    let c: Color = Color::Blue;
+    0
+}
+""" },
+    { path = "sub/lib.rue", source = """
+enum Color {
+    Red,
+    Green,
+    Blue,
+}
+""" },
+]
+compile_fail = true
+error_contains = ["E0460", "enum `Color` is private (defined in `sub/lib.rue`)"]
+
+[[case]]
+name = "flat_multifile_private_enum_construction_rejected"
+description = "Uniform privacy for enums (RUE-185): a variant of a private enum in a never-imported listed file is not constructible cross-directory."
+args = ["main.rue", "sub/lib.rue", "-o", "prog"]
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    let c = Color::Blue;
+    0
+}
+""" },
+    { path = "sub/lib.rue", source = """
+enum Color {
+    Red,
+    Green,
+    Blue,
+}
+""" },
+]
+compile_fail = true
+error_contains = ["E0460", "enum `Color` is private (defined in `sub/lib.rue`)"]
+
+[[case]]
+name = "flat_multifile_private_enum_match_pattern_rejected"
+description = "A match pattern is a reference site too (RUE-185): matching on a private cross-directory enum is E0460 with the pattern's own file-attributed span, even when the scrutinee arrives via a pub fn."
+args = ["main.rue", "sub/lib.rue", "-o", "prog"]
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    match make() {
+        Color::Red => 1,
+        Color::Green => 2,
+        Color::Blue => 3,
+    }
+}
+""" },
+    { path = "sub/lib.rue", source = """
+enum Color {
+    Red,
+    Green,
+    Blue,
+}
+pub fn make() -> Color {
+    Color::Green
+}
+""" },
+]
+compile_fail = true
+error_contains = ["E0460", "enum `Color` is private (defined in `sub/lib.rue`)", "main.rue"]
+
+[[case]]
+name = "private_enum_module_qualified_pattern_rejected"
+description = "Through a module object the private enum stays E0706 (non-regression, RUE-185): `lib.Color::Red` in a match pattern."
+files = [
+    { path = "main.rue", source = """
+const lib = @import("sub/lib.rue");
+
+fn main() -> i32 {
+    match lib.make() {
+        lib.Color::Red => 1,
+        _ => 0,
+    }
+}
+""" },
+    { path = "sub/lib.rue", source = """
+enum Color {
+    Red,
+    Green,
+    Blue,
+}
+pub fn make() -> Color {
+    Color::Green
+}
+""" },
+]
+compile_fail = true
+error_contains = ["E0706", "enum `Color` is private"]
+
+[[case]]
+name = "flat_multifile_pub_enum_cross_dir_allowed"
+description = "Positive control (RUE-185): a pub enum in another never-imported directory remains usable unqualified — annotation, construction, and match (spec 10.3:8)."
+args = ["main.rue", "sub/lib.rue", "-o", "prog"]
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    let c: Color = Color::Blue;
+    match c {
+        Color::Red => 10,
+        Color::Green => 20,
+        Color::Blue => 42,
+    }
+}
+""" },
+    { path = "sub/lib.rue", source = """
+pub enum Color {
+    Red,
+    Green,
+    Blue,
+}
+""" },
+]
+exit_code = 42
+
+[[case]]
+name = "pub_enum_module_qualified_pattern_allowed"
+description = "Positive control (RUE-185): a pub enum through a module object works in match patterns, verified by execution."
+files = [
+    { path = "main.rue", source = """
+const lib = @import("sub/lib.rue");
+
+fn main() -> i32 {
+    match lib.make() {
+        lib.Color::Red => 1,
+        lib.Color::Green => 42,
+        lib.Color::Blue => 3,
+    }
+}
+""" },
+    { path = "sub/lib.rue", source = """
+pub enum Color {
+    Red,
+    Green,
+    Blue,
+}
+pub fn make() -> Color {
+    Color::Green
+}
+""" },
+]
+exit_code = 42
+
+[[case]]
+name = "flat_multifile_private_enum_same_dir_allowed"
+description = "Control (RUE-185): intra-directory visibility is unchanged — a private enum in another listed file in the SAME directory is usable."
+args = ["main.rue", "lib.rue", "-o", "prog"]
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    let c: Color = Color::Green;
+    match c {
+        Color::Red => 1,
+        Color::Green => 42,
+        Color::Blue => 3,
+    }
+}
+""" },
+    { path = "lib.rue", source = """
+enum Color {
+    Red,
+    Green,
+    Blue,
+}
+""" },
+]
+exit_code = 42
+
 # ---------------------------------------------------------------------------
 # Nested module member access (RUE-122 regression coverage).
 #

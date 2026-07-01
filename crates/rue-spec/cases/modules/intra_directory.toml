@@ -486,3 +486,128 @@ const BONUS: i32 = 10;
 """ }
 pass_aux_files = true
 exit_code = 42
+
+# =============================================================================
+# Unqualified Cross-Directory Access: Enums (RUE-185)
+# =============================================================================
+# The uniform privacy rule (10.3:7) covers enums too: naming a private enum
+# from another directory — in a type annotation, a variant construction, or a
+# match pattern — is E0460, imported or flat-listed.
+
+[[case]]
+name = "cross_dir_unqualified_private_enum_error"
+spec = ["10.3:7"]
+description = "Unqualified annotation + variant construction naming a private enum of an imported module in another directory is rejected"
+source = """
+const defs = @import("subdir/defs");
+
+fn main() -> i32 {
+    let c: Color = Color::Blue;
+    0
+}
+"""
+aux_files = { "subdir/defs.rue" = """
+enum Color {
+    Red,
+    Green,
+    Blue,
+}
+""" }
+compile_fail = true
+error_contains = "enum `Color` is private (defined in"
+
+[[case]]
+name = "flat_multifile_unqualified_private_enum_construction_error"
+spec = ["10.3:7", "10.3:8"]
+description = "Uniform privacy: constructing a variant of a private enum in a never-imported, explicitly listed file in another directory is rejected"
+source = """
+fn main() -> i32 {
+    let c = Color::Blue;
+    0
+}
+"""
+aux_files = { "subdir/defs.rue" = """
+enum Color {
+    Red,
+    Green,
+    Blue,
+}
+""" }
+pass_aux_files = true
+compile_fail = true
+error_contains = "enum `Color` is private (defined in"
+
+[[case]]
+name = "flat_multifile_private_enum_match_pattern_error"
+spec = ["10.3:7", "10.3:8"]
+description = "A match pattern names the enum unqualified too: matching on a private cross-directory enum is rejected even when the scrutinee arrives through a pub function"
+source = """
+fn main() -> i32 {
+    match make() {
+        Color::Red => 1,
+        Color::Green => 2,
+        Color::Blue => 3,
+    }
+}
+"""
+aux_files = { "subdir/defs.rue" = """
+enum Color {
+    Red,
+    Green,
+    Blue,
+}
+pub fn make() -> Color {
+    Color::Green
+}
+""" }
+pass_aux_files = true
+compile_fail = true
+error_contains = "enum `Color` is private (defined in"
+
+[[case]]
+name = "flat_multifile_unqualified_pub_enum_allowed"
+spec = ["10.3:8", "10.5:2"]
+description = "The flat namespace still resolves pub enums across directories without imports: annotation, construction, and match all work"
+source = """
+fn main() -> i32 {
+    let c: Color = Color::Blue;
+    match c {
+        Color::Red => 10,
+        Color::Green => 20,
+        Color::Blue => 42,
+    }
+}
+"""
+aux_files = { "subdir/defs.rue" = """
+pub enum Color {
+    Red,
+    Green,
+    Blue,
+}
+""" }
+pass_aux_files = true
+exit_code = 42
+
+[[case]]
+name = "flat_multifile_same_dir_private_enum_allowed"
+spec = ["10.3:2", "10.3:8"]
+description = "Intra-directory visibility (ADR-0026) is unchanged: a private enum in another listed file in the same directory is usable unqualified"
+source = """
+fn main() -> i32 {
+    let c: Color = Color::Green;
+    match c {
+        Color::Red => 1,
+        Color::Green => 42,
+        Color::Blue => 3,
+    }
+}
+"""
+aux_files = { "defs.rue" = """
+enum Color {
+    Red,
+    Green,
+    Blue,
+}
+""" }
+pass_aux_files = true
+exit_code = 42

@@ -67,8 +67,9 @@ private item by its unqualified name from a source file in a different
 directory than the item's defining file (error E0460). This covers every
 form of unqualified reference: calling a private function, naming a
 private struct (in a type annotation, a signature, or a struct literal),
-and reading a private constant — including from another constant's
-initializer.
+naming a private enum (in a type annotation, a signature, a variant
+construction, or a match pattern), and reading a private constant —
+including from another constant's initializer.
 
 {{ rule(id="10.3:8", cat="normative") }}
 
@@ -87,6 +88,8 @@ fn secret() -> i32 { 99 }       // private to sub/
 pub fn open() -> i32 { 7 }
 struct Hidden { n: i32, }       // private to sub/
 pub struct Shared { n: i32, }
+enum Mode { Fast, Slow, }       // private to sub/
+pub enum Level { Low, High, }
 const LIMIT: i32 = 8;           // private to sub/
 pub const MAX: i32 = 16;
 
@@ -94,8 +97,12 @@ pub const MAX: i32 = 16;
 fn main() -> i32 {
     // secret()                  // error E0460: private to sub/lib.rue
     // let h = Hidden { n: 1 };  // error E0460: private to sub/lib.rue
+    // let m = Mode::Fast;       // error E0460: private to sub/lib.rue
     // let l = LIMIT;            // error E0460: private to sub/lib.rue
     let s = Shared { n: MAX };   // OK: `Shared` and `MAX` are pub
-    open() + s.n
+    match Level::High {          // OK: `Level` is pub
+        Level::Low => 0,
+        Level::High => open() + s.n,
+    }
 }
 ```

@@ -823,7 +823,7 @@ pub struct AmbiguousModuleData {
 /// exceed it).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrivateUnqualifiedAccessData {
-    /// The kind of item ("function", "struct", "constant").
+    /// The kind of item ("function", "struct", "enum", "constant").
     pub item_kind: String,
     /// The item's name as written at the reference site.
     pub name: String,
