@@ -661,6 +661,58 @@ impl<'a> Sema<'a> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
+        // Comptime-known branch selection (RUE-166, spec 4.14:17): inside a
+        // body with comptime value parameters in scope (a value-specialized
+        // function or an anonymous-struct method capturing comptime values),
+        // an `if` whose condition is compile-time evaluable selects its
+        // branch during analysis — only the taken branch is analyzed and
+        // emitted. This is what lets comptime recursion terminate: in
+        // `fact(comptime n: i32)`, the body specialized for n == 1 must not
+        // analyze the `fact(n - 1)` call in the dead else-branch, or
+        // specialization would recurse until the depth cap.
+        if !ctx.comptime_value_vars.is_empty() {
+            if let Some(ConstValue::Bool(taken)) = self.try_evaluate_const_in_fn(cond, ctx) {
+                let taken_block = if taken { Some(then_block) } else { else_block };
+                return match taken_block {
+                    Some(block) => {
+                        ctx.push_scope();
+                        let result = self.analyze_inst(air, block, ctx)?;
+                        ctx.pop_scope();
+                        // An `if` without `else` is unit-typed, so its (taken)
+                        // then-branch must still be unit (spec 4.6:5).
+                        if else_block.is_none()
+                            && result.ty != Type::UNIT
+                            && !result.ty.is_never()
+                            && !result.ty.is_error()
+                        {
+                            return Err(CompileError::new(
+                                ErrorKind::TypeMismatch {
+                                    expected: "()".to_string(),
+                                    found: result.ty.safe_name_with_pool(Some(&self.type_pool)),
+                                },
+                                self.rir.get(block).span,
+                            )
+                            .with_help(
+                                "if expressions without else must have unit type; \
+                                 consider adding an else branch or making the body return ()",
+                            ));
+                        }
+                        Ok(result)
+                    }
+                    // `if false { ... }` with no else: nothing runs; the
+                    // expression is unit.
+                    None => {
+                        let air_ref = air.add_inst(AirInst {
+                            data: AirInstData::UnitConst,
+                            ty: Type::UNIT,
+                            span,
+                        });
+                        Ok(AnalysisResult::new(air_ref, Type::UNIT))
+                    }
+                };
+            }
+        }
+
         // Condition must be bool
         let cond_result = self.analyze_inst(air, cond, ctx)?;
 
@@ -3486,7 +3538,10 @@ impl<'a> Sema<'a> {
     }
 
     /// Analyze a function call.
-    fn analyze_call(
+    ///
+    /// Also used by the module-member-call path for callees with comptime
+    /// parameters, which must go through generic specialization (RUE-166).
+    pub(crate) fn analyze_call(
         &mut self,
         air: &mut Air,
         name: Spur,
@@ -3650,8 +3705,10 @@ impl<'a> Sema<'a> {
 
         // Handle generic function calls differently
         if is_generic {
-            // Separate type arguments from runtime arguments
+            // Separate type arguments and comptime value arguments from
+            // runtime arguments
             let mut type_args: Vec<Type> = Vec::new();
+            let mut value_args: Vec<ConstValue> = Vec::new();
             let mut runtime_args: Vec<AirCallArg> = Vec::new();
             let mut type_subst: std::collections::HashMap<Spur, Type> =
                 std::collections::HashMap::new();
@@ -3680,10 +3737,29 @@ impl<'a> Sema<'a> {
                             ));
                         }
                     } else {
-                        // This is a VALUE parameter (e.g., comptime n: i32)
-                        // It's still passed at runtime but must be a compile-time constant.
-                        // The constant-ness has already been validated above.
-                        // We don't erase value parameters - they're passed normally.
+                        // This is a VALUE parameter (e.g., comptime n: i32).
+                        // Capture its concrete value: the callee is
+                        // specialized per value so its body sees the value as
+                        // a compile-time constant (RUE-166). The argument is
+                        // still also passed at runtime (value parameters are
+                        // not erased from the signature).
+                        match self.try_evaluate_const_in_fn(args[i].value, ctx) {
+                            Some(const_val) => value_args.push(const_val),
+                            None => {
+                                let param_name = self.interner.resolve(&param_names[i]).to_string();
+                                return Err(CompileError::new(
+                                    ErrorKind::ComptimeArgNotConst {
+                                        param_name: param_name.clone(),
+                                    },
+                                    self.rir.get(args[i].value).span,
+                                )
+                                .with_help(format!(
+                                    "parameter '{}' is declared as 'comptime' and requires \
+                                     a compile-time known value",
+                                    param_name
+                                )));
+                            }
+                        }
                         runtime_args.push(air_arg.clone());
                     }
                 } else {
@@ -3798,6 +3874,12 @@ impl<'a> Sema<'a> {
             let type_args_start = air.add_extra(&type_extra);
             let type_args_len = type_args.len() as u32;
 
+            // Encode comptime value arguments into extra array (as a tagged
+            // word stream; the length is in words, not values)
+            let value_words = crate::specialize::encode_const_values(&value_args);
+            let value_args_start = air.add_extra(&value_words);
+            let value_args_len = value_words.len() as u32;
+
             // Encode runtime args into extra array
             let mut args_extra = Vec::with_capacity(runtime_args.len() * 2);
             for arg in &runtime_args {
@@ -3812,6 +3894,8 @@ impl<'a> Sema<'a> {
                     name,
                     type_args_start,
                     type_args_len,
+                    value_args_start,
+                    value_args_len,
                     args_start: runtime_args_start,
                     args_len: runtime_args_len,
                 },

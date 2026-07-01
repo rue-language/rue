@@ -1,0 +1,145 @@
+# Comptime value parameters are monomorphized per value (RUE-166).
+#
+# Before the fix, a function with a `comptime n: i32` parameter was analyzed
+# ONCE with `n` unknown: `comptime { n }` in its body failed E1200, and
+# recursion (`fact(n - 1)`) failed E1201 at the argument. Now every distinct
+# comptime value creates its own specialization (`f__v5`, `f__v3`, ...) —
+# mirroring the RUE-109 type-identity mangling — in which `n` is a
+# compile-time constant. Comptime-known `if` conditions inside such bodies
+# select their branch at compile time, so comptime recursion terminates; a
+# depth cap (64 rounds) diagnoses runaway recursion instead of hanging.
+
+[section]
+id = "cli.comptime_value_params"
+name = "Comptime value parameter specialization"
+description = "Per-value monomorphization of comptime value parameters through the real driver."
+
+[[case]]
+name = "comptime_block_uses_param"
+description = "The body's comptime block sees the concrete value of the comptime parameter."
+files = [{ path = "main.rue", source = """
+fn f(comptime n: i32) -> i32 {
+    comptime { n + 1 }
+}
+fn main() -> i32 {
+    @dbg(f(5));
+    0
+}
+""" }]
+stdout = "6\n"
+
+[[case]]
+name = "comptime_recursion_factorial"
+description = "Comptime recursion: each value specializes, dead branches prune, recursion terminates."
+files = [{ path = "main.rue", source = """
+fn fact(comptime n: i32) -> i32 {
+    if n <= 1 { 1 } else { n * fact(n - 1) }
+}
+fn main() -> i32 {
+    @dbg(fact(5));
+    0
+}
+""" }]
+stdout = "120\n"
+
+[[case]]
+name = "comptime_forwarding_still_works"
+description = "Pin: forwarding a comptime parameter to another comptime parameter (worked pre-fix)."
+files = [{ path = "main.rue", source = """
+fn g(comptime m: i32) -> i32 { m }
+fn f(comptime n: i32) -> i32 { g(n) }
+fn main() -> i32 {
+    @dbg(f(42));
+    0
+}
+""" }]
+stdout = "42\n"
+
+[[case]]
+name = "two_distinct_values_two_symbols"
+description = "f(3) and f(5) produce distinct specialized symbols; same value dedups (RUE-100's duplicate-symbol failure mode must not return)."
+files = [{ path = "main.rue", source = """
+fn f(comptime n: i32) -> i32 {
+    comptime { n + 1 }
+}
+fn main() -> i32 {
+    @dbg(f(3) + f(5) + f(5));
+    0
+}
+""" }]
+stdout = "16\n"
+
+[[case]]
+name = "mixed_type_and_value_params"
+description = "A function with both a comptime type parameter and a comptime value parameter specializes on both."
+files = [{ path = "main.rue", source = """
+fn scaled(comptime T: type, comptime k: i32, x: T) -> T {
+    x * comptime { k * 2 }
+}
+fn main() -> i32 {
+    @dbg(scaled(i32, 3, 7));
+    0
+}
+""" }]
+stdout = "42\n"
+
+[[case]]
+name = "runaway_comptime_recursion_diagnosed"
+description = "Recursion with no comptime-known base case hits the depth cap with a clean diagnostic (no hang, no ICE)."
+files = [{ path = "main.rue", source = """
+fn runaway(comptime n: i32) -> i32 {
+    runaway(n + 1)
+}
+fn main() -> i32 {
+    runaway(0)
+}
+""" }]
+compile_fail = true
+error_contains = ["exceeded the maximum"]
+
+[[case]]
+name = "deep_base_case_diagnosed_not_hung"
+description = "fact(1000000): a base case beyond the depth cap is a fast, clean error — not a compiler hang."
+files = [{ path = "main.rue", source = """
+fn fact(comptime n: i64) -> i64 {
+    if n <= 1 { 1 } else { n * fact(n - 1) }
+}
+fn main() -> i32 {
+    if fact(1000000) > 0 { 1 } else { 0 }
+}
+""" }]
+compile_fail = true
+error_contains = ["exceeded the maximum"]
+
+[[case]]
+name = "module_member_call_with_comptime_param"
+description = "Calling a comptime-value function through a module object routes through specialization."
+files = [
+    { path = "main.rue", source = """
+const util = @import("util");
+fn main() -> i32 {
+    @dbg(util.scale(5, 7));
+    0
+}
+""" },
+    { path = "util.rue", source = """
+pub fn scale(comptime k: i32, x: i32) -> i32 {
+    x * comptime { k + 1 }
+}
+""" },
+]
+args = ["main.rue", "util.rue", "-o", "prog"]
+stdout = "42\n"
+
+[[case]]
+name = "runtime_arg_to_comptime_param_still_rejected"
+description = "Pin: a runtime value passed to a comptime parameter is still E1201."
+files = [{ path = "main.rue", source = """
+fn double(comptime n: i32) -> i32 { n * 2 }
+fn main() -> i32 {
+    let x = 21;
+    double(x)
+}
+""" }]
+compile_fail = true
+error_contains = ["comptime parameter requires a compile-time known value"]

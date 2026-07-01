@@ -476,7 +476,7 @@ impl AnalysisResult {
 /// This is used for compile-time evaluation of expressions and for
 /// comptime parameters. For example, in `fn Buffer(comptime N: i32)`,
 /// the value of `N` is stored as a `ConstValue::Integer`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ConstValue {
     /// Integer value. Backed by `i128` so the full range of every Rue integer
     /// type is representable (u64 values above `i64::MAX` as well as negative

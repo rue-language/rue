@@ -860,12 +860,13 @@ impl<'a> Sema<'a> {
         let param_names: Vec<Spur> = params.iter().map(|p| p.name).collect();
         let param_modes: Vec<RirParamMode> = params.iter().map(|p| p.mode).collect();
 
-        // Check if this function has any comptime TYPE parameters (not value parameters).
-        // A type parameter is a comptime param where the type is `type`.
-        // - `comptime T: type` -> type parameter (is_generic = true)
-        // - `comptime n: i32` -> value parameter (is_generic = false)
+        // Check if this function has any comptime parameters. Both kinds
+        // require per-call-site specialization (RUE-166):
+        // - `comptime T: type` -> type parameter (specialized per type)
+        // - `comptime n: i32` -> value parameter (specialized per value, so
+        //   the body sees `n` as a compile-time constant)
         let type_sym = self.interner.get_or_intern("type");
-        let is_generic = params.iter().any(|p| p.is_comptime && p.ty == type_sym);
+        let is_generic = params.iter().any(|p| p.is_comptime);
 
         // Collect type parameter names (comptime parameters whose type is `type`)
         let type_param_names: Vec<Spur> = params

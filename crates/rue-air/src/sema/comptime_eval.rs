@@ -52,7 +52,7 @@ use rue_rir::{InstData, InstRef};
 use rue_span::Span;
 
 use super::Sema;
-use super::context::{AnalysisContext, ConstValue};
+use super::context::{AnalysisContext, ConstValue, LocalVar};
 use crate::types::{StructField, Type};
 
 /// Empty type substitution map for evaluation contexts without one.
@@ -70,6 +70,12 @@ pub(crate) struct ComptimeEnv<'a> {
     /// `None` when evaluating expressions outside a typed function context
     /// (comptime function bodies before specialization, const initializers).
     resolved_types: Option<&'a HashMap<InstRef, Type>>,
+    /// Runtime locals in scope at the point being evaluated. A runtime local
+    /// shadows same-named comptime parameters and file-level constants, so a
+    /// reference to it makes the expression non-evaluable — without this,
+    /// `let n = x; g(n)` inside a body with `comptime n` in scope would
+    /// wrongly evaluate `n` to the parameter's value (spec 4.14:6).
+    runtime_locals: Option<&'a HashMap<Spur, LocalVar>>,
     /// `let` bindings introduced by blocks inside the comptime expression.
     locals: HashMap<Spur, ConstValue>,
 }
@@ -81,6 +87,7 @@ impl<'a> ComptimeEnv<'a> {
             type_subst: &EMPTY_TYPE_SUBST,
             value_subst: &EMPTY_VALUE_SUBST,
             resolved_types: None,
+            runtime_locals: None,
             locals: HashMap::new(),
         }
     }
@@ -95,6 +102,7 @@ impl<'a> ComptimeEnv<'a> {
             type_subst,
             value_subst,
             resolved_types: None,
+            runtime_locals: None,
             locals: HashMap::new(),
         }
     }
@@ -106,6 +114,7 @@ impl<'a> ComptimeEnv<'a> {
             type_subst: &ctx.comptime_type_vars,
             value_subst: &ctx.comptime_value_vars,
             resolved_types: Some(ctx.resolved_types),
+            runtime_locals: Some(&ctx.locals),
             locals: HashMap::new(),
         }
     }
@@ -194,14 +203,18 @@ impl Sema<'_> {
     /// Check if an RIR instruction is a direct reference to a `comptime`
     /// parameter of the function currently being analyzed.
     ///
-    /// Such a reference is compile-time known *to every caller* even though
-    /// its value is unknown while the body is analyzed, so it may be
+    /// Such a reference is compile-time known to every caller, so it may be
     /// forwarded to another function's comptime parameter (spec 4.14:5):
     ///
     /// ```rue
     /// fn g(comptime m: i32) -> i32 { m * 2 }
     /// fn f(comptime n: i32) -> i32 { g(n) }  // forwarding
     /// ```
+    ///
+    /// Since per-value specialization (RUE-166), bodies with comptime value
+    /// parameters are only analyzed with the concrete values in
+    /// `ctx.comptime_value_vars`, so forwards normally evaluate directly and
+    /// this check is a fallback.
     pub(crate) fn is_comptime_param_forward(
         &self,
         inst_ref: InstRef,
@@ -721,15 +734,23 @@ impl Sema<'_> {
                 if let Some(&v) = env.locals.get(name) {
                     return Ok(Some(v));
                 }
-                // 2. Comptime type parameters in scope
+                // 2. Runtime locals shadow comptime parameters and file-level
+                //    constants: a reference that resolves to one is not
+                //    compile-time evaluable (spec 4.14:6).
+                if let Some(locals) = env.runtime_locals {
+                    if locals.contains_key(name) {
+                        return Ok(None);
+                    }
+                }
+                // 3. Comptime type parameters in scope
                 if let Some(&ty) = env.type_subst.get(name) {
                     return Ok(Some(ConstValue::Type(ty)));
                 }
-                // 3. Comptime value parameters in scope
+                // 4. Comptime value parameters in scope
                 if let Some(&v) = env.value_subst.get(name) {
                     return Ok(Some(v));
                 }
-                // 4. File-level constants: the value was evaluated once
+                // 5. File-level constants: the value was evaluated once
                 //    (and range-checked against the declared type) during
                 //    declaration gathering — use it directly. Re-evaluating
                 //    the initializer here would fail for forms only the
@@ -753,7 +774,7 @@ impl Sema<'_> {
                     )?;
                     return Ok(Some(info.value));
                 }
-                // 5. Type names used as values (e.g. `Point` in
+                // 6. Type names used as values (e.g. `Point` in
                 //    `fn make_type() -> type { Point }`)
                 Ok(self.resolve_named_type_value(name).map(ConstValue::Type))
             }

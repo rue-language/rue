@@ -4,12 +4,20 @@
 //! instructions into regular `Call` instructions by:
 //!
 //! 1. Collecting all `CallGeneric` instructions in the analyzed functions
-//! 2. For each unique (func_name, type_args) combination, creating a specialized function
+//! 2. For each unique (func_name, type_args, value_args) combination, creating
+//!    a specialized function
 //! 3. Rewriting `CallGeneric` to `Call` with the specialized function name
 //!
+//! Specialization covers both comptime *type* parameters (`comptime T: type`)
+//! and comptime *value* parameters (`comptime n: i32`, RUE-166): each distinct
+//! combination of type and value arguments gets its own specialized body, in
+//! which the value parameters are compile-time constants (available to
+//! `comptime` blocks and forwardable to other comptime parameters).
+//!
 //! Specialized bodies can contain further `CallGeneric` instructions (a generic
-//! function forwarding its type parameter to another generic), so these steps
-//! repeat until no new specializations are discovered.
+//! function forwarding its type parameter to another generic, or a
+//! comptime-recursive function like `fact(comptime n)` calling `fact(n - 1)`),
+//! so these steps repeat until no new specializations are discovered.
 //!
 //! # Architecture
 //!
@@ -25,16 +33,98 @@ use rue_rir::RirParamMode;
 use rue_span::Span;
 
 use crate::inst::{Air, AirInstData};
-use crate::sema::{AnalyzedFunction, FunctionInfo, InferenceContext, Sema, SemaOutput};
+use crate::sema::{AnalyzedFunction, ConstValue, FunctionInfo, InferenceContext, Sema, SemaOutput};
 use crate::types::Type;
 
-/// A key for a specialized function: (base_function_name, type_arguments).
+/// A key for a specialized function:
+/// (base_function_name, type_arguments, value_arguments).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SpecializationKey {
     /// Base function name (e.g., "identity")
     pub base_name: Spur,
-    /// Type arguments (e.g., [Type::I32])
+    /// Type arguments (e.g., [Type::I32]), one per comptime type parameter
     pub type_args: Vec<Type>,
+    /// Comptime value arguments (e.g., [Integer(5)]), one per comptime value
+    /// parameter (RUE-166)
+    pub value_args: Vec<ConstValue>,
+}
+
+// ============================================================================
+// ConstValue <-> extra-array encoding
+// ============================================================================
+//
+// Comptime value arguments travel from the call site (sema) to this pass
+// inside the AIR extra array (a flat `u32` stream), as a tagged word stream:
+// each value is a tag word followed by its payload words.
+
+/// Tag for `ConstValue::Integer` (payload: 4 words, i128 as little-endian u32s).
+const CV_TAG_INTEGER: u32 = 0;
+/// Tag for `ConstValue::Bool` (payload: 1 word, 0 or 1).
+const CV_TAG_BOOL: u32 = 1;
+/// Tag for `ConstValue::Unit` (no payload).
+const CV_TAG_UNIT: u32 = 2;
+/// Tag for `ConstValue::Type` (payload: 1 word, `Type::as_u32`).
+const CV_TAG_TYPE: u32 = 3;
+
+/// Encode comptime value arguments as a tagged `u32` word stream for the AIR
+/// extra array. Decoded by [`decode_const_values`].
+pub fn encode_const_values(values: &[ConstValue]) -> Vec<u32> {
+    let mut words = Vec::with_capacity(values.len() * 5);
+    for value in values {
+        match value {
+            ConstValue::Integer(n) => {
+                words.push(CV_TAG_INTEGER);
+                let bits = *n as u128;
+                for i in 0..4 {
+                    words.push((bits >> (32 * i)) as u32);
+                }
+            }
+            ConstValue::Bool(b) => {
+                words.push(CV_TAG_BOOL);
+                words.push(u32::from(*b));
+            }
+            ConstValue::Unit => words.push(CV_TAG_UNIT),
+            ConstValue::Type(ty) => {
+                words.push(CV_TAG_TYPE);
+                words.push(ty.as_u32());
+            }
+        }
+    }
+    words
+}
+
+/// Decode a tagged word stream produced by [`encode_const_values`].
+pub fn decode_const_values(words: &[u32]) -> Vec<ConstValue> {
+    let mut values = Vec::new();
+    let mut i = 0;
+    while i < words.len() {
+        let tag = words[i];
+        i += 1;
+        let value = match tag {
+            CV_TAG_INTEGER => {
+                let mut bits: u128 = 0;
+                for j in 0..4 {
+                    bits |= u128::from(words[i + j]) << (32 * j);
+                }
+                i += 4;
+                ConstValue::Integer(bits as i128)
+            }
+            CV_TAG_BOOL => {
+                let b = words[i] != 0;
+                i += 1;
+                ConstValue::Bool(b)
+            }
+            CV_TAG_UNIT => ConstValue::Unit,
+            CV_TAG_TYPE => {
+                let ty = Type::from_u32(words[i]);
+                i += 1;
+                ConstValue::Type(ty)
+            }
+            _ => unreachable!("invalid ConstValue tag {tag} in extra array"),
+        };
+        values.push(value);
+    }
+    values
 }
 
 /// Info about a specialization: the mangled name and the first call site span.
@@ -49,8 +139,12 @@ struct SpecializationInfo {
 ///
 /// Each round creates the bodies for the specializations discovered in the
 /// previous round, so this bounds the nesting depth of generic-to-generic
-/// calls. Unbounded growth is possible when a generic function instantiates
-/// itself with an ever-growing type (e.g. `f(Pair(T), ...)` inside `f`).
+/// calls — including comptime-value recursion (`fact(comptime n)` calling
+/// `fact(n - 1)` adds one round per distinct value, RUE-166). Unbounded
+/// growth is possible when a generic function instantiates itself with an
+/// ever-growing type (e.g. `f(Pair(T), ...)` inside `f`) or a
+/// comptime-recursive function never reaches a comptime-known base case,
+/// so this cap turns a would-be-infinite loop into a clean E1200.
 const MAX_SPECIALIZATION_ROUNDS: usize = 64;
 
 /// Perform the specialization pass on the sema output.
@@ -98,8 +192,10 @@ pub fn specialize(
             return Err(CompileError::new(
                 ErrorKind::ComptimeEvaluationFailed {
                     reason: format!(
-                        "generic specialization of '{}' exceeded the maximum nesting depth ({}); \
-                         is a generic function recursively instantiating itself with new types?",
+                        "specialization of '{}' exceeded the maximum nesting depth ({}); \
+                         is a comptime-recursive function missing a compile-time-known \
+                         base case, or a generic function recursively instantiating \
+                         itself with new types?",
                         interner.resolve(&key.base_name),
                         MAX_SPECIALIZATION_ROUNDS
                     ),
@@ -146,6 +242,8 @@ fn collect_specializations(
             name,
             type_args_start,
             type_args_len,
+            value_args_start,
+            value_args_len,
             ..
         } = &inst.data
         {
@@ -154,15 +252,21 @@ fn collect_specializations(
                 .iter()
                 .map(|&encoded| Type::from_u32(encoded))
                 .collect();
+            let value_args = decode_const_values(air.get_extra(*value_args_start, *value_args_len));
 
             let key = SpecializationKey {
                 base_name: *name,
                 type_args,
+                value_args,
             };
 
             if let Entry::Vacant(entry) = specializations.entry(key) {
                 let base_name = interner.resolve(name);
-                let mangled = mangle_specialized_name(base_name, &entry.key().type_args);
+                let mangled = mangle_specialized_name(
+                    base_name,
+                    &entry.key().type_args,
+                    &entry.key().value_args,
+                );
                 let mangled_sym = interner.get_or_intern(&mangled);
                 pending.push(entry.key().clone());
                 entry.insert(SpecializationInfo {
@@ -185,6 +289,8 @@ fn rewrite_call_generic(
             name,
             type_args_start,
             type_args_len,
+            value_args_start,
+            value_args_len,
             args_start,
             args_len,
         } = &inst.data
@@ -194,10 +300,12 @@ fn rewrite_call_generic(
                 .iter()
                 .map(|&encoded| Type::from_u32(encoded))
                 .collect();
+            let value_args = decode_const_values(air.get_extra(*value_args_start, *value_args_len));
 
             let key = SpecializationKey {
                 base_name: *name,
                 type_args,
+                value_args,
             };
 
             if let Some(info) = specializations.get(&key) {
@@ -219,13 +327,40 @@ fn rewrite_call_generic(
 }
 
 /// Generate a mangled name for a specialized function.
-fn mangle_specialized_name(base_name: &str, type_args: &[Type]) -> String {
+///
+/// Type arguments and value arguments each contribute a `__`-separated
+/// segment, so distinct comptime values yield distinct symbols
+/// (`fact__v5`, `fact__v4`, ...; RUE-166) exactly like distinct types do
+/// (RUE-100's lesson: colliding mangles mean duplicate symbols at link time).
+fn mangle_specialized_name(
+    base_name: &str,
+    type_args: &[Type],
+    value_args: &[ConstValue],
+) -> String {
     let mut mangled = base_name.to_string();
     for ty in type_args {
         mangled.push_str("__");
         mangled.push_str(&mangle_type(*ty));
     }
+    for value in value_args {
+        mangled.push_str("__");
+        mangled.push_str(&mangle_const_value(value));
+    }
     mangled
+}
+
+/// Mangle a single comptime value argument into a unique symbol fragment.
+///
+/// Negative integers use an `m` (minus) prefix on the magnitude because `-`
+/// is not a safe symbol character (`-3` -> `vm3`).
+fn mangle_const_value(value: &ConstValue) -> String {
+    match value {
+        ConstValue::Integer(n) if *n < 0 => format!("vm{}", n.unsigned_abs()),
+        ConstValue::Integer(n) => format!("v{}", n),
+        ConstValue::Bool(b) => format!("v{}", b),
+        ConstValue::Unit => "vunit".to_string(),
+        ConstValue::Type(ty) => format!("v{}", mangle_type(*ty)),
+    }
 }
 
 /// Mangle a single type argument into a unique string.
@@ -247,10 +382,13 @@ fn mangle_type(ty: Type) -> String {
     }
 }
 
-/// Create a specialized function by re-analyzing the body with type substitution.
+/// Create a specialized function by re-analyzing the body with type and
+/// value substitution.
 ///
-/// This builds a type substitution map from the comptime parameters to their concrete
-/// type arguments, then re-analyzes the function body with these substitutions.
+/// This builds a type substitution map from the comptime type parameters to
+/// their concrete type arguments and a value substitution map from the
+/// comptime value parameters to their concrete values (RUE-166), then
+/// re-analyzes the function body with these substitutions.
 fn create_specialized_function(
     sema: &mut Sema<'_>,
     infer_ctx: &InferenceContext,
@@ -261,12 +399,26 @@ fn create_specialized_function(
 ) -> CompileResult<AnalyzedFunction> {
     let specialized_name_str = interner.resolve(&specialized_name).to_string();
 
+    // Pair each comptime parameter with its argument: type parameters
+    // (declared `: type`) consume the type_args stream, value parameters
+    // consume the value_args stream — mirroring how the call site collected
+    // them (both in parameter order).
     let mut type_subst: HashMap<Spur, Type> = HashMap::new();
+    let mut value_subst: HashMap<Spur, ConstValue> = HashMap::new();
     let mut type_arg_idx = 0;
-    for (name, _, _, is_comptime) in sema.param_arena.iter(base_info.params) {
-        if *is_comptime && type_arg_idx < key.type_args.len() {
-            type_subst.insert(*name, key.type_args[type_arg_idx]);
-            type_arg_idx += 1;
+    let mut value_arg_idx = 0;
+    for (name, ty, _, is_comptime) in sema.param_arena.iter(base_info.params) {
+        if !*is_comptime {
+            continue;
+        }
+        if *ty == Type::COMPTIME_TYPE {
+            if type_arg_idx < key.type_args.len() {
+                type_subst.insert(*name, key.type_args[type_arg_idx]);
+                type_arg_idx += 1;
+            }
+        } else if value_arg_idx < key.value_args.len() {
+            value_subst.insert(*name, key.value_args[value_arg_idx]);
+            value_arg_idx += 1;
         }
     }
 
@@ -291,7 +443,16 @@ fn create_specialized_function(
         Vec::with_capacity(base_params.len());
     for (name, ty, mode, is_comptime) in base_params {
         if is_comptime {
-            // Comptime parameters are erased from the specialized signature.
+            if ty == Type::COMPTIME_TYPE {
+                // Comptime TYPE parameters are erased from the specialized
+                // signature (types don't exist at runtime).
+                continue;
+            }
+            // Comptime VALUE parameters stay in the runtime signature — the
+            // call site still passes them (see `analyze_call`); their constant
+            // value is additionally substituted into the body via value_subst
+            // so comptime contexts see it (RUE-166).
+            specialized_params.push((name, ty, mode, true));
             continue;
         }
         let concrete_ty = if ty == Type::COMPTIME_TYPE {
@@ -320,6 +481,7 @@ fn create_specialized_function(
         &specialized_params,
         base_info.body,
         &type_subst,
+        &value_subst,
     )?;
 
     Ok(AnalyzedFunction {

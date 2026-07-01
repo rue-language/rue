@@ -27,7 +27,8 @@ pub struct FunctionInfo {
     pub rir_params_len: u32,
     /// Span of the function declaration
     pub span: Span,
-    /// Whether this function has any comptime type parameters
+    /// Whether this function has any comptime parameters (type or value) and
+    /// therefore requires per-call-site specialization (RUE-166)
     pub is_generic: bool,
     /// Whether this function is public (visible outside its directory)
     pub is_pub: bool,

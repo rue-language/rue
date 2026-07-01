@@ -137,6 +137,31 @@ fn main() -> i32 {
 }
 ```
 
+{{ rule(id="4.14:17", cat="normative") }}
+
+Within a specialized function body, an `if` expression whose condition can be evaluated at compile time (because it references comptime parameters in scope) selects its branch at compile time: only the taken branch is analyzed and compiled. This permits comptime-recursive functions, whose recursive call sits in a branch that is not taken once the recursion reaches its base case.
+
+```rue
+fn fact(comptime n: i32) -> i32 {
+    if n <= 1 { 1 } else { n * fact(n - 1) }
+}
+
+fn main() -> i32 {
+    fact(5)  // 120: fact(5) .. fact(1) are specialized; fact(1) takes the
+             // then-branch, so the recursion terminates
+}
+```
+
+{{ rule(id="4.14:18", cat="legality-rule") }}
+
+It is a compile-time error when specialization exceeds the implementation's maximum nesting depth (at least 64 levels), as happens when a comptime-recursive function never reaches a compile-time-known base case or a generic function recursively instantiates itself with new types. Implementations **MUST** diagnose this instead of failing to terminate.
+
+```rue
+fn runaway(comptime n: i32) -> i32 {
+    runaway(n + 1)  // ERROR: exceeds the maximum specialization depth
+}
+```
+
 ## Anonymous Struct Types
 
 {{ rule(id="4.14:7", cat="normative") }}

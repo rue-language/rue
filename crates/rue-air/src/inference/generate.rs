@@ -48,10 +48,14 @@ pub struct FunctionSig {
     pub param_types: Vec<InferType>,
     /// Return type, as InferType for uniform handling.
     pub return_type: InferType,
-    /// Whether this is a generic function (has comptime type parameters).
+    /// Whether this function requires specialization (has any comptime
+    /// parameters — type parameters like `comptime T: type` or value
+    /// parameters like `comptime n: i32`, RUE-166).
     /// Generic calls substitute the comptime type arguments into the parameter
     /// types before constraining arguments; type parameters that can't be
     /// resolved during constraint generation are checked in sema instead.
+    /// Comptime value parameters have concrete declared types, so their
+    /// arguments are constrained normally.
     pub is_generic: bool,
     /// Parameter modes (Normal, Inout, Borrow, Comptime).
     pub param_modes: Vec<rue_rir::RirParamMode>,
