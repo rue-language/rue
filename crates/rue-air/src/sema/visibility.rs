@@ -55,47 +55,56 @@ impl Sema<'_> {
         }
     }
 
-    /// Check that an *unqualified* call may reach the callee (RUE-37,
-    /// RUE-180).
+    /// Check that an *unqualified* reference may reach the item (RUE-37,
+    /// RUE-180, RUE-183).
     ///
-    /// All loaded files share one flat global function namespace for *name
+    /// All loaded files share one flat global namespace for *name
     /// resolution* (spec 10.5:2, transitional), but privacy is uniform in
-    /// every multi-file compilation, imports or not (spec 10.3:7):
+    /// every multi-file compilation, imports or not (spec 10.3:7), and it
+    /// covers every item kind — functions, structs, and constants alike
+    /// (spec 10.3:1):
     ///
-    /// - If the callee is accessible per [`Sema::is_accessible`] (it is
-    ///   `pub`, or the caller is in the callee's directory — ADR-0026
-    ///   intra-directory visibility), the call is fine.
-    /// - Otherwise the call is an error (E0460), naming the callee's
+    /// - If the item is accessible per [`Sema::is_accessible`] (it is
+    ///   `pub`, or the reference is in the item's directory — ADR-0026
+    ///   intra-directory visibility), the reference is fine.
+    /// - Otherwise the reference is an error (E0460), naming the item's
     ///   defining file. Whether that file was loaded via `@import` or merely
     ///   listed on the command line makes no difference.
-    pub(crate) fn check_unqualified_call_visibility(
+    ///
+    /// `item_kind` names the kind in the diagnostic ("function", "struct",
+    /// "constant").
+    pub(crate) fn check_unqualified_visibility(
         &self,
-        fn_name: &str,
-        callee_file_id: FileId,
+        item_kind: &str,
+        name: &str,
+        defining_file_id: FileId,
         is_pub: bool,
         span: rue_span::Span,
     ) -> CompileResult<()> {
-        if self.is_accessible(span.file_id, callee_file_id, is_pub) {
+        if self.is_accessible(span.file_id, defining_file_id, is_pub) {
             return Ok(());
         }
 
         // `is_accessible` is permissive when either file path is unknown
-        // (single-file mode, synthetic items), so the callee's path is
+        // (single-file mode, synthetic items), so the item's path is
         // always known here.
         let defining_file = self
-            .get_file_path(callee_file_id)
+            .get_file_path(defining_file_id)
             .unwrap_or("<unknown>")
             .to_string();
 
         Err(CompileError::new(
-            ErrorKind::PrivateUnqualifiedAccess {
-                name: fn_name.to_string(),
-                defining_file,
-            },
+            ErrorKind::PrivateUnqualifiedAccess(Box::new(
+                rue_error::PrivateUnqualifiedAccessData {
+                    item_kind: item_kind.to_string(),
+                    name: name.to_string(),
+                    defining_file,
+                },
+            )),
             span,
         )
         .with_help(format!(
-            "`{fn_name}` is not marked `pub`; private items are only visible within their defining directory"
+            "`{name}` is not marked `pub`; private items are only visible within their defining directory"
         )))
     }
 

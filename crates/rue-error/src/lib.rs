@@ -816,6 +816,19 @@ pub struct AmbiguousModuleData {
     pub dir_module: String,
 }
 
+/// Payload for [`ErrorKind::PrivateUnqualifiedAccess`], boxed to keep
+/// `ErrorKind` within its 64-byte size budget (three inline `String`s
+/// exceed it).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrivateUnqualifiedAccessData {
+    /// The kind of item ("function", "struct", "constant").
+    pub item_kind: String,
+    /// The item's name as written at the reference site.
+    pub name: String,
+    /// The path of the file that defines the private item.
+    pub defining_file: String,
+}
+
 /// The kind of compilation error.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum ErrorKind {
@@ -1119,8 +1132,8 @@ pub enum ErrorKind {
     StdLibNotFound,
     #[error("{item_kind} `{name}` is private")]
     PrivateMemberAccess { item_kind: String, name: String },
-    #[error("function `{name}` is private (defined in `{defining_file}`)")]
-    PrivateUnqualifiedAccess { name: String, defining_file: String },
+    #[error("{} `{}` is private (defined in `{}`)", .0.item_kind, .0.name, .0.defining_file)]
+    PrivateUnqualifiedAccess(Box<PrivateUnqualifiedAccessData>),
     #[error("module `{module_name}` has no member `{member_name}`")]
     UnknownModuleMember {
         module_name: String,
@@ -1290,7 +1303,7 @@ impl ErrorKind {
             ErrorKind::AmbiguousModule { .. } => ErrorCode::AMBIGUOUS_MODULE,
             ErrorKind::StdLibNotFound => ErrorCode::STD_LIB_NOT_FOUND,
             ErrorKind::PrivateMemberAccess { .. } => ErrorCode::PRIVATE_MEMBER_ACCESS,
-            ErrorKind::PrivateUnqualifiedAccess { .. } => ErrorCode::PRIVATE_UNQUALIFIED_ACCESS,
+            ErrorKind::PrivateUnqualifiedAccess(_) => ErrorCode::PRIVATE_UNQUALIFIED_ACCESS,
             ErrorKind::UnknownModuleMember { .. } => ErrorCode::UNKNOWN_MODULE_MEMBER,
 
             // Literal/operator errors (E0800-E0899)

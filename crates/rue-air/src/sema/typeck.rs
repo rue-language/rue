@@ -143,6 +143,20 @@ impl<'a> Sema<'a> {
         }
 
         if let Some(&struct_id) = self.structs.get(&type_sym) {
+            // Privacy (E0460, RUE-183): an unqualified type reference must
+            // not reach a private struct defined in another directory —
+            // privacy is uniform across item kinds (spec 10.3:1, 10.3:7).
+            // Spans here are always the reference site (annotation,
+            // signature, struct literal), so `span.file_id` is the
+            // referencing file.
+            let struct_def = self.type_pool.struct_def(struct_id);
+            self.check_unqualified_visibility(
+                "struct",
+                type_name,
+                struct_def.file_id,
+                struct_def.is_pub,
+                span,
+            )?;
             Ok(Type::new_struct(struct_id))
         } else if let Some(&enum_id) = self.enums.get(&type_sym) {
             Ok(Type::new_enum(enum_id))

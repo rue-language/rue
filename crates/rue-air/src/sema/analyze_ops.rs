@@ -1932,6 +1932,18 @@ impl<'a> Sema<'a> {
         // gathering (RUE-171); materialize it directly — the initializer is
         // never re-analyzed at use sites.
         if let Some(const_info) = self.constants.get(&name) {
+            // Privacy (E0460, RUE-183): the constants table is global, so an
+            // unqualified reference can resolve to a private constant defined
+            // in another directory — reject it, privacy is uniform across
+            // item kinds (spec 10.3:1, 10.3:7). The declaration span's file
+            // is the constant's defining file.
+            self.check_unqualified_visibility(
+                "constant",
+                name_str,
+                const_info.span.file_id,
+                const_info.is_pub,
+                span,
+            )?;
             let (data, ty) = Self::materialize_const_value(const_info.value, const_info.ty);
             let air_ref = air.add_inst(AirInst { data, ty, span });
             return Ok(AnalysisResult::new(air_ref, ty));
@@ -1939,14 +1951,25 @@ impl<'a> Sema<'a> {
 
         // Check if this is a type name (for comptime type parameters)
         // Try to resolve it as a type - if successful, emit a TypeConst instruction
-        if let Ok(resolved_type) = self.resolve_type(name, span) {
-            // This is a type name being used as a value (e.g., `i32` passed to `comptime T: type`)
-            let air_ref = air.add_inst(AirInst {
-                data: AirInstData::TypeConst(resolved_type),
-                ty: Type::COMPTIME_TYPE,
-                span,
-            });
-            return Ok(AnalysisResult::new(air_ref, Type::COMPTIME_TYPE));
+        match self.resolve_type(name, span) {
+            Ok(resolved_type) => {
+                // This is a type name being used as a value (e.g., `i32` passed to `comptime T: type`)
+                let air_ref = air.add_inst(AirInst {
+                    data: AirInstData::TypeConst(resolved_type),
+                    ty: Type::COMPTIME_TYPE,
+                    span,
+                });
+                return Ok(AnalysisResult::new(air_ref, Type::COMPTIME_TYPE));
+            }
+            // The name IS a known type, but a private one from another
+            // directory (RUE-183): report the privacy error rather than
+            // falling through to a misleading "undefined variable".
+            Err(e) if matches!(e.kind, ErrorKind::PrivateUnqualifiedAccess(_)) => {
+                return Err(e);
+            }
+            // Any other resolution failure: not a type name, keep falling
+            // through to the undefined-variable error below.
+            Err(_) => {}
         }
 
         // Not a parameter, local, type, or constant - undefined variable
@@ -2169,10 +2192,25 @@ impl<'a> Sema<'a> {
                 }
             }
         } else {
-            *self
+            let struct_id = *self
                 .structs
                 .get(&type_name)
-                .ok_or_compile_error(ErrorKind::UnknownType(type_name_str.to_string()), span)?
+                .ok_or_compile_error(ErrorKind::UnknownType(type_name_str.to_string()), span)?;
+            // Privacy (E0460, RUE-183): a struct literal names the type
+            // unqualified, so a private struct from another directory is not
+            // constructible here — privacy is uniform across item kinds
+            // (spec 10.3:1, 10.3:7). The comptime-type-variable branch above
+            // is exempt: the type value arrived through a binding (e.g. a
+            // `pub` comptime function's return), not by naming the struct.
+            let def = self.type_pool.struct_def(struct_id);
+            self.check_unqualified_visibility(
+                "struct",
+                type_name_str,
+                def.file_id,
+                def.is_pub,
+                span,
+            )?;
+            struct_id
         };
 
         // Get struct def (returns owned copy from pool)
@@ -3423,7 +3461,8 @@ impl<'a> Sema<'a> {
         // uniform in every multi-file compilation, imports or not (spec
         // 10.3:7), so the flat namespace resolves the name but the callee
         // must be `pub` (or in the caller's directory).
-        self.check_unqualified_call_visibility(
+        self.check_unqualified_visibility(
+            "function",
             &fn_name_str,
             fn_info.file_id,
             fn_info.is_pub,
