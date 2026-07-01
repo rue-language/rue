@@ -70,6 +70,9 @@ enum MovedSlot {
 /// A struct field path inside a slot, as declaration indices from the
 /// outermost struct inward: `o.a` → `[0]`, `o.a.b` → `[0, 1]` (for `a` and
 /// `b` at declaration index 0 and 1 of their respective structs).
+/// Array element paths (RUE-186) reuse the representation with the element
+/// index as the segment: `xs[2]` → `[2]`. Whether a segment is a field or an
+/// element is determined by the type at that level.
 type FieldPath = Vec<u32>;
 
 /// Move-out state for drop elaboration: whole slots and struct field paths
@@ -273,8 +276,9 @@ impl<'a> CfgBuilder<'a> {
         // Pre-scan for moves so drop flags can be initialized at the
         // value's init site, before the move is reached (RUE-108).
         // Whole-value MarkMoveds nominate the slot for a whole-slot flag;
-        // field-level MarkMoveds nominate their (slot, field path) for a
-        // per-field flag (RUE-156) when the moved type needs dropping.
+        // path-level MarkMoveds (struct field paths, and constant-index
+        // array elements per RUE-186) nominate their (slot, path) for a
+        // per-path flag (RUE-156) when the moved type needs dropping.
         for i in 0..air.len() {
             let inst = air.get(AirRef::from_raw(i as u32));
             if let AirInstData::MarkMoved {
@@ -2233,8 +2237,9 @@ impl<'a> CfgBuilder<'a> {
                 place,
             } => {
                 // Pure passthrough at runtime: lower the wrapped use and
-                // record that the slot's contents (or one field path of
-                // them, RUE-62/RUE-157) were moved out on this path, so
+                // record that the slot's contents (or one field path or
+                // array element of them, RUE-62/RUE-157/RUE-186) were
+                // moved out on this path, so
                 // drop elaboration skips the slot (or just that path) at
                 // scope exit.
                 let result = self.lower_inst(*value);
@@ -2492,9 +2497,12 @@ impl<'a> CfgBuilder<'a> {
         }
     }
 
-    /// The field path (declaration indices, outermost first) named by a
-    /// field-level MarkMoved's place. Sema only exports markers for pure
-    /// `Field` projection chains.
+    /// The path (declaration/element indices, outermost first) named by a
+    /// path-level MarkMoved's place. Sema only exports markers for pure
+    /// `Field` projection chains and for single CONSTANT-index projections
+    /// (per-element array moves, RUE-186): the marker's index operand is a
+    /// dedicated `Const` instruction, resolved back to the element index
+    /// here.
     fn moved_field_path(&self, place_ref: AirPlaceRef) -> FieldPath {
         let place = self.air.get_place(place_ref);
         self.air
@@ -2502,9 +2510,10 @@ impl<'a> CfgBuilder<'a> {
             .iter()
             .map(|proj| match proj {
                 AirProjection::Field { field_index, .. } => *field_index,
-                AirProjection::Index { .. } => {
-                    unreachable!("MarkMoved place contains a non-field projection")
-                }
+                AirProjection::Index { index, .. } => match self.air.get(*index).data {
+                    AirInstData::Const(k) => k as u32,
+                    _ => unreachable!("MarkMoved place contains a non-constant index projection"),
+                },
             })
             .collect()
     }
@@ -2532,7 +2541,7 @@ impl<'a> CfgBuilder<'a> {
             }
             if self.type_needs_drop(ty) {
                 self.emit_guarded(key, span, |b| {
-                    if !b.emit_partial_struct_drop(key, ty, span) {
+                    if !b.emit_partial_drop(key, ty, span) {
                         let param_val = b.emit(CfgInstData::Param { index: abi_slot }, ty, span);
                         b.emit(CfgInstData::Drop { value: param_val }, Type::UNIT, span);
                     }
@@ -2638,7 +2647,7 @@ impl<'a> CfgBuilder<'a> {
             let (slot, ty) = (live_slot.slot, live_slot.ty);
             self.emit_guarded(key, span, |b| {
                 // Fast path: nothing partially moved — drop the whole value.
-                if !b.emit_partial_struct_drop(key, ty, span) {
+                if !b.emit_partial_drop(key, ty, span) {
                     let slot_val = b.emit(CfgInstData::Load { slot }, ty, span);
                     b.emit(CfgInstData::Drop { value: slot_val }, Type::UNIT, span);
                 }
@@ -2668,7 +2677,7 @@ impl<'a> CfgBuilder<'a> {
             return;
         }
         self.emit_guarded(key, span, |b| {
-            if !b.emit_partial_struct_drop(key, ty, span) {
+            if !b.emit_partial_drop(key, ty, span) {
                 let old_val = match key {
                     MovedSlot::Local(slot) => b.emit(CfgInstData::Load { slot }, ty, span),
                     MovedSlot::Param(index) => b.emit(CfgInstData::Param { index }, ty, span),
@@ -2712,8 +2721,8 @@ impl<'a> CfgBuilder<'a> {
         });
     }
 
-    /// Field-granular drop of a partially-moved struct (RUE-62, RUE-156,
-    /// RUE-157).
+    /// Path-granular drop of a partially-moved struct or array (RUE-62,
+    /// RUE-156, RUE-157, RUE-186).
     ///
     /// When one or more field paths of a struct slot were (or may have
     /// been) moved out (`eat(o.a)`, `eat(o.a.b)`, `if c { eat(o.a) }`), the
@@ -2735,12 +2744,18 @@ impl<'a> CfgBuilder<'a> {
     ///      field-granular drop of the field instead of a whole `Drop`;
     ///    - untouched: a plain `Drop` of the field read via `PlaceRead`.
     ///
+    /// Arrays get the same treatment per ELEMENT (RUE-186): elements moved
+    /// out on every path are skipped, elements moved on some path are
+    /// dropped behind their runtime drop flag, untouched elements get a
+    /// plain drop. Arrays have no destructor of their own, so there is no
+    /// step-1 destructor call at array levels.
+    ///
     /// Returns `false` (caller emits the normal whole-value drop) when the
-    /// slot has no (possibly-)moved-out field paths or is not a struct.
-    /// Note each destructor still receives the WHOLE struct, including the
-    /// moved-out part's stale slots — reading a moved field in a destructor
-    /// is a use-after-move just like any other.
-    fn emit_partial_struct_drop(&mut self, key: MovedSlot, ty: Type, span: rue_span::Span) -> bool {
+    /// slot has no (possibly-)moved-out paths or is neither a struct nor an
+    /// array. Note each destructor still receives the WHOLE struct,
+    /// including the moved-out part's stale slots — reading a moved field
+    /// in a destructor is a use-after-move just like any other.
+    fn emit_partial_drop(&mut self, key: MovedSlot, ty: Type, span: rue_span::Span) -> bool {
         // `maybe` ⊇ `definite`: paths possibly vs. definitely moved out on
         // the paths reaching this exit.
         let definite = self.moved.moved_paths_of(key);
@@ -2748,25 +2763,42 @@ impl<'a> CfgBuilder<'a> {
         if maybe.is_empty() && definite.is_empty() {
             return false;
         }
-        let TypeKind::Struct(struct_id) = ty.kind() else {
-            // Per-field move markers are only emitted for struct fields, so
-            // this is unreachable today; fall back to the whole-value drop.
-            return false;
-        };
-        self.emit_partial_struct_drop_level(
-            key,
-            struct_id,
-            ty,
-            &mut Vec::new(),
-            &mut Vec::new(),
-            &definite,
-            &maybe,
-            span,
-        );
-        true
+        match ty.kind() {
+            TypeKind::Struct(struct_id) => {
+                self.emit_partial_struct_drop_level(
+                    key,
+                    struct_id,
+                    ty,
+                    &mut Vec::new(),
+                    &mut Vec::new(),
+                    &definite,
+                    &maybe,
+                    span,
+                );
+                true
+            }
+            TypeKind::Array(_) => {
+                self.emit_partial_array_drop_level(
+                    key,
+                    ty,
+                    &mut Vec::new(),
+                    &mut Vec::new(),
+                    &definite,
+                    &maybe,
+                    span,
+                );
+                true
+            }
+            _ => {
+                // Path-level move markers are only emitted for struct fields
+                // and array elements, so this is unreachable today; fall
+                // back to the whole-value drop.
+                false
+            }
+        }
     }
 
-    /// One struct level of [`Self::emit_partial_struct_drop`]: destructor
+    /// One struct level of [`Self::emit_partial_drop`]: destructor
     /// (without glue) plus per-field drops for the struct at field path
     /// `path` (projections `projs`) inside slot `key`.
     #[allow(clippy::too_many_arguments)]
@@ -2850,22 +2882,32 @@ impl<'a> CfgBuilder<'a> {
 
             let cont_block = guard_flag.map(|flag| self.begin_flag_guard(flag, span));
             let recursed = if has_deeper_move {
-                if let TypeKind::Struct(field_struct_id) = field.ty.kind() {
-                    self.emit_partial_struct_drop_level(
-                        key,
-                        field_struct_id,
-                        field.ty,
-                        path,
-                        projs,
-                        definite,
-                        maybe,
-                        span,
-                    );
-                    true
-                } else {
-                    // Deeper paths only exist through struct fields; keep a
-                    // whole drop as a defensive fallback.
-                    false
+                match field.ty.kind() {
+                    TypeKind::Struct(field_struct_id) => {
+                        self.emit_partial_struct_drop_level(
+                            key,
+                            field_struct_id,
+                            field.ty,
+                            path,
+                            projs,
+                            definite,
+                            maybe,
+                            span,
+                        );
+                        true
+                    }
+                    TypeKind::Array(_) => {
+                        self.emit_partial_array_drop_level(
+                            key, field.ty, path, projs, definite, maybe, span,
+                        );
+                        true
+                    }
+                    _ => {
+                        // Deeper paths only exist through struct fields and
+                        // array elements; keep a whole drop as a defensive
+                        // fallback.
+                        false
+                    }
                 }
             } else {
                 false
@@ -2874,6 +2916,98 @@ impl<'a> CfgBuilder<'a> {
                 let place = self.cfg.make_place(base, projs.iter().copied());
                 let field_val = self.emit(CfgInstData::PlaceRead { place }, field.ty, span);
                 self.emit(CfgInstData::Drop { value: field_val }, Type::UNIT, span);
+            }
+            if let Some(cont_block) = cont_block {
+                self.end_flag_guard(cont_block);
+            }
+
+            path.pop();
+            projs.pop();
+        }
+    }
+
+    /// One array level of [`Self::emit_partial_drop`] (RUE-186): per-element
+    /// drops for the array at path `path` (projections `projs`) inside slot
+    /// `key`, in ascending element order (matching drop-glue order). The
+    /// per-element cases mirror the struct-field cases: definitely moved →
+    /// skipped, possibly moved → guarded by the element path's runtime drop
+    /// flag, deeper moved path → recursive path-granular drop, untouched →
+    /// plain `Drop`. Arrays have no destructor of their own.
+    fn emit_partial_array_drop_level(
+        &mut self,
+        key: MovedSlot,
+        array_ty: Type,
+        path: &mut FieldPath,
+        projs: &mut Vec<Projection>,
+        definite: &std::collections::HashSet<FieldPath>,
+        maybe: &std::collections::HashSet<FieldPath>,
+        span: rue_span::Span,
+    ) {
+        let TypeKind::Array(array_id) = array_ty.kind() else {
+            unreachable!("emit_partial_array_drop_level called on non-array type");
+        };
+        let (elem_ty, len) = self.type_pool.array_def(array_id);
+        if !self.type_needs_drop(elem_ty) {
+            return;
+        }
+        let base = match key {
+            MovedSlot::Local(slot) => PlaceBase::Local(slot),
+            MovedSlot::Param(slot) => PlaceBase::Param(slot),
+        };
+
+        for k in 0..len {
+            path.push(k as u32);
+            if definite.contains(path) {
+                // Moved out on every path: the new owner drops it.
+                path.pop();
+                continue;
+            }
+            let has_deeper_move = maybe
+                .iter()
+                .any(|p| p.len() > path.len() && p.starts_with(path));
+            let guard_flag = if maybe.contains(path) {
+                self.field_drop_flags.get(&(key, path.clone())).copied()
+            } else {
+                None
+            };
+
+            let index_val = self.emit(CfgInstData::Const(k), Type::U64, span);
+            projs.push(Projection::Index {
+                array_type: array_ty,
+                index: index_val,
+            });
+
+            let cont_block = guard_flag.map(|flag| self.begin_flag_guard(flag, span));
+            let recursed = if has_deeper_move {
+                match elem_ty.kind() {
+                    TypeKind::Struct(elem_struct_id) => {
+                        self.emit_partial_struct_drop_level(
+                            key,
+                            elem_struct_id,
+                            elem_ty,
+                            path,
+                            projs,
+                            definite,
+                            maybe,
+                            span,
+                        );
+                        true
+                    }
+                    TypeKind::Array(_) => {
+                        self.emit_partial_array_drop_level(
+                            key, elem_ty, path, projs, definite, maybe, span,
+                        );
+                        true
+                    }
+                    _ => false,
+                }
+            } else {
+                false
+            };
+            if !recursed {
+                let place = self.cfg.make_place(base, projs.iter().copied());
+                let elem_val = self.emit(CfgInstData::PlaceRead { place }, elem_ty, span);
+                self.emit(CfgInstData::Drop { value: elem_val }, Type::UNIT, span);
             }
             if let Some(cont_block) = cont_block {
                 self.end_flag_guard(cont_block);

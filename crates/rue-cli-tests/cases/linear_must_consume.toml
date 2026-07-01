@@ -213,3 +213,209 @@ fn main() -> i32 {
 """ }]
 compile_fail = true
 error_contains = ["E0406", "linear value 'm' must be consumed"]
+
+# =============================================================================
+# Element-wise consumption of linear arrays (RUE-186, spec 3.8:68-73)
+#
+# A constant index into an array variable moves just that element out, so a
+# linear array can be consumed element by element. Dynamic indices stay
+# conservative (E0904); partial consumption at scope end is rejected; drop
+# elaboration must not double-drop moved-out elements nor leak unmoved ones.
+# =============================================================================
+
+[[case]]
+name = "linear_array_elementwise_consume_runs"
+description = "Element-wise consumption of a linear array compiles and runs (RUE-186)."
+files = [{ path = "main.rue", source = """
+linear struct MustUse { value: i32 }
+fn consume(m: MustUse) -> i32 { m.value }
+fn main() -> i32 {
+    let xs = [MustUse { value: 40 }, MustUse { value: 2 }];
+    consume(xs[0]) + consume(xs[1])
+}
+""" }]
+exit_code = 42
+
+[[case]]
+name = "linear_array_partial_consumption_rejected"
+description = "Consuming only some elements of a linear array names the unconsumed elements."
+files = [{ path = "main.rue", source = """
+linear struct MustUse { value: i32 }
+fn consume(m: MustUse) -> i32 { m.value }
+fn main() -> i32 {
+    let xs = [MustUse { value: 1 }, MustUse { value: 2 }, MustUse { value: 3 }];
+    consume(xs[1])
+}
+""" }]
+compile_fail = true
+error_contains = ["E0406", "element(s) [0], [2]"]
+
+[[case]]
+name = "linear_array_element_one_branch_rejected"
+description = "An element consumed in only one branch is not consumed on all paths (E0443)."
+files = [{ path = "main.rue", source = """
+linear struct MustUse { value: i32 }
+fn consume(m: MustUse) -> i32 { m.value }
+fn main() -> i32 {
+    let xs = [MustUse { value: 1 }, MustUse { value: 2 }];
+    let a = consume(xs[0]);
+    if a == 1 {
+        a + consume(xs[1])
+    } else {
+        a
+    }
+}
+""" }]
+compile_fail = true
+error_contains = ["E0443", "element(s) [1]"]
+
+[[case]]
+name = "linear_array_dynamic_index_move_rejected"
+description = "Moving out through a non-constant index stays rejected (E0904, soundness pin)."
+files = [{ path = "main.rue", source = """
+linear struct MustUse { value: i32 }
+fn consume(m: MustUse) -> i32 { m.value }
+fn pick() -> u64 { 0 }
+fn main() -> i32 {
+    let xs = [MustUse { value: 1 }, MustUse { value: 2 }];
+    let i = pick();
+    consume(xs[i]) + consume(xs[1])
+}
+""" }]
+compile_fail = true
+error_contains = ["E0904", "cannot move out of indexed position"]
+
+[[case]]
+name = "array_element_drop_order_after_move"
+description = "Drop ORDER with a moved-out element: the new owner drops it first; scope exit drops the remaining elements ascending, exactly once (RUE-186)."
+files = [{ path = "main.rue", source = """
+struct D { value: i32 }
+drop fn D(self) {
+    @dbg(self.value);
+}
+fn consume(d: D) -> i32 { d.value }
+fn main() -> i32 {
+    let xs = [D { value: 1 }, D { value: 2 }, D { value: 3 }];
+    let got = consume(xs[1]);
+    @dbg(100);
+    got - 2
+}
+""" }]
+exit_code = 0
+stdout = "2\n100\n1\n3\n"
+
+[[case]]
+name = "array_element_branch_drop_flag_runs"
+description = "An element moved on only one path is dropped at exit exactly when that path did not run (runtime drop flag, RUE-186)."
+files = [{ path = "main.rue", source = """
+struct D { value: i32 }
+drop fn D(self) {
+    @dbg(self.value);
+}
+fn consume(d: D) -> i32 { d.value }
+fn cond(x: i32) -> bool { x > 0 }
+fn main() -> i32 {
+    let xs = [D { value: 1 }, D { value: 2 }];
+    let mut total = 0;
+    if cond(0) {
+        total = total + consume(xs[0]);
+    }
+    @dbg(100);
+    total
+}
+""" }]
+exit_code = 0
+stdout = "100\n1\n2\n"
+
+[[case]]
+name = "array_early_return_drops_unmoved_elements_only"
+description = "A return with a partially moved array drops only the unmoved elements (no double drop, no leak)."
+files = [{ path = "main.rue", source = """
+struct D { value: i32 }
+drop fn D(self) {
+    @dbg(self.value);
+}
+fn consume(d: D) -> i32 { d.value }
+fn cond(x: i32) -> bool { x > 0 }
+fn main() -> i32 {
+    let xs = [D { value: 1 }, D { value: 2 }];
+    let a = consume(xs[0]);
+    if cond(1) {
+        @dbg(100);
+        return a - 1;
+    }
+    a + consume(xs[1])
+}
+""" }]
+exit_code = 0
+stdout = "1\n100\n2\n"
+
+[[case]]
+name = "array_whole_reinit_after_element_move_drops_once"
+description = "Overwriting a partially moved array drops only the unmoved old elements, then the new occupants at exit (RUE-64 x RUE-186)."
+files = [{ path = "main.rue", source = """
+struct D { value: i32 }
+drop fn D(self) {
+    @dbg(self.value);
+}
+fn consume(d: D) -> i32 { d.value }
+fn main() -> i32 {
+    let mut xs = [D { value: 1 }, D { value: 2 }];
+    let a = consume(xs[0]);
+    xs = [D { value: 7 }, D { value: 8 }];
+    @dbg(100);
+    a - 1
+}
+""" }]
+exit_code = 0
+stdout = "1\n2\n100\n7\n8\n"
+
+[[case]]
+name = "array_element_write_partially_moved_rejected"
+description = "Assignment into a partially moved array is rejected (E0480): writes cannot re-arm per-element ownership."
+files = [{ path = "main.rue", source = """
+struct D { value: i32 }
+fn consume(d: D) -> i32 { d.value }
+fn main() -> i32 {
+    let mut xs = [D { value: 1 }, D { value: 2 }];
+    let a = consume(xs[0]);
+    xs[0] = D { value: 9 };
+    a
+}
+""" }]
+compile_fail = true
+error_contains = ["E0480", "cannot assign into 'xs'"]
+
+[[case]]
+name = "array_element_move_in_loop_rejected"
+description = "A constant-index move inside a loop body is a use-after-move on the next iteration."
+files = [{ path = "main.rue", source = """
+struct D { value: i32 }
+fn consume(d: D) -> i32 { d.value }
+fn main() -> i32 {
+    let xs = [D { value: 1 }, D { value: 2 }];
+    let mut i = 0;
+    let mut total = 0;
+    while i < 2 {
+        total = total + consume(xs[0]);
+        i = i + 1;
+    }
+    total
+}
+""" }]
+compile_fail = true
+error_contains = ["E0205", "use of moved value 'xs[0]'"]
+
+[[case]]
+name = "linear_array_param_elementwise_consume_runs"
+description = "A by-value linear array parameter is consumable element-wise by the callee; the caller's whole-array move still satisfies its own obligation."
+files = [{ path = "main.rue", source = """
+linear struct MustUse { value: i32 }
+fn consume(m: MustUse) -> i32 { m.value }
+fn consume_all(xs: [MustUse; 2]) -> i32 { consume(xs[0]) + consume(xs[1]) }
+fn main() -> i32 {
+    let xs = [MustUse { value: 40 }, MustUse { value: 2 }];
+    consume_all(xs)
+}
+""" }]
+exit_code = 42

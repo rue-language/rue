@@ -272,7 +272,7 @@ fn main() -> i32 {
 
 {{ rule(id="3.8:66", cat="legality-rule") }}
 
-The consumption requirement (3.8:32) applies to every binding whose type carries a linear value (3.8:57), not only to bindings of linear struct type. In particular, an array whose element type carries a linear value **MUST** be consumed as a whole (for example, by passing the array to a function by value); dropping the array would silently drop every element.
+The consumption requirement (3.8:32) applies to every binding whose type carries a linear value (3.8:57), not only to bindings of linear struct type. In particular, an array whose element type carries a linear value **MUST** be consumed — either as a whole (for example, by passing the array to a function by value) or element-wise via constant-index moves (3.8:71); dropping the array would silently drop every element.
 
 {{ rule(id="3.8:67", cat="example") }}
 
@@ -543,6 +543,43 @@ fn main() -> i32 {
     a + b                     // 3
 }
 ```
+
+## Array Element Moves
+
+{{ rule(id="3.8:68", cat="normative") }}
+
+Indexing an array variable with a compile-time constant index whose element type is not Copy moves that element out of the array. Only that element is invalidated; sibling elements remain usable and are still dropped normally. Element moves are tracked only for indexing applied directly to an array variable (or by-value array parameter); an array reached through another projection, or indexed with a non-constant index, cannot be moved out of (see the legality rule in the Arrays chapter).
+
+{{ rule(id="3.8:69", cat="example") }}
+
+```rue
+struct Big { value: i32 }
+
+fn consume(b: Big) -> i32 { b.value }
+
+fn main() -> i32 {
+    let xs = [Big { value: 1 }, Big { value: 2 }];
+    let a = consume(xs[0]);  // moves only xs[0]
+    let b = consume(xs[1]);  // xs[1] is still valid
+    a + b                    // 3
+}
+```
+
+{{ rule(id="3.8:70", cat="legality-rule") }}
+
+While one or more elements of an array are moved out, it is a compile-time error to use the moved element (including reading a field through it), to use the array as a whole value, or to index the array with a non-constant index. The non-constant-index restriction is required for soundness: the compiler cannot know at compile time whether a runtime index denotes a moved-out element.
+
+{{ rule(id="3.8:71", cat="normative") }}
+
+An array whose elements carry linear values may be consumed element-wise: its must-consume obligation is satisfied when every element has been moved out on every non-diverging path. Moving out only some elements, or moving an element on only some paths, is a compile-time error naming the elements that are not consumed.
+
+{{ rule(id="3.8:72", cat="legality-rule") }}
+
+While one or more elements of an array are moved out, it is a compile-time error to assign into the array — to an element, or through an element (e.g. to a field of an element). Element writes do not reinstate per-element ownership; the whole array must be reinitialized instead, which makes every element owned (and droppable) again.
+
+{{ rule(id="3.8:73", cat="dynamic-semantics") }}
+
+At scope exit (and when an array variable is overwritten), elements that were moved out on every path reaching that point are not dropped; elements moved out on only some paths are dropped exactly when the executed path did not move them; untouched elements are dropped, in ascending index order.
 
 ## Shadowing and Moves
 

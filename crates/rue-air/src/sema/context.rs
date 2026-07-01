@@ -32,6 +32,11 @@ pub(crate) struct LocalVar {
 
 /// A path of field accesses from a root variable.
 /// For example, `s.a.b` is represented as [sym("a"), sym("b")] with root sym("s").
+///
+/// Array element paths (RUE-186) reuse the same representation: a constant
+/// index K is encoded as the interned decimal string of K (`xs[0]` →
+/// [sym("0")]). Identifiers can never be all digits, so index segments can't
+/// collide with field names.
 pub(crate) type FieldPath = Vec<Spur>;
 
 /// Tracks move state for a variable, including partial (field-level) moves.
@@ -54,7 +59,16 @@ pub(crate) struct VariableMoveState {
     pub full_move_on_all_paths: bool,
     /// Partial moves: maps field paths to the span where they were moved.
     /// For example, if `s.a` was moved, this contains ([sym("a")], span).
+    ///
+    /// Like `full_move`, this is MAY-move (union at branch joins).
     pub partial_moves: HashMap<FieldPath, Span>,
+    /// Partial moves that happened on EVERY non-diverging path reaching this
+    /// point (intersection at branch joins) — the per-path analogue of
+    /// `full_move_on_all_paths`. Always a subset of `partial_moves`' keys.
+    /// The element-wise linear array consumption check (RUE-186) needs
+    /// MUST-move information: an element consumed in only one branch is
+    /// still dropped on the other paths.
+    pub partial_moves_on_all_paths: HashSet<FieldPath>,
 }
 
 impl VariableMoveState {
@@ -68,10 +82,12 @@ impl VariableMoveState {
             self.full_move_on_all_paths = true;
             // Clear partial moves since the whole thing is moved
             self.partial_moves.clear();
+            self.partial_moves_on_all_paths.clear();
         } else {
             // Partial move - only if not already fully moved
             if self.full_move.is_none() {
                 self.partial_moves.insert(path.to_vec(), span);
+                self.partial_moves_on_all_paths.insert(path.to_vec());
             }
         }
     }
@@ -85,6 +101,8 @@ impl VariableMoveState {
     pub fn mark_path_reinitialized(&mut self, path: &[Spur]) {
         self.partial_moves
             .retain(|moved, _| !(moved.len() >= path.len() && moved[..path.len()] == *path));
+        self.partial_moves_on_all_paths
+            .retain(|moved| !(moved.len() >= path.len() && moved[..path.len()] == *path));
     }
 
     /// Check if a field path is moved.
@@ -143,11 +161,28 @@ impl VariableMoveState {
             partial_moves.entry(path.clone()).or_insert(*span);
         }
 
+        // A path was moved on EVERY path only if both branches moved it.
+        // A branch that fully moved the value on all its paths covers every
+        // path (it has no per-path set of its own — the full move subsumed
+        // it), so the other branch's set survives.
+        let partial_moves_on_all_paths = if branch1.full_move_on_all_paths {
+            branch2.partial_moves_on_all_paths.clone()
+        } else if branch2.full_move_on_all_paths {
+            branch1.partial_moves_on_all_paths.clone()
+        } else {
+            branch1
+                .partial_moves_on_all_paths
+                .intersection(&branch2.partial_moves_on_all_paths)
+                .cloned()
+                .collect()
+        };
+
         Self {
             full_move,
             full_move_on_all_paths: branch1.full_move_on_all_paths
                 && branch2.full_move_on_all_paths,
             partial_moves,
+            partial_moves_on_all_paths,
         }
     }
 }
@@ -747,6 +782,68 @@ mod tests {
         // Partial move should be ignored when already fully moved
         assert_eq!(state.full_move, Some(span1));
         assert!(state.partial_moves.is_empty());
+    }
+
+    #[test]
+    fn variable_move_state_partial_must_move_tracks_and_reinit_clears() {
+        // RUE-186: partial moves are recorded in the MUST set on the
+        // straight-line path, and reinitialization clears them from it.
+        let mut state = VariableMoveState::default();
+        let interner = ThreadedRodeo::new();
+        let elem0 = interner.get_or_intern("0");
+        let span = Span::new(10, 20);
+
+        state.mark_path_moved(&[elem0], span);
+        assert!(state.partial_moves_on_all_paths.contains(&vec![elem0]));
+
+        state.mark_path_reinitialized(&[elem0]);
+        assert!(!state.partial_moves_on_all_paths.contains(&vec![elem0]));
+        assert!(state.partial_moves.is_empty());
+    }
+
+    #[test]
+    fn variable_move_state_merge_intersects_partial_must_moves() {
+        // RUE-186: a path moved in only one branch survives in the MAY set
+        // (union) but not the MUST set (intersection).
+        let interner = ThreadedRodeo::new();
+        let elem0 = interner.get_or_intern("0");
+        let elem1 = interner.get_or_intern("1");
+        let span = Span::new(10, 20);
+
+        let mut b1 = VariableMoveState::default();
+        b1.mark_path_moved(&[elem0], span);
+        b1.mark_path_moved(&[elem1], span);
+        let mut b2 = VariableMoveState::default();
+        b2.mark_path_moved(&[elem0], span);
+
+        let merged = VariableMoveState::merge_union(&b1, &b2);
+        assert!(merged.partial_moves.contains_key(&vec![elem0]));
+        assert!(merged.partial_moves.contains_key(&vec![elem1]));
+        assert!(merged.partial_moves_on_all_paths.contains(&vec![elem0]));
+        assert!(!merged.partial_moves_on_all_paths.contains(&vec![elem1]));
+    }
+
+    #[test]
+    fn variable_move_state_merge_full_move_branch_covers_partial_must() {
+        // RUE-186: a branch that fully moved the value on all its paths
+        // covers every path, so the other branch's per-path MUST set
+        // survives the join (whole-in-then / element-wise-in-else).
+        let interner = ThreadedRodeo::new();
+        let elem0 = interner.get_or_intern("0");
+        let span = Span::new(10, 20);
+
+        let mut whole = VariableMoveState::default();
+        whole.mark_path_moved(&[], span);
+        let mut elementwise = VariableMoveState::default();
+        elementwise.mark_path_moved(&[elem0], span);
+
+        let merged = VariableMoveState::merge_union(&whole, &elementwise);
+        assert!(!merged.full_move_on_all_paths);
+        assert!(merged.partial_moves_on_all_paths.contains(&vec![elem0]));
+
+        // Symmetric.
+        let merged = VariableMoveState::merge_union(&elementwise, &whole);
+        assert!(merged.partial_moves_on_all_paths.contains(&vec![elem0]));
     }
 
     #[test]

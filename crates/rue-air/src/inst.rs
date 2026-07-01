@@ -1051,22 +1051,25 @@ pub enum AirInstData {
     /// whose contents were moved out (the new owner is responsible for the
     /// drop). Emitted by sema wherever the move checker marks a whole
     /// variable as moved, and — with `place` set — wherever it marks a
-    /// struct field path as moved (a partial move, RUE-62/RUE-157).
+    /// struct field path (a partial move, RUE-62/RUE-157) or a
+    /// constant-index array element (RUE-186) as moved.
     MarkMoved {
-        /// The use of the variable (or field) that constitutes the move
+        /// The use of the variable (or field/element) that constitutes the move
         value: AirRef,
         /// The local slot (or parameter ABI slot when `is_param`) moved from
         slot: u32,
         /// True when `slot` refers to a parameter ABI slot
         is_param: bool,
         /// `None`: the slot's whole value moved out. `Some(place)`: only
-        /// the field path named by the place's projections moved out — a
-        /// pure `Field` projection chain of any depth (`o.a`, `o.a.b`);
-        /// drop elaboration then drops the struct field-granularly,
-        /// skipping the moved path. Paths through an array index
-        /// (`arr[i].a`) are NOT exported (no marker), keeping the
-        /// whole-slot drop — which re-drops the moved element (a known
-        /// gap: array-element moves aren't tracked by drop elaboration).
+        /// the path named by the place's projections moved out — a pure
+        /// `Field` projection chain of any depth (`o.a`, `o.a.b`), or a
+        /// single CONSTANT-index projection (`xs[K]`, RUE-186, whose index
+        /// operand is a dedicated `Const` instruction); drop elaboration
+        /// then drops the struct/array path-granularly, skipping the moved
+        /// path. Paths THROUGH an array index (`arr[i].a`) are NOT exported
+        /// (no marker), keeping the whole-slot drop — which re-drops the
+        /// moved element (a known gap: index-interior paths aren't tracked
+        /// by drop elaboration).
         place: Option<AirPlaceRef>,
     },
 }

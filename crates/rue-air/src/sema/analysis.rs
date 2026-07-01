@@ -928,6 +928,50 @@ fn require_byref_place_arg(rir: &Rir, arg: &RirCallArg) -> CompileResult<Spur> {
     })
 }
 
+/// Result of the element-wise linear array consumption check (RUE-186); see
+/// [`Sema::check_array_elementwise_consumption`].
+enum ElementwiseConsumption {
+    /// Every element was moved out on every path: the array's must-consume
+    /// obligation is satisfied.
+    Complete,
+    /// No element was ever consumed (or the type is not an array): the
+    /// caller reports its usual whole-value diagnostic.
+    NotElementwise,
+}
+
+/// Intern the move-path segment for a constant array index (RUE-186).
+///
+/// Element paths reuse the field-path representation: index K becomes the
+/// interned decimal string of K. Identifiers can never be all digits, so
+/// these segments cannot collide with field names (see
+/// [`super::context::FieldPath`]).
+pub(crate) fn index_path_segment(interner: &ThreadedRodeo, index: u64) -> Spur {
+    interner.get_or_intern(index.to_string())
+}
+
+/// True when a move-path segment encodes a constant array index (all-digit
+/// interned string; see [`index_path_segment`]).
+pub(crate) fn is_index_segment(interner: &ThreadedRodeo, seg: Spur) -> bool {
+    let s = interner.resolve(&seg);
+    !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// Format a move path for diagnostics: field segments as `.name`, constant
+/// array index segments as `[K]` (e.g. `xs[0]`, `o.a`, `o.items[2].name`).
+fn format_move_path(interner: &ThreadedRodeo, root_var: Spur, path: &[Spur]) -> String {
+    let mut out = interner.resolve(&root_var).to_string();
+    for seg in path {
+        let s = interner.resolve(seg);
+        if is_index_segment(interner, *seg) {
+            out.push_str(&format!("[{s}]"));
+        } else {
+            out.push('.');
+            out.push_str(s);
+        }
+    }
+    out
+}
+
 /// Build the use-after-move error for a field access whose path (or one of
 /// its ancestor prefixes) was moved at `moved_span`.
 pub(crate) fn use_after_move_path_error(
@@ -937,16 +981,7 @@ pub(crate) fn use_after_move_path_error(
     span: Span,
     moved_span: Span,
 ) -> CompileError {
-    let root_name = interner.resolve(&root_var);
-    let path_str = if field_path.is_empty() {
-        root_name.to_string()
-    } else {
-        let field_names: Vec<_> = field_path
-            .iter()
-            .map(|s| interner.resolve(s).to_string())
-            .collect();
-        format!("{}.{}", root_name, field_names.join("."))
-    };
+    let path_str = format_move_path(interner, root_var, field_path);
     CompileError::new(ErrorKind::UseAfterMove(path_str), span)
         .with_label("value moved here", moved_span)
 }
@@ -1601,6 +1636,17 @@ impl<'a> Sema<'a> {
                 }
                 let state = ctx.moved_vars.get(&p.name);
                 if !state.is_some_and(|s| s.full_move_on_all_paths) {
+                    // Element-wise consumption of a linear array parameter
+                    // (RUE-186) satisfies the obligation like a whole move.
+                    match self.check_array_elementwise_consumption(
+                        p.ty,
+                        state,
+                        p.name,
+                        self.rir.get(body).span,
+                    )? {
+                        ElementwiseConsumption::Complete => continue,
+                        ElementwiseConsumption::NotElementwise => {}
+                    }
                     let name = self.interner.resolve(&p.name);
                     let err = linear_not_consumed_error(
                         name,
@@ -2574,7 +2620,13 @@ impl<'a> Sema<'a> {
                 },
                 result_type: field_type,
                 field_name: Some(field),
+                const_index: None,
             });
+
+            // A write through an element of a partially moved array
+            // (`xs[0].f = ...` after an element of `xs` moved out) is
+            // rejected (RUE-186, E0480), like a direct element write.
+            self.reject_write_into_partially_moved_array(&trace, ctx, span)?;
 
             // Analyze the value
             let value_result = self.analyze_inst(air, value, ctx)?;
@@ -2730,7 +2782,12 @@ impl<'a> Sema<'a> {
                 },
                 result_type: elem_type,
                 field_name: None,
+                const_index: self.try_get_const_index(index),
             });
+
+            // Writing into an array with moved-out elements is rejected
+            // (RUE-186, E0480): the write can't re-arm per-element ownership.
+            self.reject_write_into_partially_moved_array(&trace, ctx, span)?;
 
             // Analyze the value
             let value_result = self.analyze_inst(air, value, ctx)?;
@@ -4483,7 +4540,8 @@ impl<'a> Sema<'a> {
 
             // Only check types that carry a linear value: linear structs
             // themselves, and arrays whose elements carry one (an array of
-            // linear values must be consumed as a whole; dropping it would
+            // linear values must be consumed — as a whole, or element-wise
+            // via constant-index moves (RUE-186); dropping it would
             // silently drop every element).
             if !self.type_carries_linear(local.ty) {
                 continue;
@@ -4494,15 +4552,80 @@ impl<'a> Sema<'a> {
             // consumed in only one branch of an if/match still leaks on the
             // other paths.
             let state = ctx.moved_vars.get(symbol);
-            if !state.is_some_and(|s| s.full_move_on_all_paths) {
-                let name = self.interner.resolve(&*symbol);
-                let err =
-                    linear_not_consumed_error(name, local.span, state.and_then(|s| s.full_move));
-                return Err(self.attach_infectious_linear_note(err, local.ty));
+            if state.is_some_and(|s| s.full_move_on_all_paths) {
+                continue;
             }
+
+            // Element-wise consumption of a linear array (RUE-186, spec
+            // 3.8:71): moving every element out (constant indices) on every
+            // path satisfies the array's must-consume obligation. Partial
+            // element consumption is an error naming the missing elements.
+            match self.check_array_elementwise_consumption(local.ty, state, *symbol, local.span)? {
+                ElementwiseConsumption::Complete => continue,
+                ElementwiseConsumption::NotElementwise => {}
+            }
+
+            let name = self.interner.resolve(&*symbol);
+            let err = linear_not_consumed_error(name, local.span, state.and_then(|s| s.full_move));
+            return Err(self.attach_infectious_linear_note(err, local.ty));
         }
 
         Ok(())
+    }
+
+    /// Shared element-wise consumption check for linear arrays (RUE-186):
+    /// returns `Complete` when every element of the array was moved out on
+    /// every path (the must-consume obligation is satisfied), an `Err`
+    /// naming the missing elements when the array was only PARTIALLY
+    /// consumed element-wise, and `NotElementwise` when no element was ever
+    /// consumed (or the type is not an array) — the caller then reports its
+    /// usual whole-value diagnostic.
+    fn check_array_elementwise_consumption(
+        &self,
+        ty: Type,
+        state: Option<&super::context::VariableMoveState>,
+        symbol: Spur,
+        decl_span: Span,
+    ) -> CompileResult<ElementwiseConsumption> {
+        let TypeKind::Array(array_id) = ty.kind() else {
+            return Ok(ElementwiseConsumption::NotElementwise);
+        };
+        let Some(s) = state else {
+            return Ok(ElementwiseConsumption::NotElementwise);
+        };
+        let (_elem, len) = self.type_pool.array_def(array_id);
+        let elem_path = |k: u64| vec![index_path_segment(self.interner, k)];
+        let unconsumed: Vec<u64> = (0..len)
+            .filter(|k| !s.partial_moves_on_all_paths.contains(&elem_path(*k)))
+            .collect();
+        if unconsumed.is_empty() {
+            return Ok(ElementwiseConsumption::Complete);
+        }
+        let touched_any_element = s.partial_moves.keys().any(|p| {
+            p.first()
+                .is_some_and(|seg| is_index_segment(self.interner, *seg))
+        });
+        if !touched_any_element {
+            return Ok(ElementwiseConsumption::NotElementwise);
+        }
+        let name = self.interner.resolve(&symbol);
+        // An unconsumed element that WAS moved on some path selects the
+        // more precise "not consumed on all paths" diagnostic (E0443 over
+        // E0406).
+        let some_path_span = unconsumed
+            .iter()
+            .find_map(|k| s.partial_moves.get(&elem_path(*k)).copied());
+        let list = unconsumed
+            .iter()
+            .map(|k| format!("[{k}]"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        Err(
+            linear_not_consumed_error(name, decl_span, some_path_span).with_note(format!(
+                "the array is partially consumed: element(s) {list} of \
+                 '{name}' are not consumed on every path"
+            )),
+        )
     }
 
     /// Reject a discarded expression value that carries a linear value
@@ -4540,7 +4663,8 @@ impl<'a> Sema<'a> {
         if let TypeKind::Array(_) = ty.kind() {
             return err.with_note(
                 "this is an array whose elements carry linear values; \
-                 the array must be consumed as a whole",
+                 consume the array as a whole, or move every element out \
+                 with constant indices (`consume(xs[0]); consume(xs[1]); ...`)",
             );
         }
         let Some(struct_id) = ty.as_struct() else {
@@ -4555,6 +4679,210 @@ impl<'a> Sema<'a> {
             )),
             None => err,
         }
+    }
+
+    /// Try to record a per-element move out of an array (RUE-186, spec
+    /// 3.8:68): `let x = xs[K];` with a CONSTANT index K, rooted directly at
+    /// an array variable, moves just element K out. Sibling elements stay
+    /// usable; drop elaboration is informed via the marker the caller emits
+    /// (see [`Self::emit_element_move_marker`]).
+    ///
+    /// Returns `Ok(Some(k))` when the move was recorded (the caller must
+    /// emit the marker and skip the E0904 rejection), `Ok(None)` when this
+    /// index expression is not element-trackable — dynamic index, or the
+    /// array is not the trace root — and the caller must keep the
+    /// conservative E0904 rejection (spec 7.1:28): with a runtime index sema
+    /// cannot know WHICH element moved, so neither use-after-move checking
+    /// nor drop suppression could stay sound.
+    pub(crate) fn record_element_move_out(
+        &mut self,
+        trace: &super::analyze_ops::PlaceTrace,
+        ctx: &mut AnalysisContext,
+        span: Span,
+    ) -> CompileResult<Option<i64>> {
+        if trace.projections.len() != 1 {
+            return Ok(None);
+        }
+        let Some(k) = trace.projections[0].const_index else {
+            return Ok(None);
+        };
+        if k < 0 {
+            // Negative constants are rejected by the bounds check before
+            // this is reached; defensive.
+            return Ok(None);
+        }
+        // Moving an element out of a borrow/inout parameter would leave the
+        // CALLER's array holed, exactly like a whole or field move.
+        self.reject_move_out_of_byref_param(trace.root_var, ctx, span)?;
+        let elem_path = vec![index_path_segment(self.interner, k as u64)];
+        if let Some(state) = ctx.moved_vars.get(&trace.root_var) {
+            if let Some(moved_span) = state.is_path_moved(&elem_path) {
+                return Err(use_after_move_path_error(
+                    self.interner,
+                    trace.root_var,
+                    &elem_path,
+                    span,
+                    moved_span,
+                ));
+            }
+        }
+        ctx.moved_vars
+            .entry(trace.root_var)
+            .or_default()
+            .mark_path_moved(&elem_path, span);
+        Ok(Some(k))
+    }
+
+    /// Export a recorded element move (RUE-186) to drop elaboration: wrap
+    /// `value` in a [`AirInstData::MarkMoved`] whose place carries a
+    /// constant-index projection (the CFG builder resolves it back to the
+    /// element index; see `moved_field_path` in `rue-cfg`). Only bases that
+    /// drop elaboration would drop get a marker: locals, and Normal (owned)
+    /// params — mirroring the field-move marker conditions.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn emit_element_move_marker(
+        &self,
+        air: &mut Air,
+        trace: &super::analyze_ops::PlaceTrace,
+        ctx: &AnalysisContext,
+        value: AirRef,
+        k: i64,
+        elem_type: Type,
+        array_type: Type,
+        span: Span,
+    ) -> AirRef {
+        let droppable_base = match trace.base {
+            AirPlaceBase::Local(_) => true,
+            AirPlaceBase::Param(_) => ctx
+                .params
+                .iter()
+                .any(|p| p.name == trace.root_var && p.mode == RirParamMode::Normal),
+        };
+        if !droppable_base {
+            return value;
+        }
+        let (slot, is_param) = match trace.base {
+            AirPlaceBase::Local(slot) => (slot, false),
+            AirPlaceBase::Param(slot) => (slot, true),
+        };
+        // A dedicated Const instruction keeps the marker's index resolvable
+        // even when the source index expression was a folded constant
+        // rather than a literal.
+        let idx_const = air.add_inst(AirInst {
+            data: AirInstData::Const(k as u64),
+            ty: Type::U64,
+            span,
+        });
+        let marker_place = air.make_place(
+            trace.base,
+            std::iter::once(AirProjection::Index {
+                array_type,
+                index: idx_const,
+            }),
+        );
+        air.add_inst(AirInst {
+            data: AirInstData::MarkMoved {
+                value,
+                slot,
+                is_param,
+                place: Some(marker_place),
+            },
+            ty: elem_type,
+            span,
+        })
+    }
+
+    /// Reject a read through an array element that is (or may be) moved out
+    /// (RUE-186). Element moves only exist for indices rooted directly at an
+    /// array variable, so only a position-0 `Index` projection can read
+    /// through one. A constant index checks exactly that element's path; a
+    /// dynamic index conservatively fails on ANY outstanding partial move of
+    /// the root (sema can't know which element is read — soundness).
+    pub(crate) fn check_read_through_moved_element(
+        &self,
+        trace: &super::analyze_ops::PlaceTrace,
+        ctx: &AnalysisContext,
+        span: Span,
+    ) -> CompileResult<()> {
+        let Some(first) = trace.projections.first() else {
+            return Ok(());
+        };
+        if !matches!(first.proj, AirProjection::Index { .. }) {
+            return Ok(());
+        }
+        let Some(state) = ctx.moved_vars.get(&trace.root_var) else {
+            return Ok(());
+        };
+        match first.const_index {
+            Some(k) if k >= 0 => {
+                let elem_path = vec![index_path_segment(self.interner, k as u64)];
+                if let Some(moved_span) = state.is_path_moved(&elem_path) {
+                    return Err(use_after_move_path_error(
+                        self.interner,
+                        trace.root_var,
+                        &elem_path,
+                        span,
+                        moved_span,
+                    ));
+                }
+            }
+            _ => {
+                if let Some(moved_span) = state.is_any_part_moved() {
+                    return Err(use_after_move_path_error(
+                        self.interner,
+                        trace.root_var,
+                        &[],
+                        span,
+                        moved_span,
+                    )
+                    .with_note(
+                        "the index is not a compile-time constant, so any \
+                         moved-out element poisons the whole array",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Reject a write into an array place while one or more of the root
+    /// array's elements are moved out (RUE-186, E0480). Re-arming
+    /// per-element ownership through an element (or through-element) write
+    /// is not supported — sema-side reinitialization and the runtime drop
+    /// flags would disagree — so the whole array must be reinitialized
+    /// instead. Writes into arrays with no outstanding element moves are
+    /// unaffected.
+    pub(crate) fn reject_write_into_partially_moved_array(
+        &self,
+        trace: &super::analyze_ops::PlaceTrace,
+        ctx: &AnalysisContext,
+        span: Span,
+    ) -> CompileResult<()> {
+        // The write must go through the root array (position-0 Index
+        // projection); element moves only exist for array roots.
+        if !matches!(
+            trace.projections.first().map(|p| &p.proj),
+            Some(AirProjection::Index { .. })
+        ) {
+            return Ok(());
+        }
+        let Some(state) = ctx.moved_vars.get(&trace.root_var) else {
+            return Ok(());
+        };
+        let element_move_span = state.partial_moves.iter().find_map(|(p, s)| {
+            p.first()
+                .filter(|seg| is_index_segment(self.interner, **seg))
+                .map(|_| *s)
+        });
+        let Some(moved_span) = element_move_span else {
+            return Ok(());
+        };
+        let name = self.interner.resolve(&trace.root_var).to_string();
+        Err(
+            CompileError::new(ErrorKind::AssignToPartiallyMovedArray { array: name }, span)
+                .with_label("element moved out here", moved_span)
+                .with_help("reinitialize the whole array instead (`xs = [...]`)"),
+        )
     }
 
     /// Extract the root variable symbol from an expression, if it refers to a variable.

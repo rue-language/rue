@@ -146,6 +146,8 @@ impl ErrorCode {
     pub const CONST_MISSING_TYPE_ANNOTATION: Self = Self(475);
     // 476-477 are reserved by in-flight work.
     pub const LINEAR_VALUE_DISCARDED: Self = Self(478);
+    // 479 is reserved by in-flight work.
+    pub const ASSIGN_TO_PARTIALLY_MOVED_ARRAY: Self = Self(480);
 
     // ========================================================================
     // Control flow errors (E0500-E0599)
@@ -1165,9 +1167,19 @@ pub enum ErrorKind {
     IndexOutOfBounds { index: i64, length: u64 },
     #[error("type annotation required for empty array")]
     TypeAnnotationRequired,
-    /// Cannot move non-Copy element out of array index position
+    /// Cannot move non-Copy element out of array index position.
+    /// Raised only for moves the per-element tracker cannot follow: dynamic
+    /// (non-constant) indices, and indexing that is not rooted directly at an
+    /// array variable. A constant index into an array variable moves just
+    /// that element out (spec 3.8:68, RUE-186).
     #[error("cannot move out of indexed position: element type '{element_type}' is not Copy")]
     MoveOutOfIndex { element_type: String },
+    /// Assignment into an array (element write, or a write through an element)
+    /// while one or more of its elements are moved out (RUE-186). Reinstating
+    /// per-element ownership through writes is not supported; the whole array
+    /// must be reinitialized instead.
+    #[error("cannot assign into '{array}': one of its elements has been moved out")]
+    AssignToPartiallyMovedArray { array: String },
 
     // Linker errors
     #[error("link error: {0}")]
@@ -1324,6 +1336,9 @@ impl ErrorKind {
             ErrorKind::IndexOutOfBounds { .. } => ErrorCode::INDEX_OUT_OF_BOUNDS,
             ErrorKind::TypeAnnotationRequired => ErrorCode::TYPE_ANNOTATION_REQUIRED,
             ErrorKind::MoveOutOfIndex { .. } => ErrorCode::MOVE_OUT_OF_INDEX,
+            ErrorKind::AssignToPartiallyMovedArray { .. } => {
+                ErrorCode::ASSIGN_TO_PARTIALLY_MOVED_ARRAY
+            }
 
             // Linker/target errors (E1000-E1099)
             ErrorKind::LinkError(_) => ErrorCode::LINK_ERROR,
