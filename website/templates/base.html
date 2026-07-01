@@ -29,19 +29,51 @@
     </script>
 </head>
 <body class="min-h-screen flex flex-col">
-    <nav class="border-b border-themed">
-        <div class="max-w-5xl mx-auto px-6 py-4 flex justify-between items-center">
-            <a href="{{ get_url(path='/') }}" class="text-2xl font-bold hover:text-[var(--color-accent)] dark:hover:text-[var(--color-accent-dark)] transition-colors no-underline" style="color: inherit;">Rue</a>
+    <!-- engraved rue sprig (Ruta graveolens), referenced site-wide via <use> -->
+    <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+      <defs>
+        <g id="rue-sprig" fill="none" stroke="currentColor" stroke-width="1.5"
+           stroke-linecap="round" stroke-linejoin="round">
+          <path d="M16 30 C 16 24, 15.4 18, 16 10"/>
+          <path d="M15.7 22 C 12.5 20.5, 10 19, 8 16.5"/>
+          <path d="M8 16.5 c -2.6 -0.4 -4 -2.4 -3.4 -4.4 c 1.8 -1 4 -0.2 4.6 2 c 0.3 1 0 1.8 -1.2 2.4 z"/>
+          <path d="M11.5 19.2 c -2.4 0.6 -4.3 -0.6 -4.5 -2.6"/>
+          <path d="M16 17.5 C 19.5 16, 22 14.5, 23.8 12"/>
+          <path d="M23.8 12 c 2.6 -0.2 3.9 -2.2 3.2 -4.2 c -1.9 -0.9 -4 0.1 -4.4 2.3 c -0.2 1 0.1 1.7 1.2 1.9 z"/>
+          <path d="M20.4 14.6 c 2.4 0.4 4.2 -0.8 4.3 -2.8"/>
+          <path d="M16 10 c -0.4 -2.8 1 -4.6 3.2 -4.6 c 1.2 1.8 0.5 4 -1.6 4.9 c -0.7 0.3 -1.2 0.2 -1.6 -0.3 z"/>
+          <g stroke="none" fill="var(--color-gold)">
+            <circle cx="12.2" cy="7.4" r="1.15"/>
+            <circle cx="9.9"  cy="9.4" r="1.15"/>
+            <circle cx="12.6" cy="10.6" r="1.15"/>
+            <circle cx="14.4" cy="8.7" r="1.15"/>
+          </g>
+          <circle cx="12.4" cy="9" r="0.8" stroke="none" fill="currentColor"/>
+          <path d="M15.9 13.5 C 14.8 11.8, 13.6 10.6, 12.6 10.4"/>
+        </g>
+      </defs>
+    </svg>
+
+    <div class="colophon-bar">
+        <em>Ruta graveolens</em> &nbsp;·&nbsp; notes from a language experiment &nbsp;·&nbsp; cultivated since 2025
+    </div>
+
+    <nav>
+        <div class="masthead">
+            <a href="{{ get_url(path='/') }}" class="wordmark">
+                <svg class="sprig" viewBox="0 0 32 32"><use href="#rue-sprig"/></svg>
+                Rue
+            </a>
             <!-- Desktop navigation -->
             <div class="nav-desktop flex items-center gap-6">
-                <ul class="flex gap-6 text-sm">
-                    <li><a href="{{ get_url(path='/') }}" class="nav-link">Home</a></li>
+                <ul class="flex gap-6">
                     <li><a href="{{ get_url(path='tutorial') }}" class="nav-link">Tutorial</a></li>
-                    <li><a href="{{ get_url(path='spec') }}" class="nav-link">Specification</a></li>
+<!-- Hardcoded path: spec pages are copied into Zola content at build time -->
+                    <li><a href="/spec/" class="nav-link">Specification</a></li>
                     <li><a href="{{ get_url(path='performance') }}" class="nav-link">Performance</a></li>
-                    <li><a href="{{ get_url(path='blog') }}" class="nav-link">Blog</a></li>
-                    <li><a href="{{ config.extra.github_url }}" class="nav-link">GitHub</a></li>
-                    <li><a href="{{ config.extra.bluesky_url }}" class="nav-link">Bluesky</a></li>
+                    <li><a href="{{ get_url(path='blog') }}" class="nav-link">Lab Notes</a></li>
+                    <li><a href="{{ config.extra.github_url }}" class="nav-link ext">GitHub</a></li>
+                    <li><a href="{{ config.extra.bluesky_url }}" class="nav-link ext">Bluesky</a></li>
                 </ul>
                 <button onclick="toggleTheme()" class="theme-toggle" aria-label="Toggle theme">
                     <svg class="icon-sun w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -77,9 +109,9 @@
             <ul class="mobile-menu-list">
                 <li><a href="{{ get_url(path='/') }}" class="mobile-menu-link">Home</a></li>
                 <li><a href="{{ get_url(path='tutorial') }}" class="mobile-menu-link">Tutorial</a></li>
-                <li><a href="{{ get_url(path='spec') }}" class="mobile-menu-link">Specification</a></li>
+                <li><a href="/spec/" class="mobile-menu-link">Specification</a></li>
                 <li><a href="{{ get_url(path='performance') }}" class="mobile-menu-link">Performance</a></li>
-                <li><a href="{{ get_url(path='blog') }}" class="mobile-menu-link">Blog</a></li>
+                <li><a href="{{ get_url(path='blog') }}" class="mobile-menu-link">Lab Notes</a></li>
                 <li><a href="{{ config.extra.github_url }}" class="mobile-menu-link">GitHub</a></li>
                 <li><a href="{{ config.extra.bluesky_url }}" class="mobile-menu-link">Bluesky</a></li>
             </ul>
@@ -90,9 +122,10 @@
         {% block content %}{% endblock %}
     </main>
 
-    <footer class="border-t border-themed mt-auto">
-        <div class="max-w-5xl mx-auto px-6 py-8 text-center text-muted text-sm">
-            <p>&copy; 2025 The Rue Authors. Licensed under MIT/Apache-2.0.</p>
+    <footer class="footer-colophon">
+        <div class="inner">
+            <span>© 2025–2026 The Rue Authors · MIT/Apache-2.0</span>
+            <span><em>rue</em>, n. — a hardy evergreen herb; also, what we hope you won’t do after choosing this language.</span>
         </div>
     </footer>
 

@@ -1,14 +1,14 @@
 {% extends "base.html" %}
 
-{% block title %}{{ page.title }} | Blog | {{ config.title }}{% endblock %}
+{% block title %}{{ page.title }} | Lab Notes | {{ config.title }}{% endblock %}
 
 {% block content %}
 <article class="py-12">
     <div class="max-w-3xl mx-auto px-6">
         <header class="mb-8">
-            <h1 class="text-4xl font-bold mb-2">{{ page.title }}</h1>
-            <div class="text-muted flex flex-wrap gap-1">
-                <time datetime="{{ page.date }}">{{ page.date | date(format="%B %e, %Y") }}</time>
+            <h1 style="font-family: var(--font-display); font-weight: 460; font-size: 2.3rem; line-height: 1.15;" class="mb-3">{{ page.title }}</h1>
+            <div class="text-muted flex flex-wrap gap-1" style="font-style: italic;">
+                <time datetime="{{ page.date }}" class="note-date" style="font-style: normal;">{{ page.date | date(format="%Y · %m · %d") }}</time>
                 {% if page.extra.authors %}
                 <span class="before:content-['·'] before:mr-1">
                     by {% for author in page.extra.authors %}{% if loop.index > 1 %}{% if loop.last %} and {% else %}, {% endif %}{% endif %}{% if author == "steve" %}<a href="https://steveklabnik.com">Steve</a>{% elif author == "claude" %}<a href="https://claude.ai">Claude</a>{% else %}{{ author }}{% endif %}{% endfor %}

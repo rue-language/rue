@@ -1,14 +1,14 @@
 {% extends "base.html" %}
 
-{% block title %}Blog | {{ config.title }}{% endblock %}
+{% block title %}Lab Notes | {{ config.title }}{% endblock %}
 
 {% block content %}
 <section class="py-12">
     <div class="max-w-3xl mx-auto px-6">
-        <header class="mb-12">
-            <h1 class="text-4xl font-bold mb-2">{{ section.title }}</h1>
-            <p class="text-muted mb-4">{{ section.content | safe }}</p>
-            <a href="{{ get_url(path='blog/rss.xml') }}" class="inline-flex items-center gap-2 text-muted text-sm hover:text-[var(--color-accent)] dark:hover:text-[var(--color-accent-dark)]">
+        <header class="mb-10">
+            <h1 style="font-family: var(--font-display); font-weight: 460; font-size: 2.3rem;" class="mb-2">{{ section.title }}</h1>
+            <p class="text-muted mb-4" style="font-style: italic;">{{ section.content | safe }}</p>
+            <a href="{{ get_url(path='blog/rss.xml') }}" class="inline-flex items-center gap-2 text-muted text-sm hover:text-[var(--color-accent)]">
                 <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
                     <circle cx="6.18" cy="17.82" r="2.18"/>
                     <path d="M4 4.44v2.83c7.03 0 12.73 5.7 12.73 12.73h2.83c0-8.59-6.97-15.56-15.56-15.56zm0 5.66v2.83c3.9 0 7.07 3.17 7.07 7.07h2.83c0-5.47-4.43-9.9-9.9-9.9z"/>
@@ -17,30 +17,28 @@
             </a>
         </header>
 
-        <div class="flex flex-col gap-8">
+        <ul class="note-list">
             {% set pages = paginator.pages | default(value=section.pages) %}
             {% for page in pages %}
-            <article class="pb-8 border-b border-themed last:border-b-0">
-                <h2 class="text-xl font-semibold mb-1">
-                    <a href="{{ page.permalink }}" class="hover:text-[var(--color-accent)] dark:hover:text-[var(--color-accent-dark)]" style="color: inherit; text-decoration: none;">{{ page.title }}</a>
-                </h2>
-                <div class="text-muted text-sm mb-2 flex flex-wrap gap-1">
-                    <time datetime="{{ page.date }}">{{ page.date | date(format="%B %e, %Y") }}</time>
+            <li>
+                <span class="note-date"><time datetime="{{ page.date }}">{{ page.date | date(format="%Y · %m · %d") }}</time></span>
+                <div>
+                    <a class="note-title" href="{{ page.permalink }}">{{ page.title }}</a>
                     {% if page.extra.authors %}
-                    <span class="before:content-['·'] before:mr-1">
-                        by {% for author in page.extra.authors %}{% if loop.index > 1 %}{% if loop.last %} and {% else %}, {% endif %}{% endif %}{% if author == "steve" %}Steve{% elif author == "claude" %}Claude{% else %}{{ author }}{% endif %}{% endfor %}
+                    <span class="text-faint text-sm" style="font-style: italic;">
+                        — {% for author in page.extra.authors %}{% if loop.index > 1 %}{% if loop.last %} and {% else %}, {% endif %}{% endif %}{% if author == "steve" %}Steve{% elif author == "claude" %}Claude{% else %}{{ author }}{% endif %}{% endfor %}
                     </span>
                     {% endif %}
+                    {% if page.summary %}
+                    <p class="note-summary">{{ page.summary | safe }}</p>
+                    {% endif %}
                 </div>
-                {% if page.summary %}
-                <p class="text-muted text-sm">{{ page.summary | safe }}</p>
-                {% endif %}
-            </article>
+            </li>
             {% endfor %}
-        </div>
+        </ul>
 
         {% if paginator %}
-        <nav class="flex justify-between mt-12 pt-8 border-t border-themed">
+        <nav class="flex justify-between mt-12 pt-8" style="border-top: 1px solid var(--color-border);">
             {% if paginator.previous %}
             <a href="{{ paginator.previous }}">&larr; Newer</a>
             {% endif %}
