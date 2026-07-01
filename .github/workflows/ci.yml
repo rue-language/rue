@@ -26,6 +26,18 @@ jobs:
         # Uses hermetic rustfmt from Buck2 toolchain
         run: ./fmt.sh check
 
+  actionlint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Lint GitHub Actions workflows
+        # A workflow file GitHub can't parse fails every run in 0s with no
+        # useful error, and nothing in ./test.sh can see it — benchmarks.yml
+        # was broken this way for five months (gh-991). actionlint also
+        # shellchecks all run: blocks.
+        run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:latest -color
+
   test:
     strategy:
       matrix:

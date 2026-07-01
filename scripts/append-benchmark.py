@@ -11,7 +11,12 @@ It handles:
 - Supporting both version 1 and version 2 result schemas
 
 Usage:
-    ./append-benchmark.py <results.json> <history.json>
+    ./append-benchmark.py <results.json> <history.json> [--reason push|manual]
+
+When --reason is given, the result is upgraded to the version 2 schema
+before appending: `benchmark_reason` is set, and `commit_range` defaults to
+the run's own commit (benchmarks run once per commit, so a run covers
+exactly the commit it was built from).
 
 The results.json can be version 1 or version 2 format:
 
@@ -49,6 +54,7 @@ The history.json file stores an array of such results:
 }
 """
 
+import argparse
 import json
 import sys
 from pathlib import Path
@@ -124,12 +130,18 @@ def append_result(history: dict, result: dict) -> dict:
 
 
 def main():
-    if len(sys.argv) != 3:
-        print(f"Usage: {sys.argv[0]} <results.json> <history.json>", file=sys.stderr)
-        sys.exit(1)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("results", type=Path, help="results.json from bench.sh")
+    parser.add_argument("history", type=Path, help="history file to append to")
+    parser.add_argument(
+        "--reason",
+        choices=["push", "manual", "scheduled"],
+        help="what triggered this run; upgrades the result to the v2 schema",
+    )
+    args = parser.parse_args()
 
-    results_path = Path(sys.argv[1])
-    history_path = Path(sys.argv[2])
+    results_path = args.results
+    history_path = args.history
 
     # Load the new results
     if not results_path.exists():
@@ -138,6 +150,14 @@ def main():
 
     with open(results_path, "r") as f:
         result = json.load(f)
+
+    # Upgrade to the version 2 schema (commit range tracking)
+    if args.reason is not None:
+        result["version"] = 2
+        result["benchmark_reason"] = args.reason
+        if not result.get("commit_range"):
+            commit = result.get("commit")
+            result["commit_range"] = [commit] if commit else []
 
     # Validate the result
     if not validate_result(result):
