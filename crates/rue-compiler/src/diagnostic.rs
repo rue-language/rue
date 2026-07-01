@@ -343,15 +343,22 @@ impl<'a> MultiFileFormatter<'a> {
         self.sources.get(&file_id)
     }
 
-    /// Get a fallback source info (the first one in the map).
+    /// Get a fallback source info for a span whose file ID has no entry.
     ///
-    /// This is used when a span has no file ID (FileId::DEFAULT) and we need
-    /// to show something. Returns None if no sources are registered.
+    /// Tries `FileId::DEFAULT` first (single-file paths register their source
+    /// there or under a real ID). If that is absent, the only safe guess is
+    /// when exactly one source is registered; with multiple sources, picking
+    /// an arbitrary one would attribute the diagnostic to the wrong file
+    /// nondeterministically (hash-map iteration order — RUE-175), so this
+    /// returns None and the caller renders the message without a snippet.
     fn fallback_source(&self) -> Option<&SourceInfo<'a>> {
-        // Try FileId::DEFAULT first, then any source
-        self.sources
-            .get(&FileId::DEFAULT)
-            .or_else(|| self.sources.values().next())
+        self.sources.get(&FileId::DEFAULT).or_else(|| {
+            if self.sources.len() == 1 {
+                self.sources.values().next()
+            } else {
+                None
+            }
+        })
     }
 
     /// Format a compilation error into a string.
@@ -537,7 +544,13 @@ impl<'a> MultiFileFormatter<'a> {
             let source_info = self.get_source(file_id).or_else(|| self.fallback_source());
 
             let Some(source_info) = source_info else {
-                // No source available for this file - skip it
+                // No source available for this file. Refuse to guess a file
+                // (see fallback_source); surface the problem instead of
+                // silently misattributing the span (RUE-175).
+                report = report.footer(Level::Note.title(
+                    "source snippet unavailable: span has an unknown file id \
+                     (this is a bug in the Rue compiler)",
+                ));
                 continue;
             };
 
@@ -962,10 +975,19 @@ impl<'a> MultiFileJsonFormatter<'a> {
     }
 
     /// Get a fallback source info (for FileId::DEFAULT or when no specific source is found).
+    ///
+    /// Like [`MultiFileFormatter::fallback_source`], this only guesses when
+    /// the choice is unambiguous: `FileId::DEFAULT` if registered, else the
+    /// sole registered source. With multiple sources an unknown file ID must
+    /// not be attributed to an arbitrary file (RUE-175).
     fn fallback_source(&self) -> Option<&SourceInfo<'a>> {
-        self.sources
-            .get(&FileId::DEFAULT)
-            .or_else(|| self.sources.values().next())
+        self.sources.get(&FileId::DEFAULT).or_else(|| {
+            if self.sources.len() == 1 {
+                self.sources.values().next()
+            } else {
+                None
+            }
+        })
     }
 
     /// Calculate line and column for a byte offset in a specific source.

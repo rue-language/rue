@@ -1,4 +1,4 @@
-# Multi-file error attribution (RUE-115).
+# Multi-file error attribution (RUE-115, RUE-175).
 #
 # Parse errors produced by the chumsky error-conversion path used to drop the
 # FileId (defaulting to FileId::DEFAULT), so in a multi-file compile the
@@ -6,11 +6,18 @@
 # rendered with a caret on perfectly valid code in the wrong file. These cases
 # pin that a parse error in one file is attributed to THAT file regardless of
 # argument order, and that the other (valid) file is never named in stderr.
+#
+# RUE-175 was the same bug class one layer down: the parser built MERGED spans
+# (binary exprs, unary exprs, assign-target field/index chains, implicit unit
+# block results) with `Span::new`, which resets the FileId to DEFAULT. Any sema
+# diagnostic whose primary span was such a merged span then landed on a
+# hash-map-order-dependent file. The `*_span_*` cases below pin each expression
+# shape to its actual file.
 
 [section]
 id = "cli.multifile_errors"
 name = "Multi-file error attribution"
-description = "Parse errors must name the file that actually contains them (RUE-115)."
+description = "Diagnostics must name the file that actually contains them (RUE-115, RUE-175)."
 
 [[case]]
 name = "parse_error_in_second_file"
@@ -76,3 +83,136 @@ args = ["good.rue", "bad.rue", "-o", "prog"]
 compile_fail = true
 error_contains = ["E0102", "bad.rue:3:5"]
 compile_stderr_not_contains = ["good.rue"]
+
+[[case]]
+name = "binary_expr_span_in_second_file"
+description = """
+RUE-175: make_binary built the merged span with Span::new, dropping the
+FileId. The E0206 on the `if 1 + 2` condition in main.rue (passed second)
+alternated between main.rue:2:8 and a misaligned caret in lib.rue depending on
+hash-map iteration order. It must always point at main.rue:2:8.
+"""
+files = [
+    { path = "lib.rue", source = """
+pub fn helper() -> i64 {
+    return 1;
+}
+""" },
+    { path = "main.rue", source = """
+fn main() -> i64 {
+    if 1 + 2 {
+        return 1;
+    }
+    return 0;
+}
+""" },
+]
+args = ["lib.rue", "main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0206", "main.rue:2:8"]
+compile_stderr_not_contains = ["lib.rue"]
+
+[[case]]
+name = "binary_expr_span_swapped_order"
+description = """
+RUE-175, swapped argument order: attribution must not depend on which file
+comes first on the command line.
+"""
+files = [
+    { path = "lib.rue", source = """
+pub fn helper() -> i64 {
+    return 1;
+}
+""" },
+    { path = "main.rue", source = """
+fn main() -> i64 {
+    if 1 + 2 {
+        return 1;
+    }
+    return 0;
+}
+""" },
+]
+args = ["main.rue", "lib.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0206", "main.rue:2:8"]
+compile_stderr_not_contains = ["lib.rue"]
+
+[[case]]
+name = "unary_expr_span_in_second_file"
+description = """
+RUE-175: make_unary also built its merged span (operator start .. operand end)
+with Span::new. The E0206 on the `if -1` condition must point at main.rue:2:8,
+never at lib.rue.
+"""
+files = [
+    { path = "lib.rue", source = """
+pub fn helper() -> i64 {
+    return 1;
+}
+""" },
+    { path = "main.rue", source = """
+fn main() -> i64 {
+    if -1 {
+        return 1;
+    }
+    return 0;
+}
+""" },
+]
+args = ["lib.rue", "main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0206", "main.rue:2:8"]
+compile_stderr_not_contains = ["lib.rue"]
+
+[[case]]
+name = "field_assign_span_in_second_file"
+description = """
+RUE-175: field-assignment shape. The E0206 for assigning a bool to an i64
+field must be attributed to main.rue:4:5, never to lib.rue.
+"""
+files = [
+    { path = "lib.rue", source = """
+pub fn helper() -> i64 {
+    return 1;
+}
+""" },
+    { path = "main.rue", source = """
+struct P { x: i64 }
+fn main() -> i64 {
+    let mut p = P { x: 1 };
+    p.x = true;
+    return p.x;
+}
+""" },
+]
+args = ["lib.rue", "main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0206", "main.rue:4:5"]
+compile_stderr_not_contains = ["lib.rue"]
+
+[[case]]
+name = "index_expr_span_in_second_file"
+description = """
+RUE-175: index-expression shape. The E0206 whose primary span is the postfix
+index expression `a[0]` (used where a bool is required) must be attributed to
+main.rue:3:13, never to lib.rue.
+"""
+files = [
+    { path = "lib.rue", source = """
+pub fn helper() -> i64 {
+    return 1;
+}
+""" },
+    { path = "main.rue", source = """
+fn main() -> i64 {
+    let mut a = [1, 2, 3];
+    let i = a[0] && true;
+    return 0;
+}
+""" },
+]
+args = ["lib.rue", "main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0206", "main.rue:3:13"]
+compile_stderr_not_contains = ["lib.rue"]

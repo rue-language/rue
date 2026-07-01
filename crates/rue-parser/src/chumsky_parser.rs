@@ -539,7 +539,7 @@ where
 
 /// Helper to create binary expression
 fn make_binary(left: Expr, op: BinaryOp, right: Expr) -> Expr {
-    let span = Span::new(left.span().start, right.span().end);
+    let span = Span::with_file(left.span().file_id, left.span().start, right.span().end);
     Expr::Binary(BinaryExpr {
         left: Box::new(left),
         op,
@@ -550,7 +550,11 @@ fn make_binary(left: Expr, op: BinaryOp, right: Expr) -> Expr {
 
 /// Helper to create unary expression
 fn make_unary(op: UnaryOp, operand: Expr, op_span: SimpleSpan) -> Expr {
-    let span = Span::new(offset_to_u32(op_span.start), operand.span().end);
+    let span = Span::with_file(
+        operand.span().file_id,
+        offset_to_u32(op_span.start),
+        operand.span().end,
+    );
     Expr::Unary(UnaryExpr {
         op,
         operand: Box::new(operand),
@@ -1704,7 +1708,7 @@ where
                         // The last suffix determines the target type
                         return match suffix {
                             AssignSuffix::Field(field) => {
-                                let span = Span::new(base_expr.span().start, field.span.end);
+                                let span = base_expr.span().extend_to(field.span.end);
                                 AssignTarget::Field(FieldExpr {
                                     base: Box::new(base_expr),
                                     field,
@@ -1712,7 +1716,7 @@ where
                                 })
                             }
                             AssignSuffix::Index(index) => {
-                                let span = Span::new(base_expr.span().start, index.span().end);
+                                let span = base_expr.span().extend_to(index.span().end);
                                 AssignTarget::Index(IndexExpr {
                                     base: Box::new(base_expr),
                                     index: Box::new(index),
@@ -1724,7 +1728,7 @@ where
                     // Build intermediate expressions
                     match suffix {
                         AssignSuffix::Field(field) => {
-                            let span = Span::new(base_expr.span().start, field.span.end);
+                            let span = base_expr.span().extend_to(field.span.end);
                             base_expr = Expr::Field(FieldExpr {
                                 base: Box::new(base_expr),
                                 field,
@@ -1732,7 +1736,7 @@ where
                             });
                         }
                         AssignSuffix::Index(index) => {
-                            let span = Span::new(base_expr.span().start, index.span().end);
+                            let span = base_expr.span().extend_to(index.span().end);
                             base_expr = Expr::Index(IndexExpr {
                                 base: Box::new(base_expr),
                                 index: Box::new(index),
@@ -1953,7 +1957,7 @@ fn process_block_items(items: Vec<BlockItem>, block_span: Span) -> (Vec<Statemen
         }
         // Fallback: use a unit expression (block produces unit type)
         Expr::Unit(UnitLit {
-            span: Span::new(block_span.end, block_span.end),
+            span: Span::point_in_file(block_span.file_id, block_span.end),
         })
     });
 
