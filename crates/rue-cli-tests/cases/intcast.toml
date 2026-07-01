@@ -88,11 +88,10 @@ exit_code = 0
 
 # Control: a narrowing cast that overflows still traps.
 #
-# xfail on aarch64: the narrowing range check there compares only the low 32
-# bits of the 64-bit source (RUE-31), so this out-of-range value (whose low 32
-# bits happen to land in i32 range) is silently truncated instead of trapping.
-# That is a separate bug from this PR's widening sign-extension; remove
-# `known_bug_on` when RUE-31 is fixed.
+# Also a regression test for RUE-31: the aarch64 range checks used the 32-bit
+# CmpRR for 64-bit sources, so this out-of-range value (whose low 32 bits
+# happen to land in i32 range) was silently truncated instead of trapping.
+# All 64-bit-source range checks now select the 64-bit Cmp64RR.
 [[case]]
 name = "i64_to_i32_overflow_traps"
 files = [{ path = "main.rue", source = """
@@ -103,8 +102,67 @@ fn main() -> i32 {
 """ }]
 exit_code = 101
 runtime_error_contains = ["integer cast overflow"]
-known_bug = "RUE-31"
-known_bug_on = ["aarch64-linux", "aarch64-macos"]
+
+# RUE-31: 2^32 exactly — the buggy 32-bit compare saw only the low 32 bits
+# (zero, comfortably in i32 range) and let the cast through. The value is
+# produced by a function call so constant folding cannot elide the check.
+[[case]]
+name = "i64_pow32_to_i32_overflow_traps"
+files = [{ path = "main.rue", source = """
+fn g() -> i64 { 4294967296 }        // 2^32: low 32 bits are all zero
+fn main() -> i32 {
+    let x: i64 = g();
+    let y: i32 = @intCast(x);       // out of i32 range -> must trap
+    if y == 0 { 1 } else { 2 }
+}
+""" }]
+exit_code = 101
+runtime_error_contains = ["integer cast overflow"]
+
+# RUE-31: the low-32-bits blindness affected every 64-bit-source range check,
+# not just signed->signed. u64 -> u32 narrowing must still trap.
+[[case]]
+name = "u64_to_u32_overflow_traps"
+files = [{ path = "main.rue", source = """
+fn g() -> u64 { 4294967296 }        // 2^32: low 32 bits are all zero
+fn main() -> i32 {
+    let x: u64 = g();
+    let y: u32 = @intCast(x);       // out of u32 range -> must trap
+    if y == 0 { 1 } else { 2 }
+}
+""" }]
+exit_code = 101
+runtime_error_contains = ["integer cast overflow"]
+
+# RUE-31: u64 -> i64 is a same-size cast that still needs its upper-bound
+# check; comparing only the low 32 bits made that check a no-op.
+[[case]]
+name = "u64_above_i64_max_traps"
+files = [{ path = "main.rue", source = """
+fn g() -> u64 { let a: u64 = 9223372036854775807; a + 1 }   // 2^63 > i64::MAX
+fn main() -> i32 {
+    let x: u64 = g();
+    let y: i64 = @intCast(x);       // out of i64 range -> must trap
+    if y == 0 { 1 } else { 2 }
+}
+""" }]
+exit_code = 101
+runtime_error_contains = ["integer cast overflow"]
+
+# Control: in-range 64-bit-source casts must not trap (the widened compare
+# from the RUE-31 fix must not introduce false positives).
+[[case]]
+name = "i64_in_range_to_i32_ok"
+files = [{ path = "main.rue", source = """
+fn g() -> i64 { 0 - 2147483647 - 1 }    // i32::MIN, exactly in range
+fn main() -> i32 {
+    let x: i64 = g();
+    let y: i32 = @intCast(x);           // boundary value -> must NOT trap
+    let z: i64 = @intCast(y);           // widen back to compare in i64
+    if z == g() { 0 } else { 1 }
+}
+""" }]
+exit_code = 0
 
 # RUE-146: the x86-64 peephole rewrote the signed->unsigned negativity check
 # (`cmp64 r, 0`) into the 32-bit `test r, r`, so SF came from the low 32 bits

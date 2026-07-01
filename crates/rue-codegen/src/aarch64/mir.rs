@@ -967,7 +967,11 @@ impl fmt::Display for Aarch64Inst {
                 write!(f, "asrl {}, {}, {}", dst, src1, src2)
             }
             Aarch64Inst::CmpRR { src1, src2 } => write!(f, "cmp {}, {}", src1, src2),
-            Aarch64Inst::Cmp64RR { src1, src2 } => write!(f, "cmp {}, {}", src1, src2),
+            Aarch64Inst::Cmp64RR { src1, src2 } => {
+                // Width-marked like Adds64RR/Subs64RR so the MIR dump can
+                // distinguish the 64-bit compare from the 32-bit CmpRR.
+                write!(f, "cmp {}, {} // 64-bit", src1, src2)
+            }
             Aarch64Inst::CmpImm { src, imm } => write!(f, "cmp {}, #{}", src, imm),
             Aarch64Inst::Cbz { src, label } => write!(f, "cbz {}, {}", src, label),
             Aarch64Inst::Cbnz { src, label } => write!(f, "cbnz {}, {}", src, label),

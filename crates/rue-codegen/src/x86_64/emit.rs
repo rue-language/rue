@@ -852,7 +852,16 @@ impl<'a> Emitter<'a> {
             X86Inst::CmpRR { src1, src2 } => {
                 self.begin_inst();
                 self.emit_cmp_rr(src1.as_physical(), src2.as_physical());
-                end_inst!(self, "cmp {}, {}", src1.as_physical(), src2.as_physical());
+                // Width-honest dump: this is a 32-bit compare, so print the
+                // 32-bit register names (RUE-90). Printing r12/r13 here made
+                // the dump indistinguishable from Cmp64RR and masked
+                // comparison-width miscompiles.
+                end_inst!(
+                    self,
+                    "cmp {}, {}",
+                    src1.as_physical().name32(),
+                    src2.as_physical().name32()
+                );
             }
             X86Inst::Cmp64RR { src1, src2 } => {
                 self.begin_inst();
@@ -862,7 +871,7 @@ impl<'a> Emitter<'a> {
             X86Inst::CmpRI { src, imm } => {
                 self.begin_inst();
                 self.emit_cmp_ri(src.as_physical(), *imm);
-                end_inst!(self, "cmp {}, {}", src.as_physical(), imm);
+                end_inst!(self, "cmp {}, {}", src.as_physical().name32(), imm);
             }
             X86Inst::Cmp64RI { src, imm } => {
                 self.begin_inst();
