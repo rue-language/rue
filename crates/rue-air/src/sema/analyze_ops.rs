@@ -59,6 +59,10 @@ pub(crate) struct ProjectionInfo {
     /// For field projections: the field name (for move checking)
     /// For index projections: None
     pub field_name: Option<Spur>,
+    /// For index projections whose index is a compile-time constant: its
+    /// value (for per-element move tracking, RUE-186). None for field
+    /// projections and dynamic indices.
+    pub const_index: Option<i64>,
 }
 
 /// Result of tracing a place expression in RIR.
@@ -244,6 +248,7 @@ impl<'a> Sema<'a> {
                             },
                             result_type: field_type,
                             field_name: Some(*field),
+                            const_index: None,
                         });
 
                         Ok(Some(trace))
@@ -291,6 +296,7 @@ impl<'a> Sema<'a> {
                             },
                             result_type: elem_type,
                             field_name: None,
+                            const_index: self.try_get_const_index(*index),
                         });
 
                         Ok(Some(trace))
@@ -2444,7 +2450,7 @@ impl<'a> Sema<'a> {
     /// leave the CALLER's variable (partially) moved-from after the call
     /// returns, so both are rejected outright (RUE-127); reinitialization
     /// before exit is not tracked yet.
-    fn reject_move_out_of_byref_param(
+    pub(crate) fn reject_move_out_of_byref_param(
         &self,
         root_var: Spur,
         ctx: &AnalysisContext,
@@ -2630,6 +2636,10 @@ impl<'a> Sema<'a> {
                 }
             }
 
+            // A field read through an array element (`xs[0].f`) must not go
+            // through a moved-out element (RUE-186).
+            self.check_read_through_moved_element(&trace, ctx, span)?;
+
             // Get struct info for move checking
             // The trace's result type is the field type, but we need the parent struct type
             // to check if it's linear. The parent is the type *before* the last projection.
@@ -2707,11 +2717,12 @@ impl<'a> Sema<'a> {
                 // Export pure-field-path moves of any depth (`o.a`, `o.a.b`)
                 // to drop elaboration so the moved path's drop inside the
                 // struct's scope-exit drop is suppressed (RUE-62, RUE-157).
-                // Paths through an array index (`arr[i].a`) get no marker:
+                // Paths THROUGH an array index (`arr[i].a`) get no marker:
                 // drop elaboration keeps the whole-slot drop, which re-drops
-                // the moved element (a known gap — array-element moves
-                // aren't tracked by drop elaboration). Only Normal params
-                // occupy a real ABI slot that drop elaboration would drop.
+                // the moved element (a known gap; root-level element moves
+                // `arr[K]` ARE tracked — RUE-186 — but index-interior paths
+                // are not). Only Normal params occupy a real ABI slot that
+                // drop elaboration would drop.
                 let pure_field_path = trace
                     .projections
                     .iter()
@@ -3232,8 +3243,10 @@ impl<'a> Sema<'a> {
             // of the array (RUE-143), so the non-Copy rejection below does
             // not apply — but indexing an already-moved array is still a
             // use-after-move (`field_path()` of an index-terminated trace is
-            // empty, so this checks the root's full move).
+            // empty, so this checks the root's full move; the per-element
+            // check below covers a moved-out element, RUE-186).
             let is_byref_arg_use = ctx.byref_arg_root == Some(trace.root_var);
+            let mut element_move: Option<i64> = None;
             if is_byref_arg_use {
                 let field_path = trace.field_path();
                 if let Some(state) = ctx.moved_vars.get(&trace.root_var) {
@@ -3247,24 +3260,50 @@ impl<'a> Sema<'a> {
                         ));
                     }
                 }
+                self.check_read_through_moved_element(&trace, ctx, span)?;
             } else if !self.is_type_copy(elem_type) {
-                // Prevent moving non-Copy elements out of arrays.
-                return Err(CompileError::new(
-                    ErrorKind::MoveOutOfIndex {
-                        element_type: elem_type.safe_name_with_pool(Some(&self.type_pool)),
-                    },
-                    span,
-                )
-                .with_help("use explicit methods like swap() or take() to remove elements"));
+                // A CONSTANT index directly into an array variable moves
+                // just that element out (per-element tracking, RUE-186,
+                // spec 3.8:68). Everything else — dynamic index, or an
+                // array that is not the trace root — keeps the rejection:
+                // with a runtime index sema cannot know which element
+                // moved, so neither use-after-move checking nor drop
+                // suppression could stay sound (spec 7.1:28).
+                element_move = self.record_element_move_out(&trace, ctx, span)?;
+                if element_move.is_none() {
+                    return Err(CompileError::new(
+                        ErrorKind::MoveOutOfIndex {
+                            element_type: elem_type.safe_name_with_pool(Some(&self.type_pool)),
+                        },
+                        span,
+                    )
+                    .with_help(
+                        "moving an element out requires a compile-time \
+                         constant index into an array variable",
+                    ));
+                }
             }
 
             // Emit PlaceRead instruction
             let place_ref = Self::build_place_ref(air, &trace);
-            let air_ref = air.add_inst(AirInst {
+            let mut air_ref = air.add_inst(AirInst {
                 data: AirInstData::PlaceRead { place: place_ref },
                 ty: elem_type,
                 span,
             });
+            if let Some(k) = element_move {
+                // Export the element move to drop elaboration (RUE-186).
+                air_ref = self.emit_element_move_marker(
+                    air,
+                    &trace,
+                    ctx,
+                    air_ref,
+                    k,
+                    elem_type,
+                    parent_type,
+                    span,
+                );
+            }
             return Ok(AnalysisResult::new(air_ref, elem_type));
         }
 

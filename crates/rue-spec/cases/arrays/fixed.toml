@@ -587,18 +587,56 @@ exit_code = 42
 [[case]]
 name = "array_non_copy_element_move_error"
 spec = ["7.1:28"]
-description = "Cannot move non-Copy element out of array index"
+description = "Cannot move non-Copy element out with a non-constant index (RUE-186 keeps dynamic indices conservative)"
 source = """
 struct BigThing { value: i32 }
 
+fn first_index() -> u64 { 0 }
+
 fn main() -> i32 {
     let arr: [BigThing; 2] = [BigThing { value: 1 }, BigThing { value: 2 }];
-    let x = arr[0];
+    let i = first_index();
+    let x = arr[i];
     x.value
 }
 """
 compile_fail = true
 error_contains = "cannot move out of"
+
+[[case]]
+name = "array_non_copy_rvalue_element_move_error"
+spec = ["7.1:28"]
+description = "Cannot move a non-Copy element out of a computed (non-variable) array, even with a constant index"
+source = """
+struct BigThing { value: i32 }
+
+fn make() -> [BigThing; 2] {
+    [BigThing { value: 1 }, BigThing { value: 2 }]
+}
+
+fn main() -> i32 {
+    let x = make()[0];
+    x.value
+}
+"""
+compile_fail = true
+error_contains = "cannot move out of"
+
+[[case]]
+name = "array_non_copy_constant_index_move_ok"
+spec = ["7.1:28", "3.8:68"]
+description = "A constant index into an array variable moves the element out (per-element tracking)"
+source = """
+struct BigThing { value: i32 }
+
+fn main() -> i32 {
+    let arr: [BigThing; 2] = [BigThing { value: 40 }, BigThing { value: 2 }];
+    let x = arr[0];
+    let y = arr[1];
+    x.value + y.value
+}
+"""
+exit_code = 42
 
 [[case]]
 name = "array_non_copy_field_access_ok"

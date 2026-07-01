@@ -183,17 +183,21 @@ fn main() -> i32 {
 
 {{ rule(id="7.1:28", cat="legality-rule") }}
 
-When reading an element of a non-Copy type, it is a compile-time error to move the element out of an array position. Use explicit methods like `swap` or `take` instead.
+When reading an element of a non-Copy type, the read moves the element out of the array only when the index is a compile-time constant and the indexing applies directly to an array variable (per-element move tracking; see Array Element Moves in the Move Semantics chapter). Any other such read — a non-constant index, or an array reached through another projection or computed by an expression — is a compile-time error: with a runtime index the compiler cannot know which element moved, so neither use-after-move checking nor drop elaboration could remain sound.
 
 {{ rule(id="7.1:29") }}
 
 ```rue
 struct BigThing { value: i32 }
 
+fn first_index() -> u64 { 0 }
+
 fn main() -> i32 {
     let arr: [BigThing; 2] = [BigThing { value: 1 }, BigThing { value: 2 }];
-    let x = arr[0];     // ERROR: cannot move out of indexed position
-    0
+    let x = arr[0];             // OK: constant index moves arr[0] out
+    let i = first_index();
+    let y = arr[i];             // ERROR: cannot move out of indexed position
+    x.value
 }
 ```
 

@@ -1751,3 +1751,296 @@ fn main() -> i32 {
 }
 """
 exit_code = 42
+
+# =============================================================================
+# Array Element Moves (RUE-186)
+# =============================================================================
+
+[[case]]
+name = "array_element_move_leaves_siblings_usable"
+spec = ["3.8:68"]
+description = "A constant-index move takes only that element; siblings stay usable"
+source = """
+struct Big { value: i32 }
+
+fn consume(b: Big) -> i32 { b.value }
+
+fn main() -> i32 {
+    let xs = [Big { value: 1 }, Big { value: 2 }];
+    let a = consume(xs[0]);
+    let b = consume(xs[1]);
+    a + b
+}
+"""
+exit_code = 3
+
+[[case]]
+name = "array_element_move_out_of_order"
+spec = ["3.8:68"]
+description = "Elements can be moved out in any order"
+source = """
+struct Big { value: i32 }
+
+fn consume(b: Big) -> i32 { b.value }
+
+fn main() -> i32 {
+    let xs = [Big { value: 1 }, Big { value: 2 }, Big { value: 39 }];
+    consume(xs[2]) + consume(xs[0]) + consume(xs[1])
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "array_moved_element_reuse_rejected"
+spec = ["3.8:70"]
+description = "Using a moved-out element again is a use-after-move"
+source = """
+struct Big { value: i32 }
+
+fn consume(b: Big) -> i32 { b.value }
+
+fn main() -> i32 {
+    let xs = [Big { value: 1 }, Big { value: 2 }];
+    let a = consume(xs[0]);
+    let b = consume(xs[0]);
+    a + b
+}
+"""
+compile_fail = true
+error_contains = "use of moved value 'xs[0]'"
+
+[[case]]
+name = "array_whole_use_after_element_move_rejected"
+spec = ["3.8:70"]
+description = "A partially moved array cannot be used as a whole value"
+source = """
+struct Big { value: i32 }
+
+fn consume(b: Big) -> i32 { b.value }
+fn take_all(xs: [Big; 2]) -> i32 { 0 }
+
+fn main() -> i32 {
+    let xs = [Big { value: 1 }, Big { value: 2 }];
+    let a = consume(xs[0]);
+    a + take_all(xs)
+}
+"""
+compile_fail = true
+error_contains = "use of moved value 'xs'"
+
+[[case]]
+name = "array_dynamic_index_after_element_move_rejected"
+spec = ["3.8:70"]
+description = "A non-constant index cannot read a partially moved array (soundness)"
+source = """
+struct Big { value: i32 }
+
+fn consume(b: Big) -> i32 { b.value }
+fn peek(borrow b: Big) -> i32 { b.value }
+fn one() -> u64 { 1 }
+
+fn main() -> i32 {
+    let xs = [Big { value: 1 }, Big { value: 2 }];
+    let a = consume(xs[0]);
+    let i = one();
+    a + peek(borrow xs[i])
+}
+"""
+compile_fail = true
+error_contains = "use of moved value 'xs'"
+
+[[case]]
+name = "array_field_read_through_moved_element_rejected"
+spec = ["3.8:70"]
+description = "Reading a field through a moved-out element is a use-after-move"
+source = """
+struct Big { value: i32 }
+
+fn consume(b: Big) -> i32 { b.value }
+
+fn main() -> i32 {
+    let xs = [Big { value: 1 }, Big { value: 2 }];
+    let a = consume(xs[0]);
+    a + xs[0].value
+}
+"""
+compile_fail = true
+error_contains = "use of moved value 'xs[0]'"
+
+[[case]]
+name = "linear_array_elementwise_consumption"
+spec = ["3.8:71"]
+description = "Moving every element out satisfies a linear array's must-consume obligation"
+source = """
+linear struct MustUse { value: i32 }
+
+fn consume(m: MustUse) -> i32 { m.value }
+
+fn main() -> i32 {
+    let xs = [MustUse { value: 40 }, MustUse { value: 2 }];
+    consume(xs[0]) + consume(xs[1])
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "linear_array_partial_elementwise_rejected"
+spec = ["3.8:71"]
+description = "Consuming only some elements of a linear array is an error naming the rest"
+source = """
+linear struct MustUse { value: i32 }
+
+fn consume(m: MustUse) -> i32 { m.value }
+
+fn main() -> i32 {
+    let xs = [MustUse { value: 1 }, MustUse { value: 2 }];
+    consume(xs[0])
+}
+"""
+compile_fail = true
+error_contains = ["must be consumed", "element(s) [1]"]
+
+[[case]]
+name = "linear_array_element_one_branch_rejected"
+spec = ["3.8:71"]
+description = "An element consumed on only some paths does not satisfy the obligation"
+source = """
+linear struct MustUse { value: i32 }
+
+fn consume(m: MustUse) -> i32 { m.value }
+
+fn main() -> i32 {
+    let xs = [MustUse { value: 1 }, MustUse { value: 2 }];
+    let a = consume(xs[0]);
+    if a == 1 {
+        a + consume(xs[1])
+    } else {
+        a
+    }
+}
+"""
+compile_fail = true
+error_contains = ["not consumed on all paths", "element(s) [1]"]
+
+[[case]]
+name = "linear_array_param_elementwise_consumption"
+spec = ["3.8:71"]
+description = "A by-value linear array parameter can be consumed element-wise by the callee"
+source = """
+linear struct MustUse { value: i32 }
+
+fn consume(m: MustUse) -> i32 { m.value }
+fn consume_all(xs: [MustUse; 2]) -> i32 { consume(xs[0]) + consume(xs[1]) }
+
+fn main() -> i32 {
+    let xs = [MustUse { value: 40 }, MustUse { value: 2 }];
+    consume_all(xs)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "array_element_write_partially_moved_rejected"
+spec = ["3.8:72"]
+description = "Assigning to an element of a partially moved array is rejected"
+source = """
+struct Big { value: i32 }
+
+fn consume(b: Big) -> i32 { b.value }
+
+fn main() -> i32 {
+    let mut xs = [Big { value: 1 }, Big { value: 2 }];
+    let a = consume(xs[0]);
+    xs[0] = Big { value: 9 };
+    a
+}
+"""
+compile_fail = true
+error_contains = "cannot assign into 'xs'"
+
+[[case]]
+name = "array_through_element_write_partially_moved_rejected"
+spec = ["3.8:72"]
+description = "Assigning through an element (to its field) of a partially moved array is rejected"
+source = """
+struct Big { value: i32 }
+
+fn consume(b: Big) -> i32 { b.value }
+
+fn main() -> i32 {
+    let mut xs = [Big { value: 1 }, Big { value: 2 }];
+    let a = consume(xs[0]);
+    xs[1].value = 9;
+    a
+}
+"""
+compile_fail = true
+error_contains = "cannot assign into 'xs'"
+
+[[case]]
+name = "array_whole_reinit_restores_ownership"
+spec = ["3.8:72"]
+description = "Reinitializing the whole array makes every element owned and usable again"
+source = """
+struct Big { value: i32 }
+
+fn consume(b: Big) -> i32 { b.value }
+
+fn main() -> i32 {
+    let mut xs = [Big { value: 1 }, Big { value: 2 }];
+    let a = consume(xs[0]);
+    xs = [Big { value: 20 }, Big { value: 21 }];
+    a + consume(xs[0]) + consume(xs[1])
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "array_moved_element_not_dropped"
+spec = ["3.8:73"]
+description = "A moved-out element is dropped by its new owner, not at the array's scope exit; unmoved elements still drop in ascending order"
+source = """
+struct D { value: i32 }
+
+drop fn D(self) {
+    @dbg(self.value);
+}
+
+fn consume(d: D) -> i32 { d.value }
+
+fn main() -> i32 {
+    let xs = [D { value: 1 }, D { value: 2 }, D { value: 3 }];
+    let got = consume(xs[1]);
+    @dbg(100);
+    got - 2
+}
+"""
+exit_code = 0
+expected_stdout = "2\n100\n1\n3\n"
+
+[[case]]
+name = "array_branch_dependent_element_drop"
+spec = ["3.8:73"]
+description = "An element moved on only some paths is dropped exactly when the executed path did not move it (runtime drop flag)"
+source = """
+struct D { value: i32 }
+
+drop fn D(self) {
+    @dbg(self.value);
+}
+
+fn consume(d: D) -> i32 { d.value }
+fn cond(x: i32) -> bool { x > 0 }
+
+fn main() -> i32 {
+    let xs = [D { value: 1 }, D { value: 2 }];
+    let mut total = 0;
+    if cond(1) {
+        total = total + consume(xs[0]);
+    }
+    @dbg(100);
+    total - 1
+}
+"""
+exit_code = 0
+expected_stdout = "1\n100\n2\n"
