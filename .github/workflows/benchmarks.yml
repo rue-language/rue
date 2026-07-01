@@ -1,12 +1,18 @@
 name: Benchmarks
 
+# One benchmark run per commit that lands on trunk. The concurrency group
+# coalesces rapid merges: an in-flight run is cancelled when a newer commit
+# arrives, so the history always tracks the latest trunk state and every
+# data point corresponds to exactly one commit.
+#
+# Results flow: each platform job runs bench.sh and uploads results.json as
+# an artifact; the collect job appends them to per-platform history files on
+# the `perf` branch; the Website workflow (workflow_run trigger) then
+# redeploys the performance dashboard with the new data.
+
 on:
   push:
     branches: [trunk]
-  schedule:
-    # Run every 15 minutes to ensure benchmark coverage
-    # This provides predictable resource usage and handles high commit velocity
-    - cron: '*/15 * * * *'
   workflow_dispatch:
     inputs:
       iterations:
@@ -15,103 +21,16 @@ on:
         type: string
 
 permissions:
-  contents: write  # Needed to push to perf branch (used by collector job)
+  contents: write  # collect job pushes history to the perf branch
 
-# Time-based batching: Cancel older queued runs when new ones arrive
-# This handles high commit velocity by ensuring only the latest commit is benchmarked
-# Scheduled runs every 15 minutes ensure coverage even during quiet periods
 concurrency:
   group: benchmarks
   cancel-in-progress: true
 
 jobs:
-  # Graceful degradation: Check queue depth and decide whether to run
-  # This prevents resource exhaustion during periods of high commit velocity
-  check-queue:
-    name: Check queue depth
-    runs-on: ubuntu-latest
-    outputs:
-      should_run: ${{ steps.decide.outputs.should_run }}
-      queue_depth: ${{ steps.queue.outputs.queue_depth }}
-      reason: ${{ steps.decide.outputs.reason }}
-
-    steps:
-      - name: Check workflow queue depth
-        id: queue
-        uses: actions/github-script@v9
-        with:
-          script: |
-            // Get all workflow runs for this workflow in queued or in_progress state
-            const runs = await github.rest.actions.listWorkflowRuns({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              workflow_id: 'benchmarks.yml',
-              status: 'queued',
-              per_page: 100
-            });
-
-            const queueDepth = runs.data.workflow_runs.length;
-            core.setOutput('queue_depth', queueDepth);
-            core.info(`Current queue depth: ${queueDepth} queued runs`);
-
-            return queueDepth;
-
-      - name: Decide whether to run
-        id: decide
-        run: |
-          queue_depth="${{ steps.queue.outputs.queue_depth }}"
-
-          # Manual runs always proceed
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "should_run=true" >> $GITHUB_OUTPUT
-            echo "reason=Manual run always proceeds" >> $GITHUB_OUTPUT
-            echo "✓ Manual run - proceeding regardless of queue depth"
-            exit 0
-          fi
-
-          # Adaptive sampling based on queue depth
-          if [ "$queue_depth" -gt 20 ]; then
-            echo "should_run=false" >> $GITHUB_OUTPUT
-            echo "reason=Queue depth ($queue_depth) exceeds threshold (20) - skipping to reduce backlog" >> $GITHUB_OUTPUT
-            echo "⚠️  Queue depth too high ($queue_depth > 20) - skipping this run"
-          elif [ "$queue_depth" -gt 10 ]; then
-            # For medium queue depth, only run scheduled jobs (skip push-triggered ones)
-            if [ "${{ github.event_name }}" = "schedule" ]; then
-              echo "should_run=true" >> $GITHUB_OUTPUT
-              echo "reason=Moderate queue depth ($queue_depth) - running scheduled job only" >> $GITHUB_OUTPUT
-              echo "✓ Scheduled run with moderate queue ($queue_depth) - proceeding"
-            else
-              echo "should_run=false" >> $GITHUB_OUTPUT
-              echo "reason=Queue depth ($queue_depth) exceeds threshold (10) - skipping push-triggered run, waiting for scheduled run" >> $GITHUB_OUTPUT
-              echo "⚠️  Moderate queue depth ($queue_depth > 10) - skipping push-triggered run"
-            fi
-          else
-            echo "should_run=true" >> $GITHUB_OUTPUT
-            echo "reason=Queue depth acceptable ($queue_depth <= 10)" >> $GITHUB_OUTPUT
-            echo "✓ Queue depth acceptable ($queue_depth) - proceeding"
-          fi
-
-      - name: Log skip decision
-        if: steps.decide.outputs.should_run == 'false'
-        run: |
-          echo "## ⚠️  Benchmark Run Skipped" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Reason:** ${{ steps.decide.outputs.reason }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Queue depth:** ${{ steps.queue.outputs.queue_depth }} queued runs" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Commit:** \`$(git rev-parse --short HEAD 2>/dev/null || echo 'unknown')\`" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "This run was skipped to prevent resource exhaustion during high commit velocity." >> $GITHUB_STEP_SUMMARY
-          echo "Scheduled runs every 15 minutes ensure benchmark coverage." >> $GITHUB_STEP_SUMMARY
-
   benchmark:
-    needs: check-queue
-    if: needs.check-queue.outputs.should_run == 'true'
     strategy:
       fail-fast: false
-      # Parallel execution - no max-parallel constraint
-      # Each job uploads artifacts instead of pushing to perf branch
       matrix:
         include:
           - runner: ubuntu-latest
@@ -128,20 +47,16 @@ jobs:
     name: benchmark (${{ matrix.name }})
 
     steps:
-      - name: Checkout trunk
+      - name: Checkout
         uses: actions/checkout@v6
-        with:
-          ref: trunk
-          fetch-depth: 0  # Full history for commit info
 
       - name: Install dotslash
         uses: facebook/install-dotslash@latest
 
       # Cache the dotslash-downloaded buck2 binary (~/.cache/dotslash on
-      # Linux, ~/Library/Caches/dotslash on macOS). The previous cache of
-      # buck-out/v2/gen + ~/.cache/buck2 was inert — OSS buck2 has no
-      # persistent action cache across daemon restarts, and ~/.cache/buck2
-      # is not a path buck2 uses. (RUE-144)
+      # Linux, ~/Library/Caches/dotslash on macOS). OSS buck2 has no
+      # persistent action cache across daemon restarts, so this is the only
+      # cacheable artifact. (RUE-144)
       - name: Cache dotslash artifacts
         uses: actions/cache@v5
         with:
@@ -152,130 +67,54 @@ jobs:
           restore-keys: |
             dotslash-${{ matrix.platform }}-
 
-      - name: Get commit info
-        id: commit
-        run: |
-          echo "sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
-          echo "full_sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
-
       - name: Run benchmarks
-        id: bench
         run: |
           iterations="${{ github.event.inputs.iterations || '5' }}"
           echo "Running benchmarks with $iterations iterations on ${{ matrix.platform }}..."
-          ./bench.sh --iterations "$iterations" --output /tmp/results.json --no-history
-
-          # Extract summary for PR comment
-          echo "benchmark_results<<EOF" >> $GITHUB_OUTPUT
-          cat /tmp/results.json >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+          ./bench.sh --iterations "$iterations" --output results.json --no-history
 
       - name: Validate benchmark results
-        run: |
-          echo "=== Benchmark Results ==="
-          cat /tmp/results.json
-          echo ""
-          echo "=== Validation ==="
-          python3 << 'EOF'
-          import json
-          import sys
-
-          with open('/tmp/results.json') as f:
-              data = json.load(f)
-
-          benchmarks = data.get('benchmarks', [])
-          print(f'Platform: ${{ matrix.platform }}')
-          print(f'Commit: {data.get("commit", "unknown")}')
-          print(f'Benchmarks collected: {len(benchmarks)}')
-
-          if not benchmarks:
-              print('::error::No benchmark results collected! All benchmarks failed.')
-              sys.exit(1)
-
-          for b in benchmarks:
-              name = b.get('name', 'unknown')
-              mean = b.get('mean_ms', 0)
-              print(f'  - {name}: {mean:.2f}ms')
-
-          print('Validation passed!')
-          EOF
+        run: python3 scripts/validate-benchmark.py results.json
 
       - name: Upload benchmark results as artifact
         uses: actions/upload-artifact@v6
         with:
-          name: benchmark-results-${{ steps.commit.outputs.full_sha }}-${{ matrix.platform }}
-          path: /tmp/results.json
+          name: benchmark-results-${{ github.sha }}-${{ matrix.platform }}
+          path: results.json
           retention-days: 90
 
       - name: Summary
         run: |
-          echo "## Benchmark Results (${{ matrix.name }})" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Platform:** ${{ matrix.platform }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Commit:** \`${{ steps.commit.outputs.sha }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Results" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "\`\`\`json" >> $GITHUB_STEP_SUMMARY
-          cat /tmp/results.json >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          {
+            echo "## Benchmark Results (${{ matrix.name }})"
+            echo ""
+            echo "**Platform:** ${{ matrix.platform }}"
+            echo "**Commit:** \`${{ github.sha }}\`"
+            echo ""
+            echo '```json'
+            cat results.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   collect-results:
     name: Collect and push results
-    needs: [check-queue, benchmark]
+    needs: benchmark
     runs-on: ubuntu-latest
-    # Only run if benchmarks were executed and at least one succeeded
-    if: ${{ needs.check-queue.outputs.should_run == 'true' && !cancelled() && needs.benchmark.result != 'failure' }}
+    # Collect whatever platforms succeeded, even if one failed.
+    if: ${{ !cancelled() }}
 
     steps:
-      - name: Checkout trunk for scripts
+      - name: Checkout repo for scripts
         uses: actions/checkout@v6
         with:
-          ref: trunk
-          path: trunk
+          path: repo
 
-      - name: Get commit info and range
-        id: commit
-        run: |
-          cd trunk
-          echo "sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
-          echo "full_sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
-
-          # Get all commits since the last benchmark run (or last 24 hours as fallback)
-          # This helps track which commits this benchmark represents
-          since_time=$(date -u -d '24 hours ago' '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date -u -v-24H '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "24 hours ago")
-          commit_range=$(git log --since="$since_time" --format="%H" --reverse | tr '\n' ',' | sed 's/,$//')
-
-          # Export for later use
-          echo "commit_range=$commit_range" >> $GITHUB_OUTPUT
-
-          # Count commits in range
-          commit_count=$(echo "$commit_range" | tr ',' '\n' | wc -l | tr -d ' ')
-          echo "commit_count=$commit_count" >> $GITHUB_OUTPUT
-
-          echo "Commit range: $commit_count commits in last 24h"
-
-      - name: Download all benchmark artifacts
+      - name: Download benchmark artifacts
         uses: actions/download-artifact@v8
         with:
           path: artifacts
-          pattern: benchmark-results-${{ steps.commit.outputs.full_sha }}-*
+          pattern: benchmark-results-${{ github.sha }}-*
           merge-multiple: false
-
-      - name: List downloaded artifacts
-        run: |
-          echo "=== Downloaded Artifacts ==="
-          ls -R artifacts/
-          echo ""
-          echo "=== Artifact Contents ==="
-          for dir in artifacts/benchmark-results-*; do
-            if [ -d "$dir" ]; then
-              echo "Directory: $dir"
-              cat "$dir/results.json" | head -20
-              echo ""
-            fi
-          done
 
       - name: Checkout perf branch
         uses: actions/checkout@v6
@@ -293,32 +132,32 @@ jobs:
             git init
             git checkout -b perf
             mkdir -p benchmarks
-            echo "# Performance History" > README.md
-            echo "" >> README.md
-            echo "This branch stores benchmark history for the Rue compiler." >> README.md
-            echo "See [Performance Dashboard](https://rue-lang.dev/performance/) for visualization." >> README.md
+            {
+              echo "# Performance History"
+              echo ""
+              echo "This branch stores benchmark history for the Rue compiler."
+              echo "See [Performance Dashboard](https://rue-lang.dev/performance/) for visualization."
+            } > README.md
           fi
 
       - name: Append results to history
         run: |
-          # Determine benchmark reason based on trigger
-          if [ "${{ github.event_name }}" = "schedule" ]; then
-            benchmark_reason="scheduled"
-          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             benchmark_reason="manual"
           else
             benchmark_reason="push"
           fi
 
-          # Process each platform's results
+          found=0
           for artifact_dir in artifacts/benchmark-results-*; do
-            if [ ! -d "$artifact_dir" ]; then
-              continue
-            fi
+            [ -d "$artifact_dir" ] || continue
 
-            # Extract platform from directory name
-            # Format: benchmark-results-{sha}-{platform}
-            platform=$(basename "$artifact_dir" | sed 's/benchmark-results-.*-//')
+            # Artifact name is benchmark-results-<40-hex-sha>-<platform>;
+            # the sha contains no hyphens, so strip the prefix then
+            # everything through the next hyphen.
+            base=$(basename "$artifact_dir")
+            platform="${base#benchmark-results-}"
+            platform="${platform#*-}"
             results_file="$artifact_dir/results.json"
 
             if [ ! -f "$results_file" ]; then
@@ -327,44 +166,20 @@ jobs:
             fi
 
             echo "Processing results for platform: $platform"
+            found=1
 
-            # Enhance results with commit range metadata (convert to version 2 schema)
-            enhanced_file="$artifact_dir/results_enhanced.json"
-            python3 << EOF
-import json
-import sys
-
-with open('$results_file') as f:
-    data = json.load(f)
-
-data['version'] = 2
-data['benchmark_reason'] = '$benchmark_reason'
-
-commit_range_str = '${{ steps.commit.outputs.commit_range }}'
-if commit_range_str:
-    data['commit_range'] = [c.strip() for c in commit_range_str.split(',') if c.strip()]
-else:
-    data['commit_range'] = ['${{ steps.commit.outputs.full_sha }}']
-
-with open('$enhanced_file', 'w') as f:
-    json.dump(data, f, indent=2)
-EOF
-
-            # Create platform-specific history file if it doesn't exist
+            mkdir -p perf-branch/benchmarks
             history_file="perf-branch/benchmarks/history-$platform.json"
-            if [ ! -f "$history_file" ]; then
-              mkdir -p perf-branch/benchmarks
-              echo '{"version": 1, "runs": []}' > "$history_file"
-            fi
 
-            # Append enhanced results to history using the Python script
-            if ! python3 trunk/scripts/append-benchmark.py "$enhanced_file" "$history_file"; then
+            if ! python3 repo/scripts/append-benchmark.py "$results_file" "$history_file" --reason "$benchmark_reason"; then
               echo "::error::Failed to append benchmark results for $platform"
               exit 1
             fi
-
-            echo "✓ Appended results for $platform (covering ${{ steps.commit.outputs.commit_count }} commits)"
           done
+
+          if [ "$found" = "0" ]; then
+            echo "::warning::No benchmark artifacts to collect (all platforms failed?)"
+          fi
 
       - name: Commit and push to perf branch
         run: |
@@ -374,30 +189,11 @@ EOF
 
           git add benchmarks/
 
-          # Only commit if there are changes
           if git diff --staged --quiet; then
             echo "No changes to commit"
           else
-            # Count how many platforms were updated
+            short_sha=$(echo "${{ github.sha }}" | cut -c1-9)
             platform_count=$(git diff --staged --name-only | wc -l)
-
-            git commit -m "Benchmark results for ${{ steps.commit.outputs.sha }} ($platform_count platforms)"
-
-            # Push to perf branch (create if doesn't exist)
-            # Only this job pushes, so no race conditions
-            git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git HEAD:perf
-
-      - name: Summary
-        run: |
-          echo "## Benchmark Collection Complete" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Commit:** \`${{ steps.commit.outputs.sha }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Platforms Collected" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          for artifact_dir in artifacts/benchmark-results-*; do
-            if [ -d "$artifact_dir" ]; then
-              platform=$(basename "$artifact_dir" | sed 's/benchmark-results-.*-//')
-              echo "- ✓ $platform" >> $GITHUB_STEP_SUMMARY
-            fi
-          done
+            git commit -m "Benchmark results for $short_sha ($platform_count platforms)"
+            git push "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" HEAD:perf
+          fi
