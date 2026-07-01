@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect width="64" height="64" fill="#1d2019"/>
+  <g transform="translate(9.1 8.1) scale(1.45)">
+<g fill="none" stroke="#a9bf6a" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M16 30 C 16 24, 15.4 18, 16 10"/>
+  <path d="M15.7 22 C 12.5 20.5, 10 19, 8 16.5"/>
+  <path d="M8 16.5 c -2.6 -0.4 -4 -2.4 -3.4 -4.4 c 1.8 -1 4 -0.2 4.6 2 c 0.3 1 0 1.8 -1.2 2.4 z"/>
+  <path d="M11.5 19.2 c -2.4 0.6 -4.3 -0.6 -4.5 -2.6"/>
+  <path d="M16 17.5 C 19.5 16, 22 14.5, 23.8 12"/>
+  <path d="M23.8 12 c 2.6 -0.2 3.9 -2.2 3.2 -4.2 c -1.9 -0.9 -4 0.1 -4.4 2.3 c -0.2 1 0.1 1.7 1.2 1.9 z"/>
+  <path d="M20.4 14.6 c 2.4 0.4 4.2 -0.8 4.3 -2.8"/>
+  <path d="M16 10 c -0.4 -2.8 1 -4.6 3.2 -4.6 c 1.2 1.8 0.5 4 -1.6 4.9 c -0.7 0.3 -1.2 0.2 -1.6 -0.3 z"/>
+  <g stroke="none" fill="#e2b325">
+    <circle cx="12.2" cy="7.4" r="1.15"/>
+    <circle cx="9.9"  cy="9.4" r="1.15"/>
+    <circle cx="12.6" cy="10.6" r="1.15"/>
+    <circle cx="14.4" cy="8.7" r="1.15"/>
+  </g>
+  <circle cx="12.4" cy="9" r="0.8" stroke="none" fill="#a9bf6a"/>
+  <path d="M15.9 13.5 C 14.8 11.8, 13.6 10.6, 12.6 10.4"/>
+</g>
+  </g>
+</svg>
