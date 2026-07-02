@@ -2123,12 +2123,14 @@ impl<'a> Sema<'a> {
 
             let (element_type, length) = self.type_pool.array_def(array_type_id);
 
-            // Index must be an unsigned integer
+            // Index must be an integer type (signed or unsigned) per spec
+            // 7.1:7. A negative or out-of-range runtime index is not a type
+            // error; it traps at runtime via the bounds check (RUE-81).
             let index_result = self.analyze_inst(air, *index, ctx)?;
-            if !index_result.ty.is_unsigned() && !index_result.ty.is_error() {
+            if !index_result.ty.is_integer() && !index_result.ty.is_error() {
                 return Err(CompileError::new(
                     ErrorKind::TypeMismatch {
-                        expected: "unsigned integer type".to_string(),
+                        expected: "integer type".to_string(),
                         found: index_result.ty.safe_name_with_pool(Some(&self.type_pool)),
                     },
                     self.rir.get(*index).span,
@@ -2749,12 +2751,14 @@ impl<'a> Sema<'a> {
                 }
             };
 
-            // Analyze index
+            // Analyze index. Index must be an integer type (signed or
+            // unsigned) per spec 7.1:7; negative/out-of-range runtime indices
+            // trap at runtime via the bounds check (RUE-81).
             let index_result = self.analyze_inst(air, index, ctx)?;
-            if !index_result.ty.is_unsigned() && !index_result.ty.is_error() {
+            if !index_result.ty.is_integer() && !index_result.ty.is_error() {
                 return Err(CompileError::new(
                     ErrorKind::TypeMismatch {
-                        expected: "unsigned integer type".to_string(),
+                        expected: "integer type".to_string(),
                         found: index_result.ty.safe_name_with_pool(Some(&self.type_pool)),
                     },
                     self.rir.get(index).span,

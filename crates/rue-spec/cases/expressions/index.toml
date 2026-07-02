@@ -31,7 +31,7 @@ fn main() -> i32 {
 exit_code = 42
 
 # =============================================================================
-# Index Type Must Be Unsigned Integer
+# Index Type Must Be An Integer (Signed or Unsigned)
 # =============================================================================
 
 [[case]]
@@ -56,9 +56,12 @@ fn main() -> i32 {
 }
 """
 compile_fail = true
+error_contains = "integer"
 
+# A signed index type is accepted (spec 4.11:4 / 7.1:7). A negative value is
+# not a type error; it traps at runtime via the bounds check (RUE-81).
 [[case]]
-name = "index_type_signed_error"
+name = "index_with_signed_i32_variable"
 spec = ["4.11:4"]
 source = """
 fn main() -> i32 {
@@ -67,8 +70,19 @@ fn main() -> i32 {
     arr[i]
 }
 """
-compile_fail = true
-error_contains = "unsigned"
+exit_code = 20
+
+[[case]]
+name = "index_with_signed_i64_variable"
+spec = ["4.11:4"]
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 20, 30];
+    let i: i64 = 2;
+    arr[i]
+}
+"""
+exit_code = 30
 
 # =============================================================================
 # Result Type is Element Type

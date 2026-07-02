@@ -799,13 +799,30 @@ mod tests {
     }
 
     #[test]
-    fn test_array_index_type_must_be_unsigned() {
-        // Array index must be unsigned integer
-        let result = compile_to_air(
+    fn test_array_index_signed_type_is_accepted() {
+        // Array index may be any integer type, signed or unsigned (spec
+        // 7.1:7). A negative/out-of-range value traps at runtime, it is not a
+        // compile-time type error (RUE-81).
+        let output = compile_to_air(
             "fn main() -> i32 {
                 let arr: [i32; 3] = [1, 2, 3];
                 let i: i32 = 1;
-                arr[i]  // Error: i32 is signed
+                arr[i]  // OK: signed index accepted
+            }",
+        )
+        .unwrap();
+
+        assert_eq!(output.functions[0].air.return_type(), Type::I32);
+    }
+
+    #[test]
+    fn test_array_index_non_integer_is_rejected() {
+        // A non-integer index (bool here) is still a type error.
+        let result = compile_to_air(
+            "fn main() -> i32 {
+                let arr: [i32; 3] = [1, 2, 3];
+                let b: bool = true;
+                arr[b]  // Error: bool is not an integer
             }",
         );
 
@@ -813,12 +830,13 @@ mod tests {
     }
 
     #[test]
-    fn test_array_index_literal_infers_u64() {
-        // Integer literal used as array index should infer to u64
+    fn test_array_index_literal_infers_integer() {
+        // Integer literal used as array index should compile; it defaults to
+        // i32 (the integer-literal default) rather than being forced unsigned.
         let output = compile_to_air(
             "fn main() -> i32 {
                 let arr: [i32; 3] = [1, 2, 3];
-                arr[1]  // 1 should infer to u64
+                arr[1]
             }",
         )
         .unwrap();
