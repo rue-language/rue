@@ -110,8 +110,7 @@ impl ErrorCode {
     pub const DUPLICATE_TYPE_DEFINITION: Self = Self(405);
     pub const LINEAR_VALUE_NOT_CONSUMED: Self = Self(406);
     pub const LINEAR_STRUCT_COPY: Self = Self(407);
-    pub const HANDLE_STRUCT_MISSING_METHOD: Self = Self(408);
-    pub const HANDLE_METHOD_WRONG_SIGNATURE: Self = Self(409);
+    // 408, 409 retired with the @handle directive (RUE-199).
     pub const DUPLICATE_METHOD: Self = Self(410);
     pub const UNDEFINED_METHOD: Self = Self(411);
     pub const UNDEFINED_ASSOC_FN: Self = Self(412);
@@ -969,17 +968,6 @@ pub enum ErrorKind {
         dropped = .0.dropped
     )]
     LinearFieldDroppedByDestructure(Box<LinearFieldDroppedByDestructureError>),
-    /// @handle struct missing required .handle() method
-    #[error("struct '{struct_name}' is marked @handle but has no `handle` method")]
-    HandleStructMissingMethod { struct_name: String },
-    /// @handle struct's .handle() method has wrong signature
-    #[error(
-        "struct '{struct_name}' has `handle` method with wrong signature: expected `fn handle(self: {struct_name}) -> {struct_name}`, found `{found_signature}`"
-    )]
-    HandleMethodWrongSignature {
-        struct_name: String,
-        found_signature: String,
-    },
     /// Duplicate method definition in impl blocks for the same type
     #[error("duplicate method '{method_name}' for type '{type_name}'")]
     DuplicateMethod {
@@ -1287,10 +1275,6 @@ impl ErrorKind {
             ErrorKind::LinearStructCopy(_) => ErrorCode::LINEAR_STRUCT_COPY,
             ErrorKind::LinearFieldDroppedByDestructure(_) => {
                 ErrorCode::LINEAR_FIELD_DROPPED_BY_DESTRUCTURE
-            }
-            ErrorKind::HandleStructMissingMethod { .. } => ErrorCode::HANDLE_STRUCT_MISSING_METHOD,
-            ErrorKind::HandleMethodWrongSignature { .. } => {
-                ErrorCode::HANDLE_METHOD_WRONG_SIGNATURE
             }
             ErrorKind::DuplicateMethod { .. } => ErrorCode::DUPLICATE_METHOD,
             ErrorKind::UndefinedMethod { .. } => ErrorCode::UNDEFINED_METHOD,

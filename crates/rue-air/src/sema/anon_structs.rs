@@ -117,7 +117,6 @@ impl Sema<'_> {
             name,
             fields: fields.to_vec(),
             is_copy,
-            is_handle: false,
             is_linear: false,
             destructor: None,
             is_builtin: false,

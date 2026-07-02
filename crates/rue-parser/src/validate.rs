@@ -25,8 +25,7 @@ use rue_error::{CompileError, ErrorKind};
 /// - `allow`  — suppresses lints, e.g. `@allow(unused_variable)` on `let`
 ///   (see `has_allow_directive` in rue-air)
 /// - `copy`   — marks a struct as a copy type (see `has_copy_directive`)
-/// - `handle` — marks a struct as a handle type (see `has_handle_directive`)
-pub const KNOWN_DIRECTIVES: &[&str] = &["allow", "copy", "handle"];
+pub const KNOWN_DIRECTIVES: &[&str] = &["allow", "copy"];
 
 /// Walk the AST and report every directive whose name is not in
 /// [`KNOWN_DIRECTIVES`].
@@ -53,7 +52,7 @@ impl Validator<'_> {
             if !KNOWN_DIRECTIVES.contains(&name) {
                 self.errors.push(CompileError::new(
                     ErrorKind::ParseError(format!(
-                        "unknown directive '@{}'; known directives are @allow, @copy and @handle",
+                        "unknown directive '@{}'; known directives are @allow and @copy",
                         name
                     )),
                     directive.span,

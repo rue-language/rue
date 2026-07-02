@@ -3,7 +3,7 @@
 # Unknown @-directives in item/statement position used to be silently
 # accepted and ignored, so a typo like `@alllow(...)` was a no-op. They are
 # now a compile error naming the directive. The known set lives in
-# rue-parser's `validate::KNOWN_DIRECTIVES` (allow, copy, handle); the cases
+# rue-parser's `validate::KNOWN_DIRECTIVES` (allow, copy); the cases
 # below pin both the rejection and that every known directive still works.
 # (Expression-position intrinsics like @dbg/@intCast and the fused @import
 # token are separate mechanisms and unaffected.)
@@ -23,7 +23,7 @@ source = """
 fn main() -> i32 { 42 }
 """
 compile_fail = true
-error_contains = ["unknown directive '@important'", "@allow, @copy and @handle"]
+error_contains = ["unknown directive '@important'", "@allow and @copy"]
 
 [[case]]
 name = "unknown_directive_typo_of_allow"
@@ -93,9 +93,35 @@ fn main() -> i32 {
 exit_code = 42
 
 [[case]]
-name = "known_directive_handle_still_works"
+name = "retired_handle_directive_is_unknown"
+description = """
+@handle was retired (RUE-199, vestigial per the formal core). It is now just an
+unknown directive; a user method literally named `handle` is unaffected (see the
+next case).
+"""
 source = """
 @handle
+struct Counter {
+    count: i32,
+
+    fn handle(self) -> Counter {
+        Counter { count: self.count }
+    }
+}
+
+fn main() -> i32 {
+    let a = Counter { count: 42 };
+    let b = a.handle();
+    b.count
+}
+"""
+compile_fail = true
+error_contains = ["unknown directive '@handle'", "@allow and @copy"]
+
+[[case]]
+name = "ordinary_handle_method_still_works"
+description = "A user method named `handle` is an ordinary method, no directive involved."
+source = """
 struct Counter {
     count: i32,
 

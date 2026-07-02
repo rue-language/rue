@@ -44,7 +44,6 @@ impl<'a> Sema<'a> {
                 name: builtin.name.to_string(),
                 fields,
                 is_copy: builtin.is_copy,
-                is_handle: false, // Built-in types don't use @handle yet
                 is_linear: false, // Built-in types are not linear
                 destructor: builtin.drop_fn.map(|s| s.to_string()),
                 is_builtin: true,
