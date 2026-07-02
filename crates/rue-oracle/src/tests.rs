@@ -253,6 +253,70 @@ fn inout_struct_field() {
 }
 
 #[test]
+fn destructor_runs_at_scope_exit() {
+    let src = "struct D { v: i32 }
+    drop fn D(self) { @dbg(self.v); }
+    fn main() -> i32 {
+        let d = D { v: 7 };
+        @dbg(100);
+        0
+    }";
+    assert_eq!(run(src).stdout, "100\n7\n");
+}
+
+#[test]
+fn locals_drop_in_reverse_order() {
+    let src = "struct D { v: i32 }
+    drop fn D(self) { @dbg(self.v); }
+    fn main() -> i32 {
+        let a = D { v: 1 };
+        let b = D { v: 2 };
+        0
+    }";
+    // LIFO: b dropped before a.
+    assert_eq!(run(src).stdout, "2\n1\n");
+}
+
+#[test]
+fn destructor_then_field_drop_order() {
+    let src = "struct A { x: i32 }
+    struct O { a: A, b: i32 }
+    drop fn A(self) { @dbg(self.x); }
+    drop fn O(self) { @dbg(800); }
+    fn main() -> i32 {
+        let o = O { a: A { x: 5 }, b: 9 };
+        0
+    }";
+    // O's destructor first, then field `a`'s destructor (b is trivially droppable).
+    assert_eq!(run(src).stdout, "800\n5\n");
+}
+
+#[test]
+fn array_elements_drop_ascending() {
+    let src = "struct D { v: i32 }
+    drop fn D(self) { @dbg(self.v); }
+    fn main() -> i32 {
+        let xs = [D { v: 1 }, D { v: 2 }, D { v: 3 }];
+        0
+    }";
+    assert_eq!(run(src).stdout, "1\n2\n3\n");
+}
+
+#[test]
+fn moved_value_drops_once_at_destination() {
+    let src = "struct D { v: i32 }
+    drop fn D(self) { @dbg(self.v); }
+    fn sink(d: D) -> i32 { d.v }
+    fn main() -> i32 {
+        let d = D { v: 42 };
+        sink(d);
+        0
+    }";
+    // d is moved into sink; it drops exactly once, inside sink at its scope exit.
+    assert_eq!(run(src).stdout, "42\n");
+}
+
+#[test]
 fn string_still_unsupported() {
     // Strings (heap builtin) are a later slice; must report cleanly, not crash.
     let src = "fn main() -> i32 {
