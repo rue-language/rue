@@ -108,10 +108,9 @@ stdout = """
 Hello, Rue!
 """
 
-# @dbg moves non-Copy values, so print-then-use is a compile error (RUE-21).
+# @dbg borrows its argument, so print-then-use of a non-Copy value works (RUE-21).
 [[case]]
 name = "dbg_string_then_use"
-known_bug = "RUE-21"
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
     let mut s = String::new();
