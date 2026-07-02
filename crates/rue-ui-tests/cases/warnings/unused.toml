@@ -258,6 +258,21 @@ exit_code = 7
 no_warnings = true
 
 [[case]]
+name = "nested_field_read_no_warning"
+description = "A nested field read (o.inner.v) uses the outermost base variable (RUE-18)"
+source = """
+struct Inner { v: i32 }
+struct Outer { inner: Inner }
+
+fn main() -> i32 {
+    let o = Outer { inner: Inner { v: 5 } };
+    o.inner.v
+}
+"""
+exit_code = 5
+no_warnings = true
+
+[[case]]
 name = "dbg_field_operand_no_warning"
 description = "A field read as a @dbg operand uses the base variable (RUE-135)"
 source = """
@@ -266,6 +281,21 @@ struct S { a: i32 }
 fn main() -> i32 {
     let s = S { a: 5 };
     @dbg(s.a);
+    0
+}
+"""
+exit_code = 0
+no_warnings = true
+
+[[case]]
+name = "dbg_indexed_array_field_operand_no_warning"
+description = "A field-then-index read (s.items[0]) as a @dbg operand uses the base variable (RUE-18)"
+source = """
+struct S { items: [i32; 3] }
+
+fn main() -> i32 {
+    let s = S { items: [1, 2, 3] };
+    @dbg(s.items[0]);
     0
 }
 """
