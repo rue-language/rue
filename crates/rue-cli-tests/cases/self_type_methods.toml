@@ -1,0 +1,71 @@
+# `Self` type in named-struct inline methods (RUE-123).
+#
+# `Self` must resolve to the enclosing struct type in a method's return type,
+# parameter types, and `Self { ... }` body literals — matching the receiver and
+# anonymous-struct methods. Before the fix, any of these positions produced
+# E0204 "unknown type 'Self'".
+
+[section]
+id = "cli.self_type_methods"
+name = "Self type in methods"
+description = "Self resolves to the enclosing struct in named-struct inline method signatures and bodies."
+
+[[case]]
+name = "self_return_type_associated_fn"
+files = [{ path = "main.rue", source = """
+struct P {
+    x: i32,
+
+    fn make() -> Self {
+        P { x: 42 }
+    }
+
+    fn get(self) -> i32 { self.x }
+}
+
+fn main() -> i32 {
+    let p = P::make();
+    @dbg(p.get());
+    0
+}
+""" }]
+stdout = "42\n"
+
+[[case]]
+name = "self_in_param_return_and_body_literal"
+files = [{ path = "main.rue", source = """
+struct P {
+    x: i32,
+
+    fn make(v: i32) -> Self { Self { x: v } }
+    fn combine(self, other: Self) -> Self { Self { x: self.x + other.x } }
+    fn get(self) -> i32 { self.x }
+}
+
+fn main() -> i32 {
+    let a = P::make(30);
+    let b = P { x: 12 };
+    @dbg(a.combine(b).get());
+    0
+}
+""" }]
+stdout = "42\n"
+
+[[case]]
+name = "self_method_chaining_returning_self"
+files = [{ path = "main.rue", source = """
+struct Counter {
+    value: i32,
+
+    fn inc(self) -> Self {
+        Self { value: self.value + 1 }
+    }
+}
+
+fn main() -> i32 {
+    let c = Counter { value: 39 };
+    @dbg(c.inc().inc().inc().value);
+    0
+}
+""" }]
+stdout = "42\n"

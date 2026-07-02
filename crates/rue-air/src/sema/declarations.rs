@@ -443,17 +443,36 @@ impl<'a> Sema<'a> {
         // - They may use `Self` type which requires struct context
         // - They are registered later during comptime evaluation with proper Self resolution
         let mut anon_struct_method_refs = std::collections::HashSet::new();
+        // Also collect method InstRefs from named struct declarations. Inline
+        // methods (including associated functions with no `self`) are collected
+        // via `collect_struct_methods`, which binds `Self` to the enclosing
+        // type. They must be skipped in the generic FnDecl branch below, whose
+        // `collect_function_signature` has no struct context and would reject a
+        // `Self` return/parameter type as an unknown type (RUE-123).
+        let mut named_struct_method_refs = std::collections::HashSet::new();
         for (_, inst) in self.rir.iter() {
-            if let InstData::AnonStructType {
-                methods_start,
-                methods_len,
-                ..
-            } = &inst.data
-            {
-                let method_refs = self.rir.get_inst_refs(*methods_start, *methods_len);
-                for method_ref in method_refs {
-                    anon_struct_method_refs.insert(method_ref);
+            match &inst.data {
+                InstData::AnonStructType {
+                    methods_start,
+                    methods_len,
+                    ..
+                } => {
+                    let method_refs = self.rir.get_inst_refs(*methods_start, *methods_len);
+                    for method_ref in method_refs {
+                        anon_struct_method_refs.insert(method_ref);
+                    }
                 }
+                InstData::StructDecl {
+                    methods_start,
+                    methods_len,
+                    ..
+                } => {
+                    let method_refs = self.rir.get_inst_refs(*methods_start, *methods_len);
+                    for method_ref in method_refs {
+                        named_struct_method_refs.insert(method_ref);
+                    }
+                }
+                _ => {}
             }
         }
 
@@ -507,6 +526,14 @@ impl<'a> Sema<'a> {
                     // Skip ALL methods from anonymous structs (including associated functions)
                     // These are registered during comptime evaluation with proper Self type context
                     if anon_struct_method_refs.contains(&inst_ref) {
+                        continue;
+                    }
+
+                    // Skip named-struct associated functions (no `self`): they are
+                    // collected via `collect_struct_methods` with `Self` bound to
+                    // the enclosing type (RUE-123). Collecting them here as free
+                    // functions would reject a `Self` signature type.
+                    if named_struct_method_refs.contains(&inst_ref) {
                         continue;
                     }
                     self.collect_function_signature(
@@ -982,11 +1009,16 @@ impl<'a> Sema<'a> {
 
                 let params = self.rir.get_params(*params_start, *params_len);
                 let param_names: Vec<Spur> = params.iter().map(|p| p.name).collect();
+                // `Self` in a method signature (parameter or return position)
+                // resolves to the enclosing struct's type, just like the
+                // receiver does. Named-struct inline methods reach this path;
+                // anonymous-struct methods resolve Self elsewhere (RUE-123).
                 let param_types: Vec<Type> = params
                     .iter()
-                    .map(|p| self.resolve_type(p.ty, method_inst.span))
+                    .map(|p| self.resolve_type_with_self(p.ty, struct_type, method_inst.span))
                     .collect::<CompileResult<Vec<_>>>()?;
-                let ret_type = self.resolve_type(*return_type, method_inst.span)?;
+                let ret_type =
+                    self.resolve_type_with_self(*return_type, struct_type, method_inst.span)?;
 
                 // Allocate method parameters in the arena
                 let param_range = self

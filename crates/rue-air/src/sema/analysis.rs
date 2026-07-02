@@ -1364,7 +1364,9 @@ impl<'a> Sema<'a> {
         HashSet<Spur>,
         HashSet<(StructId, Spur)>,
     )> {
-        let ret_type = self.resolve_type(return_type, span)?;
+        // `Self` in a method signature (return or parameter position) resolves
+        // to the enclosing struct's type, just like the receiver (RUE-123).
+        let ret_type = self.resolve_type_with_self(return_type, struct_type, span)?;
 
         // Build parameter list, adding self as first parameter for methods
         let mut param_info: Vec<(Spur, Type, RirParamMode, bool)> = Vec::new();
@@ -1377,9 +1379,16 @@ impl<'a> Sema<'a> {
 
         // Add regular parameters with their modes
         for p in params.iter() {
-            let ty = self.resolve_type(p.ty, span)?;
+            let ty = self.resolve_type_with_self(p.ty, struct_type, span)?;
             param_info.push((p.name, ty, p.mode, p.is_comptime));
         }
+
+        // Bind `Self` to the enclosing struct type so that `Self { ... }`
+        // literals and `Self`-typed locals resolve in the method body, exactly
+        // as they do for anonymous-struct methods (RUE-123).
+        let self_sym = self.interner.get_or_intern("Self");
+        let mut type_subst = HashMap::new();
+        type_subst.insert(self_sym, struct_type);
 
         let (
             air,
@@ -1390,7 +1399,15 @@ impl<'a> Sema<'a> {
             local_strings,
             ref_fns,
             ref_meths,
-        ) = self.analyze_function(infer_ctx, ret_type, &param_info, body)?;
+        ) = self.analyze_function_internal(
+            infer_ctx,
+            ret_type,
+            &param_info,
+            body,
+            Some(&type_subst),
+            None,
+            false,
+        )?;
 
         Ok((
             AnalyzedFunction {
@@ -5280,7 +5297,7 @@ impl<'a> Sema<'a> {
     ///
     /// If the type symbol is "Self", it resolves to the provided self_type.
     /// Otherwise, it delegates to the standard resolve_type method.
-    fn resolve_type_with_self(
+    pub(crate) fn resolve_type_with_self(
         &mut self,
         type_sym: Spur,
         self_type: Type,

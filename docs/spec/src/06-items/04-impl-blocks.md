@@ -133,6 +133,37 @@ fn main() -> i32 {
 }
 ```
 
+## The `Self` Type
+
+{{ rule(id="6.4:18", cat="normative") }}
+
+Within a struct block, the type keyword `Self` denotes the enclosing struct
+type. It **MAY** be used wherever a type is expected — in a method's parameter
+types, in its return type, and in `Self { ... }` struct-literal expressions in
+the body — and is equivalent to writing the struct's name.
+
+{{ rule(id="6.4:19", cat="example") }}
+
+```rue
+struct Point {
+    x: i32,
+    y: i32,
+
+    fn origin() -> Self {
+        Self { x: 0, y: 0 }
+    }
+
+    fn translate(self, other: Self) -> Self {
+        Self { x: self.x + other.x, y: self.y + other.y }
+    }
+}
+
+fn main() -> i32 {
+    let p = Point::origin().translate(Point { x: 42, y: 0 });
+    p.x  // Returns 42
+}
+```
+
 ## Multiple Methods
 
 {{ rule(id="6.4:15", cat="normative") }}
