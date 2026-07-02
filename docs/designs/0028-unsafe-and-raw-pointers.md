@@ -321,12 +321,12 @@ Outside `checked` blocks, all of Rue's safety guarantees still hold.
 
 ## Implementation Phases
 
-- [x] **Phase 1: Parser support** (rue-7qxm) - Add `checked` block syntax, `unchecked` function modifier, `ptr const`/`ptr mut` types
-- [x] **Phase 2: Type system** (rue-pb4z) - Pointer types in sema, checked block tracking
-- [x] **Phase 3: Pointer intrinsics** (rue-u9a4) - `@ptr_read`, `@ptr_write`, `@ptr_offset`, `@addr_of`, `@addr_of_mut`, `@ptr_to_int`, `@int_to_ptr`
-- [x] **Phase 4: Syscall intrinsic** (rue-pwyw) - `@syscall` for direct OS calls
-- [x] **Phase 5: Codegen** (rue-bk7s) - Generate correct code for pointer operations in both x86_64 and aarch64 backends
-- [ ] **Phase 6: Stdlib foundation** (rue-i3ti) - Implement basic Vec and I/O using unchecked code (follow-on work)
+- [x] **Phase 1: Parser support** (historical bd ID rue-7qxm, pre-Linear) - Add `checked` block syntax, `unchecked` function modifier, `ptr const`/`ptr mut` types
+- [x] **Phase 2: Type system** (historical bd ID rue-pb4z, pre-Linear) - Pointer types in sema, checked block tracking
+- [x] **Phase 3: Pointer intrinsics** (historical bd ID rue-u9a4, pre-Linear) - `@ptr_read`, `@ptr_write`, `@ptr_offset`, `@addr_of`, `@addr_of_mut`, `@ptr_to_int`, `@int_to_ptr`
+- [x] **Phase 4: Syscall intrinsic** (historical bd ID rue-pwyw, pre-Linear) - `@syscall` for direct OS calls
+- [x] **Phase 5: Codegen** (historical bd ID rue-bk7s, pre-Linear) - Generate correct code for pointer operations in both x86_64 and aarch64 backends
+- [ ] **Phase 6: Stdlib foundation** (RUE-1) - Implement basic Vec and I/O using unchecked code (follow-on work)
 
 ## Consequences
 

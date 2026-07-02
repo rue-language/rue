@@ -31,8 +31,8 @@ What we're going to do. Technical details, syntax, semantics, etc.
 
 ## Implementation Phases
 
-- [ ] **Phase 1: Name** - bd-XXX
-- [ ] **Phase 2: Name** - bd-XXX
+- [ ] **Phase 1: Name** - RUE-NNN
+- [ ] **Phase 2: Name** - RUE-NNN
 
 ## Consequences
 

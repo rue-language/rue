@@ -311,12 +311,12 @@ This keeps the type system simple and avoids lifetime complexity.
 
 ## Implementation Phases
 
-Epic: rue-7lii
+Epic: rue-7lii (historical bd ID, pre-Linear; the `.N` suffixes below are its sub-phases)
 
-- [x] **Phase 1: Parser support** - rue-7lii.1 - Add `borrow` keyword, parse in parameter declarations and call sites
-- [x] **Phase 2: Semantic analysis** - rue-7lii.2 - Enforce immutability, prevent move-out, non-escaping check, exclusivity
-- [x] **Phase 3: Codegen** - rue-7lii.3 - Pass borrowed values by pointer, generate read-only accesses
-- [x] **Phase 4: Specification and tests** - rue-7lii.4 - Add spec sections, comprehensive tests
+- [x] **Phase 1: Parser support** - (historical bd ID rue-7lii.1, pre-Linear) - Add `borrow` keyword, parse in parameter declarations and call sites
+- [x] **Phase 2: Semantic analysis** - (historical bd ID rue-7lii.2, pre-Linear) - Enforce immutability, prevent move-out, non-escaping check, exclusivity
+- [x] **Phase 3: Codegen** - (historical bd ID rue-7lii.3, pre-Linear) - Pass borrowed values by pointer, generate read-only accesses
+- [x] **Phase 4: Specification and tests** - (historical bd ID rue-7lii.4, pre-Linear) - Add spec sections, comprehensive tests
 
 ## Consequences
 

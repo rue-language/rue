@@ -200,9 +200,9 @@ This is handled naturally by monomorphization - each specialization captures con
 
 ## Implementation Phases
 
-Epic: rue-nj40
+Epic: rue-nj40 (historical bd ID, pre-Linear; the `.N` suffixes below are its sub-phases)
 
-### Phase 1: Parser & AST (rue-nj40.1) ✅
+### Phase 1: Parser & AST (historical bd ID rue-nj40.1, pre-Linear) ✅
 
 - [x] Add `methods: Vec<Method>` to `TypeExpr::AnonymousStruct` in AST
 - [x] Update Chumsky parser to accept `fn` inside `struct { ... }`
@@ -213,7 +213,7 @@ Epic: rue-nj40
 
 **Deliverable**: Parser accepts `struct { x: i32, fn get(self) -> i32 { self.x } }` syntax.
 
-### Phase 2: RIR Generation (rue-nj40.2) ✅
+### Phase 2: RIR Generation (historical bd ID rue-nj40.2, pre-Linear) ✅
 
 - [x] Extend `InstData::AnonStructType` to include method references
 - [x] Store anonymous struct methods in RIR extra data
@@ -222,22 +222,22 @@ Epic: rue-nj40
 
 **Deliverable**: RIR correctly represents anonymous structs with methods.
 
-### Phase 3: Semantic Analysis (rue-nj40.3) 🔶
+### Phase 3: Semantic Analysis (historical bd ID rue-nj40.3, pre-Linear) 🔶
 
 - [x] Change method lookup key from `(Spur, Spur)` to `(StructId, Spur)`
 - [x] Register methods when creating anonymous struct types
 - [x] Resolve `Self` to the anonymous struct's `StructId` (in signatures only)
-- [x] Handle `Type::function()` call syntax for comptime type variables (rue-ybbz)
+- [x] Handle `Type::function()` call syntax for comptime type variables (historical bd ID rue-ybbz, pre-Linear)
 - [ ] Update structural equality to include method signatures
 - [ ] Handle comptime parameter capture in method bodies
 - [x] Analyze method bodies with `self` in scope
-- [x] Resolve `Self` in method body expressions (rue-h6zn)
+- [x] Resolve `Self` in method body expressions (historical bd ID rue-h6zn, pre-Linear)
 
 **Status**: Most items complete. Method registration, `self` in method bodies, associated function calls on comptime type variables (`P::constant()`), and `Self` type resolution all work. Remaining: structural equality with methods, comptime parameter capture.
 
 **Deliverable**: `v.push(42)` compiles when `v` is an anonymous struct type with a `push` method.
 
-### Phase 4: Specification & Tests (rue-nj40.4) ✅
+### Phase 4: Specification & Tests (historical bd ID rue-nj40.4, pre-Linear) ✅
 
 - [x] Add spec section for anonymous struct methods (4.14:10-15)
 - [x] Add comprehensive spec tests (17 tests, preview-gated)
@@ -320,4 +320,4 @@ Epic: rue-nj40
 - [ADR-0009: Struct Methods](0009-struct-methods.md) - Foundation for method implementation
 - [ADR-0025: Compile-Time Execution](0025-comptime.md) - Comptime infrastructure this builds on
 - [Zig Language Reference: struct](https://ziglang.org/documentation/master/#struct) - Inspiration for inline method syntax
-- [rue-nj40](https://github.com/...) - Original issue tracking this feature
+- rue-nj40 (historical bd ID, pre-Linear) - Original issue tracking this feature

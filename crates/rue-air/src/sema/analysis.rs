@@ -4653,7 +4653,7 @@ impl<'a> Sema<'a> {
         if unconsumed.is_empty() {
             return Ok(ElementwiseConsumption::Complete);
         }
-        let touched_any_element = s.partial_moves.keys().any(|p| {
+        let touched_any_element = s.partial_moves.iter().any(|(p, _)| {
             p.first()
                 .is_some_and(|seg| is_index_segment(self.interner, *seg))
         });
@@ -4664,9 +4664,13 @@ impl<'a> Sema<'a> {
         // An unconsumed element that WAS moved on some path selects the
         // more precise "not consumed on all paths" diagnostic (E0443 over
         // E0406).
-        let some_path_span = unconsumed
-            .iter()
-            .find_map(|k| s.partial_moves.get(&elem_path(*k)).copied());
+        let some_path_span = unconsumed.iter().find_map(|k| {
+            let target = elem_path(*k);
+            s.partial_moves
+                .iter()
+                .find(|(p, _)| *p == target)
+                .map(|(_, span)| *span)
+        });
         let list = unconsumed
             .iter()
             .map(|k| format!("[{k}]"))

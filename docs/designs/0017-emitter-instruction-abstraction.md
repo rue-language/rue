@@ -217,17 +217,17 @@ fn emit_prologue(&mut self) {
 
 ## Implementation Phases
 
-- [x] **Phase 1: Core types and x86-64 refactor** - rue-hf6s (completed)
+- [x] **Phase 1: Core types and x86-64 refactor** - (historical bd ID rue-hf6s, pre-Linear) (completed)
   - Add `EmittedInst` and `EmittedCode` types
   - Refactor x86-64 emitter to use new pattern
   - Update `--emit asm` to use `to_asm()`
   - Verify byte output is identical (regression test)
 
-- [x] **Phase 2: aarch64 refactor** - rue-4rzx (depends on Phase 1)
+- [x] **Phase 2: aarch64 refactor** - (historical bd ID rue-4rzx, pre-Linear) (depends on Phase 1)
   - Apply same pattern to aarch64 emitter
   - Verify byte output is identical
 
-- [x] **Phase 3: Cleanup and optimization** - rue-h8r0 (completed)
+- [x] **Phase 3: Cleanup and optimization** - (historical bd ID rue-h8r0, pre-Linear) (completed)
   - Add shared `format_offset` helper to lib.rs
   - Add `callee_saved_size()` and `adjust_fp_offset()` helpers to x86_64 emitter
   - Add `adjust_fp_offset()` helper to aarch64 emitter
@@ -277,5 +277,5 @@ fn emit_prologue(&mut self) {
 
 ## References
 
-- Issue: rue-3dxp (`--emit asm should show actual emitted code including prologue/epilogue`)
+- Issue: rue-3dxp (historical bd ID, pre-Linear) (`--emit asm should show actual emitted code including prologue/epilogue`)
 - Current emit.rs files: `crates/rue-codegen/src/{x86_64,aarch64}/emit.rs`

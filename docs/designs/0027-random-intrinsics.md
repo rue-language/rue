@@ -190,25 +190,25 @@ The return type of `@random_u64` is `u64`.
 
 ## Implementation Phases
 
-- [x] **Phase 1: Spec and tests** - rue-ddko
+- [x] **Phase 1: Spec and tests** - (historical bd ID rue-ddko, pre-Linear)
   - Add spec documentation for `@random_u32` and `@random_u64`
   - Add preview-gated spec tests (non-deterministic, so test compilation only)
   - Add `Random` to `PreviewFeature` enum
 
-- [x] **Phase 2: Parser and Sema** - rue-ub3z
+- [x] **Phase 2: Parser and Sema** - (historical bd ID rue-ub3z, pre-Linear)
   - Add `RandomU32` and `RandomU64` to intrinsic parsing
   - Add type checking (returns u32/u64, takes no args)
   - Add preview feature gate check
   - Add CFG lowering for random intrinsics
 
-- [x] **Phase 3: Runtime implementation** - rue-5852
+- [x] **Phase 3: Runtime implementation** - (historical bd ID rue-5852, pre-Linear)
   - Implement `__rue_random_u32` for x86-64 Linux
   - Implement `__rue_random_u64` for x86-64 Linux
   - Implement for aarch64 macOS (using getentropy from libSystem)
   - Implement for aarch64 Linux
   - Handle error cases (no entropy source)
 
-- [x] **Phase 4: Codegen** - rue-2h42
+- [x] **Phase 4: Codegen** - (historical bd ID rue-2h42, pre-Linear)
   - Add call generation for x86-64 backend
   - Add call generation for aarch64 backend
   - Integration testing with example programs (spec tests)

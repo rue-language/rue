@@ -273,11 +273,11 @@ The promotion happens transparently inside mutation methods.
 
 ## Implementation Phases
 
-Epic: rue-0hef
+Epic: rue-0hef (historical bd ID, pre-Linear; the `.N` suffixes below are its sub-phases)
 
 **Note**: As of 2025-12-27, mutable strings are now stable. All phases are complete.
 
-### Phase 1: Specification and Feature Gate - rue-0hef.1 (COMPLETE)
+### Phase 1: Specification and Feature Gate - (historical bd ID rue-0hef.1, pre-Linear) (COMPLETE)
 
 Write the specification first:
 
@@ -289,7 +289,7 @@ Write the specification first:
 
 **Testable**: Spec tests exist and are ignored (preview feature not yet implemented).
 
-### Phase 2: Three-Field String Representation - rue-0hef.2 (COMPLETE)
+### Phase 2: Three-Field String Representation - (historical bd ID rue-0hef.2, pre-Linear) (COMPLETE)
 
 Extend String from 2 fields (ptr, len) to 3 fields (ptr, len, cap):
 
@@ -300,7 +300,7 @@ Extend String from 2 fields (ptr, len) to 3 fields (ptr, len, cap):
 
 **Testable**: Existing string tests still pass with new representation.
 
-### Phase 3: Runtime String Functions - rue-0hef.3 (COMPLETE)
+### Phase 3: Runtime String Functions - (historical bd ID rue-0hef.3, pre-Linear) (COMPLETE)
 
 Add string-specific functions to runtime:
 
@@ -312,7 +312,7 @@ Add string-specific functions to runtime:
 
 **Testable**: Unit tests in Rust for allocation/reallocation.
 
-### Phase 4: String Destructor Integration - rue-0hef.4 (COMPLETE)
+### Phase 4: String Destructor Integration - (historical bd ID rue-0hef.4, pre-Linear) (COMPLETE)
 
 Wire String type to use destructors:
 
@@ -322,7 +322,7 @@ Wire String type to use destructors:
 
 **Testable**: Valgrind-clean string allocation and deallocation.
 
-### Phase 5: Construction Methods - rue-0hef.5 (COMPLETE)
+### Phase 5: Construction Methods - (historical bd ID rue-0hef.5, pre-Linear) (COMPLETE)
 
 Add `impl String` with construction (gated):
 
@@ -331,7 +331,7 @@ Add `impl String` with construction (gated):
 
 **Testable**: Create strings, verify cap is set correctly.
 
-### Phase 6: Query Methods - rue-0hef.6 (COMPLETE)
+### Phase 6: Query Methods - (historical bd ID rue-0hef.6, pre-Linear) (COMPLETE)
 
 Add query methods (gated):
 
@@ -341,7 +341,7 @@ Add query methods (gated):
 
 **Testable**: Query methods return correct values.
 
-### Phase 7: Mutation Methods - rue-0hef.7 (COMPLETE)
+### Phase 7: Mutation Methods - (historical bd ID rue-0hef.7, pre-Linear) (COMPLETE)
 
 Add mutation methods with `inout self` (gated):
 
@@ -354,7 +354,7 @@ Add mutation methods with `inout self` (gated):
 
 **Testable**: Build strings through multiple appends.
 
-### Phase 8: Clone Method - rue-0hef.8 (COMPLETE)
+### Phase 8: Clone Method - (historical bd ID rue-0hef.8, pre-Linear) (COMPLETE)
 
 Add explicit cloning (gated):
 
@@ -363,7 +363,7 @@ Add explicit cloning (gated):
 
 **Testable**: Clone a string, verify both are independent.
 
-### Phase 9: Equality Optimization - rue-0hef.9 (COMPLETE)
+### Phase 9: Equality Optimization - (historical bd ID rue-0hef.9, pre-Linear) (COMPLETE)
 
 Optimize string comparison:
 

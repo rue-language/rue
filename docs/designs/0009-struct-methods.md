@@ -132,19 +132,19 @@ Methods can only be defined for structs in the same compilation unit. (This is a
 
 ## Implementation Phases
 
-- [x] **Phase 1: Parsing** - rue-qs3z.1
+- [x] **Phase 1: Parsing** - (historical bd ID rue-qs3z.1, pre-Linear)
   - Add `impl` keyword to lexer
   - Parse `impl Type { fn... }` blocks
   - Add `Item::ImplBlock` to AST
   - Parse method calls as a variant of field access
 
-- [x] **Phase 2: RIR Generation** - rue-qs3z.2
+- [x] **Phase 2: RIR Generation** - (historical bd ID rue-qs3z.2, pre-Linear)
   - Add method info to RIR (ImplDecl, MethodCall, AssocFnCall instructions)
   - Generate RIR for impl blocks
   - Handle method calls in expression generation
   - Parse associated function calls (Type::fn() syntax)
 
-- [x] **Phase 3: Type Checking** - rue-qs3z.3
+- [x] **Phase 3: Type Checking** - (historical bd ID rue-qs3z.3, pre-Linear)
   - Add method registry to struct definitions
   - Type check impl blocks
   - Resolve method calls to their definitions
@@ -155,12 +155,12 @@ Methods can only be defined for structs in the same compilation unit. (This is a
     3. Resolving the method name
     4. Type checking the arguments against method signature
 
-- [x] **Phase 4: Code Generation** - rue-qs3z.4
+- [x] **Phase 4: Code Generation** - (historical bd ID rue-qs3z.4, pre-Linear)
   - Lower method calls to regular calls with receiver as first argument
   - Update both x86_64 and aarch64 backends
   - Handle associated function calls (`Type::method()`)
 
-- [x] **Phase 5: Specification & Tests** - rue-qs3z.5
+- [x] **Phase 5: Specification & Tests** - (historical bd ID rue-qs3z.5, pre-Linear)
   - Add spec chapter 6.4 for impl blocks and methods
   - Add comprehensive spec tests
   - Ensure traceability coverage

@@ -176,7 +176,7 @@ None - all questions resolved through benchmarking and implementation.
 
 ## References
 
-- Issue: rue-vfmy
+- Issue: rue-vfmy (historical bd ID, pre-Linear)
 - Commit: "Optimize: Convert AnalysisContext.params from HashMap to Vec"
 - Benchmark data: See "Benchmarks" section above
 - Rust std docs: [`HashMap`](https://doc.rust-lang.org/std/collections/struct.HashMap.html), [`Vec`](https://doc.rust-lang.org/std/vec/struct.Vec.html)

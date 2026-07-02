@@ -300,9 +300,9 @@ This is deferred to Phase 4.
 
 ## Implementation Phases
 
-Epic: rue-33lf (closed)
+Epic: rue-33lf (historical bd ID, pre-Linear; closed)
 
-### Phase 1: Comptime Expressions (rue-3xoq) - Complete
+### Phase 1: Comptime Expressions (historical bd ID rue-3xoq, pre-Linear) - Complete
 
 **Goal**: `comptime { expr }` syntax with basic expression evaluation.
 
@@ -315,7 +315,7 @@ Epic: rue-33lf (closed)
 
 **Deliverable**: Users can write `const X: i32 = comptime { 1 + 2 * 3 };`
 
-### Phase 2: Comptime Parameters (Value) (rue-ya9i) - Complete
+### Phase 2: Comptime Parameters (Value) (historical bd ID rue-ya9i, pre-Linear) - Complete
 
 **Goal**: Functions can take comptime value parameters.
 
@@ -327,7 +327,7 @@ Epic: rue-33lf (closed)
 
 **Deliverable**: Users can write `fn repeat(comptime n: i32, x: i32) -> i32`
 
-### Phase 3: Type Parameters (rue-fbwv) - Complete
+### Phase 3: Type Parameters (historical bd ID rue-fbwv, pre-Linear) - Complete
 
 **Goal**: The `type` type and comptime type parameters.
 
@@ -339,7 +339,7 @@ Epic: rue-33lf (closed)
 
 **Deliverable**: Users can write `fn max(comptime T: type, a: T, b: T) -> T`
 
-### Phase 4: Comptime Type Construction (rue-ak9z) - Complete
+### Phase 4: Comptime Type Construction (historical bd ID rue-ak9z, pre-Linear) - Complete
 
 **Goal**: Comptime functions can construct and return types.
 
