@@ -1853,6 +1853,7 @@ impl<'a> Sema<'a> {
             type_subst,
         )
         .with_const_types(&infer_ctx.const_types)
+        .with_const_values(&infer_ctx.const_values)
         .with_module_binding_types(&infer_ctx.module_binding_types)
         .with_comptime_local_types(&comptime_local_types)
         .with_extra_method_sigs(&extra_method_sigs);
@@ -5211,7 +5212,7 @@ impl<'a> Sema<'a> {
         methods_len: u32,
         _span: Span,
         type_subst: &std::collections::HashMap<Spur, Type>,
-        _value_subst: &std::collections::HashMap<Spur, ConstValue>,
+        value_subst: &std::collections::HashMap<Spur, ConstValue>,
     ) -> Option<()> {
         let method_refs = self.rir.get_inst_refs(methods_start, methods_len);
 
@@ -5262,7 +5263,11 @@ impl<'a> Sema<'a> {
                     let resolved_ty = if type_str == "Self" {
                         struct_type
                     } else {
-                        self.resolve_type_for_comptime_with_subst(p.ty, type_subst)?
+                        self.resolve_type_for_comptime_with_subst_and_values(
+                            p.ty,
+                            type_subst,
+                            value_subst,
+                        )?
                     };
                     param_types.push(resolved_ty);
                 }
@@ -5272,7 +5277,11 @@ impl<'a> Sema<'a> {
                 let ret_type = if ret_type_str == "Self" {
                     struct_type
                 } else {
-                    self.resolve_type_for_comptime_with_subst(*return_type, type_subst)?
+                    self.resolve_type_for_comptime_with_subst_and_values(
+                        *return_type,
+                        type_subst,
+                        value_subst,
+                    )?
                 };
 
                 // Allocate method parameters in the arena

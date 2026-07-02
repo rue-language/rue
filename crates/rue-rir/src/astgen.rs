@@ -10,9 +10,9 @@ use lasso::{Spur, ThreadedRodeo};
 const TYPE_INTRINSICS: &[&str] = &["size_of", "align_of"];
 use rue_parser::ast::{ConstDecl, DropFn};
 use rue_parser::{
-    ArgMode, AssignTarget, Ast, BinaryOp, CallArg, Directive, DirectiveArg, EnumDecl, Expr,
-    Function, IntrinsicArg, Item, LetPattern, Method, ParamMode, Pattern, Statement, StructDecl,
-    TypeExpr, UnaryOp, ast::Visibility,
+    ArgMode, ArrayLength, AssignTarget, Ast, BinaryOp, CallArg, Directive, DirectiveArg, EnumDecl,
+    Expr, Function, IntrinsicArg, Item, LetPattern, Method, ParamMode, Pattern, Statement,
+    StructDecl, TypeExpr, UnaryOp, ast::Visibility,
 };
 
 use crate::inst::{
@@ -84,7 +84,16 @@ impl<'a> AstGen<'a> {
                 // Get the element symbol first, then look it up
                 let elem_sym = self.intern_type(element);
                 let elem_name = self.interner.resolve(&elem_sym);
-                let s = format!("[{}; {}]", elem_name, length);
+                // The length component is either a literal (`4`) or a name
+                // referring to a `const` / `comptime` value parameter (`N`),
+                // resolved to a concrete value during sema (RUE-16).
+                let s = match length {
+                    ArrayLength::Literal(n) => format!("[{}; {}]", elem_name, n),
+                    ArrayLength::Named(ident) => {
+                        let len_name = self.interner.resolve(&ident.name);
+                        format!("[{}; {}]", elem_name, len_name)
+                    }
+                };
                 self.interner.get_or_intern(&s)
             }
             TypeExpr::AnonymousStruct { fields, .. } => {

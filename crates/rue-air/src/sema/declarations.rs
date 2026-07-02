@@ -117,6 +117,14 @@ impl<'a> Sema<'a> {
             .map(|(name, info)| (*name, info.ty))
             .collect();
 
+        // Integer constant values, so an array length naming a `const`
+        // (`[i32; K]`) resolves to a concrete length during inference (RUE-16).
+        let const_values: HashMap<Spur, i128> = self
+            .constants
+            .iter()
+            .filter_map(|(name, info)| info.value.as_int_value().map(|v| (*name, v)))
+            .collect();
+
         // Module-binding types (`const utils = @import(...)`), keyed by the
         // declaring file: bindings are per-file scoped (RUE-113), so a
         // reference resolves against the file it appears in.
@@ -132,6 +140,7 @@ impl<'a> Sema<'a> {
             enum_types,
             method_sigs,
             const_types,
+            const_values,
             module_binding_types,
         }
     }
@@ -758,6 +767,16 @@ impl<'a> Sema<'a> {
             .map(|p| p.name)
             .collect();
 
+        // Collect comptime VALUE parameter names (comptime params whose type is
+        // not `type`, e.g. `comptime N: i32`). A runtime parameter whose type
+        // uses one as an array length (`arr: [i32; N]`) must be deferred to
+        // specialization, when N's concrete value is known (RUE-16).
+        let value_param_names: Vec<Spur> = params
+            .iter()
+            .filter(|p| p.is_comptime && p.ty != type_sym)
+            .map(|p| p.name)
+            .collect();
+
         // For generic functions, we defer type resolution of type parameters until specialization.
         // We use Type::COMPTIME_TYPE as a placeholder for comptime T: type parameters.
         let param_types: Vec<Type> = params
@@ -766,11 +785,15 @@ impl<'a> Sema<'a> {
                 if p.is_comptime && p.ty == type_sym {
                     // For comptime TYPE parameters (comptime T: type), the type is `type`
                     Ok(Type::COMPTIME_TYPE)
-                } else if self.type_mentions_type_param(p.ty, &type_param_names) {
+                } else if self.type_mentions_type_param(p.ty, &type_param_names)
+                    || self.type_mentions_comptime_value_param(p.ty, &value_param_names)
+                {
                     // This parameter's type is a type parameter (`x: T`) or a
                     // composite mentioning one (`a: [T; 3]`, `p: ptr const T`;
-                    // RUE-172). Use ComptimeType as a placeholder - the actual
-                    // type is determined at specialization.
+                    // RUE-172), or an array whose length names a comptime value
+                    // parameter (`arr: [i32; N]`, RUE-16). Use ComptimeType as a
+                    // placeholder - the actual type is determined at
+                    // specialization.
                     Ok(Type::COMPTIME_TYPE)
                 } else {
                     // Regular params OR comptime VALUE params (comptime n: i32)
@@ -783,8 +806,12 @@ impl<'a> Sema<'a> {
         // For generic functions, we can't resolve the return type yet if it references
         // a type parameter - either directly (`-> T`) or inside a composite
         // (`-> [T; 3]`, RUE-172).
-        let ret_type = if self.type_mentions_type_param(return_type_sym, &type_param_names) {
-            // Return type references a type parameter - use placeholder
+        let ret_type = if self.type_mentions_type_param(return_type_sym, &type_param_names)
+            || self.type_mentions_comptime_value_param(return_type_sym, &value_param_names)
+        {
+            // Return type references a type parameter (`-> T`, `-> [T; 3]`) or
+            // an array length naming a comptime value parameter (`-> [i32; N]`,
+            // RUE-16) - use placeholder, resolved at specialization.
             Type::COMPTIME_TYPE
         } else {
             self.resolve_type(return_type_sym, span)?

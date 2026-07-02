@@ -3854,6 +3854,11 @@ impl<'a> Sema<'a> {
             let mut runtime_args: Vec<AirCallArg> = Vec::new();
             let mut type_subst: std::collections::HashMap<Spur, Type> =
                 std::collections::HashMap::new();
+            // Comptime VALUE parameters (`comptime N: i32`) map to their
+            // captured constant so a runtime param type mentioning one — an
+            // array length `arr: [i32; N]` — resolves at this call (RUE-16).
+            let mut value_subst: std::collections::HashMap<Spur, ConstValue> =
+                std::collections::HashMap::new();
 
             for (i, (air_arg, is_comptime)) in
                 air_args.iter().zip(param_comptime.iter()).enumerate()
@@ -3886,7 +3891,10 @@ impl<'a> Sema<'a> {
                         // still also passed at runtime (value parameters are
                         // not erased from the signature).
                         match self.try_evaluate_const_in_fn(args[i].value, ctx) {
-                            Some(const_val) => value_args.push(const_val),
+                            Some(const_val) => {
+                                value_args.push(const_val);
+                                value_subst.insert(param_names[i], const_val);
+                            }
                             None => {
                                 let param_name = self.interner.resolve(&param_names[i]).to_string();
                                 return Err(CompileError::new(
@@ -3936,9 +3944,13 @@ impl<'a> Sema<'a> {
                     // bound to a type value), the check happens after
                     // specialization instead.
                     let sym = rir_param_type_syms.get(i).copied();
-                    match sym
-                        .and_then(|sym| self.resolve_type_for_comptime_with_subst(sym, &type_subst))
-                    {
+                    match sym.and_then(|sym| {
+                        self.resolve_type_for_comptime_with_subst_and_values(
+                            sym,
+                            &type_subst,
+                            &value_subst,
+                        )
+                    }) {
                         Some(ty) => ty,
                         None => continue,
                     }
@@ -3966,8 +3978,12 @@ impl<'a> Sema<'a> {
             // (`-> [T; 3]`, RUE-172), and the literal `type` return (which
             // resolves back to COMPTIME_TYPE and is comptime-evaluated below).
             let return_type = if base_return_type == Type::COMPTIME_TYPE {
-                self.resolve_type_for_comptime_with_subst(return_type_sym, &type_subst)
-                    .unwrap_or(base_return_type)
+                self.resolve_type_for_comptime_with_subst_and_values(
+                    return_type_sym,
+                    &type_subst,
+                    &value_subst,
+                )
+                .unwrap_or(base_return_type)
             } else {
                 base_return_type
             };

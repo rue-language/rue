@@ -1041,11 +1041,29 @@ pub fn parse_pointer_type_syntax(type_name: &str) -> Option<(String, PtrMutabili
     }
 }
 
+/// The length component of an array type syntax `[T; N]`.
+///
+/// The length is either a literal (`[i32; 4]`) or a name referring to a
+/// file-level `const` or a `comptime` value parameter (`[i32; N]`). Named
+/// lengths are resolved to a concrete value during sema using the const
+/// evaluator / comptime substitution machinery (RUE-16).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ArrayLen {
+    /// A literal length parsed directly from the type name (`4`).
+    Literal(u64),
+    /// A name that must be resolved to a compile-time constant (`N`).
+    Named(String),
+}
+
 /// Parse array type syntax "[T; N]" and return (element_type_str, length).
 ///
 /// This handles nested arrays correctly by tracking bracket depth.
-/// For example, `[[i32; 3]; 4]` returns `("[i32; 3]", 4)`.
-pub fn parse_array_type_syntax(type_name: &str) -> Option<(String, u64)> {
+/// For example, `[[i32; 3]; 4]` returns `("[i32; 3]", ArrayLen::Literal(4))`.
+///
+/// The length component may be a decimal literal ([`ArrayLen::Literal`]) or a
+/// name ([`ArrayLen::Named`]) referring to a `const` / `comptime` value
+/// parameter; the caller resolves named lengths to a concrete value (RUE-16).
+pub fn parse_array_type_syntax(type_name: &str) -> Option<(String, ArrayLen)> {
     let type_name = type_name.trim();
     if !type_name.starts_with('[') || !type_name.ends_with(']') {
         return None;
@@ -1070,7 +1088,14 @@ pub fn parse_array_type_syntax(type_name: &str) -> Option<(String, u64)> {
     let semi_pos = semi_pos?;
     let element_type = inner[..semi_pos].trim().to_string();
     let length_str = inner[semi_pos + 1..].trim();
-    let length: u64 = length_str.parse().ok()?;
+    if length_str.is_empty() {
+        return None;
+    }
+    let length = match length_str.parse::<u64>() {
+        Ok(n) => ArrayLen::Literal(n),
+        // Not a decimal literal: a named length (`const` / `comptime` param).
+        Err(_) => ArrayLen::Named(length_str.to_string()),
+    };
 
     Some((element_type, length))
 }

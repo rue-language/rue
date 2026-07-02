@@ -440,10 +440,16 @@ fn create_specialized_function(
     }
 
     // Resolve the return type, substituting type parameters - bare (`-> T`)
-    // or inside a composite (`-> [T; 3]`, RUE-172).
+    // or inside a composite (`-> [T; 3]`, RUE-172). Value parameters also
+    // substitute so an array length can name a `comptime N: i32` (`-> [i32; N]`,
+    // RUE-16).
     let return_type = if base_info.return_type == Type::COMPTIME_TYPE {
-        sema.resolve_type_for_comptime_with_subst(base_info.return_type_sym, &type_subst)
-            .unwrap_or(Type::UNIT)
+        sema.resolve_type_for_comptime_with_subst_and_values(
+            base_info.return_type_sym,
+            &type_subst,
+            &value_subst,
+        )
+        .unwrap_or(Type::UNIT)
     } else {
         base_info.return_type
     };
@@ -473,10 +479,12 @@ fn create_specialized_function(
             continue;
         }
         let concrete_ty = if ty == Type::COMPTIME_TYPE {
-            substitute_param_type(sema, base_info, name, &type_subst).unwrap_or_else(|| {
-                debug_assert!(false, "type substitution failed for param");
-                ty
-            })
+            substitute_param_type(sema, base_info, name, &type_subst, &value_subst).unwrap_or_else(
+                || {
+                    debug_assert!(false, "type substitution failed for param");
+                    ty
+                },
+            )
         } else {
             ty
         };
@@ -512,12 +520,14 @@ fn create_specialized_function(
 
 /// Resolve a parameter's concrete type by substituting type parameters into
 /// its declared type symbol - bare (`x: T`) or inside a composite
-/// (`a: [T; 3]`, `p: ptr const T`; RUE-172).
+/// (`a: [T; 3]`, `p: ptr const T`; RUE-172). Value parameters also substitute
+/// so an array length can name a `comptime N: i32` (`arr: [i32; N]`, RUE-16).
 fn substitute_param_type(
     sema: &mut Sema<'_>,
     base_info: &FunctionInfo,
     param_name: Spur,
     type_subst: &HashMap<Spur, Type>,
+    value_subst: &HashMap<Spur, ConstValue>,
 ) -> Option<Type> {
     let type_sym = sema
         .rir
@@ -525,5 +535,5 @@ fn substitute_param_type(
         .iter()
         .find(|param| param.name == param_name)
         .map(|param| param.ty)?;
-    sema.resolve_type_for_comptime_with_subst(type_sym, type_subst)
+    sema.resolve_type_for_comptime_with_subst_and_values(type_sym, type_subst, value_subst)
 }

@@ -10,6 +10,7 @@ pub use validate::KNOWN_DIRECTIVES;
 
 pub use ast::{
     ArgMode,
+    ArrayLength,
     ArrayLitExpr,
     AssignStatement,
     AssignTarget,

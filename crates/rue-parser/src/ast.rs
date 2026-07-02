@@ -305,10 +305,14 @@ pub enum TypeExpr {
     Unit(Span),
     /// Never type: !
     Never(Span),
-    /// Array type: [T; N] where T is the element type and N is the length
+    /// Array type: [T; N] where T is the element type and N is the length.
+    /// N may be an integer literal (`[i32; 4]`) or a name referring to a
+    /// file-level `const` or a `comptime` value parameter (`[i32; N]`);
+    /// named lengths are resolved to a compile-time constant during sema
+    /// (RUE-16).
     Array {
         element: Box<TypeExpr>,
-        length: u64,
+        length: ArrayLength,
         span: Span,
     },
     /// Anonymous struct type: struct { field: Type, fn method(...) { ... }, ... }
@@ -325,6 +329,30 @@ pub enum TypeExpr {
     PointerConst { pointee: Box<TypeExpr>, span: Span },
     /// Raw pointer to mutable data: ptr mut T
     PointerMut { pointee: Box<TypeExpr>, span: Span },
+}
+
+/// The length of an array type `[T; N]`.
+///
+/// `N` is either an integer literal or a name that refers to a compile-time
+/// constant (a file-level `const` or a `comptime` value parameter). Named
+/// lengths are resolved to a concrete `u64` during semantic analysis using the
+/// const evaluator / comptime substitution machinery (RUE-16).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ArrayLength {
+    /// A literal length, e.g. the `4` in `[i32; 4]`.
+    Literal(u64),
+    /// A named length, e.g. the `N` in `[i32; N]`.
+    Named(Ident),
+}
+
+impl fmt::Display for ArrayLength {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ArrayLength::Literal(n) => write!(f, "{}", n),
+            // Match the canonical name encoding used elsewhere for identifiers.
+            ArrayLength::Named(ident) => write!(f, "sym:{}", ident.name.into_usize()),
+        }
+    }
 }
 
 /// A field in an anonymous struct type expression.
