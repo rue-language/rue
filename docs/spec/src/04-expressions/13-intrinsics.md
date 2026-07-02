@@ -61,6 +61,10 @@ The following table provides a quick reference to all available intrinsics:
 {{ rule(id="4.13:6", cat="normative") }}
 
 The `@dbg` intrinsic prints a value to standard output for debugging purposes.
+It *borrows* its argument: the value is read but not consumed, so a non-`Copy`
+argument (such as a `String`) remains valid after the `@dbg` call and is dropped
+by its owner at the end of the enclosing scope, exactly as if the `@dbg` call had
+not occurred.
 
 {{ rule(id="4.13:7", cat="normative") }}
 

@@ -3260,7 +3260,19 @@ impl<'a> Sema<'a> {
             ));
         }
 
-        let arg_result = self.analyze_inst(air, args[0].value, ctx)?;
+        // @dbg borrows its argument — it prints the value without consuming it,
+        // so a non-Copy argument (e.g. a String) remains usable afterwards and
+        // is dropped by its owner at scope exit (RUE-21). When the argument is
+        // a place rooted at a variable, set `byref_arg_root` so the var-ref /
+        // place analyses treat the read as a borrow and skip move tracking,
+        // exactly as they do for a `borrow`-mode call argument. A non-place
+        // argument (literal, arithmetic, call result) has no owning variable to
+        // preserve, so it is analyzed normally.
+        let byref_root = root_variable_of(self.rir, args[0].value);
+        let prev_byref_root = std::mem::replace(&mut ctx.byref_arg_root, byref_root);
+        let arg_result = self.analyze_inst(air, args[0].value, ctx);
+        ctx.byref_arg_root = prev_byref_root;
+        let arg_result = arg_result?;
         let arg_type = arg_result.ty;
 
         // An `<error>`-typed argument reaching here via `Ok` means no

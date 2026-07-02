@@ -95,6 +95,49 @@ fn main() -> i32 {
 exit_code = 0
 
 [[case]]
+name = "dbg_string_borrows_not_consumed"
+spec = ["4.13:6", "4.13:7"]
+description = "@dbg borrows a String; the value stays usable after the call (RUE-21)"
+source = """
+fn main() -> i32 {
+    let mut s = String::new();
+    s.push_str("hello");
+    @dbg(s);
+    let n: u64 = s.len();
+    @dbg(s);
+    if n == 5 { 0 } else { 1 }
+}
+"""
+expected_stdout = """
+hello
+hello
+"""
+exit_code = 0
+
+[[case]]
+name = "dbg_string_dropped_exactly_once"
+spec = ["4.13:6"]
+description = "A @dbg'd String is dropped exactly once by its owner, not consumed by @dbg (RUE-21)"
+source = """
+struct Holder { s: String }
+drop fn Holder(self) {
+    @dbg(self.s);
+}
+fn main() -> i32 {
+    let mut tmp = String::new();
+    tmp.push_str("world");
+    let h = Holder { s: tmp };
+    @dbg(h.s);
+    0
+}
+"""
+expected_stdout = """
+world
+world
+"""
+exit_code = 0
+
+[[case]]
 name = "dbg_prints_with_newline"
 spec = ["4.13:8"]
 source = """
