@@ -34,10 +34,10 @@ use rue_span::Span;
 
 use super::Sema;
 use super::analysis::move_out_of_inout_error;
-use super::context::{AnalysisContext, AnalysisResult, LocalVar};
+use super::context::{AnalysisContext, AnalysisResult, LocalVar, VariableMoveState};
 use crate::inst::{
-    Air, AirCallArg, AirInst, AirInstData, AirPattern, AirPlaceBase, AirPlaceRef, AirProjection,
-    AirRef,
+    Air, AirArgMode, AirCallArg, AirInst, AirInstData, AirPattern, AirPlaceBase, AirPlaceRef,
+    AirProjection, AirRef,
 };
 use crate::scope::ScopedContext;
 use crate::types::{Type, TypeKind};
@@ -3449,11 +3449,31 @@ impl<'a> Sema<'a> {
             return Ok(AnalysisResult::new(air_ref, elem_type));
         }
 
-        // Fallback: base is not a place (e.g., function call result)
-        // Spill the computed array to a temporary, then use PlaceRead.
-        // This handles `get_array()[i]` patterns.
+        // Fallback: base is not an array place (e.g. function-call result, or
+        // a String — which is a builtin struct, so `try_trace_place` bails at
+        // its non-array projection). Snapshot the base root's move state
+        // *before* analyzing it, in case this turns out to be a borrowing
+        // String index (see below).
+        let base_root = self.extract_root_variable(base);
+        let base_move_state_before = base_root.and_then(|v| ctx.moved_vars.get(&v).cloned());
         let base_result = self.analyze_inst(air, base, ctx)?;
         let base_type = base_result.ty;
+
+        // String byte indexing: `s[i]` reads the i-th BYTE of a String as `u8`
+        // (RUE-17 Phase 2, ADR-0035). O(1), bounds-checked at runtime: an
+        // `index >= s.len()` traps (exit 101), exactly like array indexing.
+        if self.is_builtin_string(base_type) {
+            return self.analyze_string_index_get(
+                air,
+                base_result,
+                base_root,
+                base_move_state_before,
+                index,
+                span,
+                ctx,
+            );
+        }
+
         let index_result = self.analyze_inst(air, index, ctx)?;
 
         // Verify base is an array
@@ -3545,6 +3565,81 @@ impl<'a> Sema<'a> {
             span,
         });
         Ok(AnalysisResult::new(block_ref, elem_type))
+    }
+
+    /// Analyze a String byte index read: `s[i] -> u8` (RUE-17 Phase 2,
+    /// ADR-0035).
+    ///
+    /// Indexing a String yields the i-th BYTE (not a char) as `u8`, lowering to
+    /// a checked runtime call `__rue_String_byte_at(ptr, len, cap, index)`. The
+    /// bounds check lives in the runtime: an `index >= len` traps (exit 101),
+    /// mirroring array indexing rather than producing UB.
+    ///
+    /// The index only *borrows* the String (it is neither consumed nor
+    /// mutated), so — like a `ByRef` builtin method — we undo the move the base
+    /// analysis recorded (`base_result` already analyzed) by restoring the
+    /// pre-analysis move state and cancelling the emitted move marker. That
+    /// keeps later uses of `s` valid and ensures the String is dropped exactly
+    /// once.
+    #[allow(clippy::too_many_arguments)]
+    fn analyze_string_index_get(
+        &mut self,
+        air: &mut Air,
+        base_result: AnalysisResult,
+        base_root: Option<Spur>,
+        base_move_state_before: Option<VariableMoveState>,
+        index: InstRef,
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AnalysisResult> {
+        // Un-move the borrowed receiver (mirrors ByRef builtin methods).
+        if let Some(var) = base_root {
+            match base_move_state_before {
+                Some(state) => {
+                    ctx.moved_vars.insert(var, state);
+                }
+                None => {
+                    ctx.moved_vars.remove(&var);
+                }
+            }
+        }
+        air.cancel_move_marker(base_result.air_ref);
+
+        // The index is an ordinary rvalue. Analyze it and require an integer
+        // type (signed or unsigned), matching array indexing (spec 7.1:7).
+        let index_result = self.analyze_inst(air, index, ctx)?;
+        if !index_result.ty.is_integer() && !index_result.ty.is_error() {
+            return Err(CompileError::new(
+                ErrorKind::TypeMismatch {
+                    expected: "an integer".to_string(),
+                    found: index_result.ty.safe_name_with_pool(Some(&self.type_pool)),
+                },
+                self.rir.get(index).span,
+            ));
+        }
+
+        // Lower to `__rue_String_byte_at(self, index) -> u8`. The String is
+        // passed by value in the AIR (codegen decomposes it into ptr/len/cap
+        // argument registers, as for other builtin String methods); the move
+        // was already cancelled above so this is a non-consuming read.
+        let call_name = self.interner.get_or_intern("__rue_String_byte_at");
+        let extra = [
+            base_result.air_ref.as_u32(),
+            AirArgMode::Normal.as_u32(),
+            index_result.air_ref.as_u32(),
+            AirArgMode::Normal.as_u32(),
+        ];
+        let args_start = air.add_extra(&extra);
+        let call_ref = air.add_inst(AirInst {
+            data: AirInstData::Call {
+                name: call_name,
+                args_start,
+                args_len: 2,
+            },
+            ty: Type::U8,
+            span,
+        });
+        Ok(AnalysisResult::new(call_ref, Type::U8))
     }
 
     /// Analyze an array index write.

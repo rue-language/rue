@@ -1,0 +1,106 @@
+# String byte access (RUE-17 Phase 2, ADR-0035).
+#
+# Rue's String is a byte string (conventionally UTF-8, not guaranteed valid).
+# `s[i]` reads the i-th BYTE as u8 (O(1), out-of-range traps exit 101), and
+# `s.substring(start, len)` returns a NEW String holding bytes [start, start+len)
+# (any byte range valid; out-of-range traps). These are exact-stdout runs of the
+# "café" demo through the real driver — the ABI (String passed as ptr/len/cap to
+# the runtime byte_at / substring calls) is exactly what a spec-harness stdout
+# check cannot exercise end to end.
+
+[section]
+id = "cli.string_byte_access"
+name = "String byte access"
+description = "Byte indexing and substring on the byte-string String type."
+
+[[case]]
+name = "cafe_byte_indexing"
+description = "The café demo: len is 5 bytes; s[0]=99 (c), s[3]=195/s[4]=169 (é), ASCII t[1]=98."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let s = "café";
+    @dbg(s.len());
+    @dbg(s[0]);
+    @dbg(s[3]);
+    @dbg(s[4]);
+    let t = "abc";
+    @dbg(t[1]);
+    0
+}
+""" }]
+exit_code = 0
+stdout = "5\n99\n195\n169\n98\n"
+
+[[case]]
+name = "index_out_of_bounds_traps"
+description = "Indexing past the last byte traps at runtime (exit 101), like array indexing."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let s = "café";
+    @dbg(s[5]);
+    0
+}
+""" }]
+exit_code = 101
+
+[[case]]
+name = "substring_byte_range"
+description = "s.substring(3, 2) yields the two bytes of é as an independent String; source s is untouched."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let s = "café";
+    let tail = s.substring(3, 2);
+    @dbg(tail.len());
+    @dbg(tail[0]);
+    @dbg(tail[1]);
+    @dbg(s.len());
+    0
+}
+""" }]
+exit_code = 0
+stdout = "2\n195\n169\n5\n"
+
+[[case]]
+name = "substring_result_is_mutable"
+description = "The new String from substring owns a heap buffer and can be mutated further."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let s = "café";
+    let mut g = s.substring(0, 3);
+    g.push_str("X");
+    @dbg(g.len());
+    @dbg(g[3]);
+    0
+}
+""" }]
+exit_code = 0
+stdout = "4\n88\n"
+
+[[case]]
+name = "substring_out_of_range_traps"
+description = "start+len past the end traps at runtime (exit 101)."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let s = "café";
+    let bad = s.substring(3, 3);
+    @dbg(bad.len());
+    0
+}
+""" }]
+exit_code = 101
+
+[[case]]
+name = "indexed_byte_feeds_u8_arithmetic"
+description = "A u8 from s[i] must be zero-extended into the full return register so a later u8 overflow-checked add does not spuriously trap (byte_at returns u64 to honor the Rue sub-word return ABI)."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let s = "abc";
+    let c: u8 = s[0];   // 97
+    let d: u8 = s[1];   // 98
+    let e: u8 = c + d;  // 195, must NOT trap as overflow
+    @dbg(e);
+    0
+}
+""" }]
+exit_code = 0
+stdout = "195\n"

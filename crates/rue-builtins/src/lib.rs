@@ -379,6 +379,26 @@ pub static STRING_TYPE: BuiltinTypeDef = BuiltinTypeDef {
             return_ty: BuiltinReturnType::SelfType,
             runtime_fn: "__rue_String_clone",
         },
+        // Byte-range slice: `s.substring(start, len)` returns a NEW String
+        // holding bytes [start, start+len) (RUE-17 Phase 2, ADR-0035). Since
+        // String is a byte string, any byte range is valid; only an
+        // out-of-range range traps at runtime (exit 101). Borrows self.
+        BuiltinMethod {
+            name: "substring",
+            receiver_mode: ReceiverMode::ByRef,
+            params: &[
+                BuiltinParam {
+                    name: "start",
+                    ty: BuiltinParamType::U64,
+                },
+                BuiltinParam {
+                    name: "len",
+                    ty: BuiltinParamType::U64,
+                },
+            ],
+            return_ty: BuiltinReturnType::SelfType,
+            runtime_fn: "__rue_String_substring",
+        },
         // Mutation methods (take &mut self, return modified String)
         BuiltinMethod {
             name: "push_str",
@@ -654,7 +674,15 @@ mod tests {
     fn test_all_string_methods_present() {
         // Verify all expected methods are defined
         let expected_methods = [
-            "len", "capacity", "is_empty", "clone", "push_str", "push", "clear", "reserve",
+            "len",
+            "capacity",
+            "is_empty",
+            "clone",
+            "substring",
+            "push_str",
+            "push",
+            "clear",
+            "reserve",
         ];
         for name in expected_methods {
             assert!(
