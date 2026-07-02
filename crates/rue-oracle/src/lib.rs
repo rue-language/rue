@@ -19,10 +19,12 @@
 //! comparison / bitwise / shift operator set with **trapping** overflow, locals,
 //! parameters, calls and recursion, block-parameter control flow (`if`/`match`/
 //! `loop` all lower to `Goto`/`Branch`/`Switch`), `@dbg`, `@intCast`, and the
-//! defined panics (overflow, divide/remainder-by-zero, int-cast overflow). Not
-//! yet: aggregates (structs/arrays/strings), places with projections, `inout`/
-//! `borrow`, and drop/destructors — these are the next slices (see `docs/formal`
-//! extension rubric). Programs using them return [`Unsupported`].
+//! defined panics (overflow, divide/remainder-by-zero, int-cast overflow);
+//! aggregates (structs/arrays) with nested place projections and bounds traps;
+//! and `inout`/`borrow` parameters (copy-in / copy-out, observably identical to
+//! by-reference under the law of exclusivity). Not yet: strings (heap builtin)
+//! and drop/destructors — the next slices (see the `docs/formal` extension
+//! rubric). Programs using them return [`Unsupported`].
 
 use lasso::ThreadedRodeo;
 use rue_air::{Type, TypeKind};
@@ -148,7 +150,7 @@ fn slot_width(v: &Value) -> usize {
 impl<'a> Interp<'a> {
     fn run(mut self) -> Result<Outcome, Unsupported> {
         match self.call("main", &[]) {
-            Ok(v) => Ok(Outcome {
+            Ok((v, _)) => Ok(Outcome {
                 exit_code: (v.as_int() & 0xFF) as i32,
                 stdout: self.stdout,
                 panic: None,
@@ -174,7 +176,10 @@ impl<'a> Interp<'a> {
             .find(|c| c.fn_name() == name)
     }
 
-    fn call(&mut self, name: &str, args: &[Value]) -> Step<Value> {
+    /// Returns the call's value **and** its final parameter slots, so the caller
+    /// can copy out `inout` parameters (Rue `inout` is copy-in / copy-out, which
+    /// is observably identical to by-reference under the law of exclusivity).
+    fn call(&mut self, name: &str, args: &[Value]) -> Step<(Value, Vec<Option<Value>>)> {
         let cfg = self
             .find_cfg(name)
             .ok_or_else(|| Flow::Unsupported(Unsupported(format!("call to '{name}'"))))?;
@@ -219,10 +224,11 @@ impl<'a> Interp<'a> {
             let term = block.terminator;
             match term {
                 Terminator::Return { value } => {
-                    return match value {
-                        Some(v) => self.eval(cfg, &mut frame, v),
-                        None => Ok(Value::Unit),
+                    let ret = match value {
+                        Some(v) => self.eval(cfg, &mut frame, v)?,
+                        None => Value::Unit,
                     };
+                    return Ok((ret, std::mem::take(&mut frame.params)));
                 }
                 Terminator::Goto { target, .. } => {
                     let ce = cfg.get_goto_args(&term).to_vec();
@@ -403,6 +409,44 @@ impl<'a> Interp<'a> {
             }
             CfgInstData::EnumVariant { variant_index, .. } => Value::Int(*variant_index as i128),
 
+            // Writes to an `inout` parameter inside the callee (visible to the
+            // caller via copy-out).
+            CfgInstData::ParamStore { param_slot, value } => {
+                let val = self.eval(cfg, frame, *value)?;
+                Self::set_param(frame, *param_slot, val);
+                Value::Unit
+            }
+            CfgInstData::ParamFieldSet {
+                param_slot,
+                inner_offset,
+                field_index,
+                value,
+                ..
+            } => {
+                if *inner_offset != 0 {
+                    return Err(Flow::Unsupported(Unsupported(
+                        "nested inout field write".into(),
+                    )));
+                }
+                let val = self.eval(cfg, frame, *value)?;
+                Self::set_param_elem(frame, *param_slot, *field_index as usize, val)?;
+                Value::Unit
+            }
+            CfgInstData::ParamIndexSet {
+                param_slot,
+                index,
+                value,
+                ..
+            } => {
+                let idx = self.eval(cfg, frame, *index)?.as_int();
+                let val = self.eval(cfg, frame, *value)?;
+                if idx < 0 {
+                    return Err(Flow::Panic(Panic("index out of bounds".into())));
+                }
+                Self::set_param_elem(frame, *param_slot, idx as usize, val)?;
+                Value::Unit
+            }
+
             CfgInstData::Call {
                 name,
                 args_start,
@@ -410,16 +454,29 @@ impl<'a> Interp<'a> {
             } => {
                 let fname = self.interner().resolve(name).to_string();
                 let call_args = cfg.get_call_args(*args_start, *args_len).to_vec();
+                // Copy-in every argument (by value); for `inout` args, remember
+                // the base parameter slot and the caller place to copy back into.
                 let mut argvals = Vec::with_capacity(call_args.len());
+                let mut writebacks: Vec<(usize, Place)> = Vec::new();
+                let mut base = 0usize;
                 for a in &call_args {
-                    if !matches!(a.mode, CfgArgMode::Normal) {
-                        return Err(Flow::Unsupported(Unsupported(
-                            "by-reference argument (inout/borrow)".into(),
-                        )));
+                    let v = self.eval(cfg, frame, a.value)?;
+                    let w = slot_width(&v).max(1);
+                    if matches!(a.mode, CfgArgMode::Inout) {
+                        writebacks.push((base, Self::lvalue_of(cfg, a.value)?));
                     }
-                    argvals.push(self.eval(cfg, frame, a.value)?);
+                    argvals.push(v);
+                    base += w;
                 }
-                self.call(&fname, &argvals)?
+                let (result, final_params) = self.call(&fname, &argvals)?;
+                // Copy-out: write each inout parameter's final value back into
+                // the caller place it came from.
+                for (slot, place) in writebacks {
+                    if let Some(val) = final_params.get(slot).and_then(|o| o.clone()) {
+                        self.place_write(cfg, frame, &place, val)?;
+                    }
+                }
+                result
             }
 
             CfgInstData::Intrinsic {
@@ -649,18 +706,16 @@ impl<'a> Interp<'a> {
         val: Value,
     ) -> Step<()> {
         let (base, path) = self.resolve_path(cfg, frame, place)?;
-        let slot = match base {
-            PlaceBase::Local(slot) => slot as usize,
-            PlaceBase::Param(_) => {
-                return Err(Flow::Unsupported(Unsupported(
-                    "write to param place".into(),
-                )));
-            }
+        // Select the storage vector: writing through an `inout` parameter place
+        // targets the param slot (copied back to the caller on return).
+        let (store, slot) = match base {
+            PlaceBase::Local(slot) => (&mut frame.locals, slot as usize),
+            PlaceBase::Param(slot) => (&mut frame.params, slot as usize),
         };
-        if slot >= frame.locals.len() {
-            frame.locals.resize(slot + 1, None);
+        if slot >= store.len() {
+            store.resize(slot + 1, None);
         }
-        let root = frame.locals[slot].get_or_insert(Value::Unit);
+        let root = store[slot].get_or_insert(Value::Unit);
         let mut cur = root;
         for idx in &path {
             cur = match cur {
@@ -690,6 +745,39 @@ impl<'a> Interp<'a> {
             Some(Value::Aggregate(_)) => Err(Flow::Panic(Panic("index out of bounds".into()))),
             _ => Err(Flow::Unsupported(Unsupported(
                 "field/index set on non-aggregate".into(),
+            ))),
+        }
+    }
+
+    /// Recover the caller place an `inout` argument was loaded from, so its
+    /// mutated value can be copied back after the call.
+    fn lvalue_of(cfg: &'a Cfg, v: CfgValue) -> Step<Place> {
+        match &cfg.get_inst(v).data {
+            CfgInstData::Load { slot } => Ok(Place::local(*slot)),
+            CfgInstData::PlaceRead { place } => Ok(place.clone()),
+            other => Err(Flow::Unsupported(Unsupported(format!(
+                "inout argument is not an lvalue: {other:?}"
+            )))),
+        }
+    }
+
+    fn set_param(frame: &mut Frame, slot: u32, val: Value) {
+        let s = slot as usize;
+        if s >= frame.params.len() {
+            frame.params.resize(s + 1, None);
+        }
+        frame.params[s] = Some(val);
+    }
+
+    fn set_param_elem(frame: &mut Frame, slot: u32, idx: usize, val: Value) -> Step<()> {
+        match frame.params.get_mut(slot as usize).and_then(|o| o.as_mut()) {
+            Some(Value::Aggregate(v)) if idx < v.len() => {
+                v[idx] = val;
+                Ok(())
+            }
+            Some(Value::Aggregate(_)) => Err(Flow::Panic(Panic("index out of bounds".into()))),
+            _ => Err(Flow::Unsupported(Unsupported(
+                "field/index set on non-aggregate inout param".into(),
             ))),
         }
     }

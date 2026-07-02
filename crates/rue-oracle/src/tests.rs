@@ -200,6 +200,59 @@ fn struct_field_mutation() {
 }
 
 #[test]
+fn inout_scalar() {
+    let src = "fn increment(inout x: i32) { x = x + 1; }
+    fn main() -> i32 {
+        let mut n = 10;
+        increment(inout n);
+        n
+    }";
+    assert_eq!(exit(src), 11);
+}
+
+#[test]
+fn inout_swap() {
+    let src = "fn swap(inout a: i32, inout b: i32) {
+        let tmp = a;
+        a = b;
+        b = tmp;
+    }
+    fn main() -> i32 {
+        let mut x = 3;
+        let mut y = 7;
+        swap(inout x, inout y);
+        x * 10 + y
+    }";
+    // after swap: x=7, y=3 -> 73
+    assert_eq!(exit(src), 73);
+}
+
+#[test]
+fn borrow_read_only() {
+    let src = "struct Point { x: i32, y: i32 }
+    fn sum_coords(borrow p: Point) -> i32 { p.x + p.y }
+    fn main() -> i32 {
+        let p = Point { x: 10, y: 32 };
+        let r = sum_coords(borrow p);
+        r + p.x - p.x
+    }";
+    assert_eq!(exit(src), 42);
+}
+
+#[test]
+fn inout_struct_field() {
+    let src = "struct P { x: i32, y: i32 }
+    fn bump(inout p: P) { p.x = p.x + 100; }
+    fn main() -> i32 {
+        let mut p = P { x: 1, y: 2 };
+        bump(inout p);
+        p.x + p.y
+    }";
+    // p.x becomes 101 -> 101 + 2 = 103
+    assert_eq!(exit(src), 103);
+}
+
+#[test]
 fn string_still_unsupported() {
     // Strings (heap builtin) are a later slice; must report cleanly, not crash.
     let src = "fn main() -> i32 {
