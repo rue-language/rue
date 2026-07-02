@@ -1,0 +1,68 @@
+#!/bin/bash
+set -euo pipefail
+
+# Clippy lint gate for the workspace (the CI `clippy` job runs this).
+#
+# Why not a single `buck2 build ...` that fails on lint? Buck2's rust rules run
+# clippy with "infallible diagnostics": the `[clippy.txt]` subtarget always
+# succeeds and merely *captures* clippy's output into a file (so downstream
+# actions consuming diagnostics don't break). There is no built-in
+# "fail-the-build-on-clippy" subtarget. So the gate is: build the
+# `[clippy.txt]` subtarget for every first-party crate target, then fail if any
+# of those diagnostic files is non-empty.
+#
+# The workspace lint policy lives in toolchains/rust/BUCK:
+#   deny_lints  = ["warnings"]   -> every rustc/clippy warning is an error
+#   allow_lints = _CLIPPY_ALLOW  -> grandfathered pre-existing clippy findings
+# Shrink _CLIPPY_ALLOW over time; a lint removed from it becomes gating here.
+
+cd "$(dirname "$0")"
+
+echo "Enumerating first-party Rust targets..."
+# One target per rust_library / rust_binary / rust_test under //crates/...
+mapfile -t TARGETS < <(./buck2 uquery \
+    "kind('rust_(library|binary|test)', 'root//crates/...')" 2>/dev/null)
+
+if [ "${#TARGETS[@]}" -eq 0 ]; then
+    echo "clippy.sh: no Rust targets found (uquery returned nothing)" >&2
+    exit 1
+fi
+
+CLIPPY_TARGETS=()
+for t in "${TARGETS[@]}"; do
+    CLIPPY_TARGETS+=("${t}[clippy.txt]")
+done
+
+echo "Running clippy on ${#CLIPPY_TARGETS[@]} targets..."
+# A real compile error (not a lint) makes this buck2 build fail non-zero, which
+# `set -e` propagates -- that is correct, the tree is broken.
+SHOW_OUTPUT="$(./buck2 build "${CLIPPY_TARGETS[@]}" --show-output 2>/dev/null)"
+
+FAILED=0
+# Each --show-output line is: "<target>[clippy.txt] <repo-root-relative-path>".
+# We only fail on clippy *errors*: deny_lints=["warnings"] turns every real
+# clippy finding into an `error:` line, whereas benign non-lint codegen output
+# (e.g. `-Ctarget-feature` `warning:` notes that rustc emits unconditionally
+# and that ordinary builds also print) must NOT gate. So grep for `^error`.
+while read -r TARGET ARTIFACT; do
+    [ -z "${ARTIFACT:-}" ] && continue
+    [ -s "$ARTIFACT" ] || continue
+    # Strip ANSI colour codes so CI logs stay readable and grep is reliable.
+    CLEANED="$(sed -E 's/\x1b\[[0-9;]*m//g' "$ARTIFACT")"
+    if printf '%s\n' "$CLEANED" | grep -qE '^error'; then
+        FAILED=1
+        echo "::group::clippy findings: $TARGET"
+        printf '%s\n' "$CLEANED"
+        echo "::endgroup::"
+    fi
+done <<< "$SHOW_OUTPUT"
+
+if [ "$FAILED" -ne 0 ]; then
+    echo ""
+    echo "clippy gate FAILED: lint violations above."
+    echo "Fix them, or (if intentional) adjust the workspace lint policy in"
+    echo "toolchains/rust/BUCK (deny_lints / allow_lints)."
+    exit 1
+fi
+
+echo "clippy gate passed: no lint violations."

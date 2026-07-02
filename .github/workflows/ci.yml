@@ -26,6 +26,32 @@ jobs:
         # Uses hermetic rustfmt from Buck2 toolchain
         run: ./fmt.sh check
 
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install dotslash
+        uses: facebook/install-dotslash@v2  # pinned: the moving `latest` branch broke macOS runners (sha256sum flags) on 2026-06-18
+
+      # Cache the dotslash-downloaded buck2 binary (see the `test` job for the
+      # rationale on which paths are worth caching).
+      - name: Cache dotslash artifacts
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cache/dotslash
+            ~/Library/Caches/dotslash
+          key: dotslash-linux-x64-${{ hashFiles('buck2') }}
+          restore-keys: |
+            dotslash-linux-x64-
+
+      - name: Run clippy
+        # Builds the [clippy.txt] subtarget for every first-party crate and
+        # fails on any clippy error. Workspace lint policy (deny warnings +
+        # grandfathered allow-list) lives in toolchains/rust/BUCK.
+        run: ./clippy.sh
+
   actionlint:
     runs-on: ubuntu-latest
     steps:

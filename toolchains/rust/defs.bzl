@@ -57,8 +57,34 @@ def _hermetic_rust_toolchain_impl(ctx: AnalysisContext) -> list[Provider]:
 
     # Create RunInfo for each tool
     compiler = RunInfo(args = [rustc_bin])
-    clippy_driver = RunInfo(args = [clippy_bin])
     rustdoc = RunInfo(args = [rustdoc_bin])
+
+    # clippy-driver dynamically loads librustc_driver from rustc/lib/, but
+    # unlike rustc that dir isn't on the loader's search path, so a bare
+    # invocation dies with "librustc_driver-*.so: cannot open shared object
+    # file". Wrap it to set LD_LIBRARY_PATH / DYLD_LIBRARY_PATH to rustc/lib
+    # before exec'ing the driver (same trick as the rustfmt wrapper below).
+    #
+    # Unlike rustfmt, clippy_driver must be a SINGLE executable, not a
+    # ["/bin/bash", wrapper, ...] arg list: the prelude re-wraps it with
+    # `cmd_args(clippy_driver, format = '{} "$@"')` (rust/context.bzl), and
+    # `format` is applied per-argument — a multi-arg RunInfo would emit one
+    # broken `<arg> "$@"` line per element. So we bake the paths into a
+    # self-contained script and point RunInfo at just that file.
+    clippy_lib_dir = dist.project("rustc/lib")
+    clippy_wrapper, _ = ctx.actions.write(
+        "clippy_driver_wrapper.sh",
+        [
+            "#!/usr/bin/env bash",
+            # Set library path for both macOS and Linux
+            cmd_args(clippy_lib_dir, format = "export DYLD_LIBRARY_PATH=\"{}\""),
+            cmd_args(clippy_lib_dir, format = "export LD_LIBRARY_PATH=\"{}\""),
+            cmd_args(clippy_bin, format = "exec {} \"$@\""),
+        ],
+        is_executable = True,
+        allow_args = True,
+    )
+    clippy_driver = RunInfo(args = cmd_args(clippy_wrapper, hidden = [clippy_bin, clippy_lib_dir]))
 
     # Build a merged sysroot by running a shell script
     # The Rust distribution has components in separate directories that need merging:
