@@ -1,13 +1,19 @@
 // Structs - custom data types with named fields
 //
-// Rue supports structs with value semantics, meaning they're
-// copied when assigned or passed to functions.
+// Structs in Rue are move types by default: using a struct value
+// (passing it to a function, assigning it) consumes the original.
+// The `@copy` directive opts a struct into Copy semantics, so its
+// values are implicitly duplicated on use instead of being moved.
+// Both Point and Rectangle below are `@copy`, which is why this
+// example can pass the same rectangle to several functions in a row.
 
+@copy
 struct Point {
     x: i32,
     y: i32,
 }
 
+@copy
 struct Rectangle {
     origin: Point,
     width: i32,

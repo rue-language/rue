@@ -29,6 +29,15 @@ filegroup(
     srcs = glob(["std/**"]),
 )
 
+# The example programs are runtime inputs to the CLI integration tests: the
+# suite compiles+runs every examples/*.rue through the real driver (RUE-48),
+# so an edit under examples/ MUST re-run the CLI suite (declared here as an
+# input, resolved to an absolute path via RUE_EXAMPLES_DIR below).
+filegroup(
+    name = "examples",
+    srcs = glob(["examples/**"]),
+)
+
 sh_test(
     name = "spec-tests",
     test = "//crates/rue-spec:rue-spec",
@@ -56,6 +65,7 @@ sh_test(
     env = {
         "RUE_BINARY": "$(exe_target //crates/rue:rue)",
         "RUE_CLI_CASES": "$(location //crates/rue-cli-tests:cases)/cases",
+        "RUE_EXAMPLES_DIR": "$(location :examples)/examples",
         "RUE_STD_DIR": "$(location :std)/std",
     },
 )

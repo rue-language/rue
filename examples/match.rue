@@ -39,5 +39,7 @@ fn count_weekdays(start: i32, end: i32) -> i32 {
 fn main() -> i32 {
     // Count weekdays from Sunday (0) through Saturday (6)
     // Should be 5 (Mon, Tue, Wed, Thu, Fri)
-    @dbg(count_weekdays(0, 6))
+    let weekdays = count_weekdays(0, 6);
+    @dbg(weekdays);
+    weekdays
 }
