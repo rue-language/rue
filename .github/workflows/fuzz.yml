@@ -70,8 +70,14 @@ jobs:
             Please check the workflow logs and crash artifacts for details.
 
             ### Next Steps
-            1. Download the crash artifacts from the workflow run
-            2. Reproduce locally with \`./buck2 run //crates/rue:rue -- crashes/crash-*.txt output\`
+            1. Download the crash artifacts from the workflow run. Each
+               reproducer is named \`crash-<target>-<sighash>-<inputhash>.txt\`;
+               the fuzzer detects both panics and *aborts* (stack overflow /
+               SIGABRT / SIGSEGV / SIGFPE), and dedups by crash signature so
+               each distinct crash is saved once (RUE-43).
+            2. Reproduce locally by feeding the saved input to the target named
+               in the filename, e.g. for a source-level target:
+               \`./buck2 run //crates/rue-fuzz:rue-fuzz -- <target> <dir-with-the-file>\`
             3. Fix the issue and add a regression test
             `;
 
