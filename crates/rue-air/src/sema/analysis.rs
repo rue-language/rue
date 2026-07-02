@@ -3381,13 +3381,178 @@ impl<'a> Sema<'a> {
         } else if name == known.target_os {
             self.analyze_target_os_intrinsic(air, &args, span)
         } else {
-            // Unknown intrinsic - resolve name for error message
-            let intrinsic_name_str = self.interner.resolve(&name);
-            Err(CompileError::new(
-                ErrorKind::UnknownIntrinsic(intrinsic_name_str.to_string()),
-                span,
-            ))
+            // Compiler-internal intrinsics synthesized ONLY by the `for`-loop
+            // desugaring (RUE-220). They never appear in user source (the
+            // parser cannot produce them). Resolving the name string here is
+            // fine: these are rare relative to user-facing intrinsics.
+            match self.interner.resolve(&name) {
+                "__rue_iter_len" => self.analyze_iter_len_intrinsic(air, &args, span, ctx),
+                "__rue_char_scalar" => {
+                    self.analyze_string_char_op_intrinsic(air, &args, span, ctx, false)
+                }
+                "__rue_char_next" => {
+                    self.analyze_string_char_op_intrinsic(air, &args, span, ctx, true)
+                }
+                other => Err(CompileError::new(
+                    ErrorKind::UnknownIntrinsic(other.to_string()),
+                    span,
+                )),
+            }
         }
+    }
+
+    // ========================================================================
+    // `for`-loop iteration intrinsics (RUE-220)
+    //
+    // These three intrinsics are synthesized ONLY by the `for`-loop desugaring
+    // in AstGen (`gen_for`); they are the type-dependent leaves of the
+    // desugaring, resolved here once the collection's type is known. Reading
+    // the collection is a scoped borrow (ADR-0037): the move state is snapshot
+    // and restored so iterating does not consume the source.
+    // ========================================================================
+
+    /// `@__rue_iter_len(coll)` → the loop bound (`usize`), dispatching the
+    /// iterable kind by the collection's type: an array's length `N` (a
+    /// compile-time constant), or a String's byte length (a `__rue_String_len`
+    /// call). This is where the whole `for` loop is preview-gated (RUE-220):
+    /// every for-loop emits exactly one `@__rue_iter_len`.
+    fn analyze_iter_len_intrinsic(
+        &mut self,
+        air: &mut Air,
+        args: &[RirCallArg],
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AnalysisResult> {
+        self.require_preview(PreviewFeature::ForLoops, "the `for` loop", span)?;
+
+        let coll = args[0].value;
+        let coll_result = self.analyze_borrowed_collection(air, coll, ctx)?;
+        let coll_type = coll_result.ty;
+
+        // Array: the bound is the compile-time length N.
+        if let Some(array_id) = coll_type.as_array() {
+            let (_elem, len) = self.type_pool.array_def(array_id);
+            let air_ref = air.add_inst(AirInst {
+                data: AirInstData::Const(len),
+                ty: Type::U64,
+                span,
+            });
+            return Ok(AnalysisResult::new(air_ref, Type::U64));
+        }
+
+        // String byte view: the bound is the byte length `s.len()`.
+        if self.is_builtin_string(coll_type) {
+            let call_name = self.interner.get_or_intern("__rue_String_len");
+            let extra = [coll_result.air_ref.as_u32(), AirArgMode::Normal.as_u32()];
+            let args_start = air.add_extra(&extra);
+            let call_ref = air.add_inst(AirInst {
+                data: AirInstData::Call {
+                    name: call_name,
+                    args_start,
+                    args_len: 1,
+                },
+                ty: Type::U64,
+                span,
+            });
+            return Ok(AnalysisResult::new(call_ref, Type::U64));
+        }
+
+        if coll_type.is_error() {
+            return Ok(AnalysisResult::new(coll_result.air_ref, Type::U64));
+        }
+
+        Err(CompileError::new(
+            ErrorKind::TypeMismatch {
+                expected: "an array or a String".to_string(),
+                found: coll_type.safe_name_with_pool(Some(&self.type_pool)),
+            },
+            span,
+        )
+        .with_help(
+            "`for` can iterate an array, a String's bytes, or a String's \
+             `.chars()` view",
+        ))
+    }
+
+    /// `@__rue_char_scalar(s, offset)` → the Unicode scalar (`u32`) at byte
+    /// `offset`, and `@__rue_char_next(s, offset)` → the byte offset of the
+    /// next character (`usize`). Both back `for c in s.chars()`; the receiver
+    /// must be a String, and both trap at runtime on invalid UTF-8 (ADR-0035).
+    fn analyze_string_char_op_intrinsic(
+        &mut self,
+        air: &mut Air,
+        args: &[RirCallArg],
+        span: Span,
+        ctx: &mut AnalysisContext,
+        is_next: bool,
+    ) -> CompileResult<AnalysisResult> {
+        let coll = args[0].value;
+        let pos = args[1].value;
+
+        let coll_result = self.analyze_borrowed_collection(air, coll, ctx)?;
+        if !self.is_builtin_string(coll_result.ty) && !coll_result.ty.is_error() {
+            return Err(CompileError::new(
+                ErrorKind::TypeMismatch {
+                    expected: "String".to_string(),
+                    found: coll_result.ty.safe_name_with_pool(Some(&self.type_pool)),
+                },
+                span,
+            )
+            .with_help("`.chars()` iteration is only available on a String"));
+        }
+
+        let pos_result = self.analyze_inst(air, pos, ctx)?;
+
+        let (fn_name, ret_ty) = if is_next {
+            ("__rue_String_char_next", Type::U64)
+        } else {
+            ("__rue_String_char_scalar", Type::U32)
+        };
+        let call_name = self.interner.get_or_intern(fn_name);
+        let extra = [
+            coll_result.air_ref.as_u32(),
+            AirArgMode::Normal.as_u32(),
+            pos_result.air_ref.as_u32(),
+            AirArgMode::Normal.as_u32(),
+        ];
+        let args_start = air.add_extra(&extra);
+        let call_ref = air.add_inst(AirInst {
+            data: AirInstData::Call {
+                name: call_name,
+                args_start,
+                args_len: 2,
+            },
+            ty: ret_ty,
+            span,
+        });
+        Ok(AnalysisResult::new(call_ref, ret_ty))
+    }
+
+    /// Analyze a for-loop's collection operand as a scoped borrow: the value is
+    /// read but its move state is restored afterward, so referencing it each
+    /// iteration (for the bound, the element, and the advance) does not consume
+    /// the source and it remains usable after the loop.
+    fn analyze_borrowed_collection(
+        &mut self,
+        air: &mut Air,
+        coll: InstRef,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AnalysisResult> {
+        let root = self.extract_root_variable(coll);
+        let move_before = root.and_then(|v| ctx.moved_vars.get(&v).cloned());
+        let coll_result = self.analyze_inst(air, coll, ctx)?;
+        if let Some(var) = root {
+            match move_before {
+                Some(state) => {
+                    ctx.moved_vars.insert(var, state);
+                }
+                None => {
+                    ctx.moved_vars.remove(&var);
+                }
+            }
+        }
+        air.cancel_move_marker(coll_result.air_ref);
+        Ok(coll_result)
     }
 
     // Helper methods for intrinsic analysis (delegated from analyze_intrinsic_impl)

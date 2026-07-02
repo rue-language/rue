@@ -179,3 +179,59 @@ fn main() -> i32 {
     total  // 6
 }
 ```
+
+## For Loops
+
+{{ rule(id="4.8:23", cat="normative") }}
+
+A `for` loop iterates over a built-in iterable, binding each element in turn and
+executing its body once per element. `for` is a preview feature (enabled with
+`--preview for_loops`; see ADR-0037).
+
+{{ rule(id="4.8:24", cat="syntax") }}
+
+```ebnf
+for_expr = "for" ( identifier | "_" ) "in" expression "{" block "}" ;
+```
+
+{{ rule(id="4.8:25", cat="normative") }}
+
+The iterable expression **MUST** be one of the following, which determine the
+element type and iteration order:
+
+- an array `[T; N]` — each element of type `T` is bound in ascending index
+  order;
+- a `String` — each byte is bound as `u8` in ascending byte order;
+- the character view `s.chars()` of a `String` — each Unicode scalar value is
+  bound as `u32`, in ascending byte order.
+
+{{ rule(id="4.8:26", cat="normative") }}
+
+A `for` expression has type `()`. Iteration is a shared read: the collection is
+borrowed for the duration of the loop and remains usable afterward, and elements
+are not moved out of it.
+
+{{ rule(id="4.8:27", cat="dynamic-semantics") }}
+
+`break` and `continue` inside a `for` body affect the `for` loop as the
+innermost enclosing loop. `continue` proceeds to the next element; `break`
+terminates the loop.
+
+{{ rule(id="4.8:28", cat="dynamic-semantics") }}
+
+Iterating `s.chars()` decodes the bytes of `s` as UTF-8. A byte sequence that is
+not well-formed UTF-8 traps at runtime when it is decoded (see ADR-0035); a
+lossy variant is not yet provided.
+
+{{ rule(id="4.8:29") }}
+
+```rue
+fn main() -> i32 {
+    let a: [i32; 3] = [10, 20, 30];
+    let mut sum = 0;
+    for x in a {
+        sum = sum + x;
+    }
+    sum  // 60
+}
+```

@@ -142,6 +142,10 @@ impl Validator<'_> {
                 self.check_expr_block(&w.body);
             }
             Expr::Loop(l) => self.check_expr_block(&l.body),
+            Expr::For(fe) => {
+                self.check_expr(&fe.iterable);
+                self.check_expr_block(&fe.body);
+            }
             Expr::Call(c) => {
                 for arg in &c.args {
                     self.check_expr(&arg.expr);

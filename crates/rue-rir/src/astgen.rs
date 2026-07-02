@@ -28,6 +28,10 @@ pub struct AstGen<'a> {
     interner: &'a ThreadedRodeo,
     /// Output RIR
     rir: Rir,
+    /// Monotonic counter used to mint unique names for the compiler-generated
+    /// temporaries of a `for`-loop desugaring (RUE-220), so nested for-loops
+    /// don't shadow one another's position/length/collection bindings.
+    for_counter: u32,
 }
 
 impl<'a> AstGen<'a> {
@@ -37,6 +41,7 @@ impl<'a> AstGen<'a> {
             ast,
             interner,
             rir: Rir::new(),
+            for_counter: 0,
         }
     }
 
@@ -468,6 +473,7 @@ impl<'a> AstGen<'a> {
                     span: while_expr.span,
                 })
             }
+            Expr::For(for_expr) => self.gen_for(for_expr),
             Expr::Loop(loop_expr) => {
                 let body = self.gen_block(&loop_expr.body);
                 self.rir.add_inst(Inst {
@@ -858,6 +864,292 @@ impl<'a> AstGen<'a> {
                 span: block.span,
             })
         }
+    }
+
+    /// Desugar a `for <binder> in <iterable> { body }` loop (RUE-220).
+    ///
+    /// Layer 1 of the iteration model: a built-in `for` over the
+    /// compiler-known iterables, in read/borrow mode, with no iterator object
+    /// and no lifetimes. The loop holds a scoped read of the collection; a
+    /// `usize` position value threads through a `loop`, and the element is
+    /// projected each iteration (ADR-0037 / RUE-219 layer-1 sketch):
+    ///
+    /// ```text
+    /// { let c = coll; let mut p = 0; let len = <bound>;
+    ///   loop {
+    ///     if p >= len { break }
+    ///     let x = <get(c, p)>;
+    ///     p = <advance(c, p)>;   // advanced BEFORE the body so `continue` still steps
+    ///     body
+    ///   } }
+    /// ```
+    ///
+    /// The type-dependent pieces are three compiler-internal intrinsics that
+    /// Sema resolves by the collection's type (dispatching the three iterable
+    /// kinds — array, String byte view, String `.chars()` scalar view):
+    /// `@__rue_iter_len`, and for the char view `@__rue_char_scalar` /
+    /// `@__rue_char_next`. Everything else reuses the ordinary
+    /// loop/branch/break/index lowering, so move-checking, drop elaboration,
+    /// and codegen come for free. The whole thing is preview-gated in Sema at
+    /// the `@__rue_iter_len` intrinsic, which every for-loop emits.
+    fn gen_for(&mut self, for_expr: &rue_parser::ForExpr) -> InstRef {
+        let span = for_expr.span;
+        let n = self.for_counter;
+        self.for_counter += 1;
+
+        // Recognize the `.chars()` scalar view syntactically: `for c in
+        // s.chars()` iterates Unicode scalars, everything else iterates by
+        // position (array element / String byte). The receiver of `.chars()`
+        // is the actual collection.
+        let (coll_expr, is_chars): (&Expr, bool) = match &*for_expr.iterable {
+            Expr::MethodCall(mc)
+                if mc.args.is_empty() && self.interner.resolve(&mc.method.name) == "chars" =>
+            {
+                (&mc.receiver, true)
+            }
+            other => (other, false),
+        };
+
+        let mut outer_stmts: Vec<u32> = Vec::new();
+
+        // Collection reference. A bare variable is referenced directly so the
+        // loop's non-consuming reads leave it usable afterward (a scoped
+        // borrow); any other expression is a temporary bound once.
+        let coll_name: Spur = if let Expr::Ident(id) = coll_expr {
+            id.name
+        } else {
+            let init = self.gen_expr(coll_expr);
+            let name = self.interner.get_or_intern(format!("__rue_for_coll_{n}"));
+            let (ds, dl) = self.rir.add_directives(&[]);
+            let alloc = self.rir.add_inst(Inst {
+                data: InstData::Alloc {
+                    directives_start: ds,
+                    directives_len: dl,
+                    name: Some(name),
+                    is_mut: false,
+                    ty: None,
+                    init,
+                },
+                span,
+            });
+            outer_stmts.push(alloc.as_u32());
+            name
+        };
+
+        // let mut __p: u64 = 0;   (position — usize is u64)
+        let p_name = self.interner.get_or_intern(format!("__rue_for_p_{n}"));
+        let u64_sym = self.interner.get_or_intern("u64");
+        let zero = self.rir.add_inst(Inst {
+            data: InstData::IntConst(0),
+            span,
+        });
+        let (ds, dl) = self.rir.add_directives(&[]);
+        let p_alloc = self.rir.add_inst(Inst {
+            data: InstData::Alloc {
+                directives_start: ds,
+                directives_len: dl,
+                name: Some(p_name),
+                is_mut: true,
+                ty: Some(u64_sym),
+                init: zero,
+            },
+            span,
+        });
+        outer_stmts.push(p_alloc.as_u32());
+
+        // let __len: u64 = @__rue_iter_len(__coll);
+        let len_name = self.interner.get_or_intern(format!("__rue_for_len_{n}"));
+        let coll_for_len = self.rir.add_inst(Inst {
+            data: InstData::VarRef { name: coll_name },
+            span,
+        });
+        let iter_len_sym = self.interner.get_or_intern("__rue_iter_len");
+        let (la_start, la_len) = self.rir.add_inst_refs(&[coll_for_len]);
+        let len_call = self.rir.add_inst(Inst {
+            data: InstData::Intrinsic {
+                name: iter_len_sym,
+                args_start: la_start,
+                args_len: la_len,
+            },
+            span,
+        });
+        let (ds, dl) = self.rir.add_directives(&[]);
+        let len_alloc = self.rir.add_inst(Inst {
+            data: InstData::Alloc {
+                directives_start: ds,
+                directives_len: dl,
+                name: Some(len_name),
+                is_mut: false,
+                ty: Some(u64_sym),
+                init: len_call,
+            },
+            span,
+        });
+        outer_stmts.push(len_alloc.as_u32());
+
+        // ---- loop body ----
+        let mut body_stmts: Vec<u32> = Vec::new();
+
+        // if __p >= __len { break }
+        let p_ref1 = self.rir.add_inst(Inst {
+            data: InstData::VarRef { name: p_name },
+            span,
+        });
+        let len_ref = self.rir.add_inst(Inst {
+            data: InstData::VarRef { name: len_name },
+            span,
+        });
+        let cond = self.rir.add_inst(Inst {
+            data: InstData::Ge {
+                lhs: p_ref1,
+                rhs: len_ref,
+            },
+            span,
+        });
+        let break_inst = self.rir.add_inst(Inst {
+            data: InstData::Break { value: None },
+            span,
+        });
+        let end_branch = self.rir.add_inst(Inst {
+            data: InstData::Branch {
+                cond,
+                then_block: break_inst,
+                else_block: None,
+            },
+            span,
+        });
+        body_stmts.push(end_branch.as_u32());
+
+        // let <binder> = <get>;
+        let binder_name: Option<Spur> = match &for_expr.binder {
+            LetPattern::Ident(id) => Some(id.name),
+            LetPattern::Wildcard(_) => None,
+        };
+        let p_for_get = self.rir.add_inst(Inst {
+            data: InstData::VarRef { name: p_name },
+            span,
+        });
+        let coll_for_get = self.rir.add_inst(Inst {
+            data: InstData::VarRef { name: coll_name },
+            span,
+        });
+        let get_inst = if is_chars {
+            let sym = self.interner.get_or_intern("__rue_char_scalar");
+            let (s, l) = self.rir.add_inst_refs(&[coll_for_get, p_for_get]);
+            self.rir.add_inst(Inst {
+                data: InstData::Intrinsic {
+                    name: sym,
+                    args_start: s,
+                    args_len: l,
+                },
+                span,
+            })
+        } else {
+            self.rir.add_inst(Inst {
+                data: InstData::IndexGet {
+                    base: coll_for_get,
+                    index: p_for_get,
+                },
+                span,
+            })
+        };
+        let (ds, dl) = self.rir.add_directives(&[]);
+        let binder_alloc = self.rir.add_inst(Inst {
+            data: InstData::Alloc {
+                directives_start: ds,
+                directives_len: dl,
+                name: binder_name,
+                is_mut: false,
+                ty: None,
+                init: get_inst,
+            },
+            span,
+        });
+        body_stmts.push(binder_alloc.as_u32());
+
+        // __p = <advance>;   (advanced before the body so `continue` steps)
+        let p_for_adv = self.rir.add_inst(Inst {
+            data: InstData::VarRef { name: p_name },
+            span,
+        });
+        let advance = if is_chars {
+            let coll_for_adv = self.rir.add_inst(Inst {
+                data: InstData::VarRef { name: coll_name },
+                span,
+            });
+            let sym = self.interner.get_or_intern("__rue_char_next");
+            let (s, l) = self.rir.add_inst_refs(&[coll_for_adv, p_for_adv]);
+            self.rir.add_inst(Inst {
+                data: InstData::Intrinsic {
+                    name: sym,
+                    args_start: s,
+                    args_len: l,
+                },
+                span,
+            })
+        } else {
+            let one = self.rir.add_inst(Inst {
+                data: InstData::IntConst(1),
+                span,
+            });
+            self.rir.add_inst(Inst {
+                data: InstData::Add {
+                    lhs: p_for_adv,
+                    rhs: one,
+                },
+                span,
+            })
+        };
+        let assign = self.rir.add_inst(Inst {
+            data: InstData::Assign {
+                name: p_name,
+                value: advance,
+            },
+            span,
+        });
+        body_stmts.push(assign.as_u32());
+
+        // user body (value discarded)
+        let user_body = self.gen_block(&for_expr.body);
+        body_stmts.push(user_body.as_u32());
+
+        // block value = ()
+        let body_unit = self.rir.add_inst(Inst {
+            data: InstData::UnitConst,
+            span,
+        });
+        body_stmts.push(body_unit.as_u32());
+
+        let body_extra_start = self.rir.add_extra(&body_stmts);
+        let loop_body = self.rir.add_inst(Inst {
+            data: InstData::Block {
+                extra_start: body_extra_start,
+                len: body_stmts.len() as u32,
+            },
+            span,
+        });
+
+        let infinite_loop = self.rir.add_inst(Inst {
+            data: InstData::InfiniteLoop { body: loop_body },
+            span,
+        });
+        outer_stmts.push(infinite_loop.as_u32());
+
+        // outer block value = ()
+        let outer_unit = self.rir.add_inst(Inst {
+            data: InstData::UnitConst,
+            span,
+        });
+        outer_stmts.push(outer_unit.as_u32());
+
+        let outer_extra_start = self.rir.add_extra(&outer_stmts);
+        self.rir.add_inst(Inst {
+            data: InstData::Block {
+                extra_start: outer_extra_start,
+                len: outer_stmts.len() as u32,
+            },
+            span,
+        })
     }
 
     fn gen_statement(&mut self, stmt: &Statement) -> InstRef {

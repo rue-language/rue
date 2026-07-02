@@ -609,6 +609,132 @@ crate::define_for_all_platforms! {
     }
 }
 
+/// Strictly decode one UTF-8 scalar starting at byte `offset` in the `len`-byte
+/// buffer at `ptr`, returning `(scalar, width_in_bytes)`.
+///
+/// This backs `for c in s.chars()` (RUE-220, ADR-0035). Rue's `String` is a
+/// byte string that may hold arbitrary bytes; decoding is where invalidity is
+/// caught, so any malformed, truncated, overlong, or surrogate sequence traps
+/// (`__rue_invalid_utf8`, exit 101) rather than producing `U+FFFD` (a lossy
+/// `.chars_lossy()` is a future addition). Callers only invoke this when
+/// `offset < len` (the loop's end test guarantees a byte remains), but a
+/// multi-byte sequence that runs past `len` is a truncated sequence and traps.
+///
+/// # Safety
+///
+/// `ptr` must point to a valid buffer of at least `len` bytes.
+unsafe fn __rue_decode_utf8_at(ptr: *const u8, len: u64, offset: u64) -> (u32, u64) {
+    let len = len as usize;
+    let i = offset as usize;
+    if i >= len {
+        crate::error::__rue_invalid_utf8();
+    }
+    // SAFETY: `i < len` and the caller guarantees `ptr` is valid for `len`
+    // bytes, so `ptr.add(i)` is in bounds.
+    let b0 = unsafe { *ptr.add(i) };
+    // ASCII fast path (single byte).
+    if b0 < 0x80 {
+        return (b0 as u32, 1);
+    }
+    // Lead byte determines the sequence width, the minimum non-overlong code
+    // point, and the initial code-point bits. Leads 0xC0/0xC1 (always overlong)
+    // and 0x80..=0xBF (continuation) and 0xF5..=0xFF (> U+10FFFF) are invalid.
+    let width: usize;
+    let min: u32;
+    let mut cp: u32;
+    if (0xC2..=0xDF).contains(&b0) {
+        width = 2;
+        min = 0x80;
+        cp = (b0 as u32) & 0x1F;
+    } else if (0xE0..=0xEF).contains(&b0) {
+        width = 3;
+        min = 0x800;
+        cp = (b0 as u32) & 0x0F;
+    } else if (0xF0..=0xF4).contains(&b0) {
+        width = 4;
+        min = 0x10000;
+        cp = (b0 as u32) & 0x07;
+    } else {
+        crate::error::__rue_invalid_utf8();
+    }
+    if i + width > len {
+        crate::error::__rue_invalid_utf8();
+    }
+    let mut k = 1usize;
+    while k < width {
+        // SAFETY: `i + width <= len` (checked above), so `i + k` is in bounds.
+        let b = unsafe { *ptr.add(i + k) };
+        if b & 0xC0 != 0x80 {
+            crate::error::__rue_invalid_utf8();
+        }
+        cp = (cp << 6) | ((b as u32) & 0x3F);
+        k += 1;
+    }
+    // Reject overlong encodings, UTF-16 surrogates, and out-of-range scalars.
+    if cp < min || (0xD800..=0xDFFF).contains(&cp) || cp > 0x10FFFF {
+        crate::error::__rue_invalid_utf8();
+    }
+    (cp, width as u64)
+}
+
+crate::define_for_all_platforms! {
+    /// Decode the Unicode scalar of the character starting at byte `offset`.
+    ///
+    /// Backs the element projection of `for c in s.chars()` (RUE-220). Returns
+    /// the scalar zero-extended into `u64` (the language-level type is `u32`;
+    /// see the `__rue_String_byte_at` ABI note on why a clean full register is
+    /// returned). Traps on invalid UTF-8.
+    ///
+    /// # ABI
+    ///
+    /// ```text
+    /// extern "C" fn __rue_String_char_scalar(ptr: *const u8, len: u64, cap: u64, offset: u64) -> u64
+    /// ```
+    ///
+    /// # Safety
+    ///
+    /// `ptr` must point to a valid buffer of at least `len` bytes.
+    #[allow(non_snake_case)]
+    pub extern "C" fn __rue_String_char_scalar(
+        ptr: *const u8,
+        len: u64,
+        _cap: u64,
+        offset: u64,
+    ) -> u64 {
+        // SAFETY: the for-loop desugaring passes the String's own (ptr, len).
+        let (scalar, _width) = unsafe { __rue_decode_utf8_at(ptr, len, offset) };
+        scalar as u64
+    }
+}
+
+crate::define_for_all_platforms! {
+    /// Return the byte offset of the character AFTER the one at `offset`.
+    ///
+    /// Backs the position advance of `for c in s.chars()` (RUE-220): the next
+    /// position is `offset + utf8_width`. Traps on invalid UTF-8.
+    ///
+    /// # ABI
+    ///
+    /// ```text
+    /// extern "C" fn __rue_String_char_next(ptr: *const u8, len: u64, cap: u64, offset: u64) -> u64
+    /// ```
+    ///
+    /// # Safety
+    ///
+    /// `ptr` must point to a valid buffer of at least `len` bytes.
+    #[allow(non_snake_case)]
+    pub extern "C" fn __rue_String_char_next(
+        ptr: *const u8,
+        len: u64,
+        _cap: u64,
+        offset: u64,
+    ) -> u64 {
+        // SAFETY: the for-loop desugaring passes the String's own (ptr, len).
+        let (_scalar, width) = unsafe { __rue_decode_utf8_at(ptr, len, offset) };
+        offset + width
+    }
+}
+
 crate::define_for_all_platforms! {
     /// Return a NEW String containing the byte range `[start, start + sub_len)`.
     ///

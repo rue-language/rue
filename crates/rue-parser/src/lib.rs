@@ -28,6 +28,7 @@ pub use ast::{
     FieldDecl,
     FieldExpr,
     FieldInit,
+    ForExpr,
     Function,
     Ident,
     IndexExpr,

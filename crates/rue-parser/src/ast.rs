@@ -449,6 +449,9 @@ pub enum Expr {
     While(WhileExpr),
     /// Loop expression - infinite loop (e.g., `loop { body }`)
     Loop(LoopExpr),
+    /// For expression - iterates over a built-in iterable
+    /// (e.g., `for x in arr { body }`)
+    For(ForExpr),
     /// Function call (e.g., `foo(1, 2)`)
     Call(CallExpr),
     /// Break statement (exits the innermost loop)
@@ -895,6 +898,25 @@ pub struct LoopExpr {
     pub span: Span,
 }
 
+/// A `for` expression that iterates over a built-in iterable (RUE-220).
+///
+/// `for <binder> in <iterable> { body }` iterates in read/borrow mode over one
+/// of the compiler-known iterables (an array, a String's bytes, or a String's
+/// `.chars()` view). It is lowered to a scoped-borrow + position + `loop`
+/// desugaring in AstGen (see `gen_for`); there is no borrow-holding iterator
+/// object. The `.chars()` char view is recognized syntactically at lowering
+/// time, so the AST just stores the iterable expression as written.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForExpr {
+    /// The loop-variable binding (identifier or `_` wildcard).
+    pub binder: LetPattern,
+    /// The iterable expression (`in <iterable>`).
+    pub iterable: Box<Expr>,
+    /// Loop body.
+    pub body: BlockExpr,
+    pub span: Span,
+}
+
 /// A break expression (exits the innermost loop).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BreakExpr {
@@ -970,6 +992,7 @@ impl Expr {
             Expr::Match(match_expr) => match_expr.span,
             Expr::While(while_expr) => while_expr.span,
             Expr::Loop(loop_expr) => loop_expr.span,
+            Expr::For(for_expr) => for_expr.span,
             Expr::Call(call) => call.span,
             Expr::Break(break_expr) => break_expr.span,
             Expr::Continue(continue_expr) => continue_expr.span,
@@ -1220,6 +1243,20 @@ fn fmt_expr(f: &mut fmt::Formatter<'_>, expr: &Expr, level: usize) -> fmt::Resul
         Expr::Loop(loop_expr) => {
             writeln!(f, "Loop")?;
             fmt_block_expr(f, &loop_expr.body, level + 1)
+        }
+        Expr::For(for_expr) => {
+            writeln!(f, "For")?;
+            indent(f, level + 1)?;
+            match &for_expr.binder {
+                LetPattern::Ident(ident) => writeln!(f, "Binder sym:{}", ident.name.into_usize())?,
+                LetPattern::Wildcard(_) => writeln!(f, "Binder _")?,
+            }
+            indent(f, level + 1)?;
+            writeln!(f, "Iterable:")?;
+            fmt_expr(f, &for_expr.iterable, level + 2)?;
+            indent(f, level + 1)?;
+            writeln!(f, "Body:")?;
+            fmt_block_expr(f, &for_expr.body, level + 2)
         }
         Expr::Call(call) => {
             writeln!(f, "Call sym:{}", call.name.name.into_usize())?;

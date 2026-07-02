@@ -1,0 +1,102 @@
+# Built-in `for` loops over arrays and string views (RUE-220, ADR-0037).
+#
+# These drive the real compiler with `--preview for_loops` and check exact
+# stdout / exit codes end to end. The `.chars()` cases in particular exercise
+# the `__rue_String_char_scalar` / `__rue_String_char_next` runtime ABI (a
+# String flattened to ptr/len/cap plus a byte offset, returning a scalar / next
+# offset), and the strict-UTF-8 decode trap, which the spec harness cannot fully
+# observe.
+
+[section]
+id = "cli.for_loops"
+name = "For loops (iteration layer 1)"
+description = "for over arrays, String bytes, and String .chars(), preview-gated."
+
+[[case]]
+name = "for_array_dbg_elements"
+description = "for over an array binds each element in index order; the array is only read, so it stays usable after the loop."
+args = ["--preview", "for_loops", "main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: [i32; 4] = [3, 1, 4, 1];
+    let mut sum = 0;
+    for x in a {
+        @dbg(x);
+        sum = sum + x;
+    }
+    @dbg(a[0]);
+    sum
+}
+""" }]
+exit_code = 9
+stdout = "3\n1\n4\n1\n3\n"
+
+[[case]]
+name = "for_string_bytes_dbg"
+description = "for over a String yields each byte as u8 in ascending byte order; 'café' is 5 bytes (é = 0xC3 0xA9 = 195, 169)."
+args = ["--preview", "for_loops", "main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let s = "café";
+    let mut count = 0;
+    for b in s {
+        @dbg(b);
+        count = count + 1;
+    }
+    count
+}
+""" }]
+exit_code = 5
+stdout = "99\n97\n102\n195\n169\n"
+
+[[case]]
+name = "for_chars_scalars_dbg"
+description = "for c in s.chars() decodes UTF-8 and binds each Unicode scalar as u32; 'café' is 4 scalars with é = U+00E9 = 233."
+args = ["--preview", "for_loops", "main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let s = "héllo";
+    let mut count = 0;
+    for c in s.chars() {
+        @dbg(c);
+        count = count + 1;
+    }
+    count
+}
+""" }]
+exit_code = 5
+stdout = "104\n233\n108\n108\n111\n"
+
+[[case]]
+name = "for_chars_invalid_utf8_traps"
+description = "Strict decode: a truncated multi-byte sequence traps at the decode boundary (exit 101) after the valid prefix has been emitted."
+args = ["--preview", "for_loops", "main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let full = "café";
+    let s = full.substring(0, 4);
+    for c in s.chars() {
+        @dbg(c);
+    }
+    0
+}
+""" }]
+exit_code = 101
+stdout = "99\n97\n102\n"
+runtime_error_contains = ["invalid UTF-8"]
+
+[[case]]
+name = "for_without_preview_is_gated"
+description = "Without --preview for_loops the for loop is rejected as a preview feature."
+args = ["main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: [i32; 2] = [1, 2];
+    for x in a {
+        let _y = x;
+    }
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["requires preview feature"]

@@ -56,8 +56,8 @@ let_stmt       = directives "let" [ "mut" ] let_pattern [ ":" type ] "=" express
 let_pattern    = IDENT | "_" ;
 assign_stmt    = place_expr "=" expression ";" ;
 expr_stmt      = expression ";"
-               | control_flow_expr ;   (* if/match/while/loop/break/continue/return
-                                          and bare blocks need no semicolon *)
+               | control_flow_expr ;   (* if/match/while/loop/for/break/continue/
+                                          return and bare blocks need no semicolon *)
 
 (* Place expressions: a variable with zero or more field/index projections.
    Used as assignment targets and as inout/borrow call arguments. *)
@@ -139,7 +139,7 @@ primitive_type_literal = "i8" | "i16" | "i32" | "i64"
 block_expr     = "{" block "}" ;
 comptime_expr  = "comptime" "{" block "}" ;
 checked_expr   = "checked" "{" block "}" ;
-control_flow_expr = if_expr | match_expr | while_expr | loop_expr
+control_flow_expr = if_expr | match_expr | while_expr | loop_expr | for_expr
                   | break_expr | "continue" | return_expr ;
 if_expr        = "if" expression "{" block "}" [ else_clause ] ;
 else_clause    = "else" ( "{" block "}" | if_expr ) ;
@@ -153,6 +153,8 @@ pattern        = "_"
                | IDENT { "." IDENT } "::" IDENT ;      (* module.Enum::Variant *)
 while_expr     = "while" expression "{" block "}" ;
 loop_expr      = "loop" "{" block "}" ;
+for_expr       = "for" ( IDENT | "_" ) "in" expression "{" block "}" ;
+                 (* preview: --preview for_loops *)
 break_expr     = "break" [ expression ] ;   (* an operand parses but is always
                                                rejected in semantic analysis *)
 return_expr    = "return" [ expression ] ;
@@ -202,7 +204,7 @@ Notes:
   duplicate or conflicting modes are a parse error.
 - **Statement termination**: `let`, assignment, and ordinary expression
   statements require `;`. Control-flow expressions (`if`, `match`, `while`,
-  `loop`, `break`, `continue`, `return`) and bare blocks may appear as
+  `loop`, `for`, `break`, `continue`, `return`) and bare blocks may appear as
   statements without a trailing semicolon.
 - There are no `impl` blocks: methods are declared inline inside the
   `struct` body, after the fields.

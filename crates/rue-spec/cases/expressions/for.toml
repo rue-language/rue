@@ -1,0 +1,214 @@
+[section]
+id = "expressions.for"
+spec_chapter = "4.8"
+name = "For Loop Expressions"
+description = """
+Built-in `for` loops (RUE-220, ADR-0037) iterate in read mode over an array, a
+String's bytes, or a String's `.chars()` scalar view. Preview-gated behind
+`--preview for_loops`.
+"""
+
+# =============================================================================
+# Arrays
+# =============================================================================
+
+[[case]]
+name = "for_array_sum"
+spec = ["4.8:23", "4.8:24", "4.8:25", "4.8:26"]
+preview = "for_loops"
+source = """
+fn main() -> i32 {
+    let a: [i32; 3] = [10, 20, 30];
+    let mut sum = 0;
+    for x in a {
+        sum = sum + x;
+    }
+    sum
+}
+"""
+exit_code = 60
+
+# The collection is borrowed for the loop, not consumed: a String iterated in a
+# `for` stays usable afterward (a second loop would be a use-after-move if the
+# first had moved it).
+[[case]]
+name = "for_string_borrows_not_consumes"
+spec = ["4.8:26"]
+preview = "for_loops"
+source = """
+fn main() -> i32 {
+    let s = "abcd";
+    let mut count = 0;
+    for _b in s {
+        count = count + 1;
+    }
+    for _b in s {
+        count = count + 1;
+    }
+    count
+}
+"""
+exit_code = 8
+
+# =============================================================================
+# String byte view
+# =============================================================================
+
+[[case]]
+name = "for_string_bytes_count"
+spec = ["4.8:25"]
+preview = "for_loops"
+source = """
+fn main() -> i32 {
+    let s = "abc";
+    let mut count = 0;
+    for _b in s {
+        count = count + 1;
+    }
+    count
+}
+"""
+exit_code = 3
+
+# "café" is 5 bytes (é is 2 UTF-8 bytes), so the byte view yields 5 elements.
+[[case]]
+name = "for_string_bytes_multibyte"
+spec = ["4.8:25"]
+preview = "for_loops"
+source = """
+fn main() -> i32 {
+    let s = "café";
+    let mut count = 0;
+    for _b in s {
+        count = count + 1;
+    }
+    count
+}
+"""
+exit_code = 5
+
+# =============================================================================
+# String char (Unicode scalar) view
+# =============================================================================
+
+[[case]]
+name = "for_chars_scalars"
+spec = ["4.8:25", "3.7:31"]
+preview = "for_loops"
+source = """
+fn main() -> i32 {
+    let s = "café";
+    let mut count = 0;
+    for c in s.chars() {
+        @dbg(c);
+        count = count + 1;
+    }
+    count
+}
+"""
+exit_code = 4
+expected_stdout = "99\n97\n102\n233\n"
+
+# =============================================================================
+# break / continue
+# =============================================================================
+
+[[case]]
+name = "for_break_continue"
+spec = ["4.8:27"]
+preview = "for_loops"
+source = """
+fn main() -> i32 {
+    let a: [i32; 5] = [1, 2, 3, 4, 5];
+    let mut sum = 0;
+    for x in a {
+        if x == 4 {
+            break;
+        }
+        if x == 2 {
+            continue;
+        }
+        sum = sum + x;
+    }
+    sum
+}
+"""
+exit_code = 4
+
+[[case]]
+name = "for_nested"
+spec = ["4.8:23"]
+preview = "for_loops"
+source = """
+fn main() -> i32 {
+    let a: [i32; 2] = [1, 2];
+    let b: [i32; 3] = [10, 20, 30];
+    let mut sum = 0;
+    for x in a {
+        for y in b {
+            sum = sum + x + y;
+        }
+    }
+    sum
+}
+"""
+exit_code = 129
+
+# =============================================================================
+# Invalid UTF-8 during char decoding traps (ADR-0035)
+# =============================================================================
+
+# substring(0, 4) of "café" keeps the lead byte of `é` (0xC3) without its
+# continuation, so decoding the 4th character traps.
+[[case]]
+name = "for_chars_invalid_utf8_traps"
+spec = ["4.8:28", "3.7:32"]
+preview = "for_loops"
+source = """
+fn main() -> i32 {
+    let full = "café";
+    let s = full.substring(0, 4);
+    for c in s.chars() {
+        @dbg(c);
+    }
+    0
+}
+"""
+exit_code = 101
+expected_stdout = "99\n97\n102\n"
+
+# =============================================================================
+# Preview gating
+# =============================================================================
+
+[[case]]
+name = "for_requires_preview"
+spec = ["4.8:23"]
+source = """
+fn main() -> i32 {
+    let a: [i32; 3] = [1, 2, 3];
+    for x in a {
+        let _y = x;
+    }
+    0
+}
+"""
+compile_fail = true
+error_contains = "requires preview feature"
+
+# A non-iterable operand is rejected (with the preview enabled).
+[[case]]
+name = "for_non_iterable_rejected"
+spec = ["4.8:25"]
+preview = "for_loops"
+source = """
+fn main() -> i32 {
+    let n = 5;
+    for x in n {
+        let _y = x;
+    }
+    0
+}
+"""
+compile_fail = true
+error_contains = "array or a String"

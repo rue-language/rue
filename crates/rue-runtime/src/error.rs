@@ -228,6 +228,57 @@ crate::define_for_all_platforms! {
     }
 }
 
+crate::define_for_all_platforms! {
+    /// Runtime error: invalid UTF-8 during decoding.
+    ///
+    /// Called when `s.chars()` iteration (RUE-220, ADR-0035) decodes a byte
+    /// sequence that is not well-formed UTF-8. Rue's `String` is a byte string
+    /// that may hold arbitrary bytes; the "trap, don't corrupt" discipline
+    /// applies at the decode boundary, so interpreting invalid bytes as
+    /// Unicode scalars traps loudly (a `.chars_lossy()` that substitutes
+    /// `U+FFFD` is a future addition).
+    ///
+    /// # Behavior
+    ///
+    /// 1. Writes `"error: invalid UTF-8\n"` to stderr (best-effort)
+    /// 2. Exits with code 101
+    ///
+    /// # ABI
+    ///
+    /// ```text
+    /// extern "C" fn __rue_invalid_utf8() -> !
+    /// ```
+    ///
+    /// No arguments. Never returns.
+    pub extern "C" fn __rue_invalid_utf8() -> ! {
+        // Build error message byte-by-byte to avoid macOS linker bug with byte strings
+        let mut msg = [0u8; 21];
+        msg[0] = b'e';
+        msg[1] = b'r';
+        msg[2] = b'r';
+        msg[3] = b'o';
+        msg[4] = b'r';
+        msg[5] = b':';
+        msg[6] = b' ';
+        msg[7] = b'i';
+        msg[8] = b'n';
+        msg[9] = b'v';
+        msg[10] = b'a';
+        msg[11] = b'l';
+        msg[12] = b'i';
+        msg[13] = b'd';
+        msg[14] = b' ';
+        msg[15] = b'U';
+        msg[16] = b'T';
+        msg[17] = b'F';
+        msg[18] = b'-';
+        msg[19] = b'8';
+        msg[20] = b'\n';
+        platform::write_stderr(&msg);
+        platform::exit(101)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

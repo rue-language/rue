@@ -28,6 +28,8 @@ The following words are keywords and cannot be used as identifiers:
 | `else` | Alternative branch |
 | `while` | While loop expression |
 | `loop` | Infinite loop expression |
+| `for` | For loop expression |
+| `in` | Iterable separator in a `for` loop |
 | `match` | Pattern matching expression |
 | `return` | Return from function |
 | `break` | Exit loop |
