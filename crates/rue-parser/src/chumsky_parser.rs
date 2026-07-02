@@ -608,8 +608,13 @@ where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
     recursive(|expr| {
+        // Standalone block-like-statement parser (if/match/while/loop/block),
+        // threaded into the atom and block parsers so that a block-like
+        // expression in statement position is a complete statement (RUE-210).
+        let block_like = block_like_head_parser(expr.clone());
+
         // Atom parser - primary expressions
-        let atom = atom_parser(expr.clone());
+        let atom = atom_parser(expr.clone(), block_like);
 
         // Rust-refugee diagnostic: `expr as T` is not Rue syntax (`as` is an
         // ordinary identifier, so `5 as i64` used to die with a generic
@@ -936,8 +941,13 @@ where
 }
 
 /// Parser for control flow expressions: break, continue, return, if, while, loop, match
+///
+/// `block_like` is the standalone block-like-statement parser threaded down to
+/// the block bodies (`if`/`while`/`loop`/`match` arms) so those bodies apply
+/// the block-like statement-boundary rule (RUE-210).
 fn control_flow_parser<'src, I>(
     expr: impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone + 'src,
+    block_like: impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone + 'src,
 ) -> impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
@@ -945,8 +955,15 @@ where
     // Break: break <expr>? (a value operand parses, but sema always rejects
     // it - break does not carry a value; parsing it gives a better diagnostic
     // than treating the operand as a separate, unreachable statement)
+    //
+    // The operand is refused when it starts with `{` so that a bare `break`
+    // used as a loop/if condition does not swallow the following block as its
+    // value: in `while break {}` the `{}` is the loop body, not a block-valued
+    // operand of `break`. The `and_is(LBrace.not())` non-consuming guard makes
+    // the optional operand decline a leading brace, leaving it for the
+    // loop/if body parser (RUE-209). `break (expr)` is unaffected.
     let break_expr = just(TokenKind::Break)
-        .ignore_then(expr.clone().or_not())
+        .ignore_then(expr.clone().and_is(just(TokenKind::LBrace).not()).or_not())
         .map_with(|value, e| {
             Expr::Break(BreakExpr {
                 value: value.map(Box::new),
@@ -960,8 +977,12 @@ where
     };
 
     // Return expression: return <expr>? (expression is optional for unit-returning functions)
+    //
+    // As with `break` above, the optional operand declines a leading `{` so a
+    // bare `return` used as a loop/if condition does not swallow the following
+    // block as its value operand (RUE-209). `return (expr)` is unaffected.
     let return_expr = just(TokenKind::Return)
-        .ignore_then(expr.clone().or_not())
+        .ignore_then(expr.clone().and_is(just(TokenKind::LBrace).not()).or_not())
         .map_with(|value, e| {
             Expr::Return(ReturnExpr {
                 value: value.map(Box::new),
@@ -973,7 +994,7 @@ where
     let if_expr = recursive(|if_expr_rec| {
         just(TokenKind::If)
             .ignore_then(expr.clone())
-            .then(maybe_unit_block_parser(expr.clone()))
+            .then(maybe_unit_block_parser(expr.clone(), block_like.clone()))
             .then(
                 just(TokenKind::Else)
                     .ignore_then(choice((
@@ -987,7 +1008,7 @@ where
                             }
                         }),
                         // else { ... }: parse a regular block
-                        maybe_unit_block_parser(expr.clone()),
+                        maybe_unit_block_parser(expr.clone(), block_like.clone()),
                     )))
                     .or_not(),
             )
@@ -1005,7 +1026,7 @@ where
     // While expression
     let while_expr = just(TokenKind::While)
         .ignore_then(expr.clone())
-        .then(maybe_unit_block_parser(expr.clone()))
+        .then(maybe_unit_block_parser(expr.clone(), block_like.clone()))
         .map_with(|(cond, body), e| {
             Expr::While(WhileExpr {
                 cond: Box::new(cond),
@@ -1017,7 +1038,7 @@ where
 
     // Loop expression (infinite loop)
     let loop_expr = just(TokenKind::Loop)
-        .ignore_then(maybe_unit_block_parser(expr.clone()))
+        .ignore_then(maybe_unit_block_parser(expr.clone(), block_like.clone()))
         .map_with(|body, e| {
             Expr::Loop(LoopExpr {
                 body,
@@ -1367,6 +1388,7 @@ where
 /// Atom parser - primary expressions (literals, identifiers, parens, blocks, control flow)
 fn atom_parser<'src, I>(
     expr: impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone + 'src,
+    block_like: impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone + 'src,
 ) -> impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
@@ -1388,11 +1410,11 @@ where
         });
 
     // Block expression
-    let block_expr = block_parser(expr.clone());
+    let block_expr = block_parser(expr.clone(), block_like.clone());
 
     // Comptime block expression: comptime { expr }
     let comptime_expr = just(TokenKind::Comptime)
-        .ignore_then(block_parser(expr.clone()))
+        .ignore_then(block_parser(expr.clone(), block_like.clone()))
         .map_with(|inner_expr, e| {
             Expr::Comptime(ComptimeBlockExpr {
                 expr: Box::new(inner_expr),
@@ -1403,7 +1425,7 @@ where
     // Checked block expression: checked { expr }
     // Unchecked operations are only allowed inside checked blocks
     let checked_expr = just(TokenKind::Checked)
-        .ignore_then(block_parser(expr.clone()))
+        .ignore_then(block_parser(expr.clone(), block_like.clone()))
         .map_with(|inner_expr, e| {
             Expr::Checked(CheckedBlockExpr {
                 expr: Box::new(inner_expr),
@@ -1594,7 +1616,7 @@ where
     // Note: anon_struct_type_expr must come before call_and_access_parser since struct is a keyword
     let primary = choice((
         literal_parser(),
-        control_flow_parser(expr.clone()),
+        control_flow_parser(expr.clone(), block_like.clone()),
         self_expr,
         self_type_expr,
         any_intrinsic_call,
@@ -1800,6 +1822,24 @@ fn is_control_flow_expr(e: &Expr) -> bool {
     )
 }
 
+/// Returns true if the expression is "block-like": a control-flow form whose
+/// syntax ends in a `}` block (`if`/`match`/`while`/`loop`) or a bare block.
+///
+/// In statement position, a block-like expression immediately followed by a
+/// `-` is a complete statement, and the `-` starts a NEW statement as unary
+/// negation rather than continuing the subtraction `(block-like) - operand`.
+/// This is enforced in [`block_item_parser`] via [`block_like_head_parser`],
+/// which parses a leading block-like expression on its own (before the general
+/// Pratt expression that would otherwise absorb the `-`) (RUE-210). Note this
+/// excludes `break`/`continue`/`return`, which are diverging but not
+/// brace-terminated.
+fn is_block_like(e: &Expr) -> bool {
+    matches!(
+        e,
+        Expr::If(_) | Expr::Match(_) | Expr::While(_) | Expr::Loop(_) | Expr::Block(_)
+    )
+}
+
 /// Returns true if the expression diverges (has the Never type).
 /// These expressions can be promoted to the final expression of a block
 /// since Never coerces to any type.
@@ -1865,6 +1905,7 @@ fn is_diverging_expr(e: &Expr) -> bool {
 /// could otherwise be misparsed as expression `x` followed by unexpected `=`.
 fn block_item_parser<'src, I>(
     expr: impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone + 'src,
+    block_like: impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone + 'src,
 ) -> impl Parser<'src, I, BlockItem, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
@@ -1878,14 +1919,29 @@ where
     // Always requires a trailing semicolon.
     let assign_stmt = assign_statement_parser(expr.clone()).map(BlockItem::Statement);
 
+    // Block-like head: a leading `if`/`match`/`while`/`loop`/`{ }` in statement
+    // position that is immediately followed by a `-` is a *complete* statement,
+    // so it must be parsed on its own — NOT through the Pratt `expr` below,
+    // which would otherwise read the `-` as binary subtraction spanning two
+    // statements. Trying this before `expr` and stopping right after the block
+    // makes the `-` start a new statement (unary negation) instead (RUE-210).
+    // `block_like` only fires when a `-` follows; for every other follower it
+    // fails and `expr` handles the item unchanged. It is threaded in (rather
+    // than rebuilt here) because it is mutually recursive with this parser
+    // through the block bodies it contains, and it declines
+    // `break`/`return`/`continue`, which fall through to `expr`.
+    let block_like_head = block_like;
+
     // Expression-based item: parse expression ONCE, then decide based on what follows.
     // This avoids O(2^n) complexity from repeatedly re-parsing expressions with backtracking.
     //
-    // After parsing an expression, we check the next token:
+    // The head is `block_like_head` (a standalone block-like expression) or,
+    // failing that, the general Pratt `expr`. After parsing the head, we check
+    // the next token:
     // - `;` → expression statement (value discarded)
     // - `}` → final expression (block's return value)
     // - other → mid-block control flow (only valid for if/while/match/loop/break/continue/return)
-    let expr_item = expr
+    let expr_item = choice((block_like_head, expr))
         .then(
             choice((
                 just(TokenKind::Semi).to(ExprFollower::Semi),
@@ -1976,11 +2032,12 @@ fn process_block_items(items: Vec<BlockItem>, block_span: Span) -> (Vec<Statemen
 /// statement like `break`/`continue`/`return` to the final expression).
 fn maybe_unit_block_parser<'src, I>(
     expr: impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone + 'src,
+    block_like: impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone + 'src,
 ) -> impl Parser<'src, I, BlockExpr, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    block_item_parser(expr)
+    block_item_parser(expr, block_like)
         .repeated()
         .collect::<Vec<_>>()
         .delimited_by(just(TokenKind::LBrace), just(TokenKind::RBrace))
@@ -1999,11 +2056,58 @@ where
 /// for positions that need an expression (function bodies, standalone blocks).
 fn block_parser<'src, I>(
     expr: impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone + 'src,
+    block_like: impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone + 'src,
 ) -> impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    maybe_unit_block_parser(expr).map(Expr::Block)
+    maybe_unit_block_parser(expr, block_like).map(Expr::Block)
+}
+
+/// Standalone parser for a *block-like* expression (`if`/`match`/`while`/
+/// `loop`/`{ }`) in statement position that is immediately followed by a `-`.
+/// In that case the block-like expression is a complete statement and the `-`
+/// begins a NEW statement as unary negation, rather than continuing as the
+/// subtraction `(block-like) - operand` (RUE-210, see [`is_block_like`] and
+/// [`block_item_parser`]).
+///
+/// The `-` lookahead is what makes this narrow and safe: `-` is the only
+/// operator that is both a prefix (unary) and an infix (binary) operator, so it
+/// is the only token that can *silently* flip meaning across the boundary.
+/// Unambiguously-binary operators (`+`, `*`, `==`, ...) are left to the general
+/// Pratt expression, which keeps a leading block-like expression as their
+/// left operand (e.g. `{ a } + { b }` stays one addition). The other prefix
+/// operators (`!`, `~`) are never infix, so they already start a new statement
+/// without special handling.
+///
+/// It is `recursive` because the block bodies it contains hold block-items that
+/// again prefer this parser; the recursion knot lets those bodies reference the
+/// same parser lazily instead of triggering an infinite eager construction
+/// cycle. The `try_map` declines `break`/`return`/`continue`, so those fall
+/// through to the general Pratt expression and keep their optional operand.
+fn block_like_head_parser<'src, I>(
+    expr: impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone + 'src,
+) -> impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    recursive(|block_like| {
+        choice((
+            control_flow_parser(expr.clone(), block_like.clone()),
+            block_parser(expr.clone(), block_like.clone()),
+        ))
+        .try_map(|e, span| {
+            if is_block_like(&e) {
+                Ok(e)
+            } else {
+                Err(Rich::custom(span, "not a block-like expression"))
+            }
+        })
+        // Only engage the statement boundary when a `-` follows (non-consuming),
+        // so all other operators keep binding through the Pratt path.
+        .then_ignore(just(TokenKind::Minus).rewind())
+        .boxed()
+    })
 }
 
 /// Parser for function definitions: [@directive]* [pub] [unchecked] fn name(params) -> Type { body }
@@ -2028,7 +2132,7 @@ where
         .then(just(TokenKind::Fn).ignore_then(ident_parser()))
         .then(params_parser().delimited_by(just(TokenKind::LParen), just(TokenKind::RParen)))
         .then(just(TokenKind::Arrow).ignore_then(type_parser()).or_not())
-        .then(block_parser(expr))
+        .then(block_parser(expr.clone(), block_like_head_parser(expr)))
         .map_with(
             |((((((directives, visibility), is_unchecked), name), params), return_type), body),
              e| Function {
@@ -2190,7 +2294,7 @@ where
                 .delimited_by(just(TokenKind::LParen), just(TokenKind::RParen)),
         )
         .then(just(TokenKind::Arrow).ignore_then(type_parser()).or_not())
-        .then(block_parser(expr))
+        .then(block_parser(expr.clone(), block_like_head_parser(expr)))
         .map_with(
             |((((directives, name), (receiver, params)), return_type), body), e| Method {
                 directives,
@@ -2220,7 +2324,7 @@ where
         .ignore_then(just(TokenKind::Fn))
         .ignore_then(ident_parser())
         .then(self_param.delimited_by(just(TokenKind::LParen), just(TokenKind::RParen)))
-        .then(block_parser(expr))
+        .then(block_parser(expr.clone(), block_like_head_parser(expr)))
         .map_with(|((type_name, self_param), body), e| DropFn {
             type_name,
             self_param,

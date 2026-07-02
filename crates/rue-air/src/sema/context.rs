@@ -295,6 +295,12 @@ pub(crate) struct AnalysisContext<'a> {
     pub next_slot: u32,
     /// How many loops we're nested inside (for break/continue validation)
     pub loop_depth: u32,
+    /// How many `checked` blocks we're nested inside. Unchecked operations —
+    /// raw-pointer intrinsics (`@raw`, `@ptr_read`, …) and calls to `unchecked
+    /// fn`s — are only legal when this is greater than zero (spec 9.1:1,
+    /// chapter 9). An `unchecked fn` body does NOT implicitly count as a
+    /// checked context; the modifier only gates *callers* (see spec 9.1:1).
+    pub checked_depth: u32,
     /// One entry per enclosing loop (innermost last); set to `true` when a
     /// `break` targeting that loop is analyzed. An infinite loop containing a
     /// break has type `()`; without one it has type `!` (see spec 4.8).
@@ -408,6 +414,7 @@ impl<'a> AnalysisContext<'a> {
             params: self.params,
             next_slot: self.next_slot,
             loop_depth: self.loop_depth,
+            checked_depth: self.checked_depth,
             loop_break_stack: self.loop_break_stack.clone(),
             used_locals: self.used_locals.clone(),
             return_type: self.return_type,

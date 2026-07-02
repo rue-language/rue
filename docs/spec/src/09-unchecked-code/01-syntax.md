@@ -75,15 +75,39 @@ Rue provides two raw pointer types for low-level memory access:
 ptr_type = "ptr" ( "const" | "mut" ) type ;
 ```
 
-{{ rule(id="9.1:10", cat="informative") }}
+{{ rule(id="9.1:10", cat="normative") }}
 
-Raw pointer types are parsed in Phase 1 but semantic analysis (type checking, pointer operations) is implemented in later phases. Until Phase 2 is implemented, using pointer types results in an "unknown type" error.
+Raw pointer types are fully type-checked: they may appear as the type of a
+local, a parameter, a struct field, or a function return type. A `ptr const T`
+and a `ptr mut T` are distinct types, and two pointer types are equal only when
+their pointee types `T` are equal — a `ptr const i32` is neither a `ptr mut
+i32` nor a `ptr const i64`.
 
 {{ rule(id="9.1:11", cat="example") }}
 
 ```rue
-// These parse correctly but fail type checking until Phase 2
 fn takes_ptr(p: ptr const i32) -> i32 { 0 }
 fn takes_mut_ptr(p: ptr mut i32) -> i32 { 0 }
-unchecked fn get_ptr() -> ptr const i32 { @panic() }
+fn identity_ptr(p: ptr const i32) -> ptr const i32 { p }
+struct Node { next: ptr const Node, value: i32 }
+```
+
+{{ rule(id="9.1:12", cat="legality-rule") }}
+
+A raw-pointer intrinsic — `@raw`, `@raw_mut`, `@ptr_read`, `@ptr_write`,
+`@ptr_offset`, `@ptr_to_int`, or `@int_to_ptr` — is an unchecked operation and
+**MUST** appear within a `checked` block. Using one outside a `checked` block is
+a compile error. (Defining a `ptr const T` / `ptr mut T` value's *type* is
+always legal; only the pointer *operations* require a `checked` block.)
+
+{{ rule(id="9.1:13", cat="example") }}
+
+```rue
+fn main() -> i32 {
+    let x: i32 = 42;
+    // The pointer operations are wrapped in `checked`; the pointer types
+    // themselves need no `checked`.
+    let p: ptr const i32 = checked { @raw(x) };
+    checked { @ptr_read(p) }
+}
 ```

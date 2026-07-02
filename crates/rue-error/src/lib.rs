@@ -49,6 +49,8 @@ use thiserror::Error;
 /// - **E0900-E0999**: Array errors
 /// - **E1000-E1099**: Linker/target errors
 /// - **E1100-E1199**: Preview feature errors
+/// - **E1200-E1299**: Comptime errors
+/// - **E1300-E1399**: Unchecked-code errors (raw pointers, `checked` blocks)
 /// - **E9000-E9999**: Internal compiler errors
 ///
 /// Once assigned, error codes must never change to maintain stability for
@@ -229,6 +231,11 @@ impl ErrorCode {
     // ========================================================================
     pub const COMPTIME_EVALUATION_FAILED: Self = Self(1200);
     pub const COMPTIME_ARG_NOT_CONST: Self = Self(1201);
+
+    // ========================================================================
+    // Unchecked-code errors (E1300-E1399)
+    // ========================================================================
+    pub const UNCHECKED_OP_REQUIRES_CHECKED: Self = Self(1300);
 
     // ========================================================================
     // Internal compiler errors (E9000-E9999)
@@ -1215,6 +1222,10 @@ pub enum ErrorKind {
     #[error("comptime parameter requires a compile-time known value")]
     ComptimeArgNotConst { param_name: String },
 
+    // Unchecked-code errors
+    #[error("{what} requires a `checked` block")]
+    UncheckedOpRequiresChecked { what: String },
+
     // Internal compiler errors (bugs in the compiler itself)
     #[error("internal compiler error: {0}")]
     InternalError(String),
@@ -1359,6 +1370,9 @@ impl ErrorKind {
             // Comptime errors (E1200-E1299)
             ErrorKind::ComptimeEvaluationFailed { .. } => ErrorCode::COMPTIME_EVALUATION_FAILED,
             ErrorKind::ComptimeArgNotConst { .. } => ErrorCode::COMPTIME_ARG_NOT_CONST,
+            ErrorKind::UncheckedOpRequiresChecked { .. } => {
+                ErrorCode::UNCHECKED_OP_REQUIRES_CHECKED
+            }
 
             // Internal compiler errors (E9000-E9999)
             ErrorKind::InternalError(_) => ErrorCode::INTERNAL_ERROR,
