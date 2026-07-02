@@ -46,6 +46,8 @@ pub struct KnownSymbols {
     pub assert: Spur,
     /// The `read_line` intrinsic symbol.
     pub read_line: Spur,
+    /// The `to_string` intrinsic symbol - formats an i64 as a decimal String.
+    pub to_string: Spur,
     /// The `parse_i32` intrinsic symbol.
     pub parse_i32: Spur,
     /// The `parse_i64` intrinsic symbol.
@@ -106,6 +108,7 @@ impl KnownSymbols {
             panic: interner.get_or_intern_static("panic"),
             assert: interner.get_or_intern_static("assert"),
             read_line: interner.get_or_intern_static("read_line"),
+            to_string: interner.get_or_intern_static("to_string"),
             parse_i32: interner.get_or_intern_static("parse_i32"),
             parse_i64: interner.get_or_intern_static("parse_i64"),
             parse_u32: interner.get_or_intern_static("parse_u32"),

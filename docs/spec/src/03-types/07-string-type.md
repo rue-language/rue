@@ -158,12 +158,89 @@ fn main() -> i32 {
 }
 ```
 
+## Integer Formatting
+
+{{ rule(id="3.7:22", cat="normative") }}
+
+The intrinsic `@to_string(n)` takes an `i64` and returns a new, heap-allocated
+`String` containing the base-10 decimal representation of `n` (see ADR-0035).
+The argument is of type `i64`; a bare integer literal argument is inferred to be
+`i64`.
+
+{{ rule(id="3.7:23", cat="dynamic-semantics") }}
+
+`@to_string(n)` formats the entire range of `i64`, including `i64::MIN`. A
+negative value is prefixed with a single `-`; a zero value formats as `0`.
+
+{{ rule(id="3.7:24") }}
+
+```rue
+fn main() -> i32 {
+    @dbg(@to_string(42));    // 42
+    @dbg(@to_string(-5));    // -5
+    0
+}
+```
+
+## Concatenation
+
+{{ rule(id="3.7:25", cat="normative") }}
+
+When both operands of the `+` operator are `String`, `s1 + s2` evaluates to a
+new, heap-allocated `String` whose bytes are the bytes of `s1` followed by the
+bytes of `s2` (see ADR-0035). Both operands are borrowed, not consumed, and
+remain usable afterwards.
+
+{{ rule(id="3.7:26", cat="legality-rule") }}
+
+The `+` operator requires both operands to have the same type. Mixing a `String`
+and an integer (for example `s + 1`) is a type error; there is no implicit
+conversion between `String` and integers.
+
+{{ rule(id="3.7:27") }}
+
+```rue
+fn main() -> i32 {
+    let greeting = "Hello, " + "world!";
+    @dbg(greeting);   // Hello, world!
+    0
+}
+```
+
+## Search
+
+{{ rule(id="3.7:28", cat="normative") }}
+
+The method `s.contains(needle)` returns `true` if and only if the bytes of the
+`String` `needle` occur as a contiguous subsequence of the bytes of `s`. The
+comparison is byte-level and does not inspect UTF-8 character boundaries. The
+empty needle is contained in every string. The receiver `s` is borrowed, not
+consumed.
+
+{{ rule(id="3.7:29", cat="normative") }}
+
+The method `s.starts_with(prefix)` returns `true` if and only if the bytes of
+the `String` `prefix` are a prefix of the bytes of `s`. The comparison is
+byte-level. The empty prefix matches every string. The receiver `s` is borrowed,
+not consumed.
+
+{{ rule(id="3.7:30") }}
+
+```rue
+fn main() -> i32 {
+    let h = "hello";
+    @dbg(h.contains("ell"));      // true
+    @dbg(h.starts_with("he"));    // true
+    @dbg(h.starts_with("lo"));    // false
+    0
+}
+```
+
 ## Limitations
 
 {{ rule(id="3.7:14", cat="informative") }}
 
 The current implementation does not support:
-- String concatenation
 - Slicing with range syntax (`s[a..b]`); use `s.substring(start, len)` instead
 - Decoding bytes into Unicode scalar values (e.g. iterating `chars`)
 - Pattern matching on strings

@@ -500,9 +500,14 @@ impl<'a> ConstraintGenerator<'a> {
 
             InstData::UnitConst => InferType::Concrete(Type::UNIT),
 
+            // Addition is overloaded: integer arithmetic OR String + String
+            // concatenation (RUE-17 Phase 1, ADR-0035). Split out from the pure
+            // arithmetic operators so it doesn't force an `is_integer`
+            // constraint on String operands.
+            InstData::Add { lhs, rhs } => self.generate_add(*lhs, *rhs, ctx),
+
             // Binary arithmetic: both operands must have the same type, result is that type
-            InstData::Add { lhs, rhs }
-            | InstData::Sub { lhs, rhs }
+            InstData::Sub { lhs, rhs }
             | InstData::Mul { lhs, rhs }
             | InstData::Div { lhs, rhs }
             | InstData::Mod { lhs, rhs } => self.generate_binary_arith(*lhs, *rhs, ctx),
@@ -860,6 +865,19 @@ impl<'a> ConstraintGenerator<'a> {
                     } else {
                         InferType::Concrete(Type::ERROR)
                     }
+                } else if intrinsic_name == "to_string" {
+                    // @to_string(n): takes an i64, returns String (RUE-17
+                    // Phase 1, ADR-0035). Constrain the argument to i64 so a
+                    // bare integer literal defaults to i64 here.
+                    for arg_ref in args.iter() {
+                        let arg_info = self.generate(*arg_ref, ctx);
+                        self.add_constraint(Constraint::equal(
+                            arg_info.ty,
+                            InferType::Concrete(Type::I64),
+                            arg_info.span,
+                        ));
+                    }
+                    self.string_infer_type()
                 } else if intrinsic_name == "parse_i32" {
                     // @parse_i32: takes a String, returns i32
                     for arg_ref in args.iter() {
@@ -1624,6 +1642,80 @@ impl<'a> ConstraintGenerator<'a> {
         self.add_constraint(Constraint::is_integer(result_ty.clone(), lhs_info.span));
 
         result_ty
+    }
+
+    /// Generate constraints for the `+` operator (RUE-17 Phase 1, ADR-0035).
+    ///
+    /// `+` is arithmetic addition on integers and concatenation on two
+    /// `String`s. When either operand is *concretely* the builtin `String`
+    /// type, both operands are constrained to `String` and the result is
+    /// `String` (a `String + int` mix then fails unification with E0206).
+    /// Otherwise this behaves exactly like [`generate_binary_arith`]: operands
+    /// and result share a type that must be an integer.
+    fn generate_add(
+        &mut self,
+        lhs: InstRef,
+        rhs: InstRef,
+        ctx: &mut ConstraintContext,
+    ) -> InferType {
+        let lhs_info = self.generate(lhs, ctx);
+        let rhs_info = self.generate(rhs, ctx);
+
+        if self.is_string_concrete(&lhs_info.ty) || self.is_string_concrete(&rhs_info.ty) {
+            let string_ty = self.string_infer_type();
+            self.add_constraint(Constraint::equal(
+                lhs_info.ty,
+                string_ty.clone(),
+                lhs_info.span,
+            ));
+            self.add_constraint(Constraint::equal(
+                rhs_info.ty,
+                string_ty.clone(),
+                rhs_info.span,
+            ));
+            return string_ty;
+        }
+
+        // Integer addition — identical to the other binary arithmetic operators.
+        let result_var = self.fresh_var();
+        let result_ty = InferType::Var(result_var);
+        self.add_constraint(Constraint::equal(
+            lhs_info.ty,
+            result_ty.clone(),
+            lhs_info.span,
+        ));
+        self.add_constraint(Constraint::equal(
+            rhs_info.ty,
+            result_ty.clone(),
+            rhs_info.span,
+        ));
+        self.add_constraint(Constraint::is_integer(result_ty.clone(), lhs_info.span));
+        result_ty
+    }
+
+    /// The builtin `String` type as an [`InferType::Concrete`], or
+    /// `Concrete(ERROR)` if it hasn't been injected (should not happen once
+    /// builtin types are registered).
+    fn string_infer_type(&self) -> InferType {
+        if let Some(string_spur) = self.interner.get("String") {
+            if let Some(&string_ty) = self.structs.get(&string_spur) {
+                return InferType::Concrete(string_ty);
+            }
+        }
+        InferType::Concrete(Type::ERROR)
+    }
+
+    /// Whether `ty` is *concretely* the builtin `String` struct (not a type
+    /// variable that might later resolve to it).
+    fn is_string_concrete(&self, ty: &InferType) -> bool {
+        if let InferType::Concrete(t) = ty {
+            if let Some(string_spur) = self.interner.get("String") {
+                if let Some(&string_ty) = self.structs.get(&string_spur) {
+                    return *t == string_ty;
+                }
+            }
+        }
+        false
     }
 
     /// Get the inferred type for a pattern.

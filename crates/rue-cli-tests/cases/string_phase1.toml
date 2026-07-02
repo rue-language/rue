@@ -1,0 +1,99 @@
+# Design-light String methods (RUE-17 Phase 1, ADR-0035).
+#
+# Phase 1 adds three runtime-visible String operations on top of the Phase 2
+# byte-access primitives: `@to_string(n)` (i64 -> decimal String),
+# `String + String` concatenation, and the byte-level `contains` / `starts_with`
+# predicates. Every operation lowers to an `extern "C"` runtime call whose ABI
+# (String flattened to ptr/len/cap, sret return buffer for the heap results) is
+# exactly what a spec-harness stdout check cannot exercise end to end — hence
+# these exact-stdout runs through the real driver.
+
+[section]
+id = "cli.string_phase1"
+name = "String Phase 1 methods"
+description = "Integer-to-String, concatenation, and byte-level search on String."
+
+[[case]]
+name = "to_string_demo"
+description = "@to_string formats an i64 in decimal, including negatives, zero, and the i64 extremes."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    @dbg(@to_string(42));
+    @dbg(@to_string(-5));
+    @dbg(@to_string(0));
+    let lo: i64 = -9223372036854775808;
+    let hi: i64 = 9223372036854775807;
+    @dbg(@to_string(lo));
+    @dbg(@to_string(hi));
+    0
+}
+""" }]
+exit_code = 0
+stdout = "42\n-5\n0\n-9223372036854775808\n9223372036854775807\n"
+
+[[case]]
+name = "concat_is_concatenation_not_addition"
+description = "@to_string(7) + @to_string(8) concatenates to '78' (not the integer sum 15); operands are borrowed, so named Strings remain usable."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let msg = @to_string(7) + @to_string(8);
+    @dbg(msg);
+    let a = "foo";
+    let b = "bar";
+    let c = a + b;
+    @dbg(c);
+    @dbg(a);
+    @dbg(b);
+    0
+}
+""" }]
+exit_code = 0
+stdout = "78\nfoobar\nfoo\nbar\n"
+
+[[case]]
+name = "concat_chained_and_mutable_result"
+description = "Concatenation chains left-to-right and its result owns a heap buffer that can be mutated further."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let m = "a" + "b" + "c";
+    @dbg(m);
+    let mut g = @to_string(1) + @to_string(2);
+    g.push_str("Z");
+    @dbg(g);
+    0
+}
+""" }]
+exit_code = 0
+stdout = "abc\n12Z\n"
+
+[[case]]
+name = "contains_and_starts_with"
+description = "Byte-level contains/starts_with; the empty needle/prefix always matches; the receiver is borrowed (usable after)."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let h = "hello";
+    @dbg(h.contains("ell"));
+    @dbg(h.contains("xyz"));
+    @dbg(h.contains(""));
+    @dbg(h.starts_with("he"));
+    @dbg(h.starts_with("lo"));
+    @dbg(h.len());
+    0
+}
+""" }]
+exit_code = 0
+stdout = "true\nfalse\ntrue\ntrue\nfalse\n5\n"
+
+[[case]]
+name = "string_plus_integer_rejected"
+description = "String + int is a type error (E0206); there is no implicit String/int conversion."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a = "foo";
+    let c = a + 5;
+    @dbg(c);
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0206"]
