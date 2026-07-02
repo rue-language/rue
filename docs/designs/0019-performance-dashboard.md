@@ -168,31 +168,31 @@ website/
 
 ## Implementation Phases
 
-**Epic:** rue-a5ah
+**Epic:** rue-a5ah (historical bd ID, pre-Linear; the `.N` suffixes below are its sub-phases)
 
-- [x] **Phase 1: Benchmark corpus** - rue-a5ah.1
+- [x] **Phase 1: Benchmark corpus** - (historical bd ID rue-a5ah.1, pre-Linear)
   - Create `benchmarks/` directory structure
   - Write initial stress test programs (many_functions, deep_nesting, etc.)
   - Create `manifest.toml` format
 
-- [x] **Phase 2: Data collection** - rue-a5ah.2
+- [x] **Phase 2: Data collection** - (historical bd ID rue-a5ah.2, pre-Linear)
   - Implement `--benchmark-json` flag in the CLI
   - Extend `TimingData` to output JSON format
   - Support multiple iterations with mean/std calculation
 
-- [x] **Phase 3: Runner & storage** - rue-a5ah.3
+- [x] **Phase 3: Runner & storage** - (historical bd ID rue-a5ah.3, pre-Linear)
   - Create `./bench.sh` script
   - Create `scripts/append-benchmark.py` to manage history
   - Set up `perf` branch structure
   - Document benchmark workflow
   - Add release/debug build modes via Buck2 modifiers
 
-- [x] **Phase 4: CI integration** - rue-a5ah.4
+- [x] **Phase 4: CI integration** - (historical bd ID rue-a5ah.4, pre-Linear)
   - GitHub Actions workflow to run benchmarks on trunk commits
   - Push results to `perf` branch
   - Configure consistent benchmark environment
 
-- [x] **Phase 5: Website visualization** - rue-a5ah.5
+- [x] **Phase 5: Website visualization** - (historical bd ID rue-a5ah.5, pre-Linear)
   - Create SVG chart generator (Rust or Python)
   - Create `/performance/` page template
   - Integrate chart generation into website build

@@ -19,7 +19,7 @@ Implemented
 
 ## Summary
 
-Add the `tracing` crate to Rue for structured debug logging, following the "wide events" philosophy from loggingsucks.com. This provides rich, context-aware logging per compilation pass rather than scattered debug statements, and also implements the `--time-passes` feature (rue-uxgx).
+Add the `tracing` crate to Rue for structured debug logging, following the "wide events" philosophy from loggingsucks.com. This provides rich, context-aware logging per compilation pass rather than scattered debug statements, and also implements the `--time-passes` feature (historical bd ID rue-uxgx, pre-Linear).
 
 ## Context
 
@@ -32,7 +32,7 @@ The "wide events" philosophy (from loggingsucks.com) advocates for:
 
 For a compiler, this translates to emitting one structured span per compilation pass with rich context (timing, counts, outcomes).
 
-Additionally, there's an open feature request (rue-uxgx) for `--time-passes` to show compilation timing. The `tracing` crate provides timing spans naturally, so both needs are addressed by the same infrastructure.
+Additionally, there's an open feature request (historical bd ID rue-uxgx, pre-Linear) for `--time-passes` to show compilation timing. The `tracing` crate provides timing spans naturally, so both needs are addressed by the same infrastructure.
 
 ## Decision
 
@@ -114,28 +114,28 @@ pub fn compile_frontend_with_options(...) -> CompileResult<...> {
 
 ## Implementation Phases
 
-- [x] **Phase 1: Add dependencies** - rue-irz1.1
+- [x] **Phase 1: Add dependencies** - (historical bd ID rue-irz1.1, pre-Linear)
   - Update `third-party/Cargo.toml` with tracing, tracing-subscriber
   - Run `reindeer buckify`
   - Update crate BUCK files
 
-- [x] **Phase 2: CLI and subscriber** - rue-irz1.2
+- [x] **Phase 2: CLI and subscriber** - (historical bd ID rue-irz1.2, pre-Linear)
   - Initialize tracing-subscriber in main.rs
   - Add `--log-level` flag (off/error/warn/info/debug/trace)
   - Add `--log-format` flag (text/json)
   - Support `RUST_LOG` environment variable
 
-- [x] **Phase 3: --time-passes** - rue-irz1.3
+- [x] **Phase 3: --time-passes** - (historical bd ID rue-irz1.3, pre-Linear)
   - Implement `--time-passes` using tracing spans
   - Collect timing from spans and format output
-  - Closes rue-uxgx
+  - Closes rue-uxgx (historical bd ID, pre-Linear)
 
-- [x] **Phase 4: Instrument compiler** - rue-irz1.4
+- [x] **Phase 4: Instrument compiler** - (historical bd ID rue-irz1.4, pre-Linear)
   - Add spans to `compile_frontend_with_options()`
   - Add spans to backend functions
   - Include context: file size, token/instruction counts
 
-- [x] **Phase 5: Documentation** - rue-irz1.5
+- [x] **Phase 5: Documentation** - (historical bd ID rue-irz1.5, pre-Linear)
   - Add logging guidelines to CLAUDE.md
   - Document the "wide events" philosophy
   - Provide good/bad examples
@@ -173,4 +173,4 @@ None - resolved during planning:
 
 - https://loggingsucks.com/ - Wide events philosophy
 - https://docs.rs/tracing - Tracing crate documentation
-- rue-uxgx - Original --time-passes feature request
+- rue-uxgx (historical bd ID, pre-Linear) - Original --time-passes feature request

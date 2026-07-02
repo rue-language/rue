@@ -46,7 +46,7 @@ pub enum Type {
 
 ### Problems
 
-1. **Dynamic array type creation**: Arrays are created during type inference, requiring mutable state during what should be parallel function analysis. This led to `FunctionAnalysisState` with per-function array registries that must be merged afterward (see rue-wcg7).
+1. **Dynamic array type creation**: Arrays are created during type inference, requiring mutable state during what should be parallel function analysis. This led to `FunctionAnalysisState` with per-function array registries that must be merged afterward (see rue-wcg7, historical bd ID, pre-Linear).
 
 2. **Inconsistent creation patterns**: Structs/enums use one path, arrays use another. This asymmetry complicates the codebase.
 
@@ -193,9 +193,9 @@ The key insight is that `Type` remains a small, Copy value - we're just changing
 
 ## Implementation Phases
 
-**Epic**: rue-igt6
+**Epic**: rue-igt6 (historical bd ID, pre-Linear)
 
-### Phase 1: Introduce TypeInternPool alongside existing system (rue-3mjg)
+### Phase 1: Introduce TypeInternPool alongside existing system (historical bd ID rue-3mjg, pre-Linear)
 
 Create the new `TypeInternPool` infrastructure without removing the old system. Both coexist temporarily.
 
@@ -206,7 +206,7 @@ Create the new `TypeInternPool` infrastructure without removing the old system. 
 
 **Ship criterion**: All existing tests pass, pool is populated but not yet used.
 
-### Phase 2: Migrate array types to the pool (rue-9e5t)
+### Phase 2: Migrate array types to the pool (historical bd ID rue-9e5t, pre-Linear)
 
 Replace `ArrayTypeId` and the per-function array type handling with pool interning.
 
@@ -217,7 +217,7 @@ Replace `ArrayTypeId` and the per-function array type handling with pool interni
 
 **Ship criterion**: Arrays work, parallel function analysis uses shared pool, no per-function array registries.
 
-### Phase 3: Migrate struct/enum IDs to pool indices (rue-ej3x)
+### Phase 3: Migrate struct/enum IDs to pool indices (historical bd ID rue-ej3x, pre-Linear)
 
 Replace `StructId` and `EnumId` with `Type` indices directly.
 
@@ -228,7 +228,7 @@ Replace `StructId` and `EnumId` with `Type` indices directly.
 
 **Ship criterion**: `Type` is now a u32 index. All lookups go through the pool.
 
-### Phase 4: Unify Type representation (rue-wsny)
+### Phase 4: Unify Type representation (historical bd ID rue-wsny, pre-Linear)
 
 Replace the `Type` enum entirely with the `Type(u32)` newtype.
 
@@ -239,7 +239,7 @@ Replace the `Type` enum entirely with the `Type(u32)` newtype.
 
 **Ship criterion**: Single unified type representation. Clean API.
 
-### Phase 5: Performance optimization (rue-ynk5, optional)
+### Phase 5: Performance optimization (historical bd ID rue-ynk5, pre-Linear; optional)
 
 If profiling shows lock contention:
 
@@ -305,5 +305,5 @@ If profiling shows lock contention:
 
 - [Zig InternPool PR #15569](https://github.com/ziglang/zig/pull/15569)
 - [Zig InternPool.zig source](https://github.com/ziglang/zig/blob/master/src/InternPool.zig)
-- [rue-50gf: Original issue on array type design](rue-50gf)
-- [rue-wcg7: Parallel function analysis](rue-wcg7)
+- rue-50gf (historical bd ID, pre-Linear): Original issue on array type design
+- rue-wcg7 (historical bd ID, pre-Linear): Parallel function analysis

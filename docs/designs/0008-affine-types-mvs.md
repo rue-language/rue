@@ -367,11 +367,11 @@ The type and linearity are checked separately.
 
 ## Implementation Phases
 
-Epic: rue-dfr8
+Epic: rue-dfr8 (historical bd ID, pre-Linear; the `.N` suffixes below are its sub-phases)
 
 This is a large feature requiring multiple phases. Each phase is a **vertical slice** - a complete, testable feature end-to-end. This allows kicking the tires at each step.
 
-### Phase 1: Affine structs (rue-dfr8.1) ✅ COMPLETE
+### Phase 1: Affine structs (historical bd ID rue-dfr8.1, pre-Linear) ✅ COMPLETE
 
 Make user-defined structs affine by default. Primitives remain implicitly Copy.
 
@@ -395,7 +395,7 @@ fn main() -> i32 {
 }
 ```
 
-### Phase 2: @copy directive (rue-dfr8.2)
+### Phase 2: @copy directive (historical bd ID rue-dfr8.2, pre-Linear)
 
 Allow opting structs into Copy semantics.
 
@@ -416,7 +416,7 @@ fn main() -> i32 {
 }
 ```
 
-### Phase 3: Inout parameters (rue-dfr8.3)
+### Phase 3: Inout parameters (historical bd ID rue-dfr8.3, pre-Linear)
 
 Add mutation-without-ownership-transfer.
 
@@ -438,7 +438,7 @@ fn main() -> i32 {
 }
 ```
 
-### Phase 4: Linear types (rue-dfr8.4)
+### Phase 4: Linear types (historical bd ID rue-dfr8.4, pre-Linear)
 
 Add must-consume semantics.
 
@@ -460,7 +460,7 @@ fn main() -> i32 {
 // fn bad() { let m = MustUse { value: 1 }; }  // ERROR: linear value dropped
 ```
 
-### Phase 5: Projection semantics (rue-dfr8.5) ✅ COMPLETE
+### Phase 5: Projection semantics (historical bd ID rue-dfr8.5, pre-Linear) ✅ COMPLETE
 
 Add proper array access rules under affine semantics.
 
@@ -469,7 +469,7 @@ Add proper array access rules under affine semantics.
 - [x] Array write: inout projection to array
 - [x] Law of exclusivity for overlapping projections (via existing inout checks)
 
-**Note**: Compound assignment on array elements (`arr[0] += 5`) is not yet implemented (separate parser enhancement needed). Also, accessing fields of struct elements in arrays (`arr[i].field`) has an ICE in codegen (see rue-oqm6).
+**Note**: Compound assignment on array elements (`arr[0] += 5`) is not yet implemented (separate parser enhancement needed). Also, accessing fields of struct elements in arrays (`arr[i].field`) has an ICE in codegen (see rue-oqm6, historical bd ID, pre-Linear — no surviving Linear issue for this; file a new one if still reproducible).
 
 **Testable**: Can mutate array elements; can't move out non-Copy elements.
 
@@ -482,7 +482,7 @@ fn main() -> i32 {
 }
 ```
 
-### Phase 6: @handle directive (rue-dfr8.6)
+### Phase 6: @handle directive (historical bd ID rue-dfr8.6, pre-Linear)
 
 Add explicit duplication for reference-counted types.
 

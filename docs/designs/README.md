@@ -20,7 +20,7 @@ Write an ADR for **large features** that:
 - Introduce new type system concepts
 - May span multiple development sessions
 
-**Do NOT write an ADR for small features** like adding a single operator, fixing bugs, or simple refactoring. Those just need a bd issue.
+**Do NOT write an ADR for small features** like adding a single operator, fixing bugs, or simple refactoring. Those just need a Linear issue (team "Rue").
 
 **Rule of thumb**: If it needs a preview feature gate, it needs an ADR.
 
@@ -79,8 +79,8 @@ superseded-by:  # fill if superseded
 
 **Implementation Phases**: Break into independently-committable chunks
 ```markdown
-- [ ] **Phase 1: Core parsing** - bd-XXX
-- [ ] **Phase 2: Type checking** - bd-XXX
+- [ ] **Phase 1: Core parsing** - RUE-NNN
+- [ ] **Phase 2: Type checking** - RUE-NNN
 ```
 
 **Consequences**: Positive, negative, and neutral implications
@@ -89,19 +89,16 @@ superseded-by:  # fill if superseded
 
 **Future Work**: Out of scope for this ADR, but related
 
-### 4. Create bd Issues
+### 4. Create Linear Issues
 
-After the ADR is drafted:
+After the ADR is drafted, file the tracking issues in Linear (team "Rue") via the
+Linear MCP tools — see the "Issue Tracking with Linear" section of the root
+`CLAUDE.md` for the full workflow:
 
-```bash
-# Create epic
-bd create "<feature title>" -t epic -p 2 --json
+- Create a parent (epic) issue with `save_issue` (`team: "Rue"`), linking the ADR in the description
+- Create a sub-issue per phase with `save_issue` (`parentId: <epic RUE-NN>`)
 
-# Create subtask for each phase
-bd create "Phase 1: <description>" -t task --parent <epic-id> --json
-```
-
-Update the ADR with the bd issue IDs.
+Update the ADR with the resulting Linear issue IDs (`RUE-NN`).
 
 ### 5. Add Preview Feature
 

@@ -246,18 +246,18 @@ CFG optimization is target-independent - it operates on typed CFG instructions b
 
 ## Implementation Phases
 
-- [x] **Phase 1: Optimization framework** - rue-aapc.1
+- [x] **Phase 1: Optimization framework** - (historical bd ID rue-aapc.1, pre-Linear)
   - Create `rue-cfg/src/opt/mod.rs` with `OptLevel` enum and pass orchestration
   - Add `-O0` through `-O3` flags to CLI
   - Add UI test infrastructure with `opt_level` support
   - Wire up in rue-compiler
 
-- [x] **Phase 2: Constant folding** - rue-aapc.2
+- [x] **Phase 2: Constant folding** - (historical bd ID rue-aapc.2, pre-Linear)
   - Implement `constfold.rs`
   - Add tests verifying folding occurs at -O1+
   - Update golden tests as needed
 
-- [x] **Phase 3: Dead code elimination** - rue-aapc.3
+- [x] **Phase 3: Dead code elimination** - (historical bd ID rue-aapc.3, pre-Linear)
   - Implement `dce.rs` with liveness analysis
   - Handle side-effects correctly (calls, escaping stores)
   - Add tests for dead store/block elimination

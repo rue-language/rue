@@ -41,8 +41,11 @@ pub(crate) type FieldPath = Vec<Spur>;
 
 /// Tracks move state for a variable, including partial (field-level) moves.
 // PartialEq is used by the loop back-edge move recheck to detect whether a
-// loop body changed any move state.
-#[derive(Debug, Clone, Default, PartialEq)]
+// loop body changed any move state. It is implemented by hand (below) rather
+// than derived because `partial_moves` is an order-insensitive map stored as a
+// `Vec`: two states with the same (path, span) entries in a different order
+// must still compare equal, matching the `HashMap` this field replaced.
+#[derive(Debug, Clone, Default)]
 pub(crate) struct VariableMoveState {
     /// If Some, the entire variable has been fully moved at this span.
     ///
@@ -61,7 +64,14 @@ pub(crate) struct VariableMoveState {
     /// For example, if `s.a` was moved, this contains ([sym("a")], span).
     ///
     /// Like `full_move`, this is MAY-move (union at branch joins).
-    pub partial_moves: HashMap<FieldPath, Span>,
+    ///
+    /// Stored as an association `Vec` rather than a `HashMap` (RUE-124): the
+    /// typical variable has 0–5 partial moves, so a flat scan beats hashing,
+    /// and it lets `is_path_moved` do a single O(n) prefix pass instead of an
+    /// O(n×depth) per-ancestor probe. The invariant that each `FieldPath` key
+    /// appears at most once (upheld by `mark_path_moved` and `merge_union`)
+    /// makes it behave exactly like the map it replaced.
+    pub partial_moves: Vec<(FieldPath, Span)>,
     /// Partial moves that happened on EVERY non-diverging path reaching this
     /// point (intersection at branch joins) — the per-path analogue of
     /// `full_move_on_all_paths`. Always a subset of `partial_moves`' keys.
@@ -86,7 +96,15 @@ impl VariableMoveState {
         } else {
             // Partial move - only if not already fully moved
             if self.full_move.is_none() {
-                self.partial_moves.insert(path.to_vec(), span);
+                // Upsert to preserve the unique-key invariant of the map this
+                // `Vec` replaced: re-moving the same path overwrites its span
+                // (matching `HashMap::insert`) rather than appending a dup.
+                if let Some((_, existing)) = self.partial_moves.iter_mut().find(|(p, _)| p == path)
+                {
+                    *existing = span;
+                } else {
+                    self.partial_moves.push((path.to_vec(), span));
+                }
                 self.partial_moves_on_all_paths.insert(path.to_vec());
             }
         }
@@ -100,7 +118,7 @@ impl VariableMoveState {
     /// rejected before this is called).
     pub fn mark_path_reinitialized(&mut self, path: &[Spur]) {
         self.partial_moves
-            .retain(|moved, _| !(moved.len() >= path.len() && moved[..path.len()] == *path));
+            .retain(|(moved, _)| !(moved.len() >= path.len() && moved[..path.len()] == *path));
         self.partial_moves_on_all_paths
             .retain(|moved| !(moved.len() >= path.len() && moved[..path.len()] == *path));
     }
@@ -113,20 +131,28 @@ impl VariableMoveState {
             return Some(span);
         }
 
-        // Check if this exact path is moved
-        if let Some(span) = self.partial_moves.get(path) {
-            return Some(*span);
-        }
-
-        // Check if any prefix (ancestor) of this path is moved
-        // e.g., if s.a is moved, then s.a.b is also considered moved
-        for len in 1..path.len() {
-            if let Some(span) = self.partial_moves.get(&path[..len]) {
-                return Some(*span);
+        // Single O(n) scan over the partial moves (RUE-124), replacing the old
+        // exact-lookup-plus-per-ancestor-probe (O(n×depth)). A stored path
+        // `moved` affects `path` iff it is a prefix of it (an exact match or an
+        // ancestor: `s.a` moved implies `s.a.b` is moved).
+        //
+        // When several stored paths match — possible only after a branch join
+        // unions nested partials (e.g. both `s.a` and `s.a.b` moved on
+        // different arms) — we must return the SAME span the old probe order
+        // did: the exact match first, otherwise the shortest ancestor. `rank`
+        // encodes that priority (exact = 0, then ancestor length ascending);
+        // keys are unique, so no two candidates ever tie.
+        let mut best: Option<(usize, Span)> = None;
+        for (moved, span) in &self.partial_moves {
+            let len = moved.len();
+            if len <= path.len() && path[..len] == moved[..] {
+                let rank = if len == path.len() { 0 } else { len };
+                if best.is_none_or(|(best_rank, _)| rank < best_rank) {
+                    best = Some((rank, *span));
+                }
             }
         }
-
-        None
+        best.map(|(_, span)| span)
     }
 
     /// Check if the entire variable (including all fields) is fully valid to use.
@@ -135,7 +161,7 @@ impl VariableMoveState {
         if let Some(span) = self.full_move {
             return Some(span);
         }
-        self.partial_moves.values().next().copied()
+        self.partial_moves.first().map(|(_, span)| *span)
     }
 
     /// Check if the variable has any move state.
@@ -155,10 +181,15 @@ impl VariableMoveState {
         // (use the span from whichever branch has it, preferring branch1)
         let full_move = branch1.full_move.or(branch2.full_move);
 
-        // A partial move is kept if it appears in EITHER branch
+        // A partial move is kept if it appears in EITHER branch. When both
+        // branches moved the same path, branch1's span wins (`or_insert`
+        // semantics of the map this replaced): start from branch1's list and
+        // append only paths branch2 introduced.
         let mut partial_moves = branch1.partial_moves.clone();
         for (path, span) in &branch2.partial_moves {
-            partial_moves.entry(path.clone()).or_insert(*span);
+            if !partial_moves.iter().any(|(p, _)| p == path) {
+                partial_moves.push((path.clone(), *span));
+            }
         }
 
         // A path was moved on EVERY path only if both branches moved it.
@@ -184,6 +215,25 @@ impl VariableMoveState {
             partial_moves,
             partial_moves_on_all_paths,
         }
+    }
+}
+
+// Hand-written so `partial_moves` compares as an unordered (path -> span) map,
+// matching the `HashMap` it replaced (RUE-124). The unique-key invariant lets
+// equal length + one-directional containment stand in for full set equality.
+// The loop back-edge recheck relies on this being order-insensitive.
+impl PartialEq for VariableMoveState {
+    fn eq(&self, other: &Self) -> bool {
+        self.full_move == other.full_move
+            && self.full_move_on_all_paths == other.full_move_on_all_paths
+            && self.partial_moves_on_all_paths == other.partial_moves_on_all_paths
+            && self.partial_moves.len() == other.partial_moves.len()
+            && self.partial_moves.iter().all(|(p, s)| {
+                other
+                    .partial_moves
+                    .iter()
+                    .any(|(op, os)| op == p && os == s)
+            })
     }
 }
 
@@ -728,6 +778,48 @@ mod tests {
     }
 
     #[test]
+    fn variable_move_state_is_path_moved_prefix_cases() {
+        // RUE-124: is_path_moved does a single prefix scan over the Vec.
+        // Exercise exact, ancestor, sibling, and nested lookups, plus the
+        // exact-over-ancestor and shortest-ancestor precedence that only
+        // arises once a branch join has unioned nested partials together.
+        let interner = ThreadedRodeo::new();
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let c = interner.get_or_intern("c");
+        let z = interner.get_or_intern("z");
+        let span_a = Span::new(1, 2);
+        let span_ab = Span::new(3, 4);
+
+        let mut state = VariableMoveState::default();
+        state.mark_path_moved(&[a, b], span_ab);
+
+        // Exact path moved.
+        assert_eq!(state.is_path_moved(&[a, b]), Some(span_ab));
+        // Descendant of a moved path is moved (ancestor prefix match).
+        assert_eq!(state.is_path_moved(&[a, b, c]), Some(span_ab));
+        // A shorter prefix that was NOT moved is not moved.
+        assert!(state.is_path_moved(&[a]).is_none());
+        // Sibling under the same root is not moved.
+        assert!(state.is_path_moved(&[a, c]).is_none());
+        // Unrelated path is not moved.
+        assert!(state.is_path_moved(&[z]).is_none());
+
+        // Now union in the ancestor `s.a` (as a branch join would), so both
+        // `[a]` and `[a, b]` are recorded. Precedence must be unchanged from
+        // the old exact-then-shortest-ancestor probe order regardless of the
+        // Vec's element order:
+        state.mark_path_moved(&[a], span_a);
+        // Exact match on `[a, b]` still wins over the `[a]` ancestor.
+        assert_eq!(state.is_path_moved(&[a, b]), Some(span_ab));
+        // For a deeper path with two matching ancestors, the shortest
+        // ancestor (`[a]`) is selected.
+        assert_eq!(state.is_path_moved(&[a, b, c]), Some(span_a));
+        // `[a]` itself is now an exact match.
+        assert_eq!(state.is_path_moved(&[a]), Some(span_a));
+    }
+
+    #[test]
     fn variable_move_state_multiple_partial_moves() {
         let mut state = VariableMoveState::default();
         let interner = ThreadedRodeo::new();
@@ -817,8 +909,8 @@ mod tests {
         b2.mark_path_moved(&[elem0], span);
 
         let merged = VariableMoveState::merge_union(&b1, &b2);
-        assert!(merged.partial_moves.contains_key(&vec![elem0]));
-        assert!(merged.partial_moves.contains_key(&vec![elem1]));
+        assert!(merged.partial_moves.iter().any(|(p, _)| p == &vec![elem0]));
+        assert!(merged.partial_moves.iter().any(|(p, _)| p == &vec![elem1]));
         assert!(merged.partial_moves_on_all_paths.contains(&vec![elem0]));
         assert!(!merged.partial_moves_on_all_paths.contains(&vec![elem1]));
     }

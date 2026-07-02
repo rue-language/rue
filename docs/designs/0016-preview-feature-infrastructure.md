@@ -178,10 +178,10 @@ pub fn compile_to_air_with_preview(
 
 ## Implementation Phases
 
-- [x] **Phase 1: Pipeline threading** - rue-0slf.1
-- [x] **Phase 2: Gating method** - rue-0slf.2
-- [x] **Phase 3: test_infra feature** - rue-0slf.3
-- [x] **Phase 4: Cleanup** - rue-0slf.4
+- [x] **Phase 1: Pipeline threading** - (historical bd ID rue-0slf.1, pre-Linear)
+- [x] **Phase 2: Gating method** - (historical bd ID rue-0slf.2, pre-Linear)
+- [x] **Phase 3: test_infra feature** - (historical bd ID rue-0slf.3, pre-Linear)
+- [x] **Phase 4: Cleanup** - (historical bd ID rue-0slf.4, pre-Linear)
 
 ## Consequences
 

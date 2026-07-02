@@ -274,11 +274,11 @@ If unwinding is added in the future, destructor behavior during unwinding will n
 
 ## Implementation Phases
 
-Epic: rue-wjha
+Epic: rue-wjha (historical bd ID, pre-Linear; the `.N` suffixes below are its sub-phases)
 
 Following spec-first, test-driven development: each phase writes spec paragraphs, then tests that reference them, then implementation to make tests pass.
 
-### Phase 1: Spec and Infrastructure (rue-wjha.7)
+### Phase 1: Spec and Infrastructure (historical bd ID rue-wjha.7, pre-Linear)
 
 **Spec**: Add destructor chapter to specification (section 3.9 or similar):
 - When destructors run (scope exit, not moved)
@@ -295,7 +295,7 @@ Following spec-first, test-driven development: each phase writes spec paragraphs
 - Add `type_needs_drop()` method to `CfgBuilder` (requires access to struct/array type definitions)
 - Add drop elaboration pass stub in CFG builder
 
-### Phase 2: Drop Elaboration (rue-wjha.8)
+### Phase 2: Drop Elaboration (historical bd ID rue-wjha.8, pre-Linear)
 
 **Spec**: Add paragraphs for:
 - Drop at end of block scope
@@ -313,7 +313,7 @@ Following spec-first, test-driven development: each phase writes spec paragraphs
 - CFG builder inserts `Drop` at scope exits
 - Handle early returns, conditionals, loops
 
-### Phase 3: Codegen (rue-wjha.9)
+### Phase 3: Codegen (historical bd ID rue-wjha.9, pre-Linear)
 
 **Spec**: Add paragraphs for:
 - Drop calls generated for non-trivial types
@@ -329,7 +329,7 @@ Following spec-first, test-driven development: each phase writes spec paragraphs
 - Elide drops for trivially droppable types
 - Register allocation around drop calls
 
-### Phase 4: User-Defined Destructors (rue-wjha.10)
+### Phase 4: User-Defined Destructors (historical bd ID rue-wjha.10, pre-Linear)
 
 **Spec**: Add paragraphs for:
 - `drop fn TypeName(self)` syntax
@@ -347,7 +347,7 @@ Following spec-first, test-driven development: each phase writes spec paragraphs
 - Semantic analysis: validate signature
 - Generate drop function, wire into type's destructor
 
-### Phase 5: Integration with Built-in Types (rue-wjha.11)
+### Phase 5: Integration with Built-in Types (historical bd ID rue-wjha.11, pre-Linear)
 
 This phase is deferred until mutable strings or other heap-allocated types land. It will:
 - Add `__rue_drop_String` to runtime

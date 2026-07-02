@@ -398,11 +398,11 @@ let air_ref = self.air.add_inst(AirInst {
 
 ## Implementation Phases
 
-**Epic**: rue-c8lp
+**Epic**: rue-c8lp (historical bd ID, pre-Linear)
 
 ### Phase 1: Builtin Registry Infrastructure
 
-**Issues**: rue-fgx3 (crate), rue-cbsc (injection)
+**Issues**: rue-fgx3 (crate), rue-cbsc (injection) (historical bd IDs, pre-Linear)
 
 **Goal**: Create the builtin type registry without changing existing behavior.
 
@@ -419,7 +419,7 @@ let air_ref = self.air.add_inst(AirInst {
 
 ### Phase 2: Migrate Sema
 
-**Issue**: rue-hp13
+**Issue**: rue-hp13 (historical bd ID, pre-Linear)
 
 **Goal**: Replace `Type::String` checks in semantic analysis with struct-based queries.
 
@@ -435,7 +435,7 @@ let air_ref = self.air.add_inst(AirInst {
 
 ### Phase 3: Migrate Codegen
 
-**Issues**: rue-s6mk (x86_64), rue-tco7 (aarch64), rue-5cfw (other)
+**Issues**: rue-s6mk (x86_64), rue-tco7 (aarch64), rue-5cfw (other) (historical bd IDs, pre-Linear)
 
 **Goal**: Replace `Type::String` checks in both backends and remaining crates.
 
@@ -454,7 +454,7 @@ let air_ref = self.air.add_inst(AirInst {
 
 ### Phase 4: Remove Type::String
 
-**Issue**: rue-bmje
+**Issue**: rue-bmje (historical bd ID, pre-Linear)
 
 **Goal**: Delete the `Type::String` variant entirely.
 
@@ -468,7 +468,7 @@ let air_ref = self.air.add_inst(AirInst {
 
 ### Phase 5: Documentation and Cleanup
 
-**Issue**: rue-n20l
+**Issue**: rue-n20l (historical bd ID, pre-Linear)
 
 **Goal**: Document the new architecture for future contributors.
 

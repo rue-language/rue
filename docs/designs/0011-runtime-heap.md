@@ -162,9 +162,9 @@ No panics in the allocator - it just returns null on failure. Higher-level code 
 
 ## Implementation Phases
 
-Epic: rue-n50n
+Epic: rue-n50n (historical bd ID, pre-Linear; the `.N` suffixes below are its sub-phases)
 
-### Phase 1: Syscall Wrappers (rue-n50n.1)
+### Phase 1: Syscall Wrappers (historical bd ID rue-n50n.1, pre-Linear)
 
 Add mmap/munmap wrappers to each platform module:
 - `x86_64_linux.rs`: `mmap()`, `munmap()`
@@ -173,7 +173,7 @@ Add mmap/munmap wrappers to each platform module:
 
 **Testable**: Call mmap, write to memory, munmap without crashing.
 
-### Phase 2: Bump Allocator Core (rue-n50n.2)
+### Phase 2: Bump Allocator Core (historical bd ID rue-n50n.2, pre-Linear)
 
 Implement the allocator logic:
 - Arena header structure
@@ -183,7 +183,7 @@ Implement the allocator logic:
 
 **Testable**: Allocate various sizes, verify returned pointers are aligned.
 
-### Phase 3: Realloc and Large Allocations (rue-n50n.3)
+### Phase 3: Realloc and Large Allocations (historical bd ID rue-n50n.3, pre-Linear)
 
 - `__rue_realloc` implementation
 - Large allocation handling (dedicated arenas)
@@ -191,7 +191,7 @@ Implement the allocator logic:
 
 **Testable**: Realloc growing and shrinking, large allocations.
 
-### Phase 4: Integration with Compiler (rue-n50n.4)
+### Phase 4: Integration with Compiler (historical bd ID rue-n50n.4, pre-Linear)
 
 - Add codegen support for calling `__rue_alloc`/`__rue_free`
 - Wire up for future String/Vec types

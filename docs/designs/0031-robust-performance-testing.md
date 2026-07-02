@@ -204,36 +204,36 @@ If the queue still backs up (e.g., during a period of intense development):
 
 ## Implementation Phases
 
-**Epic:** rue-1h38
+**Epic:** rue-1h38 (historical bd ID, pre-Linear; the `.N` suffixes below are its sub-phases)
 
-- [x] **Phase 1: Parallel execution + artifact upload** - rue-1h38.1
+- [x] **Phase 1: Parallel execution + artifact upload** - (historical bd ID rue-1h38.1, pre-Linear)
   - Modify benchmarks.yml to remove max-parallel constraint
   - Change platform jobs to upload artifacts instead of pushing to perf
   - Verify artifacts are created correctly
 
-- [x] **Phase 2: Atomic collector job** - rue-1h38.2
+- [x] **Phase 2: Atomic collector job** - (historical bd ID rue-1h38.2, pre-Linear)
   - Add collect-results job that downloads artifacts
   - Implement atomic push to perf branch
   - Test with multiple parallel platform jobs
 
-- [x] **Phase 3: Time-based batching** - rue-1h38.3
+- [x] **Phase 3: Time-based batching** - (historical bd ID rue-1h38.3, pre-Linear)
   - Add scheduled trigger (every 15 minutes)
   - Enable cancel-in-progress for concurrency control
   - Update documentation
 
-- [x] **Phase 4: Commit range tracking** - rue-1h38.4
+- [x] **Phase 4: Commit range tracking** - (historical bd ID rue-1h38.4, pre-Linear)
   - Update JSON schema to include commit_range field (version 2)
   - Capture commit range in collector job (last 24 hours)
   - Inject commit_range and benchmark_reason into results
   - Update append-benchmark.py documentation for version 2 schema
 
-- [x] **Phase 5: Graceful degradation** - rue-1h38.5
+- [x] **Phase 5: Graceful degradation** - (historical bd ID rue-1h38.5, pre-Linear)
   - Add queue depth monitoring using GitHub API
   - Implement adaptive sampling logic (skip if queue > 10 for push, > 20 for all)
   - Add logging for skipped commits with reason and queue depth
   - Manual runs always proceed regardless of queue depth
 
-- [x] **Phase 6: Dashboard improvements** - rue-1h38.6
+- [x] **Phase 6: Dashboard improvements** - (historical bd ID rue-1h38.6, pre-Linear)
   - Visualize benchmark coverage
   - Show commit ranges for each benchmark run
   - Highlight data gaps

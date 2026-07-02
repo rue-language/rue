@@ -172,30 +172,30 @@ Add a new script `./quick-test.sh` that runs only unit tests for faster iteratio
 
 ## Implementation Phases
 
-- [x] **Phase 1: Parameterized Test Support** - rue-9jdv.1
+- [x] **Phase 1: Parameterized Test Support** - (historical bd ID rue-9jdv.1, pre-Linear)
   - Added `ParamSet` struct and `params` field to `Case` in `rue-test-runner`
   - Implemented template expansion with `{param}` syntax
   - Implemented `expand_case()` and `expand_test_file()` functions
   - Added unit tests for expansion logic
   - Added example parameterized test to `integers.toml`
 
-- [x] **Phase 2: Consolidate Integer Tests** - rue-9jdv.2
+- [x] **Phase 2: Consolidate Integer Tests** - (historical bd ID rue-9jdv.2, pre-Linear)
   - Rewrote `integers.toml` using parameterized format (95 → 41 case definitions)
   - Fixed traceability report to handle parameterized tests with `spec_extra`
   - Verified 100% spec coverage maintained via traceability check
 
-- [x] **Phase 3: Consolidate Other Spec Tests** - rue-9jdv.3
+- [x] **Phase 3: Consolidate Other Spec Tests** - (historical bd ID rue-9jdv.3, pre-Linear)
   - Consolidated `arithmetic.toml` (530→274 lines), `let.toml` (688→400 lines)
   - Consolidated `functions.toml` (1405→800 lines, heavily reduced inout section)
   - Consolidated `bitwise.toml` (550→325 lines), `comparison.toml` (439→274 lines)
   - All 1021 tests pass with 100% normative spec coverage maintained
 
-- [x] **Phase 4: Integration Unit Tests** - rue-9jdv.4
+- [x] **Phase 4: Integration Unit Tests** - (historical bd ID rue-9jdv.4, pre-Linear)
   - Added `compile_to_air()` and `compile_to_cfg()` test helpers to `rue-compiler`
   - Added 115+ integration unit tests covering major language features
   - Tests organized by category: types, arithmetic, comparison, logical, bitwise, control flow, functions, structs, enums, arrays, strings, intrinsics, CFG construction, error messages, warnings, and edge cases
 
-- [x] **Phase 5: Workflow Documentation** - rue-9jdv.5
+- [x] **Phase 5: Workflow Documentation** - (historical bd ID rue-9jdv.5, pre-Linear)
   - Added Development Workflow section to CLAUDE.md
   - Added `./quick-test.sh` script for fast unit test iteration
   - Added "Choosing the Right Test Type" table documenting when to use each test level
