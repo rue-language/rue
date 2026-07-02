@@ -52,6 +52,28 @@ Paragraphs marked with rule categories are normative unless explicitly marked as
 | `informative` | Explanatory text that is not normative |
 | `example` | Code examples that are not normative |
 
+## Behavior Categories
+
+{{ rule(id="1.3:3", cat="informative") }}
+
+Beyond the paragraph categories above, this specification classifies the *behavior* of a program into four categories, following C, C++, and Rust. Rue's guiding design preference for how a behavior is assigned to a category — in short, prefer the most-defined category, and confine undefined behavior to `unchecked` operations that cannot be checked otherwise — is a design decision recorded in ADR-0036, not a normative rule of this document.
+
+{{ rule(id="1.3:4", cat="informative") }}
+
+**Undefined behavior** imposes no requirements on a conforming implementation: a program that exhibits undefined behavior is invalid, and the implementation may do anything. In Rue, undefined behavior arises **only within `unchecked` code** — raw-pointer operations whose validity cannot be checked without changing a value's representation. The safe subset of Rue has no undefined behavior; this is the language's central memory-safety guarantee.
+
+{{ rule(id="1.3:5", cat="informative") }}
+
+**Unspecified behavior** is behavior for which this specification permits a set of possibilities and does not require any particular one to be chosen or documented. Rue currently specifies most such choices — for example evaluation order (4.0) and drop order (3.9) — so this category has few instances today; it is defined for future use.
+
+{{ rule(id="1.3:6", cat="informative") }}
+
+**Implementation-defined behavior** is behavior for which this specification permits a set of possibilities and requires the implementation to choose one and **document** its choice. Examples: the growth strategy and resulting capacity of `String` (3.7); the in-memory layout of struct and array types (3.6); the width of `usize` and `isize` on a target (3.1); and the implementation limits of Appendix C.
+
+{{ rule(id="1.3:7", cat="informative") }}
+
+**Erroneous behavior** is behavior that is well-defined but constitutes a program error a conforming implementation is encouraged to diagnose — distinct from undefined behavior, which imposes no requirements at all. Rue currently has no erroneous behavior: conditions other languages leave erroneous, such as integer overflow, Rue instead *traps* as a defined runtime panic (3.1, 8.1). The category is defined so behaviors of this kind have a home if they later arise (for example, an opt-in wrapping-arithmetic mode).
+
 ## Normative Language
 
 {{ rule(id="1.4:1") }}

@@ -50,7 +50,7 @@ Field names **MUST** be unique within a struct.
 
 {{ rule(id="3.6:7", cat="informative") }}
 
-The memory layout rules described in this section are provisional and may change in future versions of Rue. The current design prioritizes simplicity over space efficiency.
+The in-memory layout of struct types is **implementation-defined** (see 1.3:6): the implementation chooses and documents it. The current implementation prioritizes simplicity over space efficiency, and the layout may change between versions. A portable program must not depend on specific field offsets, padding, or overall size beyond what the specification guarantees; a program that inspects layout (for example through `unchecked` raw-pointer access) observes an implementation-defined result.
 
 {{ rule(id="3.6:8", cat="normative") }}
 
