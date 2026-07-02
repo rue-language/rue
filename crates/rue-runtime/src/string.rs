@@ -6,7 +6,10 @@
 //! - String-specific allocation functions
 //! - String constructors (`__rue_String_new`, `__rue_String_with_capacity`)
 //! - String query methods (`len`, `capacity`, `is_empty`)
+//! - Byte-string search (`contains`, `starts_with`)
 //! - String mutation methods (`push_str`, `push`, `clear`, `reserve`)
+//! - Integer-to-String formatting (`__rue_to_string`) and concatenation
+//!   (`__rue_String_concat`)
 //! - String cloning (`__rue_String_clone`)
 //! - String dropping (`__rue_drop_String`)
 
@@ -667,6 +670,250 @@ crate::define_for_all_platforms! {
             core::ptr::copy_nonoverlapping(ptr.add(start as usize), new_ptr, sub_len as usize);
             (*out).ptr = new_ptr;
             (*out).len = sub_len;
+            (*out).cap = new_cap;
+        }
+    }
+}
+
+// =============================================================================
+// Byte-string search predicates (RUE-17 Phase 1, ADR-0035)
+// =============================================================================
+//
+// `s.contains(needle)` and `s.starts_with(prefix)` are byte-level: they compare
+// raw bytes and never inspect UTF-8 character boundaries. Both take the receiver
+// and argument String by borrow (as three fields each: ptr, len, cap; the caps
+// are part of the ABI but unused) and return `u8` (0 or 1) in the return
+// register, matching the sub-word return convention used by `__rue_str_eq` and
+// `__rue_String_is_empty`. The empty needle / empty prefix always matches.
+
+crate::define_for_all_platforms! {
+    /// True (1) iff the bytes of `needle` occur as a contiguous run inside the
+    /// receiver's bytes. Naive O(len * needle_len) scan — adequate for the
+    /// design-light Phase 1; the empty needle is always contained.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` must be valid for `len` bytes and `needle_ptr` for `needle_len`
+    /// bytes; every read below is bounded by those lengths.
+    #[allow(non_snake_case)]
+    pub extern "C" fn __rue_String_contains(
+        ptr: *const u8,
+        len: u64,
+        _cap: u64,
+        needle_ptr: *const u8,
+        needle_len: u64,
+        _needle_cap: u64,
+    ) -> u8 {
+        // The empty needle is contained in every string.
+        if needle_len == 0 {
+            return 1;
+        }
+        // A needle longer than the haystack cannot occur.
+        if needle_len > len {
+            return 0;
+        }
+        // Try every start offset that still leaves room for the whole needle.
+        let last_start = len - needle_len;
+        let mut start: u64 = 0;
+        while start <= last_start {
+            let mut k: u64 = 0;
+            while k < needle_len {
+                // SAFETY: start + k <= last_start + (needle_len - 1) = len - 1,
+                // so the haystack read is in bounds; k < needle_len bounds the
+                // needle read. u8 has no alignment requirement.
+                let a = unsafe { *ptr.add((start + k) as usize) };
+                let b = unsafe { *needle_ptr.add(k as usize) };
+                if a != b {
+                    break;
+                }
+                k += 1;
+            }
+            if k == needle_len {
+                return 1;
+            }
+            start += 1;
+        }
+        0
+    }
+}
+
+crate::define_for_all_platforms! {
+    /// True (1) iff the bytes of `prefix` are a prefix of the receiver's bytes.
+    /// The empty prefix always matches.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` must be valid for `len` bytes and `prefix_ptr` for `prefix_len`
+    /// bytes; every read below is bounded by those lengths.
+    #[allow(non_snake_case)]
+    pub extern "C" fn __rue_String_starts_with(
+        ptr: *const u8,
+        len: u64,
+        _cap: u64,
+        prefix_ptr: *const u8,
+        prefix_len: u64,
+        _prefix_cap: u64,
+    ) -> u8 {
+        // The empty prefix matches every string.
+        if prefix_len == 0 {
+            return 1;
+        }
+        // A prefix longer than the string cannot match.
+        if prefix_len > len {
+            return 0;
+        }
+        let mut k: u64 = 0;
+        while k < prefix_len {
+            // SAFETY: k < prefix_len <= len, so both reads are in bounds. u8 has
+            // no alignment requirement.
+            let a = unsafe { *ptr.add(k as usize) };
+            let b = unsafe { *prefix_ptr.add(k as usize) };
+            if a != b {
+                return 0;
+            }
+            k += 1;
+        }
+        1
+    }
+}
+
+// =============================================================================
+// Integer-to-String formatting (RUE-17 Phase 1, ADR-0035)
+// =============================================================================
+
+crate::define_for_all_platforms! {
+    /// Format an `i64` in base 10 into a freshly heap-allocated `String`.
+    ///
+    /// Implements the `@to_string(n)` intrinsic. Handles the full `i64` range,
+    /// including `i64::MIN` (whose magnitude is not representable as a positive
+    /// `i64`), and prefixes negative values with `'-'`.
+    ///
+    /// # ABI (sret convention)
+    ///
+    /// ```text
+    /// extern "C" fn __rue_to_string(out: *mut StringResult, n: i64)
+    /// ```
+    ///
+    /// `out` (the sret pointer) comes first, then the integer argument. The
+    /// returned String owns a fresh heap buffer, so it can be mutated and
+    /// dropped independently.
+    ///
+    /// # Safety
+    ///
+    /// `out` must be a valid sret pointer — see `__rue_String_new`.
+    pub extern "C" fn __rue_to_string(out: *mut StringResult, n: i64) {
+        // "-9223372036854775808" (i64::MIN) is the longest result: 20 bytes.
+        let mut buf = [0u8; 20];
+        let negative = n < 0;
+        // Magnitude as u64. `wrapping_neg` yields the correct magnitude even for
+        // i64::MIN, whose positive value does not fit in an i64.
+        let mut mag = n as u64;
+        if negative {
+            mag = mag.wrapping_neg();
+        }
+        // Emit decimal digits least-significant first, filling `buf` from the
+        // back. `i` walks left toward the front of the buffer.
+        let mut i = buf.len();
+        if mag == 0 {
+            i -= 1;
+            buf[i] = b'0';
+        } else {
+            while mag > 0 {
+                i -= 1;
+                buf[i] = b'0' + (mag % 10) as u8;
+                mag /= 10;
+            }
+        }
+        if negative {
+            i -= 1;
+            buf[i] = b'-';
+        }
+
+        let len = (buf.len() - i) as u64;
+        let new_cap = if len < STRING_MIN_CAPACITY {
+            STRING_MIN_CAPACITY
+        } else {
+            len
+        };
+        let new_ptr = heap::alloc(new_cap, 1);
+
+        // SAFETY: `new_ptr` was just allocated with `new_cap >= len` bytes; the
+        // source range `buf[i..]` holds exactly `len` initialized bytes; the
+        // regions don't overlap (fresh allocation). `out` is a valid sret
+        // pointer (see __rue_String_new).
+        unsafe {
+            core::ptr::copy_nonoverlapping(buf.as_ptr().add(i), new_ptr, len as usize);
+            (*out).ptr = new_ptr;
+            (*out).len = len;
+            (*out).cap = new_cap;
+        }
+    }
+}
+
+crate::define_for_all_platforms! {
+    /// Return a NEW String whose bytes are the concatenation of two Strings.
+    ///
+    /// Implements `s1 + s2` (RUE-17 Phase 1, ADR-0035). Both operands are
+    /// borrowed (passed as their three fields each; the caps are unused but part
+    /// of the ABI) and neither is consumed. The result owns a fresh heap buffer.
+    ///
+    /// # ABI (sret convention)
+    ///
+    /// ```text
+    /// extern "C" fn __rue_String_concat(
+    ///     out: *mut StringResult,
+    ///     ptr1: *const u8, len1: u64, cap1: u64,
+    ///     ptr2: *const u8, len2: u64, cap2: u64)
+    /// ```
+    ///
+    /// # Safety
+    ///
+    /// `ptr1`/`ptr2` must be valid for `len1`/`len2` bytes respectively, and
+    /// `out` must be a valid sret pointer (see `__rue_String_new`).
+    #[allow(non_snake_case)]
+    pub extern "C" fn __rue_String_concat(
+        out: *mut StringResult,
+        ptr1: *const u8,
+        len1: u64,
+        _cap1: u64,
+        ptr2: *const u8,
+        len2: u64,
+        _cap2: u64,
+    ) {
+        let total = len1 + len2;
+
+        if total == 0 {
+            // Empty result: a valid literal-like String (cap == 0, ptr null)
+            // that drops without freeing.
+            // SAFETY: `out` is a valid sret pointer — see __rue_String_new.
+            unsafe {
+                (*out).ptr = core::ptr::null_mut();
+                (*out).len = 0;
+                (*out).cap = 0;
+            }
+            return;
+        }
+
+        let new_cap = if total < STRING_MIN_CAPACITY {
+            STRING_MIN_CAPACITY
+        } else {
+            total
+        };
+        let new_ptr = heap::alloc(new_cap, 1);
+
+        // SAFETY: `new_ptr` has `new_cap >= total = len1 + len2` bytes. The two
+        // source ranges are each in bounds for their lengths and don't overlap
+        // the fresh allocation; `new_ptr.add(len1)` is the first byte after the
+        // copied prefix, leaving room for `len2` more bytes.
+        unsafe {
+            if len1 > 0 && !ptr1.is_null() {
+                core::ptr::copy_nonoverlapping(ptr1, new_ptr, len1 as usize);
+            }
+            if len2 > 0 && !ptr2.is_null() {
+                core::ptr::copy_nonoverlapping(ptr2, new_ptr.add(len1 as usize), len2 as usize);
+            }
+            (*out).ptr = new_ptr;
+            (*out).len = total;
             (*out).cap = new_cap;
         }
     }

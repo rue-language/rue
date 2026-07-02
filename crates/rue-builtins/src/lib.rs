@@ -379,6 +379,34 @@ pub static STRING_TYPE: BuiltinTypeDef = BuiltinTypeDef {
             return_ty: BuiltinReturnType::SelfType,
             runtime_fn: "__rue_String_clone",
         },
+        // Byte-level substring search: `s.contains(needle)` is true iff the
+        // bytes of `needle` occur as a contiguous run inside `s` (RUE-17
+        // Phase 1, ADR-0035). Byte-level, never inspects UTF-8 boundaries; the
+        // empty needle is always contained. Borrows self; `needle` is a String.
+        BuiltinMethod {
+            name: "contains",
+            receiver_mode: ReceiverMode::ByRef,
+            params: &[BuiltinParam {
+                name: "needle",
+                ty: BuiltinParamType::SelfType,
+            }],
+            return_ty: BuiltinReturnType::Bool,
+            runtime_fn: "__rue_String_contains",
+        },
+        // Byte-level prefix test: `s.starts_with(prefix)` is true iff the bytes
+        // of `prefix` are a prefix of the bytes of `s` (RUE-17 Phase 1,
+        // ADR-0035). Byte-level; the empty prefix always matches. Borrows self;
+        // `prefix` is a String.
+        BuiltinMethod {
+            name: "starts_with",
+            receiver_mode: ReceiverMode::ByRef,
+            params: &[BuiltinParam {
+                name: "prefix",
+                ty: BuiltinParamType::SelfType,
+            }],
+            return_ty: BuiltinReturnType::Bool,
+            runtime_fn: "__rue_String_starts_with",
+        },
         // Byte-range slice: `s.substring(start, len)` returns a NEW String
         // holding bytes [start, start+len) (RUE-17 Phase 2, ADR-0035). Since
         // String is a byte string, any byte range is valid; only an
@@ -439,6 +467,30 @@ pub static STRING_TYPE: BuiltinTypeDef = BuiltinTypeDef {
         },
     ],
 };
+
+// ============================================================================
+// Free-standing String runtime operations (RUE-17 Phase 1, ADR-0035)
+// ============================================================================
+
+// These operations are not `String` methods or associated functions, so they
+// have no entry in the [`BuiltinMethod`] / [`BuiltinAssociatedFn`] tables. They
+// are lowered directly by Sema into `extern "C"` runtime calls (routed through
+// the ordinary sret / by-value call convention), and their runtime symbols live
+// under the reserved `__rue_` prefix like every other builtin runtime helper.
+// The names are collected here so there is a single source of truth for what
+// the compiler emits and what `rue-runtime` must define.
+
+/// Runtime symbol for `@to_string(n)`: formats an `i64` as its decimal
+/// representation into a freshly heap-allocated `String` (full range including
+/// `i64::MIN`; negatives are prefixed with `-`). sret ABI:
+/// `extern "C" fn __rue_to_string(out: *mut StringResult, n: i64)`.
+pub const TO_STRING_RUNTIME_FN: &str = "__rue_to_string";
+
+/// Runtime symbol for `s1 + s2` on two `String`s: returns a NEW `String` whose
+/// bytes are the concatenation of `s1` and `s2`. Both operands are borrowed
+/// (neither is consumed). sret ABI: `extern "C" fn __rue_String_concat(out:
+/// *mut StringResult, ptr1, len1, cap1, ptr2, len2, cap2)`.
+pub const STRING_CONCAT_RUNTIME_FN: &str = "__rue_String_concat";
 
 // ============================================================================
 // Registry
@@ -615,6 +667,20 @@ mod tests {
         let push_str = STRING_TYPE.find_method("push_str").unwrap();
         assert_eq!(push_str.runtime_fn, "__rue_String_push_str");
         assert_eq!(push_str.receiver_mode, ReceiverMode::ByMutRef);
+
+        // Byte-level query methods (RUE-17 Phase 1): borrow self, take a String
+        // argument, return bool.
+        let contains = STRING_TYPE.find_method("contains").unwrap();
+        assert_eq!(contains.runtime_fn, "__rue_String_contains");
+        assert_eq!(contains.receiver_mode, ReceiverMode::ByRef);
+        assert_eq!(contains.return_ty, BuiltinReturnType::Bool);
+        assert_eq!(contains.params.len(), 1);
+        assert_eq!(contains.params[0].ty, BuiltinParamType::SelfType);
+
+        let starts_with = STRING_TYPE.find_method("starts_with").unwrap();
+        assert_eq!(starts_with.runtime_fn, "__rue_String_starts_with");
+        assert_eq!(starts_with.receiver_mode, ReceiverMode::ByRef);
+        assert_eq!(starts_with.return_ty, BuiltinReturnType::Bool);
     }
 
     #[test]

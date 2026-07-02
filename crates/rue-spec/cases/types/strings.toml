@@ -732,3 +732,149 @@ fn main() -> i32 {
 }
 """
 exit_code = 101
+
+# ---------------------------------------------------------------------------
+# Integer formatting, concatenation, and search (RUE-17 Phase 1, ADR-0035)
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "to_string_positive"
+spec = ["3.7:22"]
+source = """
+fn main() -> i32 {
+    @dbg(@to_string(42));
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "42\n"
+
+[[case]]
+name = "to_string_negative_and_zero"
+spec = ["3.7:23"]
+source = """
+fn main() -> i32 {
+    @dbg(@to_string(-5));
+    @dbg(@to_string(0));
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "-5\n0\n"
+
+[[case]]
+name = "to_string_i64_extremes"
+spec = ["3.7:23"]
+source = """
+fn main() -> i32 {
+    let lo: i64 = -9223372036854775808;
+    let hi: i64 = 9223372036854775807;
+    @dbg(@to_string(lo));
+    @dbg(@to_string(hi));
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "-9223372036854775808\n9223372036854775807\n"
+
+[[case]]
+name = "string_concat_literals"
+spec = ["3.7:25"]
+source = """
+fn main() -> i32 {
+    let g = "Hello, " + "world!";
+    @dbg(g);
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "Hello, world!\n"
+
+[[case]]
+name = "string_concat_borrows_operands"
+spec = ["3.7:25"]
+source = """
+fn main() -> i32 {
+    let a = "foo";
+    let b = "bar";
+    let c = a + b;
+    @dbg(c);
+    @dbg(a);
+    @dbg(b);
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "foobar\nfoo\nbar\n"
+
+[[case]]
+name = "string_concat_is_not_integer_add"
+spec = ["3.7:25"]
+source = """
+fn main() -> i32 {
+    let n = @to_string(7) + @to_string(8);
+    @dbg(n);
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "78\n"
+
+[[case]]
+name = "string_plus_integer_is_type_error"
+spec = ["3.7:26"]
+compile_fail = true
+error_contains = "E0206"
+source = """
+fn main() -> i32 {
+    let a = "foo";
+    let c = a + 5;
+    @dbg(c);
+    0
+}
+"""
+
+[[case]]
+name = "string_contains_byte_level"
+spec = ["3.7:28"]
+source = """
+fn main() -> i32 {
+    let h = "hello";
+    @dbg(h.contains("ell"));
+    @dbg(h.contains("xyz"));
+    @dbg(h.contains(""));
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "true\nfalse\ntrue\n"
+
+[[case]]
+name = "string_starts_with_byte_level"
+spec = ["3.7:29"]
+source = """
+fn main() -> i32 {
+    let h = "hello";
+    @dbg(h.starts_with("he"));
+    @dbg(h.starts_with("lo"));
+    @dbg(h.starts_with(""));
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "true\nfalse\ntrue\n"
+
+[[case]]
+name = "string_search_does_not_consume"
+spec = ["3.7:28", "3.7:29"]
+source = """
+fn main() -> i32 {
+    let h = "hello";
+    @dbg(h.contains("ell"));
+    @dbg(h.starts_with("he"));
+    @dbg(h.len());
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "true\ntrue\n5\n"

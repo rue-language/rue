@@ -2340,9 +2340,10 @@ impl<'a> Sema<'a> {
             | InstData::StringConst(_)
             | InstData::UnitConst => self.analyze_literal(air, inst_ref, ctx),
 
-            // Binary arithmetic operations
+            // Binary arithmetic operations (Add also covers String + String
+            // concatenation — see analyze_add).
             InstData::Add { lhs, rhs } => {
-                self.analyze_binary_arith(air, *lhs, *rhs, AirInstData::Add, inst.span, ctx)
+                self.analyze_add(air, inst_ref, *lhs, *rhs, inst.span, ctx)
             }
             InstData::Sub { lhs, rhs } => {
                 self.analyze_binary_arith(air, *lhs, *rhs, AirInstData::Sub, inst.span, ctx)
@@ -3332,6 +3333,8 @@ impl<'a> Sema<'a> {
             self.analyze_test_preview_gate_intrinsic(air, &args, span)
         } else if name == known.read_line {
             self.analyze_read_line_intrinsic(air, name, &args, span)
+        } else if name == known.to_string {
+            self.analyze_to_string_intrinsic(air, &args, span, ctx)
         } else if let Some(intrinsic_name_str) = known.get_parse_intrinsic_name(name) {
             self.analyze_parse_intrinsic(air, name, intrinsic_name_str, &args, span, ctx)
         } else if name == known.cast {
@@ -3752,6 +3755,69 @@ impl<'a> Sema<'a> {
         Ok(AnalysisResult::new(air_ref, string_type))
     }
 
+    /// Analyze the `@to_string(n)` intrinsic (RUE-17 Phase 1, ADR-0035).
+    ///
+    /// Formats an `i64` as its decimal representation in a fresh heap `String`.
+    /// Inference constrains the argument to `i64`, so by analysis time the
+    /// operand type is `i64` (or `error`). Rather than introduce a dedicated
+    /// codegen intrinsic, this lowers to an ordinary `extern "C"` call to the
+    /// runtime `__rue_to_string(out, n)`: the return type is the builtin
+    /// `String`, so the existing sret call convention allocates the result
+    /// buffer and passes it as the hidden first argument — no codegen change.
+    fn analyze_to_string_intrinsic(
+        &mut self,
+        air: &mut Air,
+        args: &[RirCallArg],
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AnalysisResult> {
+        if args.len() != 1 {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicWrongArgCount {
+                    name: "to_string".to_string(),
+                    expected: 1,
+                    found: args.len(),
+                },
+                span,
+            ));
+        }
+
+        // The argument is consumed by value (an i64 is Copy, so this is a plain
+        // read). Inference has already unified it with i64.
+        let arg_result = self.analyze_inst(air, args[0].value, ctx)?;
+        let arg_type = arg_result.ty;
+        if arg_type != Type::I64 && !arg_type.is_error() {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
+                    name: "@to_string".to_string(),
+                    expected: "i64".to_string(),
+                    found: arg_type.safe_name_with_pool(Some(&self.type_pool)),
+                })),
+                span,
+            ));
+        }
+
+        let string_type = self.builtin_string_type();
+        let call_name = self
+            .interner
+            .get_or_intern(rue_builtins::TO_STRING_RUNTIME_FN);
+
+        // Encode the single by-value argument as a (value, mode) pair.
+        let extra_data = [arg_result.air_ref.as_u32(), AirArgMode::Normal.as_u32()];
+        let args_start = air.add_extra(&extra_data);
+
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::Call {
+                name: call_name,
+                args_start,
+                args_len: 1,
+            },
+            ty: string_type,
+            span,
+        });
+        Ok(AnalysisResult::new(air_ref, string_type))
+    }
+
     /// Analyze @parse_i32, @parse_i64, @parse_u32, @parse_u64 intrinsics.
     fn analyze_parse_intrinsic(
         &mut self,
@@ -4110,6 +4176,104 @@ impl<'a> Sema<'a> {
             RirArgMode::Borrow => AirArgMode::Borrow,
         }
     }
+    /// Analyze the `+` operator.
+    ///
+    /// `+` is overloaded: on integers it is arithmetic addition, and on two
+    /// `String`s it is concatenation (RUE-17 Phase 1, ADR-0035). HM inference
+    /// has already resolved the result type, so we dispatch on it: a `String`
+    /// result routes to [`analyze_string_concat`]; anything else is ordinary
+    /// integer arithmetic. A mixed `String + int` never resolves to `String`
+    /// (unification fails first with E0206), so it takes the arithmetic path and
+    /// is rejected there — the user sees a clear type-mismatch error.
+    fn analyze_add(
+        &mut self,
+        air: &mut Air,
+        inst_ref: InstRef,
+        lhs: InstRef,
+        rhs: InstRef,
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AnalysisResult> {
+        let is_concat = ctx
+            .resolved_types
+            .get(&inst_ref)
+            .is_some_and(|ty| self.is_builtin_string(*ty));
+        if is_concat {
+            return self.analyze_string_concat(air, lhs, rhs, span, ctx);
+        }
+        self.analyze_binary_arith(air, lhs, rhs, AirInstData::Add, span, ctx)
+    }
+
+    /// Analyze `s1 + s2` where both operands are `String`: produce a NEW
+    /// concatenated `String` (RUE-17 Phase 1, ADR-0035).
+    ///
+    /// Both operands are *borrowed* (read, not consumed) — like the operands of
+    /// `==` — so a named operand remains usable afterwards and a temporary is
+    /// dropped by its owner at statement end; neither is leaked. The operation
+    /// lowers to an `extern "C"` sret call to `__rue_String_concat(out, ptr1,
+    /// len1, cap1, ptr2, len2, cap2)`, reusing the ordinary aggregate-return and
+    /// String-flattening call paths (no codegen change).
+    fn analyze_string_concat(
+        &mut self,
+        air: &mut Air,
+        lhs: InstRef,
+        rhs: InstRef,
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AnalysisResult> {
+        // Analyze both operands in projection (borrow) mode so a named operand
+        // is neither moved nor consumed — exactly like the operands of `==`. A
+        // variable operand yields a plain Load (no move recorded, still dropped
+        // by its owner); a temporary operand (e.g. `@to_string(7) + ...`) falls
+        // through to analyze_inst, which marks it moved — cancel that marker so
+        // the temporary is instead dropped normally at statement end (no leak,
+        // no double free). cancel_move_marker is a no-op on the Load case.
+        let lhs_result = self.analyze_inst_for_projection(air, lhs, ctx)?;
+        air.cancel_move_marker(lhs_result.air_ref);
+        let rhs_result = self.analyze_inst_for_projection(air, rhs, ctx)?;
+        air.cancel_move_marker(rhs_result.air_ref);
+
+        // Defensive type check (HM inference already guarantees both are String
+        // when we get here; this guards against error-recovery paths).
+        for operand in [&lhs_result, &rhs_result] {
+            if !self.is_builtin_string(operand.ty) && !operand.ty.is_error() {
+                return Err(CompileError::new(
+                    ErrorKind::TypeMismatch {
+                        expected: "String".to_string(),
+                        found: operand.ty.safe_name_with_pool(Some(&self.type_pool)),
+                    },
+                    span,
+                ));
+            }
+        }
+
+        let string_type = self.builtin_string_type();
+        let call_name = self
+            .interner
+            .get_or_intern(rue_builtins::STRING_CONCAT_RUNTIME_FN);
+
+        // Both String operands are flattened into (ptr, len, cap) by codegen;
+        // Normal mode with the move cancelled gives flatten-without-consume.
+        let extra_data = [
+            lhs_result.air_ref.as_u32(),
+            AirArgMode::Normal.as_u32(),
+            rhs_result.air_ref.as_u32(),
+            AirArgMode::Normal.as_u32(),
+        ];
+        let args_start = air.add_extra(&extra_data);
+
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::Call {
+                name: call_name,
+                args_start,
+                args_len: 2,
+            },
+            ty: string_type,
+            span,
+        });
+        Ok(AnalysisResult::new(air_ref, string_type))
+    }
+
     /// Analyze a binary arithmetic operator (+, -, *, /, %).
     ///
     /// Follows Rust's type inference rules:
