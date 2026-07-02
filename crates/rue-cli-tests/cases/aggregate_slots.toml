@@ -220,3 +220,284 @@ fn main() -> i32 {
 }
 """ }]
 exit_code = 42
+
+# ---------------------------------------------------------------------------
+# RUE-188: whole-aggregate EXTRACT producer (indexed element arr[K]/arr[i] or
+# array-typed struct field s.arr). The June RUE-118 fix converted aggregate
+# CONSUMERS but never the extract PRODUCER, so extracting a multi-slot
+# aggregate materialized only slot 0 (7/0/0 instead of 7/8/9). Now routed
+# through the agg_slots accessor's indexed-place-read path (load all slots
+# through the formed address), both backends.
+
+# (a) array-typed struct field extract: `let a = s.arr;`
+[[case]]
+name = "extract_struct_field_array"
+files = [{ path = "main.rue", source = """
+struct S { arr: [i64; 3], tail: i64 }
+fn main() -> i32 {
+    let s = S { arr: [7, 8, 9], tail: 42 };
+    let a = s.arr;
+    @dbg(a[0]); @dbg(a[1]); @dbg(a[2]);
+    0
+}
+""" }]
+stdout = "7\n8\n9\n"
+
+# (b) 2D-literal row extract, constant index: `let row = m[1];`
+[[case]]
+name = "extract_row_const_index"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let m: [[i64; 3]; 2] = [[1, 2, 3], [10, 20, 30]];
+    let row = m[1];
+    @dbg(row[0]); @dbg(row[1]); @dbg(row[2]);
+    0
+}
+""" }]
+stdout = "10\n20\n30\n"
+
+# (b') 2D-literal row extract, dynamic index: `let i = 1; let row = m[i];`
+[[case]]
+name = "extract_row_dynamic_index"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let m: [[i64; 3]; 2] = [[1, 2, 3], [10, 20, 30]];
+    let i = 1;
+    let row = m[i];
+    @dbg(row[0]); @dbg(row[1]); @dbg(row[2]);
+    0
+}
+""" }]
+stdout = "10\n20\n30\n"
+
+# (b'') row extract through a by-ref (borrow) 2D-array param.
+[[case]]
+name = "extract_row_from_borrow_param"
+files = [{ path = "main.rue", source = """
+fn get2(borrow m: [[i64; 3]; 2]) -> i64 {
+    let row = m[1];
+    row[0] + row[1] + row[2]
+}
+fn main() -> i32 {
+    let m: [[i64; 3]; 2] = [[1, 2, 3], [10, 20, 30]];
+    @dbg(get2(borrow m));
+    0
+}
+""" }]
+stdout = "60\n"
+
+# (b''') row extract from an array-typed struct field indexed: `g.rows[1]`.
+[[case]]
+name = "extract_row_from_struct_field_index"
+files = [{ path = "main.rue", source = """
+struct Grid { rows: [[i64; 3]; 2] }
+fn main() -> i32 {
+    let g = Grid { rows: [[1, 2, 3], [10, 20, 30]] };
+    let r = g.rows[1];
+    @dbg(r[0]); @dbg(r[1]); @dbg(r[2]);
+    0
+}
+""" }]
+stdout = "10\n20\n30\n"
+
+# (c) indexed row passed by value to a function (was 100 instead of 123).
+[[case]]
+name = "extract_row_as_call_arg"
+files = [{ path = "main.rue", source = """
+fn sum(a: [i64; 3]) -> i64 { a[0] + a[1] + a[2] }
+fn main() -> i32 {
+    let m: [[i64; 3]; 2] = [[1, 2, 3], [10, 20, 30]];
+    @dbg(sum(m[0]));
+    0
+}
+""" }]
+stdout = "6\n"
+
+# (d) RETURN position: `fn get(m) -> [i64;3] { m[1] }`. Was memory disclosure
+# (stale-frame garbage) — must return the real row.
+[[case]]
+name = "extract_row_return_position"
+files = [{ path = "main.rue", source = """
+fn get(m: [[i64; 3]; 2]) -> [i64; 3] { m[1] }
+fn main() -> i32 {
+    let m: [[i64; 3]; 2] = [[1, 2, 3], [10, 20, 30]];
+    let a = get(m);
+    @dbg(a[0]); @dbg(a[1]); @dbg(a[2]);
+    0
+}
+""" }]
+stdout = "10\n20\n30\n"
+
+# (e) struct-literal init from an indexed row: `S { arr: m[1], tail: 5 }` —
+# arr must be the full row and the neighbor field must be uncorrupted.
+[[case]]
+name = "extract_row_into_struct_literal"
+files = [{ path = "main.rue", source = """
+struct S { arr: [i64; 3], tail: i64 }
+fn main() -> i32 {
+    let m: [[i64; 3]; 2] = [[1, 2, 3], [10, 20, 30]];
+    let s = S { arr: m[1], tail: 5 };
+    @dbg(s.arr[0]); @dbg(s.arr[1]); @dbg(s.arr[2]); @dbg(s.tail);
+    0
+}
+""" }]
+stdout = "10\n20\n30\n5\n"
+
+# (f) CONTRAST FACT (preserve): indexed WRITE with an indexed-read RHS
+# `m[0] = m[1]` was already correct — pin it.
+[[case]]
+name = "indexed_write_from_indexed_read"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut m: [[i64; 3]; 2] = [[1, 2, 3], [10, 20, 30]];
+    m[0] = m[1];
+    @dbg(m[0][0]); @dbg(m[0][1]); @dbg(m[0][2]);
+    0
+}
+""" }]
+stdout = "10\n20\n30\n"
+
+# (h) rvalue projection then index: call-result and 2D-literal producers.
+[[case]]
+name = "extract_row_from_call_result"
+files = [{ path = "main.rue", source = """
+fn mk() -> [[i64; 3]; 2] { [[1, 2, 3], [10, 20, 30]] }
+fn main() -> i32 {
+    let row = mk()[1];
+    @dbg(row[0]); @dbg(row[1]); @dbg(row[2]);
+    0
+}
+""" }]
+stdout = "10\n20\n30\n"
+
+[[case]]
+name = "extract_row_from_2d_literal"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let row = [[1, 2, 3], [10, 20, 30]][1];
+    @dbg(row[0]); @dbg(row[1]); @dbg(row[2]);
+    0
+}
+""" }]
+stdout = "10\n20\n30\n"
+
+# (i) if/else join with indexed-read arms — was a cfg_lower 1-vs-N slot-count
+# assert; must now materialize full slots and run.
+[[case]]
+name = "join_indexed_read_arms"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let m: [[i64; 3]; 2] = [[1, 2, 3], [10, 20, 30]];
+    let row = if true { m[0] } else { m[1] };
+    @dbg(row[0]); @dbg(row[1]); @dbg(row[2]);
+    0
+}
+""" }]
+stdout = "1\n2\n3\n"
+
+# CONTRAST FACT (preserve): direct chained reads m[i][j] were correct — pin.
+[[case]]
+name = "chained_index_reads"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let m: [[i64; 3]; 2] = [[1, 2, 3], [10, 20, 30]];
+    @dbg(m[1][1]); @dbg(m[0][2]);
+    0
+}
+""" }]
+stdout = "20\n3\n"
+
+# ---------------------------------------------------------------------------
+# RUE-194 (facet 2): [T; 0] join. `let g: [i64;0] = if true {[]} else {[]};`
+# was the same slot-count assert (0-vs-1) from a phantom placeholder slot on
+# the zero-slot aggregate. Now zero-slot aggregates get an EMPTY slot list.
+[[case]]
+name = "empty_array_join"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let _g: [i64; 0] = if true { [] } else { [] };
+    0
+}
+""" }]
+exit_code = 0
+
+# ---------------------------------------------------------------------------
+# RUE-192: [String; N] elements. All fat-pointer (ptr/len/cap) slots of a
+# String element must be materialized. Was three distinct ICEs / garbage:
+# @dbg(arr[0]) (cfg_lower 'string value should have field vregs'), a rebind
+# `let s = arr[0]`, and `arr[i].len()` (garbage len).
+[[case]]
+name = "string_array_dbg_element"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let arr: [String; 1] = ["hi"];
+    @dbg(arr[0]);
+    0
+}
+""" }]
+stdout = "hi\n"
+
+[[case]]
+name = "string_array_rebind_element"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let arr: [String; 1] = ["hi"];
+    let s = arr[0];
+    @dbg(s);
+    0
+}
+""" }]
+stdout = "hi\n"
+
+[[case]]
+name = "string_array_pass_by_value"
+files = [{ path = "main.rue", source = """
+fn takes(s: String) -> u64 { s.len() }
+fn main() -> i32 {
+    let arr: [String; 1] = ["hello"];
+    @dbg(takes(arr[0]));
+    0
+}
+""" }]
+stdout = "5\n"
+
+[[case]]
+name = "string_array_element_len"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let arr: [String; 2] = ["hello", "xy"];
+    @dbg(arr[0].len()); @dbg(arr[1].len());
+    0
+}
+""" }]
+stdout = "5\n2\n"
+
+# ---------------------------------------------------------------------------
+# RUE-193: array drop glue over a multi-slot element type. Each element's
+# slots past slot 0 were garbage (second field corrupted), and [String; 3]
+# (9 slots) ICE'd 'array drop with 9 element slots exceeds 6 argument
+# registers' — fixed by the flattened-slot Call helper that spills past the
+# argument registers (RUE-106 #935 pattern).
+[[case]]
+name = "array_drop_multislot_struct"
+files = [{ path = "main.rue", source = """
+struct D { a: i32, b: i32 }
+drop fn D(self) { @dbg(self.a); @dbg(self.b); }
+fn main() -> i32 {
+    let _arr: [D; 3] = [D { a: 10, b: 11 }, D { a: 20, b: 21 }, D { a: 30, b: 31 }];
+    0
+}
+""" }]
+stdout = "10\n11\n20\n21\n30\n31\n"
+
+# [String; 3] = 9 flattened slots > 6 x86-64 arg regs / > 8 aarch64 arg regs:
+# the drop-glue call must spill the overflow onto the stack, not panic.
+[[case]]
+name = "array_drop_string_nine_slots"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let _arr: [String; 3] = ["aa", "bb", "cc"];
+    0
+}
+""" }]
+exit_code = 0
