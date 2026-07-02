@@ -104,14 +104,68 @@ fn main() -> i32 {
 }
 ```
 
+## Byte Access
+
+{{ rule(id="3.7:15", cat="normative") }}
+
+A `String` is a byte string: its contents are conventionally UTF-8 but are not
+required to be valid UTF-8 (see ADR-0035). Byte access therefore operates on the
+raw bytes and never inspects UTF-8 character boundaries.
+
+{{ rule(id="3.7:16", cat="normative") }}
+
+Indexing a `String` with an integer, `s[i]`, evaluates to the byte at byte
+offset `i` as a value of type `u8`. The operation is `O(1)`.
+
+{{ rule(id="3.7:17", cat="dynamic-semantics") }}
+
+If the index `i` is greater than or equal to `s.len()`, evaluating `s[i]` traps
+(index out of bounds), terminating the program the same way an out-of-bounds
+array index does.
+
+{{ rule(id="3.7:18") }}
+
+```rue
+fn main() -> i32 {
+    let s = "café";   // 5 bytes: 'c' 'a' 'f' 0xC3 0xA9
+    @dbg(s[0]);        // 99  ('c')
+    @dbg(s[3]);        // 195 (0xC3)
+    @dbg(s[4]);        // 169 (0xA9)
+    0
+}
+```
+
+{{ rule(id="3.7:19", cat="normative") }}
+
+The method `s.substring(start, len)` returns a new `String` containing the byte
+range `[start, start + len)` copied from `s`. Because `String` is a byte string,
+any byte range is permitted; the range need not fall on UTF-8 character
+boundaries. The receiver `s` is borrowed, not consumed.
+
+{{ rule(id="3.7:20", cat="dynamic-semantics") }}
+
+If `start + len` is greater than `s.len()` (or the addition overflows),
+`s.substring(start, len)` traps (index out of bounds).
+
+{{ rule(id="3.7:21") }}
+
+```rue
+fn main() -> i32 {
+    let s = "café";
+    let tail = s.substring(3, 2);   // the two bytes of 'é'
+    @dbg(tail.len());               // 2
+    0
+}
+```
+
 ## Limitations
 
 {{ rule(id="3.7:14", cat="informative") }}
 
 The current implementation does not support:
 - String concatenation
-- String indexing or slicing
+- Slicing with range syntax (`s[a..b]`); use `s.substring(start, len)` instead
+- Decoding bytes into Unicode scalar values (e.g. iterating `chars`)
 - Pattern matching on strings
-- Mutable strings
 
 These features may be added in future versions.

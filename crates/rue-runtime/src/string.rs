@@ -551,6 +551,128 @@ pub extern "C" fn __rue_String_is_empty(_ptr: *const u8, len: u64, _cap: u64) ->
 }
 
 // =============================================================================
+// String Byte Access (RUE-17 Phase 2, ADR-0035)
+// =============================================================================
+//
+// Rue's String is a byte string (conventionally UTF-8, not guaranteed valid),
+// so byte-level access looks INSIDE the raw bytes. Both operations below take
+// a String by borrow (ptr, len, cap) and bounds-check against `len`, trapping
+// (exit 101, via `__rue_bounds_check`) on out-of-range access — exactly like
+// array indexing. Neither respects UTF-8 char boundaries: any in-range byte
+// index / byte range is valid.
+
+crate::define_for_all_platforms! {
+    /// Read the byte at `index` in a String, returning it as `u8`.
+    ///
+    /// Implements `s[i]` for String (ADR-0035). O(1): a single load from
+    /// `ptr + index` after a bounds check. An `index >= len` traps at runtime
+    /// (index-out-of-bounds panic, exit 101), matching array indexing.
+    ///
+    /// # ABI
+    ///
+    /// ```text
+    /// extern "C" fn __rue_String_byte_at(ptr: *const u8, len: u64, cap: u64, index: u64) -> u64
+    /// ```
+    ///
+    /// The String is passed by borrow as its three fields (ptr, len, cap);
+    /// `cap` is unused but part of the ABI. The byte is returned in the return
+    /// register (`rax` / `x0`).
+    ///
+    /// The result is the language-level `u8` `s[i]`, but the function returns
+    /// `u64` deliberately: the Rue calling convention expects a sub-word return
+    /// value to occupy the *entire* return register zero-extended (Rue's own
+    /// functions emit `mov rax, <u8>`, and the caller reads the full register
+    /// without re-narrowing). A Rust `-> u8` leaves the upper bits of `rax`
+    /// unspecified, which would poison a later `u8` arithmetic overflow check
+    /// on the value. Returning `u64` forces the byte into a clean, fully
+    /// zero-extended register that honors that contract.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure `ptr` points to a valid buffer of at least `len`
+    /// bytes. The in-range read below is then sound because the bounds check
+    /// guarantees `index < len`.
+    #[allow(non_snake_case)]
+    pub extern "C" fn __rue_String_byte_at(ptr: *const u8, len: u64, _cap: u64, index: u64) -> u64 {
+        if index >= len {
+            // Never returns: prints "error: index out of bounds" and exits 101.
+            crate::error::__rue_bounds_check();
+        }
+        // SAFETY: `index < len` (checked above) and the caller guarantees `ptr`
+        // is valid for `len` bytes, so `ptr.add(index)` is in bounds. u8 has no
+        // alignment requirement. Zero-extend to u64 so the whole return
+        // register is clean (see ABI note above).
+        unsafe { *ptr.add(index as usize) as u64 }
+    }
+}
+
+crate::define_for_all_platforms! {
+    /// Return a NEW String containing the byte range `[start, start + sub_len)`.
+    ///
+    /// Implements `s.substring(start, sub_len)` (ADR-0035). Because String is a
+    /// byte string, ANY byte range is valid (no char-boundary trap, unlike
+    /// Rust's `str` slicing); only an out-of-range range (`start + sub_len >
+    /// len`, or an overflowing `start + sub_len`) traps (exit 101). The
+    /// returned String owns a fresh heap allocation holding a copy of the
+    /// bytes, so it can be mutated and dropped independently of the source.
+    ///
+    /// # ABI (sret convention)
+    ///
+    /// ```text
+    /// extern "C" fn __rue_String_substring(
+    ///     out: *mut StringResult, ptr: *const u8, len: u64, cap: u64,
+    ///     start: u64, sub_len: u64)
+    /// ```
+    ///
+    /// `out` (the sret pointer) comes first, then the source String's fields
+    /// (`cap` unused), then the range arguments.
+    #[allow(non_snake_case)]
+    pub extern "C" fn __rue_String_substring(
+        out: *mut StringResult,
+        ptr: *const u8,
+        len: u64,
+        _cap: u64,
+        start: u64,
+        sub_len: u64,
+    ) {
+        // Out-of-range (or overflowing) range traps, matching array indexing.
+        match start.checked_add(sub_len) {
+            Some(end) if end <= len => {}
+            _ => crate::error::__rue_bounds_check(),
+        }
+
+        if sub_len == 0 {
+            // Empty result: a valid literal-like String (cap == 0, ptr null)
+            // that drops without freeing.
+            // SAFETY: `out` is a valid sret pointer — see __rue_String_new.
+            unsafe {
+                (*out).ptr = core::ptr::null_mut();
+                (*out).len = 0;
+                (*out).cap = 0;
+            }
+            return;
+        }
+
+        let new_cap = if sub_len < STRING_MIN_CAPACITY {
+            STRING_MIN_CAPACITY
+        } else {
+            sub_len
+        };
+        let new_ptr = heap::alloc(new_cap, 1);
+
+        // SAFETY: `start + sub_len <= len` (checked above) so the source range
+        // is in bounds; `new_ptr` was just allocated with `new_cap >= sub_len`
+        // bytes; the regions don't overlap (fresh allocation).
+        unsafe {
+            core::ptr::copy_nonoverlapping(ptr.add(start as usize), new_ptr, sub_len as usize);
+            (*out).ptr = new_ptr;
+            (*out).len = sub_len;
+            (*out).cap = new_cap;
+        }
+    }
+}
+
+// =============================================================================
 // String Clone Method (Phase 8)
 // =============================================================================
 //
