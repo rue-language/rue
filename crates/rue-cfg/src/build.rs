@@ -8,7 +8,7 @@ use rue_air::{
     Air, AirArgMode, AirInstData, AirPattern, AirPlaceBase, AirPlaceRef, AirProjection, AirRef,
     StructId, Type, TypeInternPool, TypeKind,
 };
-use rue_error::{CompileWarning, WarningKind};
+use rue_error::{CompileError, CompileWarning, ErrorKind, WarningKind};
 
 use crate::CfgOutput;
 use crate::inst::{
@@ -190,6 +190,12 @@ pub struct CfgBuilder<'a> {
     value_cache: Vec<Option<CfgValue>>,
     /// Warnings collected during CFG construction (e.g., unreachable code)
     warnings: Vec<CompileWarning>,
+    /// Internal-compiler-error diagnostics collected during CFG construction
+    /// (RUE-7). These signal malformed AIR that upstream passes should have
+    /// ruled out (e.g. an un-specialized `CallGeneric`); rather than panicking
+    /// deep in lowering, we record a clean ICE here and let the driver abort
+    /// with a proper diagnostic (exit 1) instead of a process abort.
+    errors: Vec<CompileError>,
     /// Stack of scopes for drop elaboration.
     /// Each scope contains the slots that became live in that scope.
     /// Used to emit StorageDead (and Drop if needed) at scope exit.
@@ -261,6 +267,7 @@ impl<'a> CfgBuilder<'a> {
             loop_stack: Vec::new(),
             value_cache: vec![None; air.len()],
             warnings: Vec::new(),
+            errors: Vec::new(),
             scope_stack: vec![Vec::new()], // Start with one scope for the function body
             drop_flags: std::collections::HashMap::new(),
             field_drop_flags: std::collections::HashMap::new(),
@@ -326,6 +333,7 @@ impl<'a> CfgBuilder<'a> {
         CfgOutput {
             cfg: builder.cfg,
             warnings: builder.warnings,
+            errors: builder.errors,
         }
     }
 
@@ -399,16 +407,33 @@ impl<'a> CfgBuilder<'a> {
             }
 
             AirInstData::CallGeneric { .. } => {
-                // CallGeneric instructions must be specialized (rewritten to Call)
-                // before CFG building. If we reach here, specialization didn't run.
+                // CallGeneric instructions must be specialized (rewritten to a
+                // regular Call) by the specialization pass (see specialize.rs)
+                // before CFG building. Reaching here means specialization left a
+                // generic call behind — malformed AIR, i.e. a compiler bug.
                 //
-                // TODO(ICE): This should be converted to:
-                //   return Err(ice_error!("CallGeneric not specialized", phase: "cfg_builder"));
-                // But that requires refactoring build() to return CompileResult.
-                panic!(
-                    "CallGeneric instruction reached CFG building - this is a compiler bug. \
-                     CallGeneric must be specialized to regular Call before codegen."
-                );
+                // RUE-7: rather than panicking (a process abort deep in
+                // lowering), record a clean internal-compiler-error diagnostic
+                // on the error channel. The driver checks `CfgOutput.errors`
+                // and aborts with a proper ICE (exit 1, carrying this span)
+                // before optimizing or lowering the CFG further. We still emit a
+                // placeholder value so lowering can finish without cascading
+                // panics; the resulting CFG is discarded once the error surfaces.
+                self.errors.push(CompileError::new(
+                    ErrorKind::InternalError(
+                        "CallGeneric instruction reached CFG building; it must be \
+                         specialized to a regular Call before codegen (phase: \
+                         cfg_builder). This is a compiler bug."
+                            .to_string(),
+                    ),
+                    span,
+                ));
+                let value = self.emit(CfgInstData::Const(0), ty, span);
+                self.cache(air_ref, value);
+                ExprResult {
+                    value: Some(value),
+                    continuation: Continuation::Continues,
+                }
             }
 
             AirInstData::Param { index } => {
@@ -3596,5 +3621,59 @@ mod tests {
             "field a's exit drop must be guarded by a flag test"
         );
         assert_all_blocks_terminated(&main_cfg);
+    }
+
+    #[test]
+    fn callgeneric_reaching_cfg_is_internal_error_not_panic() {
+        // RUE-7: an un-specialized `CallGeneric` that survives to CFG building
+        // is malformed AIR (the specialization pass should have rewritten it to
+        // a regular `Call`). The builder must record a clean
+        // internal-compiler-error diagnostic on the error channel rather than
+        // panicking / aborting the process.
+        use rue_air::{Air, AirInst};
+        use rue_span::Span;
+
+        let interner = ThreadedRodeo::default();
+        let name = interner.get_or_intern("generic_fn");
+        let type_pool = TypeInternPool::new();
+
+        let mut air = Air::new(Type::I32);
+        let call = air.add_inst(AirInst {
+            data: AirInstData::CallGeneric {
+                name,
+                type_args_start: 0,
+                type_args_len: 0,
+                value_args_start: 0,
+                value_args_len: 0,
+                args_start: 0,
+                args_len: 0,
+            },
+            ty: Type::I32,
+            span: Span::new(0, 1),
+        });
+        // The root (last instruction) must be a Ret so `build` starts lowering
+        // from it and reaches the CallGeneric operand.
+        air.add_inst(AirInst {
+            data: AirInstData::Ret(Some(call)),
+            ty: Type::I32,
+            span: Span::new(0, 1),
+        });
+
+        let output = CfgBuilder::build(&air, 0, 0, "generic_fn", &type_pool, vec![], &interner);
+
+        assert!(
+            !output.errors.is_empty(),
+            "CallGeneric at CFG build time must record an internal-compiler-error \
+             diagnostic instead of panicking"
+        );
+        let msg = output.errors[0].to_string();
+        assert!(
+            msg.contains("internal compiler error"),
+            "diagnostic should be an ICE, got: {msg}"
+        );
+        assert!(
+            msg.contains("CallGeneric"),
+            "diagnostic should mention CallGeneric, got: {msg}"
+        );
     }
 }

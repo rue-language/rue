@@ -289,7 +289,7 @@ impl<'src> CompilationUnit<'src> {
             .collect();
 
         // Build CFGs in parallel
-        let (functions, cfg_warnings) = self.build_cfgs(all_functions, &sema_output.type_pool);
+        let (functions, cfg_warnings) = self.build_cfgs(all_functions, &sema_output.type_pool)?;
 
         self.functions = Some(functions);
         self.type_pool = Some(sema_output.type_pool);
@@ -305,13 +305,13 @@ impl<'src> CompilationUnit<'src> {
         &self,
         functions: Vec<AnalyzedFunction>,
         type_pool: &TypeInternPool,
-    ) -> (Vec<FunctionWithCfg>, Vec<CompileWarning>) {
+    ) -> MultiErrorResult<(Vec<FunctionWithCfg>, Vec<CompileWarning>)> {
         let interner = self.interner.as_ref().expect("interner not initialized");
         let opt_level = self.options.opt_level;
 
         let _span = info_span!("cfg_construction").entered();
 
-        let results: Vec<(FunctionWithCfg, Vec<CompileWarning>)> = functions
+        let results: Vec<Result<(FunctionWithCfg, Vec<CompileWarning>), CompileErrors>> = functions
             .into_par_iter()
             .map(|func| {
                 let cfg_output = CfgBuilder::build(
@@ -324,23 +324,35 @@ impl<'src> CompilationUnit<'src> {
                     interner,
                 );
 
+                // A non-empty `errors` means the CFG builder hit malformed AIR
+                // (an internal compiler error, RUE-7). Abort before optimizing
+                // the discarded CFG rather than working on it.
+                if !cfg_output.errors.is_empty() {
+                    let mut errs = CompileErrors::new();
+                    for e in cfg_output.errors {
+                        errs.push(e);
+                    }
+                    return Err(errs);
+                }
+
                 // Apply optimizations
                 let mut cfg = cfg_output.cfg;
                 rue_cfg::opt::optimize(&mut cfg, opt_level);
 
-                (
+                Ok((
                     FunctionWithCfg {
                         analyzed: func,
                         cfg,
                     },
                     cfg_output.warnings,
-                )
+                ))
             })
             .collect();
 
         let mut functions = Vec::with_capacity(results.len());
         let mut warnings = Vec::new();
-        for (func, func_warnings) in results {
+        for result in results {
+            let (func, func_warnings) = result?;
             functions.push(func);
             warnings.extend(func_warnings);
         }
@@ -350,7 +362,7 @@ impl<'src> CompilationUnit<'src> {
             "CFG construction complete"
         );
 
-        (functions, warnings)
+        Ok((functions, warnings))
     }
 
     // =========================================================================

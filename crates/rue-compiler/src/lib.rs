@@ -913,37 +913,50 @@ pub fn compile_frontend_from_ast_with_file_paths(
         let _span = info_span!("cfg_construction").entered();
 
         // Build CFGs in parallel - each function is independent
-        let results: Vec<(FunctionWithCfg, Vec<CompileWarning>)> = all_functions
-            .into_par_iter()
-            .map(|func| {
-                let cfg_output = CfgBuilder::build(
-                    &func.air,
-                    func.num_locals,
-                    func.num_param_slots,
-                    &func.name,
-                    &sema_output.type_pool,
-                    func.param_modes.clone(),
-                    &interner,
-                );
+        let results: Vec<Result<(FunctionWithCfg, Vec<CompileWarning>), CompileErrors>> =
+            all_functions
+                .into_par_iter()
+                .map(|func| {
+                    let cfg_output = CfgBuilder::build(
+                        &func.air,
+                        func.num_locals,
+                        func.num_param_slots,
+                        &func.name,
+                        &sema_output.type_pool,
+                        func.param_modes.clone(),
+                        &interner,
+                    );
 
-                // Apply optimizations to the CFG
-                let mut cfg = cfg_output.cfg;
-                rue_cfg::opt::optimize(&mut cfg, opt_level);
+                    // A non-empty `errors` means the CFG builder hit malformed
+                    // AIR (an internal compiler error, RUE-7). Abort before
+                    // optimizing the discarded CFG rather than working on it.
+                    if !cfg_output.errors.is_empty() {
+                        let mut errs = CompileErrors::new();
+                        for e in cfg_output.errors {
+                            errs.push(e);
+                        }
+                        return Err(errs);
+                    }
 
-                (
-                    FunctionWithCfg {
-                        analyzed: func,
-                        cfg,
-                    },
-                    cfg_output.warnings,
-                )
-            })
-            .collect();
+                    // Apply optimizations to the CFG
+                    let mut cfg = cfg_output.cfg;
+                    rue_cfg::opt::optimize(&mut cfg, opt_level);
+
+                    Ok((
+                        FunctionWithCfg {
+                            analyzed: func,
+                            cfg,
+                        },
+                        cfg_output.warnings,
+                    ))
+                })
+                .collect();
 
         // Unzip the results and collect all warnings
         let mut functions = Vec::with_capacity(results.len());
         let mut warnings = sema_output.warnings;
-        for (func, func_warnings) in results {
+        for result in results {
+            let (func, func_warnings) = result?;
             functions.push(func);
             warnings.extend(func_warnings);
         }
@@ -1039,37 +1052,50 @@ pub fn compile_frontend_from_rir_with_file_paths(
         let _span = info_span!("cfg_construction").entered();
 
         // Build CFGs in parallel - each function is independent
-        let results: Vec<(FunctionWithCfg, Vec<CompileWarning>)> = all_functions
-            .into_par_iter()
-            .map(|func| {
-                let cfg_output = CfgBuilder::build(
-                    &func.air,
-                    func.num_locals,
-                    func.num_param_slots,
-                    &func.name,
-                    &sema_output.type_pool,
-                    func.param_modes.clone(),
-                    &interner,
-                );
+        let results: Vec<Result<(FunctionWithCfg, Vec<CompileWarning>), CompileErrors>> =
+            all_functions
+                .into_par_iter()
+                .map(|func| {
+                    let cfg_output = CfgBuilder::build(
+                        &func.air,
+                        func.num_locals,
+                        func.num_param_slots,
+                        &func.name,
+                        &sema_output.type_pool,
+                        func.param_modes.clone(),
+                        &interner,
+                    );
 
-                // Apply optimizations to the CFG
-                let mut cfg = cfg_output.cfg;
-                rue_cfg::opt::optimize(&mut cfg, opt_level);
+                    // A non-empty `errors` means the CFG builder hit malformed
+                    // AIR (an internal compiler error, RUE-7). Abort before
+                    // optimizing the discarded CFG rather than working on it.
+                    if !cfg_output.errors.is_empty() {
+                        let mut errs = CompileErrors::new();
+                        for e in cfg_output.errors {
+                            errs.push(e);
+                        }
+                        return Err(errs);
+                    }
 
-                (
-                    FunctionWithCfg {
-                        analyzed: func,
-                        cfg,
-                    },
-                    cfg_output.warnings,
-                )
-            })
-            .collect();
+                    // Apply optimizations to the CFG
+                    let mut cfg = cfg_output.cfg;
+                    rue_cfg::opt::optimize(&mut cfg, opt_level);
+
+                    Ok((
+                        FunctionWithCfg {
+                            analyzed: func,
+                            cfg,
+                        },
+                        cfg_output.warnings,
+                    ))
+                })
+                .collect();
 
         // Unzip the results and collect all warnings
         let mut functions = Vec::with_capacity(results.len());
         let mut warnings = sema_output.warnings;
-        for (func, func_warnings) in results {
+        for result in results {
+            let (func, func_warnings) = result?;
             functions.push(func);
             warnings.extend(func_warnings);
         }
