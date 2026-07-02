@@ -62,7 +62,10 @@ The unary negation operator `-` takes a single signed integer operand and produc
 
 {{ rule(id="4.2:14", cat="legality-rule") }}
 
-A compiler **MUST** reject unary negation applied to unsigned integer types.
+A compiler **MUST** reject unary negation whose operand is not a signed integer
+type. Unsigned integer types have no negative range, and non-numeric types
+(such as `bool` or `()`) are not negatable at all; applying `-` to any of them
+is a compile-time error.
 
 {{ rule(id="4.2:7", cat="normative") }}
 

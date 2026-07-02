@@ -1991,7 +1991,7 @@ impl<'a> Sema<'a> {
                     found: format!("{var} = {ty} (infinite type)"),
                 },
                 UnifyResult::NotSigned { ty } => {
-                    ErrorKind::CannotNegateUnsigned(ty.safe_name_with_pool(Some(&self.type_pool)))
+                    ErrorKind::CannotNegate(ty.safe_name_with_pool(Some(&self.type_pool)))
                 }
                 UnifyResult::NotInteger { ty } => ErrorKind::TypeMismatch {
                     expected: "integer type".to_string(),

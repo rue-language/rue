@@ -245,6 +245,20 @@ fn main() -> i32 {
 compile_fail = true
 error_contains = "cannot apply unary operator"
 
+# Negating a non-numeric operand (bool, unit, ...) is also a type error: unary
+# `-` requires a signed integer operand (RUE-200).
+[[case]]
+name = "negation_non_numeric_{variant}_error"
+spec = ["4.2:14"]
+source = "fn main() -> i32 { let x = {expr}; 0 }"
+compile_fail = true
+error_contains = "cannot apply unary operator"
+params = [
+  { variant = "bool_true", expr = "-true" },
+  { variant = "bool_false", expr = "-false" },
+  { variant = "unit", expr = "-()" },
+]
+
 # =============================================================================
 # Runtime Errors
 # =============================================================================

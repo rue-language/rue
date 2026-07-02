@@ -1,0 +1,59 @@
+[section]
+id = "diagnostics.unary-negation"
+name = "Unary negation operand type"
+description = "Unary `-` requires a signed integer operand; bool, unit, and unsigned operands are rejected with E0801 and a helpful note (RUE-200)."
+
+[[case]]
+name = "negate_bool_error_note"
+source = """
+fn main() -> i32 {
+    let x = -true;
+    0
+}
+"""
+compile_fail = true
+error_contains = [
+    "E0801",
+    "cannot apply unary operator `-` to type 'bool'",
+    "unary `-` requires a signed integer operand (i8, i16, i32, i64, isize)",
+]
+
+[[case]]
+name = "negate_unit_error"
+source = """
+fn main() -> i32 {
+    let x = -();
+    0
+}
+"""
+compile_fail = true
+error_contains = [
+    "E0801",
+    "cannot apply unary operator `-` to type '()'",
+]
+
+[[case]]
+name = "negate_unsigned_error_note"
+source = """
+fn main() -> i32 {
+    let x: u32 = 5;
+    let y = -x;
+    0
+}
+"""
+compile_fail = true
+error_contains = [
+    "E0801",
+    "cannot apply unary operator `-` to type 'u32'",
+    "unsigned values cannot be negated",
+]
+
+[[case]]
+name = "negate_signed_ok"
+source = """
+fn main() -> i32 {
+    let x: i32 = 5;
+    -x
+}
+"""
+exit_code = 251

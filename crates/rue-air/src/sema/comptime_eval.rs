@@ -364,9 +364,7 @@ impl Sema<'_> {
                 if let Some(ty) = ty {
                     if ty.is_unsigned() {
                         return Err(CompileError::new(
-                            ErrorKind::CannotNegateUnsigned(
-                                ty.safe_name_with_pool(Some(&self.type_pool)),
-                            ),
+                            ErrorKind::CannotNegate(ty.safe_name_with_pool(Some(&self.type_pool))),
                             span,
                         ));
                     }
