@@ -1,0 +1,434 @@
+//! Crash-detecting execution harness for fuzz targets.
+//!
+//! # Why this exists (RUE-43)
+//!
+//! The naive way to run a fuzz target is `catch_unwind` in-process. That only
+//! catches Rust **panics**. An *abort* — a stack overflow (SIGSEGV on the guard
+//! page), an out-of-memory `abort()`, an explicit `SIGABRT`, or a `SIGSEGV`/
+//! `SIGFPE` from unsafe code — tears the whole process down *without* unwinding,
+//! so `catch_unwind` never returns and the crash is completely invisible to the
+//! fuzzer. That is exactly how the RUE-42 stack overflow slipped through: the
+//! process just died and the loop reported a clean run.
+//!
+//! To see aborts we run every input in a **forked child process** and inspect
+//! the child's wait-status in the parent. A child killed by a signal shows up as
+//! `WIFSIGNALED`, so `SIGSEGV`/`SIGABRT`/`SIGFPE`/... are reported as crashes.
+//!
+//! ## Panics under `panic = abort`
+//!
+//! This toolchain builds with `panic = abort` (see
+//! `toolchains/rust/defs.bzl`), so a Rust panic does **not** unwind — it runs
+//! the panic hook and then calls `abort()` (SIGABRT). `catch_unwind` therefore
+//! catches nothing here. To keep panics distinguishable from raw aborts (and to
+//! give each panic a distinct dedup signature) the child installs a panic hook
+//! that streams the panic message — including its source location — over a pipe
+//! to the parent *before* the process dies. The parent uses that message when
+//! present, and falls back to the terminating signal otherwise. `catch_unwind`
+//! is still wrapped around the target so the harness also behaves correctly if
+//! ever built with `panic = unwind`.
+//!
+//! The parent process never executes target code, so a target that corrupts
+//! memory or blows the stack cannot damage the fuzzer itself.
+
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+
+/// Exit code the child uses to signal "I caught a panic" (distinct from a
+/// signal death and from a clean exit). 101 matches rustc's own convention.
+const PANIC_EXIT_CODE: i32 = 101;
+
+/// The outcome of running one fuzz input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RunOutcome {
+    /// The target returned normally.
+    Ok,
+    /// The target panicked; carries the panic message (best-effort).
+    Panic(String),
+    /// The child was killed by a terminating signal (e.g. SIGSEGV=11,
+    /// SIGABRT=6, SIGFPE=8). This is the case the old in-process harness was
+    /// completely blind to.
+    Signal(i32),
+}
+
+impl RunOutcome {
+    /// Whether this outcome represents a crash (anything other than a clean run).
+    pub fn is_crash(&self) -> bool {
+        !matches!(self, RunOutcome::Ok)
+    }
+
+    /// A stable signature used to collapse duplicate crashes.
+    ///
+    /// - Panics dedup on their message's first line (the crash site text).
+    /// - Signals dedup on the signal type. Async-signal-safe backtracing is out
+    ///   of scope, so all crashes of the same signal kind collapse to one entry
+    ///   — which is precisely the flood-control we want (the RUE-42 overflow
+    ///   made *every* deep input SIGSEGV).
+    pub fn signature(&self) -> Option<String> {
+        match self {
+            RunOutcome::Ok => None,
+            RunOutcome::Panic(msg) => Some(format!("panic:{}", first_line(msg))),
+            RunOutcome::Signal(sig) => Some(format!("signal:{}", signal_name(*sig))),
+        }
+    }
+
+    /// Short human-readable description for logs.
+    pub fn describe(&self) -> String {
+        match self {
+            RunOutcome::Ok => "ok".to_string(),
+            RunOutcome::Panic(msg) => format!("panic: {}", first_line(msg)),
+            RunOutcome::Signal(sig) => format!("signal: {} ({})", signal_name(*sig), sig),
+        }
+    }
+}
+
+fn first_line(s: &str) -> &str {
+    s.lines().next().unwrap_or("").trim()
+}
+
+/// Human-readable name for the common fatal signals.
+pub fn signal_name(sig: i32) -> String {
+    let name = match sig {
+        libc::SIGSEGV => "SIGSEGV",
+        libc::SIGABRT => "SIGABRT",
+        libc::SIGFPE => "SIGFPE",
+        libc::SIGILL => "SIGILL",
+        libc::SIGBUS => "SIGBUS",
+        libc::SIGKILL => "SIGKILL",
+        libc::SIGTRAP => "SIGTRAP",
+        _ => return format!("SIG{sig}"),
+    };
+    name.to_string()
+}
+
+/// Run `f` in a forked child process and report how it terminated.
+///
+/// The child runs the closure under `catch_unwind`; the parent `waitpid`s and
+/// classifies the result. Fatal signals become [`RunOutcome::Signal`], panics
+/// become [`RunOutcome::Panic`], a clean run is [`RunOutcome::Ok`].
+///
+/// If `fork`/`pipe` themselves fail (extremely unlikely), we degrade gracefully
+/// to an in-process `catch_unwind` run — that still catches panics, we just lose
+/// signal detection for that one input.
+pub fn run_forked<F: FnOnce()>(f: F) -> RunOutcome {
+    // Pipe for streaming the panic message from child to parent.
+    let mut fds = [0 as libc::c_int; 2];
+    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+        return run_in_process(f);
+    }
+    let (read_fd, write_fd) = (fds[0], fds[1]);
+
+    let pid = unsafe { libc::fork() };
+    if pid < 0 {
+        unsafe {
+            libc::close(read_fd);
+            libc::close(write_fd);
+        }
+        return run_in_process(f);
+    }
+
+    if pid == 0 {
+        // ---- Child: runs the (potentially crashing) target and never returns.
+        unsafe { libc::close(read_fd) };
+
+        // Stream the panic message to the parent from the panic hook, which runs
+        // *before* the process dies. Under `panic = abort` this is the only way
+        // to recover the message (the runtime aborts right after the hook);
+        // under `panic = unwind` `catch_unwind` below also handles it.
+        let hook_fd = write_fd;
+        std::panic::set_hook(Box::new(move |info| {
+            // `info` Displays as "panicked at <file>:<line>:<col>:\n<message>",
+            // so the location is included — that keeps distinct panic sites in
+            // distinct dedup buckets.
+            let text = info.to_string();
+            let bytes = text.as_bytes();
+            unsafe {
+                libc::write(hook_fd, bytes.as_ptr() as *const libc::c_void, bytes.len());
+            }
+        }));
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+        let code = if result.is_ok() { 0 } else { PANIC_EXIT_CODE };
+        unsafe {
+            libc::close(write_fd);
+            // _exit, not exit: skip atexit handlers and stdio flushing so we
+            // don't double-flush buffers the parent also owns. `_exit` returns
+            // `!`, so the child branch diverges and never falls through to the
+            // parent code below (which would otherwise wait on itself).
+            libc::_exit(code);
+        }
+    }
+
+    // ---- Parent: collect any panic message, then reap the child.
+    unsafe { libc::close(write_fd) };
+    let mut msg = Vec::new();
+    let mut buf = [0u8; 4096];
+    loop {
+        let n = unsafe { libc::read(read_fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
+        if n <= 0 {
+            break;
+        }
+        msg.extend_from_slice(&buf[..n as usize]);
+    }
+    unsafe { libc::close(read_fd) };
+
+    let mut status: libc::c_int = 0;
+    // Loop over EINTR.
+    loop {
+        let r = unsafe { libc::waitpid(pid, &mut status, 0) };
+        if r != -1 || std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+            break;
+        }
+    }
+
+    outcome_from_status(status, msg)
+}
+
+fn outcome_from_status(status: libc::c_int, panic_msg: Vec<u8>) -> RunOutcome {
+    // A captured panic message (from the child's panic hook) takes priority: it
+    // identifies the exact crash site, which is far more useful for dedup than
+    // the bare SIGABRT the abort runtime raises afterwards.
+    let msg = String::from_utf8_lossy(&panic_msg);
+    if !msg.trim().is_empty() {
+        return RunOutcome::Panic(msg.into_owned());
+    }
+
+    if libc::WIFSIGNALED(status) {
+        // Signal death with no panic message: a genuine abort — stack overflow,
+        // segfault, FPE, or a direct abort() — exactly what the old harness
+        // could not see.
+        return RunOutcome::Signal(libc::WTERMSIG(status));
+    }
+    if libc::WIFEXITED(status) {
+        let code = libc::WEXITSTATUS(status);
+        if code == 0 {
+            return RunOutcome::Ok;
+        }
+        // A non-zero exit with no panic message (e.g. the target called
+        // process::exit): still abnormal, treat it as a crash.
+        return RunOutcome::Panic(format!("child exited with status {code}"));
+    }
+    RunOutcome::Ok
+}
+
+/// Fallback path when fork/pipe are unavailable. Note: under `panic = abort`
+/// this cannot catch panics either (the process aborts), but it preserves
+/// correctness under `panic = unwind`.
+fn run_in_process<F: FnOnce()>(f: F) -> RunOutcome {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(()) => RunOutcome::Ok,
+        Err(_) => RunOutcome::Panic("panic (message unavailable)".to_string()),
+    }
+}
+
+/// Records crashes to disk, collapsing duplicates by [`RunOutcome::signature`].
+///
+/// A reproducer is written for the *first* occurrence of each distinct crash
+/// signature; subsequent identical crashes bump the duplicate counter and are
+/// not written again, so a single flooding bug can't fill the crashes dir.
+pub struct CrashReporter {
+    crash_dir: Option<PathBuf>,
+    seen: HashSet<String>,
+    pub unique_crashes: u64,
+    pub duplicate_crashes: u64,
+}
+
+impl CrashReporter {
+    pub fn new(crash_dir: Option<PathBuf>) -> Self {
+        Self {
+            crash_dir,
+            seen: HashSet::new(),
+            unique_crashes: 0,
+            duplicate_crashes: 0,
+        }
+    }
+
+    /// Report a crash. Returns the reproducer path if a *new* one was written,
+    /// or `None` if the crash was a duplicate (or `outcome` was not a crash).
+    pub fn report(&mut self, target: &str, input: &[u8], outcome: &RunOutcome) -> Option<PathBuf> {
+        let signature = outcome.signature()?;
+
+        if !self.seen.insert(signature.clone()) {
+            self.duplicate_crashes += 1;
+            return None;
+        }
+        self.unique_crashes += 1;
+
+        eprintln!(
+            "[{target}] new crash ({}) [signature: {signature}]",
+            outcome.describe()
+        );
+
+        let crash_dir = self.crash_dir.as_ref()?;
+        match write_reproducer(crash_dir, target, input, &signature) {
+            Ok(path) => {
+                eprintln!("[{target}] saved reproducer: {}", path.display());
+                Some(path)
+            }
+            Err(e) => {
+                eprintln!("[{target}] warning: failed to save reproducer: {e}");
+                None
+            }
+        }
+    }
+
+    /// Number of distinct crash signatures seen so far.
+    pub fn distinct_signatures(&self) -> usize {
+        self.seen.len()
+    }
+}
+
+/// Write the crashing input to `crash_dir` under a name that includes both a
+/// signature hash and an input hash, so identical inputs overwrite (not
+/// accumulate) and distinct crashes never collide.
+fn write_reproducer(
+    crash_dir: &Path,
+    target: &str,
+    input: &[u8],
+    signature: &str,
+) -> std::io::Result<PathBuf> {
+    use std::io::Write;
+
+    std::fs::create_dir_all(crash_dir)?;
+
+    let input_hash = fnv1a(input);
+    let sig_hash = fnv1a(signature.as_bytes()) as u32;
+
+    let filename = format!("crash-{target}-{sig_hash:08x}-{input_hash:016x}.txt");
+    let path = crash_dir.join(filename);
+
+    let mut file = std::fs::File::create(&path)?;
+    file.write_all(input)?;
+    Ok(path)
+}
+
+/// FNV-1a hash — small, dependency-free, good enough for filenames.
+fn fnv1a(bytes: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for &b in bytes {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clean_run_is_ok() {
+        let outcome = run_forked(|| {
+            let _ = 1 + 1;
+        });
+        assert_eq!(outcome, RunOutcome::Ok);
+        assert!(!outcome.is_crash());
+        assert!(outcome.signature().is_none());
+    }
+
+    #[test]
+    fn panic_is_detected_with_message() {
+        let outcome = run_forked(|| {
+            panic!("boom-42");
+        });
+        match &outcome {
+            RunOutcome::Panic(msg) => assert!(msg.contains("boom-42"), "got: {msg}"),
+            other => panic!("expected panic, got {other:?}"),
+        }
+        assert!(outcome.is_crash());
+    }
+
+    // The core RUE-43 regression: an *abort* (signal death, which the old
+    // in-process catch_unwind harness could NOT see) must be reported as a
+    // crash carrying the terminating signal.
+    #[test]
+    fn abort_is_detected_as_signal() {
+        let outcome = run_forked(|| {
+            std::process::abort();
+        });
+        match outcome {
+            RunOutcome::Signal(sig) => assert_eq!(sig, libc::SIGABRT),
+            other => panic!("expected SIGABRT signal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn segfault_is_detected_as_signal() {
+        let outcome = run_forked(|| {
+            // Deliberate null dereference in the child only.
+            unsafe {
+                let p = std::ptr::null_mut::<u8>();
+                std::ptr::write_volatile(p, 1);
+            }
+        });
+        match outcome {
+            RunOutcome::Signal(sig) => {
+                assert!(
+                    sig == libc::SIGSEGV || sig == libc::SIGBUS,
+                    "got signal {sig}"
+                )
+            }
+            other => panic!("expected a segfault signal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn signal_and_panic_have_distinct_signatures() {
+        let sig = RunOutcome::Signal(libc::SIGSEGV).signature();
+        let pnc = RunOutcome::Panic("index out of bounds".to_string()).signature();
+        assert!(sig.is_some() && pnc.is_some());
+        assert_ne!(sig, pnc);
+    }
+
+    #[test]
+    fn reporter_dedups_identical_crashes() {
+        let dir = std::env::temp_dir().join(format!("rue-fuzz-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut reporter = CrashReporter::new(Some(dir.clone()));
+
+        let outcome = RunOutcome::Signal(libc::SIGSEGV);
+
+        // First occurrence: written.
+        let first = reporter.report("parser", b"deep((((", &outcome);
+        assert!(first.is_some(), "first crash should be saved");
+        assert_eq!(reporter.unique_crashes, 1);
+        assert_eq!(reporter.duplicate_crashes, 0);
+
+        // Same signature again (even with different input bytes): deduped.
+        let second = reporter.report("parser", b"deep[[[[", &outcome);
+        assert!(second.is_none(), "duplicate crash should be deduped");
+        assert_eq!(reporter.unique_crashes, 1);
+        assert_eq!(reporter.duplicate_crashes, 1);
+        assert_eq!(reporter.distinct_signatures(), 1);
+
+        // A genuinely different crash: written.
+        let other = reporter.report("parser", b"x", &RunOutcome::Panic("nope".into()));
+        assert!(other.is_some(), "distinct crash should be saved");
+        assert_eq!(reporter.unique_crashes, 2);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn end_to_end_abort_is_saved_and_deduped() {
+        // Prove the full path: an aborting closure -> detected as a crash ->
+        // reproducer written -> re-running the same input dedups.
+        let dir = std::env::temp_dir().join(format!("rue-fuzz-e2e-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut reporter = CrashReporter::new(Some(dir.clone()));
+        let input = b"aborting-input";
+
+        let outcome1 = run_forked(|| std::process::abort());
+        assert!(outcome1.is_crash());
+        let path = reporter.report("synthetic", input, &outcome1);
+        let path = path.expect("abort should be saved as a reproducer");
+        assert!(path.exists(), "reproducer file must exist on disk");
+        assert_eq!(std::fs::read(&path).unwrap(), input);
+
+        let outcome2 = run_forked(|| std::process::abort());
+        assert!(reporter.report("synthetic", input, &outcome2).is_none());
+        assert_eq!(reporter.unique_crashes, 1);
+        assert_eq!(reporter.duplicate_crashes, 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

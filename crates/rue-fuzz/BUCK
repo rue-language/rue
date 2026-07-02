@@ -8,6 +8,7 @@ rue_binary(
         "//crates/rue-lexer:rue-lexer",
         "//crates/rue-parser:rue-parser",
         "//third-party:anyhow",
+        "//third-party:libc",
         "//third-party:proptest",
     ],
 )

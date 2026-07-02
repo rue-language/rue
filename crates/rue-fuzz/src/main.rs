@@ -19,13 +19,13 @@
 pub mod codegen_generators;
 mod corpus;
 pub mod generators;
+pub mod harness;
 mod mutate;
 mod targets;
 
+use harness::{CrashReporter, RunOutcome, run_forked};
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 /// A fuzz target that can be run with arbitrary input.
@@ -38,11 +38,17 @@ pub trait FuzzTarget: Send + Sync {
 }
 
 /// Statistics from a fuzzing run.
+///
+/// `crashes` counts *every* crashing input (panics and signal deaths alike),
+/// broken down into `panics` and `signals`. `unique_crashes` is the number of
+/// distinct crash signatures actually saved to disk (see [`CrashReporter`]).
 #[derive(Debug, Default)]
 pub struct FuzzStats {
     pub runs: u64,
     pub crashes: u64,
     pub panics: u64,
+    pub signals: u64,
+    pub unique_crashes: u64,
     pub elapsed: Duration,
 }
 
@@ -60,10 +66,12 @@ impl std::fmt::Display for FuzzStats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "runs: {}, crashes: {}, panics: {}, exec/s: {:.1}, elapsed: {:.1}s",
+            "runs: {}, crashes: {} (panics: {}, signals: {}, unique: {}), exec/s: {:.1}, elapsed: {:.1}s",
             self.runs,
             self.crashes,
             self.panics,
+            self.signals,
+            self.unique_crashes,
             self.exec_per_sec(),
             self.elapsed.as_secs_f64()
         )
@@ -110,9 +118,15 @@ pub fn run_fuzzer<T: FuzzTarget + ?Sized>(
     );
 
     let start = Instant::now();
-    let runs = Arc::new(AtomicU64::new(0));
-    let panics = Arc::new(AtomicU64::new(0));
-    let crashes = Arc::new(AtomicU64::new(0));
+    let mut runs: u64 = 0;
+    let mut panics: u64 = 0;
+    let mut signals: u64 = 0;
+    let mut crashes: u64 = 0;
+
+    // Reproducer writing + dedup lives here; each distinct crash signature is
+    // saved once, so a single flooding bug (e.g. the RUE-42 stack overflow)
+    // can't bury the crashes dir under thousands of identical files.
+    let mut reporter = CrashReporter::new(config.crash_dir.clone());
 
     let mut rng = mutate::SimpleRng::new(42);
 
@@ -123,9 +137,8 @@ pub fn run_fuzzer<T: FuzzTarget + ?Sized>(
                 break;
             }
         }
-        let current_runs = runs.load(Ordering::Relaxed);
         if let Some(max_runs) = config.max_runs {
-            if current_runs >= max_runs {
+            if runs >= max_runs {
                 break;
             }
         }
@@ -137,27 +150,30 @@ pub fn run_fuzzer<T: FuzzTarget + ?Sized>(
             mutate::mutate(&mut input, &mut rng);
         }
 
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            target.fuzz(&input);
-        }));
+        // Run each input in a forked child so that *aborts* (stack overflow,
+        // OOM, SIGABRT/SIGSEGV/SIGFPE) are detected via the child's wait-status,
+        // not just Rust panics. This is the core RUE-43 fix.
+        let outcome = run_forked(|| target.fuzz(&input));
 
-        if result.is_err() {
-            panics.fetch_add(1, Ordering::Relaxed);
-
-            if let Some(ref crash_dir) = config.crash_dir {
-                if let Err(e) = save_crash(crash_dir, &input, current_runs) {
-                    eprintln!("Warning: failed to save crash: {}", e);
-                }
+        if outcome.is_crash() {
+            crashes += 1;
+            match &outcome {
+                RunOutcome::Panic(_) => panics += 1,
+                RunOutcome::Signal(_) => signals += 1,
+                RunOutcome::Ok => unreachable!(),
             }
+            reporter.report(target.name(), &input, &outcome);
         }
 
-        runs.fetch_add(1, Ordering::Relaxed);
+        runs += 1;
 
-        if current_runs > 0 && current_runs % config.print_interval == 0 {
+        if runs > 0 && runs % config.print_interval == 0 {
             let stats = FuzzStats {
-                runs: current_runs,
-                crashes: crashes.load(Ordering::Relaxed),
-                panics: panics.load(Ordering::Relaxed),
+                runs,
+                crashes,
+                panics,
+                signals,
+                unique_crashes: reporter.unique_crashes,
                 elapsed,
             };
             eprintln!("[{}] {}", target.name(), stats);
@@ -165,34 +181,13 @@ pub fn run_fuzzer<T: FuzzTarget + ?Sized>(
     }
 
     Ok(FuzzStats {
-        runs: runs.load(Ordering::Relaxed),
-        crashes: crashes.load(Ordering::Relaxed),
-        panics: panics.load(Ordering::Relaxed),
+        runs,
+        crashes,
+        panics,
+        signals,
+        unique_crashes: reporter.unique_crashes,
         elapsed: start.elapsed(),
     })
-}
-
-fn save_crash(crash_dir: &Path, input: &[u8], run_id: u64) -> std::io::Result<()> {
-    use std::io::Write;
-
-    std::fs::create_dir_all(crash_dir)?;
-
-    let hash = {
-        let mut h: u64 = 0;
-        for &b in input {
-            h = h.wrapping_mul(31).wrapping_add(b as u64);
-        }
-        h
-    };
-
-    let filename = format!("crash-{:016x}-{}.txt", hash, run_id);
-    let path = crash_dir.join(filename);
-
-    let mut file = std::fs::File::create(&path)?;
-    file.write_all(input)?;
-
-    eprintln!("Saved crash to: {}", path.display());
-    Ok(())
 }
 
 fn main() {
@@ -307,8 +302,11 @@ fn main() {
     match run_fuzzer(target.as_ref(), &corpus_dir, &config) {
         Ok(stats) => {
             eprintln!("\nFuzzing complete: {}", stats);
-            if stats.panics > 0 {
-                eprintln!("Found {} panic(s)!", stats.panics);
+            if stats.crashes > 0 {
+                eprintln!(
+                    "Found {} crash(es): {} panic(s), {} signal(s); {} unique reproducer(s) saved.",
+                    stats.crashes, stats.panics, stats.signals, stats.unique_crashes
+                );
                 std::process::exit(1);
             }
         }

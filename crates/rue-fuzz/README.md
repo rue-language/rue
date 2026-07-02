@@ -64,14 +64,31 @@ When `--mutate` is enabled, the fuzzer applies these mutations to corpus inputs:
 
 ## Finding Bugs
 
-When a panic is detected, the crashing input is saved to the crash directory (defaults to `crashes/` next to the corpus). To reproduce:
+### Crash detection: panics *and* aborts (RUE-43)
+
+Each input is executed in a **forked child process** (see `src/harness.rs`).
+The parent inspects the child's `waitpid` status, so the fuzzer detects not
+only Rust panics but also *aborts* that tear the process down without
+unwinding — stack overflow (SIGSEGV on the guard page), OOM/`abort()`
+(SIGABRT), and SIGSEGV/SIGFPE from unsafe code. The previous in-process
+`catch_unwind` harness was blind to all of these (and, because this toolchain
+builds with `panic = abort`, it could not actually catch panics either — they
+abort). The child streams the panic message over a pipe from its panic hook so
+panics keep a source-location dedup signature even under `panic = abort`.
+
+When a crash is detected, the crashing input is saved to the crash directory
+(defaults to `crashes/` next to the corpus) as
+`crash-<target>-<sighash>-<inputhash>.txt`. Crashes are **deduplicated by
+signature** (panic message + location, or signal type), so one flooding bug
+saves a single reproducer instead of thousands. To reproduce, feed the saved
+input back to the target named in the filename:
 
 ```bash
-# After finding a crash
-./buck2 run //crates/rue:rue -- --emit tokens crashes/crash-*.txt
+# After finding a crash in, e.g., the parser target
+./buck2 run //crates/rue:rue -- --emit tokens crashes/crash-parser-*.txt
 
-# Or compile it
-./buck2 run //crates/rue:rue -- crashes/crash-*.txt output
+# Or run the same fuzz target on a directory containing just that input
+./buck2 run //crates/rue-fuzz:rue-fuzz -- parser <dir-with-the-file>
 ```
 
 ## Integration with CI
@@ -87,7 +104,8 @@ for target in lexer parser sema compiler emitter emitter_sequence; do
 done
 ```
 
-Any panics will cause a non-zero exit code.
+Any crash — panic or abort (signal) — causes a non-zero exit code, which fails
+the CI job and uploads the saved reproducers as artifacts.
 
 ## Proptest Integration
 
@@ -135,8 +153,9 @@ The fuzzer is designed to work with Buck2 without requiring cargo-fuzz or libFuz
 
 1. Loads inputs from a corpus directory
 2. Optionally mutates inputs (byte-level mutations)
-3. Runs the fuzz target in a panic-catching wrapper
-4. Saves any crashing inputs
+3. Runs each input in a forked child process, detecting panics *and* aborts
+   (signal deaths: SIGSEGV/SIGABRT/SIGFPE) via the child's wait-status
+4. Saves a deduplicated reproducer for each distinct crash signature
 
 Additionally, proptest-based generators create syntactically valid programs and structured codegen inputs for deeper testing.
 
