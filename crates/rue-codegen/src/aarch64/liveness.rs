@@ -106,8 +106,8 @@ fn get_successors(
             }
             succs
         }
-        // Return has no successors
-        Aarch64Inst::Ret => Vec::new(),
+        // Return and trap have no successors
+        Aarch64Inst::Ret | Aarch64Inst::Brk => Vec::new(),
         // Function calls fall through (callee returns)
         Aarch64Inst::Bl { .. } => {
             if idx + 1 < num_insts {
@@ -267,6 +267,7 @@ fn uses(inst: &Aarch64Inst) -> Vec<VReg> {
         | Aarch64Inst::Label { .. }
         | Aarch64Inst::Bl { .. }
         | Aarch64Inst::Ret
+        | Aarch64Inst::Brk
         | Aarch64Inst::Svc { .. } => {
             // No vreg operands
         }
@@ -393,6 +394,7 @@ fn defs(inst: &Aarch64Inst) -> Vec<VReg> {
         | Aarch64Inst::Label { .. }
         | Aarch64Inst::Bl { .. }
         | Aarch64Inst::Ret
+        | Aarch64Inst::Brk
         | Aarch64Inst::Svc { .. } => {
             // No vreg operands
         }

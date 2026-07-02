@@ -751,6 +751,13 @@ pub enum Aarch64Inst {
     /// `ret` - Return (branch to LR).
     Ret,
 
+    /// `brk #imm` - Software breakpoint; raises an exception (SIGTRAP)
+    /// unconditionally. Emitted for a *live* `Terminator::Unreachable` so a
+    /// control-flow bug that reaches a block the compiler proved unreachable
+    /// traps loudly instead of silently falling through into the next block's
+    /// code (RUE-208).
+    Brk,
+
     /// `svc #imm` - Supervisor call (syscall instruction).
     ///
     /// On macOS, syscalls use `svc #0x80` with syscall number in X16.
@@ -989,6 +996,7 @@ impl fmt::Display for Aarch64Inst {
             Aarch64Inst::Label { id } => write!(f, "{}:", id),
             Aarch64Inst::Bl { symbol_id } => write!(f, "bl sym{}", symbol_id),
             Aarch64Inst::Ret => write!(f, "ret"),
+            Aarch64Inst::Brk => write!(f, "brk #0x1"),
             Aarch64Inst::Svc { imm } => write!(f, "svc #{:#x}", imm),
             Aarch64Inst::StpPre { src1, src2, offset } => {
                 write!(f, "stp {}, {}, [sp, #{}]!", src1, src2, offset)

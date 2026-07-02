@@ -1470,28 +1470,35 @@ impl<'a> CfgBuilder<'a> {
                     },
                 );
 
-                // Push loop context with current scope depth.
-                // The scope depth is captured BEFORE the loop body is lowered,
-                // so break/continue will drop all slots in scopes created INSIDE the loop.
+                // Lower condition in header — BEFORE pushing this while's loop
+                // context, so a break/continue inside the condition resolves via
+                // loop_stack.last() to the ENCLOSING loop, not to the while being
+                // constructed. This matches sema, which treats a while-condition as
+                // lexically OUTSIDE the while's loop scope (RUE-208; spec 4.8:7,21).
+                self.current_block = header_block;
+                let Some(cond_val) = self.lower_value(*cond) else {
+                    // The condition itself diverges — either a plain divergence
+                    // (e.g. `while return 8 {}`) or a break/continue that targeted an
+                    // enclosing loop and already set this block's terminator. Either
+                    // way the loop body and everything after the loop are unreachable.
+                    // The body/exit blocks allocated above are now orphaned — mark
+                    // them Unreachable so codegen does not assert on a missing
+                    // terminator. No loop context was pushed yet, so nothing to pop.
+                    self.cfg.set_terminator(body_block, Terminator::Unreachable);
+                    self.cfg.set_terminator(exit_block, Terminator::Unreachable);
+                    return Self::diverged();
+                };
+
+                // Push loop context with current scope depth. Pushed AFTER the
+                // condition (see above) so break/continue in the BODY target this
+                // loop. The scope depth is captured before the loop body is lowered,
+                // so break/continue will drop all slots in scopes created INSIDE the
+                // loop.
                 self.loop_stack.push(LoopContext {
                     header: header_block,
                     exit: exit_block,
                     scope_depth: self.scope_stack.len(),
                 });
-
-                // Lower condition in header
-                self.current_block = header_block;
-                let Some(cond_val) = self.lower_value(*cond) else {
-                    // The condition itself diverges (e.g. `while return 8 {}`), so the
-                    // loop body and everything after the loop are unreachable. The
-                    // body/exit blocks allocated above are now orphaned — mark them
-                    // Unreachable so codegen does not assert on a missing terminator —
-                    // and pop the loop context we pushed to keep loop_stack balanced.
-                    self.cfg.set_terminator(body_block, Terminator::Unreachable);
-                    self.cfg.set_terminator(exit_block, Terminator::Unreachable);
-                    self.loop_stack.pop();
-                    return Self::diverged();
-                };
 
                 // Branch: if true go to body, if false exit
                 let (then_args_start, then_args_len) = self.cfg.push_extra(std::iter::empty());

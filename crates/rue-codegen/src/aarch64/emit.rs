@@ -187,6 +187,9 @@ const OPCODE_CBZ_X: u32 = 0xB4000000;
 const OPCODE_BL: u32 = 0x94000000;
 /// RET - Return (branch to LR)
 const OPCODE_RET: u32 = 0xD65F03C0;
+/// BRK #1 - Software breakpoint (raises SIGTRAP). Encoding:
+/// 1101 0100 001 imm16 00000; imm16 in bits 5-20, here #1.
+const OPCODE_BRK_1: u32 = 0xD420_0020;
 
 // Conditional select
 /// CSINC Xd, XZR, XZR, invert(cond) - CSET alias
@@ -1153,6 +1156,12 @@ impl<'a> Emitter<'a> {
                 end_inst!(self, "ret");
             }
 
+            Aarch64Inst::Brk => {
+                self.begin_inst();
+                self.emit_brk();
+                end_inst!(self, "brk #0x1");
+            }
+
             Aarch64Inst::Svc { imm } => {
                 self.begin_inst();
                 self.emit_svc(*imm);
@@ -2105,6 +2114,11 @@ impl<'a> Emitter<'a> {
         self.emit_u32(OPCODE_RET);
     }
 
+    fn emit_brk(&mut self) {
+        // BRK #1 - software breakpoint, raises an exception (SIGTRAP)
+        self.emit_u32(OPCODE_BRK_1);
+    }
+
     fn emit_svc(&mut self, imm: u16) {
         // SVC #imm - Supervisor Call
         // Encoding: 1101 0100 000 imm16 00001
@@ -2868,6 +2882,14 @@ mod tests {
         // ret -> 0xD65F03C0
         let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
         assert_eq!(inst, 0xD65F03C0, "Should be RET");
+    }
+
+    #[test]
+    fn test_brk() {
+        let code = emit_single(Aarch64Inst::Brk);
+        // brk #1 -> 0xD4200020
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        assert_eq!(inst, 0xD420_0020, "Should be BRK #1");
     }
 
     #[test]

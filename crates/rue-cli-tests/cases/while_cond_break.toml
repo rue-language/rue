@@ -1,0 +1,119 @@
+# break/continue inside a while-loop's CONDITION expression (RUE-208).
+#
+# The CFG builder (rue-cfg/src/build.rs) used to push the while's own
+# LoopContext onto loop_stack BEFORE lowering the condition, so a break/continue
+# in the condition resolved via loop_stack.last() to the while being
+# constructed instead of the ENCLOSING loop. Sema, by contrast, treats a
+# while-condition as lexically OUTSIDE the while's loop scope, so the two
+# disagreed — a miscompile.
+#
+# Symptoms on trunk:
+#   - `loop { while (break) {} } 42` compiled clean but SEGFAULTED at -O0 and
+#     exited 0 (not 42) at -O2: the break was wired to the while's own exit,
+#     which dead-ended in `unreachable`, while the real `const 42; return` sat
+#     in an orphaned, predecessor-less block.
+#   - a break in a while-condition that should exit an enclosing `loop` never
+#     did, so a safety-valve return fired instead (wrong control flow).
+#
+# Fix: lower the condition BEFORE pushing the while's loop context, so
+# break/continue in the condition bind to the enclosing loop (matching sema).
+# These cases run at both -O0 and -O2 via the harness's default; the exact exit
+# codes pin the control flow.
+
+[section]
+id = "cli.while_cond_break"
+name = "break/continue in a while condition"
+description = "break/continue in a while-loop condition binds to the enclosing loop, not the while (RUE-208)."
+
+# Repro A: break in the while-condition must exit the enclosing `loop`, so
+# control reaches the trailing `42`. On trunk this segfaulted at -O0 and
+# returned 0 at -O2.
+[[case]]
+name = "break_in_cond_exits_enclosing_loop"
+description = "loop { while (break) {} } 42 — the break exits the loop; main returns 42."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    loop { while (break) {} }
+    42
+}
+""" }]
+exit_code = 42
+
+[[case]]
+name = "break_in_cond_exits_enclosing_loop_O2"
+description = "Same as break_in_cond_exits_enclosing_loop but at -O2 (optimizer must not fall off the end)."
+args = ["-O2", "main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    loop { while (break) {} }
+    42
+}
+""" }]
+exit_code = 42
+
+# Repro B: break in a nested while-condition exits the outer `loop` on the
+# 4th iteration (i becomes 4, i > 3 is true, break). The safety valve at
+# outer_iters > 20 must NOT fire. On trunk this returned 99.
+[[case]]
+name = "break_in_cond_wrong_loop"
+description = "break in a while-condition exits the outer loop; returns 4, not the safety valve 99."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut i = 0; let mut outer_iters = 0;
+    loop {
+        outer_iters = outer_iters + 1; i = i + 1;
+        while if i > 3 { break; } else { false } {}
+        if outer_iters > 20 { return 99; }
+    }
+    outer_iters
+}
+""" }]
+exit_code = 4
+
+[[case]]
+name = "break_in_cond_wrong_loop_O2"
+description = "Same as break_in_cond_wrong_loop but at -O2."
+args = ["-O2", "main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut i = 0; let mut outer_iters = 0;
+    loop {
+        outer_iters = outer_iters + 1; i = i + 1;
+        while if i > 3 { break; } else { false } {}
+        if outer_iters > 20 { return 99; }
+    }
+    outer_iters
+}
+""" }]
+exit_code = 4
+
+# continue in a while-condition must continue the ENCLOSING loop, not the while.
+# i counts 1,2,3; at i>=3 the outer loop breaks. Returns 3.
+[[case]]
+name = "continue_in_cond_targets_enclosing_loop"
+description = "continue in a while-condition re-enters the enclosing loop; returns 3."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut i = 0;
+    loop {
+        i = i + 1;
+        while if i < 3 { continue; } else { false } {}
+        if i >= 3 { break; }
+    }
+    i
+}
+""" }]
+exit_code = 3
+
+# Control: a break in the BODY of a while still targets that while (unchanged).
+[[case]]
+name = "break_in_body_targets_while"
+description = "Control: while (true) { break; } — break in the body exits the while normally."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut i = 0;
+    while true { i = i + 1; break; }
+    i + 41
+}
+""" }]
+exit_code = 42
