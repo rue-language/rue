@@ -143,3 +143,94 @@ fn main() -> i32 {
 """ }]
 compile_fail = true
 error_contains = ["comptime parameter requires a compile-time known value"]
+
+[[case]]
+name = "comptime_recursion_factorial_via_match"
+description = "RUE-191: comptime recursion written with `match` instead of `if` — arm selection on the comptime-known scrutinee lets the recursion terminate instead of spuriously hitting the depth cap."
+files = [{ path = "main.rue", source = """
+fn fact(comptime n: i32) -> i32 {
+    match n {
+        0 => 1,
+        1 => 1,
+        _ => n * fact(n - 1),
+    }
+}
+fn main() -> i32 {
+    @dbg(fact(5));
+    0
+}
+""" }]
+stdout = "120\n"
+
+[[case]]
+name = "comptime_match_dead_arm_not_analyzed"
+description = "RUE-191: the unselected arm of a comptime-known match is not analyzed — its comptime block would divide by zero for THIS specialization but is dead."
+files = [{ path = "main.rue", source = """
+fn f(comptime n: i32) -> i32 {
+    match n {
+        0 => 7,
+        _ => comptime { 100 / n },
+    }
+}
+fn main() -> i32 {
+    @dbg(f(0));
+    @dbg(f(4));
+    0
+}
+""" }]
+stdout = "7\n25\n"
+
+[[case]]
+name = "comptime_match_bool_arms"
+description = "RUE-191: bool comptime scrutinees select their arm; each specialization takes a different arm."
+files = [{ path = "main.rue", source = """
+fn pick(comptime b: bool) -> i32 {
+    match b {
+        true => 1,
+        false => 2,
+    }
+}
+fn main() -> i32 {
+    @dbg(pick(false));
+    @dbg(pick(true));
+    0
+}
+""" }]
+stdout = "2\n1\n"
+
+[[case]]
+name = "comptime_match_nonexhaustive_still_rejected"
+description = "RUE-191 guard: exhaustiveness stays checked when the scrutinee is comptime-known — a matching arm does not excuse a non-exhaustive pattern set."
+files = [{ path = "main.rue", source = """
+fn f(comptime n: i32) -> i32 {
+    match n {
+        0 => 1,
+    }
+}
+fn main() -> i32 {
+    @dbg(f(0));
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0600", "not exhaustive"]
+
+[[case]]
+name = "runtime_match_unchanged_control"
+description = "RUE-191 control: a match on a RUNTIME scrutinee inside a value-specialized body still compiles to a real runtime match (all arms live)."
+files = [{ path = "main.rue", source = """
+fn classify(comptime unused: i32, x: i32) -> i32 {
+    match x {
+        0 => 10,
+        1 => 20,
+        _ => 30,
+    }
+}
+fn main() -> i32 {
+    @dbg(classify(9, 0));
+    @dbg(classify(9, 1));
+    @dbg(classify(9, 5));
+    0
+}
+""" }]
+stdout = "10\n20\n30\n"

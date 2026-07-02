@@ -1027,6 +1027,87 @@ impl<'a> Sema<'a> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
+        // Comptime-known arm selection (RUE-191, spec 4.14:19): inside a body
+        // with comptime value parameters in scope, a `match` whose scrutinee
+        // is compile-time evaluable selects its arm during analysis — only
+        // the matching arm's body is analyzed and emitted, exactly like
+        // comptime-known `if` conditions (analyze_branch above). This is what
+        // lets comptime recursion written with `match` terminate instead of
+        // hitting the specialization depth cap, and keeps statically-dead
+        // arms from being analyzed (they may only be legal for other
+        // specializations). Rue match arms have no guards, so whether a
+        // pattern matches is decidable from the pattern alone. Any
+        // pattern/value shape this selection doesn't understand (enum
+        // patterns, mismatched pattern types) falls back to analyzing all
+        // arms, as does a comptime value no arm matches (the normal path
+        // then reports non-exhaustiveness).
+        if !ctx.comptime_value_vars.is_empty() {
+            if let Some(value) = self.try_evaluate_const_in_fn(scrutinee, ctx) {
+                let arms = self.rir.get_match_arms(arms_start, arms_len);
+                let mut selected: Option<InstRef> = None;
+                let mut prunable = !arms.is_empty();
+                let mut has_wildcard = false;
+                let mut bool_true_covered = false;
+                let mut bool_false_covered = false;
+                for (pattern, body) in &arms {
+                    let matched = match (pattern, &value) {
+                        (RirPattern::Wildcard(_), _) => {
+                            has_wildcard = true;
+                            true
+                        }
+                        (
+                            RirPattern::Int {
+                                value: magnitude,
+                                negative,
+                                ..
+                            },
+                            ConstValue::Integer(n),
+                        ) => {
+                            let pat = if *negative {
+                                -(*magnitude as i128)
+                            } else {
+                                *magnitude as i128
+                            };
+                            pat == *n
+                        }
+                        (RirPattern::Bool(b, _), ConstValue::Bool(v)) => {
+                            if *b {
+                                bool_true_covered = true;
+                            } else {
+                                bool_false_covered = true;
+                            }
+                            b == v
+                        }
+                        _ => {
+                            prunable = false;
+                            break;
+                        }
+                    };
+                    if matched && selected.is_none() {
+                        selected = Some(*body);
+                    }
+                }
+                // Exhaustiveness is a property of the pattern set, not of
+                // the arm bodies, so it stays checked even when the match
+                // value is comptime-known (spec 4.7:9): a wildcard, or
+                // both bool values for a bool scrutinee. A non-exhaustive
+                // match falls through to the normal path for the proper
+                // diagnostic (which also covers "no arm matched").
+                let exhaustive = has_wildcard
+                    || (matches!(value, ConstValue::Bool(_))
+                        && bool_true_covered
+                        && bool_false_covered);
+                if prunable && exhaustive {
+                    if let Some(body) = selected {
+                        ctx.push_scope();
+                        let result = self.analyze_inst(air, body, ctx)?;
+                        ctx.pop_scope();
+                        return Ok(result);
+                    }
+                }
+            }
+        }
+
         // Analyze the scrutinee to determine its type
         let scrutinee_result = self.analyze_inst(air, scrutinee, ctx)?;
         let scrutinee_type = scrutinee_result.ty;

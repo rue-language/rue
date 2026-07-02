@@ -103,7 +103,7 @@ const found = await parallel(
   Array.from({ length: NUM_FINDERS }, (_, i) => () =>
     agent(
       `${COMMON}\n\nYOUR FOCUS AREA: ${area}\n${angles}\n\nYou are finder #${i + 1} of ${NUM_FINDERS} on this area — explore a DIFFERENT angle/sub-area than a sibling would, to maximize coverage. Report every distinct, reproduced bug you find (aim for breadth; 0 is fine if the area is clean, but dig hard first).`,
-      { label: `find:${area}:${i + 1}`, phase: 'Find', schema: FINDINGS_SCHEMA }
+      { label: `find:${area}:${i + 1}`, phase: 'Find', model: 'sonnet', schema: FINDINGS_SCHEMA }
     )
   )
 )
@@ -131,7 +131,7 @@ const verified = await parallel(
   all.map((f, i) => () =>
     agent(
       `${COMMON}\n\nVerify this finding from area "${area}". Write its repro to /tmp/verify_${area}_${i}.rue, compile and run it on CURRENT TRUNK, and report whether the claimed bug actually occurs. Mark "confirmed" if you reproduce it, "plausible" if you can't fully reproduce but the mechanism looks real and worth filing, "refuted" if it's actually correct behavior (check docs/spec/src/). Minimize the repro. The project wants high capture, so prefer "plausible" over "refuted" when genuinely unsure — but never confirm something you couldn't run.\n\nFINDING:\n${JSON.stringify(f, null, 2)}`,
-      { label: `verify:${area}:${i}`, phase: 'Verify', schema: VERDICT_SCHEMA }
+      { label: `verify:${area}:${i}`, phase: 'Verify', model: 'opus', schema: VERDICT_SCHEMA }
     )
   )
 )

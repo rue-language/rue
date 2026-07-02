@@ -162,6 +162,24 @@ fn runaway(comptime n: i32) -> i32 {
 }
 ```
 
+{{ rule(id="4.14:19", cat="normative") }}
+
+Within a specialized function body, a `match` expression whose scrutinee can be evaluated at compile time likewise selects its arm at compile time: only the body of the first arm whose pattern matches the comptime value is analyzed and compiled. Comptime recursion may therefore equivalently be written with `match`. The pattern set itself must still be exhaustive (4.7:9) — exhaustiveness is a property of the patterns, which are checked even though unselected arm bodies are not.
+
+```rue
+fn fact(comptime n: i32) -> i32 {
+    match n {
+        0 => 1,
+        1 => 1,
+        _ => n * fact(n - 1),  // not analyzed once n reaches 1
+    }
+}
+
+fn main() -> i32 {
+    fact(5)  // 120: the recursion terminates exactly as with `if`
+}
+```
+
 ## Anonymous Struct Types
 
 {{ rule(id="4.14:7", cat="normative") }}

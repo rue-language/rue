@@ -28,12 +28,16 @@ if (!clusters.length) throw new Error('args.clusters is required: [{ key, prompt
 if (clusters.length > 4) throw new Error('max 4 workers per cycle — split the rest into the next cycle')
 
 phase('Fix')
+// Model policy (Steve, 2026-07-02): fix workers default to Opus — Fable is
+// reserved for the main loop's integration judgment and only assigned to a
+// cluster explicitly (c.model = 'fable') when the task demands it. c.effort
+// passes through (default: the session's).
 const results = await parallel(clusters.map((c, i) => () =>
   agent(`${PREAMBLE}
 
 OUTFILE: /tmp/cycle${cycle}_worker${i + 1}.diff
 
-${c.prompt}`, { label: `w${i + 1}:${c.key}`, phase: 'Fix', isolation: 'worktree' })
+${c.prompt}`, { label: `w${i + 1}:${c.key}`, phase: 'Fix', isolation: 'worktree', model: c.model || 'opus', ...(c.effort ? { effort: c.effort } : {}) })
 ))
 
 return results.filter(Boolean)
