@@ -3664,7 +3664,12 @@ impl<'a> CfgLower<'a> {
             }
 
             Terminator::Unreachable => {
-                // Nothing to emit - unreachable code
+                // Defense-in-depth (RUE-208): emit a trap rather than nothing.
+                // The compiler proved this block unreachable, but if a
+                // control-flow bug ever lets execution reach it, `ud2` faults
+                // (SIGILL) immediately instead of silently falling through into
+                // whatever code the block layout happens to place next.
+                self.mir.push(X86Inst::Ud2);
             }
 
             Terminator::None => {

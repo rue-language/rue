@@ -1042,6 +1042,11 @@ impl<'a> Emitter<'a> {
                 self.emit_ret();
                 end_inst!(self, "ret");
             }
+            X86Inst::Ud2 => {
+                self.begin_inst();
+                self.emit_ud2();
+                end_inst!(self, "ud2");
+            }
             X86Inst::Pop { dst } => {
                 self.begin_inst();
                 self.emit_pop(dst.as_physical());
@@ -1542,6 +1547,14 @@ impl<'a> Emitter<'a> {
     /// Encoding: C3
     fn emit_ret(&mut self) {
         self.code.push(0xC3);
+    }
+
+    /// Emit `ud2` (undefined instruction; raises #UD / SIGILL).
+    ///
+    /// Encoding: 0F 0B
+    fn emit_ud2(&mut self) {
+        self.code.push(0x0F);
+        self.code.push(0x0B);
     }
 
     /// Emit `pop r64`.
@@ -2791,6 +2804,12 @@ mod tests {
     fn test_ret() {
         let code = emit_single(X86Inst::Ret);
         assert_eq!(code, vec![0xC3]);
+    }
+
+    #[test]
+    fn test_ud2() {
+        let code = emit_single(X86Inst::Ud2);
+        assert_eq!(code, vec![0x0F, 0x0B]);
     }
 
     #[test]

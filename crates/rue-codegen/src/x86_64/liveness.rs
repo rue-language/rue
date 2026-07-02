@@ -305,7 +305,8 @@ pub fn uses(inst: &X86Inst) -> Vec<VReg> {
         | X86Inst::Label { .. }
         | X86Inst::CallRel { .. }
         | X86Inst::Syscall
-        | X86Inst::Ret => {
+        | X86Inst::Ret
+        | X86Inst::Ud2 => {
             // No vreg operands
         }
     }
@@ -453,7 +454,8 @@ pub fn defs(inst: &X86Inst) -> Vec<VReg> {
         | X86Inst::Label { .. }
         | X86Inst::CallRel { .. }
         | X86Inst::Syscall
-        | X86Inst::Ret => {
+        | X86Inst::Ret
+        | X86Inst::Ud2 => {
             // No vreg operands
         }
     }

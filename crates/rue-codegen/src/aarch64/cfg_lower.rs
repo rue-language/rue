@@ -3682,7 +3682,12 @@ impl<'a> CfgLower<'a> {
             }
 
             Terminator::Unreachable => {
-                // Nothing to emit - unreachable code
+                // Defense-in-depth (RUE-208): emit a trap rather than nothing.
+                // The compiler proved this block unreachable, but if a
+                // control-flow bug ever lets execution reach it, `brk` faults
+                // (SIGTRAP) immediately instead of silently falling through into
+                // whatever code the block layout happens to place next.
+                self.mir.push(Aarch64Inst::Brk);
             }
 
             Terminator::None => {

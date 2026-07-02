@@ -176,7 +176,8 @@ fn get_latency(inst: &Aarch64Inst) -> u32 {
         | Aarch64Inst::Bvc { .. }
         | Aarch64Inst::Cbz { .. }
         | Aarch64Inst::Cbnz { .. }
-        | Aarch64Inst::Ret => 1,
+        | Aarch64Inst::Ret
+        | Aarch64Inst::Brk => 1,
 
         // Labels are not real instructions
         Aarch64Inst::Label { .. } => 0,
@@ -215,6 +216,7 @@ fn is_barrier(inst: &Aarch64Inst) -> bool {
             // this was pure backend drift. (RUE-129)
             | Aarch64Inst::Svc { .. }
             | Aarch64Inst::Ret
+            | Aarch64Inst::Brk
     )
 }
 

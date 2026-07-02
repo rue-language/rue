@@ -194,7 +194,8 @@ fn get_latency(inst: &X86Inst) -> u32 {
         | X86Inst::Jge { .. }
         | X86Inst::Jle { .. }
         | X86Inst::Jmp { .. }
-        | X86Inst::Ret => 1,
+        | X86Inst::Ret
+        | X86Inst::Ud2 => 1,
 
         // Labels are not real instructions
         X86Inst::Label { .. } => 0,
@@ -229,6 +230,7 @@ fn is_barrier(inst: &X86Inst) -> bool {
             | X86Inst::CallRel { .. }
             | X86Inst::Syscall
             | X86Inst::Ret
+            | X86Inst::Ud2
     )
 }
 

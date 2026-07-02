@@ -915,6 +915,7 @@ impl RegAlloc {
             X86Inst::CallRel { symbol_id } => mir.push(X86Inst::CallRel { symbol_id }),
             X86Inst::Syscall => mir.push(X86Inst::Syscall),
             X86Inst::Ret => mir.push(X86Inst::Ret),
+            X86Inst::Ud2 => mir.push(X86Inst::Ud2),
         }
         Ok(())
     }

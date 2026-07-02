@@ -431,6 +431,12 @@ pub enum X86Inst {
     /// `ret` - Return from function.
     Ret,
 
+    /// `ud2` - Undefined instruction; raises #UD (SIGILL) unconditionally.
+    /// Emitted for a *live* `Terminator::Unreachable` so a control-flow bug
+    /// that reaches a block the compiler proved unreachable traps loudly
+    /// instead of silently falling through into the next block's code (RUE-208).
+    Ud2,
+
     /// `pop dst` - Pop value from stack into register.
     Pop { dst: Operand },
 
@@ -626,6 +632,7 @@ impl fmt::Display for X86Inst {
             X86Inst::CallRel { symbol_id } => write!(f, "call sym{}", symbol_id),
             X86Inst::Syscall => write!(f, "syscall"),
             X86Inst::Ret => write!(f, "ret"),
+            X86Inst::Ud2 => write!(f, "ud2"),
             X86Inst::Pop { dst } => write!(f, "pop {}", dst),
             X86Inst::Push { src } => write!(f, "push {}", src),
             X86Inst::Lea { dst, base, disp } => {
