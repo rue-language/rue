@@ -4,6 +4,7 @@ rue_crate(
     name = "rue-test-runner",
     deps = [
         "//crates/rue-error:rue-error",
+        "//third-party:libc",
         "//third-party:serde",
         "//third-party:tempfile",
         "//third-party:toml",
