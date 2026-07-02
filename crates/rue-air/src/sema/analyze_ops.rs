@@ -3213,6 +3213,28 @@ impl<'a> Sema<'a> {
         // Get the array type from HM inference
         let array_type = Self::get_resolved_type(ctx, inst_ref, span, "array literal")?;
 
+        // If an element expression is itself ill-typed, HM inference collapses
+        // the whole array to `<error>` rather than a real `[T; N]` (see
+        // `infer_type_to_type`'s Array arm in typeck.rs). Analyzing the
+        // elements here surfaces the element's *real* diagnostic (e.g. the
+        // unknown-associated-function error on `[String::from(..)]`) instead of
+        // masking it with an ICE about the array literal being a non-array
+        // type (RUE-190).
+        if array_type.is_error() {
+            for elem_ref in &elem_refs {
+                self.analyze_inst(air, *elem_ref, ctx)?;
+            }
+            // Elements analyzed without surfacing an error yet the array type
+            // is still `<error>`: a diagnostic was already emitted upstream.
+            // Propagate an error-typed placeholder rather than emitting an ICE.
+            let air_ref = air.add_inst(AirInst {
+                data: AirInstData::UnitConst,
+                ty: Type::ERROR,
+                span,
+            });
+            return Ok(AnalysisResult::new(air_ref, Type::ERROR));
+        }
+
         let (_array_type_id, _elem_type, expected_len) = match array_type.as_array() {
             Some(type_id) => {
                 let (element_type, length) = self.type_pool.array_def(type_id);

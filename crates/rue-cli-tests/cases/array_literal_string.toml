@@ -1,0 +1,113 @@
+[section]
+id = "array_literal_string"
+name = "Array literals of String-producing expressions (RUE-190)"
+description = """
+Regression tests for RUE-190: an array literal whose elements are
+String-producing expressions used to abort the compiler with
+E9000 "Array literal inferred as non-array type: <error>".
+
+Two flavors:
+  1. Valid String array literals must compile and run — elements are usable
+     (indexing, .len(), .capacity()), and each fat pointer materializes fully.
+  2. Ill-typed elements (e.g. a nonexistent `String::from`, an undefined
+     function) must surface the element's REAL diagnostic (E0412 / E0202),
+     never an internal-compiler-error about a non-array type. HM inference
+     collapses an array with an error-typed element to `<error>`; the array
+     analyzer now re-analyzes the elements to report their real error instead
+     of ICEing on the collapsed type.
+"""
+
+# --- Flavor 1: valid String array literals compile and run ----------------
+
+# Two String::new() elements; array indexes usable, .len() is 0.
+[[case]]
+name = "array_of_string_new_len"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let arr = [String::new(), String::new()];
+    let n: u64 = arr[0].len();
+    if n == 0 { 0 } else { 1 }
+}
+""" }]
+exit_code = 0
+
+# String literal elements; both slots readable and correct.
+[[case]]
+name = "array_of_string_literals_len"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let arr = [\"hello\", \"hi\"];
+    let a: u64 = arr[0].len();
+    let b: u64 = arr[1].len();
+    if a == 5 { if b == 2 { 0 } else { 3 } } else { 2 }
+}
+""" }]
+exit_code = 0
+
+# with_capacity elements (heap-allocated); second slot's capacity readable.
+[[case]]
+name = "array_of_string_with_capacity"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let arr = [String::with_capacity(16), String::with_capacity(16)];
+    let a: u64 = arr[0].capacity();
+    let b: u64 = arr[1].capacity();
+    if a >= 16 { if b >= 16 { 0 } else { 2 } } else { 1 }
+}
+""" }]
+exit_code = 0
+
+# Single-element array built from a String binding, then indexed.
+[[case]]
+name = "array_of_string_var_single"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a = String::new();
+    let arr = [a];
+    let n: u64 = arr[0].len();
+    if n == 0 { 0 } else { 1 }
+}
+""" }]
+exit_code = 0
+
+# --- Flavor 2: ill-typed elements surface the real error, not an ICE ------
+
+# The reported RUE-190 shape: `String::from` does not exist. Must report
+# E0412 (unknown associated function), never E9000 about a non-array type.
+[[case]]
+name = "array_of_bad_assoc_fn_reports_real_error"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let arr = [String::from(\"a\"), String::from(\"b\")];
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0412", "no associated function named 'from'"]
+compile_stderr_not_contains = ["internal compiler error", "non-array type"]
+
+# An undefined free function as the element expression.
+[[case]]
+name = "array_of_undefined_fn_reports_real_error"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let arr = [nope(), nope()];
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0202", "undefined function 'nope'"]
+compile_stderr_not_contains = ["internal compiler error", "non-array type"]
+
+# Single ill-typed element (the collapse-to-error path with one elem).
+[[case]]
+name = "array_single_bad_element_reports_real_error"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let arr = [nope()];
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0202", "undefined function 'nope'"]
+compile_stderr_not_contains = ["internal compiler error", "non-array type"]
