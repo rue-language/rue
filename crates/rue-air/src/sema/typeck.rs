@@ -6,13 +6,16 @@
 //! - ABI slot calculations
 //! - Type conversions between AIR types and inference types
 
+use std::collections::HashMap;
+
 use lasso::Spur;
 use rue_error::{CompileError, CompileResult, ErrorKind};
 use rue_span::Span;
 
 use super::Sema;
 use crate::inference::InferType;
-use crate::types::{ArrayTypeId, Type, TypeKind, parse_array_type_syntax};
+use crate::sema::ConstValue;
+use crate::types::{ArrayLen, ArrayTypeId, Type, TypeKind, parse_array_type_syntax};
 
 impl<'a> Sema<'a> {
     /// Get a human-readable name for a type.
@@ -173,10 +176,15 @@ impl<'a> Sema<'a> {
             Ok(Type::new_enum(enum_id))
         } else {
             // Check for array type syntax: [T; N]
-            if let Some((element_type, length)) = parse_array_type_syntax(type_name) {
+            if let Some((element_type, len)) = parse_array_type_syntax(type_name) {
                 // Resolve the element type first
                 let element_sym = self.interner.get_or_intern(&element_type);
                 let element_ty = self.resolve_type(element_sym, span)?;
+                // Resolve the length (literal, or a `const` / `comptime` value
+                // parameter name) to a concrete value (RUE-16). No comptime
+                // value substitution is available on this path; named lengths
+                // resolve against file-level constants only.
+                let length = self.resolve_array_length(&len, span, None)?;
                 // Get or create the array type
                 let array_type_id = self.get_or_create_array_type(element_ty, length);
                 Ok(Type::new_array(array_type_id))
@@ -219,6 +227,26 @@ impl<'a> Sema<'a> {
         type_sym: Spur,
         type_subst: &std::collections::HashMap<Spur, Type>,
     ) -> Option<Type> {
+        self.resolve_type_for_comptime_with_subst_and_values(type_sym, type_subst, &HashMap::new())
+    }
+
+    /// Resolve a type symbol to a Type with both type-parameter and
+    /// value-parameter substitution.
+    ///
+    /// Like [`resolve_type_for_comptime_with_subst`], but additionally threads
+    /// a `comptime` value substitution map so that an array length referring to
+    /// a `comptime N: i32` parameter (`[i32; N]`) resolves to its concrete
+    /// value at each specialization (RUE-16). File-level `const` lengths are
+    /// resolved directly from the constant table and need no substitution.
+    ///
+    /// [`resolve_type_for_comptime_with_subst`]:
+    /// Sema::resolve_type_for_comptime_with_subst
+    pub(crate) fn resolve_type_for_comptime_with_subst_and_values(
+        &mut self,
+        type_sym: Spur,
+        type_subst: &std::collections::HashMap<Spur, Type>,
+        value_subst: &HashMap<Spur, ConstValue>,
+    ) -> Option<Type> {
         // First check the substitution map for type parameters
         if let Some(&ty) = type_subst.get(&type_sym) {
             return Some(ty);
@@ -235,27 +263,109 @@ impl<'a> Sema<'a> {
             Some(Type::new_struct(struct_id))
         } else if let Some(&enum_id) = self.enums.get(&type_sym) {
             Some(Type::new_enum(enum_id))
-        } else if let Some((element_type, length)) = parse_array_type_syntax(type_name) {
+        } else if let Some((element_type, len)) = parse_array_type_syntax(type_name) {
             // Resolve the element type first
             let element_sym = self.interner.get_or_intern(&element_type);
-            let element_ty = self.resolve_type_for_comptime_with_subst(element_sym, type_subst)?;
+            let element_ty = self.resolve_type_for_comptime_with_subst_and_values(
+                element_sym,
+                type_subst,
+                value_subst,
+            )?;
+            // Resolve the length via comptime value substitution (a `comptime`
+            // value parameter) or file-level constants. In comptime evaluation
+            // we can't emit a diagnostic, so an unresolvable length just makes
+            // the type non-evaluable (None); the caller reports it (RUE-16).
+            let length = self
+                .resolve_array_length(&len, Span::default(), Some(value_subst))
+                .ok()?;
             // Get or create the array type
             let array_type_id = self.get_or_create_array_type(element_ty, length);
             Some(Type::new_array(array_type_id))
         } else if let Some(pointee_type_str) = type_name.strip_prefix("ptr const ") {
             // Pointer type syntax: ptr const T
             let pointee_sym = self.interner.get_or_intern(pointee_type_str);
-            let pointee_ty = self.resolve_type_for_comptime_with_subst(pointee_sym, type_subst)?;
+            let pointee_ty = self.resolve_type_for_comptime_with_subst_and_values(
+                pointee_sym,
+                type_subst,
+                value_subst,
+            )?;
             let ptr_type_id = self.type_pool.intern_ptr_const_from_type(pointee_ty);
             Some(Type::new_ptr_const(ptr_type_id))
         } else if let Some(pointee_type_str) = type_name.strip_prefix("ptr mut ") {
             // Pointer type syntax: ptr mut T
             let pointee_sym = self.interner.get_or_intern(pointee_type_str);
-            let pointee_ty = self.resolve_type_for_comptime_with_subst(pointee_sym, type_subst)?;
+            let pointee_ty = self.resolve_type_for_comptime_with_subst_and_values(
+                pointee_sym,
+                type_subst,
+                value_subst,
+            )?;
             let ptr_type_id = self.type_pool.intern_ptr_mut_from_type(pointee_ty);
             Some(Type::new_ptr_mut(ptr_type_id))
         } else {
             None // Unknown type
+        }
+    }
+
+    /// Resolve an array length `[T; N]` to a concrete `u64`.
+    ///
+    /// `N` is either a literal or a name referring to a compile-time constant.
+    /// Named lengths resolve first against the `comptime` value substitution
+    /// map (a `comptime N: i32` parameter, when `value_subst` is provided), then
+    /// against file-level `const`s. The value must be a non-negative integer
+    /// (RUE-16). On the comptime-evaluation path the caller passes a dummy span
+    /// and discards the error; on the diagnostic path (`resolve_type`) the
+    /// error surfaces to the user as E0481.
+    pub(crate) fn resolve_array_length(
+        &mut self,
+        len: &ArrayLen,
+        span: Span,
+        value_subst: Option<&HashMap<Spur, ConstValue>>,
+    ) -> CompileResult<u64> {
+        match len {
+            ArrayLen::Literal(n) => Ok(*n),
+            ArrayLen::Named(name) => {
+                let sym = self.interner.get_or_intern(name);
+                // 1. A `comptime` value parameter in scope (per specialization).
+                let value = if let Some(v) = value_subst.and_then(|vs| vs.get(&sym)) {
+                    *v
+                } else if let Some(info) = self.constants.get(&sym) {
+                    // 2. A file-level constant, evaluated during declaration
+                    //    gathering.
+                    info.value
+                } else {
+                    return Err(CompileError::new(
+                        ErrorKind::InvalidArrayLength {
+                            reason: format!(
+                                "'{name}' is not a compile-time constant; array lengths must be an \
+                                 integer literal, a `const`, or a `comptime` value parameter"
+                            ),
+                        },
+                        span,
+                    ));
+                };
+                match value.as_int_value() {
+                    Some(n) if n >= 0 => u64::try_from(n).map_err(|_| {
+                        CompileError::new(
+                            ErrorKind::InvalidArrayLength {
+                                reason: format!("array length '{name}' ({n}) is too large"),
+                            },
+                            span,
+                        )
+                    }),
+                    Some(n) => Err(CompileError::new(
+                        ErrorKind::InvalidArrayLength {
+                            reason: format!("array length '{name}' is negative ({n})"),
+                        },
+                        span,
+                    )),
+                    None => Err(CompileError::new(
+                        ErrorKind::InvalidArrayLength {
+                            reason: format!("array length '{name}' is not an integer"),
+                        },
+                        span,
+                    )),
+                }
+            }
         }
     }
 
@@ -289,6 +399,51 @@ impl<'a> Sema<'a> {
             Some(sym) => type_params.contains(&sym),
             None => false,
         }
+    }
+
+    /// Check whether a signature type symbol mentions any of the given comptime
+    /// *value* parameters in an array-length position, looking through
+    /// composite syntax: `[i32; N]`, `[[i32; N]; 3]`, `ptr const [i32; N]`, and
+    /// nestings thereof (RUE-16).
+    ///
+    /// Used alongside [`type_mentions_type_param`] when collecting a generic
+    /// function's signature: a runtime parameter whose type mentions a comptime
+    /// value parameter (only through an array length; the element/pointee can't
+    /// be a value) must be deferred (as `Type::COMPTIME_TYPE`) until
+    /// specialization, when the length's concrete value is known.
+    ///
+    /// [`type_mentions_type_param`]: Sema::type_mentions_type_param
+    pub(crate) fn type_mentions_comptime_value_param(
+        &self,
+        type_sym: Spur,
+        value_params: &[Spur],
+    ) -> bool {
+        if value_params.is_empty() {
+            return false;
+        }
+        self.type_name_mentions_value_param(self.interner.resolve(&type_sym), value_params)
+    }
+
+    fn type_name_mentions_value_param(&self, type_name: &str, value_params: &[Spur]) -> bool {
+        if let Some((element_type, len)) = parse_array_type_syntax(type_name) {
+            // The length itself may name a value parameter.
+            if let ArrayLen::Named(name) = &len {
+                if let Some(sym) = self.interner.get(name) {
+                    if value_params.contains(&sym) {
+                        return true;
+                    }
+                }
+            }
+            // Recurse into the element type (nested arrays / pointers).
+            return self.type_name_mentions_value_param(&element_type, value_params);
+        }
+        if let Some(pointee) = type_name
+            .strip_prefix("ptr const ")
+            .or_else(|| type_name.strip_prefix("ptr mut "))
+        {
+            return self.type_name_mentions_value_param(pointee, value_params);
+        }
+        false
     }
 
     /// Get or create an array type for the given element type and length.

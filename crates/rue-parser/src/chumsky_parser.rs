@@ -4,14 +4,15 @@
 //! with Pratt parsing for expression precedence.
 
 use crate::ast::{
-    AnonStructField, ArgMode, ArrayLitExpr, AssignStatement, AssignTarget, AssocFnCallExpr, Ast,
-    BinaryExpr, BinaryOp, BlockExpr, BoolLit, BreakExpr, CallArg, CallExpr, CheckedBlockExpr,
-    ComptimeBlockExpr, ConstDecl, ContinueExpr, Directive, DirectiveArg, Directives, DropFn,
-    EnumDecl, EnumVariant, Expr, FieldDecl, FieldExpr, FieldInit, Function, Ident, IfExpr,
-    IndexExpr, IntLit, IntrinsicArg, IntrinsicCallExpr, Item, LetPattern, LetStatement, LoopExpr,
-    MatchArm, MatchExpr, Method, MethodCallExpr, NegIntLit, Param, ParamMode, ParenExpr, PathExpr,
-    PathPattern, Pattern, ReturnExpr, SelfExpr, SelfParam, Statement, StringLit, StructDecl,
-    StructLitExpr, TypeExpr, TypeLitExpr, UnaryExpr, UnaryOp, UnitLit, Visibility, WhileExpr,
+    AnonStructField, ArgMode, ArrayLength, ArrayLitExpr, AssignStatement, AssignTarget,
+    AssocFnCallExpr, Ast, BinaryExpr, BinaryOp, BlockExpr, BoolLit, BreakExpr, CallArg, CallExpr,
+    CheckedBlockExpr, ComptimeBlockExpr, ConstDecl, ContinueExpr, Directive, DirectiveArg,
+    Directives, DropFn, EnumDecl, EnumVariant, Expr, FieldDecl, FieldExpr, FieldInit, Function,
+    Ident, IfExpr, IndexExpr, IntLit, IntrinsicArg, IntrinsicCallExpr, Item, LetPattern,
+    LetStatement, LoopExpr, MatchArm, MatchExpr, Method, MethodCallExpr, NegIntLit, Param,
+    ParamMode, ParenExpr, PathExpr, PathPattern, Pattern, ReturnExpr, SelfExpr, SelfParam,
+    Statement, StringLit, StructDecl, StructLitExpr, TypeExpr, TypeLitExpr, UnaryExpr, UnaryOp,
+    UnitLit, Visibility, WhileExpr,
 };
 use chumsky::input::{Input as ChumskyInput, MapExtra, Stream, ValueInput};
 use chumsky::pratt::{infix, left, prefix};
@@ -248,13 +249,16 @@ where
         // Never type: !
         let never_type = just(TokenKind::Bang).map_with(|_, e| TypeExpr::Never(span_from_extra(e)));
 
-        // Array type: [T; N]
+        // Array type: [T; N] where N is an integer literal or a name referring
+        // to a file-level `const` or a `comptime` value parameter (RUE-16).
+        let array_length = choice((
+            select! { TokenKind::Int(n) => ArrayLength::Literal(n as u64) },
+            ident_parser().map(ArrayLength::Named),
+        ));
         let array_type = just(TokenKind::LBracket)
             .ignore_then(ty.clone())
             .then_ignore(just(TokenKind::Semi))
-            .then(select! {
-                TokenKind::Int(n) => n as u64,
-            })
+            .then(array_length)
             .then_ignore(just(TokenKind::RBracket))
             .map_with(|(element, length), e| TypeExpr::Array {
                 element: Box::new(element),
@@ -1426,13 +1430,14 @@ where
             .then_ignore(one_of([TokenKind::Comma, TokenKind::RParen]).rewind())
             .map_with(|_, e| IntrinsicArg::Type(TypeExpr::Never(span_from_extra(e))));
 
-        // Array type: [T; N]
+        // Array type: [T; N] where N is a literal or a named length (RUE-16).
         let array_type = just(TokenKind::LBracket)
             .ignore_then(type_parser())
             .then_ignore(just(TokenKind::Semi))
-            .then(select! {
-                TokenKind::Int(n) => n as u64,
-            })
+            .then(choice((
+                select! { TokenKind::Int(n) => ArrayLength::Literal(n as u64) },
+                ident_parser().map(ArrayLength::Named),
+            )))
             .then_ignore(just(TokenKind::RBracket))
             .map_with(|(element, length), e| {
                 IntrinsicArg::Type(TypeExpr::Array {
@@ -3229,7 +3234,9 @@ mod tests {
                 assert_eq!(f.params.len(), 1);
                 assert_eq!(f.params[0].mode, ParamMode::Borrow);
                 match &f.params[0].ty {
-                    TypeExpr::Array { length, .. } => assert_eq!(*length, 3),
+                    TypeExpr::Array { length, .. } => {
+                        assert_eq!(*length, ArrayLength::Literal(3))
+                    }
                     _ => panic!("expected Array type"),
                 }
             }

@@ -157,6 +157,10 @@ impl ErrorCode {
     pub const LINEAR_VALUE_DISCARDED: Self = Self(478);
     // 479 is reserved by in-flight work.
     pub const ASSIGN_TO_PARTIALLY_MOVED_ARRAY: Self = Self(480);
+    /// An array length `[T; N]` where `N` is not a usable compile-time constant
+    /// (a runtime variable, a negative/non-integer value, or an undefined
+    /// name). Named lengths must resolve via the const evaluator (RUE-16).
+    pub const INVALID_ARRAY_LENGTH: Self = Self(481);
     /// Source nests deeper than the compiler's fixed recursion limit
     /// (`MAX_NESTING_DEPTH`). A parser/AstGen guard reports this instead of
     /// overflowing the stack on pathologically nested input (RUE-42). It is a
@@ -907,6 +911,11 @@ pub enum ErrorKind {
     AssignToImmutable(String),
     #[error("unknown type '{0}'")]
     UnknownType(String),
+    /// An array length `[T; N]` where `N` is not a usable compile-time
+    /// constant: a runtime variable, a non-integer/negative value, or an
+    /// undefined name (RUE-16). `reason` explains the specific problem.
+    #[error("invalid array length: {reason}")]
+    InvalidArrayLength { reason: String },
     /// Use of a value after it has been moved.
     #[error("use of moved value '{0}'")]
     UseAfterMove(String),
@@ -1251,6 +1260,7 @@ impl ErrorKind {
             ErrorKind::UndefinedFunction(_) => ErrorCode::UNDEFINED_FUNCTION,
             ErrorKind::AssignToImmutable(_) => ErrorCode::ASSIGN_TO_IMMUTABLE,
             ErrorKind::UnknownType(_) => ErrorCode::UNKNOWN_TYPE,
+            ErrorKind::InvalidArrayLength { .. } => ErrorCode::INVALID_ARRAY_LENGTH,
             ErrorKind::UseAfterMove(_) => ErrorCode::USE_AFTER_MOVE,
             ErrorKind::TypeMismatch { .. } => ErrorCode::TYPE_MISMATCH,
             ErrorKind::WrongArgumentCount { .. } => ErrorCode::WRONG_ARGUMENT_COUNT,

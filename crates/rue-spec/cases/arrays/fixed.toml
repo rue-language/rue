@@ -774,3 +774,102 @@ fn main() -> i32 {
 }
 """
 exit_code = 5
+
+# =============================================================================
+# Compile-Time Array Lengths (RUE-16)
+# =============================================================================
+
+[[case]]
+name = "array_length_from_const"
+spec = ["7.1:14", "7.1:32"]
+source = """
+const K: i32 = 4;
+fn main() -> i32 {
+    let a: [i32; K] = [10, 20, 30, 40];
+    a[0] + a[3]
+}
+"""
+exit_code = 50
+
+[[case]]
+name = "array_length_from_comptime_param"
+spec = ["7.1:32", "7.1:34"]
+source = """
+fn Buffer(comptime N: i32) -> type {
+    struct { data: [i32; N], len: u32 }
+}
+fn main() -> i32 {
+    let B = Buffer(3);
+    let b: B = B { data: [7, 8, 9], len: 3 };
+    b.data[0] + b.data[2]
+}
+"""
+exit_code = 16
+
+[[case]]
+name = "array_length_comptime_two_specializations"
+spec = ["7.1:34", "7.1:35"]
+source = """
+fn Buffer(comptime N: i32) -> type {
+    struct { data: [i32; N], len: u32 }
+}
+fn main() -> i32 {
+    let B2 = Buffer(2);
+    let B4 = Buffer(4);
+    let b2: B2 = B2 { data: [1, 2], len: 2 };
+    let b4: B4 = B4 { data: [10, 20, 30, 40], len: 4 };
+    b2.data[1] + b4.data[3]
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "array_length_comptime_param_function"
+spec = ["7.1:32", "7.1:34"]
+source = """
+fn first(comptime N: i32, arr: [i32; N]) -> i32 {
+    arr[0]
+}
+fn main() -> i32 {
+    first(3, [42, 1, 2])
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "array_length_runtime_variable_error"
+spec = ["7.1:33"]
+source = """
+fn main() -> i32 {
+    let n: i32 = 4;
+    let a: [i32; n] = [1, 2, 3, 4];
+    a[0]
+}
+"""
+compile_fail = true
+error_contains = "not a compile-time constant"
+
+[[case]]
+name = "array_length_negative_const_error"
+spec = ["7.1:33"]
+source = """
+const NEG: i32 = -3;
+fn main() -> i32 {
+    let a: [i32; NEG] = [1];
+    a[0]
+}
+"""
+compile_fail = true
+error_contains = "negative"
+
+[[case]]
+name = "array_length_undefined_name_error"
+spec = ["7.1:33"]
+source = """
+fn main() -> i32 {
+    let a: [i32; NOPE] = [1];
+    a[0]
+}
+"""
+compile_fail = true
+error_contains = "not a compile-time constant"

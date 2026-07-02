@@ -41,6 +41,11 @@ pub struct InferenceContext {
     /// Without this map a const reference inferred to `<error>` and poisoned
     /// every expression it touched (RUE-142).
     pub const_types: HashMap<Spur, Type>,
+    /// File-level integer constant values (name -> value). Constants are fully
+    /// evaluated during declaration gathering, so an array length naming one
+    /// (`[i32; K]`) can be resolved to a concrete length during constraint
+    /// generation (RUE-16). Only integer-valued constants appear here.
+    pub const_values: HashMap<Spur, i128>,
     /// Module-binding types (`const utils = @import(...)`): (declaring file,
     /// name) -> module type. Module bindings are per-file scoped (RUE-113),
     /// so they're keyed by file rather than living in `const_types`.

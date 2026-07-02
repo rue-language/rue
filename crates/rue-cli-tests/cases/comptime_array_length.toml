@@ -1,0 +1,98 @@
+# Comptime values as array lengths `[T; N]` (RUE-16).
+#
+# `N` in an array type may name a file-level `const` or a `comptime` value
+# parameter, not only an integer literal. These exercise the real driver
+# end-to-end: two specializations of the same generic in one program must
+# produce arrays of different sizes, and runtime/negative/undefined lengths
+# must be rejected.
+
+[section]
+id = "cli.comptime_array_length"
+name = "Comptime array lengths"
+description = "Array lengths [T; N] where N is a const or comptime value parameter (RUE-16)."
+
+[[case]]
+name = "const_length"
+files = [{ path = "main.rue", source = """
+const K: i32 = 4;
+
+fn main() -> i32 {
+    let a: [i32; K] = [10, 20, 30, 40];
+    @dbg(a[0] + a[3]);
+    0
+}
+""" }]
+stdout = "50\n"
+
+[[case]]
+name = "comptime_param_struct_field"
+files = [{ path = "main.rue", source = """
+fn Buffer(comptime N: i32) -> type {
+    struct { data: [i32; N], len: u32 }
+}
+
+fn main() -> i32 {
+    let B = Buffer(3);
+    let b: B = B { data: [7, 8, 9], len: 3 };
+    @dbg(b.data[0] + b.data[2]);
+    0
+}
+""" }]
+stdout = "16\n"
+
+[[case]]
+name = "two_specializations_different_sizes"
+files = [{ path = "main.rue", source = """
+fn Buffer(comptime N: i32) -> type {
+    struct { data: [i32; N], len: u32 }
+}
+
+fn main() -> i32 {
+    let B2 = Buffer(2);
+    let B4 = Buffer(4);
+    let b2: B2 = B2 { data: [1, 2], len: 2 };
+    let b4: B4 = B4 { data: [10, 20, 30, 40], len: 4 };
+    @dbg(b2.data[1] + b4.data[3]);
+    0
+}
+""" }]
+stdout = "42\n"
+
+[[case]]
+name = "comptime_param_function_arg"
+files = [{ path = "main.rue", source = """
+fn first(comptime N: i32, arr: [i32; N]) -> i32 {
+    arr[0]
+}
+
+fn main() -> i32 {
+    @dbg(first(3, [42, 1, 2]));
+    0
+}
+""" }]
+stdout = "42\n"
+
+[[case]]
+name = "runtime_length_rejected"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let n: i32 = 4;
+    let a: [i32; n] = [1, 2, 3, 4];
+    a[0]
+}
+""" }]
+compile_fail = true
+error_contains = ["not a compile-time constant"]
+
+[[case]]
+name = "negative_const_length_rejected"
+files = [{ path = "main.rue", source = """
+const NEG: i32 = -3;
+
+fn main() -> i32 {
+    let a: [i32; NEG] = [1];
+    a[0]
+}
+""" }]
+compile_fail = true
+error_contains = ["negative"]

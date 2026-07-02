@@ -90,12 +90,53 @@ fn main() -> i32 {
 {{ rule(id="7.1:14", cat="normative") }}
 
 ```ebnf
-array_type = "[" type ";" INTEGER "]" ;
+array_type   = "[" type ";" array_length "]" ;
+array_length = INTEGER | IDENTIFIER ;
 ```
 
 {{ rule(id="7.1:15", cat="legality-rule") }}
 
-The size **MUST** be a non-negative integer literal.
+The length **MUST** be a non-negative integer value known at compile time. It is
+either an integer literal, or an identifier naming a compile-time constant — a
+file-level `const` or an in-scope `comptime` value parameter.
+
+## Compile-Time Array Lengths
+
+{{ rule(id="7.1:32", cat="normative") }}
+
+An array length **MAY** be an identifier naming a compile-time constant in
+addition to an integer literal. A file-level `const` of an integer type and a
+`comptime` value parameter both qualify.
+
+{{ rule(id="7.1:33", cat="legality-rule") }}
+
+A named array length **MUST** resolve to a non-negative integer compile-time
+constant. A runtime variable, a negative value, or an undefined name in
+length position is a compile-time error.
+
+{{ rule(id="7.1:34", cat="normative") }}
+
+When an array length names a `comptime` value parameter, the length is resolved
+at each specialization. The same generic definition therefore yields arrays of
+different sizes for different argument values, so a `comptime` value parameter
+can parameterize a type's memory layout — for example a fixed-capacity buffer or
+stack — and not only its behavior.
+
+{{ rule(id="7.1:35") }}
+
+```rue
+fn Buffer(comptime N: i32) -> type {
+    struct { data: [i32; N], len: u32 }
+}
+
+fn main() -> i32 {
+    let B2 = Buffer(2);
+    let B4 = Buffer(4);
+    let b2: B2 = B2 { data: [1, 2], len: 2 };
+    let b4: B4 = B4 { data: [10, 20, 30, 40], len: 4 };
+    b2.data[1] + b4.data[3]  // 42
+}
+```
 
 ## Nested Arrays
 

@@ -659,9 +659,15 @@ impl Sema<'_> {
                 let mut struct_fields = Vec::with_capacity(field_decls.len());
                 for (name_sym, type_sym) in field_decls {
                     let name_str = self.interner.resolve(&name_sym).to_string();
-                    let Some(field_ty) =
-                        self.resolve_type_for_comptime_with_subst(type_sym, env.type_subst)
-                    else {
+                    // Field types resolve through both the type substitution
+                    // (`comptime T: type`) and the value substitution
+                    // (`comptime N: i32`, so an `[i32; N]` field gets a concrete
+                    // length at each specialization; RUE-16).
+                    let Some(field_ty) = self.resolve_type_for_comptime_with_subst_and_values(
+                        type_sym,
+                        env.type_subst,
+                        env.value_subst,
+                    ) else {
                         return Ok(None);
                     };
                     struct_fields.push(StructField {

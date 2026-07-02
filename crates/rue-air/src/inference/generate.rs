@@ -12,7 +12,7 @@ use crate::Type;
 use crate::intern_pool::TypeInternPool;
 use crate::scope::ScopedContext;
 use crate::types::{
-    PtrMutability, StructId, TypeKind, parse_array_type_syntax, parse_pointer_type_syntax,
+    ArrayLen, PtrMutability, StructId, TypeKind, parse_array_type_syntax, parse_pointer_type_syntax,
 };
 use lasso::{Spur, ThreadedRodeo};
 use rue_rir::{InstData, InstRef, Rir};
@@ -206,6 +206,11 @@ pub struct ConstraintGenerator<'a> {
     /// in unit tests; production passes the map via
     /// [`Self::with_extra_method_sigs`].
     extra_method_sigs: Option<&'a HashMap<(StructId, Spur), MethodSig>>,
+    /// File-level integer constant values (name -> value), so an array length
+    /// naming a `const` (`[i32; K]`) resolves to a concrete length during
+    /// constraint generation (RUE-16). `None` only in unit tests; production
+    /// passes the map via [`Self::with_const_values`].
+    const_values: Option<&'a HashMap<Spur, i128>>,
     /// Type intern pool for creating pointer and array types during constraint generation.
     type_pool: &'a TypeInternPool,
 }
@@ -258,6 +263,7 @@ impl<'a> ConstraintGenerator<'a> {
             module_binding_types: None,
             comptime_local_types: None,
             extra_method_sigs: None,
+            const_values: None,
             type_pool,
         }
     }
@@ -299,6 +305,30 @@ impl<'a> ConstraintGenerator<'a> {
     ) -> Self {
         self.extra_method_sigs = Some(extra_method_sigs);
         self
+    }
+
+    /// Provide file-level integer constant values (name -> value) so an array
+    /// length naming a `const` resolves during constraint generation. See the
+    /// `const_values` field (RUE-16).
+    pub fn with_const_values(mut self, const_values: &'a HashMap<Spur, i128>) -> Self {
+        self.const_values = Some(const_values);
+        self
+    }
+
+    /// Resolve an array-length component to a concrete length during constraint
+    /// generation. Literal lengths are used directly; a named length resolves
+    /// against file-level integer constants (`[i32; K]`). Names that don't
+    /// resolve here (e.g. a `comptime` value parameter, only known at
+    /// specialization) yield `None`; sema resolves and diagnoses them (RUE-16).
+    fn resolve_infer_array_length(&self, len: &ArrayLen) -> Option<u64> {
+        match len {
+            ArrayLen::Literal(n) => Some(*n),
+            ArrayLen::Named(name) => {
+                let sym = self.interner.get(name)?;
+                let value = *self.const_values?.get(&sym)?;
+                u64::try_from(value).ok()
+            }
+        }
     }
 
     /// Get the type variables allocated for integer literals.
@@ -1703,8 +1733,9 @@ impl<'a> ConstraintGenerator<'a> {
         }
 
         // Array syntax: [T; N] - recurse so substituted element types work.
-        if let Some((element_type_str, length)) = parse_array_type_syntax(name) {
+        if let Some((element_type_str, len)) = parse_array_type_syntax(name) {
             let element_ty = self.resolve_type_name_with_subst(&element_type_str, subst)?;
+            let length = self.resolve_infer_array_length(&len)?;
             return Some(InferType::Array {
                 element: Box::new(element_ty),
                 length,
@@ -1736,9 +1767,10 @@ impl<'a> ConstraintGenerator<'a> {
 
     fn resolve_type_name(&self, name: &str) -> Option<InferType> {
         // Check for array syntax first: [T; N]
-        if let Some((element_type_str, length)) = parse_array_type_syntax(name) {
+        if let Some((element_type_str, len)) = parse_array_type_syntax(name) {
             // Recursively resolve the element type
             let element_ty = self.resolve_type_name(&element_type_str)?;
+            let length = self.resolve_infer_array_length(&len)?;
             return Some(InferType::Array {
                 element: Box::new(element_ty),
                 length,
