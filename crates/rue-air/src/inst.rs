@@ -822,7 +822,9 @@ pub enum AirInstData {
     /// (type parameters like `comptime T: type` or value parameters like
     /// `comptime n: i32`, RUE-166). During a post-analysis specialization
     /// pass, this is rewritten to a regular `Call` to a specialized version
-    /// of the function (e.g., `identity__i32`, `fact__v5`).
+    /// of the function (e.g., `identity.i32`, `fact.v5`; the `.` separator is
+    /// illegal in Rue identifiers so specialized names can't collide with a
+    /// user-spellable function name, RUE-41).
     ///
     /// The type_args are encoded in the extra array as raw Type discriminant
     /// values. The comptime value arguments are encoded in the extra array as

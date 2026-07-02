@@ -142,6 +142,40 @@ fn main() -> i32 {
 exit_code = 32
 
 # =============================================================================
+# Specialized names live in a namespace disjoint from user names (RUE-41)
+# =============================================================================
+#
+# The specialized symbol for `identity<i32>` used to be `identity__i32` — a
+# string a user can legally spell as a plain function name — so a program that
+# defined BOTH failed to link with "duplicate symbol: identity__i32" even
+# though it is valid Rue. The mangling now joins segments with `.`, illegal in
+# a Rue identifier, so specialized names can never collide with user names.
+
+[[case]]
+name = "specialization_name_does_not_collide_with_user_fn"
+description = "identity<i32> plus a user fn literally named identity__i32 links and runs (RUE-41: used to be 'duplicate symbol: identity__i32')."
+files = [{ path = "main.rue", source = """
+fn identity(comptime T: type, x: T) -> T { x }
+fn identity__i32(x: i32) -> i32 { x + 100 }
+fn main() -> i32 { identity(i32, 7) + identity__i32(0) }
+""" }]
+exit_code = 107
+
+[[case]]
+name = "specialization_i32_and_i64_distinct_symbols"
+description = "identity<i32> and identity<i64> get distinct specialized symbols and distinct bodies (must not regress to RUE-100's single-symbol collapse)."
+files = [{ path = "main.rue", source = """
+fn identity(comptime T: type, x: T) -> T { x }
+fn widen(comptime T: type, x: i64) -> i64 { identity(T, x) }
+fn main() -> i32 {
+    @dbg(identity(i32, 5));
+    @dbg(widen(i64, 40));
+    0
+}
+""" }]
+stdout = "5\n40\n"
+
+# =============================================================================
 # Type parameter forwarding to nested generic calls (RUE-102)
 # =============================================================================
 

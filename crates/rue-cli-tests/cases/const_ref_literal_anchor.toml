@@ -1,0 +1,90 @@
+# A reference to a typed top-level `const` must anchor integer-literal
+# inference across a binary operator (RUE-112, part of the RUE-110 epic).
+#
+# `const BASE: i32 = 100; BASE + 1` once produced
+# `E0800: literal value 1 is out of range for type '<error>'` — the const
+# operand's declared type wasn't propagated to the *other* operand, so the
+# literal's inference context collapsed to the error type and the range check
+# rejected it. Fixed by the const-typing / per-value-comptime work (#973/#980/
+# #1006); these cases pin the behavior so it can't regress. The check is NOT
+# disabled: a literal that genuinely overflows the anchored type still E0800s.
+
+[section]
+id = "cli.const_ref_literal_anchor"
+name = "Const-reference literal anchoring"
+description = "A reference to a typed top-level const anchors an integer literal's type across a binary operator; range checks use the anchored type (RUE-112)."
+
+# The headline repro: const on the left, literal on the right.
+[[case]]
+name = "const_left_literal_right"
+files = [{ path = "main.rue", source = """
+const BASE: i32 = 100;
+
+fn main() -> i32 { BASE + 1 }
+""" }]
+exit_code = 101
+
+# Reversed operands: literal on the left, const on the right.
+[[case]]
+name = "literal_left_const_right"
+files = [{ path = "main.rue", source = """
+const BASE: i32 = 100;
+
+fn main() -> i32 { 1 + BASE }
+""" }]
+exit_code = 101
+
+# A narrow (u8) const anchors the literal to u8, not i32.
+[[case]]
+name = "narrow_const_anchors_u8"
+files = [{ path = "main.rue", source = """
+const N: u8 = 10;
+
+fn main() -> i32 {
+    let x: u8 = N + 1;
+    let r: i32 = @intCast(x);
+    r
+}
+""" }]
+exit_code = 11
+
+# Reversed narrow: literal on the left, u8 const on the right.
+[[case]]
+name = "narrow_const_anchors_u8_reversed"
+files = [{ path = "main.rue", source = """
+const N: u8 = 10;
+
+fn main() -> i32 {
+    let x: u8 = 1 + N;
+    let r: i32 = @intCast(x);
+    r
+}
+""" }]
+exit_code = 11
+
+# The range check is anchored to the const's type, not disabled: a literal
+# that overflows the anchored i32 is still rejected with E0800.
+[[case]]
+name = "overflow_against_i32_const_still_rejected"
+files = [{ path = "main.rue", source = """
+const BASE: i32 = 100;
+
+fn main() -> i32 { BASE + 5000000000 }
+""" }]
+compile_fail = true
+error_contains = ["E0800", "5000000000", "out of range", "i32"]
+
+# ...and a literal that overflows a narrow u8 const is rejected against u8.
+[[case]]
+name = "overflow_against_u8_const_still_rejected"
+files = [{ path = "main.rue", source = """
+const N: u8 = 10;
+
+fn main() -> i32 {
+    let x: u8 = N + 300;
+    let r: i32 = @intCast(x);
+    r
+}
+""" }]
+compile_fail = true
+error_contains = ["E0800", "300", "out of range", "u8"]
