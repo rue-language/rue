@@ -505,7 +505,7 @@ impl<'a> Sema<'a> {
 
                 InstData::FnDecl {
                     is_pub,
-                    is_unchecked: _,
+                    is_unchecked,
                     name,
                     params_start,
                     params_len,
@@ -541,6 +541,7 @@ impl<'a> Sema<'a> {
                         *body,
                         inst.span,
                         *is_pub,
+                        *is_unchecked,
                     )?;
                 }
 
@@ -732,6 +733,7 @@ impl<'a> Sema<'a> {
         body: InstRef,
         span: Span,
         is_pub: bool,
+        is_unchecked: bool,
     ) -> CompileResult<()> {
         // Reject user functions whose name collides with a runtime/codegen helper
         // symbol (e.g. `__rue_String_len`, `__rue_alloc`, `_start`). Without this, such a
@@ -837,6 +839,7 @@ impl<'a> Sema<'a> {
                 span,
                 is_generic,
                 is_pub,
+                is_unchecked,
                 file_id: span.file_id,
             },
         );

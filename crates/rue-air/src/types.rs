@@ -617,6 +617,20 @@ impl Type {
                 }
                 format!("<array#{}>", array_id.0)
             }
+            Some(TypeKind::PtrConst(ptr_id)) => {
+                if let Some(pool) = pool {
+                    let pointee = pool.ptr_const_def(ptr_id);
+                    return format!("ptr const {}", pointee.safe_name_with_pool(Some(pool)));
+                }
+                format!("<ptr const#{}>", ptr_id.0)
+            }
+            Some(TypeKind::PtrMut(ptr_id)) => {
+                if let Some(pool) = pool {
+                    let pointee = pool.ptr_mut_def(ptr_id);
+                    return format!("ptr mut {}", pointee.safe_name_with_pool(Some(pool)));
+                }
+                format!("<ptr mut#{}>", ptr_id.0)
+            }
             Some(_kind) => self.name().to_string(),
             None => format!("<invalid type encoding: {:#x}>", self.0),
         }

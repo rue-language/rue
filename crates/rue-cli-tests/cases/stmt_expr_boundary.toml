@@ -1,0 +1,105 @@
+[section]
+id = "cli.stmt_expr_boundary"
+name = "Statement / expression boundary parsing"
+description = """
+Regression coverage for two parser statement/expression-boundary bugs:
+RUE-209 (bare break/return used as a while/if condition swallowing the
+following block as a value operand) and RUE-210 (an if/match expression
+statement followed by a line starting with unary minus being greedily parsed
+as a subtraction spanning both lines).
+"""
+
+# =============================================================================
+# RUE-209: a bare `break`/`return` used as a while/if condition must NOT swallow
+# the following `{ ... }` block as its value operand. Before the fix this
+# desynced the parse and produced a wrong-location E0100 pointing at an outer
+# brace; after the fix the block attaches as the loop/if body and the program
+# gets a clean, correctly-located diagnostic (here E0206, a real type error).
+# =============================================================================
+
+[[case]]
+name = "while_break_condition_no_desync"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 { loop { while break {} } }
+""" }]
+compile_fail = true
+error_contains = ["E0206"]
+
+[[case]]
+name = "if_break_condition_no_desync"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 { loop { if break {} } }
+""" }]
+compile_fail = true
+error_contains = ["E0206"]
+
+# A bare `return` used as a loop condition in a unit-returning function: the
+# `{}` attaches as the while body, so the whole thing type-checks and compiles
+# cleanly. Before the fix this desynced with a wrong-location E0100.
+[[case]]
+name = "while_return_condition_compiles"
+files = [{ path = "main.rue", source = """
+fn sink() { loop { while return {} } }
+fn main() -> i32 { 0 }
+""" }]
+compile_only = true
+
+# The parenthesized control form was never affected and keeps working: `break`
+# is rejected as a real semantic error, not a parse desync.
+[[case]]
+name = "parenthesized_break_condition_semantic_error"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 { while (break) {} 0 }
+""" }]
+compile_fail = true
+error_contains = ["E0500"]
+
+# =============================================================================
+# RUE-210: an `if`/`match` expression statement followed by a line beginning
+# with unary `-` is two statements, not a subtraction. The `if`/`match` value
+# is discarded and `-1` is the block's tail expression (exit 255 = -1 & 0xFF).
+# Before the fix this parsed as `(if ...) - 1`, exiting 230.
+# =============================================================================
+
+[[case]]
+name = "if_statement_then_unary_minus"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    if true { 999 } else { 888 }
+    -1
+}
+""" }]
+exit_code = 255
+
+[[case]]
+name = "match_statement_then_unary_minus"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    match 1 { 1 => 999, _ => 888 }
+    -1
+}
+""" }]
+exit_code = 255
+
+# Statement-position only: as a `let` right-hand side the block-like expression
+# still binds the ambiguous `-` as subtraction (10 - 5 = 5).
+[[case]]
+name = "if_minus_operand_still_binds_in_expression_position"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let x = if true { 10 } else { 20 } - 5;
+    x
+}
+""" }]
+exit_code = 5
+
+# In statement position, an unambiguously-binary `+` keeps the leading
+# block-like expression as its left operand (one addition, 10 + 5 = 15).
+[[case]]
+name = "if_then_plus_stays_binary"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    if true { 10 } else { 20 } + 5
+}
+""" }]
+exit_code = 15

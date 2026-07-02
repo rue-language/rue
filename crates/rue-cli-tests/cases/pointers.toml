@@ -1,0 +1,112 @@
+# Raw pointer semantics through the real driver (RUE-8).
+#
+# Exercises the full pointer surface end-to-end: taking a pointer with
+# @raw / @raw_mut, reading and writing through it, round-tripping an
+# address through @ptr_to_int / @int_to_ptr, passing pointers across
+# function boundaries, and the checked-context enforcement (spec 9.1:1,
+# 9.1:12) that rejects unchecked pointer operations outside a `checked`
+# block.
+
+[section]
+id = "cli.pointers"
+name = "Raw pointers"
+description = "Raw pointer operations and unchecked-context enforcement via the CLI driver."
+
+# Read through a pointer taken with @raw. Prints the pointed-to value.
+[[case]]
+name = "ptr_read_roundtrip"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let x: i32 = 123;
+    let v: i32 = checked {
+        let p: ptr const i32 = @raw(x);
+        @ptr_read(p)
+    };
+    @dbg(v);
+    0
+}
+""" }]
+stdout = "123\n"
+
+# Mutate a local through a ptr mut, then observe the mutation.
+[[case]]
+name = "ptr_write_mutates_local"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut x: i32 = 10;
+    checked {
+        let p: ptr mut i32 = @raw_mut(x);
+        @ptr_write(p, 77);
+    };
+    @dbg(x);
+    0
+}
+""" }]
+stdout = "77\n"
+
+# Round-trip an address through @ptr_to_int / @int_to_ptr and read it back.
+[[case]]
+name = "ptr_int_roundtrip"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let x: i32 = 42;
+    let addr: u64 = checked {
+        let p: ptr const i32 = @raw(x);
+        @ptr_to_int(p)
+    };
+    let v: i32 = checked {
+        let p2: ptr mut i32 = @int_to_ptr(addr);
+        @ptr_read(p2)
+    };
+    @dbg(v);
+    0
+}
+""" }]
+stdout = "42\n"
+
+# A pointer passes across a function boundary as a parameter and is read
+# in the callee.
+[[case]]
+name = "ptr_across_function"
+files = [{ path = "main.rue", source = """
+fn deref(p: ptr const i32) -> i32 {
+    checked { @ptr_read(p) }
+}
+fn main() -> i32 {
+    let x: i32 = 99;
+    let v: i32 = checked {
+        let p: ptr const i32 = @raw(x);
+        deref(p)
+    };
+    @dbg(v);
+    0
+}
+""" }]
+stdout = "99\n"
+
+# Enforcement: a pointer operation outside a `checked` block is rejected
+# with E1300, not silently accepted (spec 9.1:12).
+[[case]]
+name = "ptr_read_outside_checked_is_error"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let x: i32 = 5;
+    let p: ptr const i32 = checked { @raw(x) };
+    @ptr_read(p)
+}
+""" }]
+compile_fail = true
+error_contains = ["E1300", "requires a `checked` block"]
+
+# Enforcement: calling an `unchecked fn` outside a `checked` block is
+# rejected (spec 9.1:1).
+[[case]]
+name = "unchecked_fn_outside_checked_is_error"
+files = [{ path = "main.rue", source = """
+unchecked fn danger() -> i32 { 42 }
+fn main() -> i32 {
+    danger()
+}
+""" }]
+compile_fail = true
+error_contains = ["E1300", "unchecked function"]

@@ -1813,4 +1813,39 @@ mod tests {
     fn test_pool_is_send_sync() {
         assert_send_sync::<TypeInternPool>();
     }
+
+    #[test]
+    fn test_ptr_type_error_name_shows_pointee() {
+        // Diagnostics must render the pointee type, not a bare `<ptr const>`
+        // placeholder that makes "expected X, found X" messages useless
+        // (RUE-8). Verify `safe_name_with_pool` resolves the pointee through
+        // the pool for both const and mut pointers, including nested pointers.
+        let pool = TypeInternPool::new();
+
+        let pc = pool.intern_ptr_const_from_type(Type::I32);
+        assert_eq!(
+            Type::new_ptr_const(pc).safe_name_with_pool(Some(&pool)),
+            "ptr const i32"
+        );
+
+        let pm = pool.intern_ptr_mut_from_type(Type::U64);
+        assert_eq!(
+            Type::new_ptr_mut(pm).safe_name_with_pool(Some(&pool)),
+            "ptr mut u64"
+        );
+
+        // Nested: ptr const (ptr mut i32)
+        let inner = Type::new_ptr_mut(pool.intern_ptr_mut_from_type(Type::I32));
+        let outer = pool.intern_ptr_const_from_type(inner);
+        assert_eq!(
+            Type::new_ptr_const(outer).safe_name_with_pool(Some(&pool)),
+            "ptr const ptr mut i32"
+        );
+
+        // Without a pool, fall back to a stable id-tagged placeholder.
+        assert_eq!(
+            Type::new_ptr_const(pc).safe_name_with_pool(None),
+            format!("<ptr const#{}>", pc.0)
+        );
+    }
 }

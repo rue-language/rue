@@ -3719,6 +3719,19 @@ impl<'a> Sema<'a> {
             span,
         )?;
 
+        // An `unchecked fn` may only be called inside a `checked` block
+        // (spec 9.1:1). The callee's body is analyzed like any other function;
+        // it is the *call site* that must be in an unchecked context.
+        if fn_info.is_unchecked && ctx.checked_depth == 0 {
+            return Err(CompileError::new(
+                ErrorKind::UncheckedOpRequiresChecked {
+                    what: format!("calling unchecked function `{fn_name_str}`"),
+                },
+                span,
+            )
+            .with_help("wrap the call in a `checked { ... }` block"));
+        }
+
         // Track this function as referenced (for lazy analysis)
         ctx.referenced_functions.insert(name);
 

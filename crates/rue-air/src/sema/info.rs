@@ -32,6 +32,9 @@ pub struct FunctionInfo {
     pub is_generic: bool,
     /// Whether this function is public (visible outside its directory)
     pub is_pub: bool,
+    /// Whether this function carries the `unchecked` modifier. Calling it
+    /// requires a `checked` block at the call site (spec 9.1:1).
+    pub is_unchecked: bool,
     /// File ID this function was declared in (for visibility checking)
     pub file_id: FileId,
 }

@@ -89,11 +89,11 @@ fn main() -> i32 {
 exit_code = 42
 
 # =============================================================================
-# Pointer type syntax - Phase 2 adds semantic analysis
+# Pointer type syntax and type checking
 # =============================================================================
 
-# These tests verify pointer types are recognized in the type system.
-# Phase 2 implemented pointer types (PtrConst, PtrMut).
+# These tests verify pointer types are recognized and type-checked
+# (PtrConst, PtrMut are fully analyzed; see spec 9.1:8-9.1:12).
 
 [[case]]
 name = "ptr_const_type_in_param"
@@ -133,3 +133,124 @@ fn takes_point_ptr(p: ptr const Point) -> i32 { 0 }
 fn main() -> i32 { 0 }
 """
 exit_code = 0
+
+# =============================================================================
+# Raw pointer type checking (spec 9.1:10)
+# =============================================================================
+
+# A pointer type is legal as a struct field (self-referential struct here).
+[[case]]
+name = "ptr_type_as_struct_field"
+spec = ["9.1:10"]
+source = """
+struct Node { next: ptr const Node, value: i32 }
+fn takes_node(n: Node) -> i32 { n.value }
+fn main() -> i32 { 0 }
+"""
+exit_code = 0
+
+# `ptr const T` and `ptr mut T` are distinct types: passing a const pointer
+# where a mut pointer is expected is a type error, and the diagnostic names the
+# pointee type on both sides.
+[[case]]
+name = "ptr_const_not_mut_mismatch"
+spec = ["9.1:10"]
+source = """
+fn wants_mut(p: ptr mut i32) -> i32 { 0 }
+fn main() -> i32 {
+    let x: i32 = 7;
+    let p: ptr const i32 = checked { @raw(x) };
+    wants_mut(p)
+}
+"""
+compile_fail = true
+error_contains = "expected ptr mut i32, found ptr const i32"
+
+# Two pointer types with different pointees are unequal; the message shows the
+# distinct pointee types rather than a bare `<ptr const>` placeholder.
+[[case]]
+name = "ptr_pointee_mismatch_names_pointee"
+spec = ["9.1:10"]
+source = """
+fn wants(p: ptr const i64) -> i32 { 0 }
+fn main() -> i32 {
+    let x: i32 = 7;
+    let p: ptr const i32 = checked { @raw(x) };
+    wants(p)
+}
+"""
+compile_fail = true
+error_contains = "expected ptr const i64, found ptr const i32"
+
+# =============================================================================
+# Unchecked-context enforcement (spec 9.1:1, 9.1:12)
+# =============================================================================
+
+# Calling an `unchecked fn` outside a `checked` block is a compile error.
+[[case]]
+name = "unchecked_fn_call_requires_checked"
+spec = ["9.1:1"]
+source = """
+unchecked fn danger() -> i32 { 42 }
+fn main() -> i32 {
+    danger()
+}
+"""
+compile_fail = true
+error_contains = "requires a `checked` block"
+
+# Calling an `unchecked fn` inside a `checked` block is legal.
+[[case]]
+name = "unchecked_fn_call_in_checked"
+spec = ["9.1:1"]
+source = """
+unchecked fn danger() -> i32 { 42 }
+fn main() -> i32 {
+    checked { danger() }
+}
+"""
+exit_code = 42
+
+# A raw-pointer intrinsic used outside a `checked` block is a compile error.
+[[case]]
+name = "ptr_read_outside_checked_rejected"
+spec = ["9.1:12"]
+source = """
+fn main() -> i32 {
+    let x: i32 = 5;
+    let p: ptr const i32 = checked { @raw(x) };
+    @ptr_read(p)
+}
+"""
+compile_fail = true
+error_contains = "requires a `checked` block"
+
+# `@raw` itself is an unchecked operation and is rejected outside `checked`.
+[[case]]
+name = "raw_outside_checked_rejected"
+spec = ["9.1:12"]
+source = """
+fn main() -> i32 {
+    let x: i32 = 5;
+    let p: ptr const i32 = @raw(x);
+    0
+}
+"""
+compile_fail = true
+error_contains = "requires a `checked` block"
+
+# The same pointer operations are accepted inside a `checked` block and run.
+[[case]]
+name = "ptr_ops_in_checked_ok"
+spec = ["9.1:12"]
+source = """
+fn main() -> i32 {
+    let mut x: i32 = 10;
+    checked {
+        let p: ptr mut i32 = @raw_mut(x);
+        @ptr_write(p, 42);
+    };
+    x
+}
+"""
+exit_code = 42

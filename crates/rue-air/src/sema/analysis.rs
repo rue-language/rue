@@ -1667,6 +1667,7 @@ impl<'a> Sema<'a> {
             params: &param_vec,
             next_slot: 0,
             loop_depth: 0,
+            checked_depth: 0,
             loop_break_stack: Vec::new(),
             used_locals: HashSet::new(),
             return_type,
@@ -2583,9 +2584,15 @@ impl<'a> Sema<'a> {
                 Ok(AnalysisResult::new(air_ref, Type::COMPTIME_TYPE))
             }
 
-            // Checked block: evaluate the inner expression
-            // The actual checking of unchecked operations happens in Phase 2
-            InstData::Checked { expr } => self.analyze_inst(air, *expr, ctx),
+            // Checked block: evaluate the inner expression within an unchecked
+            // context. Raw-pointer intrinsics and calls to `unchecked fn`s are
+            // only legal while `checked_depth > 0` (spec 9.1:1, chapter 9).
+            InstData::Checked { expr } => {
+                ctx.checked_depth += 1;
+                let result = self.analyze_inst(air, *expr, ctx);
+                ctx.checked_depth -= 1;
+                result
+            }
         }
     }
 
@@ -3256,6 +3263,31 @@ impl<'a> Sema<'a> {
             })
             .collect();
         let known = &self.known;
+
+        // Raw-pointer intrinsics are unchecked operations: they may only be
+        // used inside a `checked` block (spec 9.1:1, chapter 9). Gate them
+        // before the per-intrinsic dispatch so every pointer intrinsic shares
+        // one diagnostic. `@syscall` has its own gating; the pointer set here
+        // is @raw/@raw_mut/@ptr_read/@ptr_write/@ptr_offset/@ptr_to_int/
+        // @int_to_ptr.
+        if ctx.checked_depth == 0
+            && (name == known.ptr_read
+                || name == known.ptr_write
+                || name == known.ptr_offset
+                || name == known.ptr_to_int
+                || name == known.int_to_ptr
+                || name == known.raw
+                || name == known.raw_mut)
+        {
+            let intrinsic_name_str = self.interner.resolve(&name);
+            return Err(CompileError::new(
+                ErrorKind::UncheckedOpRequiresChecked {
+                    what: format!("raw-pointer intrinsic `@{intrinsic_name_str}`"),
+                },
+                span,
+            )
+            .with_help("wrap the operation in a `checked { ... }` block"));
+        }
 
         // Use pre-interned symbol comparison instead of string comparison
         if name == known.dbg {
