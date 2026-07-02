@@ -4,10 +4,10 @@
 //! - String equality comparison (`__rue_str_eq`)
 //! - Heap allocation wrappers (`__rue_alloc`, `__rue_free`, `__rue_realloc`)
 //! - String-specific allocation functions
-//! - String constructors (`String__new`, `String__with_capacity`)
+//! - String constructors (`__rue_String_new`, `__rue_String_with_capacity`)
 //! - String query methods (`len`, `capacity`, `is_empty`)
 //! - String mutation methods (`push_str`, `push`, `clear`, `reserve`)
-//! - String cloning (`String__clone`)
+//! - String cloning (`__rue_String_clone`)
 //! - String dropping (`__rue_drop_String`)
 
 use crate::heap;
@@ -342,7 +342,7 @@ crate::define_for_all_platforms! {
 /// # ABI (sret convention)
 ///
 /// ```text
-/// extern "C" fn String__new(out: *mut StringResult)
+/// extern "C" fn __rue_String_new(out: *mut StringResult)
 /// ```
 ///
 /// Caller allocates space for the return value and passes pointer.
@@ -350,7 +350,7 @@ crate::define_for_all_platforms! {
 #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn String__new(out: *mut StringResult) {
+pub extern "C" fn __rue_String_new(out: *mut StringResult) {
     // SAFETY: Writing to `out` is safe because:
     // - Caller (Rue-generated code) allocates stack space and passes a valid pointer
     // - The sret convention guarantees `out` points to properly sized/aligned memory
@@ -365,7 +365,7 @@ pub extern "C" fn String__new(out: *mut StringResult) {
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn String__new(out: *mut StringResult) {
+pub extern "C" fn __rue_String_new(out: *mut StringResult) {
     unsafe {
         (*out).ptr = core::ptr::null_mut();
         (*out).len = 0;
@@ -376,7 +376,7 @@ pub extern "C" fn String__new(out: *mut StringResult) {
 #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn String__new(out: *mut StringResult) {
+pub extern "C" fn __rue_String_new(out: *mut StringResult) {
     unsafe {
         (*out).ptr = core::ptr::null_mut();
         (*out).len = 0;
@@ -392,12 +392,12 @@ pub extern "C" fn String__new(out: *mut StringResult) {
 /// # ABI (sret convention)
 ///
 /// ```text
-/// extern "C" fn String__with_capacity(out: *mut StringResult, cap: u64)
+/// extern "C" fn __rue_String_with_capacity(out: *mut StringResult, cap: u64)
 /// ```
 #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn String__with_capacity(out: *mut StringResult, requested_cap: u64) {
+pub extern "C" fn __rue_String_with_capacity(out: *mut StringResult, requested_cap: u64) {
     let actual_cap = if requested_cap < STRING_MIN_CAPACITY {
         STRING_MIN_CAPACITY
     } else {
@@ -414,7 +414,7 @@ pub extern "C" fn String__with_capacity(out: *mut StringResult, requested_cap: u
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn String__with_capacity(out: *mut StringResult, requested_cap: u64) {
+pub extern "C" fn __rue_String_with_capacity(out: *mut StringResult, requested_cap: u64) {
     let actual_cap = if requested_cap < STRING_MIN_CAPACITY {
         STRING_MIN_CAPACITY
     } else {
@@ -431,7 +431,7 @@ pub extern "C" fn String__with_capacity(out: *mut StringResult, requested_cap: u
 #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn String__with_capacity(out: *mut StringResult, requested_cap: u64) {
+pub extern "C" fn __rue_String_with_capacity(out: *mut StringResult, requested_cap: u64) {
     let actual_cap = if requested_cap < STRING_MIN_CAPACITY {
         STRING_MIN_CAPACITY
     } else {
@@ -469,21 +469,21 @@ pub extern "C" fn String__with_capacity(out: *mut StringResult, requested_cap: u
 #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn String__len(_ptr: *const u8, len: u64, _cap: u64) -> u64 {
+pub extern "C" fn __rue_String_len(_ptr: *const u8, len: u64, _cap: u64) -> u64 {
     len
 }
 
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn String__len(_ptr: *const u8, len: u64, _cap: u64) -> u64 {
+pub extern "C" fn __rue_String_len(_ptr: *const u8, len: u64, _cap: u64) -> u64 {
     len
 }
 
 #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn String__len(_ptr: *const u8, len: u64, _cap: u64) -> u64 {
+pub extern "C" fn __rue_String_len(_ptr: *const u8, len: u64, _cap: u64) -> u64 {
     len
 }
 
@@ -502,21 +502,21 @@ pub extern "C" fn String__len(_ptr: *const u8, len: u64, _cap: u64) -> u64 {
 #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn String__capacity(_ptr: *const u8, _len: u64, cap: u64) -> u64 {
+pub extern "C" fn __rue_String_capacity(_ptr: *const u8, _len: u64, cap: u64) -> u64 {
     cap
 }
 
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn String__capacity(_ptr: *const u8, _len: u64, cap: u64) -> u64 {
+pub extern "C" fn __rue_String_capacity(_ptr: *const u8, _len: u64, cap: u64) -> u64 {
     cap
 }
 
 #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn String__capacity(_ptr: *const u8, _len: u64, cap: u64) -> u64 {
+pub extern "C" fn __rue_String_capacity(_ptr: *const u8, _len: u64, cap: u64) -> u64 {
     cap
 }
 
@@ -532,21 +532,21 @@ pub extern "C" fn String__capacity(_ptr: *const u8, _len: u64, cap: u64) -> u64 
 #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn String__is_empty(_ptr: *const u8, len: u64, _cap: u64) -> u8 {
+pub extern "C" fn __rue_String_is_empty(_ptr: *const u8, len: u64, _cap: u64) -> u8 {
     if len == 0 { 1 } else { 0 }
 }
 
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn String__is_empty(_ptr: *const u8, len: u64, _cap: u64) -> u8 {
+pub extern "C" fn __rue_String_is_empty(_ptr: *const u8, len: u64, _cap: u64) -> u8 {
     if len == 0 { 1 } else { 0 }
 }
 
 #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn String__is_empty(_ptr: *const u8, len: u64, _cap: u64) -> u8 {
+pub extern "C" fn __rue_String_is_empty(_ptr: *const u8, len: u64, _cap: u64) -> u8 {
     if len == 0 { 1 } else { 0 }
 }
 
@@ -575,13 +575,13 @@ pub extern "C" fn String__is_empty(_ptr: *const u8, len: u64, _cap: u64) -> u8 {
 #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn String__clone(out: *mut StringResult, ptr: *const u8, len: u64, _cap: u64) {
+pub extern "C" fn __rue_String_clone(out: *mut StringResult, ptr: *const u8, len: u64, _cap: u64) {
     let new_cap = len.max(STRING_MIN_CAPACITY);
     let new_ptr = heap::alloc(new_cap, 1);
 
     // Check for allocation failure before copy to avoid UB
     if new_ptr.is_null() {
-        // SAFETY: Writing to `out` is safe - see String__new for rationale
+        // SAFETY: Writing to `out` is safe - see __rue_String_new for rationale
         unsafe {
             (*out).ptr = core::ptr::null_mut();
             (*out).len = 0;
@@ -600,7 +600,7 @@ pub extern "C" fn String__clone(out: *mut StringResult, ptr: *const u8, len: u64
         }
     }
 
-    // SAFETY: Writing to `out` is safe - see String__new for rationale
+    // SAFETY: Writing to `out` is safe - see __rue_String_new for rationale
     unsafe {
         (*out).ptr = new_ptr;
         (*out).len = len;
@@ -611,13 +611,13 @@ pub extern "C" fn String__clone(out: *mut StringResult, ptr: *const u8, len: u64
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn String__clone(out: *mut StringResult, ptr: *const u8, len: u64, _cap: u64) {
+pub extern "C" fn __rue_String_clone(out: *mut StringResult, ptr: *const u8, len: u64, _cap: u64) {
     let new_cap = len.max(STRING_MIN_CAPACITY);
     let new_ptr = heap::alloc(new_cap, 1);
 
     // Check for allocation failure before copy to avoid UB
     if new_ptr.is_null() {
-        // SAFETY: Writing to `out` is safe - see String__new for rationale
+        // SAFETY: Writing to `out` is safe - see __rue_String_new for rationale
         unsafe {
             (*out).ptr = core::ptr::null_mut();
             (*out).len = 0;
@@ -636,7 +636,7 @@ pub extern "C" fn String__clone(out: *mut StringResult, ptr: *const u8, len: u64
         }
     }
 
-    // SAFETY: Writing to `out` is safe - see String__new for rationale
+    // SAFETY: Writing to `out` is safe - see __rue_String_new for rationale
     unsafe {
         (*out).ptr = new_ptr;
         (*out).len = len;
@@ -647,13 +647,13 @@ pub extern "C" fn String__clone(out: *mut StringResult, ptr: *const u8, len: u64
 #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn String__clone(out: *mut StringResult, ptr: *const u8, len: u64, _cap: u64) {
+pub extern "C" fn __rue_String_clone(out: *mut StringResult, ptr: *const u8, len: u64, _cap: u64) {
     let new_cap = len.max(STRING_MIN_CAPACITY);
     let new_ptr = heap::alloc(new_cap, 1);
 
     // Check for allocation failure before copy to avoid UB
     if new_ptr.is_null() {
-        // SAFETY: Writing to `out` is safe - see String__new for rationale
+        // SAFETY: Writing to `out` is safe - see __rue_String_new for rationale
         unsafe {
             (*out).ptr = core::ptr::null_mut();
             (*out).len = 0;
@@ -672,7 +672,7 @@ pub extern "C" fn String__clone(out: *mut StringResult, ptr: *const u8, len: u64
         }
     }
 
-    // SAFETY: Writing to `out` is safe - see String__new for rationale
+    // SAFETY: Writing to `out` is safe - see __rue_String_new for rationale
     unsafe {
         (*out).ptr = new_ptr;
         (*out).len = len;
@@ -707,7 +707,7 @@ pub extern "C" fn String__clone(out: *mut StringResult, ptr: *const u8, len: u64
 #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn String__push_str(
+pub extern "C" fn __rue_String_push_str(
     out: *mut StringResult,
     ptr: *mut u8,
     len: u64,
@@ -735,7 +735,7 @@ pub extern "C" fn String__push_str(
 
     let new_len = len + other_len;
 
-    // SAFETY: Writing to `out` is safe - see String__new for rationale
+    // SAFETY: Writing to `out` is safe - see __rue_String_new for rationale
     unsafe {
         (*out).ptr = new_ptr;
         (*out).len = new_len;
@@ -746,7 +746,7 @@ pub extern "C" fn String__push_str(
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn String__push_str(
+pub extern "C" fn __rue_String_push_str(
     out: *mut StringResult,
     ptr: *mut u8,
     len: u64,
@@ -774,7 +774,7 @@ pub extern "C" fn String__push_str(
 
     let new_len = len + other_len;
 
-    // SAFETY: Writing to `out` is safe - see String__new for rationale
+    // SAFETY: Writing to `out` is safe - see __rue_String_new for rationale
     unsafe {
         (*out).ptr = new_ptr;
         (*out).len = new_len;
@@ -785,7 +785,7 @@ pub extern "C" fn String__push_str(
 #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn String__push_str(
+pub extern "C" fn __rue_String_push_str(
     out: *mut StringResult,
     ptr: *mut u8,
     len: u64,
@@ -813,7 +813,7 @@ pub extern "C" fn String__push_str(
 
     let new_len = len + other_len;
 
-    // SAFETY: Writing to `out` is safe - see String__new for rationale
+    // SAFETY: Writing to `out` is safe - see __rue_String_new for rationale
     unsafe {
         (*out).ptr = new_ptr;
         (*out).len = new_len;
@@ -833,7 +833,13 @@ pub extern "C" fn String__push_str(
 #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn String__push(out: *mut StringResult, ptr: *mut u8, len: u64, cap: u64, byte: u8) {
+pub extern "C" fn __rue_String_push(
+    out: *mut StringResult,
+    ptr: *mut u8,
+    len: u64,
+    cap: u64,
+    byte: u8,
+) {
     let (new_ptr, new_cap) = string_ensure_capacity(ptr, len, cap, 1);
 
     // SAFETY: Writing the byte is safe because:
@@ -846,7 +852,7 @@ pub extern "C" fn String__push(out: *mut StringResult, ptr: *mut u8, len: u64, c
 
     let new_len = len + 1;
 
-    // SAFETY: Writing to `out` is safe - see String__new for rationale
+    // SAFETY: Writing to `out` is safe - see __rue_String_new for rationale
     unsafe {
         (*out).ptr = new_ptr;
         (*out).len = new_len;
@@ -857,7 +863,13 @@ pub extern "C" fn String__push(out: *mut StringResult, ptr: *mut u8, len: u64, c
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn String__push(out: *mut StringResult, ptr: *mut u8, len: u64, cap: u64, byte: u8) {
+pub extern "C" fn __rue_String_push(
+    out: *mut StringResult,
+    ptr: *mut u8,
+    len: u64,
+    cap: u64,
+    byte: u8,
+) {
     let (new_ptr, new_cap) = string_ensure_capacity(ptr, len, cap, 1);
 
     // SAFETY: Writing the byte is safe because:
@@ -870,7 +882,7 @@ pub extern "C" fn String__push(out: *mut StringResult, ptr: *mut u8, len: u64, c
 
     let new_len = len + 1;
 
-    // SAFETY: Writing to `out` is safe - see String__new for rationale
+    // SAFETY: Writing to `out` is safe - see __rue_String_new for rationale
     unsafe {
         (*out).ptr = new_ptr;
         (*out).len = new_len;
@@ -881,7 +893,13 @@ pub extern "C" fn String__push(out: *mut StringResult, ptr: *mut u8, len: u64, c
 #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn String__push(out: *mut StringResult, ptr: *mut u8, len: u64, cap: u64, byte: u8) {
+pub extern "C" fn __rue_String_push(
+    out: *mut StringResult,
+    ptr: *mut u8,
+    len: u64,
+    cap: u64,
+    byte: u8,
+) {
     let (new_ptr, new_cap) = string_ensure_capacity(ptr, len, cap, 1);
 
     // SAFETY: Writing the byte is safe because:
@@ -894,7 +912,7 @@ pub extern "C" fn String__push(out: *mut StringResult, ptr: *mut u8, len: u64, c
 
     let new_len = len + 1;
 
-    // SAFETY: Writing to `out` is safe - see String__new for rationale
+    // SAFETY: Writing to `out` is safe - see __rue_String_new for rationale
     unsafe {
         (*out).ptr = new_ptr;
         (*out).len = new_len;
@@ -913,8 +931,8 @@ pub extern "C" fn String__push(out: *mut StringResult, ptr: *mut u8, len: u64, c
 #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn String__clear(out: *mut StringResult, ptr: *mut u8, _len: u64, cap: u64) {
-    // SAFETY: Writing to `out` is safe - see String__new for rationale
+pub extern "C" fn __rue_String_clear(out: *mut StringResult, ptr: *mut u8, _len: u64, cap: u64) {
+    // SAFETY: Writing to `out` is safe - see __rue_String_new for rationale
     unsafe {
         (*out).ptr = ptr;
         (*out).len = 0;
@@ -925,8 +943,8 @@ pub extern "C" fn String__clear(out: *mut StringResult, ptr: *mut u8, _len: u64,
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn String__clear(out: *mut StringResult, ptr: *mut u8, _len: u64, cap: u64) {
-    // SAFETY: Writing to `out` is safe - see String__new for rationale
+pub extern "C" fn __rue_String_clear(out: *mut StringResult, ptr: *mut u8, _len: u64, cap: u64) {
+    // SAFETY: Writing to `out` is safe - see __rue_String_new for rationale
     unsafe {
         (*out).ptr = ptr;
         (*out).len = 0;
@@ -937,8 +955,8 @@ pub extern "C" fn String__clear(out: *mut StringResult, ptr: *mut u8, _len: u64,
 #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn String__clear(out: *mut StringResult, ptr: *mut u8, _len: u64, cap: u64) {
-    // SAFETY: Writing to `out` is safe - see String__new for rationale
+pub extern "C" fn __rue_String_clear(out: *mut StringResult, ptr: *mut u8, _len: u64, cap: u64) {
+    // SAFETY: Writing to `out` is safe - see __rue_String_new for rationale
     unsafe {
         (*out).ptr = ptr;
         (*out).len = 0;
@@ -958,7 +976,7 @@ pub extern "C" fn String__clear(out: *mut StringResult, ptr: *mut u8, _len: u64,
 #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn String__reserve(
+pub extern "C" fn __rue_String_reserve(
     out: *mut StringResult,
     ptr: *mut u8,
     len: u64,
@@ -967,7 +985,7 @@ pub extern "C" fn String__reserve(
 ) {
     let (new_ptr, new_cap) = string_ensure_capacity(ptr, len, cap, additional);
 
-    // SAFETY: Writing to `out` is safe - see String__new for rationale
+    // SAFETY: Writing to `out` is safe - see __rue_String_new for rationale
     unsafe {
         (*out).ptr = new_ptr;
         (*out).len = len; // len stays the same for reserve
@@ -978,7 +996,7 @@ pub extern "C" fn String__reserve(
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn String__reserve(
+pub extern "C" fn __rue_String_reserve(
     out: *mut StringResult,
     ptr: *mut u8,
     len: u64,
@@ -987,7 +1005,7 @@ pub extern "C" fn String__reserve(
 ) {
     let (new_ptr, new_cap) = string_ensure_capacity(ptr, len, cap, additional);
 
-    // SAFETY: Writing to `out` is safe - see String__new for rationale
+    // SAFETY: Writing to `out` is safe - see __rue_String_new for rationale
     unsafe {
         (*out).ptr = new_ptr;
         (*out).len = len;
@@ -998,7 +1016,7 @@ pub extern "C" fn String__reserve(
 #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn String__reserve(
+pub extern "C" fn __rue_String_reserve(
     out: *mut StringResult,
     ptr: *mut u8,
     len: u64,
@@ -1007,7 +1025,7 @@ pub extern "C" fn String__reserve(
 ) {
     let (new_ptr, new_cap) = string_ensure_capacity(ptr, len, cap, additional);
 
-    // SAFETY: Writing to `out` is safe - see String__new for rationale
+    // SAFETY: Writing to `out` is safe - see __rue_String_new for rationale
     unsafe {
         (*out).ptr = new_ptr;
         (*out).len = len;

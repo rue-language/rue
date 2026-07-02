@@ -93,15 +93,19 @@ exit_code = 42
 # =============================================================================
 
 [[case]]
-name = "fn_reserved_builtin_method"
+name = "fn_builtin_method_name_allowed"
 spec = ["6.0:5"]
-description = "User-defined function cannot use a built-in type method name"
+description = "A `Type__method` name is an ordinary identifier: runtime symbols moved under `__rue_` (RUE-125), so it is no longer reserved and is distinct from the built-in method"
 source = """
-fn String__len() -> i32 { 12345 }
-fn main() -> i32 { String__len() }
+fn String__len() -> i32 { 7 }
+fn main() -> i32 {
+    let mut s = String::new();
+    s.push_str("hello");
+    let builtin: i32 = @intCast(s.len());
+    builtin * 10 + String__len()
+}
 """
-compile_fail = true
-error_contains = "cannot define function `String__len`: name is reserved for a runtime helper"
+exit_code = 57
 
 [[case]]
 name = "fn_reserved_rue_prefix"

@@ -33,11 +33,15 @@ struct String { data: i32 }  // compile error
 
 {{ rule(id="6.0:5", cat="legality-rule") }}
 
-User-defined functions **MUST NOT** use names reserved for runtime and code-generation helpers. Reserved function names are: any name beginning with `__rue_`, the program entry point `_start`, and any name of the form `T__m` where `T` is a built-in type name (for example `String__len`). Defining a function with a reserved name produces a compile-time error.
+User-defined functions **MUST NOT** use names reserved for runtime and code-generation helpers. The reserved function names are exactly: any name beginning with `__rue_`, and the program entry point `_start`. Every compiler- and runtime-emitted symbol — including built-in type methods and associated functions (`__rue_String_len`, `__rue_String_new`) — lives under the `__rue_` prefix, so the reserved set does not grow as built-in types are added. Defining a function with a reserved name produces a compile-time error.
 
 {{ rule(id="6.0:6", cat="example") }}
 
 ```rue
 // Error: cannot define function with reserved name
-fn String__len() -> i32 { 0 }  // compile error
+fn __rue_alloc() -> i32 { 0 }  // compile error: `__rue_` prefix is reserved
+
+// OK: `String__len` is an ordinary identifier, distinct from the built-in
+// `String::len` method (whose runtime symbol is `__rue_String_len`).
+fn String__len() -> i32 { 0 }  // allowed
 ```
