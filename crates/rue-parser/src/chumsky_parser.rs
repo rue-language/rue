@@ -18,7 +18,7 @@ use chumsky::pratt::{infix, left, prefix};
 use chumsky::prelude::*;
 use chumsky::recovery::via_parser;
 use lasso::{Spur, ThreadedRodeo};
-use rue_error::{CompileError, CompileErrors, ErrorKind, MultiErrorResult};
+use rue_error::{CompileError, CompileErrors, ErrorKind, MAX_NESTING_DEPTH, MultiErrorResult};
 use rue_lexer::TokenKind;
 use rue_span::{FileId, Span};
 use std::borrow::Cow;
@@ -2413,6 +2413,133 @@ fn convert_error(err: Rich<'_, TokenKind>, file_id: FileId) -> CompileError {
     error
 }
 
+/// Scan the token stream for excessive syntactic nesting, returning an error
+/// if the input would nest deeper than [`MAX_NESTING_DEPTH`].
+///
+/// Deeply nested input can overflow the stack in three distinct places, and
+/// this single pre-pass guards all of them (RUE-42):
+///
+/// 1. **The parser itself.** chumsky's recursive combinators descend one native
+///    stack frame per level of bracketed expression (`(`/`[`/`{`), nested type
+///    (`[T; N]`, `ptr const T`), and `else if` chain.
+/// 2. **AstGen.** Lowering walks the AST recursively, so a deep tree — even one
+///    built iteratively by the Pratt parser, like `1 + 1 + ... + 1` or
+///    `a.b.c...` — overflows during lowering.
+/// 3. **`Drop`.** The AST's boxed children drop recursively, so merely *holding*
+///    a deep tree and letting it fall out of scope overflows.
+///
+/// Because it runs *before* the tokens reach chumsky, rejecting here means no
+/// pass (parse, lower, or drop) ever sees a tree deep enough to crash.
+///
+/// The scan maintains one operator/wrap counter per open bracket level. The
+/// tracked value `(levels.len() - 1) + sum(levels)` is a sound upper bound on
+/// the depth of the AST that would be produced: every construct that adds a
+/// level of AST nesting — an opening bracket, a prefix/infix operator, a
+/// postfix `.`/`[`, an `else`, or a `ptr` — bumps it by at least one. Counters
+/// reset at expression separators (`;`, `,`, `=>`, `=`, `:`, `->`) so that a
+/// long *sequence* of shallow expressions (many statements, many call
+/// arguments, many match arms) is not mistaken for deep nesting. The bound can
+/// over-count (e.g. array/index nesting is counted twice), which only makes the
+/// guard slightly more conservative — never less sound.
+fn check_nesting_depth(
+    tokens: &[(TokenKind, SimpleSpan)],
+    file_id: FileId,
+) -> Option<CompileError> {
+    // Per-bracket-level operator/wrap counters; `levels[0]` is the top level.
+    let mut levels: Vec<usize> = vec![0];
+    // Running sum of `levels`, maintained incrementally so the depth check is
+    // O(1) per token rather than O(n).
+    let mut total_ops: usize = 0;
+
+    // Current upper bound on AST depth given the open brackets and pending
+    // operators/wraps.
+    macro_rules! depth {
+        () => {
+            (levels.len() - 1) + total_ops
+        };
+    }
+    macro_rules! reject_if_too_deep {
+        ($span:expr) => {
+            if depth!() > MAX_NESTING_DEPTH {
+                return Some(CompileError::new(
+                    ErrorKind::NestingLimitExceeded {
+                        limit: MAX_NESTING_DEPTH,
+                    },
+                    to_rue_span_with_file(*$span, file_id),
+                ));
+            }
+        };
+    }
+
+    for (kind, span) in tokens {
+        match kind {
+            // Grouping / call / block / struct-literal open: one new nesting
+            // level.
+            TokenKind::LParen | TokenKind::LBrace => {
+                levels.push(0);
+                reject_if_too_deep!(span);
+            }
+            // `[` is both a postfix index / array wrap on the current level and
+            // a new nested level for the expression inside it.
+            TokenKind::LBracket => {
+                *levels.last_mut().unwrap() += 1;
+                total_ops += 1;
+                levels.push(0);
+                reject_if_too_deep!(span);
+            }
+            TokenKind::RParen | TokenKind::RBrace | TokenKind::RBracket => {
+                if levels.len() > 1 {
+                    total_ops -= levels.pop().unwrap();
+                }
+            }
+            // Expression / statement / clause separators: the sub-expression at
+            // the current level is complete, so its operators no longer
+            // contribute to depth.
+            TokenKind::Semi
+            | TokenKind::Comma
+            | TokenKind::FatArrow
+            | TokenKind::Eq
+            | TokenKind::Colon
+            | TokenKind::Arrow => {
+                total_ops -= *levels.last().unwrap();
+                *levels.last_mut().unwrap() = 0;
+            }
+            // Prefix / infix operators, postfix field access, `else if` chains,
+            // and pointer types each wrap the surrounding expression/type in one
+            // more AST node.
+            TokenKind::Plus
+            | TokenKind::Minus
+            | TokenKind::Star
+            | TokenKind::Slash
+            | TokenKind::Percent
+            | TokenKind::EqEq
+            | TokenKind::BangEq
+            | TokenKind::Lt
+            | TokenKind::Gt
+            | TokenKind::LtEq
+            | TokenKind::GtEq
+            | TokenKind::AmpAmp
+            | TokenKind::PipePipe
+            | TokenKind::Amp
+            | TokenKind::Pipe
+            | TokenKind::Caret
+            | TokenKind::Tilde
+            | TokenKind::LtLt
+            | TokenKind::GtGt
+            | TokenKind::Bang
+            | TokenKind::Dot
+            | TokenKind::Else
+            | TokenKind::Ptr => {
+                *levels.last_mut().unwrap() += 1;
+                total_ops += 1;
+                reject_if_too_deep!(span);
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// Chumsky-based parser that converts tokens into an AST.
 pub struct ChumskyParser {
     tokens: Vec<(TokenKind, SimpleSpan)>,
@@ -2454,29 +2581,56 @@ impl ChumskyParser {
     ///
     /// Returns all parse errors if parsing fails, not just the first one.
     pub fn parse(mut self) -> MultiErrorResult<(Ast, ThreadedRodeo)> {
+        // Guard against pathologically nested input BEFORE handing tokens to
+        // chumsky. The recursive-descent parser descends one level per opening
+        // bracket, so combined bracket-nesting depth is an upper bound on
+        // parser recursion depth; rejecting deep input here means chumsky (and
+        // every later pass, plus the recursive `Drop` of the AST) never sees a
+        // tree deep enough to overflow the stack (RUE-42).
+        if let Some(err) = check_nesting_depth(&self.tokens, self.file_id) {
+            return Err(CompileErrors::from(vec![err]));
+        }
+
         // Pre-intern primitive type symbols and create parser state with file ID
         let syms = PrimitiveTypeSpurs::new(&mut self.interner);
         let parser_state = ParserState::new(syms, self.file_id);
-        let mut state = SimpleState(parser_state);
 
-        // Create a stream from the token iterator
-        let token_iter = self.tokens.iter().cloned();
-        let stream = Stream::from_iter(token_iter);
+        // Run chumsky on a dedicated thread with a large stack. Even at the
+        // bounded `MAX_NESTING_DEPTH`, chumsky's combinator frames are heavy
+        // (tens of KB per nesting level), so a 256-deep parse would blow the
+        // default thread stack. The nesting pre-scan above caps the depth; the
+        // roomy stack here ensures the capped depth parses cleanly.
+        let tokens = std::mem::take(&mut self.tokens);
+        let source_len = self.source_len;
+        let file_id = self.file_id;
+        let result = std::thread::Builder::new()
+            .name("rue-parse".to_string())
+            .stack_size(256 * 1024 * 1024)
+            .spawn(move || {
+                let mut state = SimpleState(parser_state);
 
-        // Map the stream to split (Token, Span) tuples
-        let eoi: SimpleSpan = (self.source_len..self.source_len).into();
-        let mapped = stream.map(eoi, |(tok, span)| (tok, span));
+                // Create a stream from the token iterator
+                let token_iter = tokens.iter().cloned();
+                let stream = Stream::from_iter(token_iter);
 
-        let result = ast_parser()
-            .parse_with_state(mapped, &mut state)
-            .into_result()
-            .map_err(|errs| {
-                let errors: Vec<CompileError> = errs
-                    .into_iter()
-                    .map(|err| convert_error(err, self.file_id))
-                    .collect();
-                CompileErrors::from(errors)
-            });
+                // Map the stream to split (Token, Span) tuples
+                let eoi: SimpleSpan = (source_len..source_len).into();
+                let mapped = stream.map(eoi, |(tok, span)| (tok, span));
+
+                ast_parser()
+                    .parse_with_state(mapped, &mut state)
+                    .into_result()
+                    .map_err(|errs| {
+                        let errors: Vec<CompileError> = errs
+                            .into_iter()
+                            .map(|err| convert_error(err, file_id))
+                            .collect();
+                        CompileErrors::from(errors)
+                    })
+            })
+            .expect("failed to spawn parser thread")
+            .join()
+            .expect("parser thread panicked");
 
         let ast = result?;
 
@@ -3810,5 +3964,87 @@ mod tests {
             }
             _ => panic!("expected Struct"),
         }
+    }
+
+    // --- Nesting-depth guard (RUE-42) -------------------------------------
+
+    /// Parse a source string and return the error code of the first error, if
+    /// any. Used by the nesting-depth tests.
+    fn first_error_code(source: &str) -> Option<rue_error::ErrorCode> {
+        let lexer = Lexer::new(source);
+        let (tokens, interner) = lexer.tokenize().ok()?;
+        let parser = ChumskyParser::new(tokens, interner);
+        match parser.parse() {
+            Ok(_) => None,
+            Err(errs) => errs.first().map(|e| e.kind.code()),
+        }
+    }
+
+    #[test]
+    fn test_deeply_nested_parens_rejected_cleanly() {
+        // Far past the limit: must be a clean E0482, never a stack overflow.
+        let n = MAX_NESTING_DEPTH + 50;
+        let src = format!(
+            "fn main() -> i32 {{ {}42{} }}",
+            "(".repeat(n),
+            ")".repeat(n)
+        );
+        assert_eq!(
+            first_error_code(&src),
+            Some(rue_error::ErrorCode::NESTING_LIMIT_EXCEEDED)
+        );
+    }
+
+    #[test]
+    fn test_deep_operator_chain_rejected_cleanly() {
+        // `1 + 1 + ... + 1` is built iteratively by the Pratt parser, so it
+        // does not overflow the parser — but it would overflow AstGen / the
+        // recursive Drop of the AST. The pre-scan must still reject it.
+        let src = format!(
+            "fn main() -> i32 {{ {}1 }}",
+            "1 + ".repeat(MAX_NESTING_DEPTH + 50)
+        );
+        assert_eq!(
+            first_error_code(&src),
+            Some(rue_error::ErrorCode::NESTING_LIMIT_EXCEEDED)
+        );
+    }
+
+    #[test]
+    fn test_deep_field_chain_rejected_cleanly() {
+        let src = format!(
+            "fn main() -> i32 {{ x{} }}",
+            ".f".repeat(MAX_NESTING_DEPTH + 50)
+        );
+        assert_eq!(
+            first_error_code(&src),
+            Some(rue_error::ErrorCode::NESTING_LIMIT_EXCEEDED)
+        );
+    }
+
+    #[test]
+    fn test_deep_else_if_chain_rejected_cleanly() {
+        let src = format!(
+            "fn main() -> i32 {{ {} {{ 0 }} }}",
+            "if true { 1 } else ".repeat(MAX_NESTING_DEPTH + 50)
+        );
+        assert_eq!(
+            first_error_code(&src),
+            Some(rue_error::ErrorCode::NESTING_LIMIT_EXCEEDED)
+        );
+    }
+
+    #[test]
+    fn test_moderate_nesting_still_parses() {
+        // Well within the limit: parsing must succeed (regression guard against
+        // the pre-scan being too aggressive, and proof the large parser stack
+        // is in effect).
+        let n = 100;
+        let src = format!(
+            "fn main() -> i32 {{ {}42{} }}",
+            "(".repeat(n),
+            ")".repeat(n)
+        );
+        assert!(first_error_code(&src).is_none());
     }
 }
