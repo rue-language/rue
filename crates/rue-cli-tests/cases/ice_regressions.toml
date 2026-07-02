@@ -346,3 +346,42 @@ fn main() -> i32 {
 """ }]
 compile_fail = true
 error_contains = ["E0903"]
+
+[[case]]
+name = "runtime_type_param_rue217"
+description = "RUE-217: a non-comptime parameter of type `type` reached codegen and ICEd ('block has no terminator'). Now a clean E1200 (spec 4.14:5)."
+files = [{ path = "main.rue", source = """
+fn f(t: type) -> i32 { 0 }
+fn main() -> i32 { f(i32) }
+""" }]
+compile_fail = true
+error_contains = ["E1200", "must be marked `comptime`"]
+
+[[case]]
+name = "type_struct_field_rue217"
+description = "RUE-217: a struct field of type `type` reached codegen and ICEd ('block has no terminator'). Now a clean E1200 (spec 4.14:6)."
+files = [{ path = "main.rue", source = """
+struct Holder { t: type }
+fn main() -> i32 { let h = Holder { t: i32 }; 0 }
+""" }]
+compile_fail = true
+error_contains = ["E1200", "type values cannot exist at runtime"]
+
+[[case]]
+name = "runtime_type_method_param_rue217"
+description = "RUE-217: a non-comptime `type` parameter on an inline struct method also ICEd; now a clean E1200 (spec 4.14:5)."
+files = [{ path = "main.rue", source = """
+struct S { x: i32, fn m(self, t: type) -> i32 { 0 } }
+fn main() -> i32 { let s = S { x: 1 }; s.m(i32) }
+""" }]
+compile_fail = true
+error_contains = ["E1200", "must be marked `comptime`"]
+
+[[case]]
+name = "comptime_type_param_still_ok_rue217"
+description = "RUE-217 guard: a properly-marked `comptime T: type` parameter must still compile and run (spec 4.14:5)."
+files = [{ path = "main.rue", source = """
+fn f(comptime T: type, x: T) -> T { x }
+fn main() -> i32 { f(i32, 5) }
+""" }]
+exit_code = 5

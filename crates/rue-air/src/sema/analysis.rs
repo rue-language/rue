@@ -1343,6 +1343,31 @@ impl<'a> Sema<'a> {
         )
     }
 
+    /// Reject a `type`-valued declaration that would need to exist at runtime.
+    ///
+    /// A parameter of type `type` must be marked `comptime` (spec 4.14:5); a
+    /// non-comptime `type` parameter would carry a type value at runtime, which
+    /// spec 4.14:6 forbids. Both facets otherwise slip past sema and ICE in
+    /// codegen ("block has no terminator", RUE-217), so we surface a clean
+    /// compile-time diagnostic here. Comptime `type` parameters are erased
+    /// during specialization and never reach runtime, so they are allowed.
+    fn reject_runtime_type_value(
+        &self,
+        ty: Type,
+        is_comptime: bool,
+        span: Span,
+    ) -> CompileResult<()> {
+        if ty.is_comptime_type() && !is_comptime {
+            return Err(CompileError::new(
+                ErrorKind::ComptimeEvaluationFailed {
+                    reason: "a parameter of type `type` must be marked `comptime`".to_string(),
+                },
+                span,
+            ));
+        }
+        Ok(())
+    }
+
     fn analyze_single_function(
         &mut self,
         infer_ctx: &InferenceContext,
@@ -1365,6 +1390,11 @@ impl<'a> Sema<'a> {
             .iter()
             .map(|p| {
                 let ty = self.resolve_type(p.ty, span)?;
+                // spec 4.14:5 — a parameter of type `type` must be marked
+                // `comptime`. Without this gate a `type`-valued runtime
+                // parameter flows into codegen and ICEs ("block has no
+                // terminator", RUE-217) instead of a clean legality error.
+                self.reject_runtime_type_value(ty, p.is_comptime, span)?;
                 Ok((p.name, ty, p.mode, p.is_comptime))
             })
             .collect::<CompileResult<Vec<_>>>()?;
@@ -1433,6 +1463,10 @@ impl<'a> Sema<'a> {
         // Add regular parameters with their modes
         for p in params.iter() {
             let ty = self.resolve_type_with_self(p.ty, struct_type, span)?;
+            // spec 4.14:5 — a parameter of type `type` must be marked
+            // `comptime` (RUE-217); reject the runtime-`type` case cleanly
+            // rather than letting it ICE in codegen.
+            self.reject_runtime_type_value(ty, p.is_comptime, span)?;
             param_info.push((p.name, ty, p.mode, p.is_comptime));
         }
 
