@@ -1,0 +1,21 @@
+# AddressSanitizer harness for rue-runtime's arena allocator (RUE-211).
+#
+# This is a STANDALONE cargo crate, deliberately outside the buck2 build: the
+# rest of the repo builds with buck2, but wiring `-Zsanitizer=address` through
+# the buck2 rust toolchain is awkward (it needs a nightly toolchain, an
+# explicit `--target`, and the compiler-rt asan runtime linked in). A tiny
+# cargo crate driven by nightly rustc in a dedicated CI job is the minimal path
+# that actually works. See `src/main.rs` for the full rationale.
+#
+# It compiles the REAL allocator source (crates/rue-runtime/src/heap.rs) via a
+# `#[path]` include, so there is no copy to drift out of sync.
+
+[package]
+name = "rue-runtime-asan"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# No top-level Cargo workspace exists in this buck2 repo; declare an empty
+# workspace table so cargo does not walk upward hunting for one.
+[workspace]

@@ -46,10 +46,16 @@ case "$cmd" in
         src="$1"; shift
         bin="$(scripts/rue-bin)"
         out="$(mktemp)"
+        # Clean up the temp binary on ANY exit path. Without this trap, a
+        # nonzero exit from the compiled program (below) trips `set -e` and
+        # skips a trailing `rm`, leaking the temp file (RUE-212). The trap
+        # fires regardless of exit code, so cleanup always happens.
+        trap 'rm -f "$out"' EXIT
         "$bin" "$src" "$out"
-        "$out" "$@"
-        rc=$?
-        rm -f "$out"
+        # Run the program, capturing its exit code without letting `set -e`
+        # abort first (`|| rc=$?`), then propagate it as our own exit code.
+        rc=0
+        "$out" "$@" || rc=$?
         exit $rc
         ;;
     test)

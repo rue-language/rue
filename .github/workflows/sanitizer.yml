@@ -7,14 +7,19 @@ name: Sanitizer
 #
 # Scope (see scripts/run-sanitizer.sh for the full rationale): memcheck hooks
 # libc malloc/free, but the Rue runtime bump-allocates inside mmap'd arenas and
-# never calls libc, so to memcheck each program does "0 allocs". This job is
-# therefore a CODEGEN / generated-code memory-safety net (wild pointers, stack
-# overflow, bad syscall buffers, uninitialised-value use) that the source-level
-# fuzz job cannot provide. It does NOT catch intra-arena heap overflows like
-# RUE-34; that class needs an AddressSanitizer pass over rue-runtime's own unit
-# tests, tracked as follow-up work.
+# never calls libc, so to memcheck each program does "0 allocs". The `valgrind`
+# job below is therefore a CODEGEN / generated-code memory-safety net (wild
+# pointers, stack overflow, bad syscall buffers, uninitialised-value use) that
+# the source-level fuzz job cannot provide. It does NOT catch intra-arena heap
+# overflows like RUE-34 — those live inside a valid mmap arena, never a libc
+# block.
 #
-# It is a separate workflow so it runs in parallel with the fast `test` job in
+# The `asan` job covers exactly that blind spot (RUE-211): it runs
+# rue-runtime's real arena allocator under AddressSanitizer with manual
+# redzone poisoning, so a write past an allocation's reserved end is caught
+# even though it stays inside a live arena. See crates/rue-runtime-asan.
+#
+# Separate workflow so both jobs run in parallel with the fast `test` job in
 # ci.yml rather than serializing behind it.
 
 on:
@@ -61,3 +66,25 @@ jobs:
 
       - name: Run programs under valgrind memcheck
         run: scripts/run-sanitizer.sh
+
+  # AddressSanitizer over rue-runtime's arena allocator (RUE-211). Standalone
+  # cargo crate (crates/rue-runtime-asan) driven by nightly rustc — no buck2 —
+  # because -Zsanitizer=address needs nightly, an explicit --target, and the
+  # compiler-rt asan runtime linked in. detect_leaks=0: arenas are intentionally
+  # never freed (bump allocator), which LeakSanitizer would otherwise flag.
+  asan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install nightly Rust
+        run: rustup toolchain install nightly --profile minimal
+
+      - name: Exercise the arena allocator under AddressSanitizer
+        env:
+          RUSTFLAGS: "-Zsanitizer=address"
+          ASAN_OPTIONS: "detect_leaks=0"
+        run: >
+          cargo +nightly run
+          --manifest-path crates/rue-runtime-asan/Cargo.toml
+          --target x86_64-unknown-linux-gnu
