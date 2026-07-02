@@ -1,0 +1,72 @@
+# Un-annotated integer-literal inference is HM unify-then-default (RUE-218,
+# ADR-0007). A literal with no explicit type gets an integer inference variable
+# that unifies with every use in the enclosing function body; conflicting uses
+# are E0206 order-INDEPENDENTLY; if still unconstrained at the function-body
+# defaulting point it defaults to i32.
+#
+# These cases drive the real driver end-to-end (exact stdout, both conflict
+# orders) so a regression to the old order-dependent "pin to first use"
+# behavior is caught.
+
+[section]
+id = "cli.integer_literal_inference"
+name = "Integer-literal inference (unify-then-default)"
+description = "Un-annotated integer literals unify with every use; conflicts are order-independent; unconstrained defaults to i32."
+
+[[case]]
+name = "single_i64_use_unifies"
+description = "A literal's single i64 use fixes it to i64 (ergonomic; matches Rust)."
+files = [{ path = "main.rue", source = """
+fn takes_i64(v: i64) -> i64 { v }
+fn main() -> i32 {
+    let x = 5;
+    let a = takes_i64(x);
+    @dbg(a);
+    0
+}
+""" }]
+stdout = "5\n"
+exit_code = 0
+
+[[case]]
+name = "unconstrained_defaults_i32"
+description = "No constraining use: the literal defaults to i32 at the function-body defaulting point."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let x = 5;
+    x
+}
+""" }]
+exit_code = 5
+
+[[case]]
+name = "conflict_i32_then_i64_rejected"
+description = "i32 use before i64 use: genuine conflict, E0206."
+files = [{ path = "main.rue", source = """
+fn takes_i32(v: i32) -> i32 { v }
+fn takes_i64(v: i64) -> i64 { v }
+fn main() -> i32 {
+    let x = 5;
+    takes_i32(x);
+    takes_i64(x);
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0206", "type mismatch"]
+
+[[case]]
+name = "conflict_i64_then_i32_rejected"
+description = "i64 use before i32 use: SAME rejection as the swapped order (order-independent)."
+files = [{ path = "main.rue", source = """
+fn takes_i32(v: i32) -> i32 { v }
+fn takes_i64(v: i64) -> i64 { v }
+fn main() -> i32 {
+    let x = 5;
+    takes_i64(x);
+    takes_i32(x);
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0206", "type mismatch"]

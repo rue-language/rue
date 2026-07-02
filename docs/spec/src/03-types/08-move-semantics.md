@@ -11,9 +11,9 @@ This section describes how values are moved and copied in Rue.
 
 {{ rule(id="3.8:1", cat="normative") }}
 
-Types in Rue are categorized by how they behave when used:
-- **Copy types** can be implicitly duplicated when used. Using a Copy type does not consume the original value.
-- **Move types** (also called affine types) are consumed when used. After using a move type value, the original binding becomes invalid.
+Types in Rue are categorized by how they behave when *used* (3.8:76):
+- **Copy types** are implicitly duplicated by a use; using a Copy value does not consume the original.
+- **Move types** (also called affine types) are consumed by a use; after a move type value is used, the original binding becomes invalid.
 
 {{ rule(id="3.8:2", cat="normative") }}
 
@@ -40,6 +40,12 @@ fn main() -> i32 {
     q.x + q.y
 }
 ```
+
+## Using a Value
+
+{{ rule(id="3.8:76", cat="informative") }}
+
+The single operation underlying moves, copies, and linear consumption is the *use* of a value. Every occurrence of a place expression — a binding, a field projection, or an array index — sits in exactly one of two syntactic contexts. In a **place context** the occurrence denotes a location and the value stored there is not consumed by appearing there; the place contexts are exactly the target of an assignment, the base of a field projection or array index, and the operand of a `borrow` or `inout` argument. Every other occurrence is a **value context** — an operator operand, the scrutinee of an `if` or `match`, a struct-field or array-element initializer, a by-value function argument, the operand of `return`, or the tail expression of a block — and such an occurrence is a **use** of the place. The effect of a use depends only on the value category of the place's type: a use of a Copy type copies the value and leaves the place valid (3.8:9); a use of a move type, whether affine or linear, moves — equivalently, *consumes* — the value, leaving the place invalid until it is reinitialized (3.8:7, 3.8:33). A use of a field projection or a constant array index moves only that sub-place, a partial move (3.8:22). The enumerations below — the move contexts (3.8:7), the linear consumption contexts (3.8:33), and the repeated use of Copy values (3.8:9) — are each a consequence of this one definition: which occurrences are value contexts, and which value category the used type has. The core calculus, `docs/formal/01-core-calculus.md` §4.2, states this precisely (place context versus value context, and the copy-versus-move effect of a use); the present paragraph is its informal gloss, and the formal definition governs.
 
 ## The `@copy` Directive
 
@@ -125,10 +131,7 @@ A linear type **MUST** be explicitly consumed. It is a compile-time error for a 
 
 {{ rule(id="3.8:33", cat="normative") }}
 
-A linear value is consumed when it is:
-- Passed as an argument to a function (the function is the consumer)
-- Returned from a function (the caller becomes responsible for consuming it)
-- Field access is performed on the value (the value is destructured)
+Consuming a linear value is the same operation as moving it: any use of a linear value (3.8:76) consumes it. Passing it as a by-value argument (the function becomes the consumer), returning it (the caller becomes responsible for consuming it), and moving a field out of it (a partial move that destructures it, 3.8:22) are all uses, and therefore each consumes the value.
 
 {{ rule(id="3.8:34", cat="example") }}
 
@@ -298,7 +301,7 @@ Linear types are useful for:
 
 {{ rule(id="3.8:5", cat="legality-rule") }}
 
-It is a compile-time error to use a value that has been moved.
+It is a compile-time error to use (3.8:76) a value that has been moved.
 
 {{ rule(id="3.8:6", cat="example") }}
 
@@ -315,10 +318,7 @@ fn main() -> i32 {
 
 {{ rule(id="3.8:7", cat="normative") }}
 
-A value is considered moved when it is:
-- Assigned to another variable
-- Passed as an argument to a function
-- Returned from a function
+A move type value is moved by any use of it (3.8:76). Assigning it to another binding, passing it as a by-value argument, and returning it from a function are all value-context occurrences, and are therefore all moves.
 
 {{ rule(id="3.8:8", cat="example") }}
 
@@ -339,7 +339,7 @@ fn main() -> i32 {
 
 {{ rule(id="3.8:9", cat="normative") }}
 
-Copy types can be used multiple times without being consumed.
+A use of a Copy type (3.8:76) copies the value and leaves the original valid, so a Copy value may be used any number of times without being consumed.
 
 {{ rule(id="3.8:10", cat="example") }}
 
@@ -354,13 +354,13 @@ fn main() -> i32 {
 
 {{ rule(id="3.8:11", cat="normative") }}
 
-Function parameters of Copy types receive a copy of the argument. Function parameters of move types receive ownership of the argument.
+Passing an argument by value is a use of it (3.8:76): a parameter of Copy type receives a copy of the argument, and a parameter of move type receives ownership by moving the argument.
 
 ## Partial Moves (Field-Level Moves)
 
 {{ rule(id="3.8:22", cat="normative") }}
 
-When a non-Copy field of a struct is accessed (moved out of), only that specific field is moved, not the entire struct. Other fields remain accessible.
+A use of a non-Copy field projection (3.8:76) is a partial move: only that specific field is moved, not the entire struct, and the sibling fields remain accessible.
 
 {{ rule(id="3.8:23", cat="example") }}
 
@@ -415,7 +415,7 @@ fn main() -> i32 {
 
 {{ rule(id="3.8:28", cat="normative") }}
 
-Accessing Copy-type fields does not move them. Copy-type fields can be accessed any number of times without affecting the struct's move state.
+A use of a Copy-type field (3.8:76) copies it and does not move it; Copy-type fields can therefore be accessed any number of times without affecting the struct's move state.
 
 {{ rule(id="3.8:29", cat="example") }}
 
@@ -433,7 +433,7 @@ fn main() -> i32 {
 
 {{ rule(id="3.8:53", cat="legality-rule") }}
 
-Accessing a field through a moved ancestor path is a compile-time error even when the accessed field is itself a Copy type. The moved ancestor's storage is no longer owned by the variable, so nothing within it may be read.
+The base of a field projection is read in place context (3.8:76), but it must still own its storage. Accessing a field through a moved ancestor path is therefore a compile-time error even when the accessed field is itself a Copy type: the moved ancestor's storage is no longer owned by the variable, so nothing within it may be read.
 
 {{ rule(id="3.8:54", cat="example") }}
 

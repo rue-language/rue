@@ -97,19 +97,39 @@ fn main() -> i32 {
 
 {{ rule(id="3.1:14", cat="normative") }}
 
-An integer literal without explicit type annotation defaults to type `i32`.
+An integer literal written without an explicit type does not eagerly acquire a
+default type. It is given a fresh integer inference variable that **unifies with
+every use** of the literal's value within the enclosing function body, following
+the language's Hindley–Milner type inference (Algorithm W; see ADR-0007). This
+unification is **order-independent**: all uses of the value must agree on a
+single integer type regardless of the textual order in which they appear, and
+two uses that require different integer types are a compile error, whichever
+use is written first.
 
 {{ rule(id="3.1:15", cat="normative") }}
 
-When an integer literal appears in a context where the expected type is known (e.g., assignment to a typed variable), the literal is inferred to have that type.
+The inference variable is resolved at the **defaulting point**, which is the end
+of the enclosing function body. If any use fixes the value to a concrete integer
+type — for example, assignment to a typed variable, or passing the value to a
+function parameter of known integer type — the literal takes that type. If the
+variable is still unconstrained at the defaulting point, it defaults to `i32`.
+
+> Rue's inference is local: parameters, return types, and constants are always
+> annotated, so every function boundary firewalls inference. A literal's type
+> therefore depends only on uses within its own function body, which is what
+> makes the unify-then-default rule safe here (see ADR-0007).
 
 {{ rule(id="3.1:16") }}
 
 ```rue
+fn takes_i64(v: i64) -> i64 { v }
+
 fn main() -> i32 {
-    let x = 42;           // x has type i32 (default)
-    let y: i64 = 100;     // 100 is inferred as i64
-    0
+    let a = 42;               // no constraining use: defaults to i32 at fn end
+    let b: i64 = 100;         // fixed by the annotation: b (and 100) are i64
+    let c = 7;
+    let _d = takes_i64(c);    // c's only use fixes it to i64 (order-independent)
+    a
 }
 ```
 
