@@ -2941,8 +2941,19 @@ impl<'a> Sema<'a> {
         let receiver_var = self.extract_root_variable(receiver);
         let method_name_str = self.interner.resolve(&method).to_string();
 
-        // Check if this is a builtin mutation method
-        let is_builtin_mutation_method = self.is_builtin_mutation_method(&method_name_str);
+        // Check if this is a builtin (String) mutation method. Gate the
+        // name-only match on the receiver's resolved type actually being the
+        // builtin: a user struct method that merely shares a name with a String
+        // mutation method (`push`/`push_str`/`clear`/`reserve`) must not be
+        // misclassified as a `ByMutRef` mutation and wrongly demand a `mut`
+        // receiver (RUE-223). The type is peeked from the binding without
+        // analyzing the receiver, because the storage location must be captured
+        // before the receiver expression is (potentially) consumed below.
+        let receiver_is_builtin_string = self
+            .peek_var_ref_type(receiver, ctx)
+            .is_some_and(|ty| self.is_builtin_string(ty));
+        let is_builtin_mutation_method =
+            receiver_is_builtin_string && self.is_builtin_mutation_method(&method_name_str);
 
         // Get storage location for mutation methods before analyzing receiver
         let receiver_storage = if is_builtin_mutation_method {
@@ -4676,6 +4687,24 @@ impl<'a> Sema<'a> {
     /// - An immutable binding (`let` instead of `var`)
     /// - A borrow parameter (can't mutate borrowed values)
     /// - Not an lvalue (e.g., a function call result)
+    /// Peek the declared type of a `VarRef` receiver (a local or parameter)
+    /// without analyzing it, so a builtin mutation-method call can be classified
+    /// before the receiver expression is (potentially) consumed. Returns `None`
+    /// for non-`VarRef` receivers or unknown names — such receivers are never
+    /// valid targets for a String mutation method anyway (see
+    /// `get_string_receiver_storage`).
+    fn peek_var_ref_type(&self, receiver_ref: InstRef, ctx: &AnalysisContext) -> Option<Type> {
+        if let InstData::VarRef { name } = &self.rir.get(receiver_ref).data {
+            if let Some(local) = ctx.locals.get(name) {
+                return Some(local.ty);
+            }
+            if let Some(param) = ctx.params.iter().find(|p| p.name == *name) {
+                return Some(param.ty);
+            }
+        }
+        None
+    }
+
     fn get_string_receiver_storage(
         &self,
         receiver_ref: InstRef,
@@ -5988,8 +6017,30 @@ impl<'a> Sema<'a> {
             ));
         }
 
-        let arg_result = self.analyze_inst(air, args[0].value, ctx)?;
+        // @raw / @raw_mut take the ADDRESS of a place; per spec 3.8:57 a pointer
+        // does not own its pointee, so the operand is borrowed (address-of), not
+        // consumed. Mirror the ByRef un-move (as `borrow` operands and String
+        // index reads do): snapshot the root's move state, then cancel the move
+        // the operand analysis records. This keeps the operand live so its
+        // destructor still runs exactly once at scope exit and later uses remain
+        // legal (RUE-222) — rather than silently leaking it or rejecting a valid
+        // later use with E0205.
+        let operand = args[0].value;
+        let operand_root = self.extract_root_variable(operand);
+        let operand_move_state_before = operand_root.and_then(|v| ctx.moved_vars.get(&v).cloned());
+        let arg_result = self.analyze_inst(air, operand, ctx)?;
         let pointee_type = arg_result.ty;
+        if let Some(var) = operand_root {
+            match operand_move_state_before {
+                Some(state) => {
+                    ctx.moved_vars.insert(var, state);
+                }
+                None => {
+                    ctx.moved_vars.remove(&var);
+                }
+            }
+        }
+        air.cancel_move_marker(arg_result.air_ref);
 
         // For addr_of, we need the argument to be an lvalue (addressable)
         // This is validated at the RIR level - here we just compute the result type
