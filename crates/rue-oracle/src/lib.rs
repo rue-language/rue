@@ -21,10 +21,13 @@
 //! `loop` all lower to `Goto`/`Branch`/`Switch`), `@dbg`, `@intCast`, and the
 //! defined panics (overflow, divide/remainder-by-zero, int-cast overflow);
 //! aggregates (structs/arrays) with nested place projections and bounds traps;
-//! and `inout`/`borrow` parameters (copy-in / copy-out, observably identical to
-//! by-reference under the law of exclusivity). Not yet: strings (heap builtin)
-//! and drop/destructors — the next slices (see the `docs/formal` extension
-//! rubric). Programs using them return [`Unsupported`].
+//! `inout`/`borrow` parameters (copy-in / copy-out, observably identical to
+//! by-reference under the law of exclusivity); and drop/destructors, executed in
+//! spec-3.9 order (user destructor, then fields in declaration order / elements
+//! ascending) so the oracle validates drop *order* and drop-exactly-once, not
+//! just final values. Not yet: strings (heap builtin) — the last core slice (see
+//! the `docs/formal` extension rubric). Programs using them return
+//! [`Unsupported`].
 
 use lasso::ThreadedRodeo;
 use rue_air::{Type, TypeKind};
@@ -276,6 +279,44 @@ impl<'a> Interp<'a> {
         }
     }
 
+    /// Run the drop of a value of type `ty`, in the spec-3.9 order: the type's
+    /// user destructor first, then its fields (declaration order) / elements
+    /// (ascending). Scalars are trivially droppable (no-op). The compiler's drop
+    /// *elaboration* already decided where `drop` instructions live (suppressing
+    /// moved values), so this only executes the cleanup for a value that should
+    /// be dropped — it does not re-derive move analysis.
+    fn run_drop(&mut self, ty: Type, v: Value) -> Step<()> {
+        match ty.kind() {
+            TypeKind::Struct(sid) => {
+                let sd = self.state.type_pool.struct_def(sid);
+                if let Some(dtor) = sd.destructor.clone() {
+                    self.call(&dtor, &[v.clone()])?;
+                }
+                // A builtin type's destructor is its entire drop glue; a
+                // user struct then drops its fields in declaration order.
+                if !sd.is_builtin {
+                    if let Value::Aggregate(elems) = &v {
+                        for (i, field) in sd.fields.iter().enumerate() {
+                            if let Some(fv) = elems.get(i).cloned() {
+                                self.run_drop(field.ty, fv)?;
+                            }
+                        }
+                    }
+                }
+            }
+            TypeKind::Array(aid) => {
+                let (elem_ty, _len) = self.state.type_pool.array_def(aid);
+                if let Value::Aggregate(elems) = &v {
+                    for fv in elems.iter().cloned() {
+                        self.run_drop(elem_ty, fv)?;
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     fn eval_all(&mut self, cfg: &'a Cfg, frame: &mut Frame, vs: &[CfgValue]) -> Step<Vec<Value>> {
         vs.iter().map(|v| self.eval(cfg, frame, *v)).collect()
     }
@@ -513,9 +554,13 @@ impl<'a> Interp<'a> {
                 Value::Int(x)
             }
 
-            CfgInstData::Drop { .. }
-            | CfgInstData::StorageLive { .. }
-            | CfgInstData::StorageDead { .. } => Value::Unit,
+            CfgInstData::Drop { value } => {
+                let ty = cfg.get_inst(*value).ty;
+                let v = self.eval(cfg, frame, *value)?;
+                self.run_drop(ty, v)?;
+                Value::Unit
+            }
+            CfgInstData::StorageLive { .. } | CfgInstData::StorageDead { .. } => Value::Unit,
 
             other => {
                 return Err(Flow::Unsupported(Unsupported(format!(
