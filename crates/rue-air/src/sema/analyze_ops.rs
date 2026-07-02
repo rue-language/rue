@@ -3224,15 +3224,16 @@ impl<'a> Sema<'a> {
             for elem_ref in &elem_refs {
                 self.analyze_inst(air, *elem_ref, ctx)?;
             }
-            // Elements analyzed without surfacing an error yet the array type
-            // is still `<error>`: a diagnostic was already emitted upstream.
-            // Propagate an error-typed placeholder rather than emitting an ICE.
-            let air_ref = air.add_inst(AirInst {
-                data: AirInstData::UnitConst,
-                ty: Type::ERROR,
-                span,
-            });
-            return Ok(AnalysisResult::new(air_ref, Type::ERROR));
+            // Analyzing the elements did not surface a diagnostic, yet the
+            // array's type is still `<error>`. This is the empty-array (`[]`)
+            // and unconstrained-element (`[[]]`) case: HM inference had no
+            // constraint to fix the element type, so the element type variable
+            // decayed to `<error>` with no diagnostic of its own (RUE-153).
+            // The precise, actionable error is that the element type cannot be
+            // inferred — emit "type annotation required for empty array"
+            // (E0903) rather than returning a silent `<error>`-typed value that
+            // would sail into codegen.
+            return Err(CompileError::new(ErrorKind::TypeAnnotationRequired, span));
         }
 
         let (_array_type_id, _elem_type, expected_len) = match array_type.as_array() {

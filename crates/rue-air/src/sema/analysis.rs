@@ -45,12 +45,65 @@ use crate::types::{ModuleId, StructField, StructId, Type, TypeKind};
 pub(crate) fn analyze_all_function_bodies(mut sema: Sema<'_>) -> MultiErrorResult<SemaOutput> {
     // Use lazy analysis when imports are present (multi-file compilation)
     // This ensures only reachable code is analyzed, per ADR-0026
-    if sema.has_imports() {
+    let result = if sema.has_imports() {
         analyze_function_bodies_lazy(&mut sema)
     } else {
         // Use eager analysis for single-file compilation (backwards compatibility)
         analyze_all_function_bodies_sequential(&mut sema)
+    };
+
+    // Sema→CFG boundary invariant (RUE-153): a value may only carry the
+    // `<error>` type as part of error recovery, i.e. when at least one
+    // diagnostic has already been emitted. If analysis reports `Ok` (no
+    // errors) yet some AIR value is still `<error>`-typed, an inference
+    // variable decayed to `<error>` on a path that forgot to emit its
+    // diagnostic (the RUE-149 class). That value would otherwise reach
+    // codegen and hit an `unreachable!()`; convert it into an actionable
+    // internal-error diagnostic (E9000) here instead.
+    if let Ok(output) = &result {
+        if let Some(err) = find_undiagnosed_error_type(output) {
+            return Err(CompileErrors::from(err));
+        }
     }
+
+    result
+}
+
+/// Scan analyzed AIR for an `<error>`-typed value that survived analysis with
+/// no diagnostic emitted (see the invariant in `analyze_all_function_bodies`).
+///
+/// Returns the first offending instruction as an internal-error `CompileError`
+/// (E9000), or `None` when every value is well-typed. Only called on the
+/// success (`Ok`) path, so any `<error>` found here is by definition
+/// undiagnosed and indicates a compiler bug.
+fn find_undiagnosed_error_type(output: &SemaOutput) -> Option<CompileError> {
+    for func in &output.functions {
+        if func.air.return_type().is_error() {
+            return Some(CompileError::without_span(ErrorKind::InternalError(
+                format!(
+                    "function '{}' has an <error> return type but no diagnostic was \
+                 emitted; an inference variable decayed to <error> without \
+                 reporting an error (RUE-153)",
+                    func.name
+                ),
+            )));
+        }
+        for (_air_ref, inst) in func.air.iter() {
+            if inst.ty.is_error() {
+                return Some(CompileError::new(
+                    ErrorKind::InternalError(format!(
+                        "an <error>-typed value reached the end of semantic \
+                         analysis in function '{}' but no diagnostic was \
+                         emitted; an inference variable decayed to <error> \
+                         without reporting an error (RUE-153)",
+                        func.name
+                    )),
+                    inst.span,
+                ));
+            }
+        }
+    }
+    None
 }
 
 /// Sequential analysis path (current implementation).
@@ -5888,5 +5941,68 @@ impl<'a> Sema<'a> {
             span,
         });
         Ok(AnalysisResult::new(air_ref, result_type))
+    }
+}
+
+#[cfg(test)]
+mod error_invariant_tests {
+    use super::*;
+    use crate::inst::Air;
+    use crate::intern_pool::TypeInternPool;
+
+    fn output_with(func: AnalyzedFunction) -> SemaOutput {
+        SemaOutput {
+            functions: vec![func],
+            strings: Vec::new(),
+            warnings: Vec::new(),
+            type_pool: TypeInternPool::new(),
+        }
+    }
+
+    fn func_named(name: &str, air: Air) -> AnalyzedFunction {
+        AnalyzedFunction {
+            name: name.to_string(),
+            air,
+            num_locals: 0,
+            num_param_slots: 0,
+            param_modes: Vec::new(),
+        }
+    }
+
+    /// A well-typed function must not trip the sema→CFG error invariant.
+    #[test]
+    fn no_error_type_is_clean() {
+        let mut air = Air::new(Type::I32);
+        air.add_inst(AirInst {
+            data: AirInstData::Const(0),
+            ty: Type::I32,
+            span: Span::new(0, 0),
+        });
+        let output = output_with(func_named("main", air));
+        assert!(find_undiagnosed_error_type(&output).is_none());
+    }
+
+    /// An `<error>`-typed instruction on the success path is a compiler bug and
+    /// must be reported as an internal error (RUE-153).
+    #[test]
+    fn error_typed_instruction_is_caught() {
+        let mut air = Air::new(Type::I32);
+        air.add_inst(AirInst {
+            data: AirInstData::UnitConst,
+            ty: Type::ERROR,
+            span: Span::new(0, 0),
+        });
+        let output = output_with(func_named("main", air));
+        let err = find_undiagnosed_error_type(&output).expect("error type must be caught");
+        assert!(matches!(err.kind, ErrorKind::InternalError(_)));
+    }
+
+    /// An `<error>` return type is likewise a bug and must be caught.
+    #[test]
+    fn error_return_type_is_caught() {
+        let air = Air::new(Type::ERROR);
+        let output = output_with(func_named("f", air));
+        let err = find_undiagnosed_error_type(&output).expect("error return type must be caught");
+        assert!(matches!(err.kind, ErrorKind::InternalError(_)));
     }
 }
