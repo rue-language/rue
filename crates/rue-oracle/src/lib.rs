@@ -26,7 +26,7 @@
 
 use lasso::ThreadedRodeo;
 use rue_air::{Type, TypeKind};
-use rue_cfg::{Cfg, CfgArgMode, CfgInstData, CfgValue, PlaceBase, Terminator};
+use rue_cfg::{Cfg, CfgArgMode, CfgInstData, CfgValue, Place, PlaceBase, Projection, Terminator};
 use rue_compiler::{CompileState, compile_to_cfg};
 use std::collections::HashMap;
 
@@ -71,6 +71,10 @@ enum Value {
     Int(i128),
     Bool(bool),
     Unit,
+    /// A struct or array value: its fields (declaration order) or elements
+    /// (ascending index). Enums are payload-less today, so an enum value is an
+    /// `Int` discriminant, not an aggregate.
+    Aggregate(Vec<Value>),
 }
 
 impl Value {
@@ -78,14 +82,16 @@ impl Value {
         match self {
             Value::Int(n) => *n,
             Value::Bool(b) => *b as i128,
-            Value::Unit => 0,
+            // Unreachable for a well-typed program (aggregates never reach a
+            // scalar context); defined so callers need not thread an error.
+            Value::Unit | Value::Aggregate(_) => 0,
         }
     }
     fn as_bool(&self) -> bool {
         match self {
             Value::Bool(b) => *b,
             Value::Int(n) => *n != 0,
-            Value::Unit => false,
+            Value::Unit | Value::Aggregate(_) => false,
         }
     }
 }
@@ -119,9 +125,24 @@ struct Interp<'a> {
 /// cross-block dataflow flows through block parameters, and a persistent cache
 /// would return stale values on loop back-edges.
 struct Frame {
-    params: Vec<Value>,
+    /// Parameters laid out by ABI **slot**, not by logical argument: an
+    /// aggregate argument spans one slot per flattened scalar leaf (a `[i32; 3]`
+    /// occupies three slots), so a later parameter's `Param{index}` is offset by
+    /// the widths of the aggregates before it. The whole aggregate value is kept
+    /// at its base slot; the slots it "occupies" after that are `None` (they are
+    /// only ever reached through the base via a projection, never directly).
+    params: Vec<Option<Value>>,
     locals: Vec<Option<Value>>,
     cache: HashMap<u32, Value>,
+}
+
+/// Number of ABI parameter slots a value occupies: one per flattened scalar
+/// leaf. Matches the CFG's slot numbering for `Param{index}`.
+fn slot_width(v: &Value) -> usize {
+    match v {
+        Value::Aggregate(elems) => elems.iter().map(slot_width).sum(),
+        _ => 1,
+    }
 }
 
 impl<'a> Interp<'a> {
@@ -157,8 +178,18 @@ impl<'a> Interp<'a> {
         let cfg = self
             .find_cfg(name)
             .ok_or_else(|| Flow::Unsupported(Unsupported(format!("call to '{name}'"))))?;
+        // Lay arguments out by slot: place each whole value at its base slot,
+        // then pad with `None` for the extra slots an aggregate occupies.
+        let mut param_slots: Vec<Option<Value>> = Vec::with_capacity(args.len());
+        for a in args {
+            let w = slot_width(a).max(1);
+            param_slots.push(Some(a.clone()));
+            for _ in 1..w {
+                param_slots.push(None);
+            }
+        }
         let mut frame = Frame {
-            params: args.to_vec(),
+            params: param_slots,
             locals: vec![None; cfg.num_locals() as usize],
             cache: HashMap::new(),
         };
@@ -255,7 +286,7 @@ impl<'a> Interp<'a> {
             CfgInstData::Param { index } => frame
                 .params
                 .get(*index as usize)
-                .cloned()
+                .and_then(|o| o.clone())
                 .ok_or_else(|| Flow::Unsupported(Unsupported("param index".into())))?,
             CfgInstData::BlockParam { .. } => frame
                 .cache
@@ -323,26 +354,54 @@ impl<'a> Interp<'a> {
                 Self::set_local(frame, *slot, val);
                 Value::Unit
             }
-            CfgInstData::PlaceRead { place } if place.is_simple() => match place.base {
-                PlaceBase::Local(slot) => Self::get_local(frame, slot)?,
-                PlaceBase::Param(slot) => frame
-                    .params
-                    .get(slot as usize)
-                    .cloned()
-                    .ok_or_else(|| Flow::Unsupported(Unsupported("param place".into())))?,
-            },
-            CfgInstData::PlaceWrite { place, value } if place.is_simple() => {
+            CfgInstData::PlaceRead { place } => {
+                let place = place.clone();
+                self.place_read(cfg, frame, &place)?
+            }
+            CfgInstData::PlaceWrite { place, value } => {
+                let place = place.clone();
                 let val = self.eval(cfg, frame, *value)?;
-                match place.base {
-                    PlaceBase::Local(slot) => Self::set_local(frame, slot, val),
-                    PlaceBase::Param(_) => {
-                        return Err(Flow::Unsupported(Unsupported(
-                            "write to param place".into(),
-                        )));
-                    }
-                }
+                self.place_write(cfg, frame, &place, val)?;
                 Value::Unit
             }
+
+            CfgInstData::StructInit {
+                fields_start,
+                fields_len,
+                ..
+            } => {
+                let fields = cfg.get_extra(*fields_start, *fields_len).to_vec();
+                Value::Aggregate(self.eval_all(cfg, frame, &fields)?)
+            }
+            CfgInstData::ArrayInit {
+                elements_start,
+                elements_len,
+            } => {
+                let elems = cfg.get_extra(*elements_start, *elements_len).to_vec();
+                Value::Aggregate(self.eval_all(cfg, frame, &elems)?)
+            }
+            CfgInstData::FieldSet {
+                slot,
+                field_index,
+                value,
+                ..
+            } => {
+                let val = self.eval(cfg, frame, *value)?;
+                Self::set_agg_elem(frame, *slot, *field_index as usize, val)?;
+                Value::Unit
+            }
+            CfgInstData::IndexSet {
+                slot, index, value, ..
+            } => {
+                let idx = self.eval(cfg, frame, *index)?.as_int();
+                let val = self.eval(cfg, frame, *value)?;
+                if idx < 0 {
+                    return Err(Flow::Panic(Panic("index out of bounds".into())));
+                }
+                Self::set_agg_elem(frame, *slot, idx as usize, val)?;
+                Value::Unit
+            }
+            CfgInstData::EnumVariant { variant_index, .. } => Value::Int(*variant_index as i128),
 
             CfgInstData::Call {
                 name,
@@ -522,6 +581,117 @@ impl<'a> Interp<'a> {
             .get(slot as usize)
             .and_then(|o| o.clone())
             .ok_or_else(|| Flow::Unsupported(Unsupported(format!("read of uninit local {slot}"))))
+    }
+
+    // ---- aggregates & places ---------------------------------------------
+
+    /// Resolve a place to its base and a fully-evaluated projection path
+    /// (field indices and *evaluated* array indices). Index subexpressions are
+    /// evaluated here, in place order.
+    fn resolve_path(
+        &mut self,
+        cfg: &'a Cfg,
+        frame: &mut Frame,
+        place: &Place,
+    ) -> Step<(PlaceBase, Vec<usize>)> {
+        let projs = cfg.get_place_projections(place).to_vec();
+        let mut path = Vec::with_capacity(projs.len());
+        for p in projs {
+            match p {
+                Projection::Field { field_index, .. } => path.push(field_index as usize),
+                Projection::Index { index, .. } => {
+                    let i = self.eval(cfg, frame, index)?.as_int();
+                    if i < 0 {
+                        return Err(Flow::Panic(Panic("index out of bounds".into())));
+                    }
+                    path.push(i as usize);
+                }
+            }
+        }
+        Ok((place.base, path))
+    }
+
+    fn base_value(frame: &Frame, base: PlaceBase) -> Step<Value> {
+        match base {
+            PlaceBase::Local(slot) => Self::get_local(frame, slot),
+            PlaceBase::Param(slot) => frame
+                .params
+                .get(slot as usize)
+                .and_then(|o| o.clone())
+                .ok_or_else(|| Flow::Unsupported(Unsupported("param place".into()))),
+        }
+    }
+
+    fn place_read(&mut self, cfg: &'a Cfg, frame: &mut Frame, place: &Place) -> Step<Value> {
+        let (base, path) = self.resolve_path(cfg, frame, place)?;
+        let mut cur = Self::base_value(frame, base)?;
+        for idx in path {
+            cur = match cur {
+                Value::Aggregate(mut v) if idx < v.len() => v.swap_remove(idx),
+                Value::Aggregate(_) => {
+                    return Err(Flow::Panic(Panic("index out of bounds".into())));
+                }
+                _ => {
+                    return Err(Flow::Unsupported(Unsupported(
+                        "projection of non-aggregate".into(),
+                    )));
+                }
+            };
+        }
+        Ok(cur)
+    }
+
+    fn place_write(
+        &mut self,
+        cfg: &'a Cfg,
+        frame: &mut Frame,
+        place: &Place,
+        val: Value,
+    ) -> Step<()> {
+        let (base, path) = self.resolve_path(cfg, frame, place)?;
+        let slot = match base {
+            PlaceBase::Local(slot) => slot as usize,
+            PlaceBase::Param(_) => {
+                return Err(Flow::Unsupported(Unsupported(
+                    "write to param place".into(),
+                )));
+            }
+        };
+        if slot >= frame.locals.len() {
+            frame.locals.resize(slot + 1, None);
+        }
+        let root = frame.locals[slot].get_or_insert(Value::Unit);
+        let mut cur = root;
+        for idx in &path {
+            cur = match cur {
+                Value::Aggregate(v) if *idx < v.len() => &mut v[*idx],
+                Value::Aggregate(_) => {
+                    return Err(Flow::Panic(Panic("index out of bounds".into())));
+                }
+                _ => {
+                    return Err(Flow::Unsupported(Unsupported(
+                        "projection of non-aggregate".into(),
+                    )));
+                }
+            };
+        }
+        *cur = val;
+        Ok(())
+    }
+
+    /// Set element `idx` of the aggregate held in local `slot` (used by the
+    /// `FieldSet`/`IndexSet` convenience instructions).
+    fn set_agg_elem(frame: &mut Frame, slot: u32, idx: usize, val: Value) -> Step<()> {
+        match frame.locals.get_mut(slot as usize).and_then(|o| o.as_mut()) {
+            Some(Value::Aggregate(v)) if idx < v.len() => {
+                v[idx] = val;
+                Ok(())
+            }
+            Some(Value::Aggregate(_)) => Err(Flow::Panic(Panic("index out of bounds".into()))),
+            _ => Err(Flow::Unsupported(Unsupported(
+                "field/index set on non-aggregate".into(),
+            ))),
+        }
     }
 }
 
