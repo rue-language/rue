@@ -20,7 +20,7 @@ mod build;
 mod inst;
 pub mod opt;
 
-use rue_error::CompileWarning;
+use rue_error::{CompileError, CompileWarning};
 
 pub use build::CfgBuilder;
 pub use inst::{
@@ -41,4 +41,10 @@ pub struct CfgOutput {
     pub cfg: Cfg,
     /// Warnings detected during CFG construction.
     pub warnings: Vec<CompileWarning>,
+    /// Internal-compiler-error diagnostics detected during CFG construction
+    /// (RUE-7). Non-empty only for malformed AIR that upstream passes should
+    /// have ruled out (e.g. an un-specialized `CallGeneric`). The driver must
+    /// treat a non-empty `errors` as a hard failure and abort before
+    /// optimizing or lowering the (now-discarded) CFG.
+    pub errors: Vec<CompileError>,
 }
