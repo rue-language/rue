@@ -29,7 +29,7 @@
 use std::collections::HashMap;
 
 use rue_air::TypeKind;
-use rue_cfg::{CfgInstData, CfgValue, PlaceBase, Projection};
+use rue_cfg::{CfgInstData, CfgValue, Place, PlaceBase, Projection};
 
 use crate::cfg_lower::CfgLowerContext;
 use crate::vreg::VReg;
@@ -73,6 +73,19 @@ pub trait SlotBackend {
 
     /// Emit a store of `src` through pointer `ptr` at `byte_offset` from it.
     fn emit_store_through_ptr(&mut self, src: VReg, ptr: VReg, byte_offset: i32);
+
+    /// Emit a load of the value at `byte_offset` from pointer `ptr` into `dst`.
+    fn emit_load_through_ptr(&mut self, dst: VReg, ptr: VReg, byte_offset: i32);
+
+    /// Emit a bounds check trapping when `index_vreg >= length`.
+    fn emit_bounds_check(&mut self, index_vreg: VReg, length: u64);
+
+    /// Emit `dst = address of the (possibly projected) place` — the backend's
+    /// `lower_place_addr` (frame base + static field-slot offsets, minus
+    /// dynamic index offsets; through a by-ref pointer per the descending ABI
+    /// convention). Does NOT bounds-check index projections; callers do that
+    /// first.
+    fn emit_place_addr(&mut self, dst: VReg, place: &Place);
 }
 
 /// Get or compute the slot vregs for a multi-slot aggregate value
@@ -82,10 +95,13 @@ pub trait SlotBackend {
 /// - cache hit (StructInit/ArrayInit/Call/BlockParam populate eagerly)
 /// - `StructInit`: the field values' vregs directly
 /// - `Load`: load `slot_count` consecutive stack slots
-/// - `Param`: load from the parameter slot area
-/// - `PlaceRead` with static field projections: load from the field's slots
-///   (dynamic array indexing and inout params return `None`, preserving the
-///   callers' fallback behavior)
+/// - `Param`: load from the parameter slot area (by-ref params load through
+///   the received pointer instead — the frame slot holds an address)
+/// - `PlaceRead` with only static field projections on a frame-slot base:
+///   load from the field's consecutive slots
+/// - `PlaceRead` with index projections (constant or dynamic, `arr[i]`,
+///   `s.rows[i]`) or a by-ref param base: bounds-check every index, form the
+///   place's address, and load all `slot_count` slots through it (RUE-188)
 ///
 /// Returns `None` for non-aggregate types and unmodeled sources.
 pub fn get_or_compute_field_vregs<B: SlotBackend>(b: &mut B, value: CfgValue) -> Option<Vec<VReg>> {
@@ -116,41 +132,77 @@ pub fn get_or_compute_field_vregs<B: SlotBackend>(b: &mut B, value: CfgValue) ->
             Some(load_consecutive(b, slot, slot_count))
         }
         CfgInstData::Param { index } => {
-            let base_slot = b.ctx().num_locals + index;
             let slot_count = b.ctx().type_slot_count(ty);
-            Some(load_consecutive(b, base_slot, slot_count))
+            if b.ctx().cfg.is_param_inout(index) {
+                // By-ref (inout/borrow) param: the frame slot holds a POINTER
+                // to the caller's storage, not the value — load the slots
+                // through it (emit_place_addr fetches the received pointer).
+                let addr_vreg = b.alloc_vreg();
+                b.emit_place_addr(addr_vreg, &Place::param(index));
+                Some(load_through_ptr(b, addr_vreg, slot_count))
+            } else {
+                let base_slot = b.ctx().num_locals + index;
+                Some(load_consecutive(b, base_slot, slot_count))
+            }
         }
         CfgInstData::PlaceRead { place } => {
-            // A multi-slot aggregate read from a place — e.g. `let s2 = h.s;`.
-            // The base place-read lowering only materializes the first slot;
-            // here we materialize all of them so consumers see the full value.
-            // Only static field projections are handled — dynamic array
-            // indexing and inout params fall through to None. (RUE-22/63/94)
+            // A multi-slot aggregate read from a place — e.g. `let s2 = h.s;`
+            // or `let row = m[i];`. The base place-read lowering only
+            // materializes the first slot; here we materialize all of them so
+            // consumers see the full value. (RUE-22/63/94, RUE-118, RUE-188)
             let projections = b.ctx().cfg.get_place_projections(&place).to_vec();
-            let mut static_slot_offset: u32 = 0;
-            for proj in &projections {
-                match proj {
-                    Projection::Field {
-                        struct_id,
-                        field_index,
-                    } => {
-                        static_slot_offset +=
-                            b.ctx().struct_field_slot_offset(*struct_id, *field_index);
+            let has_index = projections
+                .iter()
+                .any(|p| matches!(p, Projection::Index { .. }));
+            let is_by_ref_base = matches!(
+                place.base,
+                PlaceBase::Param(param_slot) if b.ctx().cfg.is_param_inout(param_slot)
+            );
+            let slot_count = b.ctx().type_slot_count(ty);
+
+            if !has_index && !is_by_ref_base {
+                // Purely static projection chain rooted at a frame slot:
+                // load the field's consecutive slots directly.
+                let mut static_slot_offset: u32 = 0;
+                for proj in &projections {
+                    match proj {
+                        Projection::Field {
+                            struct_id,
+                            field_index,
+                        } => {
+                            static_slot_offset +=
+                                b.ctx().struct_field_slot_offset(*struct_id, *field_index);
+                        }
+                        Projection::Index { .. } => unreachable!("has_index is false"),
                     }
-                    Projection::Index { .. } => return None,
+                }
+                let base_slot = match place.base {
+                    PlaceBase::Local(slot) => slot + static_slot_offset,
+                    PlaceBase::Param(param_slot) => {
+                        b.ctx().num_locals + param_slot + static_slot_offset
+                    }
+                };
+                return Some(load_consecutive(b, base_slot, slot_count));
+            }
+
+            // Indexed element (`arr[i]`, `s.rows[i]` — constant or dynamic
+            // index) or a projection through a by-ref param: bounds-check
+            // every index projection, form the place's address, then load
+            // each slot through it. Slot i lives at addr - i*8 (frame slots
+            // descend; the stack grows down), matching
+            // `store_slots_through_ptr`. Previously these sources returned
+            // None and every consumer's fallback materialized only slot 0 —
+            // the RUE-188 miscompile family. (RUE-188/192)
+            for proj in &projections {
+                if let Projection::Index { array_type, index } = proj {
+                    let length = b.ctx().array_length(*array_type);
+                    let index_vreg = b.get_vreg(*index);
+                    b.emit_bounds_check(index_vreg, length);
                 }
             }
-            let base_slot = match place.base {
-                PlaceBase::Local(slot) => slot + static_slot_offset,
-                PlaceBase::Param(param_slot) => {
-                    if b.ctx().cfg.is_param_inout(param_slot) {
-                        return None;
-                    }
-                    b.ctx().num_locals + param_slot + static_slot_offset
-                }
-            };
-            let slot_count = b.ctx().type_slot_count(ty);
-            Some(load_consecutive(b, base_slot, slot_count))
+            let addr_vreg = b.alloc_vreg();
+            b.emit_place_addr(addr_vreg, &place);
+            Some(load_through_ptr(b, addr_vreg, slot_count))
         }
         // BlockParam and Call should already have slot vregs in the cache
         _ => None,
@@ -186,7 +238,16 @@ pub fn lower_struct_init<B: SlotBackend>(
                 slot_vregs.extend(nested);
             }
             TypeKind::Array(_) => {
-                slot_vregs.extend(b.collect_array_scalars(*field));
+                // Try the accessor first: it materializes lazily-sourced
+                // arrays (Load/Param/PlaceRead — including an indexed read
+                // like `S { arr: m[i], .. }`, RUE-188) and cache-hits eager
+                // ones. Fall back to the recursive flattener for ArrayInit,
+                // whose element vregs it gathers directly.
+                if let Some(nested) = get_or_compute_field_vregs(b, *field) {
+                    slot_vregs.extend(nested);
+                } else {
+                    slot_vregs.extend(b.collect_array_scalars(*field));
+                }
             }
             _ => {
                 // Scalar field - single vreg
@@ -283,6 +344,20 @@ fn load_consecutive<B: SlotBackend>(b: &mut B, base_slot: u32, count: u32) -> Ve
     for i in 0..count {
         let vreg = b.alloc_vreg();
         b.emit_load_slot(vreg, base_slot + i);
+        vregs.push(vreg);
+    }
+    vregs
+}
+
+/// Load `count` slots through `addr_vreg` at descending byte offsets (slot i
+/// at `addr - i*8` — frame slots descend; the stack grows down, matching
+/// [`store_slots_through_ptr`]), returning the freshly-allocated vregs in
+/// slot order.
+fn load_through_ptr<B: SlotBackend>(b: &mut B, addr_vreg: VReg, count: u32) -> Vec<VReg> {
+    let mut vregs = Vec::with_capacity(count as usize);
+    for i in 0..count {
+        let vreg = b.alloc_vreg();
+        b.emit_load_through_ptr(vreg, addr_vreg, -(i as i32) * 8);
         vregs.push(vreg);
     }
     vregs

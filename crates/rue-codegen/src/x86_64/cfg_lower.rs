@@ -203,6 +203,69 @@ impl<'a> CfgLower<'a> {
         self.mir.push(X86Inst::Label { id: ok_label });
     }
 
+    /// Call `symbol` passing `arg_vregs` as flattened by-value slot arguments
+    /// per the standard convention: the first slots in ARG_REGS, the rest
+    /// pushed on the stack (16-byte aligned, cleaned up after the call) —
+    /// the same shape as the generic `Call` lowering. Used by the Drop paths,
+    /// whose destructor/drop-glue calls previously moved slots into argument
+    /// registers only and panicked past 6 slots (RUE-193).
+    fn emit_call_with_slot_args(&mut self, arg_vregs: &[VReg], symbol: &str) {
+        let num_reg_args = arg_vregs.len().min(ARG_REGS.len());
+        let num_stack_args = arg_vregs.len().saturating_sub(ARG_REGS.len());
+
+        // RSP must be 16-byte aligned before the call; each push is 8 bytes,
+        // so an odd number of stack arguments needs 8 bytes of padding.
+        let needs_alignment = num_stack_args % 2 == 1;
+        if needs_alignment {
+            self.mir.push(X86Inst::AddRI {
+                dst: Operand::Physical(Reg::Rsp),
+                imm: -8,
+            });
+        }
+
+        // Push stack arguments (in reverse, so the lowest-index slot ends up
+        // at the lowest address), then stage register arguments via push/pop
+        // so regalloc's scratch use of rax can't clobber them.
+        for arg_vreg in arg_vregs.iter().skip(ARG_REGS.len()).rev() {
+            self.mir.push(X86Inst::MovRR {
+                dst: Operand::Physical(Reg::Rax),
+                src: Operand::Virtual(*arg_vreg),
+            });
+            self.mir.push(X86Inst::Push {
+                src: Operand::Physical(Reg::Rax),
+            });
+        }
+        for arg_vreg in arg_vregs.iter().take(num_reg_args).rev() {
+            self.mir.push(X86Inst::MovRR {
+                dst: Operand::Physical(Reg::Rax),
+                src: Operand::Virtual(*arg_vreg),
+            });
+            self.mir.push(X86Inst::Push {
+                src: Operand::Physical(Reg::Rax),
+            });
+        }
+        for reg in ARG_REGS.iter().take(num_reg_args) {
+            self.mir.push(X86Inst::Pop {
+                dst: Operand::Physical(*reg),
+            });
+        }
+
+        let symbol_id = self.intern_symbol(symbol);
+        self.mir.push(X86Inst::CallRel { symbol_id });
+
+        // Clean up stack arguments and alignment padding
+        if num_stack_args > 0 || needs_alignment {
+            let mut stack_space = (num_stack_args * 8) as i32;
+            if needs_alignment {
+                stack_space += 8;
+            }
+            self.mir.push(X86Inst::AddRI {
+                dst: Operand::Physical(Reg::Rsp),
+                imm: stack_space,
+            });
+        }
+    }
+
     /// Emit the divide instruction for a div/mod, with the dividend already in
     /// RAX. Sign-extends (signed) or zero-extends (unsigned) the dividend into
     /// RDX:RAX, then divides by `rhs_vreg`, selecting 64-bit forms (CQO + REX.W
@@ -433,9 +496,16 @@ impl<'a> CfgLower<'a> {
                 // arrays), also allocate vregs for each slot. Arrays included:
                 // their primary vreg is just a placeholder, so without slot
                 // vregs every element would be dropped at the join (RUE-167).
+                // Exactly slot_count vregs: a zero-slot aggregate ([T; 0],
+                // fieldless struct) gets an EMPTY list, matching the empty
+                // slot lists its sources cache — a phantom slot here tripped
+                // the join's count assert (RUE-194).
                 if matches!(ty.kind(), TypeKind::Struct(_) | TypeKind::Array(_)) {
                     let slot_count = self.ctx.type_slot_count(*ty);
-                    let mut slot_vregs = vec![vreg]; // First slot uses main vreg
+                    let mut slot_vregs = Vec::with_capacity(slot_count as usize);
+                    if slot_count > 0 {
+                        slot_vregs.push(vreg); // First slot uses main vreg
+                    }
                     for _ in 1..slot_count {
                         slot_vregs.push(self.mir.alloc_vreg());
                     }
@@ -477,8 +547,13 @@ impl<'a> CfgLower<'a> {
                 self.value_map.insert(*param_val, vreg);
 
                 if matches!(ty.kind(), TypeKind::Struct(_) | TypeKind::Array(_)) {
+                    // Exactly slot_count vregs; zero-slot aggregates get an
+                    // empty list (RUE-194) — same as lower().
                     let slot_count = self.ctx.type_slot_count(*ty);
-                    let mut slot_vregs = vec![vreg];
+                    let mut slot_vregs = Vec::with_capacity(slot_count as usize);
+                    if slot_count > 0 {
+                        slot_vregs.push(vreg);
+                    }
                     for _ in 1..slot_count {
                         slot_vregs.push(self.mir.alloc_vreg());
                     }
@@ -1548,8 +1623,14 @@ impl<'a> CfgLower<'a> {
             CfgInstData::Alloc { slot, init } => {
                 let init_type = self.ctx.cfg.get_inst(*init).ty;
                 if matches!(init_type.kind(), TypeKind::Array(_)) {
-                    // Array: recursively flatten nested arrays and store scalar elements
-                    let scalar_vregs = self.collect_array_scalar_vregs(*init);
+                    // Array: store all element slots. Try the accessor first —
+                    // it materializes lazily-sourced arrays (Load/Param/
+                    // PlaceRead, including array-typed struct fields `s.arr`
+                    // and indexed reads `m[i]`, RUE-188) and cache-hits eager
+                    // ones. Fall back to the recursive flattener for ArrayInit.
+                    let scalar_vregs = self
+                        .get_or_compute_field_vregs(*init)
+                        .unwrap_or_else(|| self.collect_array_scalar_vregs(*init));
                     crate::agg_slots::store_slots(self, &scalar_vregs, *slot);
                 } else if self.ctx.is_builtin_string(init_type) {
                     // Builtin String: store ptr, len, and cap to consecutive slots
@@ -2719,22 +2800,8 @@ impl<'a> CfgLower<'a> {
                         3,
                         "String should have 3 slots (ptr, len, cap)"
                     );
-                    // Move all 3 components into argument registers (rdi, rsi, rdx)
-                    self.mir.push(X86Inst::MovRR {
-                        dst: Operand::Physical(ARG_REGS[0]),
-                        src: Operand::Virtual(field_vregs[0]), // ptr
-                    });
-                    self.mir.push(X86Inst::MovRR {
-                        dst: Operand::Physical(ARG_REGS[1]),
-                        src: Operand::Virtual(field_vregs[1]), // len
-                    });
-                    self.mir.push(X86Inst::MovRR {
-                        dst: Operand::Physical(ARG_REGS[2]),
-                        src: Operand::Virtual(field_vregs[2]), // cap
-                    });
-
-                    let symbol_id = self.intern_symbol("__rue_drop_String");
-                    self.mir.push(X86Inst::CallRel { symbol_id });
+                    // Pass all 3 components (ptr, len, cap) to __rue_drop_String
+                    self.emit_call_with_slot_args(&field_vregs, "__rue_drop_String");
                     return;
                 }
 
@@ -2742,30 +2809,20 @@ impl<'a> CfgLower<'a> {
                 if let TypeKind::Struct(struct_id) = dropped_ty.kind() {
                     let struct_def = self.ctx.type_pool.struct_def(struct_id);
 
-                    // Collect all scalar vregs for this struct (flattened)
-                    let field_vregs = self.collect_struct_scalar_vregs(*dropped_value);
-
-                    // For now, we only support structs that fit in registers
-                    // This covers the common case. Stack spilling can be added later.
-                    debug_assert!(
-                        field_vregs.len() <= ARG_REGS.len(),
-                        "struct drop with {} fields exceeds {} argument registers",
-                        field_vregs.len(),
-                        ARG_REGS.len()
-                    );
+                    // All flattened field slots. The accessor materializes
+                    // lazily-sourced values (Load/Param/PlaceRead) so glue
+                    // functions dropping a multi-slot Param element pass real
+                    // slots, not just slot 0 + garbage (RUE-193); fall back to
+                    // the recursive flattener for StructInit.
+                    let field_vregs = self
+                        .get_or_compute_field_vregs(*dropped_value)
+                        .unwrap_or_else(|| self.collect_struct_scalar_vregs(*dropped_value));
 
                     // For builtin types (e.g., String), the destructor IS the drop glue.
                     // We call only the destructor and skip the drop glue to avoid double-calling.
                     if struct_def.is_builtin {
                         if let Some(ref destructor_name) = struct_def.destructor {
-                            for (i, vreg) in field_vregs.iter().enumerate() {
-                                self.mir.push(X86Inst::MovRR {
-                                    dst: Operand::Physical(ARG_REGS[i]),
-                                    src: Operand::Virtual(*vreg),
-                                });
-                            }
-                            let symbol_id = self.intern_symbol(destructor_name);
-                            self.mir.push(X86Inst::CallRel { symbol_id });
+                            self.emit_call_with_slot_args(&field_vregs, destructor_name);
                         }
                         // No drop glue for builtins - destructor handles everything
                         return;
@@ -2774,55 +2831,29 @@ impl<'a> CfgLower<'a> {
                     // For user-defined structs, call destructor first (if any), then drop glue
                     if let Some(ref destructor_name) = struct_def.destructor {
                         // Pass all fields to the user destructor
-                        for (i, vreg) in field_vregs.iter().enumerate() {
-                            self.mir.push(X86Inst::MovRR {
-                                dst: Operand::Physical(ARG_REGS[i]),
-                                src: Operand::Virtual(*vreg),
-                            });
-                        }
-                        let symbol_id = self.intern_symbol(destructor_name);
-                        self.mir.push(X86Inst::CallRel { symbol_id });
+                        self.emit_call_with_slot_args(&field_vregs, destructor_name);
                     }
 
-                    // Now call the drop glue function to drop fields
-                    // Pass all fields again (call may have clobbered registers)
-                    for (i, vreg) in field_vregs.iter().enumerate() {
-                        self.mir.push(X86Inst::MovRR {
-                            dst: Operand::Physical(ARG_REGS[i]),
-                            src: Operand::Virtual(*vreg),
-                        });
-                    }
-
+                    // Now call the drop glue function to drop fields, passing
+                    // all fields again (the destructor call clobbered the
+                    // argument registers)
                     let drop_fn_name = format!("__rue_drop_{}", struct_def.name);
-                    let symbol_id = self.intern_symbol(&drop_fn_name);
-                    self.mir.push(X86Inst::CallRel { symbol_id });
+                    self.emit_call_with_slot_args(&field_vregs, &drop_fn_name);
                     return;
                 }
 
                 // Handle array drops - need to pass all element values
                 if let TypeKind::Array(array_id) = dropped_ty.kind() {
-                    // Collect all scalar vregs for this array (flattened)
-                    let element_vregs = self.collect_array_scalar_vregs(*dropped_value);
-
-                    // For now, we only support arrays that fit in registers
-                    debug_assert!(
-                        element_vregs.len() <= ARG_REGS.len(),
-                        "array drop with {} element slots exceeds {} argument registers",
-                        element_vregs.len(),
-                        ARG_REGS.len()
-                    );
-
-                    // Pass all element slots to the drop glue function
-                    for (i, vreg) in element_vregs.iter().enumerate() {
-                        self.mir.push(X86Inst::MovRR {
-                            dst: Operand::Physical(ARG_REGS[i]),
-                            src: Operand::Virtual(*vreg),
-                        });
-                    }
+                    // All flattened element slots (accessor first, as above;
+                    // slot counts past the argument registers go on the stack
+                    // via emit_call_with_slot_args — e.g. [String; 3] is 9
+                    // slots, RUE-193)
+                    let element_vregs = self
+                        .get_or_compute_field_vregs(*dropped_value)
+                        .unwrap_or_else(|| self.collect_array_scalar_vregs(*dropped_value));
 
                     let drop_fn_name = types::array_drop_glue_name(array_id, self.ctx.type_pool);
-                    let symbol_id = self.intern_symbol(&drop_fn_name);
-                    self.mir.push(X86Inst::CallRel { symbol_id });
+                    self.emit_call_with_slot_args(&element_vregs, &drop_fn_name);
                     return;
                 }
 
@@ -4241,6 +4272,19 @@ impl crate::agg_slots::SlotBackend for CfgLower<'_> {
             src: Operand::Virtual(src),
         });
     }
+    fn emit_load_through_ptr(&mut self, dst: VReg, ptr: VReg, byte_offset: i32) {
+        self.mir.push(X86Inst::MovRMIndexed {
+            dst: Operand::Virtual(dst),
+            base: ptr,
+            offset: byte_offset,
+        });
+    }
+    fn emit_bounds_check(&mut self, index_vreg: VReg, length: u64) {
+        CfgLower::emit_bounds_check(self, index_vreg, length)
+    }
+    fn emit_place_addr(&mut self, dst: VReg, place: &Place) {
+        CfgLower::lower_place_addr(self, dst, place)
+    }
 }
 
 impl crate::byref_args::ByrefAddrBackend for CfgLower<'_> {
@@ -4254,12 +4298,6 @@ impl crate::byref_args::ByrefAddrBackend for CfgLower<'_> {
             base: Reg::Rbp,
             disp: offset,
         });
-    }
-    fn emit_bounds_check(&mut self, index_vreg: VReg, length: u64) {
-        CfgLower::emit_bounds_check(self, index_vreg, length)
-    }
-    fn emit_place_addr(&mut self, dst: VReg, place: &Place) {
-        CfgLower::lower_place_addr(self, dst, place)
     }
 }
 
