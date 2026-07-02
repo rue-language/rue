@@ -313,3 +313,50 @@ fn main() -> i32 { 0 }
 """
 compile_fail = true
 error_contains = "duplicate"
+
+# =============================================================================
+# The Self Type (RUE-123)
+# =============================================================================
+
+[[case]]
+name = "self_type_in_return_position"
+spec = ["6.4:18"]
+description = "Self in a method return type resolves to the enclosing struct"
+source = """
+struct P {
+    x: i32,
+
+    fn make() -> Self {
+        P { x: 42 }
+    }
+
+    fn get(self) -> i32 { self.x }
+}
+
+fn main() -> i32 {
+    let p = P::make();
+    p.get()
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "self_type_in_param_and_body"
+spec = ["6.4:18"]
+description = "Self in a parameter type and in a Self { ... } body literal"
+source = """
+struct P {
+    x: i32,
+
+    fn make(v: i32) -> Self { Self { x: v } }
+    fn combine(self, other: Self) -> Self { Self { x: self.x + other.x } }
+    fn get(self) -> i32 { self.x }
+}
+
+fn main() -> i32 {
+    let a = P::make(30);
+    let b = P { x: 12 };
+    a.combine(b).get()
+}
+"""
+exit_code = 42
