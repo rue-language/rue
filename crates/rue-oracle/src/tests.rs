@@ -316,6 +316,44 @@ fn moved_value_drops_once_at_destination() {
     assert_eq!(run(src).stdout, "42\n");
 }
 
+// --- regressions found by the differential harness (rue-oracle-diff) ---
+
+#[test]
+fn i32_min_negated_literal() {
+    // -2147483648 is stored as the 64-bit sign-extended bit pattern; the Const
+    // must reinterpret it as signed, not as a huge positive.
+    let src = "fn main() -> i32 {
+        let a: i32 = -2147483648;
+        let b: i32 = 1;
+        a / b - a
+    }";
+    // a/b = i32::MIN; i32::MIN - i32::MIN = 0.
+    assert_eq!(exit(src), 0);
+}
+
+#[test]
+fn min_mod_neg_one_traps() {
+    // i32::MIN % -1 faults at the operand width even though the math is 0.
+    let src = "fn main() -> i32 {
+        let a: i32 = -2147483648;
+        let b: i32 = -1;
+        a % b
+    }";
+    assert_eq!(run(src).exit_code, 101);
+}
+
+#[test]
+fn string_equality_by_content() {
+    let src = "fn main() -> i32 {
+        let mut a = String::new();
+        a.push_str(\"hi\");
+        let mut b = String::new();
+        b.push_str(\"hi\");
+        if a == b { 7 } else { 0 }
+    }";
+    assert_eq!(exit(src), 7);
+}
+
 #[test]
 fn string_build_and_len() {
     let src = "fn main() -> i32 {
