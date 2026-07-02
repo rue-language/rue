@@ -124,7 +124,9 @@ impl ErrorCode {
     pub const DUPLICATE_VARIANT: Self = Self(419);
     pub const UNKNOWN_VARIANT: Self = Self(420);
     pub const UNKNOWN_ENUM_TYPE: Self = Self(421);
-    pub const FIELD_WRONG_ORDER: Self = Self(422);
+    // 422 (FIELD_WRONG_ORDER) is retired: struct-literal fields may now be
+    // given in any order, matched to declared fields by name (RUE-9). Do not
+    // reuse the number.
     pub const FIELD_ACCESS_ON_NON_STRUCT: Self = Self(423);
     pub const INVALID_ASSIGNMENT_TARGET: Self = Self(424);
     pub const INOUT_NON_LVALUE: Self = Self(425);
@@ -287,8 +289,8 @@ impl fmt::Display for ErrorCode {
 //
 // As of 2026-01-11:
 // - ErrorKind size: 56 bytes
-// - Boxed variants: 4 (MissingFields, CopyStructNonCopyField,
-//   IntrinsicTypeMismatch, FieldWrongOrder)
+// - Boxed variants: 3 (MissingFields, CopyStructNonCopyField,
+//   IntrinsicTypeMismatch)
 // - All boxed variants contain 3+ Strings or String + Vec
 // - Policy is consistently applied
 
@@ -321,14 +323,6 @@ pub struct IntrinsicTypeMismatchError {
     pub name: String,
     pub expected: String,
     pub found: String,
-}
-
-/// Payload for `ErrorKind::FieldWrongOrder`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FieldWrongOrderError {
-    pub struct_name: String,
-    pub expected_field: String,
-    pub found_field: String,
 }
 
 // ============================================================================
@@ -1053,8 +1047,6 @@ pub enum ErrorKind {
     },
     #[error("unknown enum type '{0}'")]
     UnknownEnumType(String),
-    #[error("struct '{struct_name}' fields must be initialized in declaration order: expected '{expected_field}', found '{found_field}'", struct_name = .0.struct_name, expected_field = .0.expected_field, found_field = .0.found_field)]
-    FieldWrongOrder(Box<FieldWrongOrderError>),
     #[error("field access on non-struct type '{found}'")]
     FieldAccessOnNonStruct { found: String },
     #[error("invalid assignment target")]
@@ -1303,7 +1295,6 @@ impl ErrorKind {
             ErrorKind::DuplicateVariant { .. } => ErrorCode::DUPLICATE_VARIANT,
             ErrorKind::UnknownVariant { .. } => ErrorCode::UNKNOWN_VARIANT,
             ErrorKind::UnknownEnumType(_) => ErrorCode::UNKNOWN_ENUM_TYPE,
-            ErrorKind::FieldWrongOrder(_) => ErrorCode::FIELD_WRONG_ORDER,
             ErrorKind::FieldAccessOnNonStruct { .. } => ErrorCode::FIELD_ACCESS_ON_NON_STRUCT,
             ErrorKind::InvalidAssignmentTarget => ErrorCode::INVALID_ASSIGNMENT_TARGET,
             ErrorKind::InoutNonLvalue => ErrorCode::INOUT_NON_LVALUE,
@@ -2555,10 +2546,6 @@ mod tests {
         println!(
             "IntrinsicTypeMismatchError: {} bytes",
             size_of::<IntrinsicTypeMismatchError>()
-        );
-        println!(
-            "FieldWrongOrderError: {} bytes",
-            size_of::<FieldWrongOrderError>()
         );
     }
 }

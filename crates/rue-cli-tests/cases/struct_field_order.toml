@@ -1,0 +1,118 @@
+# Field-order-independent struct initialization (RUE-9).
+#
+# Struct-literal fields may be written in any order; each initializer is
+# matched to its declared field by name and stored in the slot determined by
+# declaration order (spec 3.6:15, 3.6:16). Initializers are still evaluated
+# left-to-right in source order (spec 4.0:9), so a field written earlier runs
+# earlier even when it occupies a later slot. These cases pin both the storage
+# layout (via exit code / field reads) and the observable evaluation order
+# (via @dbg stdout) end-to-end through the real driver.
+
+[section]
+id = "cli.struct_field_order"
+name = "Field-order-independent struct init"
+description = "Struct literals accept fields in any order, matched by name, stored in declaration order."
+
+[[case]]
+name = "out_of_order_stored_by_name"
+files = [{ path = "main.rue", source = """
+struct Point { x: i32, y: i32 }
+
+fn main() -> i32 {
+    // Written y first, then x; matched by name.
+    let p = Point { y: 20, x: 10 };
+    // x must be in slot 0 (10), y in slot 1 (20): 10 - 20 + 42 = 32.
+    p.x - p.y + 42
+}
+""" }]
+exit_code = 32
+
+[[case]]
+name = "out_of_order_dbg_value"
+files = [{ path = "main.rue", source = """
+struct Point { x: i32, y: i32 }
+
+fn main() -> i32 {
+    let p = Point { y: 20, x: 10 };
+    @dbg(p.x);
+    @dbg(p.y);
+    0
+}
+""" }]
+stdout = "10\n20\n"
+
+[[case]]
+name = "three_fields_shuffled"
+files = [{ path = "main.rue", source = """
+struct Rec { a: i32, b: i32, c: i32 }
+
+fn main() -> i32 {
+    let r = Rec { c: 3, a: 1, b: 2 };
+    @dbg(r.a);
+    @dbg(r.b);
+    @dbg(r.c);
+    0
+}
+""" }]
+stdout = "1\n2\n3\n"
+
+[[case]]
+name = "source_order_eval_but_name_storage"
+files = [{ path = "main.rue", source = """
+fn side_effect(val: i32) -> i32 {
+    @dbg(val);
+    val
+}
+
+struct Point { x: i32, y: i32 }
+
+fn main() -> i32 {
+    // Written y first (side_effect(2)), then x (side_effect(1)).
+    // Source-order evaluation => prints 2 then 1.
+    // Stored by name => x holds 1, y holds 2.
+    let p = Point { y: side_effect(2), x: side_effect(1) };
+    @dbg(p.x);
+    @dbg(p.y);
+    0
+}
+""" }]
+stdout = "2\n1\n1\n2\n"
+
+[[case]]
+name = "duplicate_field_out_of_order_rejected"
+files = [{ path = "main.rue", source = """
+struct Point { x: i32, y: i32 }
+
+fn main() -> i32 {
+    let p = Point { y: 2, y: 3, x: 1 };
+    p.x
+}
+""" }]
+compile_fail = true
+error_contains = ["E0402", "duplicate field"]
+
+[[case]]
+name = "unknown_field_out_of_order_rejected"
+files = [{ path = "main.rue", source = """
+struct Point { x: i32, y: i32 }
+
+fn main() -> i32 {
+    let p = Point { y: 2, z: 9 };
+    p.x
+}
+""" }]
+compile_fail = true
+error_contains = ["E0401", "unknown field"]
+
+[[case]]
+name = "missing_field_out_of_order_rejected"
+files = [{ path = "main.rue", source = """
+struct Point { x: i32, y: i32 }
+
+fn main() -> i32 {
+    let p = Point { y: 2 };
+    p.y
+}
+""" }]
+compile_fail = true
+error_contains = ["E0400", "missing field"]

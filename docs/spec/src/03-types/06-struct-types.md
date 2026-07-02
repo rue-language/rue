@@ -93,3 +93,25 @@ fn main() -> i32 {
     @size_of(Empty)  // 0
 }
 ```
+
+## Struct Literals
+
+{{ rule(id="3.6:15", cat="normative") }}
+
+In a struct literal, field initializers may appear in any order. Each initializer is matched to a declared field by name; the order in which fields are written need not match the declaration order. Providing the same field more than once, omitting a field, or naming a field the struct does not declare are all errors (see 3.6:5, 3.6:6).
+
+{{ rule(id="3.6:16", cat="dynamic-semantics") }}
+
+Regardless of the order in which fields are written, the resulting value stores each field in the slot determined by declaration order (3.6:9). Field initializer expressions are still evaluated in source order (left-to-right as written; see 4.0:9), so a field written earlier is evaluated earlier even when it occupies a later slot.
+
+{{ rule(id="3.6:17") }}
+
+```rue
+struct Point { x: i32, y: i32 }
+
+fn main() -> i32 {
+    // Fields given out of declaration order; matched by name.
+    let p = Point { y: 20, x: 10 };
+    p.x - p.y  // -10, i.e. 10 - 20
+}
+```
