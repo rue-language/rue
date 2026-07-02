@@ -53,8 +53,15 @@ enum ConstPayload {
 pub fn run(cfg: &mut Cfg) -> bool {
     let mut slots = vec![SlotState::NoWrite; cfg.num_locals() as usize];
 
+    // Zero-sized locals (`[T; 0]`, `()`, empty structs) occupy 0 slots, so a
+    // zero-sized local at the end of the frame is assigned a slot index equal
+    // to `num_locals` — out of range for `slots`. Its Alloc/Load move no
+    // bytes, so there is nothing to track or rewrite: skip out-of-range slots
+    // (RUE-194).
     let record_write = |slots: &mut Vec<SlotState>, slot: u32, payload: Option<ConstPayload>| {
-        let state = &mut slots[slot as usize];
+        let Some(state) = slots.get_mut(slot as usize) else {
+            return;
+        };
         *state = match (*state, payload) {
             (SlotState::NoWrite, Some(c)) => SlotState::OneConstWrite(c),
             _ => SlotState::Disqualified,
@@ -129,7 +136,7 @@ pub fn run(cfg: &mut Cfg) -> bool {
             CfgInstData::Load { slot } => *slot,
             _ => continue,
         };
-        if let SlotState::OneConstWrite(payload) = slots[slot as usize] {
+        if let Some(&SlotState::OneConstWrite(payload)) = slots.get(slot as usize) {
             cfg.get_inst_mut(value).data = match payload {
                 ConstPayload::Int(v) => CfgInstData::Const(v),
                 ConstPayload::Bool(b) => CfgInstData::BoolConst(b),
@@ -284,6 +291,28 @@ mod tests {
             cfg.get_inst(arg_load).data,
             CfgInstData::Load { slot: 0 }
         ));
+        assert!(matches!(
+            cfg.get_inst(load).data,
+            CfgInstData::Load { slot: 0 }
+        ));
+    }
+
+    #[test]
+    fn test_zero_slot_local_out_of_range_is_ignored() {
+        // A zero-sized local ([T; 0], unit) occupies 0 slots, so a trailing
+        // one is assigned slot index == num_locals — out of range for the
+        // slot table. Its Alloc/Load must be skipped, not panic (RUE-194).
+        let mut cfg = make_cfg(0);
+        let c = push(&mut cfg, CfgInstData::Const(0), Type::I32);
+        push(
+            &mut cfg,
+            CfgInstData::Alloc { slot: 0, init: c },
+            Type::UNIT,
+        );
+        let load = push(&mut cfg, CfgInstData::Load { slot: 0 }, Type::UNIT);
+        cfg.set_terminator(cfg.entry, Terminator::Return { value: None });
+
+        assert!(!run(&mut cfg));
         assert!(matches!(
             cfg.get_inst(load).data,
             CfgInstData::Load { slot: 0 }

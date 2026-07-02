@@ -581,6 +581,21 @@ While one or more elements of an array are moved out, it is a compile-time error
 
 At scope exit (and when an array variable is overwritten), elements that were moved out on every path reaching that point are not dropped; elements moved out on only some paths are dropped exactly when the executed path did not move them; untouched elements are dropped, in ascending index order.
 
+{{ rule(id="3.8:74", cat="normative") }}
+
+A zero-length array of a linear element type holds no linear values, so its must-consume obligation is vacuously satisfied: it may be dropped (as a local, a by-value parameter, or a discarded expression value) without error. This applies to any array shape whose total element count is zero (for example `[L; 0]`, `[[L; 5]; 0]`, and `[[L; 0]; 5]`). It does not apply to a linear struct itself: a value of a `linear struct` type must be consumed regardless of what its fields hold.
+
+{{ rule(id="3.8:75", cat="example") }}
+
+```rue
+linear struct MustUse { value: i32 }
+
+fn main() -> i32 {
+    let _none: [MustUse; 0] = [];  // OK: nothing to consume
+    0
+}
+```
+
 ## Shadowing and Moves
 
 {{ rule(id="3.8:12", cat="normative") }}
