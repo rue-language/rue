@@ -1,0 +1,63 @@
+name: Sanitizer
+
+# Runs compiled Rue programs under Valgrind's memcheck (RUE-49). Rue emits
+# static, no-libc, direct-syscall ELF, and valgrind's DBI runs such binaries
+# without recompilation, so this needs no special build — just the compiler
+# plus `valgrind` from apt.
+#
+# Scope (see scripts/run-sanitizer.sh for the full rationale): memcheck hooks
+# libc malloc/free, but the Rue runtime bump-allocates inside mmap'd arenas and
+# never calls libc, so to memcheck each program does "0 allocs". This job is
+# therefore a CODEGEN / generated-code memory-safety net (wild pointers, stack
+# overflow, bad syscall buffers, uninitialised-value use) that the source-level
+# fuzz job cannot provide. It does NOT catch intra-arena heap overflows like
+# RUE-34; that class needs an AddressSanitizer pass over rue-runtime's own unit
+# tests, tracked as follow-up work.
+#
+# It is a separate workflow so it runs in parallel with the fast `test` job in
+# ci.yml rather than serializing behind it.
+
+on:
+  push:
+    branches: [trunk]
+  pull_request:
+    branches: [trunk]
+  merge_group:
+    branches: [trunk]
+  workflow_dispatch:
+
+# Cancel in-progress runs for the same branch
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  valgrind:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install dotslash
+        uses: facebook/install-dotslash@v2  # pinned: the moving `latest` branch broke macOS runners (sha256sum flags) on 2026-06-18
+
+      # Cache the dotslash-downloaded buck2 binary, matching ci.yml. OSS buck2
+      # has no persistent action cache across daemon restarts, so only the
+      # dotslash download is worth caching. (RUE-144)
+      - name: Cache dotslash artifacts
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/dotslash
+          key: dotslash-linux-x64-${{ hashFiles('buck2') }}
+          restore-keys: |
+            dotslash-linux-x64-
+
+      - name: Install valgrind
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y valgrind
+
+      - name: Build rue compiler
+        run: ./buck2 build //crates/rue:rue
+
+      - name: Run programs under valgrind memcheck
+        run: scripts/run-sanitizer.sh

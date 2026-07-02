@@ -59,6 +59,75 @@ _OPT_FLAGS = select({
 # Using -ld_classic forces the older, more stable linker.
 _MACOS_LINKER_FLAGS = ["-Clink-arg=-ld_classic"]
 
+# Workspace clippy lint policy (the CI `clippy` gate; see clippy.sh).
+#
+# deny_lints = ["warnings"] below makes *every* rustc/clippy warning an error.
+# For rustc that is already satisfied (the tree builds -D warnings clean). For
+# clippy it would otherwise fail on ~1100 pre-existing style findings across
+# the tree. Rather than churn 100+ files in the gate-establishing change, we
+# grandfather in exactly the clippy lints that fire today via `allow_lints`
+# (`-A` overrides the `-D warnings` group for that specific lint). This makes
+# the gate GREEN now while still denying:
+#   - any clippy lint NOT in this list (new categories can't creep in), and
+#   - all rustc warnings.
+# These are `clippy::`-prefixed, so the prelude filters them out of ordinary
+# (non-clippy) rustc builds -- they only affect `clippy.txt`.
+#
+# This list is a debt ledger, not an endorsement: shrink it incrementally by
+# fixing the underlying findings and deleting the entry (RUE-47 follow-ups).
+# The deny-by-default entries (approx_constant,
+# inherent_to_string_shadow_display, not_unsafe_ptr_arg_deref) are the
+# higher-value ones to retire first.
+_CLIPPY_ALLOW = [
+    "clippy::approx_constant",
+    "clippy::assign_op_pattern",
+    "clippy::borrow_deref_ref",
+    "clippy::borrowed_box",
+    "clippy::clone_on_copy",
+    "clippy::cloned_ref_to_slice_refs",
+    "clippy::collapsible_if",
+    "clippy::collapsible_match",
+    "clippy::derivable_impls",
+    "clippy::double_must_use",
+    "clippy::empty_line_after_doc_comments",
+    "clippy::for_kv_map",
+    "clippy::identity_op",
+    "clippy::if_same_then_else",
+    "clippy::inherent_to_string_shadow_display",
+    "clippy::len_zero",
+    "clippy::let_and_return",
+    "clippy::manual_clamp",
+    "clippy::manual_div_ceil",
+    "clippy::manual_is_multiple_of",
+    "clippy::manual_map",
+    "clippy::manual_range_contains",
+    "clippy::manual_repeat_n",
+    "clippy::manual_strip",
+    "clippy::map_clone",
+    "clippy::missing_safety_doc",
+    "clippy::module_inception",
+    "clippy::needless_borrows_for_generic_args",
+    "clippy::needless_range_loop",
+    "clippy::not_unsafe_ptr_arg_deref",
+    "clippy::op_ref",
+    "clippy::ptr_arg",
+    "clippy::redundant_closure",
+    "clippy::result_large_err",
+    "clippy::same_item_push",
+    "clippy::should_implement_trait",
+    "clippy::too_many_arguments",
+    "clippy::type_complexity",
+    "clippy::unnecessary_cast",
+    "clippy::unnecessary_get_then_check",
+    "clippy::unnecessary_map_or",
+    "clippy::unnecessary_mut_passed",
+    "clippy::unwrap_or_default",
+    "clippy::useless_conversion",
+    "clippy::useless_vec",
+    "clippy::while_let_loop",
+    "clippy::write_with_newline",
+]
+
 # Hermetic toolchain for Linux x86_64
 hermetic_rust_toolchain(
     name = "hermetic-linux-x86_64",
@@ -66,6 +135,7 @@ hermetic_rust_toolchain(
     target_triple = "x86_64-unknown-linux-gnu",
     default_edition = "2024",
     deny_lints = ["warnings"],
+    allow_lints = _CLIPPY_ALLOW,
     rustc_flags = _OPT_FLAGS,
     visibility = ["PUBLIC"],
 )
@@ -77,6 +147,7 @@ hermetic_rust_toolchain(
     target_triple = "aarch64-unknown-linux-gnu",
     default_edition = "2024",
     deny_lints = ["warnings"],
+    allow_lints = _CLIPPY_ALLOW,
     rustc_flags = _OPT_FLAGS,
     visibility = ["PUBLIC"],
 )
@@ -88,6 +159,7 @@ hermetic_rust_toolchain(
     target_triple = "aarch64-apple-darwin",
     default_edition = "2024",
     deny_lints = ["warnings"],
+    allow_lints = _CLIPPY_ALLOW,
     rustc_flags = _OPT_FLAGS + _MACOS_LINKER_FLAGS,
     visibility = ["PUBLIC"],
 )
@@ -99,6 +171,7 @@ hermetic_rust_toolchain(
     target_triple = "x86_64-apple-darwin",
     default_edition = "2024",
     deny_lints = ["warnings"],
+    allow_lints = _CLIPPY_ALLOW,
     rustc_flags = _OPT_FLAGS + _MACOS_LINKER_FLAGS,
     visibility = ["PUBLIC"],
 )

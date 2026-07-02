@@ -12,7 +12,11 @@
 #   ./bench.sh --no-history       # Don't append to history file
 #   ./bench.sh --help             # Show usage
 
-set -e
+# Strict mode: -e exit on error, -u error on unset vars, pipefail so a failing
+# stage of a pipeline fails the whole pipeline. Pipelines that are *expected*
+# to fail (a grep with no match, jj/git in an environment without them) are
+# guarded explicitly with `|| true` below.
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BENCHMARKS_DIR="$SCRIPT_DIR/benchmarks"
@@ -115,7 +119,9 @@ log_info "Using compiler: $RUE_BIN"
 
 # Create temp directory for outputs
 TEMP_DIR=$(mktemp -d)
-trap "rm -rf $TEMP_DIR" EXIT
+# Single-quote the trap so $TEMP_DIR is expanded (and quoted) at trap time,
+# not now — avoids word-splitting on the path and keeps shellcheck (SC2064) happy.
+trap 'rm -rf "$TEMP_DIR"' EXIT
 
 # Parse manifest and run benchmarks
 log_info "Running benchmarks ($ITERATIONS iterations each)..."
@@ -187,8 +193,9 @@ for i in "${!benchmark_names[@]}"; do
                 rm -f "$time_output"
                 continue
             fi
-            # Extract max RSS from time output (in bytes on macOS)
-            peak_mem_bytes=$(grep "maximum resident set size" "$time_output" 2>/dev/null | awk '{print $1}')
+            # Extract max RSS from time output (in bytes on macOS).
+            # `|| true`: a missing line is not fatal (pipefail would abort otherwise).
+            peak_mem_bytes=$(grep "maximum resident set size" "$time_output" 2>/dev/null | awk '{print $1}' || true)
         else
             # Linux: -v gives max resident set size in KB
             if ! timing_json=$(/usr/bin/time -v "$RUE_BIN" --benchmark-json "$full_path" -o "$output_binary" 2>"$time_output"); then
@@ -196,14 +203,18 @@ for i in "${!benchmark_names[@]}"; do
                 rm -f "$time_output"
                 continue
             fi
-            # Extract max RSS from time output (in KB on Linux, convert to bytes)
-            peak_mem_kb=$(grep "Maximum resident set size" "$time_output" 2>/dev/null | awk '{print $NF}')
-            peak_mem_bytes=$((peak_mem_kb * 1024))
+            # Extract max RSS from time output (in KB on Linux, convert to bytes).
+            # `|| true`: a missing line is not fatal (pipefail would abort otherwise);
+            # an empty peak_mem_kb is treated as 0 in the arithmetic below.
+            peak_mem_kb=$(grep "Maximum resident set size" "$time_output" 2>/dev/null | awk '{print $NF}' || true)
+            peak_mem_bytes=$(( ${peak_mem_kb:-0} * 1024 ))
         fi
         rm -f "$time_output"
 
-        # Extract total_ms from the JSON
-        total_ms=$(echo "$timing_json" | grep -o '"total_ms":[0-9.]*' | head -1 | cut -d: -f2)
+        # Extract total_ms from the JSON. `|| true`: grep may not match and
+        # `head -1` closing the pipe early can SIGPIPE grep — neither is fatal
+        # (the `-n "$total_ms"` check below handles a missing value).
+        total_ms=$(echo "$timing_json" | grep -o '"total_ms":[0-9.]*' | head -1 | cut -d: -f2 || true)
         if [[ -n "$total_ms" ]]; then
             iteration_results+=("$total_ms")
             # Store full JSON for pass data extraction
@@ -357,10 +368,12 @@ timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 # Note: We check if the result is non-empty because piped commands may succeed but return empty
 commit=""
 if command -v jj &>/dev/null; then
-    commit=$(jj log -r @ --no-graph -T 'commit_id' 2>/dev/null | head -c 12)
+    # `|| true`: jj may fail (or `head` may SIGPIPE it) outside a jj repo; we
+    # fall back to git, then to "unknown", so this must not abort under errexit.
+    commit=$(jj log -r @ --no-graph -T 'commit_id' 2>/dev/null | head -c 12 || true)
 fi
 if [[ -z "$commit" ]] && command -v git &>/dev/null; then
-    commit=$(git rev-parse --short HEAD 2>/dev/null)
+    commit=$(git rev-parse --short HEAD 2>/dev/null || true)
 fi
 if [[ -z "$commit" ]]; then
     commit="unknown"
