@@ -1,0 +1,11 @@
+load("//crates:defs.bzl", "rue_crate")
+
+rue_crate(
+    name = "rue-oracle",
+    deps = [
+        "//crates/rue-compiler:rue-compiler",
+        "//crates/rue-cfg:rue-cfg",
+        "//crates/rue-air:rue-air",
+        "//third-party:lasso",
+    ],
+)
