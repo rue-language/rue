@@ -216,3 +216,63 @@ args = ["lib.rue", "main.rue", "-o", "prog"]
 compile_fail = true
 error_contains = ["E0206", "main.rue:3:13"]
 compile_stderr_not_contains = ["lib.rue"]
+
+[[case]]
+name = "directive_span_in_second_file"
+description = """
+RUE-189: the RIR directive encoding dropped the span's file id (and decoded
+len as end), the same loss shape as the RUE-185 pattern-span bug. The
+E0457 secondary label "type declared `@copy` here" anchors on the @copy
+directive's span in other.rue; before the fix it rendered the honest
+"unknown file id" fallback instead of the snippet. The label must show the
+@copy line from other.rue and never fall back.
+"""
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "other.rue", source = """
+@copy
+pub struct P { x: i32 }
+
+drop fn P(self) {
+    @dbg(self.x);
+}
+""" },
+]
+args = ["main.rue", "other.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0457", "other.rue:4:1", "type declared `@copy` here", "@copy"]
+compile_stderr_not_contains = ["unknown file id", "main.rue"]
+
+[[case]]
+name = "directive_span_in_first_file"
+description = """
+RUE-189, swapped order: with the @copy struct in the FIRST file, the file id
+is 0 (which coincidentally matched the pre-fix default), but the pre-fix
+decode also read the span's len word as its END offset — so any directive not
+at file offset 0 got a corrupted range. The `@copy` here sits mid-file after
+a leading comment; its label must still render the right line.
+"""
+files = [
+    { path = "lib.rue", source = """
+// leading comment so the directive is not at byte offset 0
+@copy
+pub struct Q { x: i32 }
+
+drop fn Q(self) {
+    @dbg(self.x);
+}
+""" },
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    0
+}
+""" },
+]
+args = ["lib.rue", "main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0457", "lib.rue:5:1", "type declared `@copy` here", "@copy"]
+compile_stderr_not_contains = ["unknown file id", "main.rue"]

@@ -29,7 +29,7 @@ impl InstRef {
 }
 
 /// A directive in the RIR (e.g., @allow(unused_variable))
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RirDirective {
     /// Directive name (e.g., "allow")
     pub name: Spur,
@@ -576,13 +576,19 @@ impl Rir {
     }
 
     /// Store directives and return (start, directive_count).
-    /// Layout: [name: u32, span_start: u32, span_len: u32, args_len: u32, args...] per directive
+    /// Layout: [name: u32, span_start: u32, span_len: u32, span_file: u32, args_len: u32, args...] per directive
+    ///
+    /// The span is stored as three words — start, len, AND file id — so
+    /// directive-anchored diagnostics in multi-file compilations attribute
+    /// to the right file (dropping the file id here was the same loss shape
+    /// as the RUE-185 pattern-span bug; RUE-189).
     pub fn add_directives(&mut self, directives: &[RirDirective]) -> (u32, u32) {
         let start = self.extra.len() as u32;
         for directive in directives {
             self.extra.push(directive.name.into_usize() as u32);
             self.extra.push(directive.span.start());
             self.extra.push(directive.span.len());
+            self.extra.push(directive.span.file_id.index());
             self.extra.push(directive.args.len() as u32);
             for arg in &directive.args {
                 self.extra.push(arg.into_usize() as u32);
@@ -598,9 +604,12 @@ impl Rir {
 
         for _ in 0..directive_count {
             let name = Spur::try_from_usize(self.extra[pos] as usize).unwrap();
-            let span = Span::new(self.extra[pos + 1], self.extra[pos + 2]);
-            let args_len = self.extra[pos + 3] as usize;
-            pos += 4;
+            let span_start = self.extra[pos + 1];
+            let span_len = self.extra[pos + 2];
+            let file_id = rue_span::FileId::new(self.extra[pos + 3]);
+            let span = Span::with_file(file_id, span_start, span_start + span_len);
+            let args_len = self.extra[pos + 4] as usize;
+            pos += 5;
 
             let args: Vec<Spur> = (0..args_len)
                 .map(|i| Spur::try_from_usize(self.extra[pos + i] as usize).unwrap())
@@ -3111,6 +3120,34 @@ mod tests {
         let printer = RirPrinter::new(&rir, &interner);
         let output = printer.to_string();
         assert!(output.contains("@copy struct Point { x: i32 }"));
+    }
+
+    #[test]
+    fn test_directive_span_round_trips_file_id() {
+        // Directive spans must keep start, len, AND file id through the
+        // extra-array encoding (RUE-189): dropping the file id made every
+        // directive-anchored diagnostic in a multi-file build render
+        // "unknown file id", and decoding len as end corrupted the range.
+        let (mut rir, interner) = create_printer_test_rir();
+        let copy_name = interner.get_or_intern("copy");
+        let allow_name = interner.get_or_intern("allow");
+        let arg = interner.get_or_intern("unused_variable");
+
+        let original = vec![
+            RirDirective {
+                name: copy_name,
+                args: vec![],
+                span: Span::with_file(rue_span::FileId::new(2), 7, 12),
+            },
+            RirDirective {
+                name: allow_name,
+                args: vec![arg],
+                span: Span::with_file(rue_span::FileId::new(3), 40, 62),
+            },
+        ];
+        let (start, len) = rir.add_directives(&original);
+        let decoded = rir.get_directives(start, len);
+        assert_eq!(decoded, original);
     }
 
     #[test]

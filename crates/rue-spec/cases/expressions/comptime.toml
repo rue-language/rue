@@ -1483,3 +1483,90 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = "exceeded the maximum"
+
+[[case]]
+name = "comptime_match_selects_arm_recursion"
+spec = ["4.14:19"]
+description = "A match on a comptime-known scrutinee selects its arm at compile time, letting comptime recursion written with match terminate (RUE-191)"
+source = """
+fn fact(comptime n: i32) -> i32 {
+    match n {
+        0 => 1,
+        1 => 1,
+        _ => n * fact(n - 1),
+    }
+}
+fn main() -> i32 {
+    if fact(5) == 120 { 42 } else { 0 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_match_dead_arm_not_analyzed"
+spec = ["4.14:19"]
+description = "An unselected arm body is not analyzed: a comptime expression that only fails for OTHER values does not error in a specialization that never reaches it"
+source = """
+fn f(comptime n: i32) -> i32 {
+    match n {
+        0 => 42,
+        _ => comptime { 100 / n },
+    }
+}
+fn main() -> i32 {
+    f(0)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_match_bool_scrutinee"
+spec = ["4.14:19"]
+description = "Arm selection works for bool comptime scrutinees; both specializations pick their own arm"
+source = """
+fn pick(comptime b: bool) -> i32 {
+    match b {
+        true => 40,
+        false => 2,
+    }
+}
+fn main() -> i32 {
+    pick(true) + pick(false)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_match_still_requires_exhaustiveness"
+spec = ["4.14:19", "4.7:9"]
+description = "Exhaustiveness is a property of the pattern set: a non-exhaustive integer match is rejected even when the comptime scrutinee value matches an arm"
+source = """
+fn f(comptime n: i32) -> i32 {
+    match n {
+        0 => 1,
+    }
+}
+fn main() -> i32 {
+    f(0)
+}
+"""
+compile_fail = true
+error_contains = "not exhaustive"
+
+[[case]]
+name = "comptime_match_wildcard_selected"
+spec = ["4.14:19"]
+description = "A comptime value matched by no literal pattern selects the wildcard arm"
+source = """
+fn sign(comptime n: i32) -> i32 {
+    match n {
+        -1 => 1,
+        0 => 2,
+        _ => 42,
+    }
+}
+fn main() -> i32 {
+    sign(7)
+}
+"""
+exit_code = 42
