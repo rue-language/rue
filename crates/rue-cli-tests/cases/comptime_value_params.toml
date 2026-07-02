@@ -3,7 +3,7 @@
 # Before the fix, a function with a `comptime n: i32` parameter was analyzed
 # ONCE with `n` unknown: `comptime { n }` in its body failed E1200, and
 # recursion (`fact(n - 1)`) failed E1201 at the argument. Now every distinct
-# comptime value creates its own specialization (`f__v5`, `f__v3`, ...) —
+# comptime value creates its own specialization (`f.v5`, `f.v3`, ...) —
 # mirroring the RUE-109 type-identity mangling — in which `n` is a
 # compile-time constant. Comptime-known `if` conditions inside such bodies
 # select their branch at compile time, so comptime recursion terminates; a

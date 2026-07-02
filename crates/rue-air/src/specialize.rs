@@ -326,12 +326,29 @@ fn rewrite_call_generic(
     }
 }
 
+/// Separator between mangled segments in a specialized symbol name.
+///
+/// A `.` is deliberately *illegal* in a Rue identifier (which is
+/// `[a-zA-Z_][a-zA-Z0-9_]*`), so a specialized symbol like `identity.i32`
+/// lives in a namespace disjoint from every name a user can spell. This is
+/// the targeted fix for RUE-41: previously the separator was `__`, so
+/// `identity<i32>` mangled to `identity__i32` — a name a user could legally
+/// define as a plain function, producing a duplicate-symbol link error for a
+/// valid program. Switching to an identifier-illegal separator makes the
+/// collision impossible by construction, without a full user-symbol mangling
+/// overhaul (that is RUE-178). The full user-symbol mangling scheme (RUE-178)
+/// is still future work; this only guarantees specialized names can't clash
+/// with user names.
+const SPEC_SEP: char = '.';
+
 /// Generate a mangled name for a specialized function.
 ///
-/// Type arguments and value arguments each contribute a `__`-separated
+/// Type arguments and value arguments each contribute a [`SPEC_SEP`]-separated
 /// segment, so distinct comptime values yield distinct symbols
-/// (`fact__v5`, `fact__v4`, ...; RUE-166) exactly like distinct types do
+/// (`fact.v5`, `fact.v4`, ...; RUE-166) exactly like distinct types do
 /// (RUE-100's lesson: colliding mangles mean duplicate symbols at link time).
+/// The `.` separator is illegal in Rue identifiers, so these names cannot
+/// collide with a user-spellable function name (RUE-41).
 fn mangle_specialized_name(
     base_name: &str,
     type_args: &[Type],
@@ -339,11 +356,11 @@ fn mangle_specialized_name(
 ) -> String {
     let mut mangled = base_name.to_string();
     for ty in type_args {
-        mangled.push_str("__");
+        mangled.push(SPEC_SEP);
         mangled.push_str(&mangle_type(*ty));
     }
     for value in value_args {
-        mangled.push_str("__");
+        mangled.push(SPEC_SEP);
         mangled.push_str(&mangle_const_value(value));
     }
     mangled
