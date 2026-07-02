@@ -435,7 +435,11 @@ In Claude Code, use the Linear MCP tools (`list_issues`, `get_issue`, `save_issu
 ### Quick Start
 
 - **Find ready work**: list issues in the Rue team with state `Todo`, ordered by priority; skip issues blocked by open issues
-- **State semantics (Steve's process ruling, 2026-06-11)**: `Todo` = actionable now; `Backlog` = do NOT action yet (not ready, or awaiting Steve's input — design rulings, new syntax, ADR ratifications go to Backlog instead of being decided autonomously). Only pull work from `Todo`.
+- **State semantics** — the dividing line is **whether starting the work needs a human design decision**, not merely whether it's actionable (refined 2026-07-02 from the original 2026-06-11 "actionable vs. do-not-action" ruling):
+  - **`Todo`** = actionable **and** needs no design decision to start: bugs, well-specified chores, infrastructure, CI, refactors. This is the only state autonomous work pulls from.
+  - **`Backlog`** = needs a human design decision or discussion first: **features** (any new language capability), ADR-gated work, design docs — off-limits to autonomous work *even when technically "actionable."* Backlog is the **shared design-discussion venue** for the maintainers (Steve, Dorian): read it, and contribute analysis in comments when asked, but never action or decide a Backlog item on your own.
+  - New syntax, design rulings, and ADR ratifications are **filed** to Backlog, never decided autonomously.
+  - Watch for Linear comments from any maintainer (not just Steve) on Backlog issues — that's where design gets hashed out.
 - **Create an issue**: `save_issue` with `team: "Rue"`, a clear title, and a Markdown description
 - **Claim**: `save_issue` with `state: "In Progress"` and `assignee: "me"`
 - **Complete**: `save_issue` with `state: "Done"`
