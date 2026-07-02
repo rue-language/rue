@@ -139,9 +139,74 @@ fn loop_via_recursion_sum() {
 }
 
 #[test]
-fn unsupported_is_reported_not_panicked() {
-    // Structs are a later slice; the oracle must say so cleanly, not crash.
+fn struct_field_access() {
     let src = "struct P { x: i32, y: i32 }
     fn main() -> i32 { let p = P { x: 1, y: 2 }; p.x + p.y }";
+    assert_eq!(exit(src), 3);
+}
+
+#[test]
+fn nested_struct() {
+    let src = "struct Inner { v: i32 }
+    struct Outer { a: Inner, b: Inner }
+    fn main() -> i32 {
+        let o = Outer { a: Inner { v: 10 }, b: Inner { v: 32 } };
+        o.a.v + o.b.v
+    }";
+    assert_eq!(exit(src), 42);
+}
+
+#[test]
+fn struct_passed_and_returned() {
+    let src = "struct P { x: i32, y: i32 }
+    fn sum(p: P) -> i32 { p.x + p.y }
+    fn make() -> P { P { x: 20, y: 22 } }
+    fn main() -> i32 { sum(make()) }";
+    assert_eq!(exit(src), 42);
+}
+
+#[test]
+fn array_indexing() {
+    let src = "fn main() -> i32 {
+        let a: [i32; 3] = [4, 5, 6];
+        a[0] + a[2]
+    }";
+    assert_eq!(exit(src), 10);
+}
+
+#[test]
+fn array_out_of_bounds_traps() {
+    // A constant OOB index still lowers to a checked read at O0.
+    let src = "fn get(a: [i32; 3], i: usize) -> i32 { a[i] }
+    fn main() -> i32 {
+        let a: [i32; 3] = [1, 2, 3];
+        let i: usize = 5;
+        get(a, i)
+    }";
+    let out = run(src);
+    assert_eq!(out.exit_code, 101);
+    assert_eq!(out.panic.as_deref(), Some("index out of bounds"));
+}
+
+#[test]
+fn struct_field_mutation() {
+    let src = "struct P { x: i32, y: i32 }
+    fn main() -> i32 {
+        let mut p = P { x: 1, y: 2 };
+        p.x = 40;
+        p.x + p.y
+    }";
+    assert_eq!(exit(src), 42);
+}
+
+#[test]
+fn string_still_unsupported() {
+    // Strings (heap builtin) are a later slice; must report cleanly, not crash.
+    let src = "fn main() -> i32 {
+        let mut s = String::new();
+        s.push_str(\"hi\");
+        let n: u64 = s.len();
+        if n == 2 { 0 } else { 1 }
+    }";
     assert!(run_source(src).is_err());
 }
