@@ -423,15 +423,21 @@ impl<'a> Sema<'a> {
                 // Get the resolved type from HM inference
                 let ty = Self::get_resolved_type(ctx, inst_ref, inst.span, "negation operator")?;
 
-                // Check if trying to negate an unsigned type.
-                if ty.is_unsigned() {
+                // Unary `-` requires a signed integer operand (i8/i16/i32/i64/
+                // isize). Reject unsigned integers (no negative range), bool, and
+                // every other non-signed type. `<error>`/`never` pass through so a
+                // prior error isn't masked by a spurious second diagnostic.
+                if !ty.is_signed() && !ty.is_error() && !ty.is_never() {
+                    let note = if ty.is_unsigned() {
+                        "unsigned values cannot be negated"
+                    } else {
+                        "unary `-` requires a signed integer operand (i8, i16, i32, i64, isize)"
+                    };
                     return Err(CompileError::new(
-                        ErrorKind::CannotNegateUnsigned(
-                            ty.safe_name_with_pool(Some(&self.type_pool)),
-                        ),
+                        ErrorKind::CannotNegate(ty.safe_name_with_pool(Some(&self.type_pool))),
                         inst.span,
                     )
-                    .with_note("unsigned values cannot be negated"));
+                    .with_note(note));
                 }
 
                 // Special case: negating a literal that equals |MIN| for signed types.
@@ -979,7 +985,7 @@ impl<'a> Sema<'a> {
     ///
     /// Mirrors the `let`-binding literal checks (RUE-74): out-of-range
     /// literals are E0800 (`LiteralOutOfRange`) and negative literals on
-    /// unsigned scrutinees are E0801 (`CannotNegateUnsigned`) instead of
+    /// unsigned scrutinees are E0801 (`CannotNegate`) instead of
     /// silently wrapping into a different (or unmatchable) value.
     fn check_pattern_int(
         &self,
@@ -992,7 +998,7 @@ impl<'a> Sema<'a> {
         if negative {
             if scrutinee_type.is_unsigned() {
                 return Err(
-                    CompileError::new(ErrorKind::CannotNegateUnsigned(ty_name), span).with_note(
+                    CompileError::new(ErrorKind::CannotNegate(ty_name), span).with_note(
                         "unsigned values are never negative, so this pattern could never match",
                     ),
                 );

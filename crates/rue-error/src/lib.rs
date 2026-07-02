@@ -199,7 +199,7 @@ impl ErrorCode {
     // Literal/operator errors (E0800-E0899)
     // ========================================================================
     pub const LITERAL_OUT_OF_RANGE: Self = Self(800);
-    pub const CANNOT_NEGATE_UNSIGNED: Self = Self(801);
+    pub const CANNOT_NEGATE: Self = Self(801);
     pub const CHAINED_COMPARISON: Self = Self(802);
 
     // ========================================================================
@@ -1174,7 +1174,7 @@ pub enum ErrorKind {
 
     // Operator errors
     #[error("cannot apply unary operator `-` to type '{0}'")]
-    CannotNegateUnsigned(String),
+    CannotNegate(String),
     #[error("comparison operators cannot be chained")]
     ChainedComparison,
 
@@ -1345,7 +1345,7 @@ impl ErrorKind {
 
             // Literal/operator errors (E0800-E0899)
             ErrorKind::LiteralOutOfRange { .. } => ErrorCode::LITERAL_OUT_OF_RANGE,
-            ErrorKind::CannotNegateUnsigned(_) => ErrorCode::CANNOT_NEGATE_UNSIGNED,
+            ErrorKind::CannotNegate(_) => ErrorCode::CANNOT_NEGATE,
             ErrorKind::ChainedComparison => ErrorCode::CHAINED_COMPARISON,
 
             // Array errors (E0900-E0999)
