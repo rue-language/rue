@@ -211,7 +211,7 @@ fn read_line_impl(out: *mut StringResult) {
     }
 
     // Return the string
-    // SAFETY: Writing to `out` is safe - see String__new for rationale
+    // SAFETY: Writing to `out` is safe - see __rue_String_new for rationale
     unsafe {
         (*out).ptr = ptr;
         (*out).len = len;

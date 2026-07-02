@@ -344,7 +344,7 @@ pub fn format_terminator(cfg: &rue_cfg::Cfg, terminator: &rue_cfg::Terminator) -
 ///   registers (`ret_reg_budget`: 6 on x86-64, 8 on aarch64) are returned
 ///   with one slot per return register.
 /// - Builtin `String` *always* returns via sret, regardless of fitting in
-///   registers: the runtime implementations (`String__clone`,
+///   registers: the runtime implementations (`__rue_String_clone`,
 ///   `__rue_read_line`, ...) are `extern "C"` functions taking an
 ///   `out: *mut StringResult` first parameter, so the convention is fixed
 ///   by the runtime ABI. (RUE-92)

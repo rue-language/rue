@@ -46,13 +46,13 @@
 //!             name: "new",
 //!             params: &[],
 //!             return_ty: BuiltinReturnType::SelfType,
-//!             runtime_fn: "Vec__new",
+//!             runtime_fn: "__rue_Vec_new",
 //!         },
 //!         BuiltinAssociatedFn {
 //!             name: "with_capacity",
 //!             params: &[BuiltinParam { name: "capacity", ty: BuiltinParamType::U64 }],
 //!             return_ty: BuiltinReturnType::SelfType,
-//!             runtime_fn: "Vec__with_capacity",
+//!             runtime_fn: "__rue_Vec_with_capacity",
 //!         },
 //!     ],
 //!     methods: &[
@@ -61,14 +61,14 @@
 //!             receiver_mode: ReceiverMode::ByRef,
 //!             params: &[],
 //!             return_ty: BuiltinReturnType::U64,
-//!             runtime_fn: "Vec__len",
+//!             runtime_fn: "__rue_Vec_len",
 //!         },
 //!         BuiltinMethod {
 //!             name: "push",
 //!             receiver_mode: ReceiverMode::ByMutRef,
 //!             params: &[BuiltinParam { name: "value", ty: BuiltinParamType::U64 }],
 //!             return_ty: BuiltinReturnType::SelfType,
-//!             runtime_fn: "Vec__push",
+//!             runtime_fn: "__rue_Vec_push",
 //!         },
 //!         // ... more methods
 //!     ],
@@ -94,7 +94,7 @@
 //! // In rue-runtime/src/lib.rs or a new module
 //!
 //! #[unsafe(no_mangle)]
-//! pub extern "C" fn Vec__new(out: *mut u64) {
+//! pub extern "C" fn __rue_Vec_new(out: *mut u64) {
 //!     // Initialize empty Vec at `out` pointer
 //!     unsafe {
 //!         *out = 0;           // ptr = null
@@ -118,8 +118,11 @@
 //!
 //! ## Naming Conventions
 //!
-//! - **Associated functions**: `TypeName__function_name` (e.g., `String__new`)
-//! - **Methods**: `TypeName__method_name` (e.g., `String__len`)
+//! All runtime symbols live under the reserved `__rue_` prefix, so they can
+//! never collide with a legal user identifier (RUE-125).
+//!
+//! - **Associated functions**: `__rue_TypeName_function_name` (e.g., `__rue_String_new`)
+//! - **Methods**: `__rue_TypeName_method_name` (e.g., `__rue_String_len`)
 //! - **Drop functions**: `__rue_drop_TypeName` (e.g., `__rue_drop_String`)
 //! - **Operators**: `__rue_typename_op` (e.g., `__rue_str_eq`)
 //!
@@ -242,7 +245,7 @@ pub struct BuiltinAssociatedFn {
     pub params: &'static [BuiltinParam],
     /// Return type
     pub return_ty: BuiltinReturnType,
-    /// Runtime function name (e.g., "String__new")
+    /// Runtime function name (e.g., "__rue_String_new")
     pub runtime_fn: &'static str,
 }
 
@@ -257,7 +260,7 @@ pub struct BuiltinMethod {
     pub params: &'static [BuiltinParam],
     /// Return type
     pub return_ty: BuiltinReturnType,
-    /// Runtime function name (e.g., "String__len")
+    /// Runtime function name (e.g., "__rue_String_len")
     pub runtime_fn: &'static str,
 }
 
@@ -334,7 +337,7 @@ pub static STRING_TYPE: BuiltinTypeDef = BuiltinTypeDef {
             name: "new",
             params: &[],
             return_ty: BuiltinReturnType::SelfType,
-            runtime_fn: "String__new",
+            runtime_fn: "__rue_String_new",
         },
         BuiltinAssociatedFn {
             name: "with_capacity",
@@ -343,7 +346,7 @@ pub static STRING_TYPE: BuiltinTypeDef = BuiltinTypeDef {
                 ty: BuiltinParamType::U64,
             }],
             return_ty: BuiltinReturnType::SelfType,
-            runtime_fn: "String__with_capacity",
+            runtime_fn: "__rue_String_with_capacity",
         },
     ],
     methods: &[
@@ -353,28 +356,28 @@ pub static STRING_TYPE: BuiltinTypeDef = BuiltinTypeDef {
             receiver_mode: ReceiverMode::ByRef,
             params: &[],
             return_ty: BuiltinReturnType::U64,
-            runtime_fn: "String__len",
+            runtime_fn: "__rue_String_len",
         },
         BuiltinMethod {
             name: "capacity",
             receiver_mode: ReceiverMode::ByRef,
             params: &[],
             return_ty: BuiltinReturnType::U64,
-            runtime_fn: "String__capacity",
+            runtime_fn: "__rue_String_capacity",
         },
         BuiltinMethod {
             name: "is_empty",
             receiver_mode: ReceiverMode::ByRef,
             params: &[],
             return_ty: BuiltinReturnType::Bool,
-            runtime_fn: "String__is_empty",
+            runtime_fn: "__rue_String_is_empty",
         },
         BuiltinMethod {
             name: "clone",
             receiver_mode: ReceiverMode::ByRef,
             params: &[],
             return_ty: BuiltinReturnType::SelfType,
-            runtime_fn: "String__clone",
+            runtime_fn: "__rue_String_clone",
         },
         // Mutation methods (take &mut self, return modified String)
         BuiltinMethod {
@@ -385,7 +388,7 @@ pub static STRING_TYPE: BuiltinTypeDef = BuiltinTypeDef {
                 ty: BuiltinParamType::SelfType,
             }],
             return_ty: BuiltinReturnType::SelfType,
-            runtime_fn: "String__push_str",
+            runtime_fn: "__rue_String_push_str",
         },
         BuiltinMethod {
             name: "push",
@@ -395,14 +398,14 @@ pub static STRING_TYPE: BuiltinTypeDef = BuiltinTypeDef {
                 ty: BuiltinParamType::U8,
             }],
             return_ty: BuiltinReturnType::SelfType,
-            runtime_fn: "String__push",
+            runtime_fn: "__rue_String_push",
         },
         BuiltinMethod {
             name: "clear",
             receiver_mode: ReceiverMode::ByMutRef,
             params: &[],
             return_ty: BuiltinReturnType::SelfType,
-            runtime_fn: "String__clear",
+            runtime_fn: "__rue_String_clear",
         },
         BuiltinMethod {
             name: "reserve",
@@ -412,7 +415,7 @@ pub static STRING_TYPE: BuiltinTypeDef = BuiltinTypeDef {
                 ty: BuiltinParamType::U64,
             }],
             return_ty: BuiltinReturnType::SelfType,
-            runtime_fn: "String__reserve",
+            runtime_fn: "__rue_String_reserve",
         },
     ],
 };
@@ -497,28 +500,27 @@ pub fn is_reserved_type_name(name: &str) -> bool {
 /// Check if a name is reserved for a runtime/codegen helper function, and thus
 /// may not be used as a user-defined function name.
 ///
-/// A user function with one of these names would collide with the symbol emitted
-/// by the runtime or codegen — a built-in type method (`String__len`), a
-/// `__rue_*` runtime helper (`__rue_alloc`, `__rue_exit`, drop glue, ...), or the
-/// program entry point (`_start`). Depending on link order that collision either
-/// fails to link or silently binds calls to the wrong definition, so these names
-/// are reserved and rejected at declaration time with a clear diagnostic.
+/// A user function with one of these names would collide with a symbol emitted
+/// by the runtime or codegen. Every such symbol lives under the reserved
+/// `__rue_` prefix — built-in type methods and associated functions
+/// (`__rue_String_len`, `__rue_String_new`), allocation/exit/drop glue
+/// (`__rue_alloc`, `__rue_exit`, `__rue_drop_String`), and operator helpers
+/// (`__rue_str_eq`) — with the sole exception of the linker-emitted program
+/// entry point `_start`. Reserving exactly `__rue_*` and `_start` (rather than
+/// growing the set for every new builtin) means `<BuiltinType>__<method>`
+/// spellings like `String__len` are ordinary, legal user identifiers
+/// (RUE-125). Depending on link order a real collision either fails to link or
+/// silently binds calls to the wrong definition, so these names are rejected at
+/// declaration time with a clear diagnostic.
 pub fn is_reserved_function_name(name: &str) -> bool {
-    // Runtime internal helpers: allocation, exit, debug, drop glue, parsing, ...
+    // Runtime internal helpers, built-in methods, drop glue, operators — every
+    // compiler/runtime symbol is emitted under this prefix.
     if name.starts_with("__rue_") {
         return true;
     }
     // The program entry point emitted by the linker.
     if name == "_start" {
         return true;
-    }
-    // Built-in type methods and associated functions are emitted as
-    // `<TypeName>__<method>` (e.g. `String__len`, `Vec__push`). Reserve any name
-    // of that shape whose type component is a reserved built-in type name.
-    if let Some((type_part, _method)) = name.split_once("__") {
-        if !type_part.is_empty() && is_reserved_type_name(type_part) {
-            return true;
-        }
     }
     false
 }
@@ -576,22 +578,22 @@ mod tests {
     #[test]
     fn test_string_associated_fns() {
         let new_fn = STRING_TYPE.find_associated_fn("new").unwrap();
-        assert_eq!(new_fn.runtime_fn, "String__new");
+        assert_eq!(new_fn.runtime_fn, "__rue_String_new");
         assert!(new_fn.params.is_empty());
 
         let with_cap = STRING_TYPE.find_associated_fn("with_capacity").unwrap();
-        assert_eq!(with_cap.runtime_fn, "String__with_capacity");
+        assert_eq!(with_cap.runtime_fn, "__rue_String_with_capacity");
         assert_eq!(with_cap.params.len(), 1);
     }
 
     #[test]
     fn test_string_methods() {
         let len = STRING_TYPE.find_method("len").unwrap();
-        assert_eq!(len.runtime_fn, "String__len");
+        assert_eq!(len.runtime_fn, "__rue_String_len");
         assert_eq!(len.receiver_mode, ReceiverMode::ByRef);
 
         let push_str = STRING_TYPE.find_method("push_str").unwrap();
-        assert_eq!(push_str.runtime_fn, "String__push_str");
+        assert_eq!(push_str.runtime_fn, "__rue_String_push_str");
         assert_eq!(push_str.receiver_mode, ReceiverMode::ByMutRef);
     }
 
@@ -625,22 +627,25 @@ mod tests {
 
     #[test]
     fn test_is_reserved_function_name() {
-        // Runtime helper prefix.
+        // Runtime helper prefix — allocation, exit, drop glue, and the renamed
+        // built-in methods/associated functions all live under `__rue_`.
         assert!(is_reserved_function_name("__rue_alloc"));
         assert!(is_reserved_function_name("__rue_exit"));
         assert!(is_reserved_function_name("__rue_drop_String"));
+        assert!(is_reserved_function_name("__rue_String_len"));
+        assert!(is_reserved_function_name("__rue_String_new"));
+        assert!(is_reserved_function_name("__rue_str_eq"));
         // Entry point.
         assert!(is_reserved_function_name("_start"));
-        // Built-in type methods / associated functions (any String__* shape).
-        assert!(is_reserved_function_name("String__len"));
-        assert!(is_reserved_function_name("String__new"));
-        assert!(is_reserved_function_name("String__anything"));
-        // Not reserved: ordinary user names, including non-builtin `Type__` shapes
-        // and single-underscore names.
+        // Not reserved: ordinary user names. Crucially, the `<Type>__<method>`
+        // spelling is now a legal user identifier — runtime symbols moved under
+        // `__rue_` so the reserved set no longer grows per builtin (RUE-125).
+        assert!(!is_reserved_function_name("String__len"));
+        assert!(!is_reserved_function_name("String__new"));
         assert!(!is_reserved_function_name("main"));
         assert!(!is_reserved_function_name("my_len"));
-        assert!(!is_reserved_function_name("foo__bar")); // foo is not a builtin type
-        assert!(!is_reserved_function_name("Vec__push")); // Vec is not a builtin type yet
+        assert!(!is_reserved_function_name("foo__bar"));
+        assert!(!is_reserved_function_name("Vec__push"));
         assert!(!is_reserved_function_name("_start_engine"));
         assert!(!is_reserved_function_name("rue_helper")); // no leading __
     }

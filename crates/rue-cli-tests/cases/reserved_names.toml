@@ -1,25 +1,36 @@
-# Runtime-helper names are reserved for user functions (RUE-84).
+# Runtime-helper names are reserved for user functions (RUE-84, RUE-125).
 #
 # Defining a function whose name collides with a runtime/codegen symbol
-# (String__len, __rue_*, _start) used to fail with a confusing duplicate-symbol
-# LINK error — or, worse, link "successfully" and silently bind calls to the
-# runtime's definition instead of the user's (a miscompile). These names are now
-# rejected at declaration time with a clear E0435 diagnostic. Legitimate names
-# that merely resemble the conventions still compile.
+# (__rue_*, _start) used to fail with a confusing duplicate-symbol LINK error —
+# or, worse, link "successfully" and silently bind calls to the runtime's
+# definition instead of the user's (a miscompile). These names are now rejected
+# at declaration time with a clear E0435 diagnostic.
+#
+# The reserved set is exactly `__rue_*` and `_start` (RUE-125): every
+# compiler/runtime symbol, including built-in methods (`__rue_String_len`),
+# lives under `__rue_`, so a `Type__method` spelling like `String__len` is an
+# ordinary user identifier — see builtin_method_name_allowed below.
 
 [section]
 id = "cli.reserved_names"
 name = "Reserved runtime-helper function names"
 description = "User functions may not shadow runtime/codegen helper symbols; the error is reported at compile time."
 
+# A `Type__method` name is legal and links distinctly from the built-in method
+# (whose runtime symbol is `__rue_String_len`). Built-in `s.len()` returns 5;
+# the user's `String__len()` returns 7 -> 5*10 + 7 = 57.
 [[case]]
-name = "builtin_method_name_rejected"
+name = "builtin_method_name_allowed"
 files = [{ path = "main.rue", source = """
-fn String__len() -> i32 { 12345 }
-fn main() -> i32 { String__len() }
+fn String__len() -> i32 { 7 }
+fn main() -> i32 {
+    let mut s = String::new();
+    s.push_str("hello");
+    let builtin: i32 = @intCast(s.len());
+    builtin * 10 + String__len()
+}
 """ }]
-compile_fail = true
-error_contains = ["E0435", "String__len", "reserved"]
+exit_code = 57
 
 [[case]]
 name = "rue_runtime_prefix_rejected"
