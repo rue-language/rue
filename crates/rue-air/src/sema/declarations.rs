@@ -418,6 +418,21 @@ impl<'a> Sema<'a> {
                 let mut resolved_fields = Vec::new();
                 for (field_name, field_type) in &fields {
                     let field_ty = self.resolve_type(*field_type, inst.span)?;
+                    // spec 4.14:6 — type values cannot exist at runtime. A
+                    // struct field of type `type` is a runtime storage slot for
+                    // a type value, which is forbidden; reject it at the
+                    // declaration rather than letting a `Holder { t: i32 }`
+                    // literal ICE in codegen ("block has no terminator",
+                    // RUE-217). Mirrors the clean E1200 that
+                    // `let t = comptime { i32 };` already produces.
+                    if field_ty.is_comptime_type() {
+                        return Err(CompileError::new(
+                            ErrorKind::ComptimeEvaluationFailed {
+                                reason: "type values cannot exist at runtime".to_string(),
+                            },
+                            inst.span,
+                        ));
+                    }
                     resolved_fields.push(StructField {
                         name: self.interner.resolve(&*field_name).to_string(),
                         ty: field_ty,
