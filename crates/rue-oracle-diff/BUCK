@@ -1,0 +1,16 @@
+load("//crates:defs.bzl", "rue_binary")
+
+# The differential harness: runs the concrete rue-cli-tests corpus through the
+# rue-oracle reference interpreter and checks it agrees with each case's
+# expected exit code / stdout. A disagreement is a bug in the oracle or the
+# compiler (the compiler already matches these expectations, so a mismatch
+# localizes to codegen). No #[test] functions — it IS the harness.
+rue_binary(
+    name = "rue-oracle-diff",
+    tests = False,
+    deps = [
+        "//crates/rue-oracle:rue-oracle",
+        "//third-party:serde",
+        "//third-party:toml",
+    ],
+)

@@ -271,9 +271,13 @@ impl<'a> Interp<'a> {
                 } => {
                     let s = self.eval(cfg, &mut frame, scrutinee)?.as_int();
                     let cases = cfg.get_switch_cases(cases_start, cases_len);
+                    // Case values are stored as i64 bit patterns; compare by the
+                    // 64-bit pattern so unsigned extremes (u64::MAX -> -1 as i64)
+                    // and i64::MIN match the scrutinee regardless of signedness.
+                    let s_bits = s as i64 as u64;
                     current = cases
                         .iter()
-                        .find(|(val, _)| *val as i128 == s)
+                        .find(|(val, _)| *val as u64 == s_bits)
                         .map(|(_, blk)| *blk)
                         .unwrap_or(default);
                     incoming = Vec::new();
@@ -377,7 +381,17 @@ impl<'a> Interp<'a> {
         let inst = cfg.get_inst(v);
         let ty = inst.ty;
         let result = match &inst.data {
-            CfgInstData::Const(n) => Value::Int(*n as i128),
+            CfgInstData::Const(n) => {
+                // The constant is stored as a 64-bit two's-complement bit
+                // pattern (e.g. i32::MIN is `18446744071562067968` =
+                // 0xFFFFFFFF80000000), so a signed type reinterprets it as
+                // signed; an unsigned type takes the u64 value directly.
+                if ty.is_signed() {
+                    Value::Int(*n as i64 as i128)
+                } else {
+                    Value::Int(*n as i128)
+                }
+            }
             CfgInstData::BoolConst(b) => Value::Bool(*b),
             CfgInstData::StringConst(idx) => Value::Str(
                 self.state
@@ -660,6 +674,14 @@ impl<'a> Interp<'a> {
             };
             return Err(Flow::Panic(Panic(reason.into())));
         }
+        // MIN / -1 (and MIN % -1) trap at the operand width: the hardware `idiv`
+        // faults even though the mathematical remainder is 0. Our i128 model
+        // wouldn't otherwise catch it (the value fits in i128).
+        if let Some((lo, _)) = int_bounds(ty) {
+            if ty.is_signed() && x == lo && y == -1 {
+                return Err(Flow::Panic(Panic("arithmetic overflow".into())));
+            }
+        }
         let r = if is_mod {
             x.checked_rem(y)
         } else {
@@ -676,9 +698,14 @@ impl<'a> Interp<'a> {
         b: CfgValue,
         pick: impl Fn(std::cmp::Ordering) -> bool,
     ) -> Step<Value> {
-        let x = self.eval(cfg, frame, a)?.as_int();
-        let y = self.eval(cfg, frame, b)?.as_int();
-        Ok(Value::Bool(pick(x.cmp(&y))))
+        let x = self.eval(cfg, frame, a)?;
+        let y = self.eval(cfg, frame, b)?;
+        // Strings compare by content (String ==/!=); everything else by value.
+        let ord = match (&x, &y) {
+            (Value::Str(sx), Value::Str(sy)) => sx.cmp(sy),
+            _ => x.as_int().cmp(&y.as_int()),
+        };
+        Ok(Value::Bool(pick(ord)))
     }
 
     fn bitop(
