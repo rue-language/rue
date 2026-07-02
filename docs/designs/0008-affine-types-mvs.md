@@ -14,7 +14,14 @@ superseded-by:
 
 ## Status
 
-Implemented
+Implemented — **except the `@handle` directive, which was removed 2026-07-02
+(RUE-199).** The formal-core review (`docs/formal/01-core-calculus.md` §3) found
+`@handle` to be a vestigial intermediate: it was merely an Affine (or Linear)
+type that also provided an explicit duplication operation `.handle()`, i.e. an
+ordinary function `S -> S`. The multiplicity lattice (Copy / Affine / Linear)
+needs no `@handle`; if explicit duplication of an Affine type is wanted later it
+is just such a function, requiring no directive. References to `Handle` below are
+retained as historical design context.
 
 ## Summary
 
