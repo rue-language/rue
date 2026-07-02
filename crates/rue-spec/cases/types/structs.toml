@@ -261,3 +261,96 @@ fn main() -> i32 {
 """
 exit_code = 0
 
+
+# =============================================================================
+# Struct Literals: field order independence (RUE-9)
+# =============================================================================
+
+[[case]]
+name = "struct_init_any_order"
+spec = ["3.6:15"]
+source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    // Fields written out of declaration order, matched by name.
+    // x stored in slot 0 (10), y in slot 1 (20): 10 - 20 + 42 = 32.
+    let p = Point { y: 20, x: 10 };
+    p.x - p.y + 42
+}
+"""
+exit_code = 32
+
+[[case]]
+name = "struct_init_any_order_three_fields"
+spec = ["3.6:15"]
+source = """
+struct Rec { a: i32, b: i32, c: i32 }
+fn main() -> i32 {
+    let r = Rec { c: 3, a: 1, b: 2 };
+    r.a * 100 + r.b * 10 + r.c  // 123
+}
+"""
+exit_code = 123
+
+[[case]]
+name = "struct_init_out_of_order_duplicate_error"
+spec = ["3.6:15"]
+source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    let p = Point { y: 2, y: 3, x: 1 };
+    p.x
+}
+"""
+compile_fail = true
+error_contains = "duplicate field"
+
+[[case]]
+name = "struct_init_out_of_order_unknown_error"
+spec = ["3.6:15"]
+source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    let p = Point { y: 2, z: 9 };
+    p.x
+}
+"""
+compile_fail = true
+error_contains = "unknown field"
+
+[[case]]
+name = "struct_init_out_of_order_missing_error"
+spec = ["3.6:15"]
+source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    let p = Point { y: 2 };
+    p.y
+}
+"""
+compile_fail = true
+error_contains = "missing field"
+
+[[case]]
+name = "struct_init_source_order_stored_by_name"
+spec = ["3.6:16"]
+source = """
+fn side_effect(val: i32) -> i32 {
+    @dbg(val);
+    val
+}
+
+struct Point { x: i32, y: i32 }
+
+fn main() -> i32 {
+    // Written y first, then x: evaluated in SOURCE order (prints 2 then 1),
+    // but stored by name (x in slot 0, y in slot 1).
+    let p = Point { y: side_effect(2), x: side_effect(1) };
+    p.x * 100 + p.y  // 102
+}
+"""
+exit_code = 102
+expected_stdout = """
+2
+1
+"""
