@@ -234,3 +234,95 @@ fn main() -> i32 {
 }
 """ }]
 stdout = "10\n20\n30\n"
+
+[[case]]
+name = "comptime_match_out_of_range_pattern_rejected"
+description = "RUE-215 facet A: an out-of-range integer pattern is diagnosed (E0800) even when the comptime scrutinee lets the match be pruned. Pattern legality is independent of arm selection (spec 4.7:23)."
+files = [{ path = "main.rue", source = """
+fn f(comptime n: i8) -> i32 {
+    match n {
+        0 => 1,
+        200 => 2,
+        _ => 3,
+    }
+}
+fn main() -> i32 {
+    f(0)
+}
+""" }]
+compile_fail = true
+error_contains = ["E0800", "out of range for type 'i8'"]
+
+[[case]]
+name = "match_out_of_range_pattern_control"
+description = "RUE-215 facet A control: identical body with a plain (non-comptime) i8 scrutinee is rejected the same way — confirms the check exists on the normal path."
+files = [{ path = "main.rue", source = """
+fn f(n: i8) -> i32 {
+    match n {
+        0 => 1,
+        200 => 2,
+        _ => 3,
+    }
+}
+fn main() -> i32 {
+    f(0)
+}
+""" }]
+compile_fail = true
+error_contains = ["E0800", "out of range for type 'i8'"]
+
+[[case]]
+name = "comptime_match_negative_on_unsigned_rejected"
+description = "RUE-215 facet B: a negative pattern on an unsigned comptime scrutinee is diagnosed (E0801) even when the match is prunable (spec 4.7:24)."
+files = [{ path = "main.rue", source = """
+fn f(comptime n: u32) -> i32 {
+    match n {
+        0 => 1,
+        -1 => 2,
+        _ => 3,
+    }
+}
+fn main() -> i32 {
+    f(0)
+}
+""" }]
+compile_fail = true
+error_contains = ["E0801", "u32"]
+
+[[case]]
+name = "match_negative_on_unsigned_control"
+description = "RUE-215 facet B control: identical body with a plain (non-comptime) u32 scrutinee is rejected the same way."
+files = [{ path = "main.rue", source = """
+fn f(n: u32) -> i32 {
+    match n {
+        0 => 1,
+        -1 => 2,
+        _ => 3,
+    }
+}
+fn main() -> i32 {
+    f(0)
+}
+""" }]
+compile_fail = true
+error_contains = ["E0801", "u32"]
+
+[[case]]
+name = "comptime_match_in_range_pattern_still_runs"
+description = "RUE-215 guard: a valid comptime match with an in-range pattern still prunes and runs correctly — the added legality check does not disturb selection."
+files = [{ path = "main.rue", source = """
+fn f(comptime n: i8) -> i32 {
+    match n {
+        0 => 1,
+        100 => 2,
+        _ => 3,
+    }
+}
+fn main() -> i32 {
+    @dbg(f(100));
+    @dbg(f(0));
+    @dbg(f(50));
+    0
+}
+""" }]
+stdout = "2\n1\n3\n"
