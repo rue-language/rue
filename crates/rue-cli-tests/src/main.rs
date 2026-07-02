@@ -46,6 +46,7 @@
 //! - `stdout` / `stdout_contains`: assert on the program's stdout
 //! - `runtime_error_contains`: assert on the program's stderr
 //! - `exit_code`: expected program exit code (default 0)
+//! - `timeout_ms`: wall-clock limit for running the program (default 10s)
 //! - `known_bug = "RUE-NN"`: expected failure (xfail). The case runs; if it
 //!   fails, it is reported as ignored with the bug reference. If it PASSES,
 //!   the suite fails loudly so the marker gets removed when the bug is fixed.
@@ -60,18 +61,23 @@
 //! failure class, regardless of what the case expected (it still counts as
 //! "failure" for `known_bug` purposes).
 //!
-//! # Limitations
+//! # Timeouts
 //!
-//! There is no per-case timeout; programs under test must terminate. Use
-//! `compile_only = true` for sources with infinite loops.
+//! The compiled program is run under a per-case wall-clock timeout (default
+//! [`rue_test_runner::DEFAULT_TIMEOUT_MS`], overridable per case with
+//! `timeout_ms`). If it runs long — e.g. an infinite loop in generated code —
+//! its whole process group is killed and the case is reported as a distinct
+//! TIMEOUT failure (see [`rue_test_runner::TIMEOUT_PREFIX`]), so one bad
+//! program can never hang the suite. `compile_only = true` still skips the run
+//! entirely for sources that are meant only to compile.
 
 use std::collections::HashMap;
-use std::io::Write;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Command;
+use std::time::Duration;
 
 use libtest2_mimic::{Harness, RunContext, RunError, Trial};
-use rue_test_runner::{find_dir, find_rue_binary};
+use rue_test_runner::{DEFAULT_TIMEOUT_MS, find_dir, find_rue_binary, run_with_timeout};
 use serde::Deserialize;
 
 /// Possible paths for the cases directory.
@@ -167,6 +173,11 @@ struct Case {
     /// Expected program exit code (default 0).
     #[serde(default)]
     exit_code: Option<i32>,
+    /// Wall-clock timeout in milliseconds for RUNNING the compiled program.
+    /// Defaults to [`rue_test_runner::DEFAULT_TIMEOUT_MS`]. On timeout the
+    /// program's process group is killed and the case fails as a TIMEOUT.
+    #[serde(default)]
+    timeout_ms: Option<u64>,
     /// Expected failure: reference to the Linear issue tracking the bug.
     #[serde(default)]
     known_bug: Option<String>,
@@ -323,28 +334,14 @@ fn run_case(case: &Case, rue_binary: &Path, real_std: &Path) -> TestResult {
         ));
     }
 
+    // Run the produced binary under a per-case wall-clock timeout. An infinite
+    // loop in generated code must fail this one case (as a distinct TIMEOUT
+    // class), not hang the whole suite. `run_with_timeout` puts the program in
+    // its own process group and kills the group on timeout.
     let mut run_cmd = Command::new(&program);
-    run_cmd
-        .current_dir(dir)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = run_cmd
-        .spawn()
-        .map_err(|e| format!("failed to run compiled program: {}", e))?;
-
-    if let Some(input) = &case.stdin {
-        let mut stdin = child.stdin.take().expect("stdin was piped");
-        // The program may exit without reading all input; a broken pipe here
-        // is not a test failure.
-        let _ = stdin.write_all(input.as_bytes());
-    } else {
-        drop(child.stdin.take());
-    }
-
-    let run_output = child
-        .wait_with_output()
-        .map_err(|e| format!("failed to wait for program: {}", e))?;
+    run_cmd.current_dir(dir);
+    let timeout = Duration::from_millis(case.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS));
+    let run_output = run_with_timeout(run_cmd, timeout, case.stdin.as_deref())?;
 
     let run_stdout = String::from_utf8_lossy(&run_output.stdout).to_string();
     let run_stderr = String::from_utf8_lossy(&run_output.stderr).to_string();

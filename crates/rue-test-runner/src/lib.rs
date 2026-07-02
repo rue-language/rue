@@ -795,10 +795,52 @@ fn read_all_bytes<R: IoRead>(mut reader: R) -> Vec<u8> {
     bytes
 }
 
+/// Marker prefix identifying a timeout failure. A timed-out run is a distinct
+/// failure class (like an ICE): the process ran past its wall-clock budget and
+/// was killed, rather than producing a wrong-but-finite result. Both this
+/// harness and the CLI harness surface it via this prefix so an infinite loop
+/// in a test program is reported and skipped past, never hanging the suite.
+pub const TIMEOUT_PREFIX: &str = "TIMEOUT:";
+
+/// Put the spawned child in its own process group so a timeout can kill the
+/// whole group, not just the direct child. A compiled test program spawning
+/// nothing is the common case, but killing the group is the safe default: any
+/// grandchildren it forked are torn down too, so nothing survives to keep a
+/// pipe open and wedge the harness.
+#[cfg(unix)]
+fn configure_process_group(cmd: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    // process_group(0) makes the child a new group leader whose pgid == its pid.
+    cmd.process_group(0);
+}
+
+#[cfg(not(unix))]
+fn configure_process_group(_cmd: &mut Command) {}
+
+/// Kill the timed-out child and everything in its process group, then reap it.
+#[cfg(unix)]
+fn kill_process_group(child: &mut std::process::Child) {
+    // The child leads its own group (see `configure_process_group`), so a
+    // negative pid targets every process in that group with SIGKILL.
+    let pid = child.id() as i32;
+    unsafe {
+        libc::kill(-pid, libc::SIGKILL);
+    }
+    let _ = child.kill(); // belt-and-suspenders in case the group send raced
+    let _ = child.wait(); // reap the zombie
+}
+
+#[cfg(not(unix))]
+fn kill_process_group(child: &mut std::process::Child) {
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 /// Run a command with a timeout and optional stdin input.
 ///
-/// This function spawns a child process, writes to its stdin if provided,
-/// and polls for completion, killing the process if it exceeds the specified timeout.
+/// This function spawns a child process (in its own process group), writes to
+/// its stdin if provided, and polls for completion, killing the whole process
+/// group if it exceeds the specified timeout.
 ///
 /// # Arguments
 /// * `cmd` - The command to run (already configured with arguments)
@@ -807,12 +849,15 @@ fn read_all_bytes<R: IoRead>(mut reader: R) -> Vec<u8> {
 ///
 /// # Returns
 /// * `Ok(Output)` - The process output (stdout, stderr, exit status)
-/// * `Err(String)` - Error message if the process timed out or failed to start
-fn run_with_timeout(
+/// * `Err(String)` - Error message if the process timed out or failed to start.
+///   A timeout error is prefixed with [`TIMEOUT_PREFIX`] so callers can report
+///   it as a distinct failure class.
+pub fn run_with_timeout(
     mut cmd: Command,
     timeout: Duration,
     stdin_input: Option<&str>,
 ) -> Result<Output, String> {
+    configure_process_group(&mut cmd);
     let mut child = cmd
         .stdin(if stdin_input.is_some() {
             Stdio::piped()
@@ -824,13 +869,13 @@ fn run_with_timeout(
         .spawn()
         .map_err(|e| format!("Failed to spawn process: {}", e))?;
 
-    // Write stdin input if provided
+    // Write stdin input if provided. A program may exit without reading all of
+    // its input; a broken pipe here is not a test failure, so errors are
+    // ignored (matching the CLI harness).
     if let Some(input) = stdin_input {
         if let Some(mut stdin) = child.stdin.take() {
-            stdin
-                .write_all(input.as_bytes())
-                .map_err(|e| format!("Failed to write stdin: {}", e))?;
-            // Closing stdin signals EOF to the child process
+            let _ = stdin.write_all(input.as_bytes());
+            // Dropping `stdin` closes it, signaling EOF to the child.
         }
     }
 
@@ -851,11 +896,11 @@ fn run_with_timeout(
             Ok(None) => {
                 // Still running - check timeout
                 if start.elapsed() > timeout {
-                    // Kill the process and return timeout error
-                    let _ = child.kill();
-                    let _ = child.wait(); // Reap the zombie process
+                    // Kill the whole process group and return a timeout error.
+                    kill_process_group(&mut child);
                     return Err(format!(
-                        "Test execution timed out after {} ms",
+                        "{} test execution timed out after {} ms (process group killed)",
+                        TIMEOUT_PREFIX,
                         timeout.as_millis()
                     ));
                 }
@@ -1683,6 +1728,11 @@ mod tests {
         assert!(
             err.contains("timed out"),
             "Error should mention timeout: {}",
+            err
+        );
+        assert!(
+            err.starts_with(TIMEOUT_PREFIX),
+            "Timeout error should be a distinct TIMEOUT failure class: {}",
             err
         );
     }
