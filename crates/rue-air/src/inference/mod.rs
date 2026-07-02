@@ -25,12 +25,23 @@
 //! Type variables ([`TypeVarId`]) represent unknown types to be solved.
 //! The [`Substitution`] maps type variables to their resolved types.
 //!
-//! # Integer Literals
+//! # Integer Literals (unify-then-default)
 //!
-//! Integer literals get the special [`InferType::IntLiteral`] type rather than
-//! a type variable. This models the fact that a literal like `42` can become
-//! any integer type. When an `IntLiteral` unifies with a concrete integer type,
-//! it becomes that type. Unconstrained `IntLiteral`s default to `i32` at the end.
+//! Un-annotated integer literals follow HM **unify-then-default** (spec
+//! 3.1:14–15, ADR-0007, RUE-218), *not* an eager first-use pin. Each literal is
+//! given a fresh type variable (recorded in `int_literal_vars`) that unifies
+//! with **every** use across the enclosing function body's constraint set. Two
+//! uses that require different integer types therefore conflict regardless of
+//! textual order (E0206). A variable that is still unconstrained at the
+//! defaulting point — the end of the function's constraint solve — defaults to
+//! `i32` (see [`unify::Unifier::default_int_literal_vars`]).
+//!
+//! The order-independence is a property of solving the *whole* constraint set
+//! before defaulting: binding a literal variable to a concrete integer type on
+//! first contact is ordinary unification (the variable genuinely *is* that
+//! type), so a later conflicting use is still rejected. Defaulting is applied
+//! once, after solving, never mid-stream — do not reintroduce an eager i32
+//! default at the literal's definition site.
 
 mod constraint;
 mod generate;
