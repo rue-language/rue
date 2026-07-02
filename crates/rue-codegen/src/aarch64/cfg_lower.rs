@@ -2087,7 +2087,7 @@ impl<'a> CfgLower<'a> {
                     let ptr_val = args[0];
                     let offset_val = args[1];
                     let ptr_vreg = self.get_vreg(ptr_val);
-                    let offset_vreg = self.get_vreg(offset_val);
+                    let raw_offset_vreg = self.get_vreg(offset_val);
 
                     // Get the pointer type to determine element size
                     let ptr_type = self.ctx.cfg.get_inst(ptr_val).ty;
@@ -2098,8 +2098,53 @@ impl<'a> CfgLower<'a> {
                     };
                     let element_size = types::type_size_bytes(self.ctx.type_pool, pointee_type);
 
-                    // Calculate: ptr + (offset * element_size)
-                    // First, multiply offset by element size
+                    // Sign-/zero-extend the index to a full 64-bit value before
+                    // the 64-bit scale + subtract below. A narrow signed index
+                    // (e.g. an i32 `-1`) is zero-extended into the X register by
+                    // a W-write, so without an explicit sign-extend the 64-bit
+                    // multiply would treat it as ~4 billion and corrupt the
+                    // address (RUE-213).
+                    let offset_ty = self.ctx.cfg.get_inst(offset_val).ty;
+                    let offset_vreg = self.mir.alloc_vreg();
+                    self.mir.push(Aarch64Inst::MovRR {
+                        dst: Operand::Virtual(offset_vreg),
+                        src: Operand::Virtual(raw_offset_vreg),
+                    });
+                    let ext_dst = Operand::Virtual(offset_vreg);
+                    let ext_src = Operand::Virtual(offset_vreg);
+                    match (Self::type_bits(offset_ty), offset_ty.is_signed()) {
+                        (8, true) => self.mir.push(Aarch64Inst::Sxtb {
+                            dst: ext_dst,
+                            src: ext_src,
+                        }),
+                        (8, false) => self.mir.push(Aarch64Inst::Uxtb {
+                            dst: ext_dst,
+                            src: ext_src,
+                        }),
+                        (16, true) => self.mir.push(Aarch64Inst::Sxth {
+                            dst: ext_dst,
+                            src: ext_src,
+                        }),
+                        (16, false) => self.mir.push(Aarch64Inst::Uxth {
+                            dst: ext_dst,
+                            src: ext_src,
+                        }),
+                        (32, true) => self.mir.push(Aarch64Inst::Sxtw {
+                            dst: ext_dst,
+                            src: ext_src,
+                        }),
+                        // 32-bit unsigned already zero-extends; 64-bit is full width.
+                        _ => {}
+                    }
+
+                    // Calculate: ptr - (offset * element_size)
+                    // Aggregates (arrays) are laid out with element 0 at the
+                    // highest address and later elements at lower addresses
+                    // (the stack grows down), so array indexing subtracts
+                    // index * 8 from the base. @ptr_offset must subtract the
+                    // scaled offset too, so that advancing a pointer by N lands
+                    // on element N rather than walking off the array (RUE-213).
+                    // First, multiply offset by element size.
                     let scaled_offset_vreg = self.mir.alloc_vreg();
                     if element_size == 1 {
                         // No multiplication needed
@@ -2128,9 +2173,10 @@ impl<'a> CfgLower<'a> {
                         });
                     }
 
-                    // Add to pointer (64-bit add for addresses)
+                    // Subtract from pointer (64-bit sub for addresses); see the
+                    // descending-layout note above (RUE-213).
                     let result_vreg = self.mir.alloc_vreg();
-                    self.mir.push(Aarch64Inst::AddRR {
+                    self.mir.push(Aarch64Inst::SubRR {
                         dst: Operand::Virtual(result_vreg),
                         src1: Operand::Virtual(ptr_vreg),
                         src2: Operand::Virtual(scaled_offset_vreg),

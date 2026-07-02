@@ -84,6 +84,69 @@ fn main() -> i32 {
 """ }]
 stdout = "99\n"
 
+# @ptr_offset advances a pointer by offset * sizeof(pointee) and reads the
+# element at that offset — NOT element 0 (RUE-213). This differential case
+# asserts the exact runtime value at a non-zero offset: reading index 1 of
+# [10, 20, 30] must yield 20. A miscompiled address computation (missing or
+# wrong-direction scale) reads 10 or garbage instead.
+[[case]]
+name = "ptr_offset_reads_offset_element"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 20, 30];
+    let v: i32 = checked {
+        let base: ptr const i32 = @raw(arr[0]);
+        @ptr_read(@ptr_offset(base, 1))
+    };
+    @dbg(v);
+    let w: i32 = checked {
+        let base: ptr const i32 = @raw(arr[0]);
+        @ptr_read(@ptr_offset(base, 2))
+    };
+    @dbg(w);
+    0
+}
+""" }]
+stdout = "20\n30\n"
+
+# A negative @ptr_offset walks backward through the array: starting at
+# element 2 and offsetting by -1 must land on element 1 (20). This guards
+# the sign-extension of a narrow (i32) index — without it the -1 is treated
+# as ~4 billion and the address is corrupted (RUE-213).
+[[case]]
+name = "ptr_offset_negative_walks_backward"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 20, 30];
+    let v: i32 = checked {
+        let base: ptr const i32 = @raw(arr[2]);
+        @ptr_read(@ptr_offset(base, -1))
+    };
+    @dbg(v);
+    0
+}
+""" }]
+stdout = "20\n"
+
+# Writing through an offset `ptr mut` mutates the element at that offset,
+# not element 0 (RUE-213). Offset by 2 from arr[0], write 99, observe it at
+# arr[2].
+[[case]]
+name = "ptr_offset_write_hits_offset_element"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut arr: [i32; 3] = [10, 20, 30];
+    checked {
+        let base: ptr mut i32 = @raw_mut(arr[0]);
+        @ptr_write(@ptr_offset(base, 2), 99);
+    };
+    @dbg(arr[0]);
+    @dbg(arr[2]);
+    0
+}
+""" }]
+stdout = "10\n99\n"
+
 # Enforcement: a pointer operation outside a `checked` block is rejected
 # with E1300, not silently accepted (spec 9.1:12).
 [[case]]

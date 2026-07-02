@@ -1104,6 +1104,38 @@ impl<'a> Sema<'a> {
                         && bool_true_covered
                         && bool_false_covered);
                 if prunable && exhaustive {
+                    // Pattern *legality* is independent of arm *selection*.
+                    // Spec 4.14:19 exempts only the analysis of unselected arm
+                    // *bodies* (and reaffirms exhaustiveness) — it does NOT
+                    // exempt the per-pattern legality rules of 4.7. So before
+                    // pruning we still range-check every integer pattern
+                    // against the scrutinee's declared type, exactly as the
+                    // normal path below does via check_pattern_int: E0800 for
+                    // an out-of-range literal (4.7:23) and E0801 for a negative
+                    // pattern on an unsigned scrutinee (4.7:24). The comptime
+                    // value substituted for the scrutinee mistypes as i32 at
+                    // AIR emission (a known limitation), so we take the
+                    // scrutinee's true type from Hindley-Milner inference
+                    // (RUE-215).
+                    let scrutinee_type =
+                        Self::get_resolved_type(ctx, scrutinee, span, "match scrutinee")?;
+                    if scrutinee_type.is_integer() {
+                        for (pattern, _) in &arms {
+                            if let RirPattern::Int {
+                                value: magnitude,
+                                negative,
+                                ..
+                            } = pattern
+                            {
+                                self.check_pattern_int(
+                                    *magnitude,
+                                    *negative,
+                                    scrutinee_type,
+                                    pattern.span(),
+                                )?;
+                            }
+                        }
+                    }
                     if let Some(body) = selected {
                         ctx.push_scope();
                         let result = self.analyze_inst(air, body, ctx)?;
