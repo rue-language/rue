@@ -18,7 +18,7 @@ block_expr = "{" { statement } [ expression ] "}" ;
 
 {{ rule(id="4.5:3", cat="normative") }}
 
-The type of a block expression is the type of its final expression. If the block ends with a statement, the type is `()`.
+A block expression evaluates to the value of its final expression, and its type is the type of that expression. If the block has no final expression (it ends with a statement, or is empty), it evaluates to `()` and has type `()`.
 
 {{ rule(id="4.5:4", cat="normative") }}
 

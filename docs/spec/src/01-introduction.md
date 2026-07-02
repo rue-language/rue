@@ -17,11 +17,14 @@ This document is the Rue Language Specification. It defines the syntax and seman
 This specification describes the Rue programming language as implemented by the reference compiler. It covers:
 
 - Lexical structure (tokens, comments, whitespace)
-- Types (integers, booleans, arrays, structs)
-- Expressions and operators
+- Types (integers, booleans, arrays, structs, enums, strings, move semantics, destructors)
+- Expressions and operators (including compile-time expressions)
 - Statements
-- Items (functions, struct definitions)
-- Runtime behavior
+- Items (functions, structs, enums, constants)
+- Arrays
+- Runtime behavior (overflow, bounds, panics)
+- Unchecked code and raw pointers
+- Modules and program composition
 
 {{ rule(id="1.2:2") }}
 
@@ -145,7 +148,8 @@ Grammar rules use Extended Backus-Naur Form (EBNF) notation:
 {{ rule(id="1.5:3") }}
 
 ```ebnf
-if_expr = "if" expression "{" block "}" [ "else" "{" block "}" ] ;
+if_expr     = "if" expression "{" block "}" [ else_clause ] ;
+else_clause = "else" ( "{" block "}" | if_expr ) ;
 ```
 
 ## Organization
@@ -155,12 +159,14 @@ if_expr = "if" expression "{" block "}" [ "else" "{" block "}" ] ;
 This specification is organized as follows:
 
 - **Chapter 2: Lexical Structure** - Tokens, comments, whitespace, keywords
-- **Chapter 3: Types** - Integer types, booleans, unit, never, arrays, structs
-- **Chapter 4: Expressions** - Operators, control flow, function calls
+- **Chapter 3: Types** - Integer types, booleans, unit, never, arrays, structs, enums, strings, move semantics, destructors
+- **Chapter 4: Expressions** - Operators, control flow, function calls, compile-time expressions
 - **Chapter 5: Statements** - Variable bindings, assignment
-- **Chapter 6: Items** - Functions, struct definitions
+- **Chapter 6: Items** - Functions, structs, enums, constants
 - **Chapter 7: Arrays** - Fixed-size array behavior
 - **Chapter 8: Runtime Behavior** - Overflow, bounds checking, panics
+- **Chapter 9: Unchecked Code** - Raw pointers and unchecked intrinsics
+- **Chapter 10: Modules** - Module forms, import resolution, visibility, program composition
 - **Appendix A: Grammar** - Complete EBNF grammar
 - **Appendix B: Runtime Panics** - Summary of panic conditions
 - **Appendix C: Implementation Limits** - Minimum limits for conforming implementations

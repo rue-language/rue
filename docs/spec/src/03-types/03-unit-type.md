@@ -12,7 +12,7 @@ The unit type, written `()`, has exactly one value, also written `()`.
 
 {{ rule(id="3.3:2", cat="normative") }}
 
-Functions without an explicit return type annotation implicitly return `()`.
+A function without an explicit return type annotation has return type `()`; its body block evaluates to `()`, which is the value it returns (see 6.1:4).
 
 {{ rule(id="3.3:3", cat="normative") }}
 
@@ -26,11 +26,11 @@ The unit type is a zero-sized type. See [Zero-Sized Types](../#zero-sized-types)
 
 ```rue
 fn do_nothing() {
-    // Implicitly returns ()
+    // body has no final expression, so it evaluates to ()
 }
 
 fn explicit_unit() -> () {
-    // Explicitly returns ()
+    // returns (), stated explicitly in the signature
 }
 
 fn main() -> i32 {
