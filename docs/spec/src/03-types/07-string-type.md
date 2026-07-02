@@ -236,13 +236,44 @@ fn main() -> i32 {
 }
 ```
 
+## Character Iteration
+
+{{ rule(id="3.7:31", cat="normative") }}
+
+The character view `s.chars()` yields the Unicode scalar values of a `String`,
+decoding its bytes as UTF-8. It is used as the iterable of a `for` loop (see
+[Loop Expressions](@/04-expressions/08-loop-expressions.md); a preview feature,
+`--preview for_loops`), which binds each scalar value as a `u32` in ascending
+byte order.
+
+{{ rule(id="3.7:32", cat="dynamic-semantics") }}
+
+Decoding is strict: a byte sequence that is not well-formed UTF-8 (an
+ill-formed, truncated, overlong, or surrogate sequence) traps at runtime when it
+is decoded. Because a `String` is a byte string that may hold arbitrary bytes,
+this "trap, don't corrupt" behavior at the decode boundary is where invalidity
+is caught; a lossy view that substitutes `U+FFFD` is not yet provided.
+
+{{ rule(id="3.7:33") }}
+
+```rue
+fn main() -> i32 {
+    let s = "café";
+    let mut count = 0;
+    for c in s.chars() {
+        @dbg(c);          // 99, 97, 102, 233 (the last is é = U+00E9)
+        count = count + 1;
+    }
+    count  // 4 scalar values (though the string is 5 bytes)
+}
+```
+
 ## Limitations
 
 {{ rule(id="3.7:14", cat="informative") }}
 
 The current implementation does not support:
 - Slicing with range syntax (`s[a..b]`); use `s.substring(start, len)` instead
-- Decoding bytes into Unicode scalar values (e.g. iterating `chars`)
 - Pattern matching on strings
 
 These features may be added in future versions.

@@ -7,8 +7,8 @@ use crate::ast::{
     AnonStructField, ArgMode, ArrayLength, ArrayLitExpr, AssignStatement, AssignTarget,
     AssocFnCallExpr, Ast, BinaryExpr, BinaryOp, BlockExpr, BoolLit, BreakExpr, CallArg, CallExpr,
     CheckedBlockExpr, ComptimeBlockExpr, ConstDecl, ContinueExpr, Directive, DirectiveArg,
-    Directives, DropFn, EnumDecl, EnumVariant, Expr, FieldDecl, FieldExpr, FieldInit, Function,
-    Ident, IfExpr, IndexExpr, IntLit, IntrinsicArg, IntrinsicCallExpr, Item, LetPattern,
+    Directives, DropFn, EnumDecl, EnumVariant, Expr, FieldDecl, FieldExpr, FieldInit, ForExpr,
+    Function, Ident, IfExpr, IndexExpr, IntLit, IntrinsicArg, IntrinsicCallExpr, Item, LetPattern,
     LetStatement, LoopExpr, MatchArm, MatchExpr, Method, MethodCallExpr, NegIntLit, Param,
     ParamMode, ParenExpr, PathExpr, PathPattern, Pattern, ReturnExpr, SelfExpr, SelfParam,
     Statement, StringLit, StructDecl, StructLitExpr, TypeExpr, TypeLitExpr, UnaryExpr, UnaryOp,
@@ -1047,6 +1047,27 @@ where
         })
         .boxed();
 
+    // For expression (RUE-220): `for <binder> in <iterable> { body }`.
+    //
+    // The iterable is a full expression followed by the body block. Like
+    // `while`, a bare struct literal cannot appear unparenthesized as the
+    // iterable (a `{ ident: ... }` would be reinterpreted as the body), which
+    // is fine: a struct is not iterable anyway.
+    let for_expr = just(TokenKind::For)
+        .ignore_then(let_pattern_parser())
+        .then_ignore(just(TokenKind::In))
+        .then(expr.clone())
+        .then(maybe_unit_block_parser(expr.clone(), block_like.clone()))
+        .map_with(|((binder, iterable), body), e| {
+            Expr::For(ForExpr {
+                binder,
+                iterable: Box::new(iterable),
+                body,
+                span: span_from_extra(e),
+            })
+        })
+        .boxed();
+
     // Match expression: match scrutinee { pattern => expr, ... }
     //
     // The arm block is `.or_not()` because of a brace ambiguity: in
@@ -1106,6 +1127,7 @@ where
         if_expr,
         while_expr,
         loop_expr,
+        for_expr,
         match_expr,
     ))
 }
@@ -1815,6 +1837,7 @@ fn is_control_flow_expr(e: &Expr) -> bool {
             | Expr::Match(_)
             | Expr::While(_)
             | Expr::Loop(_)
+            | Expr::For(_)
             | Expr::Break(_)
             | Expr::Continue(_)
             | Expr::Return(_)
@@ -1836,7 +1859,12 @@ fn is_control_flow_expr(e: &Expr) -> bool {
 fn is_block_like(e: &Expr) -> bool {
     matches!(
         e,
-        Expr::If(_) | Expr::Match(_) | Expr::While(_) | Expr::Loop(_) | Expr::Block(_)
+        Expr::If(_)
+            | Expr::Match(_)
+            | Expr::While(_)
+            | Expr::Loop(_)
+            | Expr::For(_)
+            | Expr::Block(_)
     )
 }
 
@@ -2924,6 +2952,41 @@ mod tests {
         // While with assignment
         let result = parse("fn main() -> i32 { while true { x = 1; } 0 }").unwrap();
         assert_eq!(result.ast.items.len(), 1);
+    }
+
+    #[test]
+    fn test_for_over_array() {
+        // `for x in <iterable> { body }` parses as a For expression (RUE-220).
+        let result = parse("fn main() -> i32 { for x in a { s = s + x; } 0 }").unwrap();
+        assert_eq!(result.ast.items.len(), 1);
+        let Item::Function(f) = &result.ast.items[0] else {
+            panic!("expected function");
+        };
+        let Expr::Block(block) = &f.body else {
+            panic!("expected block body");
+        };
+        let Statement::Expr(Expr::For(for_expr)) = &block.statements[0] else {
+            panic!("expected first statement to be a For expression");
+        };
+        assert!(matches!(for_expr.binder, LetPattern::Ident(_)));
+    }
+
+    #[test]
+    fn test_for_wildcard_and_chars() {
+        // Wildcard binder and a `.chars()` method-call iterable both parse.
+        let result = parse("fn main() -> i32 { for _ in s.chars() { n = n + 1; } 0 }").unwrap();
+        assert_eq!(result.ast.items.len(), 1);
+        let Item::Function(f) = &result.ast.items[0] else {
+            panic!("expected function");
+        };
+        let Expr::Block(block) = &f.body else {
+            panic!("expected block body");
+        };
+        let Statement::Expr(Expr::For(for_expr)) = &block.statements[0] else {
+            panic!("expected first statement to be a For expression");
+        };
+        assert!(matches!(for_expr.binder, LetPattern::Wildcard(_)));
+        assert!(matches!(&*for_expr.iterable, Expr::MethodCall(_)));
     }
 
     #[test]

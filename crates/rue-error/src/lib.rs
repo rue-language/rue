@@ -353,6 +353,10 @@ pub enum PreviewFeature {
     /// Testing infrastructure feature - permanently unstable.
     /// Used to verify the preview feature gating mechanism works.
     TestInfra,
+    /// Built-in `for` loops over arrays and string views (RUE-220, ADR-0037).
+    /// Layer 1 of the iteration model: `for x in <iterable> { body }` in
+    /// read/borrow mode over arrays, String bytes, and `s.chars()`.
+    ForLoops,
 }
 
 /// Error returned when parsing a preview feature name fails.
@@ -373,6 +377,7 @@ impl PreviewFeature {
     pub fn name(&self) -> &'static str {
         match *self {
             PreviewFeature::TestInfra => "test_infra",
+            PreviewFeature::ForLoops => "for_loops",
         }
     }
 
@@ -381,12 +386,13 @@ impl PreviewFeature {
     pub fn adr(&self) -> &'static str {
         match *self {
             PreviewFeature::TestInfra => "ADR-0005",
+            PreviewFeature::ForLoops => "ADR-0037",
         }
     }
 
     /// Get all available preview features.
     pub fn all() -> &'static [PreviewFeature] {
-        &[PreviewFeature::TestInfra]
+        &[PreviewFeature::TestInfra, PreviewFeature::ForLoops]
     }
 
     /// Get a comma-separated list of all feature names (for help text).
@@ -409,6 +415,7 @@ impl std::str::FromStr for PreviewFeature {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "test_infra" => Ok(PreviewFeature::TestInfra),
+            "for_loops" => Ok(PreviewFeature::ForLoops),
             _ => Err(ParsePreviewFeatureError(s.to_string())),
         }
     }
@@ -2185,7 +2192,7 @@ mod tests {
     #[test]
     fn test_preview_feature_all_names() {
         let names = PreviewFeature::all_names();
-        assert_eq!(names, "test_infra");
+        assert_eq!(names, "test_infra, for_loops");
     }
 
     // ========================================================================
