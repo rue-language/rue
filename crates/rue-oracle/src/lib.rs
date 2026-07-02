@@ -13,7 +13,7 @@
 //! it and the compiled binary localizes a bug to lowering/codegen — exactly the
 //! layer that has been buggy.
 //!
-//! ## Coverage (first vertical slice)
+//! ## Coverage
 //!
 //! Scalars (all integer widths + `bool` + `unit`), the full arithmetic /
 //! comparison / bitwise / shift operator set with **trapping** overflow, locals,
@@ -25,9 +25,12 @@
 //! by-reference under the law of exclusivity); and drop/destructors, executed in
 //! spec-3.9 order (user destructor, then fields in declaration order / elements
 //! ascending) so the oracle validates drop *order* and drop-exactly-once, not
-//! just final values. Not yet: strings (heap builtin) — the last core slice (see
-//! the `docs/formal` extension rubric). Programs using them return
-//! [`Unsupported`].
+//! just final values; and `String` (content modeled directly — `new`, `push`,
+//! `push_str`, `len`, `is_empty`, `clear`, `clone`; `capacity`/`reserve` are
+//! implementation-defined and reported [`Unsupported`] rather than guessed).
+//! The interpreter now covers every CFG instruction; a program is only
+//! [`Unsupported`] where a specific case is deliberately not modeled (e.g.
+//! `String::capacity`, deeply-nested inout field writes).
 
 use lasso::ThreadedRodeo;
 use rue_air::{Type, TypeKind};
@@ -80,6 +83,10 @@ enum Value {
     /// (ascending index). Enums are payload-less today, so an enum value is an
     /// `Int` discriminant, not an aggregate.
     Aggregate(Vec<Value>),
+    /// A `String`, modeled by its content only; the heap layout (ptr, len, cap)
+    /// and capacity are implementation details the oracle abstracts over
+    /// (`capacity`/`reserve` are unmodeled — see the builtin dispatch).
+    Str(String),
 }
 
 impl Value {
@@ -87,16 +94,16 @@ impl Value {
         match self {
             Value::Int(n) => *n,
             Value::Bool(b) => *b as i128,
-            // Unreachable for a well-typed program (aggregates never reach a
-            // scalar context); defined so callers need not thread an error.
-            Value::Unit | Value::Aggregate(_) => 0,
+            // Unreachable for a well-typed program (aggregates/strings never
+            // reach a scalar context); defined so callers need not thread an error.
+            Value::Unit | Value::Aggregate(_) | Value::Str(_) => 0,
         }
     }
     fn as_bool(&self) -> bool {
         match self {
             Value::Bool(b) => *b,
             Value::Int(n) => *n != 0,
-            Value::Unit | Value::Aggregate(_) => false,
+            Value::Unit | Value::Aggregate(_) | Value::Str(_) => false,
         }
     }
 }
@@ -146,6 +153,8 @@ struct Frame {
 fn slot_width(v: &Value) -> usize {
     match v {
         Value::Aggregate(elems) => elems.iter().map(slot_width).sum(),
+        // A String is a fat value occupying three ABI slots (ptr, len, cap).
+        Value::Str(_) => 3,
         _ => 1,
     }
 }
@@ -279,6 +288,41 @@ impl<'a> Interp<'a> {
         }
     }
 
+    /// Dispatch a builtin `String` method (these have no CFG body). Returns
+    /// `Ok(None)` if `name` is not a String builtin (so the caller falls back to
+    /// the ordinary CFG call). `capacity`/`reserve`/`with_capacity` capacity
+    /// behavior is implementation-defined and deliberately not modeled.
+    fn string_builtin(&self, name: &str, args: &[Value]) -> Step<Option<Value>> {
+        let s = |v: &Value| match v {
+            Value::Str(s) => s.clone(),
+            _ => String::new(),
+        };
+        let out = match name {
+            "__rue_String_new" => Value::Str(String::new()),
+            "__rue_String_with_capacity" => Value::Str(String::new()),
+            "__rue_String_push_str" => Value::Str(s(&args[0]) + &s(&args[1])),
+            "__rue_String_push" => {
+                let mut base = s(&args[0]);
+                if let Some(c) = char::from_u32(args[1].as_int() as u32) {
+                    base.push(c);
+                }
+                Value::Str(base)
+            }
+            "__rue_String_len" => Value::Int(s(&args[0]).len() as i128),
+            "__rue_String_is_empty" => Value::Bool(s(&args[0]).is_empty()),
+            "__rue_String_clear" => Value::Str(String::new()),
+            "__rue_String_clone" => Value::Str(s(&args[0])),
+            "__rue_String_reserve" => Value::Str(s(&args[0])),
+            "__rue_String_capacity" => {
+                return Err(Flow::Unsupported(Unsupported(
+                    "String::capacity is implementation-defined".into(),
+                )));
+            }
+            _ => return Ok(None),
+        };
+        Ok(Some(out))
+    }
+
     /// Run the drop of a value of type `ty`, in the spec-3.9 order: the type's
     /// user destructor first, then its fields (declaration order) / elements
     /// (ascending). Scalars are trivially droppable (no-op). The compiler's drop
@@ -289,6 +333,11 @@ impl<'a> Interp<'a> {
         match ty.kind() {
             TypeKind::Struct(sid) => {
                 let sd = self.state.type_pool.struct_def(sid);
+                // A builtin type's drop (e.g. String freeing its heap buffer) has
+                // no observable effect and no CFG body; skip it.
+                if sd.is_builtin {
+                    return Ok(());
+                }
                 if let Some(dtor) = sd.destructor.clone() {
                     self.call(&dtor, &[v.clone()])?;
                 }
@@ -330,6 +379,13 @@ impl<'a> Interp<'a> {
         let result = match &inst.data {
             CfgInstData::Const(n) => Value::Int(*n as i128),
             CfgInstData::BoolConst(b) => Value::Bool(*b),
+            CfgInstData::StringConst(idx) => Value::Str(
+                self.state
+                    .strings
+                    .get(*idx as usize)
+                    .cloned()
+                    .ok_or_else(|| Flow::Unsupported(Unsupported("string const index".into())))?,
+            ),
             CfgInstData::Param { index } => frame
                 .params
                 .get(*index as usize)
@@ -509,15 +565,20 @@ impl<'a> Interp<'a> {
                     argvals.push(v);
                     base += w;
                 }
-                let (result, final_params) = self.call(&fname, &argvals)?;
-                // Copy-out: write each inout parameter's final value back into
-                // the caller place it came from.
-                for (slot, place) in writebacks {
-                    if let Some(val) = final_params.get(slot).and_then(|o| o.clone()) {
-                        self.place_write(cfg, frame, &place, val)?;
+                // Builtin String methods have no CFG body; dispatch them here.
+                if let Some(v) = self.string_builtin(&fname, &argvals)? {
+                    v
+                } else {
+                    let (result, final_params) = self.call(&fname, &argvals)?;
+                    // Copy-out: write each inout parameter's final value back into
+                    // the caller place it came from.
+                    for (slot, place) in writebacks {
+                        if let Some(val) = final_params.get(slot).and_then(|o| o.clone()) {
+                            self.place_write(cfg, frame, &place, val)?;
+                        }
                     }
+                    result
                 }
-                result
             }
 
             CfgInstData::Intrinsic {
@@ -561,12 +622,6 @@ impl<'a> Interp<'a> {
                 Value::Unit
             }
             CfgInstData::StorageLive { .. } | CfgInstData::StorageDead { .. } => Value::Unit,
-
-            other => {
-                return Err(Flow::Unsupported(Unsupported(format!(
-                    "instruction {other:?}"
-                ))));
-            }
         };
         frame.cache.insert(v.as_u32(), result.clone());
         Ok(result)
@@ -904,6 +959,10 @@ fn from_bits(bits_val: u128, bits: u32, signed: bool) -> i128 {
 /// Format a value exactly as the `@dbg` runtime intrinsic prints it (decimal for
 /// integers respecting signedness, `true`/`false` for bool), sans the newline.
 fn format_dbg(val: &Value, ty: Type) -> Result<String, Flow> {
+    // `@dbg` of a String prints its content (matches __rue_dbg_str).
+    if let Value::Str(s) = val {
+        return Ok(s.clone());
+    }
     Ok(match ty.kind() {
         TypeKind::Bool => val.as_bool().to_string(),
         k if kind_signed(k) => val.as_int().to_string(),
