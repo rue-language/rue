@@ -1310,8 +1310,11 @@ impl<'a> ConstraintGenerator<'a> {
             InstData::IndexGet { base, index } => {
                 let base_info = self.generate(*base, ctx);
                 let index_info = self.generate(*index, ctx);
-                // Index must be an unsigned integer type
-                self.add_constraint(Constraint::is_unsigned(index_info.ty, index_info.span));
+                // Index must be an integer type (signed or unsigned) per spec
+                // 7.1:7. A negative or out-of-range index is not a type error;
+                // it is caught at runtime by the bounds check (unsigned 64-bit
+                // compare, so negatives fail and trap — RUE-81/RUE-87).
+                self.add_constraint(Constraint::is_integer(index_info.ty, index_info.span));
 
                 // Extract element type from array type.
                 // If base is InferType::Array, we can get the element type directly.
@@ -1331,8 +1334,10 @@ impl<'a> ConstraintGenerator<'a> {
             InstData::IndexSet { base, index, value } => {
                 let base_info = self.generate(*base, ctx);
                 let index_info = self.generate(*index, ctx);
-                // Index must be an unsigned integer type
-                self.add_constraint(Constraint::is_unsigned(index_info.ty, index_info.span));
+                // Index must be an integer type (signed or unsigned) per spec
+                // 7.1:7. Negative/out-of-range indices trap at runtime via the
+                // bounds check, not at compile time (RUE-81/RUE-87).
+                self.add_constraint(Constraint::is_integer(index_info.ty, index_info.span));
 
                 let value_info = self.generate(*value, ctx);
 
@@ -2281,11 +2286,11 @@ mod tests {
 
         // Result is a type variable (element type unknown)
         assert!(info.ty.is_var());
-        // Should generate 1 constraint: index must be unsigned
+        // Should generate 1 constraint: index must be an integer (spec 7.1:7)
         assert_eq!(cgen.constraints().len(), 1);
         match &cgen.constraints()[0] {
-            Constraint::IsUnsigned(_, _) => {}
-            _ => panic!("Expected IsUnsigned constraint for index"),
+            Constraint::IsInteger(_, _) => {}
+            _ => panic!("Expected IsInteger constraint for index"),
         }
     }
 
@@ -2325,11 +2330,11 @@ mod tests {
 
         // Index assignment produces Unit
         assert_eq!(info.ty, InferType::Concrete(Type::UNIT));
-        // Should generate 1 constraint: index must be unsigned
+        // Should generate 1 constraint: index must be an integer (spec 7.1:7)
         assert_eq!(cgen.constraints().len(), 1);
         match &cgen.constraints()[0] {
-            Constraint::IsUnsigned(_, _) => {}
-            _ => panic!("Expected IsUnsigned constraint for index"),
+            Constraint::IsInteger(_, _) => {}
+            _ => panic!("Expected IsInteger constraint for index"),
         }
     }
 

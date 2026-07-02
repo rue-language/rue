@@ -99,9 +99,11 @@ fn main() -> i32 {
 """
 compile_fail = true
 
+# A negative constant index is a compile-time out-of-bounds error (the
+# constant bounds check catches index < 0), not a type error (RUE-81).
 [[case]]
-name = "constant_expression_negation_rejected"
-spec = ["4.11:4"]
+name = "constant_negative_index_out_of_bounds"
+spec = ["8.2:3"]
 source = """
 fn main() -> i32 {
     let arr: [i32; 3] = [10, 20, 30];
@@ -109,7 +111,7 @@ fn main() -> i32 {
 }
 """
 compile_fail = true
-error_contains = "unsigned"
+error_contains = "out of bounds"
 
 [[case]]
 name = "constant_expression_division_valid"
@@ -144,6 +146,34 @@ source = """
 fn main() -> i32 {
     let arr: [i32; 3] = [10, 20, 30];
     let i: u64 = 100;
+    arr[i]
+}
+"""
+exit_code = 101
+
+# A negative signed index computed at runtime must trap: the bounds check is
+# an unsigned 64-bit comparison, so a negative value (all high bits set)
+# exceeds the length and fails (RUE-81 / RUE-87).
+[[case]]
+name = "negative_signed_index_traps_at_runtime"
+spec = ["8.2:5"]
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 20, 30];
+    let i: i64 = -1;
+    arr[i]
+}
+"""
+exit_code = 101
+
+# An out-of-range signed index also traps at runtime.
+[[case]]
+name = "out_of_range_signed_index_traps_at_runtime"
+spec = ["8.2:5"]
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 20, 30];
+    let i: i32 = 7;
     arr[i]
 }
 """

@@ -1,0 +1,95 @@
+# Signed integer array indices (RUE-81).
+#
+# Spec 7.1:7 / 4.11:4 allow ANY integer type as an array index, signed or
+# unsigned. Previously a signed (i32/i64) index was rejected at compile time
+# with E0206 ("expected unsigned integer type"), contradicting the spec.
+#
+# A negative or out-of-range value is NOT a compile-time type error: the
+# runtime bounds check is an unsigned 64-bit comparison (RUE-87), so a negative
+# index (all high bits set) exceeds the length and traps at runtime.
+
+[section]
+id = "cli.signed_array_index"
+name = "Signed array indices"
+description = "i32/i64 indices read/write the right element; negative/OOB signed indices trap (RUE-81)."
+
+[[case]]
+name = "signed_i64_index_reads_element"
+description = "An i64 index reads the correct element."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 20, 30];
+    let i: i64 = 1;
+    @dbg(arr[i]);
+    0
+}
+""" }]
+stdout = "20\n"
+exit_code = 0
+
+[[case]]
+name = "signed_i32_index_reads_element"
+description = "An i32 index reads the correct element (control for width)."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 20, 30];
+    let i: i32 = 2;
+    @dbg(arr[i]);
+    0
+}
+""" }]
+stdout = "30\n"
+exit_code = 0
+
+[[case]]
+name = "usize_index_reads_element"
+description = "Control: an unsigned index still works exactly as before."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 20, 30];
+    let i: usize = 0;
+    @dbg(arr[i]);
+    0
+}
+""" }]
+stdout = "10\n"
+exit_code = 0
+
+[[case]]
+name = "signed_i64_index_writes_element"
+description = "An i64 index on the write path (IndexSet) stores to the right element."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut arr: [i32; 3] = [0, 0, 0];
+    let i: i64 = 2;
+    arr[i] = 42;
+    @dbg(arr[i]);
+    0
+}
+""" }]
+stdout = "42\n"
+exit_code = 0
+
+[[case]]
+name = "negative_signed_index_traps"
+description = "A negative signed index is not a type error; it fails the bounds check and traps at runtime (exit 101)."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 20, 30];
+    let i: i64 = -1;
+    arr[i]
+}
+""" }]
+exit_code = 101
+
+[[case]]
+name = "out_of_range_signed_index_traps"
+description = "An out-of-range signed index traps at runtime (exit 101)."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 20, 30];
+    let i: i32 = 9;
+    arr[i]
+}
+""" }]
+exit_code = 101

@@ -22,7 +22,10 @@ The expression before the brackets **MUST** have an array type `[T; N]`.
 
 {{ rule(id="4.11:4", cat="legality-rule") }}
 
-The index expression **MUST** have an unsigned integer type (`u8`, `u16`, `u32`, or `u64`).
+The index expression **MUST** have an integer type (signed or unsigned:
+`i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `isize`, or `usize`). A
+negative index value is not a compile-time type error; it is caught by bounds
+checking (a negative index always fails the bounds check and traps at runtime).
 
 {{ rule(id="4.11:5", cat="normative") }}
 
