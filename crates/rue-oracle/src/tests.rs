@@ -317,13 +317,47 @@ fn moved_value_drops_once_at_destination() {
 }
 
 #[test]
-fn string_still_unsupported() {
-    // Strings (heap builtin) are a later slice; must report cleanly, not crash.
+fn string_build_and_len() {
     let src = "fn main() -> i32 {
         let mut s = String::new();
         s.push_str(\"hi\");
         let n: u64 = s.len();
         if n == 2 { 0 } else { 1 }
     }";
-    assert!(run_source(src).is_err());
+    assert_eq!(exit(src), 0);
+}
+
+#[test]
+fn string_dbg_and_concat() {
+    let src = "fn main() -> i32 {
+        let mut s = String::new();
+        s.push_str(\"foo\");
+        s.push_str(\"bar\");
+        @dbg(s);
+        0
+    }";
+    assert_eq!(run(src).stdout, "foobar\n");
+}
+
+#[test]
+fn string_literal_dbg() {
+    let src = "fn main() -> i32 {
+        let s = \"hello\";
+        @dbg(s);
+        0
+    }";
+    assert_eq!(run(src).stdout, "hello\n");
+}
+
+#[test]
+fn string_is_empty_and_clear() {
+    let src = "fn main() -> i32 {
+        let mut s = String::new();
+        s.push_str(\"x\");
+        let a: bool = s.is_empty();
+        s.clear();
+        let b: bool = s.is_empty();
+        if !a { if b { 0 } else { 1 } } else { 2 }
+    }";
+    assert_eq!(exit(src), 0);
 }
