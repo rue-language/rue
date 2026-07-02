@@ -1631,7 +1631,7 @@ impl<'a> Sema<'a> {
                 if p.mode != RirParamMode::Normal || p.is_comptime {
                     continue;
                 }
-                if !self.type_carries_linear(p.ty) {
+                if !self.type_requires_consumption(p.ty) {
                     continue;
                 }
                 let state = ctx.moved_vars.get(&p.name);
@@ -4538,12 +4538,12 @@ impl<'a> Sema<'a> {
                 continue;
             };
 
-            // Only check types that carry a linear value: linear structs
-            // themselves, and arrays whose elements carry one (an array of
-            // linear values must be consumed — as a whole, or element-wise
-            // via constant-index moves (RUE-186); dropping it would
-            // silently drop every element).
-            if !self.type_carries_linear(local.ty) {
+            // Only check types that require consumption: linear structs
+            // themselves, and non-empty arrays whose elements carry one (an
+            // array of linear values must be consumed — as a whole, or
+            // element-wise via constant-index moves (RUE-186); dropping it
+            // would silently drop every element).
+            if !self.type_requires_consumption(local.ty) {
                 continue;
             }
 
@@ -4571,6 +4571,25 @@ impl<'a> Sema<'a> {
         }
 
         Ok(())
+    }
+
+    /// Does dropping a value of this type discard a linear value, i.e. does
+    /// the type carry a must-consume obligation?
+    ///
+    /// This is [`Self::type_carries_linear`] with one refinement (RUE-194,
+    /// spec 3.8:74): an array shape whose total element count is zero
+    /// (`[L; 0]`, `[[L; 5]; 0]`, `[[L; 0]; 5]`, ...) holds no linear values
+    /// at runtime, so its obligation is vacuously satisfied and dropping it
+    /// is fine. A linear STRUCT always requires consumption — the `linear`
+    /// declaration is the obligation, regardless of what its fields hold.
+    pub(crate) fn type_requires_consumption(&self, ty: Type) -> bool {
+        match ty.kind() {
+            TypeKind::Array(array_id) => {
+                let (element_type, length) = self.type_pool.array_def(array_id);
+                length > 0 && self.type_requires_consumption(element_type)
+            }
+            _ => self.type_carries_linear(ty),
+        }
     }
 
     /// Shared element-wise consumption check for linear arrays (RUE-186):
@@ -4638,7 +4657,7 @@ impl<'a> Sema<'a> {
         ty: Type,
         inst_ref: InstRef,
     ) -> CompileResult<()> {
-        if !self.type_carries_linear(ty) {
+        if !self.type_requires_consumption(ty) {
             return Ok(());
         }
         let err = CompileError::new(

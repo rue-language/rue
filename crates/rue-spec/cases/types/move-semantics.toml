@@ -1940,6 +1940,54 @@ fn main() -> i32 {
 exit_code = 42
 
 [[case]]
+name = "zero_length_linear_array_vacuously_consumed"
+spec = ["3.8:74"]
+description = "A zero-length array of a linear type holds no linear values; dropping it is fine"
+source = """
+linear struct MustUse { value: i32 }
+
+fn main() -> i32 {
+    let _none: [MustUse; 0] = [];
+    0
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "zero_length_linear_array_param_and_discard"
+spec = ["3.8:74"]
+description = "Vacuous consumption also covers by-value parameters, discarded values, and nested zero-count shapes"
+source = """
+linear struct MustUse { value: i32 }
+
+fn take(_xs: [MustUse; 0]) -> i32 { 40 }
+fn make() -> [MustUse; 0] { [] }
+
+fn main() -> i32 {
+    make();
+    let _nested_outer: [[MustUse; 5]; 0] = [];
+    let _nested_inner: [[MustUse; 0]; 2] = [[], []];
+    take([]) + 2
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "zero_length_vacuity_not_for_linear_structs"
+spec = ["3.8:74"]
+description = "Control: a one-element linear array (and a linear struct) still must be consumed"
+source = """
+linear struct MustUse { value: i32 }
+
+fn main() -> i32 {
+    let a: [MustUse; 1] = [MustUse { value: 1 }];
+    0
+}
+"""
+compile_fail = true
+error_contains = "linear value 'a' must be consumed"
+
+[[case]]
 name = "array_element_write_partially_moved_rejected"
 spec = ["3.8:72"]
 description = "Assigning to an element of a partially moved array is rejected"
