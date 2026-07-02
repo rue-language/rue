@@ -56,6 +56,16 @@ use thiserror::Error;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ErrorCode(pub u16);
 
+/// Maximum supported syntactic nesting depth.
+///
+/// The parser (recursive-descent through bracketed constructs) and AstGen
+/// (recursive AST→RIR lowering) both bound their recursion by this value and
+/// emit [`ErrorCode::NESTING_LIMIT_EXCEEDED`] (E0482) instead of overflowing
+/// the stack on pathologically nested input (RUE-42). Chosen generously so
+/// real code never hits it, but low enough that the guarded recursion stays
+/// well within the stack the parser runs on.
+pub const MAX_NESTING_DEPTH: usize = 256;
+
 impl ErrorCode {
     // ========================================================================
     // Lexer errors (E0001-E0099)
@@ -148,6 +158,12 @@ impl ErrorCode {
     pub const LINEAR_VALUE_DISCARDED: Self = Self(478);
     // 479 is reserved by in-flight work.
     pub const ASSIGN_TO_PARTIALLY_MOVED_ARRAY: Self = Self(480);
+    /// Source nests deeper than the compiler's fixed recursion limit
+    /// (`MAX_NESTING_DEPTH`). A parser/AstGen guard reports this instead of
+    /// overflowing the stack on pathologically nested input (RUE-42). It is a
+    /// resource-limit diagnostic rather than a struct/enum error, but the
+    /// reserved code lives in this block.
+    pub const NESTING_LIMIT_EXCEEDED: Self = Self(482);
 
     // ========================================================================
     // Control flow errors (E0500-E0599)
@@ -873,6 +889,13 @@ pub enum ErrorKind {
     /// Used for parser-generated errors that don't fit the "expected X, found Y" pattern.
     #[error("{0}")]
     ParseError(String),
+    /// Source is nested more deeply than the compiler supports. Reported by
+    /// the parser's nesting pre-scan and by the AstGen depth guard so that
+    /// pathologically nested input yields a clean diagnostic instead of a
+    /// stack overflow (RUE-42). `limit` is the maximum supported nesting
+    /// depth (`MAX_NESTING_DEPTH`).
+    #[error("expression nests too deeply; exceeds the maximum nesting depth of {limit}")]
+    NestingLimitExceeded { limit: usize },
 
     // Semantic errors
     #[error("no main function found")]
@@ -1232,6 +1255,7 @@ impl ErrorKind {
             ErrorKind::UnexpectedToken { .. } => ErrorCode::UNEXPECTED_TOKEN,
             ErrorKind::UnexpectedEof { .. } => ErrorCode::UNEXPECTED_EOF,
             ErrorKind::ParseError(_) => ErrorCode::PARSE_ERROR,
+            ErrorKind::NestingLimitExceeded { .. } => ErrorCode::NESTING_LIMIT_EXCEEDED,
 
             // Semantic errors (E0200-E0399)
             ErrorKind::NoMainFunction => ErrorCode::NO_MAIN_FUNCTION,

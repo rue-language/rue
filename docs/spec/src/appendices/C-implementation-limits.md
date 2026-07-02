@@ -75,11 +75,15 @@ A conforming implementation **MUST** support at least:
 | Function parameters | No fixed limit |
 | Struct fields | No fixed limit |
 | Enum variants | 2^64 |
-| Nesting depth (blocks, loops, etc.) | No fixed limit |
+| Syntactic nesting depth (expressions, types, blocks, loops) | 256 levels |
 
 {{ rule(id="C.6:2", cat="informative") }}
 
 "No fixed limit" means the construct is limited only by available memory, not by an explicit cap in the implementation.
+
+{{ rule(id="C.6:3", cat="normative") }}
+
+Syntactic nesting depth — the depth to which expressions, types, and blocks may be nested within one another — is bounded. A conforming implementation **MUST** support a nesting depth of at least 256 levels, and **MUST** diagnose input that exceeds its supported maximum with a clear error rather than exhausting the stack or otherwise failing catastrophically. The reference implementation rejects over-deep input with error `E0482` and a fixed maximum of 256 levels. This bound applies uniformly to every recursive syntactic construct, including parenthesised and operator-chained expressions (`((…))`, `a + a + …`), field and method chains (`a.b.c…`), nested types (`[[…]]`, `ptr const ptr const …`), and `else if` chains.
 
 ## Stack and Memory Considerations
 
