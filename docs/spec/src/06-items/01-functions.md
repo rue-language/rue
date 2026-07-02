@@ -24,23 +24,23 @@ param = IDENT ":" type ;
 
 Parameters **MUST** have explicit type annotations.
 
-{{ rule(id="6.1:4", cat="legality-rule") }}
+{{ rule(id="6.1:4", cat="dynamic-semantics") }}
 
-If a return type is specified, the function body **MUST** produce a value of that type.
+A function call evaluates to the value the function's body block evaluates to (see 4.5). Reaching the end of the body is not a distinct "implicit return": the body is an expression, and the call's value *is* that expression's value.
 
 {{ rule(id="6.1:5", cat="normative") }}
 
-If no return type is specified, the function returns `()`.
+If a return type is specified, the body block **MUST** evaluate to a value of that type. If no return type is specified, the return type is `()`, and the body block evaluates to `()`.
 
 {{ rule(id="6.1:6", cat="normative") }}
 
 ```rue
 fn add(x: i32, y: i32) -> i32 {
-    x + y
+    x + y   // the body block evaluates to x + y, which is returned
 }
 
 fn do_nothing() {
-    // implicitly returns ()
+    // the body block has no final expression, so it evaluates to ()
 }
 ```
 

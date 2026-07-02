@@ -40,7 +40,7 @@ fn main() -> i32 {
 
 {{ rule(id="4.6:7", cat="normative") }}
 
-If the condition evaluates to `true`, the then-branch is executed. Otherwise, the else-branch is executed (if present).
+If the condition evaluates to `true`, the then-branch is evaluated and the `if` expression evaluates to the then-branch's value; otherwise the else-branch (if present) is evaluated and the `if` expression evaluates to its value. When no else-branch is present, the `if` expression evaluates to `()`.
 
 {{ rule(id="4.6:8") }}
 
