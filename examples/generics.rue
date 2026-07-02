@@ -4,8 +4,8 @@
 // compile-time type parameters. The compiler creates specialized
 // versions for each concrete type used.
 //
-// NOTE: This is a preview feature. Compile with:
-//   rue --preview comptime generics.rue output
+// Compile with:
+//   rue generics.rue -o generics
 
 // A generic identity function that works with any type.
 // The `comptime T: type` parameter is resolved at compile time,

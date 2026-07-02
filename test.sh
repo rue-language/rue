@@ -41,6 +41,7 @@ else
     echo "Running CLI integration tests..."
     RUE_BINARY="$RUE_BINARY" \
     RUE_CLI_CASES="crates/rue-cli-tests/cases" \
+    RUE_EXAMPLES_DIR="examples" \
     RUE_STD_DIR="std" \
     ./buck2 run //crates/rue-cli-tests:rue-cli-tests -- --quiet "$@"
 fi

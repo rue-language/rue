@@ -72,7 +72,7 @@
 //! entirely for sources that are meant only to compile.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
@@ -89,6 +89,110 @@ const CASES_DIR_PATHS: &[&str] = &[
 
 /// Possible paths for the repo's std library (for `${REAL_STD}` expansion).
 const STD_DIR_PATHS: &[&str] = &["std", "../std", "../../std"];
+
+/// Possible paths for the repo's `examples/` directory (RUE-48 smoke tests).
+const EXAMPLES_DIR_PATHS: &[&str] = &["examples", "../../examples", "../examples"];
+
+/// Expected outcome of compiling and running one `examples/*.rue` program.
+///
+/// Every file under `examples/` is compiled and run by the suite (see
+/// [`example_trials`]); this table pins the *deterministic* ones to an exact
+/// exit code and stdout so a regression that silently changes their output is
+/// caught. An example NOT listed here is still smoke-tested — it must compile,
+/// produce a binary, run, and exit *normally* (never die by SIGSEGV/SIGABRT) —
+/// so dropping a new file into `examples/` is covered automatically without
+/// editing this harness. Adding an entry here upgrades that smoke check into a
+/// pinned exact-output regression test.
+///
+/// Exit codes are the low byte of `main()`'s return value (a process exit code
+/// is 0-255), e.g. `power.rue` returns 5^6 = 15625, which exits as 15625 % 256
+/// = 9.
+struct ExampleExpectation {
+    /// File stem: the basename without the `.rue` extension.
+    name: &'static str,
+    /// Expected process exit code.
+    exit_code: i32,
+    /// Exact expected stdout.
+    stdout: &'static str,
+}
+
+const EXAMPLE_EXPECTATIONS: &[ExampleExpectation] = &[
+    ExampleExpectation {
+        name: "arrays",
+        exit_code: 157,
+        stdout: "157\n64\n12\n60\n",
+    },
+    ExampleExpectation {
+        name: "binary_search",
+        exit_code: 4,
+        stdout: "4\n",
+    },
+    ExampleExpectation {
+        name: "collatz",
+        exit_code: 97,
+        stdout: "27\n111\n",
+    },
+    ExampleExpectation {
+        name: "dbg",
+        exit_code: 0,
+        stdout: "42\n-17\ntrue\nfalse\n70\ntrue\ntrue\n120\n0\n1\n2\n3\n4\n",
+    },
+    ExampleExpectation {
+        name: "fibonacci",
+        exit_code: 55,
+        stdout: "0\n1\n1\n2\n3\n5\n8\n13\n21\n34\n55\n89\n144\n233\n377\n610\n987\n1597\n2584\n4181\n",
+    },
+    ExampleExpectation {
+        name: "fizzbuzz",
+        exit_code: 0,
+        stdout: "1\n2\n1\n4\n2\n1\n7\n8\n1\n2\n11\n1\n13\n14\n3\n16\n17\n1\n19\n2\n1\n22\n23\n1\n2\n26\n1\n28\n29\n3\n",
+    },
+    ExampleExpectation {
+        name: "gcd",
+        exit_code: 21,
+        stdout: "6\n1\n36\n",
+    },
+    ExampleExpectation {
+        name: "generics",
+        exit_code: 72,
+        stdout: "42\n20\n10\n100\n8\n17\n",
+    },
+    ExampleExpectation {
+        name: "hello",
+        exit_code: 42,
+        stdout: "",
+    },
+    ExampleExpectation {
+        name: "match",
+        exit_code: 5,
+        stdout: "5\n",
+    },
+    ExampleExpectation {
+        name: "power",
+        exit_code: 9,
+        stdout: "1\n2\n1024\n243\n2401\n1024\n",
+    },
+    ExampleExpectation {
+        name: "primes",
+        exit_code: 25,
+        stdout: "2\n3\n5\n7\n11\n13\n17\n19\n23\n29\n31\n37\n41\n43\n47\n",
+    },
+    ExampleExpectation {
+        name: "quicksort",
+        exit_code: 11,
+        stdout: "0\n64\n34\n25\n12\n22\n11\n90\n42\n15\n77\n1\n11\n12\n15\n22\n25\n34\n42\n64\n77\n90\n",
+    },
+    ExampleExpectation {
+        name: "sqrt",
+        exit_code: 12,
+        stdout: "0\n1\n2\n2\n3\n3\n4\n10\n31\n",
+    },
+    ExampleExpectation {
+        name: "structs",
+        exit_code: 50,
+        stdout: "25\n50\n30\ntrue\n",
+    },
+];
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -471,6 +575,153 @@ fn load_cases(cases_dir: &Path) -> Vec<(String, TestFile)> {
     out
 }
 
+/// Compile and run one `examples/*.rue` program end to end (RUE-48).
+///
+/// The example is written to a temp dir and compiled with the real driver
+/// (`rue <file> -o prog`), exactly as a user would. A compiler panic is an ICE;
+/// a compile failure fails the case. The produced binary is then run under the
+/// standard wall-clock timeout, and — crucially — must exit *normally*: a
+/// program killed by a signal (SIGSEGV/SIGABRT show up as a `None` exit code on
+/// unix) fails as a crash. If the example is in [`EXAMPLE_EXPECTATIONS`], its
+/// exact exit code and stdout are asserted; otherwise passing this "no crash"
+/// bar is enough (self-maintaining smoke coverage for newly added examples).
+fn run_example(
+    name: &str,
+    source: &str,
+    expectation: Option<&ExampleExpectation>,
+    rue_binary: &Path,
+) -> TestResult {
+    let temp_dir = tempfile::tempdir().map_err(|e| format!("failed to create temp dir: {}", e))?;
+    let dir = temp_dir.path();
+    let src_name = format!("{}.rue", name);
+    std::fs::write(dir.join(&src_name), source)
+        .map_err(|e| format!("failed to write {}: {}", src_name, e))?;
+
+    let mut cmd = Command::new(rue_binary);
+    cmd.args([src_name.as_str(), "-o", "prog"]).current_dir(dir);
+    let compile_output = cmd
+        .output()
+        .map_err(|e| format!("failed to invoke rue compiler: {}", e))?;
+    let compile_stderr = String::from_utf8_lossy(&compile_output.stderr).to_string();
+    let compile_stdout = String::from_utf8_lossy(&compile_output.stdout).to_string();
+
+    if let Some(ice) = ice_message(&compile_output.status, &compile_stderr) {
+        return Err(ice);
+    }
+    if !compile_output.status.success() {
+        return Err(format!(
+            "example failed to compile (exit: {:?}):\n--- compiler stdout ---\n{}\n--- compiler stderr ---\n{}",
+            compile_output.status.code(),
+            compile_stdout,
+            compile_stderr
+        ));
+    }
+
+    let program = dir.join("prog");
+    if !program.exists() {
+        return Err("compiler reported success but produced no 'prog' binary".to_string());
+    }
+
+    let mut run_cmd = Command::new(&program);
+    run_cmd.current_dir(dir);
+    let run_output = run_with_timeout(run_cmd, Duration::from_millis(DEFAULT_TIMEOUT_MS), None)?;
+    let run_stdout = String::from_utf8_lossy(&run_output.stdout).to_string();
+    let run_stderr = String::from_utf8_lossy(&run_output.stderr).to_string();
+
+    // "Runs without crashing": a normal exit yields Some(code); death by
+    // signal (SIGSEGV/SIGABRT) yields None on unix.
+    let actual_exit = match run_output.status.code() {
+        Some(code) => code,
+        None => {
+            return Err(format!(
+                "example crashed (killed by signal, status {:?})\n--- program stdout ---\n{}\n--- program stderr ---\n{}",
+                run_output.status, run_stdout, run_stderr
+            ));
+        }
+    };
+
+    if let Some(exp) = expectation {
+        if actual_exit != exp.exit_code {
+            return Err(format!(
+                "example exit code mismatch:\n  expected: {}\n  actual: {}\n--- program stdout ---\n{}\n--- program stderr ---\n{}",
+                exp.exit_code, actual_exit, run_stdout, run_stderr
+            ));
+        }
+        if run_stdout != exp.stdout {
+            return Err(format!(
+                "example stdout mismatch:\n--- expected ---\n{}\n--- actual ---\n{}",
+                exp.stdout, run_stdout
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+/// Discover `examples/*.rue` and build one smoke-test trial per file (RUE-48).
+///
+/// This is self-maintaining: it enumerates the directory at run time, so a new
+/// example is picked up automatically. If the directory can't be found or holds
+/// no `.rue` files, a single loud failing trial is emitted rather than silently
+/// running zero example tests (which would let example rot slip through CI).
+fn example_trials(rue_binary: &Path) -> Vec<Trial> {
+    let examples_dir = find_dir("RUE_EXAMPLES_DIR", EXAMPLES_DIR_PATHS, "examples");
+
+    let mut example_files: Vec<PathBuf> = match std::fs::read_dir(&examples_dir) {
+        Ok(entries) => entries
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().is_some_and(|ext| ext == "rue"))
+            .collect(),
+        Err(e) => {
+            let msg = format!(
+                "cannot read examples directory '{}': {} (set RUE_EXAMPLES_DIR)",
+                examples_dir.display(),
+                e
+            );
+            return vec![Trial::test("cli.examples::_discovery", move |_ctx| {
+                Err(RunError::fail(msg.clone()))
+            })];
+        }
+    };
+    example_files.sort();
+
+    if example_files.is_empty() {
+        let msg = format!(
+            "no *.rue examples found in '{}' — RUE-48 smoke coverage is empty",
+            examples_dir.display()
+        );
+        return vec![Trial::test("cli.examples::_discovery", move |_ctx| {
+            Err(RunError::fail(msg.clone()))
+        })];
+    }
+
+    let mut trials = Vec::with_capacity(example_files.len());
+    for path in example_files {
+        let name = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let source = match std::fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(e) => {
+                let msg = format!("failed to read {}: {}", path.display(), e);
+                trials.push(Trial::test(
+                    format!("cli.examples::{}", name),
+                    move |_ctx| Err(RunError::fail(msg.clone())),
+                ));
+                continue;
+            }
+        };
+        let rue_binary = rue_binary.to_path_buf();
+        let test_name = format!("cli.examples::{}", name);
+        trials.push(Trial::test(test_name, move |_ctx| {
+            let expectation = EXAMPLE_EXPECTATIONS.iter().find(|e| e.name == name);
+            run_example(&name, &source, expectation, &rue_binary).map_err(RunError::fail)
+        }));
+    }
+    trials
+}
+
 fn main() {
     // The compiler is invoked with the test's temp dir as cwd, so the binary
     // path must be absolute (find_rue_binary may return a relative path).
@@ -510,6 +761,11 @@ fn main() {
             cases_dir.display()
         );
     }
+
+    // RUE-48: compile+run every examples/*.rue through the real driver, so a
+    // regression that breaks a shipped example (or an example referencing a
+    // removed flag) can't slip past CI unnoticed.
+    tests.extend(example_trials(&rue_binary));
 
     Harness::with_env().discover(tests).main();
 }
