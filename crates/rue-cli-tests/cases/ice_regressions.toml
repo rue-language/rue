@@ -298,3 +298,51 @@ fn main() -> i32 {
 """ }]
 compile_fail = true
 error_contains = ["E0482"]
+
+[[case]]
+name = "empty_array_unconstrained_let_rue153"
+description = "RUE-153: an unannotated empty array `let x = []` left the element type variable unbound; it decayed to <error> with no diagnostic and sailed into codegen. Now a clean E0903."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let x = [];
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0903"]
+
+[[case]]
+name = "nested_empty_array_unconstrained_rue153"
+description = "RUE-153: a nested unconstrained empty array `[[]]` decayed to <error> with no diagnostic. Now a clean E0903."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let x = [[]];
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0903"]
+
+[[case]]
+name = "neg_of_empty_array_rue153"
+description = "RUE-153: negating an unconstrained empty array `-([])` produced an <error>-typed value with no diagnostic. Now a clean E0903."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let x = -([]);
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0903"]
+
+[[case]]
+name = "dbg_empty_array_rue153"
+description = "RUE-153: @dbg([]) with an unconstrained empty array must surface the actionable element-type error, not an E9000 ICE."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    @dbg([]);
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0903"]
