@@ -85,6 +85,21 @@ struct Report {
 }
 
 fn main() -> ExitCode {
+    // The oracle interpreter (`rue_oracle::run_source` -> `eval`) recurses per
+    // expression, so a deeply-nested but valid corpus program (e.g. the depth-60
+    // `deep_nesting` case) can exhaust the default main-thread stack — which is
+    // smaller on macOS than on Linux and overflows there. Run the whole harness
+    // on a dedicated thread with a large stack so deep-but-valid programs are
+    // interpreted without overflowing (RUE-227/236 re-land; deep_nesting re-enabled).
+    std::thread::Builder::new()
+        .stack_size(256 * 1024 * 1024)
+        .spawn(run)
+        .expect("spawn oracle-diff worker thread")
+        .join()
+        .expect("oracle-diff worker thread panicked")
+}
+
+fn run() -> ExitCode {
     // Subcommand dispatch: `rue-oracle-diff fuzz [...]` runs the differential
     // *fuzzer* (generate valid programs, cross-check oracle vs compiled binary);
     // with no subcommand it runs the corpus differential (below).

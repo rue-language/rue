@@ -2387,15 +2387,35 @@ impl<'a> CfgBuilder<'a> {
         self.value_cache[air_ref.as_u32() as usize] = Some(value);
     }
 
-    /// Lower an instruction and return its value, or None if it diverged.
-    /// This is a helper for use with the `?` operator when processing operands.
-    /// If the operand diverged, the caller should propagate the divergence.
+    /// Lower an instruction used in **value position** and return its value, or
+    /// `None` **only** if it diverged (return/break/continue).
+    ///
+    /// Callers use the `let Some(v) = self.lower_value(x) else { return
+    /// Self::diverged(); }` idiom, so `None` here means "control did not reach
+    /// this point" and the caller propagates the divergence (which terminates
+    /// the block). That idiom is only sound if `None` ⇔ divergence.
+    ///
+    /// The trap it guards against (RUE-227, the "block has no terminator" ICE
+    /// class): some AIR forms legitimately produce **no** CFG value while
+    /// control *continues* — statement-only, Unit-typed forms such as `Store`,
+    /// `ParamStore`, `Alloc`, and `StorageLive`/`StorageDead`. If such a form is
+    /// used in value position (e.g. `let x = (s.push(b));` where the mutation is
+    /// Unit — RUE-224), returning its raw `None` would make the caller wrongly
+    /// believe control diverged and bail out mid-block, leaving the block
+    /// unterminated → SIGABRT in codegen. Instead, when the expression
+    /// *continues* but yielded no value, we materialize a real Unit value here.
+    /// A well-typed program only reaches this branch for a genuinely Unit-typed
+    /// expression (sema rejects a non-Unit value being consumed where none is
+    /// produced), so a Unit `Const` is the correct, ABI-neutral filler.
     fn lower_value(&mut self, air_ref: AirRef) -> Option<CfgValue> {
         let result = self.lower_inst(air_ref);
-        if matches!(result.continuation, Continuation::Diverged) {
-            None
-        } else {
-            result.value
+        match result.continuation {
+            Continuation::Diverged => None,
+            Continuation::Continues => Some(result.value.unwrap_or_else(|| {
+                let inst = self.air.get(air_ref);
+                let (ty, span) = (inst.ty, inst.span);
+                self.emit(CfgInstData::Const(0), ty, span)
+            })),
         }
     }
 

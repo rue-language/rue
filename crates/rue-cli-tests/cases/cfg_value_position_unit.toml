@@ -1,0 +1,46 @@
+# Unit-typed expressions used in value position lower cleanly (RUE-227).
+#
+# This is the general form of the "block has no terminator" ICE class
+# (RUE-213 / RUE-217 / RUE-224): an AIR expression that produces no CFG value
+# (statement-only / Unit-typed forms) used where a value is required. The
+# AIR→CFG `lower_value` helper now materializes a real Unit value for any
+# expression that *continues* but yields no value, so the caller never mistakes
+# "no value" for divergence and leaves the block unterminated. A CFG verifier
+# pass (crate rue-cfg::verify) additionally asserts every reachable block is
+# terminated before codegen, turning any future lowering gap into a loud,
+# localized compiler-bug panic instead of a mystery SIGABRT.
+#
+# These cases must COMPILE AND RUN: a genuinely Unit-typed expression is a
+# legal argument to a `()` parameter, and its Unit value flows through the ABI
+# like any other value.
+
+[section]
+id = "cli.cfg_value_position_unit"
+name = "Unit expressions in value position"
+description = "Unit-typed expressions used as values compile and run; no 'block has no terminator' ICE (RUE-227)."
+
+[[case]]
+name = "unit_call_result_as_argument"
+description = "A unit-returning call used as a `()` argument lowers to a real Unit value and runs."
+files = [{ path = "main.rue", source = """
+fn noop() {}
+fn take(x: ()) -> i32 { 42 }
+fn main() -> i32 {
+    @dbg(take(noop()));
+    0
+}
+""" }]
+stdout = "42\n"
+
+[[case]]
+name = "unit_if_without_else_as_argument"
+description = "A unit `if`-without-else used as a `()` argument lowers cleanly and runs."
+files = [{ path = "main.rue", source = """
+fn take(x: ()) -> i32 { 7 }
+fn main() -> i32 {
+    let c: bool = true;
+    @dbg(take(if c { let _z: i32 = 1; }));
+    0
+}
+""" }]
+stdout = "7\n"
