@@ -2460,9 +2460,10 @@ impl<'a> Sema<'a> {
             | InstData::FieldSet { .. } => self.analyze_struct_ops(air, inst_ref, ctx),
 
             // Array operations
-            InstData::ArrayInit { .. } | InstData::IndexGet { .. } | InstData::IndexSet { .. } => {
-                self.analyze_array_ops(air, inst_ref, ctx)
-            }
+            InstData::ArrayInit { .. }
+            | InstData::ArrayRepeat { .. }
+            | InstData::IndexGet { .. }
+            | InstData::IndexSet { .. } => self.analyze_array_ops(air, inst_ref, ctx),
 
             // Enum operations
             InstData::EnumDecl { .. } | InstData::EnumVariant { .. } => {

@@ -823,11 +823,24 @@ pub struct MethodCallExpr {
     pub span: Span,
 }
 
-/// An array literal expression (e.g., `[1, 2, 3]`).
+/// An array literal expression.
+///
+/// Two forms share this node:
+/// * List form `[1, 2, 3]`: `elements` holds every element and `repeat` is
+///   `None`.
+/// * Repeat form `[value; count]` (RUE-235): `elements` holds the single
+///   `value` expression and `repeat` holds the `count`. The count is a
+///   compile-time constant (an integer literal or a named `const` /
+///   `comptime` value parameter), resolved during semantic analysis via the
+///   same const-eval path as array-type lengths.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArrayLitExpr {
-    /// Array elements
+    /// Array elements. For the repeat form this holds exactly one element: the
+    /// value being repeated.
     pub elements: Vec<Expr>,
+    /// For the repeat form `[value; count]`, the repeat count; `None` for the
+    /// list form.
+    pub repeat: Option<ArrayLength>,
     pub span: Span,
 }
 
@@ -1395,7 +1408,10 @@ fn fmt_expr(f: &mut fmt::Formatter<'_>, expr: &Expr, level: usize) -> fmt::Resul
             Ok(())
         }
         Expr::ArrayLit(array) => {
-            writeln!(f, "ArrayLit")?;
+            match &array.repeat {
+                Some(count) => writeln!(f, "ArrayLit (repeat; count={count})")?,
+                None => writeln!(f, "ArrayLit")?,
+            }
             for elem in &array.elements {
                 fmt_expr(f, elem, level + 1)?;
             }

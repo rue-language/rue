@@ -158,7 +158,8 @@ for_expr       = "for" ( IDENT | "_" ) "in" expression "{" block "}" ;
 break_expr     = "break" [ expression ] ;   (* an operand parses but is always
                                                rejected in semantic analysis *)
 return_expr    = "return" [ expression ] ;
-array_literal  = "[" [ expression { "," expression } ] "]" ;
+array_literal  = "[" ( [ expression { "," expression } ]
+                     | expression ";" array_length ) "]" ;  (* repeat form: array_length is a compile-time constant *)
 field_inits    = field_init { "," field_init } [ "," ] ;
 field_init     = IDENT ":" expression ;
 

@@ -1024,6 +1024,10 @@ impl Rir {
                 elems_start: *elems_start + extra_offset,
                 elems_len: *elems_len,
             },
+            InstData::ArrayRepeat { value, count } => InstData::ArrayRepeat {
+                value: renumber(*value),
+                count: *count,
+            },
             InstData::IndexGet { base, index } => InstData::IndexGet {
                 base: renumber(*base),
                 index: renumber(*index),
@@ -1293,6 +1297,7 @@ impl Rir {
                 | InstData::FieldSet { .. }
                 | InstData::EnumDecl { .. }
                 | InstData::EnumVariant { .. }
+                | InstData::ArrayRepeat { .. }
                 | InstData::IndexGet { .. }
                 | InstData::IndexSet { .. }
                 | InstData::TypeIntrinsic { .. }
@@ -1313,6 +1318,20 @@ impl Rir {
 pub struct Inst {
     pub data: InstData,
     pub span: Span,
+}
+
+/// The repeat count of an array-repeat literal `[value; count]` (RUE-235).
+///
+/// The count is a compile-time constant: either an integer literal (`[0; 128]`)
+/// or a name referring to a `const` / `comptime` value parameter (`[0; N]`).
+/// Named counts are resolved to a concrete value during semantic analysis using
+/// the same const-eval machinery as array-type lengths.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RepeatCount {
+    /// A literal count, e.g. the `128` in `[0; 128]`.
+    Literal(u64),
+    /// A named count, e.g. the `N` in `[0; N]`.
+    Named(Spur),
 }
 
 /// Instruction data - the actual operation.
@@ -1661,6 +1680,17 @@ pub enum InstData {
         elems_start: u32,
         /// Number of elements
         elems_len: u32,
+    },
+
+    /// Array-repeat literal `[value; count]` (RUE-235): creates an array of
+    /// `count` copies of a single `value`. `value` is evaluated once and its
+    /// (Copy) result fills every slot. The count is a compile-time constant
+    /// resolved during semantic analysis.
+    ArrayRepeat {
+        /// The value being repeated (evaluated once).
+        value: InstRef,
+        /// The repeat count (literal or named compile-time constant).
+        count: RepeatCount,
     },
 
     /// Array index read: reads an element from an array
@@ -2223,6 +2253,15 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     let elems_str: Vec<String> =
                         elements.iter().map(|e| format!("{}", e)).collect();
                     writeln!(out, "array_init [{}]", elems_str.join(", ")).unwrap();
+                }
+                InstData::ArrayRepeat { value, count } => {
+                    let count_str = match count {
+                        RepeatCount::Literal(n) => n.to_string(),
+                        RepeatCount::Named(sym) => {
+                            format!("sym:{}", sym.into_usize())
+                        }
+                    };
+                    writeln!(out, "array_repeat [{}; {}]", value, count_str).unwrap();
                 }
                 InstData::IndexGet { base, index } => {
                     writeln!(out, "index_get {}[{}]", base, index).unwrap();

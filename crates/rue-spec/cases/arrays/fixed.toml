@@ -873,3 +873,89 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = "not a compile-time constant"
+
+# =============================================================================
+# Array-Repeat Literals (RUE-235, preview: array_repeat)
+# =============================================================================
+
+[[case]]
+name = "array_repeat_literal_count"
+spec = ["7.1:36", "7.1:39"]
+preview = "array_repeat"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    let b = [7; 3];
+    b[0] + b[1] + b[2]
+}
+"""
+exit_code = 21
+
+[[case]]
+name = "array_repeat_zeros_annotated"
+spec = ["7.1:36"]
+preview = "array_repeat"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    let a: [i32; 4] = [0; 4];
+    a[0] + a[1] + a[2] + a[3]
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "array_repeat_named_const_count"
+spec = ["7.1:37"]
+preview = "array_repeat"
+preview_should_pass = true
+source = """
+const N: usize = 4;
+fn main() -> i32 {
+    let c = [5; N];
+    c[0] + c[1] + c[2] + c[3]
+}
+"""
+exit_code = 20
+
+[[case]]
+name = "array_repeat_evaluates_value_once"
+spec = ["7.1:39"]
+preview = "array_repeat"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    let v = 6;
+    let a = [v; 5];
+    a[0] + a[4]
+}
+"""
+exit_code = 12
+
+[[case]]
+name = "array_repeat_non_copy_element_error"
+spec = ["7.1:38"]
+preview = "array_repeat"
+preview_should_pass = true
+source = """
+struct Data { value: i32 }
+fn main() -> i32 {
+    let d = Data { value: 1 };
+    let arr = [d; 3];
+    0
+}
+"""
+compile_fail = true
+error_contains = "Copy"
+
+[[case]]
+name = "array_repeat_requires_preview"
+spec = ["7.1:36"]
+source = """
+fn main() -> i32 {
+    let b = [7; 3];
+    b[0]
+}
+"""
+compile_fail = true
+error_contains = "requires preview feature"

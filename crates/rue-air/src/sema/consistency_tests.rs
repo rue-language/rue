@@ -79,6 +79,7 @@ mod tests {
         "EnumVariant",
         // Arrays
         "ArrayInit",
+        "ArrayRepeat",
         "IndexGet",
         "IndexSet",
         // Methods

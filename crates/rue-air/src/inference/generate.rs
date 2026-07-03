@@ -15,7 +15,7 @@ use crate::types::{
     ArrayLen, PtrMutability, StructId, TypeKind, parse_array_type_syntax, parse_pointer_type_syntax,
 };
 use lasso::{Spur, ThreadedRodeo};
-use rue_rir::{InstData, InstRef, Rir};
+use rue_rir::{InstData, InstRef, RepeatCount, Rir};
 use rue_span::{FileId, Span};
 use std::collections::HashMap;
 
@@ -1410,6 +1410,30 @@ impl<'a> ConstraintGenerator<'a> {
                         element: Box::new(first_info.ty),
                         length: elements.len() as u64,
                     }
+                }
+            }
+
+            // Array-repeat literal `[value; count]` (RUE-235). The array type
+            // is `[typeof value; count]`; every slot has the value's type. The
+            // count is a compile-time constant resolved here (literal or a
+            // file-level `const`); an unresolved count (e.g. a `comptime` value
+            // parameter, only known at specialization) yields a fresh variable
+            // and is resolved/diagnosed by sema.
+            InstData::ArrayRepeat { value, count } => {
+                let value_info = self.generate(*value, ctx);
+                let resolved = match count {
+                    RepeatCount::Literal(n) => Some(*n),
+                    RepeatCount::Named(sym) => self
+                        .const_values
+                        .and_then(|cv| cv.get(sym))
+                        .and_then(|v| u64::try_from(*v).ok()),
+                };
+                match resolved {
+                    Some(length) => InferType::Array {
+                        element: Box::new(value_info.ty),
+                        length,
+                    },
+                    None => InferType::Var(self.fresh_var()),
                 }
             }
 

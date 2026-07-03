@@ -16,8 +16,8 @@ use rue_parser::{
 };
 
 use crate::inst::{
-    Inst, InstData, InstRef, Rir, RirArgMode, RirCallArg, RirDirective, RirParam, RirParamMode,
-    RirPattern,
+    Inst, InstData, InstRef, RepeatCount, Rir, RirArgMode, RirCallArg, RirDirective, RirParam,
+    RirParamMode, RirPattern,
 };
 
 /// Generates RIR from an AST.
@@ -694,20 +694,35 @@ impl<'a> AstGen<'a> {
                 })
             }
             Expr::ArrayLit(array_lit) => {
-                let elements: Vec<_> = array_lit
-                    .elements
-                    .iter()
-                    .map(|e| self.gen_expr(e))
-                    .collect();
-                let (elems_start, elems_len) = self.rir.add_inst_refs(&elements);
+                if let Some(count) = &array_lit.repeat {
+                    // Repeat form `[value; count]` (RUE-235): the single value
+                    // is evaluated once; the count is carried symbolically and
+                    // resolved during sema via the array-length const-eval path.
+                    let value = self.gen_expr(&array_lit.elements[0]);
+                    let count = match count {
+                        ArrayLength::Literal(n) => RepeatCount::Literal(*n),
+                        ArrayLength::Named(ident) => RepeatCount::Named(ident.name),
+                    };
+                    self.rir.add_inst(Inst {
+                        data: InstData::ArrayRepeat { value, count },
+                        span: array_lit.span,
+                    })
+                } else {
+                    let elements: Vec<_> = array_lit
+                        .elements
+                        .iter()
+                        .map(|e| self.gen_expr(e))
+                        .collect();
+                    let (elems_start, elems_len) = self.rir.add_inst_refs(&elements);
 
-                self.rir.add_inst(Inst {
-                    data: InstData::ArrayInit {
-                        elems_start,
-                        elems_len,
-                    },
-                    span: array_lit.span,
-                })
+                    self.rir.add_inst(Inst {
+                        data: InstData::ArrayInit {
+                            elems_start,
+                            elems_len,
+                        },
+                        span: array_lit.span,
+                    })
+                }
             }
             Expr::Index(index_expr) => {
                 let base = self.gen_expr(&index_expr.base);
