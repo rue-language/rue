@@ -1,0 +1,72 @@
+# A comptime-evaluable call in array-length position (RUE-309).
+#
+# The parser now accepts `[T; f(args)]`; sema folds the call to a concrete
+# length through the same const evaluator that reduces `comptime` blocks
+# (RUE-163). These cases drive the real binary end-to-end so the folded length
+# is exercised at runtime (indexing near the last element) and the clean-error
+# paths are checked as a user would hit them.
+
+[section]
+id = "cli.array_length_comptime_call"
+name = "Comptime-call array lengths"
+description = "Array types whose length is a comptime-evaluable function call."
+
+[[case]]
+name = "fact_length_indexes_last_element"
+files = [{ path = "main.rue", source = """
+fn fact(comptime n: i32) -> i32 {
+    if n <= 1 { 1 } else { n * fact(n - 1) }
+}
+
+fn main() -> i32 {
+    let a: [i32; fact(4)] = [
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
+        13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24
+    ];
+    // Length is fact(4) = 24, so the last valid index is 23.
+    @dbg(a[23]);
+    0
+}
+""" }]
+stdout = "24\n"
+exit_code = 0
+
+[[case]]
+name = "nested_call_length"
+files = [{ path = "main.rue", source = """
+fn g(comptime n: i32) -> i32 { n + 2 }
+fn dbl(comptime n: i32) -> i32 { n * 2 }
+
+fn main() -> i32 {
+    // dbl(g(1)) = dbl(3) = 6
+    let a: [i32; dbl(g(1))] = [10, 20, 30, 40, 50, 60];
+    @dbg(a[5]);
+    0
+}
+""" }]
+stdout = "60\n"
+exit_code = 0
+
+[[case]]
+name = "runtime_param_call_length_errors_cleanly"
+files = [{ path = "main.rue", source = """
+fn add(a: i32, b: i32) -> i32 { a + b }
+
+fn main() -> i32 {
+    let a: [i32; add(2, 3)] = [0, 0, 0, 0, 0];
+    a[0]
+}
+""" }]
+compile_fail = true
+error_contains = ["E0481", "not a compile-time constant"]
+
+[[case]]
+name = "unknown_call_length_errors_cleanly"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: [i32; nope(3)] = [0, 0, 0];
+    a[0]
+}
+""" }]
+compile_fail = true
+error_contains = ["E0481", "not a function"]

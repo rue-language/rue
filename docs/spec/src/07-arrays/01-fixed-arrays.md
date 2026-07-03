@@ -133,14 +133,16 @@ fn main() -> i32 {
 
 ```ebnf
 array_type   = "[" type ";" array_length "]" ;
-array_length = INTEGER | IDENTIFIER ;
+array_length = INTEGER | IDENTIFIER | length_call ;
+length_call  = IDENTIFIER "(" [ array_length { "," array_length } ] ")" ;
 ```
 
 {{ rule(id="7.1:15", cat="legality-rule") }}
 
 The length **MUST** be a non-negative integer value known at compile time. It is
-either an integer literal, or an identifier naming a compile-time constant — a
-file-level `const` or an in-scope `comptime` value parameter.
+either an integer literal, an identifier naming a compile-time constant — a
+file-level `const` or an in-scope `comptime` value parameter — or a call to a
+comptime-evaluable function (rule 7.1:41).
 
 ## Compile-Time Array Lengths
 
@@ -177,6 +179,35 @@ fn main() -> i32 {
     let b2: B2 = B2 { data: [1, 2], len: 2 };
     let b4: B4 = B4 { data: [10, 20, 30, 40], len: 4 };
     b2.data[1] + b4.data[3]  // 42
+}
+```
+
+{{ rule(id="7.1:41", cat="normative") }}
+
+An array length **MAY** also be a call to a comptime-evaluable function, in
+addition to a literal or a named constant. The callee **MUST** be a
+value-returning function whose parameters are all `comptime` (the same
+implicit-comptime shape that makes a call foldable in a `comptime` context);
+its arguments are themselves array-length forms (a literal, a named constant,
+or a nested call). The call is folded to the concrete length using the same
+compile-time evaluator that reduces `comptime` blocks, and its result **MUST**
+be a non-negative integer. A call whose callee takes a runtime parameter, is
+nullary, returns a type, or names no known function is not a compile-time
+length and is a compile-time error.
+
+{{ rule(id="7.1:42") }}
+
+```rue
+fn fact(comptime n: i32) -> i32 {
+    if n <= 1 { 1 } else { n * fact(n - 1) }
+}
+
+fn main() -> i32 {
+    let a: [i32; fact(4)] = [
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
+        13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24
+    ];  // length is fact(4) = 24
+    a[23]  // 24
 }
 ```
 

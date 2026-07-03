@@ -74,7 +74,8 @@ type           = "i8" | "i16" | "i32" | "i64"
                | anon_struct_type
                | "Self"
                | IDENT ;
-array_length   = INTEGER | IDENT ;
+array_length   = INTEGER | IDENT | length_call ;
+length_call    = IDENT "(" [ array_length { "," array_length } ] ")" ;  (* comptime-evaluable call, e.g. fact(4) *)
 anon_struct_type = "struct" "{" [ anon_struct_fields ] { method } "}" ;
 anon_struct_fields = struct_field { "," struct_field } [ "," ] ;
 
@@ -158,7 +159,8 @@ break_expr     = "break" [ expression ] ;   (* an operand parses but is always
                                                rejected in semantic analysis *)
 return_expr    = "return" [ expression ] ;
 array_literal  = "[" ( [ expression { "," expression } ]
-                     | expression ";" array_length ) "]" ;  (* repeat form: array_length is a compile-time constant *)
+                     | expression ";" repeat_count ) "]" ;
+repeat_count   = INTEGER | IDENT ;  (* repeat form: a literal or named compile-time constant (no call form) *)
 field_inits    = field_init { "," field_init } [ "," ] ;
 field_init     = IDENT ":" expression ;
 

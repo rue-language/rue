@@ -595,6 +595,15 @@ impl<'a> Sema<'a> {
         match len {
             ArrayLen::Literal(n) => Ok(*n),
             ArrayLen::Named(name) => {
+                // A comptime-evaluable call in length position, e.g.
+                // `[i32; fact(4)]` (RUE-309). The interned type string carries
+                // the call syntax verbatim (`fact(4)`); fold it via the same
+                // comptime machinery that reduces value-returning calls
+                // elsewhere (RUE-163). Bare names fall through to the
+                // const/comptime-parameter lookup below.
+                if let Some((callee, args)) = parse_type_call_syntax(name) {
+                    return self.resolve_array_length_call(&callee, &args, span, value_subst);
+                }
                 let sym = self.interner.get_or_intern(name);
                 // 1. A `comptime` value parameter in scope (per specialization).
                 let value = if let Some(v) = value_subst.and_then(|vs| vs.get(&sym)) {
@@ -637,6 +646,87 @@ impl<'a> Sema<'a> {
                     )),
                 }
             }
+        }
+    }
+
+    /// Fold a comptime-evaluable call in array-length position (`[T; f(args)]`,
+    /// RUE-309) to a concrete `u64`.
+    ///
+    /// The callee must be a value-returning function with at least one
+    /// parameter, all `comptime` — the same implicit-comptime shape
+    /// `eval_comptime_type_call` accepts for value-returning calls (RUE-163,
+    /// spec 4.14:5). A runtime-parametered or nullary callee is a genuine
+    /// runtime call and is not a compile-time-known length, so it errors as
+    /// E0481 rather than being silently accepted.
+    ///
+    /// Arguments arrive as raw substrings of the interned type string; each is
+    /// itself an array-length expression (a literal, a `const`/`comptime`
+    /// name, or a nested call), so it is resolved through
+    /// [`resolve_array_length`] recursively. The resulting integer bindings
+    /// feed [`reduce_type_ctor_body`], which evaluates the callee body under
+    /// that substitution — the identical reducer the value/const-expr paths
+    /// use — so a comptime-recursive `fn fact(comptime n: i32)` yields its
+    /// compile-time length.
+    ///
+    /// [`resolve_array_length`]: Sema::resolve_array_length
+    /// [`reduce_type_ctor_body`]: Sema::reduce_type_ctor_body
+    fn resolve_array_length_call(
+        &mut self,
+        callee: &str,
+        args: &[String],
+        span: Span,
+        value_subst: Option<&HashMap<Spur, ConstValue>>,
+    ) -> CompileResult<u64> {
+        let invalid =
+            |reason: String| CompileError::new(ErrorKind::InvalidArrayLength { reason }, span);
+
+        let callee_sym = self.interner.get_or_intern(callee);
+        let Some(fn_info) = self.functions.get(&callee_sym) else {
+            return Err(invalid(format!(
+                "'{callee}' is not a function; array lengths must be an integer literal, a \
+                 `const`, a `comptime` value parameter, or a call to a comptime function"
+            )));
+        };
+        if fn_info.return_type == Type::COMPTIME_TYPE {
+            return Err(invalid(format!(
+                "array length call '{callee}(...)' must return a value, not a type"
+            )));
+        }
+        let params = fn_info.params;
+        let param_names = self.param_arena.names(params).to_vec();
+        let param_comptime = self.param_arena.comptime(params).to_vec();
+        // Same implicit-comptime gate as `eval_comptime_type_call`: a value
+        // function reduces only with at least one parameter, every one
+        // `comptime`. A runtime parameter makes this a genuine runtime call.
+        let all_comptime = !param_names.is_empty() && param_comptime.iter().all(|&c| c);
+        if args.len() != param_names.len() || !all_comptime {
+            return Err(invalid(format!(
+                "array length call '{callee}(...)' is not a compile-time constant; its callee \
+                 must be a value-returning function whose parameters are all `comptime`"
+            )));
+        }
+        let mut callee_values: HashMap<Spur, ConstValue> = HashMap::new();
+        for (i, arg) in args.iter().enumerate() {
+            // Mirror `parse_array_type_syntax`: a decimal literal is a
+            // `Literal`, anything else (a name or nested call) is a `Named`
+            // resolved recursively.
+            let arg_len = match arg.parse::<u64>() {
+                Ok(n) => ArrayLen::Literal(n),
+                Err(_) => ArrayLen::Named(arg.clone()),
+            };
+            let v = self.resolve_array_length(&arg_len, span, value_subst)?;
+            callee_values.insert(param_names[i], ConstValue::Integer(v as i128));
+        }
+        let empty_types: HashMap<Spur, Type> = HashMap::new();
+        match self.reduce_type_ctor_body(callee_sym, &empty_types, &callee_values)? {
+            Some(ConstValue::Integer(n)) if n >= 0 => u64::try_from(n)
+                .map_err(|_| invalid(format!("array length '{callee}(...)' ({n}) is too large"))),
+            Some(ConstValue::Integer(n)) => Err(invalid(format!(
+                "array length '{callee}(...)' is negative ({n})"
+            ))),
+            _ => Err(invalid(format!(
+                "array length call '{callee}(...)' did not evaluate to a compile-time integer"
+            ))),
         }
     }
 
