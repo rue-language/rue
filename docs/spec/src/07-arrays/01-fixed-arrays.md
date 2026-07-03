@@ -35,6 +35,48 @@ fn main() -> i32 {
 }
 ```
 
+## Array-Repeat Literals
+
+{{ rule(id="7.1:36", cat="normative") }}
+
+```ebnf
+array_literal = "[" ( [ expression { "," expression } ]
+                    | expression ";" array_length ) "]" ;
+```
+
+An array literal has two forms. The *list form* `[e0, e1, …]` gives each
+element explicitly. The *repeat form* `[value; count]` constructs an array of
+`count` elements, each equal to `value`. The result type is `[T; count]` where
+`T` is the type of `value`.
+
+{{ rule(id="7.1:37", cat="legality-rule") }}
+
+In the repeat form, `count` **MUST** be a non-negative integer compile-time
+constant — an integer literal or an identifier naming a compile-time constant
+(a file-level `const` or an in-scope `comptime` value parameter), resolved by
+the same rules as an array-type length.
+
+{{ rule(id="7.1:38", cat="legality-rule") }}
+
+The element type of a repeat literal **MUST** be `Copy`. A repeat literal
+materializes `count` copies of a single value, which is only well-defined when
+the value can be copied; a non-Copy element type is a compile-time error.
+
+{{ rule(id="7.1:39", cat="dynamic-semantics") }}
+
+The `value` expression is evaluated exactly once; its result is copied into
+each of the `count` array slots.
+
+{{ rule(id="7.1:40") }}
+
+```rue
+fn main() -> i32 {
+    let zeros: [i32; 128] = [0; 128];   // 128 copies of 0
+    let sevens = [7; 3];                 // [7, 7, 7]
+    zeros[0] + sevens[0] + sevens[1] + sevens[2]  // 21
+}
+```
+
 ## Array Indexing
 
 {{ rule(id="7.1:6", cat="normative") }}

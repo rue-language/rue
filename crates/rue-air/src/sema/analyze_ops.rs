@@ -3407,6 +3407,10 @@ impl<'a> Sema<'a> {
                 elems_len,
             } => self.analyze_array_init(air, inst_ref, *elems_start, *elems_len, inst.span, ctx),
 
+            InstData::ArrayRepeat { value, .. } => {
+                self.analyze_array_repeat(air, inst_ref, *value, inst.span, ctx)
+            }
+
             InstData::IndexGet { base, index } => {
                 self.analyze_index_get(air, inst_ref, *base, *index, inst.span, ctx)
             }
@@ -3500,6 +3504,88 @@ impl<'a> Sema<'a> {
         // Encode into extra array
         let elems_len = air_elems.len() as u32;
         let elem_u32s: Vec<u32> = air_elems.iter().map(|r| r.as_u32()).collect();
+        let elems_start = air.add_extra(&elem_u32s);
+
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::ArrayInit {
+                elems_start,
+                elems_len,
+            },
+            ty: array_type,
+            span,
+        });
+        Ok(AnalysisResult::new(air_ref, array_type))
+    }
+
+    /// Analyze an array-repeat literal `[value; count]` (RUE-235).
+    ///
+    /// The result type `[ElemType; count]` was inferred by HM (the count is a
+    /// compile-time constant resolved during constraint generation via the
+    /// array-length const-eval path). This analysis:
+    /// 1. gates the form behind the `array_repeat` preview feature;
+    /// 2. requires the element type to be `Copy` — a repeat materializes
+    ///    `count` copies of one value, which is only sound for Copy elements
+    ///    (matching Rust's `[v; N]: Copy`);
+    /// 3. evaluates `value` exactly once and desugars to an `ArrayInit` whose
+    ///    `count` elements all reference that single evaluated value, so the
+    ///    existing per-element store lowering fills every slot on both
+    ///    backends with no codegen changes.
+    fn analyze_array_repeat(
+        &mut self,
+        air: &mut Air,
+        inst_ref: InstRef,
+        value_ref: InstRef,
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AnalysisResult> {
+        // Gate the whole form: without `--preview array_repeat`, using
+        // `[value; count]` is a "requires preview feature" error.
+        self.require_preview(
+            PreviewFeature::ArrayRepeat,
+            "array-repeat literal `[value; count]`",
+            span,
+        )?;
+
+        let array_type = Self::get_resolved_type(ctx, inst_ref, span, "array-repeat literal")?;
+
+        // If the value expression is ill-typed, HM collapses the array to
+        // `<error>`; analyze the value to surface its real diagnostic rather
+        // than masking it with an ICE about a non-array type (mirrors
+        // `analyze_array_init`, RUE-190/RUE-153).
+        if array_type.is_error() {
+            self.analyze_inst(air, value_ref, ctx)?;
+            return Err(CompileError::new(ErrorKind::TypeAnnotationRequired, span));
+        }
+
+        let (elem_type, length) = match array_type.as_array() {
+            Some(type_id) => self.type_pool.array_def(type_id),
+            None => {
+                return Err(CompileError::new(
+                    ErrorKind::InternalError(format!(
+                        "Array-repeat literal inferred as non-array type: {}",
+                        array_type.safe_name_with_pool(Some(&self.type_pool))
+                    )),
+                    span,
+                ));
+            }
+        };
+
+        // Require the element type to be Copy (RUE-235).
+        if !self.is_type_copy(elem_type) {
+            return Err(CompileError::new(
+                ErrorKind::ArrayRepeatNonCopy {
+                    element_type: elem_type.safe_name_with_pool(Some(&self.type_pool)),
+                },
+                span,
+            ));
+        }
+
+        // Evaluate the repeated value exactly once.
+        let value_result = self.analyze_inst(air, value_ref, ctx)?;
+
+        // Desugar to ArrayInit: `length` elements, each the single value.
+        let elem_u32s: Vec<u32> = vec![value_result.air_ref.as_u32(); length as usize];
+        let elems_len = elem_u32s.len() as u32;
         let elems_start = air.add_extra(&elem_u32s);
 
         let air_ref = air.add_inst(AirInst {

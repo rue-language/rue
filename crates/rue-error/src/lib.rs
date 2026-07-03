@@ -214,6 +214,7 @@ impl ErrorCode {
     pub const INDEX_OUT_OF_BOUNDS: Self = Self(902);
     pub const TYPE_ANNOTATION_REQUIRED: Self = Self(903);
     pub const MOVE_OUT_OF_INDEX: Self = Self(904);
+    pub const ARRAY_REPEAT_NON_COPY: Self = Self(905);
 
     // ========================================================================
     // Linker/target errors (E1000-E1099)
@@ -366,6 +367,10 @@ pub enum PreviewFeature {
     /// pattern matching with payload bindings (`match s { Circle(r) => r }`).
     /// The prerequisite for `Option`/`Result`.
     EnumPayloads,
+    /// Array-repeat literal `[value; count]` — build an array of `count`
+    /// copies of `value` (RUE-235). `count` is a compile-time constant and
+    /// the element type must be `Copy`.
+    ArrayRepeat,
 }
 
 /// Error returned when parsing a preview feature name fails.
@@ -389,6 +394,7 @@ impl PreviewFeature {
             PreviewFeature::ForLoops => "for_loops",
             PreviewFeature::MethodReceivers => "method_receivers",
             PreviewFeature::EnumPayloads => "enum_payloads",
+            PreviewFeature::ArrayRepeat => "array_repeat",
         }
     }
 
@@ -400,6 +406,7 @@ impl PreviewFeature {
             PreviewFeature::ForLoops => "ADR-0037",
             PreviewFeature::MethodReceivers => "ADR-0037",
             PreviewFeature::EnumPayloads => "ADR-0038",
+            PreviewFeature::ArrayRepeat => "ADR-0005",
         }
     }
 
@@ -410,6 +417,7 @@ impl PreviewFeature {
             PreviewFeature::ForLoops,
             PreviewFeature::MethodReceivers,
             PreviewFeature::EnumPayloads,
+            PreviewFeature::ArrayRepeat,
         ]
     }
 
@@ -436,6 +444,7 @@ impl std::str::FromStr for PreviewFeature {
             "for_loops" => Ok(PreviewFeature::ForLoops),
             "method_receivers" => Ok(PreviewFeature::MethodReceivers),
             "enum_payloads" => Ok(PreviewFeature::EnumPayloads),
+            "array_repeat" => Ok(PreviewFeature::ArrayRepeat),
             _ => Err(ParsePreviewFeatureError(s.to_string())),
         }
     }
@@ -1220,6 +1229,12 @@ pub enum ErrorKind {
     /// that element out (spec 3.8:68, RUE-186).
     #[error("cannot move out of indexed position: element type '{element_type}' is not Copy")]
     MoveOutOfIndex { element_type: String },
+    /// Array-repeat literal `[value; count]` whose element type is not Copy.
+    /// A repeat literal materializes `count` copies of a single value, so the
+    /// element type must be Copy (matching Rust's `[v; N]: Copy` requirement,
+    /// RUE-235).
+    #[error("array-repeat literal requires a Copy element type, but '{element_type}' is not Copy")]
+    ArrayRepeatNonCopy { element_type: String },
     /// Assignment into an array (element write, or a write through an element)
     /// while one or more of its elements are moved out (RUE-186). Reinstating
     /// per-element ownership through writes is not supported; the whole array
@@ -1383,6 +1398,7 @@ impl ErrorKind {
             ErrorKind::IndexOutOfBounds { .. } => ErrorCode::INDEX_OUT_OF_BOUNDS,
             ErrorKind::TypeAnnotationRequired => ErrorCode::TYPE_ANNOTATION_REQUIRED,
             ErrorKind::MoveOutOfIndex { .. } => ErrorCode::MOVE_OUT_OF_INDEX,
+            ErrorKind::ArrayRepeatNonCopy { .. } => ErrorCode::ARRAY_REPEAT_NON_COPY,
             ErrorKind::AssignToPartiallyMovedArray { .. } => {
                 ErrorCode::ASSIGN_TO_PARTIALLY_MOVED_ARRAY
             }
@@ -2214,7 +2230,7 @@ mod tests {
         let names = PreviewFeature::all_names();
         assert_eq!(
             names,
-            "test_infra, for_loops, method_receivers, enum_payloads"
+            "test_infra, for_loops, method_receivers, enum_payloads, array_repeat"
         );
     }
 

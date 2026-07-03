@@ -1580,15 +1580,38 @@ where
     // Combined intrinsic parser: try @import first, then general @name pattern
     let any_intrinsic_call = import_call.or(intrinsic_call);
 
-    // Array literal: [expr, expr, ...]
-    let array_lit = args_parser(expr.clone())
+    // Array literal, two forms (RUE-235):
+    //   list form:   [expr, expr, ...]
+    //   repeat form: [value ; count]   where count is a compile-time constant
+    //                                  (integer literal or named const/comptime)
+    // The repeat form is distinguished by the `;` following the first expr; it
+    // is tried first and backtracks to the list form when there is no `;`.
+    let array_repeat_count = choice((
+        select! { TokenKind::Int(n) => ArrayLength::Literal(n as u64) },
+        ident_parser().map(ArrayLength::Named),
+    ));
+    let array_repeat = expr
+        .clone()
+        .then_ignore(just(TokenKind::Semi))
+        .then(array_repeat_count)
+        .delimited_by(just(TokenKind::LBracket), just(TokenKind::RBracket))
+        .map_with(|(value, count), e| {
+            Expr::ArrayLit(ArrayLitExpr {
+                elements: vec![value],
+                repeat: Some(count),
+                span: span_from_extra(e),
+            })
+        });
+    let array_list = args_parser(expr.clone())
         .delimited_by(just(TokenKind::LBracket), just(TokenKind::RBracket))
         .map_with(|elements, e| {
             Expr::ArrayLit(ArrayLitExpr {
                 elements,
+                repeat: None,
                 span: span_from_extra(e),
             })
         });
+    let array_lit = array_repeat.or(array_list);
 
     // Type literal expression: i32, bool, etc. used as values
     // This enables generic function calls like identity(i32, 42)
