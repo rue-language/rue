@@ -10,10 +10,10 @@
 // Requires `--preview enum_payloads`.
 //
 // NOTE: `Option(T)` works standalone (see the dogfood test), but it cannot yet
-// be *returned from a `Vec(T)` method* — the enclosing comptime type parameter
-// `T` is not usable inside a method body to name `Option(T)` (E1201), and
-// binding the type in the type-function body breaks comptime type folding
-// (E1200). Until that gap is closed, `Vec` uses caller-supplied defaults
+// be *returned from an `ArrayBuf(T)` method* — the enclosing comptime type
+// parameter `T` is not usable inside a method body to name `Option(T)` (E1201),
+// and binding the type in the type-function body breaks comptime type folding
+// (E1200). Until that gap is closed, `ArrayBuf` uses caller-supplied defaults
 // (`get_or`/`pop_or`) rather than `Option(T)` accessors. See the meta report.
 
 pub fn Option(comptime T: type) -> type {
