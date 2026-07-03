@@ -1016,16 +1016,13 @@ impl<'a> ConstraintGenerator<'a> {
                     let result_var = self.fresh_var();
                     InferType::Var(result_var)
                 } else if intrinsic_name == "to_string" {
-                    // @to_string(n): takes an i64, returns String (RUE-17
-                    // Phase 1, ADR-0035). Constrain the argument to i64 so a
-                    // bare integer literal defaults to i64 here.
+                    // @to_string(n): takes any integer width, returns String
+                    // (RUE-17 Phase 1, ADR-0035; RUE-314). No i64 constraint is
+                    // added, so the argument keeps its own type; a bare integer
+                    // literal defaults to i32 like everywhere else. Sema checks
+                    // the resolved type is an integer and widens per signedness.
                     for arg_ref in args.iter() {
-                        let arg_info = self.generate(*arg_ref, ctx);
-                        self.add_constraint(Constraint::equal(
-                            arg_info.ty,
-                            InferType::Concrete(Type::I64),
-                            arg_info.span,
-                        ));
+                        self.generate(*arg_ref, ctx);
                     }
                     self.string_infer_type()
                 } else if intrinsic_name == "parse_i32"

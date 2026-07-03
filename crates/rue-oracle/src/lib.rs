@@ -310,6 +310,12 @@ impl<'a> Interp<'a> {
             _ => String::new(),
         };
         let out = match name {
+            // `@to_string(n)` (RUE-314). The argument is already widened to a
+            // 64-bit value by sema (sign-extended to i64 for signed types,
+            // zero-extended to u64 for unsigned); format it with the matching
+            // signedness so a high-bit-set unsigned value prints unsigned.
+            "__rue_to_string" => Value::Str((args[0].as_int() as i64).to_string()),
+            "__rue_to_string_unsigned" => Value::Str((args[0].as_int() as u64).to_string()),
             "__rue_String_new" => Value::Str(String::new()),
             "__rue_String_with_capacity" => Value::Str(String::new()),
             "__rue_String_push_str" => Value::Str(s(&args[0]) + &s(&args[1])),

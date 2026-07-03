@@ -778,6 +778,55 @@ exit_code = 0
 expected_stdout = "-9223372036854775808\n9223372036854775807\n"
 
 [[case]]
+name = "to_string_signed_widths"
+spec = ["3.7:22", "3.7:23"]
+source = """
+fn main() -> i32 {
+    let a: i8 = -128;
+    let b: i16 = -32768;
+    let c: i32 = -2147483648;
+    @dbg(@to_string(a));
+    @dbg(@to_string(b));
+    @dbg(@to_string(c));
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "-128\n-32768\n-2147483648\n"
+
+[[case]]
+name = "to_string_unsigned_widths_high_bit"
+spec = ["3.7:22", "3.7:23"]
+source = """
+fn main() -> i32 {
+    let a: u8 = 255;
+    let b: u16 = 65535;
+    let c: u32 = 4294967295;
+    let d: u64 = 18446744073709551615;
+    @dbg(@to_string(a));
+    @dbg(@to_string(b));
+    @dbg(@to_string(c));
+    @dbg(@to_string(d));
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "255\n65535\n4294967295\n18446744073709551615\n"
+
+[[case]]
+name = "to_string_i32_default_literal"
+spec = ["3.7:22"]
+source = """
+fn main() -> i32 {
+    let n: i32 = 42;
+    @dbg(@to_string(n));
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "42\n"
+
+[[case]]
 name = "string_concat_literals"
 spec = ["3.7:25"]
 source = """
