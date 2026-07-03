@@ -89,16 +89,12 @@ impl<'a> AstGen<'a> {
                 // Get the element symbol first, then look it up
                 let elem_sym = self.intern_type(element);
                 let elem_name = self.interner.resolve(&elem_sym);
-                // The length component is either a literal (`4`) or a name
-                // referring to a `const` / `comptime` value parameter (`N`),
-                // resolved to a concrete value during sema (RUE-16).
-                let s = match length {
-                    ArrayLength::Literal(n) => format!("[{}; {}]", elem_name, n),
-                    ArrayLength::Named(ident) => {
-                        let len_name = self.interner.resolve(&ident.name);
-                        format!("[{}; {}]", elem_name, len_name)
-                    }
-                };
+                // The length component is a literal (`4`), a name referring to
+                // a `const` / `comptime` value parameter (`N`), or a
+                // comptime-evaluable call (`fact(4)`), all resolved to a
+                // concrete value during sema (RUE-16, RUE-309).
+                let len_str = self.render_array_length(length);
+                let s = format!("[{}; {}]", elem_name, len_str);
                 self.interner.get_or_intern(&s)
             }
             TypeExpr::AnonymousStruct { fields, .. } => {
@@ -176,6 +172,26 @@ impl<'a> AstGen<'a> {
                 }
                 s.push(')');
                 self.interner.get_or_intern(&s)
+            }
+        }
+    }
+
+    /// Render an array-length component to its canonical string form for the
+    /// interned type name (`[element; <this>]`).
+    ///
+    /// A literal renders as its decimal value, a name as the identifier text,
+    /// and a call as `callee(arg, ...)` with each argument rendered by the same
+    /// rule so nested calls compose (RUE-309). Sema parses these forms back out
+    /// of the type string and folds them to a concrete length (RUE-16).
+    fn render_array_length(&self, length: &ArrayLength) -> String {
+        match length {
+            ArrayLength::Literal(n) => n.to_string(),
+            ArrayLength::Named(ident) => self.interner.resolve(&ident.name).to_string(),
+            ArrayLength::Call { name, args } => {
+                let callee = self.interner.resolve(&name.name);
+                let rendered: Vec<String> =
+                    args.iter().map(|a| self.render_array_length(a)).collect();
+                format!("{}({})", callee, rendered.join(", "))
             }
         }
     }
@@ -721,6 +737,13 @@ impl<'a> AstGen<'a> {
                     let count = match count {
                         ArrayLength::Literal(n) => RepeatCount::Literal(*n),
                         ArrayLength::Named(ident) => RepeatCount::Named(ident.name),
+                        // The array-literal repeat grammar (`[value; count]`)
+                        // only parses a literal or a bare name, never a call,
+                        // so this arm is unreachable. The call form is accepted
+                        // only in array-*type* length position (RUE-309).
+                        ArrayLength::Call { .. } => {
+                            unreachable!("array repeat count never parses a call form")
+                        }
                     };
                     self.rir.add_inst(Inst {
                         data: InstData::ArrayRepeat { value, count },

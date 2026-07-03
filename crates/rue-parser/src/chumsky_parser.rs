@@ -255,15 +255,31 @@ where
         // Never type: !
         let never_type = just(TokenKind::Bang).map_with(|_, e| TypeExpr::Never(span_from_extra(e)));
 
-        // Array type: [T; N] where N is an integer literal or a name referring
-        // to a file-level `const` or a `comptime` value parameter (RUE-16).
-        let array_length = choice((
-            select! { TokenKind::Int(n) => ArrayLength::Literal(n as u64) },
-            ident_parser().map(ArrayLength::Named),
-        ))
-        // Otherwise an empty/invalid length reports the bare-`select!`
-        // catch-all "expected something else". (RUE-19)
-        .labelled("array length");
+        // Array type: [T; N] where N is an integer literal, a name referring
+        // to a file-level `const` or a `comptime` value parameter (RUE-16), or
+        // a comptime-evaluable call `f(args)` (RUE-309). The call form is a
+        // recursive grammar so arguments (literals, names, or nested calls)
+        // compose; it is tried before the bare-name form so `f(...)` is not
+        // mis-parsed as a name `f` with a dangling argument list.
+        let array_length = recursive(|array_length| {
+            let call = ident_parser()
+                .then(
+                    array_length
+                        .separated_by(just(TokenKind::Comma))
+                        .allow_trailing()
+                        .collect::<Vec<_>>()
+                        .delimited_by(just(TokenKind::LParen), just(TokenKind::RParen)),
+                )
+                .map(|(name, args)| ArrayLength::Call { name, args });
+            choice((
+                select! { TokenKind::Int(n) => ArrayLength::Literal(n as u64) },
+                call,
+                ident_parser().map(ArrayLength::Named),
+            ))
+            // Otherwise an empty/invalid length reports the bare-`select!`
+            // catch-all "expected something else". (RUE-19)
+            .labelled("array length")
+        });
         let array_type = just(TokenKind::LBracket)
             .ignore_then(ty.clone())
             .then_ignore(just(TokenKind::Semi))
@@ -1525,14 +1541,28 @@ where
             .then_ignore(one_of([TokenKind::Comma, TokenKind::RParen]).rewind())
             .map_with(|_, e| IntrinsicArg::Type(TypeExpr::Never(span_from_extra(e))));
 
-        // Array type: [T; N] where N is a literal or a named length (RUE-16).
+        // Array type: [T; N] where N is a literal, a named length (RUE-16), or
+        // a comptime-evaluable call `f(args)` (RUE-309).
+        let array_length = recursive(|array_length| {
+            let call = ident_parser()
+                .then(
+                    array_length
+                        .separated_by(just(TokenKind::Comma))
+                        .allow_trailing()
+                        .collect::<Vec<_>>()
+                        .delimited_by(just(TokenKind::LParen), just(TokenKind::RParen)),
+                )
+                .map(|(name, args)| ArrayLength::Call { name, args });
+            choice((
+                select! { TokenKind::Int(n) => ArrayLength::Literal(n as u64) },
+                call,
+                ident_parser().map(ArrayLength::Named),
+            ))
+        });
         let array_type = just(TokenKind::LBracket)
             .ignore_then(type_parser())
             .then_ignore(just(TokenKind::Semi))
-            .then(choice((
-                select! { TokenKind::Int(n) => ArrayLength::Literal(n as u64) },
-                ident_parser().map(ArrayLength::Named),
-            )))
+            .then(array_length)
             .then_ignore(just(TokenKind::RBracket))
             .map_with(|(element, length), e| {
                 IntrinsicArg::Type(TypeExpr::Array {
@@ -3659,6 +3689,41 @@ mod tests {
             }
             _ => panic!("expected Function"),
         }
+    }
+
+    #[test]
+    fn test_array_length_call_form() {
+        // RUE-309: a comptime-evaluable call is accepted in array-length
+        // position and parses to `ArrayLength::Call`, with a nested call as an
+        // argument (`[i32; dbl(g(1))]`).
+        let result = parse("fn f() { let a: [i32; dbl(g(1))] = x; }").unwrap();
+        let Item::Function(func) = &result.ast.items[0] else {
+            panic!("expected Function");
+        };
+        // Dig into the `let` statement's declared type.
+        let Expr::Block(block) = &func.body else {
+            panic!("expected block body");
+        };
+        let Statement::Let(let_stmt) = &block.statements[0] else {
+            panic!("expected Let statement");
+        };
+        let Some(TypeExpr::Array { length, .. }) = &let_stmt.ty else {
+            panic!("expected array type annotation");
+        };
+        let ArrayLength::Call { name, args } = length else {
+            panic!("expected call-form array length, got {length:?}");
+        };
+        assert_eq!(result.get(name.name), "dbl");
+        assert_eq!(args.len(), 1);
+        let ArrayLength::Call {
+            name: inner_name,
+            args: inner_args,
+        } = &args[0]
+        else {
+            panic!("expected nested call argument");
+        };
+        assert_eq!(result.get(inner_name.name), "g");
+        assert_eq!(inner_args, &[ArrayLength::Literal(1)]);
     }
 
     #[test]

@@ -381,6 +381,14 @@ pub enum ArrayLength {
     Literal(u64),
     /// A named length, e.g. the `N` in `[i32; N]`.
     Named(Ident),
+    /// A comptime-evaluable call in length position, e.g. the `fact(4)` in
+    /// `[i32; fact(4)]` (RUE-309). The callee must be a value-returning
+    /// function whose parameters are all `comptime`; sema folds the call to a
+    /// concrete length via the same const evaluator that reduces `comptime`
+    /// blocks (RUE-163). Arguments are themselves array-length expressions
+    /// (a literal, a `const`/`comptime` name, or a nested call), so calls
+    /// compose (`[i32; fact(g(2))]`).
+    Call { name: Ident, args: Vec<ArrayLength> },
 }
 
 impl fmt::Display for ArrayLength {
@@ -389,6 +397,16 @@ impl fmt::Display for ArrayLength {
             ArrayLength::Literal(n) => write!(f, "{}", n),
             // Match the canonical name encoding used elsewhere for identifiers.
             ArrayLength::Named(ident) => write!(f, "sym:{}", ident.name.into_usize()),
+            ArrayLength::Call { name, args } => {
+                write!(f, "sym:{}(", name.name.into_usize())?;
+                for (i, arg) in args.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", arg)?;
+                }
+                write!(f, ")")
+            }
         }
     }
 }
