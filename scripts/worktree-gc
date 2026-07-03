@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# worktree-gc — reclaim disk from workflow worktrees, SAFELY.
+#
+# Replaces the old blanket `rm -rf .claude/worktrees`, which raced running
+# workers (they reported "worktree deleted mid-run"). This only acts when disk
+# is actually low, and only removes worktrees git no longer lists as live — so
+# in-flight workers are never touched.
+#
+# Usage: scripts/worktree-gc [THRESHOLD_PERCENT]   (default 85)
+set -uo pipefail
+cd "$(dirname "$0")/.."
+THRESHOLD=${1:-85}
+
+used=$(df --output=pcent . 2>/dev/null | tail -1 | tr -dc '0-9')
+used=${used:-0}
+if [ "$used" -lt "$THRESHOLD" ]; then
+  echo "worktree-gc: disk ${used}% < ${THRESHOLD}% — nothing to do"
+  exit 0
+fi
+echo "worktree-gc: disk ${used}% >= ${THRESHOLD}% — reclaiming"
+
+# 1. Prune admin entries for worktrees whose directory is already gone.
+git worktree prune 2>/dev/null || true
+
+# 2. Remove ORPHANED worktree dirs — present on disk but no longer in git's live
+#    list (i.e. a finished worker's leftover, holding a stale buck-out). Anything
+#    git still lists is live and left alone. This is where the disk actually is.
+if [ -d .claude/worktrees ]; then
+  active="$(git worktree list --porcelain 2>/dev/null | awk '/^worktree /{print $2}')"
+  for d in .claude/worktrees/*/; do
+    [ -d "$d" ] || continue
+    d="${d%/}"
+    abs="$(cd "$d" 2>/dev/null && pwd)" || continue
+    if ! printf '%s\n' "$active" | grep -qxF "$abs"; then
+      rm -rf "${d:?}" && echo "  removed orphaned worktree ${d##*/}"
+    fi
+  done
+fi
+
+# 3. Stale main-repo buck artifacts (safe; rebuilds on demand).
+./buck2 clean --stale 1h >/dev/null 2>&1 || true
+
+now=$(df --output=pcent . 2>/dev/null | tail -1 | tr -dc '0-9')
+echo "worktree-gc: done — disk now ${now:-?}%"
