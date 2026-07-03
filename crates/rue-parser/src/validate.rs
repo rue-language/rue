@@ -170,6 +170,7 @@ impl Validator<'_> {
                 }
             }
             Expr::Field(f) => self.check_expr(&f.base),
+            Expr::Try(t) => self.check_expr(&t.operand),
             Expr::MethodCall(m) => {
                 self.check_expr(&m.receiver);
                 for arg in &m.args {

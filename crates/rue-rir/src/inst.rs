@@ -822,6 +822,9 @@ impl Rir {
             InstData::BitNot { operand } => InstData::BitNot {
                 operand: renumber(*operand),
             },
+            InstData::Try { operand } => InstData::Try {
+                operand: renumber(*operand),
+            },
 
             // Control flow
             InstData::Branch {
@@ -1283,6 +1286,7 @@ impl Rir {
                 | InstData::Neg { .. }
                 | InstData::Not { .. }
                 | InstData::BitNot { .. }
+                | InstData::Try { .. }
                 | InstData::Branch { .. }
                 | InstData::Loop { .. }
                 | InstData::InfiniteLoop { .. }
@@ -1402,6 +1406,13 @@ pub enum InstData {
     Not { operand: InstRef },
     /// Bitwise NOT: ~operand
     BitNot { operand: InstRef },
+
+    /// Try/`?` propagation: `operand?` unwraps an `Option`, evaluating to the
+    /// `Some` payload, and early-returns `None` from the enclosing function
+    /// when the operand is `None` (RUE-6, ADR-0038). Sema lowers it to a
+    /// discriminant match with an early `return` on the `None` arm; the
+    /// enclosing function must itself return an `Option`.
+    Try { operand: InstRef },
 
     // Control flow
     /// Branch: if cond then then_block else else_block
@@ -1930,6 +1941,7 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                 InstData::Neg { operand } => writeln!(out, "neg {}", operand).unwrap(),
                 InstData::Not { operand } => writeln!(out, "not {}", operand).unwrap(),
                 InstData::BitNot { operand } => writeln!(out, "bit_not {}", operand).unwrap(),
+                InstData::Try { operand } => writeln!(out, "try {}", operand).unwrap(),
 
                 // Control flow
                 InstData::Branch {

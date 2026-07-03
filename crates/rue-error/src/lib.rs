@@ -193,6 +193,13 @@ impl ErrorCode {
     pub const BREAK_OUTSIDE_LOOP: Self = Self(500);
     pub const CONTINUE_OUTSIDE_LOOP: Self = Self(501);
     pub const BREAK_WITH_VALUE: Self = Self(502);
+    /// The `?` operator was used in a function whose return type is not an
+    /// `Option` (RUE-6, ADR-0038): `?` early-returns `None`, so the enclosing
+    /// function must return an `Option`.
+    pub const QUESTION_OUTSIDE_OPTION_FN: Self = Self(503);
+    /// The `?` operator was applied to a value that is not an `Option`
+    /// (RUE-6, ADR-0038).
+    pub const QUESTION_ON_NON_OPTION: Self = Self(504);
 
     // ========================================================================
     // Match errors (E0600-E0699)
@@ -1156,6 +1163,14 @@ pub enum ErrorKind {
     /// `break` with a value operand (e.g. `break 42`); break does not carry a value
     #[error("'break' with a value is not supported")]
     BreakWithValue,
+    /// The `?` operator used in a function that does not return an `Option`.
+    #[error(
+        "the `?` operator can only be used in a function that returns an `Option` (found return type `{return_type}`)"
+    )]
+    QuestionOutsideOptionFn { return_type: String },
+    /// The `?` operator applied to a value that is not an `Option`.
+    #[error("the `?` operator can only be applied to an `Option` (found `{found}`)")]
+    QuestionOnNonOption { found: String },
 
     // Match errors
     #[error("match is not exhaustive")]
@@ -1369,6 +1384,8 @@ impl ErrorKind {
             ErrorKind::BreakOutsideLoop => ErrorCode::BREAK_OUTSIDE_LOOP,
             ErrorKind::ContinueOutsideLoop => ErrorCode::CONTINUE_OUTSIDE_LOOP,
             ErrorKind::BreakWithValue => ErrorCode::BREAK_WITH_VALUE,
+            ErrorKind::QuestionOutsideOptionFn { .. } => ErrorCode::QUESTION_OUTSIDE_OPTION_FN,
+            ErrorKind::QuestionOnNonOption { .. } => ErrorCode::QUESTION_ON_NON_OPTION,
 
             // Match errors (E0600-E0699)
             ErrorKind::NonExhaustiveMatch => ErrorCode::NON_EXHAUSTIVE_MATCH,

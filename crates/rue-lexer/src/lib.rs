@@ -106,8 +106,9 @@ pub enum TokenKind {
     Colon,
     Semi,
     Comma,
-    Dot, // .
-    At,  // @
+    Dot,      // .
+    At,       // @
+    Question, // ?
 
     // Builtins
     AtImport(Spur), // @import - contains interned "import" string
@@ -181,6 +182,7 @@ impl TokenKind {
             TokenKind::Pipe => "'|'",
             TokenKind::Caret => "'^'",
             TokenKind::Tilde => "'~'",
+            TokenKind::Question => "'?'",
             TokenKind::LtLt => "'<<'",
             TokenKind::GtGt => "'>>'",
             TokenKind::LParen => "'('",
@@ -300,6 +302,7 @@ impl std::fmt::Display for TokenKind {
             TokenKind::Comma => write!(f, "COMMA"),
             TokenKind::Dot => write!(f, "DOT"),
             TokenKind::At => write!(f, "AT"),
+            TokenKind::Question => write!(f, "QUESTION"),
             TokenKind::AtImport(_) => write!(f, "AT_IMPORT"),
             TokenKind::Eof => write!(f, "EOF"),
         }

@@ -538,6 +538,13 @@ impl<'a> AstGen<'a> {
                     span: un.span,
                 })
             }
+            Expr::Try(try_expr) => {
+                let operand = self.gen_expr(&try_expr.operand);
+                self.rir.add_inst(Inst {
+                    data: InstData::Try { operand },
+                    span: try_expr.span,
+                })
+            }
             Expr::Paren(paren) => {
                 // Parentheses are transparent in the IR - just generate the inner expression
                 self.gen_expr(&paren.inner)

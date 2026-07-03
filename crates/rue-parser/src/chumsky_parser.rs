@@ -11,8 +11,8 @@ use crate::ast::{
     Function, Ident, IfExpr, IndexExpr, IntLit, IntrinsicArg, IntrinsicCallExpr, Item, LetPattern,
     LetStatement, LoopExpr, MatchArm, MatchExpr, Method, MethodCallExpr, NegIntLit, Param,
     ParamMode, ParenExpr, PathExpr, PathPattern, Pattern, ReturnExpr, SelfExpr, SelfParam,
-    Statement, StringLit, StructDecl, StructLitExpr, TypeExpr, TypeLitExpr, UnaryExpr, UnaryOp,
-    UnitLit, Visibility, WhileExpr,
+    Statement, StringLit, StructDecl, StructLitExpr, TryExpr, TypeExpr, TypeLitExpr, UnaryExpr,
+    UnaryOp, UnitLit, Visibility, WhileExpr,
 };
 use chumsky::input::{Input as ChumskyInput, MapExtra, Stream, ValueInput};
 use chumsky::pratt::{infix, left, prefix};
@@ -143,6 +143,19 @@ where
             name,
             span: span_from_extra(e),
         },
+    }
+}
+
+/// Parser for the `?` (try) postfix suffix (RUE-6, ADR-0038). Kept as a
+/// standalone helper (rather than an inline branch) so its input type is
+/// pinned by the return-type annotation. Emits [`Suffix::Try`] carrying the
+/// offset just past the `?` token.
+fn question_suffix_parser<'src, I>() -> impl Parser<'src, I, Suffix, ParserExtras<'src>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    select! {
+        TokenKind::Question = e => Suffix::Try(span_from_extra(e).end),
     }
 }
 
@@ -1290,6 +1303,9 @@ enum Suffix {
     QualifiedPath(Ident, Ident, u32),
     /// Qualified associated function call: .TypeName::function(args)
     QualifiedAssocFnCall(Ident, Ident, Vec<CallArg>, u32),
+    /// Try/`?` propagation: the `?` postfix operator, carrying the position
+    /// just past the `?` token so the resulting span covers `operand?`.
+    Try(u32),
 }
 
 /// Wraps a primary expression parser with field access, method call, and indexing suffixes
@@ -1407,6 +1423,7 @@ where
             qualified_path_suffix,
             field_suffix,
             index_suffix,
+            question_suffix_parser(),
         ))
         .boxed()
         .repeated(),
@@ -1436,6 +1453,14 @@ where
                 Expr::Index(IndexExpr {
                     base: Box::new(base),
                     index: Box::new(index),
+                    span,
+                })
+            }
+            Suffix::Try(end) => {
+                // Extend the base span through the `?`, preserving file_id.
+                let span = base.span().extend_to(end);
+                Expr::Try(TryExpr {
+                    operand: Box::new(base),
                     span,
                 })
             }
@@ -3515,6 +3540,38 @@ mod tests {
                 }
             }
             _ => panic!("expected MethodCall"),
+        }
+    }
+
+    #[test]
+    fn test_try_postfix_on_call() {
+        // `foo()?` parses as Try wrapping a Call (RUE-6).
+        let result = parse_expr("foo()?").unwrap();
+        match &result.expr {
+            Expr::Try(try_expr) => match try_expr.operand.as_ref() {
+                Expr::Call(_) => {}
+                other => panic!("expected Call operand, got {:?}", other),
+            },
+            other => panic!("expected Try, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_try_postfix_chains_with_field() {
+        // `x?.field` — `?` binds to `x`, then `.field` applies to the result.
+        let result = parse_expr("x?.field").unwrap();
+        match &result.expr {
+            Expr::Field(field) => {
+                assert_eq!(result.get(field.field.name), "field");
+                match field.base.as_ref() {
+                    Expr::Try(try_expr) => match try_expr.operand.as_ref() {
+                        Expr::Ident(ident) => assert_eq!(result.get(ident.name), "x"),
+                        other => panic!("expected Ident operand, got {:?}", other),
+                    },
+                    other => panic!("expected Try base, got {:?}", other),
+                }
+            }
+            other => panic!("expected Field, got {:?}", other),
         }
     }
 

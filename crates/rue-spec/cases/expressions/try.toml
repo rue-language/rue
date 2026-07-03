@@ -1,0 +1,146 @@
+[section]
+id = "expressions.try"
+spec_chapter = "4.15"
+name = "Try Expressions"
+description = "The postfix `?` operator unwraps an Option, short-circuiting the enclosing Option-returning function with None (RUE-6, ADR-0038)."
+
+# =============================================================================
+# Some(v): `?` unwraps to the payload and execution continues (4.15:1, 4.15:5,
+# 4.15:6). The syntax production is exercised by every case (4.15:2).
+# =============================================================================
+
+[[case]]
+name = "try_some_unwraps"
+spec = ["4.15:1", "4.15:2", "4.15:5", "4.15:6"]
+description = "`?` on a Some value unwraps the payload; the function continues."
+source = """
+fn Option(comptime T: type) -> type {
+    enum { Some(T), None }
+}
+fn some_val() -> Option(i64) {
+    let O = Option(i64);
+    O::Some(20)
+}
+fn use_it() -> Option(i64) {
+    let O = Option(i64);
+    let v = some_val()?;
+    O::Some(v + 1)
+}
+fn main() -> i32 {
+    let O = Option(i64);
+    match use_it() {
+        O::Some(n) => @intCast(n),
+        O::None => 0,
+    }
+}
+"""
+exit_code = 21
+
+# =============================================================================
+# None: `?` short-circuits, the enclosing function returns None (4.15:7).
+# =============================================================================
+
+[[case]]
+name = "try_none_short_circuits"
+spec = ["4.15:1", "4.15:7"]
+description = "`?` on a None value returns None from the enclosing function; code after it does not run."
+source = """
+fn Option(comptime T: type) -> type {
+    enum { Some(T), None }
+}
+fn none_val() -> Option(i64) {
+    let O = Option(i64);
+    O::None
+}
+fn use_it() -> Option(i64) {
+    let O = Option(i64);
+    let v = none_val()?;
+    O::Some(v + 1)
+}
+fn main() -> i32 {
+    let O = Option(i64);
+    match use_it() {
+        O::Some(n) => @intCast(n),
+        O::None => 7,
+    }
+}
+"""
+exit_code = 7
+
+# =============================================================================
+# The whole `?`-expression has the Some payload type (4.15:5).
+# =============================================================================
+
+[[case]]
+name = "try_result_type_is_payload"
+spec = ["4.15:5", "4.15:6"]
+description = "`operand?` where operand: Option(i64) has type i64 and is usable directly."
+source = """
+fn Option(comptime T: type) -> type {
+    enum { Some(T), None }
+}
+fn wrap(x: i64) -> Option(i64) {
+    let O = Option(i64);
+    O::Some(x)
+}
+fn add_two(x: i64) -> Option(i64) {
+    let O = Option(i64);
+    O::Some(wrap(x)? + 2)
+}
+fn main() -> i32 {
+    let O = Option(i64);
+    match add_two(40) {
+        O::Some(n) => @intCast(n),
+        O::None => 0,
+    }
+}
+"""
+exit_code = 42
+
+# =============================================================================
+# Legality: operand of `?` must be an Option (4.15:3, E0504).
+# =============================================================================
+
+[[case]]
+name = "try_on_non_option_error"
+spec = ["4.15:3"]
+description = "Applying `?` to a non-Option value is a compile error (E0504)."
+compile_fail = true
+error_contains = "the `?` operator can only be applied to an `Option`"
+source = """
+fn Option(comptime T: type) -> type {
+    enum { Some(T), None }
+}
+fn f() -> Option(i64) {
+    let x = 5;
+    let y = x?;
+    let O = Option(i64);
+    O::Some(y)
+}
+fn main() -> i32 { 0 }
+"""
+
+# =============================================================================
+# Legality: `?` requires the enclosing function to return an Option
+# (4.15:4, E0503).
+# =============================================================================
+
+[[case]]
+name = "try_outside_option_fn_error"
+spec = ["4.15:4"]
+description = "Using `?` in a function whose return type is not Option is a compile error (E0503)."
+compile_fail = true
+error_contains = "the `?` operator can only be used in a function that returns an `Option`"
+source = """
+fn Option(comptime T: type) -> type {
+    enum { Some(T), None }
+}
+fn some_val() -> Option(i64) {
+    let O = Option(i64);
+    O::Some(1)
+}
+fn main() -> i32 {
+    let v = some_val()?;
+    @intCast(v)
+}
+"""
