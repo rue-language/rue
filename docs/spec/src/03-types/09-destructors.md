@@ -243,3 +243,34 @@ fn main() -> i32 {
     eat(o.f)  // ERROR: cannot move field `f` out of a value of type 'Outer'
 }
 ```
+
+## The `@drop` intrinsic
+
+{{ rule(id="3.9:37", cat="normative") }}
+
+The `@drop(x)` intrinsic runs the drop glue of its operand `x` — the operand's destructor, if any, followed by the recursive drop of its fields and array elements — at the point of the call, and consumes `x`. It is the deliberate, visible discard of a value: "the drop that would otherwise run at scope exit, invoked by hand." `@drop` is memory-safe and requires no `checked` context.
+
+{{ rule(id="3.9:38", cat="dynamic-semantics") }}
+
+`@drop(x)` consumes `x`: after it, `x` is moved-from, so using `x` again is a use-after-move error (E0205), and the scope-exit drop that would otherwise run for `x` is suppressed. Together these preserve the "dropped exactly once" invariant — the glue runs once, at the `@drop` site, and not again at scope exit.
+
+{{ rule(id="3.9:39", cat="dynamic-semantics") }}
+
+Applied to a `linear` value, `@drop(x)` both runs the glue and satisfies the must-consume obligation (the value is no longer reported as an unconsumed linear value, E0406). Applied to an affine value, it runs the glue early — deterministic cleanup before the end of the enclosing scope. Applied to a `@copy` value, it is a no-op, because a `@copy` value carries no drop glue and no consumption obligation.
+
+{{ rule(id="3.9:40", cat="example") }}
+
+```rue
+linear struct Guard { v: i32 }
+
+drop fn Guard(self) { @dbg(self.v); }
+
+fn main() -> i32 {
+    let g = Guard { v: 42 };
+    @dbg(1);
+    @drop(g);  // runs Guard's destructor here: prints 42
+    @dbg(2);
+    0          // g is already consumed — no drop at scope exit
+}
+// prints: 1, 42, 2
+```

@@ -1,0 +1,164 @@
+# The `@drop(x)` intentional-destroy intrinsic (RUE-187, ADR-0039).
+#
+# `@drop(x)` runs `x`'s full drop glue (destructor + recursive field/element
+# drops) at the call site and discharges `x`'s consumption obligation:
+#
+#   - LINEAR: the value is consumed, so the must-consume rule is satisfied
+#     (no E0406) and reusing it afterwards is E0205.
+#   - AFFINE (has a `drop fn`): the glue runs EARLY — deterministic cleanup
+#     before scope exit — and the scope-exit drop is suppressed so it runs
+#     exactly once.
+#   - COPY: a no-op (Copy values carry no glue and no obligation).
+#
+# These cases pin EXACT stdout (drop ORDER, not just exit code) so the
+# early-run / exactly-once behavior is regression-tested through the real
+# driver.
+
+[section]
+id = "cli.drop_intrinsic"
+name = "@drop intentional-destroy intrinsic"
+description = "@drop runs drop glue at the call site and discharges the linear/affine consumption obligation (RUE-187)."
+
+# (b) Affine early-drop: the destructor runs at the @drop site (42 before 2),
+# and NOT again at scope exit.
+[[case]]
+name = "affine_early_drop_runs_destructor_at_site"
+description = "@drop(x) runs the destructor early: 42 prints between the 1 and 2 markers, exactly once."
+files = [{ path = "main.rue", source = """
+struct Guard { v: i32 }
+
+drop fn Guard(self) { @dbg(self.v); }
+
+fn main() -> i32 {
+    let g = Guard { v: 42 };
+    @dbg(1);
+    @drop(g);
+    @dbg(2);
+    0
+}
+""" }]
+stdout = "1\n42\n2\n"
+exit_code = 0
+
+# Control: WITHOUT @drop the destructor runs at scope exit — 2 before 42.
+[[case]]
+name = "affine_control_drops_at_scope_exit"
+description = "Control: without @drop the destructor runs at scope exit (2 prints before 42)."
+files = [{ path = "main.rue", source = """
+struct Guard { v: i32 }
+
+drop fn Guard(self) { @dbg(self.v); }
+
+fn main() -> i32 {
+    let g = Guard { v: 42 };
+    @dbg(1);
+    @dbg(2);
+    let _ = g;
+    0
+}
+""" }]
+stdout = "1\n2\n42\n"
+exit_code = 0
+
+# (a) Linear discharge: a linear value @drop'ped is no longer E0406 and runs.
+[[case]]
+name = "linear_discharged_by_drop"
+description = "@drop satisfies a linear value's must-consume obligation; the program compiles and runs."
+files = [{ path = "main.rue", source = """
+linear struct L { v: i32 }
+
+fn main() -> i32 {
+    let x = L { v: 7 };
+    @drop(x);
+    x.v
+}
+""" }]
+compile_fail = true
+error_contains = ["E0205", "use of moved value"]
+
+# (a') Linear discharge that actually runs: @drop is the ONLY consumer, so no
+# E0406, and a linear struct WITH a destructor runs it exactly once.
+[[case]]
+name = "linear_with_destructor_discharged_and_runs"
+description = "A linear value with a destructor is discharged by @drop and its destructor runs exactly once (42)."
+files = [{ path = "main.rue", source = """
+linear struct L { v: i32 }
+
+drop fn L(self) { @dbg(self.v); }
+
+fn main() -> i32 {
+    let x = L { v: 42 };
+    @drop(x);
+    @dbg(99);
+    0
+}
+""" }]
+stdout = "42\n99\n"
+exit_code = 0
+
+# Control: a linear value that is NEVER consumed is rejected (E0406).
+[[case]]
+name = "linear_unconsumed_rejected"
+description = "Control: without @drop (or another consumer) the linear value is E0406."
+files = [{ path = "main.rue", source = """
+linear struct L { v: i32 }
+
+fn main() -> i32 {
+    let x = L { v: 7 };
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0406", "must be consumed"]
+
+# (c) Use after @drop is a use-after-move error (E0205).
+[[case]]
+name = "use_after_drop_is_e0205"
+description = "After @drop(x), x is consumed — using it again is E0205."
+files = [{ path = "main.rue", source = """
+linear struct L { v: i32 }
+
+fn take(l: L) -> i32 { l.v }
+
+fn main() -> i32 {
+    let x = L { v: 7 };
+    @drop(x);
+    take(x)
+}
+""" }]
+compile_fail = true
+error_contains = ["E0205", "use of moved value"]
+
+# (d) @drop of a payload-carrying enum (enum_payloads preview): discharges the
+# value, runs, and drops exactly once. Enum payloads are trivially droppable
+# today, so this pins compile+run (7) rather than payload-glue side effects.
+[[case]]
+name = "drop_payload_enum"
+description = "@drop of a payload-carrying enum compiles, consumes the value, and runs (preview enum_payloads)."
+files = [{ path = "main.rue", source = """
+enum Shape { Circle(i32), Rect(i32, i32), Empty }
+
+fn main() -> i32 {
+    let s = Shape::Circle(5);
+    @drop(s);
+    @dbg(7);
+    0
+}
+""" }]
+args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+stdout = "7\n"
+exit_code = 0
+
+# (e) Copy value: @drop is a no-op and does NOT consume, so reuse is fine.
+[[case]]
+name = "copy_drop_is_noop_and_reusable"
+description = "@drop of a Copy value is a no-op: it neither runs glue nor consumes, so the value is still usable."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let x: i32 = 9;
+    @drop(x);
+    x
+}
+""" }]
+stdout = ""
+exit_code = 9

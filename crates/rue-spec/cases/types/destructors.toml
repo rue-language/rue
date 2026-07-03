@@ -1082,3 +1082,94 @@ fn main() -> i32 {
 """
 exit_code = 0
 expected_stdout = "7\n800\n7\n"
+
+# =============================================================================
+# The `@drop` intrinsic (RUE-187, ADR-0039)
+# =============================================================================
+
+[[case]]
+name = "drop_intrinsic_runs_glue_early"
+spec = ["3.9:37", "3.9:38"]
+description = "@drop(x) runs the destructor at the call site, not at scope exit; expected_stdout pins the ORDER (42 before 2)"
+source = """
+struct Guard { v: i32 }
+
+drop fn Guard(self) { @dbg(self.v); }
+
+fn main() -> i32 {
+    let g = Guard { v: 42 };
+    @dbg(1);
+    @drop(g);   // destructor runs HERE: prints 42
+    @dbg(2);
+    0           // g already consumed — no second drop at scope exit
+}
+"""
+exit_code = 0
+expected_stdout = "1\n42\n2\n"
+
+[[case]]
+name = "drop_intrinsic_dropped_exactly_once"
+spec = ["3.9:38"]
+description = "The scope-exit drop is suppressed after @drop, so the destructor runs exactly once (42 prints once)"
+source = """
+struct Guard { v: i32 }
+
+drop fn Guard(self) { @dbg(self.v); }
+
+fn main() -> i32 {
+    let g = Guard { v: 42 };
+    @drop(g);
+    @dbg(99);
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "42\n99\n"
+
+[[case]]
+name = "drop_intrinsic_use_after_is_error"
+spec = ["3.9:38"]
+description = "Using a value after @drop is a use-after-move error (E0205)"
+source = """
+struct Guard { v: i32 }
+
+drop fn Guard(self) { @dbg(self.v); }
+
+fn take(g: Guard) -> i32 { g.v }
+
+fn main() -> i32 {
+    let g = Guard { v: 1 };
+    @drop(g);
+    take(g)
+}
+"""
+compile_fail = true
+error_contains = "use of moved value"
+
+[[case]]
+name = "drop_intrinsic_discharges_linear"
+spec = ["3.9:39"]
+description = "@drop satisfies a linear value's must-consume obligation: no E0406, program runs"
+source = """
+linear struct L { v: i32 }
+
+fn main() -> i32 {
+    let x = L { v: 7 };
+    @drop(x);   // discharges the linear obligation
+    0
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "drop_intrinsic_copy_is_noop"
+spec = ["3.9:39"]
+description = "@drop of a @copy value is a no-op: it neither consumes nor errors, so the value is still usable"
+source = """
+fn main() -> i32 {
+    let x: i32 = 9;
+    @drop(x);   // no-op: i32 is Copy
+    x           // still usable
+}
+"""
+exit_code = 9

@@ -45,6 +45,11 @@ pub struct PrimitiveTypeSpurs {
     /// expression to give Rust users a targeted "no 'as' operator" error
     /// instead of a generic parse error. (RUE-133)
     pub as_kw: Spur,
+    /// The keyword `drop` — a reserved keyword (for `drop fn`) that is ALSO
+    /// the name of the `@drop(x)` intrinsic (RUE-187). Because the lexer emits
+    /// a dedicated `Drop` token rather than an `Ident`, the intrinsic-name
+    /// parser maps that token back to this interned "drop" symbol.
+    pub drop_kw: Spur,
 }
 
 impl PrimitiveTypeSpurs {
@@ -62,6 +67,7 @@ impl PrimitiveTypeSpurs {
             bool: interner.get_or_intern("bool"),
             self_type: interner.get_or_intern("Self"),
             as_kw: interner.get_or_intern("as"),
+            drop_kw: interner.get_or_intern("drop"),
         }
     }
 }
@@ -1516,10 +1522,23 @@ where
     // Try unambiguous type syntax first, then fall back to expression
     let intrinsic_arg = unambiguous_type.or(expr.clone().map(IntrinsicArg::Expr));
 
+    // The intrinsic name is normally an identifier, but `@drop` (RUE-187)
+    // names the intentional-destroy intrinsic with the `drop` KEYWORD (also
+    // used by `drop fn`). The lexer emits a dedicated `Drop` token for it, so
+    // accept that token here and map it back to the interned "drop" symbol.
+    let drop_intrinsic_name =
+        just(TokenKind::Drop).map_with(|_, e: &mut MapExtra<'src, '_, I, ParserExtras<'src>>| {
+            Ident {
+                name: e.state().0.syms.drop_kw,
+                span: span_from_extra(e),
+            }
+        });
+    let intrinsic_name = ident_parser().or(drop_intrinsic_name);
+
     // Intrinsic call: @name(args) or @import(args)
     // The lexer tokenizes @import specially, so we need to handle both cases
     let intrinsic_call = just(TokenKind::At)
-        .ignore_then(ident_parser())
+        .ignore_then(intrinsic_name)
         .then(
             intrinsic_arg
                 .clone()

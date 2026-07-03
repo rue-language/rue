@@ -3487,6 +3487,8 @@ impl<'a> Sema<'a> {
         // Use pre-interned symbol comparison instead of string comparison
         if name == known.dbg {
             self.analyze_dbg_intrinsic(air, inst_ref, &args, span, ctx)
+        } else if name == known.drop {
+            self.analyze_drop_intrinsic(air, &args, span, ctx)
         } else if name == known.int_cast {
             self.analyze_intcast_intrinsic(air, inst_ref, &args, span, ctx)
         } else if name == known.test_preview_gate {
@@ -3778,6 +3780,78 @@ impl<'a> Sema<'a> {
                 name: self.known.dbg,
                 args_start,
                 args_len: 1,
+            },
+            ty: Type::UNIT,
+            span,
+        });
+        Ok(AnalysisResult::new(air_ref, Type::UNIT))
+    }
+
+    /// Analyze the `@drop(x)` intentional-destroy intrinsic (RUE-187,
+    /// ADR-0039).
+    ///
+    /// `@drop(x)` runs `x`'s full drop glue (destructor + recursive field
+    /// drops) at this site AND discharges `x`'s consumption obligation:
+    ///
+    /// - *linear* — the operand is consumed like any move, so the
+    ///   must-consume check (E0406) is satisfied and reusing `x` afterwards is
+    ///   a use-after-move (E0205);
+    /// - *affine with a destructor* — the glue runs EARLY (deterministic
+    ///   cleanup before scope exit), and the suppressed scope-exit drop keeps
+    ///   the "dropped exactly once" invariant;
+    /// - *Copy* — no move, no glue: a no-op.
+    ///
+    /// The obligation-discharge rides on the ordinary move machinery: analyzing
+    /// the operand as a by-value use marks its slot moved (so drop elaboration
+    /// skips the scope-exit drop, RUE-61) and records the consumption. The
+    /// emitted `Drop` reuses the exact glue path that scope-exit drops use, so
+    /// both backends already lower it and no `unchecked` context is required
+    /// (drop glue is memory-safe).
+    fn analyze_drop_intrinsic(
+        &mut self,
+        air: &mut Air,
+        args: &[RirCallArg],
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AnalysisResult> {
+        if args.len() != 1 {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicWrongArgCount {
+                    name: "drop".to_string(),
+                    expected: 1,
+                    found: args.len(),
+                },
+                span,
+            ));
+        }
+
+        // Analyze the operand as an ordinary by-value use: for a variable this
+        // emits a `MarkMoved`-wrapped load, which both records the move (later
+        // use -> E0205, and the linear must-consume obligation is satisfied)
+        // and tells drop elaboration to skip the slot's scope-exit drop.
+        let arg_result = self.analyze_inst(air, args[0].value, ctx)?;
+        let arg_type = arg_result.ty;
+
+        // An `<error>`-typed operand reaching here via `Ok` means inference
+        // failed silently with no diagnostic; report it rather than letting a
+        // later stage hit an `unreachable!` (mirrors @dbg, RUE-149).
+        if arg_type.is_error() {
+            return Err(CompileError::new(
+                ErrorKind::InternalError(
+                    "@drop operand type failed to resolve during inference".to_string(),
+                ),
+                span,
+            ));
+        }
+
+        // Emit the drop glue at this site. The CFG builder elides the `Drop`
+        // for trivially droppable types (so `@drop` of a Copy value or a
+        // glue-free linear marker is a pure no-op beyond discharging the
+        // obligation), and otherwise lowers it through the same destructor +
+        // field-drop path as a scope-exit drop.
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::Drop {
+                value: arg_result.air_ref,
             },
             ty: Type::UNIT,
             span,
