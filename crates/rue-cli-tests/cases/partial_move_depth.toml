@@ -1,0 +1,125 @@
+# Partial moves must be enforced at depth (RUE-279).
+#
+# Spec 3.8: a struct (or array element) with any moved field cannot be used as
+# a WHOLE value. This held one level deep but not deeper: after moving a
+# sub-subfield (`o.inner.s`), the intermediate `o.inner` was still passable by
+# value — a soundness hole (the new owner and the hole coexisted). The move
+# checker now rejects using a path as a whole value when any DESCENDANT path
+# was moved, at any depth, for structs and array elements alike.
+
+[section]
+id = "cli.partial_move_depth"
+name = "Partial moves at depth"
+description = "Using an aggregate whole after a nested subfield moved is E0205."
+
+# Depth 2: `consume(o.inner.s)` moves `o.inner.s`; passing `o.inner` whole must
+# be rejected.
+[[case]]
+name = "use_whole_after_subfield_move_depth2"
+files = [
+    { path = "main.rue", source = """
+struct Inner { s: String, n: i32 }
+struct Outer { inner: Inner, tag: i32 }
+fn consume(s: String) -> i32 { @intCast(s.len()) }
+fn consume_inner(i: Inner) -> i32 { @intCast(i.s.len()) + i.n }
+fn main() -> i32 {
+    let o = Outer { inner: Inner { s: "hi", n: 5 }, tag: 9 };
+    consume(o.inner.s);
+    consume_inner(o.inner)
+}
+""" },
+]
+compile_fail = true
+error_contains = ["E0205", "o.inner"]
+
+# Depth 3: same rule one level deeper (`c.b.a.s` moved, `c.b` used whole).
+[[case]]
+name = "use_whole_after_subfield_move_depth3"
+files = [
+    { path = "main.rue", source = """
+struct A { s: String, k: i32 }
+struct B { a: A, k: i32 }
+struct C { b: B, k: i32 }
+fn cs(s: String) -> i32 { @intCast(s.len()) }
+fn cb(b: B) -> i32 { @intCast(b.a.s.len()) }
+fn main() -> i32 {
+    let c = C { b: B { a: A { s: "hi", k: 1 }, k: 2 }, k: 3 };
+    cs(c.b.a.s);
+    cb(c.b)
+}
+""" },
+]
+compile_fail = true
+error_contains = ["E0205", "c.b"]
+
+# Depth 1 (regression): the original one-level case must still be rejected.
+[[case]]
+name = "use_whole_after_field_move_depth1"
+files = [
+    { path = "main.rue", source = """
+struct Inner { s: String, n: i32 }
+fn consume(s: String) -> i32 { @intCast(s.len()) }
+fn consume_inner(i: Inner) -> i32 { @intCast(i.s.len()) + i.n }
+fn main() -> i32 {
+    let inner = Inner { s: "hi", n: 5 };
+    consume(inner.s);
+    consume_inner(inner)
+}
+""" },
+]
+compile_fail = true
+error_contains = ["E0205", "inner"]
+
+# Array element variant: `consume(arr[0].s)` moves a subfield of element 0;
+# passing `arr[0]` whole must be rejected.
+[[case]]
+name = "use_whole_element_after_subfield_move"
+files = [
+    { path = "main.rue", source = """
+struct Inner { s: String, n: i32 }
+fn consume(s: String) -> i32 { @intCast(s.len()) }
+fn consume_inner(i: Inner) -> i32 { @intCast(i.s.len()) + i.n }
+fn main() -> i32 {
+    let arr = [Inner { s: "hi", n: 5 }, Inner { s: "yo", n: 6 }];
+    consume(arr[0].s);
+    consume_inner(arr[0])
+}
+""" },
+]
+compile_fail = true
+error_contains = ["E0205", "arr[0]"]
+
+# Disjoint sibling stays legal: after moving `o.inner.s`, the untouched Copy
+# field `o.tag` is still readable (return 9).
+[[case]]
+name = "disjoint_sibling_after_subfield_move_ok"
+files = [
+    { path = "main.rue", source = """
+struct Inner { s: String, n: i32 }
+struct Outer { inner: Inner, tag: i32 }
+fn consume(s: String) -> i32 { @intCast(s.len()) }
+fn main() -> i32 {
+    let o = Outer { inner: Inner { s: "hi", n: 5 }, tag: 9 };
+    consume(o.inner.s);
+    o.tag
+}
+""" },
+]
+exit_code = 9
+
+# Sibling ELEMENT stays legal: moving `arr[0].s` must not poison `arr[1].s`
+# (constant indices are now tracked per element, not conflated). "yo".len() = 2.
+[[case]]
+name = "disjoint_sibling_element_move_ok"
+files = [
+    { path = "main.rue", source = """
+struct Inner { s: String, n: i32 }
+fn consume(s: String) -> i32 { @intCast(s.len()) }
+fn main() -> i32 {
+    let arr = [Inner { s: "hi", n: 5 }, Inner { s: "yo", n: 6 }];
+    consume(arr[0].s);
+    consume(arr[1].s)
+}
+""" },
+]
+exit_code = 2

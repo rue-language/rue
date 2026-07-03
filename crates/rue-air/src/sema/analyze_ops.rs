@@ -63,6 +63,14 @@ pub(crate) struct ProjectionInfo {
     /// value (for per-element move tracking, RUE-186). None for field
     /// projections and dynamic indices.
     pub const_index: Option<i64>,
+    /// For index projections with a non-negative constant index: the interned
+    /// decimal-string path segment for that element (`arr[0]` → `"0"`),
+    /// matching the encoding [`super::analysis::index_path_segment`] uses for
+    /// whole-element moves. Lets `field_path` nest a projection through a
+    /// constant index under the correct element (`arr[0].s` → `["0", "s"]`)
+    /// instead of stripping the index (RUE-279). None for field projections,
+    /// dynamic indices, and negative constants.
+    pub index_segment: Option<Spur>,
 }
 
 /// Result of tracing a place expression in RIR.
@@ -94,25 +102,38 @@ impl PlaceTrace {
             .unwrap_or(self.base_type)
     }
 
-    /// Build the field path for move checking (list of field name symbols).
+    /// Build the field path for move checking (list of path segments).
     ///
-    /// Returns the field names in the projection chain. Index projections
-    /// break the field path (you can't partially move out of arrays), so
-    /// this returns field names from the last index projection to the end.
+    /// Fields contribute their name; an index through a **non-negative
+    /// constant** contributes its decimal-string element segment, so a
+    /// projection through a constant index nests under the right element
+    /// (`arr[0].s` → `["0", "s"]`, matching whole-element moves — RUE-279).
+    ///
+    /// A **dynamic** (or negative) index cannot be named, so it resets the
+    /// path: segments before it are dropped and collection continues after it.
+    /// This keeps the old "you can't statically track a partial move through a
+    /// runtime index" behavior for that case (the caller falls back to the
+    /// conservative whole-array E0904 rejection), while constant indices are
+    /// now tracked precisely instead of being conflated (every `arr[K].f`
+    /// previously collapsed to `["f"]`, which both hid nested partial moves
+    /// and false-rejected sibling-element moves).
     pub fn field_path(&self) -> Vec<Spur> {
-        // Find the last index projection (if any)
-        let start_from = self
-            .projections
-            .iter()
-            .rposition(|p| matches!(p.proj, AirProjection::Index { .. }))
-            .map(|i| i + 1)
-            .unwrap_or(0);
-
-        // Collect field names from that point to the end
-        self.projections[start_from..]
-            .iter()
-            .filter_map(|p| p.field_name)
-            .collect()
+        let mut path = Vec::new();
+        for p in &self.projections {
+            match p.proj {
+                AirProjection::Index { .. } => match p.index_segment {
+                    Some(seg) => path.push(seg),
+                    // Dynamic/negative index: unnameable element — restart.
+                    None => path.clear(),
+                },
+                AirProjection::Field { .. } => {
+                    if let Some(name) = p.field_name {
+                        path.push(name);
+                    }
+                }
+            }
+        }
+        path
     }
 }
 
@@ -169,19 +190,10 @@ impl<'a> Sema<'a> {
         match &inst.data {
             // Base case: local variable reference
             InstData::VarRef { name } => {
-                // First check if it's actually a parameter
-                if let Some(param_info) = ctx.params.iter().find(|p| p.name == *name) {
-                    return Ok(Some(PlaceTrace {
-                        base: AirPlaceBase::Param(param_info.abi_slot),
-                        base_type: param_info.ty,
-                        projections: Vec::new(),
-                        root_var: *name,
-                        is_root_mutable: matches!(param_info.mode, RirParamMode::Inout),
-                        is_borrow_param: matches!(param_info.mode, RirParamMode::Borrow),
-                    }));
-                }
-
-                // Check if it's a local variable
+                // Locals shadow parameters (spec 5.1:10): a `let` that rebinds a
+                // parameter name makes every later reference resolve to the new
+                // local, not the parameter (RUE-278). A local with a param's
+                // name can only arise by shadowing, so locals always win here.
                 if let Some(local) = ctx.locals.get(name) {
                     return Ok(Some(PlaceTrace {
                         base: AirPlaceBase::Local(local.slot),
@@ -190,6 +202,18 @@ impl<'a> Sema<'a> {
                         root_var: *name,
                         is_root_mutable: local.is_mut,
                         is_borrow_param: false,
+                    }));
+                }
+
+                // Otherwise it may be a parameter.
+                if let Some(param_info) = ctx.params.iter().find(|p| p.name == *name) {
+                    return Ok(Some(PlaceTrace {
+                        base: AirPlaceBase::Param(param_info.abi_slot),
+                        base_type: param_info.ty,
+                        projections: Vec::new(),
+                        root_var: *name,
+                        is_root_mutable: matches!(param_info.mode, RirParamMode::Inout),
+                        is_borrow_param: matches!(param_info.mode, RirParamMode::Borrow),
                     }));
                 }
 
@@ -249,6 +273,7 @@ impl<'a> Sema<'a> {
                             result_type: field_type,
                             field_name: Some(*field),
                             const_index: None,
+                            index_segment: None,
                         });
 
                         Ok(Some(trace))
@@ -288,7 +313,17 @@ impl<'a> Sema<'a> {
                         ctx.byref_arg_root = saved_byref_root;
                         let index_result = index_result?;
 
-                        // Add this projection (no field name for indices)
+                        // Add this projection (no field name for indices).
+                        // A non-negative constant index also gets its interned
+                        // element path segment so field_path can nest through
+                        // it (RUE-279); negative/dynamic indices leave it None.
+                        let const_index = self.try_get_const_index(*index);
+                        let index_segment = match const_index {
+                            Some(k) if k >= 0 => {
+                                Some(super::analysis::index_path_segment(self.interner, k as u64))
+                            }
+                            _ => None,
+                        };
                         trace.projections.push(ProjectionInfo {
                             proj: AirProjection::Index {
                                 array_type: base_type,
@@ -296,7 +331,8 @@ impl<'a> Sema<'a> {
                             },
                             result_type: elem_type,
                             field_name: None,
-                            const_index: self.try_get_const_index(*index),
+                            const_index,
+                            index_segment,
                         });
 
                         Ok(Some(trace))
@@ -2158,97 +2194,102 @@ impl<'a> Sema<'a> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        // First check if it's a parameter
-        if let Some(param_info) = ctx.params.iter().find(|p| p.name == name) {
-            let ty = param_info.ty;
-            let name_str = self.interner.resolve(&name);
+        // Check if it's a parameter — but a `let` that shadows the parameter
+        // rebinds the name to a new local, and that local wins for all later
+        // reads (spec 5.1:10, RUE-278). A same-named local can only exist by
+        // shadowing, so its presence means "resolve as local" (handled below).
+        if !ctx.locals.contains_key(&name) {
+            if let Some(param_info) = ctx.params.iter().find(|p| p.name == name) {
+                let ty = param_info.ty;
+                let name_str = self.interner.resolve(&name);
 
-            // Check if this parameter has been moved
-            if let Some(move_state) = ctx.moved_vars.get(&name) {
-                if let Some(moved_span) = move_state.is_any_part_moved() {
-                    return Err(CompileError::new(
-                        ErrorKind::UseAfterMove(name_str.to_string()),
-                        span,
-                    )
-                    .with_label("value moved here", moved_span));
-                }
-            }
-
-            // Handle move semantics based on parameter mode.
-            // A use as a by-ref call argument is a borrow, not a move
-            // (`analyze_call_args` sets `byref_arg_root`), so it neither marks
-            // the parameter moved nor counts as moving out of it. This is what
-            // permits forwarding an inout parameter: `f(inout v)` inside
-            // `fn g(inout v: T)`.
-            let is_byref_arg_use = ctx.byref_arg_root == Some(name);
-            let mut moves_out = false;
-            if !self.is_type_copy(ty) {
-                match param_info.mode {
-                    // Normal and comptime parameters behave similarly for moves
-                    // (comptime params are substituted at compile time)
-                    RirParamMode::Normal | RirParamMode::Comptime => {
-                        if !is_byref_arg_use {
-                            ctx.moved_vars
-                                .entry(name)
-                                .or_default()
-                                .mark_path_moved(&[], span);
-                            // Only Normal params occupy a real ABI slot that
-                            // drop elaboration would otherwise drop at exit.
-                            moves_out = param_info.mode == RirParamMode::Normal;
-                        }
-                    }
-                    RirParamMode::Inout => {
-                        // Moving out of an inout parameter would leave the
-                        // CALLER's variable moved-from after the call returns,
-                        // so it is rejected outright (RUE-127).
-                        if !is_byref_arg_use {
-                            return Err(move_out_of_inout_error(name_str, span));
-                        }
-                    }
-                    RirParamMode::Borrow => {
-                        // A by-ref argument use re-borrows the parameter:
-                        // `f(borrow v)` inside `fn g(borrow v: T)` is a sound
-                        // read-only re-borrow and is allowed (RUE-143).
-                        // `f(inout v)` — a mutable view of read-only memory —
-                        // was already rejected in `analyze_call_args` (E0428),
-                        // so a by-ref use reaching here is borrow-mode.
-                        // Anything else moves out of the borrow: rejected.
-                        if !is_byref_arg_use {
-                            let name_str = self.interner.resolve(&name);
-                            return Err(CompileError::new(
-                                ErrorKind::MoveOutOfBorrow {
-                                    variable: name_str.to_string(),
-                                },
-                                span,
-                            ));
-                        }
+                // Check if this parameter has been moved
+                if let Some(move_state) = ctx.moved_vars.get(&name) {
+                    if let Some(moved_span) = move_state.is_any_part_moved() {
+                        return Err(CompileError::new(
+                            ErrorKind::UseAfterMove(name_str.to_string()),
+                            span,
+                        )
+                        .with_label("value moved here", moved_span));
                     }
                 }
-            }
 
-            let mut air_ref = air.add_inst(AirInst {
-                data: AirInstData::Param {
-                    index: param_info.abi_slot,
-                },
-                ty,
-                span,
-            });
-            if moves_out {
-                // Export the move to drop elaboration: the callee-side drop
-                // of this parameter is suppressed on paths where its value
-                // moved out (RUE-61).
-                air_ref = air.add_inst(AirInst {
-                    data: AirInstData::MarkMoved {
-                        value: air_ref,
-                        slot: param_info.abi_slot,
-                        is_param: true,
-                        place: None,
+                // Handle move semantics based on parameter mode.
+                // A use as a by-ref call argument is a borrow, not a move
+                // (`analyze_call_args` sets `byref_arg_root`), so it neither marks
+                // the parameter moved nor counts as moving out of it. This is what
+                // permits forwarding an inout parameter: `f(inout v)` inside
+                // `fn g(inout v: T)`.
+                let is_byref_arg_use = ctx.byref_arg_root == Some(name);
+                let mut moves_out = false;
+                if !self.is_type_copy(ty) {
+                    match param_info.mode {
+                        // Normal and comptime parameters behave similarly for moves
+                        // (comptime params are substituted at compile time)
+                        RirParamMode::Normal | RirParamMode::Comptime => {
+                            if !is_byref_arg_use {
+                                ctx.moved_vars
+                                    .entry(name)
+                                    .or_default()
+                                    .mark_path_moved(&[], span);
+                                // Only Normal params occupy a real ABI slot that
+                                // drop elaboration would otherwise drop at exit.
+                                moves_out = param_info.mode == RirParamMode::Normal;
+                            }
+                        }
+                        RirParamMode::Inout => {
+                            // Moving out of an inout parameter would leave the
+                            // CALLER's variable moved-from after the call returns,
+                            // so it is rejected outright (RUE-127).
+                            if !is_byref_arg_use {
+                                return Err(move_out_of_inout_error(name_str, span));
+                            }
+                        }
+                        RirParamMode::Borrow => {
+                            // A by-ref argument use re-borrows the parameter:
+                            // `f(borrow v)` inside `fn g(borrow v: T)` is a sound
+                            // read-only re-borrow and is allowed (RUE-143).
+                            // `f(inout v)` — a mutable view of read-only memory —
+                            // was already rejected in `analyze_call_args` (E0428),
+                            // so a by-ref use reaching here is borrow-mode.
+                            // Anything else moves out of the borrow: rejected.
+                            if !is_byref_arg_use {
+                                let name_str = self.interner.resolve(&name);
+                                return Err(CompileError::new(
+                                    ErrorKind::MoveOutOfBorrow {
+                                        variable: name_str.to_string(),
+                                    },
+                                    span,
+                                ));
+                            }
+                        }
+                    }
+                }
+
+                let mut air_ref = air.add_inst(AirInst {
+                    data: AirInstData::Param {
+                        index: param_info.abi_slot,
                     },
                     ty,
                     span,
                 });
+                if moves_out {
+                    // Export the move to drop elaboration: the callee-side drop
+                    // of this parameter is suppressed on paths where its value
+                    // moved out (RUE-61).
+                    air_ref = air.add_inst(AirInst {
+                        data: AirInstData::MarkMoved {
+                            value: air_ref,
+                            slot: param_info.abi_slot,
+                            is_param: true,
+                            place: None,
+                        },
+                        ty,
+                        span,
+                    });
+                }
+                return Ok(AnalysisResult::new(air_ref, ty));
             }
-            return Ok(AnalysisResult::new(air_ref, ty));
         }
 
         // Look up the variable in locals
@@ -2493,53 +2534,59 @@ impl<'a> Sema<'a> {
             ));
         }
 
-        // First check if it's a parameter (for inout params)
-        if let Some(param_info) = ctx.params.iter().find(|p| p.name == name) {
-            // Check parameter mode - only inout can be assigned to
-            match param_info.mode {
-                // Normal and comptime parameters are immutable
-                RirParamMode::Normal | RirParamMode::Comptime => {
-                    return Err(CompileError::new(
-                        ErrorKind::AssignToImmutable(name_str.to_string()),
-                        span,
-                    )
-                    .with_help(format!(
-                        "consider making parameter `{}` inout: `inout {}: {}`",
-                        name_str,
-                        name_str,
-                        param_info.ty.safe_name_with_pool(Some(&self.type_pool))
-                    )));
+        // Check if it's a parameter (for inout params) — unless a `let mut`
+        // shadowed it with a local of the same name, in which case the
+        // assignment targets that mutable local, not the parameter (RUE-278).
+        // Without this guard, `let mut x = x; x = x + 1;` wrongly reports E0203
+        // against the immutable parameter with a bogus "make it inout" hint.
+        if !ctx.locals.contains_key(&name) {
+            if let Some(param_info) = ctx.params.iter().find(|p| p.name == name) {
+                // Check parameter mode - only inout can be assigned to
+                match param_info.mode {
+                    // Normal and comptime parameters are immutable
+                    RirParamMode::Normal | RirParamMode::Comptime => {
+                        return Err(CompileError::new(
+                            ErrorKind::AssignToImmutable(name_str.to_string()),
+                            span,
+                        )
+                        .with_help(format!(
+                            "consider making parameter `{}` inout: `inout {}: {}`",
+                            name_str,
+                            name_str,
+                            param_info.ty.safe_name_with_pool(Some(&self.type_pool))
+                        )));
+                    }
+                    RirParamMode::Inout => {
+                        // Inout parameters can be assigned to
+                    }
+                    RirParamMode::Borrow => {
+                        return Err(CompileError::new(
+                            ErrorKind::MutateBorrowedValue {
+                                variable: name_str.to_string(),
+                            },
+                            span,
+                        ));
+                    }
                 }
-                RirParamMode::Inout => {
-                    // Inout parameters can be assigned to
-                }
-                RirParamMode::Borrow => {
-                    return Err(CompileError::new(
-                        ErrorKind::MutateBorrowedValue {
-                            variable: name_str.to_string(),
-                        },
-                        span,
-                    ));
-                }
+
+                let abi_slot = param_info.abi_slot;
+
+                // Analyze the value
+                let value_result = self.analyze_inst(air, value, ctx)?;
+
+                // Assignment to a parameter resets its move state
+                ctx.moved_vars.remove(&name);
+
+                let air_ref = air.add_inst(AirInst {
+                    data: AirInstData::ParamStore {
+                        param_slot: abi_slot,
+                        value: value_result.air_ref,
+                    },
+                    ty: Type::UNIT,
+                    span,
+                });
+                return Ok(AnalysisResult::new(air_ref, Type::UNIT));
             }
-
-            let abi_slot = param_info.abi_slot;
-
-            // Analyze the value
-            let value_result = self.analyze_inst(air, value, ctx)?;
-
-            // Assignment to a parameter resets its move state
-            ctx.moved_vars.remove(&name);
-
-            let air_ref = air.add_inst(AirInst {
-                data: AirInstData::ParamStore {
-                    param_slot: abi_slot,
-                    value: value_result.air_ref,
-                },
-                ty: Type::UNIT,
-                span,
-            });
-            return Ok(AnalysisResult::new(air_ref, Type::UNIT));
         }
 
         // Look up local variable
@@ -2843,6 +2890,12 @@ impl<'a> Sema<'a> {
         ctx: &AnalysisContext,
         span: Span,
     ) -> CompileResult<()> {
+        // A `let` shadowing the by-ref parameter rebinds the name to an owned
+        // local; moving out of that local is fine, so the parameter rule no
+        // longer applies (RUE-278).
+        if ctx.locals.contains_key(&root_var) {
+            return Ok(());
+        }
         if let Some(param_info) = ctx.params.iter().find(|p| p.name == root_var) {
             match param_info.mode {
                 RirParamMode::Inout => {
@@ -3100,9 +3153,14 @@ impl<'a> Sema<'a> {
                 self.reject_field_move_out_of_destructor_type(&trace, span)?;
                 let field_path = trace.field_path();
 
-                // Check if this field path is already moved (partial moves)
+                // Check if this field path is already moved. Moving the field
+                // out as a whole value is illegal if the path itself, an
+                // ancestor, OR any descendant subfield was already moved
+                // (`o.inner` cannot be passed by value once `o.inner.s` moved —
+                // spec 3.8, RUE-279), so check both directions here, unlike a
+                // Copy leaf read below which only cares about ancestors.
                 if let Some(state) = ctx.moved_vars.get(&trace.root_var) {
-                    if let Some(moved_span) = state.is_path_moved(&field_path) {
+                    if let Some(moved_span) = state.is_path_or_descendant_moved(&field_path) {
                         return Err(super::analysis::use_after_move_path_error(
                             self.interner,
                             trace.root_var,
@@ -3801,9 +3859,11 @@ impl<'a> Sema<'a> {
             // own path and the non-Copy branch records an element move — so
             // `moved.field[i]` after `let b = moved` slipped through. Check the
             // base place's move state here for every index read. `field_path()`
-            // stops at the last index projection, so this catches a full move
-            // of the root (or a moved field prefix) without falsely flagging a
-            // previously moved-out *element* (those use a longer index path).
+            // names this element (constant index) or the base up to a dynamic
+            // index, so `is_path_moved` catches a full move of the root, a
+            // moved field/element prefix, or this exact constant element,
+            // without flagging a *sibling* element (`arr[1]` after `arr[0]`
+            // moved has a disjoint path).
             {
                 let field_path = trace.field_path();
                 if let Some(state) = ctx.moved_vars.get(&trace.root_var) {
@@ -3862,9 +3922,10 @@ impl<'a> Sema<'a> {
             // a[i])`) borrows the element in place rather than moving it out
             // of the array (RUE-143), so the non-Copy rejection below does
             // not apply — but indexing an already-moved array is still a
-            // use-after-move (`field_path()` of an index-terminated trace is
-            // empty, so this checks the root's full move; the per-element
-            // check below covers a moved-out element, RUE-186).
+            // use-after-move (`field_path()` names this element for a constant
+            // index, so this catches the root's full move or this exact
+            // element; the per-element check below also covers a moved-out
+            // element, RUE-186).
             let is_byref_arg_use = ctx.byref_arg_root == Some(trace.root_var);
             let mut element_move: Option<i64> = None;
             if is_byref_arg_use {

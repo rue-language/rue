@@ -1,0 +1,84 @@
+# Shadowing a function parameter with `let` (RUE-278).
+#
+# A `let` that rebinds a parameter name must resolve every LATER reference
+# (reads, assignments, mutability) to the new local, exactly like shadowing a
+# local. Before the fix, post-shadow reads still hit the original parameter
+# slot (a miscompile: `let x = x + 5; x` returned the parameter, not `x + 5`),
+# and `let mut x = x; x = x + 1` wrongly reported E0203 against the immutable
+# parameter with a bogus "make it inout" hint.
+
+[section]
+id = "cli.shadow_param"
+name = "Parameter shadowing with let"
+description = "A let shadowing a parameter rebinds the name for all later uses."
+
+# Face A: `let x = x + 5; x` reads the new local (15), not the parameter (10).
+[[case]]
+name = "shadow_param_scalar_read"
+files = [
+    { path = "main.rue", source = """
+fn f(x: i32) -> i32 { let x = x + 5; x }
+fn main() -> i32 { f(10) }
+""" },
+]
+exit_code = 15
+
+# Face B: a struct parameter shadowed by a struct local; the field read after
+# the shadow sees the new local's field (1001 mod 256 = 233), not the original.
+[[case]]
+name = "shadow_param_struct_field"
+files = [
+    { path = "main.rue", source = """
+struct Point { x: i32, y: i32 }
+fn g(p: Point) -> i32 { let p = Point { x: p.x + 1000, y: p.y }; p.x }
+fn main() -> i32 { g(Point { x: 1, y: 0 }) }
+""" },
+]
+exit_code = 233
+
+# Face C: `let mut x = x` produces a fresh MUTABLE local, so `x = x + 1` is a
+# legal assignment to that local — not E0203 against the immutable parameter.
+[[case]]
+name = "shadow_param_let_mut_assign"
+files = [
+    { path = "main.rue", source = """
+fn h(x: i32) -> i32 { let mut x = x; x = x + 1; x }
+fn main() -> i32 { h(10) }
+""" },
+]
+exit_code = 11
+
+# Control: shadowing a LOCAL (not a parameter) already worked; keep it green so
+# the fix didn't regress the local-over-local path.
+[[case]]
+name = "shadow_local_control"
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 { let x = 10; let x = x + 5; x }
+""" },
+]
+exit_code = 15
+
+# A parameter read BEFORE the shadow still reads the parameter: `let a = x`
+# binds a = 2, then `let x = x + 5` binds x = 7, so a*100 + x = 207.
+[[case]]
+name = "shadow_param_read_before_shadow"
+files = [
+    { path = "main.rue", source = """
+fn f(x: i32) -> i32 { let a = x; let x = x + 5; a * 100 + x }
+fn main() -> i32 { f(2) }
+""" },
+]
+exit_code = 207
+
+# A shadow inside an inner block is scoped to that block: after the block the
+# name resolves to the parameter again (x = 7).
+[[case]]
+name = "shadow_param_inner_block_scope"
+files = [
+    { path = "main.rue", source = """
+fn f(x: i32) -> i32 { { let x = x + 5; } x }
+fn main() -> i32 { f(7) }
+""" },
+]
+exit_code = 7
