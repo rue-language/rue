@@ -14,7 +14,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use lasso::{Spur, ThreadedRodeo};
+use lasso::{Key, Spur, ThreadedRodeo};
 use rue_builtins::{BuiltinReturnType, BuiltinTypeDef};
 use rue_error::{
     CompileError, CompileErrors, CompileResult, CompileWarning, ErrorKind,
@@ -2645,6 +2645,68 @@ impl<'a> Sema<'a> {
 
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::TypeConst(struct_ty),
+                    ty: Type::COMPTIME_TYPE,
+                    span: inst.span,
+                });
+                Ok(AnalysisResult::new(air_ref, Type::COMPTIME_TYPE))
+            }
+
+            // Anonymous enum type: an enum (sum) type constructed at comptime
+            // (e.g., `enum { Some(T), None }` in a comptime type function). The
+            // enum analog of the AnonStructType arm above. Generic anon enums
+            // (payloads mentioning a `comptime T`) are comptime-evaluated, not
+            // analyzed here — this path resolves a concrete anon enum, exactly
+            // as the struct arm does (ADR-0038, RUE-6 phase 2).
+            InstData::AnonEnumType {
+                variants_start,
+                variants_len,
+                payloads_start,
+                payloads_len,
+            } => {
+                let variant_syms = self
+                    .rir
+                    .get_symbols(*variants_start, *variants_len)
+                    .to_vec();
+                let payload_words = self.rir.get_extra(*payloads_start, *payloads_len).to_vec();
+
+                let mut variant_names: Vec<String> = Vec::with_capacity(variant_syms.len());
+                let mut variant_payloads: Vec<Vec<Type>> = Vec::with_capacity(variant_syms.len());
+                let mut pi = 0usize;
+                for vsym in &variant_syms {
+                    variant_names.push(self.interner.resolve(vsym).to_string());
+                    let k = if payload_words.is_empty() {
+                        0
+                    } else {
+                        let k = payload_words[pi] as usize;
+                        pi += 1;
+                        k
+                    };
+                    let mut tys: Vec<Type> = Vec::with_capacity(k);
+                    for _ in 0..k {
+                        let ty_sym = Spur::try_from_usize(payload_words[pi] as usize)
+                            .expect("valid interned type symbol in payload region");
+                        pi += 1;
+                        let field_ty = self.resolve_type(ty_sym, inst.span)?;
+                        // A payload of type `type` cannot exist at runtime
+                        // (spec 4.14:6); reject it like struct fields / enum
+                        // declarations do.
+                        if field_ty.is_comptime_type() {
+                            return Err(CompileError::new(
+                                ErrorKind::ComptimeEvaluationFailed {
+                                    reason: "type values cannot exist at runtime".to_string(),
+                                },
+                                inst.span,
+                            ));
+                        }
+                        tys.push(field_ty);
+                    }
+                    variant_payloads.push(tys);
+                }
+
+                let enum_ty = self.find_or_create_anon_enum(&variant_names, &variant_payloads);
+
+                let air_ref = air.add_inst(AirInst {
+                    data: AirInstData::TypeConst(enum_ty),
                     ty: Type::COMPTIME_TYPE,
                     span: inst.span,
                 });

@@ -363,3 +363,44 @@ fn C() -> type {
     struct { x: i32, fn get(self) -> i64 { self.x as i64 } }  // Different type (i64 vs i32)
 }
 ```
+
+{{ rule(id="4.14:20", cat="normative") }}
+
+A comptime function that returns `type` can construct an anonymous enum (sum) type using the following syntax:
+
+```ebnf
+anon_enum_type = "enum" "{" [ enum_variant { "," enum_variant } ] "}" ;
+enum_variant = IDENT [ "(" type { "," type } ")" ] ;
+```
+
+Anonymous enums are the sum-type analog of anonymous struct types (rule 4.14:7) and may be parameterized by comptime type parameters, which makes generic sum types such as `Option` and `Result` expressible as ordinary library functions rather than compiler builtins:
+
+```rue
+fn Option(comptime T: type) -> type {
+    enum { Some(T), None }
+}
+
+fn main() -> i32 {
+    let O = Option(i32);
+    let x: O = O::Some(5);
+    match x { O::Some(n) => n, O::None => 0 }
+}
+```
+
+Each instantiation is monomorphized: `Option(i32)` and `Option(bool)` are distinct types with independent tagged-union layouts (the payload types differ). A variant that carries a payload requires the `enum_payloads` preview feature, exactly as for a named enum declaration.
+
+{{ rule(id="4.14:21", cat="normative") }}
+
+Two anonymous enum types are structurally equal if and only if they have the same variant names in the same order carrying the same payload types. Consequently, two instantiations of the same comptime type function with the same type arguments (for example `Option(i32)` evaluated twice) denote the same type, while instantiations with different type arguments denote different, non-assignable types.
+
+```rue
+fn Option(comptime T: type) -> type { enum { Some(T), None } }
+
+fn main() -> i32 {
+    let A = Option(i32);
+    let B = Option(i32);
+    let x: A = A::Some(10);
+    let y: B = x;  // OK: A and B are structurally equal
+    match y { B::Some(n) => n, B::None => 0 }
+}
+```

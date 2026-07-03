@@ -118,6 +118,32 @@ impl<'a> AstGen<'a> {
                 s.push_str(" }");
                 self.interner.get_or_intern(&s)
             }
+            TypeExpr::AnonymousEnum { variants, .. } => {
+                // Canonical name representation for an anonymous enum type used
+                // in type position (rare — anon enums normally appear as the
+                // body of a comptime type function, handled via AnonEnumType).
+                let mut s = String::from("enum { ");
+                for (i, variant) in variants.iter().enumerate() {
+                    if i > 0 {
+                        s.push_str(", ");
+                    }
+                    let name = self.interner.resolve(&variant.name.name);
+                    s.push_str(name);
+                    if !variant.payload.is_empty() {
+                        s.push('(');
+                        for (j, ty) in variant.payload.iter().enumerate() {
+                            if j > 0 {
+                                s.push_str(", ");
+                            }
+                            let ty_sym = self.intern_type(ty);
+                            s.push_str(self.interner.resolve(&ty_sym));
+                        }
+                        s.push(')');
+                    }
+                }
+                s.push_str(" }");
+                self.interner.get_or_intern(&s)
+            }
             TypeExpr::PointerConst { pointee, .. } => {
                 // ptr const T
                 let pointee_sym = self.intern_type(pointee);
@@ -804,6 +830,41 @@ impl<'a> AstGen<'a> {
                             span: type_lit.span,
                         })
                     }
+                    TypeExpr::AnonymousEnum { variants, .. } => {
+                        // Generate an anonymous enum type instruction. Variant
+                        // names and tuple-variant payloads are encoded exactly
+                        // as `gen_enum` does for a top-level `enum` declaration
+                        // (RUE-221, ADR-0038).
+                        let variant_syms: Vec<Spur> =
+                            variants.iter().map(|v| v.name.name).collect();
+                        let (variants_start, variants_len) = self.rir.add_symbols(&variant_syms);
+
+                        let has_any_payload = variants.iter().any(|v| !v.payload.is_empty());
+                        let (payloads_start, payloads_len) = if has_any_payload {
+                            let mut payload_words: Vec<u32> = Vec::new();
+                            for variant in variants {
+                                payload_words.push(variant.payload.len() as u32);
+                                for ty in &variant.payload {
+                                    let ty_sym = self.intern_type(ty);
+                                    payload_words.push(ty_sym.into_usize() as u32);
+                                }
+                            }
+                            let start = self.rir.add_extra(&payload_words);
+                            (start, payload_words.len() as u32)
+                        } else {
+                            (0, 0)
+                        };
+
+                        self.rir.add_inst(Inst {
+                            data: InstData::AnonEnumType {
+                                variants_start,
+                                variants_len,
+                                payloads_start,
+                                payloads_len,
+                            },
+                            span: type_lit.span,
+                        })
+                    }
                     _ => {
                         // For named types, unit, never, arrays, and pointers, generate TypeConst
                         let type_name = match &type_lit.type_expr {
@@ -815,7 +876,7 @@ impl<'a> AstGen<'a> {
                                 // For now, use a placeholder
                                 self.interner.get_or_intern_static("array")
                             }
-                            TypeExpr::AnonymousStruct { .. } => {
+                            TypeExpr::AnonymousStruct { .. } | TypeExpr::AnonymousEnum { .. } => {
                                 unreachable!("handled above")
                             }
                             TypeExpr::PointerConst { .. } | TypeExpr::PointerMut { .. } => {

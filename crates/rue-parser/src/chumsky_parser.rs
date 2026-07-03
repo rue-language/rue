@@ -1643,6 +1643,22 @@ where
             })
         });
 
+    // Anonymous enum type as expression: enum { Variant1, Variant2(T), ... }
+    // The enum analog of anon_struct_type_expr; enables comptime generic sum
+    // types like `fn Option(comptime T: type) -> type { enum { Some(T), None } }`
+    // (ADR-0038, RUE-6 phase 2).
+    let anon_enum_type_expr = just(TokenKind::Enum)
+        .ignore_then(
+            enum_variants_parser().delimited_by(just(TokenKind::LBrace), just(TokenKind::RBrace)),
+        )
+        .map_with(|variants, e| {
+            let span = span_from_extra(e);
+            Expr::TypeLit(TypeLitExpr {
+                type_expr: TypeExpr::AnonymousEnum { variants, span },
+                span,
+            })
+        });
+
     // Self type expression: Self { field: value } (struct literal with Self as type)
     // This enables constructing instances of anonymous struct types from methods
     let self_type_expr = just(TokenKind::SelfType)
@@ -1679,6 +1695,7 @@ where
         any_intrinsic_call,
         array_lit,
         anon_struct_type_expr,
+        anon_enum_type_expr,
         type_lit_expr,
         call_and_access_parser(expr.clone()),
         paren_expr,
@@ -3974,6 +3991,37 @@ mod tests {
     }
 
     // ==================== Anonymous Struct Method Parsing Tests ====================
+
+    #[test]
+    fn test_anon_enum_type_expr() {
+        // Anonymous enum type as a comptime type-function body: variant names
+        // plus a tuple payload referring to a comptime type parameter (RUE-6
+        // phase 2).
+        let result =
+            parse("fn Option(comptime T: type) -> type { enum { Some(T), None } }").unwrap();
+        match &result.ast.items[0] {
+            Item::Function(f) => {
+                assert_eq!(result.get(f.name.name), "Option");
+                match &f.body {
+                    Expr::Block(block) => match block.expr.as_ref() {
+                        Expr::TypeLit(type_lit) => match &type_lit.type_expr {
+                            TypeExpr::AnonymousEnum { variants, .. } => {
+                                assert_eq!(variants.len(), 2);
+                                assert_eq!(result.get(variants[0].name.name), "Some");
+                                assert_eq!(variants[0].payload.len(), 1);
+                                assert_eq!(result.get(variants[1].name.name), "None");
+                                assert!(variants[1].payload.is_empty());
+                            }
+                            _ => panic!("expected AnonymousEnum"),
+                        },
+                        _ => panic!("expected TypeLit"),
+                    },
+                    _ => panic!("expected Block"),
+                }
+            }
+            _ => panic!("expected Function"),
+        }
+    }
 
     #[test]
     fn test_anon_struct_with_fields_only() {

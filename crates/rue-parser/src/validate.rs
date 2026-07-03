@@ -230,6 +230,9 @@ impl Validator<'_> {
                     self.check_method(method);
                 }
             }
+            // Anonymous enum types carry only variant payload type expressions;
+            // no nested methods/bodies to validate.
+            TypeExpr::AnonymousEnum { .. } => {}
             TypeExpr::PointerConst { pointee, .. } | TypeExpr::PointerMut { pointee, .. } => {
                 self.check_type_expr(pointee)
             }

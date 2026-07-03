@@ -1216,8 +1216,7 @@ impl<'a> ConstraintGenerator<'a> {
                     {
                         if !bindings.is_empty() {
                             if let Some(payload) = self
-                                .enums
-                                .get(type_name)
+                                .enum_type_for(type_name)
                                 .and_then(|ty| ty.as_enum())
                                 .map(|id| self.type_pool.enum_def(id))
                                 .and_then(|def| {
@@ -1374,7 +1373,7 @@ impl<'a> ConstraintGenerator<'a> {
 
             // Enum variant
             InstData::EnumVariant { type_name, .. } => {
-                if let Some(&enum_ty) = self.enums.get(type_name) {
+                if let Some(enum_ty) = self.enum_type_for(type_name) {
                     InferType::Concrete(enum_ty)
                 } else {
                     InferType::Concrete(Type::ERROR)
@@ -1606,9 +1605,8 @@ impl<'a> ConstraintGenerator<'a> {
                 // (RUE-221). Checked here first so it takes precedence over the
                 // struct-method path below.
                 let enum_variant = self
-                    .enums
-                    .get(type_name)
-                    .and_then(|ty| ty.as_enum().map(|id| (*ty, id)))
+                    .enum_type_for(type_name)
+                    .and_then(|ty| ty.as_enum().map(|id| (ty, id)))
                     .and_then(|(ty, id)| {
                         let def = self.type_pool.enum_def(id);
                         def.find_variant(self.interner.resolve(function))
@@ -1697,6 +1695,9 @@ impl<'a> ConstraintGenerator<'a> {
             // Anonymous struct type: a struct type used as a comptime value
             // This also has the ComptimeType type.
             InstData::AnonStructType { .. } => InferType::Concrete(Type::COMPTIME_TYPE),
+
+            // Anonymous enum type: an enum (sum) type used as a comptime value.
+            InstData::AnonEnumType { .. } => InferType::Concrete(Type::COMPTIME_TYPE),
         };
 
         // Record the type for this expression
@@ -1810,6 +1811,18 @@ impl<'a> ConstraintGenerator<'a> {
         false
     }
 
+    /// Resolve an enum type name that may be a comptime type-variable binding
+    /// (`let O = Option(i32); O::Some(..)`), falling back to the named-enum
+    /// table. Mirrors sema's `resolve_enum_type_name`; without the
+    /// comptime-alias lookup, generic-enum construction/matching inferred
+    /// `<error>` and poisoned the surrounding constraints (RUE-6 phase 2).
+    fn enum_type_for(&self, type_name: &Spur) -> Option<Type> {
+        self.comptime_local_types
+            .and_then(|aliases| aliases.get(type_name).copied())
+            .filter(|ty| ty.is_enum())
+            .or_else(|| self.enums.get(type_name).copied())
+    }
+
     /// Get the inferred type for a pattern.
     fn pattern_type(&mut self, pattern: &rue_rir::RirPattern) -> InferType {
         match pattern {
@@ -1821,7 +1834,7 @@ impl<'a> ConstraintGenerator<'a> {
             rue_rir::RirPattern::Int { .. } => InferType::IntLiteral,
             rue_rir::RirPattern::Bool(_, _) => InferType::Concrete(Type::BOOL),
             rue_rir::RirPattern::Path { type_name, .. } => {
-                if let Some(&enum_ty) = self.enums.get(type_name) {
+                if let Some(enum_ty) = self.enum_type_for(type_name) {
                     InferType::Concrete(enum_ty)
                 } else {
                     InferType::Concrete(Type::ERROR)
