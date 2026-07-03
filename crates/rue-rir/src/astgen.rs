@@ -3,7 +3,7 @@
 //! AstGen converts the Abstract Syntax Tree into RIR instructions.
 //! This is analogous to Zig's AstGen phase.
 
-use lasso::{Spur, ThreadedRodeo};
+use lasso::{Key, Spur, ThreadedRodeo};
 
 /// Known type intrinsics that take a type argument rather than an expression.
 /// These intrinsics operate on types at compile time (e.g., @size_of(i32)).
@@ -183,12 +183,34 @@ impl<'a> AstGen<'a> {
             .collect();
         let (variants_start, variants_len) = self.rir.add_symbols(&variants);
 
+        // Encode tuple-variant payloads (RUE-221) as a self-describing flat
+        // sequence: for each variant, a count `k` followed by `k` payload
+        // type-name symbols. Discriminant-only variants contribute a `0`.
+        // The whole region is omitted (len 0) when no variant carries data.
+        let has_any_payload = enum_decl.variants.iter().any(|v| !v.payload.is_empty());
+        let (payloads_start, payloads_len) = if has_any_payload {
+            let mut payload_words: Vec<u32> = Vec::new();
+            for variant in &enum_decl.variants {
+                payload_words.push(variant.payload.len() as u32);
+                for ty in &variant.payload {
+                    let ty_sym = self.intern_type(ty);
+                    payload_words.push(ty_sym.into_usize() as u32);
+                }
+            }
+            let start = self.rir.add_extra(&payload_words);
+            (start, payload_words.len() as u32)
+        } else {
+            (0, 0)
+        };
+
         self.rir.add_inst(Inst {
             data: InstData::EnumDecl {
                 is_pub: enum_decl.visibility == Visibility::Public,
                 name,
                 variants_start,
                 variants_len,
+                payloads_start,
+                payloads_len,
             },
             span: enum_decl.span,
         })
@@ -835,10 +857,13 @@ impl<'a> AstGen<'a> {
             Pattern::Path(path) => {
                 // If there's a base expression (module reference), generate it first
                 let module = path.base.as_ref().map(|base| self.gen_expr(base));
+                // Payload binding names for a tuple-variant pattern (RUE-221).
+                let bindings: Vec<Spur> = path.bindings.iter().map(|b| b.name).collect();
                 RirPattern::Path {
                     module,
                     type_name: path.type_name.name, // Already a Spur
                     variant: path.variant.name,     // Already a Spur
+                    bindings,
                     span: path.span,
                 }
             }

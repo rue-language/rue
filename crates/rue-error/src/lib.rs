@@ -361,6 +361,11 @@ pub enum PreviewFeature {
     /// self)`), RUE-15 / ADR-0037. Lets methods access `self` by reference
     /// instead of consuming it.
     MethodReceivers,
+    /// Enum payloads — sum types with data (RUE-221, ADR-0038). Tuple
+    /// variants (`Circle(i32)`) carrying data, tagged-union layout, and
+    /// pattern matching with payload bindings (`match s { Circle(r) => r }`).
+    /// The prerequisite for `Option`/`Result`.
+    EnumPayloads,
 }
 
 /// Error returned when parsing a preview feature name fails.
@@ -383,6 +388,7 @@ impl PreviewFeature {
             PreviewFeature::TestInfra => "test_infra",
             PreviewFeature::ForLoops => "for_loops",
             PreviewFeature::MethodReceivers => "method_receivers",
+            PreviewFeature::EnumPayloads => "enum_payloads",
         }
     }
 
@@ -393,6 +399,7 @@ impl PreviewFeature {
             PreviewFeature::TestInfra => "ADR-0005",
             PreviewFeature::ForLoops => "ADR-0037",
             PreviewFeature::MethodReceivers => "ADR-0037",
+            PreviewFeature::EnumPayloads => "ADR-0038",
         }
     }
 
@@ -402,6 +409,7 @@ impl PreviewFeature {
             PreviewFeature::TestInfra,
             PreviewFeature::ForLoops,
             PreviewFeature::MethodReceivers,
+            PreviewFeature::EnumPayloads,
         ]
     }
 
@@ -427,6 +435,7 @@ impl std::str::FromStr for PreviewFeature {
             "test_infra" => Ok(PreviewFeature::TestInfra),
             "for_loops" => Ok(PreviewFeature::ForLoops),
             "method_receivers" => Ok(PreviewFeature::MethodReceivers),
+            "enum_payloads" => Ok(PreviewFeature::EnumPayloads),
             _ => Err(ParsePreviewFeatureError(s.to_string())),
         }
     }
@@ -2203,7 +2212,10 @@ mod tests {
     #[test]
     fn test_preview_feature_all_names() {
         let names = PreviewFeature::all_names();
-        assert_eq!(names, "test_infra, for_loops, method_receivers");
+        assert_eq!(
+            names,
+            "test_infra, for_loops, method_receivers, enum_payloads"
+        );
     }
 
     #[test]

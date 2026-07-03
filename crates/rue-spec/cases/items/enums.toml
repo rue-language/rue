@@ -255,3 +255,130 @@ fn main() -> i32 {
 }
 """
 exit_code = 42
+
+# =============================================================================
+# Variant Payloads (RUE-221, ADR-0038) — enum_payloads preview feature
+# =============================================================================
+
+# A payload-carrying variant requires the preview feature.
+[[case]]
+name = "enum_payload_requires_preview"
+spec = ["6.3:14"]
+source = """
+enum Shape { Circle(i32), Empty }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = "requires preview feature"
+
+# Declaring and constructing tuple variants (grammar 6.3:2, payloads 6.3:13).
+[[case]]
+name = "enum_payload_declare_construct"
+spec = ["6.3:2", "6.3:13"]
+preview = "enum_payloads"
+source = """
+enum Shape { Circle(i32), Rect(i32, i32), Empty }
+fn main() -> i32 {
+    let a = Shape::Circle(5);
+    let b = Shape::Rect(3, 4);
+    let c = Shape::Empty;
+    0
+}
+"""
+exit_code = 0
+
+# Construction + tagged-union layout + match extraction: Circle(5) -> 5.
+[[case]]
+name = "enum_payload_match_circle"
+spec = ["6.3:15", "6.3:16"]
+preview = "enum_payloads"
+source = """
+enum Shape { Circle(i32), Rect(i32, i32), Empty }
+fn area(s: Shape) -> i32 {
+    match s {
+        Shape::Circle(r) => r,
+        Shape::Rect(w, h) => w + h,
+        Shape::Empty => 0,
+    }
+}
+fn main() -> i32 { area(Shape::Circle(5)) }
+"""
+exit_code = 5
+
+# Multi-field payload: Rect(3, 4) -> 7 (largest-variant layout).
+[[case]]
+name = "enum_payload_match_rect"
+spec = ["6.3:15", "6.3:16"]
+preview = "enum_payloads"
+source = """
+enum Shape { Circle(i32), Rect(i32, i32), Empty }
+fn area(s: Shape) -> i32 {
+    match s {
+        Shape::Circle(r) => r,
+        Shape::Rect(w, h) => w + h,
+        Shape::Empty => 0,
+    }
+}
+fn main() -> i32 { area(Shape::Rect(3, 4)) }
+"""
+exit_code = 7
+
+# Discriminant-only variant of a sum type: Empty -> 0.
+[[case]]
+name = "enum_payload_match_empty"
+spec = ["6.3:16"]
+preview = "enum_payloads"
+source = """
+enum Shape { Circle(i32), Rect(i32, i32), Empty }
+fn area(s: Shape) -> i32 {
+    match s {
+        Shape::Circle(r) => r,
+        Shape::Rect(w, h) => w + h,
+        Shape::Empty => 0,
+    }
+}
+fn main() -> i32 { area(Shape::Empty) }
+"""
+exit_code = 0
+
+# Wrong payload arity is rejected.
+[[case]]
+name = "enum_payload_wrong_arity"
+spec = ["6.3:16"]
+preview = "enum_payloads"
+source = """
+enum Shape { Rect(i32, i32) }
+fn main() -> i32 { let r = Shape::Rect(3); 0 }
+"""
+compile_fail = true
+
+# A payload-carrying variant used as a bare path is an error.
+[[case]]
+name = "enum_payload_bare_path_error"
+spec = ["6.3:16"]
+preview = "enum_payloads"
+source = """
+enum Shape { Circle(i32) }
+fn main() -> i32 { let c = Shape::Circle; 0 }
+"""
+compile_fail = true
+
+# A payload with a destructor, moved out by a match binding, is dropped
+# exactly once when the binding leaves scope (6.3:17).
+[[case]]
+name = "enum_payload_drop_once_via_match"
+spec = ["6.3:17"]
+preview = "enum_payloads"
+source = """
+struct Res { id: i32 }
+drop fn Res(self) { @dbg(self.id); }
+enum Holder { Full(Res), Nothing }
+fn main() -> i32 {
+    let h = Holder::Full(Res { id: 7 });
+    match h {
+        Holder::Full(r) => r.id,
+        Holder::Nothing => 0,
+    }
+}
+"""
+exit_code = 7

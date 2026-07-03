@@ -423,10 +423,26 @@ pub enum CfgInstData {
     },
 
     // Enum operations
-    /// Create an enum variant (discriminant value)
+    /// Create an enum variant value: the discriminant plus (for tuple
+    /// variants, RUE-221) the payload operands, stored in the Cfg's extra
+    /// array. Use `Cfg::get_extra(payload_start, payload_len)` to retrieve the
+    /// payload values (empty for a discriminant-only variant).
     EnumVariant {
         enum_id: EnumId,
         variant_index: u32,
+        /// Start index into the Cfg's extra array for payload values.
+        payload_start: u32,
+        /// Number of payload values.
+        payload_len: u32,
+    },
+    /// Read payload field `field_index` of a tuple variant from an enum value
+    /// (RUE-221). The result is the payload field, read from the tagged-union
+    /// slots of `base` (slot 0 is the discriminant).
+    EnumPayloadGet {
+        base: CfgValue,
+        enum_id: EnumId,
+        variant_index: u32,
+        field_index: u32,
     },
 
     // Type conversion operations
@@ -1241,8 +1257,30 @@ impl Cfg {
             CfgInstData::EnumVariant {
                 enum_id,
                 variant_index,
+                payload_len,
+                ..
             } => {
-                write!(f, "enum_variant #{}::{}", enum_id.0, variant_index)
+                if *payload_len == 0 {
+                    write!(f, "enum_variant #{}::{}", enum_id.0, variant_index)
+                } else {
+                    write!(
+                        f,
+                        "enum_variant #{}::{}(payload x{})",
+                        enum_id.0, variant_index, payload_len
+                    )
+                }
+            }
+            CfgInstData::EnumPayloadGet {
+                base,
+                enum_id,
+                variant_index,
+                field_index,
+            } => {
+                write!(
+                    f,
+                    "enum_payload_get {} #{}::{}.{}",
+                    base, enum_id.0, variant_index, field_index
+                )
             }
             CfgInstData::IntCast { value, from_ty } => {
                 write!(f, "intcast {} from {}", value, from_ty.name())

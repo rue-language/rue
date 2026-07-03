@@ -802,18 +802,32 @@ where
         }),
     };
 
-    // Simple path pattern: Enum::Variant (no module prefix)
+    // Optional payload bindings for a tuple-variant pattern: `(a, b, ...)`
+    // (RUE-221). At least one binding required inside the parens.
+    let pattern_bindings = ident_parser()
+        .separated_by(just(TokenKind::Comma))
+        .at_least(1)
+        .allow_trailing()
+        .collect::<Vec<_>>()
+        .delimited_by(just(TokenKind::LParen), just(TokenKind::RParen))
+        .or_not()
+        .map(|opt| opt.unwrap_or_default());
+
+    // Simple path pattern: Enum::Variant (no module prefix), optionally with
+    // payload bindings `Enum::Variant(a, b)`.
     let simple_path_pat = ident_parser()
         .then_ignore(just(TokenKind::ColonColon))
         .then(ident_parser())
+        .then(pattern_bindings.clone())
         // Negative lookahead to ensure we're not at the start of a qualified path
         // (i.e., ensure there's no `.` before this pattern that would make it
         // part of a module.Enum::Variant pattern)
-        .map_with(|(type_name, variant), e| {
+        .map_with(|((type_name, variant), bindings), e| {
             Pattern::Path(PathPattern {
                 base: None,
                 type_name,
                 variant,
+                bindings,
                 span: span_from_extra(e),
             })
         });
@@ -831,7 +845,8 @@ where
         )
         .then_ignore(just(TokenKind::ColonColon))
         .then(ident_parser())
-        .map_with(|((first, mut rest), variant), e| {
+        .then(pattern_bindings)
+        .map_with(|(((first, mut rest), variant), bindings), e| {
             // first is the first module identifier
             // rest contains all subsequent identifiers up to and including type_name
             // The last element of rest is the type_name
@@ -859,6 +874,7 @@ where
                 base: Some(Box::new(base_expr)),
                 type_name,
                 variant,
+                bindings,
                 span: span_from_extra(e),
             })
         });
@@ -2234,15 +2250,30 @@ where
         )
 }
 
-/// Parser for enum variant: just an identifier
+/// Parser for enum variant: `Name` (discriminant-only) or `Name(T1, T2, ...)`
+/// (tuple variant carrying payload data, RUE-221).
 fn enum_variant_parser<'src, I>() -> impl Parser<'src, I, EnumVariant, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    ident_parser().map_with(|name, e| EnumVariant {
-        name,
-        span: span_from_extra(e),
-    })
+    // Optional tuple payload: `(T1, T2, ...)`. At least one type required
+    // inside the parens; `V()` is not a valid tuple variant.
+    let payload = type_parser()
+        .separated_by(just(TokenKind::Comma))
+        .at_least(1)
+        .allow_trailing()
+        .collect::<Vec<_>>()
+        .delimited_by(just(TokenKind::LParen), just(TokenKind::RParen))
+        .or_not()
+        .map(|opt| opt.unwrap_or_default());
+
+    ident_parser()
+        .then(payload)
+        .map_with(|(name, payload), e| EnumVariant {
+            name,
+            payload,
+            span: span_from_extra(e),
+        })
 }
 
 /// Parser for comma-separated enum variants

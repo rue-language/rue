@@ -25,7 +25,7 @@ use std::collections::HashMap;
 use lasso::Spur;
 use rue_error::{
     CompileError, CompileResult, CompileWarning, ErrorKind, MissingFieldsError, OptionExt,
-    WarningKind,
+    PreviewFeature, WarningKind,
 };
 use rue_rir::{InstData, InstRef, RirArgMode, RirParamMode, RirPattern};
 
@@ -1445,6 +1445,13 @@ impl<'a> Sema<'a> {
             ctx.moved_vars = moves_before_arms.clone();
             ctx.push_scope();
 
+            // Materialize tuple-variant payload bindings (RUE-221) into fresh
+            // locals before the body, so the body's references resolve to them.
+            // The enclosing match dispatched on the discriminant, so in this
+            // arm the payload is read (move mode) via `EnumPayloadGet`.
+            let binding_stmts =
+                self.materialize_match_bindings(air, pattern, scrutinee_result.air_ref, ctx)?;
+
             // Analyze arm body
             let body_result = self.analyze_inst(air, *body, ctx)?;
             let body_type = body_result.ty;
@@ -1527,7 +1534,24 @@ impl<'a> Sema<'a> {
                 }
             };
 
-            air_arms.push((air_pattern, body_result.air_ref));
+            // If the pattern bound payload data, wrap the body so the binding
+            // Alloc statements run before it (RUE-221).
+            let arm_body_ref = if binding_stmts.is_empty() {
+                body_result.air_ref
+            } else {
+                let stmts_start = air.add_extra(&binding_stmts);
+                air.add_inst(AirInst {
+                    data: AirInstData::Block {
+                        stmts_start,
+                        stmts_len: binding_stmts.len() as u32,
+                        value: body_result.air_ref,
+                    },
+                    ty: body_type,
+                    span: pattern_span,
+                })
+            };
+
+            air_arms.push((air_pattern, arm_body_ref));
         }
 
         // Join the arms' move states (union of non-diverging arms;
@@ -1588,6 +1612,124 @@ impl<'a> Sema<'a> {
             span,
         });
         Ok(AnalysisResult::new(air_ref, final_type))
+    }
+
+    /// Materialize the payload bindings of a tuple-variant match pattern
+    /// (`Circle(r)`) into fresh locals in the current (arm) scope, returning
+    /// the AIR statement refs (StorageLive + Alloc per binding) that must run
+    /// before the arm body (RUE-221, ADR-0038).
+    ///
+    /// Returns an empty vector for patterns without payload bindings. Assumes
+    /// the pattern has already been validated against the scrutinee type by
+    /// the caller (`analyze_match`); re-resolves the enum for convenience.
+    fn materialize_match_bindings(
+        &mut self,
+        air: &mut Air,
+        pattern: &RirPattern,
+        scrutinee_ref: AirRef,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<Vec<u32>> {
+        let RirPattern::Path {
+            module,
+            type_name,
+            variant,
+            bindings,
+            span,
+        } = pattern
+        else {
+            return Ok(Vec::new());
+        };
+        if bindings.is_empty() {
+            return Ok(Vec::new());
+        }
+        let pattern_span = *span;
+
+        // Binding payload data requires the preview feature.
+        self.require_preview(
+            PreviewFeature::EnumPayloads,
+            "enum payload bindings in a match pattern",
+            pattern_span,
+        )?;
+
+        let enum_id = if let Some(module_ref) = module {
+            self.resolve_enum_through_module(*module_ref, *type_name, pattern_span)?
+        } else {
+            *self.enums.get(type_name).ok_or_compile_error(
+                ErrorKind::UnknownEnumType(self.interner.resolve(&*type_name).to_string()),
+                pattern_span,
+            )?
+        };
+        let def = self.type_pool.enum_def(enum_id);
+        let variant_name = self.interner.resolve(&*variant).to_string();
+        let variant_index = def.find_variant(&variant_name).ok_or_compile_error(
+            ErrorKind::UnknownVariant {
+                enum_name: def.name.clone(),
+                variant_name: variant_name.clone(),
+            },
+            pattern_span,
+        )? as u32;
+        let payload = def.variant_payload(variant_index as usize).to_vec();
+
+        // The number of bindings must equal the variant's payload arity.
+        if bindings.len() != payload.len() {
+            return Err(CompileError::new(
+                ErrorKind::WrongArgumentCount {
+                    expected: payload.len(),
+                    found: bindings.len(),
+                },
+                pattern_span,
+            ));
+        }
+
+        let mut stmts: Vec<u32> = Vec::with_capacity(bindings.len() * 2);
+        for (i, binding_name) in bindings.iter().enumerate() {
+            let field_ty = payload[i];
+
+            // Read the payload field out of the scrutinee.
+            let get_ref = air.add_inst(AirInst {
+                data: AirInstData::EnumPayloadGet {
+                    base: scrutinee_ref,
+                    enum_id,
+                    variant_index,
+                    field_index: i as u32,
+                },
+                ty: field_ty,
+                span: pattern_span,
+            });
+
+            // Allocate a local slot and register the binding.
+            let slot = ctx.next_slot;
+            let num_slots = self.abi_slot_count(field_ty);
+            ctx.next_slot += num_slots;
+            ctx.insert_local(
+                *binding_name,
+                LocalVar {
+                    slot,
+                    ty: field_ty,
+                    is_mut: false,
+                    span: pattern_span,
+                    allow_unused: false,
+                },
+            );
+
+            let storage_live = air.add_inst(AirInst {
+                data: AirInstData::StorageLive { slot },
+                ty: field_ty,
+                span: pattern_span,
+            });
+            let alloc = air.add_inst(AirInst {
+                data: AirInstData::Alloc {
+                    slot,
+                    init: get_ref,
+                },
+                ty: Type::UNIT,
+                span: pattern_span,
+            });
+            stmts.push(storage_live.as_u32());
+            stmts.push(alloc.as_u32());
+        }
+
+        Ok(stmts)
     }
 
     /// Analyze a return statement.
@@ -3736,12 +3878,24 @@ impl<'a> Sema<'a> {
                     inst.span,
                 )?;
 
+                // A tuple variant used as a bare path (no payload arguments)
+                // is missing its data — reject it with an arity error (RUE-221).
+                let expected = enum_def.variant_payload(variant_index).len();
+                if expected > 0 {
+                    return Err(CompileError::new(
+                        ErrorKind::WrongArgumentCount { expected, found: 0 },
+                        inst.span,
+                    ));
+                }
+
                 let ty = Type::new_enum(enum_id);
 
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::EnumVariant {
                         enum_id,
                         variant_index: variant_index as u32,
+                        payload_start: 0,
+                        payload_len: 0,
                     },
                     ty,
                     span: inst.span,
@@ -4273,8 +4427,118 @@ impl<'a> Sema<'a> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
+        // Enum tuple-variant construction: `Shape::Circle(5)` (RUE-221). If
+        // `type_name` is an enum whose variant is `function`, build an
+        // `EnumVariant` value carrying the analyzed payload operands rather
+        // than dispatching to associated-function resolution.
+        if let Some(&enum_id) = self.enums.get(&type_name) {
+            let variant_name = self.interner.resolve(&function).to_string();
+            let def = self.type_pool.enum_def(enum_id);
+            if let Some(variant_index) = def.find_variant(&variant_name) {
+                return self.analyze_enum_variant_construction(
+                    air,
+                    enum_id,
+                    variant_index as u32,
+                    type_name,
+                    args_start,
+                    args_len,
+                    span,
+                    ctx,
+                );
+            }
+        }
+
         // Delegate to the main implementation in analysis.rs
         self.analyze_assoc_fn_call_impl(air, type_name, function, args_start, args_len, span, ctx)
+    }
+
+    /// Analyze construction of an enum tuple variant with a payload
+    /// (`Shape::Circle(5)`), producing an `EnumVariant` AIR value (RUE-221).
+    #[allow(clippy::too_many_arguments)]
+    fn analyze_enum_variant_construction(
+        &mut self,
+        air: &mut Air,
+        enum_id: crate::types::EnumId,
+        variant_index: u32,
+        type_name: Spur,
+        args_start: u32,
+        args_len: u32,
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AnalysisResult> {
+        let def = self.type_pool.enum_def(enum_id);
+        let payload_types = def.variant_payload(variant_index as usize).to_vec();
+        let variant_name = def.variants[variant_index as usize].clone();
+        let enum_name = def.name.clone();
+
+        // Constructing a payload-carrying variant requires the preview feature.
+        if !payload_types.is_empty() {
+            self.require_preview(
+                PreviewFeature::EnumPayloads,
+                "enum payloads (variants that carry data)",
+                span,
+            )?;
+        }
+
+        // Visibility check, mirroring the bare-path `EnumVariant` handler
+        // (E0460, privacy is uniform across item kinds).
+        self.check_unqualified_visibility(
+            "enum",
+            self.interner.resolve(&type_name),
+            def.file_id,
+            def.is_pub,
+            span,
+        )?;
+
+        let args = self.rir.get_call_args(args_start, args_len);
+
+        // Arity check.
+        if args.len() != payload_types.len() {
+            return Err(CompileError::new(
+                ErrorKind::WrongArgumentCount {
+                    expected: payload_types.len(),
+                    found: args.len(),
+                },
+                span,
+            ));
+        }
+
+        // Analyze each payload argument and type-check against the declared
+        // payload type (inference already constrained them; this is the final
+        // legality check).
+        let mut payload_refs: Vec<u32> = Vec::with_capacity(args.len());
+        for (i, arg) in args.iter().enumerate() {
+            let arg_result = self.analyze_inst(air, arg.value, ctx)?;
+            let expected = payload_types[i];
+            let actual = arg_result.ty;
+            if actual != expected && !actual.can_coerce_to(&expected) && actual != Type::ERROR {
+                return Err(self.type_mismatch_error(
+                    expected,
+                    actual,
+                    self.rir.get(arg.value).span,
+                ));
+            }
+            payload_refs.push(arg_result.air_ref.as_u32());
+        }
+
+        let payload_start = air.add_extra(&payload_refs);
+        let payload_len = payload_refs.len() as u32;
+        let ty = Type::new_enum(enum_id);
+
+        // Suppress unused-variable warnings for names only used in messages.
+        let _ = (&variant_name, &enum_name);
+
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::EnumVariant {
+                enum_id,
+                variant_index,
+                payload_start,
+                payload_len,
+            },
+            ty,
+            span,
+        });
+        Ok(AnalysisResult::new(air_ref, ty))
     }
 
     // ========================================================================

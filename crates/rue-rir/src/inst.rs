@@ -134,6 +134,9 @@ pub enum RirPattern {
         type_name: Spur,
         /// The variant name
         variant: Spur,
+        /// Payload binding names for a tuple-variant pattern `Circle(r)`
+        /// (RUE-221), in payload order. Empty for a discriminant-only pattern.
+        bindings: Vec<Spur>,
         /// Span of the pattern
         span: Span,
     },
@@ -190,7 +193,9 @@ pub enum PatternKind {
 const PATTERN_WILDCARD_SIZE: u32 = 5; // kind, span_start, span_len, span_file, body
 const PATTERN_INT_SIZE: u32 = 8; // kind, span_start, span_len, span_file, value_lo, value_hi, negative, body
 const PATTERN_BOOL_SIZE: u32 = 6; // kind, span_start, span_len, span_file, value, body
-const PATTERN_PATH_SIZE: u32 = 8; // kind, span_start, span_len, span_file, module, type_name, variant, body
+// Path patterns are variable-length (RUE-221): kind, span×3, module,
+// type_name, variant, n_bindings, bindings…, body = 9 + n_bindings words.
+// See `add_match_arms`/`get_match_arms` for the layout.
 
 /// Stored representation of struct field initializer.
 /// Layout: [field_name: u32, value: u32] = 2 u32s per field
@@ -433,6 +438,7 @@ impl Rir {
                     module,
                     type_name,
                     variant,
+                    bindings,
                     span,
                 } => {
                     self.extra.push(PatternKind::Path as u32);
@@ -443,6 +449,12 @@ impl Rir {
                     self.extra.push(module.map_or(u32::MAX, |r| r.as_u32()));
                     self.extra.push(type_name.into_usize() as u32);
                     self.extra.push(variant.into_usize() as u32);
+                    // Variable-length payload bindings (RUE-221): a count
+                    // followed by the binding symbols, then the body last.
+                    self.extra.push(bindings.len() as u32);
+                    for b in bindings {
+                        self.extra.push(b.into_usize() as u32);
+                    }
                     self.extra.push(body.as_u32());
                 }
             }
@@ -509,17 +521,25 @@ impl Rir {
                     };
                     let type_name = Spur::try_from_usize(self.extra[pos + 5] as usize).unwrap();
                     let variant = Spur::try_from_usize(self.extra[pos + 6] as usize).unwrap();
-                    let body = InstRef::from_raw(self.extra[pos + 7]);
+                    // Variable-length payload bindings (RUE-221).
+                    let n_bindings = self.extra[pos + 7] as usize;
+                    let mut bindings = Vec::with_capacity(n_bindings);
+                    for i in 0..n_bindings {
+                        bindings
+                            .push(Spur::try_from_usize(self.extra[pos + 8 + i] as usize).unwrap());
+                    }
+                    let body = InstRef::from_raw(self.extra[pos + 8 + n_bindings]);
                     arms.push((
                         RirPattern::Path {
                             module,
                             type_name,
                             variant,
+                            bindings,
                             span,
                         },
                         body,
                     ));
-                    pos += PATTERN_PATH_SIZE as usize;
+                    pos += 9 + n_bindings;
                 }
                 _ => panic!("Unknown pattern kind: {}", kind),
             }
@@ -978,11 +998,21 @@ impl Rir {
                 name,
                 variants_start,
                 variants_len,
+                payloads_start,
+                payloads_len,
             } => InstData::EnumDecl {
                 is_pub: *is_pub,
                 name: *name,
                 variants_start: *variants_start + extra_offset,
                 variants_len: *variants_len,
+                // Only offset a non-empty payload region; an empty region has
+                // no allocated extra slot, so keep its start at 0.
+                payloads_start: if *payloads_len == 0 {
+                    0
+                } else {
+                    *payloads_start + extra_offset
+                },
+                payloads_len: *payloads_len,
             },
 
             // Array operations
@@ -1183,7 +1213,11 @@ impl Rir {
                             }
                             k if k == PatternKind::Int as u32 => PATTERN_INT_SIZE as usize,
                             k if k == PatternKind::Bool as u32 => PATTERN_BOOL_SIZE as usize,
-                            k if k == PatternKind::Path as u32 => PATTERN_PATH_SIZE as usize,
+                            // Path is variable-length (RUE-221): the payload
+                            // binding count sits at offset 7, so the record is
+                            // 9 + n_bindings words (kind, span×3, module,
+                            // type_name, variant, n, bindings…, body).
+                            k if k == PatternKind::Path as u32 => 9 + extra[pos + 7] as usize,
                             _ => panic!("Unknown pattern kind during merge: {}", kind),
                         };
                         // Path patterns also embed a module InstRef at offset 4
@@ -1567,6 +1601,15 @@ pub enum InstData {
         variants_start: u32,
         /// Number of variants
         variants_len: u32,
+        /// Index into extra data where the tuple-variant payloads start
+        /// (RUE-221). The region is a self-describing flat sequence: for each
+        /// variant in declaration order, a count `k` followed by `k`
+        /// type-name symbols (as `Spur`s). A count of 0 means a
+        /// discriminant-only variant. `payloads_len` is the total number of
+        /// u32 words in the region (0 when no variant carries a payload).
+        payloads_start: u32,
+        /// Number of u32 words in the payloads region.
+        payloads_len: u32,
     },
 
     /// Enum variant: creates a value of an enum type
@@ -1734,6 +1777,7 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                 module,
                 type_name,
                 variant,
+                bindings,
                 ..
             } => {
                 let prefix = if let Some(module_ref) = module {
@@ -1741,12 +1785,19 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                 } else {
                     String::new()
                 };
-                format!(
+                let base = format!(
                     "{}{}::{}",
                     prefix,
                     self.interner.resolve(&*type_name),
                     self.interner.resolve(&*variant)
-                )
+                );
+                if bindings.is_empty() {
+                    base
+                } else {
+                    let names: Vec<&str> =
+                        bindings.iter().map(|b| self.interner.resolve(b)).collect();
+                    format!("{}({})", base, names.join(", "))
+                }
             }
         }
     }
@@ -2061,13 +2112,31 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     name,
                     variants_start,
                     variants_len,
+                    payloads_start,
+                    payloads_len,
                 } => {
                     let pub_str = if *is_pub { "pub " } else { "" };
                     let name_str = self.interner.resolve(&*name);
                     let variants = self.rir.get_symbols(*variants_start, *variants_len);
+                    // Decode payloads (self-describing [k, t0..t_{k-1}] per variant).
+                    let payload_words = self.rir.get_extra(*payloads_start, *payloads_len);
+                    let mut payload_arities: Vec<usize> = Vec::new();
+                    let mut pi = 0usize;
+                    while pi < payload_words.len() {
+                        let k = payload_words[pi] as usize;
+                        payload_arities.push(k);
+                        pi += 1 + k;
+                    }
                     let variants_str: Vec<String> = variants
                         .iter()
-                        .map(|v| self.interner.resolve(&*v).to_string())
+                        .enumerate()
+                        .map(|(i, v)| {
+                            let base = self.interner.resolve(&*v).to_string();
+                            match payload_arities.get(i) {
+                                Some(k) if *k > 0 => format!("{}/{}", base, k),
+                                _ => base,
+                            }
+                        })
                         .collect();
                     writeln!(
                         out,
@@ -2332,6 +2401,7 @@ mod tests {
             module: None,
             type_name,
             variant,
+            bindings: Vec::new(),
             span,
         };
         assert_eq!(pattern.span(), span);
@@ -3261,6 +3331,8 @@ mod tests {
                 name,
                 variants_start,
                 variants_len,
+                payloads_start: 0,
+                payloads_len: 0,
             },
             span: Span::new(0, 35),
         });
@@ -3741,6 +3813,7 @@ mod tests {
                     module: None,
                     type_name: color,
                     variant: red,
+                    bindings: Vec::new(),
                     span: Span::new(0, 10),
                 },
                 body_red,
@@ -3750,6 +3823,7 @@ mod tests {
                     module: None,
                     type_name: color,
                     variant: green,
+                    bindings: Vec::new(),
                     span: Span::new(0, 12),
                 },
                 body_green,
@@ -4054,6 +4128,7 @@ mod tests {
                     module: Some(module),
                     type_name,
                     variant,
+                    bindings: Vec::new(),
                     span: Span::new(10, 13),
                 },
                 body1,
@@ -4127,6 +4202,7 @@ mod tests {
                 module: None,
                 type_name,
                 variant,
+                bindings: Vec::new(),
                 span: Span::new(10, 13),
             },
             body,

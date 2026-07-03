@@ -401,6 +401,13 @@ pub struct EnumDef {
     pub name: String,
     /// Variant names in declaration order
     pub variants: Vec<String>,
+    /// Payload field types for each variant, in declaration order (RUE-221,
+    /// ADR-0038). Parallel to `variants`: `variant_payloads[i]` is the list of
+    /// payload types carried by tuple variant `variants[i]`, or empty for a
+    /// discriminant-only variant. An **empty outer vector** means the enum is
+    /// entirely discriminant-only (C-like), the common case; use
+    /// [`EnumDef::variant_payload`] to read a variant's payload uniformly.
+    pub variant_payloads: Vec<Vec<Type>>,
     /// Whether this enum is public (visible outside its directory)
     pub is_pub: bool,
     /// File ID this enum was declared in (for visibility checking)
@@ -416,6 +423,24 @@ impl EnumDef {
     /// Find a variant by name and return its index.
     pub fn find_variant(&self, name: &str) -> Option<usize> {
         self.variants.iter().position(|v| v == name)
+    }
+
+    /// Get the payload field types carried by variant `index`.
+    ///
+    /// Returns an empty slice for a discriminant-only variant (or when this
+    /// enum has no payloads at all). Tolerates an empty `variant_payloads`
+    /// vector so discriminant-only enums need not populate it.
+    pub fn variant_payload(&self, index: usize) -> &[Type] {
+        self.variant_payloads
+            .get(index)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// Whether any variant of this enum carries a payload (i.e. this is a
+    /// sum type with data rather than a C-like discriminant-only enum).
+    pub fn has_payloads(&self) -> bool {
+        self.variant_payloads.iter().any(|p| !p.is_empty())
     }
 
     /// Get the discriminant type for this enum.
@@ -1627,6 +1652,7 @@ mod tests {
         let empty = EnumDef {
             name: "Empty".to_string(),
             variants: vec![],
+            variant_payloads: Vec::new(),
             is_pub: false,
             file_id: rue_span::FileId::DEFAULT,
         };
@@ -1635,6 +1661,7 @@ mod tests {
         let color = EnumDef {
             name: "Color".to_string(),
             variants: vec!["Red".to_string(), "Green".to_string(), "Blue".to_string()],
+            variant_payloads: Vec::new(),
             is_pub: false,
             file_id: rue_span::FileId::DEFAULT,
         };
@@ -1646,6 +1673,7 @@ mod tests {
         let color = EnumDef {
             name: "Color".to_string(),
             variants: vec!["Red".to_string(), "Green".to_string(), "Blue".to_string()],
+            variant_payloads: Vec::new(),
             is_pub: false,
             file_id: rue_span::FileId::DEFAULT,
         };
@@ -1661,6 +1689,7 @@ mod tests {
         let empty = EnumDef {
             name: "Empty".to_string(),
             variants: vec![],
+            variant_payloads: Vec::new(),
             is_pub: false,
             file_id: rue_span::FileId::DEFAULT,
         };
@@ -1673,6 +1702,7 @@ mod tests {
         let small = EnumDef {
             name: "Small".to_string(),
             variants: vec!["A".to_string()],
+            variant_payloads: Vec::new(),
             is_pub: false,
             file_id: rue_span::FileId::DEFAULT,
         };
@@ -1681,6 +1711,7 @@ mod tests {
         let max_u8 = EnumDef {
             name: "MaxU8".to_string(),
             variants: (0..256).map(|i| format!("V{}", i)).collect(),
+            variant_payloads: Vec::new(),
             is_pub: false,
             file_id: rue_span::FileId::DEFAULT,
         };
@@ -1693,6 +1724,7 @@ mod tests {
         let medium = EnumDef {
             name: "Medium".to_string(),
             variants: (0..257).map(|i| format!("V{}", i)).collect(),
+            variant_payloads: Vec::new(),
             is_pub: false,
             file_id: rue_span::FileId::DEFAULT,
         };

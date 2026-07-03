@@ -11,9 +11,11 @@
 
 use std::collections::{HashMap, HashSet};
 
-use lasso::Spur;
+use lasso::{Key, Spur};
 use rue_builtins::is_reserved_type_name;
-use rue_error::{CompileError, CompileResult, CopyStructNonCopyFieldError, ErrorKind, ice};
+use rue_error::{
+    CompileError, CompileResult, CopyStructNonCopyFieldError, ErrorKind, PreviewFeature, ice,
+};
 use rue_rir::{InstData, InstRef, RirDirective, RirParamMode};
 use rue_span::{FileId, Span};
 
@@ -168,7 +170,21 @@ impl<'a> Sema<'a> {
                     name,
                     variants_start,
                     variants_len,
+                    payloads_len,
+                    ..
                 } => {
+                    // Tuple-variant payloads (RUE-221, ADR-0038) are gated
+                    // behind the `enum_payloads` preview feature. A payload
+                    // region of length 0 means every variant is
+                    // discriminant-only (C-like), which is always allowed.
+                    if *payloads_len > 0 {
+                        self.require_preview(
+                            PreviewFeature::EnumPayloads,
+                            "enum payloads (variants that carry data)",
+                            inst.span,
+                        )?;
+                    }
+
                     let enum_name = self.interner.resolve(&*name).to_string();
 
                     // Check for collision with built-in type names
@@ -218,6 +234,10 @@ impl<'a> Sema<'a> {
                     let enum_def = EnumDef {
                         name: enum_name,
                         variants: variant_names,
+                        // Payload types are resolved in phase 2
+                        // (`resolve_enum_payloads`), once all type names are
+                        // registered, so payloads may reference any struct/enum.
+                        variant_payloads: Vec::new(),
                         is_pub: *is_pub,
                         file_id: inst.span.file_id,
                     };
@@ -308,8 +328,71 @@ impl<'a> Sema<'a> {
     /// body analysis.
     pub(crate) fn resolve_declarations(&mut self) -> CompileResult<()> {
         self.resolve_struct_fields()?;
+        self.resolve_enum_payloads()?;
         self.propagate_field_linearity();
         self.resolve_remaining_declarations()?;
+        Ok(())
+    }
+
+    /// Phase 2: Resolve tuple-variant payload types (RUE-221, ADR-0038).
+    ///
+    /// Runs after all type names are registered, so payloads may reference any
+    /// struct or enum regardless of declaration order. Decodes the
+    /// self-describing payload region stored in the RIR `EnumDecl`
+    /// (`[k, t0, ..., t_{k-1}]` per variant) into concrete `Type`s and updates
+    /// the registered [`EnumDef`].
+    pub(crate) fn resolve_enum_payloads(&mut self) -> CompileResult<()> {
+        // Collect the work first to avoid borrowing `self.rir` while mutating
+        // the type pool through `self`.
+        let mut jobs: Vec<(Spur, u32, u32, Span)> = Vec::new();
+        for (_, inst) in self.rir.iter() {
+            if let InstData::EnumDecl {
+                name,
+                payloads_start,
+                payloads_len,
+                ..
+            } = &inst.data
+            {
+                if *payloads_len > 0 {
+                    jobs.push((*name, *payloads_start, *payloads_len, inst.span));
+                }
+            }
+        }
+
+        for (name, payloads_start, payloads_len, span) in jobs {
+            let words = self.rir.get_extra(payloads_start, payloads_len).to_vec();
+            // Decode per-variant payload type symbols.
+            let mut variant_payloads: Vec<Vec<Type>> = Vec::new();
+            let mut i = 0usize;
+            while i < words.len() {
+                let k = words[i] as usize;
+                i += 1;
+                let mut payload = Vec::with_capacity(k);
+                for _ in 0..k {
+                    let ty_sym = Spur::try_from_usize(words[i] as usize)
+                        .expect("valid interned type symbol in payload region");
+                    i += 1;
+                    let ty = self.resolve_type(ty_sym, span)?;
+                    // A payload of type `type` cannot exist at runtime
+                    // (spec 4.14:6); reject it like struct fields do.
+                    if ty.is_comptime_type() {
+                        return Err(CompileError::new(
+                            ErrorKind::ComptimeEvaluationFailed {
+                                reason: "type values cannot exist at runtime".to_string(),
+                            },
+                            span,
+                        ));
+                    }
+                    payload.push(ty);
+                }
+                variant_payloads.push(payload);
+            }
+
+            let enum_id = *self.enums.get(&name).expect("enum registered in phase 1");
+            let mut def = self.type_pool.enum_def(enum_id);
+            def.variant_payloads = variant_payloads;
+            self.type_pool.update_enum_def(enum_id, def);
+        }
         Ok(())
     }
 

@@ -1,0 +1,64 @@
+# Enum payloads — sum types with data (RUE-221, ADR-0038), gated behind the
+# `enum_payloads` preview feature. These cases drive the real compiler with
+# `--preview enum_payloads` and assert exact runtime behavior: tuple-variant
+# construction, tagged-union layout, match-with-payload-bindings (move mode),
+# and drop-through-the-active-variant running exactly once.
+
+[section]
+id = "cli.enum_payloads"
+name = "Enum payloads"
+description = "Tuple-variant construction, match-with-bindings, and drop of the active variant's payload (RUE-221)."
+
+# Circle(5) -> 5, Rect(3,4) -> 7, Empty -> 0, exercised through a function call
+# (so the multi-slot tagged-union value crosses the call ABI).
+[[case]]
+name = "construct_match_compute"
+description = "Construct each variant form, match to extract payloads, compute 5+7+0 = 12."
+args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+enum Shape { Circle(i32), Rect(i32, i32), Empty }
+fn area(s: Shape) -> i32 {
+    match s {
+        Shape::Circle(r) => r,
+        Shape::Rect(w, h) => w + h,
+        Shape::Empty => 0,
+    }
+}
+fn main() -> i32 {
+    area(Shape::Circle(5)) + area(Shape::Rect(3, 4)) + area(Shape::Empty)
+}
+""" }]
+exit_code = 12
+
+# A struct payload with a destructor, moved out by a match binding, drops
+# exactly once (its @dbg fires exactly once) when the binding leaves scope.
+[[case]]
+name = "drop_once_via_active_variant"
+description = "Payload struct with `drop fn` moved out of the enum via a match binding drops exactly once: @dbg prints 7 once, exit 7."
+args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+struct Res { id: i32 }
+drop fn Res(self) { @dbg(self.id); }
+enum Holder { Full(Res), Nothing }
+fn main() -> i32 {
+    let h = Holder::Full(Res { id: 7 });
+    match h {
+        Holder::Full(r) => r.id,
+        Holder::Nothing => 0,
+    }
+}
+""" }]
+stdout = "7\n"
+exit_code = 7
+
+# Without the preview flag, a payload-carrying enum is a clean preview error
+# (the driver reports it, no ICE).
+[[case]]
+name = "payload_requires_preview_flag"
+description = "Declaring a tuple variant without --preview enum_payloads is a preview-feature error, not an ICE."
+files = [{ path = "main.rue", source = """
+enum Shape { Circle(i32), Empty }
+fn main() -> i32 { 0 }
+""" }]
+compile_fail = true
+error_contains = ["requires preview feature"]

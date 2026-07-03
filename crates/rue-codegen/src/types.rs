@@ -6,7 +6,7 @@
 //! As of Phase 3 (ADR-0024), all struct/enum lookups go through `TypeInternPool`
 //! instead of separate `&[StructDef]` slices.
 
-use rue_air::{ArrayTypeId, StructId, TypeInternPool, TypeKind};
+use rue_air::{ArrayTypeId, EnumId, StructId, TypeInternPool, TypeKind};
 use rue_cfg::{Cfg, CfgInstData, CfgValue, Type};
 use std::collections::HashMap;
 
@@ -82,9 +82,49 @@ pub fn type_slot_count(type_pool: &TypeInternPool, ty: Type) -> u32 {
             }
             total
         }
+        TypeKind::Enum(enum_id) => {
+            // Tagged-union layout (RUE-221, ADR-0038): slot 0 holds the
+            // discriminant; the payload area that follows is sized to the
+            // largest variant. A discriminant-only (C-like) enum has no
+            // payload and therefore occupies exactly one slot, unchanged from
+            // before payloads existed.
+            let enum_def = type_pool.enum_def(enum_id);
+            let mut max_payload = 0u32;
+            for i in 0..enum_def.variant_count() {
+                let mut variant_slots = 0u32;
+                for &ty in enum_def.variant_payload(i) {
+                    variant_slots += type_slot_count(type_pool, ty);
+                }
+                max_payload = max_payload.max(variant_slots);
+            }
+            1 + max_payload
+        }
         // Scalars and other types use 1 slot
         _ => 1,
     }
+}
+
+/// Slot offset of payload field `field_index` within an enum's payload area.
+///
+/// The discriminant occupies slot 0, so payload fields begin at slot 1. This
+/// accounts for the slot sizes of all preceding payload fields of the same
+/// variant (RUE-221).
+pub fn enum_payload_slot_offset(
+    type_pool: &TypeInternPool,
+    enum_id: EnumId,
+    variant_index: u32,
+    field_index: u32,
+) -> u32 {
+    let enum_def = type_pool.enum_def(enum_id);
+    let payload = enum_def.variant_payload(variant_index as usize);
+    // 1 for the discriminant slot.
+    let mut offset = 1u32;
+    for i in 0..(field_index as usize) {
+        if let Some(&ty) = payload.get(i) {
+            offset += type_slot_count(type_pool, ty);
+        }
+    }
+    offset
 }
 
 /// Calculate the slot count for a single element of an array type.

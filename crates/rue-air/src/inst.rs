@@ -1004,6 +1004,28 @@ pub enum AirInstData {
         enum_id: crate::types::EnumId,
         /// The variant index (0-based)
         variant_index: u32,
+        /// Start index into the extra array for payload operand `AirRef`s, in
+        /// payload declaration order (RUE-221). Zero-length for a
+        /// discriminant-only variant.
+        payload_start: u32,
+        /// Number of payload operands.
+        payload_len: u32,
+    },
+
+    /// Read payload field `field_index` of a tuple variant from an enum value
+    /// (RUE-221). Materialized when lowering a match arm whose pattern binds
+    /// the payload (`Circle(r)`); the discriminant is assumed to match the
+    /// variant (the enclosing `match` dispatched on it). The result type is
+    /// the payload field's type.
+    EnumPayloadGet {
+        /// The enum value being read.
+        base: AirRef,
+        /// The enum type ID.
+        enum_id: crate::types::EnumId,
+        /// The variant whose payload layout applies.
+        variant_index: u32,
+        /// The payload field index (0-based).
+        field_index: u32,
     },
 
     // Type conversion operations
@@ -1369,8 +1391,36 @@ impl fmt::Display for Air {
                 AirInstData::EnumVariant {
                     enum_id,
                     variant_index,
+                    payload_start,
+                    payload_len,
                 } => {
-                    writeln!(f, "enum_variant #{}::{}", enum_id.0, variant_index)?;
+                    if *payload_len == 0 {
+                        writeln!(f, "enum_variant #{}::{}", enum_id.0, variant_index)?;
+                    } else {
+                        let payload: Vec<String> = self
+                            .get_air_refs(*payload_start, *payload_len)
+                            .map(|r| r.to_string())
+                            .collect();
+                        writeln!(
+                            f,
+                            "enum_variant #{}::{}({})",
+                            enum_id.0,
+                            variant_index,
+                            payload.join(", ")
+                        )?;
+                    }
+                }
+                AirInstData::EnumPayloadGet {
+                    base,
+                    enum_id,
+                    variant_index,
+                    field_index,
+                } => {
+                    writeln!(
+                        f,
+                        "enum_payload_get {} #{}::{}.{}",
+                        base, enum_id.0, variant_index, field_index
+                    )?;
                 }
                 AirInstData::IntCast { value, from_ty } => {
                     writeln!(f, "intcast {} from {}", value, from_ty.name())?;

@@ -523,8 +523,24 @@ impl<'a> Sema<'a> {
             // Zero-sized types use 0 slots
             // ComptimeType is comptime-only and uses 0 runtime slots
             TypeKind::Unit | TypeKind::Never | TypeKind::ComptimeType => 0,
-            // Enums are represented as their discriminant type (a scalar), so 1 slot
-            TypeKind::Enum(_) => 1,
+            // Tagged-union layout (RUE-221, ADR-0038): slot 0 is the
+            // discriminant, followed by payload space sized to the largest
+            // variant. A discriminant-only (C-like) enum has no payload and so
+            // occupies exactly one slot. This MUST match the codegen layout in
+            // `rue_codegen::types::type_slot_count`.
+            TypeKind::Enum(enum_id) => {
+                let enum_def = self.type_pool.enum_def(enum_id);
+                let mut max_payload = 0u32;
+                for i in 0..enum_def.variant_count() {
+                    let variant_slots: u32 = enum_def
+                        .variant_payload(i)
+                        .iter()
+                        .map(|&ty| self.abi_slot_count(ty))
+                        .sum();
+                    max_payload = max_payload.max(variant_slots);
+                }
+                1 + max_payload
+            }
             // Struct uses sum of all field slots (includes builtin String with 3 fields)
             TypeKind::Struct(struct_id) => {
                 // Sum the slot counts of all fields (handles arrays, nested structs, and builtins)

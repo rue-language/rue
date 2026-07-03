@@ -230,8 +230,20 @@ pub fn format_cfg_inst_data(data: &rue_cfg::CfgInstData) -> String {
         CfgInstData::EnumVariant {
             enum_id,
             variant_index,
+            ..
         } => {
             format!("enum_variant #{}.{}", enum_id.0, variant_index)
+        }
+        CfgInstData::EnumPayloadGet {
+            base,
+            enum_id,
+            variant_index,
+            field_index,
+        } => {
+            format!(
+                "enum_payload_get {} #{}.{}.{}",
+                base, enum_id.0, variant_index, field_index
+            )
         }
         CfgInstData::IntCast { value, from_ty } => {
             format!("int_cast {} : {}", value, from_ty.name())
@@ -430,6 +442,16 @@ impl<'a> CfgLowerContext<'a> {
     /// Calculate the total number of slots needed to store a type.
     pub fn type_slot_count(&self, ty: Type) -> u32 {
         types::type_slot_count(self.type_pool, ty)
+    }
+
+    /// Whether `ty` is a multi-slot aggregate that must be materialized and
+    /// stored slot-by-slot (struct, fixed-size array, or a payload-carrying
+    /// enum). A discriminant-only (C-like) enum is a 1-slot scalar and is
+    /// deliberately excluded so it keeps its existing scalar codegen path
+    /// (RUE-221).
+    pub fn is_multislot_aggregate(&self, ty: Type) -> bool {
+        matches!(ty.kind(), TypeKind::Struct(_) | TypeKind::Array(_))
+            || (ty.is_enum() && self.type_slot_count(ty) > 1)
     }
 
     /// Calculate the slot count for a single element of an array type.
