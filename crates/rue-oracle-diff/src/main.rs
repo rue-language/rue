@@ -10,12 +10,22 @@
 //! turns "we check the outputs we thought to write down" into "we check that
 //! the semantics and codegen agree on every program in the corpus."
 //!
-//! Usage: `rue-oracle-diff [cases-dir ...]`
-//! Case-directory resolution, in order: explicit argv paths; else the
-//! `RUE_ORACLE_DIFF_CASES` env var (a single dir — how the `buck2 test`
-//! sh_test feeds the rue-cli-tests `cases` filegroup); else the default
-//! `crates/rue-cli-tests/cases`, resolved from the current directory.
-//! Exits non-zero if any disagreement is found.
+//! Two modes:
+//!
+//! - **corpus** (default): `rue-oracle-diff [cases-dir ...]` runs the concrete
+//!   rue-cli-tests corpus through the oracle. Case-directory resolution, in
+//!   order: explicit argv paths; else the `RUE_ORACLE_DIFF_CASES` env var (a
+//!   single dir — how the `buck2 test` sh_test feeds the rue-cli-tests `cases`
+//!   filegroup); else the default `crates/rue-cli-tests/cases`.
+//! - **fuzz** (`rue-oracle-diff fuzz [...]`): the differential *fuzzer* of
+//!   RUE-247 — generate random valid programs and cross-check the oracle
+//!   against the real compiler + native binary. See [`fuzz`]. A `dump <seed>`
+//!   subcommand prints a generated program for inspection.
+//!
+//! Every mode exits non-zero if any disagreement is found.
+
+mod fuzz;
+mod generator;
 
 use rue_oracle::run_source;
 use serde::Deserialize;
@@ -75,8 +85,36 @@ struct Report {
 }
 
 fn main() -> ExitCode {
+    // Subcommand dispatch: `rue-oracle-diff fuzz [...]` runs the differential
+    // *fuzzer* (generate valid programs, cross-check oracle vs compiled binary);
+    // with no subcommand it runs the corpus differential (below).
+    let raw: Vec<String> = std::env::args().skip(1).collect();
+    if raw.first().map(String::as_str) == Some("fuzz") {
+        return fuzz::run(&raw[1..]);
+    }
+    // `dump <seed>...` prints the generated program(s) — a debugging aid for
+    // inspecting what a seed produces (and reducing a repro by hand).
+    if raw.first().map(String::as_str) == Some("dump") {
+        for s in &raw[1..] {
+            match s.parse::<u64>() {
+                Ok(seed) => {
+                    println!("// ===== seed {seed} =====");
+                    print!("{}", generator::generate(seed));
+                }
+                Err(_) => eprintln!("dump: not a seed: {s}"),
+            }
+        }
+        return ExitCode::SUCCESS;
+    }
+
+    corpus_mode(raw)
+}
+
+/// The original corpus differential: run each rue-cli-tests case through the
+/// oracle and check it agrees with the case's expected exit code / stdout.
+fn corpus_mode(raw_args: Vec<String>) -> ExitCode {
     let dirs: Vec<PathBuf> = {
-        let args: Vec<String> = std::env::args().skip(1).collect();
+        let args: Vec<String> = raw_args;
         if !args.is_empty() {
             args.into_iter().map(PathBuf::from).collect()
         } else if let Some(cases) = std::env::var_os("RUE_ORACLE_DIFF_CASES") {

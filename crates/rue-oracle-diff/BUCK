@@ -1,13 +1,19 @@
 load("//crates:defs.bzl", "rue_binary")
 
-# The differential harness: runs the concrete rue-cli-tests corpus through the
-# rue-oracle reference interpreter and checks it agrees with each case's
-# expected exit code / stdout. A disagreement is a bug in the oracle or the
-# compiler (the compiler already matches these expectations, so a mismatch
-# localizes to codegen). No #[test] functions — it IS the harness.
+# The differential harness. Two modes:
+#  * default: runs the concrete rue-cli-tests corpus through the rue-oracle
+#    reference interpreter and checks it agrees with each case's expected exit
+#    code / stdout (a mismatch localizes to codegen; wired as the sh_test below).
+#  * `fuzz`: the differential *fuzzer* (RUE-247) — generates random valid
+#    programs and cross-checks the oracle against the real compiler + native
+#    binary, reporting any exit/stdout disagreement as a miscompile with a
+#    seed-based repro. Driven by `.github/workflows/fuzz.yml` nightly; needs the
+#    `rue` binary via RUE_BINARY (or the bin/rue symlink).
+# The harness driver itself has no #[test] functions — it IS the harness — but
+# the `generator` module carries unit tests (determinism + always-emits-main),
+# so the rust_test target (`:rue-oracle-diff-test`) is kept enabled.
 rue_binary(
     name = "rue-oracle-diff",
-    tests = False,
     deps = [
         "//crates/rue-oracle:rue-oracle",
         "//third-party:serde",

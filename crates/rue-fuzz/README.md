@@ -91,9 +91,26 @@ input back to the target named in the filename:
 ./buck2 run //crates/rue-fuzz:rue-fuzz -- parser <dir-with-the-file>
 ```
 
+## Differential fuzzing (oracle vs compiled) — RUE-247
+
+A separate, complementary fuzzer lives in `crates/rue-oracle-diff`: it generates
+random **valid, well-typed** programs (in the subset the `rue-oracle` reference
+interpreter models) and runs each through *both* the oracle and the real
+compiler + native binary, comparing exit code and `@dbg` stdout. A disagreement
+is an automatically-discovered **miscompile** with a deterministic, seed-based
+repro (not a crash — a *wrong answer*). Its repros land in this crate's
+`crashes/` directory as `oracle-diff-seed-<seed>.rue` and are uploaded by the
+same CI artifact step.
+
+```bash
+RUE_BINARY="$(scripts/rue-bin)" ./buck2 run //crates/rue-oracle-diff:rue-oracle-diff -- \
+    fuzz --seeds 500                 # cross-check 500 generated programs
+./buck2 run //crates/rue-oracle-diff:rue-oracle-diff -- dump 42   # inspect seed 42's program
+```
+
 ## Integration with CI
 
-Fuzzing runs automatically in CI via `.github/workflows/fuzz.yml`. Each target runs for 5 minutes daily.
+Fuzzing runs automatically in CI via `.github/workflows/fuzz.yml`. Each target runs for 5 minutes daily; the differential fuzzer (above) runs a bounded 500-seed batch in the same workflow.
 
 To run fuzzing locally for a limited time:
 
