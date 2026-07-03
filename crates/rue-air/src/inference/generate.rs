@@ -2062,12 +2062,29 @@ impl<'a> ConstraintGenerator<'a> {
             // A struct/enum name or forwarded type parameter used as a value
             // parses as a variable reference, not a type literal.
             InstData::VarRef { name } | InstData::ParamRef { name, .. } => {
-                // A local or parameter shadows any same-named struct/enum. A local
-                // bound to a type value (e.g. `let P = Pair(i32)`) only has a
-                // concrete type during sema's comptime evaluation, so don't
-                // resolve it here. Forwarded type parameters (`T` inside a
-                // specialized generic body) are not in scope as runtime
-                // params/locals and resolve via `self.type_subst` above.
+                // A local bound to a type value (`let X = i32; identity(X, 42)`
+                // or `let P = Pair(i32); f(P, ..)`) resolves to that bound type
+                // via the precomputed comptime-local-types map — the same map
+                // generic-enum construction/matching consults (`enum_type_for`).
+                // Without this the type argument was left unresolved, so the
+                // call's return type defaulted to the literal `type` and
+                // mismatched the substituted element type (spurious E0206,
+                // RUE-281). The literal form (`identity(i32, 42)`) already
+                // worked via the `TypeConst` arm; this makes an aliased type
+                // behave identically.
+                if let Some(ty) = self
+                    .comptime_local_types
+                    .and_then(|aliases| aliases.get(name).copied())
+                {
+                    return Some(ty);
+                }
+                // A local or parameter shadows any same-named struct/enum. A
+                // local *not* bound to a comptime type value (a runtime value)
+                // has no concrete type here, so don't resolve it — a runtime
+                // value passed to a `comptime T: type` param is still rejected
+                // in sema. Forwarded type parameters (`T` inside a specialized
+                // generic body) are not in scope as runtime params/locals and
+                // resolve via `self.type_subst` above.
                 if ctx.locals.contains_key(name) || ctx.params.contains_key(name) {
                     return None;
                 }

@@ -231,3 +231,45 @@ fn main() -> i32 {
 """ }]
 args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
 exit_code = 42
+
+# A local array annotation `[T; N]` whose element is a comptime type parameter
+# used to ICE: specialization interns `[i32; N]` into the type pool only after
+# sema had already snapshotted the pool for CFG/codegen, so drop analysis
+# indexed an out-of-bounds ArrayTypeId (RUE-282). The pool is now re-snapshotted
+# after specialization, so the specialized `[i32; 2]` reaches the backend.
+
+[[case]]
+name = "local_array_of_comptime_type_param_no_ice"
+description = "RUE-282: `let y: [T; 2]` with a comptime type param T compiles and runs (no out-of-bounds ArrayTypeId ICE)."
+files = [{ path = "main.rue", source = """
+fn f(comptime T: type, x: T) -> i32 {
+    let y: [T; 2] = [x, x];
+    y[0] + y[1]
+}
+fn main() -> i32 { f(i32, 5) }
+""" }]
+exit_code = 10
+
+[[case]]
+name = "array_literal_of_comptime_type_param_no_ice"
+description = "RUE-282: an array literal `[x, x]` of a comptime-type-param element (no annotation) also reaches codegen through a re-snapshotted pool."
+files = [{ path = "main.rue", source = """
+fn f(comptime T: type, x: T) -> i32 {
+    let y = [x, x];
+    y[0] + y[1]
+}
+fn main() -> i32 { f(i32, 21) }
+""" }]
+exit_code = 42
+
+[[case]]
+name = "concrete_local_array_control"
+description = "Control for RUE-282: a concrete `[i32; 2]` local array (interned before the pool snapshot) still works."
+files = [{ path = "main.rue", source = """
+fn f(x: i32) -> i32 {
+    let y: [i32; 2] = [x, x];
+    y[0] + y[1]
+}
+fn main() -> i32 { f(5) }
+""" }]
+exit_code = 10
