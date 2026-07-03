@@ -292,7 +292,7 @@ The `@read_line` intrinsic reads a line of text from standard input.
 
 {{ rule(id="4.13:35", cat="normative") }}
 
-The return type of `@read_line` is `Option(String)`, where `Option` is the ordinary comptime-generic library enum (`enum { Some(T), None }`, ADR-0038). The concrete `Option(String)` type is taken from the surrounding context — a `let` binding annotation, or the arms of a `match` on the result — so `Option` must be in scope (e.g. imported) at the call site.
+The return type of `@read_line` is `Option(String)`, where `Option` is the ordinary comptime-generic library enum (`enum { Some(T), None }`, ADR-0038). The concrete `Option(String)` type is taken from the surrounding context — a `let` binding annotation, or the arms of a `match` on the result — so `Option` must be in scope (e.g. imported) at the call site. As a special case, when `@read_line()` is the operand of the `?` operator (§4.15), the context supplies no annotation, so the intrinsic instantiates its own `Option(String)` directly (see rule 4.15:9).
 
 {{ rule(id="4.13:36", cat="dynamic-semantics") }}
 
@@ -360,7 +360,7 @@ Each parsing intrinsic returns `Option(T)` for its target integer type `T`, wher
 - `@parse_u32` returns `Option(u32)`
 - `@parse_u64` returns `Option(u64)`
 
-The concrete `Option(T)` type is taken from the surrounding context (a `let` annotation, or the arms of a `match` on the result), so `Option` must be in scope at the call site.
+The concrete `Option(T)` type is taken from the surrounding context (a `let` annotation, or the arms of a `match` on the result), so `Option` must be in scope at the call site. As a special case, when a parsing intrinsic is the operand of the `?` operator (§4.15), the intrinsic instantiates its own `Option(T)` directly (see rule 4.15:9).
 
 {{ rule(id="4.13:45", cat="normative") }}
 

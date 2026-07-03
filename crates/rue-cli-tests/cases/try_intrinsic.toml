@@ -1,0 +1,136 @@
+# The `?` operator on a BARE fallible intrinsic (RUE-318, completing RUE-6).
+#
+# `@read_line()?` and `@parse_i64(s)?` used directly — with no annotated `let`
+# and no `match` to supply the concrete `Option` — resolve the intrinsic's own
+# fixed `Option(payload)` (read_line -> Option(String), parse_i64 -> Option(i64))
+# and short-circuit the enclosing Option-returning function with None on failure
+# (EOF for read_line, unparseable string for parse_i64). Exercised end to end
+# from real stdin so a driver/ABI regression surfaces, not just a type-check.
+
+[section]
+id = "cli.try_intrinsic"
+name = "`?` on a bare fallible intrinsic"
+description = "@read_line()? and @parse_i64(s)? resolve their own Option and propagate None via `?`."
+
+# Reads lines and sums the numbers, breaking at EOF or the first non-number.
+# `read_num` chains `@read_line()?` (None at EOF) with `@parse_i64` (None on a
+# bad line). Two numbers then EOF: count 2, sum 30, exits with the count.
+[[case]]
+name = "read_line_try_sum_until_eof"
+files = [
+  { path = "prog.rue", source = """
+fn Option(comptime T: type) -> type {
+    enum { Some(T), None }
+}
+fn read_num() -> Option(i64) {
+    let line = @read_line()?;
+    @parse_i64(line)
+}
+fn main() -> i32 {
+    let O = Option(i64);
+    let mut count: i64 = 0;
+    let mut sum: i64 = 0;
+    loop {
+        match read_num() {
+            O::Some(x) => {
+                count = count + 1;
+                sum = sum + x;
+            },
+            O::None => break,
+        }
+    }
+    println("sum: " + @to_string(sum));
+    @intCast(count)
+}
+""" },
+]
+args = ["prog.rue", "-o", "prog"]
+stdin = "12\n18\n"
+stdout = "sum: 30\n"
+exit_code = 2
+
+# Immediate EOF: `@read_line()?` short-circuits read_num to None on the first
+# call, so the loop body never runs. No trap; the program exits cleanly.
+[[case]]
+name = "read_line_try_eof_no_trap"
+files = [
+  { path = "prog.rue", source = """
+fn Option(comptime T: type) -> type {
+    enum { Some(T), None }
+}
+fn read_num() -> Option(i64) {
+    let line = @read_line()?;
+    @parse_i64(line)
+}
+fn main() -> i32 {
+    let O = Option(i64);
+    let mut count: i64 = 0;
+    loop {
+        match read_num() {
+            O::Some(_x) => { count = count + 1; },
+            O::None => break,
+        }
+    }
+    println("done");
+    @intCast(count)
+}
+""" },
+]
+args = ["prog.rue", "-o", "prog"]
+stdin = ""
+stdout = "done\n"
+exit_code = 0
+
+# `@parse_i64(s)?` directly on a literal string operand: Some path unwraps the
+# parsed integer and continues; the exit code is derived from it.
+[[case]]
+name = "parse_try_some"
+files = [
+  { path = "prog.rue", source = """
+fn Option(comptime T: type) -> type {
+    enum { Some(T), None }
+}
+fn add_one(s: String) -> Option(i64) {
+    let O = Option(i64);
+    let n = @parse_i64(s)?;
+    O::Some(n + 1)
+}
+fn main() -> i32 {
+    let O = Option(i64);
+    match add_one("40") {
+        O::Some(n) => @intCast(n),
+        O::None => 0,
+    }
+}
+""" },
+]
+args = ["prog.rue", "-o", "prog"]
+stdin = ""
+exit_code = 41
+
+# `@parse_i64(s)?` None path: an unparseable operand short-circuits add_one to
+# None, so main takes the None arm.
+[[case]]
+name = "parse_try_none_short_circuits"
+files = [
+  { path = "prog.rue", source = """
+fn Option(comptime T: type) -> type {
+    enum { Some(T), None }
+}
+fn add_one(s: String) -> Option(i64) {
+    let O = Option(i64);
+    let n = @parse_i64(s)?;
+    O::Some(n + 1)
+}
+fn main() -> i32 {
+    let O = Option(i64);
+    match add_one("not-a-number") {
+        O::Some(n) => @intCast(n),
+        O::None => 5,
+    }
+}
+""" },
+]
+args = ["prog.rue", "-o", "prog"]
+stdin = ""
+exit_code = 5

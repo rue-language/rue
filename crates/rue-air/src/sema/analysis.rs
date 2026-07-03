@@ -1776,6 +1776,7 @@ impl<'a> Sema<'a> {
             in_loop_move_recheck: false,
             iter_borrows: Vec::new(),
             expected_type: None,
+            try_operand: false,
         };
 
         // ======================================================================
@@ -4330,7 +4331,7 @@ impl<'a> Sema<'a> {
     /// ordinary comptime-generic `Option` enum is used. The runtime signals
     /// success/failure and codegen fills in this enum's discriminant + payload.
     fn resolve_option_result_type(
-        &self,
+        &mut self,
         ctx: &AnalysisContext,
         inst_ref: InstRef,
         expected_payload: Type,
@@ -4373,25 +4374,39 @@ impl<'a> Sema<'a> {
             false
         };
 
-        if !valid {
-            // With no context at all the resolved type is `<error>`; point the
-            // user at the fix instead of printing the placeholder.
-            let found = if ty.is_error() {
-                "no expected type — annotate the binding or `match` on the result".to_string()
-            } else {
-                ty.safe_name_with_pool(Some(&self.type_pool))
-            };
-            return Err(CompileError::new(
-                ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
-                    name: intrinsic_display.to_string(),
-                    expected: format!("Option({payload_display})"),
-                    found,
-                })),
-                span,
+        if valid {
+            return Ok(ty);
+        }
+
+        // As the operand of `?` on a bare fallible intrinsic, no valid `Option`
+        // reaches us from context — the `?` site cannot supply one because the
+        // enclosing function's `Option(U)` has the wrong payload (RUE-318). The
+        // intrinsic knows its own payload, so instantiate the canonical library
+        // `Option(payload)` directly: `find_or_create_anon_enum` returns the
+        // very same `EnumId` an in-scope `Option(payload)` produces (ADR-0038),
+        // so `?` then unwraps it exactly like any other typed `Option`.
+        if ctx.try_operand {
+            return Ok(self.find_or_create_anon_enum(
+                &["Some".to_string(), "None".to_string()],
+                &[vec![expected_payload], Vec::new()],
             ));
         }
 
-        Ok(ty)
+        // Otherwise: with no context at all the resolved type is `<error>`; point
+        // the user at the fix instead of printing the placeholder.
+        let found = if ty.is_error() {
+            "no expected type — annotate the binding or `match` on the result".to_string()
+        } else {
+            ty.safe_name_with_pool(Some(&self.type_pool))
+        };
+        Err(CompileError::new(
+            ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
+                name: intrinsic_display.to_string(),
+                expected: format!("Option({payload_display})"),
+                found,
+            })),
+            span,
+        ))
     }
 
     /// Analyze @read_line intrinsic.
