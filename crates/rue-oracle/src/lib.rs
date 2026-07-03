@@ -321,8 +321,20 @@ impl<'a> Interp<'a> {
             "__rue_String_push_str" => Value::Str(s(&args[0]) + &s(&args[1])),
             "__rue_String_push" => {
                 let mut base = s(&args[0]);
-                if let Some(c) = char::from_u32(args[1].as_int() as u32) {
-                    base.push(c);
+                let byte = args[1].as_int() as u8;
+                if byte < 0x80 {
+                    // ASCII: exactly one byte, matching the runtime's raw-byte
+                    // buffer (__rue_String_push writes a single byte).
+                    base.push(byte as char);
+                } else {
+                    // push takes a u8 and a Rue String is a raw byte buffer, but
+                    // a byte >= 0x80 is not valid standalone UTF-8, which
+                    // Value::Str (a Rust String) cannot represent. The runtime
+                    // stores the single raw byte; encoding a char here would
+                    // store two. Skip rather than silently diverge (see RUE-342).
+                    return Err(Flow::Unsupported(Unsupported(
+                        "String::push of a non-ASCII byte (oracle cannot model non-UTF-8 String content)".into(),
+                    )));
                 }
                 Value::Str(base)
             }
