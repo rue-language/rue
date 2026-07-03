@@ -11,6 +11,7 @@
 #   scripts/rue spec [pattern]     Spec tests, optional filter
 #   scripts/rue cli [pattern]      CLI integration tests, optional filter
 #   scripts/rue ui [pattern]       UI/diagnostics tests, optional filter
+#   scripts/rue perf [args...]     Per-pass compiler perf baseline (scripts/perf-baseline.py)
 #   scripts/rue fmt                Format the code (./fmt.sh)
 #   scripts/rue gc                 Reclaim disk: drop buck-out artifacts unused for 1+ week
 #   scripts/rue path               Print the absolute binary path (build if needed)
@@ -80,6 +81,13 @@ case "$cmd" in
         RUE_BINARY="$(scripts/rue-bin)" \
         RUE_UI_CASES="crates/rue-ui-tests/cases" \
         ./buck2 run //crates/rue-ui-tests:rue-ui-tests -- "$@"
+        ;;
+    perf)
+        # Per-pass compiler performance baseline (RUE-249). Builds the compiler
+        # first so the harness times a fresh binary, then hands off remaining
+        # args (e.g. --iterations, --format) to the Python harness.
+        scripts/rue-bin >/dev/null
+        python3 scripts/perf-baseline.py "$@"
         ;;
     fmt)
         ./fmt.sh "$@"
