@@ -1166,6 +1166,43 @@ impl<'a> Sema<'a> {
                     },
                 );
             }
+            ConstInit::Type(ty) => {
+                // A type-valued const (`const R: type = Result(i32, i32);`).
+                // If annotated, the annotation must be `type` (RUE-241).
+                if let Some(ty_sym) = p.ty_sym {
+                    let declared = self.resolve_type(ty_sym, p.span)?;
+                    if declared != Type::COMPTIME_TYPE {
+                        return Err(CompileError::new(
+                            ErrorKind::TypeMismatch {
+                                expected: declared.safe_name_with_pool(Some(&self.type_pool)),
+                                found: "type".to_string(),
+                            },
+                            p.span,
+                        ));
+                    }
+                }
+                // Type constants share the global namespace (10.5:1): a second
+                // declaration of the same name (of any const kind) is E0418.
+                if self.constants.contains_key(&name) || self.type_constants.contains_key(&name) {
+                    return Err(CompileError::new(
+                        ErrorKind::DuplicateConstant {
+                            name: name_str,
+                            kind: "constant".to_string(),
+                        },
+                        p.span,
+                    ));
+                }
+                self.type_constants.insert(
+                    name,
+                    ConstInfo {
+                        is_pub: p.is_pub,
+                        ty,
+                        init: p.init,
+                        value: ConstValue::Type(ty),
+                        span: p.span,
+                    },
+                );
+            }
         }
         Ok(())
     }
@@ -1346,13 +1383,31 @@ impl<'a> Sema<'a> {
                             .expect("ConstInit::Module holds a module type");
                         self.resolve_module_member_const(module_id, field, file_id, span, st)
                     }
-                    ConstInit::Value(_) => Err(CompileError::new(
+                    ConstInit::Value(_) | ConstInit::Type(_) => Err(CompileError::new(
                         ErrorKind::ConstExprNotSupported {
                             expr_kind: "member access on a non-module value".to_string(),
                         },
                         span,
                     )),
                 }
+            }
+
+            // A call to a type-returning function (`Result(i32, i32)`,
+            // `Pair(i32)`) evaluates to a compile-time type value, so it can
+            // name a type constant usable in signature position (RUE-241).
+            // Mirrors the `let`-bound type alias path (`try_eval_type_alias_init`).
+            InstData::Call { .. } => {
+                // Collect any constants the call arguments reference first; the
+                // callee function is collected in the declaration walk.
+                self.ensure_const_init_deps_collected(init, file_id, st)?;
+                if let Some(ty) =
+                    self.try_eval_type_alias_init(init, &HashMap::new(), &HashMap::new())
+                {
+                    return Ok(ConstInit::Type(ty));
+                }
+                // Not a type-returning call (e.g. a runtime function): the
+                // comptime engine will reject it as non-evaluable.
+                self.eval_const_value_expr(init, file_id, st, span, declared_ty)
             }
 
             // String constants would need the String type; not supported in
@@ -1404,14 +1459,10 @@ impl<'a> Sema<'a> {
 
         let mut env = super::comptime_eval::ComptimeEnv::for_const_init(&resolved_types);
         match self.eval_const_expr(init, &mut env)? {
-            // Type values (e.g. `const T = i32;`) are not supported as
-            // constants: nothing can materialize them at a use site yet.
-            Some(ConstValue::Type(_)) => Err(CompileError::new(
-                ErrorKind::ConstExprNotSupported {
-                    expr_kind: "a type value".to_string(),
-                },
-                span,
-            )),
+            // Type values (`const Int = i32;`, or an alias of another type
+            // const) become type constants usable in signature/annotation
+            // position (RUE-241).
+            Some(ConstValue::Type(ty)) => Ok(ConstInit::Type(ty)),
             Some(value) => Ok(ConstInit::Value(value)),
             None => Err(CompileError::new(
                 ErrorKind::ConstExprNotSupported {
@@ -1931,4 +1982,9 @@ enum ConstInit {
     Module(Type),
     /// A compile-time value: becomes a global value constant.
     Value(ConstValue),
+    /// A compile-time type value (`const R: type = Result(i32, i32);`, a
+    /// primitive alias `const Int = i32;`, or an alias of another type const).
+    /// Becomes a global type constant usable in signature/annotation position
+    /// (RUE-241). The `Type` is the monomorphized concrete type.
+    Type(Type),
 }

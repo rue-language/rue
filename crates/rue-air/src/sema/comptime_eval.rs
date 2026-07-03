@@ -340,6 +340,10 @@ impl Sema<'_> {
                     Type::new_struct(struct_id)
                 } else if let Some(&enum_id) = self.enums.get(name) {
                     Type::new_enum(enum_id)
+                } else if let Some(info) = self.type_constants.get(name) {
+                    // A type-valued const (`const R: type = Result(i32,i32);`,
+                    // RUE-241) names its monomorphized concrete type.
+                    info.ty
                 } else {
                     return None;
                 }
@@ -997,7 +1001,7 @@ impl Sema<'_> {
     /// `FixedBuffer(8)` — mirroring `analyze_call`'s implicit-comptime gate)
     /// and direct type expressions (`let P = Q;`, `let P = struct { .. };`).
     /// Returns `None` for anything else.
-    fn try_eval_type_alias_init(
+    pub(crate) fn try_eval_type_alias_init(
         &mut self,
         init: InstRef,
         eval_types: &HashMap<Spur, Type>,

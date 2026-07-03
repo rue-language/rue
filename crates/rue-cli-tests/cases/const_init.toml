@@ -143,20 +143,20 @@ pub const ANSWER: i32 = 42;
 ]
 exit_code = 42
 
-# A type-valued initializer is still E0434 (not E0475): type aliases are not
-# value constants, and fn-call initializers are not const-evaluable today
-# (fn-valued constants are RUE-173). If type aliases become legal they stay
-# exempt from the annotation requirement.
+# A type-valued initializer (a call to a comptime function returning `type`)
+# is a legal *type constant* (RUE-241): it is not a value constant, so it is
+# exempt from the annotation requirement (no E0475), and `T` is usable as a
+# type in signature position. Formerly rejected with E0434.
 [[case]]
-name = "type_alias_initializer_still_e0434"
+name = "type_alias_initializer_is_type_constant"
 files = [{ path = "main.rue", source = """
 fn MakeT() -> type { i32 }
 const T = MakeT();
 
-fn main() -> i32 { 0 }
+fn id(x: T) -> T { x }
+fn main() -> i32 { id(42) }
 """ }]
-compile_fail = true
-error_contains = ["E0434", "not supported in const context"]
+exit_code = 42
 
 # Annotated out-of-range value is rejected AT THE DECLARATION (E0800).
 [[case]]

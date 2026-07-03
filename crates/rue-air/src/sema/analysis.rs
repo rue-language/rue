@@ -1720,10 +1720,21 @@ impl<'a> Sema<'a> {
             value_subst,
         )?;
 
-        // Create analysis context with resolved types
-        // If type_subst is provided, initialize comptime_type_vars with the substitutions
-        // so that type parameters can be resolved during struct initialization.
-        let comptime_type_vars = type_subst.map(|s| s.clone()).unwrap_or_else(HashMap::new);
+        // Create analysis context with resolved types.
+        // Base the comptime type environment on file-level type constants
+        // (`const R: type = Result(i32, i32);`, RUE-241) so that enum/struct
+        // paths and match patterns that name `R` resolve to its concrete type,
+        // just as a `let`-bound type alias would. Type-parameter substitutions
+        // (specialized generic bodies) and later `let`-bound aliases override
+        // these, so a local binding shadows a file-level const of the same name.
+        let mut comptime_type_vars: HashMap<Spur, Type> = self
+            .type_constants
+            .iter()
+            .map(|(name, info)| (*name, info.ty))
+            .collect();
+        if let Some(s) = type_subst {
+            comptime_type_vars.extend(s.iter().map(|(k, v)| (*k, *v)));
+        }
         let comptime_value_vars = value_subst.map(|s| s.clone()).unwrap_or_else(HashMap::new);
         let mut ctx = AnalysisContext {
             locals: HashMap::new(),

@@ -80,6 +80,13 @@ pub struct Sema<'a> {
     /// Holds value constants only (e.g. `const MAX: i32 = 10`); module bindings
     /// live in [`Self::module_bindings`].
     pub(crate) constants: HashMap<Spur, ConstInfo>,
+    /// Type-valued constants (`const R: type = Result(i32, i32);`, RUE-241).
+    /// Maps the const name to the monomorphized concrete type it names, so a
+    /// signature (`fn divide(..) -> R`), annotation, or type-position use can
+    /// resolve it. Kept separate from [`Self::constants`] so a use as a value
+    /// falls through to the type-name path (emitting a `TypeConst`) instead of
+    /// materializing a value. Shares the global constant namespace (10.5:1).
+    pub(crate) type_constants: HashMap<Spur, ConstInfo>,
     /// Module-binding constants (`const utils = @import("...")`), keyed by
     /// the declaring file. Unlike value constants, module bindings are
     /// per-file scoped (ADR-0026): every file writes its own imports, so two
@@ -139,6 +146,7 @@ impl<'a> Sema<'a> {
             enums: HashMap::new(),
             methods: HashMap::new(),
             constants: HashMap::new(),
+            type_constants: HashMap::new(),
             module_bindings: HashMap::new(),
             preview_features,
             builtin_string_id: None,

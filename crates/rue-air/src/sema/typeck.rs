@@ -184,6 +184,15 @@ impl<'a> Sema<'a> {
                 span,
             )?;
             Ok(Type::new_enum(enum_id))
+        } else if let Some(info) = self.type_constants.get(&type_sym) {
+            // A type-valued const (`const R: type = Result(i32, i32);`, RUE-241)
+            // used in signature/annotation position resolves to the concrete
+            // monomorphized type it names. Privacy is uniform across item kinds
+            // (spec 10.3:7): an unqualified reference must not reach a private
+            // type const defined in another directory (E0460).
+            let (ty, file_id, is_pub) = (info.ty, info.span.file_id, info.is_pub);
+            self.check_unqualified_visibility("constant", type_name, file_id, is_pub, span)?;
+            Ok(ty)
         } else {
             // Check for array type syntax: [T; N]
             if let Some((element_type, len)) = parse_array_type_syntax(type_name) {
@@ -273,6 +282,9 @@ impl<'a> Sema<'a> {
             Some(Type::new_struct(struct_id))
         } else if let Some(&enum_id) = self.enums.get(&type_sym) {
             Some(Type::new_enum(enum_id))
+        } else if let Some(info) = self.type_constants.get(&type_sym) {
+            // A type-valued const (`const R: type = Result(i32,i32);`, RUE-241).
+            Some(info.ty)
         } else if let Some((element_type, len)) = parse_array_type_syntax(type_name) {
             // Resolve the element type first
             let element_sym = self.interner.get_or_intern(&element_type);

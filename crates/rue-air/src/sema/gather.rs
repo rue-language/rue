@@ -60,6 +60,8 @@ pub struct GatherOutput<'a> {
     pub methods: HashMap<(StructId, Spur), MethodInfo>,
     /// Constant lookup: maps const name to info (value constants only).
     pub constants: HashMap<Spur, ConstInfo>,
+    /// Type-valued constants (`const R: type = Result(i32, i32);`, RUE-241).
+    pub type_constants: HashMap<Spur, ConstInfo>,
     /// Module-binding constants (`const m = @import(...)`), keyed by the
     /// declaring file — per-file scoped (RUE-113).
     pub module_bindings: HashMap<(rue_span::FileId, Spur), ConstInfo>,
@@ -91,6 +93,7 @@ impl<'a> GatherOutput<'a> {
             enums: self.enums,
             methods: self.methods,
             constants: self.constants,
+            type_constants: self.type_constants,
             module_bindings: self.module_bindings,
             preview_features: self.preview_features,
             builtin_string_id: self.builtin_string_id,

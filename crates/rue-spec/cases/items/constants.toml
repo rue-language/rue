@@ -260,3 +260,86 @@ fn main() -> i32 { 0 }
 """
 compile_fail = true
 error_contains = "cycle detected in constant initializers"
+
+# =============================================================================
+# Type constants (6.5:12, 6.5:13, 6.5:14) — RUE-241
+# =============================================================================
+
+# A constant bound to a primitive type name is a type constant, usable as a
+# parameter and return type.
+[[case]]
+name = "type_constant_primitive_alias"
+spec = ["6.5:12", "6.5:13"]
+description = "A `const Int: type = i32;` names a type usable in parameter and return position"
+source = """
+const Int: type = i32;
+
+fn add(a: Int, b: Int) -> Int { a + b }
+
+fn main() -> i32 { add(40, 2) }
+"""
+exit_code = 42
+
+# An unannotated type constant is legal (like a module binding): no E0475.
+[[case]]
+name = "type_constant_unannotated"
+spec = ["6.5:12"]
+description = "A type constant needs no `type` annotation (it is not a value constant, so E0475 does not apply)"
+source = """
+const Int = i32;
+
+fn id(x: Int) -> Int { x }
+
+fn main() -> i32 { id(42) }
+"""
+exit_code = 42
+
+# A generic Option named through a type constant crosses a function boundary as
+# a parameter type: construct in `main`, match inside `unwrap_or`.
+[[case]]
+name = "type_constant_generic_option_param"
+spec = ["6.5:13", "6.5:14"]
+preview = "enum_payloads"
+description = "A generic Option, named via `const OptI: type = Option(i32);`, is usable as a parameter type across a call"
+source = """
+fn Option(comptime T: type) -> type { enum { Some(T), None } }
+const OptI: type = Option(i32);
+
+fn unwrap_or(o: OptI, d: i32) -> i32 {
+    match o { OptI::Some(v) => v, OptI::None => d }
+}
+
+fn main() -> i32 { unwrap_or(OptI::Some(42), 0) }
+"""
+exit_code = 42
+
+# A local `let`-bound type alias shadows a file-level type constant of the same
+# name (6.5:13).
+[[case]]
+name = "type_constant_shadowed_by_let"
+spec = ["6.5:13"]
+preview = "enum_payloads"
+description = "A `let`-bound type alias inside a function shadows a file-level type constant of the same name"
+source = """
+fn Option(comptime T: type) -> type { enum { Some(T), None } }
+const OptI: type = Option(i32);
+
+fn main() -> i32 {
+    let OptI: type = Option(i32);
+    match OptI::Some(42) { OptI::Some(v) => v, OptI::None => 0 }
+}
+"""
+exit_code = 42
+
+# A non-`type` annotation on a type-valued initializer is a type error (6.5:12).
+[[case]]
+name = "type_constant_non_type_annotation_rejected"
+spec = ["6.5:12"]
+description = "Annotating a type-valued constant with a non-`type` type is a type error"
+source = """
+const Bad: i32 = i32;
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = "type mismatch"

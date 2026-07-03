@@ -427,3 +427,54 @@ fn main() -> i32 {
 """ }]
 compile_fail = true
 error_contains = ["must be consumed"]
+
+# Generic type constants in function signatures (RUE-241). A generic Option /
+# Result, named through a file-level `const R: type = ...`, can appear in a
+# function's parameter and return type — the resolution monomorphizes to the
+# concrete enum. These cross a real call ABI.
+
+# Parameter position: construct the generic enum in `main`, pass it by value to
+# a function whose parameter type is the type constant, and match it there.
+[[case]]
+name = "type_const_generic_option_param"
+description = "Generic Option via `const OptI: type = Option(i32);` used as a parameter type: unwrap_or(Some(42), 0) = 42 across a call (RUE-241)."
+args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+fn Option(comptime T: type) -> type { enum { Some(T), None } }
+const OptI: type = Option(i32);
+fn unwrap_or(o: OptI, d: i32) -> i32 {
+    match o { OptI::Some(v) => v, OptI::None => d }
+}
+fn main() -> i32 { unwrap_or(OptI::Some(42), 0) }
+""" }]
+exit_code = 42
+
+# Two-parameter Result via a type constant, also in parameter position: both
+# arms round-trip through a function boundary.
+[[case]]
+name = "type_const_generic_result_param"
+description = "Generic Result via `const R: type = Result(i32, i32);` as a parameter type: Ok(84)/2-style value threaded through unwrap = 42 (RUE-241)."
+args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+fn Result(comptime T: type, comptime E: type) -> type { enum { Ok(T), Err(E) } }
+const R: type = Result(i32, i32);
+fn unwrap(r: R) -> i32 { match r { R::Ok(v) => v, R::Err(e) => 0 - e } }
+fn main() -> i32 { unwrap(R::Ok(42)) }
+""" }]
+exit_code = 42
+
+# Return position: `fn divide(..) -> R` compiles, is called, and returns the
+# payload enum by value (RUE-241 resolves the type constant in return position;
+# RUE-237's aggregate-return fix, now merged, round-trips the payload). This is
+# real error handling end-to-end: a fn returning a generic Result, matched -> 42.
+[[case]]
+name = "type_const_generic_result_return"
+description = "Generic Result named via a type constant in return position: fn divide -> R compiles, runs, and returns the payload by value, matched to 42 (RUE-241 + RUE-237)."
+args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+fn Result(comptime T: type, comptime E: type) -> type { enum { Ok(T), Err(E) } }
+const R: type = Result(i32, i32);
+fn divide(a: i32, b: i32) -> R { if b == 0 { R::Err(1) } else { R::Ok(a / b) } }
+fn main() -> i32 { match divide(84, 2) { R::Ok(v) => v, R::Err(e) => 0 - e } }
+""" }]
+exit_code = 42

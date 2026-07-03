@@ -19,9 +19,10 @@ The initializer of a constant **MUST** be evaluable at compile time.
 Compile-time evaluable expressions include literals, the arithmetic,
 comparison, logical, bitwise, and shift operators applied to compile-time
 evaluable operands, `comptime` block expressions, references to other
-constants, and module expressions (`@import(...)` and module member access
-— chapter 10). An initializer that is not compile-time evaluable produces a
-compile-time error (E0434).
+constants, module expressions (`@import(...)` and module member access
+— chapter 10), and type expressions (type names and calls to comptime
+functions returning `type`, 6.5:12). An initializer that is not compile-time
+evaluable produces a compile-time error (E0434).
 
 {{ rule(id="6.5:3", cat="example") }}
 
@@ -75,6 +76,52 @@ const SMALL: u8 = 200;           // u8: annotation adopted, value fits
 // const BAD: u8 = 300;          // error: out of range for u8 (E0800)
 // const NONE = 5;               // error: missing type annotation (E0475)
 ```
+
+## Type Constants
+
+{{ rule(id="6.5:12", cat="normative") }}
+
+A *type constant* is a constant whose initializer evaluates to a type: a type
+name (`const Int = i32;`), a call to a comptime function returning `type`
+(`const R = Result(i32, i32);`, 4.14:7), or an alias of another type constant.
+Like a module binding, a type constant is not a value constant: it takes an
+optional `type` annotation (`const R: type = ...;`) and, unlike a value
+constant, requires none. A non-`type` annotation on a type-valued initializer
+is a type error.
+
+{{ rule(id="6.5:13", cat="normative") }}
+
+A type constant may be used wherever a type name may appear — as a type
+annotation, and as a function parameter or return type — resolving to the
+concrete (monomorphized) type its initializer names. This lets a comptime
+type function's result cross a function boundary in the signature, so a
+function can take or return a generic `Option`/`Result` named through a
+constant. A `let`-bound type alias of the same name inside a function body
+shadows the constant.
+
+{{ rule(id="6.5:14", cat="example") }}
+
+```rue
+fn Option(comptime T: type) -> type { enum { Some(T), None } }
+const OptI: type = Option(i32);
+
+fn unwrap_or(o: OptI, d: i32) -> i32 {
+    match o { OptI::Some(v) => v, OptI::None => d }
+}
+
+fn main() -> i32 {
+    unwrap_or(OptI::Some(42), 0)  // 42
+}
+```
+
+{{ rule(id="6.5:15", cat="informative") }}
+
+In the current implementation, a type constant used in a function *signature*
+(a parameter or return type) must be declared before that function, since
+signature types are resolved as each function is collected. This ordering
+restriction is an implementation artifact, not a language guarantee: unlike
+6.5:7 (which governs a constant's own value), it applies only to signature-
+position uses of a type constant.
 
 ## Evaluation Order
 
