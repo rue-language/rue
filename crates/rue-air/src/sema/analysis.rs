@@ -1763,6 +1763,7 @@ impl<'a> Sema<'a> {
             byref_arg_root: None,
             in_loop_move_recheck: false,
             iter_borrows: Vec::new(),
+            expected_type: None,
         };
 
         // ======================================================================
@@ -3663,11 +3664,11 @@ impl<'a> Sema<'a> {
         } else if name == known.test_preview_gate {
             self.analyze_test_preview_gate_intrinsic(air, &args, span)
         } else if name == known.read_line {
-            self.analyze_read_line_intrinsic(air, name, &args, span)
+            self.analyze_read_line_intrinsic(air, name, inst_ref, &args, span, ctx)
         } else if name == known.to_string {
             self.analyze_to_string_intrinsic(air, &args, span, ctx)
         } else if let Some(intrinsic_name_str) = known.get_parse_intrinsic_name(name) {
-            self.analyze_parse_intrinsic(air, name, intrinsic_name_str, &args, span, ctx)
+            self.analyze_parse_intrinsic(air, name, inst_ref, intrinsic_name_str, &args, span, ctx)
         } else if name == known.cast {
             self.analyze_cast_intrinsic(air, inst_ref, &args, span, ctx)
         } else if name == known.panic {
@@ -4300,16 +4301,94 @@ impl<'a> Sema<'a> {
         Ok(AnalysisResult::new(air_ref, Type::UNIT))
     }
 
+    /// Validate that inference resolved a fallible intrinsic's result to an
+    /// `Option`-shaped enum whose `Some` variant carries `expected_payload` and
+    /// whose `None` variant is empty, and return that enum type.
+    ///
+    /// This is how `@read_line` / `@parse_*` obtain the concrete library
+    /// `Option` from context (RUE-6, ADR-0038): the intrinsic's return unifies
+    /// with the in-scope `Option(T)` (a `let` annotation, or the match arms the
+    /// result feeds), so no new "blessed builtin" tier is introduced — the
+    /// ordinary comptime-generic `Option` enum is used. The runtime signals
+    /// success/failure and codegen fills in this enum's discriminant + payload.
+    fn resolve_option_result_type(
+        &self,
+        ctx: &AnalysisContext,
+        inst_ref: InstRef,
+        expected_payload: Type,
+        intrinsic_display: &str,
+        payload_display: &str,
+        span: Span,
+    ) -> CompileResult<Type> {
+        // Prefer the sema-supplied expected type (a let annotation or match
+        // scrutinee pattern), which is how the concrete comptime-generic
+        // `Option` reaches us. Without one, there is no context to infer the
+        // Option type from — report that plainly rather than letting an
+        // unresolved inference variable decay to `<error>` (E9000).
+        let (ty, from_expected) = match ctx.expected_type {
+            Some(ty) => (ty, true),
+            None => (
+                Self::get_resolved_type(ctx, inst_ref, span, intrinsic_display)?,
+                false,
+            ),
+        };
+
+        // A bad annotation/pattern already produced its own diagnostic and
+        // poisoned the expected type to `error`; do not cascade a second one.
+        if from_expected && ty.is_error() {
+            return Ok(ty);
+        }
+
+        let valid = if let TypeKind::Enum(enum_id) = ty.kind() {
+            let def = self.type_pool.enum_def(enum_id);
+            match (def.find_variant("Some"), def.find_variant("None")) {
+                (Some(si), Some(ni)) if def.variant_count() == 2 => {
+                    let some_payload = def.variant_payload(si);
+                    let none_payload = def.variant_payload(ni);
+                    some_payload.len() == 1
+                        && some_payload[0] == expected_payload
+                        && none_payload.is_empty()
+                }
+                _ => false,
+            }
+        } else {
+            false
+        };
+
+        if !valid {
+            // With no context at all the resolved type is `<error>`; point the
+            // user at the fix instead of printing the placeholder.
+            let found = if ty.is_error() {
+                "no expected type — annotate the binding or `match` on the result".to_string()
+            } else {
+                ty.safe_name_with_pool(Some(&self.type_pool))
+            };
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
+                    name: intrinsic_display.to_string(),
+                    expected: format!("Option({payload_display})"),
+                    found,
+                })),
+                span,
+            ));
+        }
+
+        Ok(ty)
+    }
+
     /// Analyze @read_line intrinsic.
     fn analyze_read_line_intrinsic(
         &mut self,
         air: &mut Air,
         name: Spur,
+        inst_ref: InstRef,
         args: &[RirCallArg],
         span: Span,
+        ctx: &AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        // @read_line() - reads a line from stdin and returns it as a String.
-        // Takes no arguments, returns String.
+        // @read_line() - reads a line from stdin. Takes no arguments and
+        // returns `Option(String)`: `Some(line)` normally, `None` at EOF
+        // (RUE-6, ADR-0038). The concrete Option type is taken from context.
         if !args.is_empty() {
             return Err(CompileError::new(
                 ErrorKind::IntrinsicWrongArgCount {
@@ -4321,20 +4400,28 @@ impl<'a> Sema<'a> {
             ));
         }
 
-        // Get the String type
         let string_type = self.builtin_string_type();
+        let option_ty = self.resolve_option_result_type(
+            ctx,
+            inst_ref,
+            string_type,
+            "read_line",
+            "String",
+            span,
+        )?;
 
-        // Create the intrinsic instruction that returns String
+        // The intrinsic lowers to a runtime call whose result codegen packs
+        // into this `Option(String)` enum (discriminant + String payload).
         let air_ref = air.add_inst(AirInst {
             data: AirInstData::Intrinsic {
                 name,
                 args_start: 0, // No args
                 args_len: 0,
             },
-            ty: string_type,
+            ty: option_ty,
             span,
         });
-        Ok(AnalysisResult::new(air_ref, string_type))
+        Ok(AnalysisResult::new(air_ref, option_ty))
     }
 
     /// Analyze the `@to_string(n)` intrinsic (RUE-17 Phase 1, ADR-0035).
@@ -4405,6 +4492,7 @@ impl<'a> Sema<'a> {
         &mut self,
         air: &mut Air,
         name: Spur,
+        inst_ref: InstRef,
         intrinsic_name_str: &str,
         args: &[RirCallArg],
         span: Span,
@@ -4439,14 +4527,26 @@ impl<'a> Sema<'a> {
             ));
         }
 
-        // Determine the return type based on the intrinsic name
-        let return_type = match intrinsic_name_str {
-            "parse_i32" => Type::I32,
-            "parse_i64" => Type::I64,
-            "parse_u32" => Type::U32,
-            "parse_u64" => Type::U64,
+        // Determine the payload integer type based on the intrinsic name.
+        let (payload_type, payload_display) = match intrinsic_name_str {
+            "parse_i32" => (Type::I32, "i32"),
+            "parse_i64" => (Type::I64, "i64"),
+            "parse_u32" => (Type::U32, "u32"),
+            "parse_u64" => (Type::U64, "u64"),
             _ => unreachable!(),
         };
+
+        // The result is `Option(int)`: `Some(n)` on success, `None` on parse
+        // failure (RUE-6, ADR-0038). The concrete Option type comes from
+        // context and is validated to carry the matching integer payload.
+        let option_ty = self.resolve_option_result_type(
+            ctx,
+            inst_ref,
+            payload_type,
+            intrinsic_name_str,
+            payload_display,
+            span,
+        )?;
 
         // Encode args into extra array
         let args_start = air.add_extra(&[arg_result.air_ref.as_u32()]);
@@ -4456,10 +4556,10 @@ impl<'a> Sema<'a> {
                 args_start,
                 args_len: 1,
             },
-            ty: return_type,
+            ty: option_ty,
             span,
         });
-        Ok(AnalysisResult::new(air_ref, return_type))
+        Ok(AnalysisResult::new(air_ref, option_ty))
     }
 
     /// Analyze @random_u32 intrinsic.

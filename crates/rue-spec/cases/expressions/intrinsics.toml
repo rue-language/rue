@@ -573,17 +573,27 @@ stderr_contains = "integer cast overflow"
 
 # =============================================================================
 # @read_line Intrinsic
+#
+# Since RUE-6 (ADR-0038) @read_line returns Option(String): Some(line) normally,
+# None at end-of-input (no trap). The concrete Option is taken from context, so
+# each case defines the ordinary comptime-generic Option enum in-file and
+# threads it via a `let` annotation or the match arms.
 # =============================================================================
 
 [[case]]
-name = "read_line_returns_string"
+name = "read_line_returns_option_string"
 spec = ["4.13:33", "4.13:35"]
 source = """
-fn takes_string(s: String) -> i32 { 0 }
+fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
-    // Type checking: @read_line returns String
-    let line: String = @read_line();
-    takes_string(@read_line())
+    // Type checking: @read_line returns Option(String).
+    let Opt = Option(String);
+    let line: Opt = @read_line();
+    match line {
+        Opt::Some(s) => @dbg(s),
+        Opt::None => {},
+    }
+    0
 }
 """
 # This test will hang waiting for stdin input, so we use compile_only=true
@@ -594,9 +604,15 @@ compile_only = true
 name = "read_line_no_args"
 spec = ["4.13:34"]
 source = """
+fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
-    // Verify @read_line takes no arguments
-    let line: String = @read_line();
+    // Verify @read_line takes no arguments.
+    let Opt = Option(String);
+    let line: Opt = @read_line();
+    match line {
+        Opt::Some(s) => @dbg(s),
+        Opt::None => {},
+    }
     0
 }
 """
@@ -607,7 +623,7 @@ name = "read_line_wrong_arg_count_one"
 spec = ["4.13:4", "4.13:34"]
 source = """
 fn main() -> i32 {
-    let line: String = @read_line(42);
+    @read_line(42);
     0
 }
 """
@@ -619,7 +635,7 @@ name = "read_line_wrong_arg_count_two"
 spec = ["4.13:4", "4.13:34"]
 source = """
 fn main() -> i32 {
-    let line: String = @read_line(1, 2);
+    @read_line(1, 2);
     0
 }
 """
@@ -634,9 +650,13 @@ error_contains = "argument"
 name = "read_line_basic_input"
 spec = ["4.13:33", "4.13:36", "4.13:37"]
 source = """
+fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
-    let line = @read_line();
-    @dbg(line);
+    let Opt = Option(String);
+    match @read_line() {
+        Opt::Some(line) => @dbg(line),
+        Opt::None => {},
+    }
     0
 }
 """
@@ -648,9 +668,13 @@ exit_code = 0
 name = "read_line_strips_newline"
 spec = ["4.13:37"]
 source = """
+fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
-    let line = @read_line();
-    @dbg(line);
+    let Opt = Option(String);
+    match @read_line() {
+        Opt::Some(line) => @dbg(line),
+        Opt::None => {},
+    }
     0
 }
 """
@@ -662,11 +686,17 @@ exit_code = 0
 name = "read_line_multiple_lines"
 spec = ["4.13:36"]
 source = """
+fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
-    let line1 = @read_line();
-    let line2 = @read_line();
-    @dbg(line1);
-    @dbg(line2);
+    let Opt = Option(String);
+    match @read_line() {
+        Opt::Some(line) => @dbg(line),
+        Opt::None => {},
+    }
+    match @read_line() {
+        Opt::Some(line) => @dbg(line),
+        Opt::None => {},
+    }
     0
 }
 """
@@ -681,13 +711,17 @@ exit_code = 0
 name = "read_line_partial_line_at_eof"
 spec = ["4.13:38"]
 source = """
+fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
-    let line = @read_line();
-    @dbg(line);
+    let Opt = Option(String);
+    match @read_line() {
+        Opt::Some(line) => @dbg(line),
+        Opt::None => {},
+    }
     0
 }
 """
-# No trailing newline - should still return the partial line
+# No trailing newline - should still return Some(partial line)
 stdin = "partial"
 expected_stdout = "partial"
 exit_code = 0
@@ -696,42 +730,58 @@ exit_code = 0
 name = "read_line_empty_line"
 spec = ["4.13:36", "4.13:37"]
 source = """
+fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
-    let line = @read_line();
-    @dbg(line);
+    let Opt = Option(String);
+    match @read_line() {
+        Opt::Some(line) => @dbg(line),
+        Opt::None => {},
+    }
     0
 }
 """
-# Just a newline - should return empty string
+# Just a newline - should return Some("")
 stdin = "\n"
 expected_stdout = ""
 exit_code = 0
 
 [[case]]
-name = "read_line_eof_no_data_panics"
+name = "read_line_eof_no_data_yields_none"
 spec = ["4.13:39"]
 source = """
+fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
-    let line = @read_line();
-    0
+    let Opt = Option(String);
+    let line: Opt = @read_line();
+    // EOF with no data is None, not a trap: this returns 0, exit success.
+    match line {
+        Opt::Some(_s) => 1,
+        Opt::None => 0,
+    }
 }
 """
-# Empty stdin - should panic
+# Empty stdin - EOF with no data yields None (no panic).
 stdin = ""
-exit_code = 101
-stderr_contains = "unexpected end of input"
+exit_code = 0
 
 # =============================================================================
 # @parse_* Intrinsics
+#
+# Since RUE-6 (ADR-0038) the parse intrinsics return Option(int): Some(n) on
+# success, None on failure (empty/invalid/overflow/negative-for-unsigned).
 # =============================================================================
 
 [[case]]
 name = "parse_i32_basic"
 spec = ["4.13:43", "4.13:44", "4.13:45"]
 source = """
+fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
-    let s = "42";
-    @parse_i32(s)
+    let Opt = Option(i32);
+    match @parse_i32("42") {
+        Opt::Some(n) => n,
+        Opt::None => 0,
+    }
 }
 """
 exit_code = 42
@@ -740,9 +790,13 @@ exit_code = 42
 name = "parse_i32_negative"
 spec = ["4.13:43", "4.13:44", "4.13:47"]
 source = """
+fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
-    let s = "-17";
-    @parse_i32(s)
+    let Opt = Option(i32);
+    match @parse_i32("-17") {
+        Opt::Some(n) => n,
+        Opt::None => 0,
+    }
 }
 """
 exit_code = 239
@@ -751,9 +805,13 @@ exit_code = 239
 name = "parse_i32_zero"
 spec = ["4.13:43", "4.13:44"]
 source = """
+fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
-    let s = "0";
-    @parse_i32(s)
+    let Opt = Option(i32);
+    match @parse_i32("0") {
+        Opt::Some(n) => n,
+        Opt::None => 1,
+    }
 }
 """
 exit_code = 0
@@ -762,9 +820,13 @@ exit_code = 0
 name = "parse_i32_leading_zeros"
 spec = ["4.13:43", "4.13:47"]
 source = """
+fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
-    let s = "007";
-    @parse_i32(s)
+    let Opt = Option(i32);
+    match @parse_i32("007") {
+        Opt::Some(n) => n,
+        Opt::None => 0,
+    }
 }
 """
 exit_code = 7
@@ -773,11 +835,16 @@ exit_code = 7
 name = "parse_i32_string_not_consumed"
 spec = ["4.13:46"]
 source = """
+fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
+    let Opt = Option(i32);
     let s = "42";
-    let n = @parse_i32(s);
+    let n: Opt = @parse_i32(s);
     @dbg(s);
-    n
+    match n {
+        Opt::Some(v) => v,
+        Opt::None => 0,
+    }
 }
 """
 exit_code = 42
@@ -786,10 +853,13 @@ exit_code = 42
 name = "parse_i64_basic"
 spec = ["4.13:43", "4.13:44", "4.13:45"]
 source = """
+fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
-    let s = "123";
-    let n = @parse_i64(s);
-    @intCast(n)
+    let Opt = Option(i64);
+    match @parse_i64("123") {
+        Opt::Some(n) => @intCast(n),
+        Opt::None => 0,
+    }
 }
 """
 exit_code = 123
@@ -798,10 +868,13 @@ exit_code = 123
 name = "parse_i64_negative"
 spec = ["4.13:43", "4.13:44", "4.13:47"]
 source = """
+fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
-    let s = "-5";
-    let n = @parse_i64(s);
-    @intCast(n)
+    let Opt = Option(i64);
+    match @parse_i64("-5") {
+        Opt::Some(n) => @intCast(n),
+        Opt::None => 0,
+    }
 }
 """
 exit_code = 251
@@ -810,10 +883,13 @@ exit_code = 251
 name = "parse_u32_basic"
 spec = ["4.13:43", "4.13:44", "4.13:45"]
 source = """
+fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
-    let s = "42";
-    let n = @parse_u32(s);
-    @intCast(n)
+    let Opt = Option(u32);
+    match @parse_u32("42") {
+        Opt::Some(n) => @intCast(n),
+        Opt::None => 0,
+    }
 }
 """
 exit_code = 42
@@ -822,10 +898,13 @@ exit_code = 42
 name = "parse_u64_basic"
 spec = ["4.13:43", "4.13:44", "4.13:45"]
 source = """
+fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
-    let s = "99";
-    let n = @parse_u64(s);
-    @intCast(n)
+    let Opt = Option(u64);
+    match @parse_u64("99") {
+        Opt::Some(n) => @intCast(n),
+        Opt::None => 0,
+    }
 }
 """
 exit_code = 99
@@ -862,74 +941,91 @@ compile_fail = true
 error_contains = "String"
 
 [[case]]
-name = "parse_empty_string_panic"
+name = "parse_empty_string_yields_none"
 spec = ["4.13:49"]
 source = """
+fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
-    let s = "";
-    @parse_i32(s)
+    let Opt = Option(i32);
+    match @parse_i32("") {
+        Opt::Some(n) => n,
+        Opt::None => 42,
+    }
 }
 """
-exit_code = 101
-stderr_contains = "parse error"
+exit_code = 42
 
 [[case]]
-name = "parse_invalid_char_panic"
+name = "parse_invalid_char_yields_none"
 spec = ["4.13:49"]
 source = """
+fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
-    let s = "12abc";
-    @parse_i32(s)
+    let Opt = Option(i32);
+    match @parse_i32("12abc") {
+        Opt::Some(n) => n,
+        Opt::None => 42,
+    }
 }
 """
-exit_code = 101
-stderr_contains = "parse error"
+exit_code = 42
 
 [[case]]
-name = "parse_overflow_i32_panic"
+name = "parse_overflow_i32_yields_none"
 spec = ["4.13:49"]
 source = """
+fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
-    let s = "2147483648";
-    @parse_i32(s)
+    let Opt = Option(i32);
+    match @parse_i32("2147483648") {
+        Opt::Some(n) => n,
+        Opt::None => 42,
+    }
 }
 """
-exit_code = 101
-stderr_contains = "parse error"
+exit_code = 42
 
 [[case]]
-name = "parse_overflow_u32_panic"
+name = "parse_overflow_u32_yields_none"
 spec = ["4.13:49"]
 source = """
+fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
-    let s = "4294967296";
-    let n = @parse_u32(s);
-    @intCast(n)
+    let Opt = Option(u32);
+    match @parse_u32("4294967296") {
+        Opt::Some(n) => @intCast(n),
+        Opt::None => 42,
+    }
 }
 """
-exit_code = 101
-stderr_contains = "parse error"
+exit_code = 42
 
 [[case]]
-name = "parse_negative_unsigned_panic"
+name = "parse_negative_unsigned_yields_none"
 spec = ["4.13:48", "4.13:49"]
 source = """
+fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
-    let s = "-1";
-    let n = @parse_u32(s);
-    @intCast(n)
+    let Opt = Option(u32);
+    match @parse_u32("-1") {
+        Opt::Some(n) => @intCast(n),
+        Opt::None => 42,
+    }
 }
 """
-exit_code = 101
-stderr_contains = "parse error"
+exit_code = 42
 
 [[case]]
 name = "parse_i32_max"
 spec = ["4.13:43", "4.13:44"]
 source = """
+fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
-    let s = "127";
-    @parse_i32(s)
+    let Opt = Option(i32);
+    match @parse_i32("127") {
+        Opt::Some(n) => n,
+        Opt::None => 0,
+    }
 }
 """
 exit_code = 127
@@ -938,12 +1034,14 @@ exit_code = 127
 name = "parse_i32_boundary"
 spec = ["4.13:43", "4.13:44"]
 source = """
+fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
     // Test parsing of i32::MAX (doesn't overflow)
-    let s = "2147483647";
-    let n = @parse_i32(s);
-    // Return a value we can verify (255 & 0xFF = 255)
-    if n == 2147483647 { 255 } else { 1 }
+    let Opt = Option(i32);
+    match @parse_i32("2147483647") {
+        Opt::Some(n) => if n == 2147483647 { 255 } else { 1 },
+        Opt::None => 1,
+    }
 }
 """
 exit_code = 255
@@ -952,12 +1050,14 @@ exit_code = 255
 name = "parse_i32_min"
 spec = ["4.13:43", "4.13:44", "4.13:47"]
 source = """
+fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
     // Test parsing of i32::MIN (doesn't overflow)
-    let s = "-2147483648";
-    let n = @parse_i32(s);
-    // Return a value we can verify
-    if n == -2147483648 { 254 } else { 1 }
+    let Opt = Option(i32);
+    match @parse_i32("-2147483648") {
+        Opt::Some(n) => if n == -2147483648 { 254 } else { 1 },
+        Opt::None => 1,
+    }
 }
 """
 exit_code = 254

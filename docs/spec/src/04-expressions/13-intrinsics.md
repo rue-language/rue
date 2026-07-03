@@ -45,11 +45,11 @@ The following table provides a quick reference to all available intrinsics:
 | `@size_of` | Get type size in bytes | 1 type | `i32` |
 | `@align_of` | Get type alignment in bytes | 1 type | `i32` |
 | `@intCast` | Convert between integer types | 1 expression (integer) | inferred integer type |
-| `@read_line` | Read line from stdin | none | `String` |
-| `@parse_i32` | Parse string to i32 | 1 expression (`String`) | `i32` |
-| `@parse_i64` | Parse string to i64 | 1 expression (`String`) | `i64` |
-| `@parse_u32` | Parse string to u32 | 1 expression (`String`) | `u32` |
-| `@parse_u64` | Parse string to u64 | 1 expression (`String`) | `u64` |
+| `@read_line` | Read line from stdin | none | `Option(String)` |
+| `@parse_i32` | Parse string to i32 | 1 expression (`String`) | `Option(i32)` |
+| `@parse_i64` | Parse string to i64 | 1 expression (`String`) | `Option(i64)` |
+| `@parse_u32` | Parse string to u32 | 1 expression (`String`) | `Option(u32)` |
+| `@parse_u64` | Parse string to u64 | 1 expression (`String`) | `Option(u64)` |
 | `@random_u32` | Generate random u32 | none | `u32` |
 | `@random_u64` | Generate random u64 | none | `u64` |
 | `@target_arch` | Get target architecture | none | `Arch` |
@@ -255,7 +255,7 @@ The `@read_line` intrinsic reads a line of text from standard input.
 
 {{ rule(id="4.13:35", cat="normative") }}
 
-The return type of `@read_line` is `String`.
+The return type of `@read_line` is `Option(String)`, where `Option` is the ordinary comptime-generic library enum (`enum { Some(T), None }`, ADR-0038). The concrete `Option(String)` type is taken from the surrounding context — a `let` binding annotation, or the arms of a `match` on the result — so `Option` must be in scope (e.g. imported) at the call site.
 
 {{ rule(id="4.13:36", cat="dynamic-semantics") }}
 
@@ -263,15 +263,15 @@ The return type of `@read_line` is `String`.
 
 {{ rule(id="4.13:37", cat="dynamic-semantics") }}
 
-The returned `String` does **not** include the trailing newline character.
+On a successful read the result is `Some(line)`, where the `line` `String` does **not** include the trailing newline character.
 
 {{ rule(id="4.13:38", cat="dynamic-semantics") }}
 
-If end-of-file is reached with some data read, the partial line is returned.
+If end-of-file is reached with some data read, the partial line is returned as `Some(line)`.
 
 {{ rule(id="4.13:39", cat="dynamic-semantics") }}
 
-If end-of-file is reached with no data read, a runtime panic occurs with the message "unexpected end of input".
+If end-of-file is reached with no data read, the result is `None` (this is not an error; a read-until-end-of-input loop terminates by observing `None`).
 
 {{ rule(id="4.13:40", cat="informative") }}
 
@@ -281,24 +281,30 @@ If a read error occurs, a runtime panic occurs with the message "input error". (
 
 ```rue
 fn main() -> i32 {
+    let Opt = @import("std/option.rue").Option(String);
     @dbg("What is your name?");
-    let name = @read_line();
-    @dbg("Hello, ");
-    @dbg(name);
+    match @read_line() {
+        Opt::Some(name) => @dbg(name),
+        Opt::None => @dbg("(no input)"),
+    }
     0
 }
 ```
 
 {{ rule(id="4.13:42") }}
 
-Reading multiple lines:
+Reading every line until end-of-input:
 
 ```rue
 fn main() -> i32 {
-    let line1 = @read_line();  // First line
-    let line2 = @read_line();  // Second line
-    @dbg(line1);
-    @dbg(line2);
+    let Opt = @import("std/option.rue").Option(String);
+    loop {
+        let line: Opt = @read_line();
+        match line {
+            Opt::None => break,
+            Opt::Some(text) => @dbg(text),
+        }
+    }
     0
 }
 ```
@@ -311,11 +317,13 @@ The integer parsing intrinsics convert a string to an integer value.
 
 {{ rule(id="4.13:44", cat="normative") }}
 
-The following parsing intrinsics are available:
-- `@parse_i32` returns `i32`
-- `@parse_i64` returns `i64`
-- `@parse_u32` returns `u32`
-- `@parse_u64` returns `u64`
+Each parsing intrinsic returns `Option(T)` for its target integer type `T`, where `Option` is the ordinary comptime-generic library enum (ADR-0038):
+- `@parse_i32` returns `Option(i32)`
+- `@parse_i64` returns `Option(i64)`
+- `@parse_u32` returns `Option(u32)`
+- `@parse_u64` returns `Option(u64)`
+
+The concrete `Option(T)` type is taken from the surrounding context (a `let` annotation, or the arms of a `match` on the result), so `Option` must be in scope at the call site.
 
 {{ rule(id="4.13:45", cat="normative") }}
 
@@ -327,7 +335,7 @@ The string argument is borrowed, not consumed. The original string remains valid
 
 {{ rule(id="4.13:47", cat="normative") }}
 
-The parsed string must match the following grammar:
+A successful parse yields `Some(n)`. The parsed string is parsed successfully when it matches the following grammar:
 
 ```ebnf
 integer_string = [ "-" ] digit { digit } ;
@@ -336,11 +344,11 @@ digit = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" ;
 
 {{ rule(id="4.13:48", cat="legality-rule") }}
 
-Leading minus signs are only allowed for signed types (`@parse_i32`, `@parse_i64`).
+Leading minus signs are only allowed for signed types (`@parse_i32`, `@parse_i64`); a negative value for an unsigned type is a parse failure (yields `None`).
 
 {{ rule(id="4.13:49", cat="dynamic-semantics") }}
 
-A runtime panic occurs if:
+The result is `None` (a recoverable parse failure, not a panic) if:
 - The string is empty
 - The string contains non-digit characters (other than an optional leading minus)
 - The value overflows the target type
@@ -350,9 +358,11 @@ A runtime panic occurs if:
 
 ```rue
 fn main() -> i32 {
-    let s = "42";
-    let n = @parse_i32(s);
-    n  // returns 42
+    let Opt = @import("std/option.rue").Option(i32);
+    match @parse_i32("42") {
+        Opt::Some(n) => n,   // returns 42
+        Opt::None => 0,
+    }
 }
 ```
 
@@ -360,9 +370,11 @@ fn main() -> i32 {
 
 ```rue
 fn main() -> i32 {
-    let s = "-17";
-    let n = @parse_i32(s);
-    n  // returns -17
+    let Opt = @import("std/option.rue").Option(i32);
+    match @parse_i32("-17") {
+        Opt::Some(n) => n,   // returns -17
+        Opt::None => 0,
+    }
 }
 ```
 
@@ -370,33 +382,41 @@ fn main() -> i32 {
 
 ```rue
 fn main() -> i32 {
+    let Opt = @import("std/option.rue").Option(i32);
     let s = "42";
     // String is borrowed, not consumed
-    let n = @parse_i32(s);
+    let parsed: Opt = @parse_i32(s);
     @dbg(s);  // s is still valid
-    n
+    match parsed {
+        Opt::Some(n) => n,
+        Opt::None => 0,
+    }
 }
 ```
 
 {{ rule(id="4.13:53") }}
 
 ```rue
-// This panics at runtime: invalid character
+// An invalid character is a recoverable failure: `None`, not a panic.
 fn main() -> i32 {
-    let s = "12abc";
-    let n = @parse_i32(s);  // panic: invalid character
-    n
+    let Opt = @import("std/option.rue").Option(i32);
+    match @parse_i32("12abc") {
+        Opt::Some(n) => n,
+        Opt::None => -1,   // taken: "12abc" is not an integer
+    }
 }
 ```
 
 {{ rule(id="4.13:54") }}
 
 ```rue
-// This panics at runtime: negative for unsigned
+// A negative value for an unsigned type is a recoverable failure: `None`.
 fn main() -> i32 {
-    let s = "-17";
-    let n: u32 = @parse_u32(s);  // panic: negative value for unsigned type
-    @intCast(n)
+    let Opt = @import("std/option.rue").Option(u32);
+    match @parse_u32("-17") {
+        Opt::Some(n) => @intCast(n),
+        Opt::None => 0,   // taken: "-17" is negative
+    }
 }
 ```
 
@@ -438,22 +458,32 @@ Using `@random_u32` in a guessing game:
 
 ```rue
 fn main() -> i32 {
+    let OptStr = @import("std/option.rue").Option(String);
+    let OptU32 = @import("std/option.rue").Option(u32);
     let secret: u32 = (@random_u32() % 100) + 1;  // 1-100
     @dbg("Guess the number between 1 and 100!");
 
     let mut guesses = 0;
     loop {
-        let input = @read_line();
-        let guess = @parse_u32(input);
-        guesses = guesses + 1;
-
-        if guess < secret {
-            @dbg("Too low!");
-        } else if guess > secret {
-            @dbg("Too high!");
-        } else {
-            @dbg("You got it!");
-            break;
+        let input: OptStr = @read_line();
+        match input {
+            OptStr::None => break,          // end of input
+            OptStr::Some(text) => {
+                match @parse_u32(text) {
+                    OptU32::Some(guess) => {
+                        guesses = guesses + 1;
+                        if guess < secret {
+                            @dbg("Too low!");
+                        } else if guess > secret {
+                            @dbg("Too high!");
+                        } else {
+                            @dbg("You got it!");
+                            break;
+                        }
+                    },
+                    OptU32::None => @dbg("not a number, try again"),
+                }
+            },
         }
     }
 

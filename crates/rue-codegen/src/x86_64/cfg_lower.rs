@@ -2126,29 +2126,47 @@ impl<'a> CfgLower<'a> {
             } => {
                 let name_str = self.interner.resolve(name);
                 if name_str == "read_line" {
-                    // @read_line() intrinsic - reads a line from stdin and returns String.
-                    // Uses sret convention: allocate space on stack for the result (ptr, len, cap).
+                    // @read_line() intrinsic - reads a line from stdin and
+                    // returns `Option(String)`: `Some(line)` normally, `None`
+                    // at EOF (RUE-6, ADR-0038). The runtime writes the whole
+                    // tagged-union `Option` to an sret buffer laid out as
+                    // [disc, ptr, len, cap] (slot 0 = discriminant, RUE-221);
+                    // we pass the Some/None discriminant values and load the
+                    // slots back. No branch needed — the runtime picks the
+                    // discriminant.
+                    let vty = self.ctx.cfg.get_inst(value).ty;
+                    let (some_disc, none_disc) =
+                        types::option_variant_discriminants(self.ctx.type_pool, vty);
+                    let total_slots = self.ctx.type_slot_count(vty);
+                    // sret buffer sized to the enum's slots, rounded to 16.
+                    let sret_bytes = (total_slots as i32 * 8 + 15) & !15;
 
-                    // Allocate 32 bytes on stack for sret (24 bytes for String + 8 for alignment)
-                    // Use AddRI with negative immediate (no SubRI in MIR)
                     self.mir.push(X86Inst::AddRI {
                         dst: Operand::Physical(Reg::Rsp),
-                        imm: -32,
+                        imm: -sret_bytes,
                     });
 
-                    // Move RSP (pointer to sret space) to RDI as first argument
+                    // Args: RDI = out ptr, RSI = some_disc, RDX = none_disc.
                     self.mir.push(X86Inst::MovRR {
                         dst: Operand::Physical(Reg::Rdi),
                         src: Operand::Physical(Reg::Rsp),
+                    });
+                    self.mir.push(X86Inst::MovRI32 {
+                        dst: Operand::Physical(Reg::Rsi),
+                        imm: some_disc as i32,
+                    });
+                    self.mir.push(X86Inst::MovRI32 {
+                        dst: Operand::Physical(Reg::Rdx),
+                        imm: none_disc as i32,
                     });
 
                     // Call __rue_read_line
                     let symbol_id = self.intern_symbol("__rue_read_line");
                     self.mir.push(X86Inst::CallRel { symbol_id });
 
-                    // Load ptr, len, cap from stack into vregs
-                    let mut slot_vregs = Vec::new();
-                    for slot_idx in 0..3 {
+                    // Load the enum's slots (disc, ptr, len, cap) into vregs.
+                    let mut slot_vregs = Vec::with_capacity(total_slots as usize);
+                    for slot_idx in 0..total_slots {
                         let slot_vreg = self.mir.alloc_vreg();
                         let offset = (slot_idx * 8) as i32;
                         self.mir.push(X86Inst::MovRM {
@@ -2162,19 +2180,14 @@ impl<'a> CfgLower<'a> {
                     // Pop the sret space
                     self.mir.push(X86Inst::AddRI {
                         dst: Operand::Physical(Reg::Rsp),
-                        imm: 32,
+                        imm: sret_bytes,
                     });
 
-                    // Store the slot vregs for the String value
-                    self.struct_slot_vregs.insert(value, slot_vregs.clone());
-
-                    // Create a result vreg (for the primary value representation)
-                    let result_vreg = self.mir.alloc_vreg();
-                    self.mir.push(X86Inst::MovRR {
-                        dst: Operand::Virtual(result_vreg),
-                        src: Operand::Virtual(slot_vregs[0]),
-                    });
-                    self.value_map.insert(value, result_vreg);
+                    // Slot 0 is the discriminant and the value's primary vreg,
+                    // so a `match` switches on it directly (like EnumVariant).
+                    let disc_vreg = slot_vregs[0];
+                    self.struct_slot_vregs.insert(value, slot_vregs);
+                    self.value_map.insert(value, disc_vreg);
                 } else if name_str == "dbg" {
                     let args = self.ctx.cfg.get_extra(*args_start, *args_len);
                     let arg_val = args[0];
@@ -2303,9 +2316,19 @@ impl<'a> CfgLower<'a> {
                     || name_str == "parse_u32"
                     || name_str == "parse_u64"
                 {
-                    // @parse_* intrinsics: take a String, return an integer
+                    // @parse_* intrinsics: take a String, return `Option(int)`:
+                    // `Some(n)` on success, `None` on parse failure (RUE-6,
+                    // ADR-0038). The runtime writes the whole tagged-union
+                    // `Option` to an sret buffer laid out as [disc, value]
+                    // (slot 0 = discriminant, RUE-221); we pass ptr/len plus the
+                    // Some/None discriminant values and load the slots back.
                     let args = self.ctx.cfg.get_extra(*args_start, *args_len);
                     let arg_val = args[0];
+                    let vty = self.ctx.cfg.get_inst(value).ty;
+                    let (some_disc, none_disc) =
+                        types::option_variant_discriminants(self.ctx.type_pool, vty);
+                    let total_slots = self.ctx.type_slot_count(vty);
+                    let sret_bytes = (total_slots as i32 * 8 + 15) & !15;
 
                     // Get the String fat pointer (ptr, len, cap) — materializes a String
                     // read from a place (`@parse_i32(h.s)`) as well as cached sources. (RUE-118)
@@ -2321,14 +2344,33 @@ impl<'a> CfgLower<'a> {
                         let ptr_vreg = field_vregs[0];
                         let len_vreg = field_vregs[1];
 
-                        // Move ptr to RDI, len to RSI
+                        // Allocate the sret buffer for the Option(int) result.
+                        self.mir.push(X86Inst::AddRI {
+                            dst: Operand::Physical(Reg::Rsp),
+                            imm: -sret_bytes,
+                        });
+
+                        // Args: RDI = out, RSI = ptr, RDX = len,
+                        //       RCX = some_disc, R8 = none_disc.
                         self.mir.push(X86Inst::MovRR {
                             dst: Operand::Physical(Reg::Rdi),
-                            src: Operand::Virtual(ptr_vreg),
+                            src: Operand::Physical(Reg::Rsp),
                         });
                         self.mir.push(X86Inst::MovRR {
                             dst: Operand::Physical(Reg::Rsi),
+                            src: Operand::Virtual(ptr_vreg),
+                        });
+                        self.mir.push(X86Inst::MovRR {
+                            dst: Operand::Physical(Reg::Rdx),
                             src: Operand::Virtual(len_vreg),
+                        });
+                        self.mir.push(X86Inst::MovRI32 {
+                            dst: Operand::Physical(Reg::Rcx),
+                            imm: some_disc as i32,
+                        });
+                        self.mir.push(X86Inst::MovRI32 {
+                            dst: Operand::Physical(Reg::R8),
+                            imm: none_disc as i32,
                         });
 
                         // Determine the runtime function based on intrinsic name
@@ -2344,13 +2386,29 @@ impl<'a> CfgLower<'a> {
                         let symbol_id = self.intern_symbol(runtime_fn);
                         self.mir.push(X86Inst::CallRel { symbol_id });
 
-                        // Result is in RAX, move to a vreg
-                        let result_vreg = self.mir.alloc_vreg();
-                        self.mir.push(X86Inst::MovRR {
-                            dst: Operand::Virtual(result_vreg),
-                            src: Operand::Physical(Reg::Rax),
+                        // Load the enum's slots (disc, value) into vregs.
+                        let mut slot_vregs = Vec::with_capacity(total_slots as usize);
+                        for slot_idx in 0..total_slots {
+                            let slot_vreg = self.mir.alloc_vreg();
+                            let offset = (slot_idx * 8) as i32;
+                            self.mir.push(X86Inst::MovRM {
+                                dst: Operand::Virtual(slot_vreg),
+                                base: Reg::Rsp,
+                                offset,
+                            });
+                            slot_vregs.push(slot_vreg);
+                        }
+
+                        // Pop the sret space.
+                        self.mir.push(X86Inst::AddRI {
+                            dst: Operand::Physical(Reg::Rsp),
+                            imm: sret_bytes,
                         });
-                        self.value_map.insert(value, result_vreg);
+
+                        // Slot 0 (discriminant) is the value's primary vreg.
+                        let disc_vreg = slot_vregs[0];
+                        self.struct_slot_vregs.insert(value, slot_vregs);
+                        self.value_map.insert(value, disc_vreg);
                     } else {
                         unreachable!("string value should have field vregs for fat pointer");
                     }

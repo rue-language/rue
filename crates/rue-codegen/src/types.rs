@@ -104,6 +104,28 @@ pub fn type_slot_count(type_pool: &TypeInternPool, ty: Type) -> u32 {
     }
 }
 
+/// Return the `(Some, None)` discriminant values for an `Option`-shaped enum
+/// type, i.e. the variant indices of its `Some` and `None` variants.
+///
+/// Used to lower the fallible intrinsics (`@read_line`, `@parse_*`), whose
+/// runtime writes the caller's `Some`/`None` discriminant into the tagged-union
+/// result (RUE-6, ADR-0038). Sema has already validated the result is
+/// `Option`-shaped, so both variants are present; a missing one is a compiler
+/// bug and panics (a correctness guard, RUE-45).
+pub fn option_variant_discriminants(type_pool: &TypeInternPool, ty: Type) -> (u64, u64) {
+    let enum_id = ty
+        .as_enum()
+        .expect("fallible intrinsic result must be an Option enum");
+    let enum_def = type_pool.enum_def(enum_id);
+    let some_disc = enum_def
+        .find_variant("Some")
+        .expect("Option result enum must have a `Some` variant") as u64;
+    let none_disc = enum_def
+        .find_variant("None")
+        .expect("Option result enum must have a `None` variant") as u64;
+    (some_disc, none_disc)
+}
+
 /// Whether comparing a slot holding `ty` needs a full 64-bit compare.
 ///
 /// Narrow scalars (i8..i32, bool) live in 32-bit-comparable slots; 64-bit
