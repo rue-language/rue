@@ -2269,9 +2269,35 @@ impl<'a> CfgLower<'a> {
                         let result_vreg = self.mir.alloc_vreg();
                         self.lower_place_addr(result_vreg, place);
                         self.value_map.insert(value, result_vreg);
+                    } else if let CfgInstData::Param { index } = &lvalue_inst.data {
+                        // @raw of a function parameter: take the ADDRESS of the
+                        // parameter's storage, not its value (RUE-273). The
+                        // prologue spills every param into the contiguous frame
+                        // param area (slots num_locals..), so the address is the
+                        // frame slot; previously this fell through to the
+                        // value-load fallback below, reinterpreting the param's
+                        // value as a pointer -> segfault.
+                        let index = *index;
+                        if self.ctx.cfg.is_param_inout(index) {
+                            // inout params hold a POINTER to the caller's storage;
+                            // that pointer already IS the address of the place.
+                            let ptr_vreg = self.ensure_inout_param_ptr(index);
+                            self.value_map.insert(value, ptr_vreg);
+                        } else {
+                            let slot = self.ctx.num_locals + index;
+                            let offset = self.ctx.local_offset(slot);
+                            let result_vreg = self.mir.alloc_vreg();
+                            self.mir.push(Aarch64Inst::AddImm {
+                                dst: Operand::Virtual(result_vreg),
+                                src: Operand::Physical(Reg::Fp),
+                                imm: offset,
+                            });
+                            self.value_map.insert(value, result_vreg);
+                        }
                     } else {
-                        // For other lvalue types (Param, etc.), fall back to vreg
-                        // This is a limitation that can be addressed later.
+                        // Sema (RUE-274) requires @raw's operand to be a place, so
+                        // Load/PlaceRead/Param above cover every legal case. Keep a
+                        // defensive fallback for any not-yet-modeled place kind.
                         let vreg = self.get_vreg(lvalue_val);
                         self.value_map.insert(value, vreg);
                     }
