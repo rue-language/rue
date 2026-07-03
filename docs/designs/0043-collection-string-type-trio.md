@@ -1,11 +1,11 @@
 ---
 id: 0043
 title: "The collection & string type trio: fixed / slice / growable"
-status: proposed
+status: accepted
 tags: [strings, collections, slices, arrays, vec, allocators, stdlib]
 feature-flag:
 created: 2026-07-03
-accepted:
+accepted: 2026-07-03
 implemented:
 spec-sections: ["3.7", "3.9"]
 supersedes: [0042]
@@ -16,10 +16,12 @@ amends: [0020, 0035, 0041]
 
 ## Status
 
-Proposed. Steve endorsed the *shape* of this design in discussion on
-2026-07-03 ("I'm sold") and directed it be written up; it awaits formal
-ratification and Dorian's review before `accepted`, because it amends several
-accepted ADRs and de-blesses `String`.
+Accepted — **experimental**. Ratified by Steve on 2026-07-03. It amends
+several accepted ADRs (0035, 0041) and supersedes others in part (0020, 0042) —
+see "Relationship to prior ADRs". Adopted to be *tried* while the surface is
+still small enough to change cheaply (the `Vec`→`ArrayBuf` and `String`→`StrBuf`
+renames included); repealed via `superseded-by:` if it proves wrong.
+Implementation is tracked in the ADR-0043 epic.
 
 ## Summary
 
