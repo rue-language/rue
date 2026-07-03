@@ -1928,3 +1928,163 @@ fn main() -> i32 {
 }
 """
 exit_code = 42
+
+# =============================================================================
+# Generic Types / Type-Function Application (RUE-289)
+# =============================================================================
+# The generics mechanism: a `-> type` function is a type constructor; applying
+# it (F(i32)) reduces to a concrete type in both value and type position;
+# instantiation identity is structural; comptime params scope into method
+# bodies and nest into other constructors.
+
+[[case]]
+name = "type_constructor_value_position"
+spec = ["4.14:22"]
+description = "Type-function application in value position: bind the reduced type and use its variants (RUE-289)"
+source = """
+fn Option(comptime T: type) -> type { enum { Some(T), None } }
+fn main() -> i32 {
+    let O = Option(i32);
+    let x: O = O::Some(42);
+    match x { O::Some(n) => n, O::None => 0 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "type_constructor_in_annotation_position"
+spec = ["4.14:23"]
+description = "F(i32) used directly as a let type annotation (RUE-289, RUE-241)"
+source = """
+fn Pair(comptime T: type) -> type { struct { first: T, second: T } }
+fn main() -> i32 {
+    let P = Pair(i32);
+    let p: Pair(i32) = P { first: 40, second: 2 };
+    p.first + p.second
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "type_constructor_in_return_and_param_position"
+spec = ["4.14:23"]
+description = "F(i32) used directly as a return type and a parameter type (RUE-289, RUE-241)"
+source = """
+fn Pair(comptime T: type) -> type { struct { first: T, second: T } }
+fn mk() -> Pair(i32) {
+    let P = Pair(i32);
+    P { first: 40, second: 2 }
+}
+fn sum(p: Pair(i32)) -> i32 { p.first + p.second }
+fn main() -> i32 { sum(mk()) }
+"""
+exit_code = 42
+
+[[case]]
+name = "type_constructor_in_field_and_array_position"
+spec = ["4.14:23"]
+description = "F(i32) used directly as a struct field type and an array element type (RUE-289)"
+source = """
+fn Pair(comptime T: type) -> type { struct { first: T, second: T } }
+fn Wrapper() -> type { struct { inner: Pair(i32) } }
+fn main() -> i32 {
+    let P = Pair(i32);
+    let W = Wrapper();
+    let w: W = W { inner: P { first: 30, second: 10 } };
+    let arr: [Pair(i32); 2] = [P { first: 1, second: 1 }, P { first: 1, second: 1 }];
+    w.inner.first + w.inner.second + arr[0].first + arr[1].second
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "type_constructor_call_not_a_struct_literal_path"
+spec = ["4.14:23"]
+description = "A type-constructor call is not a struct-literal path: F(args) { ... } does not parse; bind an alias first (RUE-289)"
+source = """
+fn Pair(comptime T: type) -> type { struct { first: T, second: T } }
+fn main() -> i32 {
+    let p = Pair(i32) { first: 1, second: 2 };
+    p.first
+}
+"""
+compile_fail = true
+error_contains = "found '{'"
+
+[[case]]
+name = "type_param_scopes_into_method_body"
+spec = ["4.14:24"]
+description = "The enclosing type parameter T names types in a method body and nests into another constructor Option(T) (RUE-289, RUE-313)"
+source = """
+fn Option(comptime T: type) -> type { enum { Some(T), None } }
+fn Wrap(comptime T: type) -> type {
+    struct {
+        inner: Option(T),
+        fn get_or(self, d: T) -> T {
+            let O = Option(T);
+            match self.inner { O::Some(v) => v, O::None => d }
+        }
+    }
+}
+fn main() -> i32 {
+    let W = Wrap(i32);
+    let O = Option(i32);
+    let w: W = W { inner: O::Some(42) };
+    w.get_or(0)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "type_param_names_local_type_in_method"
+spec = ["4.14:24"]
+description = "The enclosing type parameter T is usable as a local let annotation inside a method body (RUE-289, RUE-313)"
+source = """
+fn Cell(comptime T: type) -> type {
+    struct {
+        v: T,
+        fn doubled(self) -> T {
+            let x: T = self.v;
+            x + x
+        }
+    }
+}
+fn main() -> i32 {
+    let C = Cell(i32);
+    let c: C = C { v: 21 };
+    c.doubled()
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "instantiation_identity_is_structural_across_functions"
+spec = ["4.14:25"]
+description = "F(i32) in two separate functions denotes the same type (structural identity) (RUE-289)"
+source = """
+fn Pair(comptime T: type) -> type { struct { first: T, second: T } }
+fn produce() -> Pair(i32) {
+    let P = Pair(i32);
+    P { first: 40, second: 2 }
+}
+fn consume(p: Pair(i32)) -> i32 { p.first + p.second }
+fn main() -> i32 { consume(produce()) }
+"""
+exit_code = 42
+
+[[case]]
+name = "instantiation_distinct_arguments_are_distinct_types"
+spec = ["4.14:25"]
+description = "F(i32) and F(i64) are distinct, non-assignable types (RUE-289)"
+source = """
+fn Pair(comptime T: type) -> type { struct { first: T, second: T } }
+fn main() -> i32 {
+    let A = Pair(i32);
+    let B = Pair(i64);
+    let a: A = A { first: 1, second: 2 };
+    let b: B = a;
+    0
+}
+"""
+compile_fail = true
+error_contains = "type mismatch"
