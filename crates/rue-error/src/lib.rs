@@ -181,6 +181,11 @@ impl ErrorCode {
     /// fresh name (spec 4.7:30); reusing one silently shadows the earlier
     /// binding and discards its value (RUE-269, analogous to Rust E0416).
     pub const DUPLICATE_PATTERN_BINDING: Self = Self(484);
+    /// `@raw`/`@raw_mut` applied to a non-place operand (literal, arithmetic,
+    /// call result). A raw pointer must address an addressable place (spec
+    /// 9.1:12, ADR-0028); taking the "address" of a temporary value would
+    /// reinterpret the value's bits as a pointer (RUE-274).
+    pub const RAW_REQUIRES_PLACE: Self = Self(485);
 
     // ========================================================================
     // Control flow errors (E0500-E0599)
@@ -1116,6 +1121,11 @@ pub enum ErrorKind {
     FieldAccessOnNonStruct { found: String },
     #[error("invalid assignment target")]
     InvalidAssignmentTarget,
+    /// `@raw`/`@raw_mut` operand is not an addressable place
+    #[error(
+        "@raw requires an addressable place (a variable, field, or array element), not a temporary value"
+    )]
+    RawRequiresPlace,
     /// Inout argument is not an lvalue (variable, field, or array element)
     #[error("inout argument must be an lvalue (variable, field, or array element)")]
     InoutNonLvalue,
@@ -1374,6 +1384,7 @@ impl ErrorKind {
             ErrorKind::UnknownEnumType(_) => ErrorCode::UNKNOWN_ENUM_TYPE,
             ErrorKind::FieldAccessOnNonStruct { .. } => ErrorCode::FIELD_ACCESS_ON_NON_STRUCT,
             ErrorKind::InvalidAssignmentTarget => ErrorCode::INVALID_ASSIGNMENT_TARGET,
+            ErrorKind::RawRequiresPlace => ErrorCode::RAW_REQUIRES_PLACE,
             ErrorKind::InoutNonLvalue => ErrorCode::INOUT_NON_LVALUE,
             ErrorKind::InoutExclusiveAccess { .. } => ErrorCode::INOUT_EXCLUSIVE_ACCESS,
             ErrorKind::BorrowNonLvalue => ErrorCode::BORROW_NON_LVALUE,

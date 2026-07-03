@@ -6426,10 +6426,11 @@ impl<'a> Sema<'a> {
             ));
         }
 
+        // Analyze the pointer first so the pointee type is known before the
+        // value argument is analyzed — a bare integer-literal value must infer
+        // to the pointee type, not default to i32 (RUE-275).
         let ptr_result = self.analyze_inst(air, args[0].value, ctx)?;
-        let value_result = self.analyze_inst(air, args[1].value, ctx)?;
         let ptr_type = ptr_result.ty;
-        let value_type = value_result.ty;
 
         // Pointer must be ptr mut T
         let pointee_type = match ptr_type.kind() {
@@ -6455,6 +6456,35 @@ impl<'a> Sema<'a> {
                 ));
             }
         };
+
+        // Analyze the value argument, propagating the expected pointee type into
+        // a bare integer literal so `@ptr_write(p_i64, 99)` unifies the literal
+        // to the pointee type (i64/u8/…) instead of defaulting to i32 and then
+        // spuriously failing the equality check below (RUE-275). Mirrors the
+        // struct-init field-literal coercion in `analyze_struct_init`; the
+        // range check keeps `@ptr_write(p_u8, 300)` an honest E0800.
+        let value_inst = self.rir.get(args[1].value);
+        let value_result = match &value_inst.data {
+            InstData::IntConst(value) if pointee_type.is_integer() => {
+                if !pointee_type.literal_fits(*value) {
+                    return Err(CompileError::new(
+                        ErrorKind::LiteralOutOfRange {
+                            value: *value,
+                            ty: self.format_type_name(pointee_type),
+                        },
+                        value_inst.span,
+                    ));
+                }
+                let air_ref = air.add_inst(AirInst {
+                    data: AirInstData::Const(*value),
+                    ty: pointee_type,
+                    span: value_inst.span,
+                });
+                AnalysisResult::new(air_ref, pointee_type)
+            }
+            _ => self.analyze_inst(air, args[1].value, ctx)?,
+        };
+        let value_type = value_result.ty;
 
         // Check that value type matches pointee type
         if value_type != pointee_type && !value_type.is_error() && !value_type.is_never() {
@@ -6700,6 +6730,33 @@ impl<'a> Sema<'a> {
         let operand_root = self.extract_root_variable(operand);
         let operand_move_state_before = operand_root.and_then(|v| ctx.moved_vars.get(&v).cloned());
         let arg_result = self.analyze_inst(air, operand, ctx)?;
+
+        // @raw/@raw_mut take the ADDRESS of an addressable PLACE (spec 9.1:12,
+        // ADR-0028), so the operand MUST be a place. A non-place operand
+        // (literal, arithmetic, call result, inlined global const, module
+        // member) has no storage to address; codegen would reinterpret the
+        // computed value's bits as a pointer and dereference garbage (RUE-274,
+        // a soundness hole). A place read analyzes to exactly a variable load
+        // (`Load`), a parameter read (`Param`), or a projected place-read
+        // (field/element `PlaceRead`) — the same set `try_trace_place` accepts
+        // for inout/borrow operands. A non-Copy place read is additionally
+        // wrapped in a `MarkMoved` move marker (which the address-of below
+        // cancels, since taking an address borrows rather than moves), so peel
+        // that wrapper before inspecting the underlying read. Every non-place
+        // lowers to some other AIR inst (`Const`, an arithmetic op, `Call`, a
+        // non-place `FieldGet`/`IndexGet` off a temporary, ...) and is rejected.
+        let mut place_ref = arg_result.air_ref;
+        if let AirInstData::MarkMoved { value, .. } = air.get(place_ref).data {
+            place_ref = value;
+        }
+        let operand_is_place = matches!(
+            air.get(place_ref).data,
+            AirInstData::Load { .. } | AirInstData::Param { .. } | AirInstData::PlaceRead { .. }
+        );
+        if !operand_is_place && !arg_result.ty.is_error() {
+            return Err(CompileError::new(ErrorKind::RawRequiresPlace, span));
+        }
+
         let pointee_type = arg_result.ty;
         if let Some(var) = operand_root {
             match operand_move_state_before {
@@ -6712,9 +6769,6 @@ impl<'a> Sema<'a> {
             }
         }
         air.cancel_move_marker(arg_result.air_ref);
-
-        // For addr_of, we need the argument to be an lvalue (addressable)
-        // This is validated at the RIR level - here we just compute the result type
 
         // Create the pointer type
         let result_type = if is_mut {

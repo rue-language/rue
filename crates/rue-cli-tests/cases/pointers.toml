@@ -251,3 +251,188 @@ fn main() -> i32 {
 """ }]
 compile_fail = true
 error_contains = ["E1300", "unchecked function"]
+
+# RUE-273: @raw of a function PARAMETER must take the ADDRESS of the param's
+# stack slot (LEA), not load its value. Previously codegen emitted the param's
+# value as the pointer, so dereferencing it segfaulted. Here addr(77) reads the
+# param's own value back through the pointer -> 77 (an exact-value differential
+# that a value-as-address miscompile can't satisfy).
+[[case]]
+name = "raw_of_parameter_takes_address"
+files = [{ path = "main.rue", source = """
+fn addr(x: i32) -> i32 {
+    let p: ptr const i32 = checked { @raw(x) };
+    checked { @ptr_read(p) }
+}
+fn main() -> i32 {
+    @dbg(addr(77));
+    0
+}
+""" }]
+stdout = "77\n"
+
+# RUE-273: @raw_mut of a parameter yields the address of the param slot, so a
+# write through it mutates the callee's copy of the parameter.
+[[case]]
+name = "raw_mut_of_parameter_mutates_it"
+files = [{ path = "main.rue", source = """
+fn bump(x: i32) -> i32 {
+    checked {
+        let p: ptr mut i32 = @raw_mut(x);
+        @ptr_write(p, 123);
+    };
+    x
+}
+fn main() -> i32 {
+    @dbg(bump(5));
+    0
+}
+""" }]
+stdout = "123\n"
+
+# RUE-273: @raw of a field of a struct PARAMETER (a projected place rooted at a
+# param) still computes the field's address, not a reinterpreted value.
+[[case]]
+name = "raw_of_param_struct_field"
+files = [{ path = "main.rue", source = """
+struct P { x: i32, y: i32 }
+fn rd(s: P) -> i32 {
+    let v: i32 = checked {
+        let p: ptr const i32 = @raw(s.y);
+        @ptr_read(p)
+    };
+    v
+}
+fn main() -> i32 {
+    @dbg(rd(P { x: 1, y: 88 }));
+    0
+}
+""" }]
+stdout = "88\n"
+
+# RUE-274: @raw of a non-place operand (an integer literal) has no storage to
+# address; it must be rejected at compile time (E0485), not silently accepted
+# and then dereferenced as address 0x2A at runtime (a soundness hole).
+[[case]]
+name = "raw_of_literal_rejected"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let p: ptr const i32 = checked { @raw(42) };
+    checked { @ptr_read(p) }
+}
+""" }]
+compile_fail = true
+error_contains = ["E0485", "addressable place"]
+
+# RUE-274: @raw of an arithmetic (non-place) operand is likewise rejected.
+[[case]]
+name = "raw_of_arithmetic_rejected"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let p: ptr const i32 = checked { @raw(5 + 5) };
+    checked { @ptr_read(p) }
+}
+""" }]
+compile_fail = true
+error_contains = ["E0485", "addressable place"]
+
+# RUE-274: @raw of a call result (non-place) is rejected.
+[[case]]
+name = "raw_of_call_result_rejected"
+files = [{ path = "main.rue", source = """
+fn g() -> i32 { 7 }
+fn main() -> i32 {
+    let p: ptr const i32 = checked { @raw(g()) };
+    checked { @ptr_read(p) }
+}
+""" }]
+compile_fail = true
+error_contains = ["E0485", "addressable place"]
+
+# RUE-274 control: @raw of a genuine place (a local) still compiles and works.
+[[case]]
+name = "raw_of_local_still_works"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let x: i32 = 55;
+    let v: i32 = checked {
+        let p: ptr const i32 = @raw(x);
+        @ptr_read(p)
+    };
+    @dbg(v);
+    0
+}
+""" }]
+stdout = "55\n"
+
+# RUE-275: a bare integer-literal value argument to @ptr_write must infer to the
+# pointer's pointee type (here i64), not default to i32 and spuriously fail with
+# E0206. The write of 99 through the ptr mut i64 is then observed.
+[[case]]
+name = "ptr_write_literal_infers_i64_pointee"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut v: i64 = 5;
+    checked {
+        let p: ptr mut i64 = @raw_mut(v);
+        @ptr_write(p, 99);
+    };
+    let r: i32 = @intCast(v);
+    @dbg(r);
+    0
+}
+""" }]
+stdout = "99\n"
+
+# RUE-275: same for a u8 pointee — the literal infers to u8, not i32.
+[[case]]
+name = "ptr_write_literal_infers_u8_pointee"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut v: u8 = 5;
+    checked {
+        let p: ptr mut u8 = @raw_mut(v);
+        @ptr_write(p, 200);
+    };
+    let r: i32 = @intCast(v);
+    @dbg(r);
+    0
+}
+""" }]
+stdout = "200\n"
+
+# RUE-275 control: a genuinely mismatched TYPED value (an i64 variable written
+# through a ptr mut i32) is still rejected with E0206 — the fix only infers bare
+# literals, it does not paper over real type mismatches.
+[[case]]
+name = "ptr_write_typed_mismatch_still_rejected"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut v: i32 = 5;
+    let w: i64 = 99;
+    checked {
+        let p: ptr mut i32 = @raw_mut(v);
+        @ptr_write(p, w);
+    };
+    v
+}
+""" }]
+compile_fail = true
+error_contains = ["E0206"]
+
+# RUE-275 control: an out-of-range literal for the pointee is still an honest
+# E0800, not a silent truncation.
+[[case]]
+name = "ptr_write_literal_out_of_range_rejected"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut v: u8 = 5;
+    checked {
+        let p: ptr mut u8 = @raw_mut(v);
+        @ptr_write(p, 300);
+    };
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0800"]
