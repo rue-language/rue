@@ -1,0 +1,116 @@
+# Borrow/inout method receivers (RUE-15, ADR-0037).
+#
+# `borrow self` / `inout self` receivers are accessed by reference (reusing the
+# by-ref parameter calling convention) instead of consuming the receiver. These
+# cases exercise the runtime behavior end-to-end through the real driver with
+# exact stdout, on both backends (aarch64 runs natively in CI). Gated behind
+# `--preview method_receivers`.
+
+[section]
+id = "cli.method_receivers"
+name = "Borrow/inout method receivers"
+description = "borrow self getters and inout self mutators via the real driver."
+
+# inout self mutates the receiver in place across multiple calls; a borrow self
+# getter observes the mutations and does not consume the receiver.
+[[case]]
+name = "stack_push_top_count"
+args = ["--preview", "method_receivers", "main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+struct Stack {
+    a: i32,
+    b: i32,
+    n: i32,
+
+    fn push(inout self, v: i32) {
+        if self.n == 0 {
+            self.a = v;
+        } else {
+            self.b = v;
+        }
+        self.n = self.n + 1;
+    }
+
+    fn top(borrow self) -> i32 {
+        if self.n == 1 { self.a } else { self.b }
+    }
+
+    fn count(borrow self) -> i32 {
+        self.n
+    }
+}
+
+fn main() -> i32 {
+    let mut s = Stack { a: 0, b: 0, n: 0 };
+    s.push(10);
+    s.push(20);
+    @dbg(s.top());
+    @dbg(s.count());
+    s.push(30);
+    @dbg(s.count());
+    @dbg(s.top());
+    0
+}
+""" }]
+stdout = "20\n2\n3\n30\n"
+
+# A borrow self getter is callable repeatedly without moving the receiver.
+[[case]]
+name = "borrow_getter_repeatable"
+args = ["--preview", "method_receivers", "main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+struct Counter {
+    n: i32,
+
+    fn get(borrow self) -> i32 {
+        self.n
+    }
+
+    fn bump(inout self) {
+        self.n = self.n + 1;
+    }
+}
+
+fn main() -> i32 {
+    let mut c = Counter { n: 0 };
+    c.bump();
+    c.bump();
+    @dbg(c.get());
+    c.bump();
+    @dbg(c.get());
+    @dbg(c.get());
+    0
+}
+""" }]
+stdout = "2\n3\n3\n"
+
+# An argument that only reads self is allowed alongside the inout receiver
+# access (the read completes before the receiver access begins).
+[[case]]
+name = "arg_reads_receiver"
+args = ["--preview", "method_receivers", "main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+struct Stack {
+    a: i32,
+    b: i32,
+    n: i32,
+
+    fn push(inout self, v: i32) {
+        if self.n == 0 { self.a = v; } else { self.b = v; }
+        self.n = self.n + 1;
+    }
+
+    fn count(borrow self) -> i32 { self.n }
+}
+
+fn main() -> i32 {
+    let mut s = Stack { a: 0, b: 0, n: 0 };
+    s.push(s.count());
+    s.push(s.count());
+    @dbg(s.a);
+    @dbg(s.b);
+    @dbg(s.n);
+    0
+}
+""" }]
+stdout = "0\n1\n2\n"

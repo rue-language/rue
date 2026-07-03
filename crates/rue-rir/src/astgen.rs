@@ -254,11 +254,18 @@ impl<'a> AstGen<'a> {
         // Generate body expression
         let body = self.gen_expr(&method.body);
 
-        // Track whether this method has a self receiver (method vs associated function)
+        // Track whether this method has a self receiver (method vs associated
+        // function) and, if so, the receiver's passing mode (`borrow self` /
+        // `inout self` / bare by-value `self`, RUE-15).
         let has_self = method.receiver.is_some();
+        let self_mode = match &method.receiver {
+            Some(receiver) => self.convert_param_mode(receiver.mode),
+            None => RirParamMode::Normal,
+        };
 
         // Emit methods as FnDecl instructions with has_self flag.
-        // Sema uses has_self to add the implicit self parameter for methods.
+        // Sema uses has_self to add the implicit self parameter for methods,
+        // and self_mode to add it in the declared borrow/inout/by-value mode.
         // Methods don't have their own visibility - they're accessible if the type is accessible.
         // Methods cannot be marked unchecked (that's a function-level modifier).
         let decl = self.rir.add_inst(Inst {
@@ -273,6 +280,7 @@ impl<'a> AstGen<'a> {
                 return_type,
                 body,
                 has_self,
+                self_mode,
             },
             span: method.span,
         });
@@ -373,6 +381,7 @@ impl<'a> AstGen<'a> {
                 return_type,
                 body,
                 has_self: false,
+                self_mode: RirParamMode::Normal,
             },
             span: func.span,
         });

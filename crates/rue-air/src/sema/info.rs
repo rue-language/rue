@@ -50,6 +50,10 @@ pub struct MethodInfo {
     pub struct_type: Type,
     /// Whether this is a method (has self) or associated function (no self)
     pub has_self: bool,
+    /// The receiver's passing mode when `has_self` is true (`Normal`
+    /// by-value, `Borrow`, or `Inout`; RUE-15). Determines how the receiver
+    /// is passed at call sites (by value vs. by reference / autoref).
+    pub self_mode: rue_rir::RirParamMode,
     /// Parameter data (names, types, modes, comptime flags) stored in arena.
     /// Access via `arena.names(params)`, `arena.types(params)`, etc.
     /// Note: This excludes `self` if present - only explicit parameters.

@@ -360,3 +360,200 @@ fn main() -> i32 {
 }
 """
 exit_code = 42
+
+# =============================================================================
+# Receiver Modes: borrow self / inout self (preview: method_receivers, RUE-15)
+# =============================================================================
+
+[[case]]
+name = "borrow_self_getter_repeatable"
+spec = ["6.4:24", "6.4:25", "6.4:29"]
+preview = "method_receivers"
+description = "borrow self does not consume the receiver; callable repeatedly"
+source = """
+struct Counter {
+    n: i32,
+
+    fn get(borrow self) -> i32 {
+        self.n
+    }
+}
+
+fn main() -> i32 {
+    let c = Counter { n: 21 };
+    c.get() + c.get()
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "inout_self_mutates_in_place"
+spec = ["6.4:24", "6.4:25", "6.4:29"]
+preview = "method_receivers"
+description = "inout self mutates the receiver in place across multiple calls"
+source = """
+struct Counter {
+    n: i32,
+
+    fn bump(inout self) {
+        self.n = self.n + 1;
+    }
+
+    fn get(borrow self) -> i32 {
+        self.n
+    }
+}
+
+fn main() -> i32 {
+    let mut c = Counter { n: 0 };
+    c.bump();
+    c.bump();
+    let a = c.get();
+    c.bump();
+    a * 10 + c.get()
+}
+"""
+exit_code = 23
+
+[[case]]
+name = "inout_self_with_arg_and_field_writes"
+spec = ["6.4:24", "6.4:29"]
+preview = "method_receivers"
+description = "inout self method with an extra parameter writing several fields"
+source = """
+struct Stack {
+    a: i32,
+    b: i32,
+    n: i32,
+
+    fn push(inout self, v: i32) {
+        if self.n == 0 {
+            self.a = v;
+        } else {
+            self.b = v;
+        }
+        self.n = self.n + 1;
+    }
+
+    fn top(borrow self) -> i32 {
+        if self.n == 1 { self.a } else { self.b }
+    }
+}
+
+fn main() -> i32 {
+    let mut s = Stack { a: 0, b: 0, n: 0 };
+    s.push(10);
+    s.push(20);
+    let t = s.top();
+    s.push(30);
+    t + s.n
+}
+"""
+exit_code = 23
+
+[[case]]
+name = "arg_reads_receiver_allowed"
+spec = ["6.4:28"]
+preview = "method_receivers"
+description = "an argument that only reads self is allowed alongside inout self"
+source = """
+struct Stack {
+    a: i32,
+    b: i32,
+    n: i32,
+
+    fn push(inout self, v: i32) {
+        if self.n == 0 { self.a = v; } else { self.b = v; }
+        self.n = self.n + 1;
+    }
+
+    fn count(borrow self) -> i32 { self.n }
+}
+
+fn main() -> i32 {
+    let mut s = Stack { a: 0, b: 0, n: 0 };
+    s.push(s.count());
+    s.push(s.count());
+    s.a + s.b + s.n
+}
+"""
+exit_code = 3
+
+[[case]]
+name = "receiver_mode_requires_preview"
+spec = ["6.4:24"]
+compile_fail = true
+error_contains = "requires preview feature"
+description = "borrow/inout receivers are gated behind --preview method_receivers"
+source = """
+struct P {
+    n: i32,
+    fn get(borrow self) -> i32 { self.n }
+}
+
+fn main() -> i32 {
+    let p = P { n: 0 };
+    p.get()
+}
+"""
+
+[[case]]
+name = "inout_self_requires_mut_receiver"
+spec = ["6.4:26"]
+preview = "method_receivers"
+compile_fail = true
+error_contains = "immutable"
+description = "inout self needs a mutable receiver binding"
+source = """
+struct P {
+    n: i32,
+    fn set(inout self, v: i32) { self.n = v; }
+}
+
+fn main() -> i32 {
+    let p = P { n: 0 };
+    p.set(5);
+    p.n
+}
+"""
+
+[[case]]
+name = "receiver_overlap_rejected"
+spec = ["6.4:28"]
+preview = "method_receivers"
+compile_fail = true
+error_contains = "inout"
+description = "passing the receiver's own place as an inout argument is rejected"
+source = """
+struct P {
+    n: i32,
+    fn absorb(inout self, inout other: P) {
+        self.n = self.n + other.n;
+    }
+}
+
+fn main() -> i32 {
+    let mut s = P { n: 3 };
+    s.absorb(inout s);
+    s.n
+}
+"""
+
+[[case]]
+name = "borrow_self_non_place_receiver_rejected"
+spec = ["6.4:27"]
+preview = "method_receivers"
+compile_fail = true
+error_contains = "borrow argument must be"
+description = "a borrow/inout receiver must be a place, not a temporary"
+source = """
+struct P {
+    n: i32,
+    fn make(v: i32) -> P { P { n: v } }
+    fn get(borrow self) -> i32 { self.n }
+}
+
+fn main() -> i32 {
+    P::make(5).get()
+}
+"""

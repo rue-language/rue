@@ -238,6 +238,7 @@ fn analyze_all_function_bodies_sequential(sema: &mut Sema<'_>) -> MultiErrorResu
                     return_type,
                     body,
                     has_self,
+                    self_mode,
                     ..
                 } = &method_inst.data
                 {
@@ -259,6 +260,7 @@ fn analyze_all_function_bodies_sequential(sema: &mut Sema<'_>) -> MultiErrorResu
                         method_inst.span,
                         struct_type,
                         *has_self,
+                        *self_mode,
                     ) {
                         Ok((analyzed, warnings, local_strings, _ref_fns, _ref_meths)) => {
                             functions_with_strings.push((analyzed, local_strings));
@@ -356,12 +358,13 @@ fn analyze_all_function_bodies_sequential(sema: &mut Sema<'_>) -> MultiErrorResu
             let mut param_info: Vec<(Spur, Type, RirParamMode, bool)> = Vec::new();
 
             if method_info.has_self {
-                // Add self parameter (Normal mode - passed by value)
+                // Add self parameter in the receiver's declared mode
+                // (by-value `self`, or by-ref `borrow`/`inout self`; RUE-15).
                 let self_sym = sema.interner.get_or_intern("self");
                 param_info.push((
                     self_sym,
                     method_info.struct_type,
-                    RirParamMode::Normal,
+                    method_info.self_mode,
                     false,
                 ));
             }
@@ -631,12 +634,13 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
                 let mut param_info: Vec<(Spur, Type, RirParamMode, bool)> = Vec::new();
 
                 if method_info.has_self {
-                    // Add self parameter (Normal mode - passed by value)
+                    // Add self parameter in the receiver's declared mode
+                    // (by-value `self`, or by-ref `borrow`/`inout self`; RUE-15).
                     let self_sym = sema.interner.get_or_intern("self");
                     param_info.push((
                         self_sym,
                         method_info.struct_type,
-                        RirParamMode::Normal,
+                        method_info.self_mode,
                         false,
                     ));
                 }
@@ -730,6 +734,7 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
                             return_type,
                             body,
                             has_self,
+                            self_mode,
                             ..
                         } = &method_inst.data
                         {
@@ -753,6 +758,7 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
                                 method_inst.span,
                                 method_info.struct_type,
                                 *has_self,
+                                *self_mode,
                             ) {
                                 Ok((
                                     analyzed,
@@ -1440,6 +1446,7 @@ impl<'a> Sema<'a> {
         span: Span,
         struct_type: Type,
         has_self: bool,
+        self_mode: RirParamMode,
     ) -> CompileResult<(
         AnalyzedFunction,
         Vec<CompileWarning>,
@@ -1455,9 +1462,10 @@ impl<'a> Sema<'a> {
         let mut param_info: Vec<(Spur, Type, RirParamMode, bool)> = Vec::new();
 
         if has_self {
-            // Add self parameter (Normal mode - passed by value)
+            // Add self parameter in the receiver's declared mode (by-value
+            // `self`, or by-ref `borrow`/`inout self`; RUE-15).
             let self_sym = self.interner.get_or_intern("self");
-            param_info.push((self_sym, struct_type, RirParamMode::Normal, false));
+            param_info.push((self_sym, struct_type, self_mode, false));
         }
 
         // Add regular parameters with their modes
@@ -1633,6 +1641,27 @@ impl<'a> Sema<'a> {
         HashSet<(StructId, Spur)>,
     )> {
         let mut air = Air::new(return_type);
+
+        // Preview gate (RUE-15 / ADR-0037): a `borrow self` / `inout self`
+        // receiver lowers to a synthetic `self` parameter carrying a non-Normal
+        // mode. `self` can never be a user-written parameter name (it is a
+        // dedicated keyword), so this is a reliable single chokepoint for
+        // every method body — named or anonymous struct — that actually
+        // reaches analysis. By-value `self` (Normal) and destructors are
+        // unaffected.
+        let self_sym = self.interner.get_or_intern("self");
+        if let Some((_, _, mode, _)) = params
+            .iter()
+            .find(|(name, _, mode, _)| *name == self_sym && *mode != RirParamMode::Normal)
+        {
+            debug_assert!(matches!(mode, RirParamMode::Inout | RirParamMode::Borrow));
+            self.require_preview(
+                PreviewFeature::MethodReceivers,
+                "borrow/inout method receivers",
+                self.rir.get(body).span,
+            )?;
+        }
+
         let mut param_vec: Vec<ParamInfo> = Vec::new();
         let mut param_modes: Vec<bool> = Vec::new();
 
@@ -3046,16 +3075,93 @@ impl<'a> Sema<'a> {
             ));
         }
 
-        // Check for exclusive access violation
-        self.check_exclusive_access(&args, span)?;
-
         // Clone data needed before mutable borrow
         let return_type = method_info.return_type;
+        let self_mode = method_info.self_mode;
+
+        // Receiver passing mode (autoref, RUE-15). `borrow self` / `inout
+        // self` receivers are accessed by reference — the receiver is passed
+        // by address, reusing the by-ref parameter calling convention — so the
+        // call does NOT consume the receiver. Bare `self` stays by-value.
+        let receiver_mode = match self_mode {
+            RirParamMode::Inout => AirArgMode::Inout,
+            RirParamMode::Borrow => AirArgMode::Borrow,
+            _ => AirArgMode::Normal,
+        };
+
+        if receiver_mode != AirArgMode::Normal {
+            // The receiver must be a place (a variable or a field/index chain
+            // rooted at one): codegen forms its address. A temporary (call
+            // result, literal, …) has no caller-visible storage to borrow.
+            let Some(receiver_root) = receiver_var else {
+                return Err(CompileError::new(
+                    if receiver_mode == AirArgMode::Inout {
+                        ErrorKind::InoutNonLvalue
+                    } else {
+                        ErrorKind::BorrowNonLvalue
+                    },
+                    self.rir.get(receiver).span,
+                ));
+            };
+
+            // `inout self` requires a mutable receiver binding (spec 6, reuses
+            // E0203), mirroring Rust. `borrow self` works on any binding.
+            if receiver_mode == AirArgMode::Inout
+                && !self.receiver_root_is_mutable(receiver_root, ctx)
+            {
+                let name = self.interner.resolve(&receiver_root).to_string();
+                return Err(
+                    CompileError::new(ErrorKind::AssignToImmutable(name.clone()), span).with_help(
+                        format!(
+                            "`inout self` needs a mutable receiver; make the binding \
+                     mutable: `let mut {name} = ...`"
+                        ),
+                    ),
+                );
+            }
+
+            // Access-point exclusivity (ADR-0037): the receiver's inout/borrow
+            // access is scoped to this call. Reject genuine overlap — the
+            // receiver root also passed as an inout/borrow argument
+            // (`s.absorb(inout s)`). An argument that merely READS self
+            // (`v.push(v.len())`) is fine: its read completes before the
+            // receiver access begins, and it is not a by-ref argument so it
+            // never enters the exclusivity sets.
+            let mut excl_args: Vec<RirCallArg> = Vec::with_capacity(args.len() + 1);
+            excl_args.push(RirCallArg {
+                value: receiver,
+                mode: if receiver_mode == AirArgMode::Inout {
+                    RirArgMode::Inout
+                } else {
+                    RirArgMode::Borrow
+                },
+            });
+            excl_args.extend(args.iter().cloned());
+            self.check_exclusive_access(&excl_args, span)?;
+
+            // By-ref receivers are borrows, not moves: undo the move the
+            // receiver analysis recorded (restoring the pre-receiver snapshot,
+            // so sibling moves stay recorded) and cancel its move marker, so
+            // drop elaboration does not treat this borrow as a move. Mirrors
+            // the builtin ByRef/ByMutRef receiver handling.
+            match receiver_move_state_before.clone() {
+                Some(state) => {
+                    ctx.moved_vars.insert(receiver_root, state);
+                }
+                None => {
+                    ctx.moved_vars.remove(&receiver_root);
+                }
+            }
+            air.cancel_move_marker(receiver_result.air_ref);
+        } else {
+            // Check for exclusive access violation (by-value receiver)
+            self.check_exclusive_access(&args, span)?;
+        }
 
         // Analyze arguments - receiver first, then remaining args
         let mut air_args = vec![AirCallArg {
             value: receiver_result.air_ref,
-            mode: AirArgMode::Normal,
+            mode: receiver_mode,
         }];
         air_args.extend(self.analyze_call_args(air, &args, ctx)?);
 
@@ -5435,6 +5541,21 @@ impl<'a> Sema<'a> {
         root_variable_of(self.rir, inst_ref)
     }
 
+    /// Whether a method receiver rooted at `root` binds a mutable place, for
+    /// the `inout self` mut-binding requirement (RUE-15). A `let mut` local is
+    /// mutable; an `inout` parameter is mutable (it already names mutable
+    /// caller storage); everything else (`let`, `borrow` params) is not.
+    /// Mirrors `PlaceTrace::is_root_mutable`.
+    fn receiver_root_is_mutable(&self, root: Spur, ctx: &AnalysisContext) -> bool {
+        if let Some(param) = ctx.params.iter().find(|p| p.name == root) {
+            return param.mode == RirParamMode::Inout;
+        }
+        if let Some(local) = ctx.locals.get(&root) {
+            return local.is_mut;
+        }
+        false
+    }
+
     /// Check exclusivity rules for inout and borrow parameters in a call
     /// (adapter over the shared [`check_exclusive_access_in`], RUE-141).
     pub(crate) fn check_exclusive_access(
@@ -5529,6 +5650,7 @@ impl<'a> Sema<'a> {
                 return_type,
                 body,
                 has_self,
+                self_mode,
                 ..
             } = &method_inst.data
             {
@@ -5570,6 +5692,7 @@ impl<'a> Sema<'a> {
                     MethodInfo {
                         struct_type,
                         has_self: *has_self,
+                        self_mode: *self_mode,
                         params: param_range,
                         return_type: ret_type,
                         body: *body,
@@ -5612,6 +5735,7 @@ impl<'a> Sema<'a> {
                 return_type,
                 body,
                 has_self,
+                self_mode,
                 ..
             } = &method_inst.data
             {
@@ -5656,6 +5780,7 @@ impl<'a> Sema<'a> {
                     MethodInfo {
                         struct_type,
                         has_self: *has_self,
+                        self_mode: *self_mode,
                         params: param_range,
                         return_type: ret_type,
                         body: *body,
@@ -5713,6 +5838,7 @@ impl<'a> Sema<'a> {
                 return_type,
                 body,
                 has_self,
+                self_mode,
                 ..
             } = &method_inst.data
             {
@@ -5771,6 +5897,7 @@ impl<'a> Sema<'a> {
                     MethodInfo {
                         struct_type,
                         has_self: *has_self,
+                        self_mode: *self_mode,
                         params: param_range,
                         return_type: ret_type,
                         body: *body,

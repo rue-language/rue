@@ -201,9 +201,16 @@ pub struct Method {
 }
 
 /// A self parameter in a method.
+///
+/// The receiver mode mirrors the parameter modes (`borrow self` / `inout
+/// self` / bare `self`), so the compiler can access `self` by reference for
+/// borrow/inout receivers (RUE-15). Only `Normal`, `Borrow`, and `Inout` are
+/// ever produced here — `Comptime` is not a valid receiver mode.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SelfParam {
-    /// Span covering the `self` keyword
+    /// Receiver passing mode (`Normal` by-value, `Borrow`, or `Inout`).
+    pub mode: ParamMode,
+    /// Span covering the `self` keyword (and any leading mode keyword).
     pub span: Span,
 }
 
@@ -1105,7 +1112,12 @@ fn fmt_method(f: &mut fmt::Formatter<'_>, method: &Method, level: usize) -> fmt:
     indent(f, level)?;
     write!(f, "Method sym:{}", method.name.name.into_usize())?;
     write!(f, "(")?;
-    if method.receiver.is_some() {
+    if let Some(receiver) = &method.receiver {
+        match receiver.mode {
+            ParamMode::Inout => write!(f, "inout ")?,
+            ParamMode::Borrow => write!(f, "borrow ")?,
+            _ => {}
+        }
         write!(f, "self")?;
         if !method.params.is_empty() {
             write!(f, ", ")?;

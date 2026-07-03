@@ -357,6 +357,10 @@ pub enum PreviewFeature {
     /// Layer 1 of the iteration model: `for x in <iterable> { body }` in
     /// read/borrow mode over arrays, String bytes, and `s.chars()`.
     ForLoops,
+    /// Borrow/inout method receivers (`fn f(borrow self)` / `fn f(inout
+    /// self)`), RUE-15 / ADR-0037. Lets methods access `self` by reference
+    /// instead of consuming it.
+    MethodReceivers,
 }
 
 /// Error returned when parsing a preview feature name fails.
@@ -378,6 +382,7 @@ impl PreviewFeature {
         match *self {
             PreviewFeature::TestInfra => "test_infra",
             PreviewFeature::ForLoops => "for_loops",
+            PreviewFeature::MethodReceivers => "method_receivers",
         }
     }
 
@@ -387,12 +392,17 @@ impl PreviewFeature {
         match *self {
             PreviewFeature::TestInfra => "ADR-0005",
             PreviewFeature::ForLoops => "ADR-0037",
+            PreviewFeature::MethodReceivers => "ADR-0037",
         }
     }
 
     /// Get all available preview features.
     pub fn all() -> &'static [PreviewFeature] {
-        &[PreviewFeature::TestInfra, PreviewFeature::ForLoops]
+        &[
+            PreviewFeature::TestInfra,
+            PreviewFeature::ForLoops,
+            PreviewFeature::MethodReceivers,
+        ]
     }
 
     /// Get a comma-separated list of all feature names (for help text).
@@ -416,6 +426,7 @@ impl std::str::FromStr for PreviewFeature {
         match s {
             "test_infra" => Ok(PreviewFeature::TestInfra),
             "for_loops" => Ok(PreviewFeature::ForLoops),
+            "method_receivers" => Ok(PreviewFeature::MethodReceivers),
             _ => Err(ParsePreviewFeatureError(s.to_string())),
         }
     }
@@ -2192,7 +2203,15 @@ mod tests {
     #[test]
     fn test_preview_feature_all_names() {
         let names = PreviewFeature::all_names();
-        assert_eq!(names, "test_infra, for_loops");
+        assert_eq!(names, "test_infra, for_loops, method_receivers");
+    }
+
+    #[test]
+    fn test_preview_feature_method_receivers_roundtrip() {
+        use std::str::FromStr;
+        let f = PreviewFeature::from_str("method_receivers").unwrap();
+        assert_eq!(f, PreviewFeature::MethodReceivers);
+        assert_eq!(f.name(), "method_receivers");
     }
 
     // ========================================================================

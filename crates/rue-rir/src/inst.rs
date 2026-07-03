@@ -875,6 +875,7 @@ impl Rir {
                 return_type,
                 body,
                 has_self,
+                self_mode,
             } => InstData::FnDecl {
                 directives_start: *directives_start + extra_offset,
                 directives_len: *directives_len,
@@ -886,6 +887,7 @@ impl Rir {
                 return_type: *return_type,
                 body: renumber(*body),
                 has_self: *has_self,
+                self_mode: *self_mode,
             },
 
             // Constant declaration - init is an InstRef
@@ -1383,6 +1385,10 @@ pub enum InstData {
         /// Only true for methods in impl blocks that have a self parameter.
         /// Used by sema to know to add the implicit self parameter.
         has_self: bool,
+        /// The receiver's passing mode when `has_self` is true (`Normal`
+        /// by-value, `Borrow`, or `Inout`; RUE-15). Always `Normal` for
+        /// associated functions and free functions.
+        self_mode: RirParamMode,
     },
 
     /// Constant declaration
@@ -1830,12 +1836,21 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     return_type,
                     body,
                     has_self,
+                    self_mode,
                 } => {
                     let pub_str = if *is_pub { "pub " } else { "" };
                     let unchecked_str = if *is_unchecked { "unchecked " } else { "" };
                     let name_str = self.interner.resolve(&*name);
                     let ret_str = self.interner.resolve(&*return_type);
-                    let self_str = if *has_self { "self, " } else { "" };
+                    let self_str = if *has_self {
+                        match self_mode {
+                            RirParamMode::Inout => "inout self, ",
+                            RirParamMode::Borrow => "borrow self, ",
+                            _ => "self, ",
+                        }
+                    } else {
+                        ""
+                    };
                     let params = self.rir.get_params(*params_start, *params_len);
                     let params_str: Vec<String> = params
                         .iter()
@@ -2673,6 +2688,7 @@ mod tests {
                 return_type,
                 body,
                 has_self: false,
+                self_mode: RirParamMode::Normal,
             },
             span: Span::new(0, 30),
         });
@@ -2708,6 +2724,7 @@ mod tests {
                 return_type,
                 body,
                 has_self: true,
+                self_mode: RirParamMode::Normal,
             },
             span: Span::new(0, 30),
         });
@@ -2768,6 +2785,7 @@ mod tests {
                 return_type,
                 body,
                 has_self: false,
+                self_mode: RirParamMode::Normal,
             },
             span: Span::new(0, 50),
         });
@@ -3379,6 +3397,7 @@ mod tests {
                 return_type,
                 body: method_body,
                 has_self: true,
+                self_mode: RirParamMode::Normal,
             },
             span: Span::new(0, 30),
         });
