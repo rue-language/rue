@@ -193,11 +193,25 @@ impl ErrorCode {
     /// fails cleanly instead of reaching an unfinished codegen path.
     ///
     /// Note: the second-class-escape diagnostics named in the RUE-322 brief
-    /// (return / store-in-field / bind-past-scope) will be allocated when the
-    /// slice type itself lands; the brief's suggested E0435-E0437 numbers were
-    /// already taken (`RESERVED_FUNCTION_NAME` / `DUPLICATE_FUNCTION_DEFINITION`
-    /// / `MOVE_OUT_OF_INOUT`), so a fresh free range will be used then.
+    /// (return / store-in-field / bind-past-scope) are allocated below
+    /// (E0487-E0489); the brief's suggested E0435-E0437 numbers were already
+    /// taken (`RESERVED_FUNCTION_NAME` / `DUPLICATE_FUNCTION_DEFINITION` /
+    /// `MOVE_OUT_OF_INOUT`).
     pub const SLICE_NOT_YET_IMPLEMENTED: Self = Self(486);
+    /// A slice type `[T]` was written in return position (`fn f(...) -> [T]`).
+    /// A slice is a *second-class* fat-pointer view (ADR-0037, ADR-0043,
+    /// RUE-322): it is valid only in argument position and may not be
+    /// returned, since the view would outlive the borrow it aliases.
+    pub const SLICE_RETURN_NOT_ALLOWED: Self = Self(487);
+    /// A slice type `[T]` was written as a struct field type. A slice is
+    /// second-class (ADR-0037, ADR-0043, RUE-322) and cannot be stored in an
+    /// aggregate — storing it would let the view escape its borrow's scope.
+    pub const SLICE_IN_AGGREGATE_FIELD: Self = Self(488);
+    /// A slice type `[T]` was written in a binding position other than a
+    /// parameter — a `let` local or a `const`. A slice is second-class
+    /// (ADR-0037, ADR-0043, RUE-322): it may only name a function parameter,
+    /// so it cannot be bound past its argument scope.
+    pub const SLICE_ESCAPES_SCOPE: Self = Self(489);
 
     // ========================================================================
     // Control flow errors (E0500-E0599)
@@ -1294,6 +1308,30 @@ pub enum ErrorKind {
     #[error("slice types are not yet fully implemented (ADR-0043 Phase 1, RUE-322)")]
     SliceNotYetImplemented,
 
+    /// A slice type `[T]` appeared in return position — forbidden because a
+    /// slice is second-class (ADR-0037, ADR-0043, RUE-322).
+    #[error(
+        "a slice type `[T]` cannot be returned: slices are second-class views \
+         valid only in argument position (ADR-0043)"
+    )]
+    SliceReturnNotAllowed,
+
+    /// A slice type `[T]` appeared as a struct field type — forbidden because
+    /// a slice is second-class (ADR-0037, ADR-0043, RUE-322).
+    #[error(
+        "a slice type `[T]` cannot be stored in a struct field: slices are \
+         second-class views valid only in argument position (ADR-0043)"
+    )]
+    SliceInAggregateField,
+
+    /// A slice type `[T]` appeared in a `let` or `const` binding — forbidden
+    /// because a slice is second-class (ADR-0037, ADR-0043, RUE-322).
+    #[error(
+        "a slice type `[T]` can only name a function parameter: slices are \
+         second-class views and cannot be bound past their argument scope (ADR-0043)"
+    )]
+    SliceEscapesScope,
+
     // Comptime errors
     #[error("comptime evaluation failed: {reason}")]
     ComptimeEvaluationFailed { reason: String },
@@ -1452,6 +1490,9 @@ impl ErrorKind {
             // Preview feature errors (E1100-E1199)
             ErrorKind::PreviewFeatureRequired { .. } => ErrorCode::PREVIEW_FEATURE_REQUIRED,
             ErrorKind::SliceNotYetImplemented => ErrorCode::SLICE_NOT_YET_IMPLEMENTED,
+            ErrorKind::SliceReturnNotAllowed => ErrorCode::SLICE_RETURN_NOT_ALLOWED,
+            ErrorKind::SliceInAggregateField => ErrorCode::SLICE_IN_AGGREGATE_FIELD,
+            ErrorKind::SliceEscapesScope => ErrorCode::SLICE_ESCAPES_SCOPE,
 
             // Comptime errors (E1200-E1299)
             ErrorKind::ComptimeEvaluationFailed { .. } => ErrorCode::COMPTIME_EVALUATION_FAILED,
@@ -2282,6 +2323,28 @@ mod tests {
         assert_eq!(feature.name(), "slices");
         assert_eq!(feature.adr(), "ADR-0043");
         assert!(PreviewFeature::all().contains(&PreviewFeature::Slices));
+    }
+
+    #[test]
+    fn test_slice_second_class_escape_codes() {
+        // ADR-0043 Phase 1 (RUE-322): the second-class-escape diagnostics for
+        // a slice type used outside argument position.
+        assert_eq!(
+            ErrorKind::SliceReturnNotAllowed.code(),
+            ErrorCode::SLICE_RETURN_NOT_ALLOWED
+        );
+        assert_eq!(
+            ErrorKind::SliceInAggregateField.code(),
+            ErrorCode::SLICE_IN_AGGREGATE_FIELD
+        );
+        assert_eq!(
+            ErrorKind::SliceEscapesScope.code(),
+            ErrorCode::SLICE_ESCAPES_SCOPE
+        );
+        // Codes are contiguous with the not-yet-implemented gate (E0486).
+        assert_eq!(ErrorCode::SLICE_RETURN_NOT_ALLOWED.0, 487);
+        assert_eq!(ErrorCode::SLICE_IN_AGGREGATE_FIELD.0, 488);
+        assert_eq!(ErrorCode::SLICE_ESCAPES_SCOPE.0, 489);
     }
 
     #[test]

@@ -2255,6 +2255,11 @@ impl<'a> Sema<'a> {
         // bindings at every level of a composite annotation — a scalar `P`, and
         // an inner element/pointee of `[P; 2]` / `ptr const P` alike (RUE-263).
         let annotation_type = if let Some(ty_sym) = ty {
+            // A slice type `[T]` is second-class (ADR-0037, ADR-0043, RUE-322):
+            // it may only name a function parameter, never a `let` local, so a
+            // `let s: [i32] = ...` binding would let the view escape its
+            // argument scope (E0489).
+            self.reject_slice_escape(ty_sym, span, ErrorKind::SliceEscapesScope)?;
             Some(self.resolve_type_with_ctx(ty_sym, span, ctx)?)
         } else {
             None
