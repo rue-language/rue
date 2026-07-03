@@ -70,8 +70,10 @@ pub fn generate(
     // Schedule instructions for better performance
     schedule::schedule(&mut mir);
 
-    // Verify stack alignment in debug builds
-    #[cfg(debug_assertions)]
+    // Verify stack alignment. This is a correctness check (a misaligned call
+    // violates the AAPCS64 ABI and can crash at runtime) and already returns a
+    // real ice_error, so it runs in release too — not gated on
+    // debug_assertions (RUE-45).
     verify::verify_stack_alignment(&mir)?;
 
     // Emit machine code bytes
@@ -124,8 +126,10 @@ pub fn generate_with_asm(
     // Schedule instructions for better performance
     schedule::schedule(&mut mir);
 
-    // Verify stack alignment in debug builds
-    #[cfg(debug_assertions)]
+    // Verify stack alignment. This is a correctness check (a misaligned call
+    // violates the AAPCS64 ABI and can crash at runtime) and already returns a
+    // real ice_error, so it runs in release too — not gated on
+    // debug_assertions (RUE-45).
     verify::verify_stack_alignment(&mir)?;
 
     // Emit machine code bytes with assembly text
