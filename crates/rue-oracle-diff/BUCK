@@ -16,6 +16,9 @@ rue_binary(
     name = "rue-oracle-diff",
     deps = [
         "//crates/rue-oracle:rue-oracle",
+        # rue-test-runner parses + template-expands the rue-spec corpus exactly
+        # as the spec suite does, so the `spec` mode's templating can't drift.
+        "//crates/rue-test-runner:rue-test-runner",
         "//third-party:serde",
         "//third-party:toml",
     ],
@@ -34,5 +37,19 @@ sh_test(
     test = ":rue-oracle-diff",
     env = {
         "RUE_ORACLE_DIFF_CASES": "$(location //crates/rue-cli-tests:cases)/cases",
+    },
+)
+
+# The same differential over the rue-spec corpus (RUE-204). Runs the harness in
+# `spec` mode against the rue-spec `cases` filegroup, so a codegen change that
+# diverges from the spec-defined semantics also fails CI here. Templated cases
+# are expanded via rue-test-runner; golden-IR-only / preview-gated / compile-fail
+# cases are skipped by the harness, not counted as disagreements.
+sh_test(
+    name = "oracle-diff-spec-test",
+    test = ":rue-oracle-diff",
+    args = ["spec"],
+    env = {
+        "RUE_ORACLE_DIFF_SPEC_CASES": "$(location //crates/rue-spec:cases)/cases",
     },
 )
