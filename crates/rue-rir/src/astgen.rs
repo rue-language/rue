@@ -158,6 +158,25 @@ impl<'a> AstGen<'a> {
                 let s = format!("ptr mut {}", pointee_name);
                 self.interner.get_or_intern(&s)
             }
+            TypeExpr::TypeCall { name, args, .. } => {
+                // Type-function application `Name(arg, ...)` (RUE-241). Encode a
+                // canonical `Name(arg1, arg2)` string; sema (`resolve_type`)
+                // detects this call syntax and reduces the comptime type call
+                // to the monomorphized concrete type. Arguments are interned
+                // recursively so nested calls compose
+                // (`Result(Option(i32), i32)`).
+                let mut s = self.interner.resolve(&name.name).to_string();
+                s.push('(');
+                for (i, arg) in args.iter().enumerate() {
+                    if i > 0 {
+                        s.push_str(", ");
+                    }
+                    let arg_sym = self.intern_type(arg);
+                    s.push_str(self.interner.resolve(&arg_sym));
+                }
+                s.push(')');
+                self.interner.get_or_intern(&s)
+            }
         }
     }
 
@@ -896,6 +915,14 @@ impl<'a> AstGen<'a> {
                             }
                             TypeExpr::PointerConst { .. } | TypeExpr::PointerMut { .. } => {
                                 // Pointer types as values - use intern_type to get representation
+                                self.intern_type(&type_lit.type_expr)
+                            }
+                            TypeExpr::TypeCall { .. } => {
+                                // A type-function application in *value* position
+                                // (`let R = Result(i32, i32)`) is parsed as an
+                                // ordinary call expression, not a TypeLit, so it
+                                // does not normally reach here. Intern its
+                                // canonical string for completeness (RUE-241).
                                 self.intern_type(&type_lit.type_expr)
                             }
                         };

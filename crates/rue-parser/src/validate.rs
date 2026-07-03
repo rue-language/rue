@@ -236,6 +236,12 @@ impl Validator<'_> {
             TypeExpr::PointerConst { pointee, .. } | TypeExpr::PointerMut { pointee, .. } => {
                 self.check_type_expr(pointee)
             }
+            // Type-function application: recurse into each type argument.
+            TypeExpr::TypeCall { args, .. } => {
+                for arg in args {
+                    self.check_type_expr(arg);
+                }
+            }
         }
     }
 }

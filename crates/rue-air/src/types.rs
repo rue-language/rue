@@ -1139,9 +1139,116 @@ pub fn parse_array_type_syntax(type_name: &str) -> Option<(String, ArrayLen)> {
     Some((element_type, length))
 }
 
+/// Parse a type-function application `Name(arg, ...)` and return
+/// `(name, [arg_str, ...])` (RUE-241).
+///
+/// Recognizes the canonical string [`intern_type`] produces for a
+/// `TypeExpr::TypeCall`: an identifier immediately followed by a
+/// parenthesized, comma-separated argument list. Arguments are returned as raw
+/// substrings (the caller resolves each as a type), split only at top-level
+/// commas so nested calls, arrays, and braces are preserved intact
+/// (`Result(Option(i32), i32)` -> `("Result", ["Option(i32)", "i32"])`).
+///
+/// Returns `None` for anything that is not this shape — array (`[T; N]`),
+/// pointer (`ptr const T`), and anonymous type strings (`enum { Ok(i32) }`,
+/// whose prefix before the first `(` is not a bare identifier) all fall
+/// through so their dedicated resolution paths still apply.
+///
+/// [`intern_type`]: (rue_rir astgen)
+pub fn parse_type_call_syntax(type_name: &str) -> Option<(String, Vec<String>)> {
+    let s = type_name.trim();
+    if !s.ends_with(')') {
+        return None;
+    }
+    let open = s.find('(')?;
+    let name = &s[..open];
+    // The callee name must be a bare identifier. This is what excludes
+    // anonymous type strings like `enum { Ok(i32) }`, whose text before the
+    // first `(` contains spaces/braces.
+    let mut name_chars = name.chars();
+    match name_chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return None,
+    }
+    if !name_chars.all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return None;
+    }
+
+    // Split the argument list at top-level commas, tracking nesting depth so a
+    // comma inside a nested call/array/brace does not split an argument.
+    let inner = &s[open + 1..s.len() - 1];
+    let mut args = Vec::new();
+    let mut depth = 0i32;
+    let mut start = 0usize;
+    for (i, ch) in inner.char_indices() {
+        match ch {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            ',' if depth == 0 => {
+                let arg = inner[start..i].trim();
+                if !arg.is_empty() {
+                    args.push(arg.to_string());
+                }
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    let last = inner[start..].trim();
+    if !last.is_empty() {
+        args.push(last.to_string());
+    }
+
+    Some((name.to_string(), args))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_parse_type_call_syntax_basic() {
+        assert_eq!(
+            parse_type_call_syntax("Result(i32, i32)"),
+            Some((
+                "Result".to_string(),
+                vec!["i32".to_string(), "i32".to_string()]
+            ))
+        );
+    }
+
+    #[test]
+    fn test_parse_type_call_syntax_nested() {
+        assert_eq!(
+            parse_type_call_syntax("Result(Option(i32), i32)"),
+            Some((
+                "Result".to_string(),
+                vec!["Option(i32)".to_string(), "i32".to_string()]
+            ))
+        );
+    }
+
+    #[test]
+    fn test_parse_type_call_syntax_zero_args() {
+        assert_eq!(
+            parse_type_call_syntax("Foo()"),
+            Some(("Foo".to_string(), vec![]))
+        );
+    }
+
+    #[test]
+    fn test_parse_type_call_syntax_rejects_anon_enum() {
+        // Anonymous enum canonical strings contain `(` but their prefix is not
+        // a bare identifier, so they must not be mistaken for a type call.
+        assert_eq!(parse_type_call_syntax("enum { Ok(i32), Err(i32) }"), None);
+    }
+
+    #[test]
+    fn test_parse_type_call_syntax_rejects_plain() {
+        assert_eq!(parse_type_call_syntax("i32"), None);
+        assert_eq!(parse_type_call_syntax("[i32; 4]"), None);
+        assert_eq!(parse_type_call_syntax("ptr const i32"), None);
+    }
 
     // ========== Type ID tests ==========
 

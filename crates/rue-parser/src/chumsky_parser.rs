@@ -315,6 +315,27 @@ where
                 span: span_from_extra(e),
             });
 
+        // Type-function application in type position: `Name(arg, ...)`
+        // (RUE-241). Calls a comptime `-> type` constructor with type
+        // arguments; e.g. `Result(i32, i32)`. Arguments are themselves types
+        // (parsed via the recursive `ty`), so nested calls compose
+        // (`Result(Option(i32), i32)`). Must precede `named_type` in the
+        // choice so `Name(...)` is not mis-parsed as a bare `Name` leaving the
+        // argument list dangling.
+        let type_call = ident_parser()
+            .then(
+                ty.clone()
+                    .separated_by(just(TokenKind::Comma))
+                    .allow_trailing()
+                    .collect::<Vec<_>>()
+                    .delimited_by(just(TokenKind::LParen), just(TokenKind::RParen)),
+            )
+            .map_with(|(name, args), e| TypeExpr::TypeCall {
+                name,
+                args,
+                span: span_from_extra(e),
+            });
+
         // Named type: user-defined types like MyStruct
         let named_type = ident_parser().map(TypeExpr::Named);
 
@@ -336,6 +357,7 @@ where
             ptr_mut_type,
             primitive_type_parser(),
             self_type,
+            type_call,
             named_type,
         ))
     })
@@ -4042,6 +4064,59 @@ mod tests {
                     _ => panic!("expected Block"),
                 }
             }
+            _ => panic!("expected Function"),
+        }
+    }
+
+    #[test]
+    fn test_type_call_in_return_position() {
+        // A comptime type-function application used directly as a return type
+        // (RUE-241): `-> Result(i32, i32)`. The type grammar now accepts a
+        // `Name(args...)` call in type position.
+        let result = parse("fn divide(a: i32, b: i32) -> Result(i32, i32) { 0 }").unwrap();
+        match &result.ast.items[0] {
+            Item::Function(f) => match f.return_type.as_ref().expect("return type") {
+                TypeExpr::TypeCall { name, args, .. } => {
+                    assert_eq!(result.get(name.name), "Result");
+                    assert_eq!(args.len(), 2);
+                    match (&args[0], &args[1]) {
+                        (TypeExpr::Named(a), TypeExpr::Named(b)) => {
+                            assert_eq!(result.get(a.name), "i32");
+                            assert_eq!(result.get(b.name), "i32");
+                        }
+                        _ => panic!("expected two Named type args"),
+                    }
+                }
+                other => panic!("expected TypeCall, got {other:?}"),
+            },
+            _ => panic!("expected Function"),
+        }
+    }
+
+    #[test]
+    fn test_type_call_nested_in_param_position() {
+        // Nested type-function calls compose in type position, here as a
+        // parameter type: `r: Result(Option(i32), i32)` (RUE-241).
+        let result = parse("fn f(r: Result(Option(i32), i32)) -> i32 { 0 }").unwrap();
+        match &result.ast.items[0] {
+            Item::Function(f) => match &f.params[0].ty {
+                TypeExpr::TypeCall { name, args, .. } => {
+                    assert_eq!(result.get(name.name), "Result");
+                    assert_eq!(args.len(), 2);
+                    match &args[0] {
+                        TypeExpr::TypeCall {
+                            name: inner_name,
+                            args: inner_args,
+                            ..
+                        } => {
+                            assert_eq!(result.get(inner_name.name), "Option");
+                            assert_eq!(inner_args.len(), 1);
+                        }
+                        _ => panic!("expected nested TypeCall as first arg"),
+                    }
+                }
+                other => panic!("expected TypeCall param type, got {other:?}"),
+            },
             _ => panic!("expected Function"),
         }
     }

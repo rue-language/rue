@@ -1037,8 +1037,6 @@ impl Sema<'_> {
         if fn_info.return_type != Type::COMPTIME_TYPE {
             return Ok(None);
         }
-        let fn_body = fn_info.body;
-        let fn_span = fn_info.span;
         let params = fn_info.params;
         let param_names = self.param_arena.names(params).to_vec();
         let param_comptime = self.param_arena.comptime(params).to_vec();
@@ -1070,18 +1068,42 @@ impl Sema<'_> {
                 }
             }
         }
-        // The callee body sees only its own parameters. Evaluate it directly
-        // (rather than via the error-swallowing `try_*` wrapper) so a
-        // diagnostic raised inside the constructor propagates.
-        //
-        // Guard the reduction against unbounded self-recursion. A `-> type`
-        // function reduces eagerly on the host stack, so a constructor with no
-        // compile-time-known base case (`fn Bad() -> type { Bad() }`,
-        // `fn Wrap(comptime n: i32) -> type { Wrap(n + 1) }`) would overflow
-        // that stack and abort the compiler (SIGABRT) with no diagnostic. Cap
-        // the depth at the same bound the specialization pass uses for value
-        // recursion, emitting the identical E1200 (RUE-261, spec 4.14:18).
-        let mut callee_env = ComptimeEnv::with_subst(&callee_types, &callee_values);
+        // The callee body sees only its own parameters. Reduce it with the
+        // freshly-built substitution maps.
+        self.reduce_type_ctor_body(name, &callee_types, &callee_values)
+    }
+
+    /// Reduce a `-> type` constructor's body to a type value under the given
+    /// comptime parameter substitutions. Shared by
+    /// [`eval_comptime_type_call`] (value/const-expr positions, args evaluated
+    /// via [`eval_const_expr`]) and [`resolve_type_function_call`] (a
+    /// type-function call written directly in a signature/annotation position,
+    /// args resolved as types; RUE-241) so both produce the identical
+    /// monomorphized type.
+    ///
+    /// Guards the reduction against unbounded self-recursion. A `-> type`
+    /// function reduces eagerly on the host stack, so a constructor with no
+    /// compile-time-known base case (`fn Bad() -> type { Bad() }`,
+    /// `fn Wrap(comptime n: i32) -> type { Wrap(n + 1) }`) would overflow that
+    /// stack and abort the compiler (SIGABRT) with no diagnostic. Cap the
+    /// depth at the same bound the specialization pass uses for value
+    /// recursion, emitting the identical E1200 (RUE-261, spec 4.14:18).
+    ///
+    /// [`eval_comptime_type_call`]: Sema::eval_comptime_type_call
+    /// [`eval_const_expr`]: Sema::eval_const_expr
+    /// [`resolve_type_function_call`]: Sema::resolve_type_function_call
+    pub(crate) fn reduce_type_ctor_body(
+        &mut self,
+        name: Spur,
+        callee_types: &HashMap<Spur, Type>,
+        callee_values: &HashMap<Spur, ConstValue>,
+    ) -> CompileResult<Option<ConstValue>> {
+        let Some(fn_info) = self.functions.get(&name) else {
+            return Ok(None);
+        };
+        let fn_body = fn_info.body;
+        let fn_span = fn_info.span;
+        let mut callee_env = ComptimeEnv::with_subst(callee_types, callee_values);
         self.comptime_type_call_depth += 1;
         if self.comptime_type_call_depth > MAX_SPECIALIZATION_ROUNDS {
             self.comptime_type_call_depth -= 1;

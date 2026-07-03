@@ -355,6 +355,18 @@ pub enum TypeExpr {
     PointerConst { pointee: Box<TypeExpr>, span: Span },
     /// Raw pointer to mutable data: ptr mut T
     PointerMut { pointee: Box<TypeExpr>, span: Span },
+    /// A type-function application used directly in type position:
+    /// `Name(arg, ...)` — e.g. `Result(i32, i32)` (RUE-241). This calls a
+    /// comptime `-> type` function (a type constructor) with type arguments;
+    /// sema reduces it to the monomorphized concrete type. The named-const
+    /// form (`const R: type = Result(i32, i32); fn f() -> R`) resolves to the
+    /// same type. Arguments are themselves type expressions, so nested calls
+    /// (`Result(Option(i32), i32)`) compose.
+    TypeCall {
+        name: Ident,
+        args: Vec<TypeExpr>,
+        span: Span,
+    },
 }
 
 /// The length of an array type `[T; N]`.
@@ -404,6 +416,7 @@ impl TypeExpr {
             TypeExpr::AnonymousEnum { span, .. } => *span,
             TypeExpr::PointerConst { span, .. } => *span,
             TypeExpr::PointerMut { span, .. } => *span,
+            TypeExpr::TypeCall { span, .. } => *span,
         }
     }
 }
@@ -457,6 +470,16 @@ impl fmt::Display for TypeExpr {
             }
             TypeExpr::PointerConst { pointee, .. } => write!(f, "ptr const {}", pointee),
             TypeExpr::PointerMut { pointee, .. } => write!(f, "ptr mut {}", pointee),
+            TypeExpr::TypeCall { name, args, .. } => {
+                write!(f, "sym:{}(", name.name.into_usize())?;
+                for (i, arg) in args.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", arg)?;
+                }
+                write!(f, ")")
+            }
         }
     }
 }
