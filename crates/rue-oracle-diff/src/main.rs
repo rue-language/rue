@@ -11,7 +11,10 @@
 //! the semantics and codegen agree on every program in the corpus."
 //!
 //! Usage: `rue-oracle-diff [cases-dir ...]`
-//! (default: `crates/rue-cli-tests/cases`, resolved from the current directory).
+//! Case-directory resolution, in order: explicit argv paths; else the
+//! `RUE_ORACLE_DIFF_CASES` env var (a single dir — how the `buck2 test`
+//! sh_test feeds the rue-cli-tests `cases` filegroup); else the default
+//! `crates/rue-cli-tests/cases`, resolved from the current directory.
 //! Exits non-zero if any disagreement is found.
 
 use rue_oracle::run_source;
@@ -74,10 +77,14 @@ struct Report {
 fn main() -> ExitCode {
     let dirs: Vec<PathBuf> = {
         let args: Vec<String> = std::env::args().skip(1).collect();
-        if args.is_empty() {
-            vec![PathBuf::from("crates/rue-cli-tests/cases")]
-        } else {
+        if !args.is_empty() {
             args.into_iter().map(PathBuf::from).collect()
+        } else if let Some(cases) = std::env::var_os("RUE_ORACLE_DIFF_CASES") {
+            // Set by the `//crates/rue-oracle-diff:oracle-diff-test` sh_test to
+            // the rue-cli-tests `cases` filegroup's absolute location.
+            vec![PathBuf::from(cases)]
+        } else {
+            vec![PathBuf::from("crates/rue-cli-tests/cases")]
         }
     };
 
