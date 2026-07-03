@@ -1,0 +1,66 @@
+# `let _ = <linear>` must reject the discard (RUE-229). Binding a linear-carrying
+# value to the wildcard `_` is a discard site (spec 3.9:18); discarding a linear
+# value would implicitly drop it, which linearity forbids (spec 3.8:64). The
+# wildcard path in `analyze_alloc` skipped the discarded-linear check, so
+# `let _ = make();` silently dropped the value — a soundness hole. It now emits
+# the same E0478 as the bare statement-expression discard (`make();`).
+
+[section]
+id = "cli.let_wildcard_linear_discard"
+name = "let _ linear discard"
+description = "`let _ = <linear>` and `let _: T = <linear>` are rejected with E0478 like a bare discard (RUE-229)."
+
+[[case]]
+name = "let_wildcard_discards_linear_rejected"
+description = "RUE-229 repro: `let _ = make();` on a linear type used to compile and silently drop the value; now E0478."
+files = [{ path = "main.rue", source = """
+linear struct L { v: i32 }
+fn make() -> L { L { v: 1 } }
+fn main() -> i32 {
+    let _ = make();
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0478", "linear value"]
+
+[[case]]
+name = "let_typed_wildcard_discards_linear_rejected"
+description = "The typed form `let _: L = make();` is the same discard site and is rejected identically."
+files = [{ path = "main.rue", source = """
+linear struct L { v: i32 }
+fn make() -> L { L { v: 1 } }
+fn main() -> i32 {
+    let _: L = make();
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0478", "linear value"]
+
+[[case]]
+name = "bare_statement_discard_control"
+description = "Control: the bare statement-expression discard `make();` was already rejected with E0478."
+files = [{ path = "main.rue", source = """
+linear struct L { v: i32 }
+fn make() -> L { L { v: 1 } }
+fn main() -> i32 {
+    make();
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0478"]
+
+[[case]]
+name = "let_wildcard_non_linear_still_compiles"
+description = "Control: discarding a non-linear value with `let _` remains legal and runs."
+files = [{ path = "main.rue", source = """
+struct P { v: i32 }
+fn make() -> P { P { v: 1 } }
+fn main() -> i32 {
+    let _ = make();
+    0
+}
+""" }]
+exit_code = 0

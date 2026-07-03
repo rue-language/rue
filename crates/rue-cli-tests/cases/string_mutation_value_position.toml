@@ -1,0 +1,47 @@
+# String mutation-method result in value position no longer ICEs (RUE-224).
+#
+# A String `ByMutRef` mutator (`push_str`, `clear`, `reserve`, ...) returns
+# `SelfType` at the runtime ABI level so sema can store the updated value back
+# into the receiver, but the user-visible expression is Unit — the result may
+# not be used as a value. Previously sema returned the bare `Store` as the
+# expression's value; a `Store` produces no CFG value, so in an argument
+# position `lower_value` returned `None`, the block ended unterminated, and
+# codegen aborted ("block has no terminator", SIGABRT/134).
+#
+# The fix (rue-air) is twofold: the inference-visible return type of a
+# ByMutRef method is now Unit (so a type mismatch is caught as E0206), and the
+# store is wrapped in a Block whose value is a genuine `UnitConst` (so a
+# genuinely Unit-typed argument position lowers cleanly). Statement-position
+# mutation keeps working and running.
+
+[section]
+id = "cli.string_mutation_value_position"
+name = "String mutation-method result in value position"
+description = "Using a String mutator's result as a value is a clean E0206, not an ICE (RUE-224)."
+
+[[case]]
+name = "mutation_result_as_arg_is_e0206_not_ice"
+description = "RUE-224 repro: `take(s.clear())` used to ICE at cfg_lower ('block has no terminator'); now a clean E0206 (Unit vs String)."
+files = [{ path = "main.rue", source = """
+fn take(s: String) -> i32 { 0 }
+fn main() -> i32 {
+    let mut s = String::new();
+    take(s.clear())
+}
+""" }]
+compile_fail = true
+error_contains = ["E0206"]
+
+[[case]]
+name = "statement_position_mutation_still_runs"
+description = "Statement-position String mutation (`push_str`/`clear`) compiles and runs (control)."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut s = String::new();
+    s.push_str("hi");
+    s.clear();
+    s.push_str("done");
+    0
+}
+""" }]
+exit_code = 0

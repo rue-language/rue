@@ -24,7 +24,7 @@ impl<'a> Sema<'a> {
         &self,
         method_sigs: &mut HashMap<(StructId, Spur), MethodSig>,
     ) {
-        use rue_builtins::{BUILTIN_TYPES, BuiltinParamType, BuiltinReturnType};
+        use rue_builtins::{BUILTIN_TYPES, BuiltinParamType, BuiltinReturnType, ReceiverMode};
 
         for builtin in BUILTIN_TYPES {
             let Some(name_spur) = self.interner.get(builtin.name) else {
@@ -52,12 +52,24 @@ impl<'a> Sema<'a> {
                         self.type_to_infer_type(ty)
                     })
                     .collect();
-                let return_ty = match method.return_ty {
-                    BuiltinReturnType::Unit => Type::UNIT,
-                    BuiltinReturnType::U64 => Type::U64,
-                    BuiltinReturnType::U8 => Type::U8,
-                    BuiltinReturnType::Bool => Type::BOOL,
-                    BuiltinReturnType::SelfType => struct_type,
+                // A `ByMutRef` mutation method (`push_str`, `clear`, ...) returns
+                // `SelfType` at the *runtime* ABI level so sema can store the
+                // updated value back into the receiver (see `store_string_result`
+                // in analysis.rs), but the *user-visible expression* is Unit — the
+                // result cannot be used as a value. Register the inference-visible
+                // return type as Unit so inference and sema agree; this is what
+                // turns `take(s.clear())` into a clean E0206 (Unit vs the expected
+                // argument type) instead of an ICE (RUE-224).
+                let return_ty = if method.receiver_mode == ReceiverMode::ByMutRef {
+                    Type::UNIT
+                } else {
+                    match method.return_ty {
+                        BuiltinReturnType::Unit => Type::UNIT,
+                        BuiltinReturnType::U64 => Type::U64,
+                        BuiltinReturnType::U8 => Type::U8,
+                        BuiltinReturnType::Bool => Type::BOOL,
+                        BuiltinReturnType::SelfType => struct_type,
+                    }
                 };
                 method_sigs.insert(
                     (struct_id, method_spur),

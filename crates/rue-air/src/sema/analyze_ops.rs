@@ -1805,8 +1805,16 @@ impl<'a> Sema<'a> {
         let init_result = self.analyze_inst(air, init, ctx)?;
         let var_type = init_result.ty;
 
-        // If name is None, this is a wildcard pattern `_` that discards the value
+        // If name is None, this is a wildcard pattern `_` that discards the value.
+        // `let _ = <expr>;` (and `let _: T = <expr>;`) is a discard site (spec
+        // 3.9:18): discarding a value that carries a linear value would
+        // implicitly drop it, which linearity forbids (spec 3.8:64). Reject it
+        // with the same E0478 as a bare statement-expression discard (`make();`)
+        // — without this, `let _` was a soundness hole that silently dropped
+        // linear values (RUE-229). Once `@drop(x)` lands (RUE-187) that is the
+        // sanctioned way to discard a linear value; `let _` stays an error.
         let Some(name) = name else {
+            self.reject_discarded_linear_value(var_type, init)?;
             return Ok(AnalysisResult::new(init_result.air_ref, Type::UNIT));
         };
 
