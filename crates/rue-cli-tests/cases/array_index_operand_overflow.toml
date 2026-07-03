@@ -1,0 +1,65 @@
+# Constant array-index evaluation ignored the operand integer width (RUE-234),
+# the same const-eval-type-unaware class as RUE-230 at a different site. The
+# array-index folder used the type-unaware `try_get_const_index` (raw i128, no
+# resolved types), so an index expression that overflows its own integer type
+# was accepted at compile time and deferred to a runtime panic — while the same
+# expression in a plain const initializer was caught (E0800/E1200). The folder
+# now evaluates the index at its HM-resolved operand types (mirroring the
+# RUE-230 fix), so an operand overflow is a compile-time error *before* the
+# array-length bound is consulted.
+
+[section]
+id = "cli.array_index_operand_overflow"
+name = "Array-index operand overflow"
+description = "An index expression overflowing its operand type is a compile-time error (RUE-234)."
+
+[[case]]
+name = "i8_index_operand_overflow_is_compile_error"
+description = "RUE-234: `arr[X + 1]` with `X: i8 = 127` overflows i8 (128) at the operand type; a compile-time E1200, caught during folding before the length bound (before the fix this folded to 128 and was deferred to a runtime panic)."
+compile_fail = true
+error_contains = ["E1200", "i8"]
+files = [{ path = "main.rue", source = """
+const X: i8 = 127;
+fn main() -> i32 {
+    let arr: [i32; 3] = [1, 2, 3];
+    arr[X + 1]
+}
+""" }]
+
+[[case]]
+name = "u8_index_operand_overflow_not_bogus_bounds"
+description = "RUE-234: `arr[IDX + 1]` with `IDX: u8 = 255` reports the u8 operand overflow (256 does not fit u8), not a bogus `index is 256` bounds error."
+compile_fail = true
+error_contains = ["E1200", "u8"]
+files = [{ path = "main.rue", source = """
+const IDX: u8 = 255;
+fn main() -> i32 {
+    let arr: [i32; 3] = [1, 2, 3];
+    arr[IDX + 1]
+}
+""" }]
+
+[[case]]
+name = "valid_index_expr_still_folds_and_bounds_checks"
+description = "Control: `arr[X + 1]` with in-range `X: i8 = 5` still folds to 6 and reads the element (returns 6)."
+files = [{ path = "main.rue", source = """
+const X: i8 = 5;
+fn main() -> i32 {
+    let arr: [i32; 10] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+    arr[X + 1]
+}
+""" }]
+exit_code = 6
+
+[[case]]
+name = "in_type_index_still_out_of_bounds_reports_bounds"
+description = "Control: an in-type but out-of-bounds constant index still reports the length/index bounds error (E0902)."
+compile_fail = true
+error_contains = ["E0902"]
+files = [{ path = "main.rue", source = """
+const X: i32 = 20;
+fn main() -> i32 {
+    let arr: [i32; 3] = [1, 2, 3];
+    arr[X + 1]
+}
+""" }]

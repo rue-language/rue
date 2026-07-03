@@ -508,7 +508,10 @@ impl<'a> AstGen<'a> {
             Expr::Loop(loop_expr) => {
                 let body = self.gen_block(&loop_expr.body);
                 self.rir.add_inst(Inst {
-                    data: InstData::InfiniteLoop { body },
+                    data: InstData::InfiniteLoop {
+                        body,
+                        iter_borrow: None,
+                    },
                     span: loop_expr.span,
                 })
             }
@@ -949,6 +952,7 @@ impl<'a> AstGen<'a> {
         // Collection reference. A bare variable is referenced directly so the
         // loop's non-consuming reads leave it usable afterward (a scoped
         // borrow); any other expression is a temporary bound once.
+        let coll_is_var = matches!(coll_expr, Expr::Ident(_));
         let coll_name: Spur = if let Expr::Ident(id) = coll_expr {
             id.name
         } else {
@@ -1163,8 +1167,16 @@ impl<'a> AstGen<'a> {
             span,
         });
 
+        // A `for` over a named variable holds a scoped shared borrow of that
+        // variable for the loop's duration (spec 4.8:26): sema rejects any
+        // mutation of it in the body (RUE-233). A `for` over a temporary binds
+        // an unnameable local, so there is nothing to borrow-check.
+        let iter_borrow = if coll_is_var { Some(coll_name) } else { None };
         let infinite_loop = self.rir.add_inst(Inst {
-            data: InstData::InfiniteLoop { body: loop_body },
+            data: InstData::InfiniteLoop {
+                body: loop_body,
+                iter_borrow,
+            },
             span,
         });
         outer_stmts.push(infinite_loop.as_u32());

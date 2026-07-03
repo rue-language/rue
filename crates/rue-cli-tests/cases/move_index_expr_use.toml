@@ -1,0 +1,70 @@
+# Use-after-move through an index expression on a moved base (RUE-232).
+#
+# The move-checker rejected scalar-field use (`a.v`), base-field access
+# (`let d = a.data`), and whole-value re-use (`let c = a`) after `let b = a`
+# moved `a`, but SKIPPED an *index-expression* use `moved.field[i]`: a plain
+# (Copy-element, non-by-ref) index read reached neither of the two move checks
+# in `analyze_index_get_impl` (the by-ref branch checks its own path; the
+# non-Copy branch records an element move). So `a.data[0]` after the move
+# compiled and ran to a garbage exit instead of E0205. The fix checks the base
+# place's move state for every index read.
+
+[section]
+id = "cli.move_index_expr_use"
+name = "Use-after-move via index expression"
+description = "`moved.field[i]` after a move is E0205 (RUE-232); non-moved index reads still work."
+
+[[case]]
+name = "index_expr_on_moved_struct_is_e0205"
+description = "RUE-232: reading `a.data[0]` after `let b = a` moved `a` is a use-after-move (E0205)."
+compile_fail = true
+error_contains = ["E0205"]
+files = [{ path = "main.rue", source = """
+struct C { data: [i32; 2] }
+fn main() -> i32 {
+    let a = C { data: [1, 2] };
+    let b = a;
+    a.data[0]
+}
+""" }]
+
+[[case]]
+name = "index_expr_on_second_array_field_is_e0205"
+description = "RUE-232: `x.b[1]` after `let y = x` moved `x` is E0205 (second array field, still caught)."
+compile_fail = true
+error_contains = ["E0205"]
+files = [{ path = "main.rue", source = """
+struct C { a: [i32; 2], b: [i32; 2] }
+fn main() -> i32 {
+    let x = C { a: [1, 2], b: [3, 4] };
+    let y = x;
+    x.b[1]
+}
+""" }]
+
+[[case]]
+name = "non_moved_index_read_still_works"
+description = "Control: an index read of a NON-moved struct array field compiles and returns 1."
+files = [{ path = "main.rue", source = """
+struct C { data: [i32; 2] }
+fn main() -> i32 {
+    let a = C { data: [1, 2] };
+    a.data[0]
+}
+""" }]
+exit_code = 1
+
+[[case]]
+name = "base_field_access_after_move_still_e0205_control"
+description = "Control: base-field access (`let d = a.data`) after the move stays E0205 (unchanged path)."
+compile_fail = true
+error_contains = ["E0205"]
+files = [{ path = "main.rue", source = """
+struct C { data: [i32; 2] }
+fn main() -> i32 {
+    let a = C { data: [1, 2] };
+    let b = a;
+    let d = a.data;
+    d[0]
+}
+""" }]

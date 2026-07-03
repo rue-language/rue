@@ -594,8 +594,8 @@ impl<'a> Sema<'a> {
                 self.analyze_while_loop(air, *cond, *body, inst.span, ctx)
             }
 
-            InstData::InfiniteLoop { body } => {
-                self.analyze_infinite_loop(air, *body, inst.span, ctx)
+            InstData::InfiniteLoop { body, iter_borrow } => {
+                self.analyze_infinite_loop(air, *body, *iter_borrow, inst.span, ctx)
             }
 
             InstData::Match {
@@ -929,6 +929,7 @@ impl<'a> Sema<'a> {
         &mut self,
         air: &mut Air,
         body: InstRef,
+        iter_borrow: Option<Spur>,
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
@@ -942,7 +943,16 @@ impl<'a> Sema<'a> {
         ctx.push_scope();
         ctx.loop_depth += 1;
         ctx.loop_break_stack.push(false);
+        // A `for` over a named variable borrows it (shared) for the body's
+        // duration (spec 4.8:26, RUE-233): record the borrow so a mutation of
+        // the iterated collection inside the body is rejected (E0428).
+        if let Some(var) = iter_borrow {
+            ctx.iter_borrows.push(var);
+        }
         let body_result = self.analyze_inst(air, body, ctx)?;
+        if iter_borrow.is_some() {
+            ctx.iter_borrows.pop();
+        }
         let has_break = ctx.loop_break_stack.pop().unwrap_or(false);
         ctx.loop_depth -= 1;
         ctx.pop_scope();
@@ -961,8 +971,14 @@ impl<'a> Sema<'a> {
             scratch_ctx.push_scope();
             scratch_ctx.loop_depth += 1;
             scratch_ctx.loop_break_stack.push(false);
+            if let Some(var) = iter_borrow {
+                scratch_ctx.iter_borrows.push(var);
+            }
             self.analyze_inst(&mut scratch_air, body, &mut scratch_ctx)
                 .map_err(|e| e.with_note("value was moved in a previous iteration of the loop"))?;
+            if iter_borrow.is_some() {
+                scratch_ctx.iter_borrows.pop();
+            }
             scratch_ctx.loop_break_stack.pop();
             scratch_ctx.loop_depth -= 1;
             scratch_ctx.pop_scope();
@@ -2375,6 +2391,18 @@ impl<'a> Sema<'a> {
     ) -> CompileResult<AnalysisResult> {
         let name_str = self.interner.resolve(&name);
 
+        // Reassigning a collection that an enclosing `for` loop is iterating
+        // mutates a shared-borrowed value (spec 4.8:26, RUE-233) — E0428, just
+        // like assigning through an explicit `borrow` parameter.
+        if ctx.iter_borrows.contains(&name) {
+            return Err(CompileError::new(
+                ErrorKind::MutateBorrowedValue {
+                    variable: name_str.to_string(),
+                },
+                span,
+            ));
+        }
+
         // First check if it's a parameter (for inout params)
         if let Some(param_info) = ctx.params.iter().find(|p| p.name == name) {
             // Check parameter mode - only inout can be assigned to
@@ -3494,6 +3522,31 @@ impl<'a> Sema<'a> {
         if let Some(trace) = self.try_trace_place(inst_ref, air, ctx)? {
             let elem_type = trace.result_type();
 
+            // Reading through an index expression whose base place has been
+            // moved is a use-after-move (RUE-232), exactly like a field read
+            // of a moved place. A plain (Copy-element, non-byref) index read
+            // reached neither move check below — the byref branch checks its
+            // own path and the non-Copy branch records an element move — so
+            // `moved.field[i]` after `let b = moved` slipped through. Check the
+            // base place's move state here for every index read. `field_path()`
+            // stops at the last index projection, so this catches a full move
+            // of the root (or a moved field prefix) without falsely flagging a
+            // previously moved-out *element* (those use a longer index path).
+            {
+                let field_path = trace.field_path();
+                if let Some(state) = ctx.moved_vars.get(&trace.root_var) {
+                    if let Some(moved_span) = state.is_path_moved(&field_path) {
+                        return Err(super::analysis::use_after_move_path_error(
+                            self.interner,
+                            trace.root_var,
+                            &field_path,
+                            span,
+                            moved_span,
+                        ));
+                    }
+                }
+            }
+
             // Get array info from the parent type (before the last projection)
             let parent_type = if trace.projections.len() > 1 {
                 trace.projections[trace.projections.len() - 2].result_type
@@ -3517,8 +3570,11 @@ impl<'a> Sema<'a> {
                 }
             };
 
-            // Check for constant out-of-bounds index
-            if let Some(const_idx) = self.try_get_const_index(index) {
+            // Check for constant out-of-bounds index. Evaluate at the index's
+            // resolved operand types so an expression that overflows its own
+            // integer type (`arr[X + 1]`, X: i8 = 127) is a compile-time error
+            // rather than a folded-then-bounds-checked value (RUE-234).
+            if let Some(const_idx) = self.try_get_const_index_checked(index, ctx)? {
                 if const_idx < 0 || const_idx as u64 >= array_len {
                     return Err(CompileError::new(
                         ErrorKind::IndexOutOfBounds {
@@ -3642,8 +3698,10 @@ impl<'a> Sema<'a> {
             }
         };
 
-        // Check for constant out-of-bounds index
-        if let Some(const_idx) = self.try_get_const_index(index) {
+        // Check for constant out-of-bounds index (at the index's resolved
+        // operand types, so an overflowing index expression is a compile-time
+        // error rather than a folded runtime panic — RUE-234).
+        if let Some(const_idx) = self.try_get_const_index_checked(index, ctx)? {
             if const_idx < 0 || const_idx as u64 >= array_len {
                 return Err(CompileError::new(
                     ErrorKind::IndexOutOfBounds {

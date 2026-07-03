@@ -1746,6 +1746,7 @@ impl<'a> Sema<'a> {
             referenced_methods: HashSet::new(),
             byref_arg_root: None,
             in_loop_move_recheck: false,
+            iter_borrows: Vec::new(),
         };
 
         // ======================================================================
@@ -2274,8 +2275,10 @@ impl<'a> Sema<'a> {
 
             let array_length = length;
 
-            // Compile-time bounds check for constant indices
-            if let Some(const_index) = self.try_get_const_index(*index) {
+            // Compile-time bounds check for constant indices, evaluated at the
+            // index's resolved operand types so an overflowing index expression
+            // is a compile-time error, not a folded runtime panic (RUE-234).
+            if let Some(const_index) = self.try_get_const_index_checked(*index, ctx)? {
                 if const_index < 0 || const_index as u64 >= array_length {
                     return Err(CompileError::new(
                         ErrorKind::IndexOutOfBounds {
@@ -2691,6 +2694,11 @@ impl<'a> Sema<'a> {
                 }
             }
 
+            // Writing through a field of a collection an enclosing `for` loop
+            // is iterating mutates a shared-borrowed value (spec 4.8:26,
+            // RUE-233) — E0428, like an explicit `borrow` parameter.
+            self.reject_mutate_iter_borrowed(trace.root_var, span, ctx)?;
+
             // Check mutability
             let root_name = self.interner.resolve(&trace.root_var).to_string();
             if !trace.is_root_mutable {
@@ -2840,6 +2848,11 @@ impl<'a> Sema<'a> {
                 }
             }
 
+            // Writing an element of a collection an enclosing `for` loop is
+            // iterating mutates a shared-borrowed value (spec 4.8:26,
+            // RUE-233) — E0428, like an explicit `borrow` parameter.
+            self.reject_mutate_iter_borrowed(trace.root_var, span, ctx)?;
+
             // Check mutability
             let root_name = self.interner.resolve(&trace.root_var).to_string();
             if !trace.is_root_mutable {
@@ -2907,8 +2920,10 @@ impl<'a> Sema<'a> {
                 ));
             }
 
-            // Compile-time bounds check for constant indices
-            if let Some(const_index) = self.try_get_const_index(index) {
+            // Compile-time bounds check for constant indices, evaluated at the
+            // index's resolved operand types so an overflowing index expression
+            // is a compile-time error, not a folded runtime panic (RUE-234).
+            if let Some(const_index) = self.try_get_const_index_checked(index, ctx)? {
                 if const_index < 0 || const_index as u64 >= array_len {
                     return Err(CompileError::new(
                         ErrorKind::IndexOutOfBounds {
@@ -5608,6 +5623,28 @@ impl<'a> Sema<'a> {
             return local.is_mut;
         }
         false
+    }
+
+    /// Reject a mutation of a collection that an enclosing `for` loop is
+    /// iterating (spec 4.8:26, RUE-233). A `for` over a named variable holds a
+    /// scoped shared borrow of it for the loop's duration, so mutating that
+    /// place inside the body — whole-variable, field, or element — is E0428,
+    /// exactly like mutating through an explicit `borrow` parameter.
+    pub(crate) fn reject_mutate_iter_borrowed(
+        &self,
+        root_var: Spur,
+        span: Span,
+        ctx: &AnalysisContext,
+    ) -> CompileResult<()> {
+        if ctx.iter_borrows.contains(&root_var) {
+            return Err(CompileError::new(
+                ErrorKind::MutateBorrowedValue {
+                    variable: self.interner.resolve(&root_var).to_string(),
+                },
+                span,
+            ));
+        }
+        Ok(())
     }
 
     /// Check exclusivity rules for inout and borrow parameters in a call

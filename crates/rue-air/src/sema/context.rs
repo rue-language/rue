@@ -361,6 +361,14 @@ pub(crate) struct AnalysisContext<'a> {
     /// performs, so nested loops analyzed within it don't need (and must not
     /// trigger) their own recheck — that would make nested loops exponential.
     pub in_loop_move_recheck: bool,
+    /// Collection variables currently held as a scoped shared borrow by an
+    /// enclosing `for` loop (innermost last), spec 4.8:26 / RUE-233. While a
+    /// name is here, any mutation of it in the loop body — whole-variable
+    /// assignment (`a = …`), field set (`a.f = …`), or element set
+    /// (`a[i] = …`) — is rejected with E0428 (`MutateBorrowedValue`), matching
+    /// the treatment of an explicit `borrow` parameter. Reads (including the
+    /// loop's own element reads) are permitted.
+    pub iter_borrows: Vec<Spur>,
 }
 
 // Import InstRef for use in resolved_types
@@ -436,6 +444,7 @@ impl<'a> AnalysisContext<'a> {
             // analyses.
             byref_arg_root: None,
             in_loop_move_recheck: true,
+            iter_borrows: self.iter_borrows.clone(),
         }
     }
 
