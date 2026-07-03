@@ -786,7 +786,24 @@ impl<'a> ConstraintGenerator<'a> {
                 args_len,
             } => {
                 let args = self.rir.get_call_args(*args_start, *args_len);
-                if let Some(func) = self.functions.get(name) {
+                // `print(s)` / `println(s)` builtin free functions (RUE-1):
+                // constrain the single argument to String and yield unit, so a
+                // literal argument resolves to String and the call type-checks.
+                // Only when the program hasn't shadowed the name with its own
+                // `fn print`/`fn println` (a user definition wins).
+                let is_print_builtin = !self.functions.contains_key(name)
+                    && matches!(self.interner.resolve(name), "print" | "println");
+                if is_print_builtin {
+                    for arg in args.iter() {
+                        let arg_info = self.generate(arg.value, ctx);
+                        self.add_constraint(Constraint::equal(
+                            arg_info.ty,
+                            self.string_infer_type(),
+                            arg_info.span,
+                        ));
+                    }
+                    InferType::Concrete(Type::UNIT)
+                } else if let Some(func) = self.functions.get(name) {
                     // For generic functions, build the type substitution map from the
                     // comptime type arguments, then constrain each runtime argument
                     // against its (substituted) parameter type. When a type parameter

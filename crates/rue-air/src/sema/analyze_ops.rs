@@ -4406,6 +4406,17 @@ impl<'a> Sema<'a> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
+        // `print(s)` / `println(s)` are builtin free functions (RUE-1), not
+        // user-defined ones: intercept them here before the function lookup,
+        // but only when the program hasn't shadowed the name with its own
+        // `fn print`/`fn println` (a user definition wins, keeping these names
+        // unreserved).
+        if (name == self.known.print || name == self.known.println)
+            && !self.functions.contains_key(&name)
+        {
+            return self.analyze_print_builtin(air, name, args_start, args_len, span, ctx);
+        }
+
         // Look up the function
         let fn_name_str = self.interner.resolve(&name).to_string();
         let fn_info = self

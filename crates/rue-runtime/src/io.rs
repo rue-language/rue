@@ -2,10 +2,88 @@
 //!
 //! This module provides I/O operations for Rue programs:
 //! - `__rue_read_line` - Read a line from standard input
+//! - `__rue_print` - Write a String's raw bytes to stdout (no newline)
+//! - `__rue_println` - Write a String's raw bytes to stdout, then a newline
 
 use crate::heap;
 use crate::platform;
 use crate::string::{STRING_MIN_CAPACITY, StringResult};
+
+// =============================================================================
+// String output (RUE-1: print / println)
+// =============================================================================
+//
+// `print(s)` and `println(s)` write the raw bytes of a `String` to stdout via
+// the same `write(1, ptr, len)` syscall path `@dbg` uses, but they emit the
+// string's actual bytes rather than a debug format. Unlike `@dbg`, `print`
+// adds nothing and `println` adds exactly one `\n`.
+//
+// The String argument is passed by borrow, flattened into three ABI slots
+// (ptr, len, cap) exactly like the borrowed operands of `s1 + s2` and the
+// arguments to `s.contains(needle)`. `cap` is part of the ABI but unused here:
+// output only needs the pointer and length, and the borrow means neither
+// function takes ownership, so the caller's String stays valid and is dropped
+// by its owner as usual.
+
+crate::define_for_all_platforms! {
+    /// Write a String's raw bytes to stdout with no trailing newline.
+    ///
+    /// Called by the `print(s: String)` builtin free function (RUE-1). Writes
+    /// exactly `len` bytes starting at `ptr` to file descriptor 1.
+    ///
+    /// # ABI
+    ///
+    /// ```text
+    /// extern "C" fn __rue_print(ptr: *const u8, len: u64, cap: u64)
+    /// ```
+    ///
+    /// - `ptr` / `len` / `cap` are the flattened fields of a borrowed String
+    ///   (first three argument registers). `cap` is unused.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure `ptr` points to `len` valid, initialized bytes
+    /// that remain valid for the duration of the call. The borrow ABI
+    /// guarantees this: the String is not consumed and outlives the call.
+    #[allow(non_snake_case)]
+    pub extern "C" fn __rue_print(ptr: *const u8, len: u64, _cap: u64) {
+        // SAFETY: `ptr` points to `len` valid bytes owned by the caller's
+        // String (borrowed, not consumed), and we only read from the slice.
+        let bytes = unsafe { core::slice::from_raw_parts(ptr, len as usize) };
+        platform::write_stdout(bytes);
+    }
+}
+
+crate::define_for_all_platforms! {
+    /// Write a String's raw bytes to stdout followed by a single newline.
+    ///
+    /// Called by the `println(s: String)` builtin free function (RUE-1). Writes
+    /// exactly `len` bytes starting at `ptr` to file descriptor 1, then a lone
+    /// `\n`.
+    ///
+    /// # ABI
+    ///
+    /// ```text
+    /// extern "C" fn __rue_println(ptr: *const u8, len: u64, cap: u64)
+    /// ```
+    ///
+    /// - `ptr` / `len` / `cap` are the flattened fields of a borrowed String
+    ///   (first three argument registers). `cap` is unused.
+    ///
+    /// # Safety
+    ///
+    /// See [`__rue_print`].
+    #[allow(non_snake_case)]
+    pub extern "C" fn __rue_println(ptr: *const u8, len: u64, _cap: u64) {
+        // SAFETY: see `__rue_print` — `ptr` is valid for `len` borrowed bytes.
+        let bytes = unsafe { core::slice::from_raw_parts(ptr, len as usize) };
+        platform::write_stdout(bytes);
+        // Byte-array literal (not `b"\n"`) to avoid a macOS linker quirk seen
+        // with `b"..."` in `__rue_dbg_str`.
+        let newline = [b'\n'];
+        platform::write_stdout(&newline);
+    }
+}
 
 /// Initial buffer size for reading lines.
 /// This is a reasonable size for most interactive input.

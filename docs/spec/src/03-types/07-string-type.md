@@ -207,6 +207,42 @@ fn main() -> i32 {
 }
 ```
 
+## Output
+
+{{ rule(id="3.7:35", cat="normative") }}
+
+The free function `print(s)` takes a `String` and writes its raw bytes to
+standard output, adding nothing. Unlike `@dbg`, it does not append a newline and
+does not apply any debug formatting. The argument `s` is borrowed, not consumed,
+and remains usable afterwards.
+
+{{ rule(id="3.7:36", cat="normative") }}
+
+The free function `println(s)` takes a `String` and writes its raw bytes to
+standard output followed by a single newline (`U+000A`). The argument `s` is
+borrowed, not consumed. Together with `@to_string` and `+`, `println` composes
+line-oriented output; there is no formatting or interpolation syntax.
+
+{{ rule(id="3.7:37", cat="dynamic-semantics") }}
+
+`print(s)` and `println(s)` write exactly the bytes of `s`, in order, without
+transformation: because a `String` is a byte string, the output is byte-for-byte
+identical to the string's contents (the only difference between the two is the
+single trailing newline `println` adds). Writing an empty `String` writes no
+bytes (for `print`) or a lone newline (for `println`).
+
+{{ rule(id="3.7:38") }}
+
+```rue
+fn main() -> i32 {
+    print("hello");                       // hello
+    print(" world");                      // hello world   (no newline yet)
+    println("");                          // hello world\n
+    println("value is " + @to_string(42)); // value is 42\n
+    0
+}
+```
+
 ## Search
 
 {{ rule(id="3.7:28", cat="normative") }}
