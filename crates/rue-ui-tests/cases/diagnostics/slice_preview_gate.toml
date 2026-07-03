@@ -1,0 +1,42 @@
+[section]
+id = "diagnostics.slice-preview-gate"
+name = "Slice type preview gating (ADR-0043 Phase 1)"
+description = """
+The second-class slice type `[T]` (ADR-0043, RUE-322) is gated behind
+`--preview slices`. Without the flag, using slice syntax reports E1100
+(preview feature required). With the flag, the syntax is accepted by the
+parser and type resolver but reports E0486 because the fat-pointer runtime
+(ABI + codegen on both backends) is not yet implemented. These UI cases pin
+that gating behaviour; they become regression tests for the follow-up phase
+that lands the runtime.
+"""
+
+[[case]]
+name = "slice_param_requires_preview"
+description = "A `borrow [T]` slice parameter without --preview slices is E1100."
+source = """
+fn sum(borrow s: [i32]) -> i32 { 0 }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = "requires preview feature"
+
+[[case]]
+name = "slice_let_annotation_requires_preview"
+description = "A `[T]` slice let-annotation without --preview slices is E1100."
+source = """
+fn main() -> i32 { let s: [i32] = other(); 0 }
+"""
+compile_fail = true
+error_contains = "requires preview feature"
+
+[[case]]
+name = "slice_param_under_preview_not_yet_implemented"
+description = "Under --preview slices, slice syntax parses but reports E0486 (runtime unimplemented)."
+preview = "slices"
+source = """
+fn sum(borrow s: [i32]) -> i32 { 0 }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = "not yet fully implemented"
