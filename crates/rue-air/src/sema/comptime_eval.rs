@@ -51,7 +51,7 @@ use std::sync::LazyLock;
 
 use lasso::{Key, Spur};
 use rue_error::{CompileError, CompileResult, ErrorKind};
-use rue_rir::{InstData, InstRef};
+use rue_rir::{InstData, InstRef, RirPattern};
 use rue_span::Span;
 
 use super::Sema;
@@ -139,6 +139,35 @@ impl<'a> ComptimeEnv<'a> {
             runtime_locals: None,
             locals: HashMap::new(),
         }
+    }
+}
+
+/// Decide whether a compile-time-known scrutinee value matches a match arm's
+/// pattern (RUE-262). Returns:
+/// - `Some(true)` / `Some(false)` — the pattern definitely does / does not match;
+/// - `None` — the match can't be decided at compile time here (an enum-variant
+///   `Path` pattern, or a scrutinee whose kind the pattern can't compare
+///   against), so the caller treats the whole `match` as non-evaluable.
+fn const_pattern_matches(pattern: &RirPattern, scrut: ConstValue) -> Option<bool> {
+    match pattern {
+        RirPattern::Wildcard(_) => Some(true),
+        RirPattern::Bool(b, _) => match scrut {
+            ConstValue::Bool(sb) => Some(sb == *b),
+            _ => None,
+        },
+        RirPattern::Int {
+            value, negative, ..
+        } => match scrut {
+            ConstValue::Integer(n) => {
+                let pv = *value as i128;
+                let pv = if *negative { -pv } else { pv };
+                Some(n == pv)
+            }
+            _ => None,
+        },
+        // Enum-variant patterns aren't representable as a `ConstValue` (there
+        // is no comptime enum-value form), so they can't be decided here.
+        RirPattern::Path { .. } => None,
     }
 }
 
@@ -714,6 +743,59 @@ impl Sema<'_> {
                 }
                 env.locals = saved_locals;
                 Ok(result)
+            }
+
+            // Comptime-known `if`: select the taken branch and reduce to its
+            // value. This is what lets an `if` in a `-> type` body pick a
+            // struct/enum branch at compile time (spec 4.14:17, RUE-262) — the
+            // same branch selection ordinary comptime values already relied on
+            // through the block/let path, now available as an expression. A
+            // non-constant condition makes the whole `if` non-evaluable.
+            InstData::Branch {
+                cond,
+                then_block,
+                else_block,
+            } => {
+                let (cond, then_block, else_block) = (*cond, *then_block, *else_block);
+                match self.eval_const_expr(cond, env)? {
+                    Some(ConstValue::Bool(true)) => self.eval_const_expr(then_block, env),
+                    Some(ConstValue::Bool(false)) => match else_block {
+                        Some(else_block) => self.eval_const_expr(else_block, env),
+                        // `if c { .. }` with no else yields unit when false.
+                        None => Ok(Some(ConstValue::Unit)),
+                    },
+                    // Non-constant (or non-bool) condition: not evaluable.
+                    _ => Ok(None),
+                }
+            }
+
+            // Comptime-known `match`: evaluate the scrutinee, select the first
+            // arm whose pattern matches, and reduce to that arm's body value
+            // (spec 4.14:19, RUE-262). An enum-variant (`Path`) pattern isn't
+            // representable as a `ConstValue`, and a non-constant scrutinee is
+            // not decidable here — both make the `match` non-evaluable.
+            InstData::Match {
+                scrutinee,
+                arms_start,
+                arms_len,
+            } => {
+                let (scrutinee, arms_start, arms_len) = (*scrutinee, *arms_start, *arms_len);
+                let Some(scrut) = self.eval_const_expr(scrutinee, env)? else {
+                    return Ok(None);
+                };
+                let arms = self.rir.get_match_arms(arms_start, arms_len);
+                for (pattern, body) in arms {
+                    match const_pattern_matches(&pattern, scrut) {
+                        Some(true) => return self.eval_const_expr(body, env),
+                        Some(false) => continue,
+                        // Undecidable pattern (e.g. an enum-variant `Path`
+                        // against a non-representable scrutinee): bail out.
+                        None => return Ok(None),
+                    }
+                }
+                // No arm matched. Exhaustiveness checking should make this
+                // unreachable for a well-typed match; treat as non-evaluable.
+                Ok(None)
             }
 
             // Anonymous struct type: evaluate to a comptime type value,

@@ -1988,12 +1988,12 @@ impl<'a> Sema<'a> {
         // compile (RUE-155). Resolve the name here so unknown annotations get
         // the same E0204 as signature positions. Comptime type variables
         // (e.g. `let P = Pair(i32); let p: P = ...`) and substituted type
-        // parameters live in ctx, not in the type tables, so accept those
-        // first.
+        // parameters live in ctx, not in the type tables, so resolution goes
+        // through `resolve_type_with_ctx`, which consults those local comptime
+        // bindings at every level of a composite annotation — a scalar `P`, and
+        // an inner element/pointee of `[P; 2]` / `ptr const P` alike (RUE-263).
         if let Some(ty_sym) = ty {
-            if !ctx.comptime_type_vars.contains_key(&ty_sym) {
-                self.resolve_type(ty_sym, span)?;
-            }
+            self.resolve_type_with_ctx(ty_sym, span, ctx)?;
         }
 
         // Analyze the initializer. A `for`-loop element binding is a shared
