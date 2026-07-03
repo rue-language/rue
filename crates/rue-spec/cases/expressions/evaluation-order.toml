@@ -383,3 +383,38 @@ fn main() -> i32 {
 }
 """
 exit_code = 14
+
+# =============================================================================
+# Array Literals - Elements evaluated in source order (RUE-298)
+# =============================================================================
+
+[[case]]
+name = "array_literal_source_order_mutable"
+spec = ["4.0:3", "4.0:10"]
+source = """
+fn main() -> i32 {
+    let mut x = 0;
+    // Each element mutates x and reads it back.
+    // Left-to-right: [1, 2, 3]; encode as arr[0]*100 + arr[1]*10 + arr[2].
+    let arr: [i32; 3] = [{ x = x + 1; x }, { x = x + 1; x }, { x = x + 1; x }];
+    arr[0] * 100 + arr[1] * 10 + arr[2]
+}
+"""
+exit_code = 123
+
+[[case]]
+name = "array_literal_source_order_observable"
+spec = ["4.0:3", "4.0:10"]
+source = """
+fn tap(n: i32) -> i32 { @dbg(n); n }
+fn main() -> i32 {
+    let arr: [i32; 3] = [tap(1), tap(2), tap(3)];
+    arr[0] + arr[1] + arr[2]
+}
+"""
+exit_code = 6
+expected_stdout = """
+1
+2
+3
+"""

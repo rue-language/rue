@@ -94,3 +94,35 @@ fn main() -> i32 {
 }
 """
 compile_fail = true
+
+# =============================================================================
+# Value Denotation (RUE-298)
+# A field access denotes the value currently held in the named field.
+# =============================================================================
+
+[[case]]
+name = "field_denotes_field_value"
+spec = ["4.12:9"]
+source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    let p = Point { x: 42, y: 10 };
+    // p.x denotes the value held in field x.
+    p.x
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "field_denotes_value_after_store"
+spec = ["4.12:9"]
+source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    let mut p = Point { x: 0, y: 0 };
+    p.x = 42;
+    // The field access reads back the value currently held.
+    p.x
+}
+"""
+exit_code = 42

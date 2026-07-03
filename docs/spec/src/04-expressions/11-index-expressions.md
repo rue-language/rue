@@ -31,6 +31,13 @@ checking (a negative index always fails the bounds check and traps at runtime).
 
 The type of an index expression is the element type `T`.
 
+{{ rule(id="4.11:14", cat="dynamic-semantics") }}
+
+An index expression `base[index]` evaluates to the element stored at position
+`index` of the array denoted by `base` (elements are numbered from zero). The
+base expression is evaluated before the index expression (section 4.0), and the
+resulting index is bounds-checked (see below) before the element is read.
+
 {{ rule(id="4.11:6") }}
 
 ```rue

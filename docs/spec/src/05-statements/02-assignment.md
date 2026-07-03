@@ -24,6 +24,30 @@ mixed. All of `x`, `p.f`, `arr[i]`, `arr[i].f`, `p.arr[i]`, `a.b.c`, and
 `o.items[i].arr[j]` are valid targets. (Appendix A's `place_expr` is the
 normative statement of this production; see that appendix.)
 
+## Evaluation Order
+
+{{ rule(id="5.2:14", cat="dynamic-semantics") }}
+
+In an assignment `target = expression`, the right-hand side `expression` is
+evaluated first to produce the value to be stored. The assignment target names
+a *place*; any index subexpressions appearing in the target (the `[e]` in an
+`arr[e]` target) are evaluated after the right-hand side, in source order
+(left-to-right). Once the place has been resolved, the produced value is
+written into it.
+
+{{ rule(id="5.2:15") }}
+
+```rue
+fn tap(n: i32) -> i32 { @dbg(n); n }
+
+fn main() -> i32 {
+    let mut arr: [i32; 4] = [0, 0, 0, 0];
+    // Prints 2 (the right-hand side) before 1 (the index of the place).
+    arr[tap(1)] = tap(2);
+    arr[1]  // 2
+}
+```
+
 ## Variable Assignment
 
 {{ rule(id="5.2:3", cat="legality-rule") }}

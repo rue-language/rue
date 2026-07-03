@@ -98,3 +98,31 @@ fn sub(x: i32, y: i32) -> i32 { x - y }
 fn main() -> i32 { sub(50, 8) }
 """
 exit_code = 42
+
+# =============================================================================
+# Value Denotation (RUE-298)
+# A call expression denotes the value returned by invoking the function.
+# =============================================================================
+
+[[case]]
+name = "call_denotes_return_value"
+spec = ["4.10:9"]
+source = """
+fn answer() -> i32 { 42 }
+fn main() -> i32 {
+    answer()
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "call_denotes_computed_return_value"
+spec = ["4.10:9"]
+source = """
+fn add(x: i32, y: i32) -> i32 { x + y }
+fn main() -> i32 {
+    // The call expression denotes the value produced by the body: 40 + 2.
+    add(40, 2)
+}
+"""
+exit_code = 42
