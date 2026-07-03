@@ -1966,10 +1966,10 @@ fn is_control_flow_expr(e: &Expr) -> bool {
 /// `-` is a complete statement, and the `-` starts a NEW statement as unary
 /// negation rather than continuing the subtraction `(block-like) - operand`.
 /// This is enforced in [`block_item_parser`] via [`block_like_head_parser`],
-/// which parses a leading block-like expression on its own (before the general
-/// Pratt expression that would otherwise absorb the `-`) (RUE-210). Note this
-/// excludes `break`/`continue`/`return`, which are diverging but not
-/// brace-terminated.
+/// which parses a leading, statement-complete block-like expression on its own
+/// (before the general Pratt expression that would otherwise absorb the `-`)
+/// (RUE-210). Note this excludes `break`/`continue`/`return`, which are
+/// diverging but not brace-terminated.
 fn is_block_like(e: &Expr) -> bool {
     matches!(
         e,
@@ -2062,24 +2062,29 @@ where
     let assign_stmt = assign_statement_parser(expr.clone()).map(BlockItem::Statement);
 
     // Block-like head: a leading `if`/`match`/`while`/`loop`/`{ }` in statement
-    // position that is immediately followed by a `-` is a *complete* statement,
-    // so it must be parsed on its own — NOT through the Pratt `expr` below,
-    // which would otherwise read the `-` as binary subtraction spanning two
-    // statements. Trying this before `expr` and stopping right after the block
-    // makes the `-` start a new statement (unary negation) instead (RUE-210).
-    // `block_like` only fires when a `-` follows; for every other follower it
-    // fails and `expr` handles the item unchanged. It is threaded in (rather
-    // than rebuilt here) because it is mutually recursive with this parser
-    // through the block bodies it contains, and it declines
-    // `break`/`return`/`continue`, which fall through to `expr`.
+    // position that stands as a *complete* statement — one followed by a
+    // boundary token (`-`, `;`, `}`, or EOF) rather than continued by an
+    // operator/suffix — is parsed on its own, NOT through the Pratt `expr`
+    // below. For a `-` follower this is a correctness rule: `expr` would read
+    // the `-` as binary subtraction spanning two statements, so stopping right
+    // after the block makes the `-` start a new statement (unary negation)
+    // instead (RUE-210). For `;`/`}`/EOF followers it is a performance rule:
+    // every nested block is `}`-terminated, so preferring this parser lets each
+    // level be descended exactly once instead of being re-parsed by `expr`,
+    // turning O(2^depth) block nesting into linear time (RUE-276). `block_like`
+    // declines any other follower (a continuing operator/suffix) and `expr`
+    // then handles the item unchanged. It is threaded in (rather than rebuilt
+    // here) because it is mutually recursive with this parser through the block
+    // bodies it contains, and it declines `break`/`return`/`continue`, which
+    // fall through to `expr`.
     let block_like_head = block_like;
 
     // Expression-based item: parse expression ONCE, then decide based on what follows.
     // This avoids O(2^n) complexity from repeatedly re-parsing expressions with backtracking.
     //
-    // The head is `block_like_head` (a standalone block-like expression) or,
-    // failing that, the general Pratt `expr`. After parsing the head, we check
-    // the next token:
+    // The head is `block_like_head` (a statement-complete block-like expression)
+    // or, failing that, the general Pratt `expr`. After parsing the head, we
+    // check the next token:
     // - `;` → expression statement (value discarded)
     // - `}` → final expression (block's return value)
     // - other → mid-block control flow (only valid for if/while/match/loop/break/continue/return)
@@ -2207,20 +2212,37 @@ where
 }
 
 /// Standalone parser for a *block-like* expression (`if`/`match`/`while`/
-/// `loop`/`{ }`) in statement position that is immediately followed by a `-`.
-/// In that case the block-like expression is a complete statement and the `-`
-/// begins a NEW statement as unary negation, rather than continuing as the
-/// subtraction `(block-like) - operand` (RUE-210, see [`is_block_like`] and
-/// [`block_item_parser`]).
+/// `loop`/`{ }`) that stands as a complete statement in statement position —
+/// i.e. one that is NOT continued into a larger expression by a following
+/// operator or postfix suffix. It succeeds only when the block-like construct is
+/// immediately followed by a *statement-boundary* token: `-`, `;`, `}`, or
+/// end-of-input (all non-consuming lookahead).
 ///
-/// The `-` lookahead is what makes this narrow and safe: `-` is the only
-/// operator that is both a prefix (unary) and an infix (binary) operator, so it
-/// is the only token that can *silently* flip meaning across the boundary.
-/// Unambiguously-binary operators (`+`, `*`, `==`, ...) are left to the general
-/// Pratt expression, which keeps a leading block-like expression as their
-/// left operand (e.g. `{ a } + { b }` stays one addition). The other prefix
-/// operators (`!`, `~`) are never infix, so they already start a new statement
-/// without special handling.
+/// Two jobs, one parser:
+///
+///  * **The `-` boundary (RUE-210).** `-` is the only operator that is both a
+///    prefix (unary) and an infix (binary) operator, so it is the only token
+///    that can *silently* flip meaning across a statement boundary. Parsing the
+///    block-like here, before the general Pratt expression, makes `{ a } - 1`
+///    two statements (`{ a }` then unary `-1`) rather than the subtraction
+///    `({ a }) - 1`. Unambiguously-binary operators (`+`, `*`, `==`, ...) and
+///    postfix suffixes (`.`, `[`, ...) are *not* boundaries, so they fail the
+///    lookahead and fall through to the general Pratt expression, which keeps a
+///    leading block-like expression as their left operand (e.g. `{ a } + { b }`
+///    stays one addition). The other prefix operators (`!`, `~`) are never
+///    infix, so they already start a new statement without special handling.
+///
+///  * **Linear-time nesting (RUE-276).** Accepting `;`/`}`/end as boundaries
+///    (not just `-`) is what keeps parsing near-linear in block-nesting depth.
+///    A nested block `{ { { ... } } }` is always terminated by `}`, so this
+///    parser *succeeds* at every level and the block-like is descended exactly
+///    once. The narrow `-`-only predicate this replaced instead *failed* on
+///    every `;`/`}`-terminated block, forcing the general Pratt `expr` to
+///    re-descend the same nested input — two full descents per level, i.e.
+///    O(2^depth) (depth 20 took >30s). The general `expr` is now reached only
+///    for the rarer case of a block-like actually continued by an operator or
+///    suffix, which is shallow in practice. Producing the same block-like `Expr`
+///    the Pratt `expr` would, the AST is byte-identical either way.
 ///
 /// It is `recursive` because the block bodies it contains hold block-items that
 /// again prefer this parser; the recursion knot lets those bodies reference the
@@ -2245,9 +2267,21 @@ where
                 Err(Rich::custom(span, "not a block-like expression"))
             }
         })
-        // Only engage the statement boundary when a `-` follows (non-consuming),
-        // so all other operators keep binding through the Pratt path.
-        .then_ignore(just(TokenKind::Minus).rewind())
+        // Engage only when the block-like is a *complete* statement — followed
+        // by a boundary token (`-`, `;`, `}`, or EOF), non-consuming. Any other
+        // follower (a binary operator or postfix suffix) means the block-like is
+        // continued into a larger expression, so decline and let the Pratt
+        // `expr` path handle it. `-` must be a boundary (RUE-210); the `;`/`}`/
+        // EOF boundaries keep deeply-nested blocks linear (RUE-276).
+        .then_ignore(
+            choice((
+                just(TokenKind::Minus).ignored(),
+                just(TokenKind::Semi).ignored(),
+                just(TokenKind::RBrace).ignored(),
+                end(),
+            ))
+            .rewind(),
+        )
         .boxed()
     })
 }
@@ -3010,6 +3044,41 @@ mod tests {
             Item::Const(_) => panic!("expected Function"),
             Item::Error(_) => panic!("expected Function"),
         }
+    }
+
+    /// Regression: deeply nested blocks must parse in (near-)linear time.
+    ///
+    /// The RUE-210 `block_like_head_parser` used to require a `-` to follow a
+    /// leading block-like construct; for every `;`/`}`-terminated block it
+    /// instead FAILED and the general Pratt `expr` re-descended the same nested
+    /// input, giving O(2^depth) behavior (RUE-276): depth 16 took ~1.6s, depth
+    /// 20 timed out (>30s). Accepting `;`/`}`/EOF as statement boundaries makes
+    /// each level descend exactly once. Depth 60 here parses effectively
+    /// instantly; if the exponential blowup ever returns this test hangs, which
+    /// the harness surfaces as a timeout.
+    #[test]
+    fn test_deeply_nested_blocks_parse_linearly() {
+        const DEPTH: usize = 60;
+        let source = format!(
+            "fn main() -> i32 {{ {} 0 {} }}",
+            "{ ".repeat(DEPTH),
+            "}".repeat(DEPTH),
+        );
+        let result = parse(&source).expect("deeply nested blocks should parse");
+        // Walk the nested-block spine and confirm the tree is actually DEPTH+1
+        // blocks deep (function body block plus DEPTH inner blocks), so the test
+        // exercises real nesting rather than a collapsed/error tree.
+        let Item::Function(f) = &result.ast.items[0] else {
+            panic!("expected function");
+        };
+        let mut expr = &f.body;
+        let mut levels = 0;
+        while let Expr::Block(block) = expr {
+            levels += 1;
+            expr = &block.expr;
+        }
+        assert_eq!(levels, DEPTH + 1, "expected fully nested block spine");
+        assert!(matches!(expr, Expr::Int(_)), "innermost value is `0`");
     }
 
     #[test]

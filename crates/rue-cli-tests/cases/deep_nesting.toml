@@ -1,0 +1,21 @@
+[section]
+id = "cli.deep_nesting"
+name = "Deeply nested blocks compile in linear time (RUE-276)"
+description = """
+Regression coverage for RUE-276: the parser was O(2^depth) in block-nesting
+depth because the RUE-210 leading-block-like rule required a `-` to follow and
+otherwise let the general Pratt `expr` re-descend the same nested input (two
+full descents per level). Depth 16 took ~1.6s and depth 20 timed out (>30s).
+A 60-level nested block now compiles effectively instantly; the 10s per-run
+timeout below turns any return of the exponential blowup into a loud failure
+rather than a silent hang.
+"""
+
+# A 60-deep nest of bare blocks whose innermost value is 42. Every inner block
+# is `}`-terminated, so with the fix each level is parsed exactly once.
+[[case]]
+name = "deep_nested_blocks_return_value"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { { {  42  } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } }
+""" }]
+exit_code = 42
