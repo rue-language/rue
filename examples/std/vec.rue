@@ -7,32 +7,33 @@
 // mutation, and the raw-pointer intrinsics all at once — exactly the "stdlib on
 // unchecked code" framing of RUE-1.
 //
+// `get`/`pop` return `Option(T)` (from the sibling `option.rue`), so Vec must
+// be compiled together with `option.rue` in the same flat multi-file namespace:
+//
+//     rue my_program.rue vec.rue option.rue -o my_program
+//
 // Usage (the element type is chosen when you instantiate the type function):
 //
-//     let V = @import("vec.rue").Vec(i32);   // or, same-directory, just Vec(i32)
+//     let V = Vec(i32);
+//     let O = Option(i32);
 //     let mut v = V::new();
 //     v.push(10);
 //     v.push(20);
-//     let n = v.len();          // 2
-//     let x = v.get(0);         // 10
+//     let n = v.len();                                 // 2
+//     let x = match v.get(0) { O::Some(e) => e, O::None => -1 };   // 10
 //     v.set(0, 99);
-//     let last = v.pop_or(0);   // 20
-//     v.free();                 // release the buffer
-//
-// Requires `--preview method_receivers` (borrow/inout receivers, ADR-0037).
+//     let last = match v.pop() { O::Some(e) => e, O::None => -1 }; // 20
+//     v.free();                                        // release the buffer
 //
 // SCOPE / KNOWN LIMITATIONS (tracked separately — this file deliberately does
 // not work around them):
 //
-//   * Copy element types only. `get`/`pop_or` return an element *by copy*
-//     (`@ptr_read`). Move-out of a non-Copy element and an `Option`-returning
-//     accessor are blocked today because the enclosing comptime type parameter
-//     `T` is not usable inside a method body to name `Option(T)` (E1201), so the
-//     API uses caller-supplied defaults (`get_or`, `pop_or`) for out-of-bounds
-//     instead of `Option(T)`. See the meta report for RUE issue references.
-//   * No automatic destructor. A `drop fn` cannot attach to the anonymous
-//     struct produced by a comptime type function (E0417), so the buffer is not
-//     freed automatically at scope exit — call `free()` explicitly. (The
+//   * Copy element types only. `get`/`pop` return an element *by copy* wrapped
+//     in `Option(T)` (`@ptr_read`). Move-out of a non-Copy element is not yet
+//     supported.
+//   * No automatic destructor. A `drop fn` cannot yet attach to the anonymous
+//     struct produced by a comptime type function (RUE-312), so the buffer is
+//     not freed automatically at scope exit — call `free()` explicitly. (The
 //     `@free`-from-a-destructor path itself works and is proven on a concrete
 //     named struct; it is the *generic* attachment that is blocked.)
 //   * Multi-slot aggregate element types (e.g. a two-field struct) now work:
@@ -40,6 +41,9 @@
 //     `@ptr_write` walk slots upward from the element base, matching the
 //     ascending heap layout (ADR-0040 / RUE-311). The Copy restriction above
 //     still applies (elements are transferred by copy).
+//
+// The enclosing element type `T` is usable throughout the method bodies below —
+// e.g. to name `Option(T)` and bind `let O = Option(T)` (RUE-313).
 
 pub fn Vec(comptime T: type) -> type {
     struct {
@@ -82,15 +86,22 @@ pub fn Vec(comptime T: type) -> type {
         fn capacity(borrow self) -> u64 { self.cap }
         fn is_empty(borrow self) -> bool { self.len == 0 }
 
-        // Element `i` by copy. The caller must ensure `i < len` (use `get_or`
-        // for a bounds-checked read). Reading out of bounds is a heap OOB read.
-        fn get(borrow self, i: u64) -> T {
-            checked { @ptr_read(@ptr_offset(self.buf, i)) }
+        // Element `i` by copy, wrapped in `Option(T)`: `Some(x)` when in
+        // bounds, `None` otherwise (ADR-0041). The enclosing element type `T`
+        // is in scope here, so the method can name `Option(T)` directly
+        // (RUE-313).
+        fn get(borrow self, i: u64) -> Option(T) {
+            let O = Option(T);
+            if i < self.len {
+                O::Some(checked { @ptr_read(@ptr_offset(self.buf, i)) })
+            } else {
+                O::None
+            }
         }
 
-        // Element `i` by copy, or `default` when `i` is out of bounds. This is
-        // the non-trapping accessor (the `Copy`-only stand-in for the
-        // `Option(T)`-returning `get` described in ADR-0041, blocked today).
+        // Element `i` by copy, or `default` when `i` is out of bounds. An
+        // ergonomic default-based read for callers that don't want to match on
+        // `Option`.
         fn get_or(borrow self, i: u64, default: T) -> T {
             if i < self.len {
                 checked { @ptr_read(@ptr_offset(self.buf, i)) }
@@ -124,9 +135,21 @@ pub fn Vec(comptime T: type) -> type {
             self.len = self.len + 1;
         }
 
-        // Remove and return the last element, or `default` when empty. (The
-        // `Option(T)`-returning `pop` of ADR-0041 is blocked today; this is the
-        // Copy-typed stand-in.)
+        // Remove and return the last element as `Some(x)`, or `None` when the
+        // vector is empty (ADR-0041).
+        fn pop(inout self) -> Option(T) {
+            let O = Option(T);
+            if self.len == 0 {
+                O::None
+            } else {
+                self.len = self.len - 1;
+                O::Some(checked { @ptr_read(@ptr_offset(self.buf, self.len)) })
+            }
+        }
+
+        // Remove and return the last element, or `default` when empty. An
+        // ergonomic default-based pop for callers that don't want to match on
+        // `Option`.
         fn pop_or(inout self, default: T) -> T {
             if self.len == 0 {
                 default
@@ -155,7 +178,7 @@ pub fn Vec(comptime T: type) -> type {
         // --- teardown ---
 
         // Release the heap buffer and reset to the empty state. Because a
-        // generic anonymous struct cannot yet carry a `drop fn` (E0417), this
+        // generic anonymous struct cannot yet carry a `drop fn` (RUE-312), this
         // must be called explicitly to avoid leaking the buffer.
         fn free(inout self) {
             checked { @free(self.buf, self.cap); };

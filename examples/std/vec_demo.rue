@@ -1,14 +1,16 @@
 // Dogfood for the source-level Vec(T) library (examples/std/vec.rue, RUE-1).
 //
-// Compile (multi-file; names resolve across the listed files):
-//   rue examples/std/vec_demo.rue examples/std/vec.rue \
-//       --preview method_receivers -o vec_demo
+// Compile (flat multi-file namespace; names resolve across the listed files,
+// and Vec's `get`/`pop` return `Option(T)` from option.rue):
+//   rue examples/std/vec_demo.rue examples/std/vec.rue examples/std/option.rue \
+//       -o vec_demo
 //
-// Exercises push/len/get/set/pop/while-sum/out-of-bounds on a Vec(i32).
+// Exercises push/len/get/set/pop/while-sum/out-of-bounds on a Vec(i32), with
+// the `Option(T)`-returning accessors (RUE-313).
 
 fn main() -> i32 {
-    let m = @import("vec.rue");
-    let V = m.Vec(i32);
+    let V = Vec(i32);
+    let O = Option(i32);
 
     let mut v = V::new();
     v.push(10);
@@ -16,20 +18,23 @@ fn main() -> i32 {
     v.push(30);
     @dbg(v.len());          // 3
 
-    @dbg(v.get(1));         // 20
+    // `get` returns Option(i32): Some in bounds, None otherwise.
+    @dbg(match v.get(1) { O::Some(x) => x, O::None => -1 });   // 20
     v.set(0, 99);
-    @dbg(v.get(0));         // 99
+    @dbg(match v.get(0) { O::Some(x) => x, O::None => -1 });   // 99
 
-    @dbg(v.pop_or(0));      // 30 (removed)
+    // `pop` returns Option(i32): Some(last) or None when empty.
+    @dbg(match v.pop() { O::Some(x) => x, O::None => -1 });    // 30 (removed)
     @dbg(v.len());          // 2
 
-    @dbg(v.get_or(99, 0));  // 0  (out-of-bounds -> default)
+    @dbg(match v.get(99) { O::Some(x) => x, O::None => -1 });  // -1 (out of bounds)
 
     // Sum the remaining elements with a manual while loop (no for/index sugar).
+    // `get_or` is the ergonomic default-based read used inside the loop.
     let mut i: u64 = 0;
     let mut sum: i32 = 0;
     while i < v.len() {
-        sum = sum + v.get(i);
+        sum = sum + v.get_or(i, 0);
         i = i + 1;
     }
     @dbg(sum);              // 99 + 20 = 119

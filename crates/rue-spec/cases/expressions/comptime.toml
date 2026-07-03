@@ -861,6 +861,65 @@ fn main() -> i32 {
 """
 exit_code = 9
 
+# The enclosing `comptime T: type` parameter is usable inside a method BODY,
+# not only in field/method signatures (RUE-313). Declaring a `T`-typed local
+# inside the body resolves `T` to the instantiation's concrete type.
+[[case]]
+name = "anon_struct_enclosing_type_local_in_body"
+spec = ["4.14:12"]
+description = "Enclosing comptime T names a local variable type inside a method body"
+source = """
+fn Box(comptime T: type) -> type {
+    struct {
+        v: T,
+
+        fn dup(self) -> T {
+            let x: T = self.v;
+            x
+        }
+    }
+}
+fn main() -> i32 {
+    let B = Box(i32);
+    let b: B = B { v: 42 };
+    b.dup()
+}
+"""
+exit_code = 42
+
+# The enclosing `T` can also build a generic type application `Option(T)` inside
+# a method body (bound to a local, then constructed), so a method returns a real
+# Option over the element type (RUE-313).
+[[case]]
+name = "anon_struct_enclosing_type_builds_option"
+spec = ["4.14:12"]
+description = "Enclosing comptime T builds Option(T) inside a method body"
+source = """
+fn Option(comptime T: type) -> type {
+    enum { Some(T), None }
+}
+fn Box(comptime T: type) -> type {
+    struct {
+        v: T,
+
+        fn wrap(self) -> Option(T) {
+            let O = Option(T);
+            O::Some(self.v)
+        }
+    }
+}
+fn main() -> i32 {
+    let B = Box(i32);
+    let O = Option(i32);
+    let b: B = B { v: 42 };
+    match b.wrap() {
+        O::Some(x) => x,
+        O::None => 0,
+    }
+}
+"""
+exit_code = 42
+
 [[case]]
 name = "anon_struct_associated_fn"
 spec = ["4.14:13"]

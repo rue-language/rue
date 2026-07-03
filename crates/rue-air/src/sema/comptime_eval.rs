@@ -913,6 +913,17 @@ impl Sema<'_> {
                             // caller reports the comptime failure.
                             return Ok(None);
                         }
+
+                        // Remember the enclosing type substitution (e.g.
+                        // `T -> i32` for `Vec(i32)`) so it resolves inside every
+                        // method *body*, not just the signatures registered
+                        // above (RUE-313). Method bodies are analyzed later, in
+                        // a separate pass that has no other way to recover the
+                        // constructor's type parameters.
+                        if needs_registration && !env.type_subst.is_empty() {
+                            self.anon_struct_type_subst
+                                .insert(struct_id, env.type_subst.clone());
+                        }
                     }
                 }
                 Ok(Some(ConstValue::Type(struct_ty)))

@@ -62,7 +62,7 @@ use rue_span::{FileId, Span};
 
 use crate::intern_pool::TypeInternPool;
 use crate::param_arena::ParamArena;
-use crate::types::{EnumId, StructId};
+use crate::types::{EnumId, StructId, Type};
 
 /// Semantic analyzer that converts RIR to AIR.
 pub struct Sema<'a> {
@@ -112,6 +112,14 @@ pub struct Sema<'a> {
     /// stored here, keyed by StructId. These values become part of type identity:
     /// FixedBuffer(42) and FixedBuffer(100) are different types.
     pub(crate) anon_struct_captured_values: HashMap<StructId, HashMap<Spur, ConstValue>>,
+    /// Captured comptime *type* substitution for anonymous structs produced by
+    /// a `-> type` comptime constructor. When `Vec(comptime T: type)` is
+    /// instantiated as `Vec(i32)`, this stores `T -> i32` keyed by the
+    /// resulting StructId, so the enclosing type parameter resolves not just in
+    /// field/method *signatures* (done at registration) but throughout every
+    /// method *body* at analysis time (RUE-313). Empty for non-generic anon
+    /// structs.
+    pub(crate) anon_struct_type_subst: HashMap<StructId, HashMap<Spur, Type>>,
     /// Span of each user-defined `drop fn` declaration, keyed by the struct
     /// it destructs. Used by diagnostics that point at the destructor
     /// (E0456 field-move-out-of-destructor-type, E0457 @copy-with-destructor).
@@ -159,6 +167,7 @@ impl<'a> Sema<'a> {
             param_arena: ParamArena::new(),
             anon_struct_method_sigs: HashMap::new(),
             anon_struct_captured_values: HashMap::new(),
+            anon_struct_type_subst: HashMap::new(),
             destructor_spans: HashMap::new(),
             infectious_linear: HashMap::new(),
             comptime_type_call_depth: 0,

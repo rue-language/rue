@@ -391,6 +391,11 @@ fn analyze_all_function_bodies_sequential(sema: &mut Sema<'_>) -> MultiErrorResu
                 .get(&struct_id)
                 .cloned()
                 .unwrap_or_else(HashMap::new);
+            let enclosing_type_subst = sema
+                .anon_struct_type_subst
+                .get(&struct_id)
+                .cloned()
+                .unwrap_or_else(HashMap::new);
 
             match sema.analyze_method_body(
                 &infer_ctx,
@@ -399,6 +404,7 @@ fn analyze_all_function_bodies_sequential(sema: &mut Sema<'_>) -> MultiErrorResu
                 method_info.body,
                 method_info.struct_type,
                 &captured_values,
+                &enclosing_type_subst,
             ) {
                 Ok((
                     air,
@@ -678,6 +684,11 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
                     .get(&struct_id)
                     .cloned()
                     .unwrap_or_else(HashMap::new);
+                let enclosing_type_subst = sema
+                    .anon_struct_type_subst
+                    .get(&struct_id)
+                    .cloned()
+                    .unwrap_or_else(HashMap::new);
 
                 match sema.analyze_method_body(
                     &infer_ctx,
@@ -686,6 +697,7 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
                     method_info.body,
                     method_info.struct_type,
                     &captured_values,
+                    &enclosing_type_subst,
                 ) {
                     Ok((
                         air,
@@ -1892,6 +1904,7 @@ impl<'a> Sema<'a> {
         body: InstRef,
         self_type: Type,
         captured_comptime_values: &std::collections::HashMap<Spur, ConstValue>,
+        enclosing_type_subst: &std::collections::HashMap<Spur, Type>,
     ) -> CompileResult<(
         Air,
         u32,
@@ -1902,9 +1915,13 @@ impl<'a> Sema<'a> {
         HashSet<Spur>,
         HashSet<(StructId, Spur)>,
     )> {
-        // Create a type substitution map with Self -> the struct type
+        // Create a type substitution map with Self -> the struct type, plus the
+        // enclosing `-> type` constructor's type parameters (e.g. `T -> i32`
+        // for `Vec(i32)`), so those parameters resolve throughout the method
+        // body — `let x: T`, `Option(T)`, etc. (RUE-313). `Self` is inserted
+        // last so it always wins over any same-named constructor parameter.
         let self_sym = self.interner.get_or_intern("Self");
-        let mut type_subst = HashMap::new();
+        let mut type_subst = enclosing_type_subst.clone();
         type_subst.insert(self_sym, self_type);
 
         self.analyze_function_internal(
