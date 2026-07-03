@@ -30,7 +30,8 @@ use super::context::{
 };
 use super::{AnalyzedFunction, InferenceContext, MethodInfo, Sema, SemaOutput};
 use crate::inference::{
-    Constraint, ConstraintContext, ConstraintGenerator, ParamVarInfo, Unifier, UnifyResult,
+    Constraint, ConstraintContext, ConstraintGenerator, InferType, ParamVarInfo, Unifier,
+    UnifyResult,
 };
 use crate::inst::{
     Air, AirArgMode, AirCallArg, AirInst, AirInstData, AirPlaceBase, AirProjection, AirRef,
@@ -2017,12 +2018,25 @@ impl<'a> Sema<'a> {
         // function). Real parameters keep their declared type: in a
         // value-specialized body (RUE-166) the comptime value parameter is
         // also a runtime parameter with a precise type (e.g. `comptime n:
-        // i64`), which the fallback below (i32 for any integer) must not
-        // clobber.
+        // i64`), inserted into `param_vars` above, which the gap-filling
+        // `or_insert` here must not clobber.
+        //
+        // A *captured* integer value carries only its magnitude — its declared
+        // width is not threaded through the capture — so it is typed as a
+        // fresh integer-literal variable and takes its width from use (a
+        // `comptime N: u8` read where u8 is expected unifies to u8), exactly
+        // like the literal it stands in for. Emission then reads that resolved
+        // width back out of `resolved_types` instead of hard-coding i32
+        // (RUE-216).
         if let Some(values) = value_subst {
             for (name, const_val) in values {
                 let ty = match const_val {
-                    ConstValue::Integer(_) => Type::I32, // TODO: Track actual type
+                    ConstValue::Integer(_) => {
+                        param_vars.entry(*name).or_insert(ParamVarInfo {
+                            ty: InferType::Var(cgen.fresh_int_literal_var()),
+                        });
+                        continue;
+                    }
                     ConstValue::Bool(_) => Type::BOOL,
                     ConstValue::Type(t) => *t,
                     ConstValue::Unit => Type::UNIT,
@@ -2187,7 +2201,8 @@ impl<'a> Sema<'a> {
                 // operands through here (RUE-165). Constants inline a fresh
                 // value, so there is no move state to preserve, and unknown
                 // names still get E0201 from the fallback.
-                return self.analyze_var_ref(air, *name, inst.span, ctx);
+                let resolved_ty = ctx.resolved_types.get(&inst_ref).copied();
+                return self.analyze_var_ref(air, *name, inst.span, resolved_ty, ctx);
             };
 
             let ty = local.ty;

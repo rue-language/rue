@@ -2000,7 +2000,10 @@ impl<'a> Sema<'a> {
                 ctx,
             ),
 
-            InstData::VarRef { name } => self.analyze_var_ref(air, *name, inst.span, ctx),
+            InstData::VarRef { name } => {
+                let resolved_ty = ctx.resolved_types.get(&inst_ref).copied();
+                self.analyze_var_ref(air, *name, inst.span, resolved_ty, ctx)
+            }
 
             InstData::ParamRef { index: _, name } => {
                 self.analyze_param_ref(air, *name, inst.span, ctx)
@@ -2192,6 +2195,11 @@ impl<'a> Sema<'a> {
         air: &mut Air,
         name: Spur,
         span: Span,
+        // The Hindley-Milner-resolved type of this reference, if known. Used
+        // to recover the declared width of a captured comptime value parameter
+        // (a `comptime n: u8` reference), whose `ConstValue` carries only the
+        // integer magnitude, not its type (RUE-216).
+        resolved_ty: Option<Type>,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
         // Check if it's a parameter — but a `let` that shadows the parameter
@@ -2380,13 +2388,23 @@ impl<'a> Sema<'a> {
         if let Some(const_value) = ctx.comptime_value_vars.get(&name) {
             match const_value {
                 ConstValue::Integer(val) => {
-                    // For now, emit as i32 const. TODO: Track actual type.
+                    // Emit the const with the parameter's declared width. The
+                    // `ConstValue` carries only the integer magnitude, so the
+                    // type comes from the HM-resolved type of this reference
+                    // (a captured `comptime n: u8` reference resolves to u8).
+                    // Falling back to i32 when no integer type was resolved
+                    // preserves the historical behavior for the untyped case
+                    // (RUE-216).
+                    let ty = match resolved_ty {
+                        Some(t) if t.is_integer() => t,
+                        _ => Type::I32,
+                    };
                     let air_ref = air.add_inst(AirInst {
                         data: AirInstData::Const(*val as u64),
-                        ty: Type::I32,
+                        ty,
                         span,
                     });
-                    return Ok(AnalysisResult::new(air_ref, Type::I32));
+                    return Ok(AnalysisResult::new(air_ref, ty));
                 }
                 ConstValue::Bool(val) => {
                     let air_ref = air.add_inst(AirInst {

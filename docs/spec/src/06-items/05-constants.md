@@ -34,11 +34,10 @@ const FLAG: bool = !false;       // boolean operators
 
 {{ rule(id="6.5:10", cat="informative") }}
 
-In the current implementation, a module member access (`m.CONST`, 10.4:12)
-is compile-time evaluable only as a whole initializer, not as the operand of
-an operator: write `const BASE: i32 = m.LIMIT; const N: i32 = BASE + 1;`
-rather than `const N: i32 = m.LIMIT + 1;`. This restriction is an
-implementation artifact, not a language guarantee.
+A module member access (`m.CONST`, 10.4:12) is itself compile-time evaluable,
+so it composes in any operand position of a constant initializer just like a
+reference to a local constant: `const N: i32 = m.LIMIT + 1;` is accepted, as
+is the whole-initializer form `const N: i32 = m.LIMIT;`.
 
 ## Types of Constants
 
