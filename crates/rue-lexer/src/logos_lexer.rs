@@ -97,6 +97,17 @@ fn process_string_from_quote(lex: &mut logos::Lexer<'_, LogosTokenKind>) -> Resu
                     consumed += 1;
                     result.push('\0');
                 }
+                Some('\n') | Some('\r') => {
+                    // A backslash immediately before an end-of-line is an
+                    // unterminated string (spec 2.1:9), not an invalid escape.
+                    // Reporting the raw newline/CR as the offending escape char
+                    // would also render a literal control char into the
+                    // diagnostic. Don't consume the line terminator (mirror the
+                    // bare-newline path below) so the span points at the string
+                    // start.
+                    lex.bump(consumed);
+                    return Err(LexError::UnterminatedString);
+                }
                 Some(other) => {
                     // Invalid escape - consume the char so the token covers it,
                     // and record exactly where it is for the diagnostic span.
@@ -532,15 +543,6 @@ impl<'a> LogosLexer<'a> {
         Self {
             source,
             interner: ThreadedRodeo::default(),
-            file_id: FileId::DEFAULT,
-        }
-    }
-
-    /// Create a new lexer with an existing interner.
-    pub fn with_interner(source: &'a str, interner: ThreadedRodeo) -> Self {
-        Self {
-            source,
-            interner,
             file_id: FileId::DEFAULT,
         }
     }
