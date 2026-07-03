@@ -5,11 +5,11 @@
 #
 # Vec is generic over a Copy element type and is built entirely on the unchecked
 # heap intrinsics @alloc/@realloc/@free behind a safe method API. Its `get`/`pop`
-# accessors return `Option(T)` (from option.rue) — the enclosing element type
-# `T` is usable inside the method bodies (RUE-313). See vec.rue's header for the
-# (separately tracked) limitations this stays within: Copy elements, explicit
-# free() instead of an automatic destructor (RUE-312), and single-slot element
-# types.
+# accessors return `Option(T)` (from option.rue), with the enclosing element type
+# `T` usable inside the method bodies (RUE-313). It also owns its buffer and frees
+# it automatically in a `drop fn` at scope exit (RUE-312); the
+# `vec_i32_raii_auto_free` case below exercises that path with no explicit free()
+# call. See vec.rue's header for the remaining limitation: Copy element types only.
 
 [section]
 id = "cli.vec_library"
@@ -238,3 +238,79 @@ pub fn Vec(comptime T: type) -> type {
 args = ["main.rue", "vec.rue", "-o", "prog"]
 stdout = "3\n3\n4\n90\n91\n5\n6\n2\n"
 exit_code = 0
+
+# RAII: the Vec owns its buffer and frees it automatically in its `drop fn` at
+# scope exit — the program never calls free(). This exercises the real Vec
+# destructor end-to-end (parse + monomorphize + drop-glue + @free), the last
+# gap to a real Vec (RUE-312). The `drop fn(self)` here mirrors examples/std/
+# vec.rue. Output is the same as the explicit-free dogfood; the destructor's
+# @free is a silent no-op under the bump allocator, so correctness is that the
+# program compiles, runs, and exits cleanly with the buffer released by the
+# destructor rather than a manual call.
+[[case]]
+name = "vec_i32_raii_auto_free"
+description = "Vec(i32) frees its buffer via its drop fn at scope exit — no explicit free() call (RUE-312)."
+files = [
+  { path = "main.rue", source = """
+fn main() -> i32 {
+    let m = @import(\"vec.rue\");
+    let V = m.Vec(i32);
+
+    let mut v = V::new();
+    v.push(10);
+    v.push(20);
+    v.push(30);
+    @dbg(v.len());          // 3
+    @dbg(v.get(0));         // 10
+    @dbg(v.get(2));         // 30
+    let sum: i32 = v.get(0) + v.get(1) + v.get(2);
+    @dbg(sum);              // 60
+    sum
+    // v is dropped here: its drop fn frees the buffer automatically.
+}
+""" },
+  { path = "vec.rue", source = """
+pub fn Vec(comptime T: type) -> type {
+    struct {
+        buf: ptr mut T,
+        len: u64,
+        cap: u64,
+
+        fn new() -> Self {
+            let zero: u64 = 0;
+            Self { buf: checked { @int_to_ptr(zero) }, len: 0, cap: 0 }
+        }
+        fn len(borrow self) -> u64 { self.len }
+
+        fn reserve(inout self) {
+            if self.len == self.cap {
+                let new_cap: u64 = if self.cap == 0 { 4 } else { self.cap * 2 };
+                checked {
+                    let grown = @realloc(self.buf, self.cap, new_cap);
+                    self.buf = grown;
+                };
+                self.cap = new_cap;
+            }
+        }
+        fn push(inout self, x: T) {
+            self.reserve();
+            checked {
+                let slot = @ptr_offset(self.buf, self.len);
+                @ptr_write(slot, x);
+            };
+            self.len = self.len + 1;
+        }
+        fn get(borrow self, i: u64) -> T {
+            checked { @ptr_read(@ptr_offset(self.buf, i)) }
+        }
+
+        drop fn(self) {
+            checked { @free(self.buf, self.cap); };
+        }
+    }
+}
+""" },
+]
+args = ["main.rue", "vec.rue", "-o", "prog"]
+stdout = "3\n10\n30\n60\n"
+exit_code = 60

@@ -23,19 +23,22 @@
 //     let x = match v.get(0) { O::Some(e) => e, O::None => -1 };   // 10
 //     v.set(0, 99);
 //     let last = match v.pop() { O::Some(e) => e, O::None => -1 }; // 20
-//     v.free();                                        // release the buffer
+//     // the heap buffer is freed AUTOMATICALLY when `v` goes out of scope
+//     // (the `drop fn` below); call `v.free()` only for explicit early release.
+//
+// RAII: `Vec` owns its buffer and frees it in its destructor at scope exit
+// (RUE-312), so callers no longer have to remember `free()`. `free()` remains
+// available to release the buffer early; it resets the vector to empty, so the
+// scope-exit destructor is then a safe no-op. `get`/`pop` return `Option(T)`
+// (RUE-313).
 //
 // SCOPE / KNOWN LIMITATIONS (tracked separately — this file deliberately does
 // not work around them):
 //
 //   * Copy element types only. `get`/`pop` return an element *by copy* wrapped
-//     in `Option(T)` (`@ptr_read`). Move-out of a non-Copy element is not yet
-//     supported.
-//   * No automatic destructor. A `drop fn` cannot yet attach to the anonymous
-//     struct produced by a comptime type function (RUE-312), so the buffer is
-//     not freed automatically at scope exit — call `free()` explicitly. (The
-//     `@free`-from-a-destructor path itself works and is proven on a concrete
-//     named struct; it is the *generic* attachment that is blocked.)
+//     in `Option(T)` (`@ptr_read`, RUE-313). Move-out of a non-Copy element is
+//     not yet supported. (The destructor drops only the backing buffer, not
+//     per-element glue — for a Copy `T` there is none.)
 //   * Multi-slot aggregate element types (e.g. a two-field struct) now work:
 //     every aggregate is laid out ascending-in-address and `@ptr_read`/
 //     `@ptr_write` walk slots upward from the element base, matching the
@@ -177,15 +180,28 @@ pub fn Vec(comptime T: type) -> type {
 
         // --- teardown ---
 
-        // Release the heap buffer and reset to the empty state. Because a
-        // generic anonymous struct cannot yet carry a `drop fn` (RUE-312), this
-        // must be called explicitly to avoid leaking the buffer.
+        // Release the heap buffer early and reset to the empty state. This is
+        // optional: the destructor below frees the buffer automatically at
+        // scope exit. Call `free()` only to reclaim the buffer before then; it
+        // resets `buf`/`cap` so the later scope-exit drop is a safe no-op.
         fn free(inout self) {
             checked { @free(self.buf, self.cap); };
             let zero: u64 = 0;
             self.buf = checked { @int_to_ptr(zero) };
             self.len = 0;
             self.cap = 0;
+        }
+
+        // Destructor: free the backing buffer automatically when a `Vec` value
+        // goes out of scope (RUE-312). A `drop fn(self)` inside the anonymous
+        // struct is monomorphized with the type and registered as the concrete
+        // type's destructor, so the ordinary scope-exit drop glue runs it — the
+        // same machinery a named struct's top-level `drop fn` uses. For a Copy
+        // `T` there is no per-element glue, so freeing the buffer is all that is
+        // required. (After an explicit `free()`, `buf` is null and `cap` is 0,
+        // so `@free(null, 0)` here is a no-op.)
+        drop fn(self) {
+            checked { @free(self.buf, self.cap); };
         }
     }
 }

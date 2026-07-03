@@ -5,8 +5,9 @@
 //   rue examples/std/vec_demo.rue examples/std/vec.rue examples/std/option.rue \
 //       -o vec_demo
 //
-// Exercises push/len/get/set/pop/while-sum/out-of-bounds on a Vec(i32), with
-// the `Option(T)`-returning accessors (RUE-313).
+// Exercises push/len/get/set/pop/while-sum/out-of-bounds on a Vec(i32) with the
+// `Option(T)`-returning accessors (RUE-313). The buffer is freed automatically
+// when `v` goes out of scope (Vec's `drop fn`, RUE-312) — no explicit `free()`.
 
 fn main() -> i32 {
     let V = Vec(i32);
@@ -39,6 +40,6 @@ fn main() -> i32 {
     }
     @dbg(sum);              // 99 + 20 = 119
 
-    v.free();
     sum
+    // `v` is dropped here: its `drop fn` frees the heap buffer automatically.
 }

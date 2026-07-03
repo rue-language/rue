@@ -50,6 +50,13 @@ pub struct PrimitiveTypeSpurs {
     /// a dedicated `Drop` token rather than an `Ident`, the intrinsic-name
     /// parser maps that token back to this interned "drop" symbol.
     pub drop_kw: Spur,
+    /// The synthetic method name `__drop` used for a destructor declared
+    /// *inside* an anonymous (comptime-fn) struct body (`drop fn(self) { … }`).
+    /// A named struct's destructor is a top-level `drop fn Name(self)` keyed by
+    /// the struct name; an anonymous struct has no name, so its destructor is
+    /// carried as an ordinary method under this reserved name and later
+    /// registered as the struct's `{name}.__drop` destructor (RUE-312).
+    pub drop_marker: Spur,
 }
 
 impl PrimitiveTypeSpurs {
@@ -68,6 +75,7 @@ impl PrimitiveTypeSpurs {
             self_type: interner.get_or_intern("Self"),
             as_kw: interner.get_or_intern("as"),
             drop_kw: interner.get_or_intern("drop"),
+            drop_marker: interner.get_or_intern("__drop"),
         }
     }
 }
@@ -1720,9 +1728,15 @@ where
             span: span_from_extra(e),
         });
 
-    // Parse method for anonymous struct using inline method parsing
-    // Methods inside anonymous structs follow the same syntax as impl block methods
-    let anon_struct_method = anon_struct_method_parser(expr.clone());
+    // Parse a member of an anonymous struct body: either a `drop fn(self)`
+    // destructor (RUE-312) or an ordinary method. Both produce a `Method`; the
+    // destructor is carried under the reserved `__drop` name. `drop` is tried
+    // first because it is a distinct keyword token (an ordinary method always
+    // starts with directives or `fn`).
+    let anon_struct_member = choice((
+        anon_struct_drop_fn_parser(expr.clone()),
+        anon_struct_method_parser(expr.clone()),
+    ));
 
     let anon_struct_type_expr = just(TokenKind::Struct)
         .ignore_then(just(TokenKind::LBrace))
@@ -1734,8 +1748,9 @@ where
                 .collect::<Vec<_>>(),
         )
         .then(
-            // Then parse methods (not comma-separated, each ends with })
-            anon_struct_method.repeated().collect::<Vec<_>>(),
+            // Then parse methods and an optional `drop fn` (not comma-separated,
+            // each ends with })
+            anon_struct_member.repeated().collect::<Vec<_>>(),
         )
         .then_ignore(just(TokenKind::RBrace))
         .map_with(|(fields, methods), e| {
@@ -2509,6 +2524,53 @@ where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
     method_parser_with_expr(expr)
+}
+
+/// Parser for a destructor declared *inside* an anonymous struct body:
+/// `drop fn(self) { body }` (RUE-312).
+///
+/// A named struct's destructor is a top-level `drop fn Name(self)`; an
+/// anonymous struct (the one a comptime `-> type` function returns) has no
+/// name to key on, so its destructor lives in the struct body. To reuse the
+/// existing anon-struct method monomorphization + drop-glue machinery, it is
+/// modeled as an ordinary [`Method`] under the reserved name `__drop`, with a
+/// by-value `self` receiver — matching how the drop glue invokes a destructor
+/// (by value). Sema recognizes the `__drop` name and registers it as the
+/// monomorphized struct's `{name}.__drop` destructor.
+fn anon_struct_drop_fn_parser<'src, I>(
+    expr: impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone + 'src,
+) -> impl Parser<'src, I, Method, ParserExtras<'src>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    // Destructors always take `self` by value (see the drop-glue call site,
+    // which passes the receiver in `Normal` mode). Only bare `self` is
+    // accepted, mirroring the top-level `drop fn Name(self)` grammar.
+    let self_param = just(TokenKind::SelfValue).map_with(|_, e| SelfParam {
+        mode: ParamMode::Normal,
+        span: span_from_extra(e),
+    });
+
+    just(TokenKind::Drop)
+        .ignore_then(just(TokenKind::Fn))
+        .ignore_then(self_param.delimited_by(just(TokenKind::LParen), just(TokenKind::RParen)))
+        .then(block_parser(expr.clone(), block_like_head_parser(expr)))
+        .map_with(|(self_param, body), e| {
+            let span = span_from_extra(e);
+            let syms = e.state().0.syms;
+            Method {
+                directives: smallvec::SmallVec::new(),
+                name: Ident {
+                    name: syms.drop_marker,
+                    span,
+                },
+                receiver: Some(self_param),
+                params: Vec::new(),
+                return_type: None,
+                body,
+                span,
+            }
+        })
 }
 
 /// Shared implementation for method parsing.
