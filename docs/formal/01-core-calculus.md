@@ -375,7 +375,9 @@ ill-formed (`3.8:50` — a linear value consumed on only some paths). For non-li
 (the value is conservatively considered gone), and the dynamic semantics uses a
 per-path drop flag so the runtime drops it on exactly the paths that did not
 (`3.8:73`). A branch ending in `return`/`break` has outgoing state `⊥` (diverged)
-and is excluded from the join (`3.8:51`).
+and is excluded from the join (`3.8:51`); its *type* is `never`, which
+(Sub-Never), §5.7, coerces to the sibling arm's type `T`, so a diverging arm
+still satisfies the (If)/(Match) same-type premise.
 
 `match` is the elimination form for enums, and its arms join exactly as `if`'s do.
 Typing the scrutinee is a value-context **use** of it (§4.2): a move-typed enum is
@@ -443,6 +445,69 @@ glue) owns them.
 > This section is the precise content behind "implicitly drops"/"goes out of
 > scope": end-of-scope is where drop *and* the linear leak check happen, driven by
 > the ownership state Σ, not by syntax.
+
+### 5.7 Divergence and never-coercion
+
+Prose `3.4` gives Rue its **single** type coercion: the never type `!`
+(`never` here) coerces to any type. The core realizes this as one subsumption
+rule, plus typing rules that give the diverging expression forms type `never`.
+
+The expressions that *have* type `never` are those that transfer control away
+instead of yielding a value to their context (`3.4:1/2`): `return e`, `break`,
+and an infinite `loop { e }` (one with no reachable `break`). (Surface
+`continue` elaborates to the loop's back-edge and is likewise never-typed; it is
+not a distinct core form. `@panic(...)` is **not** a never form — it elaborates
+to an ordinary call of type `unit`, matching `3.4:2`, which lists only these
+control-transfer forms, and the compiler, which types a `@panic` expression at
+`unit`.)
+
+```
+  Γ;Σ;Λ ⊢ e ⇒ T_ret ⊣ _        T_ret = the enclosing function's declared return type
+  ─────────────────────────────────────────────────────── (Return)
+  Γ;Σ;Λ ⊢ return e ⇒ never ⊣ ⊥
+
+  ───────────────────────── (Break)      -- well-formed only inside a loop; hands unit to the loop
+  Γ;Σ;Λ ⊢ break ⇒ never ⊣ ⊥
+
+  Γ;Σ;Λ ⊢ e ⇒ unit ⊣ _        the loop body has no reachable `break`
+  ─────────────────────────────────────────────────────── (Loop-Div)
+  Γ;Σ;Λ ⊢ loop { e } ⇒ never ⊣ ⊥
+```
+
+`break` yields no value to its *own* context, so its type is `never`; the "value
+unit" of the grammar (§2) is what it hands to the enclosing loop, not the type of
+the `break` expression. The outgoing state `⊥` ("diverged") is exactly the `⊥`
+that §5.5's join excludes: a branch ending in one of these forms contributes no
+ownership state to the merge. (A `loop` that *is* exited by a `break` yields
+`unit` at the break's state; formalizing multi-`break` loop ownership is
+orthogonal to coercion and left to a future loop section.)
+
+A `never`-typed expression is accepted wherever a value of any type is expected —
+this is the coercion, stated as **subsumption on the bottom type** (`3.4:3/4`):
+
+```
+  Γ;Σ;Λ ⊢ e ⇒ never ⊣ Σ'
+  ───────────────────────── (Sub-Never)      -- for any type T
+  Γ;Σ;Λ ⊢ e ⇒ T ⊣ Σ'
+```
+
+Because `never` has no values (`3.4:1`), this coercion is vacuously sound: there
+is no run-time value to convert, so re-typing a diverging expression at `T`
+cannot misclassify any value. It also creates no ownership obligation: `never` is
+zero-sized (`3.4:9`) and §3 sets `class(never) = Copy`, so a `never`-typed
+expression has nothing to move, drop, or leak, and (Sub-Never) leaves `Σ'`
+untouched.
+
+(Sub-Never) is what makes §5.5's (If)/(Match) admit a diverging arm while their
+premises still demand a single common type `T`. In
+`if c { 5 } else { return 0 }` the `else` arm has type `never`, which
+(Sub-Never) re-types to `i32` to meet the `then` arm; the whole `if` is `i32`,
+and since the `else` arm's outgoing state is `⊥` the branch join is just the
+`then` arm's state. When *every* arm diverges (`3.4:6`, e.g.
+`if c { return 1 } else { return 0 }`), the principal type is `never`, which
+(Sub-Never) then coerces to whatever the surrounding context needs (there, the
+function's `i32` return type). This is the **only** coercion in the language:
+every other typing rule demands exact type identity.
 
 ---
 
@@ -579,6 +644,7 @@ far. As breadth is filled in, each new rule adds its citation.
 | §5.4 borrows / exclusivity | 6.1:14–33, 6.1:20, 6.1:30 |
 | §5.5 branch join | 3.8:50/51, 3.8:73 |
 | §5.6 scope exit: drop + leak | 3.8:32/62/66, 3.9 (drop order) |
+| §5.7 divergence + never-coercion | 3.4:1/2/3/4/6/8, 3.4:9 |
 | §6 overflow/bounds/div-zero panics | 3.1:6/13, 8.1, 8.2, 8.3, Appendix B |
 | §7 soundness | the informal safety intent throughout ch. 3 and 8 |
 
