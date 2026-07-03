@@ -3251,9 +3251,17 @@ impl<'a> Sema<'a> {
     ) -> CompileResult<AnalysisResult> {
         let member_name_str = self.interner.resolve(&member_name).to_string();
 
-        // Get the module definition to find its file path
+        // Get the module definition and resolve its file to a canonical
+        // FileId, so equivalent path spellings (`helper.rue` vs
+        // `./helper.rue`) refer to the same module (spec 10.2:4, RUE-240).
+        // `module_file_path` is then that file's stored path, used for the
+        // directory-based visibility checks below.
         let module_def = self.module_registry.get_def(module_id);
-        let module_file_path = module_def.file_path.clone();
+        let module_file_id = self.canonical_file_id(&module_def.file_path);
+        let module_file_path = module_file_id
+            .and_then(|id| self.get_file_path(id))
+            .map(str::to_string)
+            .unwrap_or_else(|| module_def.file_path.clone());
 
         // Get the accessing file's directory for visibility check
         let accessing_file_path = self.get_source_path(span).map(|s| s.to_string());
@@ -3263,8 +3271,8 @@ impl<'a> Sema<'a> {
             let struct_def = self.type_pool.struct_def(struct_id);
 
             // Check if this struct was defined in the module's file
-            if let Some(struct_file_path) = self.get_file_path(struct_def.file_id) {
-                if struct_file_path == module_file_path {
+            {
+                if module_file_id == Some(struct_def.file_id) {
                     // Check visibility: pub structs are visible to all, private only to same directory
                     if !struct_def.is_pub {
                         // Check if accessing from same directory
@@ -3305,8 +3313,8 @@ impl<'a> Sema<'a> {
             let enum_def = self.type_pool.enum_def(enum_id);
 
             // Check if this enum was defined in the module's file
-            if let Some(enum_file_path) = self.get_file_path(enum_def.file_id) {
-                if enum_file_path == module_file_path {
+            {
+                if module_file_id == Some(enum_def.file_id) {
                     // Check visibility: pub enums are visible to all, private only to same directory
                     if !enum_def.is_pub {
                         // Check if accessing from same directory
@@ -3350,13 +3358,12 @@ impl<'a> Sema<'a> {
         // `module_bindings` table keyed by the facade's FileId (RUE-113);
         // value consts are found by name in the flat constants table,
         // filtered to the module's file via the declaration span.
-        let member_const = self
-            .get_file_id(&module_file_path)
+        let member_const = module_file_id
             .and_then(|file_id| self.module_bindings.get(&(file_id, member_name)))
             .or_else(|| {
-                self.constants.get(&member_name).filter(|const_info| {
-                    self.get_file_path(const_info.span.file_id) == Some(module_file_path.as_str())
-                })
+                self.constants
+                    .get(&member_name)
+                    .filter(|const_info| module_file_id == Some(const_info.span.file_id))
             });
         if let Some(const_info) = member_const {
             if !const_info.is_pub {

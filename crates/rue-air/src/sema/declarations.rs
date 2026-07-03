@@ -157,6 +157,129 @@ impl<'a> Sema<'a> {
         false
     }
 
+    /// Phase 0: Order-independent name-collision check across the function and
+    /// type (struct/enum) name spaces (spec 10.3:1, 10.5:1, RUE-239).
+    ///
+    /// Functions, structs, enums, and constants are all top-level items sharing
+    /// **one** name space, so any two of them with the same name collide —
+    /// regardless of their kinds, their order within a file, or the
+    /// command-line order of the files they come from. This pass over the
+    /// merged RIR is the order-independent source of truth for collisions among
+    /// **functions, structs, and enums**; the previously order-dependent gap
+    /// was a function colliding with a struct/enum, which was never checked.
+    /// The per-kind checks in [`register_type_names`](Self::register_type_names)
+    /// and the compiler's cross-file duplicate scan remain as backstops but no
+    /// longer decide legality by order.
+    ///
+    /// Constants are handled separately, after collection, in
+    /// [`check_const_cross_kind_collisions`](Self::check_const_cross_kind_collisions):
+    /// their global-vs-per-file identity (value constant vs `@import` module
+    /// binding, spec 10.4:8) is only known once initializers are evaluated, so
+    /// they cannot be classified from the raw RIR here.
+    ///
+    /// The error code reuses the existing per-kind codes based on the kinds
+    /// involved, so pre-existing diagnostics are unchanged:
+    /// - two types (struct/enum) → E0405 (`DuplicateTypeDefinition`)
+    /// - any pair involving a function → E0436 (`DuplicateFunctionDefinition`)
+    ///
+    /// Methods and associated functions live in a type-scoped namespace, not
+    /// the global one, so they are excluded here (matching the collection
+    /// logic in `resolve_remaining_declarations`).
+    pub(crate) fn check_top_level_name_collisions(&self) -> CompileResult<()> {
+        // Gather method / associated-function inst refs to exclude: they are
+        // namespaced under their enclosing type, not the global name space.
+        let mut method_refs: HashSet<InstRef> = HashSet::new();
+        for (_, inst) in self.rir.iter() {
+            match &inst.data {
+                InstData::AnonStructType {
+                    methods_start,
+                    methods_len,
+                    ..
+                }
+                | InstData::StructDecl {
+                    methods_start,
+                    methods_len,
+                    ..
+                } => {
+                    for r in self.rir.get_inst_refs(*methods_start, *methods_len) {
+                        method_refs.insert(r);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // For each name, whether the first item seen was a type (struct/enum);
+        // the alternative is a function.
+        let mut seen: HashMap<Spur, (bool, Span)> = HashMap::new();
+        for (inst_ref, inst) in self.rir.iter() {
+            let (name, is_type) = match &inst.data {
+                InstData::StructDecl { name, .. } | InstData::EnumDecl { name, .. } => {
+                    (*name, true)
+                }
+                InstData::FnDecl { name, has_self, .. } => {
+                    if *has_self || method_refs.contains(&inst_ref) {
+                        continue;
+                    }
+                    (*name, false)
+                }
+                _ => continue,
+            };
+
+            match seen.get(&name).copied() {
+                None => {
+                    seen.insert(name, (is_type, inst.span));
+                }
+                Some((first_is_type, first_span)) => {
+                    let name_str = self.interner.resolve(&name).to_string();
+                    // Two types collide as a duplicate type (E0405); any pair
+                    // involving a function is a duplicate function (E0436).
+                    let err_kind = if first_is_type && is_type {
+                        ErrorKind::DuplicateTypeDefinition {
+                            type_name: name_str,
+                        }
+                    } else {
+                        ErrorKind::DuplicateFunctionDefinition {
+                            function_name: name_str,
+                        }
+                    };
+                    return Err(CompileError::new(err_kind, inst.span)
+                        .with_label("first defined here".to_string(), first_span));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Post-collection check: a value constant's name must not collide with a
+    /// function, struct, or enum (spec 10.3:1, 10.5:1, RUE-239).
+    ///
+    /// Runs after [`resolve_declarations`](Self::resolve_declarations), when
+    /// [`Sema::constants`] holds exactly the value constants — module bindings
+    /// went to [`Sema::module_bindings`], which are per-file scoped and exempt
+    /// (spec 10.4:8). Comparing the fully-populated tables makes the check
+    /// order-independent: a `const shared` and a `fn shared` collide whichever
+    /// file or definition comes first. All such collisions reuse E0436, so a
+    /// value-constant-vs-function collision no longer depends on which was
+    /// collected first (previously E0418 only when the function came first).
+    pub(crate) fn check_const_cross_kind_collisions(&self) -> CompileResult<()> {
+        for (name, info) in self.constants.iter() {
+            if self.functions.contains_key(name)
+                || self.structs.contains_key(name)
+                || self.enums.contains_key(name)
+            {
+                let name_str = self.interner.resolve(name).to_string();
+                return Err(CompileError::new(
+                    ErrorKind::DuplicateFunctionDefinition {
+                        function_name: name_str,
+                    },
+                    info.span,
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// Phase 1: Register all type names (enum and struct IDs).
     ///
     /// This creates name → ID mappings for all enums and structs in a single pass,
@@ -331,6 +454,10 @@ impl<'a> Sema<'a> {
         self.resolve_enum_payloads()?;
         self.propagate_field_linearity();
         self.resolve_remaining_declarations()?;
+        // Now that value constants are separated from module bindings, reject
+        // any value-constant name that collides with a function/struct/enum
+        // (order-independent E0436, spec 10.3:1/10.5:1, RUE-239).
+        self.check_const_cross_kind_collisions()?;
         Ok(())
     }
 
@@ -1085,19 +1212,12 @@ impl<'a> Sema<'a> {
         let (file_id, name) = key;
         let name_str = self.interner.resolve(&name).to_string();
 
-        // Check for collision with function names. (Functions are collected
-        // in the same declaration walk, so this catches `fn` before `const`;
-        // a `const` collected on demand before a later same-named `fn` is
-        // not — matching the previous collection behavior.)
-        if self.functions.contains_key(&name) {
-            return Err(CompileError::new(
-                ErrorKind::DuplicateConstant {
-                    name: name_str.clone(),
-                    kind: "constant (conflicts with function)".to_string(),
-                },
-                p.span,
-            ));
-        }
+        // A value-constant name that collides with a function, struct, or enum
+        // is a top-level name collision (E0436), but that decision is made
+        // order-independently after all declarations are collected, in
+        // `check_const_cross_kind_collisions` — not here, where collection is
+        // dependency-ordered and the conflicting item may not be registered
+        // yet (RUE-239).
 
         // The declared integer type (when the annotation names one) becomes
         // the type context for arithmetic in the initializer, so intermediate
@@ -1674,13 +1794,21 @@ impl<'a> Sema<'a> {
         st: &mut ConstCollector,
     ) -> CompileResult<ConstInit> {
         let module_def = self.module_registry.get_def(module_id);
-        let module_file_path = module_def.file_path.clone();
         let import_path = module_def.import_path.clone();
         let member_str = self.interner.resolve(&member).to_string();
 
+        // Resolve the module's file by canonical FileId so equivalent path
+        // spellings (`helper.rue` vs `./helper.rue`) refer to the same module
+        // (spec 10.2:4, RUE-240), then use that file's stored path for
+        // downstream directory-based visibility checks.
+        let module_file_id = self.canonical_file_id(&module_def.file_path);
+        let module_file_path = module_file_id
+            .and_then(|id| self.get_file_path(id))
+            .map(str::to_string)
+            .unwrap_or(module_def.file_path);
+
         // Collect the member's declaration on demand (the module's file may
         // appear later in the declaration walk).
-        let module_file_id = self.get_file_id(&module_file_path);
         if let Some(mfile) = module_file_id {
             self.collect_const_by_key((mfile, member), st)?;
         }
@@ -1702,7 +1830,7 @@ impl<'a> Sema<'a> {
 
         // A value constant declared in the module's file yields its value.
         if let Some(info) = self.constants.get(&member) {
-            if self.get_file_path(info.span.file_id) == Some(module_file_path.as_str()) {
+            if module_file_id == Some(info.span.file_id) {
                 let (is_pub, value) = (info.is_pub, info.value);
                 self.check_const_member_visibility(
                     is_pub,

@@ -1234,3 +1234,249 @@ pub fn abs(x: i32) -> i32 {
 ]
 compile_fail = true
 error_contains = ["E0707", "module `math` has no member `nosuch`"]
+
+# ---------------------------------------------------------------------------
+# RUE-239: top-level duplicate-name detection spans ALL item kinds
+# (fn/struct/enum/const share one name space, spec 10.3:1 + 10.5:1) and is
+# order-independent — legality no longer flips on definition order or CLI
+# file order. Reuses E0436 for cross-kind collisions; same-kind keeps its
+# existing code (E0405 types, E0418 constants).
+# ---------------------------------------------------------------------------
+
+# const + fn, const listed first: previously compiled (accept-invalid); now
+# E0436 regardless of order.
+[[case]]
+name = "dup_const_fn_const_first"
+description = "RUE-239: const then fn with the same name is E0436 even when the const file is first."
+files = [
+    { path = "a.rue", source = """
+const shared: i32 = 5;
+""" },
+    { path = "b.rue", source = """
+pub fn shared() -> i32 {
+    100
+}
+
+fn main() -> i32 {
+    shared()
+}
+""" },
+]
+args = ["a.rue", "b.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0436", "shared"]
+
+# Same program, files in the other CLI order — still E0436 (was E0418 before).
+[[case]]
+name = "dup_const_fn_fn_first"
+description = "RUE-239: order-independent — swapping the CLI file order still yields E0436."
+files = [
+    { path = "a.rue", source = """
+const shared: i32 = 5;
+""" },
+    { path = "b.rue", source = """
+pub fn shared() -> i32 {
+    100
+}
+
+fn main() -> i32 {
+    shared()
+}
+""" },
+]
+args = ["b.rue", "a.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0436", "shared"]
+
+# fn + struct in ONE file: previously compiled (both coexisted); now E0436.
+[[case]]
+name = "dup_fn_struct_same_file"
+description = "RUE-239: a function and a struct with the same name collide (E0436), same file."
+files = [
+    { path = "main.rue", source = """
+fn Thing() -> i32 {
+    5
+}
+
+pub struct Thing {
+    n: i32,
+}
+
+fn main() -> i32 {
+    let t = Thing { n: 3 };
+    Thing() + t.n
+}
+""" },
+]
+compile_fail = true
+error_contains = ["E0436", "Thing"]
+
+# fn + struct across two files: same collision, cross-file.
+[[case]]
+name = "dup_fn_struct_cross_file"
+description = "RUE-239: a function and a struct with the same name collide (E0436) across files."
+files = [
+    { path = "main.rue", source = """
+fn Thing() -> i32 {
+    5
+}
+
+fn main() -> i32 {
+    Thing()
+}
+""" },
+    { path = "other.rue", source = """
+pub struct Thing {
+    n: i32,
+}
+""" },
+]
+args = ["main.rue", "other.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0436", "Thing"]
+
+# enum + const: cross-namespace collision (type vs const) is E0436.
+[[case]]
+name = "dup_enum_const_same_file"
+description = "RUE-239: an enum and a constant with the same name collide (E0436)."
+files = [
+    { path = "main.rue", source = """
+enum Color {
+    Red,
+    Green,
+}
+
+const Color: i32 = 5;
+
+fn main() -> i32 {
+    Color
+}
+""" },
+]
+compile_fail = true
+error_contains = ["E0436", "Color"]
+
+# Regression: fn + fn duplicate still E0436 (the check that already existed).
+[[case]]
+name = "dup_fn_fn_still_errors"
+description = "RUE-239 regression: two functions with the same name remain E0436."
+files = [
+    { path = "main.rue", source = """
+fn dup() -> i32 {
+    1
+}
+
+fn dup() -> i32 {
+    2
+}
+
+fn main() -> i32 {
+    dup()
+}
+""" },
+]
+compile_fail = true
+error_contains = ["E0436", "dup"]
+
+# Distinct names across all four kinds still compile and run.
+[[case]]
+name = "dup_distinct_names_ok"
+description = "RUE-239: distinct top-level names (const/fn/struct/enum) compile and run."
+files = [
+    { path = "main.rue", source = """
+const X: i32 = 3;
+
+fn Y() -> i32 {
+    5
+}
+
+struct Z {
+    n: i32,
+}
+
+enum W {
+    A,
+    B,
+}
+
+fn main() -> i32 {
+    let z = Z { n: X };
+    Y() + z.n
+}
+""" },
+]
+exit_code = 8
+
+# ---------------------------------------------------------------------------
+# RUE-240: equivalent @import path spellings (`helper.rue` vs `./helper.rue`)
+# resolve to the same module, so member access through either spelling works
+# identically (spec 10.2:4). Member access is compared by canonical FileId.
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "import_equivalent_spellings_member_access"
+description = "RUE-240: two spellings of the same file resolve both a fn and a const member (9 + 42 = 51)."
+files = [
+    { path = "main.rue", source = """
+const h1 = @import("helper.rue");
+const h2 = @import("./helper.rue");
+
+fn main() -> i32 {
+    h1.value() + h2.ANSWER
+}
+""" },
+    { path = "helper.rue", source = """
+pub const ANSWER: i32 = 42;
+
+pub fn value() -> i32 {
+    9
+}
+""" },
+]
+exit_code = 51
+
+# The `./`-spelled binding also resolves BOTH member kinds on its own.
+[[case]]
+name = "import_dot_slash_spelling_resolves_both_kinds"
+description = "RUE-240: member access through the ./-prefixed spelling resolves both fn and const (9 + 42 = 51)."
+files = [
+    { path = "main.rue", source = """
+const h1 = @import("helper.rue");
+const h2 = @import("./helper.rue");
+
+fn main() -> i32 {
+    h2.value() + h1.ANSWER
+}
+""" },
+    { path = "helper.rue", source = """
+pub const ANSWER: i32 = 42;
+
+pub fn value() -> i32 {
+    9
+}
+""" },
+]
+exit_code = 51
+
+# A genuinely-missing member through the ./ spelling still errors (E0707).
+[[case]]
+name = "import_dot_slash_spelling_missing_member_errors"
+description = "RUE-240: a truly-absent member through the ./ spelling still reports E0707."
+files = [
+    { path = "main.rue", source = """
+const h2 = @import("./helper.rue");
+
+fn main() -> i32 {
+    h2.NOPE
+}
+""" },
+    { path = "helper.rue", source = """
+pub const ANSWER: i32 = 42;
+
+pub fn value() -> i32 {
+    9
+}
+""" },
+]
+compile_fail = true
+error_contains = ["E0707", "NOPE"]

@@ -21,7 +21,7 @@ use rue_error::{
     IntrinsicTypeMismatchError, MultiErrorResult, OptionExt, PreviewFeature, WarningKind,
 };
 use rue_rir::{InstData, InstRef, Rir, RirArgMode, RirCallArg, RirDirective, RirParamMode};
-use rue_span::Span;
+use rue_span::{FileId, Span};
 use rue_target::{Arch, Os};
 
 use super::context::{
@@ -1168,9 +1168,11 @@ fn check_exclusive_access_in(
 /// declarations from the imported file, but the function table is a flat
 /// global namespace, so a name-only lookup would resolve a function from
 /// any file in the compilation. The callee must be defined in the receiver
-/// module's file: `member_file_path` (the callee's source file) must equal
-/// `module_file_path`, otherwise the call is rejected as an unknown member
-/// of `module_name`.
+/// module's file: `member_file_id` (the callee's source file) must equal the
+/// module's canonical file `module_file_id`, otherwise the call is rejected as
+/// an unknown member of `module_name`. Comparing by canonical FileId (rather
+/// than raw path string) makes equivalent import spellings — `helper.rue` vs
+/// `./helper.rue` — resolve members identically (spec 10.2:4, RUE-240).
 ///
 /// Two operations deliberately stay per-pipeline at the call sites: argument
 /// analysis (it recurses into the owning pipeline) and the exclusive-access
@@ -1179,8 +1181,8 @@ fn check_exclusive_access_in(
 fn check_module_member_call(
     rir: &Rir,
     module_name: &str,
-    module_file_path: &str,
-    member_file_path: Option<&str>,
+    module_file_id: Option<FileId>,
+    member_file_id: FileId,
     fn_name_str: &str,
     param_types: &[Type],
     param_modes: &[RirParamMode],
@@ -1189,9 +1191,9 @@ fn check_module_member_call(
     span: Span,
 ) -> CompileResult<()> {
     // Check membership: the function must be defined in the module's file.
-    // (Strict path equality, mirroring the struct/enum/const member-access
+    // (Canonical FileId equality, mirroring the struct/enum/const member-access
     // checks in analyze_module_type_member_access.)
-    if member_file_path != Some(module_file_path) {
+    if module_file_id != Some(member_file_id) {
         return Err(CompileError::new(
             ErrorKind::UnknownModuleMember {
                 module_name: module_name.to_string(),
@@ -3340,8 +3342,8 @@ impl<'a> Sema<'a> {
         check_module_member_call(
             self.rir,
             &module_def.import_path,
-            &module_def.file_path,
-            self.get_file_path(fn_info.file_id),
+            self.canonical_file_id(&module_def.file_path),
+            fn_info.file_id,
             &fn_name_str,
             &param_types,
             &param_modes,
