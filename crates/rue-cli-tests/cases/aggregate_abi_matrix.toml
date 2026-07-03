@@ -1,0 +1,626 @@
+# Aggregate-ABI hardening matrix (RUE-248).
+#
+# The "a multi-slot aggregate loses/corrupts a slot crossing a boundary" class
+# is the single most bug-prone area of the compiler: RUE-13 (by-value >6-slot
+# ICE), RUE-237 (payload enums dropped on return/field/array-element/aarch64
+# call), RUE-242 (@ptr_read/@ptr_write single-slot), RUE-224 (unit-typed store).
+# Each was fixed pointwise. This file is the systematic net: it crosses every
+# aggregate TYPE shape with every POSITION it can occupy and asserts the value
+# round-trips (built in one position, observed in another). Most cells pass
+# today; the point is that the NEXT omitted slot-routing gate fails immediately
+# at CI instead of shipping.
+#
+# All observations use `@dbg` (prints an i32 + newline) with exact-stdout
+# assertions, because a program exit code is taken mod 256 and would hide a
+# high-slot corruption. Every case returns 0 so the assertion lives entirely in
+# stdout.
+#
+# TYPE shapes (rows):
+#   S1   struct, 1 slot        S8    struct, 8 slots (> the 6-register budget)
+#   S2   struct, 2 slots       NEST  nested struct (Inner in Outer)
+#   S3   struct, 3 slots       ARR   fixed array [i32; N]
+#   AOS  array-of-struct       ENUM  payload enum (--preview enum_payloads)
+#
+# POSITIONS (columns), each a boundary an aggregate must cross intact:
+#   let-init (Alloc) · fn param by-value · by-value return · struct field
+#   read/write (PlaceRead/PlaceWrite) · array element read/write ·
+#   control-flow join (block param — the aarch64 path RUE-248 repaired) ·
+#   mutable-local reassign (Store) · inout param reassign (ParamStore) ·
+#   @ptr_read / @ptr_write · match binding (enum).
+#
+# Runs on BOTH backends; the aarch64 runtime path is only exercised in CI, so a
+# backend that forgets a slot-routing gate for one type shape fails here.
+
+[section]
+id = "cli.aggregate_abi_matrix"
+name = "Aggregate ABI type x position round-trip matrix"
+description = "Every aggregate type shape survives every boundary position it can cross (RUE-248)."
+
+# =============================================================================
+# S1 — struct, 1 slot
+# =============================================================================
+
+# let-init -> fn param by-value -> by-value return -> field read (round trip).
+[[case]]
+name = "s1_param_return_field"
+files = [{ path = "main.rue", source = """
+struct S1 { a: i32 }
+fn id(s: S1) -> S1 { s }
+fn main() -> i32 {
+    let x = S1 { a: 42 };
+    let y = id(x);
+    @dbg(y.a);
+    0
+}
+""" }]
+stdout = "42\n"
+
+# control-flow join: a 1-slot struct flows through an if/else block param.
+[[case]]
+name = "s1_join"
+files = [{ path = "main.rue", source = """
+struct S1 { a: i32 }
+fn pick(c: bool) -> S1 {
+    let x = S1 { a: 1 };
+    let y = S1 { a: 9 };
+    if c { x } else { y }
+}
+fn main() -> i32 {
+    @dbg(pick(true).a);
+    @dbg(pick(false).a);
+    0
+}
+""" }]
+stdout = "1\n9\n"
+
+# @ptr_read / @ptr_write round trip.
+[[case]]
+name = "s1_ptr_rw"
+files = [{ path = "main.rue", source = """
+struct S1 { a: i32 }
+fn main() -> i32 {
+    let mut arr: [S1; 1] = [S1 { a: 0 }];
+    checked {
+        let wp: ptr mut S1 = @raw_mut(arr[0]);
+        @ptr_write(wp, S1 { a: 55 });
+        let rp: ptr const S1 = @raw(arr[0]);
+        let v = @ptr_read(rp);
+        @dbg(v.a);
+    };
+    0
+}
+""" }]
+stdout = "55\n"
+
+# =============================================================================
+# S2 — struct, 2 slots
+# =============================================================================
+
+# param by-value -> return, both slots survive the call ABI.
+[[case]]
+name = "s2_param_return"
+files = [{ path = "main.rue", source = """
+struct S2 { a: i32, b: i32 }
+fn id(s: S2) -> S2 { s }
+fn main() -> i32 {
+    let y = id(S2 { a: 3, b: 4 });
+    @dbg(y.a); @dbg(y.b);
+    0
+}
+""" }]
+stdout = "3\n4\n"
+
+# control-flow join.
+[[case]]
+name = "s2_join"
+files = [{ path = "main.rue", source = """
+struct S2 { a: i32, b: i32 }
+fn pick(c: bool) -> S2 {
+    if c { S2 { a: 1, b: 2 } } else { S2 { a: 10, b: 20 } }
+}
+fn main() -> i32 {
+    let p = pick(false);
+    @dbg(p.a); @dbg(p.b);
+    0
+}
+""" }]
+stdout = "10\n20\n"
+
+# struct field write (PlaceWrite of a 2-slot struct into a wrapper field) then
+# read back — both slots must be stored.
+[[case]]
+name = "s2_field_write_read"
+files = [{ path = "main.rue", source = """
+struct S2 { a: i32, b: i32 }
+struct Wrap { p: S2, tag: i32 }
+fn main() -> i32 {
+    let mut w = Wrap { p: S2 { a: 0, b: 0 }, tag: 7 };
+    w.p = S2 { a: 5, b: 6 };
+    @dbg(w.p.a); @dbg(w.p.b); @dbg(w.tag);
+    0
+}
+""" }]
+stdout = "5\n6\n7\n"
+
+# array element read/write of a 2-slot struct.
+[[case]]
+name = "s2_array_elem_rw"
+files = [{ path = "main.rue", source = """
+struct S2 { a: i32, b: i32 }
+fn main() -> i32 {
+    let mut arr: [S2; 2] = [S2 { a: 0, b: 0 }, S2 { a: 0, b: 0 }];
+    arr[1] = S2 { a: 8, b: 9 };
+    @dbg(arr[1].a); @dbg(arr[1].b);
+    0
+}
+""" }]
+stdout = "8\n9\n"
+
+# mutable-local reassign (Store) of a whole 2-slot struct.
+[[case]]
+name = "s2_mut_reassign"
+files = [{ path = "main.rue", source = """
+struct S2 { a: i32, b: i32 }
+fn main() -> i32 {
+    let mut s = S2 { a: 1, b: 2 };
+    s = S2 { a: 30, b: 40 };
+    @dbg(s.a); @dbg(s.b);
+    0
+}
+""" }]
+stdout = "30\n40\n"
+
+# inout param reassign (ParamStore) writes both slots back through the pointer.
+[[case]]
+name = "s2_inout_reassign"
+files = [{ path = "main.rue", source = """
+struct S2 { a: i32, b: i32 }
+fn swap(inout s: S2) { s = S2 { a: s.b, b: s.a }; }
+fn main() -> i32 {
+    let mut s = S2 { a: 11, b: 22 };
+    swap(inout s);
+    @dbg(s.a); @dbg(s.b);
+    0
+}
+""" }]
+stdout = "22\n11\n"
+
+# @ptr_read / @ptr_write round trip.
+[[case]]
+name = "s2_ptr_rw"
+files = [{ path = "main.rue", source = """
+struct S2 { a: i32, b: i32 }
+fn main() -> i32 {
+    let mut arr: [S2; 1] = [S2 { a: 0, b: 0 }];
+    checked {
+        let wp: ptr mut S2 = @raw_mut(arr[0]);
+        @ptr_write(wp, S2 { a: 7, b: 8 });
+        let rp: ptr const S2 = @raw(arr[0]);
+        let v = @ptr_read(rp);
+        @dbg(v.a); @dbg(v.b);
+    };
+    0
+}
+""" }]
+stdout = "7\n8\n"
+
+# =============================================================================
+# S3 — struct, 3 slots
+# =============================================================================
+
+# param -> return -> join composed.
+[[case]]
+name = "s3_param_return_join"
+files = [{ path = "main.rue", source = """
+struct S3 { a: i32, b: i32, c: i32 }
+fn id(s: S3) -> S3 { s }
+fn pick(cond: bool) -> S3 {
+    if cond { S3 { a: 1, b: 2, c: 3 } } else { S3 { a: 4, b: 5, c: 6 } }
+}
+fn main() -> i32 {
+    let v = id(pick(false));
+    @dbg(v.a); @dbg(v.b); @dbg(v.c);
+    0
+}
+""" }]
+stdout = "4\n5\n6\n"
+
+# @ptr_read / @ptr_write round trip.
+[[case]]
+name = "s3_ptr_rw"
+files = [{ path = "main.rue", source = """
+struct S3 { a: i32, b: i32, c: i32 }
+fn main() -> i32 {
+    let mut arr: [S3; 1] = [S3 { a: 0, b: 0, c: 0 }];
+    checked {
+        let wp: ptr mut S3 = @raw_mut(arr[0]);
+        @ptr_write(wp, S3 { a: 3, b: 6, c: 9 });
+        let rp: ptr const S3 = @raw(arr[0]);
+        let v = @ptr_read(rp);
+        @dbg(v.a); @dbg(v.b); @dbg(v.c);
+    };
+    0
+}
+""" }]
+stdout = "3\n6\n9\n"
+
+# =============================================================================
+# S8 — struct, 8 slots (exceeds the 6-register return/arg budget -> sret path)
+# =============================================================================
+
+# param by-value -> return -> control-flow join, all eight slots survive
+# (RUE-13 class: >6-slot by-value aggregates once ICE'd / dropped slots).
+[[case]]
+name = "s8_param_return_join"
+files = [{ path = "main.rue", source = """
+struct S8 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+fn id(s: S8) -> S8 { s }
+fn pick(cond: bool) -> S8 {
+    let x = S8 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 };
+    let y = S8 { a: 10, b: 20, c: 30, d: 40, e: 50, f: 60, g: 70, h: 80 };
+    if cond { x } else { y }
+}
+fn main() -> i32 {
+    let v = id(pick(false));
+    @dbg(v.a); @dbg(v.d); @dbg(v.h);
+    0
+}
+""" }]
+stdout = "10\n40\n80\n"
+
+# mutable-local reassign (Store) of a whole 8-slot struct.
+[[case]]
+name = "s8_mut_reassign"
+files = [{ path = "main.rue", source = """
+struct S8 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+fn main() -> i32 {
+    let mut s = S8 { a: 1, b: 1, c: 1, d: 1, e: 1, f: 1, g: 1, h: 1 };
+    s = S8 { a: 2, b: 3, c: 4, d: 5, e: 6, f: 7, g: 8, h: 9 };
+    @dbg(s.a); @dbg(s.h);
+    0
+}
+""" }]
+stdout = "2\n9\n"
+
+# @ptr_read / @ptr_write round trip over all eight slots.
+[[case]]
+name = "s8_ptr_rw"
+files = [{ path = "main.rue", source = """
+struct S8 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+fn main() -> i32 {
+    let mut arr: [S8; 1] = [S8 { a: 0, b: 0, c: 0, d: 0, e: 0, f: 0, g: 0, h: 0 }];
+    checked {
+        let wp: ptr mut S8 = @raw_mut(arr[0]);
+        @ptr_write(wp, S8 { a: 11, b: 22, c: 33, d: 44, e: 55, f: 66, g: 77, h: 88 });
+        let rp: ptr const S8 = @raw(arr[0]);
+        let v = @ptr_read(rp);
+        @dbg(v.a); @dbg(v.e); @dbg(v.h);
+    };
+    0
+}
+""" }]
+stdout = "11\n55\n88\n"
+
+# =============================================================================
+# NEST — nested struct (Inner embedded in Outer)
+# =============================================================================
+
+# param -> return -> field read of the nested field.
+[[case]]
+name = "nest_param_return"
+files = [{ path = "main.rue", source = """
+struct Inner { a: i32, b: i32 }
+struct Outer { p: Inner, q: i32 }
+fn id(o: Outer) -> Outer { o }
+fn main() -> i32 {
+    let o = id(Outer { p: Inner { a: 10, b: 20 }, q: 30 });
+    @dbg(o.p.a); @dbg(o.p.b); @dbg(o.q);
+    0
+}
+""" }]
+stdout = "10\n20\n30\n"
+
+# control-flow join carrying a nested struct.
+[[case]]
+name = "nest_join"
+files = [{ path = "main.rue", source = """
+struct Inner { a: i32, b: i32 }
+struct Outer { p: Inner, q: i32 }
+fn pick(c: bool) -> Outer {
+    if c { Outer { p: Inner { a: 1, b: 2 }, q: 3 } }
+    else  { Outer { p: Inner { a: 4, b: 5 }, q: 6 } }
+}
+fn main() -> i32 {
+    let o = pick(false);
+    @dbg(o.p.a); @dbg(o.p.b); @dbg(o.q);
+    0
+}
+""" }]
+stdout = "4\n5\n6\n"
+
+# nested field write of the inner struct then read back (PlaceWrite).
+[[case]]
+name = "nest_field_write_read"
+files = [{ path = "main.rue", source = """
+struct Inner { a: i32, b: i32 }
+struct Outer { p: Inner, q: i32 }
+fn main() -> i32 {
+    let mut o = Outer { p: Inner { a: 0, b: 0 }, q: 9 };
+    o.p = Inner { a: 7, b: 8 };
+    @dbg(o.p.a); @dbg(o.p.b); @dbg(o.q);
+    0
+}
+""" }]
+stdout = "7\n8\n9\n"
+
+# @ptr_read / @ptr_write round trip over the whole nested struct.
+[[case]]
+name = "nest_ptr_rw"
+files = [{ path = "main.rue", source = """
+struct Inner { a: i32, b: i32 }
+struct Outer { p: Inner, q: i32 }
+fn main() -> i32 {
+    let mut arr: [Outer; 1] = [Outer { p: Inner { a: 0, b: 0 }, q: 0 }];
+    checked {
+        let wp: ptr mut Outer = @raw_mut(arr[0]);
+        @ptr_write(wp, Outer { p: Inner { a: 1, b: 2 }, q: 3 });
+        let rp: ptr const Outer = @raw(arr[0]);
+        let v = @ptr_read(rp);
+        @dbg(v.p.a); @dbg(v.p.b); @dbg(v.q);
+    };
+    0
+}
+""" }]
+stdout = "1\n2\n3\n"
+
+# =============================================================================
+# ARR — fixed array [i32; N]
+# =============================================================================
+
+# let-init -> fn param by-value -> by-value return -> element read.
+[[case]]
+name = "arr_param_return"
+files = [{ path = "main.rue", source = """
+fn id(a: [i32; 4]) -> [i32; 4] { a }
+fn main() -> i32 {
+    let v = id([10, 20, 30, 40]);
+    @dbg(v[0]); @dbg(v[3]);
+    0
+}
+""" }]
+stdout = "10\n40\n"
+
+# control-flow join carrying an array.
+[[case]]
+name = "arr_join"
+files = [{ path = "main.rue", source = """
+fn pick(c: bool) -> [i32; 3] {
+    if c { [1, 2, 3] } else { [4, 5, 6] }
+}
+fn main() -> i32 {
+    let v = pick(false);
+    @dbg(v[0]); @dbg(v[2]);
+    0
+}
+""" }]
+stdout = "4\n6\n"
+
+# element read/write.
+[[case]]
+name = "arr_elem_rw"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut a: [i32; 4] = [0, 0, 0, 0];
+    a[0] = 7;
+    a[3] = 9;
+    @dbg(a[0]); @dbg(a[3]);
+    0
+}
+""" }]
+stdout = "7\n9\n"
+
+# @ptr_read / @ptr_write round trip over a whole array value.
+[[case]]
+name = "arr_ptr_rw"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut a: [i32; 4] = [0, 0, 0, 0];
+    checked {
+        let wp: ptr mut [i32; 4] = @raw_mut(a);
+        @ptr_write(wp, [1, 2, 3, 4]);
+        let rp: ptr const [i32; 4] = @raw(a);
+        let v = @ptr_read(rp);
+        @dbg(v[0]); @dbg(v[3]);
+    };
+    0
+}
+""" }]
+stdout = "1\n4\n"
+
+# =============================================================================
+# AOS — array-of-struct [Point; N] (element itself multi-slot)
+# =============================================================================
+
+# param -> return, every element's every slot survives.
+[[case]]
+name = "aos_param_return"
+files = [{ path = "main.rue", source = """
+struct P { x: i32, y: i32 }
+fn id(a: [P; 2]) -> [P; 2] { a }
+fn main() -> i32 {
+    let v = id([P { x: 1, y: 2 }, P { x: 3, y: 4 }]);
+    @dbg(v[0].x); @dbg(v[0].y); @dbg(v[1].x); @dbg(v[1].y);
+    0
+}
+""" }]
+stdout = "1\n2\n3\n4\n"
+
+# element read/write of a struct element.
+[[case]]
+name = "aos_elem_rw"
+files = [{ path = "main.rue", source = """
+struct P { x: i32, y: i32 }
+fn main() -> i32 {
+    let mut a: [P; 2] = [P { x: 0, y: 0 }, P { x: 0, y: 0 }];
+    a[1] = P { x: 5, y: 6 };
+    @dbg(a[1].x); @dbg(a[1].y);
+    0
+}
+""" }]
+stdout = "5\n6\n"
+
+# @ptr_read / @ptr_write round trip over the whole array-of-struct.
+[[case]]
+name = "aos_ptr_rw"
+files = [{ path = "main.rue", source = """
+struct P { x: i32, y: i32 }
+fn main() -> i32 {
+    let mut a: [P; 2] = [P { x: 0, y: 0 }, P { x: 0, y: 0 }];
+    checked {
+        let wp: ptr mut [P; 2] = @raw_mut(a);
+        @ptr_write(wp, [P { x: 1, y: 2 }, P { x: 3, y: 4 }]);
+        let rp: ptr const [P; 2] = @raw(a);
+        let v = @ptr_read(rp);
+        @dbg(v[0].x); @dbg(v[1].y);
+    };
+    0
+}
+""" }]
+stdout = "1\n4\n"
+
+# =============================================================================
+# ENUM — payload enum (tagged union: slot 0 discriminant + payload slots).
+# The whole family is gated behind --preview enum_payloads. These are the RUE-237
+# class: enums were forgotten by scattered `is_struct() || is_array()` gates, so
+# their payload slots were dropped crossing exactly these boundaries.
+# =============================================================================
+
+# match binding: construct each variant, cross the call ABI, extract payloads.
+[[case]]
+name = "enum_param_match"
+args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+enum Shape { Circle(i32), Rect(i32, i32), Empty }
+fn area(s: Shape) -> i32 {
+    match s {
+        Shape::Circle(r) => r,
+        Shape::Rect(w, h) => w + h,
+        Shape::Empty => 0,
+    }
+}
+fn main() -> i32 {
+    @dbg(area(Shape::Circle(5)));
+    @dbg(area(Shape::Rect(3, 4)));
+    @dbg(area(Shape::Empty));
+    0
+}
+""" }]
+stdout = "5\n7\n0\n"
+
+# by-value return + control-flow join: a payload enum flows through an if/else
+# block param (the exact aarch64 gate RUE-248 repaired) then out by value.
+[[case]]
+name = "enum_return_join"
+args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+enum E { V(i32, i32), Empty }
+fn sum(e: E) -> i32 { match e { E::V(x, y) => x + y, E::Empty => 0 } }
+fn choose(cond: bool) -> E {
+    if cond { E::V(3, 4) } else { E::V(30, 40) }
+}
+fn main() -> i32 {
+    @dbg(sum(choose(true)));
+    @dbg(sum(choose(false)));
+    0
+}
+""" }]
+stdout = "7\n70\n"
+
+# struct field write/read: a payload enum stored into a struct field (PlaceWrite)
+# then read back.
+[[case]]
+name = "enum_field_write_read"
+args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+enum E { V(i32, i32), Empty }
+fn sum(e: E) -> i32 { match e { E::V(x, y) => x + y, E::Empty => 0 } }
+struct Wrap { e: E, tag: i32 }
+fn main() -> i32 {
+    let mut w = Wrap { e: E::Empty, tag: 9 };
+    w.e = E::V(7, 8);
+    @dbg(sum(w.e)); @dbg(w.tag);
+    0
+}
+""" }]
+stdout = "15\n9\n"
+
+# array element write/read: a payload enum in an array slot.
+[[case]]
+name = "enum_array_elem_rw"
+args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+enum E { V(i32, i32), Empty }
+fn sum(e: E) -> i32 { match e { E::V(x, y) => x + y, E::Empty => 0 } }
+fn main() -> i32 {
+    let mut arr: [E; 2] = [E::Empty, E::Empty];
+    arr[1] = E::V(5, 6);
+    @dbg(sum(arr[1]));
+    0
+}
+""" }]
+stdout = "11\n"
+
+# mutable-local reassign (Store) of a whole payload enum.
+[[case]]
+name = "enum_mut_reassign"
+args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+enum E { V(i32, i32), Empty }
+fn sum(e: E) -> i32 { match e { E::V(x, y) => x + y, E::Empty => 0 } }
+fn main() -> i32 {
+    let mut e = E::V(1, 1);
+    e = E::V(20, 30);
+    @dbg(sum(e));
+    0
+}
+""" }]
+stdout = "50\n"
+
+# inout param reassign (ParamStore) writes all slots of a payload enum back
+# through the pointer.
+[[case]]
+name = "enum_inout_reassign"
+args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+enum E { V(i32, i32), Empty }
+fn sum(e: E) -> i32 { match e { E::V(x, y) => x + y, E::Empty => 0 } }
+fn replace(inout e: E) { e = E::V(100, 23); }
+fn main() -> i32 {
+    let mut e = E::V(1, 2);
+    replace(inout e);
+    @dbg(sum(e));
+    0
+}
+""" }]
+stdout = "123\n"
+
+# @ptr_read / @ptr_write round trip over a whole payload enum value.
+[[case]]
+name = "enum_ptr_rw"
+args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+enum E { V(i32, i32), Empty }
+fn sum(e: E) -> i32 { match e { E::V(x, y) => x + y, E::Empty => 0 } }
+fn main() -> i32 {
+    let mut arr: [E; 1] = [E::Empty];
+    checked {
+        let wp: ptr mut E = @raw_mut(arr[0]);
+        @ptr_write(wp, E::V(9, 8));
+        let rp: ptr const E = @raw(arr[0]);
+        let v = @ptr_read(rp);
+        @dbg(sum(v));
+    };
+    0
+}
+""" }]
+stdout = "17\n"
