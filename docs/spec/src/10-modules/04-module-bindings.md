@@ -186,15 +186,18 @@ Naming a private enum's variant through a module from another directory is a
 compile-time error (E0706, because a variant path routes through
 module-member resolution).
 
-{{ rule(id="10.4:19") }}
+{{ rule(id="10.4:19", cat="legality-rule") }}
 
-An associated function's visibility is intended to follow the visibility of its
-enclosing type (10.3:7): an associated function of a private type should not be
-callable from another directory. The current implementation does **not** yet
-enforce this — an associated-function call on a private type is accepted across
-the directory boundary, whether written unqualified or module-qualified
-(RUE-330). Programs must not rely on this gap; it is an implementation
-artifact, not a guarantee.
+An associated function's visibility follows the visibility of its enclosing type
+(10.3:7): calling an associated function of a private struct from a source file
+in another directory is a compile-time error (E0460), exactly as naming that
+struct in a struct literal or type annotation would be. This holds whether the
+call is written unqualified (`Point::origin()`) or module-qualified
+(`lib.Point::origin()`) — both resolve the receiver type through the flat
+namespace (10.5:2), so both report E0460 (RUE-330). A call whose receiver type
+arrives through a comptime binding rather than by naming the struct
+(`let P = lib.Point; P::origin()`) is exempt, matching every other reference
+that reaches a type through a binding.
 
 {{ rule(id="10.4:20", cat="example") }}
 

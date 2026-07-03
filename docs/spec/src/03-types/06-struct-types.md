@@ -50,33 +50,40 @@ Field names **MUST** be unique within a struct.
 
 {{ rule(id="3.6:7", cat="informative") }}
 
-The in-memory layout of struct types is **implementation-defined** (see 1.3:6): the implementation chooses and documents it. The current implementation prioritizes simplicity over space efficiency, and the layout may change between versions. A portable program must not depend on specific field offsets, padding, or overall size beyond what the specification guarantees; a program that inspects layout (for example through `unchecked` raw-pointer access) observes an implementation-defined result.
+The in-memory layout of a struct — the byte offset of each field, any padding, the overall size, and the alignment — is **implementation-defined** (see 1.3:6). The implementation is free to choose any layout consistent with the guarantees of 3.6:8, and **MAY** place fields in any order, pack small scalars together, insert or omit padding, drop storage for zero-sized fields, or exploit value-representation ("niche") optimizations; the chosen layout may change between versions. A program can *observe* the chosen layout — through `@size_of`, `@align_of`, or `unchecked` raw-pointer access — but those observations report the current choice, they do **not** guarantee a particular value. To obtain a field's offset or a pointer to a field without hard-coding a layout, use the compiler-mediated intrinsics `@offset_of(T, field)` and `@field_ptr(place)` (see the [Intrinsics](@/04-expressions/13-intrinsics.md) chapter): they report the offset under whatever layout the implementation chose, so `unchecked` code that reaches fields through them stays correct under any layout. A portable program must not hand-compute a field offset from a literal.
 
 {{ rule(id="3.6:8", cat="normative") }}
 
-Non-zero-sized types in Rue occupy one or more 8-byte slots. Scalar types (`i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `bool`) each occupy one slot.
+Whatever layout the implementation chooses, every value of a struct type satisfies these guarantees:
 
-{{ rule(id="3.6:9", cat="normative") }}
+- Each field is accessible by name (3.6:4) and reads back the value most recently stored to it.
+- Distinct fields occupy non-overlapping storage.
+- `@size_of(T)` and `@align_of(T)` are well-defined for every sized type `T` and report the size and alignment the implementation has chosen for `T`.
+- The size of a type is a multiple of its alignment.
 
-Struct fields are laid out in memory in declaration order, with each field occupying a number of slots determined by its type.
+These are the only layout properties a portable program may rely on; the specific offsets, slot sizes, and paddings the current implementation happens to use (3.6:9, 3.6:10, 3.6:12) are documented observations, not part of this set.
 
-{{ rule(id="3.6:10", cat="normative") }}
+{{ rule(id="3.6:9", cat="informative") }}
 
-The size of a struct is the sum of the sizes of all its fields. There is no padding between fields or at the end of the struct.
+Under the current implementation, every non-zero-sized value occupies one or more 8-byte slots: each scalar type (`i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `bool`) occupies a single slot, and a struct's fields are placed in declaration order, each in the slots determined by its type, with no padding between or after them. This is a documented property of the current implementation (1.3:6), not a language guarantee.
+
+{{ rule(id="3.6:10", cat="informative") }}
+
+It follows that, under the current implementation, the size of a struct is the sum of the sizes of all its fields, with no padding between fields or at the end (a zero-sized field contributes nothing). A future version that packed scalars or reordered fields would change this observation.
 
 {{ rule(id="3.6:11") }}
 
 ```rue
-// A struct with two i32 fields occupies 2 slots (16 bytes)
+// Under the current implementation, two i32 fields occupy 2 slots (16 bytes).
 struct Point { x: i32, y: i32 }
 
-// A struct with a nested struct occupies the sum of all nested field slots
-struct Line { start: Point, end: Point }  // 4 slots (32 bytes)
+// A nested struct occupies the sum of all nested field slots: 4 slots (32 bytes).
+struct Line { start: Point, end: Point }
 ```
 
-{{ rule(id="3.6:12", cat="normative") }}
+{{ rule(id="3.6:12", cat="informative") }}
 
-Structs with one or more fields have 8-byte alignment. Empty structs (zero-sized types) have 1-byte alignment.
+Under the current implementation, a struct with one or more fields has 8-byte alignment, and an empty struct (a zero-sized type) has 1-byte alignment; `@align_of` observes these values. Like the sizes above, these are documented observations of the current layout, not language guarantees.
 
 {{ rule(id="3.6:13", cat="normative") }}
 
@@ -102,7 +109,7 @@ In a struct literal, field initializers may appear in any order. Each initialize
 
 {{ rule(id="3.6:16", cat="dynamic-semantics") }}
 
-Regardless of the order in which fields are written, the resulting value stores each field in the slot determined by declaration order (3.6:9). Field initializer expressions are still evaluated in source order (left-to-right as written; see 4.0:9), so a field written earlier is evaluated earlier even when it occupies a later slot.
+Regardless of the order in which fields are written, each field of the resulting value is set from the initializer that names it (field matching is by name, not by position). Field initializer expressions are still evaluated in source order (left-to-right as written; see 4.0:9), so a field written earlier is evaluated earlier even when the implementation stores it in a later location.
 
 {{ rule(id="3.6:17") }}
 

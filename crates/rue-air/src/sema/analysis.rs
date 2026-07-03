@@ -3614,7 +3614,16 @@ impl<'a> Sema<'a> {
 
         // Check that the type exists and is a struct
         // First check if it's a comptime type variable (e.g., `let P = Point(); P::origin()`)
+        //
+        // `privacy_exempt` mirrors the enum-variant construction handler: a
+        // comptime-bound type (`let P = Point(); P::origin()`) arrived through a
+        // binding, not by naming the struct, so it is exempt from the
+        // unqualified-privacy check. A bare `Point::origin()` names the struct
+        // and must obey the same uniform-privacy rule (spec 10.3:7) as a struct
+        // literal or type annotation would.
+        let mut privacy_exempt = false;
         let struct_id = if let Some(&ty) = ctx.comptime_type_vars.get(&type_name) {
+            privacy_exempt = true;
             // Extract struct ID from the comptime type
             match ty.kind() {
                 TypeKind::Struct(id) => id,
@@ -3634,6 +3643,23 @@ impl<'a> Sema<'a> {
                 .get(&type_name)
                 .ok_or_compile_error(ErrorKind::UnknownType(type_name_str.clone()), span)?
         };
+
+        // Privacy (E0460, RUE-330): naming a private struct to call one of its
+        // associated functions (`Secret::make()`) across a directory boundary is
+        // rejected, matching struct-literal / type-annotation references. Privacy
+        // is uniform across item kinds (spec 10.3:1, 10.3:7). Builtin structs
+        // (String, ...) have no source path, so `is_accessible` is permissive and
+        // this is a no-op for them.
+        if !privacy_exempt {
+            let struct_def = self.type_pool.struct_def(struct_id);
+            self.check_unqualified_visibility(
+                "struct",
+                &type_name_str,
+                struct_def.file_id,
+                struct_def.is_pub,
+                span,
+            )?;
+        }
 
         // Handle builtin type associated functions
         if let Some(builtin_def) = self.get_builtin_type_def(struct_id) {

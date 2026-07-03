@@ -82,11 +82,20 @@ exit_code = 42
 
 # =============================================================================
 # Memory Layout
+#
+# Layout is implementation-defined (3.6:7): @size_of/@align_of report the layout
+# the current implementation chose, they do not guarantee a value. The guarantee
+# tested here is that @size_of/@align_of are well-defined observations (3.6:8);
+# the specific numbers (8-byte slots, declaration order, no padding, 8-byte
+# alignment) are documented observations of the current layout (3.6:9/10/12),
+# not language guarantees.
 # =============================================================================
 
+# @size_of is a well-defined observation (3.6:8); the concrete 8-byte slot is
+# this implementation's documented choice (3.6:9).
 [[case]]
 name = "scalar_size_8_bytes"
-spec = ["3.6:8"]
+spec = ["3.6:8", "3.6:9"]
 source = """
 fn main() -> i32 {
     @size_of(i32)
@@ -96,7 +105,7 @@ exit_code = 8
 
 [[case]]
 name = "bool_size_8_bytes"
-spec = ["3.6:8"]
+spec = ["3.6:8", "3.6:9"]
 source = """
 fn main() -> i32 {
     @size_of(bool)
@@ -114,25 +123,29 @@ fn main() -> i32 {
 """
 exit_code = 0
 
+# Declaration-order, 8-byte-slot layout is this implementation's documented
+# observation (3.6:9), not a language guarantee.
 [[case]]
 name = "struct_fields_declaration_order"
 spec = ["3.6:9"]
 source = """
 struct Point { x: i32, y: i32 }
 fn main() -> i32 {
-    // Two fields, each 8 bytes = 16 bytes total
+    // Current implementation: two fields, each in one 8-byte slot = 16 bytes.
     @size_of(Point)
 }
 """
 exit_code = 16
 
+# Size = sum of field sizes with no padding is a documented observation of the
+# current layout (3.6:10), not guaranteed.
 [[case]]
 name = "struct_size_sum_of_fields"
 spec = ["3.6:10"]
 source = """
 struct Triple { a: i32, b: i32, c: i32 }
 fn main() -> i32 {
-    // Three fields, each 8 bytes = 24 bytes
+    // Current implementation: three 8-byte slots = 24 bytes.
     @size_of(Triple)
 }
 """
@@ -145,15 +158,17 @@ source = """
 struct Point { x: i32, y: i32 }
 struct Line { start: Point, end: Point }
 fn main() -> i32 {
-    // Two Points, each 16 bytes = 32 bytes
+    // Current implementation: two Points, each 16 bytes = 32 bytes.
     @size_of(Line)
 }
 """
 exit_code = 32
 
+# @align_of is a well-defined observation (3.6:8); the concrete 8-byte alignment
+# is this implementation's documented choice (3.6:12).
 [[case]]
 name = "struct_alignment_8_bytes"
-spec = ["3.6:12"]
+spec = ["3.6:8", "3.6:12"]
 source = """
 struct Point { x: i32, y: i32 }
 fn main() -> i32 {
@@ -164,7 +179,7 @@ exit_code = 8
 
 [[case]]
 name = "scalar_alignment_8_bytes"
-spec = ["3.6:12"]
+spec = ["3.6:8", "3.6:12"]
 source = """
 fn main() -> i32 {
     @align_of(i64)

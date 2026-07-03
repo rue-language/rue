@@ -392,3 +392,113 @@ pub fn touch() -> i32 { let h = Hidden::A; match h { Hidden::A => 1, Hidden::B =
 """ }
 compile_fail = true
 error_contains = ["E0706", "is private"]
+
+# =============================================================================
+# Associated-function privacy follows the enclosing type (10.4:19, RUE-330).
+# Calling an associated function of a private struct across a directory
+# boundary is E0460 — the same rule as naming that struct in a literal or
+# annotation — whether the call is unqualified or module-qualified.
+
+[[case]]
+name = "cross_dir_unqualified_private_assoc_fn_rejected"
+spec = ["10.4:19"]
+description = "An unqualified associated-function call on a private struct from another directory is E0460 (RUE-330)"
+source = """
+const lib = @import("sub/lib");
+
+fn main() -> i32 {
+    let s = Secret::make();
+    s.n
+}
+"""
+aux_files = { "sub/lib.rue" = """
+struct Secret {
+    n: i32,
+    fn make() -> Secret { Secret { n: 5 } }
+}
+""" }
+compile_fail = true
+error_contains = ["E0460", "struct `Secret` is private"]
+
+[[case]]
+name = "cross_dir_qualified_private_assoc_fn_rejected"
+spec = ["10.4:19"]
+description = "A module-qualified associated-function call on a private struct from another directory is E0460 (resolves the type through the flat namespace, RUE-330)"
+source = """
+const lib = @import("sub/lib");
+
+fn main() -> i32 {
+    let s = lib.Secret::make();
+    s.n
+}
+"""
+aux_files = { "sub/lib.rue" = """
+struct Secret {
+    n: i32,
+    fn make() -> Secret { Secret { n: 5 } }
+}
+""" }
+compile_fail = true
+error_contains = ["E0460", "struct `Secret` is private"]
+
+[[case]]
+name = "cross_dir_pub_assoc_fn_allowed"
+spec = ["10.4:19"]
+description = "An associated-function call on a pub struct across directories is allowed"
+source = """
+const lib = @import("sub/lib");
+
+fn main() -> i32 {
+    let p = Point::origin();
+    p.x + p.y
+}
+"""
+aux_files = { "sub/lib.rue" = """
+pub struct Point {
+    x: i32,
+    y: i32,
+    fn origin() -> Point { Point { x: 30, y: 12 } }
+}
+""" }
+exit_code = 42
+
+[[case]]
+name = "same_dir_private_assoc_fn_allowed"
+spec = ["10.4:19"]
+description = "Intra-directory visibility is unchanged: an associated-function call on a private struct in another listed file in the same directory is allowed"
+source = """
+fn main() -> i32 {
+    let s = Secret::make();
+    s.n
+}
+"""
+aux_files = { "lib.rue" = """
+struct Secret {
+    n: i32,
+    fn make() -> Secret { Secret { n: 42 } }
+}
+""" }
+pass_aux_files = true
+exit_code = 42
+
+[[case]]
+name = "cross_dir_comptime_bound_assoc_fn_allowed"
+spec = ["10.4:19"]
+description = "A receiver type reached through a comptime binding (not by naming the struct) is exempt: `let P = lib.Point; P::origin()` is allowed"
+source = """
+const lib = @import("sub/lib");
+
+fn main() -> i32 {
+    let P = lib.Point;
+    let p = P::origin();
+    p.x + p.y
+}
+"""
+aux_files = { "sub/lib.rue" = """
+pub struct Point {
+    x: i32,
+    y: i32,
+    fn origin() -> Point { Point { x: 30, y: 12 } }
+}
+""" }
+exit_code = 42

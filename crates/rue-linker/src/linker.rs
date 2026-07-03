@@ -56,6 +56,384 @@ fn is_bss_section(name: &str) -> bool {
     name.starts_with(".bss") || name == "__DATA,__bss" || name.starts_with("__bss")
 }
 
+/// Apply a single already-resolved relocation by patching `buf` in place.
+///
+/// Shared by both `link_elf` and `link_macho` (RUE-335): the per-kind patch
+/// encoding is identical across object formats, so it lives here once instead
+/// of being duplicated in each linker path — a relocation fix now lands in a
+/// single place. The caller resolves the format-specific inputs first (which
+/// merged buffer the patch site lives in, its base virtual address, and the
+/// symbol's resolved address) and passes them in.
+///
+/// Parameters use the usual ELF relocation notation:
+/// * `buf`          — merged output buffer containing the patch site.
+/// * `patch_offset` — byte offset of the patch site within `buf`.
+/// * `place`        — virtual address of the patch site (`P` = base vaddr + offset).
+/// * `target_addr`  — resolved virtual address of the referenced symbol (`S`).
+/// * `addend`       — relocation addend (`A`).
+/// * `rel_type`     — relocation kind.
+/// * `sym_name`     — referenced symbol name, used only for diagnostics.
+fn apply_relocation(
+    buf: &mut [u8],
+    patch_offset: usize,
+    place: u64,
+    target_addr: u64,
+    addend: i64,
+    rel_type: RelocationType,
+    sym_name: &str,
+) -> Result<(), LinkError> {
+    let pc = place; // `P` in the S + A - P PC-relative arms below
+    match rel_type {
+        RelocationType::Pc32 | RelocationType::Plt32 => {
+            // S + A - P, where S is symbol address, A is addend, P is place
+            let value = target_addr as i64 + addend - pc as i64;
+            // Check for overflow: value must fit in i32
+            if value < i32::MIN as i64 || value > i32::MAX as i64 {
+                return Err(LinkError::RelocationOverflow {
+                    symbol: sym_name.to_string(),
+                    rel_type: format!("{:?}", rel_type),
+                });
+            }
+            if patch_offset + 4 > buf.len() {
+                return Err(LinkError::RelocationPatchOutOfBounds {
+                    patch_offset,
+                    patch_size: 4,
+                    section_size: buf.len(),
+                    rel_type: format!("{:?}", rel_type),
+                });
+            }
+            buf[patch_offset..patch_offset + 4].copy_from_slice(&(value as i32).to_le_bytes());
+        }
+        RelocationType::GotPcRel => {
+            // R_X86_64_GOTPCREL: Load from GOT entry.
+            // For static linking, we relax this to use the symbol address directly.
+            // This requires rewriting indirect calls/jumps to direct ones, similar to
+            // GotPcRelX but without the compiler's guarantee that it's safe.
+            // In static linking, we know all symbols are resolved, so it's always safe.
+            //
+            // Transform indirect call: `call *[rip+disp]` (FF /2) -> `addr32 call rel32` (67 E8)
+            // Transform indirect jmp:  `jmp *[rip+disp]` (FF /4) -> `addr32 jmp rel32` (67 E9)
+            // Transform indirect mov:  `mov reg, [rip+disp]` (8B) -> `lea reg, [rip+disp]` (8D)
+            if patch_offset >= 2 {
+                let opcode_offset = patch_offset - 2;
+                if buf[opcode_offset] == 0xFF {
+                    let modrm = buf[opcode_offset + 1];
+                    let reg_field = (modrm >> 3) & 0x7;
+                    if reg_field == 2 {
+                        // Indirect call: `call *[rip+disp]` (FF /2, ModR/M 15)
+                        // Transform to: `addr32 call rel32` (67 E8)
+                        buf[opcode_offset] = 0x67; // addr32 prefix
+                        buf[opcode_offset + 1] = 0xE8; // direct call opcode
+                    } else if reg_field == 4 {
+                        // Indirect jmp: `jmp *[rip+disp]` (FF /4, ModR/M 25)
+                        // Transform to: `addr32 jmp rel32` (67 E9)
+                        buf[opcode_offset] = 0x67; // addr32 prefix
+                        buf[opcode_offset + 1] = 0xE9; // direct jmp opcode
+                    }
+                } else if buf[opcode_offset] == 0x8B {
+                    // MOV: `mov reg, [rip+disp]` -> `lea reg, [rip+disp]`
+                    buf[opcode_offset] = 0x8D; // LEA opcode
+                }
+                // Other patterns: just patch displacement (best effort)
+            }
+
+            let value = target_addr as i64 + addend - pc as i64;
+            if value < i32::MIN as i64 || value > i32::MAX as i64 {
+                return Err(LinkError::RelocationOverflow {
+                    symbol: sym_name.to_string(),
+                    rel_type: format!("{:?}", rel_type),
+                });
+            }
+            if patch_offset + 4 > buf.len() {
+                return Err(LinkError::RelocationPatchOutOfBounds {
+                    patch_offset,
+                    patch_size: 4,
+                    section_size: buf.len(),
+                    rel_type: format!("{:?}", rel_type),
+                });
+            }
+            buf[patch_offset..patch_offset + 4].copy_from_slice(&(value as i32).to_le_bytes());
+        }
+        RelocationType::GotPcRelX => {
+            // R_X86_64_GOTPCRELX: GOT access without REX prefix.
+            // For static linking, we perform GOT relaxation:
+            // - `mov reg, [rip+disp]` (8B) -> `lea reg, [rip+disp]` (8D)
+            // - `call *[rip+disp]` (FF /2) -> `addr32 call rel32` (67 E8)
+            // - `jmp *[rip+disp]` (FF /4) -> `addr32 jmp rel32` (67 E9)
+            //
+            // The relocation offset points to the displacement, so:
+            // - For MOV: opcode is at offset - 2
+            // - For CALL/JMP: opcode (FF) is at offset - 2, ModR/M is at offset - 1
+            if patch_offset >= 2 {
+                let opcode_offset = patch_offset - 2;
+                if buf[opcode_offset] == 0xFF {
+                    let modrm = buf[opcode_offset + 1];
+                    let reg_field = (modrm >> 3) & 0x7;
+                    if reg_field == 2 {
+                        // Indirect call: `call *[rip+disp]` (FF /2, ModR/M 15)
+                        // Transform to: `addr32 call rel32` (67 E8)
+                        buf[opcode_offset] = 0x67; // addr32 prefix
+                        buf[opcode_offset + 1] = 0xE8; // direct call opcode
+                    } else if reg_field == 4 {
+                        // Indirect jmp: `jmp *[rip+disp]` (FF /4, ModR/M 25)
+                        // Transform to: `addr32 jmp rel32` (67 E9)
+                        buf[opcode_offset] = 0x67; // addr32 prefix
+                        buf[opcode_offset + 1] = 0xE9; // direct jmp opcode
+                    }
+                } else if buf[opcode_offset] == 0x8B {
+                    // MOV: `mov reg, [rip+disp]` -> `lea reg, [rip+disp]`
+                    buf[opcode_offset] = 0x8D; // LEA opcode
+                }
+                // Other patterns: just patch displacement (best effort)
+            }
+
+            let value = target_addr as i64 + addend - pc as i64;
+            if value < i32::MIN as i64 || value > i32::MAX as i64 {
+                return Err(LinkError::RelocationOverflow {
+                    symbol: sym_name.to_string(),
+                    rel_type: format!("{:?}", rel_type),
+                });
+            }
+            if patch_offset + 4 > buf.len() {
+                return Err(LinkError::RelocationPatchOutOfBounds {
+                    patch_offset,
+                    patch_size: 4,
+                    section_size: buf.len(),
+                    rel_type: format!("{:?}", rel_type),
+                });
+            }
+            buf[patch_offset..patch_offset + 4].copy_from_slice(&(value as i32).to_le_bytes());
+        }
+        RelocationType::RexGotPcRelX => {
+            // R_X86_64_REX_GOTPCRELX: GOT access with REX prefix.
+            // For static linking, we perform GOT relaxation:
+            // - `mov reg, [rip+disp]` (REX 8B) -> `lea reg, [rip+disp]` (REX 8D)
+            // - `call *[rip+disp]` (REX FF /2) -> `addr32 call rel32` (REX 67 E8)
+            // - `jmp *[rip+disp]` (REX FF /4) -> `addr32 jmp rel32` (REX 67 E9)
+            //
+            // The relocation offset points to the displacement, so:
+            // - For MOV with REX: REX is at offset - 3, opcode at offset - 2
+            // - For CALL/JMP with REX: similar layout
+            if patch_offset >= 2 {
+                let opcode_offset = patch_offset - 2;
+                if buf[opcode_offset] == 0xFF {
+                    let modrm = buf[opcode_offset + 1];
+                    let reg_field = (modrm >> 3) & 0x7;
+                    if reg_field == 2 {
+                        // Indirect call with REX: `REX call *[rip+disp]` (4x FF /2)
+                        // Transform to: `addr32 call rel32` (67 E8) - REX stays at offset-3
+                        buf[opcode_offset] = 0x67; // addr32 prefix
+                        buf[opcode_offset + 1] = 0xE8; // direct call opcode
+                    // Note: REX prefix at offset-3 becomes harmless (no-op for CALL)
+                    } else if reg_field == 4 {
+                        // Indirect jmp with REX: `REX jmp *[rip+disp]` (4x FF /4)
+                        // Transform to: `addr32 jmp rel32` (67 E9)
+                        buf[opcode_offset] = 0x67; // addr32 prefix
+                        buf[opcode_offset + 1] = 0xE9; // direct jmp opcode
+                    }
+                } else if buf[opcode_offset] == 0x8B {
+                    // MOV with REX: `REX mov reg, [rip+disp]` -> `REX lea reg, [rip+disp]`
+                    buf[opcode_offset] = 0x8D; // LEA opcode
+                }
+                // Other patterns: just patch displacement (best effort)
+            }
+
+            let value = target_addr as i64 + addend - pc as i64;
+            if value < i32::MIN as i64 || value > i32::MAX as i64 {
+                return Err(LinkError::RelocationOverflow {
+                    symbol: sym_name.to_string(),
+                    rel_type: format!("{:?}", rel_type),
+                });
+            }
+            if patch_offset + 4 > buf.len() {
+                return Err(LinkError::RelocationPatchOutOfBounds {
+                    patch_offset,
+                    patch_size: 4,
+                    section_size: buf.len(),
+                    rel_type: format!("{:?}", rel_type),
+                });
+            }
+            buf[patch_offset..patch_offset + 4].copy_from_slice(&(value as i32).to_le_bytes());
+        }
+        RelocationType::Abs64 | RelocationType::Aarch64Abs64 => {
+            // 64-bit absolute address (pointer slots in rodata/data).
+            let value = (target_addr as i64 + addend) as u64;
+            if patch_offset + 8 > buf.len() {
+                return Err(LinkError::RelocationPatchOutOfBounds {
+                    patch_offset,
+                    patch_size: 8,
+                    section_size: buf.len(),
+                    rel_type: format!("{:?}", rel_type),
+                });
+            }
+            buf[patch_offset..patch_offset + 8].copy_from_slice(&value.to_le_bytes());
+        }
+        RelocationType::Abs32 => {
+            let value = target_addr as i64 + addend;
+            // Check for overflow: value must fit in u32
+            if value < 0 || value > u32::MAX as i64 {
+                return Err(LinkError::RelocationOverflow {
+                    symbol: sym_name.to_string(),
+                    rel_type: "Abs32".to_string(),
+                });
+            }
+            if patch_offset + 4 > buf.len() {
+                return Err(LinkError::RelocationPatchOutOfBounds {
+                    patch_offset,
+                    patch_size: 4,
+                    section_size: buf.len(),
+                    rel_type: "Abs32".to_string(),
+                });
+            }
+            buf[patch_offset..patch_offset + 4].copy_from_slice(&(value as u32).to_le_bytes());
+        }
+        RelocationType::Abs32S => {
+            let value = target_addr as i64 + addend;
+            // Check for overflow: value must fit in i32
+            if value < i32::MIN as i64 || value > i32::MAX as i64 {
+                return Err(LinkError::RelocationOverflow {
+                    symbol: sym_name.to_string(),
+                    rel_type: "Abs32S".to_string(),
+                });
+            }
+            if patch_offset + 4 > buf.len() {
+                return Err(LinkError::RelocationPatchOutOfBounds {
+                    patch_offset,
+                    patch_size: 4,
+                    section_size: buf.len(),
+                    rel_type: "Abs32S".to_string(),
+                });
+            }
+            buf[patch_offset..patch_offset + 4].copy_from_slice(&(value as i32).to_le_bytes());
+        }
+        RelocationType::Jump26 | RelocationType::Call26 => {
+            // AArch64 branch (B) or branch with link (BL) - 26-bit PC-relative offset
+            // Both use identical encoding for the immediate field
+            let value = target_addr as i64 + addend - pc as i64;
+            // Offset is in units of 4 bytes (instructions)
+            let offset = value >> 2;
+            // Check for overflow: must fit in 26 bits signed
+            let rel_name = if matches!(rel_type, RelocationType::Jump26) {
+                "Jump26"
+            } else {
+                "Call26"
+            };
+            if offset < -(1 << 25) || offset >= (1 << 25) {
+                return Err(LinkError::RelocationOverflow {
+                    symbol: sym_name.to_string(),
+                    rel_type: rel_name.to_string(),
+                });
+            }
+            if patch_offset + 4 > buf.len() {
+                return Err(LinkError::RelocationPatchOutOfBounds {
+                    patch_offset,
+                    patch_size: 4,
+                    section_size: buf.len(),
+                    rel_type: rel_name.to_string(),
+                });
+            }
+            // Read existing instruction and patch the immediate field
+            let mut inst =
+                u32::from_le_bytes(buf[patch_offset..patch_offset + 4].try_into().unwrap());
+            inst = (inst & 0xFC000000) | ((offset as u32) & 0x03FFFFFF);
+            buf[patch_offset..patch_offset + 4].copy_from_slice(&inst.to_le_bytes());
+        }
+        RelocationType::AdrpPage21 => {
+            // AArch64 ADRP - loads PC-relative page address (21-bit page offset)
+            // S + A gives the effective address; we need the page containing that
+            // Result is the page containing (S + A) minus page containing PC
+            let effective_addr = (target_addr as i64 + addend) as u64;
+            let target_page = effective_addr & !0xFFF;
+            let pc_page = pc & !0xFFF;
+            let page_offset = (target_page as i64) - (pc_page as i64);
+            // ADRP encodes a 21-bit signed page offset (each unit = 4KB page)
+            let page_count = page_offset >> 12;
+            // Check for overflow: must fit in 21 bits signed
+            if page_count < -(1 << 20) || page_count >= (1 << 20) {
+                return Err(LinkError::RelocationOverflow {
+                    symbol: sym_name.to_string(),
+                    rel_type: "AdrpPage21".to_string(),
+                });
+            }
+            if patch_offset + 4 > buf.len() {
+                return Err(LinkError::RelocationPatchOutOfBounds {
+                    patch_offset,
+                    patch_size: 4,
+                    section_size: buf.len(),
+                    rel_type: "AdrpPage21".to_string(),
+                });
+            }
+            // ADRP instruction format: imm is split into immlo (bits 29-30) and immhi (bits 5-23)
+            let imm = page_count as u32;
+            let immlo = (imm & 0x3) << 29; // bits 0-1 of imm -> bits 29-30
+            let immhi = ((imm >> 2) & 0x7FFFF) << 5; // bits 2-20 of imm -> bits 5-23
+            let mut inst =
+                u32::from_le_bytes(buf[patch_offset..patch_offset + 4].try_into().unwrap());
+            // Clear immlo and immhi fields, then set them
+            inst = (inst & 0x9F00001F) | immlo | immhi;
+            buf[patch_offset..patch_offset + 4].copy_from_slice(&inst.to_le_bytes());
+        }
+        RelocationType::AddLo12 => {
+            // AArch64 ADD/load-store PAGEOFF12 - low 12 bits of the effective
+            // address. S + A gives the effective address; extract its low 12 bits.
+            let effective_addr = (target_addr as i64 + addend) as u64;
+            let lo12 = (effective_addr & 0xFFF) as u32;
+            if patch_offset + 4 > buf.len() {
+                return Err(LinkError::RelocationPatchOutOfBounds {
+                    patch_offset,
+                    patch_size: 4,
+                    section_size: buf.len(),
+                    rel_type: "AddLo12".to_string(),
+                });
+            }
+            let mut inst =
+                u32::from_le_bytes(buf[patch_offset..patch_offset + 4].try_into().unwrap());
+
+            // PAGEOFF12 applies to both ADD and load/store instructions. For
+            // loads/stores the imm12 field is SCALED by the access size encoded
+            // in the instruction — writing the raw byte offset would multiply
+            // the effective displacement by the access size at runtime.
+            // (RUE-131 item 5a.) Rue's codegen only ever emits this on an ADD
+            // (the `else` branch), where the value is unscaled; handling the
+            // load/store form keeps both linker paths correct for any input.
+            let imm = if inst & 0x3B00_0000 == 0x3900_0000 {
+                // Load/store register, unsigned immediate class:
+                // scale = size bits [31:30]; 128-bit vector ops
+                // (size == 0b00, V == 1, opc<1> == 1) scale by 16.
+                let mut scale = inst >> 30;
+                if scale == 0 && inst & 0x0480_0000 == 0x0480_0000 {
+                    scale = 4;
+                }
+                if lo12 & ((1u32 << scale) - 1) != 0 {
+                    return Err(LinkError::RelocationOverflow {
+                        symbol: sym_name.to_string(),
+                        rel_type: format!(
+                            "AddLo12 (offset 0x{lo12:x} misaligned for {}-byte access)",
+                            1u32 << scale
+                        ),
+                    });
+                }
+                lo12 >> scale
+            } else {
+                // ADD immediate: unscaled
+                lo12
+            };
+
+            // ADD instruction format: imm12 is in bits 10-21
+            // Clear imm12 field (bits 10-21) and set it
+            inst = (inst & 0xFFC003FF) | (imm << 10);
+            buf[patch_offset..patch_offset + 4].copy_from_slice(&inst.to_le_bytes());
+        }
+        RelocationType::Unknown(t) => {
+            return Err(LinkError::UnsupportedRelocation(format!(
+                "unknown type {}",
+                t
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// A relocation waiting to be applied once all section addresses are known.
 struct PendingRelocation {
     /// Patch offset within the home buffer.
@@ -799,121 +1177,18 @@ impl Linker {
                 "relocating symbol"
             );
 
-            // Bounds-check the patch site against ITS OWN buffer — the old
-            // code indexed merged_text unconditionally. (RUE-131 item 8)
-            let check_bounds = |size: usize| -> Result<(), LinkError> {
-                if patch_idx + size > buf.len() {
-                    return Err(LinkError::RelocationPatchOutOfBounds {
-                        patch_offset: patch_idx,
-                        patch_size: size,
-                        section_size: buf.len(),
-                        rel_type: format!("{:?}", rel_type),
-                    });
-                }
-                Ok(())
-            };
-
-            // Apply the relocation based on type
-            match rel_type {
-                RelocationType::Call26 | RelocationType::Jump26 => {
-                    // ARM64 branch instruction: imm26 * 4 gives PC-relative offset
-                    check_bounds(4)?;
-                    let offset_bytes = target_vaddr as i64 - patch_vaddr as i64 + addend;
-                    let offset_words = offset_bytes >> 2;
-
-                    // Check range: 26-bit signed field gives ±128MB range
-                    if offset_words < -(1 << 25) || offset_words >= (1 << 25) {
-                        return Err(LinkError::RelocationOverflow {
-                            symbol: sym_name,
-                            rel_type: "ARM64_RELOC_BRANCH26".to_string(),
-                        });
-                    }
-
-                    // Read existing instruction and patch imm26 field
-                    let mut insn =
-                        u32::from_le_bytes(buf[patch_idx..patch_idx + 4].try_into().unwrap());
-                    insn = (insn & 0xFC000000) | ((offset_words as u32) & 0x03FFFFFF);
-                    buf[patch_idx..patch_idx + 4].copy_from_slice(&insn.to_le_bytes());
-                }
-                RelocationType::AdrpPage21 => {
-                    // ADRP: load page address (bits 12-32 of PC-relative offset)
-                    check_bounds(4)?;
-                    let target_page = (target_vaddr as i64 + addend) & !0xFFF;
-                    let patch_page = patch_vaddr as i64 & !0xFFF;
-                    let page_offset = (target_page - patch_page) >> 12;
-
-                    // 21-bit signed field
-                    if page_offset < -(1 << 20) || page_offset >= (1 << 20) {
-                        return Err(LinkError::RelocationOverflow {
-                            symbol: sym_name,
-                            rel_type: "ARM64_RELOC_PAGE21".to_string(),
-                        });
-                    }
-
-                    // Encode into ADRP instruction
-                    let mut insn =
-                        u32::from_le_bytes(buf[patch_idx..patch_idx + 4].try_into().unwrap());
-                    let imm = page_offset as u32 & 0x1FFFFF;
-                    let immlo = imm & 0x3;
-                    let immhi = (imm >> 2) & 0x7FFFF;
-                    insn = (insn & 0x9F00001F) | (immlo << 29) | (immhi << 5);
-                    buf[patch_idx..patch_idx + 4].copy_from_slice(&insn.to_le_bytes());
-                }
-                RelocationType::AddLo12 => {
-                    // ARM64_RELOC_PAGEOFF12: low 12 bits of the target address,
-                    // encoded in the imm12 field (bits 10-21).
-                    check_bounds(4)?;
-                    let lo12 = ((target_vaddr as i64 + addend) & 0xFFF) as u32;
-
-                    let mut insn =
-                        u32::from_le_bytes(buf[patch_idx..patch_idx + 4].try_into().unwrap());
-
-                    // PAGEOFF12 applies to both ADD and load/store
-                    // instructions. For loads/stores the imm12 field is
-                    // SCALED by the access size encoded in the instruction —
-                    // writing the raw byte offset multiplies the effective
-                    // displacement by the access size at runtime.
-                    // (RUE-131 item 5a)
-                    let imm = if insn & 0x3B00_0000 == 0x3900_0000 {
-                        // Load/store register, unsigned immediate class:
-                        // scale = size bits [31:30]; 128-bit vector ops
-                        // (size == 0b00, V == 1, opc<1> == 1) scale by 16.
-                        let mut scale = insn >> 30;
-                        if scale == 0 && insn & 0x0480_0000 == 0x0480_0000 {
-                            scale = 4;
-                        }
-                        if lo12 & ((1u32 << scale) - 1) != 0 {
-                            return Err(LinkError::RelocationOverflow {
-                                symbol: sym_name,
-                                rel_type: format!(
-                                    "ARM64_RELOC_PAGEOFF12 (offset 0x{lo12:x} misaligned \
-                                     for {}-byte access)",
-                                    1u32 << scale
-                                ),
-                            });
-                        }
-                        lo12 >> scale
-                    } else {
-                        // ADD immediate: unscaled
-                        lo12
-                    };
-
-                    insn = (insn & 0xFFC003FF) | (imm << 10);
-                    buf[patch_idx..patch_idx + 4].copy_from_slice(&insn.to_le_bytes());
-                }
-                RelocationType::Aarch64Abs64 | RelocationType::Abs64 => {
-                    // ARM64_RELOC_UNSIGNED: 64-bit absolute address (pointer
-                    // slots in rodata/data). Previously unsupported on the
-                    // Mach-O path because rodata/data relocations were never
-                    // collected at all. (RUE-131 item 11)
-                    check_bounds(8)?;
-                    let value = (target_vaddr as i64 + addend) as u64;
-                    buf[patch_idx..patch_idx + 8].copy_from_slice(&value.to_le_bytes());
-                }
-                _ => {
-                    return Err(LinkError::UnsupportedRelocation(format!("{:?}", rel_type)));
-                }
-            }
+            // Patch the site. The per-kind encoding — including the bounds
+            // check against ITS OWN buffer (RUE-131 item 8) — is shared with
+            // the ELF path via `apply_relocation` (RUE-335).
+            apply_relocation(
+                buf,
+                patch_idx,
+                patch_vaddr,
+                target_vaddr,
+                addend,
+                rel_type,
+                &sym_name,
+            )?;
         }
 
         // Now build the binary with the relocated code.
@@ -1291,328 +1566,17 @@ impl Linker {
             let pc = base_vaddr + offset;
             let patch_offset = offset as usize;
 
-            match rel_type {
-                RelocationType::Pc32 | RelocationType::Plt32 => {
-                    // S + A - P, where S is symbol address, A is addend, P is place
-                    let value = target_addr as i64 + addend - pc as i64;
-                    // Check for overflow: value must fit in i32
-                    if value < i32::MIN as i64 || value > i32::MAX as i64 {
-                        return Err(LinkError::RelocationOverflow {
-                            symbol: sym_name.clone(),
-                            rel_type: format!("{:?}", rel_type),
-                        });
-                    }
-                    if patch_offset + 4 > buf.len() {
-                        return Err(LinkError::RelocationPatchOutOfBounds {
-                            patch_offset,
-                            patch_size: 4,
-                            section_size: buf.len(),
-                            rel_type: format!("{:?}", rel_type),
-                        });
-                    }
-                    buf[patch_offset..patch_offset + 4]
-                        .copy_from_slice(&(value as i32).to_le_bytes());
-                }
-                RelocationType::GotPcRel => {
-                    // R_X86_64_GOTPCREL: Load from GOT entry.
-                    // For static linking, we relax this to use the symbol address directly.
-                    // This requires rewriting indirect calls/jumps to direct ones, similar to
-                    // GotPcRelX but without the compiler's guarantee that it's safe.
-                    // In static linking, we know all symbols are resolved, so it's always safe.
-                    //
-                    // Transform indirect call: `call *[rip+disp]` (FF /2) -> `addr32 call rel32` (67 E8)
-                    // Transform indirect jmp:  `jmp *[rip+disp]` (FF /4) -> `addr32 jmp rel32` (67 E9)
-                    // Transform indirect mov:  `mov reg, [rip+disp]` (8B) -> `lea reg, [rip+disp]` (8D)
-                    if patch_offset >= 2 {
-                        let opcode_offset = patch_offset - 2;
-                        if buf[opcode_offset] == 0xFF {
-                            let modrm = buf[opcode_offset + 1];
-                            let reg_field = (modrm >> 3) & 0x7;
-                            if reg_field == 2 {
-                                // Indirect call: `call *[rip+disp]` (FF /2, ModR/M 15)
-                                // Transform to: `addr32 call rel32` (67 E8)
-                                buf[opcode_offset] = 0x67; // addr32 prefix
-                                buf[opcode_offset + 1] = 0xE8; // direct call opcode
-                            } else if reg_field == 4 {
-                                // Indirect jmp: `jmp *[rip+disp]` (FF /4, ModR/M 25)
-                                // Transform to: `addr32 jmp rel32` (67 E9)
-                                buf[opcode_offset] = 0x67; // addr32 prefix
-                                buf[opcode_offset + 1] = 0xE9; // direct jmp opcode
-                            }
-                        } else if buf[opcode_offset] == 0x8B {
-                            // MOV: `mov reg, [rip+disp]` -> `lea reg, [rip+disp]`
-                            buf[opcode_offset] = 0x8D; // LEA opcode
-                        }
-                        // Other patterns: just patch displacement (best effort)
-                    }
-
-                    let value = target_addr as i64 + addend - pc as i64;
-                    if value < i32::MIN as i64 || value > i32::MAX as i64 {
-                        return Err(LinkError::RelocationOverflow {
-                            symbol: sym_name.clone(),
-                            rel_type: format!("{:?}", rel_type),
-                        });
-                    }
-                    if patch_offset + 4 > buf.len() {
-                        return Err(LinkError::RelocationPatchOutOfBounds {
-                            patch_offset,
-                            patch_size: 4,
-                            section_size: buf.len(),
-                            rel_type: format!("{:?}", rel_type),
-                        });
-                    }
-                    buf[patch_offset..patch_offset + 4]
-                        .copy_from_slice(&(value as i32).to_le_bytes());
-                }
-                RelocationType::GotPcRelX => {
-                    // R_X86_64_GOTPCRELX: GOT access without REX prefix.
-                    // For static linking, we perform GOT relaxation:
-                    // - `mov reg, [rip+disp]` (8B) -> `lea reg, [rip+disp]` (8D)
-                    // - `call *[rip+disp]` (FF /2) -> `addr32 call rel32` (67 E8)
-                    // - `jmp *[rip+disp]` (FF /4) -> `addr32 jmp rel32` (67 E9)
-                    //
-                    // The relocation offset points to the displacement, so:
-                    // - For MOV: opcode is at offset - 2
-                    // - For CALL/JMP: opcode (FF) is at offset - 2, ModR/M is at offset - 1
-                    if patch_offset >= 2 {
-                        let opcode_offset = patch_offset - 2;
-                        if buf[opcode_offset] == 0xFF {
-                            let modrm = buf[opcode_offset + 1];
-                            let reg_field = (modrm >> 3) & 0x7;
-                            if reg_field == 2 {
-                                // Indirect call: `call *[rip+disp]` (FF /2, ModR/M 15)
-                                // Transform to: `addr32 call rel32` (67 E8)
-                                buf[opcode_offset] = 0x67; // addr32 prefix
-                                buf[opcode_offset + 1] = 0xE8; // direct call opcode
-                            } else if reg_field == 4 {
-                                // Indirect jmp: `jmp *[rip+disp]` (FF /4, ModR/M 25)
-                                // Transform to: `addr32 jmp rel32` (67 E9)
-                                buf[opcode_offset] = 0x67; // addr32 prefix
-                                buf[opcode_offset + 1] = 0xE9; // direct jmp opcode
-                            }
-                        } else if buf[opcode_offset] == 0x8B {
-                            // MOV: `mov reg, [rip+disp]` -> `lea reg, [rip+disp]`
-                            buf[opcode_offset] = 0x8D; // LEA opcode
-                        }
-                        // Other patterns: just patch displacement (best effort)
-                    }
-
-                    let value = target_addr as i64 + addend - pc as i64;
-                    if value < i32::MIN as i64 || value > i32::MAX as i64 {
-                        return Err(LinkError::RelocationOverflow {
-                            symbol: sym_name.clone(),
-                            rel_type: format!("{:?}", rel_type),
-                        });
-                    }
-                    if patch_offset + 4 > buf.len() {
-                        return Err(LinkError::RelocationPatchOutOfBounds {
-                            patch_offset,
-                            patch_size: 4,
-                            section_size: buf.len(),
-                            rel_type: format!("{:?}", rel_type),
-                        });
-                    }
-                    buf[patch_offset..patch_offset + 4]
-                        .copy_from_slice(&(value as i32).to_le_bytes());
-                }
-                RelocationType::RexGotPcRelX => {
-                    // R_X86_64_REX_GOTPCRELX: GOT access with REX prefix.
-                    // For static linking, we perform GOT relaxation:
-                    // - `mov reg, [rip+disp]` (REX 8B) -> `lea reg, [rip+disp]` (REX 8D)
-                    // - `call *[rip+disp]` (REX FF /2) -> `addr32 call rel32` (REX 67 E8)
-                    // - `jmp *[rip+disp]` (REX FF /4) -> `addr32 jmp rel32` (REX 67 E9)
-                    //
-                    // The relocation offset points to the displacement, so:
-                    // - For MOV with REX: REX is at offset - 3, opcode at offset - 2
-                    // - For CALL/JMP with REX: similar layout
-                    if patch_offset >= 2 {
-                        let opcode_offset = patch_offset - 2;
-                        if buf[opcode_offset] == 0xFF {
-                            let modrm = buf[opcode_offset + 1];
-                            let reg_field = (modrm >> 3) & 0x7;
-                            if reg_field == 2 {
-                                // Indirect call with REX: `REX call *[rip+disp]` (4x FF /2)
-                                // Transform to: `addr32 call rel32` (67 E8) - REX stays at offset-3
-                                buf[opcode_offset] = 0x67; // addr32 prefix
-                                buf[opcode_offset + 1] = 0xE8; // direct call opcode
-                            // Note: REX prefix at offset-3 becomes harmless (no-op for CALL)
-                            } else if reg_field == 4 {
-                                // Indirect jmp with REX: `REX jmp *[rip+disp]` (4x FF /4)
-                                // Transform to: `addr32 jmp rel32` (67 E9)
-                                buf[opcode_offset] = 0x67; // addr32 prefix
-                                buf[opcode_offset + 1] = 0xE9; // direct jmp opcode
-                            }
-                        } else if buf[opcode_offset] == 0x8B {
-                            // MOV with REX: `REX mov reg, [rip+disp]` -> `REX lea reg, [rip+disp]`
-                            buf[opcode_offset] = 0x8D; // LEA opcode
-                        }
-                        // Other patterns: just patch displacement (best effort)
-                    }
-
-                    let value = target_addr as i64 + addend - pc as i64;
-                    if value < i32::MIN as i64 || value > i32::MAX as i64 {
-                        return Err(LinkError::RelocationOverflow {
-                            symbol: sym_name.clone(),
-                            rel_type: format!("{:?}", rel_type),
-                        });
-                    }
-                    if patch_offset + 4 > buf.len() {
-                        return Err(LinkError::RelocationPatchOutOfBounds {
-                            patch_offset,
-                            patch_size: 4,
-                            section_size: buf.len(),
-                            rel_type: format!("{:?}", rel_type),
-                        });
-                    }
-                    buf[patch_offset..patch_offset + 4]
-                        .copy_from_slice(&(value as i32).to_le_bytes());
-                }
-                RelocationType::Abs64 | RelocationType::Aarch64Abs64 => {
-                    let value = (target_addr as i64 + addend) as u64;
-                    if patch_offset + 8 > buf.len() {
-                        return Err(LinkError::RelocationPatchOutOfBounds {
-                            patch_offset,
-                            patch_size: 8,
-                            section_size: buf.len(),
-                            rel_type: format!("{:?}", rel_type),
-                        });
-                    }
-                    buf[patch_offset..patch_offset + 8].copy_from_slice(&value.to_le_bytes());
-                }
-                RelocationType::Abs32 => {
-                    let value = target_addr as i64 + addend;
-                    // Check for overflow: value must fit in u32
-                    if value < 0 || value > u32::MAX as i64 {
-                        return Err(LinkError::RelocationOverflow {
-                            symbol: sym_name.clone(),
-                            rel_type: "Abs32".to_string(),
-                        });
-                    }
-                    if patch_offset + 4 > buf.len() {
-                        return Err(LinkError::RelocationPatchOutOfBounds {
-                            patch_offset,
-                            patch_size: 4,
-                            section_size: buf.len(),
-                            rel_type: "Abs32".to_string(),
-                        });
-                    }
-                    buf[patch_offset..patch_offset + 4]
-                        .copy_from_slice(&(value as u32).to_le_bytes());
-                }
-                RelocationType::Abs32S => {
-                    let value = target_addr as i64 + addend;
-                    // Check for overflow: value must fit in i32
-                    if value < i32::MIN as i64 || value > i32::MAX as i64 {
-                        return Err(LinkError::RelocationOverflow {
-                            symbol: sym_name.clone(),
-                            rel_type: "Abs32S".to_string(),
-                        });
-                    }
-                    if patch_offset + 4 > buf.len() {
-                        return Err(LinkError::RelocationPatchOutOfBounds {
-                            patch_offset,
-                            patch_size: 4,
-                            section_size: buf.len(),
-                            rel_type: "Abs32S".to_string(),
-                        });
-                    }
-                    buf[patch_offset..patch_offset + 4]
-                        .copy_from_slice(&(value as i32).to_le_bytes());
-                }
-                RelocationType::Jump26 | RelocationType::Call26 => {
-                    // AArch64 branch (B) or branch with link (BL) - 26-bit PC-relative offset
-                    // Both use identical encoding for the immediate field
-                    let value = target_addr as i64 + addend - pc as i64;
-                    // Offset is in units of 4 bytes (instructions)
-                    let offset = value >> 2;
-                    // Check for overflow: must fit in 26 bits signed
-                    let rel_name = if matches!(rel_type, RelocationType::Jump26) {
-                        "Jump26"
-                    } else {
-                        "Call26"
-                    };
-                    if offset < -(1 << 25) || offset >= (1 << 25) {
-                        return Err(LinkError::RelocationOverflow {
-                            symbol: sym_name.clone(),
-                            rel_type: rel_name.to_string(),
-                        });
-                    }
-                    if patch_offset + 4 > buf.len() {
-                        return Err(LinkError::RelocationPatchOutOfBounds {
-                            patch_offset,
-                            patch_size: 4,
-                            section_size: buf.len(),
-                            rel_type: rel_name.to_string(),
-                        });
-                    }
-                    // Read existing instruction and patch the immediate field
-                    let mut inst =
-                        u32::from_le_bytes(buf[patch_offset..patch_offset + 4].try_into().unwrap());
-                    inst = (inst & 0xFC000000) | ((offset as u32) & 0x03FFFFFF);
-                    buf[patch_offset..patch_offset + 4].copy_from_slice(&inst.to_le_bytes());
-                }
-                RelocationType::AdrpPage21 => {
-                    // AArch64 ADRP - loads PC-relative page address (21-bit page offset)
-                    // S + A gives the effective address; we need the page containing that
-                    // Result is the page containing (S + A) minus page containing PC
-                    let effective_addr = (target_addr as i64 + addend) as u64;
-                    let target_page = effective_addr & !0xFFF;
-                    let pc_page = pc & !0xFFF;
-                    let page_offset = (target_page as i64) - (pc_page as i64);
-                    // ADRP encodes a 21-bit signed page offset (each unit = 4KB page)
-                    let page_count = page_offset >> 12;
-                    // Check for overflow: must fit in 21 bits signed
-                    if page_count < -(1 << 20) || page_count >= (1 << 20) {
-                        return Err(LinkError::RelocationOverflow {
-                            symbol: sym_name.clone(),
-                            rel_type: "AdrpPage21".to_string(),
-                        });
-                    }
-                    if patch_offset + 4 > buf.len() {
-                        return Err(LinkError::RelocationPatchOutOfBounds {
-                            patch_offset,
-                            patch_size: 4,
-                            section_size: buf.len(),
-                            rel_type: "AdrpPage21".to_string(),
-                        });
-                    }
-                    // ADRP instruction format: imm is split into immlo (bits 29-30) and immhi (bits 5-23)
-                    let imm = page_count as u32;
-                    let immlo = (imm & 0x3) << 29; // bits 0-1 of imm -> bits 29-30
-                    let immhi = ((imm >> 2) & 0x7FFFF) << 5; // bits 2-20 of imm -> bits 5-23
-                    let mut inst =
-                        u32::from_le_bytes(buf[patch_offset..patch_offset + 4].try_into().unwrap());
-                    // Clear immlo and immhi fields, then set them
-                    inst = (inst & 0x9F00001F) | immlo | immhi;
-                    buf[patch_offset..patch_offset + 4].copy_from_slice(&inst.to_le_bytes());
-                }
-                RelocationType::AddLo12 => {
-                    // AArch64 ADD - adds 12-bit page offset
-                    // S + A gives the effective address; extract low 12 bits as page offset
-                    let effective_addr = (target_addr as i64 + addend) as u64;
-                    let page_offset = (effective_addr & 0xFFF) as u32;
-                    if patch_offset + 4 > buf.len() {
-                        return Err(LinkError::RelocationPatchOutOfBounds {
-                            patch_offset,
-                            patch_size: 4,
-                            section_size: buf.len(),
-                            rel_type: "AddLo12".to_string(),
-                        });
-                    }
-                    // ADD instruction format: imm12 is in bits 10-21
-                    let mut inst =
-                        u32::from_le_bytes(buf[patch_offset..patch_offset + 4].try_into().unwrap());
-                    // Clear imm12 field (bits 10-21) and set it
-                    inst = (inst & 0xFFC003FF) | (page_offset << 10);
-                    buf[patch_offset..patch_offset + 4].copy_from_slice(&inst.to_le_bytes());
-                }
-                RelocationType::Unknown(t) => {
-                    return Err(LinkError::UnsupportedRelocation(format!(
-                        "unknown type {}",
-                        t
-                    )));
-                }
-            }
+            // Patch the site; the per-kind encoding is shared with the
+            // Mach-O path via `apply_relocation` (RUE-335).
+            apply_relocation(
+                buf,
+                patch_offset,
+                pc,
+                target_addr,
+                addend,
+                rel_type,
+                &sym_name,
+            )?;
         }
 
         // Build the ELF with proper W^X segment separation
