@@ -13,6 +13,11 @@ relates: ["ADR-0020", "ADR-0037", "RUE-315", "RUE-287", "RUE-6", "RUE-1"]
 
 # ADR-0042: Standard-library availability model
 
+> **Superseded in part by [ADR-0043](0043-collection-string-type-trio.md)**: the
+> string-specialness incoherence is resolved by de-blessing `String` (it becomes
+> the library type `StrBuf`). The *availability mechanism* this ADR raises
+> (prelude vs. explicit import for library types) remains open — RUE-315 / RUE-287.
+
 > **Status: Proposed / for discussion (Steve + Dorian).** This ADR frames the
 > problem, lays out the options with trade-offs, and records a recommendation.
 > It does **not** ratify a decision. Tracking issue: RUE-315.

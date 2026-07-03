@@ -13,6 +13,11 @@ superseded-by:
 
 # ADR-0020: Built-in Types as Synthetic Structs
 
+> **Superseded for `String` by [ADR-0043](0043-collection-string-type-trio.md)**:
+> `String` is no longer a blessed synthetic struct injected into scope — it
+> becomes the ordinary library type `StrBuf` (the growable rung of the collection
+> trio), with `str` and slices as genuine primitives.
+
 ## Status
 
 Implemented
