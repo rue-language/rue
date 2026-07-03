@@ -520,6 +520,18 @@ impl<'a> Interp<'a> {
             }
             CfgInstData::EnumVariant { variant_index, .. } => Value::Int(*variant_index as i128),
 
+            // Enum payloads (RUE-221) are a preview feature the oracle does not
+            // model yet — it represents an enum by its discriminant only. Return
+            // Unsupported (a clean skip) rather than a guessed value, so payload-
+            // bearing programs drop out of the differential path instead of
+            // reporting a false disagreement. (Proper modeling: RUE-221 oracle
+            // follow-up.)
+            CfgInstData::EnumPayloadGet { .. } => {
+                return Err(Flow::Unsupported(Unsupported(
+                    "enum payload get (RUE-221 preview)".into(),
+                )));
+            }
+
             // Writes to an `inout` parameter inside the callee (visible to the
             // caller via copy-out).
             CfgInstData::ParamStore { param_slot, value } => {

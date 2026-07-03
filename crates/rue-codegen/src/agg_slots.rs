@@ -64,6 +64,10 @@ pub trait SlotBackend {
     /// Emit a load of the constant zero into `dst`.
     fn emit_load_zero(&mut self, dst: VReg);
 
+    /// Emit a load of the integer constant `imm` into `dst` (used for an
+    /// enum discriminant, RUE-221).
+    fn emit_load_imm(&mut self, dst: VReg, imm: i64);
+
     /// Recursively collect the scalar slot vregs of an array value
     /// (the backends' thin wrapper over `types::collect_array_scalar_vregs`).
     fn collect_array_scalars(&mut self, value: CfgValue) -> Vec<VReg>;
@@ -114,7 +118,11 @@ pub fn get_or_compute_field_vregs<B: SlotBackend>(b: &mut B, value: CfgValue) ->
         let inst = b.ctx().cfg.get_inst(value);
         (inst.ty, inst.data.clone())
     };
-    if !matches!(ty.kind(), TypeKind::Struct(_) | TypeKind::Array(_)) {
+    // Aggregates are structs, arrays, and payload-carrying enums (a
+    // discriminant-only enum stays a 1-slot scalar and is handled by the
+    // ordinary single-vreg path). (RUE-221)
+    let is_payload_enum = matches!(ty.kind(), TypeKind::Enum(_)) && b.ctx().type_slot_count(ty) > 1;
+    if !matches!(ty.kind(), TypeKind::Struct(_) | TypeKind::Array(_)) && !is_payload_enum {
         return None;
     }
 
@@ -260,6 +268,69 @@ pub fn lower_struct_init<B: SlotBackend>(
         b.emit_reg_move(vreg, first_vreg);
     } else {
         b.emit_load_zero(vreg);
+    }
+
+    b.slot_cache().insert(value, slot_vregs);
+}
+
+/// Lower an `EnumVariant` tuple-variant construction into slot vregs (RUE-221).
+///
+/// Tagged-union layout: slot 0 is the discriminant (`variant_index`), followed
+/// by the payload operands flattened to one vreg per slot. The payload area is
+/// padded with zero slots so every value of the enum type occupies the same
+/// number of slots (sized to the largest variant), which is what consumers
+/// (Alloc, Store, match extraction) expect. The value's primary vreg is slot 0
+/// (the discriminant), so a `match` can switch on it directly.
+pub fn lower_enum_variant<B: SlotBackend>(
+    b: &mut B,
+    value: CfgValue,
+    payload_start: u32,
+    payload_len: u32,
+) {
+    let ty = b.ctx().cfg.get_inst(value).ty;
+    let total_slots = b.ctx().type_slot_count(ty);
+
+    // Slot 0: the discriminant.
+    let disc_vreg = b.alloc_vreg();
+    let variant_index = match &b.ctx().cfg.get_inst(value).data {
+        CfgInstData::EnumVariant { variant_index, .. } => *variant_index,
+        _ => unreachable!("lower_enum_variant on non-EnumVariant"),
+    };
+    b.emit_load_imm(disc_vreg, variant_index as i64);
+    b.map_value(value, disc_vreg);
+
+    let mut slot_vregs: Vec<VReg> = Vec::with_capacity(total_slots as usize);
+    slot_vregs.push(disc_vreg);
+
+    // Payload slots, flattening nested aggregates like StructInit does.
+    let payload = b.ctx().cfg.get_extra(payload_start, payload_len).to_vec();
+    for field in &payload {
+        let field_ty = b.ctx().cfg.get_inst(*field).ty;
+        match field_ty.kind() {
+            TypeKind::Struct(_) | TypeKind::Enum(_) => {
+                if let Some(nested) = get_or_compute_field_vregs(b, *field) {
+                    slot_vregs.extend(nested);
+                } else {
+                    slot_vregs.push(b.get_vreg(*field));
+                }
+            }
+            TypeKind::Array(_) => {
+                if let Some(nested) = get_or_compute_field_vregs(b, *field) {
+                    slot_vregs.extend(nested);
+                } else {
+                    slot_vregs.extend(b.collect_array_scalars(*field));
+                }
+            }
+            _ => slot_vregs.push(b.get_vreg(*field)),
+        }
+    }
+
+    // Pad the payload area to the enum's full slot count so all values of this
+    // type are the same size (the union is sized to the largest variant).
+    while (slot_vregs.len() as u32) < total_slots {
+        let pad = b.alloc_vreg();
+        b.emit_load_zero(pad);
+        slot_vregs.push(pad);
     }
 
     b.slot_cache().insert(value, slot_vregs);

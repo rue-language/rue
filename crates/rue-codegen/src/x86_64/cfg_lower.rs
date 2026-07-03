@@ -500,7 +500,7 @@ impl<'a> CfgLower<'a> {
                 // fieldless struct) gets an EMPTY list, matching the empty
                 // slot lists its sources cache — a phantom slot here tripped
                 // the join's count assert (RUE-194).
-                if matches!(ty.kind(), TypeKind::Struct(_) | TypeKind::Array(_)) {
+                if self.ctx.is_multislot_aggregate(*ty) {
                     let slot_count = self.ctx.type_slot_count(*ty);
                     let mut slot_vregs = Vec::with_capacity(slot_count as usize);
                     if slot_count > 0 {
@@ -546,7 +546,7 @@ impl<'a> CfgLower<'a> {
                     .insert((block.id, param_idx as u32), vreg);
                 self.value_map.insert(*param_val, vreg);
 
-                if matches!(ty.kind(), TypeKind::Struct(_) | TypeKind::Array(_)) {
+                if self.ctx.is_multislot_aggregate(*ty) {
                     // Exactly slot_count vregs; zero-slot aggregates get an
                     // empty list (RUE-194) — same as lower().
                     let slot_count = self.ctx.type_slot_count(*ty);
@@ -1644,13 +1644,14 @@ impl<'a> CfgLower<'a> {
                         "string should have 3 fields (ptr, len, cap)"
                     );
                     crate::agg_slots::store_slots(self, &field_vregs, *slot);
-                } else if matches!(init_type.kind(), TypeKind::Struct(_)) {
-                    // Struct: store all slots via the single accessor. It materializes a
-                    // struct read from a place (`let q = a.p`) by loading its slot_count
-                    // consecutive slots, and cache-hits StructInit/Load/Param/Call/
-                    // BlockParam — all of which now carry fully-flattened slot lists
-                    // (nested arrays included). Fall back to the flattener for any source
-                    // the accessor doesn't model. (RUE-118 / RUE-22)
+                } else if self.ctx.is_multislot_aggregate(init_type) {
+                    // Struct or payload enum (RUE-221): store all slots via the
+                    // single accessor. It materializes a struct read from a place
+                    // (`let q = a.p`) by loading its slot_count consecutive slots,
+                    // and cache-hits StructInit/EnumVariant/Load/Param/Call/
+                    // BlockParam — all of which carry fully-flattened slot lists.
+                    // Fall back to the flattener for any source the accessor
+                    // doesn't model. (RUE-118 / RUE-22)
                     let scalar_vregs = self
                         .get_or_compute_field_vregs(*init)
                         .unwrap_or_else(|| self.collect_struct_scalar_vregs(*init));
@@ -1730,9 +1731,11 @@ impl<'a> CfgLower<'a> {
                         let vreg = self.mir.alloc_vreg();
                         self.value_map.insert(value, vreg);
                     }
-                } else if let TypeKind::Struct(struct_id) = load_type.kind() {
-                    // Struct: load all field slots (recursively flattened)
-                    let slot_count = self.ctx.type_slot_count(Type::new_struct(struct_id));
+                } else if self.ctx.is_multislot_aggregate(load_type) {
+                    // Struct or payload enum (RUE-221): load all slots. For an
+                    // enum, slot 0 is the discriminant, so the primary vreg set
+                    // below is what a `match` switches on.
+                    let slot_count = self.ctx.type_slot_count(load_type);
                     let mut slot_vregs = Vec::with_capacity(slot_count as usize);
 
                     for i in 0..slot_count {
@@ -1776,12 +1779,11 @@ impl<'a> CfgLower<'a> {
                 // lazily-sourced values and cache-hits eager ones; if it can't model
                 // the source (e.g. a dynamically-indexed place-read) fall back to the
                 // old single-slot behavior rather than ICE. (RUE-118, RUE-80)
-                let aggregate_vregs =
-                    if matches!(val_type.kind(), TypeKind::Struct(_) | TypeKind::Array(_)) {
-                        self.get_or_compute_field_vregs(*val)
-                    } else {
-                        None
-                    };
+                let aggregate_vregs = if self.ctx.is_multislot_aggregate(val_type) {
+                    self.get_or_compute_field_vregs(*val)
+                } else {
+                    None
+                };
 
                 if let Some(slot_vregs) = aggregate_vregs {
                     // Check if this slot corresponds to an inout parameter
@@ -1840,12 +1842,11 @@ impl<'a> CfgLower<'a> {
                 // the pointer (stack grows down), so slot i lives at ptr - i*8.
                 // Unmodeled sources fall back to single-slot. (RUE-145)
                 let val_type = self.ctx.cfg.get_inst(*val).ty;
-                let aggregate_vregs =
-                    if matches!(val_type.kind(), TypeKind::Struct(_) | TypeKind::Array(_)) {
-                        self.get_or_compute_field_vregs(*val)
-                    } else {
-                        None
-                    };
+                let aggregate_vregs = if self.ctx.is_multislot_aggregate(val_type) {
+                    self.get_or_compute_field_vregs(*val)
+                } else {
+                    None
+                };
 
                 // Use ensure_inout_param_ptr in case the param was never accessed via Param instruction
                 let ptr_vreg = self.ensure_inout_param_ptr(*param_slot);
@@ -1874,12 +1875,11 @@ impl<'a> CfgLower<'a> {
                 // param); other aggregates do when their slots exceed the
                 // return registers. See crate::cfg_lower::type_uses_sret_return.
                 let is_sret_call = self.ctx.type_uses_sret(ty, RET_REGS.len() as u32);
-                let ret_slot_count =
-                    if matches!(ty.kind(), TypeKind::Struct(_) | TypeKind::Array(_)) {
-                        self.ctx.type_slot_count(ty)
-                    } else {
-                        1
-                    };
+                let ret_slot_count = if self.ctx.is_multislot_aggregate(ty) {
+                    self.ctx.type_slot_count(ty)
+                } else {
+                    1
+                };
                 // Caller-allocated return buffer: one 8-byte slot per
                 // aggregate slot, padded to keep rsp 16-byte aligned.
                 let sret_bytes = ((ret_slot_count as i32 * 8) + 15) / 16 * 16;
@@ -1921,26 +1921,23 @@ impl<'a> CfgLower<'a> {
                         continue;
                     }
 
-                    match arg_type.kind() {
-                        TypeKind::Struct(_) | TypeKind::Array(_) => {
-                            // Pass all slots of the (possibly multi-slot) aggregate arg —
-                            // struct, builtin String, or fixed-size array — regardless of
-                            // how it was produced. The accessor materializes lazily-sourced
-                            // values (Load/Param/PlaceRead) and cache-hits eager ones
-                            // (StructInit/ArrayInit/Call/BlockParam). The old per-source
-                            // array ladder iterated array_len (element count), not
-                            // slot_count, so a multidimensional array dropped every row
-                            // after the first. (RUE-118, RUE-79)
-                            if let Some(field_vregs) = self.get_or_compute_field_vregs(arg_value) {
-                                flattened_vregs.extend(field_vregs);
-                            } else {
-                                flattened_vregs.push(self.get_vreg(arg_value));
-                            }
-                        }
-                        // Note: String is now Type::Struct, handled above
-                        _ => {
+                    if self.ctx.is_multislot_aggregate(arg_type) {
+                        // Pass all slots of the (possibly multi-slot) aggregate arg —
+                        // struct, builtin String, fixed-size array, or payload enum
+                        // (RUE-221) — regardless of how it was produced. The accessor
+                        // materializes lazily-sourced values (Load/Param/PlaceRead) and
+                        // cache-hits eager ones (StructInit/ArrayInit/Call/BlockParam).
+                        // The old per-source array ladder iterated array_len (element
+                        // count), not slot_count, so a multidimensional array dropped
+                        // every row after the first. (RUE-118, RUE-79)
+                        if let Some(field_vregs) = self.get_or_compute_field_vregs(arg_value) {
+                            flattened_vregs.extend(field_vregs);
+                        } else {
                             flattened_vregs.push(self.get_vreg(arg_value));
                         }
+                    } else {
+                        // Note: String is now Type::Struct, handled above
+                        flattened_vregs.push(self.get_vreg(arg_value));
                     }
                 }
 
@@ -2030,7 +2027,7 @@ impl<'a> CfgLower<'a> {
                         dst: Operand::Virtual(result_vreg),
                         src: Operand::Virtual(slot_vregs[0]),
                     });
-                } else if matches!(ty.kind(), TypeKind::Struct(_) | TypeKind::Array(_)) {
+                } else if self.ctx.is_multislot_aggregate(ty) {
                     // Aggregates that fit return in registers. Capture
                     // every slot from RET_REGS, not just rax — arrays previously fell
                     // to the scalar path and lost all elements but the first. (RUE-78)
@@ -2770,15 +2767,66 @@ impl<'a> CfgLower<'a> {
                 });
             }
 
-            CfgInstData::EnumVariant { variant_index, .. } => {
-                // Enum variants are represented as their discriminant (variant index)
+            CfgInstData::EnumVariant {
+                variant_index,
+                payload_start,
+                payload_len,
+                ..
+            } => {
+                let vty = self.ctx.cfg.get_inst(value).ty;
+                if *payload_len == 0 && self.ctx.type_slot_count(vty) <= 1 {
+                    // Discriminant-only (C-like) enum: a single-slot scalar
+                    // holding the variant index.
+                    let vreg = self.mir.alloc_vreg();
+                    self.value_map.insert(value, vreg);
+                    self.mir.push(X86Inst::MovRI32 {
+                        dst: Operand::Virtual(vreg),
+                        imm: *variant_index as i32,
+                    });
+                } else {
+                    // Tagged-union value (RUE-221): discriminant + payload slots.
+                    let (ps, pl) = (*payload_start, *payload_len);
+                    crate::agg_slots::lower_enum_variant(self, value, ps, pl);
+                }
+            }
+
+            CfgInstData::EnumPayloadGet {
+                base,
+                enum_id,
+                variant_index,
+                field_index,
+            } => {
+                // Read payload field from the scrutinee's tagged-union slots.
+                let (enum_id, variant_index, field_index) =
+                    (*enum_id, *variant_index, *field_index);
+                let base = *base;
+                let vty = self.ctx.cfg.get_inst(value).ty;
+                let field_slots = self.ctx.type_slot_count(vty) as usize;
+                let offset = types::enum_payload_slot_offset(
+                    self.ctx.type_pool,
+                    enum_id,
+                    variant_index,
+                    field_index,
+                ) as usize;
+                let base_slots = self
+                    .get_or_compute_field_vregs(base)
+                    .expect("enum payload base must have slot vregs");
                 let vreg = self.mir.alloc_vreg();
                 self.value_map.insert(value, vreg);
-
-                self.mir.push(X86Inst::MovRI32 {
-                    dst: Operand::Virtual(vreg),
-                    imm: *variant_index as i32,
-                });
+                if field_slots > 1 {
+                    // Multi-slot payload (nested aggregate): expose all slots.
+                    let slots: Vec<VReg> = base_slots[offset..offset + field_slots].to_vec();
+                    self.struct_slot_vregs.insert(value, slots.clone());
+                    self.mir.push(X86Inst::MovRR {
+                        dst: Operand::Virtual(vreg),
+                        src: Operand::Virtual(slots[0]),
+                    });
+                } else {
+                    self.mir.push(X86Inst::MovRR {
+                        dst: Operand::Virtual(vreg),
+                        src: Operand::Virtual(base_slots[offset]),
+                    });
+                }
             }
 
             CfgInstData::IntCast {
@@ -2935,7 +2983,7 @@ impl<'a> CfgLower<'a> {
                 // materializes lazily-sourced values; if it can't model the source,
                 // fall back to the old single-slot behavior. (RUE-118, RUE-23)
                 let val_type = self.ctx.cfg.get_inst(*val).ty;
-                let vals = if matches!(val_type.kind(), TypeKind::Struct(_) | TypeKind::Array(_)) {
+                let vals = if self.ctx.is_multislot_aggregate(val_type) {
                     self.get_or_compute_field_vregs(*val)
                         .unwrap_or_else(|| vec![self.get_vreg(*val)])
                 } else {
@@ -3497,7 +3545,7 @@ impl<'a> CfgLower<'a> {
                 let args = self.ctx.cfg.get_extra(*args_start, *args_len);
                 for (i, &arg) in args.iter().enumerate() {
                     let arg_type = self.ctx.cfg.get_inst(arg).ty;
-                    if matches!(arg_type.kind(), TypeKind::Struct(_) | TypeKind::Array(_)) {
+                    if self.ctx.is_multislot_aggregate(arg_type) {
                         // For aggregate args (structs, String, arrays), copy all slot vregs
                         self.copy_aggregate_to_block_param(arg, *target, i as u32);
                     } else {
@@ -3549,7 +3597,7 @@ impl<'a> CfgLower<'a> {
                 let then_args = self.ctx.cfg.get_extra(*then_args_start, *then_args_len);
                 for (i, &arg) in then_args.iter().enumerate() {
                     let arg_type = self.ctx.cfg.get_inst(arg).ty;
-                    if matches!(arg_type.kind(), TypeKind::Struct(_) | TypeKind::Array(_)) {
+                    if self.ctx.is_multislot_aggregate(arg_type) {
                         // For aggregate args (structs, String, arrays), copy all slot vregs
                         self.copy_aggregate_to_block_param(arg, *then_block, i as u32);
                     } else {
@@ -3575,7 +3623,7 @@ impl<'a> CfgLower<'a> {
                 let else_args = self.ctx.cfg.get_extra(*else_args_start, *else_args_len);
                 for (i, &arg) in else_args.iter().enumerate() {
                     let arg_type = self.ctx.cfg.get_inst(arg).ty;
-                    if matches!(arg_type.kind(), TypeKind::Struct(_) | TypeKind::Array(_)) {
+                    if self.ctx.is_multislot_aggregate(arg_type) {
                         // For aggregate args (structs, String, arrays), copy all slot vregs
                         self.copy_aggregate_to_block_param(arg, *else_block, i as u32);
                     } else {
@@ -4302,6 +4350,12 @@ impl crate::agg_slots::SlotBackend for CfgLower<'_> {
         self.mir.push(X86Inst::MovRI32 {
             dst: Operand::Virtual(dst),
             imm: 0,
+        });
+    }
+    fn emit_load_imm(&mut self, dst: VReg, imm: i64) {
+        self.mir.push(X86Inst::MovRI32 {
+            dst: Operand::Virtual(dst),
+            imm: imm as i32,
         });
     }
     fn collect_array_scalars(&mut self, value: CfgValue) -> Vec<VReg> {

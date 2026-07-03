@@ -1216,6 +1216,7 @@ mod tests {
         let def = EnumDef {
             name: "Color".to_string(),
             variants: vec!["Red".to_string(), "Green".to_string(), "Blue".to_string()],
+            variant_payloads: Vec::new(),
             is_pub: false,
             file_id: rue_span::FileId::DEFAULT,
         };
@@ -1292,6 +1293,7 @@ mod tests {
         let def = EnumDef {
             name: "Status".to_string(),
             variants: vec!["Active".to_string(), "Inactive".to_string()],
+            variant_payloads: Vec::new(),
             is_pub: false,
             file_id: rue_span::FileId::DEFAULT,
         };
@@ -1375,6 +1377,7 @@ mod tests {
         let enum_def = EnumDef {
             name: "Color".to_string(),
             variants: vec!["Red".to_string()],
+            variant_payloads: Vec::new(),
             is_pub: false,
             file_id: rue_span::FileId::DEFAULT,
         };
@@ -1447,6 +1450,7 @@ mod tests {
         let def = EnumDef {
             name: "Status".to_string(),
             variants: vec!["A".to_string(), "B".to_string()],
+            variant_payloads: Vec::new(),
             is_pub: false,
             file_id: rue_span::FileId::DEFAULT,
         };
@@ -1538,6 +1542,7 @@ mod tests {
             EnumDef {
                 name: "E1".to_string(),
                 variants: vec![],
+                variant_payloads: Vec::new(),
                 is_pub: false,
                 file_id: rue_span::FileId::DEFAULT,
             },

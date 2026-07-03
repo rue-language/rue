@@ -220,3 +220,35 @@ fn absurd(n: Never) -> i32 {
     match n {}  // legal: zero arms cover the zero values of `Never`
 }
 ```
+
+## Patterns with Payload Bindings
+
+{{ rule(id="4.7:30", cat="normative") }}
+
+A tuple-variant pattern binds the variant's payload into fresh names:
+`EnumName::Variant(a, b)` matches a value of that variant and binds `a`, `b`
+to its payload fields in order. The number of bindings **MUST** equal the
+variant's payload arity. Payload bindings require the `enum_payloads` preview
+feature (see spec 6.3).
+
+{{ rule(id="4.7:31", cat="normative") }}
+
+Payload bindings inherit the scrutinee's access mode (ADR-0037/ADR-0038). A
+bare `match e` uses the scrutinee in value context: the matched arm's bindings
+**move** the payload out of the enum (or copy it, if the payload type is
+`Copy`). Each binding is in scope for its arm's body and shadows any outer
+binding of the same name.
+
+{{ rule(id="4.7:32") }}
+
+```rue
+enum Shape { Circle(i32), Rect(i32, i32), Empty }
+
+fn main() -> i32 {
+    match Shape::Rect(3, 4) {
+        Shape::Circle(r) => r,
+        Shape::Rect(w, h) => w + h,
+        Shape::Empty => 0,
+    }
+}
+```

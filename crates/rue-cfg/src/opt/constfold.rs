@@ -283,6 +283,7 @@ fn get_enum_variant(cfg: &Cfg, value: CfgValue) -> Option<(EnumId, u32)> {
         CfgInstData::EnumVariant {
             enum_id,
             variant_index,
+            ..
         } => Some((*enum_id, *variant_index)),
         _ => None,
     }

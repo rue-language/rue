@@ -158,10 +158,18 @@ pub struct EnumDecl {
 }
 
 /// A variant in an enum declaration.
+///
+/// A variant may be discriminant-only (`Empty`) or a **tuple variant** that
+/// carries positional payload data (`Circle(i32)`, `Rect(i32, i32)`). The
+/// `payload` vector holds the payload field types in declaration order; it is
+/// empty for a discriminant-only variant. Tuple variants require the
+/// `enum_payloads` preview feature (RUE-221, ADR-0038).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnumVariant {
     /// Variant name
     pub name: Ident,
+    /// Payload field types (empty = discriminant-only variant).
+    pub payload: Vec<TypeExpr>,
     /// Span covering the variant
     pub span: Span,
 }
@@ -643,6 +651,11 @@ pub struct NegIntLit {
 }
 
 /// A path pattern (e.g., `Color::Red` or `module.Color::Red` for enum variant matching).
+///
+/// A tuple-variant pattern binds the variant's payload into fresh names:
+/// `Circle(r)`, `Rect(w, h)`. The `bindings` vector holds those binding names
+/// in payload order; it is empty for a discriminant-only pattern (`Color::Red`).
+/// Payload bindings require the `enum_payloads` preview feature (RUE-221).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PathPattern {
     /// Optional module/namespace prefix (e.g., `utils` in `utils.Color::Red`)
@@ -651,6 +664,8 @@ pub struct PathPattern {
     pub type_name: Ident,
     /// The variant name (e.g., `Red`)
     pub variant: Ident,
+    /// Payload binding names (empty = no payload pattern).
+    pub bindings: Vec<Ident>,
     pub span: Span,
 }
 
@@ -1075,7 +1090,16 @@ fn fmt_enum(f: &mut fmt::Formatter<'_>, e: &EnumDecl, level: usize) -> fmt::Resu
     writeln!(f, "Enum sym:{}", e.name.name.into_usize())?;
     for variant in &e.variants {
         indent(f, level + 1)?;
-        writeln!(f, "Variant sym:{}", variant.name.name.into_usize())?;
+        if variant.payload.is_empty() {
+            writeln!(f, "Variant sym:{}", variant.name.name.into_usize())?;
+        } else {
+            writeln!(
+                f,
+                "Variant sym:{} payload:{}",
+                variant.name.name.into_usize(),
+                variant.payload.len()
+            )?;
+        }
     }
     Ok(())
 }

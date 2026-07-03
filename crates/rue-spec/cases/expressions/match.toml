@@ -928,3 +928,56 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = "parentheses"
+
+# =============================================================================
+# Patterns with Payload Bindings (RUE-221, ADR-0038)
+# =============================================================================
+
+# A tuple-variant pattern binds the payload; the arity must match (4.7:30).
+[[case]]
+name = "match_payload_binding_extracts"
+spec = ["4.7:30"]
+preview = "enum_payloads"
+source = """
+enum Shape { Circle(i32), Rect(i32, i32), Empty }
+fn main() -> i32 {
+    match Shape::Rect(3, 4) {
+        Shape::Circle(r) => r,
+        Shape::Rect(w, h) => w + h,
+        Shape::Empty => 0,
+    }
+}
+"""
+exit_code = 7
+
+# Bindings move the payload out in value context and are usable in the arm
+# body (4.7:31).
+[[case]]
+name = "match_payload_binding_move_mode"
+spec = ["4.7:31"]
+preview = "enum_payloads"
+source = """
+enum Wrap { One(i32) }
+fn main() -> i32 {
+    let w = Wrap::One(10);
+    match w {
+        Wrap::One(x) => x + x,
+    }
+}
+"""
+exit_code = 20
+
+# Wrong number of bindings for a variant's payload arity is rejected (4.7:30).
+[[case]]
+name = "match_payload_binding_wrong_arity"
+spec = ["4.7:30"]
+preview = "enum_payloads"
+source = """
+enum Shape { Rect(i32, i32) }
+fn main() -> i32 {
+    match Shape::Rect(3, 4) {
+        Shape::Rect(w) => w,
+    }
+}
+"""
+compile_fail = true

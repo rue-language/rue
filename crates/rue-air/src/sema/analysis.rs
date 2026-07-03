@@ -6518,6 +6518,8 @@ impl<'a> Sema<'a> {
             data: AirInstData::EnumVariant {
                 enum_id: arch_enum_id,
                 variant_index,
+                payload_start: 0,
+                payload_len: 0,
             },
             ty: result_type,
             span,
@@ -6563,6 +6565,8 @@ impl<'a> Sema<'a> {
             data: AirInstData::EnumVariant {
                 enum_id: os_enum_id,
                 variant_index,
+                payload_start: 0,
+                payload_len: 0,
             },
             ty: result_type,
             span,

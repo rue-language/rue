@@ -327,8 +327,17 @@ fn visit_instruction_uses(cfg: &Cfg, value: CfgValue, mut f: impl FnMut(CfgValue
             f(*value);
         }
 
-        // Enum operations
-        CfgInstData::EnumVariant { .. } => {}
+        // Enum operations: a tuple variant reads its payload operands.
+        CfgInstData::EnumVariant {
+            payload_start,
+            payload_len,
+            ..
+        } => {
+            for &v in cfg.get_extra(*payload_start, *payload_len) {
+                f(v);
+            }
+        }
+        CfgInstData::EnumPayloadGet { base, .. } => f(*base),
 
         // Type conversion
         CfgInstData::IntCast { value, .. } => f(*value),

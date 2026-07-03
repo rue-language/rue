@@ -1199,8 +1199,51 @@ impl<'a> ConstraintGenerator<'a> {
                         pattern.span(),
                     ));
 
+                    // Register any tuple-variant payload bindings as locals
+                    // scoped to the arm body, with their declared payload
+                    // types, so the body's references resolve during inference
+                    // (RUE-221). Without this, `Circle(r) => r` leaves `r`
+                    // unbound and its type poisons the match result.
+                    use crate::scope::ScopedContext;
+                    ctx.push_scope();
+                    if let rue_rir::RirPattern::Path {
+                        type_name,
+                        variant,
+                        bindings,
+                        span: pat_span,
+                        ..
+                    } = pattern
+                    {
+                        if !bindings.is_empty() {
+                            if let Some(payload) = self
+                                .enums
+                                .get(type_name)
+                                .and_then(|ty| ty.as_enum())
+                                .map(|id| self.type_pool.enum_def(id))
+                                .and_then(|def| {
+                                    def.find_variant(self.interner.resolve(variant))
+                                        .map(|v| def.variant_payload(v).to_vec())
+                                })
+                            {
+                                for (i, bname) in bindings.iter().enumerate() {
+                                    if let Some(&pty) = payload.get(i) {
+                                        ctx.insert_local(
+                                            *bname,
+                                            LocalVarInfo {
+                                                ty: InferType::Concrete(pty),
+                                                is_mut: false,
+                                                span: *pat_span,
+                                            },
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     // Generate body and collect its type
                     let body_info = self.generate(*body, ctx);
+                    ctx.pop_scope();
                     arm_types.push(body_info);
                 }
 
@@ -1555,6 +1598,38 @@ impl<'a> ConstraintGenerator<'a> {
                 args_len,
             } => {
                 let args = self.rir.get_call_args(*args_start, *args_len);
+
+                // Enum tuple-variant construction: `Shape::Circle(5)` parses as
+                // an associated-function call. If `type_name` is an enum and
+                // `function` names one of its variants, constrain each payload
+                // argument to the declared payload type and yield the enum type
+                // (RUE-221). Checked here first so it takes precedence over the
+                // struct-method path below.
+                let enum_variant = self
+                    .enums
+                    .get(type_name)
+                    .and_then(|ty| ty.as_enum().map(|id| (*ty, id)))
+                    .and_then(|(ty, id)| {
+                        let def = self.type_pool.enum_def(id);
+                        def.find_variant(self.interner.resolve(function))
+                            .map(|vidx| (ty, def.variant_payload(vidx).to_vec()))
+                    });
+                if let Some((enum_ty, payload)) = enum_variant {
+                    for (i, arg) in args.iter().enumerate() {
+                        let arg_info = self.generate(arg.value, ctx);
+                        if let Some(&pty) = payload.get(i) {
+                            self.add_constraint(Constraint::equal(
+                                arg_info.ty,
+                                InferType::Concrete(pty),
+                                arg_info.span,
+                            ));
+                        }
+                    }
+                    let ty = InferType::Concrete(enum_ty);
+                    self.record_type(inst_ref, ty.clone());
+                    return ExprInfo::new(ty, span);
+                }
+
                 // Get struct ID from type name for method lookup
                 let struct_id = self.structs.get(type_name).and_then(|ty| ty.as_struct());
                 let result_type = if let Some(struct_id) = struct_id {

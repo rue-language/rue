@@ -80,6 +80,7 @@ impl<'a> Sema<'a> {
             let enum_def = EnumDef {
                 name: builtin_enum.name.to_string(),
                 variants,
+                variant_payloads: Vec::new(),
                 is_pub: true,                      // Built-in enums are always public
                 file_id: rue_span::FileId::new(0), // Synthetic, no source file
             };

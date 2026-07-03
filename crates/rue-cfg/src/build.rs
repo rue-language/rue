@@ -2194,12 +2194,53 @@ impl<'a> CfgBuilder<'a> {
             AirInstData::EnumVariant {
                 enum_id,
                 variant_index,
+                payload_start,
+                payload_len,
             } => {
-                // Enum variants are just their discriminant value
+                // Lower payload operands (RUE-221) in order, then store them in
+                // the Cfg's extra array. A discriminant-only variant has no
+                // payload and lowers to just its discriminant value.
+                let payload_refs = self.air.get_air_refs(*payload_start, *payload_len);
+                let mut payload_vals: Vec<CfgValue> = Vec::with_capacity(*payload_len as usize);
+                for pref in payload_refs {
+                    let Some(v) = self.lower_value(pref) else {
+                        return Self::diverged();
+                    };
+                    payload_vals.push(v);
+                }
+                let (cfg_payload_start, cfg_payload_len) = self.cfg.push_extra(payload_vals);
                 let value = self.emit(
                     CfgInstData::EnumVariant {
                         enum_id: *enum_id,
                         variant_index: *variant_index,
+                        payload_start: cfg_payload_start,
+                        payload_len: cfg_payload_len,
+                    },
+                    ty,
+                    span,
+                );
+                self.cache(air_ref, value);
+                ExprResult {
+                    value: Some(value),
+                    continuation: Continuation::Continues,
+                }
+            }
+
+            AirInstData::EnumPayloadGet {
+                base,
+                enum_id,
+                variant_index,
+                field_index,
+            } => {
+                let Some(base_val) = self.lower_value(*base) else {
+                    return Self::diverged();
+                };
+                let value = self.emit(
+                    CfgInstData::EnumPayloadGet {
+                        base: base_val,
+                        enum_id: *enum_id,
+                        variant_index: *variant_index,
+                        field_index: *field_index,
                     },
                     ty,
                     span,
