@@ -2751,9 +2751,15 @@ impl<'a> CfgBuilder<'a> {
     /// is still emitted to end the slot's storage lifetime. A struct slot
     /// with moved-out FIELDS is dropped field-granularly instead (RUE-62).
     fn emit_drop_for_slot(&mut self, live_slot: &LiveSlot, span: rue_span::Span) {
-        // Emit Drop if the type needs it and the value wasn't moved out
+        // A `for`-loop element binder over a non-Copy collection is a
+        // non-owning borrow (spec 4.8:26): it aliases an element the collection
+        // still owns and drops, so dropping it here would double-free
+        // (RUE-259). Its storage still ends normally (StorageDead below).
         let key = MovedSlot::Local(live_slot.slot);
-        if !self.moved.is_slot_moved(key) && self.type_needs_drop(live_slot.ty) {
+        if !self.air.is_borrow_slot(live_slot.slot)
+            && !self.moved.is_slot_moved(key)
+            && self.type_needs_drop(live_slot.ty)
+        {
             let (slot, ty) = (live_slot.slot, live_slot.ty);
             self.emit_guarded(key, span, |b| {
                 // Fast path: nothing partially moved — drop the whole value.

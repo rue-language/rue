@@ -1043,6 +1043,7 @@ impl<'a> AstGen<'a> {
                     is_mut: false,
                     ty: None,
                     init,
+                    iter_elem: false,
                 },
                 span,
             });
@@ -1066,6 +1067,7 @@ impl<'a> AstGen<'a> {
                 is_mut: true,
                 ty: Some(u64_sym),
                 init: zero,
+                iter_elem: false,
             },
             span,
         });
@@ -1096,6 +1098,7 @@ impl<'a> AstGen<'a> {
                 is_mut: false,
                 ty: Some(u64_sym),
                 init: len_call,
+                iter_elem: false,
             },
             span,
         });
@@ -1135,9 +1138,17 @@ impl<'a> AstGen<'a> {
         body_stmts.push(end_branch.as_u32());
 
         // let <binder> = <get>;
+        // A `_` binder still binds a (named, underscore-prefixed so it never
+        // warns unused) local rather than a discarding `let _`: the element is
+        // a shared borrow of the collection (spec 4.8:26), not a value being
+        // discarded, so it must NOT go through the discard path — which would
+        // drop the borrowed element as a temporary and double-free it (the
+        // collection still owns and drops it, RUE-259).
         let binder_name: Option<Spur> = match &for_expr.binder {
             LetPattern::Ident(id) => Some(id.name),
-            LetPattern::Wildcard(_) => None,
+            LetPattern::Wildcard(_) => {
+                Some(self.interner.get_or_intern(format!("_rue_for_elem_{n}")))
+            }
         };
         let p_for_get = self.rir.add_inst(Inst {
             data: InstData::VarRef { name: p_name },
@@ -1176,6 +1187,11 @@ impl<'a> AstGen<'a> {
                 is_mut: false,
                 ty: None,
                 init: get_inst,
+                // The element binding is a shared read of the collection
+                // (spec 4.8:26): analyzed as a by-ref read so a non-Copy
+                // element is not moved out (RUE-259), and a non-Copy binder is
+                // a non-owning borrow slot the collection still drops.
+                iter_elem: true,
             },
             span,
         });
@@ -1293,6 +1309,7 @@ impl<'a> AstGen<'a> {
                         is_mut: let_stmt.is_mut,
                         ty,
                         init,
+                        iter_elem: false,
                     },
                     span: let_stmt.span,
                 })

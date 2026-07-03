@@ -658,6 +658,7 @@ impl<'a> ConstraintGenerator<'a> {
                 is_mut,
                 ty: type_annotation,
                 init,
+                iter_elem: _,
             } => {
                 let init_info = self.generate(*init, ctx);
 

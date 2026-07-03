@@ -28,6 +28,92 @@ fn main() -> i32 {
 """
 exit_code = 60
 
+# Iteration is a shared read (4.8:26): a non-Copy element type is bound by
+# shared borrow, NOT moved out of the array, so the loop compiles and reads
+# fields fine (RUE-259 — previously wrongly rejected E0904 "cannot move out of
+# indexed position").
+[[case]]
+name = "for_array_non_copy_element"
+spec = ["4.8:25", "4.8:26"]
+preview = "for_loops"
+source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    let a = [Point { x: 1, y: 2 }, Point { x: 3, y: 4 }];
+    let mut sum = 0;
+    for p in a {
+        sum = sum + p.x;
+    }
+    sum
+}
+"""
+exit_code = 4
+
+# Because the element is borrowed (not moved out), the ARRAY still owns each
+# element and drops it exactly once at scope exit — the per-element destructor
+# runs once per element, driven by the array, not the loop binder (RUE-259).
+[[case]]
+name = "for_array_non_copy_destructor_once"
+spec = ["4.8:26"]
+preview = "for_loops"
+source = """
+struct Res { tag: i32 }
+drop fn Res(self) { @dbg(self.tag); }
+fn main() -> i32 {
+    let a = [Res { tag: 11 }, Res { tag: 22 }];
+    let mut total = 0;
+    for r in a {
+        total = total + r.tag;
+    }
+    total
+}
+"""
+exit_code = 33
+expected_stdout = "11\n22\n"
+
+# The element binding is a shared borrow: it may be read but not moved out of
+# the collection (that would double-drop — the new owner and the array would
+# both drop it). Moving the whole binder is rejected (RUE-259).
+[[case]]
+name = "for_move_element_out_error"
+spec = ["4.8:26"]
+preview = "for_loops"
+source = """
+struct Res { tag: i32 }
+drop fn Res(self) { @dbg(self.tag); }
+fn eat(r: Res) -> i32 { r.tag }
+fn main() -> i32 {
+    let a = [Res { tag: 1 }, Res { tag: 2 }];
+    let mut s = 0;
+    for r in a {
+        s = s + eat(r);
+    }
+    s
+}
+"""
+compile_fail = true
+error_contains = "cannot move out of borrowed value"
+
+# Iteration holds a shared borrow of the collection for the loop's duration, so
+# mutating it in the body — here via an `inout self` String method — is a
+# compile-time exclusivity error, not a runtime miscompile (RUE-257).
+[[case]]
+name = "for_mutate_collection_in_body_error"
+spec = ["4.8:26"]
+preview = "for_loops"
+source = """
+fn main() -> i32 {
+    let mut s = "abc".clone();
+    for c in s.chars() {
+        s.clear();
+        @dbg(c);
+    }
+    0
+}
+"""
+compile_fail = true
+error_contains = "cannot mutate borrowed value"
+
 # The collection is borrowed for the loop, not consumed: a String iterated in a
 # `for` stays usable afterward (a second loop would be a use-after-move if the
 # first had moved it).

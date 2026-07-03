@@ -390,6 +390,12 @@ pub struct Air {
     /// (see [`AirInstData::MarkMoved`]). Empty for destructors (a destructor
     /// must not re-drop `self`) and for synthesized drop-glue functions.
     param_drops: Vec<(u32, Type)>,
+    /// Local slots that hold a non-owning *borrow* value and so must NOT be
+    /// dropped at scope exit. Currently the element binder of a `for` loop
+    /// over a non-Copy collection: iteration is a shared read (spec 4.8:26),
+    /// so the binder aliases an element the collection still owns and drops —
+    /// dropping the binder too would double-free (RUE-259).
+    borrow_slots: Vec<u32>,
 }
 
 impl Air {
@@ -402,7 +408,22 @@ impl Air {
             projections: Vec::new(),
             places: Vec::new(),
             param_drops: Vec::new(),
+            borrow_slots: Vec::new(),
         }
+    }
+
+    /// Record a local slot as a non-owning borrow binding (see `borrow_slots`).
+    pub fn add_borrow_slot(&mut self, slot: u32) {
+        if !self.borrow_slots.contains(&slot) {
+            self.borrow_slots.push(slot);
+        }
+    }
+
+    /// True when `slot` holds a non-owning borrow value that drop elaboration
+    /// must not drop (see `borrow_slots`).
+    #[inline]
+    pub fn is_borrow_slot(&self, slot: u32) -> bool {
+        self.borrow_slots.contains(&slot)
     }
 
     /// Add an instruction and return its reference.

@@ -871,6 +871,7 @@ impl Rir {
                 is_mut,
                 ty,
                 init,
+                iter_elem,
             } => InstData::Alloc {
                 directives_start: *directives_start + extra_offset,
                 directives_len: *directives_len,
@@ -878,6 +879,7 @@ impl Rir {
                 is_mut: *is_mut,
                 ty: *ty,
                 init: renumber(*init),
+                iter_elem: *iter_elem,
             },
             InstData::Assign { name, value } => InstData::Assign {
                 name: *name,
@@ -1566,6 +1568,13 @@ pub enum InstData {
         ty: Option<Spur>,
         /// Initial value instruction
         init: InstRef,
+        /// True when this binding is a `for`-loop element binding, which reads
+        /// the element by shared borrow (spec 4.8:26): the initializer is
+        /// analyzed as a by-ref read (never a move-out of the collection, so a
+        /// non-Copy element is fine, RUE-259) and a non-Copy binder is a
+        /// non-owning borrow slot that drop elaboration must not drop (the
+        /// collection retains ownership and drops the element).
+        iter_elem: bool,
     },
 
     /// Variable reference: reads the value of a variable
@@ -2076,6 +2085,7 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     is_mut,
                     ty,
                     init,
+                    iter_elem: _,
                 } => {
                     let name_str = name
                         .map(|n| self.interner.resolve(&n).to_string())
@@ -3165,6 +3175,7 @@ mod tests {
                 is_mut: false,
                 ty: Some(ty),
                 init,
+                iter_elem: false,
             },
             span: Span::new(0, 15),
         });
@@ -3194,6 +3205,7 @@ mod tests {
                 is_mut: true,
                 ty: None,
                 init,
+                iter_elem: false,
             },
             span: Span::new(0, 15),
         });
@@ -3221,6 +3233,7 @@ mod tests {
                 is_mut: false,
                 ty: None,
                 init,
+                iter_elem: false,
             },
             span: Span::new(0, 10),
         });
