@@ -69,8 +69,18 @@ impl<'a> Sema<'a> {
             | TypeKind::U64
             | TypeKind::Bool
             | TypeKind::Unit => true,
-            // Enum types are Copy (they're small discriminant values)
-            TypeKind::Enum(_) => true,
+            // An enum is Copy iff every variant payload is Copy (RUE-221:
+            // enum multiplicity is the join of its variants' payload
+            // multiplicities, lattice Copy ⊑ Affine ⊑ Linear). A
+            // discriminant-only (C-like) enum has no payloads and is Copy.
+            TypeKind::Enum(enum_id) => {
+                let enum_def = self.type_pool.enum_def(enum_id);
+                enum_def
+                    .variant_payloads
+                    .iter()
+                    .flatten()
+                    .all(|&ty| self.is_type_copy(ty))
+            }
             // Never and Error are Copy for convenience
             TypeKind::Never | TypeKind::Error => true,
             // Struct types: check if marked with @copy

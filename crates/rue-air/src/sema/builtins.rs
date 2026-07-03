@@ -193,6 +193,19 @@ impl<'a> Sema<'a> {
                 let (element_type, _length) = self.type_pool.array_def(array_id);
                 self.type_carries_linear(element_type)
             }
+            // An enum carries a linear value when any variant payload does
+            // (RUE-221, multiplicity join: a linear-payload variant makes the
+            // whole enum linear/must-consume). The discriminant selects the
+            // active variant at runtime, so a conservative static check
+            // requires consumption if *any* variant could carry one.
+            TypeKind::Enum(enum_id) => {
+                let enum_def = self.type_pool.enum_def(enum_id);
+                enum_def
+                    .variant_payloads
+                    .iter()
+                    .flatten()
+                    .any(|&payload_ty| self.type_carries_linear(payload_ty))
+            }
             _ => false,
         }
     }

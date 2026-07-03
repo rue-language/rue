@@ -2435,8 +2435,18 @@ impl<'a> CfgBuilder<'a> {
             | TypeKind::Error
             | TypeKind::ComptimeType => false,
 
-            // Enum types are trivially droppable (just discriminant values)
-            TypeKind::Enum(_) => false,
+            // An enum needs drop if any variant payload needs drop (RUE-221):
+            // at scope exit the discriminant selects the active variant and
+            // its payload's drop glue runs. A discriminant-only (C-like) enum
+            // has no payloads and is trivially droppable.
+            TypeKind::Enum(enum_id) => {
+                let enum_def = self.type_pool.enum_def(enum_id);
+                enum_def
+                    .variant_payloads
+                    .iter()
+                    .flatten()
+                    .any(|&ty| self.type_needs_drop(ty))
+            }
 
             // Struct types need drop if they have a destructor (e.g., builtin String)
             // or if any field needs drop

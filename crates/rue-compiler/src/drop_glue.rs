@@ -21,7 +21,8 @@
 //! 2. Drops each element in index order (element 0 first, then 1, etc.)
 
 use rue_air::{
-    Air, AirInst, AirInstData, AnalyzedFunction, StructDef, Type, TypeInternPool, TypeKind,
+    Air, AirInst, AirInstData, AirPattern, AirRef, AnalyzedFunction, EnumId, StructDef, Type,
+    TypeInternPool, TypeKind,
 };
 use rue_span::Span;
 
@@ -44,8 +45,17 @@ fn type_needs_drop(ty: Type, type_pool: &TypeInternPool) -> bool {
         | TypeKind::Error
         | TypeKind::ComptimeType => false,
 
-        // Enum types are trivially droppable (just discriminant values)
-        TypeKind::Enum(_) => false,
+        // An enum needs drop if any variant payload needs drop (RUE-221): at
+        // scope exit its active-variant drop glue switches on the discriminant
+        // and drops the selected payload. Discriminant-only enums are trivial.
+        TypeKind::Enum(enum_id) => {
+            let enum_def = type_pool.enum_def(enum_id);
+            enum_def
+                .variant_payloads
+                .iter()
+                .flatten()
+                .any(|&ty| type_needs_drop(ty, type_pool))
+        }
 
         // Struct types need drop if they have a destructor (e.g., builtin String)
         // or if any field needs drop
@@ -94,9 +104,25 @@ fn type_slot_count(ty: Type, type_pool: &TypeInternPool) -> u32 {
         | TypeKind::Bool
         | TypeKind::Unit
         | TypeKind::Never
-        | TypeKind::Error
-        | TypeKind::Enum(_) => 1,
+        | TypeKind::Error => 1,
         TypeKind::ComptimeType => 0,
+
+        // Tagged union: 1 discriminant slot + payload area sized to the
+        // largest variant (RUE-221). Mirrors `types::type_slot_count` in
+        // rue-codegen. A discriminant-only enum has no payload → 1 slot.
+        TypeKind::Enum(enum_id) => {
+            let enum_def = type_pool.enum_def(enum_id);
+            let mut max_payload = 0u32;
+            for i in 0..enum_def.variant_count() {
+                let variant_slots: u32 = enum_def
+                    .variant_payload(i)
+                    .iter()
+                    .map(|&ty| type_slot_count(ty, type_pool))
+                    .sum();
+                max_payload = max_payload.max(variant_slots);
+            }
+            1 + max_payload
+        }
 
         // Struct uses sum of all field slots (including builtin String with 3 fields)
         TypeKind::Struct(struct_id) => {
@@ -161,6 +187,18 @@ pub fn synthesize_drop_glue(type_pool: &TypeInternPool) -> Vec<AnalyzedFunction>
 
         // Create drop glue function for array
         let func = create_array_drop_glue_function(array_id, type_pool);
+        drop_glue_functions.push(func);
+    }
+
+    // Create drop glue for payload-carrying enums (RUE-221). The glue switches
+    // on the discriminant and drops the active variant's payload.
+    for enum_id in type_pool.all_enum_ids() {
+        let enum_ty = Type::new_enum(enum_id);
+        if !type_needs_drop(enum_ty, type_pool) {
+            continue;
+        }
+
+        let func = create_enum_drop_glue_function(enum_id, type_pool);
         drop_glue_functions.push(func);
     }
 
@@ -233,7 +271,12 @@ fn create_struct_drop_glue_function(
                     });
                     drop_statements.push(drop_ref);
                 }
-                // Other types don't need drop
+                // A payload-carrying enum *field* is not yet dropped by struct
+                // glue (RUE-221 follow-up): active-variant drop glue currently
+                // fires only for a top-level enum value at scope exit, not for
+                // one nested inside another aggregate. Such a field leaks (but
+                // never double-drops); `type_slot_count` still counts its slots
+                // so later fields stay correctly offset.
                 _ => {}
             }
         }
@@ -349,7 +392,9 @@ fn create_array_drop_glue_function(
                 });
                 drop_statements.push(drop_ref);
             }
-            // Primitives don't need drop - this shouldn't happen since we check type_needs_drop
+            // A payload-carrying enum element is not yet dropped by array glue
+            // (RUE-221 follow-up, same interim as struct glue above): it leaks
+            // rather than double-dropping.
             _ => {}
         }
     }
@@ -396,6 +441,143 @@ fn create_array_drop_glue_function(
         num_param_slots,
         param_modes,
     }
+}
+
+/// Create a drop glue function for a payload-carrying enum type (RUE-221).
+///
+/// The function receives the enum's flattened slots as parameters: slot 0 is
+/// the discriminant, slots 1.. are the payload union sized to the largest
+/// variant. It switches on the discriminant and, for the active variant, drops
+/// each droppable payload field in declaration order. Variants whose payload
+/// needs no drop (and discriminant-only variants) fall through to a no-op
+/// wildcard default arm, so exactly the active variant's payload is dropped.
+fn create_enum_drop_glue_function(enum_id: EnumId, type_pool: &TypeInternPool) -> AnalyzedFunction {
+    let enum_def = type_pool.enum_def(enum_id);
+    let fn_name = enum_drop_glue_name(enum_id, type_pool);
+    let span = Span::new(0, 0); // Synthetic span
+
+    let mut air = Air::new(Type::UNIT);
+
+    // Total ABI slots: discriminant (slot 0) + payload area (largest variant).
+    let num_param_slots = type_slot_count(Type::new_enum(enum_id), type_pool);
+
+    // The discriminant lives in param slot 0; the match switches on it.
+    let disc_ty = enum_def.discriminant_type();
+    let disc_param = air.add_inst(AirInst {
+        data: AirInstData::Param { index: 0 },
+        ty: disc_ty,
+        span,
+    });
+
+    // A single shared unit value for every arm body and the outer block.
+    let unit_const = air.add_inst(AirInst {
+        data: AirInstData::UnitConst,
+        ty: Type::UNIT,
+        span,
+    });
+
+    // Build one Int-pattern arm per variant that carries a droppable payload.
+    // Payload fields overlay the union starting at slot 1, so field j of a
+    // variant sits at slot `1 + sum(slot_count(field_k) for k < j)`.
+    let mut arm_data: Vec<u32> = Vec::new();
+    let mut arm_count = 0u32;
+
+    for variant_index in 0..enum_def.variant_count() {
+        let payload = enum_def.variant_payload(variant_index);
+        if !payload.iter().any(|&ty| type_needs_drop(ty, type_pool)) {
+            continue;
+        }
+
+        let mut drop_stmts: Vec<AirRef> = Vec::new();
+        let mut field_slot = 1u32; // slot 0 is the discriminant
+        for &field_ty in payload {
+            let field_slots = type_slot_count(field_ty, type_pool);
+            if type_needs_drop(field_ty, type_pool) {
+                let param_ref = air.add_inst(AirInst {
+                    data: AirInstData::Param { index: field_slot },
+                    ty: field_ty,
+                    span,
+                });
+                let drop_ref = air.add_inst(AirInst {
+                    data: AirInstData::Drop { value: param_ref },
+                    ty: Type::UNIT,
+                    span,
+                });
+                drop_stmts.push(drop_ref);
+            }
+            field_slot += field_slots;
+        }
+
+        // Arm body: a Block running the drops, yielding unit.
+        let stmt_u32s: Vec<u32> = drop_stmts.iter().map(|r| r.as_u32()).collect();
+        let stmts_start = air.add_extra(&stmt_u32s);
+        let stmts_len = drop_stmts.len() as u32;
+        let arm_body = air.add_inst(AirInst {
+            data: AirInstData::Block {
+                stmts_start,
+                stmts_len,
+                value: unit_const,
+            },
+            ty: Type::UNIT,
+            span,
+        });
+
+        AirPattern::Int(variant_index as i64).encode(arm_body, &mut arm_data);
+        arm_count += 1;
+    }
+
+    // A wildcard default arm (drops nothing) covers variants with no droppable
+    // payload and keeps the switch total for codegen.
+    AirPattern::Wildcard.encode(unit_const, &mut arm_data);
+    arm_count += 1;
+
+    let arms_start = air.add_extra(&arm_data);
+    let match_ref = air.add_inst(AirInst {
+        data: AirInstData::Match {
+            scrutinee: disc_param,
+            arms_start,
+            arms_len: arm_count,
+        },
+        ty: Type::UNIT,
+        span,
+    });
+
+    // Return unit; the match runs as a side-effecting statement of the body.
+    let body_stmts = [match_ref.as_u32()];
+    let body_start = air.add_extra(&body_stmts);
+    let body = air.add_inst(AirInst {
+        data: AirInstData::Block {
+            stmts_start: body_start,
+            stmts_len: 1,
+            value: unit_const,
+        },
+        ty: Type::UNIT,
+        span,
+    });
+
+    air.add_inst(AirInst {
+        data: AirInstData::Ret(Some(body)),
+        ty: Type::UNIT,
+        span,
+    });
+
+    let param_modes = vec![false; num_param_slots as usize];
+
+    AnalyzedFunction {
+        name: fn_name,
+        air,
+        num_locals: 0,
+        num_param_slots,
+        param_modes,
+    }
+}
+
+/// Generate the drop glue function name for a payload-carrying enum type.
+///
+/// Types share a namespace, so the enum's own name cannot collide with a
+/// struct's `__rue_drop_<name>` glue.
+pub fn enum_drop_glue_name(enum_id: EnumId, type_pool: &TypeInternPool) -> String {
+    format!("__rue_drop_{}", type_pool.enum_def(enum_id).name)
 }
 
 /// Generate the drop glue function name for an array type.

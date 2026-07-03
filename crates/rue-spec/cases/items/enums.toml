@@ -382,3 +382,99 @@ fn main() -> i32 {
 }
 """
 exit_code = 7
+
+# Multiplicity infectiousness (6.3:19): a variant carrying a linear payload
+# makes the whole enum linear — an unconsumed value is a must-consume error.
+[[case]]
+name = "enum_linear_infectious_must_consume"
+spec = ["6.3:19"]
+preview = "enum_payloads"
+preview_should_pass = true
+source = """
+linear struct L { v: i32 }
+enum E { Has(L), None }
+fn main() -> i32 {
+    let e = E::Has(L { v: 1 });
+    0
+}
+"""
+compile_fail = true
+error_contains = "must be consumed"
+
+# Consuming a linear enum via a match that binds and consumes the payload
+# discharges the obligation (6.3:19).
+[[case]]
+name = "enum_linear_consumed_via_match"
+spec = ["6.3:19"]
+preview = "enum_payloads"
+preview_should_pass = true
+source = """
+linear struct L { v: i32 }
+enum E { Has(L), None }
+fn sink(l: L) -> i32 { l.v }
+fn main() -> i32 {
+    let e = E::Has(L { v: 5 });
+    match e {
+        E::Has(l) => sink(l),
+        E::None => 0,
+    }
+}
+"""
+exit_code = 5
+
+# An all-Copy-payload enum bottoms out at Copy in the multiplicity join and
+# stays usable more than once (6.3:19).
+[[case]]
+name = "enum_copy_payload_stays_copy"
+spec = ["6.3:19"]
+preview = "enum_payloads"
+preview_should_pass = true
+source = """
+enum C { A(i32), B }
+fn val(c: C) -> i32 { match c { C::A(x) => x, C::B => 0 } }
+fn main() -> i32 {
+    let c = C::A(3);
+    val(c) + val(c)
+}
+"""
+exit_code = 6
+
+# Active-variant drop glue (6.3:20): an unmatched enum drops its active
+# variant's payload exactly once at scope exit. @dbg(-1) prints before the
+# scope-exit drop's @dbg(9).
+[[case]]
+name = "enum_active_variant_drop_glue"
+spec = ["6.3:20"]
+preview = "enum_payloads"
+preview_should_pass = true
+source = """
+struct D { v: i32 }
+drop fn D(self) { @dbg(self.v); }
+enum E { Has(D), None }
+fn main() -> i32 {
+    let e = E::Has(D { v: 9 });
+    @dbg(-1);
+    0
+}
+"""
+expected_stdout = "-1\n9\n"
+exit_code = 0
+
+# A discriminant-only active variant has no payload to drop (6.3:20): only -1.
+[[case]]
+name = "enum_active_variant_none_no_drop"
+spec = ["6.3:20"]
+preview = "enum_payloads"
+preview_should_pass = true
+source = """
+struct D { v: i32 }
+drop fn D(self) { @dbg(self.v); }
+enum E { Has(D), None }
+fn main() -> i32 {
+    let e = E::None;
+    @dbg(-1);
+    0
+}
+"""
+expected_stdout = "-1\n"
+exit_code = 0
