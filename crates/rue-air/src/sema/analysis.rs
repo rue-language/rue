@@ -3083,46 +3083,54 @@ impl<'a> Sema<'a> {
         // builtin: a user struct method that merely shares a name with a String
         // mutation method (`push`/`push_str`/`clear`/`reserve`) must not be
         // misclassified as a `ByMutRef` mutation and wrongly demand a `mut`
-        // receiver (RUE-223). The type is peeked from the binding without
-        // analyzing the receiver, because the storage location must be captured
-        // before the receiver expression is (potentially) consumed below.
-        let receiver_is_builtin_string = self
-            .peek_var_ref_type(receiver, ctx)
+        // receiver (RUE-223). The type is read from HM inference without
+        // analyzing the receiver, so ANY place receiver (a local, a struct
+        // field, an array element, an inout parameter, or a chain rooted at
+        // one) is recognized, not just a bare local (RUE-256).
+        let receiver_is_builtin_string = ctx
+            .resolved_types
+            .get(&receiver)
+            .copied()
             .is_some_and(|ty| self.is_builtin_string(ty));
         let is_builtin_mutation_method =
             receiver_is_builtin_string && self.is_builtin_mutation_method(&method_name_str);
 
-        // Get storage location for mutation methods before analyzing receiver
-        let receiver_storage = if is_builtin_mutation_method {
-            self.get_string_receiver_storage(receiver, ctx, span)?
-        } else {
-            None
-        };
+        // A String mutation method is `inout self` (spec 3.10:15-19): it
+        // accesses the receiver by reference and writes the result back in
+        // place, so the receiver must name a MUTABLE place. Reject an immutable
+        // binding up front (reusing the assignment-target diagnostics), before
+        // the receiver is analyzed as a borrow below.
+        if is_builtin_mutation_method {
+            self.check_string_receiver_mutable(receiver_var, ctx, span)?;
+        }
 
         // Snapshot the receiver root's move state before analyzing the
         // receiver expression: builtin ByRef/ByMutRef methods restore it to
         // undo the move the receiver analysis records (see ReceiverInfo).
         let receiver_move_state_before = receiver_var.and_then(|v| ctx.moved_vars.get(&v).cloned());
 
-        // Decide up front whether this receiver is accessed by reference
-        // (`inout self` / `borrow self`), so it is analyzed as a BORROW — not
-        // a move — in every place position (a field, an array element by
-        // const or dynamic index, a field of `self`, or through an
-        // inout/borrow parameter), mirroring the by-ref *argument* path
-        // (RUE-254, spec 6.4:25/6.4:29). Method resolution needs the receiver
-        // type, which is peeked WITHOUT emitting AIR or recording a move: a
+        // Decide up front whether this receiver is accessed by reference, so
+        // it is analyzed as a BORROW — not a move — in every place position (a
+        // field, an array element by const or dynamic index, a field of
+        // `self`, or through an inout/borrow parameter), mirroring the by-ref
+        // *argument* path (spec 6.4:25/6.4:29). For a builtin String mutation
+        // method the receiver is always by-ref, so its root is the by-ref root
+        // (RUE-256). For a user-struct method, resolution needs the receiver
+        // type — peeked WITHOUT emitting AIR or recording a move, since a
         // move-based analysis would hard-reject the read of any non-local
-        // place (E0437/E0429/E0904) before the by-ref intent is known. Only
-        // user-struct methods are considered here; builtin (String) and
-        // module receivers keep their existing post-analysis handling.
-        let receiver_byref_root = receiver_var
-            .filter(|_| !is_builtin_mutation_method)
-            .and_then(|root| {
+        // place (E0437/E0429/E0904) before the by-ref intent is known — and the
+        // root is by-ref only when the method takes `self` by reference
+        // (RUE-254). Module receivers keep their existing post-analysis handling.
+        let receiver_byref_root = if is_builtin_mutation_method {
+            receiver_var
+        } else {
+            receiver_var.and_then(|root| {
                 let ty = self.peek_place_type(receiver, ctx)?;
                 let struct_id = ty.as_struct()?;
                 let info = self.methods.get(&(struct_id, method))?;
                 matches!(info.self_mode, RirParamMode::Inout | RirParamMode::Borrow).then_some(root)
-            });
+            })
+        };
 
         // Analyze the receiver expression. When it is a by-ref receiver,
         // `byref_arg_root` makes the var-ref / field / index reads borrow the
@@ -3132,6 +3140,17 @@ impl<'a> Sema<'a> {
         ctx.byref_arg_root = prev_byref_root;
         let receiver_result = receiver_result?;
         let receiver_type = receiver_result.ty;
+
+        // The write-back target for a String mutation method is the place the
+        // receiver read just produced (a `PlaceRead` for a field/element, a
+        // `Load` for a local, or a `Param` for an inout parameter). Reusing
+        // that place — rather than re-tracing the receiver — evaluates any
+        // index expression exactly once (RUE-256).
+        let receiver_storage = if is_builtin_mutation_method {
+            Some(self.string_receiver_storage_from_read(air, receiver_result.air_ref, span)?)
+        } else {
+            None
+        };
 
         // Handle module member access: module.function() becomes a direct function call
         if let Some(module_id) = receiver_type.as_module() {
@@ -5157,34 +5176,15 @@ impl<'a> Sema<'a> {
         Ok(AnalysisResult::new(call_ref, return_ty))
     }
 
-    /// Get the storage location for a String receiver in a mutation method call.
+    /// Validate that a String mutation-method receiver names a MUTABLE place.
     ///
-    /// For mutation methods like `push_str`, `push`, `clear`, `reserve`, we need
-    /// to know where to store the updated String after the runtime function returns.
+    /// A mutation method (`push_str`, `push`, `clear`, `reserve`) is `inout
+    /// self`: it writes the updated String back through the receiver place, so
+    /// the place's root binding must be mutable. The receiver value itself is
+    /// read as a borrow (via `byref_arg_root`), so use-after-move and the
+    /// projection reads are checked by the normal receiver analysis; this only
+    /// enforces mutability of the write target, mirroring assignment.
     ///
-    /// Returns `Some(storage)` if the receiver is a mutable local or inout parameter.
-    /// Returns an error if the receiver is:
-    /// - An immutable binding (`let` instead of `var`)
-    /// - A borrow parameter (can't mutate borrowed values)
-    /// - Not an lvalue (e.g., a function call result)
-    /// Peek the declared type of a `VarRef` receiver (a local or parameter)
-    /// without analyzing it, so a builtin mutation-method call can be classified
-    /// before the receiver expression is (potentially) consumed. Returns `None`
-    /// for non-`VarRef` receivers or unknown names — such receivers are never
-    /// valid targets for a String mutation method anyway (see
-    /// `get_string_receiver_storage`).
-    fn peek_var_ref_type(&self, receiver_ref: InstRef, ctx: &AnalysisContext) -> Option<Type> {
-        if let InstData::VarRef { name } = &self.rir.get(receiver_ref).data {
-            if let Some(local) = ctx.locals.get(name) {
-                return Some(local.ty);
-            }
-            if let Some(param) = ctx.params.iter().find(|p| p.name == *name) {
-                return Some(param.ty);
-            }
-        }
-        None
-    }
-
     /// Resolve the TYPE of a place expression without emitting any AIR or
     /// recording a move (RUE-254).
     ///
@@ -5226,67 +5226,72 @@ impl<'a> Sema<'a> {
         }
     }
 
-    fn get_string_receiver_storage(
+    /// Errors when the receiver is:
+    /// - not a place rooted at a variable (`String::new().push(..)`) → E0424
+    /// - an immutable `let` binding or a normal/comptime parameter → E0203
+    /// - a `borrow` parameter (can't mutate borrowed memory) → E0428
+    fn check_string_receiver_mutable(
         &self,
-        receiver_ref: InstRef,
+        receiver_var: Option<Spur>,
         ctx: &AnalysisContext,
         span: Span,
-    ) -> CompileResult<Option<StringReceiverStorage>> {
-        let receiver_inst = self.rir.get(receiver_ref);
+    ) -> CompileResult<()> {
+        let Some(root) = receiver_var else {
+            return Err(CompileError::new(ErrorKind::InvalidAssignmentTarget, span));
+        };
 
-        match &receiver_inst.data {
-            InstData::VarRef { name } => {
-                // Check if this is a parameter
-                if let Some(param_info) = ctx.params.iter().find(|p| p.name == *name) {
-                    // Check parameter mode
-                    match param_info.mode {
-                        RirParamMode::Inout => {
-                            return Ok(Some(StringReceiverStorage::Param {
-                                abi_slot: param_info.abi_slot,
-                            }));
-                        }
-                        RirParamMode::Borrow => {
-                            let name_str = self.interner.resolve(&*name);
-                            return Err(CompileError::new(
-                                ErrorKind::MutateBorrowedValue {
-                                    variable: name_str.to_string(),
-                                },
-                                span,
-                            ));
-                        }
-                        RirParamMode::Normal | RirParamMode::Comptime => {
-                            // Normal and comptime parameters are immutable
-                            let name_str = self.interner.resolve(&*name);
-                            return Err(CompileError::new(
-                                ErrorKind::AssignToImmutable(name_str.to_string()),
-                                span,
-                            ));
-                        }
-                    }
-                }
-
-                // Check if it's a local variable
-                if let Some(local) = ctx.locals.get(name) {
-                    if !local.is_mut {
-                        let name_str = self.interner.resolve(&*name);
-                        return Err(CompileError::new(
-                            ErrorKind::AssignToImmutable(name_str.to_string()),
-                            span,
-                        ));
-                    }
-                    return Ok(Some(StringReceiverStorage::Local { slot: local.slot }));
-                }
-
-                // Variable not found
-                let name_str = self.interner.resolve(&*name);
-                Err(CompileError::new(
-                    ErrorKind::UndefinedVariable(name_str.to_string()),
+        // Root parameter: only `inout` names mutable caller storage.
+        if let Some(param) = ctx.params.iter().find(|p| p.name == root) {
+            return match param.mode {
+                RirParamMode::Inout => Ok(()),
+                RirParamMode::Borrow => Err(CompileError::new(
+                    ErrorKind::MutateBorrowedValue {
+                        variable: self.interner.resolve(&root).to_string(),
+                    },
                     span,
-                ))
-            }
+                )),
+                RirParamMode::Normal | RirParamMode::Comptime => Err(CompileError::new(
+                    ErrorKind::AssignToImmutable(self.interner.resolve(&root).to_string()),
+                    span,
+                )),
+            };
+        }
 
-            // For other receiver types (field access, function calls, etc.),
-            // we don't support mutation for now
+        // Root local: must be `let mut`.
+        if let Some(local) = ctx.locals.get(&root) {
+            if !local.is_mut {
+                return Err(CompileError::new(
+                    ErrorKind::AssignToImmutable(self.interner.resolve(&root).to_string()),
+                    span,
+                ));
+            }
+            return Ok(());
+        }
+
+        Err(CompileError::new(
+            ErrorKind::UndefinedVariable(self.interner.resolve(&root).to_string()),
+            span,
+        ))
+    }
+
+    /// Derive the write-back storage for a String mutation method from the AIR
+    /// the receiver read produced. The receiver was read as a borrow, so its
+    /// value instruction is a plain `Load` (local), `Param` (inout parameter),
+    /// or `PlaceRead` (struct field / array element / projection chain); each
+    /// maps directly to the matching store target. Reusing the already-built
+    /// place means any index expression is evaluated exactly once (RUE-256).
+    fn string_receiver_storage_from_read(
+        &self,
+        air: &Air,
+        receiver_ref: AirRef,
+        span: Span,
+    ) -> CompileResult<StringReceiverStorage> {
+        match &air.get(receiver_ref).data {
+            AirInstData::Load { slot } => Ok(StringReceiverStorage::Local { slot: *slot }),
+            AirInstData::Param { index } => Ok(StringReceiverStorage::Param { abi_slot: *index }),
+            AirInstData::PlaceRead { place } => Ok(StringReceiverStorage::Place { place: *place }),
+            // Any other value (a literal, a call result, …) has no caller-visible
+            // storage to write back to.
             _ => Err(CompileError::new(ErrorKind::InvalidAssignmentTarget, span)),
         }
     }
@@ -5313,6 +5318,14 @@ impl<'a> Sema<'a> {
             StringReceiverStorage::Param { abi_slot } => air.add_inst(AirInst {
                 data: AirInstData::ParamStore {
                     param_slot: abi_slot,
+                    value: call_ref,
+                },
+                ty: Type::UNIT,
+                span,
+            }),
+            StringReceiverStorage::Place { place } => air.add_inst(AirInst {
+                data: AirInstData::PlaceWrite {
+                    place,
                     value: call_ref,
                 },
                 ty: Type::UNIT,

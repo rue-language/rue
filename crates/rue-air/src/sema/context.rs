@@ -563,7 +563,7 @@ pub(crate) struct AnalysisResult {
     pub ty: Type,
 }
 
-use crate::inst::AirRef;
+use crate::inst::{AirPlaceRef, AirRef};
 
 impl AnalysisResult {
     #[must_use]
@@ -666,6 +666,11 @@ pub(crate) enum StringReceiverStorage {
     Local { slot: u32 },
     /// The receiver is a parameter with the given ABI slot.
     Param { abi_slot: u32 },
+    /// The receiver is a projection place — a struct field, an array element,
+    /// or a chain rooted at a local/parameter (`b.data`, `arr[0]`,
+    /// `self.inner`). The mutation result is written back through this place
+    /// (RUE-256).
+    Place { place: AirPlaceRef },
 }
 
 /// Context for analyzing a method call on a builtin type.

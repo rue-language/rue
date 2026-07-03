@@ -1,0 +1,43 @@
+# String::with_capacity allocation-failure safety (RUE-255).
+#
+# A huge requested capacity makes the heap allocation fail and return null.
+# with_capacity used to store ptr=null / cap=<huge> unconditionally, so a
+# later push saw "capacity sufficient" and wrote through the null pointer —
+# SIGSEGV (memory-unsafe). It must instead record cap=0 on failure so a later
+# push grows a fresh buffer (or the program traps cleanly), never a nonzero
+# capacity backed by null.
+
+[section]
+id = "cli.string_alloc_failure"
+name = "String allocation-failure safety"
+description = "String::with_capacity must not poison capacity when allocation fails."
+
+[[case]]
+name = "with_capacity_huge_no_segfault"
+description = "with_capacity(u64::MAX) fails the alloc: capacity reports 0 and a subsequent push grows fresh instead of writing through null (no SIGSEGV)."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut s = String::with_capacity(18446744073709551615);
+    @dbg(s.capacity());
+    s.push(65);
+    @dbg(s.len());
+    0
+}
+""" }]
+exit_code = 0
+stdout = "0\n1\n"
+
+[[case]]
+name = "with_capacity_normal_reserves"
+description = "A satisfiable with_capacity still reserves the requested capacity and appends normally."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut s = String::with_capacity(16);
+    @dbg(s.capacity());
+    s.push(65);
+    @dbg(s.len());
+    0
+}
+""" }]
+exit_code = 0
+stdout = "16\n1\n"
