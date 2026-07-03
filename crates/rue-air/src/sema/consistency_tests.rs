@@ -61,6 +61,7 @@ mod tests {
         "Call",
         "Intrinsic",
         "TypeIntrinsic",
+        "OffsetOf",
         "ParamRef",
         "Ret",
         // Blocks

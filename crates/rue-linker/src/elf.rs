@@ -493,8 +493,19 @@ impl ObjectFile {
                         let size = read_u64(data, sect_offset + 40);
                         // offset: u32 at offset 48
                         let offset = read_u32(data, sect_offset + 48) as usize;
-                        // align: u32 at offset 52
-                        let align = 1u64 << read_u32(data, sect_offset + 52);
+                        // align: u32 at offset 52. Mach-O stores alignment as a
+                        // power-of-2 exponent; `1 << exp` is UB / panics for an
+                        // exponent >= 64 (a malformed or oversized field). Use a
+                        // checked shift and reject out-of-range values with a
+                        // clean error, mirroring the ELF path's checked
+                        // arithmetic (RUE-334).
+                        let align_exp = read_u32(data, sect_offset + 52);
+                        let Some(align) = 1u64.checked_shl(align_exp) else {
+                            return Err(ParseError::InvalidSection(format!(
+                                "section {} has out-of-range alignment exponent {}",
+                                full_name, align_exp
+                            )));
+                        };
                         // reloff: u32 at offset 56
                         let reloff = read_u32(data, sect_offset + 56) as usize;
                         // nreloc: u32 at offset 60
@@ -514,12 +525,18 @@ impl ObjectFile {
                             section_flags |= SectionFlags::WRITE;
                         }
 
-                        // Read section data
+                        // Read section data. Compute the end offset with a
+                        // checked add so a malformed offset/size near usize::MAX
+                        // is rejected instead of wrapping (RUE-334), mirroring
+                        // the ELF path's checked_add bounds validation.
                         let section_data = if size > 0 && offset > 0 {
-                            if offset + size as usize > data.len() {
+                            let end = offset
+                                .checked_add(size as usize)
+                                .ok_or_else(|| ParseError::SectionOutOfBounds(full_name.clone()))?;
+                            if end > data.len() {
                                 return Err(ParseError::SectionOutOfBounds(full_name.clone()));
                             }
-                            data[offset..offset + size as usize].to_vec()
+                            data[offset..end].to_vec()
                         } else {
                             Vec::new()
                         };
@@ -563,9 +580,16 @@ impl ObjectFile {
         // Parse symbols
         let mut symbols = Vec::new();
         if symtab_count > 0 {
-            // Verify bounds
-            let symtab_end = symtab_offset + symtab_count * MACHO64_NLIST_SIZE;
-            let strtab_end = strtab_offset + strtab_size;
+            // Verify bounds. Compute the table ends with checked mul/add so a
+            // malformed count/offset can't overflow and wrap past the length
+            // check (RUE-334), mirroring the ELF path's checked arithmetic.
+            let symtab_end = symtab_count
+                .checked_mul(MACHO64_NLIST_SIZE)
+                .and_then(|n| symtab_offset.checked_add(n))
+                .ok_or_else(|| ParseError::InvalidSymbol("symbol table out of bounds".into()))?;
+            let strtab_end = strtab_offset
+                .checked_add(strtab_size)
+                .ok_or_else(|| ParseError::InvalidSymbol("string table out of bounds".into()))?;
             if symtab_end > data.len() || strtab_end > data.len() {
                 return Err(ParseError::InvalidSymbol(
                     "symbol table out of bounds".into(),
@@ -683,7 +707,12 @@ impl ObjectFile {
                 continue;
             }
 
-            let reloc_end = reloff + nreloc * MACHO64_RELOC_SIZE;
+            // Checked mul/add so a malformed nreloc/reloff can't overflow past
+            // the length check (RUE-334), mirroring the ELF reloc bounds guard.
+            let reloc_end = nreloc
+                .checked_mul(MACHO64_RELOC_SIZE)
+                .and_then(|n| reloff.checked_add(n))
+                .ok_or(ParseError::RelocationOutOfBounds)?;
             if reloc_end > data.len() {
                 return Err(ParseError::RelocationOutOfBounds);
             }
@@ -1683,6 +1712,48 @@ mod tests {
             ObjectFile::parse(&data),
             Err(ParseError::TooShort)
         ));
+    }
+
+    /// RUE-334: an out-of-range Mach-O section alignment exponent must be
+    /// rejected with a clean Err, not overflow the `1 << exp` shift (which
+    /// panics in debug / is UB in release). The parser's shift is now checked.
+    #[test]
+    fn test_macho_out_of_range_alignment() {
+        let mut obj_bytes = build_test_macho(
+            &[TestMachoSection {
+                sectname: "__text",
+                segname: "__TEXT",
+                addr: 0,
+                data: vec![0u8; 8],
+                relocs: vec![],
+            }],
+            &[],
+        );
+
+        // The align field is a u32 at offset 52 within section 0's header,
+        // which begins right after the segment command.
+        let align_field = MACHO64_HEADER_SIZE + MACHO64_SEGMENT_CMD_SIZE + 52;
+
+        // Sanity: the unmodified object parses fine (align exponent 3).
+        assert!(ObjectFile::parse(&obj_bytes).is_ok());
+
+        // An exponent >= 64 would overflow `1u64 << exp`. Must be rejected.
+        obj_bytes[align_field..align_field + 4].copy_from_slice(&64_u32.to_le_bytes());
+        assert!(matches!(
+            ObjectFile::parse(&obj_bytes),
+            Err(ParseError::InvalidSection(_))
+        ));
+
+        // u32::MAX is the pathological worst case; also cleanly rejected.
+        obj_bytes[align_field..align_field + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(matches!(
+            ObjectFile::parse(&obj_bytes),
+            Err(ParseError::InvalidSection(_))
+        ));
+
+        // Exponent 63 is the largest in-range value and must still parse.
+        obj_bytes[align_field..align_field + 4].copy_from_slice(&63_u32.to_le_bytes());
+        assert!(ObjectFile::parse(&obj_bytes).is_ok());
     }
 
     #[test]

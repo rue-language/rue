@@ -2513,7 +2513,7 @@ impl<'a> Sema<'a> {
     /// - **Arrays**: ArrayInit, IndexGet, IndexSet
     /// - **Enums**: EnumDecl, EnumVariant
     /// - **Calls**: Call, MethodCall, AssocFnCall
-    /// - **Intrinsics**: Intrinsic, TypeIntrinsic
+    /// - **Intrinsics**: Intrinsic, TypeIntrinsic, OffsetOf
     /// - **Declarations**: DropFnDecl, FnDecl
     pub(crate) fn analyze_inst(
         &mut self,
@@ -2635,9 +2635,9 @@ impl<'a> Sema<'a> {
             }
 
             // Intrinsic operations
-            InstData::Intrinsic { .. } | InstData::TypeIntrinsic { .. } => {
-                self.analyze_intrinsic_ops(air, inst_ref, ctx)
-            }
+            InstData::Intrinsic { .. }
+            | InstData::TypeIntrinsic { .. }
+            | InstData::OffsetOf { .. } => self.analyze_intrinsic_ops(air, inst_ref, ctx),
 
             // Declaration no-ops (produce Unit in expression context)
             InstData::DropFnDecl { .. } | InstData::FnDecl { .. } | InstData::ConstDecl { .. } => {
@@ -3748,8 +3748,9 @@ impl<'a> Sema<'a> {
         // only be used inside a `checked` block (spec 9.1:1, chapter 9). Gate
         // them before the per-intrinsic dispatch so every one shares a single
         // diagnostic. `@syscall` has its own gating; the set here is
-        // @raw/@raw_mut/@ptr_read/@ptr_write/@ptr_offset/@ptr_to_int/
-        // @int_to_ptr plus the heap intrinsics @alloc/@free/@realloc (RUE-1).
+        // @raw/@raw_mut/@field_ptr/@ptr_read/@ptr_write/@ptr_offset/
+        // @ptr_to_int/@int_to_ptr plus the heap intrinsics
+        // @alloc/@free/@realloc (RUE-1, RUE-301).
         if ctx.checked_depth == 0
             && (name == known.ptr_read
                 || name == known.ptr_write
@@ -3758,6 +3759,7 @@ impl<'a> Sema<'a> {
                 || name == known.int_to_ptr
                 || name == known.raw
                 || name == known.raw_mut
+                || name == known.field_ptr
                 || name == known.alloc
                 || name == known.free
                 || name == known.realloc)
@@ -3821,9 +3823,13 @@ impl<'a> Sema<'a> {
         } else if name == known.realloc {
             self.analyze_realloc_intrinsic(air, name, &args, span, ctx)
         } else if name == known.raw {
-            self.analyze_addr_of_intrinsic(air, &args, span, ctx, false)
+            let raw = self.known.raw;
+            self.analyze_addr_of_intrinsic(air, &args, span, ctx, false, raw, "addr_of")
         } else if name == known.raw_mut {
-            self.analyze_addr_of_intrinsic(air, &args, span, ctx, true)
+            let raw_mut = self.known.raw_mut;
+            self.analyze_addr_of_intrinsic(air, &args, span, ctx, true, raw_mut, "addr_of_mut")
+        } else if name == known.field_ptr {
+            self.analyze_field_ptr_intrinsic(air, &args, span, ctx)
         } else if name == known.syscall {
             self.analyze_syscall_intrinsic(air, name, &args, span, ctx)
         } else if name == known.target_arch {
@@ -7331,9 +7337,16 @@ impl<'a> Sema<'a> {
         Ok(AnalysisResult::new(air_ref, ptr_type))
     }
 
-    /// Analyze @addr_of / @addr_of_mut intrinsics: takes address of lvalue.
-    /// Signature: @addr_of(lvalue) -> ptr const T
-    /// Signature: @addr_of_mut(lvalue) -> ptr mut T
+    /// Analyze @raw / @field_ptr address-of intrinsics: forms a raw pointer to
+    /// an addressable place without taking a reference.
+    ///
+    /// `@raw(place) -> ptr const T` / `@raw_mut(place) -> ptr mut T` accept any
+    /// place; `@field_ptr(s.field) -> ptr mut F` (RUE-301) is the same address
+    /// computation restricted to a struct-field place (the field-place check is
+    /// enforced by [`Self::analyze_field_ptr_intrinsic`] before it delegates
+    /// here). `result_name` is the intrinsic name recorded in the AIR — codegen
+    /// treats `raw`/`raw_mut`/`field_ptr` identically (all lower the place's
+    /// address), so the three share this analysis and this lowering path.
     fn analyze_addr_of_intrinsic(
         &mut self,
         air: &mut Air,
@@ -7341,8 +7354,10 @@ impl<'a> Sema<'a> {
         span: Span,
         ctx: &mut AnalysisContext,
         is_mut: bool,
+        result_name: Spur,
+        diag_name: &str,
     ) -> CompileResult<AnalysisResult> {
-        let intrinsic_name = if is_mut { "addr_of_mut" } else { "addr_of" };
+        let intrinsic_name = diag_name;
 
         if args.len() != 1 {
             return Err(CompileError::new(
@@ -7416,12 +7431,10 @@ impl<'a> Sema<'a> {
             Type::new_ptr_const(ptr_type_id)
         };
 
-        // Create the intrinsic call instruction
-        let name = if is_mut {
-            self.known.raw_mut
-        } else {
-            self.known.raw
-        };
+        // Create the intrinsic call instruction. `result_name` distinguishes
+        // @raw/@raw_mut/@field_ptr in the AIR; codegen lowers all three the
+        // same way (address of the operand place).
+        let name = result_name;
         let args_start = air.add_extra(&[arg_result.air_ref.as_u32()]);
         let air_ref = air.add_inst(AirInst {
             data: AirInstData::Intrinsic {
@@ -7433,6 +7446,48 @@ impl<'a> Sema<'a> {
             span,
         });
         Ok(AnalysisResult::new(air_ref, result_type))
+    }
+
+    /// Analyze `@field_ptr(s.field)` (RUE-301): a raw `ptr mut F` to a struct
+    /// field place, the `&raw mut (*p).field` analog. Unlike `@raw`, the
+    /// operand MUST be a field-access expression (`s.field`) — that is exactly
+    /// what makes it "compiler-mediated field access": the pointer addresses
+    /// the field the compiler placed, so unchecked code walks a struct without
+    /// hardcoding slot offsets. The address computation, place liveness
+    /// handling, and codegen are shared with `@raw_mut` via
+    /// [`Self::analyze_addr_of_intrinsic`]; the only extra obligation here is
+    /// requiring a field place.
+    fn analyze_field_ptr_intrinsic(
+        &mut self,
+        air: &mut Air,
+        args: &[RirCallArg],
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AnalysisResult> {
+        if args.len() != 1 {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicWrongArgCount {
+                    name: "field_ptr".to_string(),
+                    expected: 1,
+                    found: args.len(),
+                },
+                span,
+            ));
+        }
+
+        // The operand must be a field access `s.field`. Inspect the RIR operand
+        // directly: a field access lowers to `InstData::FieldGet` before
+        // analysis, so a non-field operand (a bare variable, an index, a call
+        // result, a literal) is rejected up front with a targeted diagnostic
+        // rather than @raw's generic "not a place" message.
+        if !matches!(self.rir.get(args[0].value).data, InstData::FieldGet { .. }) {
+            return Err(CompileError::new(ErrorKind::FieldPtrRequiresField, span));
+        }
+
+        // @field_ptr yields a mutable raw pointer (like `&raw mut`), so it
+        // supports both @ptr_read and @ptr_write round-trips through the field.
+        let field_ptr = self.known.field_ptr;
+        self.analyze_addr_of_intrinsic(air, args, span, ctx, true, field_ptr, "field_ptr")
     }
 
     /// Analyze @syscall intrinsic: perform a raw OS syscall.

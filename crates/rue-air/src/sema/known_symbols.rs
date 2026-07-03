@@ -91,6 +91,9 @@ pub struct KnownSymbols {
     pub raw: Spur,
     /// The `raw_mut` intrinsic symbol - takes mutable address of lvalue.
     pub raw_mut: Spur,
+    /// The `field_ptr` intrinsic symbol - raw `ptr mut` to a struct field place
+    /// without forming a reference (RUE-301), the `&raw mut (*p).field` analog.
+    pub field_ptr: Spur,
     /// The `syscall` intrinsic symbol - direct OS syscall.
     pub syscall: Spur,
     /// The `alloc` intrinsic symbol - allocate an uninitialized heap block
@@ -147,6 +150,7 @@ impl KnownSymbols {
             int_to_ptr: interner.get_or_intern_static("int_to_ptr"),
             raw: interner.get_or_intern_static("raw"),
             raw_mut: interner.get_or_intern_static("raw_mut"),
+            field_ptr: interner.get_or_intern_static("field_ptr"),
             syscall: interner.get_or_intern_static("syscall"),
             alloc: interner.get_or_intern_static("alloc"),
             free: interner.get_or_intern_static("free"),

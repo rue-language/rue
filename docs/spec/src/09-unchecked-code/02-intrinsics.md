@@ -146,3 +146,52 @@ fn main() -> i32 {
     }
 }
 ```
+
+## Field Pointer Intrinsic
+
+{{ rule(id="9.2:15", cat="normative") }}
+
+The `@field_ptr` intrinsic forms a raw pointer to a struct field place without
+taking a reference, the analog of Rust's `&raw mut (*p).field`. Like the other
+raw-pointer intrinsics it may only appear inside a `checked` block (§9.1). It is
+compiler-mediated field access: the pointer addresses the field at the offset
+the compiler assigns, so unchecked code can walk a struct without hardcoding
+slot offsets, remaining correct even if the struct layout is
+implementation-defined.
+
+{{ rule(id="9.2:16", cat="syntax") }}
+
+```ebnf
+field_ptr_intrinsic = "@field_ptr" "(" field_access ")" ;
+field_access = expression "." IDENT ;
+```
+
+{{ rule(id="9.2:17", cat="legality-rule") }}
+
+The `@field_ptr` intrinsic takes exactly one argument, which **MUST** be a
+field-access expression `s.field`. Applying it to any other expression (a bare
+variable, an array element, a call result, or a literal) is a compile-time
+error; use `@raw`/`@raw_mut` to address those places.
+
+{{ rule(id="9.2:18", cat="dynamic-semantics") }}
+
+`@field_ptr(s.field)` returns a `ptr mut F`, where `F` is the type of `field`,
+addressing the storage of that field within `s`. The result addresses the same
+location as `@raw_mut` applied to the field, and reading it with `@ptr_read`
+observes the same value as the ordinary field access `s.field`. Because the
+returned pointer is mutable, `@ptr_write` through it updates the field in place.
+
+{{ rule(id="9.2:19", cat="example") }}
+
+```rue
+struct Mixed { a: i32, b: i64, c: bool }
+
+fn main() -> i32 {
+    let m = Mixed { a: 11, b: 22, c: true };
+    let got: i64 = checked {
+        let p: ptr mut i64 = @field_ptr(m.b);
+        @ptr_read(p)                              // 22, same as m.b
+    };
+    @intCast(got)
+}
+```

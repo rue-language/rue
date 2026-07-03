@@ -2787,8 +2787,12 @@ impl<'a> CfgLower<'a> {
                         src: Operand::Physical(Reg::Rax),
                     });
                     self.value_map.insert(value, result_vreg);
-                } else if name_str == "raw" || name_str == "raw_mut" {
-                    // @raw(lvalue) / @raw_mut(lvalue) - Take address of a value
+                } else if name_str == "raw" || name_str == "raw_mut" || name_str == "field_ptr" {
+                    // @raw(lvalue) / @raw_mut(lvalue) / @field_ptr(s.field) -
+                    // Take the address of a place. @field_ptr (RUE-301) is the
+                    // field-restricted form; its operand analyzes to a field
+                    // PlaceRead, so it flows through the same PlaceRead arm
+                    // below (lower_place_addr computes the field's address).
                     // The argument should be a local variable, and we compute its stack address.
                     let args = self.ctx.cfg.get_extra(*args_start, *args_len);
                     let lvalue_val = args[0];

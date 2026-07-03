@@ -410,6 +410,104 @@ fn main() -> i32 {
 exit_code = 0
 
 # =============================================================================
+# @offset_of Intrinsic (RUE-301)
+# =============================================================================
+
+[[case]]
+name = "offset_of_first_field_is_zero"
+spec = ["4.13:91", "4.13:92"]
+source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    let off: u64 = @offset_of(Point, x);
+    @intCast(off)
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "offset_of_second_field"
+spec = ["4.13:91", "4.13:94"]
+source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    let off: u64 = @offset_of(Point, y);
+    @intCast(off)
+}
+"""
+exit_code = 8
+
+[[case]]
+name = "offset_of_returns_u64"
+spec = ["4.13:93"]
+source = """
+fn takes_u64(x: u64) -> u64 { x }
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    let off: u64 = takes_u64(@offset_of(Point, y));
+    @intCast(off)
+}
+"""
+exit_code = 8
+
+[[case]]
+name = "offset_of_accounts_for_multislot_fields"
+spec = ["4.13:94"]
+source = """
+struct Inner { x: i32, y: i32 }
+struct Outer { flag: bool, arr: [i32; 3], inner: Inner, last: i64 }
+fn main() -> i32 {
+    // flag: 1 slot -> arr at slot 1 (byte 8)
+    // arr: 3 slots -> inner at slot 4 (byte 32)
+    // inner: 2 slots -> last at slot 6 (byte 48)
+    if @offset_of(Outer, flag) != 0 { return 1; }
+    if @offset_of(Outer, arr) != 8 { return 2; }
+    if @offset_of(Outer, inner) != 32 { return 3; }
+    if @offset_of(Outer, last) != 48 { return 4; }
+    0
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "offset_of_compile_time_const_context"
+spec = ["4.13:94"]
+source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    // @offset_of folds to a compile-time constant, like @size_of.
+    let off: u64 = @offset_of(Point, y);
+    @intCast(off)
+}
+"""
+exit_code = 8
+
+[[case]]
+name = "offset_of_non_struct_type_errors"
+spec = ["4.13:95"]
+source = """
+fn main() -> i32 {
+    let off: u64 = @offset_of(i32, a);
+    @intCast(off)
+}
+"""
+compile_fail = true
+error_contains = "non-struct"
+
+[[case]]
+name = "offset_of_unknown_field_errors"
+spec = ["4.13:95"]
+source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    let off: u64 = @offset_of(Point, z);
+    @intCast(off)
+}
+"""
+compile_fail = true
+error_contains = "unknown field"
+
+# =============================================================================
 # @intCast Intrinsic
 # =============================================================================
 

@@ -1088,10 +1088,15 @@ impl<'a> ConstraintGenerator<'a> {
                     }
                     let result_var = self.fresh_var();
                     InferType::Var(result_var)
-                } else if intrinsic_name == "raw" || intrinsic_name == "raw_mut" {
-                    // @raw / @raw_mut: takes a value, returns a pointer to it
-                    // The return type is ptr const T or ptr mut T where T is the argument type.
-                    // We create a fresh type variable for proper inference.
+                } else if intrinsic_name == "raw"
+                    || intrinsic_name == "raw_mut"
+                    || intrinsic_name == "field_ptr"
+                {
+                    // @raw / @raw_mut / @field_ptr: takes a place, returns a
+                    // pointer to it (RUE-301). The return type is a pointer
+                    // whose pointee is only known once the operand is analyzed,
+                    // so we create a fresh type variable for proper inference
+                    // (Sema fixes it to `ptr const T`/`ptr mut T`).
                     for arg_ref in args.iter() {
                         self.generate(*arg_ref, ctx);
                     }
@@ -1239,6 +1244,14 @@ impl<'a> ConstraintGenerator<'a> {
                 // Type intrinsics return i32 (the size or alignment value)
                 InferType::Concrete(Type::I32)
             }
+
+            // Field-offset intrinsic (@offset_of) — the compile-time byte
+            // offset of a field within a struct (RUE-301). Returns u64, like
+            // Rust's `core::mem::offset_of!`.
+            InstData::OffsetOf {
+                type_arg: _,
+                field: _,
+            } => InferType::Concrete(Type::U64),
 
             // Block
             InstData::Block { extra_start, len } => {

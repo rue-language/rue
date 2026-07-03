@@ -42,6 +42,84 @@ fn main() -> i32 {
 exit_code = 0
 
 # =============================================================================
+# String Representation and Ownership
+# =============================================================================
+
+# 3.7:2 — a String is three machine words (ptr, len, capacity), 24 bytes.
+[[case]]
+name = "string_size_is_24"
+spec = ["3.7:2"]
+description = "@size_of(String) is 24: three machine words (ptr, len, capacity)."
+source = """
+fn main() -> i32 {
+    @size_of(String)
+}
+"""
+exit_code = 24
+
+# 3.7:39 — String is a move type: using it after a move is E0205.
+[[case]]
+name = "string_is_move_type"
+spec = ["3.7:39"]
+description = "String is an affine (move) type; use after move is a compile error."
+source = """
+fn main() -> i32 {
+    let a = "hello";
+    let b = a;      // 'a' is moved into 'b'
+    @dbg(a);        // ERROR: use of moved value 'a'
+    @dbg(b);
+    0
+}
+"""
+compile_fail = true
+error_contains = "use of moved value"
+
+# 3.7:39 — String is not a Copy type, so a @copy struct cannot hold one.
+[[case]]
+name = "string_not_copy_field"
+spec = ["3.7:39"]
+description = "String is not Copy: a @copy struct with a String field is rejected."
+source = """
+@copy
+struct Bad { s: String }
+
+fn main() -> i32 {
+    0
+}
+"""
+compile_fail = true
+error_contains = "non-Copy type 'String'"
+
+# 3.7:39 — an unused String is dropped implicitly (affine, not linear).
+[[case]]
+name = "string_dropped_implicitly"
+spec = ["3.7:39"]
+description = "A String need not be explicitly consumed; an unused one drops at scope end."
+source = """
+fn main() -> i32 {
+    let _s = "foo" + "bar";   // heap-allocated, never used again
+    0
+}
+"""
+exit_code = 0
+
+# 3.7:40 — a heap-owning String is freed exactly once; the program runs cleanly.
+[[case]]
+name = "string_heap_freed_once"
+spec = ["3.7:40"]
+description = "A heap-allocated String is dropped once (no double free); program runs to completion."
+source = """
+fn main() -> i32 {
+    let a = "foo" + "bar";   // heap-allocated: capacity > 0
+    let b = a;               // ownership moves to 'b'
+    @dbg(b);                 // foobar
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "foobar\n"
+
+# =============================================================================
 # String Escape Sequences
 # =============================================================================
 

@@ -737,6 +737,10 @@ impl Rir {
                 name: *name,
                 type_arg: *type_arg,
             },
+            InstData::OffsetOf { type_arg, field } => InstData::OffsetOf {
+                type_arg: *type_arg,
+                field: *field,
+            },
 
             // Binary operations - renumber both operands
             InstData::Add { lhs, rhs } => InstData::Add {
@@ -1307,6 +1311,7 @@ impl Rir {
                 | InstData::IndexGet { .. }
                 | InstData::IndexSet { .. }
                 | InstData::TypeIntrinsic { .. }
+                | InstData::OffsetOf { .. }
                 | InstData::DropFnDecl { .. }
                 | InstData::Comptime { .. }
                 | InstData::Checked { .. }
@@ -1534,6 +1539,17 @@ pub enum InstData {
         name: Spur,
         /// Type argument (as an interned string, e.g., "i32", "Point", "[i32; 4]")
         type_arg: Spur,
+    },
+
+    /// `@offset_of(T, field)` — the compile-time byte offset of `field` within
+    /// struct type `T` (RUE-301). Carries a type argument (as an interned
+    /// string, exactly like [`InstData::TypeIntrinsic`]) and the field name;
+    /// neither is an `InstRef`, so this variant has no operands to renumber.
+    OffsetOf {
+        /// Type argument (as an interned string, e.g., "Point").
+        type_arg: Spur,
+        /// Field name whose offset is requested.
+        field: Spur,
     },
 
     /// Reference to a function parameter.
@@ -2081,6 +2097,11 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     let name_str = self.interner.resolve(&*name);
                     let type_str = self.interner.resolve(&*type_arg);
                     writeln!(out, "type_intrinsic @{}({})", name_str, type_str).unwrap();
+                }
+                InstData::OffsetOf { type_arg, field } => {
+                    let type_str = self.interner.resolve(&*type_arg);
+                    let field_str = self.interner.resolve(&*field);
+                    writeln!(out, "offset_of @offset_of({}, {})", type_str, field_str).unwrap();
                 }
                 InstData::ParamRef { index, name } => {
                     writeln!(out, "param {} ({})", index, self.interner.resolve(&*name)).unwrap();
