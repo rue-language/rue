@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# jj-tidy — clear the jj-log clutter the worktree/PR workflow accumulates.
+#
+# Every PR push leaves a `steveklabnik/push-<id>` bookmark, and every workflow
+# worker leaves a `worktree-wf_*` / `cycle*` git branch in the colocated repo.
+# Over a session these pile up as dozens of dangling heads in `jj log`.
+#
+# This is SAFE to run while workers are live:
+#   * `git branch -D` refuses to delete a branch checked out in any worktree,
+#     so running workers' branches are protected automatically.
+#   * we only abandon unbookmarked orphan heads — never @, never a bookmarked
+#     (i.e. live-worker or open-PR) change.
+set -uo pipefail
+cd "$(dirname "$0")/.."
+REPO=rue-language/rue
+ME="$(gh api user --jq .login 2>/dev/null || echo steveklabnik)"
+
+jj git fetch >/dev/null 2>&1 || true
+git worktree prune 2>/dev/null || true
+
+# 1. Leftover workflow-worker branches (checked-out ones are refused = protected).
+d=0
+for b in $(git branch --format='%(refname:short)' 2>/dev/null | grep -E '^(worktree-wf_|cycle[0-9])'); do
+  git branch -D "$b" >/dev/null 2>&1 && d=$((d + 1)) || true
+done
+echo "jj-tidy: deleted $d orphaned worker branches"
+
+# 2. Local push-* bookmarks whose PR has merged or closed.
+b=0
+for br in $(gh pr list --repo "$REPO" --author "$ME" --state merged --json headRefName --limit 200 --jq '.[].headRefName' 2>/dev/null
+            gh pr list --repo "$REPO" --author "$ME" --state closed --json headRefName --limit 200 --jq '.[].headRefName' 2>/dev/null); do
+  jj bookmark delete "$br" >/dev/null 2>&1 && b=$((b + 1)) || true
+done
+echo "jj-tidy: deleted $b merged/closed push bookmarks"
+
+# 3. Delete stale origin branches for merged/closed PRs (keeps open ones).
+open="$(gh pr list --repo "$REPO" --author "$ME" --state open --json headRefName --jq '.[].headRefName' 2>/dev/null | tr '\n' ' ')"
+stale=""
+for br in $(git branch -r --format='%(refname:short)' 2>/dev/null | sed -n 's|^origin/||p' | grep -E '(^|/)push-'); do
+  case " $open " in *" $br "*) continue ;; esac
+  stale="$stale $br"
+done
+[ -n "$stale" ] && git push origin --delete $stale >/dev/null 2>&1 || true
+
+# 4. Abandon orphaned mutable heads with no bookmark (never @, never a live/open change).
+jj abandon -r 'heads(mutable()) ~ @ ~ bookmarks() ~ remote_bookmarks()' >/dev/null 2>&1 || true
+
+jj git fetch >/dev/null 2>&1 || true
+jj git import >/dev/null 2>&1 || true
+echo "jj-tidy: done — non-trunk heads: $(jj log -r 'heads(all()) ~ ::trunk()' --no-graph -T '"x\n"' 2>/dev/null | grep -c x)"
