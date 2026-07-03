@@ -295,7 +295,7 @@ impl<'a> CfgLower<'a> {
             .cloned()
             .expect("aggregate block param should have slot vregs pre-allocated");
 
-        debug_assert_eq!(
+        assert_eq!(
             src_slots.len(),
             dst_slots.len(),
             "source and destination aggregate slot counts must match"
@@ -1310,7 +1310,7 @@ impl<'a> CfgLower<'a> {
                     let field_vregs = self
                         .get_or_compute_field_vregs(*init)
                         .expect("string should have fat pointer fields in Alloc");
-                    debug_assert_eq!(
+                    assert_eq!(
                         field_vregs.len(),
                         3,
                         "string should have 3 fields (ptr, len, cap)"
@@ -2508,7 +2508,7 @@ impl<'a> CfgLower<'a> {
                         .get_or_compute_field_vregs(*dropped_value)
                         .expect("String value should have field vregs");
 
-                    debug_assert_eq!(
+                    assert_eq!(
                         field_vregs.len(),
                         3,
                         "String should have 3 slots (ptr, len, cap)"
@@ -3512,12 +3512,12 @@ impl<'a> CfgLower<'a> {
             .get_or_compute_field_vregs(rhs)
             .expect("string should have fat pointer fields");
 
-        debug_assert_eq!(
+        assert_eq!(
             lhs_fields.len(),
             3,
             "string should have 3 fields (ptr, len, cap)"
         );
-        debug_assert_eq!(
+        assert_eq!(
             rhs_fields.len(),
             3,
             "string should have 3 fields (ptr, len, cap)"

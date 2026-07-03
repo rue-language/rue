@@ -469,7 +469,7 @@ impl<'a> CfgLower<'a> {
             .cloned()
             .expect("aggregate block param should have slot vregs pre-allocated");
 
-        debug_assert_eq!(
+        assert_eq!(
             src_slots.len(),
             dst_slots.len(),
             "source and destination aggregate slot counts must match"
@@ -1638,7 +1638,7 @@ impl<'a> CfgLower<'a> {
                     let field_vregs = self
                         .get_or_compute_field_vregs(*init)
                         .expect("string should have fat pointer fields in Alloc");
-                    debug_assert_eq!(
+                    assert_eq!(
                         field_vregs.len(),
                         3,
                         "string should have 3 fields (ptr, len, cap)"
@@ -2124,7 +2124,7 @@ impl<'a> CfgLower<'a> {
                         // Get the fat pointer (ptr, len, cap) — materializes a String read
                         // from a place (`@dbg(h.s)`) as well as cached sources. (RUE-118)
                         if let Some(field_vregs) = self.get_or_compute_field_vregs(arg_val) {
-                            debug_assert_eq!(
+                            assert_eq!(
                                 field_vregs.len(),
                                 3,
                                 "string should have exactly 3 vregs (ptr, len, cap)"
@@ -2246,7 +2246,7 @@ impl<'a> CfgLower<'a> {
                     // Get the String fat pointer (ptr, len, cap) — materializes a String
                     // read from a place (`@parse_i32(h.s)`) as well as cached sources. (RUE-118)
                     if let Some(field_vregs) = self.get_or_compute_field_vregs(arg_val) {
-                        debug_assert_eq!(
+                        assert_eq!(
                             field_vregs.len(),
                             3,
                             "string should have exactly 3 vregs (ptr, len, cap)"
@@ -2888,7 +2888,7 @@ impl<'a> CfgLower<'a> {
                         .get_or_compute_field_vregs(*dropped_value)
                         .expect("String value should have field vregs");
 
-                    debug_assert_eq!(
+                    assert_eq!(
                         field_vregs.len(),
                         3,
                         "String should have 3 slots (ptr, len, cap)"
@@ -3487,11 +3487,11 @@ impl<'a> CfgLower<'a> {
             .get_or_compute_field_vregs(rhs)
             .expect("builtin type should have field vregs");
 
-        debug_assert!(
+        assert!(
             lhs_fields.len() >= 2,
             "builtin type should have at least 2 fields for comparison"
         );
-        debug_assert!(
+        assert!(
             rhs_fields.len() >= 2,
             "builtin type should have at least 2 fields for comparison"
         );

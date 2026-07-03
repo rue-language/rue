@@ -884,10 +884,11 @@ impl Cfg {
     /// A block's terminator may only be set once (from `None`), or may replace
     /// an `Unreachable` placeholder. Silently overwriting a real terminator is
     /// how divergence bugs hide — e.g. a diverging let-initializer's `Return`
-    /// being clobbered by the code after the `let` (RUE-128) — so that is a
-    /// loud debug assertion instead.
+    /// being clobbered by the code after the `let` (RUE-128) — so that is an
+    /// always-on assertion (not `debug_assert!`: it guards codegen correctness,
+    /// which must hold in release builds too — RUE-45).
     pub fn set_terminator(&mut self, block: BlockId, term: Terminator) {
-        debug_assert!(
+        assert!(
             matches!(
                 self.blocks[block.0 as usize].terminator,
                 Terminator::None | Terminator::Unreachable

@@ -1654,6 +1654,10 @@ impl<'a> Sema<'a> {
             .iter()
             .find(|(name, _, mode, _)| *name == self_sym && *mode != RirParamMode::Normal)
         {
+            // Pure dev sanity check with no correctness role: the gate below
+            // (`require_preview`) does not branch on `mode`, so an unexpected
+            // mode here changes no codegen. Kept as `debug_assert!` per RUE-45
+            // (only correctness-guarding checks were promoted to `assert!`).
             debug_assert!(matches!(mode, RirParamMode::Inout | RirParamMode::Borrow));
             self.require_preview(
                 PreviewFeature::MethodReceivers,

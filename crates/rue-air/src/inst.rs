@@ -481,13 +481,17 @@ impl Air {
 
     /// Add extra data and return the start index.
     pub fn add_extra(&mut self, data: &[u32]) -> u32 {
-        // Debug assertions for u32 overflow
-        debug_assert!(
+        // Always-on overflow guards: `start`/`len` are stored as u32 and the
+        // `as u32` cast below would silently wrap on overflow, producing
+        // corrupt AIR references (wrong codegen). Correctness invariants must
+        // hold in release builds too, so these are `assert!`, not
+        // `debug_assert!` (RUE-45).
+        assert!(
             self.extra.len() <= u32::MAX as usize,
             "AIR extra data overflow: {} entries exceeds u32::MAX",
             self.extra.len()
         );
-        debug_assert!(
+        assert!(
             self.extra.len().saturating_add(data.len()) <= u32::MAX as usize,
             "AIR extra data would overflow: {} + {} exceeds u32::MAX",
             self.extra.len(),

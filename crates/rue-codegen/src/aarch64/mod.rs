@@ -70,8 +70,9 @@ pub fn generate(
     // Schedule instructions for better performance
     schedule::schedule(&mut mir);
 
-    // Verify stack alignment in debug builds
-    #[cfg(debug_assertions)]
+    // Verify stack alignment. Runs in every build (not `#[cfg(debug_assertions)]`):
+    // a stack-misalignment miscompile is an ABI-level correctness bug that must
+    // be caught in release too, not silently emitted (RUE-45; cf. RUE-24).
     verify::verify_stack_alignment(&mir)?;
 
     // Emit machine code bytes
@@ -124,8 +125,9 @@ pub fn generate_with_asm(
     // Schedule instructions for better performance
     schedule::schedule(&mut mir);
 
-    // Verify stack alignment in debug builds
-    #[cfg(debug_assertions)]
+    // Verify stack alignment. Runs in every build (not `#[cfg(debug_assertions)]`):
+    // a stack-misalignment miscompile is an ABI-level correctness bug that must
+    // be caught in release too, not silently emitted (RUE-45; cf. RUE-24).
     verify::verify_stack_alignment(&mir)?;
 
     // Emit machine code bytes with assembly text

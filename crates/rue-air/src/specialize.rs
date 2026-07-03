@@ -481,8 +481,12 @@ fn create_specialized_function(
         let concrete_ty = if ty == Type::COMPTIME_TYPE {
             substitute_param_type(sema, base_info, name, &type_subst, &value_subst).unwrap_or_else(
                 || {
-                    debug_assert!(false, "type substitution failed for param");
-                    ty
+                    // Falling back to `ty` here would leave a COMPTIME_TYPE
+                    // placeholder in the specialized runtime signature — silent
+                    // wrong codegen. Panic unconditionally (was a `debug_assert!`
+                    // that vanished in release) so the invariant is enforced in
+                    // release builds too (RUE-45).
+                    panic!("type substitution failed for param")
                 },
             )
         } else {

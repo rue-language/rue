@@ -109,3 +109,42 @@ jobs:
 
       - name: Run tests
         run: ./test.sh
+
+  # Release-mode build + test (RUE-45). CI otherwise builds/tests the compiler
+  # in debug ONLY, so release-only miscompiles never run — a correctness check
+  # written as `debug_assert!` (or `#[cfg(debug_assertions)]`) is compiled out
+  # in release and silently turns an ICE into wrong codegen (RUE-24 is the
+  # precedent). This job exercises the whole suite against a `-Copt-level=3`
+  # build of the compiler. linux-x64 only: the aim is to catch opt-level and
+  # cfg(debug_assertions) divergence, which is architecture-independent, so a
+  # single release target is enough without tripling CI cost.
+  test-release:
+    runs-on: ubuntu-latest
+    name: test (linux-x64, release)
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install dotslash
+        uses: facebook/install-dotslash@v2  # pinned: the moving `latest` branch broke macOS runners (sha256sum flags) on 2026-06-18
+
+      # Reuse the debug job's dotslash cache (the buck2 binary download is
+      # build-mode independent) via the shared `dotslash-linux-x64-` prefix.
+      - name: Cache dotslash artifacts
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cache/dotslash
+            ~/Library/Caches/dotslash
+          key: dotslash-linux-x64-release-${{ hashFiles('buck2') }}
+          restore-keys: |
+            dotslash-linux-x64-
+
+      - name: Build all targets (release)
+        run: ./buck2 build //crates/... --modifier //constraints:release
+
+      # RUE_BUCK_MODIFIERS threads the release modifier through every buck2
+      # invocation in test.sh, including the rue binary the suites compile with.
+      - name: Run tests (release)
+        run: ./test.sh
+        env:
+          RUE_BUCK_MODIFIERS: "--modifier //constraints:release"
