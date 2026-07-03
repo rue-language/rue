@@ -16,7 +16,9 @@ use super::Sema;
 use super::context::AnalysisContext;
 use crate::inference::InferType;
 use crate::sema::ConstValue;
-use crate::types::{ArrayLen, ArrayTypeId, Type, TypeKind, parse_array_type_syntax};
+use crate::types::{
+    ArrayLen, ArrayTypeId, Type, TypeKind, parse_array_type_syntax, parse_type_call_syntax,
+};
 
 impl<'a> Sema<'a> {
     /// Get a human-readable name for a type.
@@ -226,6 +228,11 @@ impl<'a> Sema<'a> {
                 let pointee_ty = self.resolve_type(pointee_sym, span)?;
                 let ptr_type_id = self.type_pool.intern_ptr_mut_from_type(pointee_ty);
                 Ok(Type::new_ptr_mut(ptr_type_id))
+            } else if let Some((call_name, arg_strs)) = parse_type_call_syntax(type_name) {
+                // A type-function application written directly in type position
+                // (`Result(i32, i32)`; RUE-241). Reduce the comptime type call
+                // to its monomorphized concrete type.
+                self.resolve_type_function_call(&call_name, &arg_strs, span)
             } else {
                 Err(CompileError::new(
                     ErrorKind::UnknownType(type_name.to_string()),
@@ -294,6 +301,98 @@ impl<'a> Sema<'a> {
             // the context-free resolver for identical resolution, privacy
             // checks, and the E0204 on a genuinely-unknown name.
             self.resolve_type(type_sym, span)
+        }
+    }
+
+    /// Resolve a type-function application written directly in type position
+    /// (`Result(i32, i32)`; RUE-241) to its monomorphized concrete type.
+    ///
+    /// The callee must be a comptime `-> type` constructor already collected
+    /// into the function table (constructors are conventionally declared before
+    /// use, the same order the named-const form and value-position use require).
+    /// Each argument string is resolved as a type (so nested calls like
+    /// `Result(Option(i32), i32)` compose), then the constructor body is
+    /// reduced under that substitution — yielding the identical type a
+    /// value-position call (`let R = Result(i32, i32)`) or the named-const form
+    /// (`const R: type = Result(i32, i32)`) produces.
+    ///
+    /// A call to a callee that is not a `-> type` function (a value-returning
+    /// function, `fn f() -> some_value_fn()`), an arity mismatch, or a body
+    /// that does not reduce to a type is reported cleanly as E1200 (an unknown
+    /// callee as E0204), never a crash.
+    fn resolve_type_function_call(
+        &mut self,
+        call_name: &str,
+        arg_strs: &[String],
+        span: Span,
+    ) -> CompileResult<Type> {
+        let name_sym = self.interner.get_or_intern(call_name);
+
+        // The callee must be a known `-> type` constructor.
+        let Some(fn_info) = self.functions.get(&name_sym) else {
+            return Err(CompileError::new(
+                ErrorKind::UnknownType(format!("{}(...)", call_name)),
+                span,
+            ));
+        };
+        let is_type_ctor = fn_info.return_type == Type::COMPTIME_TYPE;
+        let params = fn_info.params;
+        if !is_type_ctor {
+            return Err(CompileError::new(
+                ErrorKind::ComptimeEvaluationFailed {
+                    reason: format!(
+                        "'{}' is not a type: only a function returning `type` (a type \
+                         constructor) can be applied as a type here",
+                        call_name
+                    ),
+                },
+                span,
+            ));
+        }
+
+        let param_names = self.param_arena.names(params).to_vec();
+        let param_comptime = self.param_arena.comptime(params).to_vec();
+        if arg_strs.len() != param_names.len()
+            || !(param_names.is_empty() || param_comptime.iter().all(|&c| c))
+        {
+            return Err(CompileError::new(
+                ErrorKind::ComptimeEvaluationFailed {
+                    reason: format!(
+                        "type constructor '{}' expects {} comptime type argument(s), \
+                         but {} were provided",
+                        call_name,
+                        param_names.len(),
+                        arg_strs.len()
+                    ),
+                },
+                span,
+            ));
+        }
+
+        // Resolve each argument as a type and bind it to the corresponding
+        // comptime type parameter.
+        let mut callee_types: HashMap<Spur, Type> = HashMap::new();
+        for (i, arg) in arg_strs.iter().enumerate() {
+            let arg_sym = self.interner.get_or_intern(arg);
+            let arg_ty = self.resolve_type(arg_sym, span)?;
+            callee_types.insert(param_names[i], arg_ty);
+        }
+
+        // Reduce the constructor body under the substitution. Shares the exact
+        // reduction path (and E1200 recursion guard) with value-position calls.
+        let empty_values: HashMap<Spur, ConstValue> = HashMap::new();
+        match self.reduce_type_ctor_body(name_sym, &callee_types, &empty_values)? {
+            Some(ConstValue::Type(t)) => Ok(t),
+            _ => Err(CompileError::new(
+                ErrorKind::ComptimeEvaluationFailed {
+                    reason: format!(
+                        "the type constructor '{}' did not reduce to a concrete type \
+                         at compile time",
+                        call_name
+                    ),
+                },
+                span,
+            )),
         }
     }
 

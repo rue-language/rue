@@ -1,0 +1,127 @@
+# Generic types (comptime `-> type` function results) applied DIRECTLY in a
+# signature or annotation: `fn divide(...) -> Result(i32, i32)` (RUE-241).
+#
+# Before RUE-241 the type grammar rejected a type-function *call* in type
+# position (parser E0100), so a function could not return/accept a generic
+# `Result`/`Option` without a named `const` alias. The parser now accepts
+# `Name(args...)` as a type expression and sema reduces the comptime type call
+# to the same monomorphized enum the value-position call produces — the real
+# unblocker for Option/Result error handling (RUE-6). These drive the real
+# driver end-to-end with `--preview enum_payloads` and assert exact behavior.
+
+[section]
+id = "cli.generic_type_call_sigs"
+name = "Generic type-call signatures"
+description = "A comptime `-> type` call used directly as a return/param/annotation type (RUE-241)."
+
+# --- Direct call in RETURN position (the headline repro) ---
+
+[[case]]
+name = "result_return_direct"
+description = "fn divide(...) -> Result(i32, i32) compiles, is called, and its result is matched."
+files = [{ path = "main.rue", source = """
+fn Result(comptime T: type, comptime E: type) -> type { enum { Ok(T), Err(E) } }
+fn divide(a: i32, b: i32) -> Result(i32, i32) {
+    if b == 0 { let R = Result(i32, i32); R::Err(1) }
+    else { let R = Result(i32, i32); R::Ok(a / b) }
+}
+fn main() -> i32 {
+    let R = Result(i32, i32);
+    match divide(84, 2) { R::Ok(v) => v, R::Err(e) => 0 - e }
+}
+""" }]
+args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+exit_code = 42
+
+# --- Direct call in PARAMETER position ---
+
+[[case]]
+name = "result_param_direct"
+description = "A generic type used directly as a parameter type: fn unwrap_or(r: Result(i32, i32), ...)."
+files = [{ path = "main.rue", source = """
+fn Result(comptime T: type, comptime E: type) -> type { enum { Ok(T), Err(E) } }
+fn unwrap_or(r: Result(i32, i32), d: i32) -> i32 {
+    let R = Result(i32, i32);
+    match r { R::Ok(v) => v, R::Err(e) => d }
+}
+fn divide(a: i32, b: i32) -> Result(i32, i32) {
+    let R = Result(i32, i32);
+    if b == 0 { R::Err(1) } else { R::Ok(a / b) }
+}
+fn main() -> i32 { unwrap_or(divide(84, 2), 0) }
+""" }]
+args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+exit_code = 42
+
+# --- Nested type-function calls compose in type position ---
+
+[[case]]
+name = "nested_result_of_option_direct"
+description = "Result(Option(i32), i32) as a direct return type; nested type calls compose."
+files = [{ path = "main.rue", source = """
+fn Option(comptime T: type) -> type { enum { Some(T), None } }
+fn Result(comptime T: type, comptime E: type) -> type { enum { Ok(T), Err(E) } }
+fn make() -> Result(Option(i32), i32) {
+    let O = Option(i32);
+    let R = Result(Option(i32), i32);
+    R::Ok(O::Some(42))
+}
+fn main() -> i32 {
+    let O = Option(i32);
+    let R = Result(Option(i32), i32);
+    match make() {
+        R::Ok(o) => match o { O::Some(v) => v, O::None => 0 },
+        R::Err(e) => 0 - e
+    }
+}
+""" }]
+args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+exit_code = 42
+
+# --- Direct call in a LET ANNOTATION (falls out of the same resolver) ---
+
+[[case]]
+name = "result_let_annotation_direct"
+description = "The same generic type written directly in a `let x: Result(i32, i32)` annotation."
+files = [{ path = "main.rue", source = """
+fn Result(comptime T: type, comptime E: type) -> type { enum { Ok(T), Err(E) } }
+fn divide(a: i32, b: i32) -> Result(i32, i32) {
+    let R = Result(i32, i32);
+    if b == 0 { R::Err(1) } else { R::Ok(a / b) }
+}
+fn main() -> i32 {
+    let x: Result(i32, i32) = divide(84, 2);
+    let R = Result(i32, i32);
+    match x { R::Ok(v) => v, R::Err(e) => 0 - e }
+}
+""" }]
+args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+exit_code = 42
+
+# --- A non-type-returning call in type position errors cleanly (no crash) ---
+
+[[case]]
+name = "value_fn_in_type_position_errors"
+description = "Applying a value-returning function as a type is a clean E1200, not an ICE."
+files = [{ path = "main.rue", source = """
+fn some_value_fn() -> i32 { 5 }
+fn f() -> some_value_fn() { 3 }
+fn main() -> i32 { f() }
+""" }]
+args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E1200", "is not a type"]
+
+# --- Arity mismatch in a type-call errors cleanly ---
+
+[[case]]
+name = "type_call_arity_mismatch_errors"
+description = "Wrong number of type arguments to a type constructor is a clean E1200."
+files = [{ path = "main.rue", source = """
+fn Result(comptime T: type, comptime E: type) -> type { enum { Ok(T), Err(E) } }
+fn f() -> Result(i32) { 3 }
+fn main() -> i32 { 0 }
+""" }]
+args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E1200", "expects 2 comptime type argument"]
