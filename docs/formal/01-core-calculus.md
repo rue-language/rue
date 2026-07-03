@@ -46,7 +46,8 @@ Places (lvalues — expressions that denote a location)
 Expressions
   e ::= lit                    -- integer / bool / unit literal
       | p                      -- a place used in VALUE context (see §4 — this is a USE)
-      | e1 ⊕ e2                -- primitive binary op (arith, compare, bitwise)
+      | e1 ⊕ e2                -- primitive arithmetic / bitwise op (operands are Copy scalars)
+      | e1 ≟ e2                -- primitive equality compare (== / !=); operands are BORROWED, not moved (§4.1, 4.3:3f)
       | S { f1: e1, ..., fk: ek }        -- struct value construction
       | [ e1, ..., en ]        -- array value construction
       | g ( a1, ..., am )      -- call of function g with argument forms a_i (see below)
@@ -150,9 +151,18 @@ syntactic contexts:
   contexts:
   - the target of an assignment: the `p` in `assign p = e`;
   - the base of a projection: the `p` in `p.f` and the `p` in `p[e]`;
-  - the operand of a by-reference argument: the `p` in `inout p` and `borrow p`.
+  - the operand of a by-reference argument: the `p` in `inout p` and `borrow p`;
+  - the operands of an equality compare: the `p` in `p ≟ e` and `e ≟ p` (`==`
+    / `!=`). Equality **borrows** its operands — each operand place is read
+    through a shared loan, its value inspected but not consumed, exactly as a
+    `borrow p` argument (`4.3:3f`). An affine or linear operand is therefore
+    still Owned afterward and its move obligation is undischarged; `let c = a;
+    a == b` is well-formed. (Contrast: arithmetic/bitwise `⊕` operates only on
+    `Copy` scalars, so *its* operands are ordinary value-context uses below —
+    the copy-vs-borrow distinction is immaterial there.)
 - **Value context** — every other occurrence. The occurrence must *produce a
-  value*: operands of `⊕`, the scrutinee of `if`/`match`, a struct-field or
+  value*: operands of an arithmetic or bitwise `⊕` (always `Copy` scalars, so
+  the use copies), the scrutinee of `if`/`match`, a struct-field or
   array-element initializer, a by-value argument `e`, the operand of `return`,
   the tail expression of a `let`/`;`-sequence, and so on.
 
@@ -184,6 +194,7 @@ That is the entire notion. Everything the prose enumerated is now a corollary:
 | `3.8:22` field access is a partial move | the projection clause of §4.2 |
 | `3.8:33` linear consumed when passed/returned/destructured | value-context use of a Linear place moves it |
 | `3.8:53/54` reading a Copy field through a moved ancestor is an error | the base `p` of `p.f` must be Owned (§5, ProjRead) |
+| `4.3:3f` equality borrows its operands | equality operands are *place context* (§4.1), not a value-context use ⇒ no move; a shared loan for the compare |
 
 The prose paragraphs above should be **rewritten** to reference this single
 definition rather than re-list contexts. (This is the concrete form of the
@@ -308,6 +319,14 @@ they exist only for the call's dynamic extent and cannot be returned, stored, or
 outlive the call — this is what lets Rue omit lifetimes. **[open]** The core
 models loans as strictly call-scoped; if a future first-class-reference feature is
 adopted (a live ADR question, deferred), this section is where it lands.
+
+An **equality compare** `e1 ≟ e2` reads each place operand through the same
+kind of shared loan, scoped to the compare rather than a call: it requires
+`Σ(p) = Owned`, takes a `(root(p), shared)` loan for the compare's duration,
+and leaves Σ unchanged (no move — §4.1, `4.3:3f`). Two shared reads are always
+consistent, so an operand may even appear on both sides (`a == a` is
+well-formed). This is why comparing an affine or linear value does not
+discharge its move obligation.
 
 ### 5.5 Control flow and the branch join
 
@@ -450,6 +469,7 @@ far. As breadth is filled in, each new rule adds its citation.
 |---|---|
 | §3 multiplicity lattice | 3.8:1–3, 3.8:14/16/18/20, 3.8:30/32/37, 3.8:57/58, 3.8:74 |
 | §4.2 definition of *use* | 3.8:5, 3.8:7, 3.8:9, 3.8:11, 3.8:22, 3.8:33, 3.8:53 |
+| §4.1/§5.4 equality borrows its operands | 4.3:3f |
 | §4.3 expression/return value | 4.5:3 (→ value, not just type), 6.1:4/5, 4.9:1/7 |
 | §5.2 assignment / reinit | 3.8:55/56, 3.8:72 |
 | §5.3 discard leak check | 3.8:64/65 |
