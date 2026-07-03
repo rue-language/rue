@@ -1,0 +1,71 @@
+# Structural equality across aggregates (RUE-285): `==` / `!=` on structs,
+# arrays, and enums compares field-by-field / element-by-element / same-variant.
+# Runtime-visible via @dbg so the exact result of each comparison is asserted
+# (not just the process exit code). Also guards the old nested-struct bug where
+# only the first slot of a multi-slot field was compared.
+
+[section]
+id = "cli.aggregate_equality"
+name = "Structural equality across aggregates"
+description = "== / != on structs (incl. nested), arrays, and enums is structural (RUE-285)."
+
+[[case]]
+name = "aggregate_equality_structural"
+description = "Each comparison prints 1: struct ==/!=, nested struct-of-struct (deep field), array ==/!=, C-like enum ==/!=."
+files = [{ path = "main.rue", source = """
+struct Point { x: i32, y: i32 }
+struct Line { a: Point, b: Point }
+enum Color { Red, Green, Blue }
+
+fn main() -> i32 {
+    let p1 = Point { x: 1, y: 2 };
+    let p2 = Point { x: 1, y: 2 };
+    let p3 = Point { x: 1, y: 3 };
+    @dbg(if p1 == p2 { 1 } else { 0 });
+    @dbg(if p1 != p3 { 1 } else { 0 });
+
+    // Nested struct: l1 and l3 differ only in b.y, a non-first slot of the
+    // nested `b` field — the old bug compared only slot 0 and missed it.
+    let l1 = Line { a: Point { x: 1, y: 2 }, b: Point { x: 3, y: 4 } };
+    let l2 = Line { a: Point { x: 1, y: 2 }, b: Point { x: 3, y: 4 } };
+    let l3 = Line { a: Point { x: 1, y: 2 }, b: Point { x: 3, y: 5 } };
+    @dbg(if l1 == l2 { 1 } else { 0 });
+    @dbg(if l1 != l3 { 1 } else { 0 });
+
+    let arr1 = [10, 20, 30];
+    let arr2 = [10, 20, 30];
+    let arr3 = [10, 99, 30];
+    @dbg(if arr1 == arr2 { 1 } else { 0 });
+    @dbg(if arr1 != arr3 { 1 } else { 0 });
+
+    @dbg(if Color::Red == Color::Red { 1 } else { 0 });
+    @dbg(if Color::Red != Color::Green { 1 } else { 0 });
+    0
+}
+""" }]
+stdout = "1\n1\n1\n1\n1\n1\n1\n1\n"
+exit_code = 0
+
+[[case]]
+name = "aggregate_equality_borrows_operands"
+description = "== borrows its operands: a struct and an array are still usable after being compared (no move)."
+files = [{ path = "main.rue", source = """
+struct Point { x: i32, y: i32 }
+
+fn main() -> i32 {
+    let p = Point { x: 4, y: 5 };
+    let q = Point { x: 4, y: 5 };
+    let eq = p == q;              // borrows p and q
+    @dbg(if eq { 1 } else { 0 }); // 1
+    @dbg(p.x + q.y);             // 9 — p and q still usable
+
+    let a = [1, 2, 3];
+    let b = [1, 2, 3];
+    let ae = a == b;             // borrows a and b
+    @dbg(if ae { 1 } else { 0 }); // 1
+    @dbg(a[0] + b[2]);           // 4 — a and b still usable
+    0
+}
+""" }]
+stdout = "1\n9\n1\n4\n"
+exit_code = 0

@@ -14,7 +14,8 @@ Comparison operators compare two values and produce a `bool` result.
 
 {{ rule(id="4.3:2", cat="normative") }}
 
-Equality operators work on integers, booleans, strings, the unit type, and struct types.
+Equality operators work on integers, booleans, strings, the unit type, and the
+aggregate types: structs, arrays, and enums.
 
 | Operator | Name | Description |
 |----------|------|-------------|
@@ -31,7 +32,46 @@ Two unit values are always equal.
 
 {{ rule(id="4.3:3b", cat="normative") }}
 
-Two struct values are equal if and only if they have the same struct type and all corresponding fields are equal.
+Equality on the aggregate types is **structural**: two aggregate values are
+equal if and only if they have the same type and their components — determined
+recursively by this rule down to scalar leaves — are equal. Specifically, two
+struct values are equal if and only if they have the same struct type and all
+corresponding fields are equal.
+
+{{ rule(id="4.3:3c", cat="normative") }}
+
+Two array values are equal if and only if they have the same element type and
+length and their elements are equal index-by-index. (Two array types of
+different lengths are distinct types and cannot be compared; see rule 4.3:10.)
+
+{{ rule(id="4.3:3d", cat="normative") }}
+
+Two enum values are equal if and only if they have the same enum type, are the
+same variant, and — for a variant carrying a payload — their payload fields are
+equal field-by-field. Two values of different variants are never equal.
+
+{{ rule(id="4.3:3e", cat="normative") }}
+
+A raw-pointer leaf (a `*const T` or `*mut T` field or element reached while
+comparing an aggregate) compares by **address**: two raw pointers are equal if
+and only if they hold the same address. The pointees are not examined.
+
+{{ rule(id="4.3:3f", cat="dynamic-semantics") }}
+
+Equality **borrows** its operands: evaluating `a == b` or `a != b` reads both
+operands without consuming them. An affine or linear value may therefore be
+compared without discharging its move obligation, and both operands remain
+usable afterward.
+
+{{ rule(id="4.3:3g", cat="informative") }}
+
+Equality is structural **by default**. Trait-based refinement of equality —
+opting a type out of comparison, or giving it a user-defined equality (a
+`PartialEq`-style mechanism) — is deferred until traits exist (RUE-246). A
+related future consideration, once floating-point types exist, is the
+partial-equality of `NaN` (where `NaN != NaN`), which motivates the eventual
+`PartialEq`/`Eq` split; today no leaf type has such a value, so structural
+equality is a total equivalence.
 
 {{ rule(id="4.3:4") }}
 
@@ -59,6 +99,20 @@ fn main() -> i32 {
 }
 ```
 
+{{ rule(id="4.3:4b", cat="example") }}
+
+Arrays compare element-by-element; nested aggregates recurse. Comparing does
+not consume the operands, so `a` and `b` remain usable afterward.
+
+```rue
+fn main() -> i32 {
+    let a = [1, 2, 3];
+    let b = [1, 2, 3];
+    let equal = a == b;      // borrows a and b
+    if equal && a[0] == b[0] { 1 } else { 0 }
+}
+```
+
 ## Ordering Operators
 
 {{ rule(id="4.3:5", cat="normative") }}
@@ -74,7 +128,9 @@ Ordering operators work only on integers.
 
 {{ rule(id="4.3:6", cat="legality-rule") }}
 
-Ordering operators on boolean, string, unit, or struct values are a compile-time error. Implementations **MUST** reject such programs.
+Ordering operators on boolean, string, unit, or aggregate (struct, array, or
+enum) values are a compile-time error. Implementations **MUST** reject such
+programs.
 
 {{ rule(id="4.3:7") }}
 

@@ -379,28 +379,9 @@ fn check_spec_case(ident: &str, case: &rue_test_runner::Case, report: &mut Repor
 ///
 /// Entry: `(section-identifier, case-name, tracking-issue)`.
 const KNOWN_ORACLE_GAPS: &[(&str, &str, &str)] = &[
-    // RUE-285: aggregate ==/!= compares every struct/array as equal because
-    // `Value::as_int()` yields 0 for aggregates, instead of a field-wise compare.
-    (
-        "expressions/comparison",
-        "struct_equality_different_values",
-        "RUE-285",
-    ),
-    (
-        "expressions/comparison",
-        "struct_equality_inequality",
-        "RUE-285",
-    ),
-    (
-        "expressions/comparison",
-        "struct_equality_many_fields",
-        "RUE-285",
-    ),
-    (
-        "expressions/comparison",
-        "struct_with_bool_field_equality",
-        "RUE-285",
-    ),
+    // (empty) — RUE-285 fixed: the oracle now models structural ==/!= over
+    // structs, arrays, and payload enums, so the former aggregate-equality gaps
+    // run as normal three-way-agreement checks again.
 ];
 
 fn check_case(path: &Path, case: &Case, report: &mut Report) {

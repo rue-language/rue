@@ -104,6 +104,88 @@ pub fn type_slot_count(type_pool: &TypeInternPool, ty: Type) -> u32 {
     }
 }
 
+/// Whether comparing a slot holding `ty` needs a full 64-bit compare.
+///
+/// Narrow scalars (i8..i32, bool) live in 32-bit-comparable slots; 64-bit
+/// integers and raw pointers must be compared at full width so two pointers or
+/// i64s that differ only in their high 32 bits are not judged equal. Raw
+/// pointers compare by ADDRESS (identity), which a 64-bit compare of the
+/// pointer value gives directly.
+pub fn slot_needs_wide_compare(ty: Type) -> bool {
+    matches!(
+        ty.kind(),
+        TypeKind::I64 | TypeKind::U64 | TypeKind::PtrConst(_) | TypeKind::PtrMut(_)
+    )
+}
+
+/// Flatten an aggregate type into the list of leaf types, one entry per storage
+/// slot, in slot order. The length equals [`type_slot_count`].
+///
+/// This drives structural equality (RUE-285): a struct/array/payload-enum `==`
+/// compares every slot pairwise, and each slot's leaf type selects the compare
+/// width via [`slot_needs_wide_compare`].
+///
+/// Layout mirrors [`type_slot_count`]:
+/// - **struct**: fields in declaration order, each recursively flattened
+/// - **array**: the element leaf types repeated `length` times
+/// - **payload enum**: slot 0 is the discriminant (a narrow tag), followed by
+///   the payload area sized to the widest variant. For each payload slot we
+///   pick a representative leaf type that is wide if *any* variant places a
+///   wide leaf there, so a mixed `i64`/`i32` payload slot is compared at 64
+///   bits (narrow values are zero-extended in their slot, so a wide compare of
+///   a narrow value is still correct). Padding slots beyond every variant's
+///   payload are zero and compare as narrow.
+/// - **unit / never**: zero slots (no entries)
+pub fn aggregate_leaf_types(type_pool: &TypeInternPool, ty: Type) -> Vec<Type> {
+    let mut out = Vec::new();
+    push_leaf_types(type_pool, ty, &mut out);
+    out
+}
+
+fn push_leaf_types(type_pool: &TypeInternPool, ty: Type, out: &mut Vec<Type>) {
+    match ty.kind() {
+        TypeKind::Unit | TypeKind::Never => {}
+        TypeKind::Struct(struct_id) => {
+            let struct_def = type_pool.struct_def(struct_id);
+            for field in &struct_def.fields {
+                push_leaf_types(type_pool, field.ty, out);
+            }
+        }
+        TypeKind::Array(array_id) => {
+            let (element_type, length) = type_pool.array_def(array_id);
+            for _ in 0..length {
+                push_leaf_types(type_pool, element_type, out);
+            }
+        }
+        TypeKind::Enum(enum_id) => {
+            // Slot 0: the discriminant. Variant indices are small, and both the
+            // tag and any padding are materialized as clean (zero-extended)
+            // values, so a narrow compare of the tag is correct.
+            out.push(Type::I32);
+            // Payload area sized to the widest variant. For each slot position,
+            // prefer a wide leaf type if any variant carries one there.
+            let enum_def = type_pool.enum_def(enum_id);
+            let mut per_slot: Vec<Type> = Vec::new();
+            for v in 0..enum_def.variant_count() {
+                let mut variant_leaves: Vec<Type> = Vec::new();
+                for &pty in enum_def.variant_payload(v) {
+                    push_leaf_types(type_pool, pty, &mut variant_leaves);
+                }
+                for (i, leaf) in variant_leaves.into_iter().enumerate() {
+                    if i >= per_slot.len() {
+                        per_slot.push(leaf);
+                    } else if slot_needs_wide_compare(leaf) && !slot_needs_wide_compare(per_slot[i])
+                    {
+                        per_slot[i] = leaf;
+                    }
+                }
+            }
+            out.extend(per_slot);
+        }
+        _ => out.push(ty),
+    }
+}
+
 /// Slot offset of payload field `field_index` within an enum's payload area.
 ///
 /// The discriminant occupies slot 0, so payload fields begin at slot 1. This

@@ -80,8 +80,10 @@ enum Value {
     Bool(bool),
     Unit,
     /// A struct or array value: its fields (declaration order) or elements
-    /// (ascending index). Enums are payload-less today, so an enum value is an
-    /// `Int` discriminant, not an aggregate.
+    /// (ascending index). A payload-carrying enum variant is also an
+    /// `Aggregate`: element 0 is the discriminant (`Int` tag), followed by the
+    /// variant's payload fields in declaration order (RUE-285). A
+    /// discriminant-only enum (or C-like enum) stays a bare `Int` tag.
     Aggregate(Vec<Value>),
     /// A `String`, modeled by its content only; the heap layout (ptr, len, cap)
     /// and capacity are implementation details the oracle abstracts over
@@ -269,7 +271,13 @@ impl<'a> Interp<'a> {
                     cases_len,
                     default,
                 } => {
-                    let s = self.eval(cfg, &mut frame, scrutinee)?.as_int();
+                    // The scrutinee is an integer, a discriminant-only enum
+                    // (`Int` tag), or a payload-carrying enum (`Aggregate` whose
+                    // element 0 is the tag, RUE-285). Switch on the discriminant.
+                    let s = match self.eval(cfg, &mut frame, scrutinee)? {
+                        Value::Aggregate(elems) => elems.first().map(Value::as_int).unwrap_or(0),
+                        other => other.as_int(),
+                    };
                     let cases = cfg.get_switch_cases(cases_start, cases_len);
                     // Case values are stored as i64 bit patterns; compare by the
                     // 64-bit pattern so unsigned extremes (u64::MAX -> -1 as i64)
@@ -518,19 +526,43 @@ impl<'a> Interp<'a> {
                 Self::set_agg_elem(frame, *slot, idx as usize, val)?;
                 Value::Unit
             }
-            CfgInstData::EnumVariant { variant_index, .. } => Value::Int(*variant_index as i128),
-
-            // Enum payloads (RUE-221) are a preview feature the oracle does not
-            // model yet — it represents an enum by its discriminant only. Return
-            // Unsupported (a clean skip) rather than a guessed value, so payload-
-            // bearing programs drop out of the differential path instead of
-            // reporting a false disagreement. (Proper modeling: RUE-221 oracle
-            // follow-up.)
-            CfgInstData::EnumPayloadGet { .. } => {
-                return Err(Flow::Unsupported(Unsupported(
-                    "enum payload get (RUE-221 preview)".into(),
-                )));
+            // A discriminant-only variant is its tag (an `Int`); a payload-
+            // carrying variant is an `Aggregate` whose element 0 is the tag and
+            // the rest are the payload fields, in declaration order (RUE-285).
+            // This lets structural `==` distinguish `Circle(5)` from `Circle(6)`
+            // and from `Square(5)`, and lets `EnumPayloadGet` project a field.
+            CfgInstData::EnumVariant {
+                variant_index,
+                payload_start,
+                payload_len,
+                ..
+            } => {
+                if *payload_len == 0 {
+                    Value::Int(*variant_index as i128)
+                } else {
+                    let payload_refs = cfg.get_extra(*payload_start, *payload_len).to_vec();
+                    let mut elems = Vec::with_capacity(1 + payload_refs.len());
+                    elems.push(Value::Int(*variant_index as i128));
+                    elems.extend(self.eval_all(cfg, frame, &payload_refs)?);
+                    Value::Aggregate(elems)
+                }
             }
+
+            // Read payload field `field_index` of a payload-carrying variant:
+            // element `1 + field_index` of the enum's `Aggregate` (element 0 is
+            // the discriminant). A discriminant-only enum never reaches here.
+            CfgInstData::EnumPayloadGet {
+                base, field_index, ..
+            } => match self.eval(cfg, frame, *base)? {
+                Value::Aggregate(mut elems) if (*field_index as usize) + 1 < elems.len() => {
+                    elems.swap_remove(*field_index as usize + 1)
+                }
+                _ => {
+                    return Err(Flow::Unsupported(Unsupported(
+                        "enum payload get on non-payload value".into(),
+                    )));
+                }
+            },
 
             // Writes to an `inout` parameter inside the callee (visible to the
             // caller via copy-out).
@@ -712,9 +744,23 @@ impl<'a> Interp<'a> {
     ) -> Step<Value> {
         let x = self.eval(cfg, frame, a)?;
         let y = self.eval(cfg, frame, b)?;
-        // Strings compare by content (String ==/!=); everything else by value.
+        // Strings compare by content (String ==/!=). Aggregates (structs,
+        // arrays, payload enums) compare STRUCTURALLY, field-by-field /
+        // element-by-element / same-variant-and-equal-payload, via `Value`'s
+        // derived `PartialEq` which recurses into nested aggregates (RUE-285).
+        // Only `==` / `!=` reach an aggregate here (ordering `< > <= >=` is a
+        // type error on aggregates), so we report `Equal` iff structurally
+        // equal and an arbitrary non-`Equal` ordering otherwise — enough for
+        // `pick` to decide `==`/`!=`. Everything else compares by integer value.
         let ord = match (&x, &y) {
             (Value::Str(sx), Value::Str(sy)) => sx.cmp(sy),
+            (Value::Aggregate(_), _) | (_, Value::Aggregate(_)) => {
+                if x == y {
+                    std::cmp::Ordering::Equal
+                } else {
+                    std::cmp::Ordering::Less
+                }
+            }
             _ => x.as_int().cmp(&y.as_int()),
         };
         Ok(Value::Bool(pick(ord)))

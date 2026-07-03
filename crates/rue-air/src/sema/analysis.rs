@@ -5053,17 +5053,21 @@ impl<'a> Sema<'a> {
 
         // Validate the type is appropriate for this comparison
         if allow_bool {
-            // Equality operators (==, !=) work on integers, booleans, strings, unit, and structs
-            // Note: String is now a struct, so is_struct() covers it
+            // Equality operators (==, !=) are structural over aggregates
+            // (RUE-285): they work on integers, booleans, strings, unit, and
+            // any struct, array, or enum (whose leaves bottom out at these).
+            // Note: String is now a struct, so is_struct() covers it.
             if !lhs_type.is_integer()
                 && lhs_type != Type::BOOL
                 && lhs_type != Type::UNIT
                 && !lhs_type.is_struct()
+                && !lhs_type.is_array()
+                && !lhs_type.is_enum()
                 && !self.is_builtin_string(lhs_type)
             {
                 return Err(CompileError::new(
                     ErrorKind::TypeMismatch {
-                        expected: "integer, bool, string, unit, or struct".to_string(),
+                        expected: "integer, bool, string, unit, struct, array, or enum".to_string(),
                         found: lhs_type.safe_name_with_pool(Some(&self.type_pool)),
                     },
                     self.rir.get(lhs).span,
