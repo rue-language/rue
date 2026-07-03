@@ -40,6 +40,10 @@ This specification does not cover:
 
 A conforming implementation **MUST** implement all normative requirements of this specification.
 
+{{ rule(id="1.3:1a", cat="informative") }}
+
+This specification has a companion **formal core** (`docs/formal/`) that states the ownership and type judgments it covers as precise inference and reduction rules. The prose, the formal core, and a conforming compiler are three views of one language and **MUST agree where they overlap**; a genuine disagreement is a defect in the specification, reconciled by fixing whichever of the three is wrong — no artifact wins by precedence. The formal core is the more precise statement of the judgments within its scope and may *sharpen* imprecise prose (which is not a disagreement); where the formal core is **silent**, the prose governs.
+
 {{ rule(id="1.3:2") }}
 
 Paragraphs marked with rule categories are normative unless explicitly marked as informative. The following categories are used:
