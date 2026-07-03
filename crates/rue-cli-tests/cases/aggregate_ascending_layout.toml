@@ -1,0 +1,120 @@
+# Ascending aggregate layout end-to-end (RUE-311 / ADR-0040).
+#
+# Every aggregate (struct/array/String) is laid out ascending-in-address:
+# field 0 / element 0 at the LOWEST address, slot k at base + k*8. `@raw`
+# returns the low end and `@ptr_read`/`@ptr_write`/`@ptr_offset` walk slots
+# UPWARD from it, so a raw pointer behaves identically whether it points into a
+# stack local or an `@alloc`'d heap block. Before the fix, multi-slot aggregates
+# were written descending through a raw pointer (slot i at ptr - i*8), which on
+# the ascending heap underflowed into the PRECEDING allocation — silent memory
+# corruption with zero test coverage. These cases pin the fixed behavior via
+# exact stdout (drops printed for ordering), not just exit codes.
+
+[section]
+id = "cli.aggregate_ascending_layout"
+name = "Ascending aggregate layout: heap round-trip, non-clobber, array-of-struct, ABI"
+description = "Multi-slot aggregates round-trip through raw pointers and the call ABI with no adjacent-allocation corruption (RUE-311)."
+
+# --- Multi-slot heap round-trip + adjacent-allocation non-clobber -----------
+# A 999-filled guard block is allocated BEFORE the pair buffer. Writing two
+# adjacent 2-slot Pairs must stay within their own block and leave the guard
+# intact (the descending-offset bug wrote the second slot at ptr-8, corrupting
+# the guard).
+[[case]]
+name = "heap_multislot_roundtrip_no_clobber"
+files = [{ path = "main.rue", source = """
+struct Pair { a: i32, b: i32 }
+fn main() -> i32 {
+    checked {
+        let guard: ptr mut Pair = @alloc(1);
+        @ptr_write(guard, Pair { a: 999, b: 999 });
+        let p: ptr mut Pair = @alloc(2);
+        @ptr_write(p, Pair { a: 11, b: 22 });
+        let q: ptr mut Pair = @ptr_offset(p, 1);
+        @ptr_write(q, Pair { a: 33, b: 44 });
+        let v0 = @ptr_read(p);
+        @dbg(v0.a); @dbg(v0.b);
+        let v1 = @ptr_read(q);
+        @dbg(v1.a); @dbg(v1.b);
+        let g = @ptr_read(guard);
+        @dbg(g.a); @dbg(g.b);
+        @free(p, 2);
+        @free(guard, 1);
+    };
+    0
+}
+""" }]
+stdout = "11\n22\n33\n44\n999\n999\n"
+
+# --- @raw of a stack struct + @ptr round-trip (low-end ascending) -----------
+[[case]]
+name = "stack_raw_ptr_roundtrip"
+files = [{ path = "main.rue", source = """
+struct P { x: i32, y: i32, z: i32 }
+fn main() -> i32 {
+    let mut v: P = P { x: 5, y: 7, z: 9 };
+    checked {
+        let p: ptr mut P = @raw_mut(v);
+        let r = @ptr_read(p);
+        @dbg(r.x); @dbg(r.y); @dbg(r.z);
+        @ptr_write(p, P { x: 40, y: 50, z: 60 });
+    };
+    @dbg(v.x); @dbg(v.y); @dbg(v.z);
+    0
+}
+""" }]
+stdout = "5\n7\n9\n40\n50\n60\n"
+
+# --- Array-of-struct: whole-element and field write/read --------------------
+[[case]]
+name = "array_of_struct_read_write"
+files = [{ path = "main.rue", source = """
+struct P { a: i32, b: i32 }
+fn main() -> i32 {
+    let mut arr: [P; 3] = [P{a:1,b:2}, P{a:3,b:4}, P{a:5,b:6}];
+    arr[1] = P { a: 30, b: 40 };
+    arr[2].a = 50;
+    @dbg(arr[0].a); @dbg(arr[0].b);
+    @dbg(arr[1].a); @dbg(arr[1].b);
+    @dbg(arr[2].a); @dbg(arr[2].b);
+    0
+}
+""" }]
+stdout = "1\n2\n30\n40\n50\n6\n"
+
+# --- Struct pass-by-value + return across the ABI (register + sret) ---------
+[[case]]
+name = "struct_abi_roundtrip"
+files = [{ path = "main.rue", source = """
+struct P { x: i32, y: i32 }
+struct Big { a: i64, b: i64, c: i64, d: i64, e: i64 }
+fn mkP(a: i32, b: i32) -> P { P { x: a, y: b } }
+fn useP(p: P) -> i32 { p.x * 10 + p.y }
+fn mkBig(x: i64) -> Big { Big { a: x, b: x+1, c: x+2, d: x+3, e: x+4 } }
+fn sumBig(g: Big) -> i64 { g.a + g.b + g.c + g.d + g.e }
+fn main() -> i32 {
+    let p = mkP(6, 8);
+    @dbg(p.x); @dbg(p.y);
+    @dbg(useP(p));
+    let g = mkBig(10);
+    @dbg(g.a); @dbg(g.e);
+    @dbg(sumBig(g));
+    0
+}
+""" }]
+stdout = "6\n8\n68\n10\n14\n60\n"
+
+# --- inout struct: callee mutates every field through the by-ref pointer ----
+[[case]]
+name = "inout_struct_field_writeback"
+files = [{ path = "main.rue", source = """
+struct P { x: i32, y: i32, z: i32 }
+fn setAll(inout p: P) { p.x = 77; p.y = 88; p.z = 99; }
+fn main() -> i32 {
+    let mut p: P = P { x: 1, y: 2, z: 3 };
+    setAll(inout p);
+    @dbg(p.x); @dbg(p.y); @dbg(p.z);
+    0
+}
+""" }]
+stdout = "77\n88\n99\n"

@@ -934,11 +934,17 @@ impl<'a> CfgLower<'a> {
 
                     self.value_map.insert(value, val_vreg);
                 } else {
-                    // Normal parameter: load the value directly from the slot
+                    // Normal parameter: the primary vreg is the value's LOGICAL
+                    // slot 0 (e.g. an enum's discriminant). Ascending layout
+                    // (ADR-0040 / RUE-311): logical slot 0 of a multi-slot param
+                    // is at its region's low end, frame slot `base + count - 1`;
+                    // a scalar (count 1) is at `base` unchanged.
                     let vreg = self.mir.alloc_vreg();
                     self.value_map.insert(value, vreg);
 
-                    let slot = self.ctx.num_locals + *index;
+                    let param_ty = self.ctx.cfg.get_inst(value).ty;
+                    let count = self.ctx.type_slot_count(param_ty).max(1);
+                    let slot = self.ctx.num_locals + *index + count - 1;
                     let offset = self.ctx.local_offset(slot);
                     self.mir.push(X86Inst::MovRM {
                         dst: Operand::Virtual(vreg),
@@ -1735,55 +1741,24 @@ impl<'a> CfgLower<'a> {
                 let load_type = self.ctx.cfg.get_inst(value).ty;
 
                 if self.ctx.is_builtin_string(load_type) {
-                    // Builtin String: load ptr, len, and cap from consecutive slots
-                    // Check this before generic Struct case so builtin String uses this path
-                    let ptr_vreg = self.mir.alloc_vreg();
-                    let len_vreg = self.mir.alloc_vreg();
-                    let cap_vreg = self.mir.alloc_vreg();
-
-                    // Load ptr from slot
-                    let ptr_offset = self.ctx.local_offset(*slot);
-                    self.mir.push(X86Inst::MovRM {
-                        dst: Operand::Virtual(ptr_vreg),
-                        base: Reg::Rbp,
-                        offset: ptr_offset,
-                    });
-
-                    // Load len from slot + 1
-                    let len_offset = self.ctx.local_offset(slot + 1);
-                    self.mir.push(X86Inst::MovRM {
-                        dst: Operand::Virtual(len_vreg),
-                        base: Reg::Rbp,
-                        offset: len_offset,
-                    });
-
-                    // Load cap from slot + 2
-                    let cap_offset = self.ctx.local_offset(slot + 2);
-                    self.mir.push(X86Inst::MovRM {
-                        dst: Operand::Virtual(cap_vreg),
-                        base: Reg::Rbp,
-                        offset: cap_offset,
-                    });
-
+                    // Builtin String fat pointer (ptr, len, cap). Ascending
+                    // layout (ADR-0040 / RUE-311): logical slot 0 (ptr) is at
+                    // the region's low end (highest-numbered slot `slot + 2`),
+                    // slot k at `slot + 2 - k`.
+                    let slot_vregs = crate::agg_slots::load_slots_at_low(self, slot + 2, 3);
+                    let ptr_vreg = slot_vregs[0];
                     // Register String fields (ptr, len, cap)
-                    self.struct_slot_vregs
-                        .insert(value, vec![ptr_vreg, len_vreg, cap_vreg]);
+                    self.struct_slot_vregs.insert(value, slot_vregs);
                     self.value_map.insert(value, ptr_vreg);
                 } else if let TypeKind::Array(_) = load_type.kind() {
-                    // Array: load all element slots (recursively flattened)
+                    // Array: load every logical slot (ascending, ADR-0040 /
+                    // RUE-311): slot 0 at the region's low end.
                     let slot_count = self.ctx.type_slot_count(load_type);
-                    let mut slot_vregs = Vec::with_capacity(slot_count as usize);
-
-                    for i in 0..slot_count {
-                        let elem_vreg = self.mir.alloc_vreg();
-                        let elem_offset = self.ctx.local_offset(slot + i);
-                        self.mir.push(X86Inst::MovRM {
-                            dst: Operand::Virtual(elem_vreg),
-                            base: Reg::Rbp,
-                            offset: elem_offset,
-                        });
-                        slot_vregs.push(elem_vreg);
-                    }
+                    let slot_vregs = if slot_count > 0 {
+                        crate::agg_slots::load_slots_at_low(self, slot + slot_count - 1, slot_count)
+                    } else {
+                        Vec::new()
+                    };
 
                     // Register array element vregs
                     self.struct_slot_vregs.insert(value, slot_vregs.clone());
@@ -1796,22 +1771,16 @@ impl<'a> CfgLower<'a> {
                         self.value_map.insert(value, vreg);
                     }
                 } else if self.ctx.is_multislot_aggregate(load_type) {
-                    // Struct or payload enum (RUE-221): load all slots. For an
-                    // enum, slot 0 is the discriminant, so the primary vreg set
-                    // below is what a `match` switches on.
+                    // Struct or payload enum (RUE-221): load all slots
+                    // ascending (ADR-0040 / RUE-311). For an enum, slot 0 is the
+                    // discriminant, so the primary vreg set below is what a
+                    // `match` switches on.
                     let slot_count = self.ctx.type_slot_count(load_type);
-                    let mut slot_vregs = Vec::with_capacity(slot_count as usize);
-
-                    for i in 0..slot_count {
-                        let field_vreg = self.mir.alloc_vreg();
-                        let field_offset = self.ctx.local_offset(slot + i);
-                        self.mir.push(X86Inst::MovRM {
-                            dst: Operand::Virtual(field_vreg),
-                            base: Reg::Rbp,
-                            offset: field_offset,
-                        });
-                        slot_vregs.push(field_vreg);
-                    }
+                    let slot_vregs = if slot_count > 0 {
+                        crate::agg_slots::load_slots_at_low(self, slot + slot_count - 1, slot_count)
+                    } else {
+                        Vec::new()
+                    };
 
                     // Register struct field vregs
                     self.struct_slot_vregs.insert(value, slot_vregs.clone());
@@ -1934,6 +1903,14 @@ impl<'a> CfgLower<'a> {
                 let result_vreg = self.mir.alloc_vreg();
                 self.value_map.insert(value, result_vreg);
 
+                // By-value aggregate arguments are passed in REVERSED logical
+                // slot order to Rue-compiled callees (ADR-0040 / RUE-311), which
+                // read them back with the ascending frame convention. Runtime
+                // helpers (`__rue_*`, hand-written with the C ABI) instead expect
+                // a builtin aggregate's slots (e.g. a String's ptr/len/cap) in
+                // natural order, so calls to them are NOT reversed.
+                let callee_is_runtime = self.interner.resolve(name).starts_with("__rue_");
+
                 // Does this call return via the sret convention? Builtin
                 // String always does (runtime fns take an out-pointer first
                 // param); other aggregates do when their slots exceed the
@@ -1999,7 +1976,23 @@ impl<'a> CfgLower<'a> {
                         // count), not slot_count, so a multidimensional array dropped
                         // every row after the first. (RUE-118, RUE-79)
                         if let Some(field_vregs) = self.get_or_compute_field_vregs(arg_value) {
-                            flattened_vregs.extend(field_vregs);
+                            // Pass a Rue callee's aggregate slots in REVERSED
+                            // logical order (ADR-0040 / RUE-311). The callee
+                            // prologue spills ABI slot j to frame slot base+j, so
+                            // pushing logical slot k at ABI slot (C-1-k) lands it
+                            // at frame slot base + (C-1-k) — exactly the
+                            // ascending frame layout `store_slots`/
+                            // `load_consecutive` use for locals (logical slot 0
+                            // at the low-address end). Without this, by-value
+                            // aggregate params would sit in descending order
+                            // while every other aggregate is ascending, and field
+                            // reads (which now assume ascending) would transpose
+                            // the fields. Runtime callees keep natural order.
+                            if callee_is_runtime {
+                                flattened_vregs.extend(field_vregs);
+                            } else {
+                                flattened_vregs.extend(field_vregs.into_iter().rev());
+                            }
                         } else {
                             flattened_vregs.push(self.get_vreg(arg_value));
                         }
@@ -2744,9 +2737,14 @@ impl<'a> CfgLower<'a> {
 
                     // Get the local slot for this value
                     let lvalue_inst = self.ctx.cfg.get_inst(lvalue_val);
+                    let lvalue_ty = lvalue_inst.ty;
                     if let CfgInstData::Load { slot } = &lvalue_inst.data {
-                        // Simple case: address of a local variable
-                        let offset = self.ctx.local_offset(*slot);
+                        // Simple case: address of a whole local variable. @raw
+                        // yields the value's LOW end (ADR-0040 / RUE-311): an
+                        // aggregate's low-address end is its highest-numbered
+                        // frame slot, `slot + count - 1`.
+                        let count = self.ctx.type_slot_count(lvalue_ty).max(1);
+                        let offset = self.ctx.local_offset(*slot + count - 1);
                         let result_vreg = self.mir.alloc_vreg();
                         // LEA to compute address: result = rbp + offset
                         self.mir.push(X86Inst::Lea {
@@ -2776,7 +2774,10 @@ impl<'a> CfgLower<'a> {
                             let ptr_vreg = self.ensure_inout_param_ptr(index);
                             self.value_map.insert(value, ptr_vreg);
                         } else {
-                            let slot = self.ctx.num_locals + index;
+                            // Whole by-value param: its low end is the highest
+                            // slot of its frame region (ADR-0040 / RUE-311).
+                            let count = self.ctx.type_slot_count(lvalue_ty).max(1);
+                            let slot = self.ctx.num_locals + index + count - 1;
                             let offset = self.ctx.local_offset(slot);
                             let result_vreg = self.mir.alloc_vreg();
                             self.mir.push(X86Inst::Lea {
@@ -2812,7 +2813,11 @@ impl<'a> CfgLower<'a> {
             } => {
                 let val_vreg = self.get_vreg(*val);
                 let field_slot_offset = self.ctx.struct_field_slot_offset(*struct_id, *field_index);
-                let actual_slot = slot + field_slot_offset;
+                // Ascending layout (ADR-0040 / RUE-311): the field's slot sits
+                // at the struct's low end (`slot + count - 1`) plus the field's
+                // byte offset — i.e. minus the offset in slot number.
+                let struct_count = self.ctx.struct_total_slot_count(*struct_id);
+                let actual_slot = slot + (struct_count - 1) - field_slot_offset;
                 let offset = self.ctx.local_offset(actual_slot);
                 self.mir.push(X86Inst::MovMR {
                     base: Reg::Rbp,
@@ -2834,12 +2839,13 @@ impl<'a> CfgLower<'a> {
 
                 // Check if this is an inout parameter
                 if self.ctx.cfg.is_param_inout(*param_slot) {
-                    // For inout params, store through the pointer
+                    // For inout params, store through the pointer. The pointer is
+                    // the caller place's low end, so the field's ascending byte
+                    // offset is added (ADR-0040 / RUE-311).
                     let ptr_vreg = self.ensure_inout_param_ptr(*param_slot);
-                    // Negative offset because stack grows down
                     self.mir.push(X86Inst::MovMRIndexed {
                         base: ptr_vreg,
-                        offset: -((total_offset as i32) * 8),
+                        offset: (total_offset as i32) * 8,
                         src: Operand::Virtual(val_vreg),
                     });
                 } else {
@@ -3154,17 +3160,40 @@ impl<'a> CfgLower<'a> {
                         return;
                     }
 
-                    // For user-defined structs, call destructor first (if any), then drop glue
+                    // For user-defined structs, call destructor first (if any), then drop glue.
                     if let Some(ref destructor_name) = struct_def.destructor {
-                        // Pass all fields to the user destructor
-                        self.emit_call_with_slot_args(&field_vregs, destructor_name);
+                        // The user destructor takes `self` as ONE by-value
+                        // struct parameter, so its slots are passed in the
+                        // reversed by-value aggregate ABI order (ADR-0040 /
+                        // RUE-311) — see the reversal in the general `Call`
+                        // lowering. (The drop glue below instead takes each
+                        // field as a separate scalar parameter, in declaration
+                        // order, so it is NOT reversed.)
+                        let mut self_vregs = field_vregs.clone();
+                        self_vregs.reverse();
+                        self.emit_call_with_slot_args(&self_vregs, destructor_name);
                     }
 
                     // Now call the drop glue function to drop fields, passing
                     // all fields again (the destructor call clobbered the
-                    // argument registers)
+                    // argument registers). Drop glue receives the flattened
+                    // fields as individual parameters in declaration order, but
+                    // it reconstructs any multi-slot field (a nested struct or
+                    // array) by reading it as one aggregate `Param` — which uses
+                    // the reversed by-value aggregate ABI (ADR-0040 / RUE-311).
+                    // So each such field's own slots are reversed within their
+                    // sub-range here; scalar fields (one slot) are unaffected.
+                    let mut glue_vregs = field_vregs.clone();
+                    let mut off = 0usize;
+                    for field in &struct_def.fields {
+                        let fc = self.ctx.type_slot_count(field.ty) as usize;
+                        if fc > 1 && off + fc <= glue_vregs.len() {
+                            glue_vregs[off..off + fc].reverse();
+                        }
+                        off += fc;
+                    }
                     let drop_fn_name = format!("__rue_drop_{}", struct_def.name);
-                    self.emit_call_with_slot_args(&field_vregs, &drop_fn_name);
+                    self.emit_call_with_slot_args(&glue_vregs, &drop_fn_name);
                     return;
                 }
 
@@ -3174,9 +3203,21 @@ impl<'a> CfgLower<'a> {
                     // slot counts past the argument registers go on the stack
                     // via emit_call_with_slot_args — e.g. [String; 3] is 9
                     // slots, RUE-193)
-                    let element_vregs = self
+                    let mut element_vregs = self
                         .get_or_compute_field_vregs(*dropped_value)
                         .unwrap_or_else(|| self.collect_array_scalar_vregs(*dropped_value));
+
+                    // The array drop glue reconstructs each multi-slot element
+                    // via one aggregate `Param` read, which uses the reversed
+                    // by-value ABI (ADR-0040 / RUE-311). Reverse each element's
+                    // own slots within its sub-range so that read recovers
+                    // logical order; single-slot elements are unaffected.
+                    let elem_slots = self.ctx.array_element_slot_count(dropped_ty) as usize;
+                    if elem_slots > 1 {
+                        for chunk in element_vregs.chunks_mut(elem_slots) {
+                            chunk.reverse();
+                        }
+                    }
 
                     let drop_fn_name = types::array_drop_glue_name(array_id, self.ctx.type_pool);
                     self.emit_call_with_slot_args(&element_vregs, &drop_fn_name);
@@ -4114,11 +4155,11 @@ impl<'a> CfgLower<'a> {
                     self.emit_bounds_check(index_vreg, array_length);
 
                     let elem_slot_count = self.ctx.array_element_slot_count(*array_type);
-                    // Ascending array layout (ADR-0040 / RUE-243): shift the
-                    // origin to the array's lowest-address element so the ADDed
-                    // scaled index below resolves element i to base + i*size.
-                    let array_len = self.ctx.array_length(*array_type);
-                    static_slot_offset += (array_len.max(1) - 1) as u32 * elem_slot_count;
+                    // Ascending layout (ADR-0040 / RUE-311): the element's byte
+                    // offset from the array's low-end origin is `index*size`,
+                    // added below. The single root-object origin shift (applied
+                    // when forming the base address) already places us at the
+                    // low end, so no per-array `(N-1)` shift is needed.
                     index_levels.push(IndexLevel {
                         index: *index,
                         elem_slot_count,
@@ -4127,6 +4168,12 @@ impl<'a> CfgLower<'a> {
                 }
             }
         }
+
+        // Origin shift to the ROOT object's low end (ADR-0040 / RUE-311): a
+        // frame-resident aggregate's low-address end is its highest-numbered
+        // slot, `root_base + root_count - 1`. Field offsets then move UP in
+        // address (toward higher addresses = lower slot numbers).
+        let root_count = crate::agg_slots::root_slot_count(self, projections, 1);
 
         // Calculate dynamic offset from index projections
         let dynamic_offset_vreg = if !index_levels.is_empty() {
@@ -4138,7 +4185,7 @@ impl<'a> CfgLower<'a> {
         // Compute final address based on base type
         match place.base {
             PlaceBase::Local(slot) => {
-                let base_slot = slot + static_slot_offset;
+                let base_slot = slot + (root_count - 1) - static_slot_offset;
                 let base_offset = self.ctx.local_offset(base_slot);
 
                 if let Some(dyn_offset) = dynamic_offset_vreg {
@@ -4171,12 +4218,14 @@ impl<'a> CfgLower<'a> {
             }
             PlaceBase::Param(param_slot) => {
                 if self.ctx.cfg.is_param_inout(param_slot) {
-                    // Inout param - use pointer
+                    // Inout param - use pointer. The received pointer is the
+                    // caller place's low end, so field offsets and the scaled
+                    // index both ADD (ascending, ADR-0040 / RUE-311).
                     let ptr_vreg = self.ensure_inout_param_ptr(param_slot);
                     let static_byte_offset = (static_slot_offset as i32) * 8;
 
                     if let Some(dyn_offset) = dynamic_offset_vreg {
-                        // Compute address: ptr - static_offset + dynamic_offset (ascending, ADR-0040)
+                        // Compute address: ptr + static_offset + dynamic_offset (ascending)
                         let addr_vreg = self.mir.alloc_vreg();
                         self.mir.push(X86Inst::MovRR {
                             dst: Operand::Virtual(addr_vreg),
@@ -4188,7 +4237,7 @@ impl<'a> CfgLower<'a> {
                                 dst: Operand::Virtual(offset_vreg),
                                 imm: static_byte_offset as i64,
                             });
-                            self.mir.push(X86Inst::SubRR64 {
+                            self.mir.push(X86Inst::AddRR64 {
                                 dst: Operand::Virtual(addr_vreg),
                                 src: Operand::Virtual(offset_vreg),
                             });
@@ -4203,16 +4252,17 @@ impl<'a> CfgLower<'a> {
                             offset: 0,
                         });
                     } else {
-                        // Static offset only
+                        // Static offset only (ascending: field at ptr + off)
                         self.mir.push(X86Inst::MovRMIndexed {
                             dst: Operand::Virtual(dst),
                             base: ptr_vreg,
-                            offset: -static_byte_offset,
+                            offset: static_byte_offset,
                         });
                     }
                 } else {
                     // Normal param - treat like local
-                    let base_slot = self.ctx.num_locals + param_slot + static_slot_offset;
+                    let base_slot =
+                        self.ctx.num_locals + param_slot + (root_count - 1) - static_slot_offset;
                     let base_offset = self.ctx.local_offset(base_slot);
 
                     if let Some(dyn_offset) = dynamic_offset_vreg {
@@ -4307,11 +4357,10 @@ impl<'a> CfgLower<'a> {
                     self.emit_bounds_check(index_vreg, array_length);
 
                     let elem_slot_count = self.ctx.array_element_slot_count(*array_type);
-                    // Ascending array layout (ADR-0040 / RUE-243): shift the
-                    // origin to the array's lowest-address element so the ADDed
-                    // scaled index below resolves element i to base + i*size.
-                    let array_len = self.ctx.array_length(*array_type);
-                    static_slot_offset += (array_len.max(1) - 1) as u32 * elem_slot_count;
+                    // Ascending layout (ADR-0040 / RUE-311): the element's byte
+                    // offset from the low-end origin is `index*size`, added
+                    // below; the single root-object origin shift covers the
+                    // array's own origin (no per-array `(N-1)` shift).
                     index_levels.push(IndexLevel {
                         index: *index,
                         elem_slot_count,
@@ -4320,6 +4369,9 @@ impl<'a> CfgLower<'a> {
                 }
             }
         }
+
+        // Origin shift to the ROOT object's low end (ADR-0040 / RUE-311).
+        let root_count = crate::agg_slots::root_slot_count(self, projections, vals.len() as u32);
 
         // Calculate dynamic offset from index projections
         let dynamic_offset_vreg = if !index_levels.is_empty() {
@@ -4331,8 +4383,9 @@ impl<'a> CfgLower<'a> {
         // Compute final address based on base type
         match place.base {
             PlaceBase::Local(slot) => {
-                let base_slot = slot + static_slot_offset;
-                let base_offset = self.ctx.local_offset(base_slot);
+                // The accessed value's low-end (slot-0) frame slot.
+                let base_low_slot = slot + (root_count - 1) - static_slot_offset;
+                let base_offset = self.ctx.local_offset(base_low_slot);
 
                 if let Some(dyn_offset) = dynamic_offset_vreg {
                     let addr_vreg = self.mir.alloc_vreg();
@@ -4349,11 +4402,13 @@ impl<'a> CfgLower<'a> {
                     });
                     crate::agg_slots::store_slots_through_ptr(self, vals, addr_vreg, 0);
                 } else {
-                    crate::agg_slots::store_slots(self, vals, base_slot);
+                    crate::agg_slots::store_slots_at_low(self, vals, base_low_slot);
                 }
             }
             PlaceBase::Param(param_slot) => {
                 if self.ctx.cfg.is_param_inout(param_slot) {
+                    // Received pointer is the caller place's low end; field
+                    // offsets and the scaled index both ADD (ascending).
                     let ptr_vreg = self.ensure_inout_param_ptr(param_slot);
                     let static_byte_offset = (static_slot_offset as i32) * 8;
 
@@ -4369,7 +4424,7 @@ impl<'a> CfgLower<'a> {
                                 dst: Operand::Virtual(offset_vreg),
                                 imm: static_byte_offset as i64,
                             });
-                            self.mir.push(X86Inst::SubRR64 {
+                            self.mir.push(X86Inst::AddRR64 {
                                 dst: Operand::Virtual(addr_vreg),
                                 src: Operand::Virtual(offset_vreg),
                             });
@@ -4388,8 +4443,9 @@ impl<'a> CfgLower<'a> {
                         );
                     }
                 } else {
-                    let base_slot = self.ctx.num_locals + param_slot + static_slot_offset;
-                    let base_offset = self.ctx.local_offset(base_slot);
+                    let base_low_slot =
+                        self.ctx.num_locals + param_slot + (root_count - 1) - static_slot_offset;
+                    let base_offset = self.ctx.local_offset(base_low_slot);
 
                     if let Some(dyn_offset) = dynamic_offset_vreg {
                         let addr_vreg = self.mir.alloc_vreg();
@@ -4404,7 +4460,7 @@ impl<'a> CfgLower<'a> {
                         });
                         crate::agg_slots::store_slots_through_ptr(self, vals, addr_vreg, 0);
                     } else {
-                        crate::agg_slots::store_slots(self, vals, base_slot);
+                        crate::agg_slots::store_slots_at_low(self, vals, base_low_slot);
                     }
                 }
             }
@@ -4492,11 +4548,10 @@ impl<'a> CfgLower<'a> {
                 }
                 Projection::Index { array_type, index } => {
                     let elem_slot_count = self.ctx.array_element_slot_count(*array_type);
-                    // Ascending array layout (ADR-0040 / RUE-243): shift the
-                    // origin to the array's lowest-address element so the ADDed
-                    // scaled index below resolves element i to base + i*size.
-                    let array_len = self.ctx.array_length(*array_type);
-                    static_slot_offset += (array_len.max(1) - 1) as u32 * elem_slot_count;
+                    // Ascending layout (ADR-0040 / RUE-311): the element's byte
+                    // offset from the low-end origin is `index*size`, added
+                    // below; the single root-object origin shift covers the
+                    // array's own origin (no per-array `(N-1)` shift).
                     index_levels.push(IndexLevel {
                         index: *index,
                         elem_slot_count,
@@ -4505,6 +4560,11 @@ impl<'a> CfgLower<'a> {
                 }
             }
         }
+
+        // Origin shift to the ROOT object's low end (ADR-0040 / RUE-311); the
+        // resulting address is the accessed place's LOW end, from which slots
+        // ascend. With no projections the place is a scalar (root_count 1).
+        let root_count = crate::agg_slots::root_slot_count(self, projections, 1);
 
         // Calculate dynamic offset from index projections
         let dynamic_offset_vreg = if !index_levels.is_empty() {
@@ -4516,8 +4576,8 @@ impl<'a> CfgLower<'a> {
         // Compute address based on base type
         match place.base {
             PlaceBase::Local(slot) => {
-                let base_slot = slot + static_slot_offset;
-                let base_offset = self.ctx.local_offset(base_slot);
+                let base_low_slot = slot + (root_count - 1) - static_slot_offset;
+                let base_offset = self.ctx.local_offset(base_low_slot);
 
                 self.mir.push(X86Inst::Lea {
                     dst: Operand::Virtual(dst),
@@ -4534,6 +4594,8 @@ impl<'a> CfgLower<'a> {
             }
             PlaceBase::Param(param_slot) => {
                 if self.ctx.cfg.is_param_inout(param_slot) {
+                    // Received pointer is the caller place's low end; field
+                    // offset and scaled index both ADD (ascending).
                     let ptr_vreg = self.ensure_inout_param_ptr(param_slot);
                     let static_byte_offset = (static_slot_offset as i32) * 8;
 
@@ -4548,7 +4610,7 @@ impl<'a> CfgLower<'a> {
                             dst: Operand::Virtual(offset_vreg),
                             imm: static_byte_offset as i64,
                         });
-                        self.mir.push(X86Inst::SubRR64 {
+                        self.mir.push(X86Inst::AddRR64 {
                             dst: Operand::Virtual(dst),
                             src: Operand::Virtual(offset_vreg),
                         });
@@ -4561,8 +4623,9 @@ impl<'a> CfgLower<'a> {
                         });
                     }
                 } else {
-                    let base_slot = self.ctx.num_locals + param_slot + static_slot_offset;
-                    let base_offset = self.ctx.local_offset(base_slot);
+                    let base_low_slot =
+                        self.ctx.num_locals + param_slot + (root_count - 1) - static_slot_offset;
+                    let base_offset = self.ctx.local_offset(base_low_slot);
 
                     self.mir.push(X86Inst::Lea {
                         dst: Operand::Virtual(dst),

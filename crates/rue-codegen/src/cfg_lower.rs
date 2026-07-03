@@ -464,6 +464,13 @@ impl<'a> CfgLowerContext<'a> {
         types::struct_field_slot_offset(self.type_pool, struct_id, field_index)
     }
 
+    /// Total slot count of a struct (sum of its fields' slot counts). Used as
+    /// the root-object origin shift for ascending place addressing
+    /// (ADR-0040 / RUE-311).
+    pub fn struct_total_slot_count(&self, struct_id: StructId) -> u32 {
+        types::struct_slot_count(self.type_pool, struct_id)
+    }
+
     // ========================================================================
     // Builtin type helpers
     // ========================================================================

@@ -16,9 +16,9 @@
 //! projected-place address formation that now live on [`SlotBackend`]
 //! (the indexed-place-read materialization in `agg_slots` needs them too,
 //! RUE-188). `emit_place_addr` is the same math the backend's
-//! `PlaceRead`/`PlaceWrite` lowering uses: frame base + static field-slot
-//! offsets, minus dynamic index offsets; through a by-ref pointer the
-//! offsets descend per the ABI convention — caller slots grow downward.
+//! `PlaceRead`/`PlaceWrite` lowering uses: it yields the place's LOW-end
+//! address, from which aggregate slots ascend (`slot k` at `+k*8`), uniform
+//! for frame- and heap-rooted places (ADR-0040 / RUE-311).
 
 use rue_cfg::{CfgInstData, CfgValue, Place, Projection};
 use rue_error::{CompileError, ErrorKind};
@@ -71,6 +71,11 @@ pub fn lower_byref_arg_addr<B: ByrefAddrBackend + ?Sized>(
     // The argument span, captured (Copy) before the match so the borrow of the
     // CFG ends and a diagnostic can carry a source location.
     let arg_span = b.ctx().cfg.get_inst(arg_value).span;
+    // Slot count of the addressed value: a by-ref pointer must point at the
+    // place's LOW end (ADR-0040 / RUE-311), which for a frame-resident
+    // aggregate is its highest-numbered slot `base + count - 1`.
+    let arg_ty = b.ctx().cfg.get_inst(arg_value).ty;
+    let low_shift = b.ctx().type_slot_count(arg_ty).saturating_sub(1);
     let shape = match &b.ctx().cfg.get_inst(arg_value).data {
         CfgInstData::Load { slot } => ArgShape::Local(*slot),
         CfgInstData::Param { index } => ArgShape::Param(*index),
@@ -92,7 +97,7 @@ pub fn lower_byref_arg_addr<B: ByrefAddrBackend + ?Sized>(
         }
         ArgShape::Local(slot) => {
             let addr_vreg = b.alloc_vreg();
-            b.emit_frame_addr(addr_vreg, slot);
+            b.emit_frame_addr(addr_vreg, slot + low_shift);
             addr_vreg
         }
         ArgShape::Param(index) => {
@@ -106,7 +111,7 @@ pub fn lower_byref_arg_addr<B: ByrefAddrBackend + ?Sized>(
             } else {
                 // Normal param: it lives in a frame slot after the locals.
                 let slot = b.ctx().num_locals + index;
-                b.emit_frame_addr(addr_vreg, slot);
+                b.emit_frame_addr(addr_vreg, slot + low_shift);
             }
             addr_vreg
         }

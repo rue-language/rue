@@ -358,15 +358,14 @@ fn create_array_drop_glue_function(
     // For each element, emit a Drop instruction, in ASCENDING index order
     // (element 0 dropped first — the language-visible order the oracle checks).
     //
-    // Array elements are laid out ascending in memory but stored REVERSED in the
-    // flattened slot list (ADR-0040 / RUE-243): frame slots descend in address,
-    // so element 0 occupies the LAST element-chunk of the received parameter
-    // slots and element N-1 the first. Iterate physical chunks back-to-front so
-    // the drops fire in ascending logical-index order. Each chunk's own slots
-    // stay in natural order (structs keep field order; nested arrays are
-    // reversed again by their own glue via this same recursion).
+    // The flattened parameter slots are in LOGICAL order (ADR-0040 / RUE-311):
+    // element 0 occupies the first element-chunk, element N-1 the last. So
+    // iterate chunks front-to-back to drop in ascending index order. Each chunk
+    // is read back as one aggregate `Param`, which the codegen `Drop` lowering
+    // hands over in the reversed by-value ABI order, so the drop caller reverses
+    // each element's own slots to compensate (see the array `Drop` handler).
     // Type::Struct handles both user-defined structs and builtin String.
-    for phys_chunk in (0..length).rev() {
+    for phys_chunk in 0..length {
         let current_param_slot = phys_chunk as u32 * element_slot_count;
 
         // Emit Drop for this element
