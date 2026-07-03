@@ -1,25 +1,32 @@
 name: Website
 
 on:
+  # Deploy (post-merge on trunk) only on real website changes. The spec is
+  # published from docs/spec, but re-deploying on every spec commit rolls the
+  # dice against the flaky GitHub Pages backend far too often; spec, benchmark,
+  # and status-board changes are picked up by the weekly schedule (or a manual
+  # run) instead.
   push:
     branches: [trunk]
     paths:
       - 'website/**'
-      - 'docs/spec/**'
       - 'scripts/generate-charts.py'
+      - 'scripts/generate-site-status.py'
       - '.github/workflows/deploy-website.yml'
+  # PRs still build (no deploy — that's trunk-only) on spec changes too, so a
+  # spec edit that breaks the website build is caught before merge.
   pull_request:
     branches: [trunk]
     paths:
       - 'website/**'
       - 'docs/spec/**'
       - 'scripts/generate-charts.py'
+      - 'scripts/generate-site-status.py'
       - '.github/workflows/deploy-website.yml'
-  # Trigger when benchmarks complete (updates perf branch with new data)
-  workflow_run:
-    workflows: ["Benchmarks"]
-    types: [completed]
-    branches: [trunk]
+  # Weekly refresh so the published spec, benchmark sparkline, and status board
+  # don't drift more than ~7 days behind trunk. Switch to '0 6 1 * *' for monthly.
+  schedule:
+    - cron: '0 6 * * 1'
   workflow_dispatch:
 
 permissions:
