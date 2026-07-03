@@ -407,6 +407,16 @@ pub extern "C" fn __rue_String_with_capacity(out: *mut StringResult, requested_c
         requested_cap
     };
     let ptr = heap::alloc(actual_cap, 1);
+    // On allocation failure `heap::alloc` returns null. Store cap=0 (not the
+    // requested capacity) so a later `push` sees "no room", grows fresh from
+    // the null buffer (or traps cleanly), rather than believing it may write
+    // `actual_cap` bytes through a null pointer (RUE-255). Mirrors the null
+    // handling in `__rue_String_clone` and `string_ensure_capacity`.
+    let (ptr, actual_cap) = if ptr.is_null() {
+        (core::ptr::null_mut(), 0)
+    } else {
+        (ptr, actual_cap)
+    };
     unsafe {
         (*out).ptr = ptr;
         (*out).len = 0;
@@ -424,6 +434,16 @@ pub extern "C" fn __rue_String_with_capacity(out: *mut StringResult, requested_c
         requested_cap
     };
     let ptr = heap::alloc(actual_cap, 1);
+    // On allocation failure `heap::alloc` returns null. Store cap=0 (not the
+    // requested capacity) so a later `push` sees "no room", grows fresh from
+    // the null buffer (or traps cleanly), rather than believing it may write
+    // `actual_cap` bytes through a null pointer (RUE-255). Mirrors the null
+    // handling in `__rue_String_clone` and `string_ensure_capacity`.
+    let (ptr, actual_cap) = if ptr.is_null() {
+        (core::ptr::null_mut(), 0)
+    } else {
+        (ptr, actual_cap)
+    };
     unsafe {
         (*out).ptr = ptr;
         (*out).len = 0;
@@ -441,6 +461,16 @@ pub extern "C" fn __rue_String_with_capacity(out: *mut StringResult, requested_c
         requested_cap
     };
     let ptr = heap::alloc(actual_cap, 1);
+    // On allocation failure `heap::alloc` returns null. Store cap=0 (not the
+    // requested capacity) so a later `push` sees "no room", grows fresh from
+    // the null buffer (or traps cleanly), rather than believing it may write
+    // `actual_cap` bytes through a null pointer (RUE-255). Mirrors the null
+    // handling in `__rue_String_clone` and `string_ensure_capacity`.
+    let (ptr, actual_cap) = if ptr.is_null() {
+        (core::ptr::null_mut(), 0)
+    } else {
+        (ptr, actual_cap)
+    };
     unsafe {
         (*out).ptr = ptr;
         (*out).len = 0;
