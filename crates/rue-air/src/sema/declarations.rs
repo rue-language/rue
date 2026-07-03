@@ -1640,6 +1640,14 @@ impl<'a> Sema<'a> {
         // before type inference so referenced constants' types are known.)
         self.ensure_const_init_deps_collected(init, file_id, st)?;
 
+        // Pre-resolve module-member accesses (`m.CONST`) appearing as
+        // operands. The engine can't resolve them itself (no file/collector
+        // context), so it reads their values from this map keyed by the
+        // `FieldGet` instruction (RUE-267). Runs before type inference so the
+        // members' constants are collected for `infer_const_init_types`.
+        let mut const_module_members: HashMap<InstRef, ConstValue> = HashMap::new();
+        self.collect_const_module_members(init, file_id, st, &mut const_module_members)?;
+
         // Infer operand types for the initializer expression so the engine
         // checks arithmetic at the operand type instead of the raw-i64
         // fallback (RUE-230). Reports E0206 on a mismatched-operand-type
@@ -1647,7 +1655,10 @@ impl<'a> Sema<'a> {
         let mut resolved_types: HashMap<InstRef, Type> = HashMap::new();
         self.infer_const_init_types(init, declared_ty, &mut resolved_types)?;
 
-        let mut env = super::comptime_eval::ComptimeEnv::for_const_init(&resolved_types);
+        let mut env = super::comptime_eval::ComptimeEnv::for_const_init(
+            &resolved_types,
+            &const_module_members,
+        );
         match self.eval_const_expr(init, &mut env)? {
             // Type values (e.g. `const T = i32;`) are not supported as
             // constants: nothing can materialize them at a use site yet.
@@ -1701,6 +1712,17 @@ impl<'a> Sema<'a> {
             InstData::VarRef { name } => self
                 .constants
                 .get(name)
+                .map(|info| info.ty)
+                .filter(|t| t.is_integer()),
+
+            // A module-member access (`m.CONST`) carries the member constant's
+            // declared type, so arithmetic against it is checked at that width
+            // (RUE-267). The member name is globally unique in the flat
+            // namespace, so the global constants table resolves it, matching
+            // the plain-`VarRef` arm above.
+            InstData::FieldGet { field, .. } => self
+                .constants
+                .get(field)
                 .map(|info| info.ty)
                 .filter(|t| t.is_integer()),
 
@@ -1900,6 +1922,100 @@ impl<'a> Sema<'a> {
             InstData::Alloc { init, .. } => {
                 let init = *init;
                 self.ensure_const_init_deps_collected(init, file_id, st)
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Walk a constant initializer and resolve every module-member access
+    /// (`m.CONST`) appearing in it to its compile-time value, keyed by the
+    /// `FieldGet` instruction. The comptime engine has no file or
+    /// constant-collector context, so it can only evaluate a module member as
+    /// a whole initializer (via [`Self::eval_const_initializer`]'s `FieldGet`
+    /// arm); this pre-pass lets one appear as an operand of a larger
+    /// expression too — `const A: i32 = 1 + m.ANSWER;` (RUE-267).
+    ///
+    /// Only a member whose base resolves to a module and whose value is a
+    /// scalar constant is recorded. A non-module base is left untouched (the
+    /// engine reports it), while a privacy violation propagates as its usual
+    /// error (E0706). The tree walk mirrors [`Self::ensure_const_init_deps_collected`].
+    fn collect_const_module_members(
+        &mut self,
+        expr: InstRef,
+        file_id: FileId,
+        st: &mut ConstCollector,
+        out: &mut HashMap<InstRef, ConstValue>,
+    ) -> CompileResult<()> {
+        match &self.rir.get(expr).data {
+            InstData::FieldGet { base, field } => {
+                let (base, field) = (*base, *field);
+                // Probe the base; only a module base has a member value here.
+                // A non-module base (or an unresolvable one) is left for the
+                // engine to reject, matching the pre-fix behavior.
+                if let Ok(ConstInit::Module(module_ty)) =
+                    self.eval_const_initializer(base, file_id, st, None)
+                {
+                    let module_id = module_ty
+                        .as_module()
+                        .expect("ConstInit::Module holds a module type");
+                    let span = self.rir.get(expr).span;
+                    // Privacy errors (E0706) propagate; a re-export member
+                    // yields a module, not a value, so it stays unrecorded.
+                    if let ConstInit::Value(value) =
+                        self.resolve_module_member_const(module_id, field, file_id, span, st)?
+                    {
+                        out.insert(expr, value);
+                    }
+                }
+                Ok(())
+            }
+            InstData::Neg { operand }
+            | InstData::Not { operand }
+            | InstData::BitNot { operand } => {
+                let operand = *operand;
+                self.collect_const_module_members(operand, file_id, st, out)
+            }
+            InstData::Add { lhs, rhs }
+            | InstData::Sub { lhs, rhs }
+            | InstData::Mul { lhs, rhs }
+            | InstData::Div { lhs, rhs }
+            | InstData::Mod { lhs, rhs }
+            | InstData::Eq { lhs, rhs }
+            | InstData::Ne { lhs, rhs }
+            | InstData::Lt { lhs, rhs }
+            | InstData::Gt { lhs, rhs }
+            | InstData::Le { lhs, rhs }
+            | InstData::Ge { lhs, rhs }
+            | InstData::And { lhs, rhs }
+            | InstData::Or { lhs, rhs }
+            | InstData::BitAnd { lhs, rhs }
+            | InstData::BitOr { lhs, rhs }
+            | InstData::BitXor { lhs, rhs }
+            | InstData::Shl { lhs, rhs }
+            | InstData::Shr { lhs, rhs } => {
+                let (lhs, rhs) = (*lhs, *rhs);
+                self.collect_const_module_members(lhs, file_id, st, out)?;
+                self.collect_const_module_members(rhs, file_id, st, out)
+            }
+            InstData::Comptime { expr: inner } => {
+                let inner = *inner;
+                self.collect_const_module_members(inner, file_id, st, out)
+            }
+            InstData::Block { extra_start, len } => {
+                let stmt_refs: Vec<InstRef> = self
+                    .rir
+                    .get_extra(*extra_start, *len)
+                    .iter()
+                    .map(|&raw| InstRef::from_raw(raw))
+                    .collect();
+                for stmt_ref in stmt_refs {
+                    self.collect_const_module_members(stmt_ref, file_id, st, out)?;
+                }
+                Ok(())
+            }
+            InstData::Alloc { init, .. } => {
+                let init = *init;
+                self.collect_const_module_members(init, file_id, st, out)
             }
             _ => Ok(()),
         }

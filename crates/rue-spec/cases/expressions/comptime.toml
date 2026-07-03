@@ -810,6 +810,57 @@ fn main() -> i32 {
 """
 exit_code = 42
 
+# A captured comptime value parameter keeps its DECLARED width, not a
+# hard-coded i32 (RUE-216): reading a captured `comptime N: u8` in a method
+# returning u8 must type as u8. Before the fix the reference was emitted as
+# i32 and the method's u8 return type mismatched (E0206).
+[[case]]
+name = "anon_struct_comptime_param_capture_u8"
+spec = ["4.14:12"]
+description = "Captured comptime value parameter keeps its declared u8 width"
+source = """
+fn FixedBuffer(comptime N: u8) -> type {
+    struct {
+        len: i32,
+
+        fn capacity(self) -> u8 {
+            N
+        }
+    }
+}
+fn main() -> i32 {
+    let B = FixedBuffer(200);
+    let b: B = B { len: 0 };
+    @intCast(b.capacity())
+}
+"""
+exit_code = 200
+
+# The same, for a value wider than i32: a captured `comptime N: i64` keeps
+# i64, so a value above i32::MAX round-trips instead of truncating (RUE-216).
+[[case]]
+name = "anon_struct_comptime_param_capture_i64"
+spec = ["4.14:12"]
+description = "Captured comptime value parameter keeps its declared i64 width"
+source = """
+fn FixedBuffer(comptime N: i64) -> type {
+    struct {
+        len: i32,
+
+        fn capacity(self) -> i64 {
+            N
+        }
+    }
+}
+fn main() -> i32 {
+    let B = FixedBuffer(9000000000);
+    let b: B = B { len: 0 };
+    let c: i64 = b.capacity();
+    @intCast(c / 1000000000)
+}
+"""
+exit_code = 9
+
 [[case]]
 name = "anon_struct_associated_fn"
 spec = ["4.14:13"]

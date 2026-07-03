@@ -63,6 +63,8 @@ use crate::types::{StructField, Type};
 static EMPTY_TYPE_SUBST: LazyLock<HashMap<Spur, Type>> = LazyLock::new(HashMap::new);
 /// Empty value substitution map for evaluation contexts without one.
 static EMPTY_VALUE_SUBST: LazyLock<HashMap<Spur, ConstValue>> = LazyLock::new(HashMap::new);
+/// Empty module-member map for evaluation contexts without one.
+static EMPTY_MODULE_MEMBERS: LazyLock<HashMap<InstRef, ConstValue>> = LazyLock::new(HashMap::new);
 
 /// The environment a compile-time expression is evaluated in.
 pub(crate) struct ComptimeEnv<'a> {
@@ -82,6 +84,13 @@ pub(crate) struct ComptimeEnv<'a> {
     runtime_locals: Option<&'a HashMap<Spur, LocalVar>>,
     /// `let` bindings introduced by blocks inside the comptime expression.
     locals: HashMap<Spur, ConstValue>,
+    /// Values of module-member accesses (`m.CONST`) appearing in this
+    /// expression, pre-resolved from the module's file (with privacy checks)
+    /// before evaluation. The engine has no file/collector context of its own,
+    /// so a `FieldGet` on a module is only evaluable as a sub-expression
+    /// operand (`1 + m.CONST`) by looking its value up here (RUE-267). Keyed by
+    /// the `FieldGet` instruction. Empty outside const-initializer evaluation.
+    const_module_members: &'a HashMap<InstRef, ConstValue>,
 }
 
 impl<'a> ComptimeEnv<'a> {
@@ -93,6 +102,7 @@ impl<'a> ComptimeEnv<'a> {
             resolved_types: None,
             runtime_locals: None,
             locals: HashMap::new(),
+            const_module_members: &EMPTY_MODULE_MEMBERS,
         }
     }
 
@@ -108,6 +118,7 @@ impl<'a> ComptimeEnv<'a> {
             resolved_types: None,
             runtime_locals: None,
             locals: HashMap::new(),
+            const_module_members: &EMPTY_MODULE_MEMBERS,
         }
     }
 
@@ -120,6 +131,7 @@ impl<'a> ComptimeEnv<'a> {
             resolved_types: Some(ctx.resolved_types),
             runtime_locals: Some(&ctx.locals),
             locals: HashMap::new(),
+            const_module_members: &EMPTY_MODULE_MEMBERS,
         }
     }
 
@@ -131,13 +143,17 @@ impl<'a> ComptimeEnv<'a> {
     /// results) the `comptime { }` block path gets from HM inference, instead
     /// of the raw-`i64` fallback that only range-checked the final value
     /// against the declared type (RUE-230).
-    pub(crate) fn for_const_init(resolved_types: &'a HashMap<InstRef, Type>) -> Self {
+    pub(crate) fn for_const_init(
+        resolved_types: &'a HashMap<InstRef, Type>,
+        const_module_members: &'a HashMap<InstRef, ConstValue>,
+    ) -> Self {
         Self {
             type_subst: &EMPTY_TYPE_SUBST,
             value_subst: &EMPTY_VALUE_SUBST,
             resolved_types: Some(resolved_types),
             runtime_locals: None,
             locals: HashMap::new(),
+            const_module_members,
         }
     }
 }
@@ -1007,6 +1023,15 @@ impl Sema<'_> {
                 let (name, args_start, args_len) = (*name, *args_start, *args_len);
                 self.eval_comptime_type_call(name, args_start, args_len, env)
             }
+
+            // Module-member access (`m.CONST`) as an operand of a larger const
+            // initializer. The value was pre-resolved from the module's file
+            // (with privacy checks) before evaluation — see the
+            // `const_module_members` field — since the engine has no file or
+            // constant-collector context to resolve it here. A member absent
+            // from the map (a non-module base, or a re-export used as a value)
+            // is not evaluable, so the caller reports it (RUE-267).
+            InstData::FieldGet { .. } => Ok(env.const_module_members.get(&inst_ref).copied()),
 
             // Everything else requires runtime evaluation
             _ => Ok(None),

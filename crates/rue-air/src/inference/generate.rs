@@ -440,6 +440,19 @@ impl<'a> ConstraintGenerator<'a> {
         self.type_vars.fresh()
     }
 
+    /// Allocate a fresh type variable that behaves like an integer literal:
+    /// the unifier rejects binding it to a non-integer type, and if it is
+    /// still unbound after solving it defaults to i32. Used for a captured
+    /// comptime integer value (an anonymous-struct method reading `comptime
+    /// N: u8` from its enclosing function), whose declared width is not
+    /// threaded through the capture and is instead recovered from use, exactly
+    /// like the literal it stands in for (RUE-216).
+    pub fn fresh_int_literal_var(&mut self) -> TypeVarId {
+        let var = self.fresh_var();
+        self.int_literal_vars.push(var);
+        var
+    }
+
     /// Check whether an instruction is a comparison operator.
     ///
     /// Mirrors `Sema::is_comparison`; used to recognize chained comparisons

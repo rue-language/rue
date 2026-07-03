@@ -47,6 +47,48 @@ pub const ANSWER: i32 = 21;
 ]
 exit_code = 42
 
+# Member access as an OPERATOR OPERAND in a const initializer, not just as the
+# whole initializer (RUE-267): `1 + m.ANSWER` used to be rejected (E0434)
+# while `m.ANSWER` alone compiled. The comptime engine now reads the member's
+# pre-resolved value, so it composes in any operand position.
+[[case]]
+name = "member_const_as_operator_operand"
+files = [
+    { path = "main.rue", source = """
+const math = @import("math");
+const A: i32 = 1 + math.ANSWER;
+const B: i32 = math.ANSWER * 2 - 4;
+
+fn main() -> i32 {
+    A + B
+}
+""" },
+    { path = "math.rue", source = """
+pub const ANSWER: i32 = 42;
+""" },
+]
+exit_code = 123
+
+# A private member used as an operator operand reports the privacy violation
+# (E0706) rather than the generic "not supported in const context" (E0434),
+# confirming the pre-resolution propagates the real error (RUE-267).
+[[case]]
+name = "private_member_as_operator_operand_rejected"
+files = [
+    { path = "main.rue", source = """
+const lib = @import("sub/lib");
+const A: i32 = 1 + lib.SECRET;
+
+fn main() -> i32 { A }
+""" },
+    { path = "sub/lib.rue", source = """
+const SECRET: i32 = 99;
+pub fn touch() -> i32 { SECRET }
+""" },
+]
+compile_fail = true
+error_contains = ["E0706", "SECRET", "private"]
+
 # The member const's declared width survives the access: an i64 member used
 # in arithmetic must be anchored to i64 by inference, not mis-defaulted.
 [[case]]
