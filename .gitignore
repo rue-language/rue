@@ -20,3 +20,6 @@ third-party/.cargo/.global-cache/
 
 # Stable symlink to the built rue binary (scripts/rue-bin)
 /bin/
+
+# BuildBuddy remote cache local config (RUE-316) — holds the API key, never committed
+.buckconfig.local
