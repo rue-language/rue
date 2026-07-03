@@ -260,7 +260,10 @@ where
         let array_length = choice((
             select! { TokenKind::Int(n) => ArrayLength::Literal(n as u64) },
             ident_parser().map(ArrayLength::Named),
-        ));
+        ))
+        // Otherwise an empty/invalid length reports the bare-`select!`
+        // catch-all "expected something else". (RUE-19)
+        .labelled("array length");
         let array_type = just(TokenKind::LBracket)
             .ignore_then(ty.clone())
             .then_ignore(just(TokenKind::Semi))
@@ -360,6 +363,10 @@ where
             type_call,
             named_type,
         ))
+        // Summarize the whole type grammar as a single "type" expectation, so a
+        // type-position error reads `expected type, found ...` instead of
+        // enumerating the raw first tokens (`'(' or '!' or '['`). (RUE-19)
+        .labelled("type")
     })
 }
 
@@ -2702,13 +2709,22 @@ fn convert_error(err: Rich<'_, TokenKind>, file_id: FileId) -> CompileError {
                 None => Cow::Borrowed("end of file"),
             };
 
-            CompileError::new(
+            // `self` is only meaningful as a method's first parameter. When it
+            // turns up anywhere else the raw "expected ..., found 'self'" is
+            // opaque, so point the user at the rule. (RUE-19)
+            let found_is_self =
+                matches!(found.as_ref(), Some(t) if t.name() == TokenKind::SelfValue.name());
+            let mut err = CompileError::new(
                 ErrorKind::UnexpectedToken {
                     expected: expected_str,
                     found: found_str,
                 },
                 span,
-            )
+            );
+            if found_is_self {
+                err = err.with_help("methods take `self` as the first parameter");
+            }
+            err
         }
         chumsky::error::RichReason::Custom(msg) => {
             // Preserve the custom error message directly
@@ -2724,6 +2740,28 @@ fn convert_error(err: Rich<'_, TokenKind>, file_id: FileId) -> CompileError {
     }
 
     error
+}
+
+/// Drop byte-for-byte duplicate parse errors.
+///
+/// chumsky can surface the *same* diagnostic more than once when several parse
+/// alternatives fail at the same token — e.g. `self` in non-receiver position
+/// fails both the self-parameter and the regular-parameter branch, producing
+/// the identical E0100 twice for one span. Two errors are considered duplicates
+/// only when their kind (code + message payload) and span match exactly, so
+/// genuinely distinct problems at the same location are preserved. (RUE-19)
+fn dedupe_parse_errors(errors: &mut Vec<CompileError>) {
+    // Error lists are tiny, so a linear "seen" scan is cheaper than hashing.
+    let mut seen: Vec<(Option<Span>, ErrorKind)> = Vec::new();
+    errors.retain(|e| {
+        let key = (e.span(), e.kind.clone());
+        if seen.contains(&key) {
+            false
+        } else {
+            seen.push(key);
+            true
+        }
+    });
 }
 
 /// Scan the token stream for excessive syntactic nesting, returning an error
@@ -2934,10 +2972,11 @@ impl ChumskyParser {
                     .parse_with_state(mapped, &mut state)
                     .into_result()
                     .map_err(|errs| {
-                        let errors: Vec<CompileError> = errs
+                        let mut errors: Vec<CompileError> = errs
                             .into_iter()
                             .map(|err| convert_error(err, file_id))
                             .collect();
+                        dedupe_parse_errors(&mut errors);
                         CompileErrors::from(errors)
                     })
             })
@@ -4515,5 +4554,53 @@ mod tests {
             ")".repeat(n)
         );
         assert!(first_error_code(&src).is_none());
+    }
+
+    /// Collect the rendered `[code] message` lines for a source that must fail
+    /// to parse. Panics if the source parses cleanly.
+    fn error_lines(source: &str) -> Vec<String> {
+        let lexer = Lexer::new(source);
+        let (tokens, interner) = lexer.tokenize().expect("tokenize");
+        let parser = ChumskyParser::new(tokens, interner);
+        let errs = parser.parse().expect_err("expected a parse error");
+        errs.iter().map(|e| e.kind.to_string()).collect()
+    }
+
+    #[test]
+    fn test_self_in_non_receiver_position_reports_single_error() {
+        // RUE-19: `self` after a regular parameter used to produce the identical
+        // E0100 twice (both the self-param and the regular-param branch failed
+        // at the same token). Duplicates must be collapsed to one diagnostic.
+        let lines = error_lines("struct Foo { fn bar(x: i32, self) -> i32 { x } }");
+        assert_eq!(
+            lines.len(),
+            1,
+            "duplicate parse errors not deduped: {lines:?}"
+        );
+        assert!(lines[0].contains("found 'self'"), "{lines:?}");
+    }
+
+    #[test]
+    fn test_type_position_expects_type() {
+        // RUE-19: a bad token in type position summarizes as "expected type"
+        // rather than enumerating the raw first tokens (`'(' or '!' or '['`).
+        let lines = error_lines("fn foo() -> 123 { 0 }");
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("expected type, found integer")),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn test_empty_array_length_expects_array_length() {
+        // RUE-19: the array-length `select!` catch-all used to render the bare
+        // "expected something else"; it now names the array-length position.
+        let lines = error_lines("fn foo(a: [i32; ]) -> i32 { 0 }");
+        assert!(
+            lines.iter().any(|l| l.contains("expected array length")),
+            "{lines:?}"
+        );
     }
 }

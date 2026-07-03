@@ -1,0 +1,60 @@
+# Parser diagnostic wording (RUE-19).
+#
+# These pin the user-facing wording of common syntax errors: type-position
+# expectations, the array-length position, the `self`-placement help, and that
+# a `self` in the wrong place is reported exactly once (no cascading duplicate).
+
+[section]
+id = "diagnostics.parser_messages"
+name = "Parser diagnostic wording"
+description = "Targeted wording for type-position, array-length, and self-placement syntax errors."
+
+[[case]]
+name = "type_position_names_type"
+description = """
+RUE-19: a non-type token in type position summarizes the whole type grammar as
+`expected type` instead of enumerating raw first tokens (`'(' or '!' or '['`).
+"""
+source = """
+fn foo() -> 123 { 0 }
+"""
+compile_fail = true
+error_contains = ["expected type, found integer"]
+
+[[case]]
+name = "let_binding_bad_type_names_type"
+source = """
+fn main() -> i32 {
+    let x: 99 = 5;
+    0
+}
+"""
+compile_fail = true
+error_contains = ["expected type, found integer"]
+
+[[case]]
+name = "empty_array_length_named"
+description = """
+RUE-19: the array-length `select!` catch-all used to render the opaque
+`expected something else`; it now names the array-length position.
+"""
+source = """
+fn foo(a: [i32; ]) -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["expected array length"]
+
+[[case]]
+name = "self_not_first_parameter_help"
+description = """
+RUE-19: `self` after a regular parameter both keeps the E0100 wording and gains
+a help pointing at the receiver rule. It must also be reported exactly once
+(the duplicate cascading E0100 is deduped).
+"""
+source = """
+struct Foo {
+    fn bar(x: i32, self) -> i32 { x }
+}
+"""
+compile_fail = true
+error_contains = ["found 'self'", "methods take `self` as the first parameter"]
