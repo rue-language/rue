@@ -333,6 +333,21 @@ fn main() -> i32 {
 exit_code = 42
 
 [[case]]
+name = "generic_function_type_arg_via_local_alias"
+spec = ["4.14:5"]
+description = "A comptime type argument may be a local type alias (`let X = i32; identity(X, 42)`), resolving T:=i32 exactly as the literal type name does (RUE-281)"
+source = """
+fn identity(comptime T: type, x: T) -> T {
+    x
+}
+fn main() -> i32 {
+    let X = i32;
+    identity(X, 42)
+}
+"""
+exit_code = 42
+
+[[case]]
 name = "generic_function_with_bool"
 spec = ["4.14:5"]
 description = "Generic identity function specialized for bool"
@@ -1291,6 +1306,32 @@ fn main() -> i32 {
 }
 """
 exit_code = 40
+
+[[case]]
+name = "type_param_in_local_array_annotation"
+spec = ["4.14:16"]
+description = "A comptime type parameter may be the element type of a LOCAL array annotation `let y: [T; N]` (RUE-282); the specialized array type must reach codegen, not ICE"
+source = """
+fn f(comptime T: type, x: T) -> i32 {
+    let y: [T; 2] = [x, x];
+    y[0] + y[1]
+}
+fn main() -> i32 { f(i32, 5) }
+"""
+exit_code = 10
+
+[[case]]
+name = "type_param_in_local_array_literal"
+spec = ["4.14:16"]
+description = "An unannotated local array literal `[x, x]` of a comptime-type-param element also specializes and reaches codegen (RUE-282)"
+source = """
+fn f(comptime T: type, x: T) -> i32 {
+    let y = [x, x];
+    y[0] + y[1]
+}
+fn main() -> i32 { f(i32, 21) }
+"""
+exit_code = 42
 
 [[case]]
 name = "type_param_in_ptr_param_and_return"

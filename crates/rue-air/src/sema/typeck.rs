@@ -360,6 +360,17 @@ impl<'a> Sema<'a> {
         };
         let is_type_ctor = fn_info.return_type == Type::COMPTIME_TYPE;
         let params = fn_info.params;
+        let ctor_file_id = fn_info.file_id;
+        let ctor_is_pub = fn_info.is_pub;
+
+        // Privacy (E0460, RUE-283): applying a type constructor in type-
+        // annotation position (`let x: Secret(i32)`, a param/return type) is a
+        // reference to that function and must obey the same uniform-privacy
+        // rule the value/call path enforces (spec 10.3:7) — a non-`pub`
+        // constructor defined in another directory is not usable here. Without
+        // this, a private `-> type` constructor leaked across directories via a
+        // type annotation (a privacy-soundness hole).
+        self.check_unqualified_visibility("function", call_name, ctor_file_id, ctor_is_pub, span)?;
         if !is_type_ctor {
             return Err(CompileError::new(
                 ErrorKind::ComptimeEvaluationFailed {

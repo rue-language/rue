@@ -455,6 +455,10 @@ fn analyze_all_function_bodies_sequential(sema: &mut Sema<'_>) -> MultiErrorResu
         functions,
         strings: global_strings,
         warnings: all_warnings,
+        // Provisional: refreshed after specialization below. Specialized
+        // bodies can intern *new* composite types (e.g. `[i32; N]` from a
+        // `let y: [T; 2]` once `T := i32`) into `sema.type_pool`, so the pool
+        // handed to CFG/codegen must be cloned *after* the specialize pass.
         type_pool: sema.type_pool.clone(),
     };
 
@@ -463,6 +467,13 @@ fn analyze_all_function_bodies_sequential(sema: &mut Sema<'_>) -> MultiErrorResu
     if let Err(e) = crate::specialize::specialize(&mut output, sema, &infer_ctx, sema.interner) {
         errors.push(e);
     }
+
+    // Specialization interns new composite types into `sema.type_pool` (see the
+    // provisional-clone note above); re-snapshot so every array/pointer type a
+    // specialized body references exists in the pool CFG and codegen consult.
+    // Without this, a specialization-only `[i32; N]` decayed to an out-of-bounds
+    // ArrayTypeId and ICE'd in drop analysis (RUE-282).
+    output.type_pool = sema.type_pool.clone();
 
     errors.into_result_with(output)
 }
@@ -849,6 +860,8 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
         functions,
         strings: global_strings,
         warnings: all_warnings,
+        // Provisional: refreshed after specialization below (see the eager
+        // path's note). Specialized bodies may intern new composite types.
         type_pool: sema.type_pool.clone(),
     };
 
@@ -857,6 +870,11 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
     if let Err(e) = crate::specialize::specialize(&mut output, sema, &infer_ctx, sema.interner) {
         errors.push(e);
     }
+
+    // Re-snapshot the pool after specialization so specialization-only composite
+    // types (e.g. `[i32; N]` from `let y: [T; 2]`) reach CFG/codegen; otherwise
+    // an out-of-bounds ArrayTypeId ICE'd in drop analysis (RUE-282).
+    output.type_pool = sema.type_pool.clone();
 
     errors.into_result_with(output)
 }

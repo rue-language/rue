@@ -611,3 +611,62 @@ enum Color {
 """ }
 pass_aux_files = true
 exit_code = 42
+
+# The uniform privacy rule (10.3:7) also covers a comptime type constructor
+# (`fn Secret(comptime T) -> type`) applied in type-annotation position: naming
+# a private constructor from another directory in a `let x: Secret(i32)`
+# annotation is E0460, exactly as a value/call reference is. Before RUE-283 the
+# annotation path skipped this check, leaking the private constructor
+# cross-directory (a privacy-soundness hole).
+
+[[case]]
+name = "cross_dir_private_type_ctor_annotation_error"
+spec = ["10.3:7"]
+description = "Applying a private comptime type constructor in type-annotation position from another directory is rejected (E0460)"
+source = """
+fn main() -> i32 {
+    let s: Secret(i32) = mk();
+    s.v
+}
+"""
+aux_files = { "subdir/lib.rue" = """
+fn Secret(comptime T: type) -> type { struct { v: T } }
+pub fn mk() -> Secret(i32) { let S = Secret(i32); S { v: 7 } }
+""" }
+pass_aux_files = true
+compile_fail = true
+error_contains = "function `Secret` is private (defined in"
+
+[[case]]
+name = "cross_dir_pub_type_ctor_annotation_allowed"
+spec = ["10.3:7", "10.3:8"]
+description = "A pub comptime type constructor applied as an annotation across directories is allowed (flat namespace resolves the name)"
+source = """
+fn main() -> i32 {
+    let s: Secret(i32) = mk();
+    s.v
+}
+"""
+aux_files = { "subdir/lib.rue" = """
+pub fn Secret(comptime T: type) -> type { struct { v: T } }
+pub fn mk() -> Secret(i32) { let S = Secret(i32); S { v: 7 } }
+""" }
+pass_aux_files = true
+exit_code = 7
+
+[[case]]
+name = "same_dir_private_type_ctor_annotation_allowed"
+spec = ["10.3:2", "10.3:7"]
+description = "Intra-directory visibility (ADR-0026) is unchanged: a private comptime type constructor applied as an annotation in another listed file in the same directory is allowed"
+source = """
+fn main() -> i32 {
+    let s: Secret(i32) = mk();
+    s.v
+}
+"""
+aux_files = { "lib.rue" = """
+fn Secret(comptime T: type) -> type { struct { v: T } }
+pub fn mk() -> Secret(i32) { let S = Secret(i32); S { v: 7 } }
+""" }
+pass_aux_files = true
+exit_code = 7

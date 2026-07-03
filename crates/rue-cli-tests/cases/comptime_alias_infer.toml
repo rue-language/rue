@@ -186,3 +186,45 @@ fn main() -> i32 {
 }
 """ }]
 exit_code = 0
+
+# A local comptime type alias (`let X = i32;`) passed as a generic `comptime
+# T: type` argument must resolve the type argument to its bound type, exactly
+# as the literal type name does (RUE-281). Before the fix, inference's
+# `extract_type_argument` skipped the comptime-local-types lookup for a local,
+# so `T` was left unresolved and the call's return type defaulted to the
+# literal `type` — a spurious E0206 (`expected i32, found type`). The literal
+# form already worked; these pin that the aliased form now behaves identically.
+
+[[case]]
+name = "local_type_alias_as_generic_arg"
+description = "RUE-281: `let X = i32; identity(X, 42)` resolves T:=i32 and returns 42, matching the literal `identity(i32, 42)`."
+files = [{ path = "main.rue", source = """
+fn identity(comptime T: type, x: T) -> T { x }
+fn main() -> i32 {
+    let X = i32;
+    identity(X, 42)
+}
+""" }]
+exit_code = 42
+
+[[case]]
+name = "literal_type_as_generic_arg_control"
+description = "Control for RUE-281: the literal type-name form of the generic argument still returns 42."
+files = [{ path = "main.rue", source = """
+fn identity(comptime T: type, x: T) -> T { x }
+fn main() -> i32 { identity(i32, 42) }
+""" }]
+exit_code = 42
+
+[[case]]
+name = "runtime_value_to_comptime_type_param_still_rejected"
+description = "Control for RUE-281: a runtime value passed where a `comptime T: type` argument is expected is still rejected (the fix only resolves comptime type aliases, not runtime values)."
+files = [{ path = "main.rue", source = """
+fn identity(comptime T: type, x: T) -> T { x }
+fn main() -> i32 {
+    let r: i32 = 3;
+    identity(r, 42)
+}
+""" }]
+compile_fail = true
+error_contains = ["E0206"]
