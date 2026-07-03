@@ -221,6 +221,34 @@ impl Sema<'_> {
         self.try_evaluate_const(inst_ref)?.as_integer()
     }
 
+    /// Like [`try_get_const_index`], but evaluated inside the function being
+    /// analyzed, so the index is checked at its HM-resolved operand types.
+    ///
+    /// The type-unaware [`try_get_const_index`] folds `arr[X + 1]` as raw
+    /// `i128` and only the array-length bound is checked — so `X + 1` where
+    /// `X: i8 = 127` folds to `128`, fits a length-129 array, and the operand
+    /// overflow is silently deferred to a runtime panic (RUE-234). Threading
+    /// the resolved operand types (as [`try_evaluate_const_in_fn`] does)
+    /// surfaces that overflow as a compile-time E1200/E0800 — the same check
+    /// the const-initializer path gets (RUE-230) — *before* the length bound is
+    /// consulted. Returns:
+    /// - `Ok(Some(i))` — a compile-time-known, in-operand-type index `i`;
+    /// - `Ok(None)`    — not a compile-time constant (runtime index);
+    /// - `Err(..)`     — the index expression overflows at its operand type.
+    ///
+    /// [`try_get_const_index`]: Sema::try_get_const_index
+    /// [`try_evaluate_const_in_fn`]: Sema::try_evaluate_const_in_fn
+    pub(crate) fn try_get_const_index_checked(
+        &mut self,
+        inst_ref: InstRef,
+        ctx: &AnalysisContext,
+    ) -> CompileResult<Option<i64>> {
+        let mut env = ComptimeEnv::for_analysis(ctx);
+        Ok(self
+            .eval_const_expr(inst_ref, &mut env)?
+            .and_then(|v| v.as_integer()))
+    }
+
     /// Check if an RIR instruction is a direct reference to a `comptime`
     /// parameter of the function currently being analyzed.
     ///
@@ -885,7 +913,7 @@ impl Sema<'_> {
                     self.walk_comptime_type_locals(else_block, discovered, eval_types, eval_values);
                 }
             }
-            InstData::Loop { body, .. } | InstData::InfiniteLoop { body } => {
+            InstData::Loop { body, .. } | InstData::InfiniteLoop { body, .. } => {
                 let body = *body;
                 self.walk_comptime_type_locals(body, discovered, eval_types, eval_values);
             }

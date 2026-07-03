@@ -1140,7 +1140,7 @@ impl<'a> ConstraintGenerator<'a> {
             }
 
             // Infinite loop
-            InstData::InfiniteLoop { body } => {
+            InstData::InfiniteLoop { body, .. } => {
                 ctx.loop_depth += 1;
                 ctx.loop_break_stack.push(false);
                 self.generate(*body, ctx);
@@ -2426,7 +2426,10 @@ mod tests {
             span: Span::new(6, 7),
         });
         let loop_inst = rir.add_inst(rue_rir::Inst {
-            data: InstData::InfiniteLoop { body },
+            data: InstData::InfiniteLoop {
+                body,
+                iter_borrow: None,
+            },
             span: Span::new(0, 10),
         });
 

@@ -837,8 +837,9 @@ impl Rir {
                 cond: renumber(*cond),
                 body: renumber(*body),
             },
-            InstData::InfiniteLoop { body } => InstData::InfiniteLoop {
+            InstData::InfiniteLoop { body, iter_borrow } => InstData::InfiniteLoop {
                 body: renumber(*body),
+                iter_borrow: *iter_borrow,
             },
             InstData::Ret(value) => InstData::Ret(renumber_opt(*value)),
             InstData::Break { value } => InstData::Break {
@@ -1374,7 +1375,17 @@ pub enum InstData {
     Loop { cond: InstRef, body: InstRef },
 
     /// Infinite loop: loop { body }
-    InfiniteLoop { body: InstRef },
+    ///
+    /// `iter_borrow` names the collection variable held as a scoped shared
+    /// borrow for the loop's duration when this loop is the desugaring of a
+    /// `for` over a named variable (spec 4.8:26, RUE-233). Sema rejects
+    /// mutation of that variable inside the body (E0428). `None` for a plain
+    /// `loop {}` or a `for` over a temporary (which is unnameable, so
+    /// unmutatable, in the body).
+    InfiniteLoop {
+        body: InstRef,
+        iter_borrow: Option<Spur>,
+    },
 
     /// Match expression: match scrutinee { pattern => expr, ... }
     /// Arms are stored in the extra array using add_match_arms/get_match_arms.
@@ -1856,7 +1867,9 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     }
                 }
                 InstData::Loop { cond, body } => writeln!(out, "loop {}, {}", cond, body).unwrap(),
-                InstData::InfiniteLoop { body } => writeln!(out, "infinite_loop {}", body).unwrap(),
+                InstData::InfiniteLoop { body, .. } => {
+                    writeln!(out, "infinite_loop {}", body).unwrap()
+                }
                 InstData::Match {
                     scrutinee,
                     arms_start,
@@ -2673,7 +2686,10 @@ mod tests {
         });
 
         rir.add_inst(Inst {
-            data: InstData::InfiniteLoop { body },
+            data: InstData::InfiniteLoop {
+                body,
+                iter_borrow: None,
+            },
             span: Span::new(0, 15),
         });
 
