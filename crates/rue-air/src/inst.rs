@@ -502,13 +502,16 @@ impl Air {
 
     /// Add extra data and return the start index.
     pub fn add_extra(&mut self, data: &[u32]) -> u32 {
-        // Debug assertions for u32 overflow
-        debug_assert!(
+        // Correctness guard (must run in release): `start` and the extra
+        // indices are truncated to u32 below, so an overflow would silently
+        // alias unrelated extra data. Plain `assert!` not `debug_assert!`
+        // (RUE-45).
+        assert!(
             self.extra.len() <= u32::MAX as usize,
             "AIR extra data overflow: {} entries exceeds u32::MAX",
             self.extra.len()
         );
-        debug_assert!(
+        assert!(
             self.extra.len().saturating_add(data.len()) <= u32::MAX as usize,
             "AIR extra data would overflow: {} + {} exceeds u32::MAX",
             self.extra.len(),

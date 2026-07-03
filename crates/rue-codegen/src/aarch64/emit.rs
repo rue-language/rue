@@ -1358,7 +1358,11 @@ impl<'a> Emitter<'a> {
                     fixup.label
                 )))
             })?;
-            debug_assert_eq!(
+            // Correctness guard (must run in release): a misaligned branch
+            // distance would lose its low bits in the `/ 4` below and branch to
+            // the wrong instruction, so plain `assert!` not `debug_assert!`
+            // (RUE-45).
+            assert_eq!(
                 (target as i64 - fixup.offset as i64) % 4,
                 0,
                 "branch target/site must be 4-byte aligned"
@@ -1546,7 +1550,10 @@ impl<'a> Emitter<'a> {
             // and may be the very rd/rs of this access. Previously the offset
             // was masked & 0x1FF, silently WRAPPING — locals deeper than 256
             // bytes loaded from above the frame pointer. (RUE-129)
-            debug_assert!(
+            // Correctness guard (must run in release): if the base were X15 we
+            // would clobber it while materializing the address and load from the
+            // wrong location, so plain `assert!` not `debug_assert!` (RUE-45).
+            assert!(
                 base != Reg::Sp && base != Reg::X15,
                 "large-offset load needs a general base register"
             );
@@ -1580,7 +1587,11 @@ impl<'a> Emitter<'a> {
             // was masked & 0x1FF, silently WRAPPING — locals deeper than 256
             // bytes stored ABOVE the frame pointer, corrupting the caller's
             // stack. (RUE-129)
-            debug_assert!(
+            // Correctness guard (must run in release): if the base or source
+            // were X15 we would clobber it while materializing the address and
+            // store to/from the wrong location, so plain `assert!` not
+            // `debug_assert!` (RUE-45).
+            assert!(
                 base != Reg::Sp && base != Reg::X15 && rs != Reg::X15,
                 "large-offset store needs a general base register"
             );
@@ -1664,7 +1675,11 @@ impl<'a> Emitter<'a> {
         // ADD for the low part. Previously the immediate was masked & 0xFFF,
         // silently truncating — e.g. epilogues of frames >4095 bytes
         // mis-adjusted SP by multiples of 4096. (RUE-129)
-        debug_assert!(imm < (1 << 24), "ADD immediate exceeds 24 bits: {imm}");
+        // Correctness guard (must run in release): an immediate wider than the
+        // 24 bits the two-instruction shifted form can encode would be silently
+        // truncated below, mis-adjusting SP, so plain `assert!` not
+        // `debug_assert!` (RUE-45).
+        assert!(imm < (1 << 24), "ADD immediate exceeds 24 bits: {imm}");
         if imm > 0xFFF {
             let inst = OPCODE_ADD_IMM_X
                 | (1 << 22)
@@ -1741,7 +1756,11 @@ impl<'a> Emitter<'a> {
         // silently truncating — prologues of frames >4095 bytes UNDER-ALLOCATED
         // by multiples of 4096, so locals overlapped the caller's stack.
         // (RUE-129)
-        debug_assert!(imm < (1 << 24), "SUB immediate exceeds 24 bits: {imm}");
+        // Correctness guard (must run in release): an immediate wider than the
+        // 24 bits the two-instruction shifted form can encode would be silently
+        // truncated below, under-allocating the frame, so plain `assert!` not
+        // `debug_assert!` (RUE-45).
+        assert!(imm < (1 << 24), "SUB immediate exceeds 24 bits: {imm}");
         if imm > 0xFFF {
             let inst = OPCODE_SUB_IMM_X
                 | (1 << 22)
