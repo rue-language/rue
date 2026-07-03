@@ -1026,9 +1026,11 @@ impl<'a> AstGen<'a> {
     ///
     /// The type-dependent pieces are three compiler-internal intrinsics that
     /// Sema resolves by the collection's type (dispatching the three iterable
-    /// kinds — array, String byte view, String `.chars()` scalar view):
-    /// `@__rue_iter_len`, and for the char view `@__rue_char_scalar` /
-    /// `@__rue_char_next`. Everything else reuses the ordinary
+    /// kinds — array, String byte view, String `.chars()` / `.chars_lossy()`
+    /// scalar views): `@__rue_iter_len`, and for the char views
+    /// `@__rue_char_scalar` / `@__rue_char_next` (strict, trap on invalid
+    /// UTF-8) or their `_lossy` counterparts (substitute U+FFFD). Everything
+    /// else reuses the ordinary
     /// loop/branch/break/index lowering, so move-checking, drop elaboration,
     /// and codegen come for free. The whole thing is preview-gated in Sema at
     /// the `@__rue_iter_len` intrinsic, which every for-loop emits.
@@ -1037,17 +1039,21 @@ impl<'a> AstGen<'a> {
         let n = self.for_counter;
         self.for_counter += 1;
 
-        // Recognize the `.chars()` scalar view syntactically: `for c in
-        // s.chars()` iterates Unicode scalars, everything else iterates by
-        // position (array element / String byte). The receiver of `.chars()`
-        // is the actual collection.
-        let (coll_expr, is_chars): (&Expr, bool) = match &*for_expr.iterable {
-            Expr::MethodCall(mc)
-                if mc.args.is_empty() && self.interner.resolve(&mc.method.name) == "chars" =>
-            {
-                (&mc.receiver, true)
+        // Recognize the `.chars()` / `.chars_lossy()` scalar views
+        // syntactically: `for c in s.chars()` iterates Unicode scalars and traps
+        // on invalid UTF-8, `for c in s.chars_lossy()` iterates scalars but
+        // substitutes U+FFFD for invalid sequences (ADR-0035). Everything else
+        // iterates by position (array element / String byte). The receiver of
+        // the call is the actual collection.
+        let (coll_expr, is_chars, is_lossy): (&Expr, bool, bool) = match &*for_expr.iterable {
+            Expr::MethodCall(mc) if mc.args.is_empty() => {
+                match self.interner.resolve(&mc.method.name) {
+                    "chars" => (&mc.receiver, true, false),
+                    "chars_lossy" => (&mc.receiver, true, true),
+                    _ => (&*for_expr.iterable, false, false),
+                }
             }
-            other => (other, false),
+            other => (other, false, false),
         };
 
         let mut outer_stmts: Vec<u32> = Vec::new();
@@ -1186,7 +1192,11 @@ impl<'a> AstGen<'a> {
             span,
         });
         let get_inst = if is_chars {
-            let sym = self.interner.get_or_intern("__rue_char_scalar");
+            let sym = self.interner.get_or_intern(if is_lossy {
+                "__rue_char_scalar_lossy"
+            } else {
+                "__rue_char_scalar"
+            });
             let (s, l) = self.rir.add_inst_refs(&[coll_for_get, p_for_get]);
             self.rir.add_inst(Inst {
                 data: InstData::Intrinsic {
@@ -1234,7 +1244,11 @@ impl<'a> AstGen<'a> {
                 data: InstData::VarRef { name: coll_name },
                 span,
             });
-            let sym = self.interner.get_or_intern("__rue_char_next");
+            let sym = self.interner.get_or_intern(if is_lossy {
+                "__rue_char_next_lossy"
+            } else {
+                "__rue_char_next"
+            });
             let (s, l) = self.rir.add_inst_refs(&[coll_for_adv, p_for_adv]);
             self.rir.add_inst(Inst {
                 data: InstData::Intrinsic {

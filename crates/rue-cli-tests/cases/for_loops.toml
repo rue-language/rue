@@ -86,6 +86,45 @@ stdout = "99\n97\n102\n"
 runtime_error_contains = ["invalid UTF-8"]
 
 [[case]]
+name = "for_chars_lossy_valid_dbg"
+description = "for c in s.chars_lossy() decodes well-formed UTF-8 identically to .chars(); 'café' is 4 scalars ending in é = 233."
+args = ["--preview", "for_loops", "main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let s = "café";
+    let mut count = 0;
+    for c in s.chars_lossy() {
+        @dbg(c);
+        count = count + 1;
+    }
+    count
+}
+""" }]
+exit_code = 4
+stdout = "99\n97\n102\n233\n"
+
+[[case]]
+name = "for_chars_lossy_replaces_raw_invalid_bytes"
+description = "Lossy decode over a String holding a raw invalid byte (0xFF): the bad byte becomes U+FFFD (65533) and iteration continues without trapping — the surrounding ASCII bytes decode normally."
+args = ["--preview", "for_loops", "main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut s = String::new();
+    s.push(97);
+    s.push(255);
+    s.push(98);
+    let mut count = 0;
+    for c in s.chars_lossy() {
+        @dbg(c);
+        count = count + 1;
+    }
+    count
+}
+""" }]
+exit_code = 3
+stdout = "97\n65533\n98\n"
+
+[[case]]
 name = "for_without_preview_is_gated"
 description = "Without --preview for_loops the for loop is rejected as a preview feature."
 args = ["main.rue", "-o", "prog"]

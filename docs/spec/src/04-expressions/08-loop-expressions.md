@@ -203,7 +203,8 @@ element type and iteration order:
   order;
 - a `String` — each byte is bound as `u8` in ascending byte order;
 - the character view `s.chars()` of a `String` — each Unicode scalar value is
-  bound as `u32`, in ascending byte order.
+  bound as `u32`, in ascending byte order (or `s.chars_lossy()`, which decodes
+  invalid UTF-8 to `U+FFFD` instead of trapping).
 
 {{ rule(id="4.8:26", cat="normative") }}
 
@@ -220,8 +221,9 @@ terminates the loop.
 {{ rule(id="4.8:28", cat="dynamic-semantics") }}
 
 Iterating `s.chars()` decodes the bytes of `s` as UTF-8. A byte sequence that is
-not well-formed UTF-8 traps at runtime when it is decoded (see ADR-0035); a
-lossy variant is not yet provided.
+not well-formed UTF-8 traps at runtime when it is decoded (see ADR-0035).
+Iterating the lossy view `s.chars_lossy()` instead substitutes `U+FFFD` for each
+ill-formed subsequence and never traps.
 
 {{ rule(id="4.8:29") }}
 

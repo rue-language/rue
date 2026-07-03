@@ -248,11 +248,21 @@ byte order.
 
 {{ rule(id="3.7:32", cat="dynamic-semantics") }}
 
-Decoding is strict: a byte sequence that is not well-formed UTF-8 (an
-ill-formed, truncated, overlong, or surrogate sequence) traps at runtime when it
-is decoded. Because a `String` is a byte string that may hold arbitrary bytes,
-this "trap, don't corrupt" behavior at the decode boundary is where invalidity
-is caught; a lossy view that substitutes `U+FFFD` is not yet provided.
+Decoding through `s.chars()` is strict: a byte sequence that is not well-formed
+UTF-8 (an ill-formed, truncated, overlong, or surrogate sequence) traps at
+runtime when it is decoded. Because a `String` is a byte string that may hold
+arbitrary bytes, this "trap, don't corrupt" behavior at the decode boundary is
+where invalidity is caught.
+
+{{ rule(id="3.7:34", cat="dynamic-semantics") }}
+
+The lossy character view `s.chars_lossy()` yields the same Unicode scalar values
+as `s.chars()` for well-formed UTF-8, but instead of trapping it substitutes the
+Unicode replacement scalar `U+FFFD` (decimal `65533`) for each maximal subpart
+of an ill-formed subsequence and continues. Lossiness is explicit: `chars_lossy`
+is the only way to decode without trapping, so silent corruption is never the
+default. Like `chars`, it is used as the iterable of a `for` loop and binds each
+scalar value as a `u32`.
 
 {{ rule(id="3.7:33") }}
 
