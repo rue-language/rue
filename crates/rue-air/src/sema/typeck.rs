@@ -189,6 +189,35 @@ impl<'a> Sema<'a> {
         }
     }
 
+    /// Is `type_sym` the syntax of a slice type `[T]` (as opposed to a fixed
+    /// array `[T; N]`)? Slices are second-class (ADR-0037, ADR-0043, RUE-322):
+    /// callers use this to reject a slice type in a non-argument position
+    /// (return / struct field / `let` / `const`) with a targeted diagnostic
+    /// before the generic `resolve_type` path would report it.
+    pub(crate) fn is_slice_type_syntax(&self, type_sym: Spur) -> bool {
+        let name = self.interner.resolve(&type_sym);
+        name.starts_with('[') && name.ends_with(']') && parse_array_type_syntax(name).is_none()
+    }
+
+    /// Reject a slice type appearing outside argument position. When `type_sym`
+    /// is slice syntax and `--preview slices` is enabled, this returns the
+    /// second-class-escape error `kind` (E0487/E0488/E0489); otherwise it
+    /// returns `Ok(())` and the caller proceeds. The preview gate is checked
+    /// first so that, without the flag, the user still sees the uniform
+    /// "requires preview feature" message rather than a bespoke slice error.
+    pub(crate) fn reject_slice_escape(
+        &self,
+        type_sym: Spur,
+        span: Span,
+        kind: ErrorKind,
+    ) -> CompileResult<()> {
+        if self.is_slice_type_syntax(type_sym) {
+            self.require_preview(PreviewFeature::Slices, "the slice type `[T]`", span)?;
+            return Err(CompileError::new(kind, span));
+        }
+        Ok(())
+    }
+
     pub(crate) fn resolve_type(&mut self, type_sym: Spur, span: Span) -> CompileResult<Type> {
         let type_name = self.interner.resolve(&type_sym);
 

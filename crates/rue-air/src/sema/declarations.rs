@@ -499,6 +499,10 @@ impl<'a> Sema<'a> {
                     let ty_sym = Spur::try_from_usize(words[i] as usize)
                         .expect("valid interned type symbol in payload region");
                     i += 1;
+                    // A slice type `[T]` is second-class (ADR-0037, ADR-0043,
+                    // RUE-322): an enum payload is aggregate storage, so it
+                    // cannot hold a fat-pointer view (E0488).
+                    self.reject_slice_escape(ty_sym, span, ErrorKind::SliceInAggregateField)?;
                     let ty = self.resolve_type(ty_sym, span)?;
                     // A payload of type `type` cannot exist at runtime
                     // (spec 4.14:6); reject it like struct fields do.
@@ -627,6 +631,14 @@ impl<'a> Sema<'a> {
                 // Resolve field types
                 let mut resolved_fields = Vec::new();
                 for (field_name, field_type) in &fields {
+                    // A slice type `[T]` is second-class (ADR-0037, ADR-0043,
+                    // RUE-322): storing it in a struct field would let the
+                    // fat-pointer view escape its borrow's scope (E0488).
+                    self.reject_slice_escape(
+                        *field_type,
+                        inst.span,
+                        ErrorKind::SliceInAggregateField,
+                    )?;
                     let field_ty = self.resolve_type(*field_type, inst.span)?;
                     // spec 4.14:6 — type values cannot exist at runtime. A
                     // struct field of type `type` is a runtime storage slot for
@@ -1151,6 +1163,10 @@ impl<'a> Sema<'a> {
             // RUE-16) - use placeholder, resolved at specialization.
             Type::COMPTIME_TYPE
         } else {
+            // A slice type `[T]` is second-class (ADR-0037, ADR-0043,
+            // RUE-322): it is a fat-pointer view valid only in argument
+            // position and may not be returned (E0487).
+            self.reject_slice_escape(return_type_sym, span, ErrorKind::SliceReturnNotAllowed)?;
             self.resolve_type(return_type_sym, span)?
         };
 
@@ -2204,6 +2220,10 @@ impl<'a> Sema<'a> {
         };
         // The annotation resolves like any signature type (unknown names are
         // E0204) and the value is validated against it.
+        // A slice type `[T]` is second-class (ADR-0037, ADR-0043, RUE-322): a
+        // `const` is a top-level binding, never an argument, so it cannot name
+        // a slice (E0489).
+        self.reject_slice_escape(ty_sym, span, ErrorKind::SliceEscapesScope)?;
         let declared = self.resolve_type(ty_sym, span)?;
 
         // An integer value adopts any integer annotation it fits in.
