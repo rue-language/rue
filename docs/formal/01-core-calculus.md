@@ -32,11 +32,14 @@ Types
       | unit
       | never                  -- the ! type; no values
       | S                      -- a (monomorphic) struct-type name
+      | E                      -- a (monomorphic) enum-type name
       | [T; n]                 -- array of n ≥ 0 elements of type T
 
-Struct declarations
-  D ::= struct S { f1: T1, ..., fk: Tk }        -- multiplicity class assigned by §3
-  (an elaborated anonymous struct is just a struct name S with a generated identity)
+Type declarations
+  D ::= struct S { f1: T1, ..., fk: Tk }             -- struct; multiplicity class assigned by §3
+      | enum   E { K1(T̄1), ..., Kn(T̄n) }             -- enum (sum); variant Ki has payload tuple T̄i = Ti1..Ti_{ai} (ai ≥ 0)
+  (an elaborated anonymous struct is just a struct name S with a generated identity;
+   a discriminant-only, C-like enum is the ai = 0 case for every variant)
 
 Places (lvalues — expressions that denote a location)
   p ::= x                      -- a local binding
@@ -49,6 +52,7 @@ Expressions
       | e1 ⊕ e2                -- primitive arithmetic / bitwise op (operands are Copy scalars)
       | e1 ≟ e2                -- primitive equality compare (== / !=); operands are BORROWED, not moved (§4.1, 4.3:3f)
       | S { f1: e1, ..., fk: ek }        -- struct value construction
+      | E :: K ( e1, ..., em )           -- enum value construction (variant K of E with payload e1..em; m = arity of K)
       | [ e1, ..., en ]        -- array value construction
       | g ( a1, ..., am )      -- call of function g with argument forms a_i (see below)
       | if e0 { e1 } else { e2 }
@@ -59,6 +63,10 @@ Expressions
       | break                  -- exit the nearest enclosing loop, value unit
       | return e               -- exit the enclosing function with e's value
       | assign p = e           -- assignment (a statement form; value unit)
+
+Patterns (a match arm's head; matched against an enum scrutinee)
+  pat ::= E :: K ( x1, ..., xa )   -- variant pattern for variant K of arity a: binds the a payload components to fresh locals
+                                   -- (a = 0 for a discriminant-only variant, written E::K)
 
 Argument forms (how an argument is passed — the call-site mode)
   a ::= e                      -- by value: the parameter takes ownership (move) or a copy
@@ -112,7 +120,21 @@ Assignment of the class:
     class(S) = Linear         if attr(S) = linear   OR base = Linear    -- infectious (3.8:58, 3.8:57)
              = Copy           if attr(S) = @copy    (well-formed only if base = Copy — 3.8:18)
              = Affine         otherwise
+
+  For an enum  E { K1(T̄1), ..., Kn(T̄n) }  with T̄i = Ti1..Ti_{ai}:
+    class(E) = ⊔ { class(Tij) : 1 ≤ i ≤ n, 1 ≤ j ≤ ai }    -- join over EVERY payload component of EVERY variant (6.3:19)
+             = Copy   when there are no payload components  -- discriminant-only ⇒ empty join ⇒ Copy (6.3:19, 3.8:2)
 ```
+
+An enum has no `@copy`/`linear` attribute of its own: its class is exactly the
+join of its variants' payload classes (`6.3:19`). It is `Copy` iff every payload
+of every variant is `Copy` (a discriminant-only enum, whose join is empty, is the
+degenerate `Copy` case); `Affine` if some payload is `Affine` and none `Linear`;
+`Linear` if some payload is `Linear` — and a `Linear` enum must be consumed
+exactly like a `Linear` struct (`6.3:19`, matching ADR-0039). The join is over
+*all* variants because the active variant is not known statically; the class is
+the type's worst case, while the *drop* at run time touches only the active
+payload (§5.6, §6).
 
 The lattice order is `Copy ⊑ Affine ⊑ Linear` (more restrictive is higher); `⊔`
 is the least upper bound. **Infectiousness is just the join**: a struct is at
@@ -120,9 +142,10 @@ least as restrictive as its most-restrictive field. A `@copy` declaration is
 well-formed only when the field join is already `Copy` (`3.8:18`); a `linear`
 declaration forces `Linear` regardless of fields.
 
-> This replaces the prose enumerations `3.8:2` (the Copy list), `3.8:3` (structs
-> affine by default), `3.8:18/20` (`@copy` field constraint), and `3.8:57/58`
-> (carries-linear, infectious) with one lattice and one join.
+> This replaces the prose enumerations `3.8:2` (the Copy list, which includes
+> discriminant-only enums), `3.8:3` (structs affine by default), `3.8:18/20`
+> (`@copy` field constraint), `3.8:57/58` (carries-linear, infectious), and
+> `6.3:19` (enum multiplicity = the payload join) with one lattice and one join.
 
 *`@handle`* is not a fourth class: an `@handle` type is `Affine` (or `Linear`)
 that additionally provides an explicit duplication operation `.handle()`. In the
@@ -292,9 +315,13 @@ an already-`Owned` place drops the old value first (`3.8` overwrite-drop). Writi
 ```
 
 Discarding a value whose type *carries a linear value* is ill-formed (`3.8:64` —
-`carries_linear(T)` is `class(T) = Linear` lifted through arrays/structs, i.e. the
-field/element join reaching Linear). `let x = e1 ; e2` is like `Seq` but binds `x`
-(with `x` Owned in Σ for `e2`) and imposes no discard check on `e1`.
+`carries_linear(T)` is `class(T) = Linear` lifted through the aggregates: the
+field join for a struct, the element type for an array, and the **payload join
+over all variants** for an enum (`6.3:19`) reaching Linear). Because `class` is
+itself defined as exactly these joins (§3), `carries_linear(T) ⟺ class(T) =
+Linear` for every type — including enums, whose class is the payload join.
+`let x = e1 ; e2` is like `Seq` but binds `x` (with `x` Owned in Σ for `e2`) and
+imposes no discard check on `e1`.
 
 ### 5.4 Borrows and the law of exclusivity
 
@@ -350,6 +377,43 @@ per-path drop flag so the runtime drops it on exactly the paths that did not
 (`3.8:73`). A branch ending in `return`/`break` has outgoing state `⊥` (diverged)
 and is excluded from the join (`3.8:51`).
 
+`match` is the elimination form for enums, and its arms join exactly as `if`'s do.
+Typing the scrutinee is a value-context **use** of it (§4.2): a move-typed enum is
+*consumed* by the match, and each arm's variant pattern binds that variant's
+payload components as fresh Owned locals — this is the "destructured" consumption
+context of `3.8:33` and `6.3:17`. The scrutinee must be covered exhaustively (one
+arm per variant of `E`), so exactly one arm's payload is live in any run:
+
+```
+  Γ;Σ;Λ ⊢ e0 ⇒ E ⊣ Σ0          E = enum { K1(T̄1), ..., Kn(T̄n) }   with T̄i = Ti1..Ti_{ai}
+  arms are exhaustive: exactly the variants K1..Kn, arm i headed by pat_i = Ki(x_{i1}, ..., x_{i,ai})  (fresh locals)
+  for each i:   Γ, x_{i1}:Ti1, ..., x_{i,ai}:Ti_{ai} ;  Σ0[ x_{ij} ↦ Owned ] ;  Λ   ⊢ ei ⇒ T ⊣ Σi'
+  Σ' = join(Σ1, ..., Σn)      -- restricted to paths live before the match; each pattern local x_{ij} leaves scope at arm end (§5.6)
+  ─────────────────────────────────────────────────────────────────────────────────────── (Match)
+  Γ;Σ;Λ ⊢ match e0 { K1(x̄1) => e1, ..., Kn(x̄n) => en } ⇒ T ⊣ Σ'
+```
+
+Typing `e0 ⇒ E` moves the scrutinee out when `class(E) ∈ {Affine, Linear}` and
+copies it when `class(E) = Copy` (the (Use-Move)/(Use-Copy) split of §5.1),
+exactly as for any other place. The payload locals `x_{ij}` are ordinary Owned
+bindings and are governed by §5.6 at the arm's end: a `Linear`-carrying payload
+that an arm neither moves nor consumes is a leak error, and an `Affine` payload it
+drops (once) — this is the formal content of "binding a variant's payload moves it
+out; a moved-out payload runs its destructor exactly once when its binding leaves
+scope" (`6.3:17`). Diverging arms (`return`/`break`) contribute `⊥` and are
+excluded from the join, as with `if`.
+
+Enum construction is the dual introduction form, evaluated like a struct literal:
+each payload argument is a value-context use, and the result owns the tag and the
+supplied payload.
+
+```
+  E = enum { ..., Kj(T̄j), ... }  with T̄j = Tj1..Tj_{aj}
+  Γ;Σ;Λ ⊢ e1 ⇒ Tj1 ⊣ Σ1     Γ;Σ1;Λ ⊢ e2 ⇒ Tj2 ⊣ Σ2     ...     Γ;Σ_{aj-1};Λ ⊢ e_{aj} ⇒ Tj_{aj} ⊣ Σaj
+  ─────────────────────────────────────────────────────────────────────────────── (Enum-Intro)
+  Γ;Σ;Λ ⊢ E::Kj(e1, ..., e_{aj}) ⇒ E ⊣ Σaj
+```
+
 ### 5.6 Scope exit: the drop obligation and the leak check
 
 When a binding `x: T` introduced by `let` (or a by-value parameter) leaves scope
@@ -359,9 +423,18 @@ in state `Owned`:
   unconsumed (`3.8:32/62/66`). This is the must-use check.
 - else if `class(T) = Copy`: nothing happens (no drop).
 - else (`Affine`, droppable, non-linear): a **drop** is scheduled (dynamic §6):
-  the value's destructor, if any, runs, then its droppable fields/elements drop,
-  in the order of `3.9` (declaration order for fields, ascending index for
-  elements), skipping any sub-place that is `MovedOut`.
+  the value's destructor, if any, runs, then its droppable *contents* drop,
+  skipping any sub-place that is `MovedOut`. The contents depend on the type:
+  - a **struct** drops its droppable fields in declaration order (`3.9`);
+  - an **array** drops its droppable elements in ascending index order (`3.9`);
+  - an **enum** drops the payload of its **active** variant only — the variant
+    selected by the run-time discriminant — running that payload's drop glue
+    exactly once, and nothing for a discriminant-only active variant (`6.3:20`).
+    Which variant is active is a *dynamic* fact, so this drop cannot be unrolled
+    statically the way a struct's fields can; §6 reads the tag and drops the one
+    live payload. A payload already moved out (e.g. through a `match` binding,
+    §5.5) left the enum `MovedOut` and is skipped here, so it is never dropped
+    twice (`6.3:20`).
 
 Parameters passed `inout`/`borrow`, and a destructor's own `self`, are exempt from
 the must-consume and drop obligations here (`3.8:62`): the caller (resp. the drop
@@ -379,7 +452,7 @@ The machine configuration:
 
 ```
   Config  =  ⟨ H ; K ; e ⟩
-    H : Loc ⇀ StoredValue          -- the store: locations to values (scalars, struct/array aggregates)
+    H : Loc ⇀ StoredValue          -- the store: locations to values (scalars, struct/array aggregates, tagged enum values ⟨Kj; payload⟩)
     K : evaluation context / control stack   -- holds pending frames, loop and function boundaries,
                                                 and the per-scope list of drop obligations
     e : the expression being reduced
@@ -398,8 +471,21 @@ pinned — are:
 - **Drop.** When a scope's frame is popped (or a place is overwritten, or a loop
   body iterates), the drop obligations recorded for that scope run: for each
   Owned droppable place, in `3.9` order, run its destructor then recursively drop
-  its fields/elements; **a `MovedOut` place is skipped** (this single skip is what
-  makes double-free impossible — §7).
+  its contents — a struct's fields and an array's elements, or, for an **enum**,
+  *only the payload of the variant its stored tag names* (`6.3:20`); **a
+  `MovedOut` place is skipped** (this single skip is what makes double-free
+  impossible — §7). The enum case reads the tag from the store `H` to choose the
+  one payload to recurse into: an inactive variant's payload has no storage to
+  free, and a discriminant-only active variant drops nothing.
+- **Match / variant.** `E::Kj(v1, ..., va)` is a stored value carrying tag `Kj`
+  and its payload aggregate. `match v { ..., Kj(x1, ..., xa) => ej, ... }` reads
+  the tag, selects the arm for `Kj`, **binds `x1..xa` to the payload components**
+  (moving them out of the enum for a move-typed payload, copying for a Copy one),
+  and reduces `ej`; the other arms and their bindings never come into being. The
+  scrutinee value is consumed by the match, so it is not dropped again — the
+  moved-out payload is now owned by the arm's locals, which drop (or must be
+  consumed) at the arm's end per §5.6. Construction `E::Kj(e1, ..., ea)` evaluates
+  the payloads left-to-right and stores the tagged aggregate.
 - **Call / Return.** A call evaluates arguments (moving/copying by-value ones,
   binding by-reference ones to the caller's locations via the loan), pushes a
   frame binding parameters, and reduces the body; the call **evaluates to the
@@ -426,7 +512,10 @@ rather than hopes. Stated now; proved in `03-metatheory.md`.
 
 - **Type safety (progress + preservation).** A well-typed core program does not
   get stuck: it either reduces, halts with a value, or halts with one of the
-  defined panics. Types are preserved under reduction.
+  defined panics. Types are preserved under reduction. For `match`, progress rests
+  on **exhaustiveness** (§5.5): a well-typed enum value carries one of the
+  variants `K1..Kn`, and the arms cover exactly those, so some arm always
+  matches — a `match` is never stuck on an uncovered tag.
 
 - **No use-after-move.** In a well-typed program, the Use/Move dynamic rule is
   never applied to a `MovedOut` place. *Because:* `Use-Move`/`Use-Copy` (§5.1)
@@ -436,7 +525,12 @@ rather than hopes. Stated now; proved in `03-metatheory.md`.
 - **No double-free.** Every stored value's destructor runs at most once. *Because:*
   a move sets `p ↦ MovedOut`, and the Drop rule (§6) skips MovedOut places — so a
   value that was moved out of a place is dropped through its *new* owner, never
-  again through the old one.
+  again through the old one. For an **enum** this holds through two mechanisms at
+  once: the Drop rule recurses into the *active* variant's payload only, so an
+  inactive variant's (non-existent) payload is never freed; and a payload moved
+  out by a `match` binding leaves the enum place `MovedOut`, so the arm's binding
+  becomes the sole owner and the scope-exit drop of the scrutinee is skipped
+  (`6.3:20`). Neither the tag switch nor the match can free a payload twice.
 
 - **No use-after-drop / no leak of drops.** Every `Owned`, droppable,
   non-moved place is dropped exactly once, at the end of its scope, and never read
@@ -446,7 +540,14 @@ rather than hopes. Stated now; proved in `03-metatheory.md`.
 - **Linear values are consumed exactly once.** No value whose type carries a
   linear value reaches end of scope `Owned` (§5.6 rejects it) or is discarded
   (§5.3 rejects it) or is consumed on only some paths (§5.5 join rejects it);
-  and no value is used twice (`Use-Move` consumes it). Hence exactly once.
+  and no value is used twice (`Use-Move` consumes it). Hence exactly once. This
+  now covers **enums**: `class(E)` is the payload join (§3), so a `Linear`-payload
+  enum is itself `Linear` and `carries_linear(E)` holds (§5.3); letting it reach
+  end of scope unconsumed is rejected exactly as for a linear struct (`6.3:19`),
+  and consuming it by a `match` that binds and consumes the linear payload
+  discharges the obligation (§5.5). Symmetrically, an `Affine`-payload enum is
+  dropped exactly once at scope exit via its active payload (§5.6), unless a
+  `match` already moved that payload out.
 
 - **Exclusivity / no aliased mutation.** At any point in a well-typed reduction,
   no location is reachable through both a live exclusive loan and any other live
@@ -467,9 +568,11 @@ far. As breadth is filled in, each new rule adds its citation.
 
 | Formal notion | Prose paragraphs it formalizes / replaces |
 |---|---|
-| §3 multiplicity lattice | 3.8:1–3, 3.8:14/16/18/20, 3.8:30/32/37, 3.8:57/58, 3.8:74 |
+| §3 multiplicity lattice | 3.8:1–3, 3.8:14/16/18/20, 3.8:30/32/37, 3.8:57/58, 3.8:74, 6.3:19 |
 | §4.2 definition of *use* | 3.8:5, 3.8:7, 3.8:9, 3.8:11, 3.8:22, 3.8:33, 3.8:53 |
 | §4.1/§5.4 equality borrows its operands | 4.3:3f |
+| §5.5 match / enum elim + intro | 6.3:17, 3.8:33 (destructure), 4.7 (match) |
+| §5.6 enum drop (active payload) | 6.3:20 |
 | §4.3 expression/return value | 4.5:3 (→ value, not just type), 6.1:4/5, 4.9:1/7 |
 | §5.2 assignment / reinit | 3.8:55/56, 3.8:72 |
 | §5.3 discard leak check | 3.8:64/65 |
