@@ -240,10 +240,18 @@ pub fn lower_struct_init<B: SlotBackend>(
     for field in &fields {
         let field_ty = b.ctx().cfg.get_inst(*field).ty;
         match field_ty.kind() {
-            TypeKind::Struct(_) => {
-                let nested = get_or_compute_field_vregs(b, *field)
-                    .expect("nested struct field should have slot vregs");
-                slot_vregs.extend(nested);
+            TypeKind::Struct(_) | TypeKind::Enum(_) => {
+                // Struct/payload-enum field: contribute every slot. A
+                // payload enum here previously fell to the scalar `_` arm and
+                // contributed only its discriminant vreg, so the struct stored
+                // just the tag and dropped the payload (RUE-237). The accessor
+                // returns None for a discriminant-only (1-slot) enum, which
+                // correctly falls back to the single-vreg push.
+                if let Some(nested) = get_or_compute_field_vregs(b, *field) {
+                    slot_vregs.extend(nested);
+                } else {
+                    slot_vregs.push(b.get_vreg(*field));
+                }
             }
             TypeKind::Array(_) => {
                 // Try the accessor first: it materializes lazily-sourced
@@ -357,10 +365,19 @@ pub fn lower_array_init<B: SlotBackend>(
     let mut element_vregs: Vec<VReg> = Vec::new();
     for e in &elements {
         let e_ty = b.ctx().cfg.get_inst(*e).ty;
-        if matches!(e_ty.kind(), TypeKind::Struct(_) | TypeKind::Array(_)) {
-            let nested = get_or_compute_field_vregs(b, *e)
-                .expect("nested aggregate element should have slot vregs");
-            element_vregs.extend(nested);
+        // Payload enums are multi-slot aggregates too: a discriminant-only
+        // enum (accessor returns None) stays a single-vreg scalar, but a
+        // payload-carrying element must contribute all its slots or the array
+        // stores only the tag and drops the payload (RUE-237).
+        if matches!(
+            e_ty.kind(),
+            TypeKind::Struct(_) | TypeKind::Array(_) | TypeKind::Enum(_)
+        ) {
+            if let Some(nested) = get_or_compute_field_vregs(b, *e) {
+                element_vregs.extend(nested);
+            } else {
+                element_vregs.push(b.get_vreg(*e));
+            }
         } else {
             element_vregs.push(b.get_vreg(*e));
         }

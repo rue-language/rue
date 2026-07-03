@@ -3725,8 +3725,13 @@ impl<'a> CfgLower<'a> {
                     // it 0 mod 16 at callee entry, violating SysV ABI).
                     let symbol_id = self.intern_symbol("__rue_exit");
                     self.mir.push(X86Inst::CallRel { symbol_id });
-                } else if return_type.as_struct().is_some() || return_type.is_array() {
-                    // Return a multi-slot aggregate (struct or array).
+                } else if self.ctx.is_multislot_aggregate(return_type) {
+                    // Return a multi-slot aggregate (struct, array, or a
+                    // payload-carrying enum). Payload enums were previously
+                    // omitted from this gate (it tested `struct || array`
+                    // only), so a by-value enum return fell into the scalar
+                    // branch and shipped only the discriminant in rax while
+                    // the payload slot in rdx was never written (RUE-237).
                     // Gather all slots through the single accessor, regardless of source
                     // (StructInit/ArrayInit/Call/BlockParam cache-hit; Load/Param/
                     // PlaceRead materialize). Previously the `_` arm returned only slot 0
