@@ -318,15 +318,18 @@ impl<'a> CfgLower<'a> {
                     .insert((block.id, param_idx as u32), vreg);
                 self.value_map.insert(*param_val, vreg);
 
-                // For aggregate types (structs, builtin String, fixed-size
-                // arrays), also allocate vregs for each slot. Arrays included:
-                // their primary vreg is just a placeholder, so without slot
-                // vregs every element would be dropped at the join (RUE-167).
+                // For any multi-slot aggregate (struct, builtin String,
+                // fixed-size array, or payload enum), also allocate vregs for
+                // each slot. Arrays included: their primary vreg is just a
+                // placeholder, so without slot vregs every element would be
+                // dropped at the join (RUE-167). Routed through the single
+                // is_multislot_aggregate predicate so enum payloads are handled
+                // by construction (RUE-248), matching the x86_64 backend.
                 // Exactly slot_count vregs: a zero-slot aggregate ([T; 0],
                 // fieldless struct) gets an EMPTY list, matching the empty
                 // slot lists its sources cache — a phantom slot here tripped
                 // the join's count assert (RUE-194).
-                if ty.is_struct() || ty.is_array() {
+                if self.ctx.is_multislot_aggregate(*ty) {
                     let slot_count = self.ctx.type_slot_count(*ty);
                     let mut slot_vregs = Vec::with_capacity(slot_count as usize);
                     if slot_count > 0 {
@@ -372,9 +375,10 @@ impl<'a> CfgLower<'a> {
                     .insert((block.id, param_idx as u32), vreg);
                 self.value_map.insert(*param_val, vreg);
 
-                if ty.is_struct() || ty.is_array() {
+                if self.ctx.is_multislot_aggregate(*ty) {
                     // Exactly slot_count vregs; zero-slot aggregates get an
-                    // empty list (RUE-194) — same as lower().
+                    // empty list (RUE-194) — same as lower(). Single predicate
+                    // covers struct/array/payload-enum (RUE-248).
                     let slot_count = self.ctx.type_slot_count(*ty);
                     let mut slot_vregs = Vec::with_capacity(slot_count as usize);
                     if slot_count > 0 {
@@ -1433,12 +1437,15 @@ impl<'a> CfgLower<'a> {
 
             CfgInstData::Store { slot, value: val } => {
                 let val_type = self.ctx.cfg.get_inst(*val).ty;
-                // Multi-slot aggregate (struct, builtin String fat pointer, or array):
-                // store ALL slots, not just the first. The accessor materializes
-                // lazily-sourced values and cache-hits eager ones; if it can't model
-                // the source (e.g. a dynamically-indexed place-read) fall back to the
-                // old single-slot behavior rather than ICE. (RUE-118, RUE-80)
-                let aggregate_vregs = if val_type.is_struct() || val_type.is_array() {
+                // Multi-slot aggregate (struct, builtin String fat pointer,
+                // array, or payload enum): store ALL slots, not just the first.
+                // Routed through the single is_multislot_aggregate predicate so
+                // enum payloads are covered by construction (RUE-248). The
+                // accessor materializes lazily-sourced values and cache-hits
+                // eager ones; if it can't model the source (e.g. a
+                // dynamically-indexed place-read) fall back to the old
+                // single-slot behavior rather than ICE. (RUE-118, RUE-80)
+                let aggregate_vregs = if self.ctx.is_multislot_aggregate(val_type) {
                     self.get_or_compute_field_vregs(*val)
                 } else {
                     None
@@ -1493,13 +1500,15 @@ impl<'a> CfgLower<'a> {
                 }
 
                 // Whole-value reassignment of a multi-slot aggregate (struct,
-                // builtin String, or array) through inout must write ALL slots
-                // through the pointer, not just the first — same shape as the
-                // aggregate branch of Store above. Caller slots descend from
-                // the pointer (stack grows down), so slot i lives at ptr - i*8.
-                // Unmodeled sources fall back to single-slot. (RUE-145)
+                // builtin String, array, or payload enum) through inout must
+                // write ALL slots through the pointer, not just the first —
+                // same shape as the aggregate branch of Store above. Caller
+                // slots descend from the pointer (stack grows down), so slot i
+                // lives at ptr - i*8. Unmodeled sources fall back to
+                // single-slot. Single is_multislot_aggregate predicate (RUE-248,
+                // RUE-145).
                 let val_type = self.ctx.cfg.get_inst(*val).ty;
-                let aggregate_vregs = if val_type.is_struct() || val_type.is_array() {
+                let aggregate_vregs = if self.ctx.is_multislot_aggregate(val_type) {
                     self.get_or_compute_field_vregs(*val)
                 } else {
                     None
@@ -2630,12 +2639,15 @@ impl<'a> CfgLower<'a> {
             }
 
             CfgInstData::PlaceWrite { place, value: val } => {
-                // A multi-slot aggregate value (struct, String, array) must write
-                // ALL its slots to the place, not just the first. The accessor
-                // materializes lazily-sourced values; if it can't model the source,
-                // fall back to the old single-slot behavior. (RUE-118, RUE-23)
+                // A multi-slot aggregate value (struct, String, array, or
+                // payload enum) must write ALL its slots to the place, not just
+                // the first. Single is_multislot_aggregate predicate so enum
+                // payloads are covered by construction (RUE-248). The accessor
+                // materializes lazily-sourced values; if it can't model the
+                // source, fall back to the old single-slot behavior. (RUE-118,
+                // RUE-23)
                 let val_type = self.ctx.cfg.get_inst(*val).ty;
-                let vals = if val_type.is_struct() || val_type.is_array() {
+                let vals = if self.ctx.is_multislot_aggregate(val_type) {
                     self.get_or_compute_field_vregs(*val)
                         .unwrap_or_else(|| vec![self.get_vreg(*val)])
                 } else {
@@ -3616,8 +3628,10 @@ impl<'a> CfgLower<'a> {
                 let args = self.ctx.cfg.get_extra(*args_start, *args_len);
                 for (i, &arg) in args.iter().enumerate() {
                     let arg_type = self.ctx.cfg.get_inst(arg).ty;
-                    if arg_type.is_struct() || arg_type.is_array() {
-                        // For aggregate args (structs, String, arrays), copy all slot vregs
+                    if self.ctx.is_multislot_aggregate(arg_type) {
+                        // For any multi-slot aggregate arg (struct, String,
+                        // array, payload enum) copy all slot vregs — single
+                        // is_multislot_aggregate predicate (RUE-248).
                         self.copy_aggregate_to_block_param(arg, *target, i as u32);
                     } else {
                         // For scalar args, just copy the single vreg
@@ -3663,8 +3677,10 @@ impl<'a> CfgLower<'a> {
                 let then_args = self.ctx.cfg.get_extra(*then_args_start, *then_args_len);
                 for (i, &arg) in then_args.iter().enumerate() {
                     let arg_type = self.ctx.cfg.get_inst(arg).ty;
-                    if arg_type.is_struct() || arg_type.is_array() {
-                        // For aggregate args (structs, String, arrays), copy all slot vregs
+                    if self.ctx.is_multislot_aggregate(arg_type) {
+                        // For any multi-slot aggregate arg (struct, String,
+                        // array, payload enum) copy all slot vregs — single
+                        // is_multislot_aggregate predicate (RUE-248).
                         self.copy_aggregate_to_block_param(arg, *then_block, i as u32);
                     } else {
                         // For scalar args, just copy the single vreg
@@ -3689,8 +3705,10 @@ impl<'a> CfgLower<'a> {
                 let else_args = self.ctx.cfg.get_extra(*else_args_start, *else_args_len);
                 for (i, &arg) in else_args.iter().enumerate() {
                     let arg_type = self.ctx.cfg.get_inst(arg).ty;
-                    if arg_type.is_struct() || arg_type.is_array() {
-                        // For aggregate args (structs, String, arrays), copy all slot vregs
+                    if self.ctx.is_multislot_aggregate(arg_type) {
+                        // For any multi-slot aggregate arg (struct, String,
+                        // array, payload enum) copy all slot vregs — single
+                        // is_multislot_aggregate predicate (RUE-248).
                         self.copy_aggregate_to_block_param(arg, *else_block, i as u32);
                     } else {
                         // For scalar args, just copy the single vreg
