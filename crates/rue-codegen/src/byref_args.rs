@@ -21,6 +21,7 @@
 //! offsets descend per the ABI convention — caller slots grow downward.
 
 use rue_cfg::{CfgInstData, CfgValue, Place, Projection};
+use rue_error::{CompileError, ErrorKind};
 
 use crate::agg_slots::SlotBackend;
 use crate::vreg::VReg;
@@ -36,30 +37,59 @@ pub trait ByrefAddrBackend: SlotBackend {
     /// Emit `dst = address of frame slot` (`lea dst, [rbp+off]` /
     /// `add dst, fp, #off`).
     fn emit_frame_addr(&mut self, dst: VReg, slot: u32);
+
+    /// Record a user-facing diagnostic discovered during the (infallible)
+    /// lowering pass, to be surfaced by `generate()` once lowering finishes.
+    /// Only the FIRST recorded error is kept. See [`lower_byref_arg_addr`].
+    fn record_deferred_error(&mut self, err: CompileError);
 }
 
 /// Lower a by-ref (inout/borrow) call argument to the vreg holding its
 /// address.
 ///
-/// Sema guarantees the argument is a place: a variable (`Load`/`Param`) or a
-/// field/index projection chain rooted at one (`PlaceRead`). Anything else is
-/// a compiler bug, hence the panic.
-pub fn lower_byref_arg_addr<B: ByrefAddrBackend + ?Sized>(b: &mut B, arg_value: CfgValue) -> VReg {
+/// Sema accepts as a by-ref argument a place: a variable (`Load`/`Param`) or a
+/// field/index projection chain rooted at one (`PlaceRead`). A non-place value
+/// with no storage to address — most reachably a `const` folded to an
+/// immediate, which sema currently lets slip through as a bare identifier
+/// (RUE-52) — records a clean diagnostic (`inout`/`borrow` argument must be an
+/// lvalue) via [`ByrefAddrBackend::record_deferred_error`] and falls back to a
+/// dummy vreg so lowering finishes before `generate()` surfaces the error,
+/// rather than aborting the process.
+pub fn lower_byref_arg_addr<B: ByrefAddrBackend + ?Sized>(
+    b: &mut B,
+    arg_value: CfgValue,
+    is_inout: bool,
+) -> VReg {
     // Extract the small Copy payload first so the CFG borrow ends before we
     // emit (emission needs `&mut B`).
     enum ArgShape {
         Local(u32),
         Param(u32),
         Place(Place),
+        NotAPlace,
     }
+    // The argument span, captured (Copy) before the match so the borrow of the
+    // CFG ends and a diagnostic can carry a source location.
+    let arg_span = b.ctx().cfg.get_inst(arg_value).span;
     let shape = match &b.ctx().cfg.get_inst(arg_value).data {
         CfgInstData::Load { slot } => ArgShape::Local(*slot),
         CfgInstData::Param { index } => ArgShape::Param(*index),
         CfgInstData::PlaceRead { place } => ArgShape::Place(*place),
-        other => panic!("by-ref argument must be a place, not {:?}", other),
+        _ => ArgShape::NotAPlace,
     };
 
     match shape {
+        ArgShape::NotAPlace => {
+            let kind = if is_inout {
+                ErrorKind::InoutNonLvalue
+            } else {
+                ErrorKind::BorrowNonLvalue
+            };
+            b.record_deferred_error(CompileError::new(kind, arg_span));
+            // Dead value: the whole codegen result is discarded once the
+            // deferred error is surfaced, but lowering must produce SOME vreg.
+            b.alloc_vreg()
+        }
         ArgShape::Local(slot) => {
             let addr_vreg = b.alloc_vreg();
             b.emit_frame_addr(addr_vreg, slot);

@@ -1268,12 +1268,18 @@ fn handle_emit_multi_file(
                 println!("=== MIR ({}) ===", options.target);
                 if let Some(ref state) = frontend_state {
                     for func in &state.functions {
-                        let mir = generate_mir(
+                        let mir = match generate_mir(
                             &func.cfg,
                             &state.type_pool,
                             &state.interner,
                             options.target,
-                        );
+                        ) {
+                            Ok(mir) => mir,
+                            Err(e) => {
+                                eprintln!("{}", formatter.format_error(&e));
+                                return Err(());
+                            }
+                        };
                         println!("function {}:", func.analyzed.name);
                         println!("{}", mir);
                     }
@@ -1285,12 +1291,18 @@ fn handle_emit_multi_file(
                 if let Some(ref state) = frontend_state {
                     for func in &state.functions {
                         println!("function {}:", func.analyzed.name);
-                        let liveness_info = generate_liveness_info(
+                        let liveness_info = match generate_liveness_info(
                             &func.cfg,
                             &state.type_pool,
                             &state.interner,
                             options.target,
-                        );
+                        ) {
+                            Ok(info) => info,
+                            Err(e) => {
+                                eprintln!("{}", formatter.format_error(&e));
+                                return Err(());
+                            }
+                        };
                         println!("{}", liveness_info);
                     }
                 }

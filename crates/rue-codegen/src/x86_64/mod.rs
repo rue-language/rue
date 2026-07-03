@@ -54,7 +54,7 @@ pub fn generate(
         crate::cfg_lower::fn_uses_sret_return(cfg, type_pool, cfg_lower::RET_REGS.len() as u32);
 
     // Lower CFG to X86Mir with virtual registers
-    let mir = CfgLower::new(cfg, type_pool, interner).lower();
+    let mir = CfgLower::new(cfg, type_pool, interner).lower()?;
 
     // Allocate physical registers (may add spill slots)
     // Spill slots go after locals, parameters AND the sret pointer slot to avoid conflicts
@@ -113,7 +113,7 @@ pub fn generate_with_asm(
         crate::cfg_lower::fn_uses_sret_return(cfg, type_pool, cfg_lower::RET_REGS.len() as u32);
 
     // Lower CFG to X86Mir with virtual registers
-    let mir = CfgLower::new(cfg, type_pool, interner).lower();
+    let mir = CfgLower::new(cfg, type_pool, interner).lower()?;
 
     // Allocate physical registers (may add spill slots)
     let existing_slots = num_locals + num_params + has_sret as u32;
@@ -170,7 +170,7 @@ pub fn generate_regalloc_info(
         crate::cfg_lower::fn_uses_sret_return(cfg, type_pool, cfg_lower::RET_REGS.len() as u32);
 
     // Lower CFG to X86Mir with virtual registers
-    let mir = CfgLower::new(cfg, type_pool, interner).lower();
+    let mir = CfgLower::new(cfg, type_pool, interner).lower()?;
 
     // Allocate physical registers with debug info
     let existing_slots = num_locals + num_params + has_sret as u32;
