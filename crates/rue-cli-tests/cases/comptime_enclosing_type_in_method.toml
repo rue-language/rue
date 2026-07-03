@@ -1,0 +1,90 @@
+# The enclosing `comptime T: type` parameter of a `-> type` constructor is
+# usable throughout its anonymous struct's method BODIES — not just the
+# field/method signatures (RUE-313). Before the fix, referencing `T` inside a
+# method body (to declare a `T`-typed local, or to build `Option(T)`) failed
+# with "unknown type 'T'" (E0204), so a source-level `Vec(T)` could not return
+# `Option(T)`.
+
+[section]
+id = "cli.comptime_enclosing_type_in_method"
+name = "Enclosing comptime T usable in method bodies"
+description = "The constructor's comptime type parameter resolves inside anonymous-struct method bodies (RUE-313)."
+
+# A `T`-typed local declared inside a method body resolves to the concrete
+# instantiation type (i32 here).
+[[case]]
+name = "enclosing_type_local_in_method_body"
+description = "`let x: T` inside a method body resolves to the instantiation's element type."
+files = [{ path = "main.rue", source = """
+fn Box(comptime T: type) -> type {
+    struct {
+        v: T,
+        fn dup(borrow self) -> T {
+            let x: T = self.v;
+            x
+        }
+    }
+}
+fn main() -> i32 {
+    let B = Box(i32);
+    let b = B { v: 42 };
+    b.dup()
+}
+""" }]
+exit_code = 42
+
+# The enclosing `T` can name `Option(T)` in the method's return type AND build
+# it in the body (via `let O = Option(T)`), so a method can return a real
+# Option over the element type.
+[[case]]
+name = "enclosing_type_builds_option_in_method_body"
+description = "A method returns Option(T) built from the enclosing comptime T."
+files = [{ path = "main.rue", source = """
+fn Option(comptime T: type) -> type {
+    enum { Some(T), None }
+}
+fn Box(comptime T: type) -> type {
+    struct {
+        v: T,
+        fn wrap(borrow self) -> Option(T) {
+            let O = Option(T);
+            O::Some(self.v)
+        }
+    }
+}
+fn main() -> i32 {
+    let B = Box(i32);
+    let O = Option(i32);
+    let b = B { v: 42 };
+    match b.wrap() {
+        O::Some(x) => x,
+        O::None => 0,
+    }
+}
+""" }]
+exit_code = 42
+
+# Two distinct instantiations each resolve their own enclosing T inside the
+# shared method source (bool vs i32), and stay distinct types.
+[[case]]
+name = "enclosing_type_two_instantiations"
+description = "Distinct instantiations resolve their own T in the same method body."
+files = [{ path = "main.rue", source = """
+fn Box(comptime T: type) -> type {
+    struct {
+        v: T,
+        fn echo(borrow self) -> T {
+            let x: T = self.v;
+            x
+        }
+    }
+}
+fn main() -> i32 {
+    let Bi = Box(i32);
+    let Bb = Box(bool);
+    let bi = Bi { v: 7 };
+    let bb = Bb { v: true };
+    if bb.echo() { bi.echo() } else { 0 }
+}
+""" }]
+exit_code = 7
