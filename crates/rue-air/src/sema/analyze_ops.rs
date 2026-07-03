@@ -3187,11 +3187,31 @@ impl<'a> Sema<'a> {
                 field_index: field_index as u32,
             }),
         );
-        let read_ref = air.add_inst(AirInst {
+        let mut value_ref = air.add_inst(AirInst {
             data: AirInstData::PlaceRead { place: place_ref },
             ty: field_type,
             span,
         });
+
+        // Projecting a non-Copy field out of this spilled temporary MOVES it
+        // out of the temporary. The temporary is dropped whole at scope exit
+        // (drop elaboration in rue-cfg), so without a move marker its per-field
+        // drop glue would re-drop the extracted field that the new owner (e.g.
+        // the `let` binding) also drops — a double free (RUE-258). Emit a
+        // field-path MarkMoved on the temp slot, exactly as the named-place
+        // path above does, so the temporary's scope-exit drop skips this field.
+        if !self.is_type_copy(field_type) {
+            value_ref = air.add_inst(AirInst {
+                data: AirInstData::MarkMoved {
+                    value: value_ref,
+                    slot: temp_slot,
+                    is_param: false,
+                    place: Some(place_ref),
+                },
+                ty: field_type,
+                span,
+            });
+        }
 
         // Note: We don't emit StorageDead here. The temporary will be cleaned up by
         // scope-based drop elaboration in the CFG builder. This is slightly conservative
@@ -3202,7 +3222,7 @@ impl<'a> Sema<'a> {
             data: AirInstData::Block {
                 stmts_start,
                 stmts_len: 2,
-                value: read_ref,
+                value: value_ref,
             },
             ty: field_type,
             span,

@@ -1,0 +1,80 @@
+# Projecting a field out of a TEMPORARY struct value (`(Pair { .. }).a`) moves
+# that field out of the temporary. The temporary is spilled to a hidden slot
+# and dropped whole at scope exit; before RUE-258 was fixed its per-field drop
+# glue re-dropped the extracted field that the `let` binding also drops — a
+# double free (the extracted field's destructor ran TWICE).
+#
+# The fix emits a field-path MarkMoved on the spill temporary, exactly as the
+# named-place field-move path does, so the temporary's scope-exit drop skips
+# the moved-out field. Each destructor now runs exactly once (spec 3.9:2).
+
+[section]
+id = "cli.temporary_field_projection_drops"
+name = "Field projection off a temporary struct drops the extracted field once"
+description = "Moving a field out of an anonymous struct temporary must not double-drop it (RUE-258)."
+
+[[case]]
+name = "temporary_field_projection_drops_once"
+description = "RUE-258 repro: `(Pair { a, b }).a` bound to `x` drops Inner{v:1} exactly once (at `x` exit) and Inner{v:2} exactly once (at temp exit); before the fix stdout was `1 2 999 1` — v=1 dropped twice."
+files = [{ path = "main.rue", source = """
+struct Inner { v: i32 }
+drop fn Inner(self) { @dbg(self.v); }
+struct Pair { a: Inner, b: Inner }
+fn main() -> i32 {
+    let x = (Pair { a: Inner{v:1}, b: Inner{v:2} }).a;
+    @dbg(999);
+    0
+}
+""" }]
+stdout = "2\n999\n1\n"
+exit_code = 0
+
+[[case]]
+name = "temporary_both_fields_projected_each_drops_once"
+description = "RUE-258: two temporaries, opposite fields extracted; each of the four Inner values drops exactly once."
+files = [{ path = "main.rue", source = """
+struct Inner { v: i32 }
+drop fn Inner(self) { @dbg(self.v); }
+struct Pair { a: Inner, b: Inner }
+fn main() -> i32 {
+    let x = (Pair { a: Inner{v:1}, b: Inner{v:2} }).a;
+    let y = (Pair { a: Inner{v:3}, b: Inner{v:4} }).b;
+    @dbg(999);
+    0
+}
+""" }]
+stdout = "2\n3\n999\n4\n1\n"
+exit_code = 0
+
+[[case]]
+name = "temporary_copy_field_projection_sibling_drops_once"
+description = "RUE-258 sibling check: extracting a Copy field from a temporary still drops the non-Copy sibling exactly once."
+files = [{ path = "main.rue", source = """
+struct Inner { v: i32 }
+drop fn Inner(self) { @dbg(self.v); }
+struct Pair { n: i32, b: Inner }
+fn main() -> i32 {
+    let x = (Pair { n: 7, b: Inner{v:2} }).n;
+    @dbg(x);
+    0
+}
+""" }]
+stdout = "2\n7\n"
+exit_code = 0
+
+[[case]]
+name = "named_place_field_move_control_drops_once"
+description = "Control: the analogous field move out of a NAMED place drops each value exactly once (this path already worked; guards against regressing it)."
+files = [{ path = "main.rue", source = """
+struct Inner { v: i32 }
+drop fn Inner(self) { @dbg(self.v); }
+struct Pair { a: Inner, b: Inner }
+fn main() -> i32 {
+    let p = Pair { a: Inner{v:1}, b: Inner{v:2} };
+    let x = p.a;
+    @dbg(999);
+    0
+}
+""" }]
+stdout = "999\n1\n2\n"
+exit_code = 0

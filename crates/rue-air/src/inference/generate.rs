@@ -1685,9 +1685,18 @@ impl<'a> ConstraintGenerator<'a> {
                     for (i, arg) in args.iter().enumerate() {
                         let arg_info = self.generate(arg.value, ctx);
                         if let Some(&pty) = payload.get(i) {
+                            // Convert the declared payload type structurally so
+                            // an array payload (`[i32; 2]`) unifies with an
+                            // array-literal argument (`[1, 2]`) and propagates
+                            // the expected element type into its literal
+                            // elements — exactly as struct-field init does.
+                            // Using `InferType::Concrete` here left the literal
+                            // element type unconstrained, so `[{integer}; 2]`
+                            // failed to unify with `[i32; 2]` (RUE-260).
+                            let expected = self.type_to_infer(pty);
                             self.add_constraint(Constraint::equal(
                                 arg_info.ty,
-                                InferType::Concrete(pty),
+                                expected,
                                 arg_info.span,
                             ));
                         }
