@@ -1,4 +1,6 @@
-// Vec(T) — a growable, heap-backed collection written in Rue (RUE-1, ADR-0041).
+// ArrayBuf(T) — a growable, heap-backed collection written in Rue (RUE-1,
+// ADR-0041; renamed from Vec to ArrayBuf, the growable rung of the collection
+// trio `[T; N]` / `borrow [T]` / `ArrayBuf(T)`, ADR-0043 / RUE-323).
 //
 // This is a *source-level* standard-library type: it owns a heap buffer
 // addressed by a raw `ptr mut T` and grows it (amortized 2x) with the unchecked
@@ -7,14 +9,15 @@
 // mutation, and the raw-pointer intrinsics all at once — exactly the "stdlib on
 // unchecked code" framing of RUE-1.
 //
-// `get`/`pop` return `Option(T)` (from the sibling `option.rue`), so Vec must
-// be compiled together with `option.rue` in the same flat multi-file namespace:
+// `get`/`pop` return `Option(T)` (from the sibling `option.rue`), so ArrayBuf
+// must be compiled together with `option.rue` in the same flat multi-file
+// namespace:
 //
-//     rue my_program.rue vec.rue option.rue -o my_program
+//     rue my_program.rue arraybuf.rue option.rue -o my_program
 //
 // Usage (the element type is chosen when you instantiate the type function):
 //
-//     let V = Vec(i32);
+//     let V = ArrayBuf(i32);
 //     let O = Option(i32);
 //     let mut v = V::new();
 //     v.push(10);
@@ -26,9 +29,9 @@
 //     // the heap buffer is freed AUTOMATICALLY when `v` goes out of scope
 //     // (the `drop fn` below); call `v.free()` only for explicit early release.
 //
-// RAII: `Vec` owns its buffer and frees it in its destructor at scope exit
+// RAII: `ArrayBuf` owns its buffer and frees it in its destructor at scope exit
 // (RUE-312), so callers no longer have to remember `free()`. `free()` remains
-// available to release the buffer early; it resets the vector to empty, so the
+// available to release the buffer early; it resets the buffer to empty, so the
 // scope-exit destructor is then a safe no-op. `get`/`pop` return `Option(T)`
 // (RUE-313).
 //
@@ -48,7 +51,7 @@
 // The enclosing element type `T` is usable throughout the method bodies below —
 // e.g. to name `Option(T)` and bind `let O = Option(T)` (RUE-313).
 
-pub fn Vec(comptime T: type) -> type {
+pub fn ArrayBuf(comptime T: type) -> type {
     struct {
         buf: ptr mut T,
         len: u64,
@@ -56,7 +59,7 @@ pub fn Vec(comptime T: type) -> type {
 
         // --- construction ---
 
-        // An empty vector. No allocation is performed until the first push.
+        // An empty buffer. No allocation is performed until the first push.
         fn new() -> Self {
             let zero: u64 = 0;
             Self {
@@ -66,7 +69,7 @@ pub fn Vec(comptime T: type) -> type {
             }
         }
 
-        // An empty vector with room pre-reserved for `n` elements.
+        // An empty buffer with room pre-reserved for `n` elements.
         fn with_capacity(n: u64) -> Self {
             let zero: u64 = 0;
             let mut v = Self { buf: checked { @int_to_ptr(zero) }, len: 0, cap: 0 };
@@ -139,7 +142,7 @@ pub fn Vec(comptime T: type) -> type {
         }
 
         // Remove and return the last element as `Some(x)`, or `None` when the
-        // vector is empty (ADR-0041).
+        // buffer is empty (ADR-0041).
         fn pop(inout self) -> Option(T) {
             let O = Option(T);
             if self.len == 0 {
@@ -192,14 +195,14 @@ pub fn Vec(comptime T: type) -> type {
             self.cap = 0;
         }
 
-        // Destructor: free the backing buffer automatically when a `Vec` value
-        // goes out of scope (RUE-312). A `drop fn(self)` inside the anonymous
-        // struct is monomorphized with the type and registered as the concrete
-        // type's destructor, so the ordinary scope-exit drop glue runs it — the
-        // same machinery a named struct's top-level `drop fn` uses. For a Copy
-        // `T` there is no per-element glue, so freeing the buffer is all that is
-        // required. (After an explicit `free()`, `buf` is null and `cap` is 0,
-        // so `@free(null, 0)` here is a no-op.)
+        // Destructor: free the backing buffer automatically when an `ArrayBuf`
+        // value goes out of scope (RUE-312). A `drop fn(self)` inside the
+        // anonymous struct is monomorphized with the type and registered as the
+        // concrete type's destructor, so the ordinary scope-exit drop glue runs
+        // it — the same machinery a named struct's top-level `drop fn` uses. For
+        // a Copy `T` there is no per-element glue, so freeing the buffer is all
+        // that is required. (After an explicit `free()`, `buf` is null and `cap`
+        // is 0, so `@free(null, 0)` here is a no-op.)
         drop fn(self) {
             checked { @free(self.buf, self.cap); };
         }

@@ -1,16 +1,18 @@
-// Dogfood for the source-level Vec(T) library (examples/std/vec.rue, RUE-1).
+// Dogfood for the source-level ArrayBuf(T) library (examples/std/arraybuf.rue,
+// RUE-1).
 //
 // Compile (flat multi-file namespace; names resolve across the listed files,
-// and Vec's `get`/`pop` return `Option(T)` from option.rue):
-//   rue examples/std/vec_demo.rue examples/std/vec.rue examples/std/option.rue \
-//       -o vec_demo
+// and ArrayBuf's `get`/`pop` return `Option(T)` from option.rue):
+//   rue examples/std/arraybuf_demo.rue examples/std/arraybuf.rue \
+//       examples/std/option.rue -o arraybuf_demo
 //
-// Exercises push/len/get/set/pop/while-sum/out-of-bounds on a Vec(i32) with the
-// `Option(T)`-returning accessors (RUE-313). The buffer is freed automatically
-// when `v` goes out of scope (Vec's `drop fn`, RUE-312) — no explicit `free()`.
+// Exercises push/len/get/set/pop/while-sum/out-of-bounds on an ArrayBuf(i32)
+// with the `Option(T)`-returning accessors (RUE-313). The buffer is freed
+// automatically when `v` goes out of scope (ArrayBuf's `drop fn`, RUE-312) — no
+// explicit `free()`.
 
 fn main() -> i32 {
-    let V = Vec(i32);
+    let V = ArrayBuf(i32);
     let O = Option(i32);
 
     let mut v = V::new();

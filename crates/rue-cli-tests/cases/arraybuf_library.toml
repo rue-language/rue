@@ -1,28 +1,30 @@
-# The source-level Vec(T) library (examples/std/vec.rue) driven end-to-end as a
-# user would: a flat multi-file compile of a program that exercises
-# push / len / get / set / pop / a while-loop sum / out-of-bounds access on a
-# Vec(i32) (RUE-1, ADR-0041).
+# The source-level ArrayBuf(T) library (examples/std/arraybuf.rue) driven
+# end-to-end as a user would: a flat multi-file compile of a program that
+# exercises push / len / get / set / pop / a while-loop sum / out-of-bounds
+# access on an ArrayBuf(i32) (RUE-1, ADR-0041; renamed from Vec to ArrayBuf,
+# ADR-0043 / RUE-323).
 #
-# Vec is generic over a Copy element type and is built entirely on the unchecked
-# heap intrinsics @alloc/@realloc/@free behind a safe method API. Its `get`/`pop`
-# accessors return `Option(T)` (from option.rue), with the enclosing element type
-# `T` usable inside the method bodies (RUE-313). It also owns its buffer and frees
-# it automatically in a `drop fn` at scope exit (RUE-312); the
-# `vec_i32_raii_auto_free` case below exercises that path with no explicit free()
-# call. See vec.rue's header for the remaining limitation: Copy element types only.
+# ArrayBuf is generic over a Copy element type and is built entirely on the
+# unchecked heap intrinsics @alloc/@realloc/@free behind a safe method API. Its
+# `get`/`pop` accessors return `Option(T)` (from option.rue), with the enclosing
+# element type `T` usable inside the method bodies (RUE-313). It also owns its
+# buffer and frees it automatically in a `drop fn` at scope exit (RUE-312); the
+# `arraybuf_i32_raii_auto_free` case below exercises that path with no explicit
+# free() call. See arraybuf.rue's header for the remaining limitation: Copy
+# element types only.
 
 [section]
-id = "cli.vec_library"
-name = "Source-level Vec(T) library"
-description = "A Rue-source Vec(T) on @alloc/@free with a full push/pop/get/set dogfood returning Option(T) (RUE-1, RUE-313)."
+id = "cli.arraybuf_library"
+name = "Source-level ArrayBuf(T) library"
+description = "A Rue-source ArrayBuf(T) on @alloc/@free with a full push/pop/get/set dogfood returning Option(T) (RUE-1, RUE-313)."
 
 [[case]]
-name = "vec_i32_dogfood"
-description = "push/len/get/set/pop/while-sum/out-of-bounds on Vec(i32), Option(T) accessors, flat multi-file."
+name = "arraybuf_i32_dogfood"
+description = "push/len/get/set/pop/while-sum/out-of-bounds on ArrayBuf(i32), Option(T) accessors, flat multi-file."
 files = [
   { path = "main.rue", source = """
 fn main() -> i32 {
-    let V = Vec(i32);
+    let V = ArrayBuf(i32);
     let O = Option(i32);
 
     let mut v = V::new();
@@ -57,8 +59,8 @@ pub fn Option(comptime T: type) -> type {
     enum { Some(T), None }
 }
 """ },
-  { path = "vec.rue", source = """
-pub fn Vec(comptime T: type) -> type {
+  { path = "arraybuf.rue", source = """
+pub fn ArrayBuf(comptime T: type) -> type {
     struct {
         buf: ptr mut T,
         len: u64,
@@ -134,7 +136,7 @@ pub fn Vec(comptime T: type) -> type {
 }
 """ },
 ]
-args = ["main.rue", "vec.rue", "option.rue", "-o", "prog"]
+args = ["main.rue", "arraybuf.rue", "option.rue", "-o", "prog"]
 stdout = "3\n20\n99\n30\n2\n-1\n119\n"
 exit_code = 119
 
@@ -142,16 +144,16 @@ exit_code = 119
 # round-trips correctly now that aggregates are laid out ascending and raw
 # pointers walk their slots upward (ADR-0040 / RUE-311). Previously the second
 # field was written at `ptr - 8`, corrupting the preceding element/allocation,
-# so Vec was scoped to single-slot Copy elements.
+# so ArrayBuf was scoped to single-slot Copy elements.
 [[case]]
-name = "vec_struct_element_dogfood"
-description = "push/get/set/pop on Vec(Point) with a two-field struct element (RUE-311)."
+name = "arraybuf_struct_element_dogfood"
+description = "push/get/set/pop on ArrayBuf(Point) with a two-field struct element (RUE-311)."
 files = [
   { path = "main.rue", source = """
 struct Point { x: i32, y: i32 }
 fn main() -> i32 {
-    let m = @import(\"vec.rue\");
-    let V = m.Vec(Point);
+    let m = @import(\"arraybuf.rue\");
+    let V = m.ArrayBuf(Point);
 
     let mut v = V::new();
     v.push(Point { x: 1, y: 2 });
@@ -174,8 +176,8 @@ fn main() -> i32 {
     0
 }
 """ },
-  { path = "vec.rue", source = """
-pub fn Vec(comptime T: type) -> type {
+  { path = "arraybuf.rue", source = """
+pub fn ArrayBuf(comptime T: type) -> type {
     struct {
         buf: ptr mut T,
         len: u64,
@@ -235,26 +237,26 @@ pub fn Vec(comptime T: type) -> type {
 }
 """ },
 ]
-args = ["main.rue", "vec.rue", "-o", "prog"]
+args = ["main.rue", "arraybuf.rue", "-o", "prog"]
 stdout = "3\n3\n4\n90\n91\n5\n6\n2\n"
 exit_code = 0
 
-# RAII: the Vec owns its buffer and frees it automatically in its `drop fn` at
-# scope exit — the program never calls free(). This exercises the real Vec
-# destructor end-to-end (parse + monomorphize + drop-glue + @free), the last
-# gap to a real Vec (RUE-312). The `drop fn(self)` here mirrors examples/std/
-# vec.rue. Output is the same as the explicit-free dogfood; the destructor's
-# @free is a silent no-op under the bump allocator, so correctness is that the
-# program compiles, runs, and exits cleanly with the buffer released by the
-# destructor rather than a manual call.
+# RAII: the ArrayBuf owns its buffer and frees it automatically in its `drop fn`
+# at scope exit — the program never calls free(). This exercises the real
+# ArrayBuf destructor end-to-end (parse + monomorphize + drop-glue + @free), the
+# last gap to a real ArrayBuf (RUE-312). The `drop fn(self)` here mirrors
+# examples/std/arraybuf.rue. Output is the same as the explicit-free dogfood; the
+# destructor's @free is a silent no-op under the bump allocator, so correctness
+# is that the program compiles, runs, and exits cleanly with the buffer released
+# by the destructor rather than a manual call.
 [[case]]
-name = "vec_i32_raii_auto_free"
-description = "Vec(i32) frees its buffer via its drop fn at scope exit — no explicit free() call (RUE-312)."
+name = "arraybuf_i32_raii_auto_free"
+description = "ArrayBuf(i32) frees its buffer via its drop fn at scope exit — no explicit free() call (RUE-312)."
 files = [
   { path = "main.rue", source = """
 fn main() -> i32 {
-    let m = @import(\"vec.rue\");
-    let V = m.Vec(i32);
+    let m = @import(\"arraybuf.rue\");
+    let V = m.ArrayBuf(i32);
 
     let mut v = V::new();
     v.push(10);
@@ -269,8 +271,8 @@ fn main() -> i32 {
     // v is dropped here: its drop fn frees the buffer automatically.
 }
 """ },
-  { path = "vec.rue", source = """
-pub fn Vec(comptime T: type) -> type {
+  { path = "arraybuf.rue", source = """
+pub fn ArrayBuf(comptime T: type) -> type {
     struct {
         buf: ptr mut T,
         len: u64,
@@ -311,6 +313,6 @@ pub fn Vec(comptime T: type) -> type {
 }
 """ },
 ]
-args = ["main.rue", "vec.rue", "-o", "prog"]
+args = ["main.rue", "arraybuf.rue", "-o", "prog"]
 stdout = "3\n10\n30\n60\n"
 exit_code = 60
