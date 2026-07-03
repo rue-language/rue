@@ -888,9 +888,87 @@ impl Sema<'_> {
                 Ok(self.resolve_named_type_value(name).map(ConstValue::Type))
             }
 
+            // Call to a `-> type` function: reduce it to the resulting type
+            // value when the callee is a type constructor and every argument
+            // is compile-time known. This makes comptime type-function calls
+            // compose in ANY position — a delegating return body
+            // (`fn Alias() -> type { Point() }`), a nested argument
+            // (`WrapA(WrapA(i32))`), and chains thereof (RUE-251).
+            InstData::Call {
+                name,
+                args_start,
+                args_len,
+            } => {
+                let (name, args_start, args_len) = (*name, *args_start, *args_len);
+                self.eval_comptime_type_call(name, args_start, args_len, env)
+            }
+
             // Everything else requires runtime evaluation
             _ => Ok(None),
         }
+    }
+
+    /// Reduce a call to a `-> type` function to its resulting type value, when
+    /// the callee is a type constructor and every argument is compile-time
+    /// known. Shared by [`eval_const_expr`]'s `Call` arm (so nested/delegating
+    /// type-function calls compose) and the analysis pass (RUE-251).
+    ///
+    /// Returns `Ok(None)` — not an error — for a callee that does not return
+    /// `type`, a non-type-constructor arity/mode, or a non-const argument: the
+    /// call is then just a runtime call and simply non-evaluable here.
+    ///
+    /// [`eval_const_expr`]: Sema::eval_const_expr
+    fn eval_comptime_type_call(
+        &mut self,
+        name: Spur,
+        args_start: u32,
+        args_len: u32,
+        env: &mut ComptimeEnv,
+    ) -> CompileResult<Option<ConstValue>> {
+        let Some(fn_info) = self.functions.get(&name) else {
+            return Ok(None);
+        };
+        // Only `-> type` functions reduce to a type value at compile time.
+        if fn_info.return_type != Type::COMPTIME_TYPE {
+            return Ok(None);
+        }
+        let fn_body = fn_info.body;
+        let params = fn_info.params;
+        let param_names = self.param_arena.names(params).to_vec();
+        let param_comptime = self.param_arena.comptime(params).to_vec();
+        let args = self.rir.get_call_args(args_start, args_len).to_vec();
+        // Same gate as `analyze_call`'s implicit-comptime path: only a no-arg
+        // or all-comptime-param type constructor is implicitly evaluated.
+        if args.len() != param_names.len()
+            || !(args.is_empty() || param_comptime.iter().all(|&c| c))
+        {
+            return Ok(None);
+        }
+        // Evaluate each argument compositionally in the current environment,
+        // so a nested type-function call (`WrapA(i32)` inside
+        // `WrapA(WrapA(i32))`) and references to enclosing comptime
+        // params/aliases both resolve. A non-const argument makes the whole
+        // call non-evaluable.
+        let mut callee_types: HashMap<Spur, Type> = HashMap::new();
+        let mut callee_values: HashMap<Spur, ConstValue> = HashMap::new();
+        for (i, arg) in args.iter().enumerate() {
+            let Some(v) = self.eval_const_expr(arg.value, env)? else {
+                return Ok(None);
+            };
+            match v {
+                ConstValue::Type(t) => {
+                    callee_types.insert(param_names[i], t);
+                }
+                value => {
+                    callee_values.insert(param_names[i], value);
+                }
+            }
+        }
+        // The callee body sees only its own parameters. Evaluate it directly
+        // (rather than via the error-swallowing `try_*` wrapper) so a
+        // diagnostic raised inside the constructor propagates.
+        let mut callee_env = ComptimeEnv::with_subst(&callee_types, &callee_values);
+        self.eval_const_expr(fn_body, &mut callee_env)
     }
 
     /// Pre-resolve `let`-bound compile-time type aliases in a function body,
@@ -1003,49 +1081,13 @@ impl Sema<'_> {
         eval_types: &HashMap<Spur, Type>,
         eval_values: &HashMap<Spur, ConstValue>,
     ) -> Option<Type> {
-        if let InstData::Call {
-            name,
-            args_start,
-            args_len,
-        } = &self.rir.get(init).data
-        {
-            let fn_info = self.functions.get(name)?;
-            if fn_info.return_type != Type::COMPTIME_TYPE {
-                return None;
-            }
-            let fn_body = fn_info.body;
-            let params = fn_info.params;
-            let param_names = self.param_arena.names(params).to_vec();
-            let param_comptime = self.param_arena.comptime(params).to_vec();
-            let args = self.rir.get_call_args(*args_start, *args_len).to_vec();
-            // Same gate as `analyze_call`: only no-arg or all-comptime-param
-            // type constructors are implicitly comptime-evaluated.
-            if args.len() != param_names.len()
-                || !(args.is_empty() || param_comptime.iter().all(|&c| c))
-            {
-                return None;
-            }
-            let mut callee_types: HashMap<Spur, Type> = HashMap::new();
-            let mut callee_values: HashMap<Spur, ConstValue> = HashMap::new();
-            for (i, arg) in args.iter().enumerate() {
-                match self.try_evaluate_const_with_subst(arg.value, eval_types, eval_values)? {
-                    ConstValue::Type(t) => {
-                        callee_types.insert(param_names[i], t);
-                    }
-                    value => {
-                        callee_values.insert(param_names[i], value);
-                    }
-                }
-            }
-            match self.try_evaluate_const_with_subst(fn_body, &callee_types, &callee_values) {
-                Some(ConstValue::Type(t)) => Some(t),
-                _ => None,
-            }
-        } else {
-            match self.try_evaluate_const_with_subst(init, eval_types, eval_values) {
-                Some(ConstValue::Type(t)) => Some(t),
-                _ => None,
-            }
+        // `eval_const_expr`'s `Call` arm reduces type-function calls
+        // compositionally (including nested/delegating ones), so a single
+        // evaluation of the initializer handles `let P = Q;`,
+        // `let P = struct { .. };`, and `let P = Pair(i32);` alike (RUE-251).
+        match self.try_evaluate_const_with_subst(init, eval_types, eval_values) {
+            Some(ConstValue::Type(t)) => Some(t),
+            _ => None,
         }
     }
 }
