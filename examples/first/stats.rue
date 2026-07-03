@@ -1,0 +1,51 @@
+// The first real Rue program (RUE-226 dogfooding milestone).
+//
+// Reads a count N on the first line, then N integers (one per line), and
+// prints how many were read, their sum, and the maximum.
+//
+//   $ printf '3\n7\n5\n1\n' | rue examples/first/stats.rue examples/std/option.rue -o stats && ./stats
+//   count: 3
+//   sum: 13
+//   max: 7
+//
+// Two things this program reveals about Rue today (the point of dogfooding):
+//
+//   * No prelude yet (RUE-287): `Option` is not in scope automatically, so we
+//     @import it from the std library. Every peer language (Rust, Swift, Zig)
+//     has an optional type built in.
+//   * A count-prefixed format is used because @read_line traps on EOF and
+//     @parse_i64 traps on bad input rather than signalling failure. Once error
+//     handling lands (RUE-6), this becomes a natural read-until-EOF loop.
+//
+// Exercises the now-stabilized dogfooding set: @read_line, @parse_i64, a generic
+// Option, String concatenation + @to_string, println, and a while loop with a
+// match expression modelling "the max of a possibly-empty set".
+
+fn main() -> i32 {
+    let Opt = @import("../std/option.rue").Option(i64);
+
+    let n = @parse_i64(@read_line());
+
+    let mut i: i64 = 0;
+    let mut sum: i64 = 0;
+    let mut max: Opt = Opt::None;
+
+    while i < n {
+        let x = @parse_i64(@read_line());
+        sum = sum + x;
+        max = match max {
+            Opt::None => Opt::Some(x),
+            Opt::Some(m) => if x > m { Opt::Some(x) } else { Opt::Some(m) },
+        };
+        i = i + 1;
+    }
+
+    println("count: " + @to_string(n));
+    println("sum: " + @to_string(sum));
+    match max {
+        Opt::Some(m) => println("max: " + @to_string(m)),
+        Opt::None => println("max: (no input)"),
+    }
+
+    @intCast(n)
+}

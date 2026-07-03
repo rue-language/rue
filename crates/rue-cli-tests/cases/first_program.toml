@@ -1,0 +1,52 @@
+# The first real Rue program (RUE-226 dogfooding milestone): examples/first/stats.rue.
+# Reads a count N, then N integers, and prints count/sum/max. Regression-locks the
+# whole freshly-stabilized dogfooding set working together end to end, including the
+# generic Option imported from the std library (no prelude yet, so it's imported).
+
+[section]
+id = "cli.first_program"
+name = "First dogfood program (stats)"
+description = "count-prefixed integers -> count/sum/max via @read_line, @parse_i64, an imported generic Option, and println."
+
+[[case]]
+name = "stats_three_numbers"
+files = [
+  { path = "stats.rue", source = """
+fn main() -> i32 {
+    let Opt = @import("option.rue").Option(i64);
+    let n = @parse_i64(@read_line());
+    let mut i: i64 = 0;
+    let mut sum: i64 = 0;
+    let mut max: Opt = Opt::None;
+    while i < n {
+        let x = @parse_i64(@read_line());
+        sum = sum + x;
+        max = match max {
+            Opt::None => Opt::Some(x),
+            Opt::Some(m) => if x > m { Opt::Some(x) } else { Opt::Some(m) },
+        };
+        i = i + 1;
+    }
+    println("count: " + @to_string(n));
+    println("sum: " + @to_string(sum));
+    match max {
+        Opt::Some(m) => println("max: " + @to_string(m)),
+        Opt::None => println("max: (no input)"),
+    }
+    @intCast(n)
+}
+""" },
+  { path = "option.rue", source = """
+pub fn Option(comptime T: type) -> type {
+    enum { Some(T), None }
+}
+""" },
+]
+args = ["stats.rue", "option.rue", "-o", "prog"]
+stdin = "3\n7\n5\n1\n"
+stdout = """
+count: 3
+sum: 13
+max: 7
+"""
+exit_code = 3
