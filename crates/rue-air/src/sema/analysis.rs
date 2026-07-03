@@ -6216,6 +6216,50 @@ impl<'a> Sema<'a> {
         Some(())
     }
 
+    /// Scan an anonymous struct's methods for a method that declares its *own*
+    /// `comptime T: type` parameter (a type parameter owned by the method, not
+    /// by the enclosing `-> type` constructor). Returns the offending method's
+    /// span and name if found.
+    ///
+    /// Such a method would need to be monomorphized per call over its own type
+    /// parameter — a generics feature that is not yet supported (RUE-284).
+    /// Detecting it here lets the constructor's comptime reduction raise a clear
+    /// diagnostic *at the method* instead of silently failing method
+    /// registration, which used to poison the whole constructor and surface as a
+    /// misleading E1200 mis-located at the `let` that instantiates it.
+    pub(crate) fn find_method_own_comptime_type_param(
+        &self,
+        methods_start: u32,
+        methods_len: u32,
+    ) -> Option<(Span, String)> {
+        let method_refs = self.rir.get_inst_refs(methods_start, methods_len);
+        for method_ref in method_refs {
+            let method_inst = self.rir.get(method_ref);
+            if let InstData::FnDecl {
+                name: method_name,
+                params_start,
+                params_len,
+                ..
+            } = &method_inst.data
+            {
+                let params = self.rir.get_params(*params_start, *params_len);
+                for p in params {
+                    // A method-owned `comptime T: type` parameter: `comptime`
+                    // modifier plus the `type` type. (The enclosing
+                    // constructor's own comptime params are not method params,
+                    // so they are never seen here.)
+                    if p.is_comptime && self.interner.resolve(&p.ty) == "type" {
+                        return Some((
+                            method_inst.span,
+                            self.interner.resolve(method_name).to_string(),
+                        ));
+                    }
+                }
+            }
+        }
+        None
+    }
+
     /// Register methods from an anonymous struct type with type substitution (comptime-safe).
     ///
     /// This variant supports comptime parameter capture by using `resolve_type_for_comptime_with_subst`

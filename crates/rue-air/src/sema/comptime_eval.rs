@@ -853,6 +853,34 @@ impl Sema<'_> {
                 // Register methods if present and not yet registered for this
                 // struct (it may have been created earlier without methods).
                 if *methods_len > 0 {
+                    // A method that declares its own `comptime T: type`
+                    // parameter would need to be monomorphized per call over
+                    // that parameter — a generics feature not yet supported
+                    // (RUE-284). Merely *defining* such a method used to make
+                    // the enclosing `-> type` constructor non-evaluable
+                    // (registration returned None → the reduction bailed with
+                    // Ok(None)), surfacing as a misleading E1200 mis-located at
+                    // the `let` that instantiates the constructor. Detect it
+                    // here and raise a clear diagnostic pointing *at the
+                    // method* instead, without poisoning the rest of the
+                    // reduction.
+                    if let Some((method_span, method_name)) =
+                        self.find_method_own_comptime_type_param(*methods_start, *methods_len)
+                    {
+                        return Err(CompileError::new(
+                            ErrorKind::ComptimeEvaluationFailed {
+                                reason: format!(
+                                    "method '{}' declares its own `comptime` type parameter, \
+                                     which is not yet supported (a method cannot be \
+                                     monomorphized over its own type parameter); \
+                                     move the type parameter to the enclosing type \
+                                     constructor instead",
+                                    method_name
+                                ),
+                            },
+                            method_span,
+                        ));
+                    }
                     let Some(struct_id) = struct_ty.as_struct() else {
                         return Ok(None);
                     };
