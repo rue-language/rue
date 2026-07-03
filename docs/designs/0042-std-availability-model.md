@@ -1,10 +1,10 @@
 ---
 id: 0042
 title: "Standard-library availability model (str/String split, prelude vs explicit std)"
-status: proposed
+status: accepted
 tags: [stdlib, modules, strings, prelude, ergonomics, language-shape]
 created: 2026-07-03
-accepted:
+accepted: 2026-07-03
 implemented:
 spec-sections: ["2 (lexical/literals)", "3.7 (String)", "10 (modules)"]
 supersedes:
@@ -18,9 +18,17 @@ relates: ["ADR-0020", "ADR-0037", "RUE-315", "RUE-287", "RUE-6", "RUE-1"]
 > the library type `StrBuf`). The *availability mechanism* this ADR raises
 > (prelude vs. explicit import for library types) remains open — RUE-315 / RUE-287.
 
-> **Status: Proposed / for discussion (Steve + Dorian).** This ADR frames the
-> problem, lays out the options with trade-offs, and records a recommendation.
-> It does **not** ratify a decision. Tracking issue: RUE-315.
+> **Status: Accepted — ratified by Steve, 2026-07-03.** Decision: **Option C** —
+> an explicit `@import("std")` bundle, namespace-qualified (`std.Option`,
+> `std.StrBuf`, …), Zig-style, with **no prelude initially**. Adopted to be
+> *tried*: if the `std.` tax proves too heavy in practice, add a minimal prelude
+> (Option B) — that reversal is cheap. Backed by **lazy semantic analysis**
+> (compile-on-reference) so a growing `std` stays compile-time-cheap regardless —
+> the natural fit for Rue's comptime-source std, exactly as Zig does it. NB: the
+> string *type structure* half of this ADR is now owned by ADR-0043 (de-blessed
+> `String` → `StrBuf`); what this ADR ratifies is the *availability mechanism*.
+> Implementation: RUE-315 (std bundle + `@import("std")` namespacing) and a
+> separate lazy-analysis design pass. Tracking issue: RUE-315.
 
 ## Context
 
