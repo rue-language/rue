@@ -2938,6 +2938,34 @@ impl<'a> Sema<'a> {
             // Analyze the value
             let value_result = self.analyze_inst(air, value, ctx)?;
 
+            // The write reinitializes its destination element: the assigned
+            // path is no longer moved, so `arr[0] = arr[0]` un-marks the
+            // move-out the RHS `arr[0]` just recorded and leaves the element
+            // usable again (spec 3.8:55). This mirrors `analyze_field_set_impl`,
+            // which reinitializes an assigned field path. Only a direct,
+            // constant-index element of a root array is reinitialized: that is
+            // exactly the shape `record_element_move_out` tracks per element
+            // (`projections == [Index]` with a known index), so a nested or
+            // dynamic index — which was never recorded as a per-element move —
+            // is conservatively left alone (RUE-228).
+            if let [
+                ProjectionInfo {
+                    const_index: Some(k),
+                    ..
+                },
+            ] = trace.projections.as_slice()
+            {
+                if *k >= 0 {
+                    let elem_path = vec![index_path_segment(self.interner, *k as u64)];
+                    if let Some(state) = ctx.moved_vars.get_mut(&trace.root_var) {
+                        state.mark_path_reinitialized(&elem_path);
+                        if state.is_empty() {
+                            ctx.moved_vars.remove(&trace.root_var);
+                        }
+                    }
+                }
+            }
+
             // Emit PlaceWrite instruction
             let place_ref = Self::build_place_ref(air, &trace);
             let air_ref = air.add_inst(AirInst {
@@ -5070,7 +5098,33 @@ impl<'a> Sema<'a> {
             }),
         };
 
-        Ok(AnalysisResult::new(store_ref, Type::UNIT))
+        // A bare `Store`/`ParamStore` produces no CFG value, so returning it as
+        // the expression's value leaves an argument position with no operand —
+        // `lower_value` returns `None`, the CFG block ends unterminated, and
+        // codegen aborts ("block has no terminator", RUE-224). Wrap the store as
+        // a side-effect statement inside a Block whose value is a genuine
+        // `UnitConst`. In statement position (`s.clear();`) the block runs the
+        // store and discards the unit; in value position (`take(s.clear())`) the
+        // expression is now a real Unit value, so the argument type check rejects
+        // it with a clean E0206 (Unit vs the expected argument type) instead of
+        // ICEing.
+        let unit_ref = air.add_inst(AirInst {
+            data: AirInstData::UnitConst,
+            ty: Type::UNIT,
+            span,
+        });
+        let stmts_start = air.add_extra(&[store_ref.as_u32()]);
+        let block_ref = air.add_inst(AirInst {
+            data: AirInstData::Block {
+                stmts_start,
+                stmts_len: 1,
+                value: unit_ref,
+            },
+            ty: Type::UNIT,
+            span,
+        });
+
+        Ok(AnalysisResult::new(block_ref, Type::UNIT))
     }
 
     /// Check if directives contain @allow for a specific warning name.

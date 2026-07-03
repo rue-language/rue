@@ -1,0 +1,76 @@
+# Array-element self-assign `arr[i] = arr[i]` (RUE-228). `analyze_index_set_impl`
+# did not reinitialize the assigned index path the way `analyze_field_set_impl`
+# does, so the write never un-marked the move-out the RHS `arr[0]` recorded.
+# Two facets, one root:
+#
+#   A (reject-valid): `arr[0] = arr[0]; arr[0].v` wrongly errored E0205 even
+#     though spec 3.8:55 says the write reinitializes `arr[0]`.
+#   B (miscompile): with a destructor the element's drop fired mid-statement
+#     (the moved-out slot was still overwrite-dropped) and the element was
+#     never dropped at scope exit.
+#
+# The whole-variable (`a = a`) and whole-array (`arr = arr`) forms were already
+# correct and are kept here as controls.
+
+[section]
+id = "cli.array_element_self_assign"
+name = "Array-element self-assign"
+description = "`arr[i] = arr[i]` reinitializes the element: usable after, dropped only at scope exit (RUE-228)."
+
+[[case]]
+name = "self_assign_element_reinitializes_facet_a"
+description = "RUE-228 facet A: `arr[0] = arr[0]` then reading `arr[0].v` compiles and returns 7 (was wrongly E0205)."
+files = [{ path = "main.rue", source = """
+struct Data { v: i32 }
+fn main() -> i32 {
+    let mut arr = [Data { v: 7 }, Data { v: 2 }];
+    arr[0] = arr[0];
+    arr[0].v
+}
+""" }]
+exit_code = 7
+
+[[case]]
+name = "self_assign_element_drops_only_at_scope_exit_facet_b"
+description = "RUE-228 facet B: element destructor fires only at scope exit, not mid-statement. Expect -1 (marker) then 1 and 2 (both elements dropped at scope exit)."
+files = [{ path = "main.rue", source = """
+struct Data { v: i32 }
+drop fn Data(self) { @dbg(self.v); }
+fn main() -> i32 {
+    let mut arr = [Data { v: 1 }, Data { v: 2 }];
+    arr[0] = arr[0];
+    @dbg(-1);
+    0
+}
+""" }]
+stdout = "-1\n1\n2\n"
+
+[[case]]
+name = "whole_value_self_assign_control"
+description = "Control: `a = a` on a whole struct already reinitializes and drops only at scope exit (-1 then 1)."
+files = [{ path = "main.rue", source = """
+struct Data { v: i32 }
+drop fn Data(self) { @dbg(self.v); }
+fn main() -> i32 {
+    let mut a = Data { v: 1 };
+    a = a;
+    @dbg(-1);
+    0
+}
+""" }]
+stdout = "-1\n1\n"
+
+[[case]]
+name = "element_overwrite_still_drops_old_value"
+description = "Control: overwriting `arr[0]` with a fresh value (not a self-move) still drops the old element mid-write (1) then the fresh 9 and 2 at scope exit."
+files = [{ path = "main.rue", source = """
+struct Data { v: i32 }
+drop fn Data(self) { @dbg(self.v); }
+fn main() -> i32 {
+    let mut arr = [Data { v: 1 }, Data { v: 2 }];
+    arr[0] = Data { v: 9 };
+    @dbg(-1);
+    0
+}
+""" }]
+stdout = "1\n-1\n9\n2\n"

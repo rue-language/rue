@@ -2094,17 +2094,31 @@ impl<'a> CfgBuilder<'a> {
                 if air_place.projections_len == 0 {
                     self.emit_overwrite_drop(base_key, val_ty, span);
                 } else {
-                    // A single top-level field write: skip the old-value
-                    // drop when the field was definitely moved out, and guard
-                    // it with the field's runtime drop flag when the move was
-                    // path-dependent (RUE-156 x RUE-64 interaction).
+                    // A single top-level field OR constant-index element write:
+                    // skip the old-value drop when that path was definitely
+                    // moved out, and guard it with the path's runtime drop flag
+                    // when the move was path-dependent (RUE-156 x RUE-64
+                    // interaction). Constant array elements share the field-path
+                    // representation (index K -> segment K, RUE-186), so
+                    // `arr[0] = arr[0]` must not drop element 0 mid-write after
+                    // the RHS moved it out (RUE-228).
                     let mut field_flag: Option<u32> = None;
-                    let field_moved = match self
+                    let single_path: Option<FieldPath> = match self
                         .air
                         .get_projections(air_place.projections_start, air_place.projections_len)
                     {
-                        [AirProjection::Field { field_index, .. }] => {
-                            let path = vec![*field_index];
+                        [AirProjection::Field { field_index, .. }] => Some(vec![*field_index]),
+                        [AirProjection::Index { index, .. }] => match self.air.get(*index).data {
+                            AirInstData::Const(k) => Some(vec![k as u32]),
+                            // A dynamic index can't identify a single element,
+                            // so there is no per-element move to skip: drop the
+                            // old value as usual.
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    let field_moved = match single_path {
+                        Some(path) => {
                             if self.moved.moved_paths_of(base_key).contains(&path) {
                                 true
                             } else {
@@ -2115,7 +2129,7 @@ impl<'a> CfgBuilder<'a> {
                                 false
                             }
                         }
-                        _ => false,
+                        None => false,
                     };
                     self.emit_projected_overwrite_drop(
                         base_key,
@@ -2147,15 +2161,28 @@ impl<'a> CfgBuilder<'a> {
                     self.moved.clear_slot(MovedSlot::Param(slot));
                     self.update_drop_flag(MovedSlot::Param(slot), true, span);
                 } else if air_place.projections_len == 1 {
-                    if let [AirProjection::Field { field_index, .. }] = self
+                    match self
                         .air
                         .get_projections(air_place.projections_start, air_place.projections_len)
                     {
-                        self.moved.clear_field(base_key, *field_index);
-                        // The field is re-initialized: re-arm its runtime
-                        // drop flag so scope-exit (and later overwrite)
-                        // drops fire again (RUE-156).
-                        self.update_field_drop_flag(base_key, &[*field_index], true, span);
+                        [AirProjection::Field { field_index, .. }] => {
+                            self.moved.clear_field(base_key, *field_index);
+                            // The field is re-initialized: re-arm its runtime
+                            // drop flag so scope-exit (and later overwrite)
+                            // drops fire again (RUE-156).
+                            self.update_field_drop_flag(base_key, &[*field_index], true, span);
+                        }
+                        // A constant-index element write re-initializes that
+                        // element: clear its moved state and re-arm its drop
+                        // flag so it is dropped once at scope exit (RUE-228).
+                        [AirProjection::Index { index, .. }] => {
+                            if let AirInstData::Const(k) = self.air.get(*index).data {
+                                let seg = k as u32;
+                                self.moved.clear_field(base_key, seg);
+                                self.update_field_drop_flag(base_key, &[seg], true, span);
+                            }
+                        }
+                        _ => {}
                     }
                 }
                 ExprResult {
