@@ -4,8 +4,7 @@ spec_chapter = "4.8"
 name = "For Loop Expressions"
 description = """
 Built-in `for` loops (RUE-220, ADR-0037) iterate in read mode over an array, a
-String's bytes, or a String's `.chars()` scalar view. Preview-gated behind
-`--preview for_loops`.
+String's bytes, or a String's `.chars()` scalar view.
 """
 
 # =============================================================================
@@ -15,7 +14,6 @@ String's bytes, or a String's `.chars()` scalar view. Preview-gated behind
 [[case]]
 name = "for_array_sum"
 spec = ["4.8:23", "4.8:24", "4.8:25", "4.8:26"]
-preview = "for_loops"
 source = """
 fn main() -> i32 {
     let a: [i32; 3] = [10, 20, 30];
@@ -35,7 +33,6 @@ exit_code = 60
 [[case]]
 name = "for_array_non_copy_element"
 spec = ["4.8:25", "4.8:26"]
-preview = "for_loops"
 source = """
 struct Point { x: i32, y: i32 }
 fn main() -> i32 {
@@ -55,7 +52,6 @@ exit_code = 4
 [[case]]
 name = "for_array_non_copy_destructor_once"
 spec = ["4.8:26"]
-preview = "for_loops"
 source = """
 struct Res { tag: i32 }
 drop fn Res(self) { @dbg(self.tag); }
@@ -77,7 +73,6 @@ expected_stdout = "11\n22\n"
 [[case]]
 name = "for_move_element_out_error"
 spec = ["4.8:26"]
-preview = "for_loops"
 source = """
 struct Res { tag: i32 }
 drop fn Res(self) { @dbg(self.tag); }
@@ -100,7 +95,6 @@ error_contains = "cannot move out of borrowed value"
 [[case]]
 name = "for_mutate_collection_in_body_error"
 spec = ["4.8:26"]
-preview = "for_loops"
 source = """
 fn main() -> i32 {
     let mut s = "abc".clone();
@@ -120,7 +114,6 @@ error_contains = "cannot mutate borrowed value"
 [[case]]
 name = "for_string_borrows_not_consumes"
 spec = ["4.8:26"]
-preview = "for_loops"
 source = """
 fn main() -> i32 {
     let s = "abcd";
@@ -143,7 +136,6 @@ exit_code = 8
 [[case]]
 name = "for_string_bytes_count"
 spec = ["4.8:25"]
-preview = "for_loops"
 source = """
 fn main() -> i32 {
     let s = "abc";
@@ -160,7 +152,6 @@ exit_code = 3
 [[case]]
 name = "for_string_bytes_multibyte"
 spec = ["4.8:25"]
-preview = "for_loops"
 source = """
 fn main() -> i32 {
     let s = "café";
@@ -180,7 +171,6 @@ exit_code = 5
 [[case]]
 name = "for_chars_scalars"
 spec = ["4.8:25", "3.7:31"]
-preview = "for_loops"
 source = """
 fn main() -> i32 {
     let s = "café";
@@ -202,7 +192,6 @@ expected_stdout = "99\n97\n102\n233\n"
 [[case]]
 name = "for_break_continue"
 spec = ["4.8:27"]
-preview = "for_loops"
 source = """
 fn main() -> i32 {
     let a: [i32; 5] = [1, 2, 3, 4, 5];
@@ -224,7 +213,6 @@ exit_code = 4
 [[case]]
 name = "for_nested"
 spec = ["4.8:23"]
-preview = "for_loops"
 source = """
 fn main() -> i32 {
     let a: [i32; 2] = [1, 2];
@@ -249,7 +237,6 @@ exit_code = 129
 [[case]]
 name = "for_chars_invalid_utf8_traps"
 spec = ["4.8:28", "3.7:32"]
-preview = "for_loops"
 source = """
 fn main() -> i32 {
     let full = "café";
@@ -272,7 +259,6 @@ expected_stdout = "99\n97\n102\n"
 [[case]]
 name = "for_chars_lossy_valid"
 spec = ["3.7:34"]
-preview = "for_loops"
 source = """
 fn main() -> i32 {
     let s = "café";
@@ -293,7 +279,6 @@ expected_stdout = "99\n97\n102\n233\n"
 [[case]]
 name = "for_chars_lossy_replaces_invalid"
 spec = ["3.7:34"]
-preview = "for_loops"
 source = """
 fn main() -> i32 {
     let full = "café";
@@ -309,30 +294,10 @@ fn main() -> i32 {
 exit_code = 4
 expected_stdout = "99\n97\n102\n65533\n"
 
-# =============================================================================
-# Preview gating
-# =============================================================================
-
-[[case]]
-name = "for_requires_preview"
-spec = ["4.8:23"]
-source = """
-fn main() -> i32 {
-    let a: [i32; 3] = [1, 2, 3];
-    for x in a {
-        let _y = x;
-    }
-    0
-}
-"""
-compile_fail = true
-error_contains = "requires preview feature"
-
-# A non-iterable operand is rejected (with the preview enabled).
+# A non-iterable operand is rejected.
 [[case]]
 name = "for_non_iterable_rejected"
 spec = ["4.8:25"]
-preview = "for_loops"
 source = """
 fn main() -> i32 {
     let n = 5;

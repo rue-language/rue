@@ -387,7 +387,7 @@ fn main() -> i32 {
 }
 ```
 
-Each instantiation is monomorphized: `Option(i32)` and `Option(bool)` are distinct types with independent tagged-union layouts (the payload types differ). A variant that carries a payload requires the `enum_payloads` preview feature, exactly as for a named enum declaration.
+Each instantiation is monomorphized: `Option(i32)` and `Option(bool)` are distinct types with independent tagged-union layouts (the payload types differ).
 
 {{ rule(id="4.14:21", cat="normative") }}
 

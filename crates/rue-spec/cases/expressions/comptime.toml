@@ -1749,7 +1749,6 @@ exit_code = 42
 [[case]]
 name = "anon_enum_generic_option_some"
 spec = ["4.14:20"]
-preview = "enum_payloads"
 description = "Generic Option enum: construct Some(T) and match it out (ADR-0038 deliverable)"
 source = """
 fn Option(comptime T: type) -> type {
@@ -1766,7 +1765,6 @@ exit_code = 42
 [[case]]
 name = "anon_enum_generic_option_none"
 spec = ["4.14:20"]
-preview = "enum_payloads"
 description = "Generic Option enum: the None variant selects the default arm"
 source = """
 fn Option(comptime T: type) -> type {
@@ -1783,7 +1781,6 @@ exit_code = 42
 [[case]]
 name = "anon_enum_two_type_params_result"
 spec = ["4.14:20"]
-preview = "enum_payloads"
 description = "Two-type-parameter Result enum: both Ok and Err arms construct and match"
 source = """
 fn Result(comptime T: type, comptime E: type) -> type {
@@ -1803,7 +1800,6 @@ exit_code = 42
 [[case]]
 name = "anon_enum_monomorphized_distinct"
 spec = ["4.14:21"]
-preview = "enum_payloads"
 description = "Option(i32) and Option(bool) are distinct types: mixing them is a type error"
 source = """
 fn Option(comptime T: type) -> type {
@@ -1822,7 +1818,6 @@ error_contains = "type mismatch"
 [[case]]
 name = "anon_enum_structural_reuse"
 spec = ["4.14:21"]
-preview = "enum_payloads"
 description = "Two Option(i32) instantiations are structurally equal and interchangeable"
 source = """
 fn Option(comptime T: type) -> type {
@@ -1841,7 +1836,6 @@ exit_code = 42
 [[case]]
 name = "anon_enum_type_fn_over_enclosing_param"
 spec = ["4.14:20"]
-preview = "enum_payloads"
 description = "A generic function whose signature applies a type constructor to its own type parameter (`-> Option(T)`) resolves and monomorphizes at the call site (RUE-272)"
 source = """
 fn Option(comptime T: type) -> type { enum { Some(T), None } }
@@ -1859,7 +1853,6 @@ exit_code = 42
 [[case]]
 name = "anon_enum_type_fn_over_param_two_instantiations"
 spec = ["4.14:21"]
-preview = "enum_payloads"
 description = "The same generic function over Option(T) monomorphizes independently for i32 and bool (RUE-272)"
 source = """
 fn Option(comptime T: type) -> type { enum { Some(T), None } }

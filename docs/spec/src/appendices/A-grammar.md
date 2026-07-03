@@ -154,7 +154,6 @@ pattern        = "_"
 while_expr     = "while" expression "{" block "}" ;
 loop_expr      = "loop" "{" block "}" ;
 for_expr       = "for" ( IDENT | "_" ) "in" expression "{" block "}" ;
-                 (* preview: --preview for_loops *)
 break_expr     = "break" [ expression ] ;   (* an operand parses but is always
                                                rejected in semantic analysis *)
 return_expr    = "return" [ expression ] ;

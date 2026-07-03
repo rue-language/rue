@@ -25,7 +25,7 @@ description = "inout/borrow self methods work through params, array elements (co
 [[case]]
 name = "inout_self_through_inout_param"
 description = "c.bump() (inout self) where c is an inout parameter mutates in place; two bumps -> 2."
-args = ["--preview", "method_receivers", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 struct Counter { n: i32, fn bump(inout self) { self.n = self.n + 1; } }
 fn bump_twice(inout c: Counter) { c.bump(); c.bump(); }
@@ -41,7 +41,7 @@ exit_code = 2
 [[case]]
 name = "borrow_self_through_borrow_param"
 description = "c.get() (borrow self) where c is a borrow parameter reads without moving; returns 7."
-args = ["--preview", "method_receivers", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 struct Counter { n: i32, fn get(borrow self) -> i32 { self.n } }
 fn read(borrow c: Counter) -> i32 { c.get() }
@@ -56,7 +56,7 @@ exit_code = 7
 [[case]]
 name = "inout_self_on_dynamic_index_element"
 description = "arr[i].bump() with a runtime index mutates element i in place; arr[0] -> 1."
-args = ["--preview", "method_receivers", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 struct Counter { n: i32, fn bump(inout self) { self.n = self.n + 1; } }
 fn main() -> i32 {
@@ -72,7 +72,7 @@ exit_code = 1
 [[case]]
 name = "inout_self_on_const_index_element"
 description = "arr[1].bump() (const index) mutates that element; the sibling element is untouched."
-args = ["--preview", "method_receivers", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 struct Counter { n: i32, fn bump(inout self) { self.n = self.n + 1; } }
 fn main() -> i32 {
@@ -87,7 +87,7 @@ exit_code = 11
 [[case]]
 name = "inout_self_on_struct_field_array_element"
 description = "w.items[0].bump() through a nested field+index place mutates the element; w.items[0].n -> 1."
-args = ["--preview", "method_receivers", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 struct Counter { n: i32, fn bump(inout self) { self.n = self.n + 1; } }
 struct Wrapper { items: [Counter; 2] }
@@ -103,7 +103,7 @@ exit_code = 1
 [[case]]
 name = "inout_self_on_field_of_self"
 description = "self.inner.bump() inside a method (field-of-inout-param receiver) mutates; o.inner.v -> 1."
-args = ["--preview", "method_receivers", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 struct Inner { v: i32, fn bump(inout self) { self.v = self.v + 1; } }
 struct Outer { inner: Inner, fn go(inout self) { self.inner.bump(); } }
@@ -121,7 +121,7 @@ exit_code = 1
 [[case]]
 name = "by_value_self_still_moves_double_call"
 description = "Control: bare `self` (by-value) consumes the receiver; calling it twice is E0205."
-args = ["--preview", "method_receivers", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 struct Counter { n: i32, fn consume(self) -> i32 { self.n } }
 fn main() -> i32 {
@@ -139,7 +139,7 @@ error_contains = ["E0205", "use of moved value 'c'"]
 [[case]]
 name = "borrow_self_on_moved_value_still_errors"
 description = "Control: calling a borrow-self method after the value was moved into a by-value call is E0205."
-args = ["--preview", "method_receivers", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 struct Counter { n: i32, fn get(borrow self) -> i32 { self.n } }
 fn sink(c: Counter) -> i32 { c.n }

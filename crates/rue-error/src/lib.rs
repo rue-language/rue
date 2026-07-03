@@ -369,23 +369,6 @@ pub enum PreviewFeature {
     /// Testing infrastructure feature - permanently unstable.
     /// Used to verify the preview feature gating mechanism works.
     TestInfra,
-    /// Built-in `for` loops over arrays and string views (RUE-220, ADR-0037).
-    /// Layer 1 of the iteration model: `for x in <iterable> { body }` in
-    /// read/borrow mode over arrays, String bytes, and `s.chars()`.
-    ForLoops,
-    /// Borrow/inout method receivers (`fn f(borrow self)` / `fn f(inout
-    /// self)`), RUE-15 / ADR-0037. Lets methods access `self` by reference
-    /// instead of consuming it.
-    MethodReceivers,
-    /// Enum payloads — sum types with data (RUE-221, ADR-0038). Tuple
-    /// variants (`Circle(i32)`) carrying data, tagged-union layout, and
-    /// pattern matching with payload bindings (`match s { Circle(r) => r }`).
-    /// The prerequisite for `Option`/`Result`.
-    EnumPayloads,
-    /// Array-repeat literal `[value; count]` — build an array of `count`
-    /// copies of `value` (RUE-235). `count` is a compile-time constant and
-    /// the element type must be `Copy`.
-    ArrayRepeat,
 }
 
 /// Error returned when parsing a preview feature name fails.
@@ -406,10 +389,6 @@ impl PreviewFeature {
     pub fn name(&self) -> &'static str {
         match *self {
             PreviewFeature::TestInfra => "test_infra",
-            PreviewFeature::ForLoops => "for_loops",
-            PreviewFeature::MethodReceivers => "method_receivers",
-            PreviewFeature::EnumPayloads => "enum_payloads",
-            PreviewFeature::ArrayRepeat => "array_repeat",
         }
     }
 
@@ -418,22 +397,12 @@ impl PreviewFeature {
     pub fn adr(&self) -> &'static str {
         match *self {
             PreviewFeature::TestInfra => "ADR-0005",
-            PreviewFeature::ForLoops => "ADR-0037",
-            PreviewFeature::MethodReceivers => "ADR-0037",
-            PreviewFeature::EnumPayloads => "ADR-0038",
-            PreviewFeature::ArrayRepeat => "ADR-0005",
         }
     }
 
     /// Get all available preview features.
     pub fn all() -> &'static [PreviewFeature] {
-        &[
-            PreviewFeature::TestInfra,
-            PreviewFeature::ForLoops,
-            PreviewFeature::MethodReceivers,
-            PreviewFeature::EnumPayloads,
-            PreviewFeature::ArrayRepeat,
-        ]
+        &[PreviewFeature::TestInfra]
     }
 
     /// Get a comma-separated list of all feature names (for help text).
@@ -456,10 +425,6 @@ impl std::str::FromStr for PreviewFeature {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "test_infra" => Ok(PreviewFeature::TestInfra),
-            "for_loops" => Ok(PreviewFeature::ForLoops),
-            "method_receivers" => Ok(PreviewFeature::MethodReceivers),
-            "enum_payloads" => Ok(PreviewFeature::EnumPayloads),
-            "array_repeat" => Ok(PreviewFeature::ArrayRepeat),
             _ => Err(ParsePreviewFeatureError(s.to_string())),
         }
     }
@@ -2263,18 +2228,32 @@ mod tests {
     #[test]
     fn test_preview_feature_all_names() {
         let names = PreviewFeature::all_names();
-        assert_eq!(
-            names,
-            "test_infra, for_loops, method_receivers, enum_payloads, array_repeat"
-        );
+        assert_eq!(names, "test_infra");
     }
 
     #[test]
-    fn test_preview_feature_method_receivers_roundtrip() {
+    fn test_preview_feature_test_infra_roundtrip() {
         use std::str::FromStr;
-        let f = PreviewFeature::from_str("method_receivers").unwrap();
-        assert_eq!(f, PreviewFeature::MethodReceivers);
-        assert_eq!(f.name(), "method_receivers");
+        let f = PreviewFeature::from_str("test_infra").unwrap();
+        assert_eq!(f, PreviewFeature::TestInfra);
+        assert_eq!(f.name(), "test_infra");
+    }
+
+    #[test]
+    fn test_preview_feature_stabilized_are_unknown() {
+        // for_loops, method_receivers, enum_payloads, and array_repeat were
+        // stabilized (no longer gated) — their names must now be rejected.
+        for name in [
+            "for_loops",
+            "method_receivers",
+            "enum_payloads",
+            "array_repeat",
+        ] {
+            assert!(
+                name.parse::<PreviewFeature>().is_err(),
+                "{name} should be an unknown preview feature after stabilization"
+            );
+        }
     }
 
     // ========================================================================

@@ -86,7 +86,7 @@ fn main() -> i32 {
     0
 }
 """ }]
-args = ["main.rue", "--preview", "method_receivers", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 stdout = "111\n999\n"
 exit_code = 0
 

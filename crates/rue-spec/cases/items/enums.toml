@@ -257,25 +257,24 @@ fn main() -> i32 {
 exit_code = 42
 
 # =============================================================================
-# Variant Payloads (RUE-221, ADR-0038) — enum_payloads preview feature
+# Variant Payloads (RUE-221, ADR-0038)
 # =============================================================================
 
-# A payload-carrying variant requires the preview feature.
+# A variant may carry a payload, and an enum may freely mix payload-carrying
+# and discriminant-only variants (6.3:14).
 [[case]]
-name = "enum_payload_requires_preview"
+name = "enum_payload_mixed_variants_ok"
 spec = ["6.3:14"]
 source = """
-enum Shape { Circle(i32), Empty }
+enum Shape { Circle(i32), Rect(i32, i32), Empty }
 fn main() -> i32 { 0 }
 """
-compile_fail = true
-error_contains = "requires preview feature"
+exit_code = 0
 
 # Declaring and constructing tuple variants (grammar 6.3:2, payloads 6.3:13).
 [[case]]
 name = "enum_payload_declare_construct"
 spec = ["6.3:2", "6.3:13"]
-preview = "enum_payloads"
 source = """
 enum Shape { Circle(i32), Rect(i32, i32), Empty }
 fn main() -> i32 {
@@ -291,7 +290,6 @@ exit_code = 0
 [[case]]
 name = "enum_payload_match_circle"
 spec = ["6.3:15", "6.3:16"]
-preview = "enum_payloads"
 source = """
 enum Shape { Circle(i32), Rect(i32, i32), Empty }
 fn area(s: Shape) -> i32 {
@@ -309,7 +307,6 @@ exit_code = 5
 [[case]]
 name = "enum_payload_match_rect"
 spec = ["6.3:15", "6.3:16"]
-preview = "enum_payloads"
 source = """
 enum Shape { Circle(i32), Rect(i32, i32), Empty }
 fn area(s: Shape) -> i32 {
@@ -327,7 +324,6 @@ exit_code = 7
 [[case]]
 name = "enum_payload_match_empty"
 spec = ["6.3:16"]
-preview = "enum_payloads"
 source = """
 enum Shape { Circle(i32), Rect(i32, i32), Empty }
 fn area(s: Shape) -> i32 {
@@ -345,7 +341,6 @@ exit_code = 0
 [[case]]
 name = "enum_payload_wrong_arity"
 spec = ["6.3:16"]
-preview = "enum_payloads"
 source = """
 enum Shape { Rect(i32, i32) }
 fn main() -> i32 { let r = Shape::Rect(3); 0 }
@@ -356,7 +351,6 @@ compile_fail = true
 [[case]]
 name = "enum_payload_bare_path_error"
 spec = ["6.3:16"]
-preview = "enum_payloads"
 source = """
 enum Shape { Circle(i32) }
 fn main() -> i32 { let c = Shape::Circle; 0 }
@@ -368,7 +362,6 @@ compile_fail = true
 [[case]]
 name = "enum_payload_drop_once_via_match"
 spec = ["6.3:17"]
-preview = "enum_payloads"
 source = """
 struct Res { id: i32 }
 drop fn Res(self) { @dbg(self.id); }
@@ -388,8 +381,6 @@ exit_code = 7
 [[case]]
 name = "enum_linear_infectious_must_consume"
 spec = ["6.3:19"]
-preview = "enum_payloads"
-preview_should_pass = true
 source = """
 linear struct L { v: i32 }
 enum E { Has(L), None }
@@ -406,8 +397,6 @@ error_contains = "must be consumed"
 [[case]]
 name = "enum_linear_consumed_via_match"
 spec = ["6.3:19"]
-preview = "enum_payloads"
-preview_should_pass = true
 source = """
 linear struct L { v: i32 }
 enum E { Has(L), None }
@@ -427,8 +416,6 @@ exit_code = 5
 [[case]]
 name = "enum_copy_payload_stays_copy"
 spec = ["6.3:19"]
-preview = "enum_payloads"
-preview_should_pass = true
 source = """
 enum C { A(i32), B }
 fn val(c: C) -> i32 { match c { C::A(x) => x, C::B => 0 } }
@@ -445,8 +432,6 @@ exit_code = 6
 [[case]]
 name = "enum_active_variant_drop_glue"
 spec = ["6.3:20"]
-preview = "enum_payloads"
-preview_should_pass = true
 source = """
 struct D { v: i32 }
 drop fn D(self) { @dbg(self.v); }
@@ -464,8 +449,6 @@ exit_code = 0
 [[case]]
 name = "enum_active_variant_none_no_drop"
 spec = ["6.3:20"]
-preview = "enum_payloads"
-preview_should_pass = true
 source = """
 struct D { v: i32 }
 drop fn D(self) { @dbg(self.v); }

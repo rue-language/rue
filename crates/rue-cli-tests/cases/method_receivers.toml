@@ -3,8 +3,7 @@
 # `borrow self` / `inout self` receivers are accessed by reference (reusing the
 # by-ref parameter calling convention) instead of consuming the receiver. These
 # cases exercise the runtime behavior end-to-end through the real driver with
-# exact stdout, on both backends (aarch64 runs natively in CI). Gated behind
-# `--preview method_receivers`.
+# exact stdout, on both backends (aarch64 runs natively in CI).
 
 [section]
 id = "cli.method_receivers"
@@ -15,7 +14,7 @@ description = "borrow self getters and inout self mutators via the real driver."
 # getter observes the mutations and does not consume the receiver.
 [[case]]
 name = "stack_push_top_count"
-args = ["--preview", "method_receivers", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 struct Stack {
     a: i32,
@@ -57,7 +56,7 @@ stdout = "20\n2\n3\n30\n"
 # A borrow self getter is callable repeatedly without moving the receiver.
 [[case]]
 name = "borrow_getter_repeatable"
-args = ["--preview", "method_receivers", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 struct Counter {
     n: i32,
@@ -88,7 +87,7 @@ stdout = "2\n3\n3\n"
 # access (the read completes before the receiver access begins).
 [[case]]
 name = "arg_reads_receiver"
-args = ["--preview", "method_receivers", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 struct Stack {
     a: i32,

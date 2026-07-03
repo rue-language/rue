@@ -373,6 +373,25 @@ impl<'a> Interp<'a> {
                     }
                 }
             }
+            // Dropping an enum runs the drop glue of its *active* variant's
+            // payload (spec 6.3:20). The Aggregate layout is [tag, payload
+            // fields...] (see `EnumVariant`), so element 0 selects the variant
+            // and elements 1.. are its payload fields, in declaration order. A
+            // discriminant-only value is a bare `Int` (no `Aggregate`), so there
+            // is nothing to drop.
+            TypeKind::Enum(eid) => {
+                if let Value::Aggregate(elems) = &v
+                    && let Some(Value::Int(tag)) = elems.first()
+                {
+                    let def = self.state.type_pool.enum_def(eid);
+                    let payload_tys = def.variant_payload(*tag as usize).to_vec();
+                    for (i, pty) in payload_tys.into_iter().enumerate() {
+                        if let Some(fv) = elems.get(i + 1).cloned() {
+                            self.run_drop(pty, fv)?;
+                        }
+                    }
+                }
+            }
             _ => {}
         }
         Ok(())

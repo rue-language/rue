@@ -393,7 +393,7 @@ exit_code = 1
 # Enum Equality (RUE-285): same variant and equal payload
 # =============================================================================
 
-# Discriminant-only (C-like) enums: equal iff the same variant. Not preview.
+# Discriminant-only (C-like) enums: equal iff the same variant.
 [[case]]
 name = "enum_clike_equality_{variant}"
 spec = ["4.3:2", "4.3:3d"]
@@ -427,11 +427,10 @@ fn main() -> i32 {
 compile_fail = true
 
 # Payload-carrying enums: same variant AND equal payload; different variants
-# are never equal. Gated on the enum_payloads preview feature (RUE-221).
+# are never equal (RUE-221).
 [[case]]
 name = "enum_payload_equality_{variant}"
 spec = ["4.3:2", "4.3:3d"]
-preview = "enum_payloads"
 source = """
 enum Shape { Circle(i32), Square(i32) }
 

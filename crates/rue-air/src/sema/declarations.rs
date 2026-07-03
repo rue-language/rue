@@ -13,9 +13,7 @@ use std::collections::{HashMap, HashSet};
 
 use lasso::{Key, Spur};
 use rue_builtins::is_reserved_type_name;
-use rue_error::{
-    CompileError, CompileResult, CopyStructNonCopyFieldError, ErrorKind, PreviewFeature, ice,
-};
+use rue_error::{CompileError, CompileResult, CopyStructNonCopyFieldError, ErrorKind, ice};
 use rue_rir::{InstData, InstRef, RirDirective, RirParamMode};
 use rue_span::{FileId, Span};
 
@@ -303,21 +301,8 @@ impl<'a> Sema<'a> {
                     name,
                     variants_start,
                     variants_len,
-                    payloads_len,
                     ..
                 } => {
-                    // Tuple-variant payloads (RUE-221, ADR-0038) are gated
-                    // behind the `enum_payloads` preview feature. A payload
-                    // region of length 0 means every variant is
-                    // discriminant-only (C-like), which is always allowed.
-                    if *payloads_len > 0 {
-                        self.require_preview(
-                            PreviewFeature::EnumPayloads,
-                            "enum payloads (variants that carry data)",
-                            inst.span,
-                        )?;
-                    }
-
                     let enum_name = self.interner.resolve(&*name).to_string();
 
                     // Check for collision with built-in type names

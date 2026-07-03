@@ -19,7 +19,7 @@
 #   S1   struct, 1 slot        S8    struct, 8 slots (> the 6-register budget)
 #   S2   struct, 2 slots       NEST  nested struct (Inner in Outer)
 #   S3   struct, 3 slots       ARR   fixed array [i32; N]
-#   AOS  array-of-struct       ENUM  payload enum (--preview enum_payloads)
+#   AOS  array-of-struct       ENUM  payload enum
 #
 # POSITIONS (columns), each a boundary an aggregate must cross intact:
 #   let-init (Alloc) · fn param by-value · by-value return · struct field
@@ -490,7 +490,7 @@ stdout = "1\n4\n"
 
 # =============================================================================
 # ENUM — payload enum (tagged union: slot 0 discriminant + payload slots).
-# The whole family is gated behind --preview enum_payloads. These are the RUE-237
+# These are the RUE-237
 # class: enums were forgotten by scattered `is_struct() || is_array()` gates, so
 # their payload slots were dropped crossing exactly these boundaries.
 # =============================================================================
@@ -498,7 +498,7 @@ stdout = "1\n4\n"
 # match binding: construct each variant, cross the call ABI, extract payloads.
 [[case]]
 name = "enum_param_match"
-args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 enum Shape { Circle(i32), Rect(i32, i32), Empty }
 fn area(s: Shape) -> i32 {
@@ -521,7 +521,7 @@ stdout = "5\n7\n0\n"
 # block param (the exact aarch64 gate RUE-248 repaired) then out by value.
 [[case]]
 name = "enum_return_join"
-args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 enum E { V(i32, i32), Empty }
 fn sum(e: E) -> i32 { match e { E::V(x, y) => x + y, E::Empty => 0 } }
@@ -540,7 +540,7 @@ stdout = "7\n70\n"
 # then read back.
 [[case]]
 name = "enum_field_write_read"
-args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 enum E { V(i32, i32), Empty }
 fn sum(e: E) -> i32 { match e { E::V(x, y) => x + y, E::Empty => 0 } }
@@ -557,7 +557,7 @@ stdout = "15\n9\n"
 # array element write/read: a payload enum in an array slot.
 [[case]]
 name = "enum_array_elem_rw"
-args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 enum E { V(i32, i32), Empty }
 fn sum(e: E) -> i32 { match e { E::V(x, y) => x + y, E::Empty => 0 } }
@@ -573,7 +573,7 @@ stdout = "11\n"
 # mutable-local reassign (Store) of a whole payload enum.
 [[case]]
 name = "enum_mut_reassign"
-args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 enum E { V(i32, i32), Empty }
 fn sum(e: E) -> i32 { match e { E::V(x, y) => x + y, E::Empty => 0 } }
@@ -590,7 +590,7 @@ stdout = "50\n"
 # through the pointer.
 [[case]]
 name = "enum_inout_reassign"
-args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 enum E { V(i32, i32), Empty }
 fn sum(e: E) -> i32 { match e { E::V(x, y) => x + y, E::Empty => 0 } }
@@ -607,7 +607,7 @@ stdout = "123\n"
 # @ptr_read / @ptr_write round trip over a whole payload enum value.
 [[case]]
 name = "enum_ptr_rw"
-args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 enum E { V(i32, i32), Empty }
 fn sum(e: E) -> i32 { match e { E::V(x, y) => x + y, E::Empty => 0 } }

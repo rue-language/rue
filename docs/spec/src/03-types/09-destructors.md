@@ -63,8 +63,13 @@ The following types are trivially droppable:
 - The boolean type (`bool`)
 - The unit type (`()`)
 - The never type (`!`)
-- Enum types
+- Discriminant-only enum types (every variant is payload-free)
 - Arrays of trivially droppable types
+
+A payload-carrying enum is **not** trivially droppable unless every payload is
+itself trivially droppable. Dropping such an enum runs the drop glue of its
+**active** variant's payload exactly once, and nothing for a discriminant-only
+active variant (6.3:20).
 
 {{ rule(id="3.9:9", cat="normative") }}
 

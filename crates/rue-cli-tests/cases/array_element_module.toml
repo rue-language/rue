@@ -32,7 +32,7 @@ pub fn value() -> i32 { 1 }
 [[case]]
 name = "module_in_array_repeat_is_e0206"
 description = "`[h; 3]` where `h` is an imported module → clean E0206 (was intern-pool SIGABRT)."
-args = ["main.rue", "--preview", "array_repeat", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 compile_fail = true
 error_contains = ["E0206", "<module>"]
 files = [

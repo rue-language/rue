@@ -22,6 +22,11 @@ load-bearing question in RUE-15 (method receivers) and states the global
 discipline that complements ADR-0013 (borrowing modes) and formalization
 decision 4 (loans strictly second-class, no lifetimes).
 
+**Stabilized (2026-07-03):** the two preview features that rode on this access
+model — borrow/inout method receivers (`method_receivers`, RUE-15) and built-in
+`for` loops iterating in read/borrow mode (`for_loops`, RUE-220) — are complete
+and were stabilized (their `--preview` gates removed).
+
 ## Summary
 
 Rue's law of exclusivity is **access-point-based**, not span/region-based: an
