@@ -355,10 +355,19 @@ fn create_array_drop_glue_function(
     // Collect drop statements for each element
     let mut drop_statements = Vec::new();
 
-    // For each element, emit a Drop instruction.
+    // For each element, emit a Drop instruction, in ASCENDING index order
+    // (element 0 dropped first — the language-visible order the oracle checks).
+    //
+    // Array elements are laid out ascending in memory but stored REVERSED in the
+    // flattened slot list (ADR-0040 / RUE-243): frame slots descend in address,
+    // so element 0 occupies the LAST element-chunk of the received parameter
+    // slots and element N-1 the first. Iterate physical chunks back-to-front so
+    // the drops fire in ascending logical-index order. Each chunk's own slots
+    // stay in natural order (structs keep field order; nested arrays are
+    // reversed again by their own glue via this same recursion).
     // Type::Struct handles both user-defined structs and builtin String.
-    for elem_idx in 0..length {
-        let current_param_slot = elem_idx as u32 * element_slot_count;
+    for phys_chunk in (0..length).rev() {
+        let current_param_slot = phys_chunk as u32 * element_slot_count;
 
         // Emit Drop for this element
         match element_type.kind() {

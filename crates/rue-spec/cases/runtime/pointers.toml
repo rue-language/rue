@@ -181,3 +181,39 @@ fn main() -> i32 {
 }
 """
 exit_code = 57  # 12345 % 256 = 57
+
+# @ptr_offset is standard pointer arithmetic: p + n*size_of(pointee), a plain
+# add, forward for positive n (ADR-0040 / RUE-243). arr[0]+1 lands on element
+# 1, and arr[0]+2 on element 2 — indexing and pointer arithmetic agree because
+# array elements are laid out ascending (spec 3.5:4).
+[[case]]
+name = "ptr_offset_add_forward"
+spec = ["9.2:7"]
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 20, 30];
+    checked {
+        let base: ptr const i32 = @raw(arr[0]);
+        let a: i32 = @ptr_read(@ptr_offset(base, 1));
+        let b: i32 = @ptr_read(@ptr_offset(base, 2));
+        a + b
+    }
+}
+"""
+exit_code = 50  # 20 + 30
+
+# A negative @ptr_offset moves toward lower addresses: from element 2, offset
+# -1 lands on element 1 (spec 9.2:7).
+[[case]]
+name = "ptr_offset_add_backward"
+spec = ["9.2:7"]
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 20, 30];
+    checked {
+        let base: ptr const i32 = @raw(arr[2]);
+        @ptr_read(@ptr_offset(base, -1))
+    }
+}
+"""
+exit_code = 20
