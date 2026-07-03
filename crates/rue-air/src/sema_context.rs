@@ -10,9 +10,24 @@
 //! parallel-analysis pipeline and was removed per ADR-0033 phase 1b.
 
 use std::collections::HashMap;
+use std::path::{Component, Path, PathBuf};
 use std::sync::{PoisonError, RwLock};
 
 use crate::types::{ModuleDef, ModuleId};
+
+/// Lexically normalize a resolved file path for use as a registry key, dropping
+/// `.` (current-directory) components so `./foo.rue` and `foo.rue` key to the
+/// same module (spec 10.2:4). Purely lexical — never touches the filesystem.
+fn normalize_key(path: &str) -> String {
+    let mut out = PathBuf::new();
+    for comp in Path::new(path).components() {
+        match comp {
+            Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out.to_string_lossy().into_owned()
+}
 
 /// Thread-safe registry for modules.
 ///
@@ -20,7 +35,13 @@ use crate::types::{ModuleDef, ModuleId};
 /// parallel function analysis. It uses double-checked locking to minimize contention.
 #[derive(Debug)]
 pub struct ModuleRegistry {
-    /// Maps import path (e.g., "math.rue") to ModuleId.
+    /// Maps a module's *resolved* file path (normalized) to its ModuleId.
+    ///
+    /// Keying by the resolved file rather than the `@import` string is what
+    /// makes modules importer-relative (RUE-266): two `@import("foo")` sites in
+    /// different directories resolve to different files and get distinct
+    /// modules, while any two imports that resolve to the *same* file share one
+    /// module (spec 10.2:4), whatever string or spelling reached it.
     paths: RwLock<HashMap<String, ModuleId>>,
     /// Module definitions indexed by ModuleId.
     defs: RwLock<Vec<ModuleDef>>,
@@ -35,23 +56,21 @@ impl ModuleRegistry {
         }
     }
 
-    /// Look up a module by import path.
-    pub fn get(&self, import_path: &str) -> Option<ModuleId> {
-        self.paths
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(import_path)
-            .copied()
-    }
-
     /// Get or create a module for the given import path and resolved file path.
+    ///
+    /// The module is keyed by its *resolved* `file_path` (normalized), so two
+    /// importers that reach the same file share one module and two that reach
+    /// different files get distinct modules even under the same `@import`
+    /// string (RUE-266). The `import_path` is retained only for diagnostics.
     ///
     /// Returns the ModuleId and whether it was newly created.
     pub fn get_or_create(&self, import_path: String, file_path: String) -> (ModuleId, bool) {
+        let key = normalize_key(&file_path);
+
         // Fast path: check if already exists
         {
             let paths = self.paths.read().unwrap_or_else(PoisonError::into_inner);
-            if let Some(id) = paths.get(&import_path) {
+            if let Some(id) = paths.get(&key) {
                 return (*id, false);
             }
         }
@@ -59,14 +78,14 @@ impl ModuleRegistry {
         // Slow path: acquire write lock and insert
         let mut paths = self.paths.write().unwrap_or_else(PoisonError::into_inner);
         // Double-check after acquiring write lock
-        if let Some(id) = paths.get(&import_path) {
+        if let Some(id) = paths.get(&key) {
             return (*id, false);
         }
 
         let mut defs = self.defs.write().unwrap_or_else(PoisonError::into_inner);
         let id = ModuleId::new(defs.len() as u32);
-        defs.push(ModuleDef::new(import_path.clone(), file_path));
-        paths.insert(import_path, id);
+        defs.push(ModuleDef::new(import_path, file_path));
+        paths.insert(key, id);
         (id, true)
     }
 

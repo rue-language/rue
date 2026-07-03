@@ -1,0 +1,99 @@
+# Importer-relative @import resolution (RUE-266).
+#
+# @import resolution and the dual-entity ambiguity check are judged relative
+# to the IMPORTING file's own directory (spec 10.2:2), not program-globally.
+# Before the fix, a relative `@import("foo")` resolved to whichever `foo.rue`
+# happened to iterate first across the whole program (Face A), and two
+# unrelated, individually-unambiguous `@import("foo")` sites in different
+# directories tripped a false E0708 (Face B).
+
+[section]
+id = "cli.module_importer_relative"
+name = "Importer-relative module resolution"
+description = "Relative @import resolves against the importing file's own directory."
+
+# Face A: two directories each define their OWN foo.rue and each contain a
+# module that does `@import("foo")`. Each must bind to the foo NEXT TO IT, so
+# the two modules see different values (10 vs 20). The driver auto-discovers
+# a/foo.rue and b/foo.rue transitively from the importing files.
+[[case]]
+name = "same_import_string_resolves_per_directory"
+files = [
+    { path = "main.rue", source = """
+const a = @import("a/mod_a");
+const b = @import("b/mod_b");
+
+fn main() -> i32 {
+    @dbg(a.a_val());
+    @dbg(b.b_val());
+    0
+}
+""" },
+    { path = "a/mod_a.rue", source = """
+const foo = @import("foo");
+pub fn a_val() -> i32 { foo.a_foo() }
+""" },
+    { path = "a/foo.rue", source = """
+pub fn a_foo() -> i32 { 10 }
+""" },
+    { path = "b/mod_b.rue", source = """
+const foo = @import("foo");
+pub fn b_val() -> i32 { foo.b_foo() }
+""" },
+    { path = "b/foo.rue", source = """
+pub fn b_foo() -> i32 { 20 }
+""" },
+]
+stdout = "10\n20\n"
+
+# Face B: one importer resolves `foo` to a FILE module (sub/foo.rue), another
+# resolves `foo` to a DIRECTORY-module facade (facdir/foo/_foo.rue). These are
+# two unrelated imports, each unambiguous in its own directory — no E0708.
+[[case]]
+name = "file_module_and_facade_in_different_dirs_are_not_ambiguous"
+files = [
+    { path = "main.rue", source = """
+const u1 = @import("sub/user1");
+const u2 = @import("facdir/user2");
+
+fn main() -> i32 {
+    @dbg(u1.one());
+    @dbg(u2.two());
+    0
+}
+""" },
+    { path = "sub/user1.rue", source = """
+const foo = @import("foo");
+pub fn one() -> i32 { foo.sfoo() }
+""" },
+    { path = "sub/foo.rue", source = """
+pub fn sfoo() -> i32 { 3 }
+""" },
+    { path = "facdir/user2.rue", source = """
+const foo = @import("foo");
+pub fn two() -> i32 { foo.dfoo() }
+""" },
+    { path = "facdir/foo/_foo.rue", source = """
+pub fn dfoo() -> i32 { 4 }
+""" },
+]
+stdout = "3\n4\n"
+
+# A genuine dual-entity ambiguity within ONE directory still errors (E0708):
+# both `foo.rue` and `foo/_foo.rue` sit next to the importer.
+[[case]]
+name = "genuine_single_dir_ambiguity_still_errors"
+files = [
+    { path = "main.rue", source = """
+const foo = @import("foo");
+fn main() -> i32 { foo.v_file() }
+""" },
+    { path = "foo.rue", source = """
+pub fn v_file() -> i32 { 1 }
+""" },
+    { path = "foo/_foo.rue", source = """
+pub fn v_dir() -> i32 { 2 }
+""" },
+]
+compile_fail = true
+error_contains = ["E0708", "foo"]

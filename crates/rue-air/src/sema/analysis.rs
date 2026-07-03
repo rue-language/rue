@@ -4549,21 +4549,56 @@ impl<'a> Sema<'a> {
         // (unit tests, multi-file compilation, and files the driver's import
         // discovery loaded). Delegates to the structured ModulePath resolver
         // so loaded-path matching has exactly one implementation.
+        //
+        // Resolution is importer-relative (spec 10.2:2, RUE-266): candidates
+        // are anchored to base directories searched in order — the importing
+        // file's own directory first, then the root file's directory. This
+        // keeps both resolution AND the dual-entity ambiguity check
+        // per-importer rather than program-global, so two unrelated
+        // `@import("foo")` sites in different directories each resolve to their
+        // own `foo` with no false cross-directory collision.
         let module_path = super::module_path::ModulePath::parse(import_path);
-        if let Some((file_module, dir_module)) =
-            module_path.find_ambiguity(self.file_paths.values())
-        {
-            return Err(CompileError::new(
-                ErrorKind::AmbiguousModule(Box::new(rue_error::AmbiguousModuleData {
-                    path: import_path.to_string(),
-                    file_module,
-                    dir_module,
-                })),
-                span,
-            ));
+        let dir_of = |p: &str| {
+            Path::new(p)
+                .parent()
+                .map(|d| d.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        };
+        let importer_dir = self.get_source_path(span).map(&dir_of);
+        let root_dir = self
+            .file_paths
+            .iter()
+            .min_by_key(|(id, _)| id.index())
+            .map(|(_, p)| dir_of(p));
+        let mut base_dirs: Vec<String> = Vec::new();
+        if let Some(d) = importer_dir {
+            base_dirs.push(d);
         }
-        if let Some(resolved) = module_path.resolve(self.file_paths.values()) {
-            return Ok(resolved);
+        if let Some(d) = root_dir
+            && !base_dirs.contains(&d)
+        {
+            base_dirs.push(d);
+        }
+        if base_dirs.is_empty() {
+            base_dirs.push(String::new());
+        }
+        let base_refs: Vec<&str> = base_dirs.iter().map(|s| s.as_str()).collect();
+        match module_path.resolve_in_dirs(&base_refs, self.file_paths.values()) {
+            super::module_path::DirResolution::Ambiguous {
+                file_module,
+                dir_module,
+            } => {
+                return Err(CompileError::new(
+                    ErrorKind::AmbiguousModule(Box::new(rue_error::AmbiguousModuleData {
+                        path: import_path.to_string(),
+                        file_module,
+                        dir_module,
+                    })),
+                    span,
+                ));
+            }
+            super::module_path::DirResolution::Resolved(resolved) => return Ok(resolved),
+            super::module_path::DirResolution::NotFound => {}
         }
 
         // Phase 2: Try to find the file on disk (for directory modules and actual file imports)
