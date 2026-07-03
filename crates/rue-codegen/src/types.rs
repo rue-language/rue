@@ -228,6 +228,19 @@ pub fn type_size_bytes(type_pool: &TypeInternPool, ty: Type) -> u64 {
     (slots as u64) * 8
 }
 
+/// Total slot count of a struct: the sum of every field's slot count. Equal to
+/// `type_slot_count(Struct(struct_id))`, but reachable directly from a
+/// `StructId` (used to anchor ascending place addressing at a struct root —
+/// ADR-0040 / RUE-311).
+pub fn struct_slot_count(type_pool: &TypeInternPool, struct_id: StructId) -> u32 {
+    let struct_def = type_pool.struct_def(struct_id);
+    let mut total = 0u32;
+    for field in &struct_def.fields {
+        total += type_slot_count(type_pool, field.ty);
+    }
+    total
+}
+
 /// Calculate the slot offset for a field within a struct.
 ///
 /// This accounts for the sizes of all preceding fields.
@@ -272,12 +285,11 @@ pub fn collect_array_scalar_vregs(
         } => {
             let elements = cfg.get_extra(*elements_start, *elements_len);
             let mut result = Vec::new();
-            // Store elements in REVERSE order so element 0 lands at the array's
-            // lowest address (frame slots descend in address): ascending array
-            // layout per ADR-0040 / RUE-243. Mirror of `lower_array_init`. Each
-            // element's own slots stay in natural order (nested arrays reverse
-            // via this same recursion; structs keep descending fields).
-            for elem in elements.iter().rev() {
+            // Collect elements in logical order (element 0 first), matching
+            // `lower_array_init`: the slot cache is uniform ascending order and
+            // the ascending physical layout is produced at store time (ADR-0040
+            // / RUE-311).
+            for elem in elements.iter() {
                 let elem_inst = cfg.get_inst(*elem);
                 if elem_inst.ty.is_array() {
                     // Recursively collect from nested array

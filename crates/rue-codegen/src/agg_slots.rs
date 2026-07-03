@@ -84,11 +84,11 @@ pub trait SlotBackend {
     /// Emit a bounds check trapping when `index_vreg >= length`.
     fn emit_bounds_check(&mut self, index_vreg: VReg, length: u64);
 
-    /// Emit `dst = address of the (possibly projected) place` — the backend's
-    /// `lower_place_addr` (frame base + static field-slot offsets, minus
-    /// dynamic index offsets; through a by-ref pointer per the descending ABI
-    /// convention). Does NOT bounds-check index projections; callers do that
-    /// first.
+    /// Emit `dst = low-end address of the (possibly projected) place` — the
+    /// backend's `lower_place_addr`. The result is the place's lowest-address
+    /// byte; aggregate slots ascend from it (`slot k` at `dst + k*8`), uniform
+    /// for frame- and heap-rooted places (ADR-0040 / RUE-311). Does NOT
+    /// bounds-check index projections; callers do that first.
     fn emit_place_addr(&mut self, dst: VReg, place: &Place);
 }
 
@@ -169,8 +169,13 @@ pub fn get_or_compute_field_vregs<B: SlotBackend>(b: &mut B, value: CfgValue) ->
             let slot_count = b.ctx().type_slot_count(ty);
 
             if !has_index && !is_by_ref_base {
-                // Purely static projection chain rooted at a frame slot:
-                // load the field's consecutive slots directly.
+                // Purely static projection chain rooted at a frame slot.
+                // Ascending layout (ADR-0040 / RUE-311): the accessed field's
+                // low end (its logical slot 0) sits at the ROOT object's low
+                // end plus the summed field byte offset. In frame-slot terms
+                // the root's low end is `root_base + (C_root - 1)` (its
+                // highest-numbered = lowest-address slot), and adding the field
+                // offset in ADDRESS space means SUBTRACTING it in slot number.
                 let mut static_slot_offset: u32 = 0;
                 for proj in &projections {
                     match proj {
@@ -184,23 +189,23 @@ pub fn get_or_compute_field_vregs<B: SlotBackend>(b: &mut B, value: CfgValue) ->
                         Projection::Index { .. } => unreachable!("has_index is false"),
                     }
                 }
-                let base_slot = match place.base {
-                    PlaceBase::Local(slot) => slot + static_slot_offset,
-                    PlaceBase::Param(param_slot) => {
-                        b.ctx().num_locals + param_slot + static_slot_offset
-                    }
+                let root_base = match place.base {
+                    PlaceBase::Local(slot) => slot,
+                    PlaceBase::Param(param_slot) => b.ctx().num_locals + param_slot,
                 };
-                return Some(load_consecutive(b, base_slot, slot_count));
+                let root_count = root_slot_count(b, &projections, slot_count);
+                let field_low_slot = root_base + (root_count - 1) - static_slot_offset;
+                return Some(load_slots_at_low(b, field_low_slot, slot_count));
             }
 
             // Indexed element (`arr[i]`, `s.rows[i]` — constant or dynamic
             // index) or a projection through a by-ref param: bounds-check
-            // every index projection, form the place's address, then load
-            // each slot through it. Slot i lives at addr - i*8 (frame slots
-            // descend; the stack grows down), matching
-            // `store_slots_through_ptr`. Previously these sources returned
-            // None and every consumer's fallback materialized only slot 0 —
-            // the RUE-188 miscompile family. (RUE-188/192)
+            // every index projection, form the place's low-end address, then
+            // load each slot through it. Slot k lives at addr + k*8 (ascending,
+            // ADR-0040 / RUE-311), matching `store_slots_through_ptr`.
+            // Previously these sources returned None and every consumer's
+            // fallback materialized only slot 0 — the RUE-188 miscompile
+            // family. (RUE-188/192)
             for proj in &projections {
                 if let Projection::Index { array_type, index } = proj {
                     let length = b.ctx().array_length(*array_type);
@@ -214,6 +219,22 @@ pub fn get_or_compute_field_vregs<B: SlotBackend>(b: &mut B, value: CfgValue) ->
         }
         // BlockParam and Call should already have slot vregs in the cache
         _ => None,
+    }
+}
+
+/// Total slot count of the ROOT object a projected place is rooted at — the
+/// container the first projection indexes into. Ascending place addressing
+/// (ADR-0040 / RUE-311) anchors every field/element at the root object's low
+/// end (`root_base + root_count - 1` in frame slots), so the root's own slot
+/// count is the one origin shift a projection chain needs; nested containers
+/// contribute only their byte offsets from that anchor. With no projections the
+/// place *is* the root, so `fallback` (the accessed value's own slot count) is
+/// used.
+pub fn root_slot_count<B: SlotBackend>(b: &B, projections: &[Projection], fallback: u32) -> u32 {
+    match projections.first() {
+        Some(Projection::Field { struct_id, .. }) => b.ctx().struct_total_slot_count(*struct_id),
+        Some(Projection::Index { array_type, .. }) => b.ctx().type_slot_count(*array_type),
+        None => fallback,
     }
 }
 
@@ -361,19 +382,18 @@ pub fn lower_array_init<B: SlotBackend>(
     let vreg = b.alloc_vreg();
     b.map_value(value, vreg);
 
-    // Array elements are laid out ASCENDING in memory: element 0 at the
-    // array's lowest address, element i at base + i*element_size (ADR-0040 /
-    // RUE-243). Frame slots descend in address (slot k lives at a lower
-    // address than slot k-1), so we store the elements in REVERSE order —
-    // element N-1 into the first (highest-address) slot, element 0 into the
-    // last (lowest-address) slot. Array-index address computation applies the
-    // matching `+(N-1)*elem_slot_count` origin shift and adds the scaled
-    // index, so indexing and @ptr_offset agree. Each element's own slots stay
-    // in natural order (struct fields remain descending; nested arrays are
-    // reversed by their own recursion). (ADR-0040)
+    // The slot cache holds the aggregate's logical slots in ascending order —
+    // element 0 first, then element 1, and so on, each element's own slots in
+    // logical order (RUE-311). Physical ascending layout (element 0 at the
+    // array's lowest address, element i at base + i*element_size — ADR-0040 /
+    // RUE-243) is produced when this list is *stored*: `store_slots` reverses
+    // it into the frame (logical slot 0 at the highest-numbered = lowest-
+    // address slot), and `store_slots_through_ptr` writes it ascending from a
+    // low-end pointer. So every consumer — frame store, `@ptr_write`, the call
+    // ABI, structural equality — sees one uniform slot order.
     let elements = b.ctx().cfg.get_extra(elements_start, elements_len).to_vec();
     let mut element_vregs: Vec<VReg> = Vec::new();
-    for e in elements.iter().rev() {
+    for e in elements.iter() {
         let e_ty = b.ctx().cfg.get_inst(*e).ty;
         // Payload enums are multi-slot aggregates too: a discriminant-only
         // enum (accessor returns None) stays a single-vreg scalar, but a
@@ -397,17 +417,33 @@ pub fn lower_array_init<B: SlotBackend>(
     b.emit_load_zero(vreg);
 }
 
-/// Store `vals` to consecutive frame slots starting at `base_slot`
-/// (slot `base_slot + i` gets `vals[i]`).
+/// Store a whole aggregate value's `vals` (one vreg per logical slot, slot 0
+/// first) to the frame region beginning at `base_slot`, laid out
+/// ASCENDING-in-address (ADR-0040): logical slot 0 at the region's LOWEST
+/// address, slot `k` at `base_low_addr + k*8`. Frame slots descend in address
+/// (a higher slot number is a lower address), so logical slot `k` is stored at
+/// frame slot `base_slot + (len-1) - k` — the region's low end is its
+/// highest-numbered slot.
 pub fn store_slots<B: SlotBackend>(b: &mut B, vals: &[VReg], base_slot: u32) {
-    for (i, val) in vals.iter().enumerate() {
-        b.emit_store_slot(*val, base_slot + i as u32);
+    let low_slot = base_slot + (vals.len() as u32).saturating_sub(1);
+    store_slots_at_low(b, vals, low_slot);
+}
+
+/// Store `vals` (logical slot 0 first) into the frame with the value's
+/// low-end (slot-0) at frame slot `low_slot`; logical slot `k` lands at frame
+/// slot `low_slot - k` (each higher slot at a higher address — ascending,
+/// ADR-0040).
+pub fn store_slots_at_low<B: SlotBackend>(b: &mut B, vals: &[VReg], low_slot: u32) {
+    for (k, val) in vals.iter().enumerate() {
+        b.emit_store_slot(*val, low_slot - k as u32);
     }
 }
 
-/// Store `vals` through `ptr` at descending byte offsets: `vals[i]` goes to
-/// `ptr - static_byte_offset - i*8`. Caller-frame slots descend from an inout
-/// pointer (the stack grows down), matching the place-read path.
+/// Store `vals` (logical slot 0 first) through `ptr` at ASCENDING byte
+/// offsets: `vals[k]` goes to `ptr + static_byte_offset + k*8`. `ptr` is the
+/// pointee's low-end address (what `@raw` and `@ptr_offset` yield, and where
+/// `@alloc` blocks begin), so aggregate slots ascend uniformly for pointers of
+/// every origin — stack, heap, or `@int_to_ptr` (ADR-0040 / RUE-311).
 pub fn store_slots_through_ptr<B: SlotBackend>(
     b: &mut B,
     vals: &[VReg],
@@ -415,15 +451,15 @@ pub fn store_slots_through_ptr<B: SlotBackend>(
     static_byte_offset: i32,
 ) {
     for (i, val) in vals.iter().enumerate() {
-        b.emit_store_through_ptr(*val, ptr, -static_byte_offset - (i as i32) * 8);
+        b.emit_store_through_ptr(*val, ptr, static_byte_offset + (i as i32) * 8);
     }
 }
 
 /// Callee side of the sret return convention (RUE-106): load the sret buffer
 /// pointer the prologue saved at the frame slot one past the param area, then
 /// store every slot of the return value through it at ascending byte offsets
-/// (`vals[i]` to `ptr + i*8` — the buffer is caller-allocated and addressed
-/// upward, unlike the descending inout frame-slot writes).
+/// (`vals[i]` to `ptr + i*8`) — the same low-end-ascending convention every
+/// aggregate memory access now uses (ADR-0040 / RUE-311).
 ///
 /// See `crate::cfg_lower::type_uses_sret_return` for when returns use sret.
 pub fn store_slots_to_sret<B: SlotBackend>(b: &mut B, vals: &[VReg]) {
@@ -435,37 +471,47 @@ pub fn store_slots_to_sret<B: SlotBackend>(b: &mut B, vals: &[VReg]) {
     }
 }
 
-/// Load `count` slots through `ptr` at descending byte offsets (slot i at
-/// `ptr - i*8`), returning the freshly-allocated vregs in slot order. The
-/// public counterpart of [`store_slots_through_ptr`]: used by `@ptr_read` to
-/// read an aggregate pointee through a raw pointer, one 8-byte slot per field
-/// (RUE-242). Every value of an aggregate type occupies `type_slot_count`
-/// consecutive descending slots, matching how `@raw` addresses the place.
+/// Load `count` slots through `ptr` at ASCENDING byte offsets (slot k at
+/// `ptr + k*8`), returning the freshly-allocated vregs in logical slot order.
+/// The public counterpart of [`store_slots_through_ptr`]: used by `@ptr_read`
+/// to read an aggregate pointee through a raw pointer, one 8-byte slot per
+/// field (RUE-242). `ptr` is the pointee's low-end address; every value of an
+/// aggregate type occupies `type_slot_count` consecutive ascending slots
+/// (ADR-0040 / RUE-311).
 pub fn load_slots_through_ptr<B: SlotBackend>(b: &mut B, ptr: VReg, count: u32) -> Vec<VReg> {
     load_through_ptr(b, ptr, count)
 }
 
-/// Load `count` consecutive frame slots starting at `base_slot`, returning the
-/// freshly-allocated vregs in slot order.
+/// Load a whole aggregate value's `count` logical slots from the frame region
+/// beginning at `base_slot` (ascending layout, ADR-0040): logical slot 0 is at
+/// the region's low end (frame slot `base_slot + count - 1`), slot `k` at
+/// `base_slot + count - 1 - k`. Returns the vregs in logical slot order.
 fn load_consecutive<B: SlotBackend>(b: &mut B, base_slot: u32, count: u32) -> Vec<VReg> {
+    load_slots_at_low(b, base_slot + count.saturating_sub(1), count)
+}
+
+/// Load `count` logical slots (slot 0 first) from the frame with the value's
+/// low-end (slot 0) at frame slot `low_slot`; logical slot `k` is read from
+/// frame slot `low_slot - k` (ascending, ADR-0040).
+pub fn load_slots_at_low<B: SlotBackend>(b: &mut B, low_slot: u32, count: u32) -> Vec<VReg> {
     let mut vregs = Vec::with_capacity(count as usize);
-    for i in 0..count {
+    for k in 0..count {
         let vreg = b.alloc_vreg();
-        b.emit_load_slot(vreg, base_slot + i);
+        b.emit_load_slot(vreg, low_slot - k);
         vregs.push(vreg);
     }
     vregs
 }
 
-/// Load `count` slots through `addr_vreg` at descending byte offsets (slot i
-/// at `addr - i*8` — frame slots descend; the stack grows down, matching
-/// [`store_slots_through_ptr`]), returning the freshly-allocated vregs in
-/// slot order.
+/// Load `count` slots through `addr_vreg` at ASCENDING byte offsets (slot k at
+/// `addr + k*8`, matching [`store_slots_through_ptr`]), returning the
+/// freshly-allocated vregs in logical slot order. `addr_vreg` is the pointee's
+/// low-end address (ADR-0040 / RUE-311).
 fn load_through_ptr<B: SlotBackend>(b: &mut B, addr_vreg: VReg, count: u32) -> Vec<VReg> {
     let mut vregs = Vec::with_capacity(count as usize);
-    for i in 0..count {
+    for k in 0..count {
         let vreg = b.alloc_vreg();
-        b.emit_load_through_ptr(vreg, addr_vreg, -(i as i32) * 8);
+        b.emit_load_through_ptr(vreg, addr_vreg, (k as i32) * 8);
         vregs.push(vreg);
     }
     vregs

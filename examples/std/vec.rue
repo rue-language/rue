@@ -35,10 +35,11 @@
 //     freed automatically at scope exit — call `free()` explicitly. (The
 //     `@free`-from-a-destructor path itself works and is proven on a concrete
 //     named struct; it is the *generic* attachment that is blocked.)
-//   * Element type must be a single 8-byte slot (scalars: iN/uN/bool, or a
-//     one-field struct). Multi-slot aggregate elements are miscompiled by the
-//     aggregate raw-pointer path (descending slot offsets underflow the
-//     ascending heap element base) — a separate raw-pointer bug, not a Vec bug.
+//   * Multi-slot aggregate element types (e.g. a two-field struct) now work:
+//     every aggregate is laid out ascending-in-address and `@ptr_read`/
+//     `@ptr_write` walk slots upward from the element base, matching the
+//     ascending heap layout (ADR-0040 / RUE-311). The Copy restriction above
+//     still applies (elements are transferred by copy).
 
 pub fn Vec(comptime T: type) -> type {
     struct {
