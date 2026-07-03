@@ -52,6 +52,11 @@ pub struct KnownSymbols {
     pub read_line: Spur,
     /// The `to_string` intrinsic symbol - formats an i64 as a decimal String.
     pub to_string: Spur,
+    /// The `print` builtin free function - writes a String to stdout (RUE-1).
+    pub print: Spur,
+    /// The `println` builtin free function - writes a String plus a newline to
+    /// stdout (RUE-1).
+    pub println: Spur,
     /// The `parse_i32` intrinsic symbol.
     pub parse_i32: Spur,
     /// The `parse_i64` intrinsic symbol.
@@ -114,6 +119,8 @@ impl KnownSymbols {
             assert: interner.get_or_intern_static("assert"),
             read_line: interner.get_or_intern_static("read_line"),
             to_string: interner.get_or_intern_static("to_string"),
+            print: interner.get_or_intern_static("print"),
+            println: interner.get_or_intern_static("println"),
             parse_i32: interner.get_or_intern_static("parse_i32"),
             parse_i64: interner.get_or_intern_static("parse_i64"),
             parse_u32: interner.get_or_intern_static("parse_u32"),
@@ -179,6 +186,8 @@ mod tests {
         assert_eq!(interner.resolve(&known.panic), "panic");
         assert_eq!(interner.resolve(&known.assert), "assert");
         assert_eq!(interner.resolve(&known.read_line), "read_line");
+        assert_eq!(interner.resolve(&known.print), "print");
+        assert_eq!(interner.resolve(&known.println), "println");
         assert_eq!(interner.resolve(&known.parse_i32), "parse_i32");
         assert_eq!(interner.resolve(&known.parse_i64), "parse_i64");
         assert_eq!(interner.resolve(&known.parse_u32), "parse_u32");

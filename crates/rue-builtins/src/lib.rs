@@ -492,6 +492,18 @@ pub const TO_STRING_RUNTIME_FN: &str = "__rue_to_string";
 /// *mut StringResult, ptr1, len1, cap1, ptr2, len2, cap2)`.
 pub const STRING_CONCAT_RUNTIME_FN: &str = "__rue_String_concat";
 
+/// Runtime symbol for `print(s)`: writes the raw bytes of `s` to stdout with no
+/// added newline. The `String` is passed by borrow (not consumed), flattened
+/// into three ABI slots: `extern "C" fn __rue_print(ptr, len, cap)` (`cap`
+/// unused). Returns unit (RUE-1).
+pub const PRINT_RUNTIME_FN: &str = "__rue_print";
+
+/// Runtime symbol for `println(s)`: writes the raw bytes of `s` to stdout
+/// followed by a single `\n`. Same borrow ABI as [`PRINT_RUNTIME_FN`]:
+/// `extern "C" fn __rue_println(ptr, len, cap)` (`cap` unused). Returns unit
+/// (RUE-1).
+pub const PRINTLN_RUNTIME_FN: &str = "__rue_println";
+
 // ============================================================================
 // Registry
 // ============================================================================

@@ -878,3 +878,71 @@ fn main() -> i32 {
 """
 exit_code = 0
 expected_stdout = "true\ntrue\n5\n"
+
+# --- Output: print / println (RUE-1) ---
+
+[[case]]
+name = "print_writes_bytes_without_newline"
+spec = ["3.7:35", "3.7:37"]
+source = """
+fn main() -> i32 {
+    print("hello");
+    print(" world");
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "hello world"
+
+[[case]]
+name = "println_appends_single_newline"
+spec = ["3.7:36", "3.7:37"]
+source = """
+fn main() -> i32 {
+    println("hi");
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "hi\n"
+
+[[case]]
+name = "println_composes_with_to_string_and_concat"
+spec = ["3.7:36"]
+source = """
+fn main() -> i32 {
+    println("value is " + @to_string(42));
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "value is 42\n"
+
+[[case]]
+name = "print_empty_writes_nothing_println_empty_writes_newline"
+spec = ["3.7:37"]
+source = """
+fn main() -> i32 {
+    print("");
+    println("");
+    print("end");
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "\nend"
+
+[[case]]
+name = "print_borrows_argument_string"
+spec = ["3.7:35"]
+source = """
+fn main() -> i32 {
+    let s = "reused";
+    print(s);
+    print(s);
+    @dbg(s.len());
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "reusedreused6\n"

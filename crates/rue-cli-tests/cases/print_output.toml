@@ -1,0 +1,93 @@
+# `print` / `println` builtin free functions (RUE-1).
+#
+# `print(s: String)` writes the raw bytes of `s` to stdout with nothing added;
+# `println(s: String)` writes the bytes then a single `\n`. They borrow the
+# String (do not consume it), so the argument stays usable afterwards. These
+# are runtime-visible, so every case pins the exact stdout bytes (including the
+# presence or absence of a trailing newline) — the one thing the spec harness's
+# exit-code assertions can't see.
+
+[section]
+id = "cli.print"
+name = "print / println output"
+description = "Raw-byte stdout output via the print and println builtins."
+
+[[case]]
+name = "print_no_trailing_newline"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    print("hello");
+    print(" world");
+    0
+}
+""" }]
+stdout = "hello world"
+
+[[case]]
+name = "println_adds_single_newline"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    println("hi");
+    0
+}
+""" }]
+stdout = "hi\n"
+
+[[case]]
+name = "println_composed_with_to_string_and_concat"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    println("value is " + @to_string(42));
+    0
+}
+""" }]
+stdout = "value is 42\n"
+
+[[case]]
+name = "print_empty_and_println_empty"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    print("");
+    println("");
+    print("end");
+    0
+}
+""" }]
+stdout = "\nend"
+
+[[case]]
+name = "print_borrows_string_reusable_after_call"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut s = String::new();
+    s.push_str("built ");
+    s.push_str("string");
+    print(s);
+    print(s);
+    println(s);
+    0
+}
+""" }]
+stdout = "built stringbuilt stringbuilt string\n"
+
+[[case]]
+name = "print_utf8_bytes_verbatim"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    println("café");
+    0
+}
+""" }]
+# café = 63 61 66 c3 a9, then a newline — the raw UTF-8 bytes, unmodified.
+stdout = "café\n"
+
+[[case]]
+name = "user_defined_print_shadows_builtin"
+files = [{ path = "main.rue", source = """
+fn print(x: i32) -> i32 { x + 1 }
+
+fn main() -> i32 {
+    print(41)
+}
+""" }]
+exit_code = 42

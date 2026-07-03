@@ -4884,6 +4884,92 @@ impl<'a> Sema<'a> {
         Ok(AnalysisResult::new(air_ref, string_type))
     }
 
+    /// Analyze the `print(s)` / `println(s)` builtin free functions (RUE-1).
+    ///
+    /// Both take a single `String` and return unit: `print` writes its raw
+    /// bytes to stdout with nothing added, `println` appends a single `\n`.
+    /// Formatting and interpolation are deliberately out of scope — callers
+    /// compose with `@to_string` and `+` (e.g. `println("n=" + @to_string(n))`).
+    ///
+    /// The `String` argument is *borrowed* (read, not consumed), exactly like
+    /// the operands of `s1 + s2`: a named argument stays usable afterwards and
+    /// a temporary is dropped by its owner at statement end (no leak, no double
+    /// free). This lowers to an ordinary `extern "C"` call to the runtime
+    /// `__rue_print` / `__rue_println`, reusing the String-flattening call path
+    /// (the String passes as its three fields ptr/len/cap; the runtime ignores
+    /// cap) — so no codegen change is needed.
+    pub(crate) fn analyze_print_builtin(
+        &mut self,
+        air: &mut Air,
+        name: Spur,
+        args_start: u32,
+        args_len: u32,
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AnalysisResult> {
+        let fn_name = if name == self.known.println {
+            "println"
+        } else {
+            "print"
+        };
+
+        let args = self.rir.get_call_args(args_start, args_len);
+        if args.len() != 1 {
+            return Err(CompileError::new(
+                ErrorKind::WrongArgumentCount {
+                    expected: 1,
+                    found: args.len(),
+                },
+                span,
+            )
+            .with_help(format!("`{fn_name}` takes exactly one String argument")));
+        }
+        let arg_value = args[0].value;
+
+        // Borrow the argument (like a `+` operand): analyze in projection mode
+        // and cancel any move marker so a variable operand is not consumed and
+        // a temporary is still dropped by its owner at statement end.
+        let arg_result = self.analyze_inst_for_projection(air, arg_value, ctx)?;
+        air.cancel_move_marker(arg_result.air_ref);
+
+        if !self.is_builtin_string(arg_result.ty) && !arg_result.ty.is_error() {
+            return Err(CompileError::new(
+                ErrorKind::TypeMismatch {
+                    expected: "String".to_string(),
+                    found: arg_result.ty.safe_name_with_pool(Some(&self.type_pool)),
+                },
+                self.rir.get(arg_value).span,
+            )
+            .with_help(format!(
+                "`{fn_name}` takes a String; build one with `@to_string`, `+`, or String methods"
+            )));
+        }
+
+        let runtime_fn = if name == self.known.println {
+            rue_builtins::PRINTLN_RUNTIME_FN
+        } else {
+            rue_builtins::PRINT_RUNTIME_FN
+        };
+        let call_name = self.interner.get_or_intern(runtime_fn);
+
+        // The String is flattened into (ptr, len, cap) by codegen; Normal mode
+        // with the move cancelled gives flatten-without-consume (same as the
+        // operands of `__rue_String_concat`).
+        let extra_data = [arg_result.air_ref.as_u32(), AirArgMode::Normal.as_u32()];
+        let args_start = air.add_extra(&extra_data);
+
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::Call {
+                name: call_name,
+                args_start,
+                args_len: 1,
+            },
+            ty: Type::UNIT,
+            span,
+        });
+        Ok(AnalysisResult::new(air_ref, Type::UNIT))
+    }
+
     /// Analyze a binary arithmetic operator (+, -, *, /, %).
     ///
     /// Follows Rust's type inference rules:
