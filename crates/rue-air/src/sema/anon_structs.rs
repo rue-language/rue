@@ -115,15 +115,32 @@ impl Sema<'_> {
         let name = format!("__anon_struct_{}", struct_id.0);
         let name_spur = self.interner.get_or_intern(&name);
 
-        // Determine if the struct is Copy (all fields are Copy)
-        let is_copy = fields.iter().all(|f| f.ty.is_copy_in_pool(&self.type_pool));
+        // A `drop fn(self)` inside the struct body is carried as a method under
+        // the reserved `__drop` name (RUE-312). Its presence means this struct
+        // has a user destructor: register `{name}.__drop` as the destructor so
+        // the CFG drop glue runs it at scope exit, and force the struct
+        // non-Copy (a type with a destructor cannot be `@copy` — the spirit of
+        // the named-struct E0457 check).
+        let drop_marker = self.interner.get_or_intern("__drop");
+        let has_destructor = method_sigs.iter().any(|sig| sig.name == drop_marker);
+
+        // Determine if the struct is Copy (all fields are Copy, and there is no
+        // destructor).
+        let is_copy =
+            !has_destructor && fields.iter().all(|f| f.ty.is_copy_in_pool(&self.type_pool));
+
+        let destructor = if has_destructor {
+            Some(format!("{}.__drop", name))
+        } else {
+            None
+        };
 
         let struct_def = StructDef {
             name,
             fields: fields.to_vec(),
             is_copy,
             is_linear: false,
-            destructor: None,
+            destructor,
             is_builtin: false,
             is_pub: false,                     // Anonymous structs are private
             file_id: rue_span::FileId::new(0), // Anonymous, no source file

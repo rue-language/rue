@@ -179,7 +179,7 @@ drop fn TypeName(self) {
 
 {{ rule(id="3.9:25", cat="normative") }}
 
-A user-defined destructor **MUST** be declared at the top level, outside of any `impl` block. It **MUST** take exactly one parameter named `self` and return nothing (implicit unit type).
+A user-defined destructor for a *named* struct type **MUST** be declared at the top level, outside of any `impl` block. It **MUST** take exactly one parameter named `self` and return nothing (implicit unit type). (A destructor for an *anonymous* struct type is declared inside the struct body instead; see 3.9:41.)
 
 {{ rule(id="3.9:26", cat="legality-rule") }}
 
@@ -279,3 +279,58 @@ fn main() -> i32 {
 }
 // prints: 1, 42, 2
 ```
+
+## Destructors on anonymous (generic) struct types
+
+{{ rule(id="3.9:41", cat="syntax") }}
+
+A struct type produced by a comptime `-> type` function is *anonymous* — it has
+no name to key a top-level `drop fn Name(self)` on. Its destructor is instead
+declared **inside the struct body**, using a name-less `drop fn`:
+
+```rue
+fn Buf(comptime T: type) -> type {
+    struct {
+        buf: ptr mut T,
+        cap: u64,
+        drop fn(self) {
+            checked { @free(self.buf, self.cap); };
+        }
+    }
+}
+```
+
+The in-body destructor **MUST** take exactly one by-value `self` parameter and
+return nothing (implicit unit type). A receiver mode keyword (`borrow` /
+`inout`) is not permitted on a destructor's `self`.
+
+{{ rule(id="3.9:42", cat="normative") }}
+
+An anonymous struct's in-body destructor has the same semantics as a named
+struct's top-level `drop fn`: it is monomorphized together with the struct at
+each instantiation and runs on every value of the resulting concrete type when
+that value is dropped (at scope exit or via `@drop`), before the automatic
+dropping of the value's fields. All destructor legality rules (3.9:26 — at most
+one per type; 3.9:31 — a `@copy` type cannot have one, so a struct with an
+in-body `drop fn` is never `@copy`; 3.9:33 — `self` may not be moved out;
+3.9:34 — a field may not be moved out) apply unchanged.
+
+{{ rule(id="3.9:43", cat="example") }}
+
+```rue
+fn Tag(comptime T: type) -> type {
+    struct {
+        v: T,
+        fn make(x: T) -> Self { Self { v: x } }
+        drop fn(self) { @dbg(self.v); }
+    }
+}
+
+fn main() -> i32 {
+    let G = Tag(i32);
+    let a = G::make(1);
+    let b = G::make(2);
+    @dbg(100);
+    0
+}
+// prints: 100, 2, 1  (values drop in reverse declaration order at scope exit)

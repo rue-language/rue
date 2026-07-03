@@ -1173,3 +1173,82 @@ fn main() -> i32 {
 }
 """
 exit_code = 9
+
+# --- Destructors on anonymous (generic) struct types (RUE-312) ---
+
+[[case]]
+name = "anon_struct_in_body_destructor_runs"
+spec = ["3.9:41", "3.9:42"]
+description = "A `drop fn(self)` declared inside a comptime type function's anonymous struct runs at scope exit"
+source = """
+fn Box(comptime T: type) -> type {
+    struct {
+        v: T,
+        fn make(x: T) -> Self { Self { v: x } }
+        drop fn(self) { @dbg(self.v); }
+    }
+}
+
+fn main() -> i32 {
+    let B = Box(i32);
+    let b = B::make(7);
+    @dbg(100);
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "100\n7\n"
+
+[[case]]
+name = "anon_struct_destructor_drop_order"
+spec = ["3.9:42"]
+description = "Anonymous-struct destructors run in reverse declaration order, like named-struct destructors"
+source = """
+fn Tag(comptime T: type) -> type {
+    struct {
+        v: T,
+        fn make(x: T) -> Self { Self { v: x } }
+        drop fn(self) { @dbg(self.v); }
+    }
+}
+
+fn main() -> i32 {
+    let G = Tag(i32);
+    let a = G::make(1);
+    let b = G::make(2);
+    let c = G::make(3);
+    @dbg(100);
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "100\n3\n2\n1\n"
+
+[[case]]
+name = "anon_struct_destructor_not_double_dropped_on_move"
+spec = ["3.9:42"]
+description = "A moved anonymous-struct value is dropped exactly once, by its final owner (the callee)"
+source = """
+fn Tag(comptime T: type) -> type {
+    struct {
+        v: T,
+        fn make(x: T) -> Self { Self { v: x } }
+        fn val(borrow self) -> T { self.v }
+        drop fn(self) { @dbg(self.v); }
+    }
+}
+
+fn eat(g: Tag(i32)) -> i32 {
+    g.val()
+}
+
+fn main() -> i32 {
+    let G = Tag(i32);
+    let a = G::make(5);
+    @dbg(eat(a));   // a moved into eat: dropped there (prints 5), then eat returns 5
+    @dbg(100);
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "5\n5\n100\n"

@@ -315,6 +315,9 @@ fn analyze_all_function_bodies_sequential(sema: &mut Sema<'_>) -> MultiErrorResu
     // aren't in any named StructDecl. We use a fixed-point loop since analyzing one
     // method may create new anonymous struct types with their own methods.
     let mut analyzed_anon_methods: HashSet<(StructId, Spur)> = HashSet::new();
+    // The reserved name a `drop fn(self)` destructor is carried under inside an
+    // anonymous struct body (RUE-312); such a method is analyzed as a destructor.
+    let drop_marker_sym = sema.interner.get_or_intern("__drop");
     loop {
         // Collect anonymous struct methods that haven't been analyzed yet
         let pending_anon_methods: Vec<(StructId, Spur, MethodInfo)> = sema
@@ -397,15 +400,40 @@ fn analyze_all_function_bodies_sequential(sema: &mut Sema<'_>) -> MultiErrorResu
                 .cloned()
                 .unwrap_or_else(HashMap::new);
 
-            match sema.analyze_method_body(
-                &infer_ctx,
-                method_info.return_type,
-                &param_info,
-                method_info.body,
-                method_info.struct_type,
-                &captured_values,
-                &enclosing_type_subst,
-            ) {
+            // A `drop fn(self)` in an anonymous struct body is carried under the
+            // reserved `__drop` method name (RUE-312). It must be analyzed as a
+            // *destructor*, not an ordinary method: `self` is consumed and the
+            // drop glue (not the destructor) drops the fields afterwards, so the
+            // destructor's own param-drop list is cleared and a self-move out of
+            // it is rejected — exactly like a named struct's `drop fn`. The
+            // enclosing `-> type` constructor's params (`T`) are threaded through
+            // to BOTH paths (RUE-313), so a generic destructor
+            // (`@free(self.buf, self.cap)`) monomorphizes per instantiation.
+            let is_destructor = method_name == drop_marker_sym;
+
+            let analysis_result = if is_destructor {
+                sema.analyze_anon_destructor_body(
+                    &infer_ctx,
+                    &param_info,
+                    method_info.body,
+                    method_info.struct_type,
+                    &captured_values,
+                    &full_name,
+                    &enclosing_type_subst,
+                )
+            } else {
+                sema.analyze_method_body(
+                    &infer_ctx,
+                    method_info.return_type,
+                    &param_info,
+                    method_info.body,
+                    method_info.struct_type,
+                    &captured_values,
+                    &enclosing_type_subst,
+                )
+            };
+
+            match analysis_result {
                 Ok((
                     air,
                     num_locals,
@@ -1934,6 +1962,82 @@ impl<'a> Sema<'a> {
             Some(captured_comptime_values),
             false,
         )
+    }
+
+    /// Analyze the body of a `drop fn(self)` destructor declared inside an
+    /// anonymous struct (RUE-312).
+    ///
+    /// This is the anon-struct analog of [`Self::analyze_destructor_function`]
+    /// (which handles named-struct `drop fn Name(self)`): it resolves `Self` to
+    /// the monomorphized struct type (like [`Self::analyze_method_body`]) *and*
+    /// applies destructor semantics — `is_destructor = true` exempts the
+    /// linear-parameter must-consume check, a self-move out of the body is
+    /// rejected (`reject_self_move_in_destructor`, RUE-139), and the owned
+    /// parameter drop list is cleared so the drop glue (not the destructor)
+    /// disposes of `self`'s fields, avoiding infinite recursion. The return
+    /// type is always unit.
+    #[allow(clippy::type_complexity)]
+    fn analyze_anon_destructor_body(
+        &mut self,
+        infer_ctx: &InferenceContext,
+        params: &[(Spur, Type, RirParamMode, bool)],
+        body: InstRef,
+        self_type: Type,
+        captured_comptime_values: &std::collections::HashMap<Spur, ConstValue>,
+        full_name: &str,
+        enclosing_type_subst: &std::collections::HashMap<Spur, Type>,
+    ) -> CompileResult<(
+        Air,
+        u32,
+        u32,
+        Vec<bool>,
+        Vec<CompileWarning>,
+        Vec<String>,
+        HashSet<Spur>,
+        HashSet<(StructId, Spur)>,
+    )> {
+        // Resolve `Self` to the concrete struct type.
+        let self_sym = self.interner.get_or_intern("Self");
+        // Seed with the enclosing `-> type` constructor's params (`T -> i32`)
+        // so a generic destructor body can name `T` (RUE-313), then `Self` last.
+        let mut type_subst = enclosing_type_subst.clone();
+        type_subst.insert(self_sym, self_type);
+
+        let (
+            mut air,
+            num_locals,
+            num_param_slots,
+            param_modes,
+            warnings,
+            local_strings,
+            ref_fns,
+            ref_meths,
+        ) = self.analyze_function_internal(
+            infer_ctx,
+            Type::UNIT,
+            params,
+            body,
+            Some(&type_subst),
+            Some(captured_comptime_values),
+            /* is_destructor */ true,
+        )?;
+
+        reject_self_move_in_destructor(&air, full_name)?;
+
+        // The destructor consumes `self`; the drop glue drops the fields
+        // afterwards, so the destructor must not re-drop its own parameter.
+        air.clear_param_drops();
+
+        Ok((
+            air,
+            num_locals,
+            num_param_slots,
+            param_modes,
+            warnings,
+            local_strings,
+            ref_fns,
+            ref_meths,
+        ))
     }
 
     /// Run Hindley-Milner type inference on a function body.

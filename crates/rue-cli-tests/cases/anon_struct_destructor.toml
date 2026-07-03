@@ -1,0 +1,172 @@
+# A `drop fn(self)` declared inside a comptime type function's anonymous struct
+# — RAII for library collection types (RUE-312). Before the fix a `drop fn`
+# inside an anonymous struct body did not even PARSE (E0100); now it is carried
+# as the struct's `__drop` method, registered as the monomorphized struct's
+# destructor, and run by the ordinary scope-exit drop glue — the same machinery
+# a named struct's top-level `drop fn` uses.
+#
+# These cases pin EXACT stdout (order matters) so the destructor's presence,
+# count, and ordering are all regression-tested. The heap case proves the
+# buffer is freed AUTOMATICALLY at scope exit with no explicit free() call —
+# the last gap to a "real" RAII Vec (RUE-1).
+
+[section]
+id = "cli.anon_struct_destructor"
+name = "Destructors on anonymous (generic) struct types"
+description = "A drop fn inside a comptime type function's anonymous struct runs at scope exit (RUE-312)."
+
+# The destructor runs at scope exit: 100 (live marker) then 7 (the destructor).
+[[case]]
+name = "in_body_destructor_runs"
+description = "A drop fn(self) in an anonymous struct runs automatically at scope exit."
+files = [{ path = "main.rue", source = """
+fn Box(comptime T: type) -> type {
+    struct {
+        v: T,
+        fn make(x: T) -> Self { Self { v: x } }
+        drop fn(self) { @dbg(self.v); }
+    }
+}
+
+fn main() -> i32 {
+    let B = Box(i32);
+    let b = B::make(7);
+    @dbg(100);
+    0
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+stdout = "100\n7\n"
+exit_code = 0
+
+# Reverse declaration order (LIFO) across three values, like named structs.
+[[case]]
+name = "destructor_drop_order_lifo"
+description = "Anonymous-struct destructors run in reverse declaration order."
+files = [{ path = "main.rue", source = """
+fn Tag(comptime T: type) -> type {
+    struct {
+        v: T,
+        fn make(x: T) -> Self { Self { v: x } }
+        drop fn(self) { @dbg(self.v); }
+    }
+}
+
+fn main() -> i32 {
+    let G = Tag(i32);
+    let a = G::make(1);
+    let b = G::make(2);
+    let c = G::make(3);
+    @dbg(100);
+    0
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+stdout = "100\n3\n2\n1\n"
+exit_code = 0
+
+# A moved value is dropped exactly once, by its final owner (the callee), not
+# twice — the move analysis reaches drop elaboration for anon-struct types too.
+[[case]]
+name = "destructor_not_double_dropped_on_move"
+description = "A moved anonymous-struct value is dropped exactly once, by the callee."
+files = [{ path = "main.rue", source = """
+fn Tag(comptime T: type) -> type {
+    struct {
+        v: T,
+        fn make(x: T) -> Self { Self { v: x } }
+        fn val(borrow self) -> T { self.v }
+        drop fn(self) { @dbg(self.v); }
+    }
+}
+
+fn eat(g: Tag(i32)) -> i32 {
+    g.val()
+}
+
+fn main() -> i32 {
+    let G = Tag(i32);
+    let a = G::make(5);
+    @dbg(eat(a));   // a moved into eat: dropped there (5), then eat returns 5
+    @dbg(100);
+    0
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+stdout = "5\n5\n100\n"
+exit_code = 0
+
+# The real payoff: a generic heap-owning type frees its buffer AUTOMATICALLY at
+# scope exit via its destructor — no explicit free() call. The `T` in the field
+# type is monomorphized (i32 here), and @free runs inside the destructor. The
+# 999 marker after the live value (42) proves the destructor ran.
+[[case]]
+name = "generic_heap_buffer_auto_freed"
+description = "A generic @alloc-owning struct frees its buffer in its drop fn at scope exit (no explicit free)."
+files = [{ path = "main.rue", source = """
+fn Buf(comptime T: type) -> type {
+    struct {
+        buf: ptr mut T,
+        cap: u64,
+
+        fn with(n: u64, first: T) -> Self {
+            let zero: u64 = 0;
+            let mut s = Self { buf: checked { @int_to_ptr(zero) }, cap: 0 };
+            checked {
+                let grown = @realloc(s.buf, s.cap, n);
+                s.buf = grown;
+            };
+            s.cap = n;
+            checked { @ptr_write(s.buf, first); };
+            s
+        }
+
+        fn head(borrow self) -> T {
+            checked { @ptr_read(self.buf) }
+        }
+
+        drop fn(self) {
+            checked { @free(self.buf, self.cap); };
+            @dbg(999);
+        }
+    }
+}
+
+fn main() -> i32 {
+    let B = Buf(i32);
+    let b = B::with(4, 42);
+    @dbg(b.head());   // 42 (live)
+    0                 // buffer freed here by the destructor: prints 999
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+stdout = "42\n999\n"
+exit_code = 0
+
+# Two distinct instantiations each get their own monomorphized destructor and
+# both run at scope exit (LIFO): the i32 one prints its value, the bool-tagged
+# one (carried as an i32 marker) prints its own.
+[[case]]
+name = "two_instantiations_each_get_destructor"
+description = "Distinct instantiations of the type function each get their own destructor."
+files = [{ path = "main.rue", source = """
+fn Cell(comptime T: type) -> type {
+    struct {
+        v: T,
+        fn of(x: T) -> Self { Self { v: x } }
+        drop fn(self) { @dbg(self.v); }
+    }
+}
+
+fn main() -> i32 {
+    let Ci = Cell(i32);
+    let Cu = Cell(u32);
+    let a = Ci::of(11);
+    let b = Cu::of(22);
+    @dbg(100);
+    0
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+stdout = "100\n22\n11\n"
+exit_code = 0
