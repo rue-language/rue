@@ -2560,6 +2560,20 @@ impl<'a> CfgLower<'a> {
                     return;
                 }
 
+                // Handle enum drops (RUE-221): pass the enum's flattened slots
+                // (discriminant + payload union) to its synthesized drop glue,
+                // which switches on the discriminant and drops the active
+                // variant's payload.
+                if let Some(enum_id) = dropped_ty.as_enum() {
+                    let field_vregs = self
+                        .get_or_compute_field_vregs(*dropped_value)
+                        .expect("payload enum value should have field vregs");
+                    let enum_def = self.ctx.type_pool.enum_def(enum_id);
+                    let drop_fn_name = format!("__rue_drop_{}", enum_def.name);
+                    self.emit_call_with_slot_args(&field_vregs, &drop_fn_name);
+                    return;
+                }
+
                 // For other types that might need drop in the future
                 unreachable!(
                     "Drop instruction reached codegen for unexpected type: {:?}",

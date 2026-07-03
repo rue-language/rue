@@ -139,16 +139,24 @@ Binding a variant's payload in a `match` arm (see spec 4.7) moves the payload
 out of the enum value in move mode; a moved-out payload that has a destructor
 runs that destructor exactly once, when its binding leaves scope.
 
-{{ rule(id="6.3:19") }}
+{{ rule(id="6.3:19", cat="legality-rule") }}
 
-The intended full model is that an enum's multiplicity is the join of its
-variants' payload multiplicities — an enum a variant of which carries a linear
-payload is itself linear and must be consumed — and that dropping an enum value
-without consuming it drops the payload of its **active** variant (the one
-selected by the discriminant). Multiplicity infectiousness and implicit
-active-variant drop glue are a follow-up phase of the `enum_payloads` preview
-feature (RUE-221); until then, implicitly dropping an unconsumed
-payload-carrying enum leaks (but never double-drops) its payload.
+An enum's multiplicity is the **join** of its variants' payload multiplicities
+over the lattice Copy ⊑ Affine ⊑ Linear. An enum whose every payload is Copy
+(including a discriminant-only enum) is itself Copy; an enum a variant of which
+carries an Affine (drop-carrying) payload is Affine; an enum a variant of which
+carries a **linear** payload is itself linear and **MUST** be consumed —
+letting such a value be implicitly dropped is a must-consume error, exactly as
+for a linear struct. Consuming the enum (for example, by a `match` that binds
+and consumes the payload) discharges the obligation.
+
+{{ rule(id="6.3:20", cat="dynamic-semantics") }}
+
+Dropping an enum value that is not consumed drops the payload of its **active**
+variant — the one selected by the discriminant at run time — running that
+payload's drop glue exactly once, and nothing for a discriminant-only active
+variant. A payload moved out of the enum beforehand (for example, through a
+`match` binding) is not dropped again at scope exit.
 
 {{ rule(id="6.3:18") }}
 
