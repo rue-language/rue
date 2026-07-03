@@ -1,0 +1,149 @@
+# Opt-level differential tests (RUE-236).
+#
+# Each case here is marked `differential_opt = true`: the harness compiles and
+# runs it once per optimization level (-O0, -O1, -O2, -O3) and asserts the exit
+# code AND stdout are IDENTICAL across all of them. This is the program-opt-
+# level analogue of the release-mode CI job (RUE-45), which catches compiler
+# `cfg(debug_assertions)` divergence — here we catch optimizer passes that
+# change a program's observable behavior.
+#
+# -O2/-O3 currently alias -O1 (const-fold + DCE), so results match today; the
+# point is to set the net now so a FUTURE optimizer change that breaks
+# semantics at a higher level is caught immediately, naming the diverging level.
+#
+# Keep this subset SMALL and representative (bounded CI cost): one case each for
+# arithmetic, control flow, an ABI/by-value-aggregate path, and a
+# call/recursion path. Each declares exact stdout+exit_code so every level is
+# also anchored to the known-good result, not just to the other levels.
+
+[section]
+id = "cli.differential_opt"
+name = "Opt-level differential"
+description = "Marked cases must produce identical results at -O0/-O1/-O2/-O3."
+
+# Arithmetic: a spread of operators, widths, and folds. Constant-heavy so the
+# const-fold pass has plenty to chew on; the runtime baseline (-O0) must agree.
+[[case]]
+name = "arithmetic_across_opt_levels"
+differential_opt = true
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: i32 = 6;
+    let b: i32 = 7;
+    let c: i32 = a * b + 100 / 5 - 3;
+    let d: i32 = (c << 2) ^ 0x0F;
+    let e: u32 = ~0 - 4294967200;
+    @dbg(c);
+    @dbg(d);
+    @dbg(e);
+    c
+}
+""" }]
+stdout = """59
+227
+95
+"""
+exit_code = 59
+
+# Control flow: nested loops, branches, mutation, early-ish exits. Exercises
+# CFG-shaped code where a bad block-simplification would show up.
+[[case]]
+name = "control_flow_across_opt_levels"
+differential_opt = true
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut sum: i32 = 0;
+    let mut i: i32 = 0;
+    while i < 10 {
+        if i % 2 == 0 {
+            sum = sum + i;
+        } else {
+            sum = sum - 1;
+        }
+        let mut j: i32 = 0;
+        while j < i {
+            sum = sum + 1;
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    @dbg(sum);
+    sum
+}
+""" }]
+stdout = "60\n"
+exit_code = 60
+
+# ABI / by-value aggregate: a struct passed and returned by value, with a
+# large-enough field mix to exercise the aggregate-slot path that has
+# historically miscompiled (RUE-13/14). Divergence here would be an ABI bug the
+# optimizer exposed.
+[[case]]
+name = "aggregate_abi_across_opt_levels"
+differential_opt = true
+files = [{ path = "main.rue", source = """
+struct Vec3 {
+    x: i64,
+    y: i64,
+    z: i64,
+}
+
+fn add(a: Vec3, b: Vec3) -> Vec3 {
+    Vec3 { x: a.x + b.x, y: a.y + b.y, z: a.z + b.z }
+}
+
+fn dot(a: Vec3, b: Vec3) -> i64 {
+    a.x * b.x + a.y * b.y + a.z * b.z
+}
+
+fn main() -> i32 {
+    let s = add(Vec3 { x: 1, y: 2, z: 3 }, Vec3 { x: 10, y: 20, z: 30 });
+    @dbg(s.x);
+    @dbg(s.y);
+    @dbg(s.z);
+    let d = dot(Vec3 { x: 1, y: 2, z: 3 }, Vec3 { x: 10, y: 20, z: 30 });
+    @dbg(d);
+    let r: i32 = @intCast(d % 256);
+    r
+}
+""" }]
+stdout = """11
+22
+33
+140
+"""
+exit_code = 140
+
+# Call / recursion: mutual + self recursion, so inlining or tail-call style
+# opts (should they ever land) can't silently change the result.
+[[case]]
+name = "recursion_across_opt_levels"
+differential_opt = true
+files = [{ path = "main.rue", source = """
+fn fib(n: i32) -> i32 {
+    if n < 2 {
+        n
+    } else {
+        fib(n - 1) + fib(n - 2)
+    }
+}
+
+fn is_even(n: i32) -> bool {
+    if n == 0 { true } else { is_odd(n - 1) }
+}
+
+fn is_odd(n: i32) -> bool {
+    if n == 0 { false } else { is_even(n - 1) }
+}
+
+fn main() -> i32 {
+    let f: i32 = fib(15);
+    @dbg(f);
+    if is_even(f) { @dbg(0); } else { @dbg(1); }
+    f
+}
+""" }]
+stdout = """610
+0
+"""
+exit_code = 98
