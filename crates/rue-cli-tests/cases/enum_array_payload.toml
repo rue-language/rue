@@ -1,0 +1,79 @@
+# Array-typed enum tuple-variant payloads (RUE-260), gated behind the
+# `enum_payloads` preview feature.
+#
+# Before the fix, constructing an enum tuple-variant whose declared payload is
+# an array spuriously failed with E0206: the construction path wrapped the
+# declared payload type as `InferType::Concrete([i32; 2])` instead of
+# converting it structurally, so an array-literal argument (`[1, 2]`, typed
+# `[{integer}; 2]`) never unified against it — and even a struct-element array
+# printed "expected [Guard; 2], found [Guard; 2]" (identical strings) because
+# the integer elements were left undefaulted. The fix converts the declared
+# payload type with `type_to_infer` (structural arrays) exactly as struct-field
+# init does, so array literals unify and integer elements default. A genuinely
+# mismatched payload still reports E0206 / E0901.
+
+[section]
+id = "cli.enum_array_payload"
+name = "Array-typed enum tuple-variant payloads"
+description = "Enum tuple variants may carry array payloads; array literals unify against the declared element type (RUE-260)."
+
+[[case]]
+name = "int_array_payload_constructs_and_round_trips"
+description = "RUE-260: `Wrapper::Has([1, 2])` compiles and the payload round-trips through a match: 10 + 20 = 30."
+args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+enum Wrapper { Has([i32; 2]), None }
+fn main() -> i32 {
+    let w = Wrapper::Has([10, 20]);
+    match w {
+        Wrapper::Has(a) => a[0] + a[1],
+        Wrapper::None => 0,
+    }
+}
+""" }]
+exit_code = 30
+
+[[case]]
+name = "struct_element_array_payload_constructs"
+description = "RUE-260: an array-of-struct payload (`[Guard; 2]`) constructs and round-trips: 1 + 2 = 3."
+args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+struct Guard { v: i32 }
+enum Wrapper { Has([Guard; 2]), None }
+fn main() -> i32 {
+    let w = Wrapper::Has([Guard{v:1}, Guard{v:2}]);
+    match w {
+        Wrapper::Has(a) => a[0].v + a[1].v,
+        Wrapper::None => 0,
+    }
+}
+""" }]
+exit_code = 3
+
+[[case]]
+name = "wrong_element_type_array_payload_rejected"
+description = "RUE-260 control: an array payload with the wrong element type still reports E0206."
+args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+enum Wrapper { Has([i32; 2]), None }
+fn main() -> i32 {
+    let w = Wrapper::Has([true, false]);
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0206"]
+
+[[case]]
+name = "wrong_length_array_payload_rejected"
+description = "RUE-260 control: an array payload with the wrong length still reports E0901."
+args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+enum Wrapper { Has([i32; 2]), None }
+fn main() -> i32 {
+    let w = Wrapper::Has([1, 2, 3]);
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0901"]
