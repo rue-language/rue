@@ -212,6 +212,12 @@ impl ErrorCode {
     /// (ADR-0037, ADR-0043, RUE-322): it may only name a function parameter,
     /// so it cannot be bound past its argument scope.
     pub const SLICE_ESCAPES_SCOPE: Self = Self(489);
+    /// `@field_ptr(...)` was applied to something other than a field-access
+    /// expression `s.field` (RUE-301). `@field_ptr` is *compiler-mediated
+    /// field access*: it forms a raw pointer to the field the compiler placed,
+    /// so its operand MUST name a struct field. Use `@raw`/`@raw_mut` for the
+    /// address of a whole variable or array element.
+    pub const FIELD_PTR_REQUIRES_FIELD: Self = Self(490);
 
     // ========================================================================
     // Control flow errors (E0500-E0599)
@@ -1132,6 +1138,9 @@ pub enum ErrorKind {
         "@raw requires an addressable place (a variable, field, or array element), not a temporary value"
     )]
     RawRequiresPlace,
+    /// `@field_ptr` operand is not a field-access expression `s.field`
+    #[error("@field_ptr requires a field access expression (for example `s.field`)")]
+    FieldPtrRequiresField,
     /// Inout argument is not an lvalue (variable, field, or array element)
     #[error("inout argument must be an lvalue (variable, field, or array element)")]
     InoutNonLvalue,
@@ -1428,6 +1437,7 @@ impl ErrorKind {
             ErrorKind::FieldAccessOnNonStruct { .. } => ErrorCode::FIELD_ACCESS_ON_NON_STRUCT,
             ErrorKind::InvalidAssignmentTarget => ErrorCode::INVALID_ASSIGNMENT_TARGET,
             ErrorKind::RawRequiresPlace => ErrorCode::RAW_REQUIRES_PLACE,
+            ErrorKind::FieldPtrRequiresField => ErrorCode::FIELD_PTR_REQUIRES_FIELD,
             ErrorKind::InoutNonLvalue => ErrorCode::INOUT_NON_LVALUE,
             ErrorKind::InoutExclusiveAccess { .. } => ErrorCode::INOUT_EXCLUSIVE_ACCESS,
             ErrorKind::BorrowNonLvalue => ErrorCode::BORROW_NON_LVALUE,

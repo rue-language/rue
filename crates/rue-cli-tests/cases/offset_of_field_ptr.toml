@@ -1,0 +1,171 @@
+# Compiler-mediated field access through the real driver (RUE-301).
+#
+# Exercises @offset_of (comptime byte offset of a struct field) and @field_ptr
+# (a raw `ptr mut` to a field place) end-to-end: correct offsets for mixed
+# scalar / array / nested-struct layouts, read/write round-trips through a
+# field pointer, and agreement between @offset_of + @ptr_offset and a direct
+# field access. These are the primitives that let unchecked code walk a struct
+# without hardcoding the 8-byte-slot layout (RUE-288). The `differential_opt`
+# cases also assert identical results across -O0..-O3 (constant offsets must
+# not be miscompiled by the optimizer).
+
+[section]
+id = "cli.offset_of_field_ptr"
+name = "@offset_of / @field_ptr"
+description = "Compiler-mediated field offsets and field pointers via the CLI driver."
+
+# @offset_of returns the byte offset of each field under the current 8-byte
+# slot layout. i32 `a` occupies one slot, so `b` is at byte 8 and `c` at 16.
+[[case]]
+name = "offset_of_mixed_scalars"
+files = [{ path = "main.rue", source = """
+struct Mixed { a: i32, b: i64, c: bool }
+fn main() -> i32 {
+    let oa: u64 = @offset_of(Mixed, a);
+    let ob: u64 = @offset_of(Mixed, b);
+    let oc: u64 = @offset_of(Mixed, c);
+    @dbg(oa);
+    @dbg(ob);
+    @dbg(oc);
+    0
+}
+""" }]
+stdout = "0\n8\n16\n"
+exit_code = 0
+
+# Multi-slot preceding fields (an array and a nested struct) shift later
+# offsets by their full slot count.
+[[case]]
+name = "offset_of_array_and_nested"
+files = [{ path = "main.rue", source = """
+struct Inner { x: i32, y: i32 }
+struct Outer { flag: bool, arr: [i32; 3], inner: Inner, last: i64 }
+fn main() -> i32 {
+    @dbg(@offset_of(Outer, flag) == 0);
+    @dbg(@offset_of(Outer, arr) == 8);
+    @dbg(@offset_of(Outer, inner) == 32);
+    @dbg(@offset_of(Outer, last) == 48);
+    0
+}
+""" }]
+stdout = "true\ntrue\ntrue\ntrue\n"
+exit_code = 0
+
+# @field_ptr read round-trip: the pointer observes the same value as the direct
+# field access, for both the first field (offset 0) and a later field.
+[[case]]
+name = "field_ptr_read_roundtrip"
+differential_opt = true
+files = [{ path = "main.rue", source = """
+struct Mixed { a: i32, b: i64, c: bool }
+fn main() -> i32 {
+    let m = Mixed { a: 11, b: 22, c: true };
+    let a: i32 = checked { @ptr_read(@field_ptr(m.a)) };
+    let b: i64 = checked { @ptr_read(@field_ptr(m.b)) };
+    @dbg(a);
+    @dbg(b);
+    let bi: i32 = @intCast(b);
+    a + bi
+}
+""" }]
+stdout = "11\n22\n"
+exit_code = 33
+
+# @field_ptr yields a mutable pointer: writing through it updates the field in
+# place, observable via a later direct read.
+[[case]]
+name = "field_ptr_write_updates_field"
+differential_opt = true
+files = [{ path = "main.rue", source = """
+struct Pair { a: i32, b: i32 }
+fn main() -> i32 {
+    let mut p = Pair { a: 7, b: 9 };
+    checked {
+        let fp: ptr mut i32 = @field_ptr(p.b);
+        @ptr_write(fp, 100);
+    };
+    @dbg(p.a);
+    @dbg(p.b);
+    p.b
+}
+""" }]
+stdout = "7\n100\n"
+exit_code = 100
+
+# @offset_of + @ptr_offset over the struct base reaches the same field as
+# @field_ptr and as a direct access — the layout-agnostic navigation RUE-301
+# unlocks. `Cell` has two i64 fields, so element-stride @ptr_offset(base, 1)
+# lands exactly on the second field (offset 8).
+[[case]]
+name = "offset_of_ptr_offset_agrees_with_field_ptr"
+differential_opt = true
+files = [{ path = "main.rue", source = """
+struct Cell { first: i64, second: i64 }
+fn main() -> i32 {
+    let c = Cell { first: 40, second: 2 };
+    let via_field_ptr: i64 = checked { @ptr_read(@field_ptr(c.second)) };
+    let via_offset: i64 = checked {
+        let base: ptr const i64 = @raw(c.first);
+        // second is at byte offset 8 == one i64 element from base.
+        @ptr_read(@ptr_offset(base, 1))
+    };
+    @dbg(via_field_ptr == via_offset);
+    @dbg(via_field_ptr == c.second);
+    let s: i32 = @intCast(via_field_ptr);
+    s
+}
+""" }]
+stdout = "true\ntrue\n"
+exit_code = 2
+
+# @field_ptr on a struct received by value as a parameter addresses the
+# parameter's own storage; reading it matches the field.
+[[case]]
+name = "field_ptr_on_param_struct"
+differential_opt = true
+files = [{ path = "main.rue", source = """
+struct Point { x: i32, y: i32 }
+fn second(p: Point) -> i32 {
+    checked { @ptr_read(@field_ptr(p.y)) }
+}
+fn main() -> i32 {
+    let pt = Point { x: 3, y: 44 };
+    let r: i32 = second(pt);
+    @dbg(r);
+    r
+}
+""" }]
+stdout = "44\n"
+exit_code = 44
+
+# @field_ptr requires a field-access expression; a bare variable is E0490.
+[[case]]
+name = "field_ptr_rejects_bare_variable"
+files = [{ path = "main.rue", source = """
+struct Pair { a: i32, b: i32 }
+fn main() -> i32 {
+    let p = Pair { a: 7, b: 9 };
+    let v: u64 = checked {
+        let fp = @field_ptr(p);
+        @ptr_to_int(fp)
+    };
+    @intCast(v)
+}
+""" }]
+compile_fail = true
+error_contains = ["E0490", "field access"]
+
+# @field_ptr outside a checked block is rejected like the other raw-pointer
+# intrinsics.
+[[case]]
+name = "field_ptr_requires_checked"
+files = [{ path = "main.rue", source = """
+struct Pair { a: i32, b: i32 }
+fn main() -> i32 {
+    let p = Pair { a: 7, b: 9 };
+    let fp: ptr mut i32 = @field_ptr(p.a);
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E1300", "checked"]

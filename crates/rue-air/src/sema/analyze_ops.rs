@@ -5255,6 +5255,10 @@ impl<'a> Sema<'a> {
                 self.analyze_type_intrinsic(air, *name, *type_arg, inst.span)
             }
 
+            InstData::OffsetOf { type_arg, field } => {
+                self.analyze_offset_of(air, *type_arg, *field, inst.span)
+            }
+
             _ => Err(CompileError::new(
                 ErrorKind::InternalError(format!(
                     "analyze_intrinsic_ops called with non-intrinsic instruction: {:?}",
@@ -5302,6 +5306,89 @@ impl<'a> Sema<'a> {
             span,
         });
         Ok(AnalysisResult::new(air_ref, Type::I32))
+    }
+
+    /// Analyze `@offset_of(T, field)` (RUE-301): the compile-time byte offset of
+    /// `field` within struct type `T`.
+    ///
+    /// The offset is computed from the layout the compiler assigns — the sum of
+    /// the ABI slot counts of all preceding fields, times the 8-byte slot size
+    /// (spec 3.6). This MUST match `struct_field_slot_offset` in
+    /// `rue-codegen::types` (which multiplies the same preceding-field slot sum
+    /// by 8 when addressing a field), so that `@offset_of(T, f)` and
+    /// `@field_ptr(s.f)` agree with direct `s.f` access under any layout. The
+    /// result is a comptime-known `u64`, mirroring Rust's
+    /// `core::mem::offset_of!` (return type) and `@size_of`/`@align_of` (which
+    /// likewise fold to a `Const` at analysis time).
+    fn analyze_offset_of(
+        &mut self,
+        air: &mut Air,
+        type_arg: Spur,
+        field: Spur,
+        span: Span,
+    ) -> CompileResult<AnalysisResult> {
+        let ty = self.resolve_type(type_arg, span)?;
+
+        // `@offset_of` is only meaningful for a struct type: only structs have
+        // named fields. A non-struct operand is the same error class as `.f`
+        // on a non-struct (E0428).
+        let struct_id = match ty.as_struct() {
+            Some(id) => id,
+            None => {
+                if ty.is_error() {
+                    let air_ref = air.add_inst(AirInst {
+                        data: AirInstData::Const(0),
+                        ty: Type::U64,
+                        span,
+                    });
+                    return Ok(AnalysisResult::new(air_ref, Type::U64));
+                }
+                return Err(CompileError::new(
+                    ErrorKind::FieldAccessOnNonStruct {
+                        found: self.format_type_name(ty),
+                    },
+                    span,
+                ));
+            }
+        };
+
+        let struct_def = self.type_pool.struct_def(struct_id);
+        let field_name_str = self.interner.resolve(&field);
+        let field_index = match struct_def.find_field(field_name_str) {
+            Some((index, _)) => index,
+            None => {
+                return Err(CompileError::new(
+                    ErrorKind::UnknownField {
+                        struct_name: struct_def.name.clone(),
+                        field_name: field_name_str.to_string(),
+                    },
+                    span,
+                ));
+            }
+        };
+
+        // Sum the slot counts of every field preceding `field`, then scale by
+        // the 8-byte slot size. Cloning the field types first keeps the
+        // immutable borrow of `struct_def` from colliding with `abi_slot_count`
+        // (which borrows `self`).
+        let preceding_field_types: Vec<Type> = struct_def
+            .fields
+            .iter()
+            .take(field_index)
+            .map(|f| f.ty)
+            .collect();
+        let slot_offset: u32 = preceding_field_types
+            .iter()
+            .map(|&fty| self.abi_slot_count(fty))
+            .sum();
+        let byte_offset = (slot_offset as u64) * 8;
+
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::Const(byte_offset),
+            ty: Type::U64,
+            span,
+        });
+        Ok(AnalysisResult::new(air_ref, Type::U64))
     }
 
     /// Analyze an intrinsic call.

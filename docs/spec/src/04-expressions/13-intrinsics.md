@@ -53,6 +53,7 @@ Expression intrinsics (usable in any expression position):
 | `@dbg` | Print debug output | 1 expression (int, bool, or string) | `()` |
 | `@size_of` | Get type size in bytes | 1 type | `i32` |
 | `@align_of` | Get type alignment in bytes | 1 type | `i32` |
+| `@offset_of` | Get a struct field's byte offset | 1 type, 1 field name | `u64` |
 | `@intCast` | Convert between integer types | 1 expression (integer) | inferred integer type |
 | `@to_string` | Format an integer as its decimal `String` | 1 expression (any integer) | `String` |
 | `@drop` | Run a value's drop glue and consume it (RUE-187) | 1 expression (any type) | `()` |
@@ -75,6 +76,7 @@ full semantics):
 | `@syscall` | Direct system call | 1–7 expressions (`u64`) | `i64` |
 | `@raw` | `const` pointer to a place | 1 place expression | `ptr const T` |
 | `@raw_mut` | `mut` pointer to a place | 1 place expression | `ptr mut T` |
+| `@field_ptr` | `mut` pointer to a struct field place | 1 field-access expression | `ptr mut F` |
 | `@ptr_read` | Read through a pointer | 1 expression (`ptr const T`/`ptr mut T`) | `T` |
 | `@ptr_write` | Write through a pointer | 2 expressions (`ptr mut T`, `T`) | `()` |
 | `@ptr_offset` | Pointer arithmetic | 2 expressions (`ptr T`, integer) | `ptr T` |
@@ -220,6 +222,50 @@ All types in Rue currently have 8-byte alignment.
 ```rue
 fn main() -> i32 {
     @align_of(i32)    // 8
+}
+```
+
+## `@offset_of`
+
+{{ rule(id="4.13:91", cat="normative") }}
+
+The `@offset_of` intrinsic returns the byte offset of a field within a struct
+type, mirroring Rust's `core::mem::offset_of!`.
+
+{{ rule(id="4.13:92", cat="normative") }}
+
+`@offset_of` accepts exactly two arguments: the first **MUST** be a struct type,
+and the second **MUST** be the name of one of that struct's fields.
+
+{{ rule(id="4.13:93", cat="normative") }}
+
+The return type of `@offset_of` is `u64`.
+
+{{ rule(id="4.13:94", cat="normative") }}
+
+The value returned by `@offset_of` is the offset the compiler assigns to the
+field under the layout it chooses for the struct, determined at compile time.
+Because the value comes from the compiler's own layout rather than a
+hand-computed constant, `@offset_of` remains correct even if the struct layout
+is implementation-defined. The offset of a field is the sum of the sizes of all
+preceding fields under the current layout (§3.6).
+
+{{ rule(id="4.13:95", cat="legality-rule") }}
+
+It is a compile-time error to apply `@offset_of` to a non-struct type, or to
+name a field that the struct does not declare.
+
+{{ rule(id="4.13:96") }}
+
+```rue
+struct Mixed { a: i32, b: i64, c: bool }
+
+fn main() -> i32 {
+    let off_a: u64 = @offset_of(Mixed, a);   // 0
+    let off_b: u64 = @offset_of(Mixed, b);   // 8  (a occupies one 8-byte slot)
+    let off_c: u64 = @offset_of(Mixed, c);   // 16 (a and b occupy two slots)
+    let sum: u64 = off_a + off_b + off_c;    // 24
+    @intCast(sum)
 }
 ```
 

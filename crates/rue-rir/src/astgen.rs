@@ -689,6 +689,36 @@ impl<'a> AstGen<'a> {
                 let name = intrinsic.name.name; // Already a Spur
                 let intrinsic_name_str = self.interner.resolve(&name);
 
+                // `@offset_of(T, field)` (RUE-301) is compiler-mediated field
+                // addressing: the first argument names a struct type and the
+                // second names one of its fields. Both spell as bare
+                // identifiers (`Point`, `x`) — the parser hands them over as
+                // `Expr::Ident` (or the first as a `Type` when it is an
+                // unambiguous type form). Lower the pair into a dedicated
+                // `OffsetOf` node so Sema can compute the offset from the
+                // layout it assigns, rather than the user hardcoding a literal.
+                if intrinsic_name_str == "offset_of" && intrinsic.args.len() == 2 {
+                    let type_arg = match &intrinsic.args[0] {
+                        IntrinsicArg::Type(ty) => Some(self.intern_type(ty)),
+                        IntrinsicArg::Expr(Expr::Ident(ident)) => Some(ident.name),
+                        _ => None,
+                    };
+                    if let (Some(type_arg), IntrinsicArg::Expr(Expr::Ident(field))) =
+                        (type_arg, &intrinsic.args[1])
+                    {
+                        return self.rir.add_inst(Inst {
+                            data: InstData::OffsetOf {
+                                type_arg,
+                                field: field.name,
+                            },
+                            span: intrinsic.span,
+                        });
+                    }
+                    // Fall through to the generic expression-intrinsic path,
+                    // which surfaces a proper diagnostic (wrong argument shape)
+                    // during semantic analysis.
+                }
+
                 let is_type_intrinsic = TYPE_INTRINSICS.contains(&intrinsic_name_str);
 
                 if is_type_intrinsic && intrinsic.args.len() == 1 {

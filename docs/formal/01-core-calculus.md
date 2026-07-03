@@ -639,62 +639,513 @@ resolve at the call.
 
 ---
 
-## 6. Dynamic semantics (small-step) *(sketch — shape fixed, rules being filled in)*
+## 6. Dynamic semantics (small-step)
 
-The machine configuration:
+This section gives the small-step operational semantics for **every** core form
+of §2. It is the paper form of `crates/rue-oracle` — the executable reference
+interpreter that runs a core program and produces its exit code, its `@dbg`
+output, its panics, and its drop trace, and is differential-tested against the
+compiler on the RUE-50 corpus. Each rule group below cites the oracle function
+that realizes it (`crates/rue-oracle/src/lib.rs`), so the paper semantics and the
+executable semantics are one artifact read two ways: **the thing that governs the
+spec is the thing we can run.** Where a rule and the interpreter disagree, one of
+them is a bug (RUE-305) — that is the point of pinning both.
+
+> The oracle interprets over the compiler's typed **CFG**, not directly over the
+> §2 surface AST; the CFG is that AST after control flow is made explicit
+> (`if`/`match`/`loop` become `Branch`/`Switch`/`Goto`, `let`/`;` become straight-
+> line SSA). The reduction below is over the §2 forms; the correspondence is the
+> obvious one, noted per group. Any place where the two could observably differ
+> is a differential-test obligation.
+
+### 6.1 The machine configuration
 
 ```
-  Config  =  ⟨ H ; K ; e ⟩
-    H : Loc ⇀ StoredValue          -- the store: locations to values (scalars, struct/array aggregates, tagged enum values ⟨Kj; payload⟩)
-    K : evaluation context / control stack   -- holds pending frames, loop and function boundaries,
-                                                and the per-scope list of drop obligations
-    e : the expression being reduced
-  Env  :  x ⇀ Loc                  -- carried per frame in K; binds each live local to its storage
+  Locations      ℓ ∈ Loc                    -- one storage cell per live let-binding or by-value parameter
+  Cell contents  c ::= v | ⊘                 -- ⊘ = uninitialised / moved-out (the dynamic image of Σ's absence/MovedOut, §5)
+  Store          H : Loc ⇀ c
+  Values         v ::= n_T                    -- a scalar integer n of type T = int(w,s), with min_T ≤ n ≤ max_T
+                     | b                       -- b ∈ { true, false }
+                     | ⟨⟩                      -- unit
+                     | { v1, …, vk }_S         -- a struct-S value (fields in declaration order)
+                     | [ v1, …, vn ]           -- an array value (elements in ascending index)
+                     | Kj⟨ v1, …, va ⟩         -- an enum value: variant tag Kj (0-based index j) + payload v1..va (a = 0 ⇒ just the tag)
+  Environment    ρ : Var ⇀ Loc               -- per frame: each in-scope binding → its cell
+  Scope record   s = [ℓ1, …, ℓq]             -- cells owed a drop at this scope's exit, in creation order (dropped newest-first)
+  Frame          φ = ⟨ ρ ; σ ⟩ ,  σ = [s1, …, sr]   -- a stack of r ≥ 1 open scopes; σ's top is the innermost scope
+  Control stack  K ::= halt                    -- bottom: nothing pending; a returned value is the program result
+                     | ret(E, φ) · K           -- a caller suspended in evaluation context E (§6.2), frame φ, awaiting a callee's value
+                     | loopβ(e_body, φ) · K    -- a loop boundary: its body e_body and the frame φ to resume; break unwinds to here
+  Config         C ::= ⟨ H ; φ ; K ; e ⟩       -- active frame φ evaluating expression e
+                     | ↯κ                        -- halted in a trap of category κ ∈ { overflow, div-zero, rem-zero, bounds } (exit 101)
+                     | ✓n                        -- halted normally with process exit code n
 ```
 
-Reduction `⟨H;K;e⟩ → ⟨H';K';e'⟩` is small-step and left-to-right per §4.0-order of
-the prose (`4.0:3–9`), which the core inherits verbatim. The load-bearing,
-Rue-specific rules — the ones an alternate compiler and a proof both need
-pinned — are:
+The reduction relation is `C → C'`. The store `H` is global (locations never
+alias across frames except through the by-reference sharing of §6.9); `φ` and `K`
+carry the per-call control state the sketch attributed to `K`. This matches the
+oracle's `Interp`/`Frame` (`lib.rs:132`, `lib.rs:141`): a `Frame` is `φ`, its
+`locals`/`params` vectors are the cells reachable through `ρ`, and its evaluation
+proceeds block-by-block exactly as `E`-decomposition proceeds redex-by-redex.
 
-- **Use/Move (read a place in value context).** Reads the aggregate at the
-  place's location. For a moved place this rule is *unreachable* in a well-typed
-  program (that is the safety theorem, §7); the interpreter still asserts
-  `Owned`-ness dynamically to serve as the oracle.
-- **Drop.** When a scope's frame is popped (or a place is overwritten, or a loop
-  body iterates), the drop obligations recorded for that scope run: for each
-  Owned droppable place, in `3.9` order, run its destructor then recursively drop
-  its contents — a struct's fields and an array's elements, or, for an **enum**,
-  *only the payload of the variant its stored tag names* (`6.3:20`); **a
-  `MovedOut` place is skipped** (this single skip is what makes double-free
-  impossible — §7). The enum case reads the tag from the store `H` to choose the
-  one payload to recurse into: an inactive variant's payload has no storage to
-  free, and a discriminant-only active variant drops nothing.
-- **Match / variant.** `E::Kj(v1, ..., va)` is a stored value carrying tag `Kj`
-  and its payload aggregate. `match v { ..., Kj(x1, ..., xa) => ej, ... }` reads
-  the tag, selects the arm for `Kj`, **binds `x1..xa` to the payload components**
-  (moving them out of the enum for a move-typed payload, copying for a Copy one),
-  and reduces `ej`; the other arms and their bindings never come into being. The
-  scrutinee value is consumed by the match, so it is not dropped again — the
-  moved-out payload is now owned by the arm's locals, which drop (or must be
-  consumed) at the arm's end per §5.6. Construction `E::Kj(e1, ..., ea)` evaluates
-  the payloads left-to-right and stores the tagged aggregate.
-- **Call / Return.** A call evaluates arguments (moving/copying by-value ones,
-  binding by-reference ones to the caller's locations via the loan), pushes a
-  frame binding parameters, and reduces the body; the call **evaluates to the
-  value the body evaluates to**; `return e` discards intervening frames up to the
-  function boundary and yields `e`'s value. (This is §4.3 made operational.)
-- **inout / borrow.** The parameter's location *is* the argument place's location
-  (no copy); writes through an `inout` parameter are visible to the caller after
-  return (`6.1:18`); a `borrow` parameter's location is read-only for the callee.
-- **Overflow / bounds / div-zero.** Arithmetic that overflows the operands' type,
-  an out-of-range index, and division/remainder by zero each step to a **panic**
-  configuration that halts with the exit code of Appendix B (`3.1:6/13`,
-  `8.1`–`8.3`). These are total, deterministic, and observable — an alternate
-  compiler must reproduce them exactly.
+`n_T` records the value's integer type because overflow, comparison signedness,
+and bitwise width all depend on it; the oracle carries the same information out of
+band on each CFG instruction's `ty` (`lib.rs:415`). A discriminant-only enum value
+`Kj⟨⟩` is stored as its bare tag (the oracle's `Value::Int` tag, `lib.rs:565`); a
+payload-carrying `Kj⟨v1..va⟩` as the tagged aggregate (`lib.rs:559`, RUE-285).
 
-The interpreter implementing this relation is the executable oracle (README §
-"The executable oracle" / RUE-50).
+Four **scope helpers** on frames, used by the rules below, all defined in terms of
+the drop relation `drop(H, ℓ)` of §6.11 (which is itself a no-op on a `⊘` or
+`Copy` cell, so these fold harmlessly over non-droppable bindings):
+
+```
+  push-scope(⟨ρ;σ⟩)              = ⟨ρ; [] :: σ⟩                    -- open a fresh, empty innermost scope
+  run-scope-drops(H, ⟨ρ; s::σ⟩) = drop the cells of s newest-first, yielding H'; result frame ⟨ρ; σ⟩   -- close ONE (innermost) scope
+  run-all-scope-drops(H, φ)      = iterate run-scope-drops until φ has no open scopes (whole-frame teardown, on return)
+  unwind-drops(H, φ', φ)         = run-scope-drops repeatedly on φ' until its open-scope stack equals φ's (break: down to a boundary)
+```
+
+A scope gains a cell to drop when a `let` (§6.7) or a `match` arm (§6.6) binds one;
+`inout`/`borrow` parameters are deliberately never recorded (§6.9), which is how
+they escape the drop obligation (§5.6).
+
+### 6.2 Evaluation order: contexts, search, and panic propagation
+
+Evaluation is left-to-right, inheriting the prose order `4.0:3–9` verbatim (the
+same order §5 threads Σ through). This is fixed by a grammar of single-hole
+**evaluation contexts** `E`, whose hole marks the one subexpression reduced next:
+
+```
+  E ::= [·]
+      | E ⊕ e  | v ⊕ E                                   -- arithmetic / bitwise / shift operands, left then right
+      | E ≟ e  | v ≟ E                                   -- equality operands (the operand is BORROWED, not moved — §6.3)
+      | ⊖ E                                              -- unary neg / not / bitnot
+      | S{ f1=v1, …, f_{i-1}=v_{i-1}, fi=E, f_{i+1}=e, … }  -- struct field i (earlier fields already values)
+      | [ v1, …, v_{i-1}, E, e_{i+1}, … ]                -- array element i
+      | Kj( v1, …, v_{i-1}, E, e_{i+1}, … )              -- enum payload component i
+      | E . f  | E [ e ]  | v [ E ]                       -- projection base, then index
+      | g( v̄, …, E, … )                                  -- a by-VALUE call argument (a by-ref arg is a place, not reduced — §6.9)
+      | if E { e1 } else { e2 }                          -- scrutinee
+      | match E { … }                                    -- scrutinee
+      | let x = E ; e2                                   -- bound expression (e2 not entered until E is a value)
+      | E ; e2                                           -- discarded expression
+      | assign p = E                                     -- right-hand side (p's index subexpressions reduce first, below)
+      | return E
+```
+
+A place `p` used in value context (the `e ::= p` production) is a redex once its
+index subexpressions are values; the contexts `E[e]`/`v[E]` reduce those indices
+left-to-right first (as `resolve_path` does, `lib.rs:858`). The two structural
+rules that drive every reduction:
+
+```
+  ⟨ H ; φ ; K ; r ⟩ → ⟨ H' ; φ' ; K' ; e' ⟩          -- r is a redex reduced by a §6.3–§6.11 rule
+  ───────────────────────────────────────────────────────────────── (Search)
+  ⟨ H ; φ ; K ; E[r] ⟩ → ⟨ H' ; φ' ; K' ; E[e'] ⟩
+
+  a redex rule fires ↯κ                                -- a trap (§6.12)
+  ─────────────────────────────────── (Panic-Lift)     -- for any context E
+  ⟨ H ; φ ; K ; E[r] ⟩ → ↯κ
+```
+
+(Search) also carries `Call`/`Return`/`break` steps that rewrite `φ`/`K`; those
+appear below with the frame explicit. (Panic-Lift) is why a trap anywhere
+abandons the whole configuration: a panic is not a value and no context can
+consume it, so it propagates to the top and halts (`Interp::run`, `lib.rs:172`).
+
+### 6.3 Literals and the use of a place (copy / move)
+
+A literal is already a value; it takes no step except to *be* one. Its width and
+signedness were resolved by elaboration (§5.8), so the machine stores the concrete
+`n_T` / `b` / `⟨⟩` (`Const`/`BoolConst`, `lib.rs:417`).
+
+Using a place `p` in value context is the operational side of §4.2 / §5.1. Let
+`p` resolve, under ρ, to a root cell `ℓ` and an evaluated projection path `π`
+(field indices and already-reduced array indices, §6.2); write `H(ℓ)@π` for the
+sub-value reached by following `π` into `H(ℓ)`, and `H[ℓ@π ↦ ⊘]` for the store
+with that sub-position replaced by the moved-out marker. Reading navigates the
+stored aggregate exactly as `place_read` does (`lib.rs:892`).
+
+```
+  ρ(root(p)) = ℓ      H(ℓ)@π = v      class(T) = Copy           -- T the type of p (§5)
+  ─────────────────────────────────────────────────────────────────── (D-Use-Copy)
+  ⟨ H ; φ ; K ; p ⟩ → ⟨ H ; φ ; K ; v ⟩                         -- the cell is left untouched
+
+  ρ(root(p)) = ℓ      H(ℓ)@π = v      class(T) ∈ {Affine, Linear}
+  ─────────────────────────────────────────────────────────────────── (D-Use-Move)
+  ⟨ H ; φ ; K ; p ⟩ → ⟨ H[ℓ@π ↦ ⊘] ; φ ; K ; v ⟩               -- whole- or partial-place move; source becomes ⊘
+```
+
+`(D-Use-Move)` writes `⊘` at exactly the sub-position moved (the whole cell for a
+whole-place use, one field/element for a projection — the *partial move* of
+§4.2), so the later scope-exit drop of `ℓ` (§6.11) skips it and cannot free it a
+second time. In a **well-typed** program `H(ℓ)@π` is never `⊘` when a use fires —
+that is the no-use-after-move theorem (§7); the oracle nonetheless treats a read
+of an absent cell as a hard error (`get_local`, `lib.rs:845`) so a violation is
+caught rather than masked. The oracle achieves the `⊘`-marking *statically* — the
+compiler's drop elaboration omits the drop of a moved place, so no runtime marker
+is needed (`run_drop`'s note, `lib.rs:344`); the paper machine marks it
+dynamically. The two are observably identical: the same values are dropped the
+same number of times.
+
+Equality operands are the exception (§4.1, §5.4, `4.3:3f`): the operand place is
+**read through a shared loan and not moved**, so even an `Affine`/`Linear`
+operand steps by `(D-Use-Copy)` in the `E ≟ e` / `v ≟ E` positions, leaving its
+cell `Owned`. This is the dynamic image of the equality-borrow side condition; the
+oracle simply reads both operands without disturbing storage (`cmp`, `lib.rs:762`).
+
+### 6.4 Primitive operators
+
+All operands are `Copy` scalars, already reduced to `n_T` (or `b`) by §6.2.
+
+**Arithmetic `+ - *` and unary `neg`** compute over ℤ and **trap on overflow** —
+Rue arithmetic never wraps (`3.1:6/13`). Let `n1 ⊕_ℤ n2` be the exact integer
+result:
+
+```
+  min_T ≤ (n1 ⊕_ℤ n2) ≤ max_T          ⊕ ∈ { +, -, * }
+  ───────────────────────────────────────────────────── (D-Arith)
+  (n1)_T ⊕ (n2)_T  →  (n1 ⊕_ℤ n2)_T
+
+  (n1 ⊕_ℤ n2) < min_T   or   (n1 ⊕_ℤ n2) > max_T
+  ───────────────────────────────────────────────────── (D-Arith-Trap)
+  (n1)_T ⊕ (n2)_T  →  ↯overflow
+```
+
+`(D-Arith)`/`(D-Arith-Trap)` are `arith` + `range_check` (`lib.rs:713`,
+`lib.rs:1037`): the interpreter computes in `i128` (wide enough that no host
+overflow precedes the range check) and traps when the result leaves `[min_T,
+max_T]`. `neg` is the unary case: `neg (min_T)_T → ↯overflow` because `-min_T >
+max_T` for a signed `T` (`Neg`, `lib.rs:484`).
+
+**Division and remainder `/ %`** add two extra traps before the range check
+(`divmod`, `lib.rs:727`):
+
+```
+  n2 ≠ 0    ¬(s = signed ∧ n1 = min_T ∧ n2 = -1)      q = n1 quot n2 (truncated toward zero)
+  ───────────────────────────────────────────────────────────────────────────── (D-Div)
+  (n1)_{int(w,s)} / (n2)_{int(w,s)}  →  (q)_{int(w,s)}
+
+  (n2)_T = 0_T                                    ───────────────────────── (D-Div-Zero)
+                                                  (n1)_T / (n2)_T → ↯div-zero
+
+  s = signed    n1 = min_T    n2 = -1             ─────────────────────────── (D-Div-Overflow)
+                                                  (n1)_T / (n2)_T → ↯overflow
+```
+
+`%` is identical with `q` the truncated remainder `n1 rem n2`, trapping
+`↯rem-zero` on a zero divisor and `↯overflow` on `min_T % -1` (the hardware
+`idiv` faults there even though the mathematical remainder is 0 — `lib.rs:748`).
+
+**Comparison `≟` and the ordering compares `< > <= >=`** yield `bool`
+(`cmp`, `lib.rs:762`). Scalars compare by their integer value, respecting
+signedness (the value `n_T` already carries the sign). Only `==`/`!=` may reach an
+aggregate (ordering on aggregates is a §5 type error); there they compare
+**structurally** — a struct field-by-field, an array element-by-element, an enum
+same-tag-and-equal-payload, recursing into nested aggregates (RUE-285) — and a
+`String` by its byte content (`4.3:2`):
+
+```
+  v1 ≈ v2  ⟺  v1 and v2 are structurally equal      (scalars by value; aggregates componentwise; strings by content)
+  ─────────────────────────────────────────────────────────────────────────────────── (D-Eq)
+  v1 == v2 → (v1 ≈ v2)                v1 != v2 → ¬(v1 ≈ v2)
+```
+
+**Bitwise `& | ^ ~` and shifts `<< >>`** operate on the `w`-bit two's-complement
+representation and never trap (`bitop`/`shift`, `lib.rs:794`). Write `β_w(n)` for
+the `w`-bit pattern of `n` and `val_{w,s}(β)` for its reinterpretation at
+signedness `s`:
+
+```
+  ⊛ ∈ { &, |, ^ }        β = β_w(n1) ⊛_bits β_w(n2)
+  ───────────────────────────────────────────────────── (D-Bit)
+  (n1)_{int(w,s)} ⊛ (n2)_{int(w,s)} → ( val_{w,s}(β) )_{int(w,s)}
+
+  (n1)_{int(w,s)}  ~  → ( val_{w,s}( ¬β_w(n1) ) )_{int(w,s)}       -- bitwise complement (BitNot, lib.rs:489)
+```
+
+Shifts mask the shift amount modulo the operand width `w` (`4.3a:10`); `>>` on a
+signed type is arithmetic (sign-replicating), on an unsigned type logical
+(`shift`, `lib.rs:810`):
+
+```
+  k = amt mod w        β = β_w(n) shifted left by k, masked to w bits
+  ───────────────────────────────────────────────────────────────── (D-Shl)
+  (n)_{int(w,s)} << (amt)_T → ( val_{w,s}(β) )_{int(w,s)}
+
+  k = amt mod w        β = ( arithmetic-if-signed / logical-if-unsigned ) right shift of β_w(n) by k
+  ───────────────────────────────────────────────────────────────── (D-Shr)
+  (n)_{int(w,s)} >> (amt)_T → ( val_{w,s}(β) )_{int(w,s)}
+```
+
+`not` on `bool` is `not true → false`, `not false → true` (`Not`, `lib.rs:488`).
+
+### 6.5 Aggregate introduction and projection
+
+A struct, array, or enum literal is a redex once **all** its components are values
+(the `E` contexts of §6.2 reduce them left-to-right, threading `H`). It steps to
+the corresponding aggregate value, owning every component (`StructInit`/
+`ArrayInit`, `lib.rs:518`):
+
+```
+  ────────────────────────────────────────────────── (D-Struct)
+  S{ f1=v1, …, fk=vk } → { v1, …, vk }_S
+
+  ────────────────────────────────────────────────── (D-Array)
+  [ v1, …, vn ] → [ v1, …, vn ]                       -- (n ≥ 0; the empty array [] is the zero-sized [T;0])
+```
+
+Projection in value context is subsumed by the place-use rules of §6.3 (a
+projection `p.f` / `p[e]` is a place); an **array index is bounds-checked** at the
+moment the path is navigated, and an out-of-range or negative index traps
+(`resolve_path`/`place_read`, `lib.rs:869`, `lib.rs:897`):
+
+```
+  0 ≤ i < n
+  ───────────────────────────────── (D-Index)         -- [v0,…,v_{n-1}] @ [i] = vi (then §6.3 copies or moves)
+  reading [ v0, …, v_{n-1} ][ i ] yields vi
+
+  i < 0   or   i ≥ n
+  ───────────────────────────────── (D-Index-Trap)
+  reading [ v0, …, v_{n-1} ][ i ] → ↯bounds
+```
+
+### 6.6 Enum introduction and the `match` elimination
+
+Enum construction evaluates its payload left-to-right (§6.2) and builds the tagged
+value; a discriminant-only variant is just its tag (`EnumVariant`, `lib.rs:559`):
+
+```
+  ────────────────────────────────────────────────── (D-Enum-Intro)
+  E::Kj( v1, …, va ) → Kj⟨ v1, …, va ⟩                -- a = 0 ⇒ the bare tag Kj⟨⟩
+```
+
+`match` first reduces its scrutinee to an enum value `Kj⟨v1,…,va⟩` (a
+value-context **use** of the scrutinee, §5.5: a move for a non-`Copy` enum — its
+source cell became `⊘` by §6.3 — a copy otherwise). The tag `Kj` selects the one
+covering arm (exhaustiveness, §5.5, guarantees exactly one), which **binds the
+payload components to fresh cells** and reduces the arm body in a new scope owning
+those cells; the other arms never come into being (`Switch` + `EnumPayloadGet`,
+`lib.rs:268`, `lib.rs:579`):
+
+```
+  arm j is  Kj(x1, …, xa) => ej        ℓ1..ℓa fresh        ρ' = ρ[ x1↦ℓ1, …, xa↦ℓa ]
+  H' = H[ ℓ1↦v1, …, ℓa↦va ]           φ' = push-scope(φ with ρ', owing [ℓ1,…,ℓa])
+  ────────────────────────────────────────────────────────────────────────────────── (D-Match)
+  ⟨ H ; φ ; K ; match Kj⟨v1,…,va⟩ { …, Kj(x1..xa) => ej, … } ⟩  →  ⟨ H' ; φ' ; K ; ej ⟩
+```
+
+The scrutinee value is **consumed** by the match: its payload now lives in the
+`ℓi`, so it is not dropped again, and each `xi` is an ordinary `Owned` binding
+governed by §6.11 at the arm's end (a `Linear` payload the arm neither moves nor
+consumes is the leak the statics already rejected; an `Affine` one is dropped
+once). This is the operational content of "binding a variant's payload moves it
+out; a moved-out payload runs its destructor exactly once when its binding leaves
+scope" (`6.3:17`, `6.3:20`). `if` is the two-armed boolean special case:
+
+```
+  ─────────────────────────────────────── (D-If-T)          ─────────────────────────────────────── (D-If-F)
+  if true { e1 } else { e2 } → e1                            if false { e1 } else { e2 } → e2
+```
+
+`if`'s arms are entered directly (they open scopes for their own `let`-bindings by
+§6.7); the boolean scrutinee is `Copy`, so no drop attends the branch itself.
+
+### 6.7 `let`, sequencing, and scope-exit drop
+
+`let x = v ; e2` allocates a fresh cell for `x`, binds it, and reduces the body in
+a scope that **owes `x` a drop**. To make scope exit a reduction step, the machine
+uses one administrative runtime form, `endscope(ℓ̄) in e` (not a §2 surface form),
+which runs the drops of cells `ℓ̄` when `e` has become a value:
+
+```
+  ℓ fresh
+  ─────────────────────────────────────────────────────────────────── (D-Let)
+  ⟨ H ; ⟨ρ;σ⟩ ; K ; let x = v ; e2 ⟩ → ⟨ H[ℓ↦v] ; ⟨ρ[x↦ℓ];σ⟩ ; K ; endscope([ℓ]) in e2 ⟩
+
+  ─────────────────────────────────────────────────────────────────── (D-EndScope)     -- ℓ̄ dropped newest-first
+  ⟨ H ; φ ; K ; endscope([ℓ1,…,ℓq]) in v ⟩ → ⟨ drop(H, ℓq) ; …; drop(H, ℓ1) ; φ ; K ; v ⟩
+```
+
+where `drop(H, ℓ)` is the drop relation of §6.11 (a no-op on a `⊘` or `Copy`
+cell). Nested `let`s nest their `endscope`s, so cells are dropped in **reverse
+declaration order** (RAII) — the innermost/newest binding first. A bare sequence
+`e1 ; e2` evaluates `e1` to a value and **discards** it; because §5.3 guarantees
+`e1` carries no linear value, the discarded temporary is simply dropped (a no-op
+for a `Copy` value) and control passes to `e2`:
+
+```
+  ─────────────────────────────────────────────────────────── (D-Seq)
+  ⟨ H ; φ ; K ; v1 ; e2 ⟩ → ⟨ drop(H, v1) ; φ ; K ; e2 ⟩       -- drop the discarded temporary, then continue
+```
+
+(The oracle realizes both via the compiler's explicit `Drop` CFG instructions,
+which its elaboration inserts at exactly these scope/temporary boundaries and the
+interpreter executes with `run_drop`, `lib.rs:701`; `drop(H, v)` on an already-
+owned temporary value is `drop` on a cell whose contents is `v` and never `⊘`.)
+
+### 6.8 Assignment: overwrite-drop and reinitialisation
+
+`assign p = v` stores `v` into the cell/sub-position `p` denotes. If that position
+currently holds an `Owned` droppable value, it is **dropped first** (overwrite-
+drop, §5.2, `3.8:55`); reinitialising a `⊘` (moved-out) position drops nothing.
+The result is `⟨⟩` and the position becomes `Owned` (`place_write`, `lib.rs:911`):
+
+```
+  ρ(root(p)) = ℓ      H(ℓ)@π = c      H1 = ( drop(H, c-at-ℓ@π) if c ≠ ⊘ else H )      H2 = H1[ ℓ@π ↦ v ]
+  ─────────────────────────────────────────────────────────────────────────────────────────────────── (D-Assign)
+  ⟨ H ; φ ; K ; assign p = v ⟩ → ⟨ H2 ; φ ; K ; ⟨⟩ ⟩
+```
+
+(The compiler elaborates the overwrite-drop as an explicit `Drop` emitted before
+the store, so the oracle's `place_write` needs only to overwrite — the drop
+instruction ran first; consistent with `3.8` overwrite-drop.)
+
+### 6.9 Calls, parameters, and return
+
+A call `g(a1, …, am)` evaluates its arguments left-to-right (§6.2). A by-value
+argument reduces to a value `vi` that is **moved or copied into** the parameter
+cell (per §4.2 — the source place, if any, was already marked `⊘` by §6.3). A
+by-reference argument `inout p` / `borrow p` is **not** reduced to a value:
+instead the parameter cell *is* the argument place's cell — the callee and caller
+share storage for the call's dynamic extent, so a write through an `inout`
+parameter is visible to the caller on return (`6.1:18`), and a `borrow` parameter
+is read-only. Let `g` be `fn g(m1 x1:T1, …, mm xm:Tm) -> Tr { e_body }`:
+
+```
+  for each i:  arg a_i  is  either  a value v_i (by-value: fresh cell ℓ_i, H'(ℓ_i)=v_i)
+                          or  a by-ref place p_i (inout/borrow: ℓ_i = ρ(root(p_i)) shared, no copy)
+  ρ_g = [ x1↦ℓ1, …, xm↦ℓm ]        φ_g = ⟨ ρ_g ; [ [by-value ℓ_i only] ] ⟩        -- by-ref params owe NO drop (§5.6)
+  ────────────────────────────────────────────────────────────────────────────────────────────── (D-Call)
+  ⟨ H ; φ ; K ; E[ g(a1,…,am) ] ⟩ → ⟨ H' ; φ_g ; ret(E, φ)·K ; e_body ⟩
+```
+
+The callee's entry scope owes a drop **only** for the by-value parameter cells;
+`inout`/`borrow` parameters are owned by the caller and are exempt (§5.6,
+`3.8:62`). When the body reduces to a value `v`, the frame is popped: its open
+scopes' drops run (freeing the by-value params and any still-live locals), and `v`
+is handed back to the suspended caller context:
+
+```
+  ────────────────────────────────────────────────────────────────────────── (D-Return-Value)
+  ⟨ H ; φ_g ; ret(E, φ)·K ; v ⟩ → ⟨ run-all-scope-drops(H, φ_g) ; φ ; K ; E[v] ⟩
+
+  ────────────────────────────────────────────────────────────────────────── (D-Return)
+  ⟨ H ; φ_g ; ret(E, φ)·K ; return v ⟩ → ⟨ run-all-scope-drops(H, φ_g) ; φ ; K ; E[v] ⟩
+```
+
+`(D-Return-Value)` is the "a function evaluates to the value its body evaluates
+to" rule of §4.3 — there is no implicit action, the body simply *is* an
+expression that reduced to `v`. `(D-Return)` is the explicit form: `return v`
+discards the intervening scopes up to the function boundary, running their drops,
+and yields `v` (the oracle's `Terminator::Return`, `lib.rs:240`, with the
+compiler having placed the pre-return `Drop`s). The oracle models `inout` by
+**copy-in / copy-out** rather than true sharing — it copies the argument in, runs
+the callee, then copies each `inout` parameter's final value back into the caller
+place (`lib.rs:640`, `lib.rs:657`). Under the law of exclusivity (§5.4) an `inout`
+place is unaliased for the call's duration, so copy-out is observably identical to
+the shared-cell rule above; the paper machine takes the sharing form because it is
+simpler to state and the two agree exactly on well-typed programs.
+
+A call whose callee is a builtin with no core body (e.g. a `String` method, or
+`@dbg` / `@to_string`) reduces by the builtin's defining equation rather than by
+`(D-Call)`; these are elaboration-level primitives, and the oracle dispatches them
+directly (`string_builtin`, `lib.rs:307`; `@dbg` appends its argument's rendering
+to the observable output, `lib.rs:667`). The core-form call rule above governs
+every user function.
+
+### 6.10 `loop` and `break`
+
+`loop { e }` pushes a loop boundary and enters the body in a fresh scope; when the
+body reduces to a value (necessarily `⟨⟩`, discarded), its scope drops run and the
+loop **re-enters** its body — so a value's storage from one iteration is reclaimed
+before the next, exactly as a `let` inside the loop body drops each turn (in the
+oracle the loop is `Goto`/`Branch`/`Switch` back-edges, `lib.rs:247`, and the
+compiler places a `Drop` on the back-edge that `run_drop` executes each turn).
+`break` unwinds to the nearest loop boundary, running the drops of every scope it
+discards, and the whole `loop` yields `⟨⟩`:
+
+```
+  ─────────────────────────────────────────────────────────────────── (D-Loop-Enter)
+  ⟨ H ; φ ; K ; loop { e } ⟩ → ⟨ H ; push-scope(φ) ; loopβ(e, φ)·K ; e ⟩
+
+  ─────────────────────────────────────────────────────────────────── (D-Loop-Iter)
+  ⟨ H ; φ' ; loopβ(e, φ)·K ; v ⟩ → ⟨ run-scope-drops(H, φ') ; push-scope(φ) ; loopβ(e, φ)·K ; e ⟩
+
+  ─────────────────────────────────────────────────────────────────── (D-Break)      -- unwinds scopes down to the loop boundary
+  ⟨ H ; φ' ; loopβ(e, φ)·K ; break ⟩ → ⟨ unwind-drops(H, φ', φ) ; φ ; K ; ⟨⟩ ⟩
+```
+
+`unwind-drops(H, φ', φ)` runs the scope-exit drops of every scope open in `φ'`
+that is not already open in the enclosing `φ`. A `loop` with no reachable `break`
+never fires `(D-Break)` and so runs forever — its static type is `never` (§5.7,
+`Loop-Div`), consistent with its never yielding a value to its context.
+(Multi-`break` and `break e` value-carrying loops are elaborated to this shape;
+formalizing their ownership join is the deferred loop-section work noted in §5.7.)
+
+### 6.11 Drop
+
+`drop(H, ℓ)` and `drop(H, c)` are the operational core of Rue's memory safety.
+Dropping a cell holding `⊘` — a moved-out or uninitialised position — does
+**nothing** (this single skip is what makes double-free impossible, §7). Otherwise
+the value's user destructor, if any, runs **first**, then its droppable *contents*
+drop in `3.9` order (`run_drop`, `lib.rs:350`):
+
+```
+  drop(H, ⊘)                       = H                                   -- moved-out / uninitialised: skip
+  drop(H, n_T) = drop(H, b) = drop(H, ⟨⟩) = H                            -- scalars are Copy: nothing to drop
+  drop(H, { v1,…,vk }_S)           = drop*( dtor_S(H, {v̄}_S) , [v1,…,vk] )   -- run S's destructor (if any), then fields in DECLARATION order
+  drop(H, [ v1,…,vn ])             = drop*( H , [v1,…,vn] )              -- elements in ASCENDING index order
+  drop(H, Kj⟨ v1,…,va ⟩)           = drop*( H , [v1,…,va] )              -- ONLY the ACTIVE variant Kj's payload (6.3:20)
+```
+
+where `drop*(H, [c1,…,cm])` folds `drop` over the list left-to-right, and
+`dtor_S` runs `S`'s destructor as an ordinary call (§6.9) if `S` declares one
+(skipping it, and the whole field recursion, for a **builtin** `S` such as
+`String`, whose destructor *is* its entire drop glue and has no observable effect
+in the model — `lib.rs:356`). The **enum** case reads the runtime tag `Kj` to
+recurse into the *active* variant's payload only: an inactive variant's payload
+has no storage, and a discriminant-only active variant (`a = 0`) drops nothing
+(`lib.rs:388`). A payload already moved out by a `match` binding (§6.6) left the
+enum place `⊘`, so it is skipped here and never dropped twice.
+
+Because a destructor is a normal function, dropping can itself step the machine
+(and can even trap — a destructor that overflows halts with `↯overflow`, exactly
+as the oracle would, since `run_drop` calls back into `call`). Drops are therefore
+sequenced, not atomic; `endscope`/`return`/`break`/overwrite all expand to `drop`
+applications in the orders fixed above.
+
+### 6.12 Traps and the top-level result
+
+The four trap categories — `overflow` (arithmetic, `neg`, `min_T / -1`),
+`div-zero`, `rem-zero`, and `bounds` (a negative or out-of-range array index) —
+each abandon the configuration to `↯κ` and halt the program with the panic exit
+code of Appendix B (101), regardless of surrounding context (§6.2, Panic-Lift).
+They are **total, deterministic, and observable**: an alternate compiler must
+reproduce the same trap on the same input (`3.1:6/13`, `8.1`–`8.3`). The top-level
+result is fixed by running `main`:
+
+```
+  ⟨ H0 ; φ_main ; halt ; e_main ⟩ →* ⟨ H ; φ_main ; halt ; v ⟩
+  ────────────────────────────────────────────────────────────── (Result-Ok)
+  program result = ✓( n mod 256 )        where v = n_{int(32,signed)}, or ✓0 if v = ⟨⟩
+
+  ⟨ H0 ; φ_main ; halt ; e_main ⟩ →* ↯κ
+  ────────────────────────────────────────────────────────────── (Result-Panic)
+  program result = ✓101
+```
+
+`main`'s returned `i32` is masked to a byte for the process exit code, and a
+`unit`-returning `main` exits 0 (`Interp::run`, `lib.rs:165`); any trap exits 101
+(`lib.rs:172`). These two rules, plus the observable `@dbg` output accumulated
+during reduction, are precisely the `Outcome` (`exit_code`, `stdout`, `panic`) the
+differential harness compares against the compiled binary (RUE-50).
+
+The interpreter implementing this whole relation is the executable oracle
+(`crates/rue-oracle`; README § "The executable oracle" / RUE-50). Every rule group
+above names the function that realizes it, so a change to either must be mirrored
+in the other or the differential tests will diverge — which is the mechanism that
+keeps the paper semantics and the running semantics one artifact.
 
 ---
 
@@ -757,7 +1208,9 @@ on "use", "moved", "consumed", "dropped" being defined — which §3–§6 final
 ## 8. Traceability: prose paragraphs this core subsumes
 
 For the spec-traceability discipline (`crates/rue-spec`), the correspondence so
-far. As breadth is filled in, each new rule adds its citation.
+far. As breadth is filled in, each new rule adds its citation. The §6 rows below
+also correspond, function-for-function, to `crates/rue-oracle` — the executable
+witness of the dynamic semantics (RUE-50), cited inline in each §6 rule group.
 
 | Formal notion | Prose paragraphs it formalizes / replaces |
 |---|---|
@@ -774,7 +1227,16 @@ far. As breadth is filled in, each new rule adds its citation.
 | §5.5 branch join | 3.8:50/51, 3.8:73 |
 | §5.6 scope exit: drop + leak | 3.8:32/62/66, 3.9 (drop order) |
 | §5.7 divergence + never-coercion | 3.4:1/2/3/4/6/8, 3.4:9 |
-| §6 overflow/bounds/div-zero panics | 3.1:6/13, 8.1, 8.2, 8.3, Appendix B |
+| §6.2 evaluation order (contexts, left-to-right) | 4.0:3–9 |
+| §6.3 dynamic use: copy vs. move; equality borrows | 3.8:5/7/22, 4.3:3f |
+| §6.4 operator dynamics: arith/div/mod, compare, bitwise/shift | 4.2:1, 4.3:1/2, 4.3a:10, 3.1:6/13 |
+| §6.5 aggregate intro + projection (bounds) | 3.5:2, 3.6:16, 8.2 |
+| §6.6 enum intro + match dynamics | 6.3:17, 4.7 |
+| §6.7/§6.8 let/seq/scope-drop, assignment overwrite-drop | 4.5:3, 3.8:55/64, 3.9 |
+| §6.9 call / return / inout copy-out | 6.1:4/5/18, 4.9:1/7 |
+| §6.10 loop / break dynamics | 4.9 (loop), 3.4:2 |
+| §6.11 drop relation (active enum payload; skip moved) | 3.9, 6.3:20 |
+| §6.12 overflow/bounds/div-zero panics + exit code | 3.1:6/13, 8.1, 8.2, 8.3, Appendix B |
 | §7 soundness | the informal safety intent throughout ch. 3 and 8 |
 
 ---

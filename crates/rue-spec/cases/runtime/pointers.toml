@@ -217,3 +217,94 @@ fn main() -> i32 {
 }
 """
 exit_code = 20
+
+# =============================================================================
+# @field_ptr — compiler-mediated field pointer (RUE-301)
+# =============================================================================
+
+# @field_ptr(s.field) yields a mutable raw pointer to the field; reading it
+# observes the same value as the direct field access (spec 9.2:15, 9.2:18).
+[[case]]
+name = "field_ptr_read_matches_direct"
+spec = ["9.2:15", "9.2:16", "9.2:18"]
+source = """
+struct Mixed { a: i32, b: i64, c: bool }
+fn main() -> i32 {
+    let m = Mixed { a: 11, b: 22, c: true };
+    let got: i64 = checked {
+        let p: ptr mut i64 = @field_ptr(m.b);
+        @ptr_read(p)
+    };
+    @intCast(got)
+}
+"""
+exit_code = 22
+
+# @field_ptr addresses the first field (offset 0) correctly too.
+[[case]]
+name = "field_ptr_first_field"
+spec = ["9.2:15", "9.2:18"]
+source = """
+struct Pair { a: i32, b: i32 }
+fn main() -> i32 {
+    let p = Pair { a: 7, b: 9 };
+    checked {
+        let fp: ptr mut i32 = @field_ptr(p.a);
+        @ptr_read(fp)
+    }
+}
+"""
+exit_code = 7
+
+# The pointer from @field_ptr is mutable: @ptr_write through it updates the
+# field in place (spec 9.2:18).
+[[case]]
+name = "field_ptr_write_updates_field"
+spec = ["9.2:18"]
+source = """
+struct Pair { a: i32, b: i32 }
+fn main() -> i32 {
+    let mut p = Pair { a: 7, b: 9 };
+    checked {
+        let fp: ptr mut i32 = @field_ptr(p.b);
+        @ptr_write(fp, 100);
+    };
+    p.b
+}
+"""
+exit_code = 100
+
+# @field_ptr requires a field-access expression; a bare variable is rejected
+# (spec 9.2:17).
+[[case]]
+name = "field_ptr_requires_field_access"
+spec = ["9.2:17"]
+source = """
+struct Pair { a: i32, b: i32 }
+fn main() -> i32 {
+    let p = Pair { a: 7, b: 9 };
+    let v: u64 = checked {
+        let fp = @field_ptr(p);
+        @ptr_to_int(fp)
+    };
+    @intCast(v)
+}
+"""
+compile_fail = true
+error_contains = "field access"
+
+# @field_ptr may only appear inside a checked block (spec 9.2:15, cross-ref
+# 9.1).
+[[case]]
+name = "field_ptr_requires_checked_block"
+spec = ["9.2:15"]
+source = """
+struct Pair { a: i32, b: i32 }
+fn main() -> i32 {
+    let p = Pair { a: 7, b: 9 };
+    let fp: ptr mut i32 = @field_ptr(p.a);
+    0
+}
+"""
+compile_fail = true
+error_contains = "checked"

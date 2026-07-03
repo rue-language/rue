@@ -12,7 +12,12 @@ The type `String` represents an immutable sequence of UTF-8 encoded bytes.
 
 {{ rule(id="3.7:2", cat="normative") }}
 
-A `String` value is a fat pointer consisting of a pointer to the string data and the length in bytes.
+A `String` value occupies three machine words — a pointer to the string data,
+the length in bytes, and the allocated capacity in bytes — so `@size_of(String)`
+is `24` on a 64-bit target. A string literal has a capacity of zero and its
+pointer refers to read-only memory (3.7:3); a `String` produced by an operation
+that allocates (`@to_string`, 3.7:22, or `+`, 3.7:25) has a capacity greater
+than zero and owns a heap buffer of that size.
 
 {{ rule(id="3.7:3", cat="normative") }}
 
@@ -25,6 +30,47 @@ fn main() -> i32 {
     let s = "hello";
     0
 }
+```
+
+## Representation and Ownership
+
+{{ rule(id="3.7:39", cat="normative") }}
+
+`String` is a move type (an affine type), not a `Copy` type (see
+[Move Semantics](@/03-types/08-move-semantics.md)). Assigning a `String` to
+another binding, passing it by value, or returning it moves it; the source
+binding is left invalid, and using a moved `String` is a compile-time error
+(E0205). Because `String` is not a `Copy` type, a `@copy` struct may not have a
+`String` field. Unlike a `linear` type, a `String` need not be explicitly
+consumed: an unused `String` is dropped implicitly at the end of its scope.
+
+{{ rule(id="3.7:40", cat="dynamic-semantics") }}
+
+A `String` owns its heap allocation and has a destructor (see
+[Destructors](@/03-types/09-destructors.md)). When a `String` is dropped: if its
+capacity is zero (a literal) no action is taken; if its capacity is greater than
+zero the owned heap buffer is freed. Because a move transfers ownership, the
+buffer is freed exactly once — at the drop of the final owner — and never at a
+moved-from binding.
+
+{{ rule(id="3.7:41", cat="informative") }}
+
+The capacity of a heap-allocated `String`, and the growth strategy that chooses
+it, are implementation-defined (1.3:6): a conforming program observes only the
+length and byte content of a `String`, never its exact capacity. The
+mutable-string extension ([Mutable Strings](@/03-types/10-mutable-strings.md),
+section 3.10) builds on this same three-word representation.
+
+{{ rule(id="3.7:42") }}
+
+```rue
+fn main() -> i32 {
+    let a = "foo" + "bar";   // heap-allocated: capacity > 0
+    let b = a;               // 'a' is moved into 'b'
+    // let c = a;            // ERROR (E0205): use of moved value 'a'
+    @dbg(b);                 // foobar
+    0
+}                            // 'b' is dropped: its heap buffer is freed once
 ```
 
 ## String Literals
