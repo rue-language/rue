@@ -28,7 +28,7 @@
 use std::collections::HashMap;
 
 use lasso::ThreadedRodeo;
-use rue_air::{StructId, TypeInternPool, TypeKind};
+use rue_air::{TypeInternPool, TypeKind};
 use rue_builtins::BinOp;
 use rue_cfg::{
     BasicBlock, BlockId, Cfg, CfgInstData, CfgValue, Place, PlaceBase, Projection, Terminator, Type,
@@ -1516,9 +1516,10 @@ impl<'a> CfgLower<'a> {
                         dst: Operand::Virtual(vreg),
                         imm: 1,
                     });
-                } else if let TypeKind::Struct(struct_id) = lhs_ty.kind() {
-                    // Struct equality: compare all fields
-                    self.emit_struct_equality(value, *lhs, *rhs, struct_id, false);
+                } else if self.ctx.is_multislot_aggregate(lhs_ty) {
+                    // Structural equality: compare every slot (struct fields,
+                    // array elements, or an enum's tag + payload). (RUE-285)
+                    self.emit_aggregate_equality(value, *lhs, *rhs, lhs_ty, false);
                 } else {
                     self.emit_comparison(value, *lhs, *rhs, |mir, vreg| {
                         mir.push(X86Inst::Sete {
@@ -1551,9 +1552,10 @@ impl<'a> CfgLower<'a> {
                         dst: Operand::Virtual(vreg),
                         imm: 0,
                     });
-                } else if let TypeKind::Struct(struct_id) = lhs_ty.kind() {
-                    // Struct inequality: compare all fields, invert result
-                    self.emit_struct_equality(value, *lhs, *rhs, struct_id, true);
+                } else if self.ctx.is_multislot_aggregate(lhs_ty) {
+                    // Structural inequality: compare every slot, invert result.
+                    // (RUE-285)
+                    self.emit_aggregate_equality(value, *lhs, *rhs, lhs_ty, true);
                 } else {
                     self.emit_comparison(value, *lhs, *rhs, |mir, vreg| {
                         mir.push(X86Inst::Setne {
@@ -3467,30 +3469,35 @@ impl<'a> CfgLower<'a> {
     ///
     /// Compares all fields of two structs and returns true only if all fields are equal.
     /// If `invert` is true, returns true if any field is different (for !=).
-    fn emit_struct_equality(
+    /// Structural equality (`==` / `!=`) for a multi-slot aggregate: struct,
+    /// fixed-size array, or a payload-carrying enum (RUE-285).
+    ///
+    /// The aggregate is flattened to one vreg per storage slot (via
+    /// [`get_or_compute_field_vregs`]); we compare every slot pairwise and AND
+    /// the results, so nested aggregates recurse for free (a nested struct or
+    /// array contributes all of its leaf slots). Each slot's compare width is
+    /// selected by its leaf type ([`types::aggregate_leaf_types`]) so 64-bit
+    /// leaves and raw pointers (which compare by ADDRESS) are compared at full
+    /// width. For an enum, slot 0 is the discriminant: two different variants
+    /// differ in the tag and are never equal; two same-variant values compare
+    /// their payloads (the padding beyond a variant's payload is a deterministic
+    /// zero, so it never spuriously distinguishes equal values). Reading each
+    /// operand's slots does not consume it, so `==` borrows its operands.
+    fn emit_aggregate_equality(
         &mut self,
         value: CfgValue,
         lhs: CfgValue,
         rhs: CfgValue,
-        struct_id: StructId,
+        ty: Type,
         invert: bool,
     ) {
         let result_vreg = self.mir.alloc_vreg();
         self.value_map.insert(value, result_vreg);
 
-        // Get the struct field vregs
-        let lhs_fields = self
-            .get_or_compute_field_vregs(lhs)
-            .expect("struct should have field vregs");
-        let rhs_fields = self
-            .get_or_compute_field_vregs(rhs)
-            .expect("struct should have field vregs");
+        let leaf_types = types::aggregate_leaf_types(self.ctx.type_pool, ty);
 
-        let struct_def = self.ctx.type_pool.struct_def(struct_id);
-        let field_count = struct_def.fields.len();
-
-        if field_count == 0 {
-            // Empty struct: always equal
+        if leaf_types.is_empty() {
+            // Zero-slot aggregate (empty struct, zero-length array): always equal.
             self.mir.push(X86Inst::MovRI32 {
                 dst: Operand::Virtual(result_vreg),
                 imm: if invert { 0 } else { 1 },
@@ -3498,32 +3505,36 @@ impl<'a> CfgLower<'a> {
             return;
         }
 
-        // Start with 1 (true), AND each field comparison result
+        // Flattened slot vregs, one per leaf.
+        let lhs_slots = self
+            .get_or_compute_field_vregs(lhs)
+            .expect("aggregate should have slot vregs");
+        let rhs_slots = self
+            .get_or_compute_field_vregs(rhs)
+            .expect("aggregate should have slot vregs");
+        debug_assert_eq!(lhs_slots.len(), leaf_types.len());
+        debug_assert_eq!(rhs_slots.len(), leaf_types.len());
+
+        // Start with 1 (true), AND each slot comparison result.
         self.mir.push(X86Inst::MovRI32 {
             dst: Operand::Virtual(result_vreg),
             imm: 1,
         });
 
-        // Compare each field and AND with result
-        let mut field_slot = 0usize;
-        for field in &struct_def.fields {
-            let field_slots = self.ctx.type_slot_count(field.ty) as usize;
-            let lhs_field_vreg = lhs_fields[field_slot];
-            let rhs_field_vreg = rhs_fields[field_slot];
-
-            // Allocate a vreg for this field's comparison result
+        for (i, leaf_ty) in leaf_types.iter().enumerate() {
+            let lhs_slot_vreg = lhs_slots[i];
+            let rhs_slot_vreg = rhs_slots[i];
             let cmp_vreg = self.mir.alloc_vreg();
 
-            // Use 64-bit compare for i64/u64 types
-            if matches!(field.ty.kind(), TypeKind::I64 | TypeKind::U64) {
+            if types::slot_needs_wide_compare(*leaf_ty) {
                 self.mir.push(X86Inst::Cmp64RR {
-                    src1: Operand::Virtual(lhs_field_vreg),
-                    src2: Operand::Virtual(rhs_field_vreg),
+                    src1: Operand::Virtual(lhs_slot_vreg),
+                    src2: Operand::Virtual(rhs_slot_vreg),
                 });
             } else {
                 self.mir.push(X86Inst::CmpRR {
-                    src1: Operand::Virtual(lhs_field_vreg),
-                    src2: Operand::Virtual(rhs_field_vreg),
+                    src1: Operand::Virtual(lhs_slot_vreg),
+                    src2: Operand::Virtual(rhs_slot_vreg),
                 });
             }
             self.mir.push(X86Inst::Sete {
@@ -3539,8 +3550,6 @@ impl<'a> CfgLower<'a> {
                 dst: Operand::Virtual(result_vreg),
                 src: Operand::Virtual(cmp_vreg),
             });
-
-            field_slot += field_slots;
         }
 
         // Invert result if needed (for !=)

@@ -274,3 +274,176 @@ fn main() -> i32 {
 }
 """
 exit_code = 1
+
+# =============================================================================
+# Array Equality (RUE-285): structural, element-by-element
+# =============================================================================
+
+[[case]]
+name = "array_equality_{variant}"
+spec = ["4.3:2", "4.3:3c"]
+source = """
+fn main() -> i32 {
+    let a = [{a0}, {a1}, {a2}];
+    let b = [{b0}, {b1}, {b2}];
+    if a {op} b { 1 } else { 0 }
+}
+"""
+params = [
+  { variant = "equal", a0 = "1", a1 = "2", a2 = "3", b0 = "1", b1 = "2", b2 = "3", op = "==", exit_code = 1 },
+  { variant = "different", a0 = "1", a1 = "2", a2 = "3", b0 = "1", b1 = "2", b2 = "9", op = "==", exit_code = 0 },
+  { variant = "inequality", a0 = "1", a1 = "2", a2 = "3", b0 = "1", b1 = "2", b2 = "9", op = "!=", exit_code = 1 },
+]
+
+# Nested aggregates recurse: array-of-struct and struct-of-array.
+[[case]]
+name = "array_of_struct_equality"
+spec = ["4.3:2", "4.3:3c", "4.3:3b"]
+source = """
+struct P { x: i32, y: i32 }
+
+fn main() -> i32 {
+    let a = [P { x: 1, y: 2 }, P { x: 3, y: 4 }];
+    let b = [P { x: 1, y: 2 }, P { x: 3, y: 4 }];
+    let c = [P { x: 1, y: 2 }, P { x: 3, y: 5 }];
+    if a == b && a != c { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "struct_of_array_equality"
+spec = ["4.3:2", "4.3:3b", "4.3:3c"]
+source = """
+struct S { v: [i32; 3] }
+
+fn main() -> i32 {
+    let a = S { v: [1, 2, 3] };
+    let b = S { v: [1, 2, 3] };
+    let c = S { v: [1, 2, 4] };
+    if a == b && a != c { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+# Nested struct: a difference in a non-first slot of a nested field must be seen
+# (regression guard for the old slot-0-only struct-equality bug, RUE-285).
+[[case]]
+name = "nested_struct_equality_deep_field"
+spec = ["4.3:2", "4.3:3b"]
+source = """
+struct Inner { a: i32, b: i32 }
+struct Outer { p: Inner, q: i32 }
+
+fn main() -> i32 {
+    let x = Outer { p: Inner { a: 1, b: 2 }, q: 5 };
+    let y = Outer { p: Inner { a: 1, b: 2 }, q: 5 };
+    let z = Outer { p: Inner { a: 1, b: 99 }, q: 5 };
+    if x == y && x != z { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "array_ordering_disallowed"
+spec = ["4.3:6"]
+source = """
+fn main() -> i32 {
+    let a = [1, 2];
+    let b = [1, 2];
+    if a < b { 1 } else { 0 }
+}
+"""
+compile_fail = true
+
+# Equality borrows its operands: both arrays remain usable after `==`.
+[[case]]
+name = "array_equality_borrows_operands"
+spec = ["4.3:3f"]
+source = """
+fn main() -> i32 {
+    let a = [1, 2, 3];
+    let b = [1, 2, 3];
+    let equal = a == b;
+    if equal { a[0] + b[2] } else { 0 }
+}
+"""
+exit_code = 4
+
+# A raw-pointer leaf compares by ADDRESS (identity): two structs holding the
+# address of the same local are equal; one holding a different local is not.
+[[case]]
+name = "struct_raw_pointer_field_equality_by_address"
+spec = ["4.3:2", "4.3:3b", "4.3:3e"]
+source = """
+struct Pw { p: ptr const i32 }
+
+fn main() -> i32 {
+    let x: i32 = 42;
+    let y: i32 = 42;
+    let a = checked { Pw { p: @raw(x) } };
+    let b = checked { Pw { p: @raw(x) } };
+    let c = checked { Pw { p: @raw(y) } };
+    if a == b && a != c { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+# =============================================================================
+# Enum Equality (RUE-285): same variant and equal payload
+# =============================================================================
+
+# Discriminant-only (C-like) enums: equal iff the same variant. Not preview.
+[[case]]
+name = "enum_clike_equality_{variant}"
+spec = ["4.3:2", "4.3:3d"]
+source = """
+enum Color { Red, Green, Blue }
+
+fn main() -> i32 {
+    let a = Color::{a};
+    let b = Color::{b};
+    if a {op} b { 1 } else { 0 }
+}
+"""
+params = [
+  { variant = "same", a = "Red", b = "Red", op = "==", exit_code = 1 },
+  { variant = "different", a = "Red", b = "Green", op = "==", exit_code = 0 },
+  { variant = "inequality", a = "Red", b = "Green", op = "!=", exit_code = 1 },
+]
+
+[[case]]
+name = "enum_clike_ordering_disallowed"
+spec = ["4.3:6"]
+source = """
+enum Color { Red, Green }
+
+fn main() -> i32 {
+    let a = Color::Red;
+    let b = Color::Green;
+    if a < b { 1 } else { 0 }
+}
+"""
+compile_fail = true
+
+# Payload-carrying enums: same variant AND equal payload; different variants
+# are never equal. Gated on the enum_payloads preview feature (RUE-221).
+[[case]]
+name = "enum_payload_equality_{variant}"
+spec = ["4.3:2", "4.3:3d"]
+preview = "enum_payloads"
+source = """
+enum Shape { Circle(i32), Square(i32) }
+
+fn main() -> i32 {
+    let a = Shape::{a};
+    let b = Shape::{b};
+    if a {op} b { 1 } else { 0 }
+}
+"""
+params = [
+  { variant = "same", a = "Circle(5)", b = "Circle(5)", op = "==", exit_code = 1 },
+  { variant = "same_variant_diff_payload", a = "Circle(5)", b = "Circle(6)", op = "==", exit_code = 0 },
+  { variant = "different_variant", a = "Circle(5)", b = "Square(5)", op = "==", exit_code = 0 },
+  { variant = "inequality", a = "Circle(5)", b = "Square(5)", op = "!=", exit_code = 1 },
+]
