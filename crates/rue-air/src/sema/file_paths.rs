@@ -4,10 +4,26 @@
 //! for module resolution and relative imports.
 
 use std::collections::HashMap;
+use std::path::{Component, Path, PathBuf};
 
 use rue_span::FileId;
 
 use super::Sema;
+
+/// Normalize a source-file path for equivalence comparison by dropping `.`
+/// (current-directory) components, so `./helper.rue` and `helper.rue` compare
+/// equal. Parent (`..`) and normal components are preserved, so the
+/// normalization is purely lexical and never touches the filesystem.
+fn normalize_module_path(path: &str) -> String {
+    let mut out = PathBuf::new();
+    for comp in Path::new(path).components() {
+        match comp {
+            Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out.to_string_lossy().into_owned()
+}
 
 impl<'a> Sema<'a> {
     /// Set file paths for module resolution in multi-file compilation.
@@ -39,6 +55,28 @@ impl<'a> Sema<'a> {
         self.file_paths
             .iter()
             .find(|(_, p)| p.as_str() == path)
+            .map(|(id, _)| *id)
+    }
+
+    /// Resolve a source-file path to its canonical [`FileId`](rue_span::FileId),
+    /// tolerating equivalent spellings of the same file.
+    ///
+    /// A module imported as `@import("./helper.rue")` records its resolved path
+    /// with the leading `./` (or other `.` components) still attached, while
+    /// the file table stores the plain `helper.rue`. An exact
+    /// [`get_file_id`](Self::get_file_id) match would miss it, so member access
+    /// through that binding spuriously failed (E0707, RUE-240). Comparing by
+    /// normalized path (dropping `.` components) makes both spellings resolve
+    /// to the same file, matching spec 10.2:4 (an import resolving to an
+    /// already-loaded file refers to that same module).
+    pub(crate) fn canonical_file_id(&self, path: &str) -> Option<FileId> {
+        if let Some(id) = self.get_file_id(path) {
+            return Some(id);
+        }
+        let norm = normalize_module_path(path);
+        self.file_paths
+            .iter()
+            .find(|(_, p)| normalize_module_path(p) == norm)
             .map(|(id, _)| *id)
     }
 

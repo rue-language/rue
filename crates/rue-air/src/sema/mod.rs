@@ -161,7 +161,15 @@ impl<'a> Sema<'a> {
     /// This is the main entry point for semantic analysis. It returns analyzed
     /// functions, struct definitions, enum definitions, and any warnings.
     pub fn analyze_all(mut self) -> MultiErrorResult<SemaOutput> {
-        // Phase 0: Inject built-in types (String, etc.) before user code
+        // Phase 0a: Reject a top-level name claimed by two of function /
+        // struct / enum, order-independently (spec 10.3:1, 10.5:1, RUE-239).
+        // Runs before builtin injection so it scans only user RIR. Value
+        // constants are folded in later, after collection separates them from
+        // per-file module bindings (see `check_const_cross_kind_collisions`).
+        self.check_top_level_name_collisions()
+            .map_err(CompileErrors::from)?;
+
+        // Phase 0b: Inject built-in types (String, etc.) before user code
         self.inject_builtin_types();
 
         // Phase 1: Register type names
