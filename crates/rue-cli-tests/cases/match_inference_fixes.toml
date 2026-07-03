@@ -1,0 +1,170 @@
+# Pattern-matching / type-inference fixes driven through the real CLI.
+#
+# Three bugs found by the 2026-07-03 pattern-matching hunt:
+#   RUE-268 comptime match arm pruning didn't exempt unselected arms from HM
+#           type-inference (a valid program with a wrong-typed dead arm was
+#           rejected with a bogus E0206).
+#   RUE-269 a duplicate binding name in an enum-payload pattern (`Rect(w, w)`)
+#           was silently accepted, shadowing and losing a field. Now E0484.
+#   RUE-270 an integer literal added to a never-typed `match n {}` was rejected
+#           with a bogus E0800 "literal out of range for '!'". `!` coerces.
+
+[section]
+id = "cli.match_inference_fixes"
+name = "Match arm pruning, duplicate bindings, never coercion"
+description = "Comptime match arm inference (RUE-268), duplicate pattern bindings (RUE-269), never-vs-literal coercion (RUE-270) through the real driver."
+
+# ---------------------------------------------------------------------------
+# RUE-268: comptime match only analyzes/type-checks the selected arm.
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "comptime_match_dead_arm_wrong_type_ok"
+description = "RUE-268: a comptime match's statically-unselected arm may have a different type; only the selected arm is type-checked (spec 4.14:19)."
+files = [{ path = "main.rue", source = """
+fn f(comptime n: i32) -> i32 { match n { 0 => 42, _ => "never taken, wrong type" } }
+fn main() -> i32 {
+    @dbg(f(0));
+    0
+}
+""" }]
+stdout = "42\n"
+
+[[case]]
+name = "comptime_match_selects_other_arm_type"
+description = "RUE-268: when the comptime value selects a different arm, that arm's type is the match type (the dead first arm's String is ignored)."
+files = [{ path = "main.rue", source = """
+fn f(comptime n: i32) -> i32 { match n { 0 => "wrong", _ => 7 } }
+fn main() -> i32 {
+    @dbg(f(1));
+    0
+}
+""" }]
+stdout = "7\n"
+
+[[case]]
+name = "comptime_match_two_specializations"
+description = "RUE-268: distinct comptime values pick distinct arms; both specializations compile and run."
+files = [{ path = "main.rue", source = """
+fn f(comptime n: i32) -> i32 { match n { 0 => 42, _ => 99 } }
+fn main() -> i32 {
+    @dbg(f(0));
+    @dbg(f(5));
+    0
+}
+""" }]
+stdout = "42\n99\n"
+
+[[case]]
+name = "comptime_match_bool_dead_arm_wrong_type_ok"
+description = "RUE-268: same pruning for a comptime bool scrutinee — the unselected `false` arm's wrong type is not checked."
+files = [{ path = "main.rue", source = """
+fn f(comptime b: bool) -> i32 { match b { true => 42, false => "wrong type" } }
+fn main() -> i32 {
+    @dbg(f(true));
+    0
+}
+""" }]
+stdout = "42\n"
+
+[[case]]
+name = "runtime_match_disagreeing_arms_still_error"
+description = "RUE-268 control: a genuinely runtime match (non-comptime param) must still unify all arms and reject disagreeing types (E0206)."
+files = [{ path = "main.rue", source = """
+fn f(n: i32) -> i32 { match n { 0 => 42, _ => "runtime wrong" } }
+fn main() -> i32 { f(0) }
+""" }]
+compile_fail = true
+error_contains = ["E0206"]
+
+# ---------------------------------------------------------------------------
+# RUE-269: duplicate binding name in an enum-payload pattern is E0484.
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "duplicate_payload_binding_rejected"
+description = "RUE-269: `Rect(w, w)` binds `w` twice — rejected with E0484 instead of silently dropping the first field."
+args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+enum Shape { Rect(i32, i32) }
+fn main() -> i32 { match Shape::Rect(3, 4) { Shape::Rect(w, w) => w } }
+""" }]
+compile_fail = true
+error_contains = ["E0484", "bound more than once"]
+
+[[case]]
+name = "distinct_payload_bindings_ok"
+description = "RUE-269 control: distinct payload binding names still compile and both fields are available."
+args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+enum Shape { Rect(i32, i32) }
+fn main() -> i32 {
+    @dbg(match Shape::Rect(3, 4) { Shape::Rect(w, h) => w + h });
+    0
+}
+""" }]
+stdout = "7\n"
+
+[[case]]
+name = "duplicate_payload_binding_three_fields"
+description = "RUE-269: a reused name anywhere in a longer payload (`Tri(a, b, a)`) is caught."
+args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+enum Tri { T(i32, i32, i32) }
+fn main() -> i32 { match Tri::T(1, 2, 3) { Tri::T(a, b, a) => a + b } }
+""" }]
+compile_fail = true
+error_contains = ["E0484"]
+
+# ---------------------------------------------------------------------------
+# RUE-270: never coerces past the integer-literal range check.
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "literal_plus_empty_match_compiles"
+description = "RUE-270: `1 + match n {}` — the empty match has type `!`, which coerces to the literal's type (spec 3.4:3-4). Compiles (the fn is uncallable — Never is uninhabited)."
+compile_only = true
+files = [{ path = "main.rue", source = """
+enum Never {}
+fn absurd(n: Never) -> i32 { 1 + match n {} }
+fn main() -> i32 { 0 }
+""" }]
+
+[[case]]
+name = "let_annotated_empty_match_compiles"
+description = "RUE-270: `let x: i32 = match n {}` — `!` coerces to i32."
+compile_only = true
+files = [{ path = "main.rue", source = """
+enum Never {}
+fn absurd(n: Never) -> i32 { let x: i32 = match n {}; x }
+fn main() -> i32 { 0 }
+""" }]
+
+[[case]]
+name = "literal_plus_diverging_match_runs"
+description = "RUE-270: `1 + (match x { _ => return 1 })` — the arm diverges (`!`), coerces, and the function returns 1."
+files = [{ path = "main.rue", source = """
+fn absurd(x: i32) -> i32 { 1 + (match x { _ => return 1 }) }
+fn main() -> i32 { absurd(5) }
+""" }]
+exit_code = 1
+
+[[case]]
+name = "real_out_of_range_literal_still_errors"
+description = "RUE-270 control: `!` coercion must not suppress the range check against a *real* integer type — 300 doesn't fit u8, still E0800."
+compile_fail = true
+files = [{ path = "main.rue", source = """
+fn main() -> i32 { let x: u8 = 300; 0 }
+""" }]
+error_contains = ["E0800"]
+
+[[case]]
+name = "out_of_range_literal_with_never_in_scope_still_errors"
+description = "RUE-270 control: a never-typed match elsewhere in the body must not mask an out-of-range literal (E0800 still fires)."
+compile_fail = true
+files = [{ path = "main.rue", source = """
+enum Never {}
+fn absurd(n: Never) -> i32 { let y: u8 = 300; let _ = match n {}; 0 }
+fn main() -> i32 { 0 }
+""" }]
+error_contains = ["E0800"]

@@ -176,6 +176,11 @@ impl ErrorCode {
     /// Analogous to Rust's E0072 and a sibling of [`Self::CONST_INITIALIZER_CYCLE`]
     /// (E0461) for the type-definition graph.
     pub const RECURSIVE_TYPE_INFINITE_SIZE: Self = Self(483);
+    /// A pattern binds the same identifier more than once (e.g. an enum
+    /// payload pattern `Rect(w, w)`). Every binding in a pattern must be a
+    /// fresh name (spec 4.7:30); reusing one silently shadows the earlier
+    /// binding and discards its value (RUE-269, analogous to Rust E0416).
+    pub const DUPLICATE_PATTERN_BINDING: Self = Self(484);
 
     // ========================================================================
     // Control flow errors (E0500-E0599)
@@ -965,6 +970,11 @@ pub enum ErrorKind {
     TypeMismatch { expected: String, found: String },
     #[error("{}", format_argument_count(*.expected, *.found))]
     WrongArgumentCount { expected: usize, found: usize },
+    /// A pattern binds the same identifier more than once (spec 4.7:30):
+    /// e.g. an enum payload pattern `Rect(w, w)`. Reusing a name silently
+    /// shadows the earlier binding and discards its value (RUE-269).
+    #[error("identifier '{name}' is bound more than once in the same pattern")]
+    DuplicatePatternBinding { name: String },
 
     // Struct errors
     #[error("{}", format_missing_fields(.0))]
@@ -1321,6 +1331,7 @@ impl ErrorKind {
             ErrorKind::UseAfterMove(_) => ErrorCode::USE_AFTER_MOVE,
             ErrorKind::TypeMismatch { .. } => ErrorCode::TYPE_MISMATCH,
             ErrorKind::WrongArgumentCount { .. } => ErrorCode::WRONG_ARGUMENT_COUNT,
+            ErrorKind::DuplicatePatternBinding { .. } => ErrorCode::DUPLICATE_PATTERN_BINDING,
 
             // Struct/enum errors (E0400-E0499)
             ErrorKind::MissingFields(_) => ErrorCode::MISSING_FIELDS,

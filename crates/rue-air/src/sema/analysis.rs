@@ -1976,6 +1976,7 @@ impl<'a> Sema<'a> {
         .with_const_values(&infer_ctx.const_values)
         .with_module_binding_types(&infer_ctx.module_binding_types)
         .with_comptime_local_types(&comptime_local_types)
+        .with_comptime_values(value_subst)
         .with_extra_method_sigs(&extra_method_sigs);
 
         // Build parameter map for constraint context.
