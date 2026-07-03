@@ -406,3 +406,134 @@ fn main() -> i32 {
     match y { B::Some(n) => n, B::None => 0 }
 }
 ```
+
+## Generic Types (Comptime Type Functions)
+
+The rules in this section describe the generics mechanism of Rue. A generic
+type is not a distinct language construct: it is an ordinary function whose
+comptime parameters and `type` return make it a *type constructor*. This is how
+`Option`, `Result`, and array-buffer types are expressed as library code rather
+than compiler builtins.
+
+{{ rule(id="4.14:22", cat="normative") }}
+
+A comptime function whose declared return type is `type` is a *type
+constructor* (equivalently, a *generic type*). Its body evaluates at compile
+time (rule 4.14:1) to an anonymous struct type (rule 4.14:7) or anonymous enum
+type (rule 4.14:20). Calling a type constructor is *type-function application*;
+the call is evaluated at compile time and reduces to a single concrete type.
+Because application is comptime evaluation, every argument must be
+compile-time known (rule 4.14:6), and each `type`-typed argument must be
+supplied by a `comptime` parameter or another type value.
+
+In *value position*, the reduced type is an ordinary compile-time type value:
+it may be bound with `let` and then used as the path of a struct-literal
+expression (`P { … }`), a method call, or an associated-function call
+(`P::origin()`), exactly as in rules 4.14:7 through 4.14:13.
+
+```rue
+fn Option(comptime T: type) -> type { enum { Some(T), None } }
+
+fn main() -> i32 {
+    let O = Option(i32);        // type-function application in value position
+    let x: O = O::Some(42);
+    match x { O::Some(n) => n, O::None => 0 }
+}
+```
+
+{{ rule(id="4.14:23", cat="normative") }}
+
+A type-constructor call may appear directly wherever a type is expected — in a
+`let` type annotation, a function parameter type, a function return type, a
+struct field type, an array element type (`[F(i32); N]`), or a pointer pointee
+— and may be nested within composite types (rule 4.14:16). The call is
+evaluated at compile time and the resulting concrete type is substituted in
+that position.
+
+```rue
+fn Pair(comptime T: type) -> type { struct { first: T, second: T } }
+
+fn mk() -> Pair(i32) {                 // application in return position
+    let P = Pair(i32);
+    P { first: 40, second: 2 }
+}
+
+fn sum(p: Pair(i32)) -> i32 {          // application in parameter position
+    p.first + p.second
+}
+
+fn main() -> i32 {
+    let p: Pair(i32) = mk();           // application in annotation position
+    sum(p)
+}
+```
+
+A type-constructor call is a type, not a path expression: the forms
+`F(args) { … }` (a struct literal) and `F(args)::NAME` (an associated item or
+enum variant) are not accepted, because a call expression is not a permitted
+struct-literal or pattern path. Bind the resulting type to a name first — with
+`let P = F(args);` — and use that name as the path in expression and pattern
+position (`P { … }`, `P::NAME`).
+
+{{ rule(id="4.14:24", cat="normative") }}
+
+The comptime parameters of a type constructor — both `type` parameters and
+ordinary `comptime` value parameters — are in scope throughout its entire body,
+including the signatures and bodies of the methods and associated functions
+(rules 4.14:10, 4.14:13) of the anonymous type it returns (extending rule
+4.14:12, which captures a value parameter, to `type` parameters). A `type`
+parameter `T` may be used anywhere a type is expected — as a field type, a
+method parameter or return type, or a local `let` annotation — and may be
+passed as an argument to another type constructor (for example `Option(T)`),
+nesting generic types.
+
+```rue
+fn Option(comptime T: type) -> type { enum { Some(T), None } }
+
+fn Wrap(comptime T: type) -> type {
+    struct {
+        inner: Option(T),               // T passed to another constructor
+        fn get_or(self, d: T) -> T {    // T names the parameter/return type
+            let O = Option(T);          // T in scope in the method body
+            match self.inner { O::Some(v) => v, O::None => d }
+        }
+    }
+}
+
+fn main() -> i32 {
+    let W = Wrap(i32);
+    let O = Option(i32);
+    let w: W = W { inner: O::Some(7) };
+    w.get_or(0)
+}
+```
+
+{{ rule(id="4.14:25", cat="normative") }}
+
+Each type produced by type-function application is monomorphized
+independently: instantiations with different arguments have independent layouts
+and are distinct, non-assignable types. The identity of an instantiation is
+*structural* — determined by the structural-equality rules for anonymous struct
+(rules 4.14:8, 4.14:15) and enum (rule 4.14:21) types — and does not depend on
+the identity of the constructor or of its arguments. Consequently `F(i32)` and
+`F(i32)` denote the same type wherever they appear, including across separate
+functions; `F(i32)` and `F(i64)` denote different types; and a structurally
+identical result produced by a *different* constructor denotes the same type as
+well (rule 4.14:8).
+
+```rue
+fn Pair(comptime T: type) -> type { struct { first: T, second: T } }
+
+fn produce() -> Pair(i32) {
+    let P = Pair(i32);
+    P { first: 10, second: 5 }
+}
+
+fn consume(p: Pair(i32)) -> i32 {  // same type as produce()'s return
+    p.first + p.second
+}
+
+fn main() -> i32 {
+    consume(produce())  // 15
+}
+```

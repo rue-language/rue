@@ -58,7 +58,7 @@ Expressions
       | if e0 { e1 } else { e2 }
       | match e0 { pat1 => e1, ..., patk => ek }
       | let x = e1 ; e2        -- binding; scope of x is e2
-      | e1 ; e2                -- sequence; e1's value is DISCARDED (must be unit or a leak error)
+      | e1 ; e2                -- sequence; e1's value is DISCARDED (well-formed unless it carries a linear value — §5.3, 3.8:64)
       | loop { e }             -- infinite loop; exited only by break
       | break                  -- exit the nearest enclosing loop, value unit
       | return e               -- exit the enclosing function with e's value
@@ -509,6 +509,134 @@ and since the `else` arm's outgoing state is `⊥` the branch join is just the
 function's `i32` return type). This is the **only** coercion in the language:
 every other typing rule demands exact type identity.
 
+### 5.8 Leaf, operator, aggregate, and call forms
+
+§5.5 gave the rules for the branching and enum forms (`if`/`match`, enum
+intro/elim) and §5.7 the diverging forms (`return`/`break`/`loop`). This
+subsection completes the statics with the remaining **non-diverging** expression
+forms of §2 — literals, primitive arithmetic/bitwise, equality compare, struct
+and array construction, and calls — closing the "thin statics" gap (RUE-308).
+None of these adds ownership machinery beyond the *use* discipline of §4.2 and
+the loan discipline of §5.4; they are collected here so §5 covers every §2
+expression form, not because they introduce anything new. Each threads the
+ownership state Σ left-to-right through its subexpressions (evaluation order
+`4.0`). The diverging forms are **not** restated here (they live in §5.7), and
+`match`/enum construction are **not** restated here (they live in §5.5).
+
+**Literals.** A literal denotes a fresh `Copy` value of its own type and reads no
+place, so Σ is unchanged.
+
+```
+  lit is an integer / bool / unit literal of type T       -- T ∈ { int(w,s), bool, unit }
+  ─────────────────────────────────────────────────────── (Lit)
+  Γ;Σ;Λ ⊢ lit ⇒ T ⊣ Σ
+```
+
+An integer literal's width and signedness are fixed *before* the core: elaboration
+has already resolved the surface "an integer literal defaults to `i32` unless the
+context requires another type" (`4.1:3`) into a concrete `int(w, s)`, so the core
+sees only the resolved type (`4.1:2` for integers, `4.1:5` for `true`/`false`,
+`4.1:7` for `()`).
+
+**Primitive arithmetic / bitwise `⊕`.** Both operands share one integer type and
+the result has that same type; the operands are `Copy` scalars, so each is an
+ordinary value-context use that *copies* (§4.2) and the only effect on Σ is
+whatever uses the operand subexpressions themselves perform.
+
+```
+  Γ;Σ;Λ ⊢ e1 ⇒ int(w,s) ⊣ Σ1     Γ;Σ1;Λ ⊢ e2 ⇒ int(w,s) ⊣ Σ2     ⊕ ∈ { +,-,*,/,%, &,|,^,<<,>> }
+  ─────────────────────────────────────────────────────────────────────────────────────── (Arith)
+  Γ;Σ;Λ ⊢ e1 ⊕ e2 ⇒ int(w,s) ⊣ Σ2
+```
+
+The same-type/same-result-type shape is `4.2:1`. Overflow, division-by-zero, and
+remainder-by-zero are *dynamic* panics (§6), not typing errors. (Equality `≟` is
+a separate rule below because, unlike `⊕`, it *borrows* rather than copies its
+operands.)
+
+**Equality compare `≟`.** Comparison of two values of the same type yields `bool`.
+Unlike `⊕`, a place appearing **directly** as an operand is read through a
+call-scoped *shared loan* and is **not** moved, even when its type is `Affine` or
+`Linear` — this side condition overrides the default (Use-Move) of §4.2 for the
+operand position, exactly the equality-compare loan of §5.4 (`4.3:3f`).
+
+```
+  Γ;Σ;Λ ⊢ e1 ⇒ T ⊣ Σ1     Γ;Σ1;Λ ⊢ e2 ⇒ T ⊣ Σ2     ≟ ∈ { ==, != }
+  a place operand p is read through a (root(p), shared) loan and is NOT moved  (§4.1, §5.4, 4.3:3f)
+  ─────────────────────────────────────────────────────────────────────── (Eq)
+  Γ;Σ;Λ ⊢ e1 ≟ e2 ⇒ bool ⊣ Σ2
+```
+
+The result is always `bool` (`4.3:1`); equality is defined for scalars, `unit`,
+strings, and the aggregate types — structs, arrays, enums (`4.3:2`) — and
+recurses structurally without ever consuming an operand. Because a place operand
+leaves Σ untouched, its move obligation is undischarged: `let c = a; a ≟ b` is
+well-formed, and two shared reads are always consistent, so `a == a` is too
+(§5.4). Σ2 reflects only the uses performed *inside* compound operand
+subexpressions (e.g. `f() == g()`), never a move of a directly-named operand
+place.
+
+**Struct construction.** Each field initializer is a value-context use of the
+declared field type — a move for a non-`Copy` field, a copy for a `Copy` one
+(§4.2) — and the result owns every field.
+
+```
+  S = struct { f1: T1, ..., fk: Tk }        all k fields supplied, each exactly once  (3.6:5, 3.6:6, 3.6:15)
+  Γ;Σ;Λ ⊢ e1 ⇒ T1 ⊣ Σ1     Γ;Σ1;Λ ⊢ e2 ⇒ T2 ⊣ Σ2     ...     Γ;Σ_{k-1};Λ ⊢ ek ⇒ Tk ⊣ Σk
+  ─────────────────────────────────────────────────────────────────────────────── (Struct-Intro)
+  Γ;Σ;Λ ⊢ S { f1: e1, ..., fk: ek } ⇒ S ⊣ Σk
+```
+
+Initializers are typed in the order written and Σ is threaded through them,
+matching the source-order evaluation of `3.6:16`/`4.0:9` even though the stored
+value places each field in its *declaration* slot (`3.6:9`). A well-formed
+literal supplies every field exactly once (`3.6:5`, `3.6:6`); a surface literal
+written field-out-of-order (`3.6:15`) is presented here in declaration order by
+elaboration without loss of generality. The result owns all fields, so
+`class(S)` is the field join of §3.
+
+**Array construction.** All `n` elements share one element type `T`, and the
+result has type `[T; n]`.
+
+```
+  Γ;Σ;Λ ⊢ e1 ⇒ T ⊣ Σ1     Γ;Σ1;Λ ⊢ e2 ⇒ T ⊣ Σ2     ...     Γ;Σ_{n-1};Λ ⊢ en ⇒ T ⊣ Σn      n ≥ 0
+  ─────────────────────────────────────────────────────────────────────────────── (Array-Intro)
+  Γ;Σ;Λ ⊢ [ e1, ..., en ] ⇒ [T; n] ⊣ Σn
+```
+
+Every element is a value-context use of `T` (`3.5:2` — one shared element type),
+typed left-to-right with Σ threaded, and the array owns all `n` elements;
+`class([T; n])` is given by §3 (`3.5:1` for the type form). The empty array `[]`
+(`n = 0`) is the `Copy`, zero-sized `[T; 0]` and uses nothing.
+
+**Call.** A call's type is the callee's return type; its arguments are checked
+against the parameter list, each in its call-site mode. By-value arguments are
+value-context uses that thread Σ; by-reference arguments take a call-scoped loan
+and leave Σ unchanged, per §5.4.
+
+```
+  g : fn ( m1 x1:T1, ..., mm xm:Tm ) -> Tr        -- the (monomorphic) signature of g
+  the m argument forms a1..am match the m parameters in count and mode  (4.10:3)
+  for each i, threading Σ left-to-right (Σ0 = Σ):
+      a_i = e          (mi = ∅):       Γ;Σ_{i-1};Λ ⊢ e ⇒ Ti ⊣ Σi                          -- by value: value-context use, §4.2
+      a_i = borrow p   (mi = borrow):  Σ_{i-1}(p)=Owned;            Σi = Σ_{i-1};  add (root(p), shared)    to Λ_call   -- §5.4
+      a_i = inout p    (mi = inout):   Σ_{i-1}(p)=Owned, p mutable; Σi = Σ_{i-1};  add (root(p), exclusive) to Λ_call   -- §5.4
+  Λ_call is CONSISTENT  (law of exclusivity, §5.4)
+  ─────────────────────────────────────────────────────────────────────────────── (Call)
+  Γ;Σ;Λ ⊢ g ( a1, ..., am ) ⇒ Tr ⊣ Σm
+```
+
+The result type is the callee's return type `Tr` (`4.10:5`); the argument count
+must match the parameter count (`4.10:3`) and each argument's type its parameter
+(`4.10:4`). A by-value argument moves a non-`Copy` value into the parameter and
+copies a `Copy` one (§4.2), recording that in Σ; a `borrow`/`inout` argument
+leaves Σ unchanged and instead contributes a loan to `Λ_call`, which must satisfy
+the law of exclusivity (§5.4). The loans are second-class — released when the
+call returns — so the outgoing Σm carries only the moves performed by the
+by-value arguments. Because the core is fully monomorphic (§1), `g` names a
+single concrete signature: there is no overload or generic instantiation to
+resolve at the call.
+
 ---
 
 ## 6. Dynamic semantics (small-step) *(sketch — shape fixed, rules being filled in)*
@@ -637,6 +765,7 @@ far. As breadth is filled in, each new rule adds its citation.
 | §4.2 definition of *use* | 3.8:5, 3.8:7, 3.8:9, 3.8:11, 3.8:22, 3.8:33, 3.8:53 |
 | §4.1/§5.4 equality borrows its operands | 4.3:3f |
 | §5.5 match / enum elim + intro | 6.3:17, 3.8:33 (destructure), 4.7 (match) |
+| §5.8 leaf/operator/aggregate/call statics | 4.1:2/5/7, 4.2:1, 4.3:1/2, 3.6:5/6/15/16, 3.5:1/2, 4.10:3/4/5/7 |
 | §5.6 enum drop (active payload) | 6.3:20 |
 | §4.3 expression/return value | 4.5:3 (→ value, not just type), 6.1:4/5, 4.9:1/7 |
 | §5.2 assignment / reinit | 3.8:55/56, 3.8:72 |

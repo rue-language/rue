@@ -165,8 +165,10 @@ shape.
 
 - **`01-core-calculus.md`** — the keystone. Abstract syntax; the multiplicity
   lattice (Copy / Affine / Linear); **the definition of *use* (place vs. value
-  context)**; the ownership-threading type judgment; the operational semantics
-  and drop; and the soundness theorems (memory safety), stated precisely.
+  context)**; the ownership-threading type judgment — including the leaf,
+  operator, aggregate, and call statics (§5.8) that complete every §2 expression
+  form; the operational semantics and drop; and the soundness theorems (memory
+  safety), stated precisely.
 - *(planned)* `02-elaboration.md` — surface→core desugaring and the comptime /
   monomorphization semantics.
 - *(planned)* `03-metatheory.md` — proofs (progress, preservation, and the

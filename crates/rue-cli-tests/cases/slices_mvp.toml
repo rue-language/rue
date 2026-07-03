@@ -1,0 +1,63 @@
+# ADR-0043 Phase 1 slice runtime — executable acceptance tests (RUE-322).
+#
+# The slice front-end (parser + `--preview slices` gate + E0486 stub) and the
+# second-class escape enforcement (E0487-E0489) have landed, but the RUNTIME —
+# the {ptr, len} fat-pointer ABI, `borrow arr` -> slice materialization, slice
+# `.len()`, and bounds-checked read-indexing `s[i]` on BOTH backends — is not
+# yet implemented, so `borrow s: [T]` in argument position still reports E0486
+# ("slice types are not yet fully implemented").
+#
+# These cases pin the exact end-to-end behavior the MVP runtime must produce.
+# They are `known_bug = "RUE-322"` xfails today (the compile fails cleanly with
+# E0486); when the fat-pointer runtime lands, drop the `known_bug` markers and
+# they become the runtime's regression tests. See the ABI analysis in the
+# RUE-322 worklog: the blockers are (1) `borrow` currently passes a single
+# pointer, not a 2-word aggregate; (2) `emit_bounds_check` takes a compile-time
+# constant length, but a slice length is runtime; (3) array indexing lowers via
+# `Place` projections tied to a compile-time `array_type`, whereas a slice index
+# is a raw-pointer load off the fat pointer's `ptr` word.
+
+[section]
+id = "cli.slices"
+name = "Slice runtime (ADR-0043 Phase 1)"
+description = "borrow-a-whole-array slice parameter: len() and bounds-checked read-indexing."
+
+# The canonical verify-by-execution case from RUE-322: sum a borrowed array
+# through a `borrow s: [i32]` slice parameter using `s.len()` and `s[i]`.
+[[case]]
+name = "slice_param_sum_len_index"
+known_bug = "RUE-322"
+files = [{ path = "main.rue", source = """
+fn sum(borrow s: [i32]) -> i32 {
+    let mut t = 0;
+    let mut i: u64 = 0;
+    while i < s.len() {
+        t = t + s[i];
+        i = i + 1;
+    }
+    t
+}
+fn main() -> i32 {
+    let a: [i32; 3] = [10, 20, 30];
+    sum(borrow a)
+}
+""" }]
+args = ["main.rue", "--preview", "slices", "-o", "prog"]
+exit_code = 60
+
+# Out-of-bounds read-index through a slice parameter must trap at runtime with
+# the same abort discipline as array indexing (`__rue_bounds_check`, exit 101).
+[[case]]
+name = "slice_param_index_out_of_bounds_traps"
+known_bug = "RUE-322"
+files = [{ path = "main.rue", source = """
+fn get(borrow s: [i32], i: u64) -> i32 {
+    s[i]
+}
+fn main() -> i32 {
+    let a: [i32; 3] = [10, 20, 30];
+    get(borrow a, 5)
+}
+""" }]
+args = ["main.rue", "--preview", "slices", "-o", "prog"]
+exit_code = 101
