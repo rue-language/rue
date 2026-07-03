@@ -38,12 +38,19 @@ Syscall numbers and conventions differ between operating systems. Linux x86-64 s
 
 ```rue
 fn main() -> i32 {
+    let msg: [u8; 3] = [72, 73, 10]; // "HI\n"
+    let write_num: u64 = 1;          // Linux x86-64: write
+    let fd: u64 = 1;                 // stdout
+    let exit_num: u64 = 231;         // Linux x86-64: exit_group
+    let code: u64 = 0;
     checked {
-        // Linux x86-64: write(fd=1, buf, len)
-        let result = @syscall(1_u64, 1_u64, msg_ptr, msg_len);
+        // write(fd=1, buf, len)
+        let msg_ptr: u64 = @ptr_to_int(@raw(msg[0]));
+        let msg_len: u64 = 3;
+        let result = @syscall(write_num, fd, msg_ptr, msg_len);
 
-        // Linux x86-64: exit_group(code)
-        @syscall(231_u64, 0_u64);
+        // exit_group(code)
+        @syscall(exit_num, code);
     };
     0
 }

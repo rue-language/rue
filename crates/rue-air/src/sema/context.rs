@@ -155,6 +155,30 @@ impl VariableMoveState {
         best.map(|(_, span)| span)
     }
 
+    /// Check whether `path` is valid to use as a WHOLE value (moving or
+    /// passing the aggregate by value). Returns `Some(span)` if the path
+    /// itself, any ancestor, OR any descendant has been moved.
+    ///
+    /// `is_path_moved` only checks the exact-and-ancestor direction, which is
+    /// right for reading a single leaf: a moved *sibling* subfield is
+    /// irrelevant to reading `o.inner.n`. But using `o.inner` as a whole value
+    /// after `o.inner.s` was moved out would let the new owner and the hole
+    /// coexist — spec 3.8 forbids using a struct with any moved field as a
+    /// whole value, at any depth (RUE-279). So the whole-value-use sites must
+    /// also reject when a DESCENDANT path (a stored moved path that has `path`
+    /// as a strict prefix) is moved.
+    pub fn is_path_or_descendant_moved(&self, path: &[Spur]) -> Option<Span> {
+        if let Some(span) = self.is_path_moved(path) {
+            return Some(span);
+        }
+        // Descendant direction: a longer stored moved path (`o.inner.s`) whose
+        // prefix is the queried whole-value path (`o.inner`).
+        self.partial_moves
+            .iter()
+            .find(|(moved, _)| moved.len() > path.len() && moved[..path.len()] == *path)
+            .map(|(_, span)| *span)
+    }
+
     /// Check if the entire variable (including all fields) is fully valid to use.
     /// Returns Some(span) if there's any move (full or partial) that would prevent use.
     pub fn is_any_part_moved(&self) -> Option<Span> {

@@ -2127,33 +2127,37 @@ impl<'a> Sema<'a> {
 
         // For VarRef, we handle it specially: check for full moves but don't mark as moved
         if let InstData::VarRef { name } = &inst.data {
-            // First check if it's a parameter
-            if let Some(param_info) = ctx.params.iter().find(|p| p.name == *name) {
-                let ty = param_info.ty;
+            // Check if it's a parameter — unless a `let` shadowed it with a
+            // same-named local, which then wins for all later references
+            // (spec 5.1:10, RUE-278); the local is resolved just below.
+            if !ctx.locals.contains_key(name) {
+                if let Some(param_info) = ctx.params.iter().find(|p| p.name == *name) {
+                    let ty = param_info.ty;
 
-                // Check if this parameter has been fully moved
-                // (Partial moves are checked at the FieldGet level)
-                if let Some(move_state) = ctx.moved_vars.get(name) {
-                    if let Some(moved_span) = move_state.full_move {
-                        let name_str = self.interner.resolve(&*name);
-                        return Err(CompileError::new(
-                            ErrorKind::UseAfterMove(name_str.to_string()),
-                            inst.span,
-                        )
-                        .with_label("value moved here", moved_span));
+                    // Check if this parameter has been fully moved
+                    // (Partial moves are checked at the FieldGet level)
+                    if let Some(move_state) = ctx.moved_vars.get(name) {
+                        if let Some(moved_span) = move_state.full_move {
+                            let name_str = self.interner.resolve(&*name);
+                            return Err(CompileError::new(
+                                ErrorKind::UseAfterMove(name_str.to_string()),
+                                inst.span,
+                            )
+                            .with_label("value moved here", moved_span));
+                        }
                     }
+
+                    // NOTE: We do NOT mark as moved here - this is a projection
+
+                    let air_ref = air.add_inst(AirInst {
+                        data: AirInstData::Param {
+                            index: param_info.abi_slot,
+                        },
+                        ty,
+                        span: inst.span,
+                    });
+                    return Ok(AnalysisResult::new(air_ref, ty));
                 }
-
-                // NOTE: We do NOT mark as moved here - this is a projection
-
-                let air_ref = air.add_inst(AirInst {
-                    data: AirInstData::Param {
-                        index: param_info.abi_slot,
-                    },
-                    ty,
-                    span: inst.span,
-                });
-                return Ok(AnalysisResult::new(air_ref, ty));
             }
 
             // Look up the variable in locals
@@ -2839,6 +2843,7 @@ impl<'a> Sema<'a> {
                 result_type: field_type,
                 field_name: Some(field),
                 const_index: None,
+                index_segment: None,
             });
 
             // A write through an element of a partially moved array
@@ -2852,10 +2857,11 @@ impl<'a> Sema<'a> {
             // The write reinitializes its destination: the assigned path
             // (and any moved sub-paths under it) is no longer moved, so
             // `o.f = ...` after `consume(o.f)` makes `o.f` usable again.
-            // Index projections are skipped: `arr[i].f` records its moves
-            // under the index-agnostic path `f` (see PlaceTrace::field_path),
-            // so unmarking on a write to `arr[0].f` would wrongly forget a
-            // move out of `arr[1].f`.
+            // Writes through an index projection are skipped: a partially
+            // moved array is already rejected outright above (E0480), and
+            // per-element write re-arm is unsupported (the sema path and the
+            // runtime drop flags would disagree), so the whole array must be
+            // reinitialized instead — never a single `arr[0].f` write.
             if !trace
                 .projections
                 .iter()
@@ -3001,7 +3007,13 @@ impl<'a> Sema<'a> {
                 }
             }
 
-            // Add the index projection
+            // Add the index projection. A non-negative constant index carries
+            // its element path segment so field_path nests through it (RUE-279).
+            let const_index = self.try_get_const_index(index);
+            let index_segment = match const_index {
+                Some(k) if k >= 0 => Some(index_path_segment(self.interner, k as u64)),
+                _ => None,
+            };
             trace.projections.push(ProjectionInfo {
                 proj: AirProjection::Index {
                     array_type: base_type,
@@ -3009,7 +3021,8 @@ impl<'a> Sema<'a> {
                 },
                 result_type: elem_type,
                 field_name: None,
-                const_index: self.try_get_const_index(index),
+                const_index,
+                index_segment,
             });
 
             // Writing into an array with moved-out elements is rejected
@@ -5290,6 +5303,19 @@ impl<'a> Sema<'a> {
         // direct `a[i] = …` or reassignment inside the body.
         self.reject_mutate_iter_borrowed(root, span, ctx)?;
 
+        // Root local: must be `let mut`. Checked before parameters because a
+        // `let` that shadows a param name rebinds the receiver to that local
+        // (spec 5.1:10, RUE-278).
+        if let Some(local) = ctx.locals.get(&root) {
+            if !local.is_mut {
+                return Err(CompileError::new(
+                    ErrorKind::AssignToImmutable(self.interner.resolve(&root).to_string()),
+                    span,
+                ));
+            }
+            return Ok(());
+        }
+
         // Root parameter: only `inout` names mutable caller storage.
         if let Some(param) = ctx.params.iter().find(|p| p.name == root) {
             return match param.mode {
@@ -5305,17 +5331,6 @@ impl<'a> Sema<'a> {
                     span,
                 )),
             };
-        }
-
-        // Root local: must be `let mut`.
-        if let Some(local) = ctx.locals.get(&root) {
-            if !local.is_mut {
-                return Err(CompileError::new(
-                    ErrorKind::AssignToImmutable(self.interner.resolve(&root).to_string()),
-                    span,
-                ));
-            }
-            return Ok(());
         }
 
         Err(CompileError::new(
@@ -5695,7 +5710,10 @@ impl<'a> Sema<'a> {
         self.reject_move_out_of_byref_param(trace.root_var, ctx, span)?;
         let elem_path = vec![index_path_segment(self.interner, k as u64)];
         if let Some(state) = ctx.moved_vars.get(&trace.root_var) {
-            if let Some(moved_span) = state.is_path_moved(&elem_path) {
+            // Whole-element move: reject if the element itself, an ancestor, or
+            // any descendant subfield was already moved (`arr[0]` can't be
+            // moved once `arr[0].s` moved — spec 3.8, RUE-279).
+            if let Some(moved_span) = state.is_path_or_descendant_moved(&elem_path) {
                 return Err(use_after_move_path_error(
                     self.interner,
                     trace.root_var,
@@ -5886,11 +5904,13 @@ impl<'a> Sema<'a> {
     /// caller storage); everything else (`let`, `borrow` params) is not.
     /// Mirrors `PlaceTrace::is_root_mutable`.
     fn receiver_root_is_mutable(&self, root: Spur, ctx: &AnalysisContext) -> bool {
-        if let Some(param) = ctx.params.iter().find(|p| p.name == root) {
-            return param.mode == RirParamMode::Inout;
-        }
+        // Locals shadow parameters (RUE-278): a `let mut` rebinding a param
+        // name is the mutable binding that later receiver uses see.
         if let Some(local) = ctx.locals.get(&root) {
             return local.is_mut;
+        }
+        if let Some(param) = ctx.params.iter().find(|p| p.name == root) {
+            return param.mode == RirParamMode::Inout;
         }
         false
     }
