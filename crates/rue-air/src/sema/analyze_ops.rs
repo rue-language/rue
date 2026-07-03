@@ -1786,15 +1786,22 @@ impl<'a> Sema<'a> {
 
         // Analyze the operand.
         //
-        // The operand's own type must already be known: `?` works on any typed
-        // `Option` value (a function result, constructor, variable, etc.). A BARE
-        // fallible-intrinsic operand — `@read_line()?` / `@parse_i64(s)?` — is NOT
-        // yet supported: those intrinsics need their exact `Option` return type
-        // (e.g. `Option(String)`) as an expected type, which the `?` site cannot
-        // supply (the enclosing fn's `Option(U)` has the wrong payload — E0702).
-        // Use `let x: Option(String) = @read_line();` + `match` for now; resolving
-        // a fallible intrinsic through `?`-context is a follow-up (RUE-318).
-        let operand_result = self.analyze_inst(air, operand, ctx)?;
+        // `?` works on any typed `Option` value (a function result, constructor,
+        // variable, etc.), whose type is already known. A BARE fallible-intrinsic
+        // operand — `@read_line()?` / `@parse_i64(s)?` — is special: the intrinsic
+        // needs its exact `Option` return type (e.g. `Option(String)`), and the
+        // `?` site cannot supply it as an `expected_type` — the enclosing fn's
+        // `Option(U)` has the wrong payload (RUE-318). So we clear `expected_type`
+        // and set `try_operand`, telling a fallible intrinsic to instantiate its
+        // OWN fixed `Option(payload)` (it knows its payload). A non-intrinsic
+        // operand ignores both flags — its type is resolved independently.
+        let prev_expected = ctx.expected_type.take();
+        let prev_try_operand = ctx.try_operand;
+        ctx.try_operand = true;
+        let operand_outcome = self.analyze_inst(air, operand, ctx);
+        ctx.expected_type = prev_expected;
+        ctx.try_operand = prev_try_operand;
+        let operand_result = operand_outcome?;
         let operand_ty = operand_result.ty;
 
         if operand_ty.is_error() {

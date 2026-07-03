@@ -2,43 +2,46 @@
 # A natural read-until-EOF loop (no count prefix) — reads integers one per line
 # until end-of-input and prints count/sum/max. Regression-locks the dogfooding
 # set working together end to end now that error handling has landed (RUE-6,
-# ADR-0038): @read_line returns Option(String) (None at EOF) and @parse_i64
-# returns Option(i64) (None on a non-numeric line) instead of trapping, so the
-# loop terminates on EOF and skips unparseable lines. The generic Option is
-# imported from the std library (no prelude yet).
+# ADR-0038) and the `?` operator resolves a bare fallible intrinsic (RUE-318).
+# @read_line returns Option(String) (None at EOF) and @parse_i64 returns
+# Option(i64) (None on a non-numeric line); the `read_num` helper chains them
+# with `?`: `@read_line()?` short-circuits to None at EOF, the tail @parse_i64
+# is None on a non-numeric line, and the loop breaks the first time read_num()
+# is None. Option is a top-level comptime-generic enum defined inline (no
+# prelude yet, and an @imported type cannot be named at a signature position).
 
 [section]
 id = "cli.first_program"
 name = "First dogfood program (stats)"
-description = "read-until-EOF integers -> count/sum/max via @read_line/@parse_i64 returning Option, an imported generic Option, and println."
+description = "read-until-EOF integers -> count/sum/max via read_num() chaining @read_line()? / @parse_i64 returning Option, and println."
 
 [[case]]
 name = "stats_read_until_eof"
 files = [
   { path = "stats.rue", source = """
+fn Option(comptime T: type) -> type {
+    enum { Some(T), None }
+}
+fn read_num() -> Option(i64) {
+    let line = @read_line()?;
+    @parse_i64(line)
+}
 fn main() -> i32 {
-    let OptStr = @import("option.rue").Option(String);
-    let OptInt = @import("option.rue").Option(i64);
+    let OptInt = Option(i64);
     let mut count: i64 = 0;
     let mut sum: i64 = 0;
     let mut max: OptInt = OptInt::None;
     loop {
-        let line: OptStr = @read_line();
-        match line {
-            OptStr::None => break,
-            OptStr::Some(text) => {
-                match @parse_i64(text) {
-                    OptInt::Some(x) => {
-                        count = count + 1;
-                        sum = sum + x;
-                        max = match max {
-                            OptInt::None => OptInt::Some(x),
-                            OptInt::Some(m) => if x > m { OptInt::Some(x) } else { OptInt::Some(m) },
-                        };
-                    },
-                    OptInt::None => {},
-                }
+        match read_num() {
+            OptInt::Some(x) => {
+                count = count + 1;
+                sum = sum + x;
+                max = match max {
+                    OptInt::None => OptInt::Some(x),
+                    OptInt::Some(m) => if x > m { OptInt::Some(x) } else { OptInt::Some(m) },
+                };
             },
+            OptInt::None => break,
         }
     }
     println("count: " + @to_string(count));
@@ -50,13 +53,8 @@ fn main() -> i32 {
     @intCast(count)
 }
 """ },
-  { path = "option.rue", source = """
-pub fn Option(comptime T: type) -> type {
-    enum { Some(T), None }
-}
-""" },
 ]
-args = ["stats.rue", "option.rue", "-o", "prog"]
+args = ["stats.rue", "-o", "prog"]
 stdin = "7\n5\n1\n"
 stdout = """
 count: 3
@@ -65,35 +63,36 @@ max: 7
 """
 exit_code = 3
 
-# A non-numeric line in the middle is skipped (parse -> None), not fatal, and
-# EOF ends the loop cleanly. Proves the recoverable error model end to end.
+# A non-numeric line ends the read loop: read_num() chains `@read_line()?` with
+# `@parse_i64`, so a line that fails to parse yields None exactly like EOF, and
+# the loop breaks. Integers before it are counted; input after it is not read.
 [[case]]
-name = "stats_skips_bad_lines"
+name = "stats_stops_at_non_number"
 files = [
   { path = "stats.rue", source = """
+fn Option(comptime T: type) -> type {
+    enum { Some(T), None }
+}
+fn read_num() -> Option(i64) {
+    let line = @read_line()?;
+    @parse_i64(line)
+}
 fn main() -> i32 {
-    let OptStr = @import("option.rue").Option(String);
-    let OptInt = @import("option.rue").Option(i64);
+    let OptInt = Option(i64);
     let mut count: i64 = 0;
     let mut sum: i64 = 0;
     let mut max: OptInt = OptInt::None;
     loop {
-        let line: OptStr = @read_line();
-        match line {
-            OptStr::None => break,
-            OptStr::Some(text) => {
-                match @parse_i64(text) {
-                    OptInt::Some(x) => {
-                        count = count + 1;
-                        sum = sum + x;
-                        max = match max {
-                            OptInt::None => OptInt::Some(x),
-                            OptInt::Some(m) => if x > m { OptInt::Some(x) } else { OptInt::Some(m) },
-                        };
-                    },
-                    OptInt::None => {},
-                }
+        match read_num() {
+            OptInt::Some(x) => {
+                count = count + 1;
+                sum = sum + x;
+                max = match max {
+                    OptInt::None => OptInt::Some(x),
+                    OptInt::Some(m) => if x > m { OptInt::Some(x) } else { OptInt::Some(m) },
+                };
             },
+            OptInt::None => break,
         }
     }
     println("count: " + @to_string(count));
@@ -105,14 +104,9 @@ fn main() -> i32 {
     @intCast(count)
 }
 """ },
-  { path = "option.rue", source = """
-pub fn Option(comptime T: type) -> type {
-    enum { Some(T), None }
-}
-""" },
 ]
-args = ["stats.rue", "option.rue", "-o", "prog"]
-stdin = "10\nnot a number\n20\n"
+args = ["stats.rue", "-o", "prog"]
+stdin = "10\n20\nnot a number\n30\n"
 stdout = """
 count: 2
 sum: 30
@@ -120,35 +114,36 @@ max: 20
 """
 exit_code = 2
 
-# Empty input (immediate EOF): the loop never enters, no trap. Before RUE-6 the
-# first @read_line would have aborted with exit 101; now it is `None`.
+# Empty input (immediate EOF): read_num() returns None on the first call, so the
+# loop never enters and nothing traps. Before RUE-6 the first @read_line would
+# have aborted with exit 101; now `@read_line()?` cleanly short-circuits to None.
 [[case]]
 name = "stats_empty_input_no_trap"
 files = [
   { path = "stats.rue", source = """
+fn Option(comptime T: type) -> type {
+    enum { Some(T), None }
+}
+fn read_num() -> Option(i64) {
+    let line = @read_line()?;
+    @parse_i64(line)
+}
 fn main() -> i32 {
-    let OptStr = @import("option.rue").Option(String);
-    let OptInt = @import("option.rue").Option(i64);
+    let OptInt = Option(i64);
     let mut count: i64 = 0;
     let mut sum: i64 = 0;
     let mut max: OptInt = OptInt::None;
     loop {
-        let line: OptStr = @read_line();
-        match line {
-            OptStr::None => break,
-            OptStr::Some(text) => {
-                match @parse_i64(text) {
-                    OptInt::Some(x) => {
-                        count = count + 1;
-                        sum = sum + x;
-                        max = match max {
-                            OptInt::None => OptInt::Some(x),
-                            OptInt::Some(m) => if x > m { OptInt::Some(x) } else { OptInt::Some(m) },
-                        };
-                    },
-                    OptInt::None => {},
-                }
+        match read_num() {
+            OptInt::Some(x) => {
+                count = count + 1;
+                sum = sum + x;
+                max = match max {
+                    OptInt::None => OptInt::Some(x),
+                    OptInt::Some(m) => if x > m { OptInt::Some(x) } else { OptInt::Some(m) },
+                };
             },
+            OptInt::None => break,
         }
     }
     println("count: " + @to_string(count));
@@ -160,13 +155,8 @@ fn main() -> i32 {
     @intCast(count)
 }
 """ },
-  { path = "option.rue", source = """
-pub fn Option(comptime T: type) -> type {
-    enum { Some(T), None }
-}
-""" },
 ]
-args = ["stats.rue", "option.rue", "-o", "prog"]
+args = ["stats.rue", "-o", "prog"]
 stdin = ""
 stdout = """
 count: 0

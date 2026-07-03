@@ -402,6 +402,17 @@ pub(crate) struct AnalysisContext<'a> {
     /// because comptime-generic library enums are resolved only in sema. Left
     /// `None` everywhere else, so no other analysis is affected.
     pub expected_type: Option<Type>,
+    /// True only while analyzing the operand of a `?` expression (RUE-318). The
+    /// `?` site cannot supply an `expected_type` for a *bare* fallible intrinsic
+    /// (`@read_line()?` / `@parse_i64(s)?`): the enclosing function's `Option(U)`
+    /// has the wrong payload (e.g. `@read_line` is `Option(String)`, not the
+    /// function's `Option(i64)`). When this flag is set and no valid expected
+    /// `Option` is available, a fallible intrinsic instantiates its *own* fixed
+    /// `Option(payload)` (it knows its payload) via `find_or_create_anon_enum`,
+    /// the same canonical library enum an in-scope `Option(T)` would produce.
+    /// Left `false` everywhere else, so the plain "context supplies the Option"
+    /// path (a `let` annotation or `match` arms) is unaffected.
+    pub try_operand: bool,
 }
 
 // Import InstRef for use in resolved_types
@@ -479,6 +490,7 @@ impl<'a> AnalysisContext<'a> {
             in_loop_move_recheck: true,
             iter_borrows: self.iter_borrows.clone(),
             expected_type: None,
+            try_operand: false,
         }
     }
 

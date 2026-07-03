@@ -87,3 +87,37 @@ fn main() -> i32 {
     }
 }
 ```
+
+{{ rule(id="4.15:9", cat="normative") }}
+
+When the operand of `?` is a bare call to a fallible intrinsic — `@read_line`
+or one of the `@parse_*` intrinsics (§4.13) — the intrinsic's `Option` type is
+resolved from the intrinsic itself rather than from a surrounding annotation or
+`match`. Each such intrinsic has a fixed payload (`@read_line` → `String`,
+`@parse_i64` → `i64`, and so on), so `operand?` unwraps to that payload and
+short-circuits the enclosing function with its `None` on failure. This is what
+lets `@read_line()?` and `@parse_i64(s)?` be written directly, without first
+binding the result to an annotated `let` (RUE-318).
+
+{{ rule(id="4.15:10") }}
+
+```rue
+fn Option(comptime T: type) -> type {
+    enum { Some(T), None }
+}
+
+// `@read_line()?` short-circuits to None at end-of-input; the tail
+// `@parse_i64(line)` is None on a line that is not a number.
+fn read_num() -> Option(i64) {
+    let line = @read_line()?;
+    @parse_i64(line)
+}
+
+fn main() -> i32 {
+    let O = Option(i64);
+    match read_num() {
+        O::Some(n) => @intCast(n),
+        O::None => 0,
+    }
+}
+```
