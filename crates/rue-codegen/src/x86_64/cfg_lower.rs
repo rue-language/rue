@@ -33,6 +33,7 @@ use rue_builtins::BinOp;
 use rue_cfg::{
     BasicBlock, BlockId, Cfg, CfgInstData, CfgValue, Place, PlaceBase, Projection, Terminator, Type,
 };
+use rue_error::{CompileError, CompileResult};
 
 use super::mir::{LabelId, Operand, Reg, VReg, X86Inst, X86Mir};
 use crate::cfg_lower::{CfgLowerContext, IndexLevel};
@@ -76,6 +77,11 @@ pub struct CfgLower<'a> {
     /// For inout params, the slot contains a pointer to the caller's memory.
     /// This map stores the vreg holding that pointer so Store can use it.
     inout_param_ptrs: HashMap<u32, VReg>,
+    /// First user-facing diagnostic recorded during lowering (RUE-52). Lowering
+    /// is infallible for speed; a by-ref argument with no addressable storage
+    /// (a `const` folded to an immediate) records its error here and `lower()`
+    /// surfaces it instead of the process aborting.
+    deferred_error: Option<CompileError>,
 }
 
 impl<'a> CfgLower<'a> {
@@ -103,6 +109,7 @@ impl<'a> CfgLower<'a> {
             fn_name: cfg.fn_name(),
             struct_slot_vregs: HashMap::with_capacity(estimated_struct_inits),
             inout_param_ptrs: HashMap::with_capacity(estimated_inout_params),
+            deferred_error: None,
         }
     }
 
@@ -486,7 +493,7 @@ impl<'a> CfgLower<'a> {
     }
 
     /// Lower CFG to X86Mir.
-    pub fn lower(mut self) -> X86Mir {
+    pub fn lower(mut self) -> CompileResult<X86Mir> {
         // Pre-allocate vregs for block parameters
         for block in self.ctx.cfg.blocks() {
             for (param_idx, (param_val, ty)) in block.params.iter().enumerate() {
@@ -522,7 +529,10 @@ impl<'a> CfgLower<'a> {
             self.lower_block(block);
         }
 
-        self.mir
+        if let Some(err) = self.deferred_error.take() {
+            return Err(err);
+        }
+        Ok(self.mir)
     }
 
     /// Lower CFG to X86Mir with debug information about instruction selection.
@@ -1922,7 +1932,11 @@ impl<'a> CfgLower<'a> {
                     // element (RUE-143). Single shared implementation — see
                     // crate::byref_args.
                     if arg.is_by_ref() {
-                        let addr_vreg = crate::byref_args::lower_byref_arg_addr(self, arg_value);
+                        let addr_vreg = crate::byref_args::lower_byref_arg_addr(
+                            self,
+                            arg_value,
+                            arg.is_inout(),
+                        );
                         flattened_vregs.push(addr_vreg);
                         continue;
                     }
@@ -4511,6 +4525,9 @@ impl crate::byref_args::ByrefAddrBackend for CfgLower<'_> {
             disp: offset,
         });
     }
+    fn record_deferred_error(&mut self, err: CompileError) {
+        self.deferred_error.get_or_insert(err);
+    }
 }
 
 #[cfg(test)]
@@ -4547,7 +4564,9 @@ mod tests {
             &interner,
         );
 
-        CfgLower::new(&cfg_output.cfg, type_pool, &interner).lower()
+        CfgLower::new(&cfg_output.cfg, type_pool, &interner)
+            .lower()
+            .expect("test lowering should succeed")
     }
 
     #[test]

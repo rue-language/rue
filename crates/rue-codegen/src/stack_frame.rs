@@ -286,7 +286,7 @@ fn generate_x86_64_stack_frame(
     let sret_slots = has_sret as u32;
 
     // Lower CFG to X86Mir with virtual registers
-    let mir = CfgLower::new(cfg, type_pool, interner).lower();
+    let mir = CfgLower::new(cfg, type_pool, interner).lower()?;
 
     // Allocate physical registers (may add spill slots)
     let existing_slots = num_locals + num_params + sret_slots;
@@ -434,7 +434,7 @@ fn generate_aarch64_stack_frame(
     let sret_slots = has_sret as u32;
 
     // Lower CFG to Aarch64Mir with virtual registers
-    let mir = CfgLower::new(cfg, type_pool, interner, target).lower();
+    let mir = CfgLower::new(cfg, type_pool, interner, target).lower()?;
 
     // Allocate physical registers (may add spill slots)
     let existing_slots = num_locals + num_params + sret_slots;

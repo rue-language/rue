@@ -1613,15 +1613,16 @@ pub fn generate_mir(
     type_pool: &TypeInternPool,
     interner: &ThreadedRodeo,
     target: Target,
-) -> Mir {
+) -> CompileResult<Mir> {
     match target.arch() {
         Arch::X86_64 => {
-            let mir = rue_codegen::x86_64::CfgLower::new(cfg, type_pool, interner).lower();
-            Mir::X86_64(mir)
+            let mir = rue_codegen::x86_64::CfgLower::new(cfg, type_pool, interner).lower()?;
+            Ok(Mir::X86_64(mir))
         }
         Arch::Aarch64 => {
-            let mir = rue_codegen::aarch64::CfgLower::new(cfg, type_pool, interner, target).lower();
-            Mir::Aarch64(mir)
+            let mir =
+                rue_codegen::aarch64::CfgLower::new(cfg, type_pool, interner, target).lower()?;
+            Ok(Mir::Aarch64(mir))
         }
     }
 }
@@ -1643,7 +1644,7 @@ pub fn generate_allocated_mir(
     match target.arch() {
         Arch::X86_64 => {
             // Lower CFG to X86Mir with virtual registers
-            let mir = rue_codegen::x86_64::CfgLower::new(cfg, type_pool, interner).lower();
+            let mir = rue_codegen::x86_64::CfgLower::new(cfg, type_pool, interner).lower()?;
 
             // Allocate physical registers
             let (mir, _num_spills, _used_callee_saved) =
@@ -1653,7 +1654,8 @@ pub fn generate_allocated_mir(
         }
         Arch::Aarch64 => {
             // Lower CFG to Aarch64Mir with virtual registers
-            let mir = rue_codegen::aarch64::CfgLower::new(cfg, type_pool, interner, target).lower();
+            let mir =
+                rue_codegen::aarch64::CfgLower::new(cfg, type_pool, interner, target).lower()?;
 
             // Allocate physical registers
             let (mir, _num_spills, _used_callee_saved) =
@@ -1675,15 +1677,16 @@ pub fn generate_liveness_info(
     type_pool: &TypeInternPool,
     interner: &ThreadedRodeo,
     target: Target,
-) -> rue_codegen::LivenessDebugInfo {
+) -> CompileResult<rue_codegen::LivenessDebugInfo> {
     match target.arch() {
         Arch::X86_64 => {
-            let mir = rue_codegen::x86_64::CfgLower::new(cfg, type_pool, interner).lower();
-            rue_codegen::x86_64::liveness::analyze_debug(&mir)
+            let mir = rue_codegen::x86_64::CfgLower::new(cfg, type_pool, interner).lower()?;
+            Ok(rue_codegen::x86_64::liveness::analyze_debug(&mir))
         }
         Arch::Aarch64 => {
-            let mir = rue_codegen::aarch64::CfgLower::new(cfg, type_pool, interner, target).lower();
-            rue_codegen::aarch64::liveness::analyze_debug(&mir)
+            let mir =
+                rue_codegen::aarch64::CfgLower::new(cfg, type_pool, interner, target).lower()?;
+            Ok(rue_codegen::aarch64::liveness::analyze_debug(&mir))
         }
     }
 }
