@@ -1198,8 +1198,30 @@ impl<'a> Sema<'a> {
             }
         }
 
+        // Derive the expected scrutinee type from the arm patterns, so a
+        // fallible-intrinsic scrutinee learns which in-scope `Option(T)` to
+        // return (`match @read_line() { Option::Some(l) => .., Option::None =>
+        // .. }`, RUE-6). Only sema resolves the comptime-generic `Option`
+        // alias the pattern names, so we resolve the first enum pattern's type
+        // here and expose it while the scrutinee is analyzed. Resolution errors
+        // are ignored — pattern legality is checked on the normal path below.
+        let arms_for_expected = self.rir.get_match_arms(arms_start, arms_len);
+        let expected_scrutinee = arms_for_expected.iter().find_map(|(pattern, _)| {
+            if let RirPattern::Path { type_name, .. } = pattern {
+                self.resolve_type_with_ctx(*type_name, span, ctx)
+                    .ok()
+                    .filter(|ty| ty.is_enum())
+            } else {
+                None
+            }
+        });
+        let prev_expected = ctx.expected_type.take();
+        ctx.expected_type = expected_scrutinee;
+
         // Analyze the scrutinee to determine its type
-        let scrutinee_result = self.analyze_inst(air, scrutinee, ctx)?;
+        let scrutinee_outcome = self.analyze_inst(air, scrutinee, ctx);
+        ctx.expected_type = prev_expected;
+        let scrutinee_result = scrutinee_outcome?;
         let scrutinee_type = scrutinee_result.ty;
 
         // Validate that we can match on this type (integers, booleans, and enums)
@@ -2040,8 +2062,22 @@ impl<'a> Sema<'a> {
         // through `resolve_type_with_ctx`, which consults those local comptime
         // bindings at every level of a composite annotation — a scalar `P`, and
         // an inner element/pointee of `[P; 2]` / `ptr const P` alike (RUE-263).
-        if let Some(ty_sym) = ty {
-            self.resolve_type_with_ctx(ty_sym, span, ctx)?;
+        let annotation_type = if let Some(ty_sym) = ty {
+            Some(self.resolve_type_with_ctx(ty_sym, span, ctx)?)
+        } else {
+            None
+        };
+
+        // A resolved enum annotation is the expected type for the initializer.
+        // This is how a fallible intrinsic learns its `Option(T)` return from a
+        // `let x: Option(T) = @read_line()` annotation (RUE-6): only sema can
+        // resolve the comptime-generic `Option` alias, so inference cannot
+        // thread it. Narrow to enums so unrelated `let`s are unaffected.
+        let prev_expected = ctx.expected_type.take();
+        if let Some(annot) = annotation_type {
+            if annot.is_enum() {
+                ctx.expected_type = Some(annot);
+            }
         }
 
         // Analyze the initializer. A `for`-loop element binding is a shared
@@ -2051,15 +2087,19 @@ impl<'a> Sema<'a> {
         // (RUE-259), exactly as a `borrow`-mode argument would be. The root is
         // the collection variable (`a` in `a[__p]`); a `.chars()` scalar read
         // has no place root, so this is a no-op there.
-        let init_result = if iter_elem {
+        let init_outcome = if iter_elem {
             let byref_root = super::analysis::root_variable_of(self.rir, init);
             let prev = std::mem::replace(&mut ctx.byref_arg_root, byref_root);
             let r = self.analyze_inst(air, init, ctx);
             ctx.byref_arg_root = prev;
-            r?
+            r
         } else {
-            self.analyze_inst(air, init, ctx)?
+            self.analyze_inst(air, init, ctx)
         };
+        // Restore the previous expected type before propagating any error so it
+        // never leaks into a sibling statement.
+        ctx.expected_type = prev_expected;
+        let init_result = init_outcome?;
         let var_type = init_result.ty;
 
         // If name is None, this is a wildcard pattern `_` that discards the value.

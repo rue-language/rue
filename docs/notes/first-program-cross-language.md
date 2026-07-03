@@ -130,34 +130,46 @@ model Rue is built on, and the felt experience of the mutation is identical.
 
 ```rue
 fn main() -> i32 {
-    let Opt = @import("../std/option.rue").Option(i64);   // no prelude yet
-    let n = @parse_i64(@read_line());                     // count prefix required
+    let OptStr = @import("../std/option.rue").Option(String);  // no prelude yet
+    let OptInt = @import("../std/option.rue").Option(i64);
 
-    let mut i: i64 = 0;
+    let mut count: i64 = 0;
     let mut sum: i64 = 0;
-    let mut max: Opt = Opt::None;
-    while i < n {
-        let x = @parse_i64(@read_line());                 // traps on bad input
-        sum = sum + x;
-        max = match max {
-            Opt::None => Opt::Some(x),
-            Opt::Some(m) => if x > m { Opt::Some(x) } else { Opt::Some(m) },
-        };
-        i = i + 1;
+    let mut max: OptInt = OptInt::None;
+    loop {
+        let line: OptStr = @read_line();                       // None at EOF
+        match line {
+            OptStr::None => break,                             // read-until-EOF
+            OptStr::Some(text) => {
+                match @parse_i64(text) {                       // None on bad input
+                    OptInt::Some(x) => {
+                        count = count + 1;
+                        sum = sum + x;
+                        max = match max {
+                            OptInt::None => OptInt::Some(x),
+                            OptInt::Some(m) => if x > m { OptInt::Some(x) } else { OptInt::Some(m) },
+                        };
+                    },
+                    OptInt::None => {},                        // skip, no trap
+                }
+            },
+        }
     }
 
-    println("count: " + @to_string(n));
+    println("count: " + @to_string(count));
     println("sum: " + @to_string(sum));
     match max {
-        Opt::Some(m) => println("max: " + @to_string(m)),
-        Opt::None => println("max: (no input)"),
+        OptInt::Some(m) => println("max: " + @to_string(m)),
+        OptInt::None => println("max: (no input)"),
     }
-    @intCast(n)
+    @intCast(count)
 }
 ```
 
-The logic is the same. The friction is entirely in three seams the other four
-languages don't have.
+The logic is the same, and — since error handling landed (RUE-6, ADR-0038) —
+the EOF and parse-failure seams are gone: this is a natural read-until-EOF loop
+with no count prefix and no traps. The remaining friction is the imported
+`Option` (no prelude yet) and i64-only `@to_string`.
 
 ---
 
@@ -165,8 +177,8 @@ languages don't have.
 
 | | Rust | Swift | Zig | Hylo | **Rue (today)** |
 |---|---|---|---|---|---|
-| **EOF** | iterator / read-to-end | `readLine() -> String?` | `…OrEof -> ?[]u8` | Optional | **traps** — needs a count prefix |
-| **Parse failure** | `Result` + `?` | `Int() -> Int?` | error union + `catch` | Optional | **traps** — `@parse_i64 -> i64` |
+| **EOF** | iterator / read-to-end | `readLine() -> String?` | `…OrEof -> ?[]u8` | Optional | `@read_line -> Option(String)`, `None` at EOF |
+| **Parse failure** | `Result` + `?` | `Int() -> Int?` | error union + `catch` | Optional | `@parse_i64 -> Option(i64)`, `None` on bad input |
 | **Optional type** | `Option<T>` (prelude) | `T?` (built in) | `?T` (built in) | `Optional` (std) | **`@import`ed** — no prelude |
 | **Error propagation** | `?` | `try` / `do`-`catch` | `try` / `catch` | — | **none yet** |
 | **Numeric formatting** | `{}` any width | `\()` any | `{d}` any | `\()` any | **`@to_string` is i64-only** |

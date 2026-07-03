@@ -984,17 +984,14 @@ impl<'a> ConstraintGenerator<'a> {
                     let result_var = self.fresh_var();
                     InferType::Var(result_var)
                 } else if intrinsic_name == "read_line" {
-                    // @read_line: returns String (same as string constants)
-                    if let Some(string_spur) = self.interner.get("String") {
-                        if let Some(&string_ty) = self.structs.get(&string_spur) {
-                            InferType::Concrete(string_ty)
-                        } else {
-                            // Fallback if String struct not found
-                            InferType::Concrete(Type::ERROR)
-                        }
-                    } else {
-                        InferType::Concrete(Type::ERROR)
-                    }
+                    // @read_line: returns `Option(String)` (RUE-6, ADR-0038).
+                    // The concrete Option type comes from context (a `let`
+                    // annotation or the match arms the result feeds), so use a
+                    // fresh variable and let unification resolve it — mirroring
+                    // @intCast/@cast. Sema validates the resolved type is an
+                    // Option-shaped enum over String.
+                    let result_var = self.fresh_var();
+                    InferType::Var(result_var)
                 } else if intrinsic_name == "to_string" {
                     // @to_string(n): takes an i64, returns String (RUE-17
                     // Phase 1, ADR-0035). Constrain the argument to i64 so a
@@ -1008,30 +1005,20 @@ impl<'a> ConstraintGenerator<'a> {
                         ));
                     }
                     self.string_infer_type()
-                } else if intrinsic_name == "parse_i32" {
-                    // @parse_i32: takes a String, returns i32
+                } else if intrinsic_name == "parse_i32"
+                    || intrinsic_name == "parse_i64"
+                    || intrinsic_name == "parse_u32"
+                    || intrinsic_name == "parse_u64"
+                {
+                    // @parse_*: takes a String, returns `Option(int)` (RUE-6,
+                    // ADR-0038). The concrete Option type (and thus the payload
+                    // int type) is resolved from context, so use a fresh
+                    // variable and let sema validate the resolved Option shape.
                     for arg_ref in args.iter() {
                         self.generate(*arg_ref, ctx);
                     }
-                    InferType::Concrete(Type::I32)
-                } else if intrinsic_name == "parse_i64" {
-                    // @parse_i64: takes a String, returns i64
-                    for arg_ref in args.iter() {
-                        self.generate(*arg_ref, ctx);
-                    }
-                    InferType::Concrete(Type::I64)
-                } else if intrinsic_name == "parse_u32" {
-                    // @parse_u32: takes a String, returns u32
-                    for arg_ref in args.iter() {
-                        self.generate(*arg_ref, ctx);
-                    }
-                    InferType::Concrete(Type::U32)
-                } else if intrinsic_name == "parse_u64" {
-                    // @parse_u64: takes a String, returns u64
-                    for arg_ref in args.iter() {
-                        self.generate(*arg_ref, ctx);
-                    }
-                    InferType::Concrete(Type::U64)
+                    let result_var = self.fresh_var();
+                    InferType::Var(result_var)
                 } else if intrinsic_name == "random_u32" {
                     // @random_u32: no arguments, returns u32
                     InferType::Concrete(Type::U32)

@@ -393,6 +393,15 @@ pub(crate) struct AnalysisContext<'a> {
     /// the treatment of an explicit `borrow` parameter. Reads (including the
     /// loop's own element reads) are permitted.
     pub iter_borrows: Vec<Spur>,
+    /// The type this expression is expected to produce, when sema knows it from
+    /// a surrounding annotation or pattern. Set narrowly around a
+    /// let-initializer (to the resolved annotation type) and around a `match`
+    /// scrutinee (to the enum named by the arm patterns). The fallible
+    /// intrinsics (`@read_line`, `@parse_*`) read this to learn which in-scope
+    /// `Option(T)` to return (RUE-6, ADR-0038) — inference cannot supply it
+    /// because comptime-generic library enums are resolved only in sema. Left
+    /// `None` everywhere else, so no other analysis is affected.
+    pub expected_type: Option<Type>,
 }
 
 // Import InstRef for use in resolved_types
@@ -469,6 +478,7 @@ impl<'a> AnalysisContext<'a> {
             byref_arg_root: None,
             in_loop_move_recheck: true,
             iter_borrows: self.iter_borrows.clone(),
+            expected_type: None,
         }
     }
 

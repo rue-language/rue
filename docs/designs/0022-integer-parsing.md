@@ -17,6 +17,14 @@ superseded-by:
 
 Implemented
 
+> **Amended by RUE-6 / ADR-0038 (error handling).** These intrinsics no longer
+> return a bare integer and no longer panic on bad input. Each now returns
+> `Option(T)` for its target type `T`: `Some(n)` on a successful parse and
+> `None` on failure (empty string, invalid character, overflow, or a negative
+> value for an unsigned type). The `@try_parse_*` idea below is subsumed — the
+> ordinary `@parse_*` is now the fallible-by-`Option` form. See ADR-0038 and
+> spec §4.13.
+
 ## Summary
 
 Add intrinsics to parse strings into integer values: `@parse_i32`, `@parse_i64`, `@parse_u32`, `@parse_u64`. These intrinsics accept a `String` and return the corresponding integer type, panicking on invalid input or overflow. This enables programs to process numeric input from users or files.

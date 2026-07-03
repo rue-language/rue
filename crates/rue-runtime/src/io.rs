@@ -7,7 +7,7 @@
 
 use crate::heap;
 use crate::platform;
-use crate::string::{STRING_MIN_CAPACITY, StringResult};
+use crate::string::STRING_MIN_CAPACITY;
 
 // =============================================================================
 // String output (RUE-1: print / println)
@@ -89,61 +89,84 @@ crate::define_for_all_platforms! {
 /// This is a reasonable size for most interactive input.
 const READ_LINE_INITIAL_CAPACITY: u64 = 128;
 
-/// Read a line from standard input.
+/// Result of `@read_line`: a tagged-union `Option(String)` written via sret.
+///
+/// The compiler lays a payload-carrying enum out as slot 0 = discriminant
+/// followed by the payload slots (RUE-221), so the in-memory layout of
+/// `Option(String)` is `[disc, ptr, len, cap]`. This struct mirrors that
+/// layout exactly so the runtime can write the whole `Option` in one place and
+/// codegen simply loads the four slots back (RUE-6).
+#[repr(C)]
+pub struct OptionStringResult {
+    /// Discriminant slot: `some_disc` on success, `none_disc` at EOF.
+    pub disc: u64,
+    pub ptr: *mut u8,
+    pub len: u64,
+    pub cap: u64,
+}
+
+/// Read a line from standard input, returning `Option(String)`.
 ///
 /// Reads bytes from stdin (file descriptor 0) until a newline character (`\n`)
-/// is encountered or EOF is reached. Returns the line as a String (excluding
-/// the trailing newline).
+/// is encountered or EOF is reached. Yields the line (excluding the trailing
+/// newline) as `Some(String)`, or `None` at end-of-input (RUE-6, ADR-0038).
 ///
 /// # Returns
 ///
-/// Returns the string data via sret convention. Writes to `out`:
-/// - ptr: Pointer to the string data (heap-allocated)
-/// - len: Length of the string in bytes (excluding newline)
-/// - cap: Capacity of the allocated buffer
+/// Writes the whole `Option(String)` to `out` via sret:
+/// - On success (line read, or partial line at EOF): `disc = some_disc` and the
+///   String fields `ptr`/`len`/`cap` are populated.
+/// - At EOF with no data read: `disc = none_disc` and the payload slots are
+///   zeroed (a `None` never drops its payload, so the zeros are inert).
+///
+/// `some_disc`/`none_disc` are the caller's `Some`/`None` variant indices,
+/// passed in so the runtime need not know the compiler's discriminant
+/// assignment.
 ///
 /// # Panics
 ///
-/// - If EOF is reached with no data read: panics with "unexpected end of input"
 /// - If a read error occurs: panics with "input error"
+/// - If memory allocation fails: panics with "out of memory"
+///
+/// EOF is **not** a panic — it is reported as `None`.
 ///
 /// # ABI (sret convention)
 ///
 /// ```text
-/// extern "C" fn __rue_read_line(out: *mut StringResult)
+/// extern "C" fn __rue_read_line(out: *mut OptionStringResult, some_disc: u64, none_disc: u64)
 /// ```
 ///
 /// Caller allocates space for the return value and passes pointer.
 #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn __rue_read_line(out: *mut StringResult) {
-    read_line_impl(out);
+pub extern "C" fn __rue_read_line(out: *mut OptionStringResult, some_disc: u64, none_disc: u64) {
+    read_line_impl(out, some_disc, none_disc);
 }
 
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn __rue_read_line(out: *mut StringResult) {
-    read_line_impl(out);
+pub extern "C" fn __rue_read_line(out: *mut OptionStringResult, some_disc: u64, none_disc: u64) {
+    read_line_impl(out, some_disc, none_disc);
 }
 
 #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn __rue_read_line(out: *mut StringResult) {
-    read_line_impl(out);
+pub extern "C" fn __rue_read_line(out: *mut OptionStringResult, some_disc: u64, none_disc: u64) {
+    read_line_impl(out, some_disc, none_disc);
 }
 
 /// Implementation of read_line shared across platforms.
 ///
 /// This function reads from stdin byte-by-byte until:
-/// - A newline character is found (returns line without the newline)
-/// - EOF is reached with some data (returns partial line)
-/// - EOF is reached with no data (panics)
+/// - A newline character is found (returns `Some` line without the newline)
+/// - EOF is reached with some data (returns `Some` partial line)
+/// - EOF is reached with no data (returns `None`)
 /// - A read error occurs (panics)
 #[inline]
-fn read_line_impl(out: *mut StringResult) {
+fn read_line_impl(out: *mut OptionStringResult, some_disc: u64, none_disc: u64) {
     // Allocate initial buffer
     let mut cap = READ_LINE_INITIAL_CAPACITY;
     let mut ptr = heap::alloc(cap, 1);
@@ -212,43 +235,21 @@ fn read_line_impl(out: *mut StringResult) {
         if result == 0 {
             // EOF reached
             if len == 0 {
-                // EOF with no data - free buffer and panic
+                // EOF with no data: this is not an error (RUE-6, ADR-0038).
+                // Free the empty buffer and report `None` so a read-until-EOF
+                // loop can terminate cleanly instead of trapping.
                 heap::free(ptr, cap, 1);
-                // Build error message in buffer (like print_i64 does)
-                let mut msg = [0u8; 31];
-                msg[0] = b'e';
-                msg[1] = b'r';
-                msg[2] = b'r';
-                msg[3] = b'o';
-                msg[4] = b'r';
-                msg[5] = b':';
-                msg[6] = b' ';
-                msg[7] = b'u';
-                msg[8] = b'n';
-                msg[9] = b'e';
-                msg[10] = b'x';
-                msg[11] = b'p';
-                msg[12] = b'e';
-                msg[13] = b'c';
-                msg[14] = b't';
-                msg[15] = b'e';
-                msg[16] = b'd';
-                msg[17] = b' ';
-                msg[18] = b'e';
-                msg[19] = b'n';
-                msg[20] = b'd';
-                msg[21] = b' ';
-                msg[22] = b'o';
-                msg[23] = b'f';
-                msg[24] = b' ';
-                msg[25] = b'i';
-                msg[26] = b'n';
-                msg[27] = b'p';
-                msg[28] = b'u';
-                msg[29] = b't';
-                msg[30] = b'\n';
-                platform::write_stderr(&msg);
-                platform::exit(101);
+                // SAFETY: `out` points to caller-allocated space for the
+                // Option(String) result (4 slots). We write `None` and zero
+                // the payload; a `None` never has its payload dropped, so the
+                // zeroed String slots are inert.
+                unsafe {
+                    (*out).disc = none_disc;
+                    (*out).ptr = core::ptr::null_mut();
+                    (*out).len = 0;
+                    (*out).cap = 0;
+                }
+                return;
             }
             // EOF with data - return partial line
             break;
@@ -288,9 +289,10 @@ fn read_line_impl(out: *mut StringResult) {
         len += 1;
     }
 
-    // Return the string
+    // Return `Some(string)`.
     // SAFETY: Writing to `out` is safe - see __rue_String_new for rationale
     unsafe {
+        (*out).disc = some_disc;
         (*out).ptr = ptr;
         (*out).len = len;
         (*out).cap = cap;

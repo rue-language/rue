@@ -17,6 +17,13 @@ superseded-by:
 
 Implemented
 
+> **Amended by RUE-6 / ADR-0038 (error handling).** `@read_line` no longer
+> returns a bare `String` and no longer panics at end-of-input. It now returns
+> `Option(String)`: `Some(line)` on a successful read (including a partial line
+> at EOF) and `None` when EOF is reached with no data, so a read-until-EOF loop
+> terminates cleanly instead of trapping. A genuine I/O read error still panics.
+> See ADR-0038 and spec §4.13 for the current behavior.
+
 ## Summary
 
 Add a `@read_line()` intrinsic that reads a line of text from standard input and returns it as a `String`. On EOF or I/O error, the intrinsic panics. This provides the simplest possible input mechanism for Rue programs.

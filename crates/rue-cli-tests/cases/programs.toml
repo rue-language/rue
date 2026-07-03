@@ -127,17 +127,28 @@ Hello
 
 [[case]]
 name = "string_equality_branches"
-files = [{ path = "main.rue", source = """
+files = [
+  { path = "main.rue", source = """
 fn main() -> i32 {
-    let answer = @read_line();
-    if answer == "yes" {
-        @dbg("affirmative");
-    } else {
-        @dbg("negative");
+    let OptStr = @import("opt.rue").Option(String);
+    match @read_line() {
+        OptStr::Some(answer) => {
+            if answer == "yes" {
+                @dbg("affirmative");
+            } else {
+                @dbg("negative");
+            }
+        },
+        OptStr::None => {},
     }
     0
 }
-""" }]
+""" },
+  { path = "opt.rue", source = """
+pub fn Option(comptime T: type) -> type { enum { Some(T), None } }
+""" },
+]
+args = ["main.rue", "opt.rue", "-o", "prog"]
 stdin = "yes"
 stdout = "affirmative\n"
 
