@@ -537,3 +537,120 @@ fn main() -> i32 {
     consume(produce())  // 15
 }
 ```
+
+## The Comptime-Evaluable Set
+
+The rules for comptime branch selection (4.14:17, 4.14:19), comptime
+parameters (4.14:5, 4.14:6), and type-function application (4.14:22) all turn
+on whether a given expression is *comptime-evaluable* — known at compile time.
+This section defines that set inductively: rule 4.14:26 gives the base cases,
+rules 4.14:27 and 4.14:28 give the closure (inductive) cases, and rule 4.14:29
+closes the set — nothing outside these clauses is comptime-evaluable.
+
+{{ rule(id="4.14:26", cat="normative") }}
+
+An expression is **comptime-evaluable** in a given scope in each of the
+following base cases:
+
+- an integer literal, a boolean literal (`true`, `false`), or the unit value
+  (`()`);
+- a reference to a `const` item (Chapter 6), whose initializer is itself
+  comptime-evaluable — every `const` initializer is required to be
+  comptime-evaluable, so every `const` reference qualifies;
+- a reference to a `comptime` parameter in scope (4.14:5), including a
+  `comptime T: type` parameter, whose bound value is fixed at each
+  specialization.
+
+A reference to a runtime binding is **not** comptime-evaluable: neither a
+non-`comptime` `let` binding (Chapter 6) nor a non-`comptime` function
+parameter is known at compile time. Using such a reference where a
+comptime-evaluable expression is required is a compile-time error (4.14:6,
+diagnostic `E1201`).
+
+```rue
+const K: i32 = 3;
+
+fn dbl(comptime n: i32) -> i32 { n * 2 }
+
+fn main() -> i32 {
+    dbl(K)  // 6: `K` is a const reference, hence comptime-evaluable
+}
+```
+
+{{ rule(id="4.14:27", cat="normative") }}
+
+The comptime-evaluable set is **closed under the value-forming operators and
+grouping constructs**: an expression built from one of the following is
+comptime-evaluable whenever all of its operand expressions are
+comptime-evaluable, and is otherwise not:
+
+- arithmetic operators (`+`, `-`, `*`, `/`, `%`) and unary negation (`-`);
+- comparison operators (`==`, `!=`, `<`, `<=`, `>`, `>=`);
+- logical operators (`&&`, `||`, `!`);
+- bitwise operators (`&`, `|`, `^`, `<<`, `>>`, `~`);
+- parenthesization `( e )`;
+- a block `{ … }` — including a `comptime { … }` block (4.14:2) — whose `let`
+  initializers and tail expression are comptime-evaluable.
+
+Evaluation of these forms follows runtime semantics exactly, subject to the
+comptime overflow and division restrictions of 4.14:4. If any operand is not
+comptime-evaluable (for example, a runtime `let` reference), the whole
+expression is not comptime-evaluable.
+
+```rue
+const K: i32 = 3;
+
+fn t(comptime n: i32) -> i32 {
+    if (n & 1) == 1 && n > 0 { 1 } else { 0 }  // comptime-if: operands are
+                                               // the comptime param `n`
+}
+
+fn main() -> i32 {
+    t(K + 1)  // arg is `const + literal`, hence comptime-evaluable  -> 0
+}
+```
+
+{{ rule(id="4.14:28", cat="normative") }}
+
+The comptime-evaluable set is **closed under fully-comptime calls**: a call
+expression `f(a₁, …, aₙ)` is comptime-evaluable if and only if every parameter
+of `f` is declared `comptime` and every argument `aᵢ` is comptime-evaluable. A
+call to a function that has any non-`comptime` parameter is **not**
+comptime-evaluable, even when its arguments are, because that function's body
+runs at runtime. Type-function application (4.14:22) is the special case of
+this rule whose result is a `type` value; a fully-comptime call reduces at
+compile time by the same evaluation used for monomorphization identity
+(4.14:25).
+
+```rue
+fn inc(comptime n: i32) -> i32 { n + 1 }
+fn dbl(comptime n: i32) -> i32 { n * 2 }
+
+fn main() -> i32 {
+    dbl(inc(4))  // 10: `inc(4)` is a fully-comptime call, so it is a
+                 // comptime-evaluable argument to `dbl`
+}
+```
+
+{{ rule(id="4.14:29", cat="legality-rule") }}
+
+The comptime-evaluable set is exactly the least set closed under rules
+4.14:26 through 4.14:28; **no other expression is comptime-evaluable**. In
+particular, the type-introspection intrinsics `@size_of` and `@align_of`
+(§4.13) are *not* comptime-evaluable in the current language: although their
+results are compile-time constants, an implementation is not required to fold
+them into the comptime-evaluable set, and this one does not. Using such an
+expression where comptime evaluation is required is a compile-time error — in a
+`comptime` argument position (4.14:6) the diagnostic is `E1201`, and in a
+`const` initializer (Chapter 6) it is `E0434`. A future revision may enlarge
+the set; a program that relies on an expression *not* covered by rules
+4.14:26–4.14:28 being comptime-evaluable is non-portable.
+
+```rue
+fn dbl(comptime n: i32) -> i32 { n * 2 }
+
+fn main() -> i32 {
+    dbl(@size_of(i32))  // ERROR (E1201): @size_of is not comptime-evaluable,
+                        // so it cannot be a comptime argument
+}
+```

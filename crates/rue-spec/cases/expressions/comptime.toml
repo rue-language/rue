@@ -2088,3 +2088,172 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = "type mismatch"
+
+# --- Comptime-evaluable set (RUE-290): rules 4.14:26-29 ---
+
+[[case]]
+name = "comptime_set_base_const_ref"
+spec = ["4.14:26"]
+description = "A const reference is a comptime-evaluable base case (RUE-290)"
+source = """
+const K: i32 = 3;
+fn dbl(comptime n: i32) -> i32 { n * 2 }
+fn main() -> i32 { dbl(K) }
+"""
+exit_code = 6
+
+[[case]]
+name = "comptime_set_base_comptime_type_param"
+spec = ["4.14:26"]
+description = "A comptime T: type parameter reference is comptime-evaluable and drives type-function application (RUE-290)"
+source = """
+fn Pair(comptime T: type) -> type { struct { first: T, second: T } }
+fn wrap(comptime U: type) -> i32 {
+    let P = Pair(U);
+    let p: P = P { first: 1, second: 2 };
+    p.first + p.second
+}
+fn main() -> i32 { wrap(i32) }
+"""
+exit_code = 3
+
+[[case]]
+name = "comptime_set_base_unit_literal"
+spec = ["4.14:26"]
+description = "The unit value is a comptime-evaluable base case (RUE-290)"
+source = """
+fn u(comptime x: ()) -> i32 { 5 }
+fn main() -> i32 { u(()) }
+"""
+exit_code = 5
+
+[[case]]
+name = "comptime_set_reject_runtime_let"
+spec = ["4.14:26"]
+description = "A runtime let binding is not comptime-evaluable (RUE-290)"
+source = """
+fn dbl(comptime n: i32) -> i32 { n * 2 }
+fn main() -> i32 { let x = 5; dbl(x) }
+"""
+compile_fail = true
+error_contains = "comptime parameter requires a compile-time known value"
+
+[[case]]
+name = "comptime_set_reject_runtime_param"
+spec = ["4.14:26"]
+description = "A non-comptime function parameter is not comptime-evaluable (RUE-290)"
+source = """
+fn dbl(comptime n: i32) -> i32 { n * 2 }
+fn f(y: i32) -> i32 { dbl(y) }
+fn main() -> i32 { f(5) }
+"""
+compile_fail = true
+error_contains = "comptime parameter requires a compile-time known value"
+
+[[case]]
+name = "comptime_set_closure_arithmetic"
+spec = ["4.14:27"]
+description = "Arithmetic over comptime-evaluable operands is comptime-evaluable (RUE-290)"
+source = """
+const K: i32 = 3;
+fn dbl(comptime n: i32) -> i32 { n * 2 }
+fn main() -> i32 { dbl(K + 1) }
+"""
+exit_code = 8
+
+[[case]]
+name = "comptime_set_closure_bitwise_cmp_logical"
+spec = ["4.14:27"]
+description = "Bitwise, comparison, logical, and paren operators close the comptime set, driving a comptime-if (RUE-290)"
+source = """
+fn t(comptime n: i32) -> i32 { if (n & 1) == 1 && n > 0 { 1 } else { 0 } }
+fn main() -> i32 { t(3) }
+"""
+exit_code = 1
+
+[[case]]
+name = "comptime_set_closure_block"
+spec = ["4.14:27"]
+description = "A plain block whose tail is comptime-evaluable is comptime-evaluable (RUE-290)"
+source = """
+fn dbl(comptime n: i32) -> i32 { n * 2 }
+fn main() -> i32 { dbl({ 3 + 1 }) }
+"""
+exit_code = 8
+
+[[case]]
+name = "comptime_set_closure_comptime_block"
+spec = ["4.14:27"]
+description = "A comptime { } block is a comptime-evaluable constructor (RUE-290)"
+source = """
+fn dbl(comptime n: i32) -> i32 { n * 2 }
+fn main() -> i32 { dbl(comptime { let a = 3; a + 1 }) }
+"""
+exit_code = 8
+
+[[case]]
+name = "comptime_set_closure_reject_runtime_operand"
+spec = ["4.14:27"]
+description = "An operator expression with a runtime operand is not comptime-evaluable (RUE-290)"
+source = """
+fn dbl(comptime n: i32) -> i32 { n * 2 }
+fn main() -> i32 { let x = 5; dbl(x + 1) }
+"""
+compile_fail = true
+error_contains = "comptime parameter requires a compile-time known value"
+
+[[case]]
+name = "comptime_set_call_fully_comptime"
+spec = ["4.14:28"]
+description = "A call whose params are all comptime and args all comptime-evaluable is comptime-evaluable (RUE-290)"
+source = """
+fn inc(comptime n: i32) -> i32 { n + 1 }
+fn dbl(comptime n: i32) -> i32 { n * 2 }
+fn main() -> i32 { dbl(inc(4)) }
+"""
+exit_code = 10
+
+[[case]]
+name = "comptime_set_call_reject_runtime_param_fn"
+spec = ["4.14:28"]
+description = "A call to a function with a non-comptime parameter is not comptime-evaluable (RUE-290)"
+source = """
+fn inc(n: i32) -> i32 { n + 1 }
+fn dbl(comptime n: i32) -> i32 { n * 2 }
+fn main() -> i32 { dbl(inc(4)) }
+"""
+compile_fail = true
+error_contains = "comptime parameter requires a compile-time known value"
+
+[[case]]
+name = "comptime_set_boundary_size_of_not_comptime"
+spec = ["4.14:29"]
+description = "@size_of is not comptime-evaluable in a comptime argument position (RUE-290)"
+source = """
+fn dbl(comptime n: i32) -> i32 { n * 2 }
+fn main() -> i32 { dbl(@size_of(i32)) }
+"""
+compile_fail = true
+error_contains = "comptime parameter requires a compile-time known value"
+
+[[case]]
+name = "comptime_set_boundary_align_of_not_comptime"
+spec = ["4.14:29"]
+description = "@align_of is not comptime-evaluable in a comptime argument position (RUE-290)"
+source = """
+fn dbl(comptime n: i32) -> i32 { n * 2 }
+fn main() -> i32 { dbl(@align_of(i64)) }
+"""
+compile_fail = true
+error_contains = "comptime parameter requires a compile-time known value"
+
+[[case]]
+name = "comptime_set_boundary_size_of_not_const_evaluable"
+spec = ["4.14:29"]
+description = "@size_of is not comptime-evaluable in a const initializer (RUE-290)"
+source = """
+const S: i32 = @size_of(i32);
+fn main() -> i32 { S }
+"""
+compile_fail = true
+error_contains = "not supported in const context"
