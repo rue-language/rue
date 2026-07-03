@@ -13,6 +13,12 @@ superseded-by:
 
 # ADR-0035: String model — byte strings with loud pragmatism
 
+> **Amended by [ADR-0043](0043-collection-string-type-trio.md)**: the byte-string
+> invariant below is carried forward unchanged, but `String` is renamed `StrBuf`
+> and gains two siblings — `str` (a slice) and `Str(N)` (fixed) — as the string
+> rungs of the collection trio, and slicing (`s[a..b]`) now returns a borrowed
+> `str` view rather than an owned copy.
+
 ## Status
 
 Accepted — **experimental**. Ratified by Steve on 2026-07-02 with the explicit
