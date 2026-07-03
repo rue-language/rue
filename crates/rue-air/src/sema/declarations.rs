@@ -21,7 +21,17 @@ use rue_span::{FileId, Span};
 
 use super::{ConstInfo, ConstValue, FunctionInfo, InferenceContext, MethodInfo, Sema};
 use crate::inference::{FunctionSig, MethodSig};
-use crate::types::{EnumDef, StructDef, StructField, StructId, Type};
+use crate::types::{EnumDef, EnumId, StructDef, StructField, StructId, Type, TypeKind};
+
+/// A node in the "contains by value" type graph, used by
+/// [`Sema::check_recursive_value_types`] to detect infinite-size cycles
+/// (RUE-264). Only aggregate types (struct, enum) can participate in such a
+/// cycle; the array element is followed transitively but is not itself a node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum TypeNode {
+    Struct(StructId),
+    Enum(EnumId),
+}
 
 impl<'a> Sema<'a> {
     /// Build an `InferenceContext` from the collected type information.
@@ -452,6 +462,11 @@ impl<'a> Sema<'a> {
     pub(crate) fn resolve_declarations(&mut self) -> CompileResult<()> {
         self.resolve_struct_fields()?;
         self.resolve_enum_payloads()?;
+        // Reject infinite-size types now that every struct field and enum
+        // payload is resolved, before any later pass (layout, drop-glue)
+        // recurses through the field graph and overflows the host stack
+        // (RUE-264).
+        self.check_recursive_value_types()?;
         self.propagate_field_linearity();
         self.resolve_remaining_declarations()?;
         // Now that value constants are separated from module bindings, reject
@@ -656,6 +671,116 @@ impl<'a> Sema<'a> {
             }
         }
         Ok(())
+    }
+
+    /// Reject types whose size is infinite because they contain themselves by
+    /// value (RUE-264). A well-formed type must have a finite layout: a struct
+    /// field, enum payload, or array element stores its value *inline*, so a
+    /// type that transitively contains itself through only such by-value edges
+    /// has no finite size. Such a definition would otherwise recurse forever in
+    /// layout / drop-glue computation and overflow the compiler's own stack
+    /// (a SIGABRT that even bypasses the ICE panic-hook). This is the
+    /// type-graph analogue of the constant-initializer cycle check (E0461):
+    /// it detects a cycle in the "contains by value" graph and reports E0483
+    /// (cf. Rust's E0072).
+    ///
+    /// A pointer field (`ptr const T` / `ptr mut T`) is indirection, not
+    /// by-value containment, so it breaks the cycle and is allowed — that is
+    /// how a recursive data structure is written.
+    pub(crate) fn check_recursive_value_types(&self) -> CompileResult<()> {
+        // Drive from each user-declared struct/enum so the diagnostic points at
+        // the offending declaration (the RIR carries the span; the type pool
+        // does not).
+        for (_, inst) in self.rir.iter() {
+            let (name_sym, span) = match &inst.data {
+                InstData::StructDecl { name, .. } | InstData::EnumDecl { name, .. } => {
+                    (*name, inst.span)
+                }
+                _ => continue,
+            };
+            let start_ty = if let Some(&struct_id) = self.structs.get(&name_sym) {
+                Type::new_struct(struct_id)
+            } else if let Some(&enum_id) = self.enums.get(&name_sym) {
+                Type::new_enum(enum_id)
+            } else {
+                continue;
+            };
+
+            let mut on_path: HashSet<TypeNode> = HashSet::new();
+            let mut path: Vec<String> = Vec::new();
+            if let Some(cycle) = self.find_value_cycle(start_ty, &mut on_path, &mut path) {
+                let name = self.interner.resolve(&name_sym).to_string();
+                return Err(CompileError::new(
+                    ErrorKind::RecursiveTypeInfiniteSize {
+                        name,
+                        cycle: cycle.join(" -> "),
+                    },
+                    span,
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Depth-first search for a by-value containment cycle in the type graph,
+    /// mirroring the traversal `drop_glue::type_needs_drop` performs (structs
+    /// recurse through fields, enums through variant payloads, arrays through
+    /// the element type; pointers and scalars terminate). Returns the cyclic
+    /// containment path (as type names) if `ty` transitively contains a struct
+    /// or enum already on the current path.
+    fn find_value_cycle(
+        &self,
+        ty: Type,
+        on_path: &mut HashSet<TypeNode>,
+        path: &mut Vec<String>,
+    ) -> Option<Vec<String>> {
+        match ty.kind() {
+            TypeKind::Struct(id) => {
+                let def = self.type_pool.struct_def(id);
+                if !on_path.insert(TypeNode::Struct(id)) {
+                    // Back-edge: this struct is already on the current path.
+                    let mut cycle = path.clone();
+                    cycle.push(def.name.clone());
+                    return Some(cycle);
+                }
+                path.push(def.name.clone());
+                for field in &def.fields {
+                    if let Some(cycle) = self.find_value_cycle(field.ty, on_path, path) {
+                        return Some(cycle);
+                    }
+                }
+                path.pop();
+                on_path.remove(&TypeNode::Struct(id));
+                None
+            }
+            TypeKind::Enum(id) => {
+                let def = self.type_pool.enum_def(id);
+                if !on_path.insert(TypeNode::Enum(id)) {
+                    let mut cycle = path.clone();
+                    cycle.push(def.name.clone());
+                    return Some(cycle);
+                }
+                path.push(def.name.clone());
+                for payload_ty in def.variant_payloads.iter().flatten() {
+                    if let Some(cycle) = self.find_value_cycle(*payload_ty, on_path, path) {
+                        return Some(cycle);
+                    }
+                }
+                path.pop();
+                on_path.remove(&TypeNode::Enum(id));
+                None
+            }
+            // An array stores its elements inline, so a by-value cycle can run
+            // through the element type (`struct A { a: [A; 1] }`).
+            TypeKind::Array(array_id) => {
+                let (element_ty, _length) = self.type_pool.array_def(array_id);
+                self.find_value_cycle(element_ty, on_path, path)
+            }
+            // Pointers are indirection (they break the cycle); scalars, unit,
+            // never, error, module and comptime-type carry no by-value struct
+            // containment.
+            _ => None,
+        }
     }
 
     /// Resolve @copy validation, destructors, functions, and methods.

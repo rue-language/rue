@@ -3537,6 +3537,36 @@ impl<'a> Sema<'a> {
         }
     }
 
+    /// Reject an array element (of a literal or a repeat) whose type has no
+    /// runtime representation, before it can reach the intern pool — which
+    /// panics on both `type` values and modules (intern_pool.rs, RUE-253,
+    /// RUE-265).
+    ///
+    /// - A `type` value is comptime-only (spec 4.14:6): E1200, matching the
+    ///   diagnostic `let t = comptime { i32 };` gets.
+    /// - A module is not a runtime value (spec 10.4:145): E0206, matching the
+    ///   diagnostic a module passed as a function argument gets.
+    fn reject_non_runtime_array_element(&self, elem_ty: Type, span: Span) -> CompileResult<()> {
+        if elem_ty == Type::COMPTIME_TYPE {
+            return Err(CompileError::new(
+                ErrorKind::ComptimeEvaluationFailed {
+                    reason: "type values cannot exist at runtime".to_string(),
+                },
+                span,
+            ));
+        }
+        if matches!(elem_ty.kind(), TypeKind::Module(_)) {
+            return Err(CompileError::new(
+                ErrorKind::TypeMismatch {
+                    expected: "a runtime value".to_string(),
+                    found: elem_ty.safe_name_with_pool(Some(&self.type_pool)),
+                },
+                span,
+            ));
+        }
+        Ok(())
+    }
+
     /// Analyze an array initialization.
     fn analyze_array_init(
         &mut self,
@@ -3556,13 +3586,8 @@ impl<'a> Sema<'a> {
         // the comptime-only `type`, would reach the intern pool and panic
         // (RUE-253).
         for elem_ref in &elem_refs {
-            if ctx.resolved_types.get(elem_ref).copied() == Some(Type::COMPTIME_TYPE) {
-                return Err(CompileError::new(
-                    ErrorKind::ComptimeEvaluationFailed {
-                        reason: "type values cannot exist at runtime".to_string(),
-                    },
-                    span,
-                ));
+            if let Some(elem_ty) = ctx.resolved_types.get(elem_ref).copied() {
+                self.reject_non_runtime_array_element(elem_ty, span)?;
             }
         }
 
@@ -3663,17 +3688,13 @@ impl<'a> Sema<'a> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        // A repeat literal of a `type` value (`[i32; 2]`) has no runtime
-        // representation (spec 4.14:6). Reject it with E1200 — before the
-        // preview gate below and before the comptime-only element type would
-        // reach the intern pool and panic (RUE-253).
-        if ctx.resolved_types.get(&value_ref).copied() == Some(Type::COMPTIME_TYPE) {
-            return Err(CompileError::new(
-                ErrorKind::ComptimeEvaluationFailed {
-                    reason: "type values cannot exist at runtime".to_string(),
-                },
-                span,
-            ));
+        // A repeat literal of a non-runtime value — a `type` value (`[i32; 2]`,
+        // spec 4.14:6) or a module (`[@import("m"); 2]`, spec 10.4:145) — has no
+        // runtime representation. Reject it (E1200 / E0206) before the preview
+        // gate below and before the comptime-only/module element type would
+        // reach the intern pool and panic (RUE-253, RUE-265).
+        if let Some(value_ty) = ctx.resolved_types.get(&value_ref).copied() {
+            self.reject_non_runtime_array_element(value_ty, span)?;
         }
 
         // Gate the whole form: without `--preview array_repeat`, using
@@ -4419,9 +4440,14 @@ impl<'a> Sema<'a> {
                     _ => {}
                 }
             }
-            // Try to evaluate the function body at compile time
+            // Try to evaluate the function body at compile time. A hard error
+            // raised while reducing the constructor (e.g. an unbounded
+            // self-recursive `-> type` function exceeding the comptime depth
+            // limit, RUE-261) must surface as its real diagnostic (E1200)
+            // rather than being swallowed into a downstream link error, so use
+            // the propagating reduction entry point.
             if let Some(ConstValue::Type(ty)) =
-                self.try_evaluate_const_with_subst(fn_body, &type_subst, &value_subst)
+                self.eval_type_constructor_body(fn_body, &type_subst, &value_subst)?
             {
                 // Success! Return a TypeConst instruction instead of a runtime call
                 let air_ref = air.add_inst(AirInst {

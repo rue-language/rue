@@ -103,6 +103,17 @@ impl<'a> Sema<'a> {
         }
     }
 
+    /// A `type` value or a module value has no runtime representation and so
+    /// cannot be interned as an array element (`type` values: spec 4.14:6;
+    /// modules: spec 10.4:145). An array with such an element decays to
+    /// `<error>` during type resolution; sema then rejects the offending
+    /// element with a clean diagnostic (E1200 for a `type` value, E0206 for a
+    /// module) rather than reaching the intern pool, which panics on both kinds
+    /// (RUE-253, RUE-265).
+    pub(crate) fn is_non_internable_element(elem_ty: Type) -> bool {
+        matches!(elem_ty.kind(), TypeKind::ComptimeType | TypeKind::Module(_))
+    }
+
     /// Convert a fully-resolved InferType to a concrete Type.
     ///
     /// This handles the conversion of InferType::Array to Type::new_array(id)
@@ -115,11 +126,11 @@ impl<'a> Sema<'a> {
             InferType::Array { element, length } => {
                 // Recursively convert element type
                 let elem_ty = self.infer_type_to_type(element);
-                // A `type`-valued element is comptime-only and cannot be
-                // interned (spec 4.14:6); leave the array as `<error>` so sema
-                // rejects it with E1200 rather than panicking in the intern
-                // pool (RUE-253). `<error>` elements decay the same way.
-                if elem_ty == Type::ERROR || elem_ty == Type::COMPTIME_TYPE {
+                // A comptime-only (`type`) or module element cannot be interned;
+                // leave the array as `<error>` so sema rejects it with a clean
+                // diagnostic rather than panicking in the intern pool. `<error>`
+                // elements decay the same way (RUE-253, RUE-265).
+                if elem_ty == Type::ERROR || Self::is_non_internable_element(elem_ty) {
                     return Type::ERROR;
                 }
                 // Get or create the array type ID
@@ -484,10 +495,11 @@ impl<'a> Sema<'a> {
                 // Convert the element type to get the concrete Type
                 // (This is safe because we processed nested arrays first)
                 let elem_ty = self.infer_type_to_concrete_type_for_key(element);
-                // Skip `<error>` and comptime-only `type` elements: neither can
-                // be interned. A `[type; N]` array is diagnosed as E1200 in
-                // sema instead of panicking here (RUE-253).
-                if elem_ty != Type::ERROR && elem_ty != Type::COMPTIME_TYPE {
+                // Skip `<error>`, comptime-only `type`, and module elements:
+                // none can be interned. A `[type; N]` array is diagnosed as
+                // E1200 and a `[module; N]` array as E0206 in sema instead of
+                // panicking here (RUE-253, RUE-265).
+                if elem_ty != Type::ERROR && !Self::is_non_internable_element(elem_ty) {
                     // Pre-create this array type
                     self.get_or_create_array_type(elem_ty, *length);
                 }
@@ -511,10 +523,11 @@ impl<'a> Sema<'a> {
             InferType::Array { element, length } => {
                 // For nested arrays, look up or create the array type
                 let elem_ty = self.infer_type_to_concrete_type_for_key(element);
-                // A comptime-only `type` element (or `<error>`) cannot be
-                // interned; propagate `<error>` so the enclosing array is
-                // diagnosed as E1200 in sema rather than panicking (RUE-253).
-                if elem_ty == Type::ERROR || elem_ty == Type::COMPTIME_TYPE {
+                // A comptime-only `type` or module element (or `<error>`)
+                // cannot be interned; propagate `<error>` so the enclosing array
+                // is diagnosed as E1200 / E0206 in sema rather than panicking
+                // (RUE-253, RUE-265).
+                if elem_ty == Type::ERROR || Self::is_non_internable_element(elem_ty) {
                     return Type::ERROR;
                 }
                 // Get or create the array type in the pool

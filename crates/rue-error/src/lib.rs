@@ -171,6 +171,11 @@ impl ErrorCode {
     /// resource-limit diagnostic rather than a struct/enum error, but the
     /// reserved code lives in this block.
     pub const NESTING_LIMIT_EXCEEDED: Self = Self(482);
+    /// A struct or enum (transitively) contains itself by value with no
+    /// pointer indirection, so it has no finite size/layout (RUE-264).
+    /// Analogous to Rust's E0072 and a sibling of [`Self::CONST_INITIALIZER_CYCLE`]
+    /// (E0461) for the type-definition graph.
+    pub const RECURSIVE_TYPE_INFINITE_SIZE: Self = Self(483);
 
     // ========================================================================
     // Control flow errors (E0500-E0599)
@@ -1071,6 +1076,13 @@ pub enum ErrorKind {
     /// being defined, so no evaluation order exists.
     #[error("cycle detected in constant initializers: {cycle}")]
     ConstInitializerCycle { cycle: String },
+    /// A struct or enum (transitively) contains itself by value with no
+    /// pointer indirection, so it has infinite size and no valid layout
+    /// (RUE-264). `cycle` names the containment path (e.g. `A -> B -> A`).
+    #[error(
+        "recursive type '{name}' has infinite size (contains itself by value: {cycle}); break the cycle with a pointer (`ptr const {name}` / `ptr mut {name}`)"
+    )]
+    RecursiveTypeInfiniteSize { name: String, cycle: String },
     /// A value constant declared without a type annotation. Annotations are
     /// required on value constants (spec 6.5:4, RUE-179); only module
     /// bindings (`const m = @import(...)` and aliases) are exempt.
@@ -1342,6 +1354,7 @@ impl ErrorKind {
             ErrorKind::DuplicateConstant { .. } => ErrorCode::DUPLICATE_CONSTANT,
             ErrorKind::ConstExprNotSupported { .. } => ErrorCode::CONST_EXPR_NOT_SUPPORTED,
             ErrorKind::ConstInitializerCycle { .. } => ErrorCode::CONST_INITIALIZER_CYCLE,
+            ErrorKind::RecursiveTypeInfiniteSize { .. } => ErrorCode::RECURSIVE_TYPE_INFINITE_SIZE,
             ErrorKind::ConstMissingTypeAnnotation { .. } => {
                 ErrorCode::CONST_MISSING_TYPE_ANNOTATION
             }

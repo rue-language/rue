@@ -56,6 +56,7 @@ use rue_span::Span;
 
 use super::Sema;
 use super::context::{AnalysisContext, ConstValue, LocalVar};
+use crate::specialize::MAX_SPECIALIZATION_ROUNDS;
 use crate::types::{StructField, Type};
 
 /// Empty type substitution map for evaluation contexts without one.
@@ -211,6 +212,28 @@ impl Sema<'_> {
     ) -> Option<ConstValue> {
         let mut env = ComptimeEnv::with_subst(type_subst, value_subst);
         self.eval_const_expr(inst_ref, &mut env).ok().flatten()
+    }
+
+    /// Like [`try_evaluate_const_with_subst`], but *propagates* a hard
+    /// diagnostic raised while reducing the body instead of swallowing it.
+    ///
+    /// Reducing a `-> type` constructor body may legitimately be non-evaluable
+    /// (`Ok(None)` — defer to a runtime call) or raise a genuine compile error
+    /// (`Err` — e.g. an arithmetic overflow, a privacy violation, or exceeding
+    /// the comptime-recursion depth limit for a non-terminating type
+    /// constructor, RUE-261). The type-constructor reduction site uses this so
+    /// the latter surfaces as its real diagnostic (E1200) rather than being
+    /// swallowed and mis-reported as a downstream link error.
+    ///
+    /// [`try_evaluate_const_with_subst`]: Sema::try_evaluate_const_with_subst
+    pub(crate) fn eval_type_constructor_body(
+        &mut self,
+        inst_ref: InstRef,
+        type_subst: &HashMap<Spur, Type>,
+        value_subst: &HashMap<Spur, ConstValue>,
+    ) -> CompileResult<Option<ConstValue>> {
+        let mut env = ComptimeEnv::with_subst(type_subst, value_subst);
+        self.eval_const_expr(inst_ref, &mut env)
     }
 
     /// Try to extract a constant integer value from an RIR index expression.
@@ -933,6 +956,7 @@ impl Sema<'_> {
             return Ok(None);
         }
         let fn_body = fn_info.body;
+        let fn_span = fn_info.span;
         let params = fn_info.params;
         let param_names = self.param_arena.names(params).to_vec();
         let param_comptime = self.param_arena.comptime(params).to_vec();
@@ -967,8 +991,35 @@ impl Sema<'_> {
         // The callee body sees only its own parameters. Evaluate it directly
         // (rather than via the error-swallowing `try_*` wrapper) so a
         // diagnostic raised inside the constructor propagates.
+        //
+        // Guard the reduction against unbounded self-recursion. A `-> type`
+        // function reduces eagerly on the host stack, so a constructor with no
+        // compile-time-known base case (`fn Bad() -> type { Bad() }`,
+        // `fn Wrap(comptime n: i32) -> type { Wrap(n + 1) }`) would overflow
+        // that stack and abort the compiler (SIGABRT) with no diagnostic. Cap
+        // the depth at the same bound the specialization pass uses for value
+        // recursion, emitting the identical E1200 (RUE-261, spec 4.14:18).
         let mut callee_env = ComptimeEnv::with_subst(&callee_types, &callee_values);
-        self.eval_const_expr(fn_body, &mut callee_env)
+        self.comptime_type_call_depth += 1;
+        if self.comptime_type_call_depth > MAX_SPECIALIZATION_ROUNDS {
+            self.comptime_type_call_depth -= 1;
+            return Err(CompileError::new(
+                ErrorKind::ComptimeEvaluationFailed {
+                    reason: format!(
+                        "specialization of '{}' exceeded the maximum nesting depth ({}); \
+                         is a comptime-recursive function missing a compile-time-known \
+                         base case, or a generic function recursively instantiating \
+                         itself with new types?",
+                        self.interner.resolve(&name),
+                        MAX_SPECIALIZATION_ROUNDS
+                    ),
+                },
+                fn_span,
+            ));
+        }
+        let result = self.eval_const_expr(fn_body, &mut callee_env);
+        self.comptime_type_call_depth -= 1;
+        result
     }
 
     /// Pre-resolve `let`-bound compile-time type aliases in a function body,

@@ -122,6 +122,14 @@ pub struct Sema<'a> {
     /// Maps the struct to the (field name, field type name) that caused it,
     /// for diagnostics explaining why the container is linear.
     pub(crate) infectious_linear: HashMap<StructId, (String, String)>,
+    /// Current recursion depth of `-> type` comptime-function reduction
+    /// (`eval_comptime_type_call`). Unlike value functions — whose comptime
+    /// recursion is bounded by the specialization-round limit — a `-> type`
+    /// function reduces eagerly on the host stack, so an unbounded
+    /// self-recursive type constructor (`fn Bad() -> type { Bad() }`) would
+    /// overflow that stack (SIGABRT) without this guard. Bounded at
+    /// `MAX_SPECIALIZATION_ROUNDS`, emitting the same E1200 (RUE-261).
+    pub(crate) comptime_type_call_depth: usize,
 }
 
 impl<'a> Sema<'a> {
@@ -153,6 +161,7 @@ impl<'a> Sema<'a> {
             anon_struct_captured_values: HashMap::new(),
             destructor_spans: HashMap::new(),
             infectious_linear: HashMap::new(),
+            comptime_type_call_depth: 0,
         }
     }
 
