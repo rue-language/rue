@@ -162,15 +162,19 @@ fn main() -> i32 {
 
 {{ rule(id="3.7:22", cat="normative") }}
 
-The intrinsic `@to_string(n)` takes an `i64` and returns a new, heap-allocated
-`String` containing the base-10 decimal representation of `n` (see ADR-0035).
-The argument is of type `i64`; a bare integer literal argument is inferred to be
-`i64`.
+The intrinsic `@to_string(n)` takes an argument of any integer type (`i8`,
+`i16`, `i32`, `i64`, `u8`, `u16`, `u32`, or `u64`) and returns a new,
+heap-allocated `String` containing the base-10 decimal representation of `n`
+(see ADR-0035). The argument keeps its own type; a bare integer literal argument
+is inferred to be `i32` (the default integer type).
 
 {{ rule(id="3.7:23", cat="dynamic-semantics") }}
 
-`@to_string(n)` formats the entire range of `i64`, including `i64::MIN`. A
-negative value is prefixed with a single `-`; a zero value formats as `0`.
+`@to_string(n)` formats the entire range of the argument's type, including
+`i64::MIN` and `u64::MAX`. The value is formatted according to its type's
+signedness: an unsigned value with its high bit set formats as its unsigned
+magnitude, never as a negative number. A negative signed value is prefixed with
+a single `-`; a zero value formats as `0`.
 
 {{ rule(id="3.7:24") }}
 

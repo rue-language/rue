@@ -54,7 +54,7 @@ Expression intrinsics (usable in any expression position):
 | `@size_of` | Get type size in bytes | 1 type | `i32` |
 | `@align_of` | Get type alignment in bytes | 1 type | `i32` |
 | `@intCast` | Convert between integer types | 1 expression (integer) | inferred integer type |
-| `@to_string` | Format an integer as its decimal `String` | 1 expression (`i64`) | `String` |
+| `@to_string` | Format an integer as its decimal `String` | 1 expression (any integer) | `String` |
 | `@drop` | Run a value's drop glue and consume it (RUE-187) | 1 expression (any type) | `()` |
 | `@read_line` | Read line from stdin | none | `Option(String)` |
 | `@parse_i32` | Parse string to i32 | 1 expression (`String`) | `Option(i32)` |

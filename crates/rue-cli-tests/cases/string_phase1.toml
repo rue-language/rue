@@ -1,7 +1,7 @@
 # Design-light String methods (RUE-17 Phase 1, ADR-0035).
 #
 # Phase 1 adds three runtime-visible String operations on top of the Phase 2
-# byte-access primitives: `@to_string(n)` (i64 -> decimal String),
+# byte-access primitives: `@to_string(n)` (any integer -> decimal String),
 # `String + String` concatenation, and the byte-level `contains` / `starts_with`
 # predicates. Every operation lowers to an `extern "C"` runtime call whose ABI
 # (String flattened to ptr/len/cap, sret return buffer for the heap results) is
@@ -30,6 +30,48 @@ fn main() -> i32 {
 """ }]
 exit_code = 0
 stdout = "42\n-5\n0\n-9223372036854775808\n9223372036854775807\n"
+
+[[case]]
+name = "to_string_all_integer_widths"
+description = "@to_string accepts any integer width (RUE-314): each of i8/i16/i32/i64/u8/u16/u32/u64 formats correctly, and an unsigned value with the high bit set prints as its unsigned magnitude, not a negative number."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: i8 = -128;
+    let b: i16 = -32768;
+    let c: i32 = -2147483648;
+    let d: i64 = -9223372036854775808;
+    let e: u8 = 255;
+    let f: u16 = 65535;
+    let g: u32 = 4294967295;
+    let h: u64 = 18446744073709551615;
+    println(@to_string(a));
+    println(@to_string(b));
+    println(@to_string(c));
+    println(@to_string(d));
+    println(@to_string(e));
+    println(@to_string(f));
+    println(@to_string(g));
+    println(@to_string(h));
+    0
+}
+""" }]
+exit_code = 0
+stdout = "-128\n-32768\n-2147483648\n-9223372036854775808\n255\n65535\n4294967295\n18446744073709551615\n"
+
+[[case]]
+name = "to_string_i32_no_cast_needed"
+description = "@to_string of an i32 value (the default width, and what @parse_i32 returns) compiles without an @intCast (RUE-314 regression)."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let x: i32 = 12345;
+    let y: i32 = -6789;
+    println(@to_string(x));
+    println(@to_string(y));
+    0
+}
+""" }]
+exit_code = 0
+stdout = "12345\n-6789\n"
 
 [[case]]
 name = "concat_is_concatenation_not_addition"

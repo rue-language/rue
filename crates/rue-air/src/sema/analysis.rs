@@ -4530,15 +4530,22 @@ impl<'a> Sema<'a> {
         Ok(AnalysisResult::new(air_ref, option_ty))
     }
 
-    /// Analyze the `@to_string(n)` intrinsic (RUE-17 Phase 1, ADR-0035).
+    /// Analyze the `@to_string(n)` intrinsic (RUE-17 Phase 1, ADR-0035;
+    /// RUE-314).
     ///
-    /// Formats an `i64` as its decimal representation in a fresh heap `String`.
-    /// Inference constrains the argument to `i64`, so by analysis time the
-    /// operand type is `i64` (or `error`). Rather than introduce a dedicated
+    /// Formats any integer (`i8`/`i16`/`i32`/`i64`/`u8`/`u16`/`u32`/`u64`) as
+    /// its decimal representation in a fresh heap `String`. The runtime
+    /// formatters operate on a 64-bit value, so a narrower argument is widened
+    /// to 64 bits first: signed types sign-extend to `i64` and use
+    /// `__rue_to_string`; unsigned types zero-extend to `u64` and use
+    /// `__rue_to_string_unsigned` (so a `u32`/`u64` with the high bit set
+    /// prints as its unsigned value, not a negative number). The widening
+    /// reuses the ordinary `IntCast` path, which the backends already
+    /// sign/zero-extend correctly (RUE-88). Rather than introduce a dedicated
     /// codegen intrinsic, this lowers to an ordinary `extern "C"` call to the
-    /// runtime `__rue_to_string(out, n)`: the return type is the builtin
-    /// `String`, so the existing sret call convention allocates the result
-    /// buffer and passes it as the hidden first argument — no codegen change.
+    /// runtime: the return type is the builtin `String`, so the existing sret
+    /// call convention allocates the result buffer and passes it as the hidden
+    /// first argument — no codegen change.
     fn analyze_to_string_intrinsic(
         &mut self,
         air: &mut Air,
@@ -4557,28 +4564,50 @@ impl<'a> Sema<'a> {
             ));
         }
 
-        // The argument is consumed by value (an i64 is Copy, so this is a plain
-        // read). Inference has already unified it with i64.
+        // The argument is consumed by value (every integer is Copy, so this is a
+        // plain read). Any integer width is accepted (RUE-314).
         let arg_result = self.analyze_inst(air, args[0].value, ctx)?;
         let arg_type = arg_result.ty;
-        if arg_type != Type::I64 && !arg_type.is_error() {
+        if !arg_type.is_integer() && !arg_type.is_error() {
             return Err(CompileError::new(
                 ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
                     name: "@to_string".to_string(),
-                    expected: "i64".to_string(),
+                    expected: "integer".to_string(),
                     found: arg_type.safe_name_with_pool(Some(&self.type_pool)),
                 })),
                 span,
             ));
         }
 
+        // Widen the argument to a 64-bit value and pick the runtime formatter by
+        // signedness. Unsigned types must format their zero-extended value, so
+        // route them through the unsigned formatter; an error-typed argument is
+        // treated as signed (it never reaches codegen).
+        let unsigned = arg_type.is_unsigned();
+        let widen_to = if unsigned { Type::U64 } else { Type::I64 };
+        let arg_air_ref = if arg_type.is_error() || arg_type == widen_to {
+            arg_result.air_ref
+        } else {
+            air.add_inst(AirInst {
+                data: AirInstData::IntCast {
+                    value: arg_result.air_ref,
+                    from_ty: arg_type,
+                },
+                ty: widen_to,
+                span,
+            })
+        };
+
         let string_type = self.builtin_string_type();
-        let call_name = self
-            .interner
-            .get_or_intern(rue_builtins::TO_STRING_RUNTIME_FN);
+        let runtime_fn = if unsigned {
+            rue_builtins::TO_STRING_UNSIGNED_RUNTIME_FN
+        } else {
+            rue_builtins::TO_STRING_RUNTIME_FN
+        };
+        let call_name = self.interner.get_or_intern(runtime_fn);
 
         // Encode the single by-value argument as a (value, mode) pair.
-        let extra_data = [arg_result.air_ref.as_u32(), AirArgMode::Normal.as_u32()];
+        let extra_data = [arg_air_ref.as_u32(), AirArgMode::Normal.as_u32()];
         let args_start = air.add_extra(&extra_data);
 
         let air_ref = air.add_inst(AirInst {

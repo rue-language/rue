@@ -1151,6 +1151,68 @@ crate::define_for_all_platforms! {
 }
 
 crate::define_for_all_platforms! {
+    /// Format a `u64` in base 10 into a freshly heap-allocated `String`.
+    ///
+    /// Implements `@to_string(n)` for unsigned integers (RUE-314). The compiler
+    /// zero-extends narrower unsigned operands (`u8`/`u16`/`u32`) to `u64`
+    /// before the call, so this handles the full `u64` range — a value with the
+    /// high bit set prints as its unsigned magnitude (e.g. `u64::MAX` prints
+    /// `18446744073709551615`), never as a negative number. There is no sign
+    /// prefix.
+    ///
+    /// # ABI (sret convention)
+    ///
+    /// ```text
+    /// extern "C" fn __rue_to_string_unsigned(out: *mut StringResult, n: u64)
+    /// ```
+    ///
+    /// `out` (the sret pointer) comes first, then the integer argument. The
+    /// returned String owns a fresh heap buffer, so it can be mutated and
+    /// dropped independently.
+    ///
+    /// # Safety
+    ///
+    /// `out` must be a valid sret pointer — see `__rue_String_new`.
+    pub extern "C" fn __rue_to_string_unsigned(out: *mut StringResult, n: u64) {
+        // "18446744073709551615" (u64::MAX) is the longest result: 20 bytes.
+        let mut buf = [0u8; 20];
+        let mut mag = n;
+        // Emit decimal digits least-significant first, filling `buf` from the
+        // back. `i` walks left toward the front of the buffer.
+        let mut i = buf.len();
+        if mag == 0 {
+            i -= 1;
+            buf[i] = b'0';
+        } else {
+            while mag > 0 {
+                i -= 1;
+                buf[i] = b'0' + (mag % 10) as u8;
+                mag /= 10;
+            }
+        }
+
+        let len = (buf.len() - i) as u64;
+        let new_cap = if len < STRING_MIN_CAPACITY {
+            STRING_MIN_CAPACITY
+        } else {
+            len
+        };
+        let new_ptr = heap::alloc(new_cap, 1);
+
+        // SAFETY: `new_ptr` was just allocated with `new_cap >= len` bytes; the
+        // source range `buf[i..]` holds exactly `len` initialized bytes; the
+        // regions don't overlap (fresh allocation). `out` is a valid sret
+        // pointer (see __rue_String_new).
+        unsafe {
+            core::ptr::copy_nonoverlapping(buf.as_ptr().add(i), new_ptr, len as usize);
+            (*out).ptr = new_ptr;
+            (*out).len = len;
+            (*out).cap = new_cap;
+        }
+    }
+}
+
+crate::define_for_all_platforms! {
     /// Return a NEW String whose bytes are the concatenation of two Strings.
     ///
     /// Implements `s1 + s2` (RUE-17 Phase 1, ADR-0035). Both operands are

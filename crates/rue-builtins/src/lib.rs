@@ -480,11 +480,20 @@ pub static STRING_TYPE: BuiltinTypeDef = BuiltinTypeDef {
 // The names are collected here so there is a single source of truth for what
 // the compiler emits and what `rue-runtime` must define.
 
-/// Runtime symbol for `@to_string(n)`: formats an `i64` as its decimal
-/// representation into a freshly heap-allocated `String` (full range including
-/// `i64::MIN`; negatives are prefixed with `-`). sret ABI:
-/// `extern "C" fn __rue_to_string(out: *mut StringResult, n: i64)`.
+/// Runtime symbol for `@to_string(n)` on a signed integer: formats an `i64` as
+/// its decimal representation into a freshly heap-allocated `String` (full range
+/// including `i64::MIN`; negatives are prefixed with `-`). Narrower signed
+/// operands (`i8`/`i16`/`i32`) are sign-extended to `i64` before the call. sret
+/// ABI: `extern "C" fn __rue_to_string(out: *mut StringResult, n: i64)`.
 pub const TO_STRING_RUNTIME_FN: &str = "__rue_to_string";
+
+/// Runtime symbol for `@to_string(n)` on an unsigned integer: formats a `u64` as
+/// its decimal representation into a freshly heap-allocated `String` (full
+/// range, so a value with the high bit set prints as its unsigned magnitude, not
+/// a negative number). Narrower unsigned operands (`u8`/`u16`/`u32`) are
+/// zero-extended to `u64` before the call. sret ABI:
+/// `extern "C" fn __rue_to_string_unsigned(out: *mut StringResult, n: u64)`.
+pub const TO_STRING_UNSIGNED_RUNTIME_FN: &str = "__rue_to_string_unsigned";
 
 /// Runtime symbol for `s1 + s2` on two `String`s: returns a NEW `String` whose
 /// bytes are the concatenation of `s1` and `s2`. Both operands are borrowed
