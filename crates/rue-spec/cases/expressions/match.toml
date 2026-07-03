@@ -981,3 +981,21 @@ fn main() -> i32 {
 }
 """
 compile_fail = true
+
+# Each payload binding must be a fresh name (4.7:30). Reusing an identifier —
+# `Rect(w, w)` — silently shadowed the earlier binding and lost its value;
+# it is now an E0484 error (RUE-269, analogous to Rust E0416).
+[[case]]
+name = "match_payload_binding_duplicate_name"
+spec = ["4.7:30"]
+preview = "enum_payloads"
+source = """
+enum Shape { Rect(i32, i32) }
+fn main() -> i32 {
+    match Shape::Rect(3, 4) {
+        Shape::Rect(w, w) => w,
+    }
+}
+"""
+compile_fail = true
+error_contains = "bound more than once"

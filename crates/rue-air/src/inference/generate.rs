@@ -11,6 +11,7 @@ use super::types::{InferType, TypeVarAllocator, TypeVarId};
 use crate::Type;
 use crate::intern_pool::TypeInternPool;
 use crate::scope::ScopedContext;
+use crate::sema::ConstValue;
 use crate::types::{
     ArrayLen, PtrMutability, StructId, TypeKind, parse_array_type_syntax, parse_pointer_type_syntax,
 };
@@ -211,6 +212,15 @@ pub struct ConstraintGenerator<'a> {
     /// constraint generation (RUE-16). `None` only in unit tests; production
     /// passes the map via [`Self::with_const_values`].
     const_values: Option<&'a HashMap<Spur, i128>>,
+    /// Comptime *value* parameters known for the specialization currently being
+    /// analyzed (`comptime n: i32` → `n = 0` for the call `f(0)`). Lets a
+    /// `match` on a comptime-known scrutinee prune to its selected arm during
+    /// constraint generation, so only that arm participates in inference —
+    /// mirroring sema's arm selection (spec 4.14:19). Without this, inference
+    /// cross-constrains every arm and rejects a valid program whose statically
+    /// unselected arm has a different type (RUE-268). `None` for ordinary
+    /// (non-specialized) functions, where every match is treated as runtime.
+    comptime_values: Option<&'a HashMap<Spur, ConstValue>>,
     /// Type intern pool for creating pointer and array types during constraint generation.
     type_pool: &'a TypeInternPool,
 }
@@ -264,6 +274,7 @@ impl<'a> ConstraintGenerator<'a> {
             comptime_local_types: None,
             extra_method_sigs: None,
             const_values: None,
+            comptime_values: None,
             type_pool,
         }
     }
@@ -312,6 +323,19 @@ impl<'a> ConstraintGenerator<'a> {
     /// `const_values` field (RUE-16).
     pub fn with_const_values(mut self, const_values: &'a HashMap<Spur, i128>) -> Self {
         self.const_values = Some(const_values);
+        self
+    }
+
+    /// Provide the comptime value parameters of the specialization being
+    /// analyzed so a `match` on a comptime-known scrutinee prunes to its
+    /// selected arm during constraint generation. See the `comptime_values`
+    /// field (RUE-268). `None` (ordinary functions) leaves every match
+    /// runtime.
+    pub fn with_comptime_values(
+        mut self,
+        comptime_values: Option<&'a HashMap<Spur, ConstValue>>,
+    ) -> Self {
+        self.comptime_values = comptime_values;
         self
     }
 
@@ -1234,6 +1258,26 @@ impl<'a> ConstraintGenerator<'a> {
                 let scrutinee_info = self.generate(*scrutinee, ctx);
                 let arms = self.rir.get_match_arms(*arms_start, *arms_len);
 
+                // Comptime-known scrutinee (spec 4.14:19): when the scrutinee
+                // is a comptime value known for this specialization, sema
+                // selects and analyzes only the matching arm's body. Inference
+                // must mirror that here — cross-constraining all arms would
+                // reject a valid program whose statically-unselected arm has a
+                // deliberately different type (RUE-268). Only the selected arm
+                // participates; its body's type is the match's type. Any shape
+                // this doesn't understand falls through to the runtime path,
+                // which unifies every arm (so a genuine runtime match still
+                // errors when arms disagree). This is a strict subset of the
+                // scrutinees sema prunes, so the selected arm always has an
+                // inferred type when sema later prunes to it.
+                if let Some(selected) = self.comptime_selected_arm(*scrutinee, &arms) {
+                    ctx.push_scope();
+                    let body_info = self.generate(selected, ctx);
+                    ctx.pop_scope();
+                    self.record_type(inst_ref, body_info.ty.clone());
+                    return ExprInfo::new(body_info.ty, span);
+                }
+
                 // Collect arm types, handling Never coercion
                 let mut arm_types: Vec<ExprInfo> = Vec::new();
                 for (pattern, body) in arms.iter() {
@@ -1794,6 +1838,15 @@ impl<'a> ConstraintGenerator<'a> {
         let lhs_info = self.generate(lhs, ctx);
         let rhs_info = self.generate(rhs, ctx);
 
+        // A diverging operand (`!`, e.g. `n - match m {}`) makes the whole
+        // expression diverge. Never coerces to any type (spec 3.4:3-4), so
+        // don't constrain the operands to one another — doing so would drag an
+        // integer literal to `!` and then bogusly range-check it against `!`
+        // (RUE-270). The result is `!`; the surrounding context coerces it.
+        if Self::is_never_concrete(&lhs_info.ty) || Self::is_never_concrete(&rhs_info.ty) {
+            return InferType::Concrete(Type::NEVER);
+        }
+
         // Both operands must have the same type
         // Use a fresh type variable for the result
         let result_var = self.fresh_var();
@@ -1816,6 +1869,12 @@ impl<'a> ConstraintGenerator<'a> {
         result_ty
     }
 
+    /// Whether `ty` is *concretely* the never type `!` (a diverging expression),
+    /// as opposed to an unresolved type variable that might resolve to it.
+    fn is_never_concrete(ty: &InferType) -> bool {
+        matches!(ty, InferType::Concrete(t) if t.is_never())
+    }
+
     /// Generate constraints for the `+` operator (RUE-17 Phase 1, ADR-0035).
     ///
     /// `+` is arithmetic addition on integers and concatenation on two
@@ -1832,6 +1891,15 @@ impl<'a> ConstraintGenerator<'a> {
     ) -> InferType {
         let lhs_info = self.generate(lhs, ctx);
         let rhs_info = self.generate(rhs, ctx);
+
+        // A diverging operand (`!`, e.g. `1 + match n {}`) makes the whole
+        // expression diverge; never coerces to any type (spec 3.4:3-4). Don't
+        // constrain the operands to one another (that would drag the integer
+        // literal `1` to `!` and range-check it against `!`, RUE-270). Checked
+        // before the String-concat overload so `s + match n {}` also diverges.
+        if Self::is_never_concrete(&lhs_info.ty) || Self::is_never_concrete(&rhs_info.ty) {
+            return InferType::Concrete(Type::NEVER);
+        }
 
         if self.is_string_concrete(&lhs_info.ty) || self.is_string_concrete(&rhs_info.ty) {
             let string_ty = self.string_infer_type();
@@ -1999,6 +2067,91 @@ impl<'a> ConstraintGenerator<'a> {
             }
             _ => None,
         }
+    }
+
+    /// If `scrutinee` is a comptime value known for this specialization and the
+    /// arm patterns form an exhaustive set this understands (integer/boolean
+    /// literals plus a wildcard), return the body of the single arm the value
+    /// selects. Mirrors sema's comptime arm selection (`analyze_match`, spec
+    /// 4.14:19) so inference constrains only the selected arm; the constraint
+    /// generator otherwise cross-constrains every arm and rejects a valid
+    /// program whose statically-unselected arm has a different type (RUE-268).
+    ///
+    /// Returns `None` — meaning "constrain all arms as a runtime match" — for
+    /// any shape not understood (a non-comptime or compound scrutinee, an enum
+    /// pattern, a non-exhaustive set). The comptime cases handled here are a
+    /// strict subset of those sema prunes with the same value and patterns, so
+    /// whenever this prunes, sema also prunes to the *same* arm — the only arm
+    /// whose body inference generated a type for.
+    fn comptime_selected_arm(
+        &self,
+        scrutinee: InstRef,
+        arms: &[(rue_rir::RirPattern, InstRef)],
+    ) -> Option<InstRef> {
+        use rue_rir::RirPattern;
+
+        // Only a bare reference to a comptime value parameter is evaluated
+        // here; richer scrutinees are left to sema's own selection.
+        // `ConstValue` is `Copy`, so take an owned copy for the match below.
+        let value: ConstValue = match &self.rir.get(scrutinee).data {
+            InstData::VarRef { name } | InstData::ParamRef { name, .. } => {
+                *self.comptime_values?.get(name)?
+            }
+            _ => return None,
+        };
+
+        let mut selected: Option<InstRef> = None;
+        let mut has_wildcard = false;
+        let mut bool_true_covered = false;
+        let mut bool_false_covered = false;
+        for (pattern, body) in arms {
+            let matched = match pattern {
+                RirPattern::Wildcard(_) => {
+                    has_wildcard = true;
+                    true
+                }
+                RirPattern::Int {
+                    value: magnitude,
+                    negative,
+                    ..
+                } => match value {
+                    ConstValue::Integer(n) => {
+                        let pat = if *negative {
+                            -(*magnitude as i128)
+                        } else {
+                            *magnitude as i128
+                        };
+                        pat == n
+                    }
+                    // Value/pattern kind mismatch — fall back to runtime path.
+                    _ => return None,
+                },
+                RirPattern::Bool(b, _) => match value {
+                    ConstValue::Bool(v) => {
+                        if *b {
+                            bool_true_covered = true;
+                        } else {
+                            bool_false_covered = true;
+                        }
+                        *b == v
+                    }
+                    _ => return None,
+                },
+                // Enum patterns: not understood here — runtime path.
+                _ => return None,
+            };
+            if matched && selected.is_none() {
+                selected = Some(*body);
+            }
+        }
+
+        // Exhaustiveness is a property of the pattern set (spec 4.7:9), still
+        // required when the value is comptime-known: a wildcard, or both bool
+        // values for a bool scrutinee. A non-exhaustive set falls back so sema
+        // reports the proper diagnostic on the runtime path.
+        let exhaustive = has_wildcard
+            || (matches!(value, ConstValue::Bool(_)) && bool_true_covered && bool_false_covered);
+        if exhaustive { selected } else { None }
     }
 
     /// Resolve a signature type symbol with type-parameter substitution,

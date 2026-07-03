@@ -1520,6 +1520,40 @@ fn main() -> i32 {
 exit_code = 42
 
 [[case]]
+name = "comptime_match_dead_arm_not_type_checked"
+spec = ["4.14:19"]
+description = "An unselected arm body is exempt from type inference too: a dead arm may have a different type from the selected one without a type-mismatch error (RUE-268). The sibling comptime_match_dead_arm_not_analyzed used an i32 dead arm, so it never exercised the cross-arm type-equality constraint."
+source = """
+fn f(comptime n: i32) -> i32 {
+    match n {
+        0 => 42,
+        _ => "never taken, wrong type",
+    }
+}
+fn main() -> i32 {
+    f(0)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_match_selected_arm_is_match_type"
+spec = ["4.14:19"]
+description = "When the comptime value selects a later arm, that arm's type is the match's type — the dead first arm's incompatible type is ignored (RUE-268)"
+source = """
+fn f(comptime n: i32) -> i32 {
+    match n {
+        0 => "wrong",
+        _ => 7,
+    }
+}
+fn main() -> i32 {
+    f(1)
+}
+"""
+exit_code = 7
+
+[[case]]
 name = "comptime_match_bool_scrutinee"
 spec = ["4.14:19"]
 description = "Arm selection works for bool comptime scrutinees; both specializations pick their own arm"

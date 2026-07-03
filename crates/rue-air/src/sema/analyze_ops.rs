@@ -1731,6 +1731,22 @@ impl<'a> Sema<'a> {
             ));
         }
 
+        // Every payload binding must be a fresh name (spec 4.7:30). Reusing an
+        // identifier — `Rect(w, w)` — silently shadows the earlier binding and
+        // discards its value, so reject it (E0484, analogous to Rust E0416)
+        // rather than losing a field (RUE-269). Wildcards never reach here:
+        // `_` in payload position isn't a binding.
+        for (i, name) in bindings.iter().enumerate() {
+            if bindings[..i].contains(name) {
+                return Err(CompileError::new(
+                    ErrorKind::DuplicatePatternBinding {
+                        name: self.interner.resolve(name).to_string(),
+                    },
+                    pattern_span,
+                ));
+            }
+        }
+
         let mut stmts: Vec<u32> = Vec::with_capacity(bindings.len() * 2);
         for (i, binding_name) in bindings.iter().enumerate() {
             let field_ty = payload[i];
