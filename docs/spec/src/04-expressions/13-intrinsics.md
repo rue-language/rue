@@ -87,11 +87,20 @@ full semantics):
 {{ rule(id="4.13:5b", cat="informative") }}
 
 The compiler frontend additionally reserves the names `@cast`, `@panic`, and
-`@assert`. Their behavior is not yet stabilized — the current implementation
-does not lower them to correct code (`@cast` fails type inference; `@panic` and
-`@assert` compile but have no runtime effect) — so they are intentionally
-omitted from the inventory above and left unspecified. Use `@intCast` for
-integer conversions until `@cast` is specified.
+`@assert`. Their surface syntax is not yet fully stabilized, so they are omitted
+from the normative inventory above, but they are no longer no-ops (RUE-319):
+
+- `@panic(msg?)` aborts the process. It writes `panic: <msg>` (or just `panic`
+  when called with no argument) to standard error and exits with status 101 —
+  the same abort discipline as the `@intCast` overflow, division-by-zero, and
+  bounds-check traps.
+- `@assert(cond, msg?)` evaluates the boolean `cond`. When `cond` is `false` it
+  aborts exactly like `@panic`: with a message it writes `panic: <msg>`,
+  otherwise it writes `assertion failed`, and in both cases exits with status
+  101. When `cond` is `true` it has no effect.
+- `@cast` is rejected at compile time with a diagnostic directing the programmer
+  to `@intCast`; it never had a working inference rule and is fully redundant
+  with `@intCast`. Use `@intCast` for integer conversions.
 
 ## `@dbg`
 

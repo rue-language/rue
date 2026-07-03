@@ -992,14 +992,16 @@ impl<'a> ConstraintGenerator<'a> {
                 let intrinsic_name = self.interner.resolve(name);
                 let args = self.rir.get_inst_refs(*args_start, *args_len);
 
-                if intrinsic_name == "intCast" {
-                    // @intCast: target type is inferred from context
-                    // The argument must be an integer type
-                    if !args.is_empty() {
-                        let arg_info = self.generate(args[0], ctx);
-                        // Constraint: argument must be an integer
-                        // We'll check this in sema, for now just process the argument
-                        let _ = arg_info;
+                if intrinsic_name == "intCast" || intrinsic_name == "cast" {
+                    // @intCast: target type is inferred from context.
+                    // @cast: a fresh var here too, so sema can reject it with a
+                    // clean "use @intCast" diagnostic instead of inference
+                    // masking it with a type-mismatch error (RUE-319).
+                    // The argument must be an integer type.
+                    for arg_ref in args.iter() {
+                        // Process arguments for constraint generation; the
+                        // integer check happens in sema.
+                        let _ = self.generate(*arg_ref, ctx);
                     }
                     // Return type is inferred from context - create a fresh type variable
                     let result_var = self.fresh_var();
@@ -1009,7 +1011,7 @@ impl<'a> ConstraintGenerator<'a> {
                     // The concrete Option type comes from context (a `let`
                     // annotation or the match arms the result feeds), so use a
                     // fresh variable and let unification resolve it — mirroring
-                    // @intCast/@cast. Sema validates the resolved type is an
+                    // @intCast. Sema validates the resolved type is an
                     // Option-shaped enum over String.
                     let result_var = self.fresh_var();
                     InferType::Var(result_var)

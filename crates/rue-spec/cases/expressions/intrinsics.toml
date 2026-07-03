@@ -43,6 +43,87 @@ compile_fail = true
 error_contains = "unknown intrinsic"
 
 # =============================================================================
+# Reserved-but-unspecified intrinsics: @panic / @assert / @cast (4.13:5b, RUE-319)
+#
+# @panic and @assert are not in the normative inventory yet, but they are no
+# longer silent no-ops: they abort the process (message to stderr, exit 101),
+# the same abort discipline as the @intCast overflow trap. @cast is rejected
+# at compile time in favor of @intCast.
+# =============================================================================
+
+[[case]]
+name = "panic_with_message_aborts"
+spec = ["4.13:5b"]
+source = """
+fn main() -> i32 {
+    @panic("boom");
+    0
+}
+"""
+exit_code = 101
+stderr_contains = "panic: boom"
+
+[[case]]
+name = "panic_no_message_aborts"
+spec = ["4.13:5b"]
+source = """
+fn main() -> i32 {
+    @panic();
+    0
+}
+"""
+exit_code = 101
+stderr_contains = "panic"
+
+[[case]]
+name = "assert_false_aborts"
+spec = ["4.13:5b"]
+source = """
+fn main() -> i32 {
+    @assert(false);
+    0
+}
+"""
+exit_code = 101
+stderr_contains = "assertion failed"
+
+[[case]]
+name = "assert_true_passes"
+spec = ["4.13:5b"]
+source = """
+fn main() -> i32 {
+    @assert(true);
+    42
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "assert_false_with_message_aborts"
+spec = ["4.13:5b"]
+source = """
+fn main() -> i32 {
+    @assert(1 == 2, "one is not two");
+    0
+}
+"""
+exit_code = 101
+stderr_contains = "one is not two"
+
+[[case]]
+name = "cast_rejected_use_intcast"
+spec = ["4.13:5b"]
+source = """
+fn main() -> i32 {
+    let x: i64 = 5;
+    let y: i32 = @cast(x);
+    y
+}
+"""
+compile_fail = true
+error_contains = "intCast"
+
+# =============================================================================
 # @dbg Intrinsic
 # =============================================================================
 

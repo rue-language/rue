@@ -2852,6 +2852,40 @@ impl<'a> CfgLower<'a> {
                         let vreg = self.get_vreg(lvalue_val);
                         self.value_map.insert(value, vreg);
                     }
+                } else if name_str == "panic" {
+                    // @panic(msg?) — abort the process with a message on stderr
+                    // and exit code 101, the same abort discipline as the other
+                    // runtime traps (RUE-319). Never returns; any code the
+                    // compiler emits after this point is dead at runtime.
+                    let args = self.ctx.cfg.get_extra(*args_start, *args_len);
+                    if args.is_empty() {
+                        let symbol_id = self.intern_symbol("__rue_panic_no_msg");
+                        self.mir.push(X86Inst::CallRel { symbol_id });
+                    } else {
+                        self.emit_panic_with_msg(args[0]);
+                    }
+                } else if name_str == "assert" {
+                    // @assert(cond, msg?) — abort iff `cond` is false (RUE-319).
+                    // A true condition falls through with no effect.
+                    let args = self.ctx.cfg.get_extra(*args_start, *args_len);
+                    let cond_val = args[0];
+                    let msg_val = args.get(1).copied();
+                    let cond_vreg = self.get_vreg(cond_val);
+                    let pass_label = self.new_label();
+                    // cond != 0 (true) → skip the abort.
+                    self.mir.push(X86Inst::CmpRI {
+                        src: Operand::Virtual(cond_vreg),
+                        imm: 0,
+                    });
+                    self.mir.push(X86Inst::Jnz { label: pass_label });
+                    match msg_val {
+                        Some(msg) => self.emit_panic_with_msg(msg),
+                        None => {
+                            let symbol_id = self.intern_symbol("__rue_assert_failed");
+                            self.mir.push(X86Inst::CallRel { symbol_id });
+                        }
+                    }
+                    self.mir.push(X86Inst::Label { id: pass_label });
                 }
             }
 
@@ -3474,6 +3508,35 @@ impl<'a> CfgLower<'a> {
         let symbol_id = self.intern_symbol("__rue_overflow");
         self.mir.push(X86Inst::CallRel { symbol_id });
         self.mir.push(X86Inst::Label { id: ok_label });
+    }
+
+    /// Emit an aborting call to `__rue_panic(ptr, len)` for `@panic("msg")` and
+    /// `@assert(cond, "msg")` (RUE-319). `msg_val` is the CFG value of the
+    /// message `String`; its fat pointer supplies the `ptr`/`len` arguments.
+    /// Never returns at runtime.
+    fn emit_panic_with_msg(&mut self, msg_val: CfgValue) {
+        if let Some(field_vregs) = self.get_or_compute_field_vregs(msg_val) {
+            // A String is a (ptr, len, cap) fat pointer; pass ptr in RDI, len in RSI.
+            assert_eq!(
+                field_vregs.len(),
+                3,
+                "panic message string should have exactly 3 vregs (ptr, len, cap)"
+            );
+            let ptr_vreg = field_vregs[0];
+            let len_vreg = field_vregs[1];
+            self.mir.push(X86Inst::MovRR {
+                dst: Operand::Physical(Reg::Rdi),
+                src: Operand::Virtual(ptr_vreg),
+            });
+            self.mir.push(X86Inst::MovRR {
+                dst: Operand::Physical(Reg::Rsi),
+                src: Operand::Virtual(len_vreg),
+            });
+            let symbol_id = self.intern_symbol("__rue_panic");
+            self.mir.push(X86Inst::CallRel { symbol_id });
+        } else {
+            unreachable!("panic/assert message must be a string with field vregs");
+        }
     }
 
     /// Emit integer cast range check.
