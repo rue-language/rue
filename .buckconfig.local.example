@@ -1,4 +1,4 @@
-# BuildBuddy remote build cache — opt-in local config (RUE-316).
+# BuildBuddy remote cache + remote execution — opt-in local config (RUE-316).
 #
 # Copy this file to `.buckconfig.local` (gitignored) and paste your BuildBuddy
 # API key. buck2 reads `.buckconfig.local` automatically and layers it over
@@ -11,18 +11,31 @@
 # Get the key from https://app.buildbuddy.io (Settings -> API keys). CI reads the
 # same key from the BUILDBUDDY_API_KEY repo secret instead of this file.
 #
-# This is CACHE-ONLY: actions execute locally, only the action cache + CAS are
-# remote (so it can't affect build correctness, only speed). The remote cache
-# persists across daemon restarts and machines — which the local OSS buck2 cache
-# does not (see .github/workflows/ci.yml).
+# With this config, a normal `buck2 build` uses the remote action cache (actions
+# execute locally, cache is shared across machines + daemon restarts). Adding
+# `--prefer-remote` runs the WHOLE build on BuildBuddy's workers (verified: the
+# full compiler builds with 171/175 actions remote, 0 local). Remote execution is
+# possible because the rust toolchain ships its own tree (rustc finds its libs via
+# $ORIGIN under RE) and links via `cc`+lld; the remote_cache platform pins the
+# rbe-ubuntu22-04 container image (Python 3.10 for the prelude's rustc wrapper).
+#
+# The exact knobs below matter (all three were required to connect):
+#   - grpc:// scheme on the addresses (buck2 rejects grpcs://; tls=true upgrades)
+#   - digest_algorithms = SHA256 (BuildBuddy's CAS digest)
+#   - remote_enabled=True in the platform (OSS buck2 only opens the RE connection
+#     when remote is enabled — even for cache-only use)
 
 [buck2_re_client]
-engine_address = remote.buildbuddy.io
-action_cache_address = remote.buildbuddy.io
-cas_address = remote.buildbuddy.io
+engine_address = grpc://remote.buildbuddy.io
+action_cache_address = grpc://remote.buildbuddy.io
+cas_address = grpc://remote.buildbuddy.io
 tls = true
 http_headers = x-buildbuddy-api-key:<YOUR_BUILDBUDDY_API_KEY>
 
+[buck2]
+digest_algorithms = SHA256
+
 [build]
-# Route execution through the cache-only platform (local exec + remote cache).
+# Route execution through the remote-cache/RE platform (local exec + remote cache
+# by default; full remote execution with --prefer-remote).
 execution_platforms = root//platforms:remote_cache

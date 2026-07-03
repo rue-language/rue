@@ -55,9 +55,16 @@ def _hermetic_rust_toolchain_impl(ctx: AnalysisContext) -> list[Provider]:
     rustdoc_bin = dist.project("rustc/bin/rustdoc")
     clippy_bin = dist.project("clippy-preview/bin/clippy-driver")
 
-    # Create RunInfo for each tool
-    compiler = RunInfo(args = [rustc_bin])
-    rustdoc = RunInfo(args = [rustdoc_bin])
+    # Create RunInfo for each tool. Include the full distribution as a hidden
+    # input so rustc/rustdoc's native $ORIGIN/../lib RPATH resolves under REMOTE
+    # execution too: RE materializes the toolchain tree on the remote worker, so
+    # rustc/bin/rustc must land co-located with rustc/lib/ (where librustc_driver
+    # lives). Locally the http_archive tree is already co-located, so this is a
+    # no-op there; on RE it's what makes rustc find its shared libs (RUE-316).
+    # This is the relocatable, canonical approach ($ORIGIN RPATH), not an
+    # absolute-path LD_LIBRARY_PATH hack.
+    compiler = RunInfo(args = cmd_args(rustc_bin, hidden = [dist]))
+    rustdoc = RunInfo(args = cmd_args(rustdoc_bin, hidden = [dist]))
 
     # clippy-driver dynamically loads librustc_driver from rustc/lib/, but
     # unlike rustc that dir isn't on the loader's search path, so a bare
