@@ -1090,6 +1090,60 @@ impl<'a> ConstraintGenerator<'a> {
                     }
                     let result_var = self.fresh_var();
                     InferType::Var(result_var)
+                } else if intrinsic_name == "alloc" {
+                    // @alloc(count: u64) -> ptr mut T. The element type T (and
+                    // thus the result pointer type) is inferred from context,
+                    // exactly like @int_to_ptr; sema validates it is `ptr mut T`.
+                    // Constrain `count` to u64 so a bare integer literal
+                    // (`@alloc(4)`) defaults to u64 rather than i64.
+                    for arg_ref in args.iter() {
+                        let info = self.generate(*arg_ref, ctx);
+                        self.add_constraint(Constraint::equal(
+                            info.ty,
+                            InferType::Concrete(Type::U64),
+                            info.span,
+                        ));
+                    }
+                    let result_var = self.fresh_var();
+                    InferType::Var(result_var)
+                } else if intrinsic_name == "realloc" {
+                    // @realloc(ptr: ptr mut T, old_count: u64, new_count: u64)
+                    // -> ptr mut T. The result type is the same pointer type as
+                    // the first argument; unify a fresh var with arg0's type so
+                    // it flows in both directions. Counts are constrained to u64.
+                    let mut first_ty: Option<InferType> = None;
+                    for (i, arg_ref) in args.iter().enumerate() {
+                        let info = self.generate(*arg_ref, ctx);
+                        if i == 0 {
+                            first_ty = Some(info.ty);
+                        } else {
+                            self.add_constraint(Constraint::equal(
+                                info.ty,
+                                InferType::Concrete(Type::U64),
+                                info.span,
+                            ));
+                        }
+                    }
+                    let result_var = self.fresh_var();
+                    let result_ty = InferType::Var(result_var);
+                    if let Some(arg0_ty) = first_ty {
+                        self.add_constraint(Constraint::equal(result_ty.clone(), arg0_ty, span));
+                    }
+                    result_ty
+                } else if intrinsic_name == "free" {
+                    // @free(ptr: ptr mut T, count: u64) -> (). Constrain the
+                    // `count` (second) argument to u64.
+                    for (i, arg_ref) in args.iter().enumerate() {
+                        let info = self.generate(*arg_ref, ctx);
+                        if i == 1 {
+                            self.add_constraint(Constraint::equal(
+                                info.ty,
+                                InferType::Concrete(Type::U64),
+                                info.span,
+                            ));
+                        }
+                    }
+                    InferType::Concrete(Type::UNIT)
                 } else if intrinsic_name == "int_to_ptr" || intrinsic_name == "null_ptr" {
                     // @int_to_ptr / @null_ptr: returns a pointer type inferred from context
                     for arg_ref in args.iter() {

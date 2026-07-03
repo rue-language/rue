@@ -1,0 +1,135 @@
+# Heap Allocation Intrinsic Tests
+#
+# Tests for @alloc / @free / @realloc — the raw, unchecked heap primitives
+# (RUE-1). Like the raw-pointer intrinsics they must appear inside a `checked`
+# block. These are the primitives a source-level `Vec` is built on.
+
+[section]
+id = "runtime.heap"
+spec_chapter = "9.2"
+name = "Heap Allocation Intrinsics"
+description = "Tests for @alloc, @free, and @realloc heap intrinsics"
+
+# =============================================================================
+# @alloc allocates a typed block; write/read through the returned pointer.
+# =============================================================================
+
+[[case]]
+name = "alloc_write_read"
+spec = ["9.2:9", "9.2:10"]
+source = """
+fn main() -> i32 {
+    checked {
+        let p: ptr mut i32 = @alloc(4);
+        @ptr_write(p, 42);
+        @ptr_read(p)
+    }
+}
+"""
+exit_code = 42
+
+# @alloc + @ptr_offset addresses successive elements (element i at offset i).
+[[case]]
+name = "alloc_multiple_elements"
+spec = ["9.2:10"]
+source = """
+fn main() -> i32 {
+    checked {
+        let p: ptr mut i32 = @alloc(3);
+        @ptr_write(p, 10);
+        @ptr_write(@ptr_offset(p, 1), 20);
+        @ptr_write(@ptr_offset(p, 2), 30);
+        @ptr_read(p) + @ptr_read(@ptr_offset(p, 1)) + @ptr_read(@ptr_offset(p, 2))
+    }
+}
+"""
+exit_code = 60
+
+# =============================================================================
+# @free releases an allocated block (value read out before freeing).
+# =============================================================================
+
+[[case]]
+name = "alloc_then_free"
+spec = ["9.2:11"]
+source = """
+fn main() -> i32 {
+    checked {
+        let p: ptr mut i32 = @alloc(2);
+        @ptr_write(p, 7);
+        let v: i32 = @ptr_read(p);
+        @free(p, 2);
+        v
+    }
+}
+"""
+exit_code = 7
+
+# =============================================================================
+# @realloc grows a block and preserves the existing contents.
+# =============================================================================
+
+[[case]]
+name = "realloc_preserves_contents"
+spec = ["9.2:12"]
+source = """
+fn main() -> i32 {
+    checked {
+        let mut p: ptr mut i32 = @alloc(2);
+        @ptr_write(p, 5);
+        @ptr_write(@ptr_offset(p, 1), 7);
+        p = @realloc(p, 2, 8);
+        let sum: i32 = @ptr_read(p) + @ptr_read(@ptr_offset(p, 1));
+        @free(p, 8);
+        sum
+    }
+}
+"""
+exit_code = 12
+
+# @realloc of a null pointer behaves like a fresh @alloc.
+[[case]]
+name = "realloc_null_is_alloc"
+spec = ["9.2:12"]
+source = """
+fn main() -> i32 {
+    checked {
+        let zero: u64 = 0;
+        let start: ptr mut i32 = @int_to_ptr(zero);
+        let p: ptr mut i32 = @realloc(start, 0, 4);
+        @ptr_write(p, 99);
+        let v: i32 = @ptr_read(p);
+        @free(p, 4);
+        v
+    }
+}
+"""
+exit_code = 99
+
+# =============================================================================
+# Legality: heap intrinsics require a `checked` block.
+# =============================================================================
+
+[[case]]
+name = "alloc_requires_checked"
+spec = ["9.2:13"]
+source = """
+fn main() -> i32 {
+    let p: ptr mut i32 = @alloc(4);
+    0
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "free_requires_checked"
+spec = ["9.2:13"]
+source = """
+fn main() -> i32 {
+    let zero: u64 = 0;
+    let p: ptr mut i32 = checked { @int_to_ptr(zero) };
+    @free(p, 4);
+    0
+}
+"""
+compile_fail = true

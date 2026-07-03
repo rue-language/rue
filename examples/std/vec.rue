@@ -1,0 +1,167 @@
+// Vec(T) — a growable, heap-backed collection written in Rue (RUE-1, ADR-0041).
+//
+// This is a *source-level* standard-library type: it owns a heap buffer
+// addressed by a raw `ptr mut T` and grows it (amortized 2x) with the unchecked
+// heap intrinsics `@alloc`/`@realloc`/`@free`, all confined to `checked {}`
+// blocks behind a safe method API. It exercises comptime generics, `inout self`
+// mutation, and the raw-pointer intrinsics all at once — exactly the "stdlib on
+// unchecked code" framing of RUE-1.
+//
+// Usage (the element type is chosen when you instantiate the type function):
+//
+//     let V = @import("vec.rue").Vec(i32);   // or, same-directory, just Vec(i32)
+//     let mut v = V::new();
+//     v.push(10);
+//     v.push(20);
+//     let n = v.len();          // 2
+//     let x = v.get(0);         // 10
+//     v.set(0, 99);
+//     let last = v.pop_or(0);   // 20
+//     v.free();                 // release the buffer
+//
+// Requires `--preview method_receivers` (borrow/inout receivers, ADR-0037).
+//
+// SCOPE / KNOWN LIMITATIONS (tracked separately — this file deliberately does
+// not work around them):
+//
+//   * Copy element types only. `get`/`pop_or` return an element *by copy*
+//     (`@ptr_read`). Move-out of a non-Copy element and an `Option`-returning
+//     accessor are blocked today because the enclosing comptime type parameter
+//     `T` is not usable inside a method body to name `Option(T)` (E1201), so the
+//     API uses caller-supplied defaults (`get_or`, `pop_or`) for out-of-bounds
+//     instead of `Option(T)`. See the meta report for RUE issue references.
+//   * No automatic destructor. A `drop fn` cannot attach to the anonymous
+//     struct produced by a comptime type function (E0417), so the buffer is not
+//     freed automatically at scope exit — call `free()` explicitly. (The
+//     `@free`-from-a-destructor path itself works and is proven on a concrete
+//     named struct; it is the *generic* attachment that is blocked.)
+//   * Element type must be a single 8-byte slot (scalars: iN/uN/bool, or a
+//     one-field struct). Multi-slot aggregate elements are miscompiled by the
+//     aggregate raw-pointer path (descending slot offsets underflow the
+//     ascending heap element base) — a separate raw-pointer bug, not a Vec bug.
+
+pub fn Vec(comptime T: type) -> type {
+    struct {
+        buf: ptr mut T,
+        len: u64,
+        cap: u64,
+
+        // --- construction ---
+
+        // An empty vector. No allocation is performed until the first push.
+        fn new() -> Self {
+            let zero: u64 = 0;
+            Self {
+                buf: checked { @int_to_ptr(zero) },
+                len: 0,
+                cap: 0,
+            }
+        }
+
+        // An empty vector with room pre-reserved for `n` elements.
+        fn with_capacity(n: u64) -> Self {
+            let zero: u64 = 0;
+            let mut v = Self { buf: checked { @int_to_ptr(zero) }, len: 0, cap: 0 };
+            if n > 0 {
+                // `@realloc` of the null buffer allocates a fresh block; its
+                // result type is inferred from `v.buf` (a `ptr mut T` field),
+                // so no `T` annotation is needed in the method body.
+                checked {
+                    let grown = @realloc(v.buf, v.cap, n);
+                    v.buf = grown;
+                };
+                v.cap = n;
+            }
+            v
+        }
+
+        // --- reads ---
+
+        fn len(borrow self) -> u64 { self.len }
+        fn capacity(borrow self) -> u64 { self.cap }
+        fn is_empty(borrow self) -> bool { self.len == 0 }
+
+        // Element `i` by copy. The caller must ensure `i < len` (use `get_or`
+        // for a bounds-checked read). Reading out of bounds is a heap OOB read.
+        fn get(borrow self, i: u64) -> T {
+            checked { @ptr_read(@ptr_offset(self.buf, i)) }
+        }
+
+        // Element `i` by copy, or `default` when `i` is out of bounds. This is
+        // the non-trapping accessor (the `Copy`-only stand-in for the
+        // `Option(T)`-returning `get` described in ADR-0041, blocked today).
+        fn get_or(borrow self, i: u64, default: T) -> T {
+            if i < self.len {
+                checked { @ptr_read(@ptr_offset(self.buf, i)) }
+            } else {
+                default
+            }
+        }
+
+        // --- mutation ---
+
+        // Ensure there is room for at least one more element, growing the
+        // buffer (amortized 2x) when full. Internal helper.
+        fn reserve(inout self) {
+            if self.len == self.cap {
+                let new_cap: u64 = if self.cap == 0 { 4 } else { self.cap * 2 };
+                checked {
+                    let grown = @realloc(self.buf, self.cap, new_cap);
+                    self.buf = grown;
+                };
+                self.cap = new_cap;
+            }
+        }
+
+        // Append `x` to the end, growing if necessary.
+        fn push(inout self, x: T) {
+            self.reserve();
+            checked {
+                let slot = @ptr_offset(self.buf, self.len);
+                @ptr_write(slot, x);
+            };
+            self.len = self.len + 1;
+        }
+
+        // Remove and return the last element, or `default` when empty. (The
+        // `Option(T)`-returning `pop` of ADR-0041 is blocked today; this is the
+        // Copy-typed stand-in.)
+        fn pop_or(inout self, default: T) -> T {
+            if self.len == 0 {
+                default
+            } else {
+                self.len = self.len - 1;
+                checked { @ptr_read(@ptr_offset(self.buf, self.len)) }
+            }
+        }
+
+        // Overwrite element `i` with `x`. Out-of-bounds indices are ignored.
+        fn set(inout self, i: u64, x: T) {
+            if i < self.len {
+                checked {
+                    let slot = @ptr_offset(self.buf, i);
+                    @ptr_write(slot, x);
+                };
+            }
+        }
+
+        // Drop all elements (keeps the allocated capacity). For Copy `T` this
+        // just resets the length.
+        fn clear(inout self) {
+            self.len = 0;
+        }
+
+        // --- teardown ---
+
+        // Release the heap buffer and reset to the empty state. Because a
+        // generic anonymous struct cannot yet carry a `drop fn` (E0417), this
+        // must be called explicitly to avoid leaking the buffer.
+        fn free(inout self) {
+            checked { @free(self.buf, self.cap); };
+            let zero: u64 = 0;
+            self.buf = checked { @int_to_ptr(zero) };
+            self.len = 0;
+            self.cap = 0;
+        }
+    }
+}

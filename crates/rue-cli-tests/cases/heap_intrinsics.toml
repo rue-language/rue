@@ -1,0 +1,105 @@
+# @alloc / @free / @realloc heap intrinsics driven the way a user does — real
+# files, the real driver, real program exit codes and stdout (RUE-1).
+#
+# These are the unchecked heap primitives a source-level Vec is built on. The
+# runtime __rue_alloc/__rue_free/__rue_realloc are already used by String, so
+# these cases also confirm the archive symbols resolve when referenced only
+# from user code.
+
+[section]
+id = "cli.heap_intrinsics"
+name = "Heap allocation intrinsics"
+description = "@alloc/@free/@realloc allocate, free, and grow heap blocks (RUE-1)."
+
+# Allocate a buffer, write/read three elements through it, then free it.
+[[case]]
+name = "alloc_write_read_free"
+description = "Round-trips values through an @alloc'd i32 buffer and frees it."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    checked {
+        let p: ptr mut i32 = @alloc(3);
+        @ptr_write(p, 10);
+        @ptr_write(@ptr_offset(p, 1), 20);
+        @ptr_write(@ptr_offset(p, 2), 30);
+        @dbg(@ptr_read(p));
+        @dbg(@ptr_read(@ptr_offset(p, 1)));
+        @dbg(@ptr_read(@ptr_offset(p, 2)));
+        @free(p, 3);
+        @ptr_read(p) + @ptr_read(@ptr_offset(p, 1)) + @ptr_read(@ptr_offset(p, 2))
+    }
+}
+""" }]
+stdout = "10\n20\n30\n"
+exit_code = 60
+
+# @realloc grows a block and preserves the earlier contents.
+[[case]]
+name = "realloc_grows_and_preserves"
+description = "Growing an @alloc'd block with @realloc keeps the existing elements."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    checked {
+        let mut p: ptr mut i32 = @alloc(2);
+        @ptr_write(p, 5);
+        @ptr_write(@ptr_offset(p, 1), 7);
+        p = @realloc(p, 2, 16);
+        @ptr_write(@ptr_offset(p, 8), 100);
+        let sum: i32 = @ptr_read(p) + @ptr_read(@ptr_offset(p, 1)) + @ptr_read(@ptr_offset(p, 8));
+        @free(p, 16);
+        sum
+    }
+}
+""" }]
+exit_code = 112
+
+# @free called from a user destructor: the whole owned-buffer-with-drop pattern
+# works on a concrete named struct (the generic-struct attachment is blocked;
+# see the meta report). Prints the live value, then the destructor's marker.
+[[case]]
+name = "free_from_destructor"
+description = "A struct that owns an @alloc'd buffer frees it in its `drop fn` at scope exit."
+files = [{ path = "main.rue", source = """
+struct Buf {
+    data: ptr mut i32,
+    cap: u64,
+    fn init() -> Self {
+        checked {
+            let p: ptr mut i32 = @alloc(4);
+            @ptr_write(p, 111);
+            Self { data: p, cap: 4 }
+        }
+    }
+    fn first(borrow self) -> i32 {
+        checked { @ptr_read(self.data) }
+    }
+}
+
+drop fn Buf(self) {
+    checked { @free(self.data, self.cap); };
+    @dbg(999);
+}
+
+fn main() -> i32 {
+    let b = Buf::init();
+    @dbg(b.first());
+    0
+}
+""" }]
+args = ["main.rue", "--preview", "method_receivers", "-o", "prog"]
+stdout = "111\n999\n"
+exit_code = 0
+
+# Heap intrinsics are unchecked: using @alloc outside a `checked` block is a
+# compile error.
+[[case]]
+name = "alloc_outside_checked_rejected"
+description = "@alloc outside a checked block is rejected (E1300)."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let p: ptr mut i32 = @alloc(4);
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["heap intrinsic `@alloc`", "checked"]

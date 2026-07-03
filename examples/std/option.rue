@@ -1,0 +1,24 @@
+// Option(T) — an optional value, written in Rue as a comptime-generic enum.
+//
+//     let OptI = @import("option.rue").Option(i32);
+//     let x: OptI = OptI::Some(42);
+//     match x {
+//         OptI::Some(v) => v,
+//         OptI::None => 0,
+//     }
+//
+// Requires `--preview enum_payloads`.
+//
+// NOTE: `Option(T)` works standalone (see the dogfood test), but it cannot yet
+// be *returned from a `Vec(T)` method* — the enclosing comptime type parameter
+// `T` is not usable inside a method body to name `Option(T)` (E1201), and
+// binding the type in the type-function body breaks comptime type folding
+// (E1200). Until that gap is closed, `Vec` uses caller-supplied defaults
+// (`get_or`/`pop_or`) rather than `Option(T)` accessors. See the meta report.
+
+pub fn Option(comptime T: type) -> type {
+    enum {
+        Some(T),
+        None,
+    }
+}

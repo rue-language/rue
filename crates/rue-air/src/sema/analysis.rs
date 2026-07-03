@@ -3625,12 +3625,12 @@ impl<'a> Sema<'a> {
             .collect();
         let known = &self.known;
 
-        // Raw-pointer intrinsics are unchecked operations: they may only be
-        // used inside a `checked` block (spec 9.1:1, chapter 9). Gate them
-        // before the per-intrinsic dispatch so every pointer intrinsic shares
-        // one diagnostic. `@syscall` has its own gating; the pointer set here
-        // is @raw/@raw_mut/@ptr_read/@ptr_write/@ptr_offset/@ptr_to_int/
-        // @int_to_ptr.
+        // Raw-pointer and heap intrinsics are unchecked operations: they may
+        // only be used inside a `checked` block (spec 9.1:1, chapter 9). Gate
+        // them before the per-intrinsic dispatch so every one shares a single
+        // diagnostic. `@syscall` has its own gating; the set here is
+        // @raw/@raw_mut/@ptr_read/@ptr_write/@ptr_offset/@ptr_to_int/
+        // @int_to_ptr plus the heap intrinsics @alloc/@free/@realloc (RUE-1).
         if ctx.checked_depth == 0
             && (name == known.ptr_read
                 || name == known.ptr_write
@@ -3638,12 +3638,20 @@ impl<'a> Sema<'a> {
                 || name == known.ptr_to_int
                 || name == known.int_to_ptr
                 || name == known.raw
-                || name == known.raw_mut)
+                || name == known.raw_mut
+                || name == known.alloc
+                || name == known.free
+                || name == known.realloc)
         {
             let intrinsic_name_str = self.interner.resolve(&name);
+            let kind = if name == known.alloc || name == known.free || name == known.realloc {
+                "heap"
+            } else {
+                "raw-pointer"
+            };
             return Err(CompileError::new(
                 ErrorKind::UncheckedOpRequiresChecked {
-                    what: format!("raw-pointer intrinsic `@{intrinsic_name_str}`"),
+                    what: format!("{kind} intrinsic `@{intrinsic_name_str}`"),
                 },
                 span,
             )
@@ -3687,6 +3695,12 @@ impl<'a> Sema<'a> {
             self.analyze_ptr_to_int_intrinsic(air, name, &args, span, ctx)
         } else if name == known.int_to_ptr {
             self.analyze_int_to_ptr_intrinsic(air, name, inst_ref, &args, span, ctx)
+        } else if name == known.alloc {
+            self.analyze_alloc_intrinsic(air, name, inst_ref, &args, span, ctx)
+        } else if name == known.free {
+            self.analyze_free_intrinsic(air, name, &args, span, ctx)
+        } else if name == known.realloc {
+            self.analyze_realloc_intrinsic(air, name, &args, span, ctx)
         } else if name == known.raw {
             self.analyze_addr_of_intrinsic(air, &args, span, ctx, false)
         } else if name == known.raw_mut {
@@ -6889,6 +6903,204 @@ impl<'a> Sema<'a> {
             span,
         });
         Ok(AnalysisResult::new(air_ref, result_type))
+    }
+
+    /// Analyze @alloc intrinsic: allocate an uninitialized heap block (RUE-1).
+    /// Signature: @alloc(count: u64) -> ptr mut T
+    /// The element type T (and thus the result pointer type `ptr mut T`) is
+    /// inferred from context, exactly like @int_to_ptr. The allocation is
+    /// `count * size_of(T)` bytes; the returned pointer is null on failure
+    /// (the caller is expected to check), so this is an unchecked operation.
+    fn analyze_alloc_intrinsic(
+        &mut self,
+        air: &mut Air,
+        name: Spur,
+        inst_ref: InstRef,
+        args: &[RirCallArg],
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AnalysisResult> {
+        if args.len() != 1 {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicWrongArgCount {
+                    name: "alloc".to_string(),
+                    expected: 1,
+                    found: args.len(),
+                },
+                span,
+            ));
+        }
+
+        let count_result = self.analyze_inst(air, args[0].value, ctx)?;
+        let count_type = count_result.ty;
+        if count_type != Type::U64 && !count_type.is_error() && !count_type.is_never() {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
+                    name: "alloc".to_string(),
+                    expected: "u64".to_string(),
+                    found: self.format_type_name(count_type),
+                })),
+                span,
+            ));
+        }
+
+        // The result type comes from HM inference (assignment/annotation
+        // context) and must be a mutable pointer `ptr mut T`.
+        let result_type = Self::get_resolved_type(ctx, inst_ref, span, "@alloc intrinsic")?;
+        if !result_type.is_ptr_mut() && !result_type.is_error() && !result_type.is_never() {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
+                    name: "alloc".to_string(),
+                    expected: "ptr mut T".to_string(),
+                    found: self.format_type_name(result_type),
+                })),
+                span,
+            ));
+        }
+
+        let args_start = air.add_extra(&[count_result.air_ref.as_u32()]);
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::Intrinsic {
+                name,
+                args_start,
+                args_len: 1,
+            },
+            ty: result_type,
+            span,
+        });
+        Ok(AnalysisResult::new(air_ref, result_type))
+    }
+
+    /// Analyze @free intrinsic: free a block previously `@alloc`'d (RUE-1).
+    /// Signature: @free(ptr: ptr mut T, count: u64) -> ()
+    /// `count` must match the element count passed to `@alloc` so the runtime
+    /// can compute the block size.
+    fn analyze_free_intrinsic(
+        &mut self,
+        air: &mut Air,
+        name: Spur,
+        args: &[RirCallArg],
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AnalysisResult> {
+        if args.len() != 2 {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicWrongArgCount {
+                    name: "free".to_string(),
+                    expected: 2,
+                    found: args.len(),
+                },
+                span,
+            ));
+        }
+
+        let ptr_result = self.analyze_inst(air, args[0].value, ctx)?;
+        let ptr_type = ptr_result.ty;
+        if !ptr_type.is_ptr_mut() && !ptr_type.is_error() && !ptr_type.is_never() {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
+                    name: "free".to_string(),
+                    expected: "ptr mut T".to_string(),
+                    found: self.format_type_name(ptr_type),
+                })),
+                span,
+            ));
+        }
+
+        let count_result = self.analyze_inst(air, args[1].value, ctx)?;
+        let count_type = count_result.ty;
+        if count_type != Type::U64 && !count_type.is_error() && !count_type.is_never() {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
+                    name: "free".to_string(),
+                    expected: "u64".to_string(),
+                    found: self.format_type_name(count_type),
+                })),
+                span,
+            ));
+        }
+
+        let args_start =
+            air.add_extra(&[ptr_result.air_ref.as_u32(), count_result.air_ref.as_u32()]);
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::Intrinsic {
+                name,
+                args_start,
+                args_len: 2,
+            },
+            ty: Type::UNIT,
+            span,
+        });
+        Ok(AnalysisResult::new(air_ref, Type::UNIT))
+    }
+
+    /// Analyze @realloc intrinsic: grow/shrink an `@alloc`'d block (RUE-1).
+    /// Signature: @realloc(ptr: ptr mut T, old_count: u64, new_count: u64) -> ptr mut T
+    /// The result pointer has the same type as `ptr`; contents up to
+    /// `min(old_count, new_count)` elements are preserved (runtime copies).
+    fn analyze_realloc_intrinsic(
+        &mut self,
+        air: &mut Air,
+        name: Spur,
+        args: &[RirCallArg],
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AnalysisResult> {
+        if args.len() != 3 {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicWrongArgCount {
+                    name: "realloc".to_string(),
+                    expected: 3,
+                    found: args.len(),
+                },
+                span,
+            ));
+        }
+
+        let ptr_result = self.analyze_inst(air, args[0].value, ctx)?;
+        let ptr_type = ptr_result.ty;
+        if !ptr_type.is_ptr_mut() && !ptr_type.is_error() && !ptr_type.is_never() {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
+                    name: "realloc".to_string(),
+                    expected: "ptr mut T".to_string(),
+                    found: self.format_type_name(ptr_type),
+                })),
+                span,
+            ));
+        }
+
+        let old_result = self.analyze_inst(air, args[1].value, ctx)?;
+        let new_result = self.analyze_inst(air, args[2].value, ctx)?;
+        for count_result in [&old_result, &new_result] {
+            let count_type = count_result.ty;
+            if count_type != Type::U64 && !count_type.is_error() && !count_type.is_never() {
+                return Err(CompileError::new(
+                    ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
+                        name: "realloc".to_string(),
+                        expected: "u64".to_string(),
+                        found: self.format_type_name(count_type),
+                    })),
+                    span,
+                ));
+            }
+        }
+
+        let args_start = air.add_extra(&[
+            ptr_result.air_ref.as_u32(),
+            old_result.air_ref.as_u32(),
+            new_result.air_ref.as_u32(),
+        ]);
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::Intrinsic {
+                name,
+                args_start,
+                args_len: 3,
+            },
+            ty: ptr_type,
+            span,
+        });
+        Ok(AnalysisResult::new(air_ref, ptr_type))
     }
 
     /// Analyze @addr_of / @addr_of_mut intrinsics: takes address of lvalue.
