@@ -1736,68 +1736,85 @@ where
         .delimited_by(just(TokenKind::LBracket), just(TokenKind::RBracket))
         .map(AssignSuffix::Index);
 
-    ident_parser()
-        .then(
-            choice((field_suffix, index_suffix))
-                .repeated()
-                .collect::<Vec<_>>(),
-        )
+    let suffix = choice((field_suffix, index_suffix));
+
+    // Identifier base: `x`, `x.a[0].b`, ... (a bare `x` is a variable target).
+    let ident_target = ident_parser()
+        .then(suffix.clone().repeated().collect::<Vec<_>>())
         .map(|(base_ident, suffixes)| {
             if suffixes.is_empty() {
                 // Simple variable: x
-                AssignTarget::Var(base_ident)
+                AssignTarget::Var(base_ident.clone())
             } else {
-                // Chain of field/index accesses: x.a[0].b...
-                // Build up the expression from left to right, consuming suffixes by value
-                let mut base_expr = Expr::Ident(base_ident);
-                let mut suffixes = suffixes.into_iter().peekable();
-                while let Some(suffix) = suffixes.next() {
-                    let is_last = suffixes.peek().is_none();
-                    if is_last {
-                        // The last suffix determines the target type
-                        return match suffix {
-                            AssignSuffix::Field(field) => {
-                                let span = base_expr.span().extend_to(field.span.end);
-                                AssignTarget::Field(FieldExpr {
-                                    base: Box::new(base_expr),
-                                    field,
-                                    span,
-                                })
-                            }
-                            AssignSuffix::Index(index) => {
-                                let span = base_expr.span().extend_to(index.span().end);
-                                AssignTarget::Index(IndexExpr {
-                                    base: Box::new(base_expr),
-                                    index: Box::new(index),
-                                    span,
-                                })
-                            }
-                        };
-                    }
-                    // Build intermediate expressions
-                    match suffix {
-                        AssignSuffix::Field(field) => {
-                            let span = base_expr.span().extend_to(field.span.end);
-                            base_expr = Expr::Field(FieldExpr {
-                                base: Box::new(base_expr),
-                                field,
-                                span,
-                            });
-                        }
-                        AssignSuffix::Index(index) => {
-                            let span = base_expr.span().extend_to(index.span().end);
-                            base_expr = Expr::Index(IndexExpr {
-                                base: Box::new(base_expr),
-                                index: Box::new(index),
-                                span,
-                            });
-                        }
-                    }
-                }
-                // This is unreachable since we already checked suffixes.is_empty()
-                unreachable!()
+                build_projected_assign_target(Expr::Ident(base_ident), suffixes)
             }
+        });
+
+    // `self` base: `self.a`, `self.a[0]`, ... — for mutating a field of an
+    // `inout self` receiver (RUE-15). At least one projection is required: a
+    // bare `self` is not an assignable place.
+    let self_target = just(TokenKind::SelfValue)
+        .map_with(|_, e| SelfExpr {
+            span: span_from_extra(e),
         })
+        .then(suffix.repeated().at_least(1).collect::<Vec<_>>())
+        .map(|(self_expr, suffixes)| {
+            build_projected_assign_target(Expr::SelfExpr(self_expr), suffixes)
+        });
+
+    choice((self_target, ident_target))
+}
+
+/// Build a field/index assignment target from a base expression and a
+/// non-empty chain of field/index projections. The last projection determines
+/// whether the target is a `Field` or `Index` place; earlier ones become
+/// intermediate `Expr::Field`/`Expr::Index` accesses on the base.
+fn build_projected_assign_target(base: Expr, suffixes: Vec<AssignSuffix>) -> AssignTarget {
+    debug_assert!(!suffixes.is_empty());
+    let mut base_expr = base;
+    let mut suffixes = suffixes.into_iter().peekable();
+    while let Some(suffix) = suffixes.next() {
+        let is_last = suffixes.peek().is_none();
+        if is_last {
+            return match suffix {
+                AssignSuffix::Field(field) => {
+                    let span = base_expr.span().extend_to(field.span.end);
+                    AssignTarget::Field(FieldExpr {
+                        base: Box::new(base_expr),
+                        field,
+                        span,
+                    })
+                }
+                AssignSuffix::Index(index) => {
+                    let span = base_expr.span().extend_to(index.span().end);
+                    AssignTarget::Index(IndexExpr {
+                        base: Box::new(base_expr),
+                        index: Box::new(index),
+                        span,
+                    })
+                }
+            };
+        }
+        match suffix {
+            AssignSuffix::Field(field) => {
+                let span = base_expr.span().extend_to(field.span.end);
+                base_expr = Expr::Field(FieldExpr {
+                    base: Box::new(base_expr),
+                    field,
+                    span,
+                });
+            }
+            AssignSuffix::Index(index) => {
+                let span = base_expr.span().extend_to(index.span().end);
+                base_expr = Expr::Index(IndexExpr {
+                    base: Box::new(base_expr),
+                    index: Box::new(index),
+                    span,
+                });
+            }
+        }
+    }
+    unreachable!("suffixes is non-empty")
 }
 
 /// Parser for assignment statements: target = expr;
@@ -2294,10 +2311,22 @@ fn method_parser_with_expr<'src, I>(
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    // Parse optional self parameter
-    let self_param = just(TokenKind::SelfValue).map_with(|_, e| SelfParam {
-        span: span_from_extra(e),
-    });
+    // Parse optional self parameter, with an optional receiver mode keyword
+    // (`borrow self` / `inout self`), mirroring the parameter modes (RUE-15).
+    // Bare `self` stays by-value (`Normal`).
+    let receiver_mode = choice((
+        just(TokenKind::Inout).to(ParamMode::Inout),
+        just(TokenKind::Borrow).to(ParamMode::Borrow),
+    ))
+    .or_not()
+    .map(|opt| opt.unwrap_or(ParamMode::Normal));
+
+    let self_param = receiver_mode
+        .then(just(TokenKind::SelfValue))
+        .map_with(|(mode, _), e| SelfParam {
+            mode,
+            span: span_from_extra(e),
+        });
 
     // Parse self followed by optional regular params
     let self_then_params = self_param
@@ -2343,8 +2372,9 @@ where
 {
     let expr = expr_parser();
 
-    // Parse self parameter
+    // Parse self parameter (destructors always take self by value)
     let self_param = just(TokenKind::SelfValue).map_with(|_, e| SelfParam {
+        mode: ParamMode::Normal,
         span: span_from_extra(e),
     });
 

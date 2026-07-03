@@ -891,6 +891,7 @@ impl<'a> Sema<'a> {
                 return_type,
                 body,
                 has_self,
+                self_mode,
                 ..
             } = &method_inst.data
             {
@@ -931,6 +932,7 @@ impl<'a> Sema<'a> {
                     MethodInfo {
                         struct_type,
                         has_self: *has_self,
+                        self_mode: *self_mode,
                         params: param_range,
                         return_type: ret_type,
                         body: *body,

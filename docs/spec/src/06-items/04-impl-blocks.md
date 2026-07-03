@@ -18,7 +18,8 @@ field_list = field_def { "," field_def } [ "," ] ;
 method_list = method_def { method_def } ;
 method_def = [ directives ] "fn" IDENT "(" [ method_params ] ")" [ "->" type ] block ;
 method_params = method_param { "," method_param } [ "," ] ;
-method_param = "self" | ( IDENT ":" type ) ;
+method_param = receiver | ( [ "inout" | "borrow" ] IDENT ":" type ) ;
+receiver = [ "inout" | "borrow" ] "self" ;
 ```
 
 ## Method Definition
@@ -209,3 +210,80 @@ Calling an associated function with method call syntax (receiver.function()) is 
 {{ rule(id="6.4:23", cat="legality-rule") }}
 
 Calling a method with associated function syntax (Type::method()) is a compile-time error.
+
+## Receiver Modes
+
+> Note: `borrow self` and `inout self` receivers are a preview feature
+> (`--preview method_receivers`, ADR-0037 / RUE-15). Bare `self` (by-value) is
+> stable.
+
+{{ rule(id="6.4:24", cat="normative") }}
+
+A receiver **MAY** be declared `borrow self` or `inout self`, mirroring the
+`borrow`/`inout` parameter modes. A bare `self` receiver is passed by value
+(copied if the struct is `Copy`, otherwise moved). A `borrow self` receiver
+grants read-only access to the receiver without taking ownership. An `inout
+self` receiver grants exclusive mutable access without taking ownership, and
+mutations to `self` are observed by the caller after the call returns.
+
+{{ rule(id="6.4:25", cat="normative") }}
+
+The receiver mode is a property of the method signature; it is **NOT** written
+at the call site. A call `receiver.method(args)` accesses the receiver in the
+method's declared mode automatically (autoref): by value for `self`, by
+immutable reference for `borrow self`, and by exclusive mutable reference for
+`inout self`.
+
+{{ rule(id="6.4:26", cat="legality-rule") }}
+
+Calling an `inout self` method requires the receiver to be a mutable place
+(for example a `let mut` binding, or a field or element reachable from one). A
+call whose receiver is not mutable is a compile-time error.
+
+{{ rule(id="6.4:27", cat="legality-rule") }}
+
+A `borrow self` or `inout self` method call whose receiver is not a place (for
+example the result of a function or method call) is a compile-time error: the
+receiver has no caller-visible storage to reference.
+
+{{ rule(id="6.4:28", cat="legality-rule") }}
+
+The law of exclusivity extends to receivers: the access implied by a `borrow
+self` or `inout self` receiver participates in exclusivity checking together
+with the call's `borrow`/`inout` arguments. Passing the receiver's own place
+as an `inout` (or conflicting `borrow`) argument to the same call is a
+compile-time error. An argument that only reads the receiver (for example
+`v.push(v.len())`) is permitted, because its read completes before the
+receiver access begins.
+
+{{ rule(id="6.4:29", cat="dynamic-semantics") }}
+
+A `borrow self` or `inout self` method call does not consume the receiver: the
+receiver remains usable after the call. In particular, a `borrow self` getter
+**MAY** be called repeatedly, and an `inout self` mutator mutates the receiver
+in place rather than requiring the caller to rebuild it.
+
+{{ rule(id="6.4:30", cat="example") }}
+
+```rue
+struct Counter {
+    n: i32,
+
+    fn get(borrow self) -> i32 {
+        self.n
+    }
+
+    fn bump(inout self) {
+        self.n = self.n + 1;
+    }
+}
+
+fn main() -> i32 {
+    let mut c = Counter { n: 0 };
+    c.bump();
+    c.bump();
+    let a = c.get();   // borrow does not consume `c`
+    c.bump();
+    a + c.get()        // 2 + 3 = 5
+}
+```
