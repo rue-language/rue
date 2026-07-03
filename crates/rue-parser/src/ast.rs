@@ -330,6 +330,11 @@ pub enum TypeExpr {
         length: ArrayLength,
         span: Span,
     },
+    /// Slice type: `[T]` — a second-class fat-pointer view (ptr + runtime len)
+    /// over a fixed array or growable buffer (ADR-0043, RUE-322). In parameter
+    /// position the `borrow`/`inout` mode selects the shared/exclusive form
+    /// (`borrow [T]` / `inout [T]`). Gated behind `--preview slices`.
+    Slice { element: Box<TypeExpr>, span: Span },
     /// Anonymous struct type: struct { field: Type, fn method(...) { ... }, ... }
     /// Used in comptime type construction (e.g., `fn Pair(comptime T: type) -> type { struct { first: T, second: T } }`)
     /// Methods can be included inside the struct definition (Zig-style).
@@ -430,6 +435,7 @@ impl TypeExpr {
             TypeExpr::Unit(span) => *span,
             TypeExpr::Never(span) => *span,
             TypeExpr::Array { span, .. } => *span,
+            TypeExpr::Slice { span, .. } => *span,
             TypeExpr::AnonymousStruct { span, .. } => *span,
             TypeExpr::AnonymousEnum { span, .. } => *span,
             TypeExpr::PointerConst { span, .. } => *span,
@@ -448,6 +454,7 @@ impl fmt::Display for TypeExpr {
             TypeExpr::Array {
                 element, length, ..
             } => write!(f, "[{}; {}]", element, length),
+            TypeExpr::Slice { element, .. } => write!(f, "[{}]", element),
             TypeExpr::AnonymousStruct {
                 fields, methods, ..
             } => {

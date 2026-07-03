@@ -312,6 +312,17 @@ where
                 span: span_from_extra(e),
             });
 
+        // Slice type: `[T]` (no length) — a second-class fat-pointer view
+        // (ADR-0043, RUE-322). Tried after `array_type` so `[T; N]` is not
+        // mis-parsed; the two diverge on whether a `;` follows the element.
+        let slice_type = just(TokenKind::LBracket)
+            .ignore_then(ty.clone())
+            .then_ignore(just(TokenKind::RBracket))
+            .map_with(|element, e| TypeExpr::Slice {
+                element: Box::new(element),
+                span: span_from_extra(e),
+            });
+
         // Anonymous struct type: struct { field: Type, ... }
         // Used in comptime type construction
         let anon_struct_field = ident_parser()
@@ -392,6 +403,7 @@ where
             unit_type,
             never_type,
             array_type,
+            slice_type,
             anon_struct_type,
             ptr_const_type,
             ptr_mut_type,
@@ -3808,6 +3820,37 @@ mod tests {
             }
             _ => panic!("expected Function"),
         }
+    }
+
+    #[test]
+    fn test_slice_type_param_parses() {
+        // ADR-0043 / RUE-322: `[T]` (no length) parses to TypeExpr::Slice; the
+        // `borrow` mode is carried separately on the parameter.
+        let result = parse("fn sum(borrow s: [i32]) -> i32 { 0 }").unwrap();
+        match &result.ast.items[0] {
+            Item::Function(f) => {
+                assert_eq!(f.params.len(), 1);
+                assert_eq!(f.params[0].mode, ParamMode::Borrow);
+                match &f.params[0].ty {
+                    TypeExpr::Slice { element, .. } => match element.as_ref() {
+                        TypeExpr::Named(ident) => assert_eq!(result.get(ident.name), "i32"),
+                        other => panic!("expected named element, got {other:?}"),
+                    },
+                    other => panic!("expected Slice type, got {other:?}"),
+                }
+            }
+            _ => panic!("expected Function"),
+        }
+    }
+
+    #[test]
+    fn test_array_vs_slice_type_distinct() {
+        // `[i32; 3]` remains an Array; only the length-less `[i32]` is a Slice.
+        let result = parse("fn f(borrow a: [i32; 3]) -> i32 { 0 }").unwrap();
+        let Item::Function(func) = &result.ast.items[0] else {
+            panic!("expected Function");
+        };
+        assert!(matches!(func.params[0].ty, TypeExpr::Array { .. }));
     }
 
     #[test]

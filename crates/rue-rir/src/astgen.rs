@@ -97,6 +97,17 @@ impl<'a> AstGen<'a> {
                 let s = format!("[{}; {}]", elem_name, len_str);
                 self.interner.get_or_intern(&s)
             }
+            TypeExpr::Slice { element, .. } => {
+                // Slice type `[T]` (ADR-0043, RUE-322): canonical string is
+                // `[elem]` (no length), distinguishing it from `[elem; N]`.
+                // Sema recognizes this shape, gates it behind `--preview
+                // slices`, and (until the fat-pointer runtime lands) reports it
+                // as not-yet-implemented.
+                let elem_sym = self.intern_type(element);
+                let elem_name = self.interner.resolve(&elem_sym);
+                let s = format!("[{}]", elem_name);
+                self.interner.get_or_intern(&s)
+            }
             TypeExpr::AnonymousStruct { fields, .. } => {
                 // For anonymous structs, generate a canonical name representation
                 let mut s = String::from("struct { ");
@@ -939,6 +950,13 @@ impl<'a> AstGen<'a> {
                                 // Array types as values are not yet supported
                                 // For now, use a placeholder
                                 self.interner.get_or_intern_static("array")
+                            }
+                            TypeExpr::Slice { .. } => {
+                                // Slice type `[T]` in value position (ADR-0043,
+                                // RUE-322). Intern its canonical string; sema
+                                // gates it behind `--preview slices` and reports
+                                // it not-yet-implemented.
+                                self.intern_type(&type_lit.type_expr)
                             }
                             TypeExpr::AnonymousStruct { .. } | TypeExpr::AnonymousEnum { .. } => {
                                 unreachable!("handled above")

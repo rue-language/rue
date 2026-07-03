@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 
 use lasso::Spur;
-use rue_error::{CompileError, CompileResult, ErrorKind};
+use rue_error::{CompileError, CompileResult, ErrorKind, PreviewFeature};
 use rue_span::Span;
 
 use super::Sema;
@@ -164,6 +164,31 @@ impl<'a> Sema<'a> {
     /// Resolve a type symbol to a Type.
     ///
     /// Handles array types with the syntax "[T; N]".
+    /// Recognize slice type syntax `[T]` (ADR-0043, RUE-322).
+    ///
+    /// A slice is a bracketed type that is *not* a fixed array `[T; N]` (which
+    /// [`parse_array_type_syntax`] handles). Returns `Some(result)` when the
+    /// canonical type string is slice syntax so the caller short-circuits;
+    /// `None` otherwise (a genuinely unknown type falls through to E0204).
+    ///
+    /// This gates the surface behind `--preview slices` and, until the
+    /// fat-pointer runtime (ABI + codegen on both backends) lands, reports
+    /// [`ErrorKind::SliceNotYetImplemented`] (E0486) rather than letting an
+    /// unfinished slice reach lowering.
+    fn try_resolve_slice_type(&self, type_name: &str, span: Span) -> Option<CompileResult<Type>> {
+        if type_name.starts_with('[')
+            && type_name.ends_with(']')
+            && parse_array_type_syntax(type_name).is_none()
+        {
+            Some(
+                self.require_preview(PreviewFeature::Slices, "the slice type `[T]`", span)
+                    .and_then(|()| Err(CompileError::new(ErrorKind::SliceNotYetImplemented, span))),
+            )
+        } else {
+            None
+        }
+    }
+
     pub(crate) fn resolve_type(&mut self, type_sym: Spur, span: Span) -> CompileResult<Type> {
         let type_name = self.interner.resolve(&type_sym);
 
@@ -236,6 +261,9 @@ impl<'a> Sema<'a> {
                 // context-free (a signature/return position collected before any
                 // body context exists).
                 self.resolve_type_function_call(&call_name, &arg_strs, span, None)
+            } else if let Some(result) = self.try_resolve_slice_type(type_name, span) {
+                // Slice type `[T]` (ADR-0043, RUE-322): gated + not-yet-runnable.
+                result
             } else {
                 Err(CompileError::new(
                     ErrorKind::UnknownType(type_name.to_string()),

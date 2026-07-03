@@ -226,6 +226,7 @@ impl Validator<'_> {
         match ty {
             TypeExpr::Named(_) | TypeExpr::Unit(_) | TypeExpr::Never(_) => {}
             TypeExpr::Array { element, .. } => self.check_type_expr(element),
+            TypeExpr::Slice { element, .. } => self.check_type_expr(element),
             TypeExpr::AnonymousStruct { methods, .. } => {
                 for method in methods {
                     self.check_method(method);

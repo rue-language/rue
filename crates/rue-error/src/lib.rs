@@ -186,6 +186,18 @@ impl ErrorCode {
     /// 9.1:12, ADR-0028); taking the "address" of a temporary value would
     /// reinterpret the value's bits as a pointer (RUE-274).
     pub const RAW_REQUIRES_PLACE: Self = Self(485);
+    /// A second-class slice type (`borrow [T]` / `inout [T]`) or range slice
+    /// (`x[a..b]`) was used with `--preview slices` enabled, but the
+    /// fat-pointer runtime (ABI + codegen on both backends) is not yet
+    /// implemented (ADR-0043 Phase 1, RUE-322). Emitted so the gated syntax
+    /// fails cleanly instead of reaching an unfinished codegen path.
+    ///
+    /// Note: the second-class-escape diagnostics named in the RUE-322 brief
+    /// (return / store-in-field / bind-past-scope) will be allocated when the
+    /// slice type itself lands; the brief's suggested E0435-E0437 numbers were
+    /// already taken (`RESERVED_FUNCTION_NAME` / `DUPLICATE_FUNCTION_DEFINITION`
+    /// / `MOVE_OUT_OF_INOUT`), so a fresh free range will be used then.
+    pub const SLICE_NOT_YET_IMPLEMENTED: Self = Self(486);
 
     // ========================================================================
     // Control flow errors (E0500-E0599)
@@ -376,6 +388,11 @@ pub enum PreviewFeature {
     /// Testing infrastructure feature - permanently unstable.
     /// Used to verify the preview feature gating mechanism works.
     TestInfra,
+    /// Second-class slice types `borrow [T]` / `inout [T]` and range slicing
+    /// `x[a..b]` (ADR-0043, RUE-322). The keystone view type of the
+    /// collection/string trio. Gated until the fat-pointer ABI lands on both
+    /// backends.
+    Slices,
 }
 
 /// Error returned when parsing a preview feature name fails.
@@ -396,6 +413,7 @@ impl PreviewFeature {
     pub fn name(&self) -> &'static str {
         match *self {
             PreviewFeature::TestInfra => "test_infra",
+            PreviewFeature::Slices => "slices",
         }
     }
 
@@ -404,12 +422,13 @@ impl PreviewFeature {
     pub fn adr(&self) -> &'static str {
         match *self {
             PreviewFeature::TestInfra => "ADR-0005",
+            PreviewFeature::Slices => "ADR-0043",
         }
     }
 
     /// Get all available preview features.
     pub fn all() -> &'static [PreviewFeature] {
-        &[PreviewFeature::TestInfra]
+        &[PreviewFeature::TestInfra, PreviewFeature::Slices]
     }
 
     /// Get a comma-separated list of all feature names (for help text).
@@ -432,6 +451,7 @@ impl std::str::FromStr for PreviewFeature {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "test_infra" => Ok(PreviewFeature::TestInfra),
+            "slices" => Ok(PreviewFeature::Slices),
             _ => Err(ParsePreviewFeatureError(s.to_string())),
         }
     }
@@ -1269,6 +1289,11 @@ pub enum ErrorKind {
         what: String,
     },
 
+    /// A slice type / range-slice was used under `--preview slices` but the
+    /// fat-pointer runtime is not implemented yet (ADR-0043 Phase 1, RUE-322).
+    #[error("slice types are not yet fully implemented (ADR-0043 Phase 1, RUE-322)")]
+    SliceNotYetImplemented,
+
     // Comptime errors
     #[error("comptime evaluation failed: {reason}")]
     ComptimeEvaluationFailed { reason: String },
@@ -1426,6 +1451,7 @@ impl ErrorKind {
 
             // Preview feature errors (E1100-E1199)
             ErrorKind::PreviewFeatureRequired { .. } => ErrorCode::PREVIEW_FEATURE_REQUIRED,
+            ErrorKind::SliceNotYetImplemented => ErrorCode::SLICE_NOT_YET_IMPLEMENTED,
 
             // Comptime errors (E1200-E1299)
             ErrorKind::ComptimeEvaluationFailed { .. } => ErrorCode::COMPTIME_EVALUATION_FAILED,
@@ -2245,7 +2271,17 @@ mod tests {
     #[test]
     fn test_preview_feature_all_names() {
         let names = PreviewFeature::all_names();
-        assert_eq!(names, "test_infra");
+        assert_eq!(names, "test_infra, slices");
+    }
+
+    #[test]
+    fn test_preview_feature_slices() {
+        // ADR-0043 Phase 1 (RUE-322): the slice preview feature.
+        let feature: PreviewFeature = "slices".parse().unwrap();
+        assert_eq!(feature, PreviewFeature::Slices);
+        assert_eq!(feature.name(), "slices");
+        assert_eq!(feature.adr(), "ADR-0043");
+        assert!(PreviewFeature::all().contains(&PreviewFeature::Slices));
     }
 
     #[test]
