@@ -1257,6 +1257,49 @@ fn main() -> i32 {
 exit_code = 42
 
 [[case]]
+name = "comptime_value_recursion"
+spec = ["4.14:5"]
+description = "A comptime value parameter is a constant in the body, so a comptime-recursive value function folds to a compile-time constant - RUE-163 facet 1"
+source = """
+fn fact(comptime n: i32) -> i32 {
+    if n <= 1 { 1 } else { n * fact(n - 1) }
+}
+fn main() -> i32 {
+    comptime { fact(5) - 78 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_value_recursion_const_init"
+spec = ["4.14:5"]
+description = "A comptime-recursive value function reduces in a const initializer - RUE-163 facet 1"
+source = """
+fn fib(comptime n: i32) -> i32 {
+    if n < 2 { n } else { fib(n - 1) + fib(n - 2) }
+}
+const F9: i32 = fib(9);
+fn main() -> i32 {
+    if F9 == 34 { 42 } else { 1 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_plain_call_not_comptime_arg"
+spec = ["4.14:6"]
+description = "A call to a function with no comptime parameters is a runtime value, not a comptime-known argument - RUE-163 facet 1 boundary"
+source = """
+fn get_value() -> i32 { 5 }
+fn scale(comptime factor: i32, value: i32) -> i32 { factor * value }
+fn main() -> i32 {
+    scale(get_value(), 10)
+}
+"""
+compile_fail = true
+error_contains = "comptime parameter requires a compile-time known value"
+
+[[case]]
 name = "comptime_file_level_const"
 spec = ["4.14:2"]
 description = "File-level constants are usable inside comptime blocks"

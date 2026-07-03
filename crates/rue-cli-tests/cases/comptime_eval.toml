@@ -61,3 +61,28 @@ fn main() -> i32 {
 args = ["main.rue", "-o", "prog"]
 compile_fail = true
 error_contains = ["E1200", "integer overflow", "i32"]
+
+[[case]]
+name = "comptime_value_recursion"
+description = "A comptime-recursive value function folds to a compile-time constant usable inside comptime {} and as a const initializer (RUE-163 facet 1)."
+files = [{ path = "main.rue", source = """
+fn fact(comptime n: i32) -> i32 {
+    if n <= 1 { 1 } else { n * fact(n - 1) }
+}
+const F6: i32 = fact(6);
+fn main() -> i32 {
+    // Reduction inside a comptime block (the recursive call fact(n-1) folds).
+    @dbg(comptime { fact(5) });
+    // Reduction as a file-level const initializer.
+    @dbg(F6);
+    // Forwarding a comptime value parameter through another comptime function.
+    @dbg(fact(4));
+    0
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+exit_code = 0
+stdout = """120
+720
+24
+"""

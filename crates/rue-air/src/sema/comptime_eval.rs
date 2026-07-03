@@ -1066,14 +1066,29 @@ impl Sema<'_> {
         }
     }
 
-    /// Reduce a call to a `-> type` function to its resulting type value, when
-    /// the callee is a type constructor and every argument is compile-time
-    /// known. Shared by [`eval_const_expr`]'s `Call` arm (so nested/delegating
-    /// type-function calls compose) and the analysis pass (RUE-251).
+    /// Reduce a call to a comptime-evaluable function to its resulting value,
+    /// when every argument is compile-time known. Shared by
+    /// [`eval_const_expr`]'s `Call` arm (so nested/delegating calls compose)
+    /// and the analysis pass (RUE-251).
     ///
-    /// Returns `Ok(None)` — not an error — for a callee that does not return
-    /// `type`, a non-type-constructor arity/mode, or a non-const argument: the
-    /// call is then just a runtime call and simply non-evaluable here.
+    /// Two callee shapes reduce here:
+    ///
+    /// - **`-> type` constructors** — reduce to a [`ConstValue::Type`], so
+    ///   `Pair(i32)` composes in any position (RUE-251).
+    /// - **Value-returning functions with all-comptime (or no) parameters** —
+    ///   reduce to their [`ConstValue::Integer`]/[`ConstValue::Bool`] result,
+    ///   which is what lets a comptime-recursive `fn fact(comptime n: i32)`
+    ///   produce a compile-time constant usable as an array length or inside a
+    ///   `comptime { }` block (RUE-163 facet 1, spec 4.14:5). A function with
+    ///   any *runtime* parameter is a genuine runtime call and is left
+    ///   non-evaluable, so ordinary calls like `add(3, 5)` (runtime `a`, `b`)
+    ///   are not folded here.
+    ///
+    /// Returns `Ok(None)` — not an error — for an unknown callee, a
+    /// non-const argument, or an arity/mode that does not match the
+    /// implicit-comptime gate: the call is then just a runtime call and simply
+    /// non-evaluable here. Reducing the body may still raise `Err` (arithmetic
+    /// overflow, recursion-depth overrun); opportunistic callers swallow it.
     ///
     /// [`eval_const_expr`]: Sema::eval_const_expr
     fn eval_comptime_type_call(
@@ -1086,19 +1101,30 @@ impl Sema<'_> {
         let Some(fn_info) = self.functions.get(&name) else {
             return Ok(None);
         };
-        // Only `-> type` functions reduce to a type value at compile time.
-        if fn_info.return_type != Type::COMPTIME_TYPE {
-            return Ok(None);
-        }
+        let is_type_fn = fn_info.return_type == Type::COMPTIME_TYPE;
         let params = fn_info.params;
         let param_names = self.param_arena.names(params).to_vec();
         let param_comptime = self.param_arena.comptime(params).to_vec();
         let args = self.rir.get_call_args(args_start, args_len).to_vec();
-        // Same gate as `analyze_call`'s implicit-comptime path: only a no-arg
-        // or all-comptime-param type constructor is implicitly evaluated.
-        if args.len() != param_names.len()
-            || !(args.is_empty() || param_comptime.iter().all(|&c| c))
-        {
+        if args.len() != param_names.len() {
+            return Ok(None);
+        }
+        // Same gate as `analyze_call`'s implicit-comptime path. A `-> type`
+        // constructor reduces with no args (a nullary type alias) or when every
+        // parameter is comptime. A *value*-returning function reduces only when
+        // it has at least one parameter and every one is comptime — the
+        // comptime-recursion / forwarding shape (`fn fact(comptime n: i32)`,
+        // RUE-163 facet 1). A nullary or runtime-parametered value function is a
+        // genuine runtime call, not a compile-time-known value: folding
+        // `get_value()` (a plain `fn get_value() -> i32`) would wrongly make it
+        // acceptable as a `comptime` argument (spec 4.14:6).
+        let all_params_comptime = !param_names.is_empty() && param_comptime.iter().all(|&c| c);
+        let eligible = if is_type_fn {
+            param_names.is_empty() || all_params_comptime
+        } else {
+            all_params_comptime
+        };
+        if !eligible {
             return Ok(None);
         }
         // Evaluate each argument compositionally in the current environment,
@@ -1126,13 +1152,15 @@ impl Sema<'_> {
         self.reduce_type_ctor_body(name, &callee_types, &callee_values)
     }
 
-    /// Reduce a `-> type` constructor's body to a type value under the given
-    /// comptime parameter substitutions. Shared by
+    /// Reduce a comptime-evaluable function's body to a [`ConstValue`] under
+    /// the given comptime parameter substitutions — a type value for a
+    /// `-> type` constructor, or an integer/bool for a value-returning
+    /// comptime function (RUE-163 facet 1). Shared by
     /// [`eval_comptime_type_call`] (value/const-expr positions, args evaluated
     /// via [`eval_const_expr`]) and [`resolve_type_function_call`] (a
     /// type-function call written directly in a signature/annotation position,
     /// args resolved as types; RUE-241) so both produce the identical
-    /// monomorphized type.
+    /// monomorphized result.
     ///
     /// Guards the reduction against unbounded self-recursion. A `-> type`
     /// function reduces eagerly on the host stack, so a constructor with no
