@@ -1671,10 +1671,12 @@ impl<'a> CfgLower<'a> {
                         dst: Operand::Virtual(result_vreg),
                         src: Operand::Virtual(slot_vregs[0]),
                     });
-                } else if ty.is_struct() || ty.is_array() {
+                } else if self.ctx.is_multislot_aggregate(ty) {
                     // Aggregates that fit return in registers. Capture
                     // every slot from RET_REGS, not just x0 — arrays previously fell
-                    // to the scalar path and lost all elements but the first. (RUE-78)
+                    // to the scalar path and lost all elements but the first (RUE-78),
+                    // and payload enums fell there too, leaving the call result with
+                    // no slot vregs and ICEing the enum-payload read (RUE-237).
                     let slot_count = ret_slot_count;
                     let mut slot_vregs = Vec::new();
                     for slot_idx in 0..slot_count {
@@ -3746,8 +3748,14 @@ impl<'a> CfgLower<'a> {
                     });
                     let symbol_id = self.intern_symbol("__rue_exit");
                     self.mir.push(Aarch64Inst::Bl { symbol_id });
-                } else if return_type.as_struct().is_some() || return_type.is_array() {
-                    // Return a multi-slot aggregate (struct or array).
+                } else if self.ctx.is_multislot_aggregate(return_type) {
+                    // Return a multi-slot aggregate (struct, array, or a
+                    // payload-carrying enum). Payload enums were previously
+                    // omitted from this gate (it tested `struct || array`
+                    // only), so a by-value enum return fell into the scalar
+                    // branch, shipping only the discriminant in x0 while the
+                    // payload slot base had no slot vregs — ICEing at the
+                    // enum-payload place-read (RUE-237).
                     // Gather all slots through the single accessor, regardless of source
                     // (StructInit/ArrayInit/Call/BlockParam cache-hit; Load/Param/
                     // PlaceRead materialize). Previously the `_` arm returned only slot 0

@@ -1472,8 +1472,31 @@ impl<'a> Sema<'a> {
             // locals before the body, so the body's references resolve to them.
             // The enclosing match dispatched on the discriminant, so in this
             // arm the payload is read (move mode) via `EnumPayloadGet`.
-            let binding_stmts =
+            let mut binding_stmts =
                 self.materialize_match_bindings(air, pattern, scrutinee_result.air_ref, ctx)?;
+
+            // RUE-238: a non-binding arm (a wildcard `_`, or a variant matched
+            // without binding its payload) still *consumes* the scrutinee — the
+            // match marked it moved (see the `mark_moved` in the emitted AIR) —
+            // but extracts nothing, so its active-variant payload would leak.
+            // Emit a drop of the whole scrutinee value; for an enum this lowers
+            // to the variant-dispatched drop glue (`__rue_drop_E`), which drops
+            // exactly the active variant's payload (a no-op when that variant
+            // carries nothing droppable). Arms that DO bind the payload move it
+            // into their binding locals — dropped when those go out of scope —
+            // so they must not also drop the scrutinee, or the payload would be
+            // dropped twice; `binding_stmts.is_empty()` is precisely that guard
+            // (Rue variant patterns bind either all payload fields or none).
+            if binding_stmts.is_empty() && scrutinee_type.is_enum() {
+                let drop_ref = air.add_inst(AirInst {
+                    data: AirInstData::Drop {
+                        value: scrutinee_result.air_ref,
+                    },
+                    ty: Type::UNIT,
+                    span: pattern_span,
+                });
+                binding_stmts.push(drop_ref.as_u32());
+            }
 
             // Analyze arm body
             let body_result = self.analyze_inst(air, *body, ctx)?;

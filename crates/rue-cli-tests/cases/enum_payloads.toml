@@ -165,6 +165,140 @@ fn main() -> i32 {
 """ }]
 exit_code = 6
 
+# RUE-237 facet A: a payload enum returned BY VALUE round-trips its payload
+# through the call ABI. The return terminator's aggregate-slot gate omitted
+# enums, so `make` shipped only the discriminant in the first return register
+# and the payload slot was never written — the match read garbage (0).
+[[case]]
+name = "by_value_enum_return_carries_payload"
+description = "A function returning a payload enum by value carries the payload through the ABI: make() -> Some(42), match extracts 42."
+args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+enum Opt { Some(i32), None }
+fn make() -> Opt { Opt::Some(42) }
+fn main() -> i32 {
+    match make() {
+        Opt::Some(v) => v,
+        Opt::None => 0,
+    }
+}
+""" }]
+exit_code = 42
+
+# RUE-237 facet A: a payload enum passed in AND returned (identity) keeps its
+# payload across both ABI crossings.
+[[case]]
+name = "enum_passthru_roundtrip"
+description = "Passing a payload enum in and returning it unchanged round-trips the payload: passthru(Circle(9)) -> 9."
+args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+enum Shape { Circle(i32), Square(i32) }
+fn passthru(s: Shape) -> Shape { s }
+fn main() -> i32 {
+    match passthru(Shape::Circle(9)) {
+        Shape::Circle(r) => r,
+        Shape::Square(x) => x,
+    }
+}
+""" }]
+exit_code = 9
+
+# RUE-237 facet C: reading a payload enum out of a STRUCT FIELD round-trips the
+# payload. The struct-init slot flattening omitted enum fields, so the struct
+# stored only the discriminant and dropped the payload; the field read then
+# saw garbage (0).
+[[case]]
+name = "struct_field_enum_carries_payload"
+description = "A payload enum stored in a struct field keeps its payload: w.o = Some(42), match extracts 42."
+args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+enum Opt { Some(i32), None }
+struct Wrapper { o: Opt }
+fn main() -> i32 {
+    let w = Wrapper { o: Opt::Some(42) };
+    match w.o {
+        Opt::Some(v) => v,
+        Opt::None => 0,
+    }
+}
+""" }]
+exit_code = 42
+
+# RUE-237: a payload enum stored in an ARRAY element keeps its payload (the
+# array-init slot flattening had the same enum omission as struct-init).
+[[case]]
+name = "array_element_enum_carries_payload"
+description = "Payload enums in an array literal keep their payloads: [Some(10), Some(32)], 10 + 32 = 42."
+args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+enum Opt { Some(i32), None }
+fn main() -> i32 {
+    let a = [Opt::Some(10), Opt::Some(32)];
+    match a[0] {
+        Opt::Some(x) => match a[1] { Opt::Some(y) => x + y, Opt::None => 0 },
+        Opt::None => 0,
+    }
+}
+""" }]
+exit_code = 42
+
+# RUE-238: a bare `_` arm consumes the scrutinee but binds nothing, so its
+# active-variant payload must still be dropped — exactly once. Previously the
+# discarded payload leaked (its destructor never ran, nothing printed).
+[[case]]
+name = "wildcard_arm_drops_discarded_payload"
+description = "A bare `_` match arm over a payload enum drops the discarded active payload exactly once: prints 7."
+args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+struct D { v: i32 }
+drop fn D(self) { @dbg(self.v); }
+enum E { Has(D), None }
+fn main() -> i32 {
+    let e = E::Has(D { v: 7 });
+    match e { _ => 0 }
+}
+""" }]
+stdout = "7\n"
+exit_code = 0
+
+# RUE-238: the same wildcard drop over a discriminant-only active variant drops
+# nothing (the drop glue dispatches on the runtime discriminant): no output.
+[[case]]
+name = "wildcard_arm_no_payload_drops_nothing"
+description = "A bare `_` arm whose active variant is discriminant-only drops nothing: no output, exit 0."
+args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+struct D { v: i32 }
+drop fn D(self) { @dbg(self.v); }
+enum E { Has(D), None }
+fn main() -> i32 {
+    let e = E::None;
+    match e { _ => 0 }
+}
+""" }]
+exit_code = 0
+
+# RUE-238: a wildcard catch-all alongside an explicit no-payload variant arm
+# still drops the payload of a value the wildcard catches, exactly once.
+[[case]]
+name = "wildcard_catchall_drops_caught_payload"
+description = "A `_` catch-all that catches a droppable variant drops its payload once: E::Has caught by `_`, prints 7."
+args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+struct D { v: i32 }
+drop fn D(self) { @dbg(self.v); }
+enum E { Has(D), None }
+fn main() -> i32 {
+    let e = E::Has(D { v: 7 });
+    match e {
+        E::None => 1,
+        _ => 0,
+    }
+}
+""" }]
+stdout = "7\n"
+exit_code = 0
+
 # Without the preview flag, a payload-carrying enum is a clean preview error
 # (the driver reports it, no ICE).
 [[case]]
