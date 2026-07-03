@@ -13,6 +13,7 @@ use rue_error::{CompileError, CompileResult, ErrorKind};
 use rue_span::Span;
 
 use super::Sema;
+use super::context::AnalysisContext;
 use crate::inference::InferType;
 use crate::sema::ConstValue;
 use crate::types::{ArrayLen, ArrayTypeId, Type, TypeKind, parse_array_type_syntax};
@@ -231,6 +232,68 @@ impl<'a> Sema<'a> {
                     span,
                 ))
             }
+        }
+    }
+
+    /// Resolve a type-annotation symbol to a `Type`, consulting the analysis
+    /// context's local comptime type bindings at every level of a composite
+    /// annotation (RUE-263).
+    ///
+    /// [`resolve_type`] takes no context, so it can validate a *scalar*
+    /// comptime-type-var annotation (`let p: P`, which the caller special-cases
+    /// before ever reaching resolution) but not a *composite* one: `[P; 2]` or
+    /// `ptr const P` misses in the local-binding map as a whole symbol, and the
+    /// context-free recursion then can't resolve the inner `P` (it isn't a named
+    /// struct/enum), yielding a spurious E0204. This variant threads
+    /// `ctx.comptime_type_vars` through the recursion so an inner
+    /// element/pointee that is a local comptime type var resolves. Non-composite
+    /// leaves and genuinely-unknown names fall through to [`resolve_type`],
+    /// keeping the primitive/struct/enum resolution, privacy checks (E0460), and
+    /// the E0204 for a truly unknown type in one place so the two paths can't
+    /// drift.
+    ///
+    /// Array lengths are resolved context-free (literals and file-level
+    /// `const`s), exactly as [`resolve_type`] does — a length naming a local
+    /// `comptime N: i32` parameter (`[P; N]`) is *not* resolved here and gets
+    /// the same E0481 it does today. Threading the comptime value map so `N`
+    /// resolves would surface a latent rue-cfg drop-analysis ICE for
+    /// comptime-value-length *local* arrays (the length only works in signature
+    /// and return positions so far, RUE-252); that gap is tracked separately.
+    ///
+    /// [`resolve_type`]: Sema::resolve_type
+    pub(crate) fn resolve_type_with_ctx(
+        &mut self,
+        type_sym: Spur,
+        span: Span,
+        ctx: &AnalysisContext,
+    ) -> CompileResult<Type> {
+        // A local comptime type variable (`let P = Point();`) or a substituted
+        // comptime type parameter is a type value already — resolve it directly.
+        if let Some(&ty) = ctx.comptime_type_vars.get(&type_sym) {
+            return Ok(ty);
+        }
+        let type_name = self.interner.resolve(&type_sym);
+        if let Some((element_type, len)) = parse_array_type_syntax(type_name) {
+            let element_sym = self.interner.get_or_intern(&element_type);
+            let element_ty = self.resolve_type_with_ctx(element_sym, span, ctx)?;
+            let length = self.resolve_array_length(&len, span, None)?;
+            let array_type_id = self.get_or_create_array_type(element_ty, length);
+            Ok(Type::new_array(array_type_id))
+        } else if let Some(pointee) = type_name.strip_prefix("ptr const ") {
+            let pointee_sym = self.interner.get_or_intern(pointee);
+            let pointee_ty = self.resolve_type_with_ctx(pointee_sym, span, ctx)?;
+            let ptr_type_id = self.type_pool.intern_ptr_const_from_type(pointee_ty);
+            Ok(Type::new_ptr_const(ptr_type_id))
+        } else if let Some(pointee) = type_name.strip_prefix("ptr mut ") {
+            let pointee_sym = self.interner.get_or_intern(pointee);
+            let pointee_ty = self.resolve_type_with_ctx(pointee_sym, span, ctx)?;
+            let ptr_type_id = self.type_pool.intern_ptr_mut_from_type(pointee_ty);
+            Ok(Type::new_ptr_mut(ptr_type_id))
+        } else {
+            // Non-composite leaf: primitive / struct / enum / unknown. Defer to
+            // the context-free resolver for identical resolution, privacy
+            // checks, and the E0204 on a genuinely-unknown name.
+            self.resolve_type(type_sym, span)
         }
     }
 

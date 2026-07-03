@@ -150,3 +150,87 @@ fn main() -> i32 {
 }
 """ }]
 stdout = "42\n"
+
+# Comptime-known if/match in a `-> type` body selects the taken branch and
+# reduces to that branch's struct/enum type (RUE-262). Before the fix these
+# rejected with E1200 "cannot store type value in variable at runtime" because
+# the comptime evaluator didn't reduce `if`/`match` expressions.
+
+[[case]]
+name = "if_branch_selects_struct_type"
+description = "A comptime `if` in a `-> type` body reduces to the taken branch's struct; the result is usable as a type (RUE-262)."
+files = [{ path = "main.rue", source = """
+fn Choose(comptime flag: bool) -> type {
+    if flag { struct { x: i32 } } else { struct { y: i32 } }
+}
+fn main() -> i32 {
+    let A = Choose(true);
+    let a: A = A { x: 41 };
+    @dbg(a.x + 1);
+    0
+}
+""" }]
+stdout = "42\n"
+
+[[case]]
+name = "if_branch_false_arm"
+description = "The false arm of a comptime `if` in a `-> type` body is selected when the condition is false (RUE-262)."
+files = [{ path = "main.rue", source = """
+fn Choose(comptime flag: bool) -> type {
+    if flag { struct { x: i32 } } else { struct { y: i32 } }
+}
+fn main() -> i32 {
+    let B = Choose(false);
+    let b: B = B { y: 7 };
+    @dbg(b.y);
+    0
+}
+""" }]
+stdout = "7\n"
+
+[[case]]
+name = "match_branch_selects_struct_type"
+description = "A comptime `match` in a `-> type` body reduces to the matched arm's struct (RUE-262)."
+files = [{ path = "main.rue", source = """
+fn Choose(comptime n: i32) -> type {
+    match n { 0 => struct { a: i32 }, 1 => struct { b: i32 }, _ => struct { c: i32 } }
+}
+fn main() -> i32 {
+    let T = Choose(1);
+    let t: T = T { b: 5 };
+    @dbg(t.b);
+    0
+}
+""" }]
+stdout = "5\n"
+
+[[case]]
+name = "recursive_type_fn_via_if"
+description = "A `-> type` function that recurses through a comptime `if` terminates and reduces to the base struct (RUE-262)."
+files = [{ path = "main.rue", source = """
+fn Nest(comptime n: i32) -> type {
+    if n == 0 { struct { base: i32 } } else { Nest(n - 1) }
+}
+fn main() -> i32 {
+    let T = Nest(3);
+    let t: T = T { base: 8 };
+    @dbg(t.base);
+    0
+}
+""" }]
+stdout = "8\n"
+
+[[case]]
+name = "runtime_condition_in_type_fn_rejected"
+description = "A genuinely runtime condition in a `-> type` body cannot be reduced and is rejected cleanly, not accepted (RUE-262)."
+files = [{ path = "main.rue", source = """
+fn Choose(flag: bool) -> type {
+    if flag { struct { x: i32 } } else { struct { y: i32 } }
+}
+fn main() -> i32 {
+    let A = Choose(true);
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E1200"]

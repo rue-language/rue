@@ -1,0 +1,84 @@
+# A local bound to a comptime type value (`let P = Point();`) works as a
+# composite type annotation — an array element or a pointer pointee — not just
+# as a scalar type (RUE-263).
+#
+# Before the fix, `let arr: [P; 2]` / `let pp: ptr const P` rejected with E0204
+# "unknown type 'P'": the whole composite symbol `[P; 2]` missed the local
+# comptime-type-var map, so annotation validation fell into the context-free
+# `resolve_type`, which couldn't resolve the inner `P`. Sema now resolves
+# composite annotations through the comptime type context (`resolve_type_with_ctx`).
+
+[section]
+id = "cli.comptime_type_var_composite"
+name = "Comptime type var in composite annotations"
+description = "Local comptime type value as an array-element / pointer-pointee type (RUE-263)."
+
+[[case]]
+name = "array_of_comptime_type_var"
+description = "`let arr: [P; 2]` where P is a local comptime type value compiles and runs (RUE-263)."
+files = [{ path = "main.rue", source = """
+fn Point() -> type { struct { x: i32, y: i32 } }
+fn main() -> i32 {
+    let P = Point();
+    let arr: [P; 2] = [P { x: 1, y: 2 }, P { x: 3, y: 4 }];
+    @dbg(arr[0].x + arr[1].y);
+    0
+}
+""" }]
+stdout = "5\n"
+
+[[case]]
+name = "nested_array_of_comptime_type_var"
+description = "A doubly-nested `[[P; 2]; 2]` annotation resolves the inner comptime type var at every level (RUE-263)."
+files = [{ path = "main.rue", source = """
+fn Point() -> type { struct { x: i32, y: i32 } }
+fn main() -> i32 {
+    let P = Point();
+    let grid: [[P; 2]; 2] = [[P { x: 1, y: 1 }, P { x: 2, y: 2 }], [P { x: 3, y: 3 }, P { x: 4, y: 4 }]];
+    @dbg(grid[0][1].x + grid[1][0].y);
+    0
+}
+""" }]
+stdout = "5\n"
+
+[[case]]
+name = "array_length_from_file_const"
+description = "A comptime-type-var array whose length is a file-level `const` resolves (RUE-263)."
+files = [{ path = "main.rue", source = """
+const K: i32 = 2;
+fn Point() -> type { struct { x: i32, y: i32 } }
+fn main() -> i32 {
+    let P = Point();
+    let arr: [P; K] = [P { x: 4, y: 1 }, P { x: 9, y: 3 }];
+    @dbg(arr[0].x + arr[1].y);
+    0
+}
+""" }]
+stdout = "7\n"
+
+[[case]]
+name = "pointer_to_comptime_type_var"
+description = "`ptr const P` where P is a local comptime type value resolves as a pointee type (RUE-263)."
+files = [{ path = "main.rue", source = """
+fn Point() -> type { struct { x: i32, y: i32 } }
+fn main() -> i32 {
+    let P = Point();
+    let p: P = P { x: 10, y: 20 };
+    let pp: ptr const P = checked { @raw(p) };
+    @dbg(checked { @ptr_read(pp).x });
+    0
+}
+""" }]
+stdout = "10\n"
+
+[[case]]
+name = "unknown_composite_element_still_e0204"
+description = "A genuinely-unknown array-element type is still rejected with E0204, not silently accepted (RUE-263)."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let arr: [Bogus; 2] = [1, 2];
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0204", "Bogus"]
