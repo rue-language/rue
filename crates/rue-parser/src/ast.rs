@@ -340,6 +340,17 @@ pub enum TypeExpr {
         methods: Vec<Method>,
         span: Span,
     },
+    /// Anonymous enum type: enum { Variant1, Variant2(T), ... }
+    /// The enum analog of `AnonymousStruct`, used in comptime type
+    /// construction (e.g.
+    /// `fn Option(comptime T: type) -> type { enum { Some(T), None } }`).
+    /// This makes generic sum types like `Option`/`Result` expressible as
+    /// ordinary comptime type functions (ADR-0038, RUE-6 phase 2).
+    AnonymousEnum {
+        /// Variant declarations (name and optional tuple payload types)
+        variants: Vec<EnumVariant>,
+        span: Span,
+    },
     /// Raw pointer to immutable data: ptr const T
     PointerConst { pointee: Box<TypeExpr>, span: Span },
     /// Raw pointer to mutable data: ptr mut T
@@ -390,6 +401,7 @@ impl TypeExpr {
             TypeExpr::Never(span) => *span,
             TypeExpr::Array { span, .. } => *span,
             TypeExpr::AnonymousStruct { span, .. } => *span,
+            TypeExpr::AnonymousEnum { span, .. } => *span,
             TypeExpr::PointerConst { span, .. } => *span,
             TypeExpr::PointerMut { span, .. } => *span,
         }
@@ -420,6 +432,26 @@ impl fmt::Display for TypeExpr {
                         write!(f, ", ")?;
                     }
                     write!(f, "fn sym:{}", method.name.name.into_usize())?;
+                }
+                write!(f, " }}")
+            }
+            TypeExpr::AnonymousEnum { variants, .. } => {
+                write!(f, "enum {{ ")?;
+                for (i, variant) in variants.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "sym:{}", variant.name.name.into_usize())?;
+                    if !variant.payload.is_empty() {
+                        write!(f, "(")?;
+                        for (j, ty) in variant.payload.iter().enumerate() {
+                            if j > 0 {
+                                write!(f, ", ")?;
+                            }
+                            write!(f, "{}", ty)?;
+                        }
+                        write!(f, ")")?;
+                    }
                 }
                 write!(f, " }}")
             }

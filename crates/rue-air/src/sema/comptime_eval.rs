@@ -49,7 +49,7 @@
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
-use lasso::Spur;
+use lasso::{Key, Spur};
 use rue_error::{CompileError, CompileResult, ErrorKind};
 use rue_rir::{InstData, InstRef};
 use rue_span::Span;
@@ -767,6 +767,62 @@ impl Sema<'_> {
                     }
                 }
                 Ok(Some(ConstValue::Type(struct_ty)))
+            }
+
+            // Anonymous enum type: evaluate to a comptime type value, resolving
+            // each variant's payload types through the type/value substitution.
+            // The enum analog of the AnonStructType arm above — this is what
+            // makes `fn Option(comptime T: type) -> type { enum { Some(T), None } }`
+            // monomorphize per instantiation (ADR-0038, RUE-6 phase 2).
+            InstData::AnonEnumType {
+                variants_start,
+                variants_len,
+                payloads_start,
+                payloads_len,
+            } => {
+                let variant_syms: Vec<lasso::Spur> = self
+                    .rir
+                    .get_symbols(*variants_start, *variants_len)
+                    .to_vec();
+                let payload_words: Vec<u32> =
+                    self.rir.get_extra(*payloads_start, *payloads_len).to_vec();
+
+                // Decode the self-describing payload region into per-variant
+                // type-symbol lists (parallel to `variant_syms`), then resolve
+                // each payload type through the substitutions.
+                let mut variant_names: Vec<String> = Vec::with_capacity(variant_syms.len());
+                let mut variant_payloads: Vec<Vec<Type>> = Vec::with_capacity(variant_syms.len());
+                let mut pi = 0usize;
+                for &vsym in &variant_syms {
+                    variant_names.push(self.interner.resolve(&vsym).to_string());
+                    // A variant carries a payload only when the payload region
+                    // is present (`payloads_len > 0`) and describes arity `k`.
+                    let k = if payload_words.is_empty() {
+                        0
+                    } else {
+                        let k = payload_words[pi] as usize;
+                        pi += 1;
+                        k
+                    };
+                    let mut tys: Vec<Type> = Vec::with_capacity(k);
+                    for _ in 0..k {
+                        let ty_sym = lasso::Spur::try_from_usize(payload_words[pi] as usize)
+                            .expect("valid payload type symbol");
+                        pi += 1;
+                        let Some(ty) = self.resolve_type_for_comptime_with_subst_and_values(
+                            ty_sym,
+                            env.type_subst,
+                            env.value_subst,
+                        ) else {
+                            return Ok(None);
+                        };
+                        tys.push(ty);
+                    }
+                    variant_payloads.push(tys);
+                }
+
+                let enum_ty = self.find_or_create_anon_enum(&variant_names, &variant_payloads);
+                Ok(Some(ConstValue::Type(enum_ty)))
             }
 
             // TypeConst: a type used as a value (e.g., `i32` in `identity(i32, 42)`)

@@ -1081,6 +1081,22 @@ impl Rir {
                 methods_start: *methods_start + extra_offset,
                 methods_len: *methods_len,
             },
+            InstData::AnonEnumType {
+                variants_start,
+                variants_len,
+                payloads_start,
+                payloads_len,
+            } => InstData::AnonEnumType {
+                variants_start: *variants_start + extra_offset,
+                variants_len: *variants_len,
+                // Empty payload region has no allocated slot (mirrors EnumDecl).
+                payloads_start: if *payloads_len == 0 {
+                    0
+                } else {
+                    *payloads_start + extra_offset
+                },
+                payloads_len: *payloads_len,
+            },
         };
 
         Inst {
@@ -1283,6 +1299,9 @@ impl Rir {
                 | InstData::DropFnDecl { .. }
                 | InstData::Comptime { .. }
                 | InstData::Checked { .. }
+                // AnonEnumType stores only variant-name and payload type
+                // symbols in extra, never InstRefs — nothing to renumber.
+                | InstData::AnonEnumType { .. }
                 | InstData::TypeConst { .. } => {}
             }
         }
@@ -1732,6 +1751,25 @@ pub enum InstData {
         methods_start: u32,
         /// Number of methods (InstRefs to FnDecl instructions)
         methods_len: u32,
+    },
+
+    /// Anonymous enum type: an enum (sum) type used as a value expression
+    /// (e.g., `enum { Some(T), None }` in comptime type construction). The
+    /// enum analog of [`InstData::AnonStructType`]; enables generic sum types
+    /// like `Option`/`Result` as comptime type functions (ADR-0038, RUE-6
+    /// phase 2). Variant names and tuple-variant payloads are encoded exactly
+    /// as in [`InstData::EnumDecl`].
+    AnonEnumType {
+        /// Index into extra data where variant name symbols start
+        variants_start: u32,
+        /// Number of variants
+        variants_len: u32,
+        /// Index into extra data where the tuple-variant payloads start,
+        /// encoded as in [`InstData::EnumDecl`]: a self-describing flat
+        /// sequence of `count` + `count` type-name symbols per variant.
+        payloads_start: u32,
+        /// Number of u32 words in the payloads region (0 when no payloads).
+        payloads_len: u32,
     },
 }
 
@@ -2283,6 +2321,37 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                         write!(out, "methods: [{}]", methods_str.join(", ")).unwrap();
                     }
                     writeln!(out, " }}").unwrap();
+                }
+
+                // Anonymous enum type
+                InstData::AnonEnumType {
+                    variants_start,
+                    variants_len,
+                    payloads_start,
+                    payloads_len,
+                } => {
+                    let variants = self.rir.get_symbols(*variants_start, *variants_len);
+                    // Decode payloads (self-describing [k, t0..t_{k-1}] per variant).
+                    let payload_words = self.rir.get_extra(*payloads_start, *payloads_len);
+                    let mut payload_arities: Vec<usize> = Vec::new();
+                    let mut pi = 0usize;
+                    while pi < payload_words.len() {
+                        let k = payload_words[pi] as usize;
+                        payload_arities.push(k);
+                        pi += 1 + k;
+                    }
+                    let variants_str: Vec<String> = variants
+                        .iter()
+                        .enumerate()
+                        .map(|(i, v)| {
+                            let base = self.interner.resolve(&*v).to_string();
+                            match payload_arities.get(i) {
+                                Some(k) if *k > 0 => format!("{}/{}", base, k),
+                                _ => base,
+                            }
+                        })
+                        .collect();
+                    writeln!(out, "enum {{ {} }}", variants_str.join(", ")).unwrap();
                 }
             }
         }

@@ -176,3 +176,120 @@ fn main() -> i32 { 0 }
 """ }]
 compile_fail = true
 error_contains = ["requires preview feature"]
+
+# =============================================================================
+# Generic enums — Option/Result as comptime type functions (RUE-6 phase 2,
+# ADR-0038). The enum analog of the anonymous-struct comptime type functions:
+# an enum body over a comptime type parameter, monomorphized per instantiation.
+# Definitions are inline (no prelude — RUE-1 is out of scope).
+# =============================================================================
+
+# Option(i32): Some(5) -> 5 and None -> 0, both through a match.
+[[case]]
+name = "generic_option_construct_match"
+description = "Inline generic Option enum: Some(5) matches to 5, None matches to 0; sum is 5."
+args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+fn Option(comptime T: type) -> type { enum { Some(T), None } }
+fn main() -> i32 {
+    let O = Option(i32);
+    let x: O = O::Some(5);
+    let y: O = O::None;
+    let a = match x { O::Some(n) => n, O::None => 0 };
+    let b = match y { O::Some(n) => n, O::None => 0 };
+    a + b
+}
+""" }]
+exit_code = 5
+
+# Option(bool) is a distinct instantiation with its own layout and works.
+[[case]]
+name = "generic_option_bool_instantiation"
+description = "Option(bool) is a distinct monomorphization: Some(true) matches to 7."
+args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+fn Option(comptime T: type) -> type { enum { Some(T), None } }
+fn main() -> i32 {
+    let O = Option(bool);
+    let x: O = O::Some(true);
+    match x { O::Some(b) => if b { 7 } else { 8 }, O::None => 0 }
+}
+""" }]
+exit_code = 7
+
+# Two-type-parameter Result: both Ok and Err arms construct and match.
+[[case]]
+name = "generic_result_two_params"
+description = "Two-param Result enum: Ok(100) -> 100, Err(true) -> 42; sum is 142."
+args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+fn Result(comptime T: type, comptime E: type) -> type { enum { Ok(T), Err(E) } }
+fn main() -> i32 {
+    let R = Result(i32, bool);
+    let ok: R = R::Ok(100);
+    let er: R = R::Err(true);
+    let a = match ok { R::Ok(v) => v, R::Err(e) => if e { 1 } else { 2 } };
+    let b = match er { R::Ok(v) => v, R::Err(e) => if e { 42 } else { 43 } };
+    a + b
+}
+""" }]
+exit_code = 142
+
+# Mixing distinct instantiations (Option(bool) value into Option(i32) slot) is
+# a compile-time type error — monomorphization keeps the types apart.
+[[case]]
+name = "generic_option_distinct_types_rejected"
+description = "Assigning an Option(bool) value to an Option(i32)-typed binding is a type error."
+args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+fn Option(comptime T: type) -> type { enum { Some(T), None } }
+fn main() -> i32 {
+    let Oi = Option(i32);
+    let Ob = Option(bool);
+    let x: Oi = Ob::Some(true);
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["type mismatch"]
+
+# A payload struct with a destructor, carried by Some(D) of a generic Option,
+# drops through the active variant exactly once at scope exit.
+[[case]]
+name = "generic_enum_payload_drop_once"
+description = "Generic Option holding a struct with `drop fn`: dropping the enum runs the payload destructor once (@dbg prints 33)."
+args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+struct Noisy { code: i32 }
+drop fn Noisy(self) { @dbg(self.code); }
+fn Option(comptime T: type) -> type { enum { Some(T), None } }
+fn main() -> i32 {
+    let O = Option(Noisy);
+    let x: O = O::Some(Noisy { code: 33 });
+    match x {
+        O::Some(v) => v.code,
+        O::None => 0,
+    }
+}
+""" }]
+stdout = "33\n"
+exit_code = 33
+
+# A linear payload type makes the generic enum linear (multiplicity join),
+# so an unconsumed value is a compile error — linearity composes for free,
+# with no special "Result is linear" rule (ADR-0038).
+[[case]]
+name = "generic_enum_linear_payload_must_consume"
+description = "A generic Result whose Err payload is a linear struct is itself linear: leaving it unconsumed is E0406."
+args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+linear struct Token { v: i32 }
+fn Result(comptime T: type, comptime E: type) -> type { enum { Ok(T), Err(E) } }
+fn main() -> i32 {
+    let R = Result(i32, Token);
+    let x: R = R::Ok(5);
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["must be consumed"]

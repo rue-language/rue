@@ -3,13 +3,18 @@
 //! This module implements structural type equality for anonymous structs.
 //! Two anonymous structs with the same field names/types (in order) AND
 //! the same method signatures AND the same captured comptime values are the same type.
+//!
+//! It also implements the enum analog (`find_or_create_anon_enum`): anonymous
+//! enum types produced by comptime type functions like
+//! `fn Option(comptime T: type) -> type { enum { Some(T), None } }`
+//! (ADR-0038, RUE-6 phase 2).
 
 use std::collections::HashMap;
 
 use lasso::Spur;
 
 use crate::sema::context::ConstValue;
-use crate::types::{StructDef, StructField, Type};
+use crate::types::{EnumDef, StructDef, StructField, Type};
 
 use super::Sema;
 use super::info::AnonMethodSig;
@@ -145,5 +150,66 @@ impl Sema<'_> {
 
         // Return with is_new=true
         (Type::new_struct(struct_id), true)
+    }
+
+    /// Find an existing anonymous enum with the same variants and payload
+    /// types, or create a new one. The enum analog of
+    /// [`Self::find_or_create_anon_struct`].
+    ///
+    /// Structural equality is achieved via a *canonical name* that fully
+    /// encodes the variant names and their resolved payload types: two
+    /// instantiations with identical structure (`Option(i32)` reused) intern
+    /// the same name and dedup to one `EnumId`, while distinct structure
+    /// (`Option(i32)` vs `Option(bool)`) interns different names and yields
+    /// distinct enums with correctly-sized tagged-union layouts. Because
+    /// payload types are already fully monomorphized here, captured comptime
+    /// values (e.g. an `[i32; N]` payload) are reflected in the name too, so
+    /// no separate captured-value tracking is needed (unlike anon structs,
+    /// which can capture a value without it appearing in a field type).
+    pub(crate) fn find_or_create_anon_enum(
+        &mut self,
+        variant_names: &[String],
+        variant_payloads: &[Vec<Type>],
+    ) -> Type {
+        // Build the canonical, structure-encoding name.
+        let mut name = String::from("enum { ");
+        for (i, vname) in variant_names.iter().enumerate() {
+            if i > 0 {
+                name.push_str(", ");
+            }
+            name.push_str(vname);
+            let payload = &variant_payloads[i];
+            if !payload.is_empty() {
+                name.push('(');
+                for (j, ty) in payload.iter().enumerate() {
+                    if j > 0 {
+                        name.push_str(", ");
+                    }
+                    name.push_str(&ty.safe_name_with_pool(Some(&self.type_pool)));
+                }
+                name.push(')');
+            }
+        }
+        name.push_str(" }");
+
+        let name_spur = self.interner.get_or_intern(&name);
+
+        let def = EnumDef {
+            name,
+            variants: variant_names.to_vec(),
+            variant_payloads: variant_payloads.to_vec(),
+            is_pub: false,                     // Anonymous enums are private
+            file_id: rue_span::FileId::new(0), // Anonymous, no source file
+        };
+
+        // `register_enum` dedups by interned name, so an equivalent anonymous
+        // enum interned earlier is reused.
+        let (enum_id, _is_new) = self.type_pool.register_enum(name_spur, def);
+
+        // Mirror `find_or_create_anon_struct`, which records the type in the
+        // name→id lookup so later resolution paths see it.
+        self.enums.insert(name_spur, enum_id);
+
+        Type::new_enum(enum_id)
     }
 }

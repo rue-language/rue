@@ -1570,3 +1570,101 @@ fn main() -> i32 {
 }
 """
 exit_code = 42
+
+# =============================================================================
+# Anonymous enum types (generic sum types: Option/Result) — RUE-6 phase 2,
+# ADR-0038. The enum analog of the anonymous-struct comptime type functions
+# above; each instantiation is monomorphized with its own tagged-union layout.
+# =============================================================================
+
+[[case]]
+name = "anon_enum_generic_option_some"
+spec = ["4.14:20"]
+preview = "enum_payloads"
+description = "Generic Option enum: construct Some(T) and match it out (ADR-0038 deliverable)"
+source = """
+fn Option(comptime T: type) -> type {
+    enum { Some(T), None }
+}
+fn main() -> i32 {
+    let O = Option(i32);
+    let x: O = O::Some(42);
+    match x { O::Some(n) => n, O::None => 0 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "anon_enum_generic_option_none"
+spec = ["4.14:20"]
+preview = "enum_payloads"
+description = "Generic Option enum: the None variant selects the default arm"
+source = """
+fn Option(comptime T: type) -> type {
+    enum { Some(T), None }
+}
+fn main() -> i32 {
+    let O = Option(i32);
+    let x: O = O::None;
+    match x { O::Some(n) => n, O::None => 42 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "anon_enum_two_type_params_result"
+spec = ["4.14:20"]
+preview = "enum_payloads"
+description = "Two-type-parameter Result enum: both Ok and Err arms construct and match"
+source = """
+fn Result(comptime T: type, comptime E: type) -> type {
+    enum { Ok(T), Err(E) }
+}
+fn main() -> i32 {
+    let R = Result(i32, bool);
+    let ok: R = R::Ok(40);
+    let er: R = R::Err(true);
+    let a = match ok { R::Ok(v) => v, R::Err(e) => if e { 1 } else { 2 } };
+    let b = match er { R::Ok(v) => v, R::Err(e) => if e { 2 } else { 3 } };
+    a + b
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "anon_enum_monomorphized_distinct"
+spec = ["4.14:21"]
+preview = "enum_payloads"
+description = "Option(i32) and Option(bool) are distinct types: mixing them is a type error"
+source = """
+fn Option(comptime T: type) -> type {
+    enum { Some(T), None }
+}
+fn main() -> i32 {
+    let Oi = Option(i32);
+    let Ob = Option(bool);
+    let x: Oi = Ob::Some(true);
+    0
+}
+"""
+compile_fail = true
+error_contains = "type mismatch"
+
+[[case]]
+name = "anon_enum_structural_reuse"
+spec = ["4.14:21"]
+preview = "enum_payloads"
+description = "Two Option(i32) instantiations are structurally equal and interchangeable"
+source = """
+fn Option(comptime T: type) -> type {
+    enum { Some(T), None }
+}
+fn main() -> i32 {
+    let A = Option(i32);
+    let B = Option(i32);
+    let x: A = A::Some(42);
+    let y: B = x;
+    match y { B::Some(n) => n, B::None => 0 }
+}
+"""
+exit_code = 42

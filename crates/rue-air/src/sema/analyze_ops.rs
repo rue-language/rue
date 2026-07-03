@@ -1380,13 +1380,17 @@ impl<'a> Sema<'a> {
                         // Qualified access: module.EnumName::Variant
                         self.resolve_enum_through_module(*module_ref, *type_name, pattern_span)?
                     } else {
-                        // Unqualified access: EnumName::Variant
-                        let enum_id = *self.enums.get(type_name).ok_or_compile_error(
-                            ErrorKind::UnknownEnumType(
-                                self.interner.resolve(&*type_name).to_string(),
-                            ),
-                            pattern_span,
-                        )?;
+                        // Unqualified access: EnumName::Variant, or the generic
+                        // form `O::Some(..)` where `O` is a comptime type
+                        // variable bound to `Option(i32)` (RUE-6 phase 2).
+                        let (enum_id, via_comptime) = self
+                            .resolve_enum_type_name(*type_name, ctx)
+                            .ok_or_compile_error(
+                                ErrorKind::UnknownEnumType(
+                                    self.interner.resolve(&*type_name).to_string(),
+                                ),
+                                pattern_span,
+                            )?;
                         // Privacy (E0460, RUE-185): a match pattern names the
                         // enum unqualified, so a private enum from another
                         // directory cannot be matched on — privacy is uniform
@@ -1394,15 +1398,18 @@ impl<'a> Sema<'a> {
                         // module-qualified branch above does its own check
                         // (E0706). The pattern-to-AIR conversion later in
                         // this loop re-resolves the same name but runs only
-                        // after this check has passed.
-                        let def = self.type_pool.enum_def(enum_id);
-                        self.check_unqualified_visibility(
-                            "enum",
-                            self.interner.resolve(&*type_name),
-                            def.file_id,
-                            def.is_pub,
-                            pattern_span,
-                        )?;
+                        // after this check has passed. A comptime-bound enum is
+                        // exempt (the type arrived through a binding).
+                        if !via_comptime {
+                            let def = self.type_pool.enum_def(enum_id);
+                            self.check_unqualified_visibility(
+                                "enum",
+                                self.interner.resolve(&*type_name),
+                                def.file_id,
+                                def.is_pub,
+                                pattern_span,
+                            )?;
+                        }
                         enum_id
                     };
                     let enum_def = self.type_pool.enum_def(enum_id);
@@ -1522,15 +1529,17 @@ impl<'a> Sema<'a> {
                     let enum_id = if let Some(module_ref) = module {
                         self.resolve_enum_through_module(*module_ref, *type_name, pattern_span)?
                     } else {
-                        *self.enums.get(type_name).ok_or_else(|| {
-                            CompileError::new(
-                                ErrorKind::InternalError(format!(
-                                    "enum type '{}' not found during pattern conversion",
-                                    type_name_str
-                                )),
-                                pattern_span,
-                            )
-                        })?
+                        self.resolve_enum_type_name(*type_name, ctx)
+                            .map(|(id, _)| id)
+                            .ok_or_else(|| {
+                                CompileError::new(
+                                    ErrorKind::InternalError(format!(
+                                        "enum type '{}' not found during pattern conversion",
+                                        type_name_str
+                                    )),
+                                    pattern_span,
+                                )
+                            })?
                     };
                     let enum_def = self.type_pool.enum_def(enum_id);
                     let variant_name = self.interner.resolve(&*variant);
@@ -1670,10 +1679,12 @@ impl<'a> Sema<'a> {
         let enum_id = if let Some(module_ref) = module {
             self.resolve_enum_through_module(*module_ref, *type_name, pattern_span)?
         } else {
-            *self.enums.get(type_name).ok_or_compile_error(
-                ErrorKind::UnknownEnumType(self.interner.resolve(&*type_name).to_string()),
-                pattern_span,
-            )?
+            self.resolve_enum_type_name(*type_name, ctx)
+                .map(|(id, _)| id)
+                .ok_or_compile_error(
+                    ErrorKind::UnknownEnumType(self.interner.resolve(&*type_name).to_string()),
+                    pattern_span,
+                )?
         };
         let def = self.type_pool.enum_def(enum_id);
         let variant_name = self.interner.resolve(&*variant).to_string();
@@ -3878,7 +3889,7 @@ impl<'a> Sema<'a> {
         &mut self,
         air: &mut Air,
         inst_ref: InstRef,
-        _ctx: &mut AnalysisContext,
+        ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
         let inst = self.rir.get(inst_ref);
 
@@ -3903,25 +3914,34 @@ impl<'a> Sema<'a> {
                     // Qualified access: module.EnumName::Variant
                     self.resolve_enum_through_module(*module_ref, *type_name, inst.span)?
                 } else {
-                    // Unqualified access: EnumName::Variant
-                    let enum_id = *self.enums.get(type_name).ok_or_compile_error(
-                        ErrorKind::UnknownEnumType(self.interner.resolve(&*type_name).to_string()),
-                        inst.span,
-                    )?;
+                    // Unqualified access: EnumName::Variant, or the generic
+                    // form `O::None` where `O` is a comptime type-variable
+                    // bound to `Option(i32)` (RUE-6 phase 2).
+                    let (enum_id, via_comptime) = self
+                        .resolve_enum_type_name(*type_name, ctx)
+                        .ok_or_compile_error(
+                            ErrorKind::UnknownEnumType(
+                                self.interner.resolve(&*type_name).to_string(),
+                            ),
+                            inst.span,
+                        )?;
                     // Privacy (E0460, RUE-185): constructing a variant names
                     // the enum unqualified, so a private enum from another
                     // directory is not constructible here — privacy is
                     // uniform across item kinds (spec 10.3:1, 10.3:7). The
                     // module-qualified branch above does its own check
-                    // (E0706, `resolve_enum_through_module`).
-                    let def = self.type_pool.enum_def(enum_id);
-                    self.check_unqualified_visibility(
-                        "enum",
-                        self.interner.resolve(&*type_name),
-                        def.file_id,
-                        def.is_pub,
-                        inst.span,
-                    )?;
+                    // (E0706, `resolve_enum_through_module`). A comptime-bound
+                    // enum is exempt (the type arrived through a binding).
+                    if !via_comptime {
+                        let def = self.type_pool.enum_def(enum_id);
+                        self.check_unqualified_visibility(
+                            "enum",
+                            self.interner.resolve(&*type_name),
+                            def.file_id,
+                            def.is_pub,
+                            inst.span,
+                        )?;
+                    }
                     enum_id
                 };
                 let enum_def = self.type_pool.enum_def(enum_id);
@@ -4472,6 +4492,25 @@ impl<'a> Sema<'a> {
         self.analyze_method_call_impl(air, receiver, method, args_start, args_len, span, ctx)
     }
 
+    /// Resolve a path/pattern enum type name that may be a comptime
+    /// type-variable binding (`let O = Option(i32); O::Some(..)`), falling
+    /// back to the named-enum table. Returns `(enum_id, via_comptime_binding)`,
+    /// or `None` if the name is not an enum. When `via_comptime_binding` is
+    /// true the enum arrived through a `let` binding (an anonymous enum from a
+    /// comptime type function), so privacy does not apply — mirroring how the
+    /// struct-literal / annotation paths treat comptime type variables as
+    /// privacy-exempt (RUE-6 phase 2).
+    pub(crate) fn resolve_enum_type_name(
+        &self,
+        type_name: Spur,
+        ctx: &AnalysisContext,
+    ) -> Option<(crate::types::EnumId, bool)> {
+        if let Some(&ty) = ctx.comptime_type_vars.get(&type_name) {
+            return ty.as_enum().map(|id| (id, true));
+        }
+        self.enums.get(&type_name).map(|&id| (id, false))
+    }
+
     /// Analyze an associated function call.
     ///
     /// This is a complex operation. The full implementation is in analysis.rs.
@@ -4485,11 +4524,13 @@ impl<'a> Sema<'a> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        // Enum tuple-variant construction: `Shape::Circle(5)` (RUE-221). If
-        // `type_name` is an enum whose variant is `function`, build an
-        // `EnumVariant` value carrying the analyzed payload operands rather
-        // than dispatching to associated-function resolution.
-        if let Some(&enum_id) = self.enums.get(&type_name) {
+        // Enum tuple-variant construction: `Shape::Circle(5)` (RUE-221), and
+        // its generic form `O::Some(5)` where `O` is a comptime type-variable
+        // bound to `Option(i32)` (RUE-6 phase 2). If `type_name` resolves to an
+        // enum whose variant is `function`, build an `EnumVariant` value
+        // carrying the analyzed payload operands rather than dispatching to
+        // associated-function resolution.
+        if let Some((enum_id, via_comptime)) = self.resolve_enum_type_name(type_name, ctx) {
             let variant_name = self.interner.resolve(&function).to_string();
             let def = self.type_pool.enum_def(enum_id);
             if let Some(variant_index) = def.find_variant(&variant_name) {
@@ -4498,6 +4539,7 @@ impl<'a> Sema<'a> {
                     enum_id,
                     variant_index as u32,
                     type_name,
+                    via_comptime,
                     args_start,
                     args_len,
                     span,
@@ -4519,6 +4561,7 @@ impl<'a> Sema<'a> {
         enum_id: crate::types::EnumId,
         variant_index: u32,
         type_name: Spur,
+        privacy_exempt: bool,
         args_start: u32,
         args_len: u32,
         span: Span,
@@ -4539,14 +4582,18 @@ impl<'a> Sema<'a> {
         }
 
         // Visibility check, mirroring the bare-path `EnumVariant` handler
-        // (E0460, privacy is uniform across item kinds).
-        self.check_unqualified_visibility(
-            "enum",
-            self.interner.resolve(&type_name),
-            def.file_id,
-            def.is_pub,
-            span,
-        )?;
+        // (E0460, privacy is uniform across item kinds). A comptime-bound enum
+        // (`let O = Option(i32); O::Some(..)`) is exempt: the type value
+        // arrived through a binding, not by naming the enum (privacy_exempt).
+        if !privacy_exempt {
+            self.check_unqualified_visibility(
+                "enum",
+                self.interner.resolve(&type_name),
+                def.file_id,
+                def.is_pub,
+                span,
+            )?;
+        }
 
         let args = self.rir.get_call_args(args_start, args_len);
 
