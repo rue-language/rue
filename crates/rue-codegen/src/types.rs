@@ -190,7 +190,12 @@ pub fn collect_array_scalar_vregs(
         } => {
             let elements = cfg.get_extra(*elements_start, *elements_len);
             let mut result = Vec::new();
-            for elem in elements {
+            // Store elements in REVERSE order so element 0 lands at the array's
+            // lowest address (frame slots descend in address): ascending array
+            // layout per ADR-0040 / RUE-243. Mirror of `lower_array_init`. Each
+            // element's own slots stay in natural order (nested arrays reverse
+            // via this same recursion; structs keep descending fields).
+            for elem in elements.iter().rev() {
                 let elem_inst = cfg.get_inst(*elem);
                 if elem_inst.ty.is_array() {
                     // Recursively collect from nested array

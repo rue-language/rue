@@ -361,9 +361,19 @@ pub fn lower_array_init<B: SlotBackend>(
     let vreg = b.alloc_vreg();
     b.map_value(value, vreg);
 
+    // Array elements are laid out ASCENDING in memory: element 0 at the
+    // array's lowest address, element i at base + i*element_size (ADR-0040 /
+    // RUE-243). Frame slots descend in address (slot k lives at a lower
+    // address than slot k-1), so we store the elements in REVERSE order —
+    // element N-1 into the first (highest-address) slot, element 0 into the
+    // last (lowest-address) slot. Array-index address computation applies the
+    // matching `+(N-1)*elem_slot_count` origin shift and adds the scaled
+    // index, so indexing and @ptr_offset agree. Each element's own slots stay
+    // in natural order (struct fields remain descending; nested arrays are
+    // reversed by their own recursion). (ADR-0040)
     let elements = b.ctx().cfg.get_extra(elements_start, elements_len).to_vec();
     let mut element_vregs: Vec<VReg> = Vec::new();
-    for e in &elements {
+    for e in elements.iter().rev() {
         let e_ty = b.ctx().cfg.get_inst(*e).ty;
         // Payload enums are multi-slot aggregates too: a discriminant-only
         // enum (accessor returns None) stays a single-vreg scalar, but a

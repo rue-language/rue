@@ -147,6 +147,84 @@ fn main() -> i32 {
 """ }]
 stdout = "10\n99\n"
 
+# @ptr_offset is standard pointer arithmetic: a plain ADD, forward toward
+# HIGHER addresses, uniform for every pointer origin (ADR-0040 / RUE-243).
+# This walks a fresh mmap region (NOT a local array): @ptr_offset(base, 1)
+# must land one element FORWARD (higher address), so writing 100/200/300 at
+# offsets 0/1/2 and reading them back returns them in order, and the address
+# delta base->base+1 is exactly sizeof(pointee) (8, one slot). Before RUE-243
+# @ptr_offset subtracted, so it walked mmap pointers BACKWARD and this read
+# garbage. mmap uses the x86-64 Linux syscall ABI, so scope to that host.
+[[case]]
+name = "ptr_offset_forward_on_mmap_pointer"
+only_on = ["x86-64-linux"]
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    checked {
+        let sys_mmap: u64 = 9;
+        let zero: u64 = 0;
+        let len: u64 = 4096;
+        let prot: u64 = 3;
+        let flags: u64 = 34;
+        let fdneg: u64 = 18446744073709551615;
+        let addr: i64 = @syscall(sys_mmap, zero, len, prot, flags, fdneg, zero);
+        let au: u64 = @intCast(addr);
+        let base: ptr mut i32 = @int_to_ptr(au);
+        @ptr_write(@ptr_offset(base, 0), 100);
+        @ptr_write(@ptr_offset(base, 1), 200);
+        @ptr_write(@ptr_offset(base, 2), 300);
+        let d: u64 = @ptr_to_int(@ptr_offset(base, 1)) - @ptr_to_int(base);
+        @dbg(d);
+        @dbg(@ptr_read(@ptr_offset(base, 0)));
+        @dbg(@ptr_read(@ptr_offset(base, 1)));
+        @dbg(@ptr_read(@ptr_offset(base, 2)));
+    };
+    0
+}
+""" }]
+stdout = "8\n100\n200\n300\n"
+
+# Array indexing and @ptr_offset AGREE by construction (ADR-0040 / RUE-243):
+# both compute base + i*size (ascending). Write element 2 through the index
+# path (`a[2] = 77`), then read it back through the pointer path
+# (@ptr_offset(@raw(a[0]), 2)); the two must resolve to the same address, so
+# the read observes 77. Conversely, write through the pointer path and read
+# through the index path.
+[[case]]
+name = "array_index_and_ptr_offset_agree"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut a: [i32; 4] = [0, 0, 0, 0];
+    a[2] = 77;
+    let via_ptr: i32 = checked { @ptr_read(@ptr_offset(@raw(a[0]), 2)) };
+    @dbg(via_ptr);
+    checked {
+        @ptr_write(@ptr_offset(@raw_mut(a[0]), 3), 88);
+    };
+    @dbg(a[3]);
+    0
+}
+""" }]
+stdout = "77\n88\n"
+
+# @ptr_offset moves toward HIGHER addresses for a positive index and LOWER
+# for a negative one, on an ordinary (non-array-origin) local pointer
+# (ADR-0040 / RUE-243). The forward delta is exactly sizeof(pointee) = 8.
+[[case]]
+name = "ptr_offset_forward_is_higher_address"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let x: i32 = 0;
+    checked {
+        let p: ptr const i32 = @raw(x);
+        let fwd: u64 = @ptr_to_int(@ptr_offset(p, 1)) - @ptr_to_int(p);
+        @dbg(fwd);
+    };
+    0
+}
+""" }]
+stdout = "8\n"
+
 # Enforcement: a pointer operation outside a `checked` block is rejected
 # with E1300, not silently accepted (spec 9.1:12).
 [[case]]

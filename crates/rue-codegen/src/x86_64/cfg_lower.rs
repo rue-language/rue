@@ -2445,7 +2445,7 @@ impl<'a> CfgLower<'a> {
                     let element_size = types::type_size_bytes(self.ctx.type_pool, pointee_type);
 
                     // Sign-/zero-extend the index to a full 64-bit value before
-                    // the 64-bit scale + subtract below. A narrow signed index
+                    // the 64-bit scale + add below. A narrow signed index
                     // (e.g. an i32 `-1`) sits in the low 32 bits with high bits
                     // clear; without extension the 64-bit multiply would treat
                     // it as ~4 billion and corrupt the address (RUE-213).
@@ -2482,13 +2482,13 @@ impl<'a> CfgLower<'a> {
                         _ => {}
                     }
 
-                    // Calculate: ptr - (offset * element_size)
-                    // Aggregates (arrays) are laid out with element 0 at the
-                    // highest address and later elements at lower addresses
-                    // (the stack grows down), so array indexing subtracts
-                    // index * 8 from the base. @ptr_offset must subtract the
-                    // scaled offset too, so that advancing a pointer by N lands
-                    // on element N rather than walking off the array (RUE-213).
+                    // Calculate: ptr + (offset * element_size)
+                    // Standard pointer arithmetic, an unconditional add
+                    // (ADR-0040 / RUE-243): arrays are now laid out ascending
+                    // (element i at base + i*size), so array indexing adds and
+                    // @ptr_offset adds too — they agree, and the add is uniform
+                    // for every pointer origin (local array, heap, mmap,
+                    // @int_to_ptr). Positive n moves toward higher addresses.
                     // First, multiply offset by element size.
                     let scaled_offset_vreg = self.mir.alloc_vreg();
                     if element_size == 1 {
@@ -2520,14 +2520,14 @@ impl<'a> CfgLower<'a> {
                         });
                     }
 
-                    // Subtract from pointer (64-bit sub for addresses); see the
-                    // descending-layout note above (RUE-213).
+                    // Add to pointer (64-bit add for addresses); see the
+                    // ascending-layout note above (ADR-0040 / RUE-243).
                     let result_vreg = self.mir.alloc_vreg();
                     self.mir.push(X86Inst::MovRR {
                         dst: Operand::Virtual(result_vreg),
                         src: Operand::Virtual(ptr_vreg),
                     });
-                    self.mir.push(X86Inst::SubRR64 {
+                    self.mir.push(X86Inst::AddRR64 {
                         dst: Operand::Virtual(result_vreg),
                         src: Operand::Virtual(scaled_offset_vreg),
                     });
@@ -3897,6 +3897,11 @@ impl<'a> CfgLower<'a> {
                     self.emit_bounds_check(index_vreg, array_length);
 
                     let elem_slot_count = self.ctx.array_element_slot_count(*array_type);
+                    // Ascending array layout (ADR-0040 / RUE-243): shift the
+                    // origin to the array's lowest-address element so the ADDed
+                    // scaled index below resolves element i to base + i*size.
+                    let array_len = self.ctx.array_length(*array_type);
+                    static_slot_offset += (array_len.max(1) - 1) as u32 * elem_slot_count;
                     index_levels.push(IndexLevel {
                         index: *index,
                         elem_slot_count,
@@ -3920,14 +3925,16 @@ impl<'a> CfgLower<'a> {
                 let base_offset = self.ctx.local_offset(base_slot);
 
                 if let Some(dyn_offset) = dynamic_offset_vreg {
-                    // Compute address: rbp + base_offset - dynamic_offset
+                    // Compute address: rbp + base_offset + dynamic_offset (ascending, ADR-0040)
                     let addr_vreg = self.mir.alloc_vreg();
                     self.mir.push(X86Inst::Lea {
                         dst: Operand::Virtual(addr_vreg),
                         base: Reg::Rbp,
                         disp: base_offset,
                     });
-                    self.mir.push(X86Inst::SubRR64 {
+                    // Ascending layout: element i is at base + i*size, so ADD
+                    // the scaled index to the (lowest-address) origin (ADR-0040).
+                    self.mir.push(X86Inst::AddRR64 {
                         dst: Operand::Virtual(addr_vreg),
                         src: Operand::Virtual(dyn_offset),
                     });
@@ -3952,7 +3959,7 @@ impl<'a> CfgLower<'a> {
                     let static_byte_offset = (static_slot_offset as i32) * 8;
 
                     if let Some(dyn_offset) = dynamic_offset_vreg {
-                        // Compute address: ptr - static_offset - dynamic_offset
+                        // Compute address: ptr - static_offset + dynamic_offset (ascending, ADR-0040)
                         let addr_vreg = self.mir.alloc_vreg();
                         self.mir.push(X86Inst::MovRR {
                             dst: Operand::Virtual(addr_vreg),
@@ -3969,7 +3976,7 @@ impl<'a> CfgLower<'a> {
                                 src: Operand::Virtual(offset_vreg),
                             });
                         }
-                        self.mir.push(X86Inst::SubRR64 {
+                        self.mir.push(X86Inst::AddRR64 {
                             dst: Operand::Virtual(addr_vreg),
                             src: Operand::Virtual(dyn_offset),
                         });
@@ -3998,7 +4005,7 @@ impl<'a> CfgLower<'a> {
                             base: Reg::Rbp,
                             disp: base_offset,
                         });
-                        self.mir.push(X86Inst::SubRR64 {
+                        self.mir.push(X86Inst::AddRR64 {
                             dst: Operand::Virtual(addr_vreg),
                             src: Operand::Virtual(dyn_offset),
                         });
@@ -4083,6 +4090,11 @@ impl<'a> CfgLower<'a> {
                     self.emit_bounds_check(index_vreg, array_length);
 
                     let elem_slot_count = self.ctx.array_element_slot_count(*array_type);
+                    // Ascending array layout (ADR-0040 / RUE-243): shift the
+                    // origin to the array's lowest-address element so the ADDed
+                    // scaled index below resolves element i to base + i*size.
+                    let array_len = self.ctx.array_length(*array_type);
+                    static_slot_offset += (array_len.max(1) - 1) as u32 * elem_slot_count;
                     index_levels.push(IndexLevel {
                         index: *index,
                         elem_slot_count,
@@ -4112,7 +4124,9 @@ impl<'a> CfgLower<'a> {
                         base: Reg::Rbp,
                         disp: base_offset,
                     });
-                    self.mir.push(X86Inst::SubRR64 {
+                    // Ascending layout: element i is at base + i*size, so ADD
+                    // the scaled index to the (lowest-address) origin (ADR-0040).
+                    self.mir.push(X86Inst::AddRR64 {
                         dst: Operand::Virtual(addr_vreg),
                         src: Operand::Virtual(dyn_offset),
                     });
@@ -4143,7 +4157,7 @@ impl<'a> CfgLower<'a> {
                                 src: Operand::Virtual(offset_vreg),
                             });
                         }
-                        self.mir.push(X86Inst::SubRR64 {
+                        self.mir.push(X86Inst::AddRR64 {
                             dst: Operand::Virtual(addr_vreg),
                             src: Operand::Virtual(dyn_offset),
                         });
@@ -4167,7 +4181,7 @@ impl<'a> CfgLower<'a> {
                             base: Reg::Rbp,
                             disp: base_offset,
                         });
-                        self.mir.push(X86Inst::SubRR64 {
+                        self.mir.push(X86Inst::AddRR64 {
                             dst: Operand::Virtual(addr_vreg),
                             src: Operand::Virtual(dyn_offset),
                         });
@@ -4261,6 +4275,11 @@ impl<'a> CfgLower<'a> {
                 }
                 Projection::Index { array_type, index } => {
                     let elem_slot_count = self.ctx.array_element_slot_count(*array_type);
+                    // Ascending array layout (ADR-0040 / RUE-243): shift the
+                    // origin to the array's lowest-address element so the ADDed
+                    // scaled index below resolves element i to base + i*size.
+                    let array_len = self.ctx.array_length(*array_type);
+                    static_slot_offset += (array_len.max(1) - 1) as u32 * elem_slot_count;
                     index_levels.push(IndexLevel {
                         index: *index,
                         elem_slot_count,
@@ -4290,7 +4309,7 @@ impl<'a> CfgLower<'a> {
                 });
 
                 if let Some(dyn_offset) = dynamic_offset_vreg {
-                    self.mir.push(X86Inst::SubRR64 {
+                    self.mir.push(X86Inst::AddRR64 {
                         dst: Operand::Virtual(dst),
                         src: Operand::Virtual(dyn_offset),
                     });
@@ -4319,7 +4338,7 @@ impl<'a> CfgLower<'a> {
                     }
 
                     if let Some(dyn_offset) = dynamic_offset_vreg {
-                        self.mir.push(X86Inst::SubRR64 {
+                        self.mir.push(X86Inst::AddRR64 {
                             dst: Operand::Virtual(dst),
                             src: Operand::Virtual(dyn_offset),
                         });
@@ -4335,7 +4354,7 @@ impl<'a> CfgLower<'a> {
                     });
 
                     if let Some(dyn_offset) = dynamic_offset_vreg {
-                        self.mir.push(X86Inst::SubRR64 {
+                        self.mir.push(X86Inst::AddRR64 {
                             dst: Operand::Virtual(dst),
                             src: Operand::Virtual(dyn_offset),
                         });

@@ -20,7 +20,7 @@ All elements of an array **MUST** have the same type `T`.
 
 {{ rule(id="3.5:4", cat="normative") }}
 
-Arrays are stored contiguously in memory. The size of `[T; N]` is `N * size_of(T)`. Zero-length arrays `[T; 0]` are zero-sized types. See [Zero-Sized Types](../#zero-sized-types) for the general definition.
+Arrays are stored contiguously in memory in **ascending** order: element `i` is located at offset `i * size_of(T)` from the start of the array, so element `0` occupies the array's lowest address and element `N-1` its highest. Consequently array indexing and pointer arithmetic (`@ptr_offset`, §9.2) agree by construction — both advance by `size_of(T)` per element. The size of `[T; N]` is `N * size_of(T)`. Zero-length arrays `[T; 0]` are zero-sized types. See [Zero-Sized Types](../#zero-sized-types) for the general definition. (Struct field layout, by contrast, remains implementation-defined; see ADR-0040.)
 
 {{ rule(id="3.5:5") }}
 

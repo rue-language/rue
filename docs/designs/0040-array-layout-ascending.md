@@ -6,7 +6,7 @@ tags: [layout, arrays, pointers, codegen, abi]
 feature-flag:
 created: 2026-07-03
 accepted: 2026-07-03
-implemented:
+implemented: 2026-07-03
 spec-sections: ["3.6", "9"]
 superseded-by:
 ---
