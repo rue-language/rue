@@ -28,6 +28,13 @@ The identifier **MUST** be a valid field name for that struct type.
 
 The type of a field access expression is the type of the accessed field.
 
+{{ rule(id="4.12:9", cat="dynamic-semantics") }}
+
+A field access expression `base.field` evaluates to the value currently held in
+the named `field` of the struct denoted by `base`. The base expression is
+evaluated first (section 4.0); the result is the value of that field at the
+point the access is evaluated.
+
 {{ rule(id="4.12:6") }}
 
 ```rue

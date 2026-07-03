@@ -214,3 +214,39 @@ fn main() -> i32 {
 }
 """
 compile_fail = true
+
+# =============================================================================
+# Evaluation Order (RUE-298)
+# The right-hand side is evaluated before the target place's index.
+# =============================================================================
+
+[[case]]
+name = "assignment_rhs_before_place_index_observable"
+spec = ["5.2:14"]
+source = """
+fn tap(n: i32) -> i32 { @dbg(n); n }
+fn main() -> i32 {
+    let mut arr: [i32; 4] = [0, 0, 0, 0];
+    // RHS (tap(2)) is evaluated before the place index (tap(1)):
+    // prints 2 then 1.
+    arr[tap(1)] = tap(2);
+    arr[1]
+}
+"""
+exit_code = 2
+expected_stdout = """
+2
+1
+"""
+
+[[case]]
+name = "assignment_stores_rhs_value"
+spec = ["5.2:14"]
+source = """
+fn main() -> i32 {
+    let mut arr: [i32; 2] = [0, 0];
+    arr[1] = 42;
+    arr[1]
+}
+"""
+exit_code = 42

@@ -146,3 +146,33 @@ fn main() -> i32 {
 }
 """
 exit_code = 42
+
+# =============================================================================
+# Value Denotation (RUE-298)
+# An index expression denotes the element stored at the given position.
+# =============================================================================
+
+[[case]]
+name = "index_denotes_element_value"
+spec = ["4.11:14"]
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 42, 100];
+    // arr[1] denotes the element stored at position 1.
+    arr[1]
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "index_denotes_element_after_store"
+spec = ["4.11:14"]
+source = """
+fn main() -> i32 {
+    let mut arr: [i32; 2] = [0, 0];
+    arr[0] = 42;
+    // The index expression reads back the value currently stored.
+    arr[0]
+}
+"""
+exit_code = 42

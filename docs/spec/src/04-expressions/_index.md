@@ -47,3 +47,7 @@ Logical operators `&&` and `||` are an exception to the normal left-to-right eva
 {{ rule(id="4.0:9", cat="normative") }}
 
 For struct literal expressions of the form `Type { field1: expr1, field2: expr2, ... }`, the field initializer expressions are evaluated in source order (left-to-right as written).
+
+{{ rule(id="4.0:10", cat="normative") }}
+
+For array literal expressions of the list form `[e0, e1, ..., en]`, the element expressions are evaluated in source order (left-to-right, `e0` first). For the repeat form `[value; count]`, the `value` expression is evaluated exactly once (see section 7.1).

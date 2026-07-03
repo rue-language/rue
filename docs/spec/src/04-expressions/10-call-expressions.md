@@ -28,6 +28,14 @@ Each argument type **MUST** be compatible with the corresponding parameter type.
 
 The type of a call expression is the function's return type.
 
+{{ rule(id="4.10:9", cat="dynamic-semantics") }}
+
+A call expression evaluates to the value produced by invoking the function:
+the callee's body is executed with each parameter bound to the corresponding
+evaluated argument value, and the call expression denotes the value the
+invocation returns (see section 4.9 for how a function produces its return
+value). When the return type is `()`, the call denotes the unit value.
+
 {{ rule(id="4.10:6") }}
 
 ```rue
