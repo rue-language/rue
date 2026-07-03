@@ -83,3 +83,66 @@ fn main() -> i32 {
     }
 }
 ```
+
+## Heap Allocation Intrinsics
+
+{{ rule(id="9.2:9", cat="normative") }}
+
+The `@alloc`, `@free`, and `@realloc` intrinsics provide raw, unchecked access
+to the heap. Like the raw-pointer intrinsics they may only appear inside a
+`checked` block (§9.1). They are the primitives on which safe, owned
+collections (for example a source-level `Vec`) are built: the unsafety is
+confined to the collection's internals behind a checked API.
+
+{{ rule(id="9.2:10", cat="dynamic-semantics") }}
+
+`@alloc(count)` allocates a heap block large enough to hold `count` elements of
+type `T` — that is, `count * size_of(T)` bytes of **uninitialized** storage —
+and returns a `ptr mut T` addressing the block. The element type `T` (and hence
+the result type `ptr mut T`) is inferred from the surrounding context, exactly
+as for `@int_to_ptr`. `count` must have type `u64`. On allocation failure the
+returned pointer is null; the caller is responsible for checking. The returned
+pointer is suitable for `@ptr_offset`/`@ptr_read`/`@ptr_write` over the
+`count` elements (element `i` at `@ptr_offset(p, i)`).
+
+{{ rule(id="9.2:11", cat="dynamic-semantics") }}
+
+`@free(p, count)` releases a block previously returned by `@alloc`/`@realloc`,
+where `p` is a `ptr mut T` and `count` (a `u64`) is the element count that was
+allocated. Using `p` after it is freed is undefined behavior. Freeing a null
+pointer is permitted and has no effect.
+
+{{ rule(id="9.2:12", cat="dynamic-semantics") }}
+
+`@realloc(p, old_count, new_count)` resizes the block addressed by `p` (a
+`ptr mut T`) from `old_count` to `new_count` elements and returns a `ptr mut T`
+to the resized block, which may differ from `p`. The first
+`min(old_count, new_count)` elements are preserved. If `p` is null it behaves
+like `@alloc(new_count)`. `old_count` and `new_count` must have type `u64`. The
+result type is the same pointer type as `p`.
+
+{{ rule(id="9.2:13", cat="legality-rule") }}
+
+`@alloc`, `@free`, and `@realloc` may only be used inside a `checked` block. The
+element-count arguments (`count`, `old_count`, `new_count`) must be `u64`, and
+the pointer arguments of `@free`/`@realloc` must be a mutable pointer
+`ptr mut T`. The result type of `@alloc` must be resolvable to a `ptr mut T`
+from context.
+
+{{ rule(id="9.2:14", cat="example") }}
+
+```rue
+fn main() -> i32 {
+    checked {
+        // Allocate room for 4 i32s, write three, read one back, then free.
+        let p: ptr mut i32 = @alloc(4);
+        @ptr_write(p, 10);
+        @ptr_write(@ptr_offset(p, 1), 20);
+        @ptr_write(@ptr_offset(p, 2), 30);
+        let grown: ptr mut i32 = @realloc(p, 4, 8); // contents preserved
+        let v: i32 = @ptr_read(@ptr_offset(grown, 1)); // 20
+        @free(grown, 8);
+        v
+    }
+}
+```

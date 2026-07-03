@@ -1,0 +1,39 @@
+// Dogfood for the source-level Vec(T) library (examples/std/vec.rue, RUE-1).
+//
+// Compile (multi-file; names resolve across the listed files):
+//   rue examples/std/vec_demo.rue examples/std/vec.rue \
+//       --preview method_receivers -o vec_demo
+//
+// Exercises push/len/get/set/pop/while-sum/out-of-bounds on a Vec(i32).
+
+fn main() -> i32 {
+    let m = @import("vec.rue");
+    let V = m.Vec(i32);
+
+    let mut v = V::new();
+    v.push(10);
+    v.push(20);
+    v.push(30);
+    @dbg(v.len());          // 3
+
+    @dbg(v.get(1));         // 20
+    v.set(0, 99);
+    @dbg(v.get(0));         // 99
+
+    @dbg(v.pop_or(0));      // 30 (removed)
+    @dbg(v.len());          // 2
+
+    @dbg(v.get_or(99, 0));  // 0  (out-of-bounds -> default)
+
+    // Sum the remaining elements with a manual while loop (no for/index sugar).
+    let mut i: u64 = 0;
+    let mut sum: i32 = 0;
+    while i < v.len() {
+        sum = sum + v.get(i);
+        i = i + 1;
+    }
+    @dbg(sum);              // 99 + 20 = 119
+
+    v.free();
+    sum
+}

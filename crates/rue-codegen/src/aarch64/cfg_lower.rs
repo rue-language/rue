@@ -119,6 +119,49 @@ impl<'a> CfgLower<'a> {
         self.mir.intern_symbol(symbol)
     }
 
+    /// Per-element stride in bytes for a heap intrinsic (`@alloc`/`@free`/
+    /// `@realloc`) whose pointer type is `ty` (a `ptr mut T`/`ptr const T`):
+    /// `size_of(T)`. All Rue types are 8-byte-slotted, so this is
+    /// `slot_count(T) * 8` — the same stride `@ptr_offset` uses (RUE-1).
+    fn alloc_element_size(&self, ty: Type) -> u64 {
+        let pointee = match ty.kind() {
+            TypeKind::PtrMut(id) => self.ctx.type_pool.ptr_mut_def(id),
+            TypeKind::PtrConst(id) => self.ctx.type_pool.ptr_const_def(id),
+            // Sema guarantees a pointer type here; be defensive on error/never.
+            _ => return 8,
+        };
+        types::type_size_bytes(self.ctx.type_pool, pointee)
+    }
+
+    /// Emit `count_vreg * element_size` (a compile-time constant stride) into a
+    /// fresh vreg. Mirrors the scaling used by `@ptr_offset`.
+    fn scale_by_size(&mut self, count_vreg: VReg, element_size: u64) -> VReg {
+        let out = self.mir.alloc_vreg();
+        if element_size == 0 {
+            self.mir.push(Aarch64Inst::MovImm {
+                dst: Operand::Virtual(out),
+                imm: 0,
+            });
+        } else if element_size == 1 {
+            self.mir.push(Aarch64Inst::MovRR {
+                dst: Operand::Virtual(out),
+                src: Operand::Virtual(count_vreg),
+            });
+        } else {
+            let size_vreg = self.mir.alloc_vreg();
+            self.mir.push(Aarch64Inst::MovImm {
+                dst: Operand::Virtual(size_vreg),
+                imm: element_size as i64,
+            });
+            self.mir.push(Aarch64Inst::MulRR {
+                dst: Operand::Virtual(out),
+                src1: Operand::Virtual(count_vreg),
+                src2: Operand::Virtual(size_vreg),
+            });
+        }
+        out
+    }
+
     /// Recursively collect all scalar vregs from an array value.
     fn collect_array_scalar_vregs(&mut self, value: CfgValue) -> Vec<VReg> {
         let slot_vregs = self.struct_slot_vregs.clone();
@@ -2263,6 +2306,105 @@ impl<'a> CfgLower<'a> {
                     self.mir.push(Aarch64Inst::MovRR {
                         dst: Operand::Virtual(result_vreg),
                         src: Operand::Virtual(addr_vreg),
+                    });
+                    self.value_map.insert(value, result_vreg);
+                } else if name_str == "alloc" {
+                    // @alloc(count) -> ptr mut T. Allocate count * size_of(T)
+                    // bytes via __rue_alloc(size, align). Element type T is the
+                    // pointee of the result pointer type (RUE-1).
+                    let args = self.ctx.cfg.get_extra(*args_start, *args_len);
+                    let count_vreg = self.get_vreg(args[0]);
+
+                    let result_ty = self.ctx.cfg.get_inst(value).ty;
+                    let element_size = self.alloc_element_size(result_ty);
+                    let size_vreg = self.scale_by_size(count_vreg, element_size);
+
+                    // size -> X0, align=8 -> X1 (AArch64 C ABI arg registers).
+                    self.mir.push(Aarch64Inst::MovRR {
+                        dst: Operand::Physical(Reg::X0),
+                        src: Operand::Virtual(size_vreg),
+                    });
+                    self.mir.push(Aarch64Inst::MovImm {
+                        dst: Operand::Physical(Reg::X1),
+                        imm: 8,
+                    });
+                    let symbol_id = self.intern_symbol("__rue_alloc");
+                    self.mir.push(Aarch64Inst::Bl { symbol_id });
+
+                    let result_vreg = self.mir.alloc_vreg();
+                    self.mir.push(Aarch64Inst::MovRR {
+                        dst: Operand::Virtual(result_vreg),
+                        src: Operand::Physical(Reg::X0),
+                    });
+                    self.value_map.insert(value, result_vreg);
+                } else if name_str == "free" {
+                    // @free(ptr, count) -> (). __rue_free(ptr, size, align)
+                    // where size = count * size_of(T) (RUE-1).
+                    let args = self.ctx.cfg.get_extra(*args_start, *args_len);
+                    let ptr_val = args[0];
+                    let ptr_vreg = self.get_vreg(ptr_val);
+                    let count_vreg = self.get_vreg(args[1]);
+
+                    let ptr_ty = self.ctx.cfg.get_inst(ptr_val).ty;
+                    let element_size = self.alloc_element_size(ptr_ty);
+                    let size_vreg = self.scale_by_size(count_vreg, element_size);
+
+                    self.mir.push(Aarch64Inst::MovRR {
+                        dst: Operand::Physical(Reg::X0),
+                        src: Operand::Virtual(ptr_vreg),
+                    });
+                    self.mir.push(Aarch64Inst::MovRR {
+                        dst: Operand::Physical(Reg::X1),
+                        src: Operand::Virtual(size_vreg),
+                    });
+                    self.mir.push(Aarch64Inst::MovImm {
+                        dst: Operand::Physical(Reg::X2),
+                        imm: 8,
+                    });
+                    let symbol_id = self.intern_symbol("__rue_free");
+                    self.mir.push(Aarch64Inst::Bl { symbol_id });
+
+                    // Result is unit.
+                    let result_vreg = self.mir.alloc_vreg();
+                    self.value_map.insert(value, result_vreg);
+                } else if name_str == "realloc" {
+                    // @realloc(ptr, old_count, new_count) -> ptr mut T.
+                    // __rue_realloc(ptr, old_size, new_size, align). Element type
+                    // T is the pointee of the result (=arg0) pointer type (RUE-1).
+                    let args = self.ctx.cfg.get_extra(*args_start, *args_len);
+                    let ptr_val = args[0];
+                    let ptr_vreg = self.get_vreg(ptr_val);
+                    let old_vreg = self.get_vreg(args[1]);
+                    let new_vreg = self.get_vreg(args[2]);
+
+                    let result_ty = self.ctx.cfg.get_inst(value).ty;
+                    let element_size = self.alloc_element_size(result_ty);
+                    let old_size_vreg = self.scale_by_size(old_vreg, element_size);
+                    let new_size_vreg = self.scale_by_size(new_vreg, element_size);
+
+                    self.mir.push(Aarch64Inst::MovRR {
+                        dst: Operand::Physical(Reg::X0),
+                        src: Operand::Virtual(ptr_vreg),
+                    });
+                    self.mir.push(Aarch64Inst::MovRR {
+                        dst: Operand::Physical(Reg::X1),
+                        src: Operand::Virtual(old_size_vreg),
+                    });
+                    self.mir.push(Aarch64Inst::MovRR {
+                        dst: Operand::Physical(Reg::X2),
+                        src: Operand::Virtual(new_size_vreg),
+                    });
+                    self.mir.push(Aarch64Inst::MovImm {
+                        dst: Operand::Physical(Reg::X3),
+                        imm: 8,
+                    });
+                    let symbol_id = self.intern_symbol("__rue_realloc");
+                    self.mir.push(Aarch64Inst::Bl { symbol_id });
+
+                    let result_vreg = self.mir.alloc_vreg();
+                    self.mir.push(Aarch64Inst::MovRR {
+                        dst: Operand::Virtual(result_vreg),
+                        src: Operand::Physical(Reg::X0),
                     });
                     self.value_map.insert(value, result_vreg);
                 } else if name_str == "raw" || name_str == "raw_mut" {

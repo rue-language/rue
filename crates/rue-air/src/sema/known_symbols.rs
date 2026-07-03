@@ -93,6 +93,13 @@ pub struct KnownSymbols {
     pub raw_mut: Spur,
     /// The `syscall` intrinsic symbol - direct OS syscall.
     pub syscall: Spur,
+    /// The `alloc` intrinsic symbol - allocate an uninitialized heap block
+    /// of `count` elements of the (context-inferred) element type (RUE-1).
+    pub alloc: Spur,
+    /// The `free` intrinsic symbol - free a block previously `@alloc`'d.
+    pub free: Spur,
+    /// The `realloc` intrinsic symbol - grow/shrink an `@alloc`'d block.
+    pub realloc: Spur,
 
     // Target platform intrinsics
     /// The `target_arch` intrinsic symbol - returns target CPU architecture.
@@ -141,6 +148,9 @@ impl KnownSymbols {
             raw: interner.get_or_intern_static("raw"),
             raw_mut: interner.get_or_intern_static("raw_mut"),
             syscall: interner.get_or_intern_static("syscall"),
+            alloc: interner.get_or_intern_static("alloc"),
+            free: interner.get_or_intern_static("free"),
+            realloc: interner.get_or_intern_static("realloc"),
 
             // Target platform intrinsics
             target_arch: interner.get_or_intern_static("target_arch"),
@@ -207,6 +217,9 @@ mod tests {
         assert_eq!(interner.resolve(&known.raw), "raw");
         assert_eq!(interner.resolve(&known.raw_mut), "raw_mut");
         assert_eq!(interner.resolve(&known.syscall), "syscall");
+        assert_eq!(interner.resolve(&known.alloc), "alloc");
+        assert_eq!(interner.resolve(&known.free), "free");
+        assert_eq!(interner.resolve(&known.realloc), "realloc");
         assert_eq!(interner.resolve(&known.target_arch), "target_arch");
         assert_eq!(interner.resolve(&known.target_os), "target_os");
     }
