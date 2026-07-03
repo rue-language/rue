@@ -43,7 +43,7 @@ when deciding what to optimize.
     scripts/perf-baseline.py --format json       # machine-readable aggregate
 
 By default the compiler is located via `scripts/rue-bin` (a normal build).
-Pass `--release` to build/locate it with `--modifier //constraints:release`,
+Pass `--release` to build/locate it with `--target-platforms //platforms:release`,
 or `--rue-bin PATH` / the `RUE` env var to use an already-built binary.
 
 Numbers are absolute milliseconds and are therefore MACHINE-SPECIFIC; treat
@@ -146,7 +146,7 @@ def resolve_rue_bin(args, root: Path) -> str:
         return env
     cmd = [str(root / "scripts" / "rue-bin")]
     if args.release:
-        cmd += ["--modifier", "//constraints:release"]
+        cmd += ["--target-platforms", "//platforms:release"]
     out = subprocess.run(cmd, capture_output=True, text=True)
     if out.returncode != 0:
         sys.stderr.write(out.stderr)
@@ -337,7 +337,7 @@ def main():
     ap.add_argument("--warmup", type=int, default=1, help="warmup runs before timing (default 1)")
     ap.add_argument("--timeout", type=float, default=60.0, help="per-compile timeout seconds (default 60)")
     ap.add_argument("--rue-bin", help="path to an already-built rue binary")
-    ap.add_argument("--release", action="store_true", help="locate the compiler via //constraints:release")
+    ap.add_argument("--release", action="store_true", help="locate the compiler via //platforms:release")
     ap.add_argument("--format", choices=["text", "markdown", "json"], default="text")
     args = ap.parse_args()
 
