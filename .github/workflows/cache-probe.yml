@@ -35,11 +35,14 @@ jobs:
         run: |
           cat > .buckconfig.local <<EOF
           [buck2_re_client]
-          engine_address = remote.buildbuddy.io
-          action_cache_address = remote.buildbuddy.io
-          cas_address = remote.buildbuddy.io
+          engine_address = grpc://remote.buildbuddy.io
+          action_cache_address = grpc://remote.buildbuddy.io
+          cas_address = grpc://remote.buildbuddy.io
           tls = true
           http_headers = x-buildbuddy-api-key:${KEY}
+
+          [buck2]
+          digest_algorithms = SHA256
 
           [build]
           execution_platforms = root//platforms:remote_cache
@@ -58,9 +61,11 @@ jobs:
       - name: Cache-hit summary
         if: always()
         run: |
-          echo "### Remote cache probe" >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          echo "COLD: $(grep -oE 'Commands: .*' cold.log | tail -1)" >> "$GITHUB_STEP_SUMMARY"
-          echo "WARM: $(grep -oE 'Commands: .*' warm.log | tail -1)" >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          echo "A non-zero 'cached'/'remote' count on WARM means the remote cache is working."
+          {
+            echo "### Remote cache probe"
+            echo '```'
+            echo "COLD: $(grep -oE 'Commands: .*' cold.log | tail -1)"
+            echo "WARM: $(grep -oE 'Commands: .*' warm.log | tail -1)"
+            echo '```'
+            echo "A non-zero 'cached'/'remote' count on WARM means the remote cache is working."
+          } >> "$GITHUB_STEP_SUMMARY"
