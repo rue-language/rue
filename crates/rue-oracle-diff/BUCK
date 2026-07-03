@@ -14,3 +14,19 @@ rue_binary(
         "//third-party:toml",
     ],
 )
+
+# Run the differential harness under `buck2 test //...` (and hence CI): the
+# harness reads the rue-cli-tests `cases` filegroup via RUE_ORACLE_DIFF_CASES
+# and exits non-zero on ANY oracle/compiler disagreement, so a codegen change
+# that diverges from the semantics fails CI here (RUE-205). Mirrors the
+# examples smoke test wiring (RUE-48): filegroup input + env var + sh_test.
+# Preview-gated / multi-file / custom-arg / compile-fail cases are skipped by
+# the harness (Unsupported or non-runnable shape), not counted as
+# disagreements, so they cannot cause spurious failures.
+sh_test(
+    name = "oracle-diff-test",
+    test = ":rue-oracle-diff",
+    env = {
+        "RUE_ORACLE_DIFF_CASES": "$(location //crates/rue-cli-tests:cases)/cases",
+    },
+)
