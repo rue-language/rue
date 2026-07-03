@@ -1,0 +1,155 @@
+# @panic / @assert runtime abort behavior (RUE-319).
+#
+# Before this fix, @panic and @assert were accepted by sema but had NO
+# cfg_lower branch in either backend, so they were SILENT RUNTIME NO-OPS:
+# `@panic("boom")` ran past and the program exited 0, and `@assert(false)`
+# did nothing. That silent failure of an abort primitive is dangerous.
+#
+# Now both lower to a runtime abort modeled on the existing @intCast overflow
+# trap: they write a message to stderr and exit with status 101. @assert only
+# aborts when its condition is false; a true condition is a no-op.
+#
+# These are runtime-visible (exit code + stderr), so they belong here as CLI
+# cases with exact assertions, not just spec cases.
+
+[section]
+id = "cli.panic_assert"
+name = "@panic / @assert runtime abort"
+description = "@panic and @assert abort with a message and exit 101; @assert passes when true."
+
+# ── @panic ───────────────────────────────────────────────────────────────────
+
+# @panic with a message: aborts, message on stderr prefixed with "panic: ".
+[[case]]
+name = "panic_with_message_aborts"
+description = "@panic(\"boom\") aborts with exit 101 and writes the message to stderr."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    @panic("boom");
+    0
+}
+""" }]
+exit_code = 101
+stdout = ""
+runtime_error_contains = ["panic: boom"]
+
+# @panic with no message: aborts, writes "panic".
+[[case]]
+name = "panic_no_message_aborts"
+description = "@panic() with no argument aborts with exit 101 and writes \"panic\"."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    @panic();
+    0
+}
+""" }]
+exit_code = 101
+stdout = ""
+runtime_error_contains = ["panic"]
+
+# Statements before @panic still run (so their stdout is observable); the
+# statement after @panic must NOT run (it's dead at runtime).
+[[case]]
+name = "panic_is_reached_after_side_effects"
+description = "Code before @panic runs; code after it does not (real divergence)."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    @dbg(1);
+    @panic("stop");
+    @dbg(2);
+    0
+}
+""" }]
+exit_code = 101
+stdout = "1\n"
+runtime_error_contains = ["panic: stop"]
+
+# ── @assert ──────────────────────────────────────────────────────────────────
+
+# @assert(false): aborts with "assertion failed".
+[[case]]
+name = "assert_false_aborts"
+description = "@assert(false) aborts with exit 101 and writes \"assertion failed\"."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    @assert(false);
+    0
+}
+""" }]
+exit_code = 101
+stdout = ""
+runtime_error_contains = ["assertion failed"]
+
+# @assert(true): no effect, program continues to its normal exit.
+[[case]]
+name = "assert_true_passes"
+description = "@assert(true) has no effect; the program returns normally."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    @assert(true);
+    42
+}
+""" }]
+exit_code = 42
+stdout = ""
+
+# @assert with a runtime-computed condition that holds: passes.
+[[case]]
+name = "assert_runtime_true_passes"
+description = "@assert on a runtime-true condition falls through."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let x: i32 = 5;
+    @assert(x > 3);
+    x
+}
+""" }]
+exit_code = 5
+stdout = ""
+
+# @assert with a runtime-computed condition that fails: aborts.
+[[case]]
+name = "assert_runtime_false_aborts"
+description = "@assert on a runtime-false condition aborts with exit 101."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let x: i32 = 2;
+    @assert(x > 3);
+    x
+}
+""" }]
+exit_code = 101
+stdout = ""
+runtime_error_contains = ["assertion failed"]
+
+# @assert with a message: the failing form shows the user's text via the
+# @panic path ("panic: <msg>").
+[[case]]
+name = "assert_false_with_message_aborts"
+description = "@assert(cond, \"msg\") aborts showing the message when cond is false."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    @assert(1 == 2, "one is not two");
+    0
+}
+""" }]
+exit_code = 101
+stdout = ""
+runtime_error_contains = ["one is not two"]
+
+# ── @cast rejection ──────────────────────────────────────────────────────────
+
+# @cast is redundant with @intCast and never had a working inference rule; it
+# is now rejected at compile time with a diagnostic pointing to @intCast.
+[[case]]
+name = "cast_is_rejected_use_intcast"
+description = "@cast is a compile error directing the user to @intCast."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let x: i64 = 5;
+    let y: i32 = @cast(x);
+    y
+}
+""" }]
+compile_fail = true
+error_contains = ["cast", "intCast"]

@@ -279,6 +279,126 @@ crate::define_for_all_platforms! {
     }
 }
 
+crate::define_for_all_platforms! {
+    /// Runtime error: explicit `@panic(msg)` with a message.
+    ///
+    /// Called by code generated for the `@panic("...")` intrinsic. Writes
+    /// `"panic: "`, the user-supplied message bytes, and a trailing newline to
+    /// stderr, then exits with code 101 (the same abort path as the other
+    /// runtime traps: division by zero, overflow, bounds, cast overflow).
+    ///
+    /// # Behavior
+    ///
+    /// 1. Writes `"panic: {msg}\n"` to stderr (best-effort)
+    /// 2. Exits with code 101
+    ///
+    /// # ABI
+    ///
+    /// ```text
+    /// extern "C" fn __rue_panic(ptr: *const u8, len: u64) -> !
+    /// ```
+    ///
+    /// - `ptr` / `len` are the message string's fat-pointer fields (the `cap`
+    ///   field is not needed and is not passed).
+    /// - Never returns.
+    ///
+    /// # Safety
+    ///
+    /// The caller (Rue-generated code) guarantees `ptr` points to `len` valid,
+    /// initialized, byte-aligned bytes that stay valid for the call.
+    pub extern "C" fn __rue_panic(ptr: *const u8, len: u64) -> ! {
+        // "panic: " built byte-by-byte to avoid the macOS byte-string linker bug.
+        let mut prefix = [0u8; 7];
+        prefix[0] = b'p';
+        prefix[1] = b'a';
+        prefix[2] = b'n';
+        prefix[3] = b'i';
+        prefix[4] = b'c';
+        prefix[5] = b':';
+        prefix[6] = b' ';
+        platform::write_stderr(&prefix);
+        // SAFETY: the caller guarantees `ptr`/`len` describe a valid byte range.
+        let bytes = unsafe { core::slice::from_raw_parts(ptr, len as usize) };
+        platform::write_stderr(bytes);
+        let newline = [b'\n'];
+        platform::write_stderr(&newline);
+        platform::exit(101)
+    }
+}
+
+crate::define_for_all_platforms! {
+    /// Runtime error: explicit `@panic()` with no message.
+    ///
+    /// Called by code generated for the message-less `@panic()` intrinsic.
+    ///
+    /// # Behavior
+    ///
+    /// 1. Writes `"panic\n"` to stderr (best-effort)
+    /// 2. Exits with code 101
+    ///
+    /// # ABI
+    ///
+    /// ```text
+    /// extern "C" fn __rue_panic_no_msg() -> !
+    /// ```
+    ///
+    /// No arguments. Never returns.
+    pub extern "C" fn __rue_panic_no_msg() -> ! {
+        let mut msg = [0u8; 6];
+        msg[0] = b'p';
+        msg[1] = b'a';
+        msg[2] = b'n';
+        msg[3] = b'i';
+        msg[4] = b'c';
+        msg[5] = b'\n';
+        platform::write_stderr(&msg);
+        platform::exit(101)
+    }
+}
+
+crate::define_for_all_platforms! {
+    /// Runtime error: failed `@assert(cond)` (no message).
+    ///
+    /// Called by code generated for `@assert(cond)` when `cond` is false.
+    /// The message-carrying form `@assert(cond, "msg")` routes to
+    /// [`__rue_panic`] instead so the user's text is shown.
+    ///
+    /// # Behavior
+    ///
+    /// 1. Writes `"assertion failed\n"` to stderr (best-effort)
+    /// 2. Exits with code 101
+    ///
+    /// # ABI
+    ///
+    /// ```text
+    /// extern "C" fn __rue_assert_failed() -> !
+    /// ```
+    ///
+    /// No arguments. Never returns.
+    pub extern "C" fn __rue_assert_failed() -> ! {
+        let mut msg = [0u8; 17];
+        msg[0] = b'a';
+        msg[1] = b's';
+        msg[2] = b's';
+        msg[3] = b'e';
+        msg[4] = b'r';
+        msg[5] = b't';
+        msg[6] = b'i';
+        msg[7] = b'o';
+        msg[8] = b'n';
+        msg[9] = b' ';
+        msg[10] = b'f';
+        msg[11] = b'a';
+        msg[12] = b'i';
+        msg[13] = b'l';
+        msg[14] = b'e';
+        msg[15] = b'd';
+        msg[16] = b'\n';
+        platform::write_stderr(&msg);
+        platform::exit(101)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -288,6 +408,9 @@ mod tests {
         assert_eq!(b"error: integer overflow\n".len(), 24);
         assert_eq!(b"error: integer cast overflow\n".len(), 29);
         assert_eq!(b"error: index out of bounds\n".len(), 27);
+        assert_eq!(b"panic: ".len(), 7);
+        assert_eq!(b"panic\n".len(), 6);
+        assert_eq!(b"assertion failed\n".len(), 17);
     }
 
     #[test]

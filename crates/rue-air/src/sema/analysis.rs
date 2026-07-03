@@ -4064,64 +4064,26 @@ impl<'a> Sema<'a> {
     fn analyze_cast_intrinsic(
         &mut self,
         air: &mut Air,
-        inst_ref: InstRef,
+        _inst_ref: InstRef,
         args: &[RirCallArg],
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        if args.len() != 1 {
-            return Err(CompileError::new(
-                ErrorKind::IntrinsicWrongArgCount {
-                    name: "cast".to_string(),
-                    expected: 1,
-                    found: args.len(),
-                },
-                span,
-            ));
+        // `@cast` never had a working inference rule and is fully redundant with
+        // `@intCast` (RUE-319). Rather than silently accept it and then fail
+        // inference (the old E0206/E0702 confusion), reject it up front with a
+        // clear pointer to the working intrinsic. Inference gives `@cast` a
+        // fresh type variable (like `@intCast`) precisely so this diagnostic is
+        // what the user sees, in every context, instead of a masking
+        // type-mismatch error. Arguments are still analyzed so any error inside
+        // them is reported too.
+        for arg in args {
+            let _ = self.analyze_inst(air, arg.value, ctx);
         }
-
-        // Get target type from HM inference
-        let target_type = Self::get_resolved_type(ctx, inst_ref, span, "@cast intrinsic")?;
-
-        let arg_result = self.analyze_inst(air, args[0].value, ctx)?;
-        let source_type = arg_result.ty;
-
-        // Validate types
-        if !source_type.is_integer() && !source_type.is_error() && !source_type.is_never() {
-            return Err(CompileError::new(
-                ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
-                    name: "cast".to_string(),
-                    expected: "integer type".to_string(),
-                    found: source_type.safe_name_with_pool(Some(&self.type_pool)),
-                })),
-                span,
-            ));
-        }
-        if !target_type.is_integer() && !target_type.is_error() && !target_type.is_never() {
-            return Err(CompileError::new(
-                ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
-                    name: "cast".to_string(),
-                    expected: "integer target type".to_string(),
-                    found: target_type.safe_name_with_pool(Some(&self.type_pool)),
-                })),
-                span,
-            ));
-        }
-
-        // Skip cast if types are the same
-        if source_type == target_type || source_type.is_error() || source_type.is_never() {
-            return Ok(arg_result);
-        }
-
-        let air_ref = air.add_inst(AirInst {
-            data: AirInstData::IntCast {
-                value: arg_result.air_ref,
-                from_ty: source_type,
-            },
-            ty: target_type,
-            span,
-        });
-        Ok(AnalysisResult::new(air_ref, target_type))
+        Err(
+            CompileError::new(ErrorKind::UnknownIntrinsic("cast".to_string()), span)
+                .with_help("use `@intCast` to cast between integer types"),
+        )
     }
 
     fn analyze_panic_intrinsic(
@@ -4144,9 +4106,16 @@ impl<'a> Sema<'a> {
         }
 
         if args.is_empty() {
-            // Panic with no message
+            // Panic with no message: still a real trap (RUE-319). Emitting an
+            // Intrinsic with zero args (not a UnitConst) is what makes cfg_lower
+            // lower it to the `__rue_panic_no_msg` abort call instead of a
+            // silent no-op.
             let air_ref = air.add_inst(AirInst {
-                data: AirInstData::UnitConst,
+                data: AirInstData::Intrinsic {
+                    name: self.known.panic,
+                    args_start: 0,
+                    args_len: 0,
+                },
                 ty: Type::NEVER,
                 span,
             });
