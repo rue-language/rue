@@ -2049,19 +2049,33 @@ impl<'a> CfgLower<'a> {
                     });
                     self.value_map.insert(value, result_vreg);
                 } else if name_str == "ptr_read" {
-                    // @ptr_read(ptr) - Read value at pointer
-                    // The pointer is in the first argument, we load from [ptr].
+                    // @ptr_read(ptr) - Read the pointee value through the pointer.
                     let args = self.ctx.cfg.get_extra(*args_start, *args_len);
                     let ptr_val = args[0];
                     let ptr_vreg = self.get_vreg(ptr_val);
 
-                    // Load from memory at the pointer address
-                    let result_vreg = self.mir.alloc_vreg();
-                    self.mir.push(Aarch64Inst::LdrIndexed {
-                        dst: Operand::Virtual(result_vreg),
-                        base: ptr_vreg,
-                    });
-                    self.value_map.insert(value, result_vreg);
+                    // The result type is the pointee type. An aggregate pointee
+                    // (struct/array/payload enum) occupies several 8-byte slots;
+                    // read EVERY slot at its descending byte offset (slot i at
+                    // ptr - i*8, matching how @raw addresses the place and the
+                    // by-ref aggregate load path). Reading only slot 0 dropped
+                    // every field but the first (RUE-242).
+                    let result_ty = self.ctx.cfg.get_inst(value).ty;
+                    let slot_count = self.ctx.type_slot_count(result_ty);
+                    if slot_count > 1 {
+                        let slot_vregs =
+                            crate::agg_slots::load_slots_through_ptr(self, ptr_vreg, slot_count);
+                        let first = slot_vregs[0];
+                        self.struct_slot_vregs.insert(value, slot_vregs);
+                        self.value_map.insert(value, first);
+                    } else {
+                        let result_vreg = self.mir.alloc_vreg();
+                        self.mir.push(Aarch64Inst::LdrIndexed {
+                            dst: Operand::Virtual(result_vreg),
+                            base: ptr_vreg,
+                        });
+                        self.value_map.insert(value, result_vreg);
+                    }
                 } else if name_str == "ptr_write" {
                     // @ptr_write(ptr, value) - Write value at pointer
                     // First argument is pointer, second is value to write.
@@ -2069,13 +2083,25 @@ impl<'a> CfgLower<'a> {
                     let ptr_val = args[0];
                     let value_val = args[1];
                     let ptr_vreg = self.get_vreg(ptr_val);
-                    let value_vreg = self.get_vreg(value_val);
 
-                    // Store value to memory at the pointer address
-                    self.mir.push(Aarch64Inst::StrIndexed {
-                        src: Operand::Virtual(value_vreg),
-                        base: ptr_vreg,
-                    });
+                    // An aggregate value spans several 8-byte slots; store EVERY
+                    // slot at its descending byte offset (slot i at ptr - i*8),
+                    // symmetric with @ptr_read. Storing only slot 0 dropped
+                    // every field but the first (RUE-242).
+                    let value_ty = self.ctx.cfg.get_inst(value_val).ty;
+                    let slot_count = self.ctx.type_slot_count(value_ty);
+                    if slot_count > 1 {
+                        let slot_vregs = self
+                            .get_or_compute_field_vregs(value_val)
+                            .unwrap_or_else(|| vec![self.get_vreg(value_val)]);
+                        crate::agg_slots::store_slots_through_ptr(self, &slot_vregs, ptr_vreg, 0);
+                    } else {
+                        let value_vreg = self.get_vreg(value_val);
+                        self.mir.push(Aarch64Inst::StrIndexed {
+                            src: Operand::Virtual(value_vreg),
+                            base: ptr_vreg,
+                        });
+                    }
 
                     // Result is unit (no meaningful value)
                     let result_vreg = self.mir.alloc_vreg();

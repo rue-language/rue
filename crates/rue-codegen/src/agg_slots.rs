@@ -425,6 +425,16 @@ pub fn store_slots_to_sret<B: SlotBackend>(b: &mut B, vals: &[VReg]) {
     }
 }
 
+/// Load `count` slots through `ptr` at descending byte offsets (slot i at
+/// `ptr - i*8`), returning the freshly-allocated vregs in slot order. The
+/// public counterpart of [`store_slots_through_ptr`]: used by `@ptr_read` to
+/// read an aggregate pointee through a raw pointer, one 8-byte slot per field
+/// (RUE-242). Every value of an aggregate type occupies `type_slot_count`
+/// consecutive descending slots, matching how `@raw` addresses the place.
+pub fn load_slots_through_ptr<B: SlotBackend>(b: &mut B, ptr: VReg, count: u32) -> Vec<VReg> {
+    load_through_ptr(b, ptr, count)
+}
+
 /// Load `count` consecutive frame slots starting at `base_slot`, returning the
 /// freshly-allocated vregs in slot order.
 fn load_consecutive<B: SlotBackend>(b: &mut B, base_slot: u32, count: u32) -> Vec<VReg> {

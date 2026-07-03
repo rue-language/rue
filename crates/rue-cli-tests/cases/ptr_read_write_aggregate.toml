@@ -1,0 +1,141 @@
+# Raw-pointer read/write fixes found by the codegen-arithmetic/ABI hunt
+# (2026-07-02).
+#
+# RUE-242: @ptr_read / @ptr_write on a multi-slot aggregate pointee
+# (struct/array/nested struct) only transferred the first 8-byte slot, silently
+# dropping every other field. Both now iterate over ALL slots of the pointee at
+# their descending byte offsets (slot i at ptr - i*8), reusing the aggregate
+# slot machinery.
+#
+# RUE-244: a @ptr_read result type was not reconciled against the binding's
+# type annotation (inference modeled it as an unconstrained fresh variable), so
+# an i64 pointee flowed into an i32 binding with no E0206 and a silent runtime
+# truncation. The pointee type now participates in ordinary type-checking.
+
+[section]
+id = "cli.ptr_read_write_aggregate"
+name = "Raw-pointer read/write over multi-field aggregates and result-type checking"
+description = "@ptr_read/@ptr_write transfer every slot of an aggregate pointee, and @ptr_read's result type is checked against the binding annotation."
+
+# --- RUE-242: @ptr_read of a 2-field struct reads BOTH fields ----------------
+[[case]]
+name = "ptr_read_two_field_struct"
+files = [{ path = "main.rue", source = """
+struct P { x: i32, y: i32 }
+fn main() -> i32 {
+    let arr: [P; 1] = [P { x: 1, y: 2 }];
+    checked {
+        let p: ptr const P = @raw(arr[0]);
+        let v = @ptr_read(p);
+        @dbg(v.x);
+        @dbg(v.y);
+    };
+    0
+}
+""" }]
+stdout = "1\n2\n"
+
+# --- RUE-242: @ptr_write of a 2-field struct writes BOTH fields --------------
+[[case]]
+name = "ptr_write_two_field_struct"
+files = [{ path = "main.rue", source = """
+struct P { x: i32, y: i32 }
+fn main() -> i32 {
+    let mut arr: [P; 1] = [P { x: 0, y: 0 }];
+    checked {
+        let p: ptr mut P = @raw_mut(arr[0]);
+        @ptr_write(p, P { x: 7, y: 9 });
+    };
+    @dbg(arr[0].x);
+    @dbg(arr[0].y);
+    0
+}
+""" }]
+stdout = "7\n9\n"
+
+# --- RUE-242: nested struct (3 slots) round-trips through read and write -----
+[[case]]
+name = "ptr_read_write_nested_struct"
+files = [{ path = "main.rue", source = """
+struct Inner { a: i32, b: i32 }
+struct Outer { p: Inner, q: i32 }
+fn main() -> i32 {
+    let mut arr: [Outer; 1] = [Outer { p: Inner { a: 10, b: 20 }, q: 30 }];
+    checked {
+        let rp: ptr const Outer = @raw(arr[0]);
+        let v = @ptr_read(rp);
+        @dbg(v.p.a);
+        @dbg(v.p.b);
+        @dbg(v.q);
+        let wp: ptr mut Outer = @raw_mut(arr[0]);
+        @ptr_write(wp, Outer { p: Inner { a: 1, b: 2 }, q: 3 });
+    };
+    @dbg(arr[0].p.a);
+    @dbg(arr[0].p.b);
+    @dbg(arr[0].q);
+    0
+}
+""" }]
+stdout = "10\n20\n30\n1\n2\n3\n"
+
+# --- RUE-242 guard: scalar pointee read/write still works --------------------
+[[case]]
+name = "ptr_read_write_scalar"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut v: i32 = 5;
+    checked {
+        let p: ptr mut i32 = @raw_mut(v);
+        let r = @ptr_read(p);
+        @dbg(r);
+        @ptr_write(p, 42);
+    };
+    @dbg(v);
+    0
+}
+""" }]
+stdout = "5\n42\n"
+
+# --- RUE-244: i64 pointee into an i32 annotation is a type error ------------
+[[case]]
+name = "ptr_read_result_type_mismatch_i32"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let v: i64 = 42;
+    let x: i32 = checked { @ptr_read(@raw(v)) };
+    x
+}
+""" }]
+compile_fail = true
+error_contains = ["E0206"]
+
+# --- RUE-244: matching pointee/annotation compiles and runs -----------------
+[[case]]
+name = "ptr_read_result_type_match_i32"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let v: i32 = 42;
+    let x: i32 = checked { @ptr_read(@raw(v)) };
+    x
+}
+""" }]
+exit_code = 42
+
+# --- RUE-244: struct pointee into a wrong struct annotation is E0206 --------
+[[case]]
+name = "ptr_read_result_type_mismatch_struct"
+files = [{ path = "main.rue", source = """
+struct P { x: i32, y: i32 }
+struct Q { a: i32 }
+fn main() -> i32 {
+    let arr: [P; 1] = [P { x: 4, y: 8 }];
+    checked {
+        let p: ptr const P = @raw(arr[0]);
+        let v: Q = @ptr_read(p);
+        @dbg(v.a);
+    };
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0206"]
