@@ -3690,10 +3690,16 @@ impl<'a> Sema<'a> {
             match self.interner.resolve(&name) {
                 "__rue_iter_len" => self.analyze_iter_len_intrinsic(air, &args, span, ctx),
                 "__rue_char_scalar" => {
-                    self.analyze_string_char_op_intrinsic(air, &args, span, ctx, false)
+                    self.analyze_string_char_op_intrinsic(air, &args, span, ctx, false, false)
                 }
                 "__rue_char_next" => {
-                    self.analyze_string_char_op_intrinsic(air, &args, span, ctx, true)
+                    self.analyze_string_char_op_intrinsic(air, &args, span, ctx, true, false)
+                }
+                "__rue_char_scalar_lossy" => {
+                    self.analyze_string_char_op_intrinsic(air, &args, span, ctx, false, true)
+                }
+                "__rue_char_next_lossy" => {
+                    self.analyze_string_char_op_intrinsic(air, &args, span, ctx, true, true)
                 }
                 other => Err(CompileError::new(
                     ErrorKind::UnknownIntrinsic(other.to_string()),
@@ -3779,7 +3785,9 @@ impl<'a> Sema<'a> {
     /// `@__rue_char_scalar(s, offset)` → the Unicode scalar (`u32`) at byte
     /// `offset`, and `@__rue_char_next(s, offset)` → the byte offset of the
     /// next character (`usize`). Both back `for c in s.chars()`; the receiver
-    /// must be a String, and both trap at runtime on invalid UTF-8 (ADR-0035).
+    /// must be a String. When `lossy` is false these trap at runtime on invalid
+    /// UTF-8; when true (`.chars_lossy()`) they substitute U+FFFD instead
+    /// (ADR-0035).
     fn analyze_string_char_op_intrinsic(
         &mut self,
         air: &mut Air,
@@ -3787,6 +3795,7 @@ impl<'a> Sema<'a> {
         span: Span,
         ctx: &mut AnalysisContext,
         is_next: bool,
+        lossy: bool,
     ) -> CompileResult<AnalysisResult> {
         let coll = args[0].value;
         let pos = args[1].value;
@@ -3805,10 +3814,11 @@ impl<'a> Sema<'a> {
 
         let pos_result = self.analyze_inst(air, pos, ctx)?;
 
-        let (fn_name, ret_ty) = if is_next {
-            ("__rue_String_char_next", Type::U64)
-        } else {
-            ("__rue_String_char_scalar", Type::U32)
+        let (fn_name, ret_ty) = match (is_next, lossy) {
+            (true, false) => ("__rue_String_char_next", Type::U64),
+            (true, true) => ("__rue_String_char_next_lossy", Type::U64),
+            (false, false) => ("__rue_String_char_scalar", Type::U32),
+            (false, true) => ("__rue_String_char_scalar_lossy", Type::U32),
         };
         let call_name = self.interner.get_or_intern(fn_name);
         let extra = [

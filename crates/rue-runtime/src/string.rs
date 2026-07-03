@@ -765,6 +765,150 @@ crate::define_for_all_platforms! {
     }
 }
 
+/// Leniently decode one UTF-8 scalar starting at byte `offset` in the `len`-byte
+/// buffer at `ptr`, returning `(scalar, width_in_bytes)`.
+///
+/// This backs `for c in s.chars_lossy()` (RUE-17 Phase 3, ADR-0035). Unlike the
+/// strict [`__rue_decode_utf8_at`], which traps at the decode boundary, this
+/// **never traps**: an invalid, truncated, overlong, or surrogate sequence
+/// yields the Unicode replacement scalar `U+FFFD` and advances past its
+/// *maximal subpart of an ill-formed subsequence* — one byte for a lone
+/// invalid lead/continuation, more when a partly-valid multi-byte sequence
+/// breaks or runs off the end. This is the Unicode-recommended substitution
+/// (matching Rust's `String::from_utf8_lossy`), so a valid string decodes
+/// identically to `.chars()` while garbage bytes are replaced instead of
+/// aborting. Lossiness is opt-in: the default `.chars()` still traps.
+///
+/// # Safety
+///
+/// `ptr` must point to a valid buffer of at least `len` bytes.
+unsafe fn __rue_decode_utf8_lossy_at(ptr: *const u8, len: u64, offset: u64) -> (u32, u64) {
+    const FFFD: u32 = 0xFFFD;
+    let len = len as usize;
+    let i = offset as usize;
+    if i >= len {
+        return (FFFD, 1);
+    }
+    // SAFETY: `i < len` and the caller guarantees `ptr` is valid for `len`
+    // bytes, so `ptr.add(i)` is in bounds.
+    let b0 = unsafe { *ptr.add(i) };
+    // ASCII fast path (single byte).
+    if b0 < 0x80 {
+        return (b0 as u32, 1);
+    }
+    // The lead byte fixes the sequence width and the valid range of the FIRST
+    // continuation byte. That first-byte range is what enforces non-overlong
+    // (0xE0 needs >= 0xA0, 0xF0 needs >= 0x90), non-surrogate (0xED needs
+    // <= 0x9F), and in-range (0xF4 needs <= 0x8F) — so a full-width sequence
+    // that clears these checks is always a valid scalar. Leads 0x80..=0xC1 and
+    // 0xF5..=0xFF can never begin a sequence: substitute one U+FFFD, step 1.
+    let (width, second_lo, second_hi) = match b0 {
+        0xC2..=0xDF => (2usize, 0x80u8, 0xBFu8),
+        0xE0 => (3, 0xA0, 0xBF),
+        0xE1..=0xEC => (3, 0x80, 0xBF),
+        0xED => (3, 0x80, 0x9F),
+        0xEE..=0xEF => (3, 0x80, 0xBF),
+        0xF0 => (4, 0x90, 0xBF),
+        0xF1..=0xF3 => (4, 0x80, 0xBF),
+        0xF4 => (4, 0x80, 0x8F),
+        _ => return (FFFD, 1),
+    };
+    let mask = match width {
+        2 => 0x1F,
+        3 => 0x0F,
+        _ => 0x07,
+    };
+    let mut cp = (b0 as u32) & mask;
+    // First continuation: uses the width-specific range above.
+    if i + 1 >= len {
+        return (FFFD, 1);
+    }
+    // SAFETY: `i + 1 < len`, in bounds.
+    let b1 = unsafe { *ptr.add(i + 1) };
+    if b1 < second_lo || b1 > second_hi {
+        return (FFFD, 1);
+    }
+    cp = (cp << 6) | ((b1 as u32) & 0x3F);
+    // Remaining continuations (positions 3..width) accept the generic
+    // 0x80..=0xBF range. On a break, the maximal subpart is everything
+    // consumed so far.
+    let mut consumed = 2usize;
+    while consumed < width {
+        if i + consumed >= len {
+            return (FFFD, consumed as u64);
+        }
+        // SAFETY: `i + consumed < len`, in bounds.
+        let b = unsafe { *ptr.add(i + consumed) };
+        if b & 0xC0 != 0x80 {
+            return (FFFD, consumed as u64);
+        }
+        cp = (cp << 6) | ((b as u32) & 0x3F);
+        consumed += 1;
+    }
+    (cp, width as u64)
+}
+
+crate::define_for_all_platforms! {
+    /// Decode the Unicode scalar at byte `offset`, replacing invalid UTF-8.
+    ///
+    /// Backs the element projection of `for c in s.chars_lossy()` (RUE-17
+    /// Phase 3). Like [`__rue_String_char_scalar`] but never traps: an invalid
+    /// sequence yields `U+FFFD` (see [`__rue_decode_utf8_lossy_at`]). Returns
+    /// the scalar zero-extended into `u64` (language-level type `u32`).
+    ///
+    /// # ABI
+    ///
+    /// ```text
+    /// extern "C" fn __rue_String_char_scalar_lossy(ptr: *const u8, len: u64, cap: u64, offset: u64) -> u64
+    /// ```
+    ///
+    /// # Safety
+    ///
+    /// `ptr` must point to a valid buffer of at least `len` bytes.
+    #[allow(non_snake_case)]
+    pub extern "C" fn __rue_String_char_scalar_lossy(
+        ptr: *const u8,
+        len: u64,
+        _cap: u64,
+        offset: u64,
+    ) -> u64 {
+        // SAFETY: the for-loop desugaring passes the String's own (ptr, len).
+        let (scalar, _width) = unsafe { __rue_decode_utf8_lossy_at(ptr, len, offset) };
+        scalar as u64
+    }
+}
+
+crate::define_for_all_platforms! {
+    /// Return the byte offset of the character AFTER the one at `offset`,
+    /// replacing invalid UTF-8.
+    ///
+    /// Backs the position advance of `for c in s.chars_lossy()` (RUE-17
+    /// Phase 3). Like [`__rue_String_char_next`] but never traps: the advance
+    /// past an invalid sequence is the width of its maximal subpart (see
+    /// [`__rue_decode_utf8_lossy_at`]), guaranteeing forward progress.
+    ///
+    /// # ABI
+    ///
+    /// ```text
+    /// extern "C" fn __rue_String_char_next_lossy(ptr: *const u8, len: u64, cap: u64, offset: u64) -> u64
+    /// ```
+    ///
+    /// # Safety
+    ///
+    /// `ptr` must point to a valid buffer of at least `len` bytes.
+    #[allow(non_snake_case)]
+    pub extern "C" fn __rue_String_char_next_lossy(
+        ptr: *const u8,
+        len: u64,
+        _cap: u64,
+        offset: u64,
+    ) -> u64 {
+        // SAFETY: the for-loop desugaring passes the String's own (ptr, len).
+        let (_scalar, width) = unsafe { __rue_decode_utf8_lossy_at(ptr, len, offset) };
+        offset + width
+    }
+}
+
 crate::define_for_all_platforms! {
     /// Return a NEW String containing the byte range `[start, start + sub_len)`.
     ///

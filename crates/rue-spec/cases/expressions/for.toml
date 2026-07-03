@@ -264,6 +264,52 @@ exit_code = 101
 expected_stdout = "99\n97\n102\n"
 
 # =============================================================================
+# Lossy char iteration: `.chars_lossy()` substitutes U+FFFD, never traps
+# (ADR-0035, RUE-17 Phase 3)
+# =============================================================================
+
+# Over well-formed UTF-8, the lossy view decodes identically to `.chars()`.
+[[case]]
+name = "for_chars_lossy_valid"
+spec = ["3.7:34"]
+preview = "for_loops"
+source = """
+fn main() -> i32 {
+    let s = "café";
+    let mut count = 0;
+    for c in s.chars_lossy() {
+        @dbg(c);
+        count = count + 1;
+    }
+    count
+}
+"""
+exit_code = 4
+expected_stdout = "99\n97\n102\n233\n"
+
+# substring(0, 4) of "café" keeps the lead byte of `é` (0xC3) without its
+# continuation. The strict view traps here; the lossy view substitutes one
+# U+FFFD (65533) for the truncated sequence and finishes without trapping.
+[[case]]
+name = "for_chars_lossy_replaces_invalid"
+spec = ["3.7:34"]
+preview = "for_loops"
+source = """
+fn main() -> i32 {
+    let full = "café";
+    let s = full.substring(0, 4);
+    let mut count = 0;
+    for c in s.chars_lossy() {
+        @dbg(c);
+        count = count + 1;
+    }
+    count
+}
+"""
+exit_code = 4
+expected_stdout = "99\n97\n102\n65533\n"
+
+# =============================================================================
 # Preview gating
 # =============================================================================
 
