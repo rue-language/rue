@@ -3471,6 +3471,23 @@ impl<'a> Sema<'a> {
     ) -> CompileResult<AnalysisResult> {
         let elem_refs = self.rir.get_inst_refs(elems_start, elems_len);
 
+        // An array literal of `type` values (`[i32, i32]`) has no runtime
+        // representation: type values only exist at compile time (spec
+        // 4.14:6). Reject it with E1200 — the same diagnostic `let t =
+        // comptime { i32 };` gets — before the array type, whose element is
+        // the comptime-only `type`, would reach the intern pool and panic
+        // (RUE-253).
+        for elem_ref in &elem_refs {
+            if ctx.resolved_types.get(elem_ref).copied() == Some(Type::COMPTIME_TYPE) {
+                return Err(CompileError::new(
+                    ErrorKind::ComptimeEvaluationFailed {
+                        reason: "type values cannot exist at runtime".to_string(),
+                    },
+                    span,
+                ));
+            }
+        }
+
         // Get the array type from HM inference
         let array_type = Self::get_resolved_type(ctx, inst_ref, span, "array literal")?;
 
@@ -3568,6 +3585,19 @@ impl<'a> Sema<'a> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
+        // A repeat literal of a `type` value (`[i32; 2]`) has no runtime
+        // representation (spec 4.14:6). Reject it with E1200 — before the
+        // preview gate below and before the comptime-only element type would
+        // reach the intern pool and panic (RUE-253).
+        if ctx.resolved_types.get(&value_ref).copied() == Some(Type::COMPTIME_TYPE) {
+            return Err(CompileError::new(
+                ErrorKind::ComptimeEvaluationFailed {
+                    reason: "type values cannot exist at runtime".to_string(),
+                },
+                span,
+            ));
+        }
+
         // Gate the whole form: without `--preview array_repeat`, using
         // `[value; count]` is a "requires preview feature" error.
         self.require_preview(
@@ -4284,25 +4314,37 @@ impl<'a> Sema<'a> {
         //   - `fn FixedBuffer(comptime N: i32) -> type { struct { fn capacity(self) -> i32 { N } } }`
         let all_params_comptime = param_comptime.iter().all(|&c| c);
         if base_return_type == Type::COMPTIME_TYPE && (args.is_empty() || all_params_comptime) {
-            // Build value_subst from comptime VALUE parameters (e.g., comptime N: i32)
+            // Build the substitutions for the callee body from its comptime
+            // arguments: TYPE parameters (`comptime T: type`) into `type_subst`
+            // and VALUE parameters (`comptime N: i32`) into `value_subst`. Both
+            // are needed so a type constructor whose body mentions a type
+            // parameter (`struct { value: T }`) reduces here — including when
+            // this call is itself a nested argument (`WrapA(WrapA(i32))`), so
+            // the inner call analyzes to a `TypeConst` (RUE-251).
+            let mut type_subst: std::collections::HashMap<Spur, Type> =
+                std::collections::HashMap::new();
             let mut value_subst: std::collections::HashMap<Spur, ConstValue> =
                 std::collections::HashMap::new();
             for (i, is_comptime) in param_comptime.iter().enumerate() {
-                if *is_comptime && param_types[i] != Type::COMPTIME_TYPE {
-                    // This is a comptime VALUE parameter - extract its const value
-                    // (evaluated in the calling function's context so comptime
-                    // parameters in scope and resolved types are visible)
-                    if let Some(const_val) = self.try_evaluate_const_in_fn(args[i].value, ctx) {
+                if !*is_comptime {
+                    continue;
+                }
+                // Evaluated in the calling function's context so comptime
+                // parameters in scope and resolved types are visible.
+                match self.try_evaluate_const_in_fn(args[i].value, ctx) {
+                    Some(ConstValue::Type(t)) if param_types[i] == Type::COMPTIME_TYPE => {
+                        type_subst.insert(param_names[i], t);
+                    }
+                    Some(const_val) if param_types[i] != Type::COMPTIME_TYPE => {
                         value_subst.insert(param_names[i], const_val);
                     }
+                    _ => {}
                 }
             }
             // Try to evaluate the function body at compile time
-            if let Some(ConstValue::Type(ty)) = self.try_evaluate_const_with_subst(
-                fn_body,
-                &std::collections::HashMap::new(),
-                &value_subst,
-            ) {
+            if let Some(ConstValue::Type(ty)) =
+                self.try_evaluate_const_with_subst(fn_body, &type_subst, &value_subst)
+            {
                 // Success! Return a TypeConst instruction instead of a runtime call
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::TypeConst(ty),

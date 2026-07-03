@@ -331,6 +331,32 @@ impl<'a> ConstraintGenerator<'a> {
         }
     }
 
+    /// Like [`Self::resolve_infer_array_length`], but a comptime *value*
+    /// parameter captured at the call site (`values`, e.g. `N=3` for
+    /// `make_array(3)`) resolves a named length before the file-level
+    /// `const_values` table is consulted. Without this, a generic function
+    /// whose return/param type is `[i32; N]` sized by a comptime value param
+    /// couldn't resolve `N`, so the type fell back to the `COMPTIME_TYPE`
+    /// placeholder and the call was misinferred as returning `type`
+    /// (RUE-252).
+    fn resolve_infer_array_length_with_values(
+        &self,
+        len: &ArrayLen,
+        values: &HashMap<Spur, i128>,
+    ) -> Option<u64> {
+        match len {
+            ArrayLen::Literal(n) => Some(*n),
+            ArrayLen::Named(name) => {
+                let sym = self.interner.get(name)?;
+                let value = values
+                    .get(&sym)
+                    .copied()
+                    .or_else(|| self.const_values.and_then(|m| m.get(&sym).copied()))?;
+                u64::try_from(value).ok()
+            }
+        }
+    }
+
     /// Get the type variables allocated for integer literals.
     pub fn int_literal_vars(&self) -> &[TypeVarId] {
         &self.int_literal_vars
@@ -738,18 +764,29 @@ impl<'a> ConstraintGenerator<'a> {
                         // Build the type substitution map from comptime type arguments
                         let mut type_subst: std::collections::HashMap<lasso::Spur, Type> =
                             std::collections::HashMap::new();
+                        // Comptime VALUE arguments (`comptime N: i32`) captured
+                        // as their integer constant, so a return/param type
+                        // sized by one — an array length `[i32; N]` — resolves
+                        // at this call (RUE-252).
+                        let mut value_subst: std::collections::HashMap<lasso::Spur, i128> =
+                            std::collections::HashMap::new();
                         for (i, arg) in args.iter().enumerate() {
-                            if i < func.param_comptime.len()
-                                && func.param_comptime[i]
-                                && func.param_types.get(i)
-                                    == Some(&InferType::Concrete(Type::COMPTIME_TYPE))
-                                && i < func.param_names.len()
+                            if i >= func.param_comptime.len()
+                                || !func.param_comptime[i]
+                                || i >= func.param_names.len()
+                            {
+                                continue;
+                            }
+                            if func.param_types.get(i)
+                                == Some(&InferType::Concrete(Type::COMPTIME_TYPE))
                             {
                                 if let Some(concrete_ty) =
                                     self.extract_type_argument(arg.value, ctx)
                                 {
                                     type_subst.insert(func.param_names[i], concrete_ty);
                                 }
+                            } else if let Some(v) = self.extract_int_argument(arg.value) {
+                                value_subst.insert(func.param_names[i], v);
                             }
                         }
 
@@ -773,7 +810,11 @@ impl<'a> ConstraintGenerator<'a> {
                                 // mentioning a type parameter like `a: [T; 3]`
                                 // (RUE-172) - substitute T
                                 match func.param_type_syms.get(i).and_then(|sym| {
-                                    self.resolve_type_sym_with_subst(*sym, &type_subst)
+                                    self.resolve_type_sym_with_subst(
+                                        *sym,
+                                        &type_subst,
+                                        &value_subst,
+                                    )
                                 }) {
                                     Some(ty) => ty,
                                     // Unknown type parameter - checked in sema
@@ -794,8 +835,12 @@ impl<'a> ConstraintGenerator<'a> {
                         // (`-> [T; 3]`, RUE-172).
                         let return_type =
                             if func.return_type == InferType::Concrete(Type::COMPTIME_TYPE) {
-                                self.resolve_type_sym_with_subst(func.return_type_sym, &type_subst)
-                                    .unwrap_or_else(|| func.return_type.clone())
+                                self.resolve_type_sym_with_subst(
+                                    func.return_type_sym,
+                                    &type_subst,
+                                    &value_subst,
+                                )
+                                .unwrap_or_else(|| func.return_type.clone())
                             } else {
                                 func.return_type.clone()
                             };
@@ -1924,6 +1969,28 @@ impl<'a> ConstraintGenerator<'a> {
         }
     }
 
+    /// Extract a comptime *value* argument as an integer constant, for
+    /// resolving an array length parameterized by a comptime value param
+    /// (`fn f(comptime N: i32) -> [i32; N]`, RUE-252). Handles an integer
+    /// literal, its negation, and a reference to a file-level `const`; other
+    /// forms (checked fully in sema) yield `None`.
+    fn extract_int_argument(&self, arg: InstRef) -> Option<i128> {
+        match &self.rir.get(arg).data {
+            InstData::IntConst(v) => Some(*v as i128),
+            InstData::Neg { operand } => {
+                if let InstData::IntConst(v) = &self.rir.get(*operand).data {
+                    Some(-(*v as i128))
+                } else {
+                    None
+                }
+            }
+            InstData::VarRef { name } | InstData::ParamRef { name, .. } => {
+                self.const_values.and_then(|m| m.get(name).copied())
+            }
+            _ => None,
+        }
+    }
+
     /// Resolve a signature type symbol with type-parameter substitution,
     /// looking through composite syntax (RUE-172).
     ///
@@ -1935,17 +2002,19 @@ impl<'a> ConstraintGenerator<'a> {
         &self,
         sym: Spur,
         subst: &HashMap<Spur, Type>,
+        values: &HashMap<Spur, i128>,
     ) -> Option<InferType> {
         if let Some(&ty) = subst.get(&sym) {
             return Some(InferType::Concrete(ty));
         }
-        self.resolve_type_name_with_subst(self.interner.resolve(&sym), subst)
+        self.resolve_type_name_with_subst(self.interner.resolve(&sym), subst, values)
     }
 
     fn resolve_type_name_with_subst(
         &self,
         name: &str,
         subst: &HashMap<Spur, Type>,
+        values: &HashMap<Spur, i128>,
     ) -> Option<InferType> {
         if let Some(name_spur) = self.interner.get(name) {
             if let Some(&ty) = subst.get(&name_spur) {
@@ -1955,8 +2024,8 @@ impl<'a> ConstraintGenerator<'a> {
 
         // Array syntax: [T; N] - recurse so substituted element types work.
         if let Some((element_type_str, len)) = parse_array_type_syntax(name) {
-            let element_ty = self.resolve_type_name_with_subst(&element_type_str, subst)?;
-            let length = self.resolve_infer_array_length(&len)?;
+            let element_ty = self.resolve_type_name_with_subst(&element_type_str, subst, values)?;
+            let length = self.resolve_infer_array_length_with_values(&len, values)?;
             return Some(InferType::Array {
                 element: Box::new(element_ty),
                 length,
@@ -1965,7 +2034,8 @@ impl<'a> ConstraintGenerator<'a> {
 
         // Pointer syntax: ptr mut T / ptr const T - recurse on the pointee.
         if let Some((pointee_type_str, mutability)) = parse_pointer_type_syntax(name) {
-            let pointee_infer_ty = self.resolve_type_name_with_subst(&pointee_type_str, subst)?;
+            let pointee_infer_ty =
+                self.resolve_type_name_with_subst(&pointee_type_str, subst, values)?;
             // Only concrete pointees can be interned during constraint generation
             // (same limitation as resolve_type_name).
             let pointee_ty = match pointee_infer_ty {

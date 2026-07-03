@@ -1,0 +1,152 @@
+# Comptime type-function composition and array-of-type diagnostics.
+#
+# Type-returning functions (`-> type`) are load-bearing for Option/Result/Vec,
+# so their calls must reduce compositionally — in a delegating return body and
+# as a nested argument — and an array literal of `type` values must produce a
+# clean diagnostic instead of an ICE. These exercise the real driver
+# end-to-end.
+
+[section]
+id = "cli.comptime_type_functions"
+name = "Comptime type-function composition"
+description = "Delegating/nested `-> type` calls reduce; array-of-type is E1200, not an ICE (RUE-251, RUE-252, RUE-253)."
+
+# --- RUE-251: delegating type-function call (body is a CALL, not a literal) ---
+
+[[case]]
+name = "delegating_type_alias"
+files = [{ path = "main.rue", source = """
+fn Point() -> type { struct { x: i32, y: i32 } }
+fn PointAlias() -> type { Point() }
+
+fn main() -> i32 {
+    let A = PointAlias();
+    let a: A = A { x: 10, y: 32 };
+    @dbg(a.x + a.y);
+    0
+}
+""" }]
+stdout = "42\n"
+
+[[case]]
+name = "two_level_delegation"
+files = [{ path = "main.rue", source = """
+fn Point() -> type { struct { x: i32, y: i32 } }
+fn PointAlias() -> type { Point() }
+fn PointAlias2() -> type { PointAlias() }
+
+fn main() -> i32 {
+    let A = PointAlias2();
+    let a: A = A { x: 40, y: 2 };
+    @dbg(a.x + a.y);
+    0
+}
+""" }]
+stdout = "42\n"
+
+# --- RUE-251: nested type-function call as an argument ---
+
+[[case]]
+name = "nested_type_function_call"
+files = [{ path = "main.rue", source = """
+fn WrapA(comptime T: type) -> type { struct { value: T } }
+
+fn main() -> i32 {
+    let Inner = WrapA(i32);
+    let W = WrapA(WrapA(i32));
+    let w: W = W { value: Inner { value: 42 } };
+    @dbg(w.value.value);
+    0
+}
+""" }]
+stdout = "42\n"
+
+[[case]]
+name = "three_level_nesting_compiles"
+files = [{ path = "main.rue", source = """
+fn WrapA(comptime T: type) -> type { struct { value: T } }
+
+fn main() -> i32 {
+    let W = WrapA(WrapA(WrapA(i32)));
+    0
+}
+""" }]
+stdout = ""
+
+[[case]]
+name = "runtime_value_to_comptime_param_rejected"
+files = [{ path = "main.rue", source = """
+fn ident(comptime N: i32) -> i32 { N }
+
+fn main() -> i32 {
+    let r: i32 = 3;
+    ident(r)
+}
+""" }]
+compile_fail = true
+error_contains = ["E1201", "compile-time known value"]
+
+# --- RUE-252: generic fn returning [i32; N] sized by a comptime VALUE param ---
+
+[[case]]
+name = "make_array_return_type"
+files = [{ path = "main.rue", source = """
+fn make_array(comptime N: i32) -> [i32; N] { [7, 7, 7] }
+
+fn main() -> i32 {
+    let a: [i32; 3] = make_array(3);
+    @dbg(a[0] + a[1] + a[2]);
+    0
+}
+""" }]
+stdout = "21\n"
+
+[[case]]
+name = "make_array_two_sizes"
+files = [{ path = "main.rue", source = """
+fn make3(comptime N: i32) -> [i32; N] { [1, 2, 3] }
+fn make4(comptime N: i32) -> [i32; N] { [10, 20, 30, 40] }
+
+fn main() -> i32 {
+    let a: [i32; 3] = make3(3);
+    let b: [i32; 4] = make4(4);
+    @dbg(a[2] + b[3]);
+    0
+}
+""" }]
+stdout = "43\n"
+
+# --- RUE-253: array literal / repeat of `type` values is E1200, not an ICE ---
+
+[[case]]
+name = "array_literal_of_types_e1200"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let arr = [i32, i32];
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E1200", "type values cannot exist at runtime"]
+
+[[case]]
+name = "array_repeat_of_types_e1200"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let arr = [i32; 2];
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E1200", "type values cannot exist at runtime"]
+
+[[case]]
+name = "valid_array_still_works"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let arr = [10, 20, 12];
+    @dbg(arr[0] + arr[1] + arr[2]);
+    0
+}
+""" }]
+stdout = "42\n"

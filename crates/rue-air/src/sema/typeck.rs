@@ -115,7 +115,11 @@ impl<'a> Sema<'a> {
             InferType::Array { element, length } => {
                 // Recursively convert element type
                 let elem_ty = self.infer_type_to_type(element);
-                if elem_ty == Type::ERROR {
+                // A `type`-valued element is comptime-only and cannot be
+                // interned (spec 4.14:6); leave the array as `<error>` so sema
+                // rejects it with E1200 rather than panicking in the intern
+                // pool (RUE-253). `<error>` elements decay the same way.
+                if elem_ty == Type::ERROR || elem_ty == Type::COMPTIME_TYPE {
                     return Type::ERROR;
                 }
                 // Get or create the array type ID
@@ -480,7 +484,10 @@ impl<'a> Sema<'a> {
                 // Convert the element type to get the concrete Type
                 // (This is safe because we processed nested arrays first)
                 let elem_ty = self.infer_type_to_concrete_type_for_key(element);
-                if elem_ty != Type::ERROR {
+                // Skip `<error>` and comptime-only `type` elements: neither can
+                // be interned. A `[type; N]` array is diagnosed as E1200 in
+                // sema instead of panicking here (RUE-253).
+                if elem_ty != Type::ERROR && elem_ty != Type::COMPTIME_TYPE {
                     // Pre-create this array type
                     self.get_or_create_array_type(elem_ty, *length);
                 }
@@ -504,7 +511,10 @@ impl<'a> Sema<'a> {
             InferType::Array { element, length } => {
                 // For nested arrays, look up or create the array type
                 let elem_ty = self.infer_type_to_concrete_type_for_key(element);
-                if elem_ty == Type::ERROR {
+                // A comptime-only `type` element (or `<error>`) cannot be
+                // interned; propagate `<error>` so the enclosing array is
+                // diagnosed as E1200 in sema rather than panicking (RUE-253).
+                if elem_ty == Type::ERROR || elem_ty == Type::COMPTIME_TYPE {
                     return Type::ERROR;
                 }
                 // Get or create the array type in the pool
