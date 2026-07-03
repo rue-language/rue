@@ -1,17 +1,23 @@
-# A `for` loop over a named variable holds a scoped shared borrow of the
-# collection for the loop's duration (spec 4.8:26, RUE-233). Mutating the
-# iterated collection inside the body used to be silently accepted and affected
-# later iterations (`for x in a { a[2] = 100; }` exited 103, not 6). The
-# implicit borrow now participates in exclusivity checking: mutating the
-# iterated place — element (`a[i]=`), whole variable (`a=`), or field — inside
-# the body is E0428 (`MutateBorrowedValue`), just like an explicit `borrow`
-# parameter. Iterating a different collection, and read-only iteration, still
-# compile.
+# A `for` loop is a shared borrow of the collection for the loop's duration
+# (spec 4.8:26, RUE-233/RUE-257/RUE-259 — one root: the loop desugared to a
+# move-out instead of the shared borrow the spec mandates). Three faces:
+#
+#  * RUE-233: mutating the iterated place — element (`a[i]=`), whole variable
+#    (`a=`), or field — inside the body is E0428 (`MutateBorrowedValue`), like
+#    an explicit `borrow` parameter (used to be silently accepted).
+#  * RUE-257: mutating the collection through an `inout self` method (String
+#    `.clear()`/`.push()`) inside the body is E0428 too — previously a runtime
+#    miscompile (a spurious `invalid UTF-8` / out-of-bounds trap).
+#  * RUE-259: a NON-Copy element type is bound by shared borrow, not moved out
+#    of the collection — the loop compiles (used to be E0904), the array drops
+#    each element exactly once, and moving the binder out is rejected.
+#
+# Iterating a different collection, and read-only iteration, still compile.
 
 [section]
 id = "cli.for_loop_iter_borrow"
 name = "For-loop iterable borrow-check"
-description = "Mutating the iterated collection inside a `for` body is E0428 (RUE-233)."
+description = "A `for` loop is a shared borrow: non-Copy elements iterate without moving, per-element destructors run once, mutating the collection mid-loop is E0428 (RUE-233/257/259)."
 
 [[case]]
 name = "mutate_iterated_element_is_e0428"
@@ -82,3 +88,131 @@ fn main() -> i32 {
 }
 """ }]
 exit_code = 6
+
+# --- RUE-259: non-Copy element type iterates by shared borrow -----------------
+
+[[case]]
+name = "non_copy_element_iterates"
+description = "RUE-259: a non-Copy struct element iterates by shared borrow (was wrongly E0904); sums to 4."
+args = ["--preview", "for_loops", "main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    let a = [Point { x: 1, y: 2 }, Point { x: 3, y: 4 }];
+    let mut sum = 0;
+    for p in a {
+        sum = sum + p.x;
+    }
+    sum
+}
+""" }]
+exit_code = 4
+
+[[case]]
+name = "non_copy_element_destructor_runs_once"
+description = "RUE-259: the array (not the loop binder) drops each element once — destructor fires exactly once per element."
+args = ["--preview", "for_loops", "main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+struct Res { tag: i32 }
+drop fn Res(self) { @dbg(self.tag); }
+fn main() -> i32 {
+    let a = [Res { tag: 11 }, Res { tag: 22 }];
+    let mut total = 0;
+    for r in a {
+        total = total + r.tag;
+    }
+    total
+}
+""" }]
+stdout = "11\n22\n"
+exit_code = 33
+
+[[case]]
+name = "non_copy_wildcard_binder_destructor_once"
+description = "RUE-259: `for _ in a` over a drop-bearing element also borrows (not discards) it — the array drops each element once, not twice."
+args = ["--preview", "for_loops", "main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+struct Res { tag: i32 }
+drop fn Res(self) { @dbg(self.tag); }
+fn main() -> i32 {
+    let a = [Res { tag: 7 }, Res { tag: 8 }];
+    let mut n = 0;
+    for _ in a {
+        n = n + 1;
+    }
+    n
+}
+""" }]
+stdout = "7\n8\n"
+exit_code = 2
+
+[[case]]
+name = "move_element_out_is_error"
+description = "RUE-259: moving the binder out of the loop would double-drop — rejected (cannot move out of borrowed value)."
+args = ["--preview", "for_loops", "main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["cannot move out of borrowed value"]
+files = [{ path = "main.rue", source = """
+struct Res { tag: i32 }
+drop fn Res(self) { @dbg(self.tag); }
+fn eat(r: Res) -> i32 { r.tag }
+fn main() -> i32 {
+    let a = [Res { tag: 1 }, Res { tag: 2 }];
+    let mut s = 0;
+    for r in a {
+        s = s + eat(r);
+    }
+    s
+}
+""" }]
+
+# --- RUE-257: mutating the collection via an inout-self method ----------------
+
+[[case]]
+name = "mutate_via_method_in_chars_loop_is_e0428"
+description = "RUE-257: `s.clear()` inside `for c in s.chars()` mutates a shared-borrowed String (E0428), not a runtime UTF-8 trap."
+args = ["--preview", "for_loops", "main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0428"]
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut s = "abc".clone();
+    for c in s.chars() {
+        s.clear();
+        @dbg(c);
+    }
+    0
+}
+""" }]
+
+[[case]]
+name = "mutate_via_method_in_byte_loop_is_e0428"
+description = "RUE-257: `s.clear()` inside `for b in s` (byte view) is E0428, not an out-of-bounds trap."
+args = ["--preview", "for_loops", "main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0428"]
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut s = "abc".clone();
+    for b in s {
+        s.clear();
+    }
+    0
+}
+""" }]
+
+[[case]]
+name = "read_collection_elsewhere_in_body_is_fine"
+description = "Control: reading (not mutating) the iterated array elsewhere in the body is a shared+shared read — fine."
+args = ["--preview", "for_loops", "main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a = [1, 2, 3];
+    let mut sum = 0;
+    for x in a {
+        sum = sum + x + a[0];
+    }
+    sum
+}
+""" }]
+exit_code = 9

@@ -1934,6 +1934,7 @@ impl<'a> Sema<'a> {
                 is_mut,
                 ty,
                 init,
+                iter_elem,
             } => self.analyze_alloc(
                 air,
                 *directives_start,
@@ -1942,6 +1943,7 @@ impl<'a> Sema<'a> {
                 *is_mut,
                 *ty,
                 *init,
+                *iter_elem,
                 inst.span,
                 ctx,
             ),
@@ -1976,6 +1978,7 @@ impl<'a> Sema<'a> {
         is_mut: bool,
         ty: Option<Spur>,
         init: InstRef,
+        iter_elem: bool,
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
@@ -1993,8 +1996,22 @@ impl<'a> Sema<'a> {
             }
         }
 
-        // Analyze the initializer
-        let init_result = self.analyze_inst(air, init, ctx)?;
+        // Analyze the initializer. A `for`-loop element binding is a shared
+        // read of the collection (spec 4.8:26): analyze the element read under
+        // `byref_arg_root` so it borrows the element in place rather than
+        // moving it out — a non-Copy element is then read, not consumed
+        // (RUE-259), exactly as a `borrow`-mode argument would be. The root is
+        // the collection variable (`a` in `a[__p]`); a `.chars()` scalar read
+        // has no place root, so this is a no-op there.
+        let init_result = if iter_elem {
+            let byref_root = super::analysis::root_variable_of(self.rir, init);
+            let prev = std::mem::replace(&mut ctx.byref_arg_root, byref_root);
+            let r = self.analyze_inst(air, init, ctx);
+            ctx.byref_arg_root = prev;
+            r?
+        } else {
+            self.analyze_inst(air, init, ctx)?
+        };
         let var_type = init_result.ty;
 
         // If name is None, this is a wildcard pattern `_` that discards the value.
@@ -2049,6 +2066,15 @@ impl<'a> Sema<'a> {
         let slot = ctx.next_slot;
         let num_slots = self.abi_slot_count(var_type);
         ctx.next_slot += num_slots;
+
+        // A `for`-loop element binder over a NON-Copy collection aliases an
+        // element the collection still owns and drops (spec 4.8:26): mark its
+        // slot as a non-owning borrow so drop elaboration does not drop it too
+        // (which would double-free the element, RUE-259). A Copy binder owns a
+        // trivially-droppable copy, so it needs no marker.
+        if iter_elem && !self.is_type_copy(var_type) {
+            air.add_borrow_slot(slot);
+        }
 
         // Register the variable
         ctx.insert_local(
@@ -2231,6 +2257,20 @@ impl<'a> Sema<'a> {
             // If type is not Copy, mark as moved — unless this use is a by-ref
             // call argument, which borrows the variable rather than moving it.
             let moves_out = !self.is_type_copy(ty) && ctx.byref_arg_root != Some(name);
+            // A `for`-loop element binder over a non-Copy collection is a
+            // non-owning shared borrow of an element the collection still owns
+            // (spec 4.8:26): reading it is fine, but moving it out would let
+            // the new owner AND the collection both drop the element
+            // (double-free), so a move is rejected like moving out of a
+            // `borrow` parameter (RUE-259).
+            if moves_out && air.is_borrow_slot(slot) {
+                return Err(CompileError::new(
+                    ErrorKind::MoveOutOfBorrow {
+                        variable: name_str.to_string(),
+                    },
+                    span,
+                ));
+            }
             if moves_out {
                 ctx.moved_vars
                     .entry(name)
@@ -2996,6 +3036,24 @@ impl<'a> Sema<'a> {
             // rejections don't apply — but reading through an already-moved
             // path is still a use-after-move.
             let is_byref_arg_use = ctx.byref_arg_root == Some(trace.root_var);
+
+            // Moving a (non-Copy) field or the whole value out of a `for`-loop
+            // element binder over a non-Copy collection would let the new owner
+            // AND the collection both drop it (double-free): iteration is a
+            // shared read (spec 4.8:26), so the binder may be read but not
+            // moved out, whole-value or field-granular (RUE-259).
+            if !is_byref_arg_use
+                && (is_linear || !self.is_type_copy(field_type))
+                && matches!(trace.base, AirPlaceBase::Local(s) if air.is_borrow_slot(s))
+            {
+                return Err(CompileError::new(
+                    ErrorKind::MoveOutOfBorrow {
+                        variable: self.interner.resolve(&trace.root_var).to_string(),
+                    },
+                    span,
+                ));
+            }
+
             let mut emit_move_marker = false;
             let mut move_is_partial = false;
             if is_byref_arg_use {

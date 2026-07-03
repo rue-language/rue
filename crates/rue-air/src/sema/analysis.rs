@@ -1077,7 +1077,7 @@ pub(crate) fn linear_not_consumed_error(
 /// Extract the root variable symbol from an expression, if it refers to a
 /// variable. Canonical, pipeline-agnostic implementation; see
 /// [`Sema::extract_root_variable`] for the full contract.
-fn root_variable_of(rir: &Rir, inst_ref: InstRef) -> Option<Spur> {
+pub(crate) fn root_variable_of(rir: &Rir, inst_ref: InstRef) -> Option<Spur> {
     let inst = rir.get(inst_ref);
     match &inst.data {
         InstData::VarRef { name } => Some(*name),
@@ -3256,6 +3256,14 @@ impl<'a> Sema<'a> {
                 ));
             };
 
+            // Calling an `inout self` method on a collection an enclosing
+            // `for` loop is iterating mutates a shared-borrowed value (spec
+            // 4.8:26, RUE-257) — E0428. A `borrow self` method only reads it,
+            // which coexists with the loop's shared borrow, so it is allowed.
+            if receiver_mode == AirArgMode::Inout {
+                self.reject_mutate_iter_borrowed(receiver_root, span, ctx)?;
+            }
+
             // `inout self` requires a mutable receiver binding (spec 6, reuses
             // E0203), mirroring Rust. `borrow self` works on any binding.
             if receiver_mode == AirArgMode::Inout
@@ -5239,6 +5247,12 @@ impl<'a> Sema<'a> {
         let Some(root) = receiver_var else {
             return Err(CompileError::new(ErrorKind::InvalidAssignmentTarget, span));
         };
+
+        // A builtin mutation method takes the receiver by `inout`, so calling
+        // one on a collection an enclosing `for` loop is iterating mutates a
+        // shared-borrowed value (spec 4.8:26, RUE-257) — E0428, exactly like a
+        // direct `a[i] = …` or reassignment inside the body.
+        self.reject_mutate_iter_borrowed(root, span, ctx)?;
 
         // Root parameter: only `inout` names mutable caller storage.
         if let Some(param) = ctx.params.iter().find(|p| p.name == root) {
