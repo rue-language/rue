@@ -22,7 +22,7 @@ description = "A `for` loop is a shared borrow: non-Copy elements iterate withou
 [[case]]
 name = "mutate_iterated_element_is_e0428"
 description = "RUE-233: `a[2] = 100` inside `for x in a` mutates a shared-borrowed collection (E0428)."
-args = ["--preview", "for_loops", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 compile_fail = true
 error_contains = ["E0428"]
 files = [{ path = "main.rue", source = """
@@ -40,7 +40,7 @@ fn main() -> i32 {
 [[case]]
 name = "reassign_iterated_array_is_e0428"
 description = "RUE-233: whole-array reassign `a = [7,8,9]` inside `for x in a` is E0428."
-args = ["--preview", "for_loops", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 compile_fail = true
 error_contains = ["E0428"]
 files = [{ path = "main.rue", source = """
@@ -58,7 +58,7 @@ fn main() -> i32 {
 [[case]]
 name = "mutate_different_array_is_fine"
 description = "Control: iterating `b` while mutating a DIFFERENT array `a` compiles and runs (60 + 100)."
-args = ["--preview", "for_loops", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
     let mut a: [i32; 3] = [1, 2, 3];
@@ -76,7 +76,7 @@ exit_code = 160
 [[case]]
 name = "read_only_for_loop_still_works"
 description = "Control: a read-only `for x in a` still compiles and sums correctly (1+2+3 = 6)."
-args = ["--preview", "for_loops", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
     let a: [i32; 3] = [1, 2, 3];
@@ -94,7 +94,7 @@ exit_code = 6
 [[case]]
 name = "non_copy_element_iterates"
 description = "RUE-259: a non-Copy struct element iterates by shared borrow (was wrongly E0904); sums to 4."
-args = ["--preview", "for_loops", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 struct Point { x: i32, y: i32 }
 fn main() -> i32 {
@@ -111,7 +111,7 @@ exit_code = 4
 [[case]]
 name = "non_copy_element_destructor_runs_once"
 description = "RUE-259: the array (not the loop binder) drops each element once — destructor fires exactly once per element."
-args = ["--preview", "for_loops", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 struct Res { tag: i32 }
 drop fn Res(self) { @dbg(self.tag); }
@@ -130,7 +130,7 @@ exit_code = 33
 [[case]]
 name = "non_copy_wildcard_binder_destructor_once"
 description = "RUE-259: `for _ in a` over a drop-bearing element also borrows (not discards) it — the array drops each element once, not twice."
-args = ["--preview", "for_loops", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 struct Res { tag: i32 }
 drop fn Res(self) { @dbg(self.tag); }
@@ -149,7 +149,7 @@ exit_code = 2
 [[case]]
 name = "move_element_out_is_error"
 description = "RUE-259: moving the binder out of the loop would double-drop — rejected (cannot move out of borrowed value)."
-args = ["--preview", "for_loops", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 compile_fail = true
 error_contains = ["cannot move out of borrowed value"]
 files = [{ path = "main.rue", source = """
@@ -171,7 +171,7 @@ fn main() -> i32 {
 [[case]]
 name = "mutate_via_method_in_chars_loop_is_e0428"
 description = "RUE-257: `s.clear()` inside `for c in s.chars()` mutates a shared-borrowed String (E0428), not a runtime UTF-8 trap."
-args = ["--preview", "for_loops", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 compile_fail = true
 error_contains = ["E0428"]
 files = [{ path = "main.rue", source = """
@@ -188,7 +188,7 @@ fn main() -> i32 {
 [[case]]
 name = "mutate_via_method_in_byte_loop_is_e0428"
 description = "RUE-257: `s.clear()` inside `for b in s` (byte view) is E0428, not an out-of-bounds trap."
-args = ["--preview", "for_loops", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 compile_fail = true
 error_contains = ["E0428"]
 files = [{ path = "main.rue", source = """
@@ -204,7 +204,7 @@ fn main() -> i32 {
 [[case]]
 name = "read_collection_elsewhere_in_body_is_fine"
 description = "Control: reading (not mutating) the iterated array elsewhere in the body is a shared+shared read — fine."
-args = ["--preview", "for_loops", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
     let a = [1, 2, 3];

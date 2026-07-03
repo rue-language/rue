@@ -1,6 +1,5 @@
-# Enum payloads — sum types with data (RUE-221, ADR-0038), gated behind the
-# `enum_payloads` preview feature. These cases drive the real compiler with
-# `--preview enum_payloads` and assert exact runtime behavior: tuple-variant
+# Enum payloads — sum types with data (RUE-221, ADR-0038). These cases drive the
+# real compiler and assert exact runtime behavior: tuple-variant
 # construction, tagged-union layout, match-with-payload-bindings (move mode),
 # and drop-through-the-active-variant running exactly once.
 
@@ -14,7 +13,7 @@ description = "Tuple-variant construction, match-with-bindings, and drop of the 
 [[case]]
 name = "construct_match_compute"
 description = "Construct each variant form, match to extract payloads, compute 5+7+0 = 12."
-args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 enum Shape { Circle(i32), Rect(i32, i32), Empty }
 fn area(s: Shape) -> i32 {
@@ -35,7 +34,7 @@ exit_code = 12
 [[case]]
 name = "drop_once_via_active_variant"
 description = "Payload struct with `drop fn` moved out of the enum via a match binding drops exactly once: @dbg prints 7 once, exit 7."
-args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 struct Res { id: i32 }
 drop fn Res(self) { @dbg(self.id); }
@@ -58,7 +57,7 @@ exit_code = 7
 [[case]]
 name = "active_variant_drop_glue_has"
 description = "Unmatched enum with a droppable active-variant payload drops it once at scope exit: prints -1 then 9."
-args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 struct D { v: i32 }
 drop fn D(self) { @dbg(self.v); }
@@ -76,7 +75,7 @@ exit_code = 0
 [[case]]
 name = "active_variant_drop_glue_none"
 description = "Unmatched enum whose active variant is discriminant-only drops nothing: prints only -1."
-args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 struct D { v: i32 }
 drop fn D(self) { @dbg(self.v); }
@@ -95,7 +94,7 @@ exit_code = 0
 [[case]]
 name = "match_move_no_double_drop"
 description = "A payload moved out via a match binding drops exactly once — the scope-exit glue does not double-drop it: prints 7 once."
-args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 struct D { v: i32 }
 drop fn D(self) { @dbg(self.v); }
@@ -117,7 +116,7 @@ exit_code = 7
 [[case]]
 name = "linear_enum_must_consume"
 description = "An enum with a linear-payload variant is linear: leaving a value unconsumed is E0406."
-args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 linear struct L { v: i32 }
 enum E { Has(L), None }
@@ -134,7 +133,7 @@ error_contains = ["E0406", "must be consumed"]
 [[case]]
 name = "linear_enum_consumed_ok"
 description = "Consuming a linear enum via a match that moves and consumes the payload satisfies must-consume: exit 5."
-args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 linear struct L { v: i32 }
 enum E { Has(L), None }
@@ -154,7 +153,7 @@ exit_code = 5
 [[case]]
 name = "copy_payload_enum_stays_copy"
 description = "An enum whose only payloads are Copy stays Copy — usable twice with no must-consume/move error: exit 6."
-args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 enum C { A(i32), B }
 fn val(c: C) -> i32 { match c { C::A(x) => x, C::B => 0 } }
@@ -172,7 +171,7 @@ exit_code = 6
 [[case]]
 name = "by_value_enum_return_carries_payload"
 description = "A function returning a payload enum by value carries the payload through the ABI: make() -> Some(42), match extracts 42."
-args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 enum Opt { Some(i32), None }
 fn make() -> Opt { Opt::Some(42) }
@@ -190,7 +189,7 @@ exit_code = 42
 [[case]]
 name = "enum_passthru_roundtrip"
 description = "Passing a payload enum in and returning it unchanged round-trips the payload: passthru(Circle(9)) -> 9."
-args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 enum Shape { Circle(i32), Square(i32) }
 fn passthru(s: Shape) -> Shape { s }
@@ -210,7 +209,7 @@ exit_code = 9
 [[case]]
 name = "struct_field_enum_carries_payload"
 description = "A payload enum stored in a struct field keeps its payload: w.o = Some(42), match extracts 42."
-args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 enum Opt { Some(i32), None }
 struct Wrapper { o: Opt }
@@ -229,7 +228,7 @@ exit_code = 42
 [[case]]
 name = "array_element_enum_carries_payload"
 description = "Payload enums in an array literal keep their payloads: [Some(10), Some(32)], 10 + 32 = 42."
-args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 enum Opt { Some(i32), None }
 fn main() -> i32 {
@@ -248,7 +247,7 @@ exit_code = 42
 [[case]]
 name = "wildcard_arm_drops_discarded_payload"
 description = "A bare `_` match arm over a payload enum drops the discarded active payload exactly once: prints 7."
-args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 struct D { v: i32 }
 drop fn D(self) { @dbg(self.v); }
@@ -266,7 +265,7 @@ exit_code = 0
 [[case]]
 name = "wildcard_arm_no_payload_drops_nothing"
 description = "A bare `_` arm whose active variant is discriminant-only drops nothing: no output, exit 0."
-args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 struct D { v: i32 }
 drop fn D(self) { @dbg(self.v); }
@@ -283,7 +282,7 @@ exit_code = 0
 [[case]]
 name = "wildcard_catchall_drops_caught_payload"
 description = "A `_` catch-all that catches a droppable variant drops its payload once: E::Has caught by `_`, prints 7."
-args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 struct D { v: i32 }
 drop fn D(self) { @dbg(self.v); }
@@ -299,18 +298,6 @@ fn main() -> i32 {
 stdout = "7\n"
 exit_code = 0
 
-# Without the preview flag, a payload-carrying enum is a clean preview error
-# (the driver reports it, no ICE).
-[[case]]
-name = "payload_requires_preview_flag"
-description = "Declaring a tuple variant without --preview enum_payloads is a preview-feature error, not an ICE."
-files = [{ path = "main.rue", source = """
-enum Shape { Circle(i32), Empty }
-fn main() -> i32 { 0 }
-""" }]
-compile_fail = true
-error_contains = ["requires preview feature"]
-
 # =============================================================================
 # Generic enums — Option/Result as comptime type functions (RUE-6 phase 2,
 # ADR-0038). The enum analog of the anonymous-struct comptime type functions:
@@ -322,7 +309,7 @@ error_contains = ["requires preview feature"]
 [[case]]
 name = "generic_option_construct_match"
 description = "Inline generic Option enum: Some(5) matches to 5, None matches to 0; sum is 5."
-args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
@@ -340,7 +327,7 @@ exit_code = 5
 [[case]]
 name = "generic_option_bool_instantiation"
 description = "Option(bool) is a distinct monomorphization: Some(true) matches to 7."
-args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
@@ -355,7 +342,7 @@ exit_code = 7
 [[case]]
 name = "generic_result_two_params"
 description = "Two-param Result enum: Ok(100) -> 100, Err(true) -> 42; sum is 142."
-args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 fn Result(comptime T: type, comptime E: type) -> type { enum { Ok(T), Err(E) } }
 fn main() -> i32 {
@@ -374,7 +361,7 @@ exit_code = 142
 [[case]]
 name = "generic_option_distinct_types_rejected"
 description = "Assigning an Option(bool) value to an Option(i32)-typed binding is a type error."
-args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
@@ -392,7 +379,7 @@ error_contains = ["type mismatch"]
 [[case]]
 name = "generic_enum_payload_drop_once"
 description = "Generic Option holding a struct with `drop fn`: dropping the enum runs the payload destructor once (@dbg prints 33)."
-args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 struct Noisy { code: i32 }
 drop fn Noisy(self) { @dbg(self.code); }
@@ -415,7 +402,7 @@ exit_code = 33
 [[case]]
 name = "generic_enum_linear_payload_must_consume"
 description = "A generic Result whose Err payload is a linear struct is itself linear: leaving it unconsumed is E0406."
-args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 linear struct Token { v: i32 }
 fn Result(comptime T: type, comptime E: type) -> type { enum { Ok(T), Err(E) } }

@@ -81,11 +81,11 @@ fn main() -> i32 {
 exit_code = 0
 stdout = "8\n"
 
-# Field-of-self receiver inside an inout-self method (method_receivers preview).
+# Field-of-self receiver inside an inout-self method.
 [[case]]
 name = "self_field_receiver_via_method"
 description = "self.data.push_str(..) inside an `inout self` method mutates the receiver's String field."
-args = ["--preview", "method_receivers", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 struct Buf {
     data: String,

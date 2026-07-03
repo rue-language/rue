@@ -112,10 +112,10 @@ variant carries a payload is a *sum type*.
 
 {{ rule(id="6.3:14", cat="normative") }}
 
-Tuple-variant payloads are a preview feature: an enum declaration containing a
-payload-carrying variant requires the `enum_payloads` preview feature to be
-enabled (ADR-0038). Discriminant-only enums remain available without any
-preview feature.
+A variant **MAY** carry a payload: a parenthesized, comma-separated list of one
+or more types written after the variant name (ADR-0038). A variant with no such
+list is discriminant-only, and an enum may freely mix payload-carrying and
+discriminant-only variants.
 
 {{ rule(id="6.3:15", cat="normative") }}
 

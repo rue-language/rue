@@ -25,7 +25,7 @@ use std::collections::HashMap;
 use lasso::Spur;
 use rue_error::{
     CompileError, CompileResult, CompileWarning, ErrorKind, MissingFieldsError, OptionExt,
-    PreviewFeature, WarningKind,
+    WarningKind,
 };
 use rue_rir::{InstData, InstRef, RirArgMode, RirParamMode, RirPattern};
 
@@ -1727,13 +1727,6 @@ impl<'a> Sema<'a> {
             return Ok(Vec::new());
         }
         let pattern_span = *span;
-
-        // Binding payload data requires the preview feature.
-        self.require_preview(
-            PreviewFeature::EnumPayloads,
-            "enum payload bindings in a match pattern",
-            pattern_span,
-        )?;
 
         let enum_id = if let Some(module_ref) = module {
             self.resolve_enum_through_module(*module_ref, *type_name, pattern_span)?
@@ -3789,14 +3782,6 @@ impl<'a> Sema<'a> {
             self.reject_non_runtime_array_element(value_ty, span)?;
         }
 
-        // Gate the whole form: without `--preview array_repeat`, using
-        // `[value; count]` is a "requires preview feature" error.
-        self.require_preview(
-            PreviewFeature::ArrayRepeat,
-            "array-repeat literal `[value; count]`",
-            span,
-        )?;
-
         let array_type = Self::get_resolved_type(ctx, inst_ref, span, "array-repeat literal")?;
 
         // If the value expression is ill-typed, HM collapses the array to
@@ -4939,15 +4924,6 @@ impl<'a> Sema<'a> {
         let payload_types = def.variant_payload(variant_index as usize).to_vec();
         let variant_name = def.variants[variant_index as usize].clone();
         let enum_name = def.name.clone();
-
-        // Constructing a payload-carrying variant requires the preview feature.
-        if !payload_types.is_empty() {
-            self.require_preview(
-                PreviewFeature::EnumPayloads,
-                "enum payloads (variants that carry data)",
-                span,
-            )?;
-        }
 
         // Visibility check, mirroring the bare-path `EnumVariant` handler
         // (E0460, privacy is uniform across item kinds). A comptime-bound enum

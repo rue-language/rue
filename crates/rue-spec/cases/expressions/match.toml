@@ -937,7 +937,6 @@ error_contains = "parentheses"
 [[case]]
 name = "match_payload_binding_extracts"
 spec = ["4.7:30"]
-preview = "enum_payloads"
 source = """
 enum Shape { Circle(i32), Rect(i32, i32), Empty }
 fn main() -> i32 {
@@ -955,7 +954,6 @@ exit_code = 7
 [[case]]
 name = "match_payload_binding_move_mode"
 spec = ["4.7:31"]
-preview = "enum_payloads"
 source = """
 enum Wrap { One(i32) }
 fn main() -> i32 {
@@ -971,7 +969,6 @@ exit_code = 20
 [[case]]
 name = "match_payload_binding_wrong_arity"
 spec = ["4.7:30"]
-preview = "enum_payloads"
 source = """
 enum Shape { Rect(i32, i32) }
 fn main() -> i32 {
@@ -988,7 +985,6 @@ compile_fail = true
 [[case]]
 name = "match_payload_binding_duplicate_name"
 spec = ["4.7:30"]
-preview = "enum_payloads"
 source = """
 enum Shape { Rect(i32, i32) }
 fn main() -> i32 {

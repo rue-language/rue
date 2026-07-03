@@ -362,13 +362,12 @@ fn main() -> i32 {
 exit_code = 42
 
 # =============================================================================
-# Receiver Modes: borrow self / inout self (preview: method_receivers, RUE-15)
+# Receiver Modes: borrow self / inout self (RUE-15)
 # =============================================================================
 
 [[case]]
 name = "borrow_self_getter_repeatable"
 spec = ["6.4:24", "6.4:25", "6.4:29"]
-preview = "method_receivers"
 description = "borrow self does not consume the receiver; callable repeatedly"
 source = """
 struct Counter {
@@ -389,7 +388,6 @@ exit_code = 42
 [[case]]
 name = "inout_self_mutates_in_place"
 spec = ["6.4:24", "6.4:25", "6.4:29"]
-preview = "method_receivers"
 description = "inout self mutates the receiver in place across multiple calls"
 source = """
 struct Counter {
@@ -418,7 +416,6 @@ exit_code = 23
 [[case]]
 name = "inout_self_with_arg_and_field_writes"
 spec = ["6.4:24", "6.4:29"]
-preview = "method_receivers"
 description = "inout self method with an extra parameter writing several fields"
 source = """
 struct Stack {
@@ -454,7 +451,6 @@ exit_code = 23
 [[case]]
 name = "arg_reads_receiver_allowed"
 spec = ["6.4:28"]
-preview = "method_receivers"
 description = "an argument that only reads self is allowed alongside inout self"
 source = """
 struct Stack {
@@ -480,27 +476,8 @@ fn main() -> i32 {
 exit_code = 3
 
 [[case]]
-name = "receiver_mode_requires_preview"
-spec = ["6.4:24"]
-compile_fail = true
-error_contains = "requires preview feature"
-description = "borrow/inout receivers are gated behind --preview method_receivers"
-source = """
-struct P {
-    n: i32,
-    fn get(borrow self) -> i32 { self.n }
-}
-
-fn main() -> i32 {
-    let p = P { n: 0 };
-    p.get()
-}
-"""
-
-[[case]]
 name = "inout_self_requires_mut_receiver"
 spec = ["6.4:26"]
-preview = "method_receivers"
 compile_fail = true
 error_contains = "immutable"
 description = "inout self needs a mutable receiver binding"
@@ -520,7 +497,6 @@ fn main() -> i32 {
 [[case]]
 name = "receiver_overlap_rejected"
 spec = ["6.4:28"]
-preview = "method_receivers"
 compile_fail = true
 error_contains = "inout"
 description = "passing the receiver's own place as an inout argument is rejected"
@@ -542,7 +518,6 @@ fn main() -> i32 {
 [[case]]
 name = "borrow_self_non_place_receiver_rejected"
 spec = ["6.4:27"]
-preview = "method_receivers"
 compile_fail = true
 error_contains = "borrow argument must be"
 description = "a borrow/inout receiver must be a place, not a temporary"

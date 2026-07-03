@@ -129,12 +129,12 @@ fn main() -> i32 {
 compile_fail = true
 error_contains = ["E0205", "use of moved value"]
 
-# (d) @drop of a payload-carrying enum (enum_payloads preview): discharges the
-# value, runs, and drops exactly once. Enum payloads are trivially droppable
-# today, so this pins compile+run (7) rather than payload-glue side effects.
+# (d) @drop of a payload-carrying enum: discharges the
+# value, runs, and drops exactly once. This enum's payload is trivially
+# droppable (i32), so this pins compile+run (7) rather than payload-glue side effects.
 [[case]]
 name = "drop_payload_enum"
-description = "@drop of a payload-carrying enum compiles, consumes the value, and runs (preview enum_payloads)."
+description = "@drop of a payload-carrying enum compiles, consumes the value, and runs."
 files = [{ path = "main.rue", source = """
 enum Shape { Circle(i32), Rect(i32, i32), Empty }
 
@@ -145,7 +145,7 @@ fn main() -> i32 {
     0
 }
 """ }]
-args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 stdout = "7\n"
 exit_code = 0
 

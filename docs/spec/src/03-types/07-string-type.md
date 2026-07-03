@@ -278,9 +278,8 @@ fn main() -> i32 {
 
 The character view `s.chars()` yields the Unicode scalar values of a `String`,
 decoding its bytes as UTF-8. It is used as the iterable of a `for` loop (see
-[Loop Expressions](@/04-expressions/08-loop-expressions.md); a preview feature,
-`--preview for_loops`), which binds each scalar value as a `u32` in ascending
-byte order.
+[Loop Expressions](@/04-expressions/08-loop-expressions.md)), which binds each
+scalar value as a `u32` in ascending byte order.
 
 {{ rule(id="3.7:32", cat="dynamic-semantics") }}
 

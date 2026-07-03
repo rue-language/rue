@@ -167,6 +167,19 @@ When all tests for a preview feature pass:
 
 The feature is now part of stable Rue.
 
+### Stabilized features
+
+The following preview features completed this process and are now stable (their
+`--preview` gates and `PreviewFeature` variants were removed):
+
+- `array_repeat` — the `[value; count]` array-repeat literal (RUE-235), gated
+  under this ADR; stabilized 2026-07-03.
+- `for_loops` and `method_receivers` — see ADR-0037; stabilized 2026-07-03.
+- `enum_payloads` — see ADR-0038; stabilized 2026-07-03.
+
+`test_infra` remains permanently unstable (it exists only to exercise the gating
+mechanism), so the `PreviewFeature` enum is not empty.
+
 ## Implementation Phases
 
 - [x] **Phase 1: Infrastructure** - Add PreviewFeature enum, CompileOptions, CLI flag, error kind

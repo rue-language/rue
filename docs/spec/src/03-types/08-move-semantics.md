@@ -21,8 +21,13 @@ The following types are Copy types:
 - All integer types (`i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`)
 - The boolean type (`bool`)
 - The unit type (`()`)
-- Enum types (all variants of an enum)
+- Discriminant-only enum types (every variant is payload-free, C-like)
 - Array types `[T; N]` where `T` is a Copy type
+
+A payload-carrying enum is **not** unconditionally Copy: its multiplicity is the
+join of its variants' payload multiplicities over Copy ⊑ Affine ⊑ Linear
+(6.3:19). Such an enum is Copy only when every payload is itself Copy; a variant
+carrying a move (affine or linear) payload makes the whole enum a move type.
 
 {{ rule(id="3.8:3", cat="normative") }}
 
@@ -92,7 +97,7 @@ struct Outer { inner: Inner }  // ERROR: field 'inner' has non-Copy type 'Inner'
 
 {{ rule(id="3.8:20", cat="normative") }}
 
-A `@copy` struct **MAY** contain fields of primitive Copy types (integers, booleans, unit), enum types, arrays of Copy types, or other `@copy` struct types.
+A `@copy` struct **MAY** contain fields of primitive Copy types (integers, booleans, unit), discriminant-only enum types, arrays of Copy types, or other `@copy` struct types. A field whose type is a payload-carrying enum is admissible only when that enum is itself Copy under the join of 6.3:19 — that is, only when every one of its payloads is Copy; a `@copy` struct field must itself be a Copy type (3.8:18), so a move-typed enum field is rejected.
 
 {{ rule(id="3.8:21", cat="example") }}
 

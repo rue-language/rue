@@ -213,10 +213,6 @@ Calling a method with associated function syntax (Type::method()) is a compile-t
 
 ## Receiver Modes
 
-> Note: `borrow self` and `inout self` receivers are a preview feature
-> (`--preview method_receivers`, ADR-0037 / RUE-15). Bare `self` (by-value) is
-> stable.
-
 {{ rule(id="6.4:24", cat="normative") }}
 
 A receiver **MAY** be declared `borrow self` or `inout self`, mirroring the

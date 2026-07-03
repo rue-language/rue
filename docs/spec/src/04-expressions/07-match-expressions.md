@@ -228,8 +228,7 @@ fn absurd(n: Never) -> i32 {
 A tuple-variant pattern binds the variant's payload into fresh names:
 `EnumName::Variant(a, b)` matches a value of that variant and binds `a`, `b`
 to its payload fields in order. The number of bindings **MUST** equal the
-variant's payload arity. Payload bindings require the `enum_payloads` preview
-feature (see spec 6.3).
+variant's payload arity (see spec 6.3).
 
 {{ rule(id="4.7:31", cat="normative") }}
 

@@ -3,10 +3,10 @@ id: 0038
 title: "Error handling: sum types, Result/Option, and must-check via linearity"
 status: accepted
 tags: [error-handling, enums, sum-types, linearity, pattern-matching]
-feature-flag: enum_payloads
+feature-flag:
 created: 2026-07-02
 accepted: 2026-07-02
-implemented:
+implemented: 2026-07-03
 spec-sections: ["3.5", "4.7", "6.3"]
 superseded-by:
 ---
@@ -20,6 +20,13 @@ payloads (a prerequisite feature, tracked as a phase of RUE-6) and makes RUE-187
 (intentional-destroy escape hatch) a required companion. Builds on ADR-0037
 (access model), ADR-0013 (borrowing modes), and the multiplicity lattice
 (docs/formal §3), and reuses ADR-0020 (comptime type functions).
+
+**Stabilized (2026-07-03):** the `enum_payloads` preview feature — tuple-variant
+payloads, tagged-union layout, and match-with-payload-bindings — is complete and
+was stabilized (its `--preview enum_payloads` gate removed). Payload-carrying
+enums take their multiplicity from the join of their variants' payloads
+(spec 6.3:19/6.3:20), and the pre-payload blanket ownership rules were narrowed
+to discriminant-only enums (RUE-294).
 
 ## Summary
 

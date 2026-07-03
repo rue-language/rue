@@ -185,8 +185,7 @@ fn main() -> i32 {
 {{ rule(id="4.8:23", cat="normative") }}
 
 A `for` loop iterates over a built-in iterable, binding each element in turn and
-executing its body once per element. `for` is a preview feature (enabled with
-`--preview for_loops`; see ADR-0037).
+executing its body once per element (see ADR-0037).
 
 {{ rule(id="4.8:24", cat="syntax") }}
 

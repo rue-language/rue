@@ -1676,11 +1676,6 @@ impl<'a> Sema<'a> {
             .find(|(name, _, mode, _)| *name == self_sym && *mode != RirParamMode::Normal)
         {
             debug_assert!(matches!(mode, RirParamMode::Inout | RirParamMode::Borrow));
-            self.require_preview(
-                PreviewFeature::MethodReceivers,
-                "borrow/inout method receivers",
-                self.rir.get(body).span,
-            )?;
         }
 
         let mut param_vec: Vec<ParamInfo> = Vec::new();
@@ -3760,8 +3755,6 @@ impl<'a> Sema<'a> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        self.require_preview(PreviewFeature::ForLoops, "the `for` loop", span)?;
-
         let coll = args[0].value;
         let coll_result = self.analyze_borrowed_collection(air, coll, ctx)?;
         let coll_type = coll_result.ty;

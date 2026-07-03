@@ -121,6 +121,6 @@ pub fn Vec(comptime T: type) -> type {
 }
 """ },
 ]
-args = ["main.rue", "vec.rue", "--preview", "method_receivers", "-o", "prog"]
+args = ["main.rue", "vec.rue", "-o", "prog"]
 stdout = "3\n20\n99\n30\n2\n0\n119\n"
 exit_code = 119
