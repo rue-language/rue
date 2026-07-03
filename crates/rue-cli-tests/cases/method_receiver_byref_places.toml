@@ -1,0 +1,153 @@
+# `inout self` / `borrow self` method calls must work in EVERY receiver
+# position, not just a bare local binding (RUE-254).
+#
+# An `inout self` receiver accesses the receiver by exclusive mutable ref and a
+# `borrow self` receiver by immutable ref (spec 6.4:25); such a call does NOT
+# consume the receiver (spec 6.4:29). Sema used to analyze the receiver
+# expression as a by-VALUE move, which hard-rejected the read of any non-local
+# place: an inout/borrow parameter (E0437/E0429), an indexed element
+# (E0904, const or dynamic index), a struct-field array element (E0904), or a
+# field of `self` (E0437) — a whole reject-valid class that blocked real
+# method code. The fix routes a by-ref receiver through the same by-ref-access
+# logic the inout/borrow ARGUMENT path uses (peek the receiver type, then
+# analyze the receiver as a borrow rather than a move).
+#
+# Each facet asserts the mutation actually happened (exit code reflects the
+# post-call field value), not merely that it compiled. The final two cases are
+# no-regression controls: a by-value (`sink`) `self` method STILL moves.
+
+[section]
+id = "cli.method_receiver_byref_places"
+name = "by-ref method receivers in all place positions"
+description = "inout/borrow self methods work through params, array elements (const+dynamic index), struct-field arrays, and fields of self; by-value self still moves (RUE-254)."
+
+# Facet 1: by-ref parameter receiver (inout).
+[[case]]
+name = "inout_self_through_inout_param"
+description = "c.bump() (inout self) where c is an inout parameter mutates in place; two bumps -> 2."
+args = ["--preview", "method_receivers", "main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+struct Counter { n: i32, fn bump(inout self) { self.n = self.n + 1; } }
+fn bump_twice(inout c: Counter) { c.bump(); c.bump(); }
+fn main() -> i32 {
+    let mut c = Counter { n: 0 };
+    bump_twice(inout c);
+    c.n
+}
+""" }]
+exit_code = 2
+
+# Facet 1: by-ref parameter receiver (borrow).
+[[case]]
+name = "borrow_self_through_borrow_param"
+description = "c.get() (borrow self) where c is a borrow parameter reads without moving; returns 7."
+args = ["--preview", "method_receivers", "main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+struct Counter { n: i32, fn get(borrow self) -> i32 { self.n } }
+fn read(borrow c: Counter) -> i32 { c.get() }
+fn main() -> i32 {
+    let c = Counter { n: 7 };
+    read(borrow c)
+}
+""" }]
+exit_code = 7
+
+# Facet 2: dynamically-indexed array element.
+[[case]]
+name = "inout_self_on_dynamic_index_element"
+description = "arr[i].bump() with a runtime index mutates element i in place; arr[0] -> 1."
+args = ["--preview", "method_receivers", "main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+struct Counter { n: i32, fn bump(inout self) { self.n = self.n + 1; } }
+fn main() -> i32 {
+    let mut arr = [Counter { n: 0 }, Counter { n: 10 }];
+    let i = 0;
+    arr[i].bump();
+    arr[0].n
+}
+""" }]
+exit_code = 1
+
+# Facet 2 (variant): constant-index array element.
+[[case]]
+name = "inout_self_on_const_index_element"
+description = "arr[1].bump() (const index) mutates that element; the sibling element is untouched."
+args = ["--preview", "method_receivers", "main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+struct Counter { n: i32, fn bump(inout self) { self.n = self.n + 1; } }
+fn main() -> i32 {
+    let mut arr = [Counter { n: 0 }, Counter { n: 10 }];
+    arr[1].bump();
+    arr[1].n
+}
+""" }]
+exit_code = 11
+
+# Facet 3: struct-field array element (Field + Index projections).
+[[case]]
+name = "inout_self_on_struct_field_array_element"
+description = "w.items[0].bump() through a nested field+index place mutates the element; w.items[0].n -> 1."
+args = ["--preview", "method_receivers", "main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+struct Counter { n: i32, fn bump(inout self) { self.n = self.n + 1; } }
+struct Wrapper { items: [Counter; 2] }
+fn main() -> i32 {
+    let mut w = Wrapper { items: [Counter { n: 0 }, Counter { n: 5 }] };
+    w.items[0].bump();
+    w.items[0].n
+}
+""" }]
+exit_code = 1
+
+# Facet 4: field of self / of an inout param.
+[[case]]
+name = "inout_self_on_field_of_self"
+description = "self.inner.bump() inside a method (field-of-inout-param receiver) mutates; o.inner.v -> 1."
+args = ["--preview", "method_receivers", "main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+struct Inner { v: i32, fn bump(inout self) { self.v = self.v + 1; } }
+struct Outer { inner: Inner, fn go(inout self) { self.inner.bump(); } }
+fn main() -> i32 {
+    let mut o = Outer { inner: Inner { v: 0 } };
+    o.go();
+    o.inner.v
+}
+""" }]
+exit_code = 1
+
+# Control: a by-value (`sink`) self method STILL moves its receiver, so a
+# double call is a use-after-move — the fix must not over-permissively treat
+# by-value receivers as borrows.
+[[case]]
+name = "by_value_self_still_moves_double_call"
+description = "Control: bare `self` (by-value) consumes the receiver; calling it twice is E0205."
+args = ["--preview", "method_receivers", "main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+struct Counter { n: i32, fn consume(self) -> i32 { self.n } }
+fn main() -> i32 {
+    let c = Counter { n: 3 };
+    let a = c.consume();
+    let b = c.consume();
+    a + b
+}
+""" }]
+compile_fail = true
+error_contains = ["E0205", "use of moved value 'c'"]
+
+# Control: `borrow self` on a value already moved out still errors — the
+# borrow-undo must not resurrect a genuinely moved receiver.
+[[case]]
+name = "borrow_self_on_moved_value_still_errors"
+description = "Control: calling a borrow-self method after the value was moved into a by-value call is E0205."
+args = ["--preview", "method_receivers", "main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+struct Counter { n: i32, fn get(borrow self) -> i32 { self.n } }
+fn sink(c: Counter) -> i32 { c.n }
+fn main() -> i32 {
+    let c = Counter { n: 5 };
+    let x = sink(c);
+    x + c.get()
+}
+""" }]
+compile_fail = true
+error_contains = ["E0205", "use of moved value 'c'"]

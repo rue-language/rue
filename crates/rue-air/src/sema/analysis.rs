@@ -3104,8 +3104,33 @@ impl<'a> Sema<'a> {
         // undo the move the receiver analysis records (see ReceiverInfo).
         let receiver_move_state_before = receiver_var.and_then(|v| ctx.moved_vars.get(&v).cloned());
 
-        // Analyze the receiver expression
-        let receiver_result = self.analyze_inst(air, receiver, ctx)?;
+        // Decide up front whether this receiver is accessed by reference
+        // (`inout self` / `borrow self`), so it is analyzed as a BORROW — not
+        // a move — in every place position (a field, an array element by
+        // const or dynamic index, a field of `self`, or through an
+        // inout/borrow parameter), mirroring the by-ref *argument* path
+        // (RUE-254, spec 6.4:25/6.4:29). Method resolution needs the receiver
+        // type, which is peeked WITHOUT emitting AIR or recording a move: a
+        // move-based analysis would hard-reject the read of any non-local
+        // place (E0437/E0429/E0904) before the by-ref intent is known. Only
+        // user-struct methods are considered here; builtin (String) and
+        // module receivers keep their existing post-analysis handling.
+        let receiver_byref_root = receiver_var
+            .filter(|_| !is_builtin_mutation_method)
+            .and_then(|root| {
+                let ty = self.peek_place_type(receiver, ctx)?;
+                let struct_id = ty.as_struct()?;
+                let info = self.methods.get(&(struct_id, method))?;
+                matches!(info.self_mode, RirParamMode::Inout | RirParamMode::Borrow).then_some(root)
+            });
+
+        // Analyze the receiver expression. When it is a by-ref receiver,
+        // `byref_arg_root` makes the var-ref / field / index reads borrow the
+        // place instead of moving out of it (restored afterwards).
+        let prev_byref_root = std::mem::replace(&mut ctx.byref_arg_root, receiver_byref_root);
+        let receiver_result = self.analyze_inst(air, receiver, ctx);
+        ctx.byref_arg_root = prev_byref_root;
+        let receiver_result = receiver_result?;
         let receiver_type = receiver_result.ty;
 
         // Handle module member access: module.function() becomes a direct function call
@@ -3247,11 +3272,13 @@ impl<'a> Sema<'a> {
             excl_args.extend(args.iter().cloned());
             self.check_exclusive_access(&excl_args, span)?;
 
-            // By-ref receivers are borrows, not moves: undo the move the
-            // receiver analysis recorded (restoring the pre-receiver snapshot,
-            // so sibling moves stay recorded) and cancel its move marker, so
-            // drop elaboration does not treat this borrow as a move. Mirrors
-            // the builtin ByRef/ByMutRef receiver handling.
+            // By-ref receivers are borrows, not moves. The receiver was
+            // already analyzed under `byref_arg_root` above (RUE-254), so no
+            // move was recorded and no marker emitted; this restore of the
+            // pre-receiver snapshot and marker cancellation are defensive
+            // no-ops for a well-formed place receiver (and still cover the
+            // now-vestigial path where the receiver root differs from the
+            // byref root). Mirrors the builtin ByRef/ByMutRef handling.
             match receiver_move_state_before.clone() {
                 Some(state) => {
                     ctx.moved_vars.insert(receiver_root, state);
@@ -5156,6 +5183,47 @@ impl<'a> Sema<'a> {
             }
         }
         None
+    }
+
+    /// Resolve the TYPE of a place expression without emitting any AIR or
+    /// recording a move (RUE-254).
+    ///
+    /// Used to learn a method receiver's type — and thus, via method
+    /// resolution, whether the method takes `self` by reference (`inout
+    /// self` / `borrow self`) — *before* the receiver expression is analyzed.
+    /// A by-ref receiver must be analyzed as a borrow rather than a move
+    /// (spec 6.4:25, 6.4:29), and that decision needs the type; a move-based
+    /// analysis would hard-reject the read of any non-local place (an inout
+    /// parameter, an indexed element, a field of `self`, ...) before the
+    /// by-ref intent could be recovered. The index expression of an
+    /// `IndexGet` is intentionally NOT visited — the element type does not
+    /// depend on the index value, and visiting it here would double-analyze
+    /// its side effects. Returns `None` for anything that is not a statically
+    /// typed place chain rooted at a variable (call results, literals, ...).
+    fn peek_place_type(&self, inst_ref: InstRef, ctx: &AnalysisContext) -> Option<Type> {
+        match &self.rir.get(inst_ref).data {
+            InstData::VarRef { name } | InstData::ParamRef { name, .. } => {
+                if let Some(local) = ctx.locals.get(name) {
+                    return Some(local.ty);
+                }
+                ctx.params.iter().find(|p| p.name == *name).map(|p| p.ty)
+            }
+            InstData::FieldGet { base, field } => {
+                let base_ty = self.peek_place_type(*base, ctx)?;
+                let struct_id = base_ty.as_struct()?;
+                let struct_def = self.type_pool.struct_def(struct_id);
+                let field_name_str = self.interner.resolve(field);
+                let (_field_index, struct_field) = struct_def.find_field(field_name_str)?;
+                Some(struct_field.ty)
+            }
+            InstData::IndexGet { base, .. } => {
+                let base_ty = self.peek_place_type(*base, ctx)?;
+                let array_id = base_ty.as_array()?;
+                let (elem_type, _len) = self.type_pool.array_def(array_id);
+                Some(elem_type)
+            }
+            _ => None,
+        }
     }
 
     fn get_string_receiver_storage(
