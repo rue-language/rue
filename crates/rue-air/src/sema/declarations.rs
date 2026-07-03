@@ -1016,8 +1016,19 @@ impl<'a> Sema<'a> {
             ));
         }
 
+        // The declared integer type (when the annotation names one) becomes
+        // the type context for arithmetic in the initializer, so intermediate
+        // results are checked at the operand type just like a `comptime { }`
+        // block (RUE-230). A non-integer or unresolvable annotation yields
+        // `None`; the annotation error, if any, resurfaces in
+        // `const_type_for_value` where it did before.
+        let declared_ty = p
+            .ty_sym
+            .and_then(|sym| self.resolve_type(sym, p.span).ok())
+            .filter(Type::is_integer);
+
         st.in_progress.push(key);
-        let outcome = self.eval_const_initializer(p.init, file_id, st);
+        let outcome = self.eval_const_initializer(p.init, file_id, st, declared_ty);
         st.in_progress.pop();
         let outcome = outcome?;
         st.done.insert(key);
@@ -1151,6 +1162,7 @@ impl<'a> Sema<'a> {
         init: InstRef,
         file_id: FileId,
         st: &mut ConstCollector,
+        declared_ty: Option<Type>,
     ) -> CompileResult<ConstInit> {
         let init_inst = self.rir.get(init);
         let span = init_inst.span;
@@ -1236,7 +1248,7 @@ impl<'a> Sema<'a> {
                 }
                 // Not a constant: let the comptime engine decide (it rejects
                 // unknown names and type names as non-evaluable).
-                self.eval_const_value_expr(init, file_id, st, span)
+                self.eval_const_value_expr(init, file_id, st, span, declared_ty)
             }
 
             // Member access: `base.member` where `base` is a module —
@@ -1244,7 +1256,7 @@ impl<'a> Sema<'a> {
             // `const X: i32 = m.ANSWER;` (a member value constant).
             InstData::FieldGet { base, field } => {
                 let (base, field) = (*base, *field);
-                match self.eval_const_initializer(base, file_id, st)? {
+                match self.eval_const_initializer(base, file_id, st, None)? {
                     ConstInit::Module(module_ty) => {
                         let module_id = module_ty
                             .as_module()
@@ -1271,31 +1283,43 @@ impl<'a> Sema<'a> {
 
             // Everything else: literals, arithmetic, comptime blocks, ... —
             // evaluated by the comptime engine.
-            _ => self.eval_const_value_expr(init, file_id, st, span),
+            _ => self.eval_const_value_expr(init, file_id, st, span, declared_ty),
         }
     }
 
     /// Evaluate a (non-module) constant initializer through the comptime
     /// engine (`sema::comptime_eval`).
     ///
-    /// The engine runs without HM type information here (a file-level const
-    /// has no enclosing function), so arithmetic uses the checked-`i64`
-    /// fallback semantics; the result is range-checked against the declared
-    /// type in [`Self::const_type_for_value`] (which also rejects a missing
-    /// annotation, E0475).
+    /// A file-level const has no enclosing function, so there is no HM
+    /// `resolved_types` map. Instead we infer one up front from the declared
+    /// integer type (`infer_const_init_types`) and hand it to the engine, so
+    /// arithmetic is checked at the operand type — matching the `comptime { }`
+    /// block path (operand-type mismatch → E0206, operand/intermediate
+    /// overflow → E1200, RUE-230). The final value is still range-checked
+    /// against the declared type in [`Self::const_type_for_value`] (which also
+    /// rejects a missing annotation, E0475).
     fn eval_const_value_expr(
         &mut self,
         init: InstRef,
         file_id: FileId,
         st: &mut ConstCollector,
         span: Span,
+        declared_ty: Option<Type>,
     ) -> CompileResult<ConstInit> {
         // Pre-collect referenced constants: the engine's file-level-constant
         // lookup only consults the finished `constants` table, so anything
-        // this initializer names must be collected first.
+        // this initializer names must be collected first. (Also required
+        // before type inference so referenced constants' types are known.)
         self.ensure_const_init_deps_collected(init, file_id, st)?;
 
-        let mut env = super::comptime_eval::ComptimeEnv::new();
+        // Infer operand types for the initializer expression so the engine
+        // checks arithmetic at the operand type instead of the raw-i64
+        // fallback (RUE-230). Reports E0206 on a mismatched-operand-type
+        // binary op before evaluation, mirroring the runtime path.
+        let mut resolved_types: HashMap<InstRef, Type> = HashMap::new();
+        self.infer_const_init_types(init, declared_ty, &mut resolved_types)?;
+
+        let mut env = super::comptime_eval::ComptimeEnv::for_const_init(&resolved_types);
         match self.eval_const_expr(init, &mut env)? {
             // Type values (e.g. `const T = i32;`) are not supported as
             // constants: nothing can materialize them at a use site yet.
@@ -1313,6 +1337,173 @@ impl<'a> Sema<'a> {
                 span,
             )),
         }
+    }
+
+    /// Infer integer operand types for a const initializer's expression tree,
+    /// recording each integer-typed node in `map`, so the comptime engine can
+    /// apply the same operand-type checks a `comptime { }` block gets from HM
+    /// inference (RUE-230). Two effects:
+    ///
+    /// - **E1200 (operand/intermediate overflow):** every arithmetic node is
+    ///   typed, so `finish_arith` range-checks each intermediate at the
+    ///   operand type (not just the final value against the declared type).
+    /// - **E0206 (mixed operand types):** a binary op whose operands carry
+    ///   different concrete integer types is rejected here, before evaluation,
+    ///   mirroring the runtime diagnostic (`expected <lhs>, found <rhs>`, span
+    ///   on the rhs operand).
+    ///
+    /// `expected` is the type context flowing down from the declared const
+    /// type: integer literals adopt it, while references to other constants
+    /// carry their own declared type. Returns the node's integer type when
+    /// known (`None` for non-integer or unconstrained nodes).
+    fn infer_const_init_types(
+        &mut self,
+        expr: InstRef,
+        expected: Option<Type>,
+        map: &mut HashMap<InstRef, Type>,
+    ) -> CompileResult<Option<Type>> {
+        let expected = expected.filter(Type::is_integer);
+        let ty = match &self.rir.get(expr).data {
+            // A literal adopts the type context (the declared const type, or a
+            // surrounding operand's type propagated down).
+            InstData::IntConst(_) => expected,
+
+            // A reference to another constant carries that constant's declared
+            // type, regardless of the surrounding context.
+            InstData::VarRef { name } => self
+                .constants
+                .get(name)
+                .map(|info| info.ty)
+                .filter(|t| t.is_integer()),
+
+            // Unary ops preserve the operand's (integer) type. A bare integer
+            // literal operand is left untyped, though: typing `-5` as `u8`
+            // would make the engine reject it as `E0801 cannot negate u8`
+            // before the value/annotation range check runs, whereas a negative
+            // literal const is diagnosed as out-of-range against its declared
+            // type in `const_type_for_value` (spec 6.5:5). Only the facets that
+            // need operand types — binary arithmetic — are threaded here.
+            InstData::Neg { operand } | InstData::BitNot { operand } => {
+                let operand = *operand;
+                if matches!(self.rir.get(operand).data, InstData::IntConst(_)) {
+                    None
+                } else {
+                    self.infer_const_init_types(operand, expected, map)?
+                }
+            }
+
+            // Logical NOT is a bool; still walk the operand for nested checks.
+            InstData::Not { operand } => {
+                let operand = *operand;
+                self.infer_const_init_types(operand, None, map)?;
+                None
+            }
+
+            // Arithmetic/bitwise binary ops: operands must share a type. The
+            // result type is that shared type (so `finish_arith` checks at the
+            // operand width). A mismatch of two known concrete types is E0206.
+            InstData::Add { lhs, rhs }
+            | InstData::Sub { lhs, rhs }
+            | InstData::Mul { lhs, rhs }
+            | InstData::Div { lhs, rhs }
+            | InstData::Mod { lhs, rhs }
+            | InstData::BitAnd { lhs, rhs }
+            | InstData::BitOr { lhs, rhs }
+            | InstData::BitXor { lhs, rhs } => {
+                let (lhs, rhs) = (*lhs, *rhs);
+                let lt = self.infer_const_init_types(lhs, expected, map)?;
+                let rt = self.infer_const_init_types(rhs, expected, map)?;
+                if let (Some(l), Some(r)) = (lt, rt) {
+                    if l != r {
+                        return Err(CompileError::new(
+                            ErrorKind::TypeMismatch {
+                                expected: l.safe_name_with_pool(Some(&self.type_pool)),
+                                found: r.safe_name_with_pool(Some(&self.type_pool)),
+                            },
+                            self.rir.get(rhs).span,
+                        ));
+                    }
+                }
+                lt.or(rt).or(expected)
+            }
+
+            // Shifts: the result follows the lhs; the shift amount is an
+            // independent operand (spec 4.3a:10).
+            InstData::Shl { lhs, rhs } | InstData::Shr { lhs, rhs } => {
+                let (lhs, rhs) = (*lhs, *rhs);
+                let lt = self.infer_const_init_types(lhs, expected, map)?;
+                self.infer_const_init_types(rhs, None, map)?;
+                lt
+            }
+
+            // Comparisons/logical: bool result. Operands anchor each other so
+            // a bare literal compared against a typed const is checked at that
+            // const's type; the node itself is not integer-typed.
+            InstData::Eq { lhs, rhs }
+            | InstData::Ne { lhs, rhs }
+            | InstData::Lt { lhs, rhs }
+            | InstData::Gt { lhs, rhs }
+            | InstData::Le { lhs, rhs }
+            | InstData::Ge { lhs, rhs } => {
+                let (lhs, rhs) = (*lhs, *rhs);
+                let lt = self.infer_const_init_types(lhs, None, map)?;
+                let rt = self.infer_const_init_types(rhs, None, map)?;
+                if lt.is_some() && rt.is_none() {
+                    self.infer_const_init_types(rhs, lt, map)?;
+                } else if rt.is_some() && lt.is_none() {
+                    self.infer_const_init_types(lhs, rt, map)?;
+                }
+                None
+            }
+
+            InstData::And { lhs, rhs } | InstData::Or { lhs, rhs } => {
+                let (lhs, rhs) = (*lhs, *rhs);
+                self.infer_const_init_types(lhs, None, map)?;
+                self.infer_const_init_types(rhs, None, map)?;
+                None
+            }
+
+            // `comptime { expr }` forwards the context to its inner expression.
+            InstData::Comptime { expr: inner } => {
+                let inner = *inner;
+                self.infer_const_init_types(inner, expected, map)?
+            }
+
+            // A block's tail expression carries the context; `let` initializers
+            // are typed by their own value (no annotation context available
+            // here), and non-tail statements carry no expected type.
+            InstData::Block { extra_start, len } => {
+                let stmt_refs: Vec<InstRef> = self
+                    .rir
+                    .get_extra(*extra_start, *len)
+                    .iter()
+                    .map(|&raw| InstRef::from_raw(raw))
+                    .collect();
+                let n = stmt_refs.len();
+                let mut tail_ty = None;
+                for (i, &stmt_ref) in stmt_refs.iter().enumerate() {
+                    let is_tail = i + 1 == n;
+                    let stmt_expected = if is_tail { expected } else { None };
+                    let t = if let InstData::Alloc { init, .. } = &self.rir.get(stmt_ref).data {
+                        let init = *init;
+                        self.infer_const_init_types(init, None, map)?;
+                        None
+                    } else {
+                        self.infer_const_init_types(stmt_ref, stmt_expected, map)?
+                    };
+                    if is_tail {
+                        tail_ty = t;
+                    }
+                }
+                tail_ty
+            }
+
+            _ => None,
+        };
+        if let Some(t) = ty {
+            map.insert(expr, t);
+        }
+        Ok(ty)
     }
 
     /// Walk a constant initializer expression and collect (on demand) every
