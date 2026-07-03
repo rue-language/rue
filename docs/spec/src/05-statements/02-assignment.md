@@ -13,10 +13,16 @@ An assignment statement assigns a new value to a mutable variable.
 {{ rule(id="5.2:2", cat="normative") }}
 
 ```ebnf
-assign_stmt = IDENT "=" expression ";"
-            | IDENT "[" expression "]" "=" expression ";"
-            | expression "." IDENT "=" expression ";" ;
+assign_stmt   = assign_target "=" expression ";" ;
+assign_target = IDENT { "." IDENT | "[" expression "]" }
+              | "self" ( "." IDENT | "[" expression "]" ) { "." IDENT | "[" expression "]" } ;
 ```
+
+The assignment target is a *place*: a variable (or, inside a method, `self`)
+followed by any number of field (`.f`) and index (`[e]`) projections, freely
+mixed. All of `x`, `p.f`, `arr[i]`, `arr[i].f`, `p.arr[i]`, `a.b.c`, and
+`o.items[i].arr[j]` are valid targets. (Appendix A's `place_expr` is the
+normative statement of this production; see that appendix.)
 
 ## Variable Assignment
 

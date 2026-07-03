@@ -299,3 +299,96 @@ pub fn touch() -> i32 { SECRET }
 """ }
 compile_fail = true
 error_contains = "private"
+
+# =============================================================================
+# Types, Enum Variants, and Associated Functions Through a Module (RUE-293)
+# =============================================================================
+# A module's types, enum variants, and associated functions are referenced
+# through a module binding in expression/pattern positions (10.4:15); a
+# qualified path is rejected in a type position (10.4:16); privacy is uniform
+# (10.4:18).
+
+[[case]]
+name = "qualified_type_variant_and_assoc_fn_forms"
+spec = ["10.4:15"]
+description = "Struct literal, associated function, variant expression, and variant pattern are all usable through a module binding"
+source = """
+const lib = @import("sub/lib");
+
+fn main() -> i32 {
+    let p = lib.Point { x: 40, y: 2 };
+    let q = lib.Point::origin();
+    let c = lib.Color::Green;
+    let base = p.x + p.y + q.x + q.y;
+    match c {
+        lib.Color::Red => 0,
+        lib.Color::Green => base,
+        lib.Color::Blue => 0,
+    }
+}
+"""
+aux_files = { "sub/lib.rue" = """
+pub struct Point {
+    x: i32,
+    y: i32,
+    fn origin() -> Point { Point { x: 30, y: 12 } }
+}
+pub enum Color { Red, Green, Blue, }
+""" }
+exit_code = 84
+
+[[case]]
+name = "qualified_path_in_type_position_rejected"
+spec = ["10.4:16"]
+description = "A module-qualified path in a type-annotation position is a parse error (E0100); types are named by bare identifier only"
+source = """
+const lib = @import("sub/lib");
+
+fn main() -> i32 {
+    let p: lib.Point = lib.Point { x: 1, y: 2 };
+    p.x + p.y
+}
+"""
+aux_files = { "sub/lib.rue" = """
+pub struct Point { x: i32, y: i32, }
+""" }
+compile_fail = true
+error_contains = ["E0100"]
+
+[[case]]
+name = "qualified_private_struct_literal_rejected"
+spec = ["10.4:18"]
+description = "A private struct named in a module-qualified struct literal from another directory is E0460 (resolves through the flat namespace)"
+source = """
+const lib = @import("sub/lib");
+
+fn main() -> i32 {
+    let s = lib.Secret { n: 3 };
+    s.n
+}
+"""
+aux_files = { "sub/lib.rue" = """
+struct Secret { n: i32, }
+pub fn touch() -> i32 { let s = Secret { n: 1 }; s.n }
+""" }
+compile_fail = true
+error_contains = ["E0460", "is private"]
+
+[[case]]
+name = "qualified_private_enum_variant_rejected"
+spec = ["10.4:18"]
+description = "A private enum's variant named through a module from another directory is E0706 (routes through module-member resolution)"
+source = """
+const lib = @import("sub/lib");
+
+fn main() -> i32 {
+    let h = lib.Hidden::A;
+    0
+}
+"""
+aux_files = { "sub/lib.rue" = """
+enum Hidden { A, B, }
+pub fn touch() -> i32 { let h = Hidden::A; match h { Hidden::A => 1, Hidden::B => 2, } }
+""" }
+compile_fail = true
+error_contains = ["E0706", "is private"]

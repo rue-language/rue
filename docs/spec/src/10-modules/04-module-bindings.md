@@ -138,6 +138,93 @@ const COPY: i32 = math.ANSWER;   // const-evaluable member access
 fn main() -> i32 { math.ANSWER + COPY }   // 84
 ```
 
+## Types, Enum Variants, and Associated Functions Through a Module
+
+The preceding sections cover functions and value constants as module members.
+This section specifies how a module's **types**, **enum variants**, and
+**associated functions** (6.4:11) are referenced through a module binding, and
+how privacy applies to each form.
+
+{{ rule(id="10.4:15", cat="normative") }}
+
+A type, enum variant, or associated function of a module **MAY** be named
+through a module binding in an *expression* or *pattern* position by writing
+the binding, a `.`, and the item's path: a struct type in a struct-literal
+expression (`m.Point { .. }`), an enum variant in a variant expression or a
+match pattern (`m.Color::Red`), and an associated function in a call
+(`m.Point::origin()`). Each of these forms is accepted wherever the
+corresponding *bare* path — `Point { .. }`, `Color::Red`, `Point::origin()` —
+is accepted, and has the same meaning.
+
+{{ rule(id="10.4:16", cat="legality-rule") }}
+
+A module-qualified path is **not** accepted in a *type* position — a type
+annotation, a field type, or a parameter or return type. In those positions a
+type is named only by a bare identifier (resolved through the flat namespace,
+10.5:2); writing `m.Type` where a type is expected is a compile-time error
+reported during parsing (E0100).
+
+{{ rule(id="10.4:17") }}
+
+Resolution of the tail path in the forms of 10.4:15 currently proceeds through
+the transitional flat namespace (10.5:2): the type, variant, or associated
+function is looked up by name across the whole compilation, and the leading
+module qualifier does **not** restrict the lookup to members of the named
+module. A program must not rely on the qualifier naming the module that defines
+the item; unlike functions and value constants (10.4:3, 10.4:12), which resolve
+as genuine module members, the qualifier is not yet load-bearing for these item
+kinds. This is a transitional artifact that will change when top-level names
+become module-scoped (10.5:2).
+
+{{ rule(id="10.4:18", cat="legality-rule") }}
+
+Privacy of module-qualified type and enum-variant access is uniform (10.3:7).
+Naming a private struct in a module-qualified struct literal from a source file
+in another directory is a compile-time error (E0460, the same error as the
+unqualified form, because the type resolves through the flat namespace).
+Naming a private enum's variant through a module from another directory is a
+compile-time error (E0706, because a variant path routes through
+module-member resolution).
+
+{{ rule(id="10.4:19") }}
+
+An associated function's visibility is intended to follow the visibility of its
+enclosing type (10.3:7): an associated function of a private type should not be
+callable from another directory. The current implementation does **not** yet
+enforce this — an associated-function call on a private type is accepted across
+the directory boundary, whether written unqualified or module-qualified
+(RUE-330). Programs must not rely on this gap; it is an implementation
+artifact, not a guarantee.
+
+{{ rule(id="10.4:20", cat="example") }}
+
+```rue
+// sub/lib.rue
+pub struct Point {
+    x: i32,
+    y: i32,
+    fn origin() -> Point { Point { x: 30, y: 12 } }  // associated fn
+}
+pub enum Color { Red, Green, Blue, }
+enum Hidden { A, B, }               // private outside sub/
+
+// main.rue — a different directory
+const lib = @import("sub/lib");
+fn main() -> i32 {
+    let p = lib.Point { x: 40, y: 2 };     // qualified struct literal
+    let q = lib.Point::origin();           // qualified associated fn
+    let c = lib.Color::Green;              // qualified variant expression
+    // let bad: lib.Point = p;           // error E0100: no qualified path in a type position
+    // let h = lib.Hidden::A;            // error E0706: `Hidden` is private outside sub/
+    let base = p.x + p.y + q.x + q.y;    // 40 + 2 + 30 + 12 = 84
+    match c {
+        lib.Color::Red => 0,             // qualified variant pattern
+        lib.Color::Green => base,        // 84
+        lib.Color::Blue => 0,
+    }
+}
+```
+
 ## Modules Are Not Runtime Values
 
 {{ rule(id="10.4:6", cat="legality-rule") }}

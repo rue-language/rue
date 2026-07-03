@@ -40,7 +40,7 @@ This representation allows string literals to remain cheap (no allocation) while
 fn takes_string(s: String) -> i32 { 0 }
 
 fn main() -> i32 {
-    var s = "hello";
+    let mut s = "hello";
     takes_string(s);    // s is moved
     // takes_string(s); // ERROR: use of moved value
     0
@@ -118,13 +118,13 @@ fn main() -> i32 {
 
 {{ rule(id="3.10:19", cat="informative") }}
 
-Mutation methods use `inout self` to modify the string in place. The variable must be declared with `var` to allow mutation.
+Mutation methods use `inout self` to modify the string in place. The variable must be declared with `let mut` to allow mutation.
 
 {{ rule(id="3.10:20", cat="example") }}
 
 ```rue
 fn main() -> i32 {
-    var s = String::new();
+    let mut s = String::new();
     s.push_str("hello");
     s.push_str(" world");
     s.push(33);  // '!' character
@@ -150,7 +150,7 @@ Heap promotion is transparent to the user. There is no separate "owned" vs "borr
 
 ```rue
 fn main() -> i32 {
-    var s = "hello";     // literal: capacity = 0
+    let mut s = "hello";     // literal: capacity = 0
     s.push_str("!");     // promotes to heap, then appends
     // s is now "hello!" with capacity > 0
     0
@@ -204,7 +204,7 @@ The destructor automatically distinguishes between string literals and heap-allo
 
 ```rue
 fn main() -> i32 {
-    var s = "hello";
+    let mut s = "hello";
     s.push_str("!");  // promotes to heap
     0
 }  // destructor frees the heap buffer

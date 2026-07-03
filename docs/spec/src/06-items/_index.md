@@ -10,6 +10,13 @@ page_template = "spec/page.html"
 
 This chapter describes items in Rue.
 
+> **Grammar note.** The EBNF fragments in this chapter are illustrative
+> excerpts scoped to the construct under discussion, and are deliberately
+> narrower than the full syntax (they may omit `pub`, directives, receiver
+> modes, method bodies, or variant payloads). [Appendix A](../appendices/a-grammar/)
+> is the normative grammar; where a fragment here differs from it, Appendix A
+> governs.
+
 {{ rule(id="6.0:1") }}
 
 Items are top-level definitions in a program. Unlike statements, items are visible throughout the module.

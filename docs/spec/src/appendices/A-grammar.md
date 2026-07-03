@@ -10,6 +10,12 @@ This appendix contains the complete EBNF grammar for Rue. It is maintained by
 hand against the parser in `crates/rue-parser/src/chumsky_parser.rs`; when the
 parser changes, this appendix must be updated in the same change.
 
+This grammar is **normative**: it is the authoritative syntactic definition of
+Rue. The EBNF fragments that appear inline in Chapters 5 and 6 are
+**illustrative excerpts** for local exposition and are deliberately narrowed to
+the construct under discussion; where any of them differs from this appendix,
+this appendix governs.
+
 ```ebnf
 (* Program structure *)
 program        = { item } ;
@@ -37,12 +43,13 @@ struct_def     = directives [ "pub" ] [ "linear" ]
 struct_fields  = struct_field { "," struct_field } [ "," ] ;
 struct_field   = IDENT ":" type ;
 method         = directives "fn" IDENT
-                 "(" [ "self" [ "," params ] | params ] ")"
+                 "(" [ [ "inout" | "borrow" ] "self" [ "," params ] | params ] ")"
                  [ "->" type ] "{" block "}" ;
 
 (* Enums *)
 enum_def       = [ "pub" ] "enum" IDENT "{" [ enum_variants ] "}" ;
-enum_variants  = IDENT { "," IDENT } [ "," ] ;
+enum_variants  = enum_variant { "," enum_variant } [ "," ] ;
+enum_variant   = IDENT [ "(" type { "," type } [ "," ] ")" ] ;  (* optional tuple payload; at least one type inside the parens *)
 
 (* Destructors *)
 drop_fn        = "drop" "fn" IDENT "(" "self" ")" "{" block "}" ;
@@ -59,9 +66,11 @@ expr_stmt      = expression ";"
                | control_flow_expr ;   (* if/match/while/loop/for/break/continue/
                                           return and bare blocks need no semicolon *)
 
-(* Place expressions: a variable with zero or more field/index projections.
-   Used as assignment targets and as inout/borrow call arguments. *)
-place_expr     = IDENT { "." IDENT | "[" expression "]" } ;
+(* Place expressions: a variable — or `self`, inside a method — followed by
+   zero or more field/index projections. Used as assignment targets. A bare
+   `self` is not a place: when the base is `self`, at least one projection is
+   required (a legality rule). *)
+place_expr     = ( IDENT | "self" ) { "." IDENT | "[" expression "]" } ;
 
 (* Types *)
 type           = "i8" | "i16" | "i32" | "i64"
@@ -73,9 +82,11 @@ type           = "i8" | "i16" | "i32" | "i64"
                | "ptr" "mut" type
                | anon_struct_type
                | "Self"
+               | type_call
                | IDENT ;
+type_call      = IDENT "(" [ type { "," type } [ "," ] ] ")" ;  (* type-function application, e.g. Pair(i32), Result(Option(i32), i32) *)
 array_length   = INTEGER | IDENT | length_call ;
-length_call    = IDENT "(" [ array_length { "," array_length } ] ")" ;  (* comptime-evaluable call, e.g. fact(4) *)
+length_call    = IDENT "(" [ array_length { "," array_length } [ "," ] ] ")" ;  (* comptime-evaluable call, e.g. fact(4) *)
 anon_struct_type = "struct" "{" [ anon_struct_fields ] { method } "}" ;
 anon_struct_fields = struct_field { "," struct_field } [ "," ] ;
 
@@ -105,12 +116,12 @@ suffix         = "." IDENT                                     (* field access *
                | "." IDENT "::" IDENT                          (* qualified enum variant *)
                | "." IDENT "::" IDENT "(" [ call_args ] ")" ;  (* qualified assoc fn call *)
 
-(* Call arguments: inout/borrow arguments must be place expressions
-   (a variable, optionally with field/index projections); plain
-   arguments are arbitrary expressions. *)
+(* Call arguments: any argument may carry an `inout`/`borrow` mode. The
+   argument itself is parsed as an arbitrary expression; the requirement that
+   an inout/borrow argument denote a place (a variable, optionally with field/
+   index projections) is a legality rule (6.1:17), not a syntactic one. *)
 call_args      = call_arg { "," call_arg } ;
-call_arg       = ( "inout" | "borrow" ) place_expr
-               | expression ;
+call_arg       = [ "inout" | "borrow" ] expression ;
 
 primary        = INTEGER | STRING | BOOL | "()"
                | "self"
@@ -200,9 +211,20 @@ Notes:
   unambiguously a type (`()`, `[T; N]`, a primitive type keyword, or a `!`
   that is the entire argument) parses as a type; anything else — including
   `!expr`, which is logical not — parses as an expression.
-- **`inout`/`borrow` call arguments** must be place expressions: a variable
-  optionally followed by field and index projections (e.g. `inout s.arr[i]`),
-  not arbitrary expressions.
+- **`inout`/`borrow` call arguments** are parsed as ordinary expressions; the
+  rule that such an argument must denote a place — a variable optionally
+  followed by field and index projections (e.g. `inout s.arr[i]`) — is a
+  legality rule enforced during semantic analysis (6.1:17), not a syntactic
+  restriction. A non-place argument such as `inout a + 1` parses but is
+  rejected with an lvalue error (E0425).
+- **Type-function application in type position** (`type_call`): a name applied
+  to type arguments, e.g. `Pair(i32)` or `Result(Option(i32), i32)`, denotes
+  the type produced by a comptime `-> type` constructor (RUE-241). Nested
+  applications compose. Its result cannot yet head a struct literal
+  (`Pair(i32) { … }` does not parse); bind it via a `let` of that type instead.
+- **Anonymous struct types** carry inline methods only when a `struct { … }`
+  appears as a *value* (e.g. the body of a comptime `-> type` function); in
+  pure type position (a type annotation) a `struct { … }` parses fields only.
 - **A parameter takes at most one mode** (`comptime`, `inout`, or `borrow`);
   duplicate or conflicting modes are a parse error.
 - **Statement termination**: `let`, assignment, and ordinary expression
@@ -211,3 +233,6 @@ Notes:
   statements without a trailing semicolon.
 - There are no `impl` blocks: methods are declared inline inside the
   `struct` body, after the fields.
+- **Method receivers** may carry a mode: `inout self` (mutating receiver) or
+  `borrow self` (read-only receiver); a bare `self` is by-value. This mirrors
+  the `inout`/`borrow` parameter modes; `comptime self` is not permitted.
