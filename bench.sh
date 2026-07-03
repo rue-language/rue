@@ -109,7 +109,7 @@ log_info "Building rue compiler ($BUILD_MODE mode)..."
 
 # Get the path to the built compiler (scripts/rue-bin builds it and resolves a
 # stable absolute path; extra args pass through to buck2 build).
-RUE_BIN="$(./scripts/rue-bin --modifier //constraints:$BUILD_MODE)"
+RUE_BIN="$(./scripts/rue-bin --target-platforms //platforms:$BUILD_MODE)"
 if [[ ! -x "$RUE_BIN" ]]; then
     log_error "Failed to find rue binary at: $RUE_BIN"
     exit 1

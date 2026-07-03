@@ -150,19 +150,32 @@ benchmarks fail). This is a real parser bug, filed separately; it is out of
 scope for this measurement-only change. Once fixed, add `deep_nesting` back to
 `default_corpus()` in `scripts/perf-baseline.py`.
 
-## Build caveat (affects absolute numbers, not the profile)
+## Build profile (release vs. DEFAULT)
 
-The numbers above come from the buck2 **DEFAULT** build profile. The
-`//constraints:release` opt-level flags (`-Copt-level=3 -Clto=thin`, defined in
-`toolchains/rust/BUCK`) are **not currently applied** to `//crates/rue:rue`:
-building with `--modifier //constraints:release` produces a byte-identical
-configuration hash / output path, so `scripts/rue-bin --modifier
-//constraints:release` (used by `bench.sh`) returns the *same unoptimized
-binary*. This makes the parser's constant factor much larger than it should be
-and is relevant to RUE-45 (release-mode CI). Wiring the constraint through is a
-build change, out of scope here, but it means today's baseline is a
-**worst-case (unoptimized-compiler)** profile; the relative ranking of passes is
-unaffected.
+The numbers above may come from either the buck2 **DEFAULT** (unoptimized)
+profile or the optimized **release** profile, depending on how the compiler was
+built. The `-Copt-level=3 -Clto=thin` release flags live in
+`toolchains/rust/BUCK` and are applied to `//crates/rue:rue` when it is built
+through the **`//platforms:release` target platform**:
+
+```bash
+buck2 build //crates/rue:rue --target-platforms //platforms:release
+scripts/rue-bin --target-platforms //platforms:release   # absolute path to it
+```
+
+`bench.sh` (and `scripts/perf-baseline.py --release`) build through
+`//platforms:release`, so their "release" numbers now measure a genuinely
+optimized binary — release is byte-distinct from and roughly 2x smaller than the
+DEFAULT build.
+
+Historical note (RUE-277): a bare `--modifier //constraints:release` was a
+**no-op** — it left the configured-target hash unchanged, so debug and "release"
+resolved to the same `buck-out/.../<hash>/rue` path and `bench.sh` measured an
+unoptimized binary. The fix routes the opt-level constraint through a target
+*platform* (`//platforms:{debug,release}`), which gives each mode a distinct
+configuration the toolchain's `rustc_flags` select can actually see. A plain
+`//crates/rue:rue` build (no `--target-platforms`) still uses the DEFAULT
+unoptimized profile.
 
 ## Related
 

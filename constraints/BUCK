@@ -1,11 +1,16 @@
 # Build configuration constraints
 #
 # These constraints control build-time options like optimization level.
-# Use with --modifier or in platform definitions.
+#
+# NOTE: select this via a target *platform*, not a bare `--modifier`. A bare
+# `--modifier //constraints:release` does not change the configured target's
+# hash (debug and release resolve to the same buck-out path, so the build is a
+# no-op and the toolchain never sees the flag — RUE-277). The //platforms
+# targets bake these constraints into a distinct target configuration:
 #
 # Example usage:
-#   buck2 build //crates/rue:rue --modifier //constraints:release
-#   buck2 build //crates/rue:rue --modifier //constraints:debug
+#   buck2 build //crates/rue:rue --target-platforms //platforms:release
+#   buck2 build //crates/rue:rue --target-platforms //platforms:debug
 
 # Optimization level constraint setting
 constraint_setting(

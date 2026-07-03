@@ -14,7 +14,7 @@
 #
 # Any extra arguments are passed through to `buck2 build`, e.g. a release build:
 #
-#   RUE_BINARY="$(scripts/rue-bin --modifier //constraints:release)"
+#   RUE_BINARY="$(scripts/rue-bin --target-platforms //platforms:release)"
 #
 set -euo pipefail
 

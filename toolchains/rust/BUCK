@@ -45,8 +45,22 @@ http_archive(
     visibility = [],
 )
 
-# Optimization flags based on build mode
-# DEFAULT matches when no opt-level constraint is set (debug by default)
+# Optimization flags based on build mode (RUE-277).
+#
+# This select is evaluated in the *target configuration* of whatever depends on
+# the toolchain, so the release arm only fires when the opt-level constraint is
+# actually part of that configuration. A bare `--modifier //constraints:release`
+# does NOT put it there (it leaves the config hash unchanged), so release builds
+# must go through a target platform that bakes the constraint in — build with
+# `--target-platforms //platforms:release` (see platforms/BUCK). DEFAULT matches
+# when no opt-level constraint is set (a plain `//crates/rue:rue` build stays
+# debug/unoptimized).
+#
+# `-Clto=thin` is only applied to crates configured under the release target
+# platform. Proc-macro crates (serde_derive, logos-derive, ...) are exec-deps
+# configured under the execution platform, which has no opt-level constraint, so
+# they hit the DEFAULT arm and never receive `-Clto=thin` — sidestepping rustc's
+# refusal to thin-LTO a proc-macro crate.
 _OPT_FLAGS = select({
     "DEFAULT": [],
     "root//constraints:debug": [],

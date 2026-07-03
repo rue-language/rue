@@ -1,0 +1,36 @@
+# Build-mode target platforms (RUE-277)
+#
+# These platforms put the //constraints:opt-level value into the *target
+# configuration*, which is what buck2 keys output paths (and cache) on. Select
+# one with `--target-platforms`:
+#
+#   buck2 build //crates/rue:rue --target-platforms //platforms:release
+#   buck2 build //crates/rue:rue --target-platforms //platforms:debug
+#
+# WHY A PLATFORM AND NOT `--modifier //constraints:release`:
+# A bare `--modifier //constraints:release` (or `-c`/read_root_config) does NOT
+# change the configured target's hash — debug and "release" resolve to the SAME
+# `buck-out/.../<hash>/rue` path, so buck2 serves one cached artifact for both
+# and the toolchain's `rustc_flags` select (evaluated in the target
+# configuration) never sees the constraint. Baking the constraint into a target
+# platform gives each build mode a DISTINCT configuration hash AND makes the
+# `_OPT_FLAGS` select in `toolchains/rust/BUCK` resolve to the release flags —
+# so `//platforms:release` yields a genuinely optimized, byte-distinct binary.
+#
+# Each platform inherits the host os/cpu from `prelude//platforms:default`
+# (evaluated via host_info() on the building machine), so the correct hermetic
+# toolchain is still selected on every host (linux x86_64/arm64, macOS arm64).
+
+platform(
+    name = "debug",
+    constraint_values = ["//constraints:debug"],
+    deps = ["prelude//platforms:default"],
+    visibility = ["PUBLIC"],
+)
+
+platform(
+    name = "release",
+    constraint_values = ["//constraints:release"],
+    deps = ["prelude//platforms:default"],
+    visibility = ["PUBLIC"],
+)
