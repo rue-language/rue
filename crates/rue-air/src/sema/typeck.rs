@@ -262,13 +262,15 @@ impl<'a> Sema<'a> {
     /// the E0204 for a truly unknown type in one place so the two paths can't
     /// drift.
     ///
-    /// Array lengths are resolved context-free (literals and file-level
-    /// `const`s), exactly as [`resolve_type`] does — a length naming a local
-    /// `comptime N: i32` parameter (`[P; N]`) is *not* resolved here and gets
-    /// the same E0481 it does today. Threading the comptime value map so `N`
-    /// resolves would surface a latent rue-cfg drop-analysis ICE for
-    /// comptime-value-length *local* arrays (the length only works in signature
-    /// and return positions so far, RUE-252); that gap is tracked separately.
+    /// Array lengths are resolved through `ctx.comptime_value_vars` (RUE-271):
+    /// a length naming an enclosing `comptime N: i32` value parameter (`[i32; N]`
+    /// / `[P; N]`) binds to its concrete value at each specialization, then
+    /// falls back to file-level `const`s and literals like [`resolve_type`]. A
+    /// length that resolves to none of these (a runtime parameter) still gets a
+    /// clean E0481. The specialized array type is interned into the same pool
+    /// the CFG builder later sees (the pool is cloned *after* specialization,
+    /// RUE-282), so drop analysis of a comptime-value-length local array no
+    /// longer hits an out-of-bounds `ArrayTypeId`.
     ///
     /// [`resolve_type`]: Sema::resolve_type
     pub(crate) fn resolve_type_with_ctx(
@@ -286,7 +288,7 @@ impl<'a> Sema<'a> {
         if let Some((element_type, len)) = parse_array_type_syntax(type_name) {
             let element_sym = self.interner.get_or_intern(&element_type);
             let element_ty = self.resolve_type_with_ctx(element_sym, span, ctx)?;
-            let length = self.resolve_array_length(&len, span, None)?;
+            let length = self.resolve_array_length(&len, span, Some(&ctx.comptime_value_vars))?;
             let array_type_id = self.get_or_create_array_type(element_ty, length);
             Ok(Type::new_array(array_type_id))
         } else if let Some(pointee) = type_name.strip_prefix("ptr const ") {
