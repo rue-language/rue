@@ -96,3 +96,82 @@ fn main() -> i32 {
 """ }]
 compile_fail = true
 error_contains = ["negative"]
+
+# --- Local `let` annotation sized by a comptime value parameter (RUE-271) ---
+# `let arr: [T; N]` inside `fn f(comptime N: i32)` used to E0481 (length
+# resolved context-free) and, once threaded, ICE'd in CFG drop analysis because
+# the specialized array type wasn't visible to the CFG builder's type pool. Now
+# it binds the concrete length per specialization and runs end to end.
+
+[[case]]
+name = "local_annotation_comptime_length"
+files = [{ path = "main.rue", source = """
+fn f(comptime N: i32, x: i32) -> i32 {
+    let y: [i32; N] = [x, x];
+    @intCast(y[0]) + @intCast(y[1])
+}
+
+fn main() -> i32 {
+    f(2, 21)
+}
+""" }]
+exit_code = 42
+
+[[case]]
+name = "local_annotation_two_specializations"
+files = [{ path = "main.rue", source = """
+fn head(comptime N: i32) -> i32 {
+    let y: [i32; N] = [7, 7, 7];
+    y[0] + N
+}
+
+fn main() -> i32 {
+    @dbg(head(2));
+    @dbg(head(3));
+    0
+}
+""" }]
+stdout = "9\n10\n"
+
+[[case]]
+name = "local_annotation_comptime_type_and_length"
+files = [{ path = "main.rue", source = """
+fn f(comptime P: type, comptime N: i32, a: P, b: P) -> P {
+    let y: [P; N] = [a, b];
+    y[1]
+}
+
+fn main() -> i32 {
+    f(i32, 2, 40, 42)
+}
+""" }]
+exit_code = 42
+
+[[case]]
+name = "local_annotation_drop_element_no_ice"
+files = [{ path = "main.rue", source = """
+fn f(comptime N: i32) -> i32 {
+    let y: [String; N] = ["ab", "cde"];
+    42
+}
+
+fn main() -> i32 {
+    f(2)
+}
+""" }]
+exit_code = 42
+
+[[case]]
+name = "local_annotation_runtime_length_rejected"
+files = [{ path = "main.rue", source = """
+fn f(n: i32) -> i32 {
+    let y: [i32; n] = [1, 1];
+    y[0]
+}
+
+fn main() -> i32 {
+    f(2)
+}
+""" }]
+compile_fail = true
+error_contains = ["not a compile-time constant"]
