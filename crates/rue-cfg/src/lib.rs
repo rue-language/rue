@@ -19,6 +19,7 @@
 mod build;
 mod inst;
 pub mod opt;
+mod verify;
 
 use rue_error::{CompileError, CompileWarning};
 

@@ -153,6 +153,17 @@ pub fn optimize(cfg: &mut Cfg, level: OptLevel) {
             dce::run(cfg);
         }
     }
+
+    // Structural verification (RUE-227). This runs at EVERY opt level (O0
+    // included) so the CFG handed to codegen is always checked — the AIR→CFG
+    // "block has no terminator" bug class becomes a loud, localized panic here
+    // instead of a mysterious SIGABRT deep in cfg_lower. `optimize` is the
+    // single choke point every build site funnels through right before
+    // lowering, so verifying here covers both construction and optimization
+    // output. Malformed-AIR cases that populate `CfgOutput.errors` (e.g. an
+    // un-specialized CallGeneric) abort before this is reached, so they are
+    // never verified. See `crate::verify`.
+    cfg.verify();
 }
 
 #[cfg(test)]

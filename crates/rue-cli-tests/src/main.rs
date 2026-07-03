@@ -53,6 +53,11 @@
 //! - `only_on = ["x86-64-linux", ...]`: run the case only on these hosts
 //!   (ignored elsewhere). For behavior that depends on the host platform,
 //!   e.g. whether `--target X` is a cross-compile or a native compile.
+//! - `differential_opt = true`: compile+run the case once per optimization
+//!   level (`-O0`/`-O1`/`-O2`/`-O3`) and assert identical exit code AND stdout
+//!   across all levels, catching optimizer miscompiles (RUE-236). The runner
+//!   drives `-O`, so the case must not set its own `-O` in `args` and must not
+//!   be `compile_fail`/`compile_only`. Give it exact `stdout`/`exit_code`.
 //!
 //! # ICE detection
 //!
@@ -299,9 +304,36 @@ struct Case {
     /// Skip this case entirely.
     #[serde(default)]
     skip: bool,
+    /// Opt-level differential test (RUE-236): compile+run this case once per
+    /// optimization level (`-O0`, `-O1`, `-O2`, `-O3`) and assert IDENTICAL
+    /// exit code AND stdout across all levels. A divergence fails the case,
+    /// naming the level that differs. This catches optimizer passes that break
+    /// semantics — the analogue, at the *program's* opt level, of the
+    /// release-mode CI job (RUE-45) that catches `cfg(debug_assertions)`
+    /// divergence in the *compiler*. `-O2`/`-O3` alias `-O1` today, so results
+    /// match now; the net is set so a future divergence is caught.
+    ///
+    /// Marked cases must be plain compile-and-run cases: `compile_fail`,
+    /// `compile_only`, and an explicit `-O` in `args` are rejected (the runner
+    /// drives the opt level itself). Give the case exact `stdout` and
+    /// `exit_code` so each level is also checked against the known-good result,
+    /// not merely against the other levels.
+    #[serde(default)]
+    differential_opt: bool,
 }
 
 type TestResult = Result<(), String>;
+
+/// What running one case produced: the compiled program's exit code and
+/// stdout. For cases that don't run a program (`compile_fail`/`compile_only`),
+/// `ran` is false and the other fields are empty. Used by the opt-level
+/// differential runner to compare results across `-O` levels.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct RunOutcome {
+    ran: bool,
+    exit_code: Option<i32>,
+    stdout: String,
+}
 
 /// Check a finished process for signs of a compiler panic / ICE.
 fn ice_message(status: &std::process::ExitStatus, stderr: &str) -> Option<String> {
@@ -326,7 +358,17 @@ fn expand_env_value(value: &str, real_std: &Path) -> String {
     value.replace("${REAL_STD}", &real_std.to_string_lossy())
 }
 
-fn run_case(case: &Case, rue_binary: &Path, real_std: &Path) -> TestResult {
+/// Compile and run one case, returning the program's outcome.
+///
+/// When `opt_level` is `Some("-O2")` etc., that flag is appended to the
+/// compiler args so the same case can be driven across optimization levels
+/// (see [`run_case_differential`]); when `None`, args are used verbatim.
+fn run_case(
+    case: &Case,
+    rue_binary: &Path,
+    real_std: &Path,
+    opt_level: Option<&str>,
+) -> Result<RunOutcome, String> {
     let temp_dir = tempfile::tempdir().map_err(|e| format!("failed to create temp dir: {}", e))?;
     let dir = temp_dir.path();
 
@@ -345,13 +387,20 @@ fn run_case(case: &Case, rue_binary: &Path, real_std: &Path) -> TestResult {
 
     // Default invocation mirrors what a user types: `rue main.rue -o prog`,
     // with RELATIVE paths and the temp dir as the working directory.
-    let args: Vec<String> = match &case.args {
+    let mut args: Vec<String> = match &case.args {
         Some(args) => args.clone(),
         None => {
             let first = case.files.first().ok_or("case has no files")?.path.clone();
             vec![first, "-o".to_string(), output_name.clone()]
         }
     };
+    // For an opt-level differential run, append the level flag. Flag position
+    // is irrelevant to the CLI, so this composes with either default or
+    // explicit args (differential cases are validated to not carry their own
+    // `-O`, so there's no conflict).
+    if let Some(level) = opt_level {
+        args.push(level.to_string());
+    }
 
     let mut cmd = Command::new(rue_binary);
     cmd.args(&args).current_dir(dir);
@@ -404,7 +453,7 @@ fn run_case(case: &Case, rue_binary: &Path, real_std: &Path) -> TestResult {
                 ));
             }
         }
-        return Ok(());
+        return Ok(RunOutcome::default());
     }
 
     if !compile_succeeded {
@@ -426,7 +475,7 @@ fn run_case(case: &Case, rue_binary: &Path, real_std: &Path) -> TestResult {
     }
 
     if case.compile_only {
-        return Ok(());
+        return Ok(RunOutcome::default());
     }
 
     // Run the produced binary from the temp dir.
@@ -486,6 +535,65 @@ fn run_case(case: &Case, rue_binary: &Path, real_std: &Path) -> TestResult {
         }
     }
 
+    Ok(RunOutcome {
+        ran: true,
+        exit_code: actual_exit,
+        stdout: run_stdout,
+    })
+}
+
+/// Opt-level differential runner (RUE-236): compile+run a marked case at every
+/// optimization level and assert identical exit code AND stdout across all of
+/// them, so an optimizer pass that miscompiles is caught.
+///
+/// Each level runs through the full [`run_case`] machinery, so its declared
+/// `exit_code`/`stdout` are checked at *every* level (a correctness anchor),
+/// and then the levels' outcomes are cross-checked against the first level so a
+/// divergence that still matches no declared value can't slip through. On a
+/// mismatch the error names the diverging level.
+fn run_case_differential(case: &Case, rue_binary: &Path, real_std: &Path) -> TestResult {
+    // Levels to compare. -O2/-O3 alias -O1 today; the net catches a future
+    // divergence.
+    const OPT_LEVELS: &[&str] = &["-O0", "-O1", "-O2", "-O3"];
+
+    // Guard against misuse: the runner drives the opt level, so these would be
+    // ambiguous or meaningless.
+    if case.compile_fail || case.compile_only {
+        return Err(
+            "differential_opt case must be a compile-and-run case (not compile_fail/compile_only)"
+                .to_string(),
+        );
+    }
+    if let Some(args) = &case.args {
+        if args.iter().any(|a| a.starts_with("-O")) {
+            return Err(
+                "differential_opt case must not set its own -O flag in args (the runner drives it)"
+                    .to_string(),
+            );
+        }
+    }
+
+    let mut baseline: Option<(&str, RunOutcome)> = None;
+    for level in OPT_LEVELS {
+        let outcome = run_case(case, rue_binary, real_std, Some(level))
+            .map_err(|e| format!("at {}: {}", level, e))?;
+        match &baseline {
+            None => baseline = Some((level, outcome)),
+            Some((base_level, base)) => {
+                if &outcome != base {
+                    return Err(format!(
+                        "opt-level divergence: {} produced (exit={:?}, stdout={:?}) but {} produced (exit={:?}, stdout={:?})",
+                        base_level,
+                        base.exit_code,
+                        base.stdout,
+                        level,
+                        outcome.exit_code,
+                        outcome.stdout
+                    ));
+                }
+            }
+        }
+    }
     Ok(())
 }
 
@@ -513,7 +621,11 @@ fn run_case_wrapper(
         ));
     }
 
-    let result = run_case(case, rue_binary, real_std);
+    let result = if case.differential_opt {
+        run_case_differential(case, rue_binary, real_std)
+    } else {
+        run_case(case, rue_binary, real_std, None).map(|_| ())
+    };
 
     // A known_bug scoped to other platforms doesn't apply here: the case
     // runs as a normal test on this host.
