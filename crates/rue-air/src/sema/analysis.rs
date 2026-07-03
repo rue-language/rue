@@ -3575,7 +3575,7 @@ impl<'a> Sema<'a> {
         } else if name == known.random_u64 {
             self.analyze_random_u64_intrinsic(air, name, &args, span)
         } else if name == known.ptr_read {
-            self.analyze_ptr_read_intrinsic(air, name, &args, span, ctx)
+            self.analyze_ptr_read_intrinsic(air, name, inst_ref, &args, span, ctx)
         } else if name == known.ptr_write {
             self.analyze_ptr_write_intrinsic(air, name, &args, span, ctx)
         } else if name == known.ptr_offset {
@@ -6206,6 +6206,7 @@ impl<'a> Sema<'a> {
         &mut self,
         air: &mut Air,
         name: Spur,
+        inst_ref: InstRef,
         args: &[RirCallArg],
         span: Span,
         ctx: &mut AnalysisContext,
@@ -6239,6 +6240,23 @@ impl<'a> Sema<'a> {
                 ));
             }
         };
+
+        // The result type is the pointee type. Inference modeled @ptr_read's
+        // result as a fresh type variable (the pointee is only known here), so
+        // a binding/annotation constrained that variable to some concrete type
+        // without ever comparing it to the pointee. Reconcile them now so a
+        // mismatch (`let x: i32 = @ptr_read(p_to_i64)`) is E0206 like every
+        // other path, instead of silently truncating (RUE-244). Skip when the
+        // resolved type is unconstrained (`<error>` — e.g. no annotation) or
+        // never; those carry no expectation to check against.
+        if let Some(&expected) = ctx.resolved_types.get(&inst_ref)
+            && expected != pointee_type
+            && !expected.is_error()
+            && !expected.is_never()
+            && !pointee_type.is_error()
+        {
+            return Err(self.type_mismatch_error(expected, pointee_type, span));
+        }
 
         // Create the intrinsic call instruction
         let args_start = air.add_extra(&[ptr_result.air_ref.as_u32()]);
