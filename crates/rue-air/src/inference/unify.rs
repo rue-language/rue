@@ -312,7 +312,21 @@ impl Unifier {
                     self.int_literal_vars.insert(*other);
                 }
                 InferType::Concrete(t) => {
-                    if !t.is_integer() && !t.is_error() && !t.is_never() {
+                    if t.is_error() {
+                        // Don't let an `<error>` type poison an integer
+                        // literal. This binding arises when a live literal
+                        // branch shares an if/match result variable with an
+                        // erroneous (or comptime-untaken) sibling branch: the
+                        // sibling's `<error>` would otherwise drag the literal
+                        // to `<error>`, producing a bogus "literal out of range
+                        // for '<error>'" (E0800) and swallowing the real error.
+                        // Leave the literal free so it defaults to i32; the
+                        // real error is reported at its own site, and a
+                        // comptime-pruned untaken branch is never analyzed at
+                        // all (RUE-231).
+                        return UnifyResult::Ok;
+                    }
+                    if !t.is_integer() && !t.is_never() {
                         return UnifyResult::IntLiteralNonInteger { found: *t };
                     }
                 }

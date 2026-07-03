@@ -26,9 +26,12 @@
 //! - `~` (BitNot) truncates to the operand width (`~0` as u8 is 255).
 //!
 //! When no resolved types are available (evaluating a comptime function body
-//! before specialization, or a file-level const initializer), arithmetic
-//! falls back to checked `i64` semantics: results outside the `i64` range
-//! make the expression non-evaluable (`Ok(None)`) rather than an error.
+//! before specialization), arithmetic falls back to checked `i64` semantics:
+//! results outside the `i64` range make the expression non-evaluable
+//! (`Ok(None)`) rather than an error. A file-level const initializer supplies
+//! operand types up front (`infer_const_init_types` builds a `resolved_types`
+//! map from the declared const type), so it takes the typed path and gets the
+//! same operand-type overflow checks as a `comptime { }` block (RUE-230).
 //!
 //! # Outcome encoding
 //!
@@ -115,6 +118,24 @@ impl<'a> ComptimeEnv<'a> {
             value_subst: &ctx.comptime_value_vars,
             resolved_types: Some(ctx.resolved_types),
             runtime_locals: Some(&ctx.locals),
+            locals: HashMap::new(),
+        }
+    }
+
+    /// The environment for a file-level const initializer: no comptime
+    /// parameters and no runtime locals, but a `resolved_types` map inferred
+    /// from the declared const type (see `infer_const_init_types`). Threading
+    /// these operand types lets `finish_arith` check arithmetic at the operand
+    /// type — the same operand-type overflow (E1200, including intermediate
+    /// results) the `comptime { }` block path gets from HM inference, instead
+    /// of the raw-`i64` fallback that only range-checked the final value
+    /// against the declared type (RUE-230).
+    pub(crate) fn for_const_init(resolved_types: &'a HashMap<InstRef, Type>) -> Self {
+        Self {
+            type_subst: &EMPTY_TYPE_SUBST,
+            value_subst: &EMPTY_VALUE_SUBST,
+            resolved_types: Some(resolved_types),
+            runtime_locals: None,
             locals: HashMap::new(),
         }
     }

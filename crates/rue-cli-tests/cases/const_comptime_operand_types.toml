@@ -1,0 +1,154 @@
+# Const-initializer arithmetic must be checked at the *operand* type, the same
+# as a `comptime { }` block, not just range-checked against the declared type
+# (RUE-230). And a comptime-pruned untaken if/match branch must not poison the
+# taken branch through type inference (RUE-231).
+#
+# Before RUE-230 the const-initializer path evaluated arithmetic as raw i128
+# with `resolved_types: None`, so it never learned operand types: it skipped the
+# operand-type match (E0206) and operand/intermediate overflow (E1200) checks
+# that the comptime-block engine performs. Facets A/B/C below pin the fixed
+# behavior; the valid-const and comptime-block controls guard against
+# over-rejection / regressing the already-correct path.
+
+[section]
+id = "cli.const_comptime_operand_types"
+name = "Const-initializer operand-type checks and comptime branch pruning"
+description = "Const-initializer arithmetic is checked at the operand type (E0206 mixed types, E1200 operand/intermediate overflow) like a comptime block, and comptime-pruned untaken branches don't poison the taken branch (RUE-230, RUE-231)."
+
+# --- RUE-230 facet A: mixed incompatible integer operands → E0206 ------------
+# `X - Y` mixes u32 and i32; even though the result fits the declared i32, the
+# operands' types don't match — the same E0206 the runtime `x - y` reports.
+[[case]]
+name = "mixed_operand_types_rejected_e0206"
+files = [{ path = "main.rue", source = """
+const X: u32 = 10;
+const Y: i32 = 3;
+const Z: i32 = X - Y;
+
+fn main() -> i32 { Z }
+""" }]
+compile_fail = true
+error_contains = ["E0206", "expected u32", "found i32"]
+
+# --- RUE-230 facet B: operand-type underflow → E1200 -------------------------
+# `3 - 10` underflows at u32 (would panic at runtime), so it is a comptime
+# error even though the signed result -7 fits the declared i32.
+[[case]]
+name = "operand_underflow_rejected_e1200"
+files = [{ path = "main.rue", source = """
+const X: u32 = 3;
+const Y: u32 = 10;
+const Z: i32 = X - Y;
+
+fn main() -> i32 { Z }
+""" }]
+compile_fail = true
+error_contains = ["E1200", "at type u32", "-7 does not fit in u32"]
+
+# --- RUE-230 facet C: intermediate overflow → E1200 --------------------------
+# The intermediate 4e9 overflows i32 even though the final result fits; the
+# byte-identical `comptime { ... }` block is rejected the same way (control
+# below), so the two paths must agree.
+[[case]]
+name = "intermediate_overflow_rejected_e1200"
+files = [{ path = "main.rue", source = """
+const A: i32 = 2000000000 + 2000000000 - 3000000000;
+
+fn main() -> i32 { A }
+""" }]
+compile_fail = true
+error_contains = ["E1200", "at type i32", "4000000000 does not fit in i32"]
+
+# --- RUE-230 control: valid const arithmetic still compiles and evaluates -----
+[[case]]
+name = "valid_const_arithmetic_still_evaluates"
+files = [{ path = "main.rue", source = """
+const N: i32 = 2 + 3;
+const M: i32 = N * 4;
+
+fn main() -> i32 { M }
+""" }]
+exit_code = 20
+
+# --- RUE-230 control: comptime-block path is unchanged ------------------------
+# The same intermediate overflow inside an explicit comptime block was already
+# rejected E1200; it must stay rejected (no behavior change).
+[[case]]
+name = "comptime_block_intermediate_overflow_unchanged"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    comptime { 2000000000 + 2000000000 - 3000000000 }
+}
+""" }]
+compile_fail = true
+error_contains = ["E1200", "at type i32", "4000000000 does not fit in i32"]
+
+# --- RUE-230 control: mixed operands are fine when both fit the shared type ---
+# u8 + u8 = 255 fits u8; the const evaluates and is @intCast for the exit code.
+[[case]]
+name = "same_type_operands_evaluate"
+files = [{ path = "main.rue", source = """
+const A: u8 = 200;
+const B: u8 = 55;
+const SUM: u8 = A + B;
+
+fn main() -> i32 {
+    let s: u8 = SUM;
+    let r: i32 = @intCast(s);
+    r
+}
+""" }]
+exit_code = 255
+
+# --- RUE-231: comptime-pruned untaken branch must not poison the taken one ----
+# `n == 0` selects the then-branch; the else-branch's undefined name must not be
+# analyzed (spec 4.14:19), and its `<error>` type must not leak into the taken
+# literal `1` (which previously failed E0800 "out of range for '<error>'").
+[[case]]
+name = "comptime_if_untaken_branch_error_ignored"
+files = [{ path = "main.rue", source = """
+fn pick(comptime n: i32) -> i32 {
+    if n == 0 {
+        1
+    } else {
+        undefined_name
+    }
+}
+
+fn main() -> i32 { pick(0) }
+""" }]
+exit_code = 1
+
+# --- RUE-231: same, via `match` ----------------------------------------------
+[[case]]
+name = "comptime_match_untaken_arm_error_ignored"
+files = [{ path = "main.rue", source = """
+fn pick(comptime n: i32) -> i32 {
+    match n {
+        0 => 1,
+        _ => undefined_name,
+    }
+}
+
+fn main() -> i32 { pick(0) }
+""" }]
+exit_code = 1
+
+# --- RUE-231: the SELECTED branch's own error is still reported ---------------
+# Here the taken then-branch itself references an undefined name; pruning the
+# untaken branch must not silence the selected branch's real error.
+[[case]]
+name = "comptime_selected_branch_error_still_caught"
+files = [{ path = "main.rue", source = """
+fn pick(comptime n: i32) -> i32 {
+    if n == 0 {
+        undefined_in_taken
+    } else {
+        2
+    }
+}
+
+fn main() -> i32 { pick(0) }
+""" }]
+compile_fail = true
+error_contains = ["E0201", "undefined_in_taken"]
