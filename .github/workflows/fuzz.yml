@@ -47,6 +47,16 @@ jobs:
       - name: Fuzz x86-64 emitter sequences (5 minutes)
         run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 emitter_sequence crates/rue-fuzz/corpus
 
+      # Differential fuzzing: generate valid programs and cross-check the
+      # rue-oracle reference interpreter against the compiled native binary
+      # (RUE-247). Any exit-code / stdout disagreement is an automatically-found
+      # miscompile; the step exits non-zero and a self-contained repro (named by
+      # its seed) lands in crates/rue-fuzz/crashes/ for the upload step below.
+      - name: Differential fuzz (oracle vs compiled, 500 seeds)
+        run: |
+          RUE_BINARY="$(scripts/rue-bin)" ./buck2 run //crates/rue-oracle-diff:rue-oracle-diff -- \
+            fuzz --seeds 500 --crash-dir crates/rue-fuzz/crashes
+
       - name: Upload crash artifacts
         if: failure()
         uses: actions/upload-artifact@v6
