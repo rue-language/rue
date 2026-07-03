@@ -13,8 +13,11 @@ the prose specification (`docs/spec/`) cannot:
 
 The prose spec answers "what does this feature do, for a human learning the
 language." The formal core answers "what is the *exact* meaning, for a compiler
-author or a proof." They are two views of one language and must agree; where they
-disagree, that is a bug in one of them, tracked and fixed.
+author or a proof." The compiler is a third view — the running realization. All
+three are views of one language and must agree where they overlap; a genuine
+disagreement is a bug in one of them, reconciled by fixing whichever is wrong
+rather than by precedence (RUE-305), and surfaced mechanically by the
+differential oracle. Where the core is silent, the prose governs.
 
 > **Status: foundation in progress.** This is being built keystone-first. The
 > core calculus, the definition of *use*, and the shape of the ownership and
@@ -91,8 +94,12 @@ replace it; it *grounds* it. Concretely:
   discipline the test suite already enforces, run in the other direction.
 - Where the formal core reveals that a prose rule is imprecise, incomplete, or a
   folk-term ("implicit return", "when used"), the prose rule is **rewritten to
-  match the core** — the core is the tie-breaker. Several such rewrites are
-  expected; each is a normal spec change, pre-1.0.
+  match the core** — sharpening underspecified prose is the core doing its job,
+  not a disagreement. But a genuine *contradiction* between the prose, the core,
+  and the compiler is a **defect in one of the three**, reconciled by fixing
+  whichever is wrong — no artifact is presumed authoritative, and none wins by
+  precedence (RUE-305). Several such rewrites are expected; each is a normal spec
+  change, pre-1.0.
 - The formalization is *allowed to remove or roll back* language features it
   shows to be ill-defined or not worth their complexity. Pre-1.0, simplification
   is a feature. Such proposals are filed to Backlog for a maintainer decision,
