@@ -1,0 +1,28 @@
+# BuildBuddy remote build cache — opt-in local config (RUE-316).
+#
+# Copy this file to `.buckconfig.local` (gitignored) and paste your BuildBuddy
+# API key. buck2 reads `.buckconfig.local` automatically and layers it over
+# `.buckconfig`, so the shared config stays cache-agnostic — nobody without a key
+# is affected.
+#
+#   cp .buckconfig.local.example .buckconfig.local
+#   # then replace <YOUR_BUILDBUDDY_API_KEY> below
+#
+# Get the key from https://app.buildbuddy.io (Settings -> API keys). CI reads the
+# same key from the BUILDBUDDY_API_KEY repo secret instead of this file.
+#
+# This is CACHE-ONLY: actions execute locally, only the action cache + CAS are
+# remote (so it can't affect build correctness, only speed). The remote cache
+# persists across daemon restarts and machines — which the local OSS buck2 cache
+# does not (see .github/workflows/ci.yml).
+
+[buck2_re_client]
+engine_address = remote.buildbuddy.io
+action_cache_address = remote.buildbuddy.io
+cas_address = remote.buildbuddy.io
+tls = true
+http_headers = x-buildbuddy-api-key:<YOUR_BUILDBUDDY_API_KEY>
+
+[build]
+# Route execution through the cache-only platform (local exec + remote cache).
+execution_platforms = root//platforms:remote_cache
