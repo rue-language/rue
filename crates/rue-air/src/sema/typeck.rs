@@ -231,8 +231,11 @@ impl<'a> Sema<'a> {
             } else if let Some((call_name, arg_strs)) = parse_type_call_syntax(type_name) {
                 // A type-function application written directly in type position
                 // (`Result(i32, i32)`; RUE-241). Reduce the comptime type call
-                // to its monomorphized concrete type.
-                self.resolve_type_function_call(&call_name, &arg_strs, span)
+                // to its monomorphized concrete type. No analysis context is
+                // available on this context-free path, so arguments resolve
+                // context-free (a signature/return position collected before any
+                // body context exists).
+                self.resolve_type_function_call(&call_name, &arg_strs, span, None)
             } else {
                 Err(CompileError::new(
                     ErrorKind::UnknownType(type_name.to_string()),
@@ -296,6 +299,14 @@ impl<'a> Sema<'a> {
             let pointee_ty = self.resolve_type_with_ctx(pointee_sym, span, ctx)?;
             let ptr_type_id = self.type_pool.intern_ptr_mut_from_type(pointee_ty);
             Ok(Type::new_ptr_mut(ptr_type_id))
+        } else if let Some((call_name, arg_strs)) = parse_type_call_syntax(type_name) {
+            // A type-function application in an annotation position whose
+            // arguments may name enclosing comptime type parameters or local
+            // comptime type variables (`let x: Option(T)` / `let x: Option(P)`).
+            // Thread `ctx` so each argument resolves through this same
+            // context-aware resolver rather than context-free — otherwise the
+            // inner `T`/`P` would miss and yield a spurious E0204 (RUE-272).
+            self.resolve_type_function_call(&call_name, &arg_strs, span, Some(ctx))
         } else {
             // Non-composite leaf: primitive / struct / enum / unknown. Defer to
             // the context-free resolver for identical resolution, privacy
@@ -320,11 +331,23 @@ impl<'a> Sema<'a> {
     /// function, `fn f() -> some_value_fn()`), an arity mismatch, or a body
     /// that does not reduce to a type is reported cleanly as E1200 (an unknown
     /// callee as E0204), never a crash.
+    ///
+    /// When `ctx` is `Some`, each argument is resolved through
+    /// [`resolve_type_with_ctx`] so an argument naming an enclosing comptime
+    /// type parameter or a local comptime type variable (`Option(T)` inside a
+    /// generic function, `let x: Option(P)` where `P` is a local type alias)
+    /// resolves from the analysis context rather than being reported as an
+    /// unknown type (RUE-272). When `ctx` is `None` (a signature/return
+    /// position, collected before any body context exists) arguments resolve
+    /// context-free, exactly as before.
+    ///
+    /// [`resolve_type_with_ctx`]: Sema::resolve_type_with_ctx
     fn resolve_type_function_call(
         &mut self,
         call_name: &str,
         arg_strs: &[String],
         span: Span,
+        ctx: Option<&AnalysisContext>,
     ) -> CompileResult<Type> {
         let name_sym = self.interner.get_or_intern(call_name);
 
@@ -374,7 +397,10 @@ impl<'a> Sema<'a> {
         let mut callee_types: HashMap<Spur, Type> = HashMap::new();
         for (i, arg) in arg_strs.iter().enumerate() {
             let arg_sym = self.interner.get_or_intern(arg);
-            let arg_ty = self.resolve_type(arg_sym, span)?;
+            let arg_ty = match ctx {
+                Some(ctx) => self.resolve_type_with_ctx(arg_sym, span, ctx)?,
+                None => self.resolve_type(arg_sym, span)?,
+            };
             callee_types.insert(param_names[i], arg_ty);
         }
 
@@ -488,6 +514,51 @@ impl<'a> Sema<'a> {
             )?;
             let ptr_type_id = self.type_pool.intern_ptr_mut_from_type(pointee_ty);
             Some(Type::new_ptr_mut(ptr_type_id))
+        } else if let Some((call_name, arg_strs)) = parse_type_call_syntax(type_name) {
+            // A type-function application whose arguments may name enclosing
+            // comptime type parameters (`Option(T)` with `T` in `type_subst`).
+            // Resolve each argument under the current substitution, then reduce
+            // the constructor body to its monomorphized type — so a generic
+            // signature/return type applying an enclosing constructor to a type
+            // parameter (`fn wrap(comptime T: type, ...) -> Option(T)`)
+            // monomorphizes at each call site (RUE-272). Shares the reduction
+            // path (and E1200 recursion guard) with the signature-position
+            // resolver `resolve_type_function_call`. On the comptime path we
+            // can't emit a diagnostic, so any failure (unknown callee,
+            // non-`type` callee, arity mismatch, non-reducing body, recursion
+            // guard) just makes the type non-evaluable (`None`); the caller
+            // reports it.
+            let name_sym = self.interner.get_or_intern(&call_name);
+            let fn_info = self.functions.get(&name_sym)?;
+            if fn_info.return_type != Type::COMPTIME_TYPE {
+                return None;
+            }
+            let params = fn_info.params;
+            let param_names = self.param_arena.names(params).to_vec();
+            let param_comptime = self.param_arena.comptime(params).to_vec();
+            if arg_strs.len() != param_names.len()
+                || !(param_names.is_empty() || param_comptime.iter().all(|&c| c))
+            {
+                return None;
+            }
+            let mut callee_types: HashMap<Spur, Type> = HashMap::new();
+            for (i, arg) in arg_strs.iter().enumerate() {
+                let arg_sym = self.interner.get_or_intern(arg);
+                let arg_ty = self.resolve_type_for_comptime_with_subst_and_values(
+                    arg_sym,
+                    type_subst,
+                    value_subst,
+                )?;
+                callee_types.insert(param_names[i], arg_ty);
+            }
+            let empty_values: HashMap<Spur, ConstValue> = HashMap::new();
+            match self
+                .reduce_type_ctor_body(name_sym, &callee_types, &empty_values)
+                .ok()?
+            {
+                Some(ConstValue::Type(t)) => Some(t),
+                _ => None,
+            }
         } else {
             None // Unknown type
         }
@@ -579,6 +650,17 @@ impl<'a> Sema<'a> {
             .or_else(|| type_name.strip_prefix("ptr mut "))
         {
             return self.type_name_mentions_type_param(pointee, type_params);
+        }
+        // A type-function application `Name(arg, ...)` mentions a type parameter
+        // if any argument does — `Option(T)` mentions `T`, so a signature/return
+        // type applying an enclosing constructor to a type parameter is deferred
+        // (as `Type::COMPTIME_TYPE`) until specialization, exactly like `[T; N]`
+        // (RUE-272). The constructor name itself is never a type parameter, so
+        // only the arguments are inspected.
+        if let Some((_call_name, arg_strs)) = parse_type_call_syntax(type_name) {
+            return arg_strs
+                .iter()
+                .any(|arg| self.type_name_mentions_type_param(arg, type_params));
         }
         // Leaf name: only a match against an already-interned symbol counts
         // (type parameter names are interned by the parser).

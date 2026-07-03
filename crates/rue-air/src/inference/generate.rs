@@ -13,7 +13,8 @@ use crate::intern_pool::TypeInternPool;
 use crate::scope::ScopedContext;
 use crate::sema::ConstValue;
 use crate::types::{
-    ArrayLen, PtrMutability, StructId, TypeKind, parse_array_type_syntax, parse_pointer_type_syntax,
+    ArrayLen, PtrMutability, StructId, TypeKind, parse_array_type_syntax,
+    parse_pointer_type_syntax, parse_type_call_syntax,
 };
 use lasso::{Spur, ThreadedRodeo};
 use rue_rir::{InstData, InstRef, RepeatCount, Rir};
@@ -860,12 +861,41 @@ impl<'a> ConstraintGenerator<'a> {
                         // (`-> [T; 3]`, RUE-172).
                         let return_type =
                             if func.return_type == InferType::Concrete(Type::COMPTIME_TYPE) {
-                                self.resolve_type_sym_with_subst(
+                                match self.resolve_type_sym_with_subst(
                                     func.return_type_sym,
                                     &type_subst,
                                     &value_subst,
-                                )
-                                .unwrap_or_else(|| func.return_type.clone())
+                                ) {
+                                    Some(ty) => ty,
+                                    None => {
+                                        // The declared return type is a
+                                        // type-function application to a type
+                                        // parameter (`-> Option(T)`; RUE-272).
+                                        // The constraint generator can't reduce
+                                        // a `-> type` constructor body, so it
+                                        // can't name the monomorphized
+                                        // struct/enum here — sema computes the
+                                        // true type in the analyze pass. Use a
+                                        // fresh inference variable (pinned by
+                                        // the call's use site) rather than the
+                                        // `COMPTIME_TYPE` placeholder, which
+                                        // would spuriously unify against the real
+                                        // result type and reject the program
+                                        // (E0206). A literal `-> type`
+                                        // constructor call is NOT a type-call in
+                                        // this sense and still yields
+                                        // `COMPTIME_TYPE`.
+                                        let is_type_call = parse_type_call_syntax(
+                                            self.interner.resolve(&func.return_type_sym),
+                                        )
+                                        .is_some();
+                                        if is_type_call {
+                                            InferType::Var(self.fresh_var())
+                                        } else {
+                                            func.return_type.clone()
+                                        }
+                                    }
+                                }
                             } else {
                                 func.return_type.clone()
                             };
