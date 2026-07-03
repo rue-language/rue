@@ -31,8 +31,15 @@ enum Compiled {
     /// The compiler rejected a program the oracle's frontend accepted — an ICE
     /// or backend gap (carries the compiler's stderr, truncated).
     CompileFail(String),
-    /// The binary ran to completion: process exit code + captured stdout.
-    Ran { exit: i32, stdout: String },
+    /// The binary ran to completion: process exit code + captured stdout +
+    /// captured stderr. `stderr` carries the runtime's trap message (e.g.
+    /// `"error: integer overflow\n"`) so that when both engines exit 101 we can
+    /// compare *which* trap fired, not just that one did (RUE-339).
+    Ran {
+        exit: i32,
+        stdout: String,
+        stderr: String,
+    },
     /// The binary was killed by a signal (e.g. SIGSEGV) — a hard miscompile.
     Crash(i32),
     /// The binary did not terminate within the per-program timeout.
@@ -226,14 +233,67 @@ enum Verdict {
     Disagree(String),
 }
 
+/// A category of runtime trap, shared vocabulary between the oracle's panic
+/// reason ([`rue_oracle::Outcome::panic`]) and the compiled runtime's stderr
+/// message (`rue-runtime/src/error.rs`). Every defined Rue trap exits 101, so
+/// the exit code alone cannot tell two traps apart; this is what lets
+/// [`classify`] catch a miscompile that traps for the *wrong reason* (RUE-339).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TrapCategory {
+    DivideByZero,
+    Overflow,
+    IntCastOverflow,
+    Bounds,
+}
+
+/// Classify the oracle's panic reason (the exact strings raised in
+/// `rue-oracle/src/lib.rs`) into a [`TrapCategory`]. Reasons we don't map (e.g.
+/// `"reached unreachable"`, which has no distinct runtime message class) return
+/// `None`, so the caller falls back to plain exit-code agreement rather than
+/// inventing a disagreement.
+fn oracle_trap_category(reason: &str) -> Option<TrapCategory> {
+    match reason {
+        // The runtime routes both `x / 0` and `x % 0` to the single
+        // `error: division by zero` handler, so both oracle reasons map here.
+        "divide by zero" | "remainder by zero" => Some(TrapCategory::DivideByZero),
+        "arithmetic overflow" => Some(TrapCategory::Overflow),
+        "integer cast overflow" => Some(TrapCategory::IntCastOverflow),
+        "index out of bounds" => Some(TrapCategory::Bounds),
+        _ => None,
+    }
+}
+
+/// Classify the compiled runtime's stderr message into a [`TrapCategory`] by its
+/// distinguishing class substring (the messages are defined in
+/// `rue-runtime/src/error.rs`). We match on the class rather than the exact
+/// bytes so wording tweaks don't cause false-disagrees, and check the more
+/// specific `integer cast overflow` before `integer overflow`. An unrecognized
+/// message (a `@panic`/`@assert`/UTF-8/unreachable trap, or future wording)
+/// returns `None`, falling back to exit-code agreement.
+fn runtime_trap_category(stderr: &str) -> Option<TrapCategory> {
+    if stderr.contains("integer cast overflow") {
+        Some(TrapCategory::IntCastOverflow)
+    } else if stderr.contains("integer overflow") {
+        Some(TrapCategory::Overflow)
+    } else if stderr.contains("division by zero") {
+        Some(TrapCategory::DivideByZero)
+    } else if stderr.contains("index out of bounds") {
+        Some(TrapCategory::Bounds)
+    } else {
+        None
+    }
+}
+
 fn classify(oracle: &rue_oracle::Outcome, compiled: &Compiled) -> Verdict {
     match compiled {
-        Compiled::Ran { exit, stdout } => {
+        Compiled::Ran {
+            exit,
+            stdout,
+            stderr,
+        } => {
             let exit_ok = oracle.exit_code == *exit;
             let stdout_ok = &oracle.stdout == stdout;
-            if exit_ok && stdout_ok {
-                Verdict::Agree
-            } else {
+            if !exit_ok || !stdout_ok {
                 let mut r = String::new();
                 if !exit_ok {
                     r += &format!("exit: oracle {} vs compiled {exit}; ", oracle.exit_code);
@@ -244,8 +304,29 @@ fn classify(oracle: &rue_oracle::Outcome, compiled: &Compiled) -> Verdict {
                         oracle.stdout, stdout
                     );
                 }
-                Verdict::Disagree(r)
+                return Verdict::Disagree(r);
             }
+            // Exit code and stdout agree. When both engines ended in a runtime
+            // trap (exit 101), also compare *which* trap fired: since every Rue
+            // trap exits 101, a miscompile that traps for the wrong reason at
+            // the same point would otherwise be a false-AGREE (RUE-339). We
+            // compare category classes, not exact message bytes, to avoid
+            // false-disagrees; if either side's cause can't be classified (e.g.
+            // a `@panic`/unreachable trap, or an unmapped oracle reason) we fall
+            // back to the exit-code agreement above — a documented residual
+            // blind spot, never a manufactured disagreement.
+            if *exit == 101
+                && let Some(want) = oracle.panic.as_deref().and_then(oracle_trap_category)
+                && let Some(got) = runtime_trap_category(stderr)
+                && want != got
+            {
+                return Verdict::Disagree(format!(
+                    "panic category: oracle {want:?} vs compiled {got:?} \
+                     (both exit 101; compiled stderr {:?})",
+                    first_line(stderr)
+                ));
+            }
+            Verdict::Agree
         }
         Compiled::CompileFail(stderr) => Verdict::Disagree(format!(
             "compiler rejected a program the oracle accepted (possible ICE/backend gap): {}",
@@ -288,12 +369,14 @@ fn compile_and_run(
     }
 
     // Run the produced binary directly with a manual timeout so we can read the
-    // child's own exit code / terminating signal unambiguously.
+    // child's own exit code / terminating signal unambiguously. stderr is
+    // captured (not `Stdio::null`) so a trap's message is available to
+    // `classify` for panic-category comparison (RUE-339).
     let mut child = Command::new(&bin_path)
         .current_dir(dir)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()?;
 
     let start = Instant::now();
@@ -304,8 +387,20 @@ fn compile_and_run(
                 if let Some(mut out) = child.stdout.take() {
                     out.read_to_string(&mut stdout).ok();
                 }
+                // Bounded read: trap messages are short, and the child has
+                // already exited, so its full output is buffered in the pipe —
+                // no drain-deadlock. The cap just guards against a chatty
+                // program making us buffer unbounded stderr.
+                let mut stderr = String::new();
+                if let Some(err) = child.stderr.take() {
+                    err.take(8192).read_to_string(&mut stderr).ok();
+                }
                 return Ok(match status.code() {
-                    Some(code) => Compiled::Ran { exit: code, stdout },
+                    Some(code) => Compiled::Ran {
+                        exit: code,
+                        stdout,
+                        stderr,
+                    },
                     None => Compiled::Crash(status.signal().unwrap_or(0)),
                 });
             }
@@ -348,7 +443,7 @@ impl Disagreement {
 
 fn describe(c: &Compiled) -> String {
     match c {
-        Compiled::Ran { exit, stdout } => format!("ran exit={exit} stdout={stdout:?}"),
+        Compiled::Ran { exit, stdout, .. } => format!("ran exit={exit} stdout={stdout:?}"),
         Compiled::CompileFail(e) => format!("compile-fail: {}", first_line(e)),
         Compiled::Crash(sig) => format!("crash signal={sig}"),
         Compiled::Timeout => "timeout".to_string(),
@@ -398,45 +493,109 @@ mod tests {
         }
     }
 
+    /// An oracle outcome that ended in a runtime trap (exit 101) with `reason`.
+    fn trap(reason: &str) -> Outcome {
+        Outcome {
+            exit_code: 101,
+            stdout: String::new(),
+            panic: Some(reason.to_string()),
+        }
+    }
+
+    /// A `Compiled::Ran` with no captured stderr (for the non-trap tests).
+    fn ran(exit: i32, stdout: &str) -> Compiled {
+        Compiled::Ran {
+            exit,
+            stdout: stdout.to_string(),
+            stderr: String::new(),
+        }
+    }
+
+    /// A `Compiled::Ran` that trapped at exit 101 with the given stderr message.
+    fn ran_trap(stderr: &str) -> Compiled {
+        Compiled::Ran {
+            exit: 101,
+            stdout: String::new(),
+            stderr: stderr.to_string(),
+        }
+    }
+
     fn is_disagree(v: Verdict) -> bool {
         matches!(v, Verdict::Disagree(_))
     }
 
     #[test]
     fn agrees_when_exit_and_stdout_match() {
-        let v = classify(
-            &oc(42, "7\n"),
-            &Compiled::Ran {
-                exit: 42,
-                stdout: "7\n".to_string(),
-            },
-        );
+        let v = classify(&oc(42, "7\n"), &ran(42, "7\n"));
         assert!(matches!(v, Verdict::Agree));
     }
 
     #[test]
     fn detects_exit_mismatch() {
         // The planted-bug shape: same stdout, wrong exit code.
-        let v = classify(
-            &oc(42, ""),
-            &Compiled::Ran {
-                exit: 43,
-                stdout: String::new(),
-            },
-        );
+        let v = classify(&oc(42, ""), &ran(43, ""));
         assert!(is_disagree(v));
     }
 
     #[test]
     fn detects_stdout_mismatch() {
+        let v = classify(&oc(0, "7\n"), &ran(0, "8\n"));
+        assert!(is_disagree(v));
+    }
+
+    #[test]
+    fn detects_wrong_trap_at_exit_101() {
+        // RUE-339: the false-AGREE this fix closes. Both engines exit 101 with
+        // identical (empty) stdout, but the oracle expected an arithmetic
+        // overflow while the compiled binary trapped on a bounds check — a
+        // miscompile that the old exit-code-only comparator scored as Agree.
         let v = classify(
-            &oc(0, "7\n"),
-            &Compiled::Ran {
-                exit: 0,
-                stdout: "8\n".to_string(),
-            },
+            &trap("arithmetic overflow"),
+            &ran_trap("error: index out of bounds\n"),
         );
         assert!(is_disagree(v));
+    }
+
+    #[test]
+    fn agrees_when_trap_categories_match() {
+        // Same cause on both sides -> genuine agreement, not a false-disagree.
+        let v = classify(
+            &trap("divide by zero"),
+            &ran_trap("error: division by zero\n"),
+        );
+        assert!(matches!(v, Verdict::Agree));
+        // The oracle's `remainder by zero` maps to the runtime's single
+        // `division by zero` handler — must still agree (category, not bytes).
+        let v = classify(
+            &trap("remainder by zero"),
+            &ran_trap("error: division by zero\n"),
+        );
+        assert!(matches!(v, Verdict::Agree));
+        // `integer cast overflow` must not be confused with `integer overflow`.
+        let v = classify(
+            &trap("integer cast overflow"),
+            &ran_trap("error: integer cast overflow\n"),
+        );
+        assert!(matches!(v, Verdict::Agree));
+        let v = classify(
+            &trap("integer cast overflow"),
+            &ran_trap("error: integer overflow\n"),
+        );
+        assert!(is_disagree(v));
+    }
+
+    #[test]
+    fn falls_back_when_cause_unclassifiable() {
+        // An unmapped runtime message (e.g. a `@panic`/unreachable trap) must
+        // NOT manufacture a disagreement — we fall back to exit-code agreement.
+        let v = classify(&trap("arithmetic overflow"), &ran_trap("panic: boom\n"));
+        assert!(matches!(v, Verdict::Agree));
+        // Likewise an oracle reason we don't map (e.g. reached unreachable).
+        let v = classify(
+            &trap("reached unreachable"),
+            &ran_trap("error: integer overflow\n"),
+        );
+        assert!(matches!(v, Verdict::Agree));
     }
 
     #[test]
