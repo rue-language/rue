@@ -1,0 +1,75 @@
+# An infinite-size type — one that (transitively) contains itself by value with
+# no pointer indirection — must be rejected with a clean bounded diagnostic
+# (E0483), not crash the compiler. RUE-264.
+#
+# Layout / drop-glue computation recurses through struct fields, enum payloads,
+# and array elements. A by-value cycle makes that recursion unbounded and
+# overflows the compiler's own stack (SIGABRT, exit 134) — the raw overflow
+# even bypasses the ICE panic-hook, so no banner prints. A well-formedness
+# check now detects the cycle up front (the type-graph analogue of the cyclic
+# const-initializer check, E0461) and reports E0483 (cf. Rust E0072). A cycle
+# broken by a pointer is a legitimate recursive data structure and still
+# compiles.
+
+[section]
+id = "cli.recursive_value_type"
+name = "Recursive-by-value type (infinite size)"
+description = "Infinite-size types are E0483, not a stack-overflow ICE; pointer indirection and ordinary structs are unaffected (RUE-264)."
+
+[[case]]
+name = "self_recursive_struct_is_e0483"
+description = "`struct A { a: A }` → clean E0483 (was SIGABRT 134)."
+compile_fail = true
+error_contains = ["E0483", "infinite size", "A -> A"]
+files = [{ path = "main.rue", source = """
+struct A { a: A }
+fn main() -> i32 { 0 }
+""" }]
+
+[[case]]
+name = "mutually_recursive_structs_multifile_is_e0483"
+description = "Cross-file mutual recursion `struct A { b: B }` / `struct B { a: A }` → clean E0483 (was SIGABRT 134)."
+args = ["a.rue", "b.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0483", "infinite size"]
+files = [
+    { path = "a.rue", source = """
+struct A { b: B }
+fn main() -> i32 { 0 }
+""" },
+    { path = "b.rue", source = """
+struct B { a: A }
+""" },
+]
+
+[[case]]
+name = "array_by_value_recursion_is_e0483"
+description = "`struct A { a: [A; 1] }` (arrays store elements inline) → clean E0483."
+compile_fail = true
+error_contains = ["E0483", "infinite size"]
+files = [{ path = "main.rue", source = """
+struct A { a: [A; 1] }
+fn main() -> i32 { 0 }
+""" }]
+
+[[case]]
+name = "pointer_indirection_breaks_cycle_control"
+description = "Control: recursion through a pointer is a valid recursive type and compiles."
+compile_only = true
+files = [{ path = "main.rue", source = """
+struct Node { next: ptr const Node, val: i32 }
+fn main() -> i32 { 0 }
+""" }]
+
+[[case]]
+name = "ordinary_nested_struct_unaffected_control"
+description = "Control: an ordinary non-recursive nested struct still compiles and runs (exit 8)."
+files = [{ path = "main.rue", source = """
+struct Inner { x: i32 }
+struct Outer { i: Inner, y: i32 }
+fn main() -> i32 {
+    let o = Outer { i: Inner { x: 5 }, y: 3 };
+    o.i.x + o.y
+}
+""" }]
+exit_code = 8

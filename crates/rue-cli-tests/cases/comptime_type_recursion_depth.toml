@@ -1,0 +1,64 @@
+# Unbounded comptime `-> type` recursion must produce a clean, bounded
+# diagnostic (E1200) instead of overflowing the compiler's own stack (SIGABRT,
+# exit 134) — RUE-261.
+#
+# The comptime evaluator reduces a type-returning function eagerly on the host
+# stack. Without a depth guard, a self-recursive type constructor with no
+# compile-time-known base case recurses forever and aborts the compiler with no
+# diagnostic (the raw stack overflow even bypasses the ICE panic-hook). The
+# value-returning analog was already bounded by the specialization-round limit;
+# this pins the same E1200 on the `-> type` reduction path. Legitimate bounded
+# composition (a delegation chain well under the limit) must still compile.
+
+[section]
+id = "cli.comptime_type_recursion_depth"
+name = "Comptime type-recursion depth limit"
+description = "Unbounded `-> type` recursion is E1200, not a stack-overflow ICE; bounded composition still compiles (RUE-261)."
+
+[[case]]
+name = "no_arg_type_recursion_is_e1200"
+description = "`fn Bad() -> type { Bad() }` → clean E1200 (was SIGABRT 134)."
+compile_fail = true
+error_contains = ["E1200", "exceeded the maximum nesting depth"]
+files = [{ path = "main.rue", source = """
+fn Bad() -> type { Bad() }
+fn main() -> i32 { Bad(); 0 }
+""" }]
+
+[[case]]
+name = "comptime_value_type_recursion_is_e1200"
+description = "`fn Wrap(comptime n: i32) -> type { Wrap(n + 1) }` → clean E1200 (was SIGABRT 134)."
+compile_fail = true
+error_contains = ["E1200", "exceeded the maximum nesting depth"]
+files = [{ path = "main.rue", source = """
+fn Wrap(comptime n: i32) -> type { Wrap(n + 1) }
+fn main() -> i32 { let W = Wrap(0); 0 }
+""" }]
+
+[[case]]
+name = "value_returning_runaway_still_e1200_control"
+description = "Control: the value-returning analog remains a clean E1200."
+compile_fail = true
+error_contains = ["E1200", "exceeded the maximum nesting depth"]
+files = [{ path = "main.rue", source = """
+fn runaway(comptime n: i32) -> i32 { runaway(n + 1) }
+fn main() -> i32 { runaway(0) }
+""" }]
+
+[[case]]
+name = "bounded_delegation_chain_still_compiles_control"
+description = "Control: a six-level delegating `-> type` chain (well under the limit) still reduces and runs (exit 42)."
+files = [{ path = "main.rue", source = """
+fn Base() -> type { struct { x: i32 } }
+fn A1() -> type { Base() }
+fn A2() -> type { A1() }
+fn A3() -> type { A2() }
+fn A4() -> type { A3() }
+fn A5() -> type { A4() }
+fn main() -> i32 {
+    let T = A5();
+    let v: T = T { x: 41 };
+    v.x + 1
+}
+""" }]
+exit_code = 42

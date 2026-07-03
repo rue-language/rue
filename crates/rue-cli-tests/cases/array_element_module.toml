@@ -1,0 +1,65 @@
+# A non-runtime value used as an array element must be rejected with the normal
+# type diagnostic before it reaches the intern pool — which panics on both
+# module and `type` values ("Cannot intern module types"). RUE-265 (module
+# elements) and RUE-253 (type-value elements) are the same class.
+#
+# A module value has no runtime representation (spec 10.4:145); putting one in
+# an array literal or repeat used to reach the intern pool and abort the
+# compiler (SIGABRT, exit 134). The array-element check now rejects it with
+# E0206 — the same diagnostic a module passed as a function argument gets —
+# before the intern pool. The `type`-value control (RUE-253) still produces
+# E1200, and ordinary runtime arrays are unaffected.
+
+[section]
+id = "cli.array_element_module"
+name = "Non-runtime array elements"
+description = "A module (E0206) or `type` value (E1200) as an array element is a clean diagnostic, not an intern-pool ICE (RUE-265, RUE-253)."
+
+[[case]]
+name = "module_in_array_literal_is_e0206"
+description = "`[h, h]` where `h` is an imported module → clean E0206 (was intern-pool SIGABRT)."
+compile_fail = true
+error_contains = ["E0206", "<module>"]
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 { let h = @import("helper"); let arr = [h, h]; 0 }
+""" },
+    { path = "helper.rue", source = """
+pub fn value() -> i32 { 1 }
+""" },
+]
+
+[[case]]
+name = "module_in_array_repeat_is_e0206"
+description = "`[h; 3]` where `h` is an imported module → clean E0206 (was intern-pool SIGABRT)."
+args = ["main.rue", "--preview", "array_repeat", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0206", "<module>"]
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 { let h = @import("helper"); let arr = [h; 3]; 0 }
+""" },
+    { path = "helper.rue", source = """
+pub fn value() -> i32 { 1 }
+""" },
+]
+
+[[case]]
+name = "type_value_in_array_literal_is_e1200_control"
+description = "Control (RUE-253): an array literal of `type` values remains a clean E1200."
+compile_fail = true
+error_contains = ["E1200"]
+files = [{ path = "main.rue", source = """
+fn main() -> i32 { let arr = [i32, i32]; 0 }
+""" }]
+
+[[case]]
+name = "runtime_array_unaffected_control"
+description = "Control: an ordinary runtime array still compiles and runs (exit 6)."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let arr = [1, 2, 3];
+    arr[0] + arr[1] + arr[2]
+}
+""" }]
+exit_code = 6

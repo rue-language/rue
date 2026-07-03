@@ -105,6 +105,7 @@ impl<'a> GatherOutput<'a> {
             anon_struct_captured_values: HashMap::new(),
             destructor_spans: HashMap::new(),
             infectious_linear: HashMap::new(),
+            comptime_type_call_depth: 0,
         }
     }
 }

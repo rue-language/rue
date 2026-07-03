@@ -145,7 +145,7 @@ struct SpecializationInfo {
 /// ever-growing type (e.g. `f(Pair(T), ...)` inside `f`) or a
 /// comptime-recursive function never reaches a comptime-known base case,
 /// so this cap turns a would-be-infinite loop into a clean E1200.
-const MAX_SPECIALIZATION_ROUNDS: usize = 64;
+pub(crate) const MAX_SPECIALIZATION_ROUNDS: usize = 64;
 
 /// Perform the specialization pass on the sema output.
 ///
