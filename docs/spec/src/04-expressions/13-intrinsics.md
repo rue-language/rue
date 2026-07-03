@@ -37,7 +37,16 @@ It is a compile-time error to use an unknown intrinsic name.
 
 {{ rule(id="4.13:5a", cat="informative") }}
 
-The following table provides a quick reference to all available intrinsics:
+The following tables list every intrinsic the compiler recognizes, grouped by
+whether the intrinsic may appear in any expression position (expression
+intrinsics) or only inside a `checked` block (unchecked intrinsics, specified in
+§9.2). This inventory is kept in sync with the compiler's intrinsic registry:
+the pre-interned names in `crates/rue-air/src/sema/known_symbols.rs` and the
+dispatch on them in `crates/rue-air/src/sema/analysis.rs`. A name that is absent
+from that registry is rejected as an unknown intrinsic (rule 4.13:5), so any
+intrinsic the compiler accepts **MUST** appear here.
+
+Expression intrinsics (usable in any expression position):
 
 | Intrinsic | Purpose | Arguments | Return Type |
 |-----------|---------|-----------|-------------|
@@ -45,6 +54,8 @@ The following table provides a quick reference to all available intrinsics:
 | `@size_of` | Get type size in bytes | 1 type | `i32` |
 | `@align_of` | Get type alignment in bytes | 1 type | `i32` |
 | `@intCast` | Convert between integer types | 1 expression (integer) | inferred integer type |
+| `@to_string` | Format an integer as its decimal `String` | 1 expression (`i64`) | `String` |
+| `@drop` | Run a value's drop glue and consume it (RUE-187) | 1 expression (any type) | `()` |
 | `@read_line` | Read line from stdin | none | `Option(String)` |
 | `@parse_i32` | Parse string to i32 | 1 expression (`String`) | `Option(i32)` |
 | `@parse_i64` | Parse string to i64 | 1 expression (`String`) | `Option(i64)` |
@@ -55,6 +66,32 @@ The following table provides a quick reference to all available intrinsics:
 | `@target_arch` | Get target architecture | none | `Arch` |
 | `@target_os` | Get target OS | none | `Os` |
 | `@import` | Import module | 1 expression (string literal) | module type |
+
+Unchecked intrinsics (only valid inside a `checked` block; see §9.2 for their
+full semantics):
+
+| Intrinsic | Purpose | Arguments | Return Type |
+|-----------|---------|-----------|-------------|
+| `@syscall` | Direct system call | 1–7 expressions (`u64`) | `i64` |
+| `@raw` | `const` pointer to a place | 1 place expression | `ptr const T` |
+| `@raw_mut` | `mut` pointer to a place | 1 place expression | `ptr mut T` |
+| `@ptr_read` | Read through a pointer | 1 expression (`ptr const T`/`ptr mut T`) | `T` |
+| `@ptr_write` | Write through a pointer | 2 expressions (`ptr mut T`, `T`) | `()` |
+| `@ptr_offset` | Pointer arithmetic | 2 expressions (`ptr T`, integer) | `ptr T` |
+| `@ptr_to_int` | Pointer to integer | 1 expression (pointer) | `u64` |
+| `@int_to_ptr` | Integer to pointer | 1 expression (`u64`) | inferred `ptr mut T` |
+| `@alloc` | Allocate a heap block | 1 expression (`u64` count) | inferred `ptr mut T` |
+| `@free` | Free a heap block | 2 expressions (`ptr mut T`, `u64` count) | `()` |
+| `@realloc` | Resize a heap block | 3 expressions (`ptr mut T`, `u64`, `u64`) | `ptr mut T` |
+
+{{ rule(id="4.13:5b", cat="informative") }}
+
+The compiler frontend additionally reserves the names `@cast`, `@panic`, and
+`@assert`. Their behavior is not yet stabilized — the current implementation
+does not lower them to correct code (`@cast` fails type inference; `@panic` and
+`@assert` compile but have no runtime effect) — so they are intentionally
+omitted from the inventory above and left unspecified. Use `@intCast` for
+integer conversions until `@cast` is specified.
 
 ## `@dbg`
 
