@@ -36,6 +36,10 @@ pub struct KnownSymbols {
     // Intrinsic names
     /// The `dbg` intrinsic symbol.
     pub dbg: Spur,
+    /// The `drop` intrinsic symbol - the intentional-destroy escape hatch
+    /// (RUE-187, ADR-0039). Runs a value's drop glue and discharges its
+    /// consumption obligation (linear/affine).
+    pub drop: Spur,
     /// The `intCast` intrinsic symbol (deprecated, use `cast`).
     pub int_cast: Spur,
     /// The `cast` intrinsic symbol.
@@ -103,6 +107,7 @@ impl KnownSymbols {
         Self {
             // Intrinsic names
             dbg: interner.get_or_intern_static("dbg"),
+            drop: interner.get_or_intern_static("drop"),
             int_cast: interner.get_or_intern_static("intCast"),
             cast: interner.get_or_intern_static("cast"),
             panic: interner.get_or_intern_static("panic"),
@@ -168,6 +173,7 @@ mod tests {
 
         // Verify symbols can be resolved back to their expected strings
         assert_eq!(interner.resolve(&known.dbg), "dbg");
+        assert_eq!(interner.resolve(&known.drop), "drop");
         assert_eq!(interner.resolve(&known.int_cast), "intCast");
         assert_eq!(interner.resolve(&known.cast), "cast");
         assert_eq!(interner.resolve(&known.panic), "panic");
