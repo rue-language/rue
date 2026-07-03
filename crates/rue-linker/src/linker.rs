@@ -1684,8 +1684,8 @@ impl Linker {
         elf.push(crate::constants::ELFOSABI_NONE);
         elf.extend_from_slice(&[0u8; 8]); // Padding
         elf.extend_from_slice(&ET_EXEC.to_le_bytes()); // e_type: ET_EXEC
-        // The linker currently only produces ELF executables. For Mach-O targets,
-        // we use the system linker via a separate code path.
+        // This path (link_elf) produces ELF executables. Mach-O targets are
+        // emitted directly by link_macho — the crate uses no system linker.
         elf.extend_from_slice(
             &self
                 .target
@@ -1739,6 +1739,21 @@ impl Linker {
             elf.extend_from_slice(&(merged_data.len() as u64).to_le_bytes()); // p_filesz
             elf.extend_from_slice(&data_memsz.to_le_bytes()); // p_memsz (includes bss)
             elf.extend_from_slice(&self.page_size.to_le_bytes()); // p_align
+        }
+
+        // Pad to the reserved code file offset before writing .text. The text
+        // PT_LOAD's p_offset, code_vaddr, and e_entry all reserve HEADER_SIZE
+        // (space for the maximum number of program headers), but only
+        // num_program_headers were actually written above. Without this pad a
+        // link with fewer than the reserved number of LOAD segments would place
+        // .text at a smaller file offset than its header advertises — a corrupt,
+        // non-loadable executable (and it must be *padded*, not shrunk, because
+        // the ELF rule p_offset % page == p_vaddr % page is baked into
+        // code_vaddr). Real compiles always emit 3 segments, so this was latent;
+        // it is reachable via the Linker API with a code-only / code+rodata
+        // object.
+        if (elf.len() as u64) < code_file_offset {
+            elf.resize(code_file_offset as usize, 0);
         }
 
         // Write code section
@@ -1854,6 +1869,35 @@ mod tests {
         assert_eq!(&elf[0..4], &ELF_MAGIC);
         // Check it's an executable
         assert_eq!(elf[E_TYPE_OFFSET], ET_EXEC as u8);
+    }
+
+    #[test]
+    fn test_code_only_link_text_at_advertised_offset() {
+        // A code-only object links to fewer than the reserved number of LOAD
+        // segments. The text PT_LOAD's p_offset reserves the max-header
+        // HEADER_SIZE, so the .text bytes must be *padded* to sit at that offset
+        // rather than immediately after the (fewer) written headers — otherwise
+        // the executable is corrupt. Regression for the rue-linker review finding.
+        let code = vec![0xB8, 0x2A, 0x00, 0x00, 0x00, 0xC3]; // mov eax, 42; ret
+        let obj_bytes = ObjectBuilder::new(ELF_TARGET, "main")
+            .code(code.clone())
+            .build();
+        let obj = ObjectFile::parse(&obj_bytes).unwrap();
+        let mut linker = Linker::new(ELF_TARGET);
+        linker.add_object(obj).unwrap();
+        let elf = linker.link("main").unwrap();
+
+        // e_phoff is at ELF64 header offset 32; the text R+X segment is written
+        // as the first program header, whose p_offset is at byte 8 of the phdr.
+        let e_phoff = u64::from_le_bytes(elf[32..40].try_into().unwrap()) as usize;
+        let text_p_offset =
+            u64::from_le_bytes(elf[e_phoff + 8..e_phoff + 16].try_into().unwrap()) as usize;
+        // The .text bytes must physically sit at the offset the header advertises.
+        assert_eq!(
+            &elf[text_p_offset..text_p_offset + code.len()],
+            &code[..],
+            "code must be at the file offset the text program header advertises"
+        );
     }
 
     #[test]
@@ -2359,6 +2403,8 @@ mod tests {
         assert_eq!(p1_flags, PF_R | PF_X, "first segment should be R+X (code)");
 
         // Check second segment is R only (rodata)
+        // The 2nd program header sits right after the ELF header + 1st phdr
+        // (headers are contiguous from e_phoff); it is NOT the code offset.
         let ph2_offset = TEST_EHDR_SIZE + TEST_PHDR_SIZE;
         let p2_flags = u32::from_le_bytes(elf[ph2_offset + 4..ph2_offset + 8].try_into().unwrap());
         assert_eq!(p2_flags, PF_R, "second segment should be R only (rodata)");
@@ -2450,7 +2496,7 @@ mod tests {
         assert!(entry < 0x500000, "entry should be reasonable");
 
         // Verify we have actual code after headers
-        let header_and_phdr_size = TEST_EHDR_SIZE + TEST_PHDR_SIZE;
+        let header_and_phdr_size = TEST_EHDR_SIZE + 3 * TEST_PHDR_SIZE;
         assert!(
             elf.len() > header_and_phdr_size,
             "should have content after headers"
@@ -3258,7 +3304,7 @@ mod tests {
         let elf = linker.link("main").unwrap();
 
         // Find the code section (after headers)
-        let header_size = TEST_EHDR_SIZE + TEST_PHDR_SIZE;
+        let header_size = TEST_EHDR_SIZE + 3 * TEST_PHDR_SIZE;
         let code = &elf[header_size..];
 
         // The instruction should now be LEA (8D) instead of MOV (8B)
@@ -3303,7 +3349,7 @@ mod tests {
 
         let elf = linker.link("main").unwrap();
 
-        let header_size = TEST_EHDR_SIZE + TEST_PHDR_SIZE;
+        let header_size = TEST_EHDR_SIZE + 3 * TEST_PHDR_SIZE;
         let code = &elf[header_size..];
 
         // The instruction should now be LEA (8D) instead of MOV (8B)
@@ -3349,7 +3395,7 @@ mod tests {
 
         let elf = linker.link("main").unwrap();
 
-        let header_size = TEST_EHDR_SIZE + TEST_PHDR_SIZE;
+        let header_size = TEST_EHDR_SIZE + 3 * TEST_PHDR_SIZE;
         let code = &elf[header_size..];
 
         // The indirect call should be transformed to: addr32 prefix + direct call
@@ -3400,7 +3446,7 @@ mod tests {
 
         let elf = linker.link("main").unwrap();
 
-        let header_size = TEST_EHDR_SIZE + TEST_PHDR_SIZE;
+        let header_size = TEST_EHDR_SIZE + 3 * TEST_PHDR_SIZE;
         let code = &elf[header_size..];
 
         // REX prefix is preserved, FF 15 becomes 67 E8
@@ -3445,7 +3491,7 @@ mod tests {
 
         let elf = linker.link("main").unwrap();
 
-        let header_size = TEST_EHDR_SIZE + TEST_PHDR_SIZE;
+        let header_size = TEST_EHDR_SIZE + 3 * TEST_PHDR_SIZE;
         let code = &elf[header_size..];
 
         // Verify LEA transformation preserves the register encoding
@@ -3486,7 +3532,7 @@ mod tests {
 
         let elf = linker.link("main").unwrap();
 
-        let header_size = TEST_EHDR_SIZE + TEST_PHDR_SIZE;
+        let header_size = TEST_EHDR_SIZE + 3 * TEST_PHDR_SIZE;
         let code = &elf[header_size..];
 
         // For static linking, GotPcRel should be relaxed just like GotPcRelX:
@@ -3785,7 +3831,7 @@ mod tests {
         // Code is written right after the (single, text-only) program header
         // in the FILE, but virtual addresses are always computed assuming the
         // maximum 3 program headers.
-        let code_off = TEST_EHDR_SIZE + TEST_PHDR_SIZE;
+        let code_off = TEST_EHDR_SIZE + 3 * TEST_PHDR_SIZE;
         let code_vaddr = 0x400000 + (TEST_EHDR_SIZE + 3 * TEST_PHDR_SIZE) as u64;
         // obj0 .text at merged offset 0; obj1 .text at 32 (24 aligned to 16).
         assert_eq!(

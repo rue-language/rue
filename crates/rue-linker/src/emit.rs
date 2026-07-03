@@ -1791,9 +1791,9 @@ mod tests {
         );
     }
 
-    /// Test that Mach-O object files have valid structure for system linker.
-    /// This validates the object file structure without actually invoking the linker
-    /// (which would require running on macOS).
+    /// Test that emitted Mach-O object files have valid structure. The crate
+    /// emits Mach-O directly (no system linker); this validates the object-file
+    /// structure without executing it (which would require running on macOS).
     ///
     /// A valid Mach-O object file for linking must have:
     /// - Correct magic number and header
