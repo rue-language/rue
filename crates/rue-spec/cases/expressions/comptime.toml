@@ -1702,3 +1702,42 @@ fn main() -> i32 {
 }
 """
 exit_code = 42
+
+[[case]]
+name = "anon_enum_type_fn_over_enclosing_param"
+spec = ["4.14:20"]
+preview = "enum_payloads"
+description = "A generic function whose signature applies a type constructor to its own type parameter (`-> Option(T)`) resolves and monomorphizes at the call site (RUE-272)"
+source = """
+fn Option(comptime T: type) -> type { enum { Some(T), None } }
+fn wrap(comptime T: type, v: T) -> Option(T) {
+    let O = Option(T);
+    O::Some(v)
+}
+fn main() -> i32 {
+    let O = Option(i32);
+    match wrap(i32, 42) { O::Some(x) => x, O::None => 0 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "anon_enum_type_fn_over_param_two_instantiations"
+spec = ["4.14:21"]
+preview = "enum_payloads"
+description = "The same generic function over Option(T) monomorphizes independently for i32 and bool (RUE-272)"
+source = """
+fn Option(comptime T: type) -> type { enum { Some(T), None } }
+fn wrap(comptime T: type, v: T) -> Option(T) {
+    let O = Option(T);
+    O::Some(v)
+}
+fn main() -> i32 {
+    let Oi = Option(i32);
+    let a = match wrap(i32, 40) { Oi::Some(x) => x, Oi::None => 0 };
+    let Ob = Option(bool);
+    let b = match wrap(bool, true) { Ob::Some(x) => 2, Ob::None => 0 };
+    a + b
+}
+"""
+exit_code = 42

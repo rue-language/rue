@@ -125,3 +125,109 @@ fn main() -> i32 { 0 }
 args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
 compile_fail = true
 error_contains = ["E1200", "expects 2 comptime type argument"]
+
+# --- Type function applied to an ENCLOSING type parameter (RUE-272) ---
+#
+# Composing RUE-241 (type-call in a signature) with RUE-263
+# (comptime-type-var-in-context): a generic function whose signature applies a
+# constructor to its own type parameter (`fn wrap(comptime T: type, v: T) ->
+# Option(T)`). The `T` in `Option(T)` resolves from the enclosing comptime
+# parameter and monomorphizes at each call site — the milestone that makes
+# generic FUNCTIONS OVER Option/Result usable, not just concrete
+# instantiations.
+
+[[case]]
+name = "type_fn_over_enclosing_param_return"
+description = "fn wrap(comptime T: type, v: T) -> Option(T): the enclosing T resolves and Some carries 42."
+files = [{ path = "main.rue", source = """
+fn Option(comptime T: type) -> type { enum { Some(T), None } }
+fn wrap(comptime T: type, v: T) -> Option(T) {
+    let O = Option(T);
+    O::Some(v)
+}
+fn main() -> i32 {
+    let O = Option(i32);
+    match wrap(i32, 42) { O::Some(x) => x, O::None => 0 }
+}
+""" }]
+args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+exit_code = 42
+
+[[case]]
+name = "type_fn_over_enclosing_param_two_instantiations"
+description = "Two instantiations (i32 and bool) monomorphize independently: 40 + 2 = 42."
+files = [{ path = "main.rue", source = """
+fn Option(comptime T: type) -> type { enum { Some(T), None } }
+fn wrap(comptime T: type, v: T) -> Option(T) {
+    let O = Option(T);
+    O::Some(v)
+}
+fn main() -> i32 {
+    let Oi = Option(i32);
+    let a = match wrap(i32, 40) { Oi::Some(x) => x, Oi::None => 0 };
+    let Ob = Option(bool);
+    let b = match wrap(bool, true) { Ob::Some(x) => 2, Ob::None => 0 };
+    a + b
+}
+""" }]
+args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+exit_code = 42
+
+[[case]]
+name = "type_fn_over_enclosing_param_array"
+description = "Composes with [T; N]: fn first(comptime T: type, xs: [T; 2]) -> Option(T) returns xs[0]."
+files = [{ path = "main.rue", source = """
+fn Option(comptime T: type) -> type { enum { Some(T), None } }
+fn first(comptime T: type, xs: [T; 2]) -> Option(T) {
+    let O = Option(T);
+    O::Some(xs[0])
+}
+fn main() -> i32 {
+    let arr = [7, 9];
+    let O = Option(i32);
+    match first(i32, arr) { O::Some(x) => x, O::None => 0 }
+}
+""" }]
+args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+exit_code = 7
+
+[[case]]
+name = "type_fn_over_enclosing_param_nested"
+description = "Nested Result(Option(T), i32) return type resolves and constructs through both layers."
+files = [{ path = "main.rue", source = """
+fn Option(comptime T: type) -> type { enum { Some(T), None } }
+fn Result(comptime T: type, comptime E: type) -> type { enum { Ok(T), Err(E) } }
+fn wrap_ok(comptime T: type, v: T) -> Result(Option(T), i32) {
+    let O = Option(T);
+    let R = Result(Option(T), i32);
+    R::Ok(O::Some(v))
+}
+fn main() -> i32 {
+    let O = Option(i32);
+    let R = Result(Option(i32), i32);
+    match wrap_ok(i32, 42) {
+        R::Ok(o) => match o { O::Some(v) => v, O::None => 0 },
+        R::Err(e) => 0 - e,
+    }
+}
+""" }]
+args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+exit_code = 42
+
+[[case]]
+name = "type_fn_over_enclosing_param_let_annotation"
+description = "A `let x: Option(T)` annotation inside the generic body resolves T from the enclosing param."
+files = [{ path = "main.rue", source = """
+fn Option(comptime T: type) -> type { enum { Some(T), None } }
+fn wrap(comptime T: type, v: T) -> Option(T) {
+    let O = Option(T);
+    let x: Option(T) = O::Some(v);
+    x
+}
+fn main() -> i32 {
+    let O = Option(i32);
+    match wrap(i32, 42) { O::Some(x) => x, O::None => 0 }
+}
+""" }]
+args = ["--preview", "enum_payloads", "main.rue", "-o", "prog"]
+exit_code = 42
