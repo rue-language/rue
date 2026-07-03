@@ -405,6 +405,8 @@ pub enum LogosTokenKind {
     Dot,
     #[token("@")]
     At,
+    #[token("?")]
+    Question,
 
     // Builtins. Exactly "@import" is its own token; the regex below wins the
     // longest-match for "@import" followed by more identifier chars (e.g.
@@ -504,6 +506,7 @@ impl From<LogosTokenKind> for TokenKind {
             LogosTokenKind::Comma => TokenKind::Comma,
             LogosTokenKind::Dot => TokenKind::Dot,
             LogosTokenKind::At => TokenKind::At,
+            LogosTokenKind::Question => TokenKind::Question,
             // AtImport is handled specially in tokenize() to provide the interned "import" Spur
             LogosTokenKind::AtImport => unreachable!("AtImport should be handled specially"),
             // AtImportPrefixedIdent is split into At + Ident in tokenize()
@@ -988,6 +991,15 @@ mod tests {
         assert_eq!(get_ident_str(&tokens[10].kind, &interner), Some("f"));
         assert!(matches!(tokens[11].kind, TokenKind::GtGt));
         assert_eq!(get_ident_str(&tokens[12].kind, &interner), Some("g"));
+    }
+
+    #[test]
+    fn test_logos_question_token() {
+        // The `?` (try) operator lexes to a single Question token (RUE-6).
+        let lexer = LogosLexer::new("x?");
+        let (tokens, interner) = lexer.tokenize().unwrap();
+        assert_eq!(get_ident_str(&tokens[0].kind, &interner), Some("x"));
+        assert!(matches!(tokens[1].kind, TokenKind::Question));
     }
 
     #[test]

@@ -554,6 +554,9 @@ pub enum Expr {
     Field(FieldExpr),
     /// Method call (e.g., `point.distance()`)
     MethodCall(MethodCallExpr),
+    /// Try/`?` propagation (e.g., `foo()?`): unwraps an `Option`, early-returning
+    /// `None` from the enclosing (Option-returning) function on `None` (RUE-6).
+    Try(TryExpr),
     /// Intrinsic call (e.g., `@dbg(42)`)
     IntrinsicCall(IntrinsicCallExpr),
     /// Array literal (e.g., `[1, 2, 3]`)
@@ -852,6 +855,20 @@ pub struct FieldExpr {
     pub span: Span,
 }
 
+/// A try/`?` propagation expression (e.g., `foo()?`).
+///
+/// `operand` must evaluate to an `Option`; the `?` unwraps it to the `Some`
+/// payload, early-returning `None` from the enclosing function when the operand
+/// is `None` (RUE-6, ADR-0038). The enclosing function must itself return an
+/// `Option`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TryExpr {
+    /// The operand whose `Option` is unwrapped/propagated.
+    pub operand: Box<Expr>,
+    /// Span covering `operand?` (through the `?`).
+    pub span: Span,
+}
+
 /// A method call expression (e.g., `point.distance()`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MethodCallExpr {
@@ -1108,6 +1125,7 @@ impl Expr {
             Expr::StructLit(struct_lit) => struct_lit.span,
             Expr::Field(field_expr) => field_expr.span,
             Expr::MethodCall(method_call) => method_call.span,
+            Expr::Try(try_expr) => try_expr.span,
             Expr::IntrinsicCall(intrinsic) => intrinsic.span,
             Expr::ArrayLit(array_lit) => array_lit.span,
             Expr::Index(index_expr) => index_expr.span,
@@ -1429,6 +1447,10 @@ fn fmt_expr(f: &mut fmt::Formatter<'_>, expr: &Expr, level: usize) -> fmt::Resul
         Expr::Field(field) => {
             writeln!(f, "Field .sym:{}", field.field.name.into_usize())?;
             fmt_expr(f, &field.base, level + 1)
+        }
+        Expr::Try(try_expr) => {
+            writeln!(f, "Try ?")?;
+            fmt_expr(f, &try_expr.operand, level + 1)
         }
         Expr::MethodCall(method_call) => {
             writeln!(

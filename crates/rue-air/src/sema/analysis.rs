@@ -2478,6 +2478,7 @@ impl<'a> Sema<'a> {
             | InstData::Loop { .. }
             | InstData::InfiniteLoop { .. }
             | InstData::Match { .. }
+            | InstData::Try { .. }
             | InstData::Break { .. }
             | InstData::Continue
             | InstData::Ret(_)

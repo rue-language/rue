@@ -651,6 +651,27 @@ impl<'a> ConstraintGenerator<'a> {
                 result_ty
             }
 
+            // Try/`?`: unwraps `Option(T)` to `T` (RUE-6, ADR-0038). When the
+            // operand's type is already a concrete `Option`-shaped enum, the
+            // result is its `Some` payload; otherwise a fresh variable that
+            // sema types authoritatively from the operand's enum. Sema does the
+            // full checking (operand is Option, enclosing fn returns Option).
+            InstData::Try { operand } => {
+                let operand_info = self.generate(*operand, ctx);
+                match &operand_info.ty {
+                    InferType::Concrete(ty) => ty
+                        .as_enum()
+                        .map(|enum_id| self.type_pool.enum_def(enum_id))
+                        .and_then(|def| {
+                            def.find_variant("Some")
+                                .and_then(|si| def.variant_payload(si).first().copied())
+                        })
+                        .map(InferType::Concrete)
+                        .unwrap_or_else(|| InferType::Var(self.fresh_var())),
+                    _ => InferType::Var(self.fresh_var()),
+                }
+            }
+
             // Variable reference
             InstData::VarRef { name } => {
                 if let Some(local) = ctx.locals.get(name) {

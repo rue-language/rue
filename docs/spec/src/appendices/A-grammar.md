@@ -100,6 +100,7 @@ postfix        = primary { suffix } ;
 suffix         = "." IDENT                                     (* field access *)
                | "." IDENT "(" [ call_args ] ")"               (* method call *)
                | "[" expression "]"                            (* indexing *)
+               | "?"                                           (* try / Option propagation *)
                | "." IDENT "{" [ field_inits ] "}"             (* qualified struct literal *)
                | "." IDENT "::" IDENT                          (* qualified enum variant *)
                | "." IDENT "::" IDENT "(" [ call_args ] ")" ;  (* qualified assoc fn call *)
