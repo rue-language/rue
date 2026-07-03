@@ -360,7 +360,9 @@ fn B() -> type {
 }
 
 fn C() -> type {
-    struct { x: i32, fn get(self) -> i64 { self.x as i64 } }  // Different type (i64 vs i32)
+    // Rue has no `as` cast operator; integer conversions use the @intCast
+    // intrinsic (§4.13), whose target type is inferred from the return type.
+    struct { x: i32, fn get(self) -> i64 { @intCast(self.x) } }  // Different type (i64 vs i32)
 }
 ```
 
