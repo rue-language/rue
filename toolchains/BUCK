@@ -20,6 +20,7 @@ load(":remote_test_execution.bzl", "noop_remote_test_execution_toolchain")
 
 system_cxx_toolchain(
     name = "cxx",
+    linker = "cc",
     visibility = ["PUBLIC"],
 )
 

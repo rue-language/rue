@@ -73,6 +73,13 @@ _OPT_FLAGS = select({
 # Using -ld_classic forces the older, more stable linker.
 _MACOS_LINKER_FLAGS = ["-Clink-arg=-ld_classic"]
 
+# Linux: force the linker driver to use lld (shipped with the rust toolchain)
+# rather than the system `ld`. This lets the cxx linker driver be `cc` (present
+# in every build container/host) instead of `clang++` (absent from RE
+# containers) without falling back to `collect2 -> ld`, which the hermetic CI
+# sandbox lacks. Makes remote execution work AND keeps native CI green (RUE-320).
+_LINUX_LINKER_FLAGS = ["-Clink-arg=-fuse-ld=lld"]
+
 # Workspace clippy lint policy (the CI `clippy` gate; see clippy.sh).
 #
 # deny_lints = ["warnings"] below makes *every* rustc/clippy warning an error.
@@ -150,7 +157,7 @@ hermetic_rust_toolchain(
     default_edition = "2024",
     deny_lints = ["warnings"],
     allow_lints = _CLIPPY_ALLOW,
-    rustc_flags = _OPT_FLAGS,
+    rustc_flags = _OPT_FLAGS + _LINUX_LINKER_FLAGS,
     visibility = ["PUBLIC"],
 )
 
@@ -162,7 +169,7 @@ hermetic_rust_toolchain(
     default_edition = "2024",
     deny_lints = ["warnings"],
     allow_lints = _CLIPPY_ALLOW,
-    rustc_flags = _OPT_FLAGS,
+    rustc_flags = _OPT_FLAGS + _LINUX_LINKER_FLAGS,
     visibility = ["PUBLIC"],
 )
 

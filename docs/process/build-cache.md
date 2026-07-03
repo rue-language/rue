@@ -7,23 +7,22 @@ tier) for a shared remote action cache — and full remote **execution** was pro
 to work locally: with the config below, the entire compiler built on BuildBuddy's
 workers (171/175 actions remote, 0 local, ~103s cold).
 
-> **Status (RUE-316 landed the groundwork; RUE-320 finishes it).** The remote
-> platform + the `$ORIGIN` toolchain-tree fix are in place, but full RE is **not
-> enabled by default and not yet landable as-is**. It needs the linker driver to
-> be `cc` (so lld, not the absent `clang++`, links on the remote worker) — and
-> that override can only be applied to the **remote platform**, not globally:
-> making it the toolchain-wide default (`linker = "cc"` in `toolchains/BUCK`)
-> breaks native CI, whose system builds rely on the default linker path
-> (`collect2: cannot find 'ld'`). Platform-scoped linker selection is tracked as
-> **RUE-320**. Until then the `remote_cache` platform is opt-in/experimental and
-> its remote-execution actions require that linker override locally.
+> **Status: working (RUE-316 + RUE-320 landed).** The remote platform, the
+> `$ORIGIN` toolchain-tree fix, and the linker are all in place. Full RE is
+> functional: `buck2 build //crates/rue:rue --prefer-remote` runs the whole build
+> on BuildBuddy's workers. The linker piece (RUE-320) is solved *globally* — the
+> linux toolchains link via `cc -fuse-ld=lld` (`_LINUX_LINKER_FLAGS` in
+> `toolchains/rust/BUCK` + `linker = "cc"` in `toolchains/BUCK`), so `cc` uses the
+> rust-bundled lld and never falls back to `collect2 -> ld`. That keeps native CI
+> green (no system-`ld` dependency) **and** makes RE work (`cc` is in the
+> container, `clang++` was not) — no platform-scoping needed.
 
 - **Remote action cache**: actions execute locally; the cache is shared across
   machines + daemon restarts. Can only affect *speed*, never correctness.
 - **`--prefer-remote`**: full remote **execution** — compiles + links on
-  BuildBuddy's container (~80 free-tier cores). Blocked on RUE-320.
+  BuildBuddy's container (~80 free-tier cores).
 
-Tracking: RUE-316 (groundwork), RUE-320 (platform-scoped linker to finish RE).
+Tracking: RUE-316 (groundwork) + RUE-320 (linker), both landed.
 
 ## Local dev
 
@@ -58,17 +57,19 @@ they're recorded here so a future config change doesn't silently regress:
 4. **Container** (`platforms/remote_cache.bzl`): pinned to `rbe-ubuntu22-04`
    (Python 3.10 — the prelude's rustc wrapper needs ≥3.9; the default image ships
    3.6).
-5. **Linker** (RUE-320, NOT landed): the remote worker needs the linker driver to
-   be **`cc`** instead of `clang++` (lld — `-fuse-ld=lld`, shipped with rust — does
-   the real linking; the driver just needs to exist, and `cc` is everywhere while
-   `clang++` is not). This was proven with `linker = "cc"` in `toolchains/BUCK`, but
-   that override is **global** and breaks native CI (`cc` → `collect2` → `cannot
-   find 'ld'` when the hermetic lld flags aren't on the command). It has to be
-   **scoped to the remote platform** instead — tracked as RUE-320.
+5. **Linker** (RUE-320, landed): the remote worker needs the linker driver to be
+   **`cc`** instead of `clang++` (`clang++` isn't in the container; `cc` is
+   everywhere). The trap is that `cc` alone falls back to `collect2 -> ld`, which
+   the hermetic CI sandbox lacks. The fix: `linker = "cc"` in `toolchains/BUCK`
+   **plus** `_LINUX_LINKER_FLAGS = ["-Clink-arg=-fuse-ld=lld"]` on the linux rust
+   toolchains (`toolchains/rust/BUCK`), so `cc` uses the rust-bundled lld and never
+   touches system `ld`. Global and CI-safe — verified: native `./test.sh` Pass 24
+   with the wrapper emitting `cc -fuse-ld=lld`, and a remote `--prefer-remote` link
+   succeeds (`cc` in the container). No platform-scoping needed.
 
-Change 3 (`$ORIGIN` toolchain-tree) is global and local-safe (verified: local
-build + suite green). 1, 2, 4 live in the opt-in `.buckconfig.local` / the
-`remote_cache` platform. 5 is the remaining blocker for a default-on RE.
+Changes 3 (`$ORIGIN` toolchain-tree) and 5 (linker) are global and CI-safe
+(verified: native build + suite green). 1, 2, 4 live in the opt-in
+`.buckconfig.local` / the `remote_cache` platform.
 
 ## CI
 
