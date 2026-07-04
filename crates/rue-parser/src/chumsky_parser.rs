@@ -611,16 +611,6 @@ where
         .collect()
 }
 
-/// Parser for comma-separated expression arguments (for contexts that don't support inout)
-fn args_parser<'src, I>(
-    expr: impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone,
-) -> impl Parser<'src, I, Vec<Expr>, ParserExtras<'src>> + Clone
-where
-    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
-{
-    expr.separated_by(just(TokenKind::Comma)).collect()
-}
-
 /// Parser for struct field initializers: name: expr
 fn field_init_parser<'src, I>(
     expr: impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone,
@@ -1714,34 +1704,55 @@ where
     //   list form:   [expr, expr, ...]
     //   repeat form: [value ; count]   where count is a compile-time constant
     //                                  (integer literal or named const/comptime)
-    // The repeat form is distinguished by the `;` following the first expr; it
-    // is tried first and backtracks to the list form when there is no `;`.
+    // The repeat form is distinguished by the `;` following the first expr. Parse
+    // the bracket pair and first expression once, then branch on the separator;
+    // trying `[expr ; count]` as a full alternative before `[expr, ...]` reparses
+    // deeply-nested list elements exponentially when there is no `;` (RUE-374).
     let array_repeat_count = choice((
         select! { TokenKind::Int(n) => ArrayLength::Literal(n as u64) },
         ident_parser().map(ArrayLength::Named),
     ));
-    let array_repeat = expr
+    let array_tail = choice((
+        just(TokenKind::Semi)
+            .ignore_then(array_repeat_count)
+            .map(|count| (Vec::new(), Some(count))),
+        just(TokenKind::Comma)
+            .ignore_then(
+                expr.clone()
+                    .separated_by(just(TokenKind::Comma))
+                    .at_least(1)
+                    .collect::<Vec<_>>(),
+            )
+            .map(|rest| (rest, None)),
+        just(TokenKind::RBracket)
+            .rewind()
+            .map(|_| (Vec::new(), None)),
+    ));
+    let non_empty_array = expr
         .clone()
-        .then_ignore(just(TokenKind::Semi))
-        .then(array_repeat_count)
-        .delimited_by(just(TokenKind::LBracket), just(TokenKind::RBracket))
-        .map_with(|(value, count), e| {
-            Expr::ArrayLit(ArrayLitExpr {
-                elements: vec![value],
-                repeat: Some(count),
-                span: span_from_extra(e),
-            })
+        .then(array_tail)
+        .map(|(first, (mut rest, repeat))| {
+            if repeat.is_some() {
+                (vec![first], repeat)
+            } else {
+                let mut elements = vec![first];
+                elements.append(&mut rest);
+                (elements, None)
+            }
         });
-    let array_list = args_parser(expr.clone())
+    let empty_array = just(TokenKind::RBracket)
+        .rewind()
+        .map(|_| (Vec::new(), None));
+    let array_lit = non_empty_array
+        .or(empty_array)
         .delimited_by(just(TokenKind::LBracket), just(TokenKind::RBracket))
-        .map_with(|elements, e| {
+        .map_with(|(elements, repeat), e| {
             Expr::ArrayLit(ArrayLitExpr {
                 elements,
-                repeat: None,
+                repeat,
                 span: span_from_extra(e),
             })
         });
-    let array_lit = array_repeat.or(array_list);
 
     // Type literal expression: i32, bool, etc. used as values
     // This enables generic function calls like identity(i32, 42)
@@ -3333,6 +3344,59 @@ mod tests {
         }
         assert_eq!(levels, DEPTH + 1, "expected fully nested block spine");
         assert!(matches!(expr, Expr::Int(_)), "innermost value is `0`");
+    }
+
+    /// Regression: nested array-list literals must parse in linear time.
+    ///
+    /// RUE-374: array literals used to be parsed as `[expr ; count]` OR
+    /// `[expr, ...]`. For a nested list like `[[[1]]]`, every level first parsed
+    /// the full inner array as a repeat value, failed to find `;`, then
+    /// backtracked and parsed the same inner array again as a list element. That
+    /// doubled the work per level. The parser now parses the first expression
+    /// once and dispatches on the following separator.
+    #[test]
+    fn test_deeply_nested_array_lists_parse_linearly() {
+        const DEPTH: usize = 60;
+        let source = format!("{}1{}", "[".repeat(DEPTH), "]".repeat(DEPTH));
+        let result = parse_expr(&source).expect("deeply nested array list should parse");
+
+        let mut expr = &result.expr;
+        let mut levels = 0;
+        while let Expr::ArrayLit(array) = expr {
+            levels += 1;
+            assert_eq!(array.elements.len(), 1, "expected single-element list");
+            assert!(
+                array.repeat.is_none(),
+                "nested list must not parse as repeat"
+            );
+            expr = &array.elements[0];
+        }
+        assert_eq!(levels, DEPTH, "expected fully nested array-list spine");
+        assert!(matches!(expr, Expr::Int(_)), "innermost value is `1`");
+    }
+
+    #[test]
+    fn test_array_literal_forms() {
+        let empty = parse_expr("[]").unwrap();
+        let Expr::ArrayLit(array) = empty.expr else {
+            panic!("expected empty array literal");
+        };
+        assert!(array.elements.is_empty());
+        assert!(array.repeat.is_none());
+
+        let list = parse_expr("[1, 2]").unwrap();
+        let Expr::ArrayLit(array) = list.expr else {
+            panic!("expected array-list literal");
+        };
+        assert_eq!(array.elements.len(), 2);
+        assert!(array.repeat.is_none());
+
+        let repeat = parse_expr("[1; 4]").unwrap();
+        let Expr::ArrayLit(array) = repeat.expr else {
+            panic!("expected array-repeat literal");
+        };
+        assert_eq!(array.elements.len(), 1);
+        assert!(matches!(array.repeat, Some(ArrayLength::Literal(4))));
     }
 
     #[test]
