@@ -899,7 +899,7 @@ pub fn normalize_golden(s: &str) -> String {
 /// which forces a trailing newline — doesn't force every expectation to be
 /// written on one crowded line. Reserve [`normalize_golden`] for `--emit` IR
 /// golden dumps, which are inherently multi-line and formatting-insensitive.
-fn strip_block_boundary_newlines(s: &str) -> &str {
+pub fn strip_block_boundary_newlines(s: &str) -> &str {
     let s = s
         .strip_prefix("\r\n")
         .or_else(|| s.strip_prefix('\n'))

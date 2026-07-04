@@ -227,12 +227,15 @@ struct Frame {
 }
 
 /// Number of ABI parameter slots a value occupies: one per flattened scalar
-/// leaf. Matches the CFG's slot numbering for `Param{index}`.
+/// leaf. Matches the CFG's slot numbering for `Param{index}`, including
+/// zero-sized values: `abi_slot_count` (rue-air typeck) gives unit and empty
+/// structs ZERO slots, so a parameter after a ZST is NOT shifted up.
 fn slot_width(v: &Value) -> usize {
     match v {
         Value::Aggregate(elems) => elems.iter().map(slot_width).sum(),
         // A String is a fat value occupying three ABI slots (ptr, len, cap).
         Value::Str(_) => 3,
+        Value::Unit => 0,
         _ => 1,
     }
 }
@@ -290,10 +293,16 @@ impl<'a> Interp<'a> {
             .find_cfg(name)
             .ok_or_else(|| Flow::Unsupported(Unsupported(format!("call to '{name}'"))))?;
         // Lay arguments out by slot: place each whole value at its base slot,
-        // then pad with `None` for the extra slots an aggregate occupies.
+        // then pad with `None` for the extra slots an aggregate occupies. A
+        // zero-sized argument occupies no slot at all (matching
+        // `abi_slot_count`), so it is never materialized in `params` and the
+        // following arguments are not shifted.
         let mut param_slots: Vec<Option<Value>> = Vec::with_capacity(args.len());
         for a in args {
-            let w = slot_width(a).max(1);
+            let w = slot_width(a);
+            if w == 0 {
+                continue;
+            }
             param_slots.push(Some(a.clone()));
             for _ in 1..w {
                 param_slots.push(None);
@@ -398,9 +407,48 @@ impl<'a> Interp<'a> {
     /// the ordinary CFG call). `capacity`/`reserve`/`with_capacity` capacity
     /// behavior is implementation-defined and deliberately not modeled.
     fn string_builtin(&self, name: &str, args: &[Value]) -> Step<Option<Value>> {
-        let s = |v: &Value| match v {
-            Value::Str(s) => s.clone(),
-            _ => String::new(),
+        // Logical-argument count each modeled builtin expects (receiver
+        // included). A call shape that doesn't match means the runtime-fn
+        // signature drifted from what the oracle models (the RUE-314 class):
+        // skip honestly rather than read args positionally from the wrong
+        // slots and return a plausible-but-wrong value.
+        let expected_arity = match name {
+            "__rue_String_new" => Some(0),
+            "__rue_to_string"
+            | "__rue_to_string_unsigned"
+            | "__rue_String_with_capacity"
+            | "__rue_String_len"
+            | "__rue_String_is_empty"
+            | "__rue_String_clear"
+            | "__rue_String_clone" => Some(1),
+            "__rue_String_push_str"
+            | "__rue_String_push"
+            | "__rue_String_reserve"
+            | "__rue_String_byte_at"
+            | "__rue_str_byte_at"
+            | "__rue_String_char_scalar"
+            | "__rue_String_char_scalar_lossy"
+            | "__rue_String_char_next"
+            | "__rue_String_char_next_lossy" => Some(2),
+            _ => None,
+        };
+        if let Some(expected) = expected_arity
+            && args.len() != expected
+        {
+            return Err(Flow::Unsupported(Unsupported(format!(
+                "builtin '{name}' called with {} args, oracle models {expected} (signature drift?)",
+                args.len()
+            ))));
+        }
+        // Same honesty rule for argument TYPES: a non-string where the modeled
+        // signature has a string is drift, not an empty string.
+        let s = |v: &Value| -> Result<String, Flow> {
+            match v {
+                Value::Str(s) => Ok(s.clone()),
+                _ => Err(Flow::Unsupported(Unsupported(format!(
+                    "builtin '{name}' received a non-string argument (signature drift?)"
+                )))),
+            }
         };
         let out = match name {
             // `@to_string(n)` (RUE-314). The argument is already widened to a
@@ -411,9 +459,9 @@ impl<'a> Interp<'a> {
             "__rue_to_string_unsigned" => Value::Str((args[0].as_int() as u64).to_string()),
             "__rue_String_new" => Value::Str(String::new()),
             "__rue_String_with_capacity" => Value::Str(String::new()),
-            "__rue_String_push_str" => Value::Str(s(&args[0]) + &s(&args[1])),
+            "__rue_String_push_str" => Value::Str(s(&args[0])? + &s(&args[1])?),
             "__rue_String_push" => {
-                let mut base = s(&args[0]);
+                let mut base = s(&args[0])?;
                 let byte = args[1].as_int() as u8;
                 if byte < 0x80 {
                     // ASCII: exactly one byte, matching the runtime's raw-byte
@@ -431,18 +479,18 @@ impl<'a> Interp<'a> {
                 }
                 Value::Str(base)
             }
-            "__rue_String_len" => Value::Int(s(&args[0]).len() as i128),
-            "__rue_String_is_empty" => Value::Bool(s(&args[0]).is_empty()),
+            "__rue_String_len" => Value::Int(s(&args[0])?.len() as i128),
+            "__rue_String_is_empty" => Value::Bool(s(&args[0])?.is_empty()),
             "__rue_String_clear" => Value::Str(String::new()),
-            "__rue_String_clone" => Value::Str(s(&args[0])),
-            "__rue_String_reserve" => Value::Str(s(&args[0])),
+            "__rue_String_clone" => Value::Str(s(&args[0])?),
+            "__rue_String_reserve" => Value::Str(s(&args[0])?),
             // `s[i]` byte indexing (ADR-0035): the runtime `__rue_String_byte_at`
             // bounds-checks `index >= len` — trapping like array indexing — and
             // returns the raw byte zero-extended. Model it over the byte content
             // directly. A negative index is passed to the runtime as a huge u64,
             // so it is likewise out of bounds and traps.
             "__rue_String_byte_at" => {
-                let text = s(&args[0]);
+                let text = s(&args[0])?;
                 let bytes = text.as_bytes();
                 let idx = args[1].as_int();
                 if idx < 0 || idx as u128 >= bytes.len() as u128 {
@@ -456,7 +504,7 @@ impl<'a> Interp<'a> {
             // bounds-check-and-trap discipline. Modeled identically over the byte
             // content (the `str` receiver is `arg[0]`, the index `arg[1]`).
             "__rue_str_byte_at" => {
-                let text = s(&args[0]);
+                let text = s(&args[0])?;
                 let bytes = text.as_bytes();
                 let idx = args[1].as_int();
                 if idx < 0 || idx as u128 >= bytes.len() as u128 {
@@ -474,14 +522,14 @@ impl<'a> Interp<'a> {
             // strict and `_lossy` variants coincide over the modeled content — a
             // well-formed loop only ever passes whole-character-boundary offsets.
             "__rue_String_char_scalar" | "__rue_String_char_scalar_lossy" => {
-                let text = s(&args[0]);
+                let text = s(&args[0])?;
                 match char_at(&text, args[1].as_int()) {
                     Some((scalar, _)) => Value::Int(scalar as i128),
                     None => return Err(Flow::Panic(Panic("invalid UTF-8".into()))),
                 }
             }
             "__rue_String_char_next" | "__rue_String_char_next_lossy" => {
-                let text = s(&args[0]);
+                let text = s(&args[0])?;
                 let offset = args[1].as_int();
                 match char_at(&text, offset) {
                     Some((_, width)) => Value::Int(offset + width as i128),
@@ -560,6 +608,47 @@ impl<'a> Interp<'a> {
         Ok(())
     }
 
+    /// Whether `ty` occupies ZERO ABI parameter slots — the type-level twin of
+    /// [`slot_width`] and of the compiler's `abi_slot_count == 0` (rue-air
+    /// typeck): unit/never/comptime types, structs whose fields are all
+    /// zero-sized, and arrays that are empty or have zero-sized elements.
+    /// Enums are never zero-sized (they always carry a discriminant slot).
+    fn is_zero_sized(&self, ty: Type) -> bool {
+        match ty.kind() {
+            TypeKind::Unit | TypeKind::Never | TypeKind::ComptimeType => true,
+            TypeKind::Struct(sid) => {
+                let sd = self.state.type_pool.struct_def(sid);
+                sd.fields.iter().all(|f| self.is_zero_sized(f.ty))
+            }
+            TypeKind::Array(aid) => {
+                let (elem_ty, len) = self.state.type_pool.array_def(aid);
+                len == 0 || self.is_zero_sized(elem_ty)
+            }
+            _ => false,
+        }
+    }
+
+    /// Materialize the (unique) value of a zero-sized type, preserving the
+    /// aggregate shape so field/element projections still line up.
+    fn zero_sized_value(&self, ty: Type) -> Value {
+        match ty.kind() {
+            TypeKind::Struct(sid) => {
+                let sd = self.state.type_pool.struct_def(sid);
+                Value::Aggregate(
+                    sd.fields
+                        .iter()
+                        .map(|f| self.zero_sized_value(f.ty))
+                        .collect(),
+                )
+            }
+            TypeKind::Array(aid) => {
+                let (elem_ty, len) = self.state.type_pool.array_def(aid);
+                Value::Aggregate((0..len).map(|_| self.zero_sized_value(elem_ty)).collect())
+            }
+            _ => Value::Unit,
+        }
+    }
+
     fn eval_all(&mut self, cfg: &'a Cfg, frame: &mut Frame, vs: &[CfgValue]) -> Step<Vec<Value>> {
         vs.iter().map(|v| self.eval(cfg, frame, *v)).collect()
     }
@@ -590,11 +679,22 @@ impl<'a> Interp<'a> {
                     .cloned()
                     .ok_or_else(|| Flow::Unsupported(Unsupported("string const index".into())))?,
             ),
-            CfgInstData::Param { index } => frame
-                .params
-                .get(*index as usize)
-                .and_then(|o| o.clone())
-                .ok_or_else(|| Flow::Unsupported(Unsupported("param index".into())))?,
+            CfgInstData::Param { index } => {
+                if self.is_zero_sized(ty) {
+                    // A zero-sized parameter occupies NO slot (abi_slot_count
+                    // = 0), but the CFG still emits a Param read for it —
+                    // sharing its `index` with the NEXT parameter's slot. Do
+                    // not read the slot (that would grab the next parameter's
+                    // value); materialize the unique ZST value instead.
+                    self.zero_sized_value(ty)
+                } else {
+                    frame
+                        .params
+                        .get(*index as usize)
+                        .and_then(|o| o.clone())
+                        .ok_or_else(|| Flow::Unsupported(Unsupported("param index".into())))?
+                }
+            }
             CfgInstData::BlockParam { .. } => frame
                 .cache
                 .get(&v.as_u32())
@@ -798,8 +898,12 @@ impl<'a> Interp<'a> {
                 let mut base = 0usize;
                 for a in &call_args {
                     let v = self.eval(cfg, frame, a.value)?;
-                    let w = slot_width(&v).max(1);
-                    if matches!(a.mode, CfgArgMode::Inout) {
+                    // A zero-sized argument occupies no parameter slot (see
+                    // `slot_width`): it neither advances `base` nor gets an
+                    // inout write-back (the callee's params hold no slot for
+                    // it to copy back from).
+                    let w = slot_width(&v);
+                    if matches!(a.mode, CfgArgMode::Inout) && w > 0 {
                         writebacks.push((base, Self::lvalue_of(cfg, a.value)?));
                     }
                     argvals.push(v);

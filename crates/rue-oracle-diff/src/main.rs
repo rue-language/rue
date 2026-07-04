@@ -210,6 +210,14 @@ fn finish_report(report: &Report, corpus: &str) -> ExitCode {
         println!("\n  ✗ {d}");
     }
 
+    // Zero cases checked means the corpus wiring is broken (empty dir, stale
+    // env-var path, TOMLs with no parseable cases) — a no-op differential run
+    // must not report success (the RUE-341 coverage-overstatement hazard).
+    if total == 0 {
+        println!("\nno runnable {corpus} cases were checked — corpus dir empty or misconfigured.");
+        return ExitCode::FAILURE;
+    }
+
     if report.disagreements.is_empty() {
         println!("\noracle agrees with the compiler on every runnable case.");
         ExitCode::SUCCESS
@@ -319,11 +327,15 @@ fn check_spec_case(ident: &str, case: &rue_test_runner::Case, report: &mut Repor
         Err(_unsupported) => report.skip_unsupported += 1,
         Ok(outcome) => {
             let exit_ok = outcome.exit_code == expected_exit;
-            // Compare stdout under the spec runner's own normalization so a
-            // trailing-newline difference is not reported as a miscompile.
+            // Compare stdout the way the spec runner itself does: byte-exact
+            // modulo the single `"""` block-boundary newline. NOT
+            // normalize_golden — that trims per-line trailing whitespace and
+            // boundary blank lines, which would record a real
+            // whitespace-shaped oracle-vs-compiler divergence as agreement
+            // (RUE-132's byte-exactness rule applies here too).
             let stdout_ok = case.expected_stdout.as_ref().is_none_or(|s| {
-                rue_test_runner::normalize_golden(&outcome.stdout)
-                    == rue_test_runner::normalize_golden(s)
+                rue_test_runner::strip_block_boundary_newlines(&outcome.stdout)
+                    == rue_test_runner::strip_block_boundary_newlines(s)
             });
             let agrees = exit_ok && stdout_ok;
 

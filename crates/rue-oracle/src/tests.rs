@@ -558,3 +558,26 @@ fn string_is_empty_and_clear() {
     }";
     assert_eq!(exit(src), 0);
 }
+
+#[test]
+fn zst_param_before_scalar_does_not_shift_slots() {
+    // A zero-sized argument occupies zero ABI slots (abi_slot_count), so the
+    // scalar after it lives at slot 0, not slot 1. The oracle used to force
+    // every argument to at least one slot and read 0 here — a phantom
+    // DISAGREE blaming codegen (rue-oracle component review, 2026-07-04).
+    let src = "struct E {}
+    fn pick(e: E, n: i32) -> i32 { n }
+    fn main() -> i32 { let e = E {}; pick(e, 42) }";
+    assert_eq!(exit(src), 42);
+}
+
+#[test]
+fn zst_param_forwarded_through_two_calls() {
+    // Forwarding the ZST through another call keeps the layout consistent at
+    // every level.
+    let src = "struct E {}
+    fn pick(e: E, n: i32) -> i32 { n }
+    fn wrap(e: E, n: i32) -> i32 { pick(e, n + 1) }
+    fn main() -> i32 { let e = E {}; wrap(e, 41) }";
+    assert_eq!(exit(src), 42);
+}
