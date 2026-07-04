@@ -42,6 +42,11 @@ The following words are keywords and cannot be used as identifiers:
 | `impl` | Impl block |
 | `self` | Self parameter in methods |
 | `drop` | Destructor declaration |
+| `pub` | Public visibility modifier |
+| `const` | Constant declaration |
+| `checked` | Checked block (§9.1) |
+| `unchecked` | Unchecked function modifier |
+| `ptr` | Pointer type constructor (`ptr const T` / `ptr mut T`) |
 
 ## Type Names
 
@@ -61,3 +66,4 @@ The following are type names and are reserved:
 | `u64` | 64-bit unsigned integer |
 | `bool` | Boolean type |
 | `type` | Compile-time type of types |
+| `Self` | The enclosing struct type, within a struct block (§6.4) |
