@@ -326,6 +326,18 @@ pub fn get_host_target() -> &'static str {
     }
 }
 
+/// Every platform name `only_on`/`known_bug_on` may legally name — the same
+/// set [`get_host_target`] can return. Case files are validated against this
+/// list at load time: a typo'd platform name would otherwise make the case
+/// silently run NOWHERE while still counting as spec coverage (the RUE-132
+/// skipped-test-counts-as-coverage class, via the platform axis).
+pub const KNOWN_TARGETS: &[&str] = &[
+    "x86-64-linux",
+    "aarch64-linux",
+    "aarch64-macos",
+    "x86-64-macos",
+];
+
 /// Check if a test should be skipped based on `only_on` restrictions.
 ///
 /// Returns `Some(reason)` if the test should be skipped, `None` if it should run.
@@ -597,6 +609,55 @@ pub fn validate_preview_features(test_file: &TestFile) -> Vec<UnknownPreviewFeat
     errors
 }
 
+/// An error indicating a case's `only_on` list names an unknown platform.
+///
+/// An unknown name can never equal the host, so the case would be skipped on
+/// EVERY platform — silently, while its spec references still count as
+/// coverage in the traceability gate. Reject at load time like unknown
+/// preview-feature names.
+#[derive(Debug, Clone)]
+pub struct UnknownPlatformError {
+    /// The unrecognized platform name.
+    pub platform: String,
+    /// The name of the offending test case.
+    pub test_name: String,
+    /// The section ID the test belongs to.
+    pub section_id: String,
+}
+
+impl std::fmt::Display for UnknownPlatformError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "test '{}' in section '{}' has unknown only_on platform '{}' (known: {})",
+            self.test_name,
+            self.section_id,
+            self.platform,
+            KNOWN_TARGETS.join(", ")
+        )
+    }
+}
+
+impl std::error::Error for UnknownPlatformError {}
+
+/// Validate all `only_on` platform names in a test file against
+/// [`KNOWN_TARGETS`].
+pub fn validate_only_on_targets(test_file: &TestFile) -> Vec<UnknownPlatformError> {
+    let mut errors = Vec::new();
+    for case in &test_file.case {
+        for platform in &case.only_on {
+            if !KNOWN_TARGETS.contains(&platform.as_str()) {
+                errors.push(UnknownPlatformError {
+                    platform: platform.clone(),
+                    test_name: case.name.clone(),
+                    section_id: test_file.section.id.clone(),
+                });
+            }
+        }
+    }
+    errors
+}
+
 /// An error indicating a case declares a compile-error assertion
 /// (`error_contains` / `expected_error`) without `compile_fail = true`.
 ///
@@ -747,6 +808,7 @@ pub fn collect_toml_files(dir: &Path, files: &mut Vec<PathBuf>) {
 pub fn load_test_files(cases_dir: &Path) -> Vec<(String, TestFile)> {
     let mut specs = Vec::new();
     let mut preview_errors: Vec<UnknownPreviewFeatureError> = Vec::new();
+    let mut platform_errors: Vec<UnknownPlatformError> = Vec::new();
     let mut stray_error_assertions: Vec<StrayErrorAssertionError> = Vec::new();
     let mut bare_compile_fail: Vec<BareCompileFailError> = Vec::new();
 
@@ -779,6 +841,10 @@ pub fn load_test_files(cases_dir: &Path) -> Vec<(String, TestFile)> {
 
                 // Validate preview feature names
                 preview_errors.extend(validate_preview_features(&spec));
+
+                // Validate only_on platform names (a typo would silently skip
+                // the case on every host while still counting as coverage)
+                platform_errors.extend(validate_only_on_targets(&spec));
 
                 // Reject compile-error assertions on cases that aren't compile_fail
                 stray_error_assertions.extend(validate_error_assertions(&spec));
@@ -833,6 +899,22 @@ Error: {} test file(s) failed to load:",
             "Test loading failed: {} test(s) use unknown preview feature names. \
              See errors above for details.",
             preview_errors.len()
+        );
+    }
+
+    // Report unknown only_on platform names and fail if any were found
+    if !platform_errors.is_empty() {
+        eprintln!(
+            "\nError: Found {} unknown only_on platform name(s):",
+            platform_errors.len()
+        );
+        for error in &platform_errors {
+            eprintln!("  - {}", error);
+        }
+        panic!(
+            "Test loading failed: {} case(s) use unknown only_on platform names \
+             (the case would run on NO platform). See errors above for details.",
+            platform_errors.len()
         );
     }
 
@@ -1168,7 +1250,11 @@ pub fn run_with_timeout(
 /// `compile_fail` expectation: "the compiler rejected the program" and "the
 /// compiler crashed" are different outcomes, and conflating them lets crashes
 /// hide inside passing suites. Mirrors `ice_message` in rue-cli-tests.
-fn ice_message(status: &std::process::ExitStatus, stderr: &str) -> Option<String> {
+/// Check a finished compiler process for signs of a panic / ICE.
+/// This is the SINGLE shared implementation — rue-cli-tests imports it
+/// rather than keeping its own copy, so a new panic marker or abort
+/// signature added here covers every harness at once.
+pub fn ice_message(status: &std::process::ExitStatus, stderr: &str) -> Option<String> {
     if stderr.contains("panicked at") || stderr.contains("internal compiler error") {
         return Some(format!(
             "INTERNAL COMPILER ERROR: compiler panicked\n--- compiler stderr ---\n{}",

@@ -138,6 +138,11 @@ pub struct TraceabilityReport {
     /// Test references that don't match any existing paragraph.
     /// Each entry is a tuple of (test_name, invalid_reference_id).
     pub orphan_references: Vec<(String, String)>,
+    /// Rule ids defined more than once in the spec. Duplicates fail the gate:
+    /// with last-writer-wins parsing, a later duplicate can silently replace a
+    /// normative rule (erasing its coverage requirement) — as nearly happened
+    /// with 3.7:49 on 2026-07-04.
+    pub duplicate_rule_ids: Vec<String>,
 }
 
 /// Normative paragraphs that currently have no *running* test, tracked as known
@@ -290,11 +295,13 @@ impl TraceabilityReport {
     }
 
     /// Whether the traceability gate should fail: any *unexpected* uncovered
-    /// normative rule, any stale allowlist entry, or any orphan reference.
+    /// normative rule, any stale allowlist entry, any orphan reference, or any
+    /// duplicate rule id.
     pub fn gate_failing(&self) -> bool {
         !self.unexpected_uncovered_normative_paragraphs().is_empty()
             || !self.stale_known_uncovered().is_empty()
             || !self.orphan_references.is_empty()
+            || !self.duplicate_rule_ids.is_empty()
     }
 
     /// Returns the coverage percentage for normative paragraphs (0.0 to 100.0).
@@ -471,6 +478,18 @@ impl TraceabilityReport {
             }
             println!();
         }
+
+        // Duplicate rule ids (each silently replaced an earlier paragraph)
+        if !self.duplicate_rule_ids.is_empty() {
+            println!(
+                "Duplicate rule ids ({}) — renumber so each id appears once:",
+                self.duplicate_rule_ids.len()
+            );
+            for dup in &self.duplicate_rule_ids {
+                println!("  {}", dup);
+            }
+            println!();
+        }
     }
 
     /// Prints a detailed traceability matrix to stdout.
@@ -520,6 +539,29 @@ impl TraceabilityReport {
     }
 }
 
+/// Extract a quoted shortcode argument (`name = "value"`), tolerating
+/// whitespace around `=`. Zola accepts `id = "x"` and renders it identically
+/// to `id="x"`, so the checker must too: a spaced `cat` used to silently
+/// demote a rule to informative, and a spaced `id` made the rule invisible —
+/// both dropped coverage enforcement without a report.
+fn find_shortcode_arg(line: &str, name: &str) -> Option<String> {
+    let mut search_from = 0;
+    while let Some(rel) = line[search_from..].find(name) {
+        let pos = search_from + rel;
+        let after = line[pos + name.len()..].trim_start();
+        if let Some(rest) = after.strip_prefix('=') {
+            let rest = rest.trim_start();
+            if let Some(rest) = rest.strip_prefix('"') {
+                if let Some(end) = rest.find('"') {
+                    return Some(rest[..end].to_string());
+                }
+            }
+        }
+        search_from = pos + name.len();
+    }
+    None
+}
+
 /// Parse a spec marker from a line.
 /// Format: {{ rule(id="X.Y:Z") }} or {{ rule(id="X.Y:Z", cat="category") }} (Zola shortcode)
 /// Category can be: normative, informative, syntax, example
@@ -529,36 +571,16 @@ fn parse_spec_comment(line: &str) -> Option<(String, String)> {
     let line = line.trim();
 
     // Zola shortcode format: {{ rule(id="X.Y:Z") }} or {{ rule(id="X.Y:Z", cat="category") }}
-    if line.starts_with("{{") && line.contains("rule(") {
-        // Extract the id parameter
-        if let Some(id_start) = line.find("id=\"") {
-            let id_content = &line[id_start + 4..]; // Skip 'id="'
-            if let Some(id_end) = id_content.find('"') {
-                let id = &id_content[..id_end];
-
-                // Validate that the ID contains a colon (required format: X.Y:Z)
-                if !id.contains(':') {
-                    return None;
-                }
-
-                // Extract optional cat parameter
-                let category = if let Some(cat_start) = line.find("cat=\"") {
-                    let cat_content = &line[cat_start + 5..]; // Skip 'cat="'
-                    if let Some(cat_end) = cat_content.find('"') {
-                        cat_content[..cat_end].to_string()
-                    } else {
-                        "informative".to_string()
-                    }
-                } else {
-                    "informative".to_string()
-                };
-
-                return Some((id.to_string(), category));
-            }
-        }
+    if !(line.starts_with("{{") && line.contains("rule(")) {
+        return None;
     }
-
-    None
+    let id = find_shortcode_arg(line, "id")?;
+    // Validate that the ID contains a colon (required format: X.Y:Z)
+    if !id.contains(':') {
+        return None;
+    }
+    let category = find_shortcode_arg(line, "cat").unwrap_or_else(|| "informative".to_string());
+    Some((id, category))
 }
 
 /// Check if a line is a spec marker (Zola shortcode format).
@@ -566,8 +588,16 @@ fn is_spec_marker(line: &str) -> bool {
     line.starts_with("{{") && line.contains("rule(")
 }
 
-/// Parse spec paragraphs from a markdown file.
-fn parse_spec_file(path: &Path, paragraphs: &mut BTreeMap<String, SpecParagraph>) {
+/// Parse spec paragraphs from a markdown file. A rule id that was already
+/// registered (same file or an earlier one) is recorded in `duplicates` —
+/// last-writer-wins insertion silently REPLACED the earlier paragraph before,
+/// so an informative restatement authored after a normative rule erased the
+/// coverage requirement without any report.
+fn parse_spec_file(
+    path: &Path,
+    paragraphs: &mut BTreeMap<String, SpecParagraph>,
+    duplicates: &mut Vec<String>,
+) {
     let content = match fs::read_to_string(path) {
         Ok(c) => c,
         Err(e) => {
@@ -598,7 +628,22 @@ fn parse_spec_file(path: &Path, paragraphs: &mut BTreeMap<String, SpecParagraph>
                 break;
             }
 
-            paragraphs.insert(id.clone(), SpecParagraph { id, category, text });
+            if let Some(prev) = paragraphs.insert(
+                id.clone(),
+                SpecParagraph {
+                    id: id.clone(),
+                    category: category.clone(),
+                    text,
+                },
+            ) {
+                duplicates.push(format!(
+                    "{} (categories '{}' and '{}'; second occurrence in {})",
+                    id,
+                    prev.category,
+                    category,
+                    path.display()
+                ));
+            }
         }
     }
 }
@@ -614,18 +659,22 @@ fn parse_spec_file(path: &Path, paragraphs: &mut BTreeMap<String, SpecParagraph>
 ///
 /// # Returns
 ///
-/// A map of paragraph IDs to [`SpecParagraph`] structs, sorted by ID.
-pub fn parse_spec_paragraphs(spec_dir: &Path) -> BTreeMap<String, SpecParagraph> {
+/// A map of paragraph IDs to [`SpecParagraph`] structs, sorted by ID, plus a
+/// list of DUPLICATE rule ids (an id defined more than once across the spec).
+/// Duplicates fail the traceability gate: with last-writer-wins insertion, a
+/// duplicate can silently replace a normative rule with an informative one.
+pub fn parse_spec_paragraphs(spec_dir: &Path) -> (BTreeMap<String, SpecParagraph>, Vec<String>) {
     let mut paragraphs = BTreeMap::new();
+    let mut duplicates = Vec::new();
 
     let mut md_files = Vec::new();
     collect_files_by_ext(spec_dir, "md", &mut md_files);
 
     for path in md_files {
-        parse_spec_file(&path, &mut paragraphs);
+        parse_spec_file(&path, &mut paragraphs, &mut duplicates);
     }
 
-    paragraphs
+    (paragraphs, duplicates)
 }
 
 /// A parsed test specification file.
@@ -785,8 +834,24 @@ pub fn parse_test_files(cases_dir: &Path) -> Vec<TestFile> {
                             .get("skip")
                             .and_then(|s| s.as_bool())
                             .unwrap_or(false);
+                        // Per-param `preview`/`preview_should_pass` overrides
+                        // mirror the runner's expand_case: an instance the
+                        // runner allows to fail must not count as coverage,
+                        // even when the BASE case has no preview (RUE-132).
+                        let param_is_preview = param_table
+                            .get("preview")
+                            .and_then(|p| p.as_str())
+                            .map(|s| !s.is_empty());
+                        let param_should_pass = param_table
+                            .get("preview_should_pass")
+                            .and_then(|p| p.as_bool());
+                        let effective_preview = param_is_preview.unwrap_or(is_preview);
+                        let effective_should_pass =
+                            param_should_pass.unwrap_or(preview_should_pass);
+                        let param_preview_allowed_to_fail =
+                            effective_preview && !effective_should_pass;
                         let counts_as_coverage =
-                            !base_skip && !param_skip && !preview_allowed_to_fail;
+                            !base_skip && !param_skip && !param_preview_allowed_to_fail;
 
                         cases.push(TestCase {
                             name: expanded_name,
@@ -837,7 +902,7 @@ pub fn parse_test_files(cases_dir: &Path) -> Vec<TestFile> {
 /// ```
 pub fn generate_report(spec_dir: &Path, cases_dir: &Path) -> TraceabilityReport {
     // Parse spec paragraphs
-    let paragraphs = parse_spec_paragraphs(spec_dir);
+    let (paragraphs, duplicate_rule_ids) = parse_spec_paragraphs(spec_dir);
 
     // Parse test files
     let test_files = parse_test_files(cases_dir);
@@ -878,6 +943,7 @@ pub fn generate_report(spec_dir: &Path, cases_dir: &Path) -> TraceabilityReport 
         paragraphs,
         coverage,
         orphan_references,
+        duplicate_rule_ids,
     }
 }
 
@@ -930,7 +996,9 @@ Another paragraph.
         fs::write(&file_path, content).unwrap();
 
         let mut paragraphs = BTreeMap::new();
-        parse_spec_file(&file_path, &mut paragraphs);
+        let mut duplicates = Vec::new();
+        parse_spec_file(&file_path, &mut paragraphs, &mut duplicates);
+        assert!(duplicates.is_empty());
 
         assert_eq!(paragraphs.len(), 2);
         assert!(paragraphs.contains_key("3.1:1"));
@@ -962,7 +1030,9 @@ fn main() { }
         fs::write(&file_path, content).unwrap();
 
         let mut paragraphs = BTreeMap::new();
-        parse_spec_file(&file_path, &mut paragraphs);
+        let mut duplicates = Vec::new();
+        parse_spec_file(&file_path, &mut paragraphs, &mut duplicates);
+        assert!(duplicates.is_empty());
 
         assert_eq!(paragraphs.len(), 1);
         assert!(paragraphs.contains_key("3.1:5"));
@@ -1003,6 +1073,7 @@ fn main() { }
             paragraphs,
             coverage,
             orphan_references: vec![],
+            duplicate_rule_ids: vec![],
         };
 
         assert_eq!(report.covered_count(), 1);
@@ -1126,6 +1197,7 @@ exit_code = 0
                 paragraphs,
                 coverage,
                 orphan_references: vec![],
+                duplicate_rule_ids: vec![],
             }
         }
 
