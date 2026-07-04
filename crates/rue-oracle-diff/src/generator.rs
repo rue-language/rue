@@ -168,6 +168,8 @@ pub struct Program {
     has_bump: bool,
     /// Number of generated enums (variants are always 3: `V0`,`V1`,`V2`).
     enums: usize,
+    /// Whether `E0` carries Copy payloads on `V1`/`V2`.
+    enum_payload: bool,
     top_level: Vec<String>,
 }
 
@@ -181,6 +183,7 @@ pub fn generate(seed: u64) -> String {
         has_rec: false,
         has_bump: false,
         enums: 0,
+        enum_payload: false,
         top_level: Vec::new(),
     };
     p.build()
@@ -245,7 +248,7 @@ impl Program {
         if depth == 0 {
             return self.leaf(Ty::Bool, scope);
         }
-        match self.rng.below(4) {
+        match self.rng.below(5) {
             0 => {
                 // Comparison of two same-typed ints. Only compare a type that
                 // has a variable in scope, so both operands are typed
@@ -266,12 +269,24 @@ impl Program {
                 format!("({l} {cmp} {r})")
             }
             1 => {
+                // Bool equality is a distinct structural-equality path from
+                // integer comparison, and RUE-357 specifically wants it in the
+                // generator mix.
+                if scope.of(Ty::Bool).is_empty() {
+                    return self.leaf(Ty::Bool, scope);
+                }
+                let cmp = *self.rng.pick(&["==", "!="]);
+                let l = self.expr(Ty::Bool, scope, depth - 1);
+                let r = self.expr(Ty::Bool, scope, depth - 1);
+                format!("({l} {cmp} {r})")
+            }
+            2 => {
                 let op = *self.rng.pick(&["&&", "||"]);
                 let l = self.expr(Ty::Bool, scope, depth - 1);
                 let r = self.expr(Ty::Bool, scope, depth - 1);
                 format!("({l} {op} {r})")
             }
-            2 => {
+            3 => {
                 let inner = self.bool_expr(scope, depth - 1);
                 format!("(!{inner})")
             }
@@ -461,8 +476,32 @@ impl Program {
 
     fn emit_enums(&mut self) {
         if self.rng.chance(1, 2) {
-            self.top_level.push("enum E0 { V0, V1, V2 }".to_string());
+            if self.rng.chance(1, 2) {
+                self.top_level
+                    .push("enum E0 { V0, V1(i32), V2(bool) }".to_string());
+                self.enum_payload = true;
+            } else {
+                self.top_level.push("enum E0 { V0, V1, V2 }".to_string());
+            }
             self.enums = 1;
+        }
+    }
+
+    fn enum_ctor_src(&mut self) -> String {
+        if self.enum_payload {
+            match self.rng.below(3) {
+                0 => "E0::V0".to_string(),
+                1 => {
+                    let v = self.int_literal(Ty::I32);
+                    format!("E0::V1({v})")
+                }
+                _ => {
+                    let v = self.bool_literal();
+                    format!("E0::V2({v})")
+                }
+            }
+        } else {
+            format!("E0::V{}", self.rng.below(3))
         }
     }
 
@@ -613,17 +652,74 @@ impl Program {
         if self.enums == 0 {
             return;
         }
-        let variant = self.rng.below(3);
         let ename = self.fresh("e");
-        body.push(format!("    let {ename}: E0 = E0::V{variant};"));
+        let ctor = self.enum_ctor_src();
+        body.push(format!("    let {ename}: E0 = {ctor};"));
         let a = self.expr(Ty::I32, scope, 1);
         let b = self.expr(Ty::I32, scope, 1);
         let c = self.expr(Ty::I32, scope, 1);
         let vn = self.fresh("v");
-        body.push(format!(
-            "    let {vn}: i32 = match {ename} {{ E0::V0 => {a}, E0::V1 => {b}, E0::V2 => {c} }};"
-        ));
+        if self.enum_payload {
+            body.push(format!(
+                "    let {vn}: i32 = match {ename} {{ E0::V0 => {a}, E0::V1(x) => (x + {b}), E0::V2(flag) => if flag {{ {c} }} else {{ {a} }} }};"
+            ));
+        } else {
+            body.push(format!(
+                "    let {vn}: i32 = match {ename} {{ E0::V0 => {a}, E0::V1 => {b}, E0::V2 => {c} }};"
+            ));
+        }
         scope.push(vn, Ty::I32);
+    }
+
+    fn snippet_equality(&mut self, body: &mut Vec<String>, scope: &mut Scope) {
+        match self.rng.below(4) {
+            0 if !self.structs.is_empty() => {
+                let i = self.rng.below(self.structs.len() as u64) as usize;
+                let sname = self.structs[i].name.clone();
+                let left = self.fresh("p");
+                let right = self.fresh("p");
+                let a = self.struct_ctor_src(i);
+                let b = self.struct_ctor_src(i);
+                body.push(format!("    let {left}: {sname} = {a};"));
+                body.push(format!("    let {right}: {sname} = {b};"));
+                let vn = self.fresh("b");
+                let cmp = *self.rng.pick(&["==", "!="]);
+                body.push(format!("    let {vn}: bool = ({left} {cmp} {right});"));
+                scope.push(vn, Ty::Bool);
+            }
+            1 => {
+                let left = self.fresh("a");
+                let right = self.fresh("a");
+                let xs: Vec<String> = (0..3).map(|_| self.int_literal(Ty::I32)).collect();
+                let ys: Vec<String> = (0..3).map(|_| self.int_literal(Ty::I32)).collect();
+                body.push(format!("    let {left}: [i32; 3] = [{}];", xs.join(", ")));
+                body.push(format!("    let {right}: [i32; 3] = [{}];", ys.join(", ")));
+                let vn = self.fresh("b");
+                let cmp = *self.rng.pick(&["==", "!="]);
+                body.push(format!("    let {vn}: bool = ({left} {cmp} {right});"));
+                scope.push(vn, Ty::Bool);
+            }
+            2 if self.enums != 0 => {
+                let left = self.fresh("e");
+                let right = self.fresh("e");
+                let a = self.enum_ctor_src();
+                let b = self.enum_ctor_src();
+                body.push(format!("    let {left}: E0 = {a};"));
+                body.push(format!("    let {right}: E0 = {b};"));
+                let vn = self.fresh("b");
+                let cmp = *self.rng.pick(&["==", "!="]);
+                body.push(format!("    let {vn}: bool = ({left} {cmp} {right});"));
+                scope.push(vn, Ty::Bool);
+            }
+            _ => {
+                let l = self.expr(Ty::Bool, scope, 2);
+                let r = self.expr(Ty::Bool, scope, 2);
+                let vn = self.fresh("b");
+                let cmp = *self.rng.pick(&["==", "!="]);
+                body.push(format!("    let {vn}: bool = ({l} {cmp} {r});"));
+                scope.push(vn, Ty::Bool);
+            }
+        }
     }
 
     fn snippet_inout(&mut self, body: &mut Vec<String>, scope: &mut Scope) {
@@ -688,7 +784,7 @@ impl Program {
         // A random sequence of feature snippets.
         let steps = 4 + self.rng.below(8);
         for _ in 0..steps {
-            match self.rng.below(11) {
+            match self.rng.below(12) {
                 0 => self.snippet_let(&mut body, &mut scope),
                 1 => self.snippet_intcast(&mut body, &mut scope),
                 2 => self.snippet_struct(&mut body, &mut scope),
@@ -699,6 +795,7 @@ impl Program {
                 7 => self.snippet_recursion(&mut body, &mut scope),
                 8 => self.snippet_loop(&mut body, &mut scope),
                 9 => self.snippet_string(&mut body, &mut scope),
+                10 => self.snippet_equality(&mut body, &mut scope),
                 _ => self.snippet_dbg(&mut body, &scope),
             }
         }
@@ -741,5 +838,44 @@ mod tests {
             let src = generate(seed);
             assert!(src.contains("fn main() -> i32 {"), "seed {seed}: {src}");
         }
+    }
+
+    #[test]
+    fn generates_payload_enum_cases() {
+        let mut saw_payload_enum = false;
+        let mut saw_payload_ctor = false;
+        let mut saw_payload_match = false;
+
+        for seed in 0..200u64 {
+            let src = generate(seed);
+            saw_payload_enum |= src.contains("enum E0 { V0, V1(i32), V2(bool) }");
+            saw_payload_ctor |= src.contains("E0::V1(") || src.contains("E0::V2(");
+            saw_payload_match |= src.contains("E0::V1(x)") && src.contains("E0::V2(flag)");
+        }
+
+        assert!(saw_payload_enum);
+        assert!(saw_payload_ctor);
+        assert!(saw_payload_match);
+    }
+
+    #[test]
+    fn generates_structural_equality_cases() {
+        let mut saw_bool_eq = false;
+        let mut saw_array_eq = false;
+        let mut saw_struct_eq = false;
+        let mut saw_enum_eq = false;
+
+        for seed in 0..500u64 {
+            let src = generate(seed);
+            saw_bool_eq |= src.contains(" == b") || src.contains(" != b");
+            saw_array_eq |= src.contains(": [i32; 3]") && src.contains(" = (a");
+            saw_struct_eq |= src.contains(" = (p");
+            saw_enum_eq |= src.contains(" = (e");
+        }
+
+        assert!(saw_bool_eq);
+        assert!(saw_array_eq);
+        assert!(saw_struct_eq);
+        assert!(saw_enum_eq);
     }
 }
