@@ -29,6 +29,7 @@
 //! unrelated same-named file elsewhere in the program (RUE-266).
 
 use std::path::Path;
+use std::{fs, io};
 
 use crate::path_norm::normalize_module_path as normalize;
 
@@ -137,15 +138,28 @@ impl ModulePath {
     where
         I: Iterator<Item = &'a String>,
     {
-        // Pair each loaded path with its normalized form once.
-        let normalized: Vec<(String, &String)> = loaded_paths.map(|p| (normalize(p), p)).collect();
+        // Pair each loaded path with its normalized form once. When the path
+        // exists on disk, also keep its filesystem-canonical identity so
+        // relative/absolute aliases and symlinks still resolve to the one
+        // already-loaded module (RUE-360). The lexical key remains the primary
+        // comparison so pure in-memory tests and virtual paths keep working.
+        let normalized: Vec<(String, Option<String>, &String)> = loaded_paths
+            .map(|p| (normalize(p), canonical_key(p), p))
+            .collect();
 
         let find_exact = |candidate: &str| -> Option<String> {
             let cand = normalize(candidate);
+            let cand_canonical = canonical_key(candidate);
             normalized
                 .iter()
-                .find(|(norm, _)| *norm == cand)
-                .map(|(_, orig)| (*orig).clone())
+                .find(|(norm, canonical, _)| {
+                    *norm == cand
+                        || matches!(
+                            (cand_canonical.as_ref(), canonical.as_ref()),
+                            (Some(a), Some(b)) if a == b
+                        )
+                })
+                .map(|(_, _, orig)| (*orig).clone())
         };
 
         match self {
@@ -155,7 +169,7 @@ impl ModulePath {
                 // (see discover_and_load_imports in the rue crate); here we
                 // just match it among the loaded files. Std is not
                 // importer-relative, so base_dirs are ignored.
-                for (_, orig) in &normalized {
+                for (_, _, orig) in &normalized {
                     if boundary_ends(orig, "_std.rue") {
                         return DirResolution::Resolved((*orig).clone());
                     }
@@ -206,6 +220,14 @@ fn boundary_ends(candidate: &str, suffix: &str) -> bool {
     candidate.ends_with(suffix) && {
         let prefix_len = candidate.len() - suffix.len();
         prefix_len == 0 || candidate.as_bytes()[prefix_len - 1] == b'/'
+    }
+}
+
+fn canonical_key(path: &str) -> Option<String> {
+    match fs::canonicalize(path) {
+        Ok(path) => Some(path.to_string_lossy().into_owned()),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => None,
+        Err(_) => None,
     }
 }
 
@@ -509,6 +531,65 @@ mod tests {
             module.resolve_in_dirs(&["."], paths.iter()),
             DirResolution::Resolved("./helper.rue".to_string())
         );
+    }
+
+    #[test]
+    fn test_filesystem_canonical_alias_matches_loaded_file() {
+        let root = temp_test_dir("rue_module_alias_abs");
+        let lib = root.join("lib.rue");
+        std::fs::write(&lib, "pub fn v() -> i32 { 3 }").unwrap();
+
+        let loaded_spelling = lib.canonicalize().unwrap().to_string_lossy().into_owned();
+        let paths = vec![loaded_spelling.clone()];
+        let module = ModulePath::ExplicitRue {
+            path: "lib.rue".to_string(),
+        };
+
+        assert_eq!(
+            module.resolve_in_dirs(&[root.to_str().unwrap()], paths.iter()),
+            DirResolution::Resolved(loaded_spelling)
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_filesystem_canonical_symlink_alias_matches_loaded_file() {
+        use std::os::unix::fs::symlink;
+
+        let root = temp_test_dir("rue_module_alias_symlink");
+        let lib = root.join("lib.rue");
+        let link = root.join("link.rue");
+        std::fs::write(&lib, "pub fn v() -> i32 { 3 }").unwrap();
+        symlink(&lib, &link).unwrap();
+
+        let loaded_spelling = lib.canonicalize().unwrap().to_string_lossy().into_owned();
+        let paths = vec![loaded_spelling.clone()];
+        let module = ModulePath::ExplicitRue {
+            path: "link.rue".to_string(),
+        };
+
+        assert_eq!(
+            module.resolve_in_dirs(&[root.to_str().unwrap()], paths.iter()),
+            DirResolution::Resolved(loaded_spelling)
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn temp_test_dir(name: &str) -> std::path::PathBuf {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "{name}_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&path).unwrap();
+        path
     }
 
     // =========================================================================
