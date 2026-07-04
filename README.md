@@ -1,35 +1,84 @@
-# rue
+# Rue
+
+Rue is an experimental systems programming language exploring memory safety
+without garbage collection and higher-level ergonomics than Rust or Zig. It is
+implemented in Rust and emits native code directly, without LLVM.
+
+```rue
+fn fib(n: i32) -> i32 {
+    if n <= 1 { n } else { fib(n - 1) + fib(n - 2) }
+}
+
+fn main() -> i32 {
+    @dbg(fib(10));
+    0
+}
+```
 
 > [!CAUTION]
-> Listen, this repo is just for fun. I had it private, but I care more about
-> being able to run GitHub Actions to make sure that things are good, so I'm
-> open sourcing this repo. Not everything in here is good, or accurate, or
-> anything: I'm just messing around. Feel free to take a look but don't look too
-> much into this just yet. Someday I'll actually talk about this.
+> Rue is an early-stage language. Its syntax, semantics, runtime, and standard
+> library are still changing, and it is not ready for production use.
 
-rue is a programming language. Right now, it's a very basic one.
+## What is here
 
-I am building this project for two main reasons:
+The repository contains a complete native compiler pipeline, including:
 
-* I want to play around with a compiler
-* I want to see how good Claude is at building compilers
+- lexer, parser, semantic analysis, and several inspectable IRs;
+- affine ownership, borrowing modes, destructors, structs, enums, arrays,
+  strings, modules, comptime, and unsafe/raw-pointer support;
+- x86-64 Linux, AArch64 Linux, and AArch64 macOS code generation;
+- a small runtime, ELF/Mach-O object and linking support, and direct
+  machine-code emitters;
+- specification, UI, CLI, differential-oracle, fuzz, sanitizer, and benchmark
+  suites.
 
-I have some ideas for where I want rue to go, but everything is subject to
-change at the moment.
+The authoritative language definition is the [Rue specification](docs/spec/).
+The [tutorial](website/content/tutorial/) is the best introduction to writing
+Rue programs. Architecture and design rationale live in
+[docs/architecture.md](docs/architecture.md) and [docs/designs/](docs/designs/).
+
+## Build and try Rue
+
+Rue uses Buck2 rather than Cargo. Install
+[Dotslash](https://dotslash-cli.com/); Buck2 and the Rust toolchain are then
+bootstrapped hermetically by the repository.
+
+```bash
+scripts/rue build
+scripts/rue exec examples/fibonacci.rue
+scripts/rue test
+```
+
+Use `scripts/rue-bin` when you need the compiler path, or run the real CLI
+through the wrapper:
+
+```bash
+RUE="$(scripts/rue-bin)"
+"$RUE" --help
+"$RUE" examples/fibonacci.rue -o fibonacci
+./fibonacci
+```
+
+Supported targets are `x86-64-linux`, `aarch64-linux`, and `aarch64-macos`.
+Cross-target machine-code and assembly emission is available, but producing an
+executable may require target-specific system tools.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) and
+[docs/development.md](docs/development.md) for the development workflow.
+
+## Project status
+
+Rue is developed in public as both a language-design project and an experiment
+in agent-assisted compiler engineering. Accepted features may remain behind
+`--preview` until their implementation and specification are complete. The
+test suite tracks normative specification coverage and known implementation
+gaps explicitly.
 
 ## License
 
-Licensed under either of
+Rue is dual-licensed under the
+[Apache License 2.0](LICENSE-APACHE) or [MIT license](LICENSE-MIT), at your
+option.
 
- * Apache License, Version 2.0
-   ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
- * MIT license
-   ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
-
-at your option.
-
-## Contribution
-
-Unless you explicitly state otherwise, any contribution intentionally submitted
-for inclusion in the work by you, as defined in the Apache-2.0 license, shall be
-dual licensed as above, without any additional terms or conditions.
+Unless you explicitly state otherwise, any contribution intentionally
+submitted for inclusion in Rue is dual-licensed on the same terms.

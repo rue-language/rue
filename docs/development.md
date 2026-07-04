@@ -1,260 +1,117 @@
-# Development Guide
-
-This document covers how to build, test, and contribute to the Rue compiler.
+# Development guide
 
 ## Prerequisites
 
-### Required
+Install [Dotslash](https://dotslash-cli.com/). The repository uses it to
+bootstrap Buck2; Buck2 downloads the pinned Rust toolchain and dependencies.
+Cargo is not the build system.
 
-- **dotslash** - For bootstrapping Buck2. Install via `brew install dotslash` (macOS) or see [dotslash docs](https://dotslash-cli.com/).
+Linux builds are otherwise self-contained. macOS needs Xcode Command Line
+Tools because executable linking uses system tooling.
 
-### Platform-Specific
+## Common commands
 
-The Rust toolchain is downloaded automatically by Buck2 (hermetic build). However, running Rue programs has platform requirements:
-
-| Platform | Requirements |
-|----------|--------------|
-| Linux x86_64 | None (fully hermetic) |
-| macOS ARM64 | Xcode Command Line Tools (`xcode-select --install`) |
-| macOS x86_64 | Xcode Command Line Tools (`xcode-select --install`) |
-
-**Why macOS needs Xcode**: The Rue compiler uses the system `clang` to link executables on macOS. On Linux, Rue uses its own internal ELF linker.
-
-### Optional (for IDE support)
-
-- **Rust toolchain via rustup** - For IDE features (rust-analyzer, etc.). The `rust-toolchain.toml` in the repo root ensures the right version.
-
-## Repository Structure
-
-```
-rue/
-├── crates/
-│   ├── rue/           # CLI binary
-│   ├── rue-air/       # Typed IR + semantic analysis
-│   ├── rue-codegen/   # Machine code generation
-│   ├── rue-compiler/  # Pipeline orchestration
-│   ├── rue-error/     # Error types
-│   ├── rue-lexer/     # Tokenizer
-│   ├── rue-linker/    # Object file creation and linking
-│   ├── rue-parser/    # AST construction
-│   ├── rue-rir/       # Untyped IR
-│   ├── rue-runtime/    # The runtime
-│   ├── rue-span/      # Source locations
-│   └── rue-spec/      # Specification test runner
-├── docs/              # Documentation
-├── examples/          # Example .rue programs
-├── third-party/       # Vendored dependencies
-└── toolchains/        # Buck2 toolchain definitions
-```
-
-## Building
-
-### Build Everything
+The `scripts/rue` wrapper is the supported entry point and can be invoked from
+any directory inside the repository:
 
 ```bash
-./buck2 build //...
+scripts/rue build                    # build the compiler
+scripts/rue exec program.rue         # compile and run a program
+scripts/rue quick                    # Rust unit tests
+scripts/rue test [pattern]           # full suite, optionally filtered
+scripts/rue spec 4.2                 # filtered specification cases
+scripts/rue cli abi                  # filtered CLI integration cases
+scripts/rue fmt                      # format first-party Rust
+scripts/rue gc                       # remove stale Buck artifacts
 ```
 
-### Build the Compiler
+For direct compiler invocations, resolve the binary through `scripts/rue-bin`:
 
 ```bash
-./buck2 build //crates/rue:rue
+RUE="$(scripts/rue-bin)"
+"$RUE" main.rue -o program
+"$RUE" --emit air --emit cfg main.rue
 ```
 
-The binary is output to `buck-out/v2/gen/root/crates/rue/__rue__/rue`.
+Multiple source files require `-o`. Run `"$RUE" --help` for targets, preview
+features, optimization levels, logging, timing, and all emit stages.
 
-### Build a Specific Crate
+Long-form Buck commands remain useful when working on build targets:
 
 ```bash
-./buck2 build //crates/rue-lexer:rue-lexer
+./buck2 build //crates/...
+./buck2 test //crates/rue-codegen:rue-codegen-test
+./buck2 run //crates/rue:rue -- source.rue -o program
 ```
 
-## Testing
+## Repository map
 
-### Run All Tests
+| Path | Responsibility |
+| --- | --- |
+| `crates/rue` | CLI driver |
+| `crates/rue-{lexer,parser,rir}` | parsing and untyped IR |
+| `crates/rue-air` | semantic analysis and typed IR |
+| `crates/rue-cfg` | control flow and target-independent optimization |
+| `crates/rue-codegen` | x86-64 and AArch64 backends |
+| `crates/rue-linker` | ELF/Mach-O objects and linking |
+| `crates/rue-runtime` | target runtime support |
+| `crates/rue-{spec,ui-tests,cli-tests}` | behavioral test harnesses |
+| `crates/rue-{oracle,oracle-diff}` | independent evaluator and differential tests |
+| `crates/rue-fuzz` | mutation/property fuzzing |
+| `docs/spec/src` | authoritative language specification |
+| `docs/designs` | architecture decision records |
+| `website` | public website, tutorial, and field journal |
+
+See [architecture.md](architecture.md) for the compiler pipeline.
+
+## Choosing tests
+
+- Add **unit tests** for local data structures, transformations, and invariants.
+- Add **spec tests** for language syntax or semantics. Reference the relevant
+  `chapter.section:paragraph` IDs; the traceability gate rejects dangling
+  references and tracks normative coverage.
+- Add **UI tests** for diagnostics, warnings, flags, and message presentation
+  not mandated by the specification.
+- Add **CLI tests** for the driver, filesystem/module loading, ABI behavior,
+  multiple files, linking, runtime I/O, or internal-compiler-error regressions.
+
+Known compiler defects use `known_bug = "RUE-NN"` in CLI cases. The harness
+treats an unexpected pass as a failure so obsolete markers cannot linger.
+Preview-language cases must enable their feature explicitly and do not count as
+stable normative coverage.
+
+During implementation, use the narrowest relevant command. Before submitting:
 
 ```bash
-./test.sh
+scripts/rue fmt
+scripts/rue test
 ```
 
-This runs:
-1. Unit tests for all crates (`buck2 test`)
-2. Specification tests (`buck2 run //crates/rue-spec:rue-spec`)
+CI additionally runs Clippy, workflow linting, debug tests on Linux x86-64,
+Linux AArch64, and macOS, plus a release-mode Linux suite. Fuzz, sanitizer,
+website, and benchmark workflows run separately.
 
-### Run Unit Tests Only
+## Language and design changes
+
+The specification, implementation, and tests form one change. New language
+features require an ADR and a preview feature until their syntax, semantics,
+diagnostics, and tests are complete. Follow [docs/designs/README.md](designs/README.md)
+and the implementation process in [process/implementation.md](process/implementation.md).
+
+Rue tracks work in Linear under `RUE-NN`; do not create repository TODO files
+as a substitute for tracked issues.
+
+## Version control
+
+Rue uses [Jujutsu](https://jj-vcs.github.io/jj/latest/) for local version
+control. This checkout may be a fork, so inspect remotes before publishing.
 
 ```bash
-./buck2 test //...
+jj status
+jj diff
+jj describe -m "Concise change description"
+jj new
 ```
 
-### Run Spec Tests Only
-
-```bash
-./buck2 run //crates/rue-spec:rue-spec
-```
-
-### Run a Specific Test
-
-```bash
-./buck2 test //crates/rue-lexer:rue-lexer-test
-```
-
-### Filter Spec Tests
-
-```bash
-./buck2 run //crates/rue-spec:rue-spec -- "1.1"  # Run section 1.1 tests
-./buck2 run //crates/rue-spec:rue-spec -- "zero" # Run tests matching "zero"
-```
-
-## Using the Compiler
-
-### Compile a Program
-
-```bash
-./buck2 run //crates/rue:rue -- source.rue output
-./output
-echo $?  # Check exit code
-```
-
-### Dump Intermediate Representations
-
-```bash
-# Dump RIR (untyped IR)
-./buck2 run //crates/rue:rue -- --dump-rir source.rue
-
-# Dump AIR (typed IR)
-./buck2 run //crates/rue:rue -- --dump-air source.rue
-
-# Dump MIR (machine IR before register allocation)
-./buck2 run //crates/rue:rue -- --dump-mir source.rue
-```
-
-## Adding Tests
-
-### Unit Tests
-
-Add tests to the relevant crate's source file:
-
-```rust
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_something() {
-        // ...
-    }
-}
-```
-
-Ensure the crate has a `rust_test` target in its `BUCK` file.
-
-### Specification Tests
-
-Add test cases to `.toml` files in `crates/rue-spec/cases/`:
-
-```toml
-[[case]]
-name = "my_test"
-source = "fn main() -> i32 { 42 }"
-exit_code = 42
-```
-
-For compile-fail tests:
-
-```toml
-[[case]]
-name = "my_error_test"
-source = "fn main() { }"
-compile_fail = true
-error_contains = "expected '->'"
-```
-
-For golden tests (exact output matching):
-
-```toml
-[[case]]
-name = "my_golden_test"
-source = "fn main() -> i32 { 42 }"
-expected_air = """
-function main:
-air (return_type: i32) {
-    %0 : i32 = const 42
-    %1 : i32 = ret %0
-}
-"""
-```
-
-## Version Control
-
-This project uses [Jujutsu (jj)](https://github.com/martinvonz/jj) for version control.
-
-### Common Commands
-
-```bash
-jj status          # Show working copy changes
-jj diff            # Show diff
-jj commit -m "msg" # Create a commit
-jj log             # Show history
-```
-
-### Creating a Commit
-
-```bash
-jj commit -m "Add feature X"
-```
-
-## Code Style
-
-- Follow standard Rust formatting (`rustfmt`)
-- Keep functions small and focused
-- Prefer explicit types in public APIs
-- Add doc comments to public items
-
-## Debugging
-
-### Print IR at Each Stage
-
-Use the `--dump-*` flags to see the IR at each compilation stage:
-
-```bash
-echo 'fn main() -> i32 { 42 }' > /tmp/test.rue
-./buck2 run //crates/rue:rue -- --dump-rir /tmp/test.rue
-./buck2 run //crates/rue:rue -- --dump-air /tmp/test.rue
-./buck2 run //crates/rue:rue -- --dump-mir /tmp/test.rue
-```
-
-### Disassemble Output
-
-```bash
-./buck2 run //crates/rue:rue -- /tmp/test.rue /tmp/test
-objdump -d /tmp/test
-```
-
-### Run Under GDB
-
-```bash
-./buck2 run //crates/rue:rue -- /tmp/test.rue /tmp/test
-gdb /tmp/test
-```
-
-## Common Tasks
-
-### Add a New Crate
-
-1. Create directory `crates/rue-newcrate/`
-2. Add `BUCK` file with `rust_library` and `rust_test` targets
-3. Add to dependencies in consuming crates' `BUCK` files
-
-### Add a Third-Party Dependency
-
-Dependencies are vendored in `third-party/`. See existing setup for patterns.
-
-### Modify the Grammar
-
-1. Update `rue-lexer` if new tokens needed
-2. Update `rue-parser` for new syntax
-3. Update `rue-rir` for new IR instructions
-4. Update `rue-air` for typed versions
-5. Update `rue-codegen` for code generation
-6. Add spec tests for new behavior
+Do not develop directly on `trunk`. The detailed commit and review workflow is
+documented under [docs/process/](process/).
