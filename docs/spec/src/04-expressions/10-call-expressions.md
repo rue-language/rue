@@ -10,11 +10,16 @@ template = "spec/page.html"
 
 A call expression invokes a function with a list of arguments.
 
-{{ rule(id="4.10:2", cat="normative") }}
+{{ rule(id="4.10:2", cat="syntax") }}
 
 ```ebnf
-call_expr = expression "(" [ expression { "," expression } ] ")" ;
+call_expr = expression "(" [ call_arg { "," call_arg } ] ")" ;
+call_arg  = [ "inout" | "borrow" ] expression ;
 ```
+
+{{ rule(id="4.10:10", cat="informative") }}
+
+An `inout` or `borrow` argument must denote a place; that requirement is a post-parse legality rule of the parameter-mode system (6.1:17), not a grammar restriction (see the grammar notes in appendix A).
 
 {{ rule(id="4.10:3", cat="legality-rule") }}
 
@@ -22,19 +27,19 @@ The number of arguments **MUST** match the number of parameters in the function 
 
 {{ rule(id="4.10:4", cat="legality-rule") }}
 
-Each argument type **MUST** be compatible with the corresponding parameter type.
+Each argument's type **MUST** be the corresponding parameter's type. As everywhere, the one admitted coercion is from the never type (3.4:3); no other type difference is accepted (core calculus `docs/formal/01-core-calculus.md` §5.8, rule `(Call)`).
 
 {{ rule(id="4.10:5", cat="normative") }}
 
-The type of a call expression is the function's return type.
+The type of a call expression is the function's declared return type (core calculus `docs/formal/01-core-calculus.md` §5.8, rule `(Call)`).
 
 {{ rule(id="4.10:9", cat="dynamic-semantics") }}
 
-A call expression evaluates to the value produced by invoking the function:
-the callee's body is executed with each parameter bound to the corresponding
-evaluated argument value, and the call expression denotes the value the
-invocation returns (see section 4.9 for how a function produces its return
-value). When the return type is `()`, the call denotes the unit value.
+A call expression evaluates to the value the invocation returns: the callee's body is evaluated with each parameter bound to its corresponding argument — a by-value argument's evaluated value in fresh storage, or, for an `inout`/`borrow` argument, the argument place itself (6.1:18) — and the value the body produces (see 4.5 and 4.9) is the call expression's value (core calculus `docs/formal/01-core-calculus.md` §6.9, rules `(D-Call)`/`(D-Return-Value)`). When the return type is `()`, the call evaluates to `()`.
+
+{{ rule(id="4.10:11", cat="informative") }}
+
+Passing an argument by value is a *use* of it — a move for a non-Copy type, a copy for a Copy type (3.8:11). An `inout`/`borrow` argument is not used; it takes a scoped loan for the call's duration (6.1; core calculus `docs/formal/01-core-calculus.md` §5.4). Those rules are specified in sections 3.8 and 6.1, not here.
 
 {{ rule(id="4.10:6") }}
 
@@ -50,7 +55,7 @@ fn main() -> i32 {
 
 {{ rule(id="4.10:7", cat="normative") }}
 
-Arguments are evaluated left-to-right before the function is called, as specified in section 4.0.
+Arguments are evaluated left-to-right before the function is called, as specified in section 4.0 (core calculus `docs/formal/01-core-calculus.md` §6.2).
 
 {{ rule(id="4.10:8") }}
 

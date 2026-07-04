@@ -10,7 +10,7 @@ description = "If expressions conditionally execute branches based on a boolean 
 
 [[case]]
 name = "if_condition_true"
-spec = ["4.6:1", "4.6:2", "4.6:7"]
+spec = ["4.6:1", "4.6:2", "4.6:7", "4.6:10"]
 source = """
 fn main() -> i32 {
     if true { 42 } else { 0 }
@@ -167,7 +167,7 @@ exit_code = 42
 
 [[case]]
 name = "execute_then_branch"
-spec = ["4.6:7"]
+spec = ["4.6:7", "4.6:11"]
 source = """
 fn main() -> i32 {
     let mut x = 0;

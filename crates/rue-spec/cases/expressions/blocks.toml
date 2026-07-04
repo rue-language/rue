@@ -36,7 +36,7 @@ exit_code = 30
 
 [[case]]
 name = "block_empty_is_unit"
-spec = ["4.5:3"]
+spec = ["4.5:7"]
 source = """
 fn do_nothing() {
     {}

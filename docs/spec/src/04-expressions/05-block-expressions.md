@@ -10,7 +10,7 @@ template = "spec/page.html"
 
 A block expression is a sequence of statements followed by an optional expression, enclosed in braces.
 
-{{ rule(id="4.5:2", cat="normative") }}
+{{ rule(id="4.5:2", cat="syntax") }}
 
 ```ebnf
 block_expr = "{" { statement } [ expression ] "}" ;
@@ -18,7 +18,11 @@ block_expr = "{" { statement } [ expression ] "}" ;
 
 {{ rule(id="4.5:3", cat="normative") }}
 
-A block expression evaluates to the value of its final expression, and its type is the type of that expression. If the block has no final expression (it ends with a statement, or is empty), it evaluates to `()` and has type `()`.
+A block expression with a final expression evaluates to that expression's value, and its type is that expression's type. (A block elaborates to a `let`/sequence chain, and a sequence evaluates to its tail — core calculus `docs/formal/01-core-calculus.md` §4.3, §6.7.)
+
+{{ rule(id="4.5:7", cat="normative") }}
+
+A block expression with no final expression — one that ends with a statement, or is empty — evaluates to `()` and has type `()`.
 
 {{ rule(id="4.5:4", cat="normative") }}
 
@@ -37,6 +41,6 @@ fn main() -> i32 {
 }
 ```
 
-{{ rule(id="4.5:6", cat="normative") }}
+{{ rule(id="4.5:6", cat="dynamic-semantics") }}
 
-When a block exits, all local variables declared in that block are destroyed.
+When a block exits, the live bindings declared in it are dropped, newest-first (3.9:4, 3.9:18; core calculus `docs/formal/01-core-calculus.md` §6.7, rule `(D-EndScope)`).

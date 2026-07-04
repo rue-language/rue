@@ -45,8 +45,9 @@ Follow this order for consistent, reviewable changes:
 ### 1. Update Specification (if changing language semantics)
 
 Edit files in `docs/spec/src/`:
-- Add or modify paragraphs with proper IDs: `r[X.Y:Z#category]`
-- Categories: `normative`, `legality-rule`, `dynamic-semantics`, `syntax`, `example`, `informative`
+- Add or modify paragraphs with proper ID markers: `{{ rule(id="X.Y:Z", cat="category") }}`
+- Categories: `normative`, `legality-rule`, `dynamic-semantics`, `syntax`, `undefined-behavior` (gated — require test coverage); `example`, `informative` (not gated)
+- Prose register, ID discipline, and the folk-term ban: see [the spec prose rubric](spec-prose-rubric.md)
 
 ### 2. Add Tests First
 

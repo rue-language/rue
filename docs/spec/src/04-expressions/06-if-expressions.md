@@ -8,7 +8,7 @@ template = "spec/page.html"
 
 {{ rule(id="4.6:1", cat="normative") }}
 
-An if expression conditionally executes one of two branches based on a boolean condition.
+An if expression conditionally evaluates one of two branches based on a boolean condition.
 
 {{ rule(id="4.6:2", cat="syntax") }}
 
@@ -23,7 +23,11 @@ The condition expression **MUST** have type `bool`.
 
 {{ rule(id="4.6:4", cat="legality-rule") }}
 
-If an `else` branch is present, both branches **MUST** have the same type. The type of the if expression is the type of its branches.
+If an `else` branch is present, both branches **MUST** have the same type. (A diverging branch has type `!`, which coerces to the other branch's type — 3.4:3; core calculus `docs/formal/01-core-calculus.md` §5.7, rule `(Sub-Never)`.)
+
+{{ rule(id="4.6:10", cat="normative") }}
+
+The type of an if expression with an `else` branch is the common type of its branches (core calculus `docs/formal/01-core-calculus.md` §5.5, rule `(If)`).
 
 {{ rule(id="4.6:5", cat="legality-rule") }}
 
@@ -38,9 +42,13 @@ fn main() -> i32 {
 }
 ```
 
-{{ rule(id="4.6:7", cat="normative") }}
+{{ rule(id="4.6:7", cat="dynamic-semantics") }}
 
-If the condition evaluates to `true`, the then-branch is evaluated and the `if` expression evaluates to the then-branch's value; otherwise the else-branch (if present) is evaluated and the `if` expression evaluates to its value. When no else-branch is present, the `if` expression evaluates to `()`.
+The condition is evaluated first. If it evaluates to `true`, the then-branch is evaluated and the if expression evaluates to the then-branch's value; otherwise the else-branch is evaluated and the if expression evaluates to the else-branch's value (core calculus `docs/formal/01-core-calculus.md` §6.6, rules `(D-If-T)`/`(D-If-F)`).
+
+{{ rule(id="4.6:11", cat="dynamic-semantics") }}
+
+An if expression with no `else` branch evaluates to `()`: when the condition is `false` no branch is evaluated and the expression's value is `()`, and when it is `true` the then-branch's value is `()` by rule 4.6:5.
 
 {{ rule(id="4.6:8") }}
 
@@ -63,3 +71,7 @@ fn main() -> i32 {
     else { 3 }
 }
 ```
+
+{{ rule(id="4.6:12", cat="informative") }}
+
+The branches of an if expression also reconcile their *ownership* effects: each branch is checked under the same incoming ownership state, and the states are joined after the branch (3.8:50, 3.8:73; core calculus `docs/formal/01-core-calculus.md` §5.5). That interaction is specified in section 3.8, not here.
