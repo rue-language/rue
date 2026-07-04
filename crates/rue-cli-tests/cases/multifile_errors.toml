@@ -85,6 +85,31 @@ error_contains = ["E0102", "bad.rue:3:5"]
 compile_stderr_not_contains = ["good.rue"]
 
 [[case]]
+name = "lex_and_parse_errors_in_different_files_are_accumulated"
+description = """
+RUE-361: multi-file parsing used to fail fast on the first lex/parse error,
+so argument order determined which broken file was reported. Both broken files
+must now be diagnosed in one compiler invocation.
+"""
+files = [
+    { path = "lex_bad.rue", source = """
+fn lex_bad() -> i32 { $ }
+""" },
+    { path = "parse_bad.rue", source = """
+fn parse_bad( -> i32 { 2 }
+""" },
+]
+args = ["lex_bad.rue", "parse_bad.rue", "-o", "prog"]
+compile_fail = true
+error_contains = [
+    "E0001",
+    "lex_bad.rue:1:23",
+    "E0100",
+    "parse_bad.rue:1:15",
+    "aborting due to 2 previous errors",
+]
+
+[[case]]
 name = "binary_expr_span_in_second_file"
 description = """
 RUE-175: make_binary built the merged span with Span::new, dropping the

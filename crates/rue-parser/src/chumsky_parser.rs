@@ -3126,7 +3126,18 @@ impl ChumskyParser {
     /// Parse the tokens into an AST, returning the AST and the interner.
     ///
     /// Returns all parse errors if parsing fails, not just the first one.
-    pub fn parse(mut self) -> MultiErrorResult<(Ast, ThreadedRodeo)> {
+    pub fn parse(self) -> MultiErrorResult<(Ast, ThreadedRodeo)> {
+        self.parse_preserving_interner()
+            .map_err(|(errors, _interner)| errors)
+    }
+
+    /// Parse the tokens into an AST, preserving the interner even on error.
+    ///
+    /// Multi-file compilation uses this to continue parsing later files after
+    /// an earlier file fails, while still sharing one interner across all files.
+    pub fn parse_preserving_interner(
+        mut self,
+    ) -> Result<(Ast, ThreadedRodeo), (CompileErrors, ThreadedRodeo)> {
         // Guard against pathologically nested input BEFORE handing tokens to
         // chumsky. The recursive-descent parser descends one level per opening
         // bracket, so combined bracket-nesting depth is an upper bound on
@@ -3134,7 +3145,7 @@ impl ChumskyParser {
         // every later pass, plus the recursive `Drop` of the AST) never sees a
         // tree deep enough to overflow the stack (RUE-42).
         if let Some(err) = check_nesting_depth(&self.tokens, self.file_id) {
-            return Err(CompileErrors::from(vec![err]));
+            return Err((CompileErrors::from(vec![err]), self.interner));
         }
 
         // Pre-intern primitive type symbols and create parser state with file ID
@@ -3185,14 +3196,17 @@ impl ChumskyParser {
             .join()
             .expect("parser thread panicked");
 
-        let ast = result?;
+        let ast = match result {
+            Ok(ast) => ast,
+            Err(errors) => return Err((errors, self.interner)),
+        };
 
         // Post-parse validation that needs the interner (e.g. resolving
         // directive names so the diagnostic can say which directive is
         // unknown). See the `validate` module.
         let validation_errors = crate::validate::check_directives(&ast, &self.interner);
         if !validation_errors.is_empty() {
-            return Err(CompileErrors::from(validation_errors));
+            return Err((CompileErrors::from(validation_errors), self.interner));
         }
 
         Ok((ast, self.interner))
