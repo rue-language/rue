@@ -20,6 +20,14 @@
 pub mod ice;
 
 use rue_span::Span;
+
+/// The rue compiler version.
+///
+/// Single source of truth: the CLI's `--version` banner and ICE reports
+/// (via the `ice!`/`ice_error!` macros) both read this constant. Buck2
+/// builds don't set `CARGO_PKG_VERSION`, so it can't come from the
+/// environment.
+pub const VERSION: &str = "0.1.0";
 use std::borrow::Cow;
 use std::collections::HashSet;
 use std::fmt;
@@ -86,7 +94,9 @@ impl ErrorCode {
     // Parser errors (E0100-E0199)
     // ========================================================================
     pub const UNEXPECTED_TOKEN: Self = Self(100);
-    pub const UNEXPECTED_EOF: Self = Self(101);
+    // E0101 was UNEXPECTED_EOF, deleted as never-produced: the parser reports
+    // end-of-file as UnexpectedToken { found: "end of file" }. Keep the
+    // number retired rather than reusing it.
     pub const PARSE_ERROR: Self = Self(102);
 
     // ========================================================================
@@ -946,11 +956,14 @@ pub struct PrivateUnqualifiedAccessData {
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum ErrorKind {
     // Lexer errors
-    #[error("unexpected character: {0}")]
+    // escape_debug keeps printable characters as-is but renders control and
+    // other invisible characters (NUL, VT, BOM, ...) as visible escapes like
+    // \u{b}, so a hostile byte can't corrupt the one-line message.
+    #[error("unexpected character: {}", .0.escape_debug())]
     UnexpectedCharacter(char),
     #[error("invalid integer literal")]
     InvalidInteger,
-    #[error("invalid escape sequence: \\{0}")]
+    #[error("invalid escape sequence: \\{}", .0.escape_debug())]
     InvalidStringEscape(char),
     #[error("unterminated string literal")]
     UnterminatedString,
@@ -975,8 +988,6 @@ pub enum ErrorKind {
         expected: Cow<'static, str>,
         found: Cow<'static, str>,
     },
-    #[error("unexpected end of file, expected {expected}")]
-    UnexpectedEof { expected: Cow<'static, str> },
     /// A custom parse error with a specific message.
     ///
     /// Used for parser-generated errors that don't fit the "expected X, found Y" pattern.
@@ -1416,7 +1427,6 @@ impl ErrorKind {
 
             // Parser errors (E0100-E0199)
             ErrorKind::UnexpectedToken { .. } => ErrorCode::UNEXPECTED_TOKEN,
-            ErrorKind::UnexpectedEof { .. } => ErrorCode::UNEXPECTED_EOF,
             ErrorKind::ParseError(_) => ErrorCode::PARSE_ERROR,
             ErrorKind::NestingLimitExceeded { .. } => ErrorCode::NESTING_LIMIT_EXCEEDED,
 
@@ -1553,18 +1563,6 @@ impl ErrorKind {
             // Internal compiler errors (E9000-E9999)
             ErrorKind::InternalError(_) => ErrorCode::INTERNAL_ERROR,
             ErrorKind::InternalCodegenError(_) => ErrorCode::INTERNAL_CODEGEN_ERROR,
-        }
-    }
-}
-
-impl CompileError {
-    /// Create an error at a specific position (zero-length span).
-    #[inline]
-    pub fn at(kind: ErrorKind, pos: u32) -> Self {
-        Self {
-            kind,
-            span: Some(Span::point(pos)),
-            diagnostic: Diagnostic::new(),
         }
     }
 }
@@ -1962,17 +1960,24 @@ mod tests {
     }
 
     #[test]
-    fn test_error_at_position() {
-        let error = CompileError::at(ErrorKind::InvalidInteger, 42);
-
-        assert!(error.has_span());
-        assert_eq!(error.span(), Some(Span::point(42)));
-    }
-
-    #[test]
     fn test_unexpected_character_message() {
         let error = CompileError::without_span(ErrorKind::UnexpectedCharacter('@'));
         assert_eq!(error.to_string(), "unexpected character: @");
+    }
+
+    #[test]
+    fn test_unexpected_character_escapes_invisible_chars() {
+        // Control and format characters must not appear raw in the one-line
+        // message; escape_debug renders them as visible escapes.
+        let vt = CompileError::without_span(ErrorKind::UnexpectedCharacter('\u{b}'));
+        assert_eq!(vt.to_string(), "unexpected character: \\u{b}");
+        let nul = CompileError::without_span(ErrorKind::UnexpectedCharacter('\0'));
+        assert_eq!(nul.to_string(), "unexpected character: \\0");
+        let bom = CompileError::without_span(ErrorKind::UnexpectedCharacter('\u{feff}'));
+        assert_eq!(bom.to_string(), "unexpected character: \\u{feff}");
+        // Printable characters are unchanged, including non-ASCII.
+        let acute = CompileError::without_span(ErrorKind::UnexpectedCharacter('é'));
+        assert_eq!(acute.to_string(), "unexpected character: é");
     }
 
     #[test]
@@ -1982,14 +1987,6 @@ mod tests {
             found: Cow::Borrowed("'+'"),
         });
         assert_eq!(error.to_string(), "expected identifier, found '+'");
-    }
-
-    #[test]
-    fn test_unexpected_eof_message() {
-        let error = CompileError::without_span(ErrorKind::UnexpectedEof {
-            expected: Cow::Borrowed("'}'"),
-        });
-        assert_eq!(error.to_string(), "unexpected end of file, expected '}'");
     }
 
     #[test]
@@ -2659,13 +2656,6 @@ mod tests {
             }
             .code(),
             ErrorCode::UNEXPECTED_TOKEN
-        );
-        assert_eq!(
-            ErrorKind::UnexpectedEof {
-                expected: "}".into()
-            }
-            .code(),
-            ErrorCode::UNEXPECTED_EOF
         );
         assert_eq!(
             ErrorKind::ParseError("custom error".into()).code(),

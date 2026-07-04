@@ -210,8 +210,9 @@ struct Options {
     jobs: usize,
 }
 
-/// Version string for the rue compiler.
-const VERSION: &str = "0.1.0";
+/// Version string for the rue compiler (single-sourced from rue-error so the
+/// `--version` banner and ICE reports can never drift apart).
+const VERSION: &str = rue_compiler::VERSION;
 
 fn print_version() {
     println!("rue {}", VERSION);

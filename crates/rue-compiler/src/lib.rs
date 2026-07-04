@@ -205,7 +205,7 @@ pub use rue_codegen::{
 };
 pub use rue_error::{
     Applicability, CompileError, CompileErrors, CompileResult, CompileWarning, Diagnostic,
-    ErrorCode, ErrorKind, MultiErrorResult, PreviewFeature, PreviewFeatures, Suggestion,
+    ErrorCode, ErrorKind, MultiErrorResult, PreviewFeature, PreviewFeatures, Suggestion, VERSION,
     WarningKind,
 };
 pub use rue_lexer::{Lexer, Token, TokenKind};
