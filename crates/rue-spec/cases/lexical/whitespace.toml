@@ -26,6 +26,17 @@ spec = ["2.3:1"]
 source = "fn\tmain()\t->\ti32\t{\t42\t}"
 exit_code = 42
 
+# Form-feed (U+000C) is deliberately NOT whitespace: spec 2.3:1 lists only
+# space, tab, newline, and carriage return. This matches Zig's strict set and
+# diverges from Rust, which treats form-feed as Pattern_White_Space (RUE-333).
+# A stray form-feed must therefore produce a clean lex error, not be skipped.
+[[case]]
+name = "form_feed_not_whitespace"
+spec = ["2.3:1"]
+source = "fn main() -> i32 {\f42 }"
+compile_fail = true
+error_contains = "unexpected character"
+
 [[case]]
 name = "newlines"
 spec = ["2.3:1"]

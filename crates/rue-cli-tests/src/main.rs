@@ -225,7 +225,7 @@ struct SourceFile {
     source: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Case {
     name: String,
@@ -662,6 +662,14 @@ fn run_case_wrapper(
     }
 }
 
+/// A `differential_opt` case's cross-level check is only meaningful if each opt
+/// level is also pinned to a known-good result, so it must declare both an
+/// explicit `stdout` and `exit_code`. Returns true when the case is
+/// `differential_opt` but missing either — a load-time error (RUE-132).
+fn differential_opt_missing_pin(case: &Case) -> bool {
+    case.differential_opt && (case.stdout.is_none() || case.exit_code.is_none())
+}
+
 fn load_cases(cases_dir: &Path) -> Vec<(String, TestFile)> {
     let mut toml_files = Vec::new();
     rue_test_runner::collect_toml_files(cases_dir, &mut toml_files);
@@ -677,7 +685,27 @@ fn load_cases(cases_dir: &Path) -> Vec<(String, TestFile)> {
             }
         };
         match toml::from_str::<TestFile>(&content) {
-            Ok(tf) => out.push((path.display().to_string(), tf)),
+            Ok(tf) => {
+                // A differential_opt case's cross-level check is trivially green
+                // today (-O2/-O3 alias -O1), so it only catches a *consistently*
+                // wrong program if each level is also pinned to a known-good
+                // result. Require both an explicit `stdout` and `exit_code` at
+                // load time so the doc comment's promise is enforced, not merely
+                // documented (RUE-132).
+                for case in &tf.cases {
+                    if differential_opt_missing_pin(case) {
+                        eprintln!(
+                            "error: {}: differential_opt case '{}' must declare both an explicit \
+                             `stdout` and `exit_code` (each opt level is checked against them, so \
+                             the cross-level compare can't pass a consistently-wrong program)",
+                            path.display(),
+                            case.name
+                        );
+                        std::process::exit(1);
+                    }
+                }
+                out.push((path.display().to_string(), tf));
+            }
             Err(e) => {
                 eprintln!("error: failed to parse {}: {}", path.display(), e);
                 std::process::exit(1);
@@ -880,4 +908,45 @@ fn main() {
     tests.extend(example_trials(&rue_binary));
 
     Harness::with_env().discover(tests).main();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn differential_opt_requires_stdout_and_exit_code() {
+        // Missing both -> rejected.
+        let mut case = Case {
+            name: "c".to_string(),
+            differential_opt: true,
+            ..Default::default()
+        };
+        assert!(differential_opt_missing_pin(&case));
+
+        // Only stdout -> still rejected (exit_code missing).
+        case.stdout = Some("59\n".to_string());
+        assert!(differential_opt_missing_pin(&case));
+
+        // Only exit_code -> still rejected (stdout missing).
+        case.stdout = None;
+        case.exit_code = Some(59);
+        assert!(differential_opt_missing_pin(&case));
+
+        // Both present -> accepted.
+        case.stdout = Some("59\n".to_string());
+        assert!(!differential_opt_missing_pin(&case));
+    }
+
+    #[test]
+    fn non_differential_case_not_required_to_pin() {
+        // A plain case missing stdout/exit_code is fine — the requirement only
+        // applies to differential_opt cases.
+        let case = Case {
+            name: "c".to_string(),
+            differential_opt: false,
+            ..Default::default()
+        };
+        assert!(!differential_opt_missing_pin(&case));
+    }
 }

@@ -1,0 +1,24 @@
+[section]
+id = "cli.large_stdout"
+name = "Large program stdout does not deadlock the harness (RUE-132)"
+
+# A program that writes far more than the OS pipe buffer (~64KB) must run to
+# completion through the real harness. run_with_timeout drains stdout/stderr on
+# reader threads started right after spawn; before that fix the pipe would fill,
+# the program would block in write(), and the case would time out (same class as
+# RUE-338). ~168KB of output here is comfortably past the buffer.
+[[case]]
+name = "program_emitting_over_64kb_completes"
+description = "Prints 30000 lines (~168KB) via @dbg and exits 0 without deadlocking."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut i = 0;
+    while i < 30000 {
+        @dbg(i);
+        i = i + 1;
+    }
+    0
+}
+""" }]
+stdout_contains = ["0\n", "29999\n"]
+exit_code = 0
