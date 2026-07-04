@@ -1,14 +1,14 @@
 ---
 id: 0023
 title: Multi-File Compilation
-status: implemented
+status: superseded
 tags: [architecture, compiler, scalability]
 feature-flag: multi_file
 created: 2025-12-31
 accepted: 2025-12-31
 implemented: 2025-12-31
 spec-sections: []
-superseded-by:
+superseded-by: 0026
 ---
 
 # ADR-0023: Multi-File Compilation

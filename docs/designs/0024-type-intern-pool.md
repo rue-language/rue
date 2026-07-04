@@ -4,9 +4,9 @@ title: Type Intern Pool
 status: implemented
 tags: [type-system, performance, parallelization]
 feature-flag: null
-created: 2026-01-01
-accepted: 2026-01-01
-implemented: 2026-01-04
+created: 2026-01-02
+accepted: 2026-01-02
+implemented: 2026-01-02
 spec-sections: []
 superseded-by:
 ---
@@ -15,295 +15,448 @@ superseded-by:
 
 ## Status
 
-Implemented
+**Implemented** (2026-01-02) - Phases 1-4 complete. Type is now a u32 newtype with O(1) equality.
 
-## Summary
+This text replaces an earlier migration plan for the same decision. The prior
+version remains available in Git history rather than occupying a second ADR
+identity.
 
-Replace Rue's current type representation (a `Type` enum with separate ID registries for structs, enums, and arrays) with a unified **Type Intern Pool** inspired by Zig's `InternPool`. All types become 32-bit indices into a canonical, thread-safe pool, enabling O(1) type equality, efficient memory usage, and clean parallel compilation.
+## Executive Summary
 
-## Context
+After multiple failed migration attempts, we discovered that **the pool is already the primary lookup mechanism** for struct/enum definitions. The `struct_defs` and `enum_defs` Vecs are legacy artifacts carried around for "backwards compatibility" but aren't used in the main codepath.
 
-### Current Architecture
+This revised approach:
+1. **Removes the Vec duplication** (Phase 2A) - simple cleanup
+2. **Keeps the `Type` enum unchanged** - no pattern match migration needed
+3. **Migrates arrays to the pool** (Phase 2B) - the real value
+4. **Defers `Type` → `TypeId` rename** until generics needs it (Phase 4, optional)
 
-Rue currently has three separate ID systems for composite types:
+## Context: Why Previous Attempts Failed
 
-| Type | ID Type | Storage | Creation Point |
-|------|---------|---------|----------------|
-| Structs | `StructId(u32)` | `Vec<StructDef>` in `TypeContext` | Declaration collection (pre-analysis) |
-| Enums | `EnumId(u32)` | `Vec<EnumDef>` in `TypeContext` | Declaration collection (pre-analysis) |
-| Arrays | `ArrayTypeId(u32)` | `Vec<ArrayTypeDef>` in `FunctionAnalysisState` | During function body analysis |
+### Original ADR-0024 Phase 4
+The original plan required:
+- Renaming `InternedType` → `Type` globally (~675 usages)
+- Updating all pattern matches simultaneously
+- Massive compiler errors eating all context (600+ errors)
 
-The `Type` enum is:
+### Incremental Migration Approach
+A previous incremental approach added a `Type::Interned(TypeId)` variant, but:
+- Created dual representations that both needed handling
+- Every pattern match needed `Type::Interned(_) => panic!(...)` or `.normalize()`
+- The migration stalled with 9+ locations needing manual updates
+
+## Key Discovery: Pool Already Primary
+
+Analysis revealed that `SemaContext.get_struct_def()` already uses the pool:
+
 ```rust
-pub enum Type {
-    I8, I16, I32, I64, U8, U16, U32, U64,
-    Bool, Unit, Error, Never,
-    Struct(StructId),
-    Enum(EnumId),
-    Array(ArrayTypeId),
+// sema_context.rs:370-372
+pub fn get_struct_def(&self, id: StructId) -> StructDef {
+    self.type_pool.struct_def(id)  // Uses pool, NOT Vec!
 }
 ```
 
-### Problems
+The only code using the Vec directly:
+- `TypeContext.get_struct_def()` - legacy, limited use
+- Test assertions checking `output.struct_defs.len()`
+- Logging for struct_count
 
-1. **Dynamic array type creation**: Arrays are created during type inference, requiring mutable state during what should be parallel function analysis. This led to `FunctionAnalysisState` with per-function array registries that must be merged afterward (see rue-wcg7, historical bd ID, pre-Linear).
+This means **90%+ of struct/enum lookups already use the pool**.
 
-2. **Inconsistent creation patterns**: Structs/enums use one path, arrays use another. This asymmetry complicates the codebase.
+## Revised Approach
 
-3. **Type comparison overhead**: Comparing types requires matching on enum variants. For composite types, you then need to compare IDs, which requires knowing they came from the same registry.
+### Guiding Principles
 
-4. **Future generics**: When we add `Vec<T>` or `Option<T>`, we'll need to intern instantiated generic types like `Vec<i32>` vs `Vec<String>`. The current architecture has no path to this.
+1. **Keep `Type` enum unchanged** - pattern matching works, don't break it
+2. **Remove duplication first** - the Vecs are pure overhead
+3. **Pool is canonical** - all lookups go through pool
+4. **Defer rename to Phase 4** - only if generics specialization needs it
 
-### What Zig Does
+### What Changes
 
-Zig uses an `InternPool` - a canonical, thread-safe, sharded hash table that deduplicates and interns all types and values:
+| Component | Current | After Phase 2A | After Phase 2B |
+|-----------|---------|----------------|----------------|
+| `Sema.struct_defs` | `Vec<StructDef>` | **Removed** | Removed |
+| `Sema.enum_defs` | `Vec<EnumDef>` | **Removed** | Removed |
+| `TypeContext.struct_defs` | `Vec<StructDef>` | **Removed** | Removed |
+| `SemaContext.struct_defs` | `Vec<StructDef>` (unused) | **Removed** | Removed |
+| `SemaOutput.struct_defs` | `Vec<StructDef>` | **Pool ref** | Pool ref |
+| `ArrayTypeRegistry` | Separate | Separate | **Pool** |
+| `Type` enum | 15 variants | **Unchanged** | Unchanged |
+| Pattern matches | ~215 locations | **Unchanged** | Unchanged |
 
-- Types are represented as 32-bit indices
-- The `Key` union defines all possible type variants (including `ArrayType { len, child, sentinel }`)
-- Content-addressed deduplication: identical types share the same index
-- Type equality is just `u32 == u32`
-- Thread-safe via sharded hash maps with atomic operations
+### What Stays the Same
 
-## Decision
-
-Implement a unified `TypeInternPool` for all types in Rue.
-
-### Core Design
-
-```rust
-/// Interned type index - 32 bits, Copy, cheap comparison.
-///
-/// Reserved indices 0-15 are primitives (no lookup needed).
-/// Index 16+ are composite types stored in the pool.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub struct Type(u32);
-
-impl Type {
-    // Reserved indices for primitives
-    pub const I8: Type = Type(0);
-    pub const I16: Type = Type(1);
-    pub const I32: Type = Type(2);
-    pub const I64: Type = Type(3);
-    pub const U8: Type = Type(4);
-    pub const U16: Type = Type(5);
-    pub const U32: Type = Type(6);
-    pub const U64: Type = Type(7);
-    pub const BOOL: Type = Type(8);
-    pub const UNIT: Type = Type(9);
-    pub const NEVER: Type = Type(10);
-    pub const ERROR: Type = Type(11);
-    // 12-15 reserved for future primitives
-
-    const PRIMITIVE_COUNT: u32 = 16;
-
-    /// Check if this is a primitive type (no pool lookup needed).
-    #[inline]
-    pub fn is_primitive(self) -> bool {
-        self.0 < Self::PRIMITIVE_COUNT
-    }
-}
-
-/// Type data stored in the intern pool.
-///
-/// This is NOT Copy - it lives in the pool. You work with `Type` indices.
-pub enum TypeData {
-    /// User-defined struct (nominal type)
-    Struct(StructDef),
-    /// User-defined enum (nominal type)
-    Enum(EnumDef),
-    /// Fixed-size array (structural type)
-    Array { element: Type, len: u64 },
-    // Future: Pointer, Function, Generic instantiations, etc.
-}
-
-/// Thread-safe intern pool for all composite types.
-pub struct TypeInternPool {
-    inner: RwLock<TypeInternPoolInner>,
-}
-
-struct TypeInternPoolInner {
-    /// All composite type data, indexed by (Type.0 - PRIMITIVE_COUNT)
-    types: Vec<TypeData>,
-
-    /// Structural type deduplication: (element, len) -> Type for arrays
-    array_map: HashMap<(Type, u64), Type>,
-
-    /// Nominal type lookup: name -> Type for structs/enums
-    struct_by_name: HashMap<Spur, Type>,
-    enum_by_name: HashMap<Spur, Type>,
-}
-```
-
-### Key Properties
-
-1. **O(1) type equality**: `type_a == type_b` is just `u32 == u32`
-
-2. **Primitives are free**: No lookup for `i32`, `bool`, etc. - they're encoded in the index itself
-
-3. **Structural deduplication for arrays**: `[i32; 5]` interns to the same `Type` regardless of where it's created
-
-4. **Nominal identity for structs/enums**: Two structs with the same fields but different names are different types (as they should be)
-
-5. **Thread-safe**: RwLock (or sharded locks) for concurrent access during parallel compilation
-
-6. **Self-contained**: Arrays can reference other types via their `Type` index, enabling nested types like `[[i32; 3]; 4]`
-
-### API
-
-```rust
-impl TypeInternPool {
-    /// Create a new pool with primitives pre-registered.
-    pub fn new() -> Self;
-
-    /// Intern an array type (structural - deduplicates).
-    pub fn intern_array(&self, element: Type, len: u64) -> Type;
-
-    /// Register a new struct (nominal - no deduplication).
-    /// Returns the Type and whether it was newly inserted.
-    pub fn register_struct(&self, name: Spur, def: StructDef) -> (Type, bool);
-
-    /// Register a new enum (nominal - no deduplication).
-    pub fn register_enum(&self, name: Spur, def: EnumDef) -> (Type, bool);
-
-    /// Look up a struct by name.
-    pub fn get_struct_by_name(&self, name: Spur) -> Option<Type>;
-
-    /// Look up an enum by name.
-    pub fn get_enum_by_name(&self, name: Spur) -> Option<Type>;
-
-    /// Get type data (panics for primitives - use Type::is_primitive first).
-    pub fn get(&self, ty: Type) -> &TypeData;
-
-    /// Get type data if composite, None for primitives.
-    pub fn try_get(&self, ty: Type) -> Option<&TypeData>;
-
-    // Convenience methods
-    pub fn is_struct(&self, ty: Type) -> bool;
-    pub fn is_enum(&self, ty: Type) -> bool;
-    pub fn is_array(&self, ty: Type) -> bool;
-    pub fn get_struct_def(&self, ty: Type) -> Option<&StructDef>;
-    pub fn get_enum_def(&self, ty: Type) -> Option<&EnumDef>;
-    pub fn get_array_info(&self, ty: Type) -> Option<(Type, u64)>; // (element, len)
-}
-```
-
-### Migration Strategy
-
-The key insight is that `Type` remains a small, Copy value - we're just changing its internal representation from an enum to an index. Most code that uses `Type` doesn't need to change semantically; it just needs mechanical updates.
+- `Type::I32`, `Type::Struct(StructId)` - unchanged
+- All pattern matches on `Type` - unchanged
+- `StructId`, `EnumId` newtypes - unchanged (they wrap pool indices)
+- `ArrayTypeId` - unchanged until Phase 2B
 
 ## Implementation Phases
 
-**Epic**: rue-igt6 (historical bd ID, pre-Linear)
+### Phase 1: Infrastructure ✅ (Already Complete)
 
-### Phase 1: Introduce TypeInternPool alongside existing system (historical bd ID rue-3mjg, pre-Linear)
+The pool infrastructure exists and is populated:
+- `TypeInternPool` in `intern_pool.rs`
+- `type_pool.struct_def(id)` works
+- `SemaContext` uses pool for lookups
 
-Create the new `TypeInternPool` infrastructure without removing the old system. Both coexist temporarily.
+### Phase 2A: Remove Vec Duplication (NEW - Easy)
 
-- [x] Create `rue-air/src/intern_pool.rs` with `TypeInternPool`, `TypeData`
-- [x] Add `TypeInternPool` to `Sema` and `SemaContext`
-- [x] Populate pool during declaration collection (structs, enums)
-- [x] Verify pool contents match existing registries (test coverage)
+**Goal**: Single source of truth for struct/enum definitions.
 
-**Ship criterion**: All existing tests pass, pool is populated but not yet used.
+**Changes**:
+1. Remove `struct_defs: Vec<StructDef>` from `Sema`, `TypeContext`, `SemaContext`
+2. Remove `enum_defs: Vec<EnumDef>` from same
+3. Update `SemaOutput` to provide pool access instead of Vecs
+4. Update tests to use `type_pool.struct_count()` instead of `output.struct_defs.len()`
+5. Update logging to use pool stats
 
-### Phase 2: Migrate array types to the pool (historical bd ID rue-9e5t, pre-Linear)
+**Files affected**: ~8-10 files, mostly deletions
 
-Replace `ArrayTypeId` and the per-function array type handling with pool interning.
+**Ship criterion**: All tests pass, no `struct_defs` or `enum_defs` Vecs anywhere.
 
-- [x] Replace `FunctionAnalysisState.array_types` with `TypeInternPool.intern_array()`
-- [x] Update `MergedAnalysisState` - array merging becomes a no-op (pool handles dedup)
-- [x] Update AIR instructions that reference `ArrayTypeId` to use `Type`
-- [x] `ArrayTypeId` now wraps pool indices (kept for type safety)
+### Phase 2B: Migrate Arrays to Pool
 
-**Ship criterion**: Arrays work, parallel function analysis uses shared pool, no per-function array registries.
+**Goal**: Array types interned in pool, enabling parallel creation without merging.
 
-### Phase 3: Migrate struct/enum IDs to pool indices (historical bd ID rue-ej3x, pre-Linear)
+**Changes**:
+1. Move `ArrayTypeRegistry` functionality into `TypeInternPool`
+2. Use `type_pool.intern_array(element, len)` instead of registry
+3. Remove `ArrayTypeRegistry` from `SemaContext`
+4. Arrays deduplicate automatically (same element+len = same type)
 
-Replace `StructId` and `EnumId` with `Type` indices directly.
+**Files affected**: ~5-10 files
 
-- [x] Change `Type::Struct(StructId)` → composite `Type` index with tag encoding
-- [x] Change `Type::Enum(EnumId)` → composite `Type` index with tag encoding
-- [x] Update all `StructId`/`EnumId` usages in AIR, CFG, codegen
-- [x] `StructId`/`EnumId` now wrap pool indices (kept for type safety)
+**Ship criterion**: Arrays work, no separate array registry, parallel function analysis cleaner.
 
-**Ship criterion**: `Type` is now a u32 index. All lookups go through the pool.
+### Phase 3: Struct/Enum Unified Indexing (Optional)
 
-### Phase 4: Unify Type representation (historical bd ID rue-wsny, pre-Linear)
+**Goal**: `StructId` and `EnumId` are just `TypeId` under the hood.
 
-Replace the `Type` enum entirely with the `Type(u32)` newtype.
+Currently `StructId(0)` and `EnumId(0)` could both exist (different types). After this phase, all composite types share one index space.
 
-- [x] Remove old `Type` enum variants - now `struct Type(u32)` with tag encoding
-- [x] Update all pattern matches on `Type` to use `kind()` method returning `TypeKind`
-- [x] Add helper methods to `Type` for common checks (`is_integer()`, `is_signed()`, etc.)
-- [x] Optimize: inline primitive checks (no pool lookup for `Type::I32.is_integer()`)
+**Changes**:
+1. Make `StructId` and `EnumId` aliases for a range of `TypeId`
+2. Update pattern matching on `Type::Struct(id)` to extract from TypeId
 
-**Ship criterion**: Single unified type representation. Clean API.
+**Complexity**: Medium. May not be needed if current design works.
 
-### Phase 5: Performance optimization (historical bd ID rue-ynk5, pre-Linear; optional)
+### Phase 4: Type Enum → TypeId (Deferred)
 
-If profiling shows lock contention:
+**Goal**: Replace `Type` enum with `TypeId(u32)` for O(1) comparison in generics.
 
-- [ ] Implement sharded locks (Zig uses 16 shards)
-- [ ] Consider lock-free reads for the common case (append-only types array)
-- [ ] Benchmark and tune
+**Only do this when**:
+- Generics specialization needs canonical type comparison
+- `SpecializationKey { type_args: Vec<Type> }` hash collisions become an issue
+- We're adding `Vec<T>` and need to intern generic instantiations
 
-**Ship criterion**: No regression from current performance. Improvements for parallel compilation.
+**Changes**:
+1. Rename `Type` → `TypeKind` (the pattern-matchable form)
+2. Make `TypeId` the primary type representation
+3. Add `TypeId::kind(&self, pool) -> TypeKind` for pattern matching
+4. Migrate storage: `ty: Type` → `ty: TypeId`
+5. Migrate patterns: `match ty { Type::I32 => }` → `match ty.kind(pool) { TypeKind::I32 => }`
 
-> **Note**: Phase 5 is deferred until profiling shows a need. The current RwLock
-> implementation works well for the current workload.
+**Complexity**: High. 200+ pattern matches need updating. Only do if benefits justify cost.
 
-## Consequences
+## Benefits of This Approach
 
-### Positive
+### Immediate (Phase 2A)
+- **Simpler codebase**: Remove redundant Vec storage
+- **Single source of truth**: Pool is canonical
+- **No risk**: Just deletions, easy to verify
 
-1. **Correctness**: Single source of truth for types eliminates registry synchronization bugs
+### Medium-term (Phase 2B)
+- **Parallel array creation**: No per-function merging
+- **Array deduplication**: `[i32; 5]` same type everywhere
+- **Cleaner architecture**: One registry for all composite types
 
-2. **Performance**:
-   - O(1) type comparison (u32 equality vs enum matching)
-   - Better cache locality (types are indices, pool is contiguous)
-   - Clean parallel compilation (no per-function merging for arrays)
+### Long-term (Phase 4, if needed)
+- **O(1) type equality**: Critical for generic specialization caching
+- **Foundation for generics**: `Vec<i32>` as interned type
+- **Future type features**: Pointers, function types, etc.
 
-3. **Simplicity**:
-   - One way to create and compare types
-   - `StructId`, `EnumId`, `ArrayTypeId` are now thin wrappers around pool indices
-   - `FunctionAnalysisState` becomes much simpler (no array handling)
+## Comparison to Original Plan
 
-4. **Future-ready**:
-   - Clear path to generic type instantiation (`Vec<i32>`)
-   - Pointer types, function types, etc. fit naturally
-   - Foundation for incremental compilation (stable type hashes)
+| Aspect | Original | Revised |
+|--------|----------|---------|
+| Pattern matches changed | 215+ | **0** (until Phase 4) |
+| Files changed (Phase 2) | ~25 | **~10** |
+| Risk of breaking changes | High | **Low** |
+| Immediate benefit | Low (just infrastructure) | **High** (remove duplication) |
+| Type representation | Changes immediately | **Unchanged until needed** |
+| Generics support | Required before generics | **Only if needed** |
 
-### Negative
+## Migration Order
 
-1. **Large refactor**: ~4000-5000 lines across ~15-20 files
+```
+Phase 1 ✅ (done)
+    │
+    ▼
+Phase 2A: Remove Vec duplication (~1-2 hours)
+    │
+    ▼
+Phase 2B: Migrate arrays to pool (~2-4 hours)
+    │
+    ▼
+[STOP HERE unless generics needs it]
+    │
+    ▼
+Phase 3: Unified indexing (optional, ~2-4 hours)
+    │
+    ▼
+Phase 4: Type→TypeId rename (only if needed, ~8-16 hours)
+```
 
-2. **Indirection for type queries**: `pool.get(ty)` instead of direct enum match
-   - Mitigated by helper methods and inlined primitive checks
+## Files to Change
 
-3. **Lock overhead for type creation**: RwLock for concurrent access
-   - Mitigated by read-heavy workload (types created once, queried many times)
-   - Can shard if profiling shows contention
+### Phase 2A (Remove Vecs)
 
-4. **Learning curve**: Contributors need to understand the interning pattern
+**Delete fields**:
+- `crates/rue-air/src/sema/mod.rs`: `struct_defs`, `enum_defs` fields
+- `crates/rue-air/src/sema_context.rs`: `struct_defs`, `enum_defs` fields
+- `crates/rue-air/src/type_context.rs`: `struct_defs`, `enum_defs` fields
 
-## Open Questions
+**Update**:
+- `crates/rue-air/src/sema/declarations.rs`: Remove `.push()` calls
+- `crates/rue-air/src/sema/builtins.rs`: Remove `.push()` call
+- `crates/rue-air/src/sema/analysis.rs`: Remove `std::mem::take(&mut sema.struct_defs)`
+- `crates/rue-air/src/sema/mod.rs`: Remove Vec cloning in `build_type_context()`
+- `crates/rue-air/src/sema/tests.rs`: Use `type_pool.struct_count()` instead
+- `crates/rue-compiler/src/lib.rs`: Use `type_pool.struct_count()` for logging
 
-1. **Sharding from the start?** Zig uses 16 shards. We could start with a single RwLock and shard later if needed. The API doesn't change.
+### Phase 2B (Arrays to Pool)
 
-2. **Primitive representation**: Reserved indices 0-15 vs. separate enum? Reserved indices are simpler and avoid branching.
+- `crates/rue-air/src/intern_pool.rs`: Already has `intern_array()`
+- `crates/rue-air/src/sema_context.rs`: Replace `ArrayTypeRegistry` with pool
+- `crates/rue-air/src/sema/analysis.rs`: Use `type_pool.intern_array()`
+- `crates/rue-codegen/src/types.rs`: Update array lookups
 
-3. **Error handling for invalid Type indices**: Panic (current approach) or Result? Panic is fine for compiler internals - an invalid Type index is always a bug.
+## Success Criteria
 
-## Future Work
+### Phase 2A Complete ✅ (2026-01-02)
+- [x] No `struct_defs: Vec<StructDef>` anywhere in codebase
+- [x] No `enum_defs: Vec<EnumDef>` anywhere in codebase
+- [x] All struct/enum lookups go through `type_pool`
+- [x] All tests pass
+- [x] `./test.sh` green
 
-- **Generic types**: `Vec<T>` instantiation will intern `Vec<i32>` etc. The pool design supports this naturally.
-- **Pointer types**: `&T`, `&mut T` would be interned composite types
-- **Function types**: For function pointers or closures
-- **Incremental compilation**: Pool contents can be serialized/hashed for incremental cache keys
+### Phase 2B Complete ✅ (2026-01-02)
+- [x] No `ArrayTypeRegistry`
+- [x] Arrays interned via `type_pool.intern_array()`
+- [x] Array deduplication works (same element+len = same ArrayTypeId)
+- [x] All tests pass
 
-## References
+## Phase 3 & 4: Type Enum → Type(u32) Migration
 
-- [Zig InternPool PR #15569](https://github.com/ziglang/zig/pull/15569)
-- [Zig InternPool.zig source](https://github.com/ziglang/zig/blob/master/src/InternPool.zig)
-- rue-50gf (historical bd ID, pre-Linear): Original issue on array type design
-- rue-wcg7 (historical bd ID, pre-Linear): Parallel function analysis
+**Status**: Implemented (2026-01-02)
+
+After completing Phase 2B, we proceeded with Phases 3 and 4 to achieve the full benefits described in the original ADR-0024:
+- O(1) type equality via u32 comparison
+- Foundation for generic type instantiation
+- Unified type representation
+
+### Migration Strategy: "Shadow Type" Approach
+
+The key challenge is migrating ~61 pattern match sites without creating 600+ simultaneous compilation errors. Our approach uses **incremental migration with TypeKind**:
+
+#### Phase 3.1: Introduce TypeKind enum
+
+Create a new `TypeKind` enum that mirrors the current `Type` enum structure:
+
+```rust
+// crates/rue-air/src/types.rs
+pub enum TypeKind {
+    I8, I16, I32, I64, U8, U16, U32, U64,
+    Bool, Unit,
+    Struct(StructId),
+    Enum(EnumId),
+    Array(ArrayTypeId),
+    Module(ModuleId),
+    Error,
+    Never,
+    ComptimeType,
+}
+```
+
+**Why**: TypeKind is the pattern-matchable representation of a Type. Separating these concerns allows incremental migration.
+
+#### Phase 3.2: Add Type::kind() method
+
+Add a method to convert Type to TypeKind:
+
+```rust
+impl Type {
+    pub fn kind(&self) -> TypeKind {
+        match self {
+            Type::I8 => TypeKind::I8,
+            Type::I16 => TypeKind::I16,
+            // ... etc for all variants
+        }
+    }
+}
+```
+
+**Why**: This allows pattern matches to gradually migrate from `match ty { Type::I32 => }` to `match ty.kind() { TypeKind::I32 => }` while keeping everything compiling.
+
+#### Phase 3.3: Migrate pattern matches incrementally
+
+Migrate one file at a time:
+
+```rust
+// Before:
+match ty {
+    Type::I32 | Type::I64 => emit_integer_op(),
+    Type::Struct(id) => {
+        let def = pool.struct_def(id);
+        emit_struct_op(&def);
+    }
+    _ => panic!("unexpected type"),
+}
+
+// After:
+match ty.kind() {
+    TypeKind::I32 | TypeKind::I64 => emit_integer_op(),
+    TypeKind::Struct(id) => {
+        let def = pool.struct_def(id);
+        emit_struct_op(&def);
+    }
+    _ => panic!("unexpected type"),
+}
+```
+
+**Benefits**:
+- Each file compiles and tests pass ✅
+- Can ship intermediate states ✅
+- Easy to back out if issues arise ✅
+- Clear progress tracking (~61 match sites)
+
+#### Phase 4.1: Replace Type enum with Type(InternedType)
+
+Once all pattern matches use `.kind()`, replace the Type enum:
+
+```rust
+// Remove the old enum:
+// pub enum Type { I8, I16, ... }
+
+// Replace with newtype:
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Type(InternedType);
+
+impl Type {
+    // Primitive constants
+    pub const I8: Type = Type(InternedType::I8);
+    pub const I16: Type = Type(InternedType::I16);
+    // ... etc
+
+    // Now kind() does a pool lookup:
+    pub fn kind(&self, pool: &TypeInternPool) -> TypeKind {
+        if self.0.is_primitive() {
+            // Fast path: decode primitive from index
+            match self.0.index() {
+                0 => TypeKind::I8,
+                1 => TypeKind::I16,
+                // ... etc
+            }
+        } else {
+            // Composite types: pool lookup
+            pool.get_kind(self.0)
+        }
+    }
+}
+```
+
+**Why**: Now Type is just a u32 index, giving us O(1) equality. All existing pattern matches continue to work via `.kind()`.
+
+#### Phase 4.2: Update method signatures
+
+Once Type is Type(InternedType), update methods that pattern match:
+
+```rust
+// Before (Phase 3):
+impl Type {
+    pub fn is_integer(&self) -> bool {
+        matches!(self.kind(), TypeKind::I8 | TypeKind::I16 | ...)
+    }
+}
+
+// After (Phase 4, optimized):
+impl Type {
+    pub fn is_integer(&self) -> bool {
+        // No pool lookup needed - just check the index
+        matches!(self.0.index(), 0..=7) // i8..u64
+    }
+}
+```
+
+### Success Criteria
+
+#### Phase 3 Complete ✅ (2026-01-02)
+- [x] TypeKind enum exists in crates/rue-air/src/types.rs
+- [x] Type::kind() method implemented
+- [x] All ~61 pattern match sites migrated to use .kind()
+- [x] All tests pass
+- [x] No direct pattern matches on Type enum remain
+
+#### Phase 4 Complete ✅ (2026-01-02)
+- [x] Type enum removed, replaced with Type(u32) newtype
+- [x] Type::kind() decodes u32 back to TypeKind for pattern matching
+- [x] Type constants (Type::I32, etc.) defined as const Type(n)
+- [x] Helper methods (is_integer, as_struct, etc.) optimized with u32 checks
+- [x] All tests pass (1230 spec, 275 unit, 38 UI)
+- [x] O(1) type equality via u32 comparison works
+
+### Files Affected (Estimated)
+
+**Phase 3.1-3.2** (~1-2 files):
+- `crates/rue-air/src/types.rs` - Add TypeKind, Type::kind()
+
+**Phase 3.3** (~20 files, 61 match sites):
+- `crates/rue-air/src/sema/analysis.rs` (~19 matches)
+- `crates/rue-air/src/sema/typeck.rs` (~9 matches)
+- `crates/rue-codegen/src/x86_64/cfg_lower.rs` (~7 matches)
+- `crates/rue-compiler/src/drop_glue.rs` (~8 matches)
+- `crates/rue-air/src/intern_pool.rs` (~15 matches)
+- ... (15 more files with 1-3 matches each)
+
+**Phase 4.1-4.2** (~3-5 files):
+- `crates/rue-air/src/types.rs` - Replace enum with newtype
+- `crates/rue-air/src/intern_pool.rs` - Add get_kind() method
+- `crates/rue-air/src/lib.rs` - Update exports
+
+### Comparison to Big-Bang Approach
+
+| Aspect | Big-Bang | Shadow Type (Our Approach) |
+|--------|----------|----------------------------|
+| Compilation errors | 600+ all at once | 0 (compiles at each step) |
+| Testability | Only at the end | After each file migration |
+| Risk | High | Low |
+| Context window | Fills with errors | Clean, focused changes |
+| Reversibility | Difficult | Easy (one file at a time) |
+| Progress tracking | Binary (done/not done) | Linear (~61 match sites) |
+
+### Why This Works
+
+1. **TypeKind is the same structure as Type**: Just a renamed copy, so semantics don't change
+2. **Type::kind() starts trivial**: Just returns the enum variant, no pool lookup
+3. **Incremental migration**: Each file can be done independently
+4. **Final flip is mechanical**: Once all matches use .kind(), replacing the enum is safe
+
+### Implementation Order (Completed)
+
+1. ✅ Add TypeKind enum to types.rs
+2. ✅ Add Type::kind() → TypeKind conversion
+3. ✅ Migrate pattern matches file by file, testing after each
+4. ✅ Replace Type enum with Type(u32) newtype
+5. ✅ Optimize Type::kind() and helper methods
+6. Kept TypeKind for pattern matching (provides better ergonomics than direct u32 decoding)
+
+## Appendix: Why We Proceeded with Phases 3 & 4
+
+The revised ADR originally recommended stopping after Phase 2B and only proceeding if generics needed it. However, we implemented Phases 3 & 4 because:
+
+1. **Clean foundation**: Better to complete the migration while the architecture is fresh
+2. **Original design intent**: The full InternPool design provides clear benefits
+3. **Incremental safety**: Our "Shadow Type" approach mitigates the risk that caused the original deferral
+4. **Future-proofing**: O(1) type comparison and generic type instantiation will be needed eventually

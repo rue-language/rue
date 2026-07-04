@@ -1,7 +1,7 @@
 ---
 id: 0040
 title: "Array layout is ascending; @ptr_offset is standard pointer arithmetic"
-status: accepted
+status: implemented
 tags: [layout, arrays, pointers, codegen, abi]
 feature-flag:
 created: 2026-07-03

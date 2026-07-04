@@ -1,7 +1,25 @@
+---
+id: 0033
+title: Sema Pipeline Unification
+status: rejected
+tags: [compiler, semantics, architecture]
+created: 2026-06-11
+accepted:
+implemented:
+spec-sections: []
+superseded-by:
+---
+
 # ADR-0033: Sema Pipeline Unification
 
-**Status:** Proposed
-**Tracking:** RUE-134 (dead-correct vs live-wrong epic), RUE-120, RUE-141 (drift instances)
+## Status
+
+Rejected as moot. The investigation recorded in RUE-174 established that the
+supposed parallel semantic pipelines were dead copies rather than competing
+production implementations; they were deleted in PRs #952 and #953. The
+remaining live-pipeline duplication is tracked independently.
+
+**Tracking:** RUE-134, RUE-120, RUE-141
 
 ## Problem
 

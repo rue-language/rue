@@ -8,8 +8,8 @@ created: 2026-07-03
 accepted: 2026-07-03
 implemented:
 spec-sections: ["3.7", "3.9"]
-supersedes: [0042]
-amends: [0020, 0035, 0041]
+supersedes:
+amends: [0020, 0035, 0041, 0042]
 ---
 
 # ADR-0043: The collection & string type trio (fixed / slice / growable)

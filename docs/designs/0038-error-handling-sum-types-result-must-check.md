@@ -1,7 +1,7 @@
 ---
 id: 0038
 title: "Error handling: sum types, Result/Option, and must-check via linearity"
-status: accepted
+status: implemented
 tags: [error-handling, enums, sum-types, linearity, pattern-matching]
 feature-flag:
 created: 2026-07-02

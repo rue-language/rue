@@ -9,6 +9,7 @@ accepted: 2025-12-31
 implemented: 2025-12-31
 spec-sections: []
 superseded-by:
+amended-by: [0043]
 ---
 
 # ADR-0020: Built-in Types as Synthetic Structs
