@@ -297,7 +297,10 @@ impl Program {
                 format!("({l} {op} ({r} | 1))")
             }
             2 => {
-                // Shift by a same-typed amount; over-shift traps in both engines.
+                // Shift by a same-typed amount; the shift count is masked modulo
+                // the operand width (spec 4.3a, formal core (D-Shl)/(D-Shr)) in
+                // both engines, so an over-shift is a defined value and never
+                // traps — no divisor-style guard is needed.
                 let op = *self.rng.pick(&["<<", ">>"]);
                 let l = self.expr(ty, scope, depth - 1);
                 let r = self.expr(ty, scope, depth - 1);
