@@ -126,7 +126,14 @@ fn alloc_arena(min_size: usize, align: usize) -> *mut ArenaHeader {
     let Some(total) = aligned_header.checked_add(min_size) else {
         return ptr::null_mut();
     };
-    let total_size = align_up(total, 4096); // Page-align
+    // Page-align with a CHECKED round-up: a `total` in the top page
+    // (> usize::MAX - 4095) would wrap `align_up` to 0, then clamp up to
+    // DEFAULT_ARENA_SIZE and hand out a huge block backed by a 64 KiB
+    // mapping — a heap overflow. Return null on overflow, honoring the
+    // documented OOM contract.
+    let Some(total_size) = total.checked_next_multiple_of(4096) else {
+        return ptr::null_mut();
+    };
 
     // Use at least the default arena size
     let arena_size = if total_size < DEFAULT_ARENA_SIZE {
@@ -182,8 +189,13 @@ fn alloc_arena(min_size: usize, align: usize) -> *mut ArenaHeader {
 /// The returned pointer (if non-null) is valid and properly aligned.
 /// The memory remains valid until the program exits.
 pub fn alloc(size: u64, align: u64) -> *mut u8 {
-    // Validate arguments
-    if size == 0 || align == 0 || !is_power_of_two(align) {
+    // Validate arguments. `align` is also capped at the page size: the arena
+    // base is only page-aligned (mmap), and blocks are placed at an offset
+    // aligned relative to that base, so an `align` greater than a page could
+    // yield a misaligned absolute address. No reachable caller exceeds 8;
+    // reject the rest cleanly rather than silently misalign (callers already
+    // handle a null return).
+    if size == 0 || align == 0 || !is_power_of_two(align) || align > 4096 {
         return ptr::null_mut();
     }
 
@@ -489,6 +501,28 @@ mod tests {
         // 3 is not a power of 2
         let ptr = alloc(16, 3);
         assert!(ptr.is_null());
+    }
+
+    #[test]
+    fn test_alloc_page_rounding_overflow_returns_null() {
+        // A size in the top page (> usize::MAX - 4095) once wrapped the
+        // page round-up to 0, clamped up to DEFAULT_ARENA_SIZE, and handed
+        // out a huge block backed by a 64 KiB mapping (heap overflow). It
+        // must now return null instead.
+        let ptr = alloc((usize::MAX as u64) - 124, 1);
+        assert!(ptr.is_null());
+    }
+
+    #[test]
+    fn test_alloc_rejects_over_page_alignment() {
+        // Blocks are placed at an offset aligned relative to the page-aligned
+        // arena base, so an align larger than a page could yield a misaligned
+        // absolute address. Such requests are rejected cleanly (null).
+        assert!(alloc(64, 8192).is_null());
+        // Page-sized and smaller power-of-two alignments are still honored.
+        let ptr = alloc(64, 4096);
+        assert!(!ptr.is_null());
+        assert_eq!(ptr as usize % 4096, 0);
     }
 
     #[test]

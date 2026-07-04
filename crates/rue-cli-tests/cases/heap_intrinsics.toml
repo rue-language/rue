@@ -103,3 +103,22 @@ fn main() -> i32 {
 """ }]
 compile_fail = true
 error_contains = ["heap intrinsic `@alloc`", "checked"]
+
+# A near-usize::MAX @alloc once wrapped the arena's page round-up to zero,
+# handed out a huge block backed by a 64 KiB mapping, and let a later write
+# corrupt memory / SIGSEGV (rue-runtime component review, 2026-07-04). The
+# allocator must now return null (address 0) for such a request.
+[[case]]
+name = "alloc_page_rounding_overflow_returns_null"
+description = "A near-usize::MAX @alloc returns null instead of an unbacked pointer."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    checked {
+        let p: ptr mut u8 = @alloc(18446744073709551491);
+        let addr: u64 = @ptr_to_int(p);
+        if addr == 0 { 0 } else { 1 }
+    }
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+exit_code = 0
