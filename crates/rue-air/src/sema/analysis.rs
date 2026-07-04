@@ -116,6 +116,7 @@ fn analyze_all_function_bodies_sequential(sema: &mut Sema<'_>) -> MultiErrorResu
     let mut functions_with_strings: Vec<(AnalyzedFunction, Vec<String>)> = Vec::new();
     let mut errors = CompileErrors::new();
     let mut all_warnings = Vec::new();
+    let mut referenced_functions = HashSet::new();
 
     // Collect method refs from struct declarations to skip them when analyzing regular functions
     let mut method_refs: HashSet<InstRef> = HashSet::new();
@@ -195,9 +196,11 @@ fn analyze_all_function_bodies_sequential(sema: &mut Sema<'_>) -> MultiErrorResu
                 *body,
                 inst.span,
             ) {
-                Ok((analyzed, warnings, local_strings, _ref_fns, _ref_meths)) => {
+                Ok((analyzed, warnings, local_strings, mut ref_fns, _ref_meths)) => {
                     functions_with_strings.push((analyzed, local_strings));
                     all_warnings.extend(warnings);
+                    ref_fns.remove(name);
+                    referenced_functions.extend(ref_fns);
                 }
                 Err(e) => errors.push(e),
             }
@@ -263,9 +266,10 @@ fn analyze_all_function_bodies_sequential(sema: &mut Sema<'_>) -> MultiErrorResu
                         *has_self,
                         *self_mode,
                     ) {
-                        Ok((analyzed, warnings, local_strings, _ref_fns, _ref_meths)) => {
+                        Ok((analyzed, warnings, local_strings, ref_fns, _ref_meths)) => {
                             functions_with_strings.push((analyzed, local_strings));
                             all_warnings.extend(warnings);
+                            referenced_functions.extend(ref_fns);
                         }
                         Err(e) => errors.push(e),
                     }
@@ -301,9 +305,10 @@ fn analyze_all_function_bodies_sequential(sema: &mut Sema<'_>) -> MultiErrorResu
                 inst.span,
                 struct_type,
             ) {
-                Ok((analyzed, warnings, local_strings, _ref_fns, _ref_meths)) => {
+                Ok((analyzed, warnings, local_strings, ref_fns, _ref_meths)) => {
                     functions_with_strings.push((analyzed, local_strings));
                     all_warnings.extend(warnings);
+                    referenced_functions.extend(ref_fns);
                 }
                 Err(e) => errors.push(e),
             }
@@ -441,7 +446,7 @@ fn analyze_all_function_bodies_sequential(sema: &mut Sema<'_>) -> MultiErrorResu
                     param_modes_result,
                     warnings,
                     local_strings,
-                    _ref_fns,
+                    ref_fns,
                     _ref_meths,
                 )) => {
                     let analyzed = AnalyzedFunction {
@@ -453,6 +458,7 @@ fn analyze_all_function_bodies_sequential(sema: &mut Sema<'_>) -> MultiErrorResu
                     };
                     functions_with_strings.push((analyzed, local_strings));
                     all_warnings.extend(warnings);
+                    referenced_functions.extend(ref_fns);
                 }
                 Err(e) => errors.push(e),
             }
@@ -484,6 +490,7 @@ fn analyze_all_function_bodies_sequential(sema: &mut Sema<'_>) -> MultiErrorResu
         functions.push(analyzed);
     }
 
+    add_unused_function_warnings(sema, &referenced_functions, &mut all_warnings);
     all_warnings.sort_by_key(|w| w.span().map(|s| s.start));
 
     let mut output = SemaOutput {
@@ -511,6 +518,37 @@ fn analyze_all_function_bodies_sequential(sema: &mut Sema<'_>) -> MultiErrorResu
     output.type_pool = sema.type_pool.clone();
 
     errors.into_result_with(output)
+}
+
+/// Emit warnings for unused free functions.
+///
+/// This intentionally excludes methods/destructors; they have different
+/// reachability rules and are not covered by the current spec/UI cases.
+fn add_unused_function_warnings(
+    sema: &Sema<'_>,
+    referenced_functions: &HashSet<Spur>,
+    warnings: &mut Vec<CompileWarning>,
+) {
+    let main_sym = sema.interner.get("main");
+
+    for (name, info) in &sema.functions {
+        let name_str = sema.interner.resolve(name);
+        if Some(*name) == main_sym
+            || info.is_pub
+            || info.allow_unused_function
+            || name_str.starts_with('_')
+            || referenced_functions.contains(name)
+        {
+            continue;
+        }
+
+        warnings.push(
+            CompileWarning::new(WarningKind::UnusedFunction(name_str.to_string()), info.span)
+                .with_help(format!(
+                    "if this is intentional, prefix it with an underscore: `_{name_str}`"
+                )),
+        );
+    }
 }
 
 /// Lazy analysis path (Phase 3 of module system, ADR-0026).
@@ -895,6 +933,7 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
         functions.push(analyzed);
     }
 
+    add_unused_function_warnings(sema, &analyzed_functions, &mut all_warnings);
     all_warnings.sort_by_key(|w| w.span().map(|s| s.start));
 
     let mut output = SemaOutput {

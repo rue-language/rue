@@ -1796,10 +1796,11 @@ pub enum WarningKind {
 pub type CompileWarning = DiagnosticWrapper<WarningKind>;
 
 impl WarningKind {
-    /// Returns the variable name if this is an UnusedVariable warning.
+    /// Returns the declaration name for warning kinds that should use line
+    /// numbers to disambiguate duplicate names.
     pub fn unused_variable_name(&self) -> Option<&str> {
         match self {
-            WarningKind::UnusedVariable(name) => Some(name),
+            WarningKind::UnusedVariable(name) | WarningKind::UnusedFunction(name) => Some(name),
             _ => None,
         }
     }

@@ -161,7 +161,6 @@ no_warnings = true
 [[case]]
 name = "allow_unused_function"
 spec = ["2.5:19"]
-skip = true  # TODO: Unused function warnings not yet implemented
 source = """
 @allow(unused_function)
 fn helper() -> i32 { 42 }
