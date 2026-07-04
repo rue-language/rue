@@ -304,11 +304,11 @@ Extend String from 2 fields (ptr, len) to 3 fields (ptr, len, cap):
 
 Add string-specific functions to runtime:
 
-- [x] `__rue_string_alloc(cap: u64) -> *mut u8` - allocate buffer (min 16 bytes)
-- [x] `__rue_string_realloc(ptr: *mut u8, old_cap: u64, new_cap: u64) -> *mut u8` - grow buffer
-- [x] `__rue_string_clone(ptr: *const u8, len: u64) -> *mut u8` - deep copy
+- [x] `__rue_String_with_capacity(out: *mut StringResult, cap: u64)` - allocate buffer (min 16 bytes)
+- [x] `__rue_String_reserve(out: *mut StringResult, ptr: *mut u8, len: u64, cap: u64, additional: u64)` - grow buffer
+- [x] `__rue_String_clone(out: *mut StringResult, ptr: *const u8, len: u64, cap: u64)` - deep copy
 - [x] `__rue_drop_String(ptr: *mut u8, len: u64, cap: u64)` - free if heap (cap > 0)
-- [x] Growth strategy implementation (2x, min 16)
+- [x] Growth strategy implementation through `string_ensure_capacity` (2x, min 16)
 
 **Testable**: Unit tests in Rust for allocation/reallocation.
 
