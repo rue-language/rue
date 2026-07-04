@@ -38,3 +38,24 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = "3:9"
+
+# =============================================================================
+# For-loop iterable errors
+# =============================================================================
+
+[[case]]
+name = "for_iterable_type_error_points_at_iterable"
+source = """
+fn main() -> i32 {
+    let notiter: i32 = 5;
+    for x in notiter {
+        let y = x;
+    }
+    0
+}
+"""
+compile_fail = true
+# The not-iterable error anchors on the iterable subexpression (`notiter` at
+# 3:14), not the whole `for` statement: the desugared @__rue_iter_len intrinsic
+# carries the iterable's span (rue-rir component review, 2026-07-04).
+error_contains = ["3:14", "expected an array or a StrBuf, found i32"]

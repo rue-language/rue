@@ -57,6 +57,13 @@ impl Validator<'_> {
                     )),
                     directive.span,
                 ));
+            } else if name == "copy" && !directive.args.is_empty() {
+                // Arity is per-directive: @copy takes no arguments (spec
+                // 2.5), while @allow legitimately takes lint names.
+                self.errors.push(CompileError::new(
+                    ErrorKind::ParseError("@copy takes no arguments".to_string()),
+                    directive.span,
+                ));
             }
         }
     }
