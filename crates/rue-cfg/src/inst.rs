@@ -75,12 +75,6 @@ impl Place {
         }
     }
 
-    /// Returns true if this place has no projections (is just a variable).
-    #[inline]
-    pub const fn is_simple(&self) -> bool {
-        self.proj_len == 0
-    }
-
     /// Returns the local slot if this is a simple local place with no projections.
     #[inline]
     pub const fn as_local(&self) -> Option<u32> {
@@ -1257,17 +1251,24 @@ impl Cfg {
             CfgInstData::EnumVariant {
                 enum_id,
                 variant_index,
+                payload_start,
                 payload_len,
-                ..
             } => {
                 if *payload_len == 0 {
                     write!(f, "enum_variant #{}::{}", enum_id.0, variant_index)
                 } else {
-                    write!(
-                        f,
-                        "enum_variant #{}::{}(payload x{})",
-                        enum_id.0, variant_index, payload_len
-                    )
+                    // Print the actual payload operands (like StructInit and
+                    // ArrayInit do) so the variant's dataflow inputs are
+                    // readable in the dump, not just their count.
+                    write!(f, "enum_variant #{}::{}(", enum_id.0, variant_index)?;
+                    let payload = self.get_extra(*payload_start, *payload_len);
+                    for (i, value) in payload.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{}", value)?;
+                    }
+                    write!(f, ")")
                 }
             }
             CfgInstData::EnumPayloadGet {
@@ -1299,29 +1300,38 @@ impl Cfg {
 
     /// Format a place for display, showing the base and projections.
     fn fmt_place(&self, f: &mut fmt::Formatter<'_>, place: &Place) -> fmt::Result {
-        // Write the base
-        match place.base {
-            PlaceBase::Local(slot) => write!(f, "${}", slot)?,
-            PlaceBase::Param(slot) => write!(f, "param%{}", slot)?,
-        }
+        write!(f, "{}", self.place_to_string(place))
+    }
 
-        // Write the projections
-        let projections = self.get_place_projections(place);
-        for proj in projections {
+    /// Render a place with its projections RESOLVED (e.g. `$0.#2.1($arr)[v3]`),
+    /// unlike `Place`'s own `Display`, which cannot see this Cfg's projection
+    /// arena and can only print the raw index range (`$0[3..5]`). Use this for
+    /// any human-facing dump or tracing description of a place.
+    pub fn place_to_string(&self, place: &Place) -> String {
+        use std::fmt::Write as _;
+        let mut out = String::new();
+        match place.base {
+            PlaceBase::Local(slot) => {
+                let _ = write!(out, "${}", slot);
+            }
+            PlaceBase::Param(slot) => {
+                let _ = write!(out, "param%{}", slot);
+            }
+        }
+        for proj in self.get_place_projections(place) {
             match proj {
                 Projection::Field {
                     struct_id,
                     field_index,
                 } => {
-                    write!(f, ".#{}.{}", struct_id.0, field_index)?;
+                    let _ = write!(out, ".#{}.{}", struct_id.0, field_index);
                 }
                 Projection::Index { array_type, index } => {
-                    write!(f, "({})[{}]", array_type.name(), index)?;
+                    let _ = write!(out, "({})[{}]", array_type.name(), index);
                 }
             }
         }
-
-        Ok(())
+        out
     }
 }
 

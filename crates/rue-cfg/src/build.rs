@@ -1393,45 +1393,11 @@ impl<'a> CfgBuilder<'a> {
 
                 // Wire up non-divergent branches to join
                 if !then_diverged {
-                    let args: Vec<CfgValue> = if let Some(val) = then_result.value {
-                        if result_param.is_some() {
-                            vec![val]
-                        } else {
-                            vec![]
-                        }
-                    } else {
-                        vec![]
-                    };
-                    let (args_start, args_len) = self.cfg.push_extra(args);
-                    self.cfg.set_terminator(
-                        then_exit_block,
-                        Terminator::Goto {
-                            target: join_block,
-                            args_start,
-                            args_len,
-                        },
-                    );
+                    self.goto_join(then_exit_block, join_block, result_param, then_result.value);
                 }
 
                 if !else_diverged {
-                    let args: Vec<CfgValue> = if let Some(val) = else_result.value {
-                        if result_param.is_some() {
-                            vec![val]
-                        } else {
-                            vec![]
-                        }
-                    } else {
-                        vec![]
-                    };
-                    let (args_start, args_len) = self.cfg.push_extra(args);
-                    self.cfg.set_terminator(
-                        else_exit_block,
-                        Terminator::Goto {
-                            target: join_block,
-                            args_start,
-                            args_len,
-                        },
-                    );
+                    self.goto_join(else_exit_block, join_block, result_param, else_result.value);
                 }
 
                 self.current_block = join_block;
@@ -1759,24 +1725,7 @@ impl<'a> CfgBuilder<'a> {
                 // Wire up non-divergent arms to join
                 for (exit_block, body_result, diverged) in arm_results {
                     if !diverged {
-                        let args: Vec<CfgValue> = if let Some(val) = body_result.value {
-                            if result_param.is_some() {
-                                vec![val]
-                            } else {
-                                vec![]
-                            }
-                        } else {
-                            vec![]
-                        };
-                        let (args_start, args_len) = self.cfg.push_extra(args);
-                        self.cfg.set_terminator(
-                            exit_block,
-                            Terminator::Goto {
-                                target: join_block,
-                                args_start,
-                                args_len,
-                            },
-                        );
+                        self.goto_join(exit_block, join_block, result_param, body_result.value);
                     }
                 }
 
@@ -2380,6 +2329,34 @@ impl<'a> CfgBuilder<'a> {
     fn emit(&mut self, data: CfgInstData, ty: Type, span: rue_span::Span) -> CfgValue {
         self.cfg
             .add_inst_to_block(self.current_block, CfgInst { data, ty, span })
+    }
+
+    /// Terminate `exit_block` with a `Goto` into `join_block`, passing the
+    /// branch's value as the single block arg IFF the join has a result
+    /// param. This is the ONE place the value-branch/join-param arity
+    /// contract is encoded — if/else arms and match arms all wire through
+    /// here, so the contract cannot drift between constructs (the RUE-347
+    /// bug class lives exactly on this seam).
+    fn goto_join(
+        &mut self,
+        exit_block: BlockId,
+        join_block: BlockId,
+        result_param: Option<CfgValue>,
+        value: Option<CfgValue>,
+    ) {
+        let args: Vec<CfgValue> = match (value, result_param) {
+            (Some(val), Some(_)) => vec![val],
+            _ => vec![],
+        };
+        let (args_start, args_len) = self.cfg.push_extra(args);
+        self.cfg.set_terminator(
+            exit_block,
+            Terminator::Goto {
+                target: join_block,
+                args_start,
+                args_len,
+            },
+        );
     }
 
     /// Cache a value for an AIR ref.

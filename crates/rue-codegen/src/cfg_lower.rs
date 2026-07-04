@@ -131,8 +131,10 @@ impl fmt::Display for LoweringDebugInfo {
     }
 }
 
-/// Format a CFG instruction data as a human-readable string.
-pub fn format_cfg_inst_data(data: &rue_cfg::CfgInstData) -> String {
+/// Format a CFG instruction data as a human-readable string. Takes the `Cfg`
+/// so places render with their projections resolved (`$0.#2.1`), not as raw
+/// projection-arena index ranges (`$0[3..5]`).
+pub fn format_cfg_inst_data(cfg: &rue_cfg::Cfg, data: &rue_cfg::CfgInstData) -> String {
     use rue_cfg::CfgInstData;
 
     match data {
@@ -166,19 +168,43 @@ pub fn format_cfg_inst_data(data: &rue_cfg::CfgInstData) -> String {
         CfgInstData::ParamStore { param_slot, value } => {
             format!("param_store %{} = {}", param_slot, value)
         }
-        CfgInstData::Call { name, .. } => {
-            // Note: Can't show args without Cfg access; just show name
-            // Display symbol as @{id} since we don't have interner access
-            format!("call @{}(...)", name.into_usize())
+        CfgInstData::Call {
+            name,
+            args_start,
+            args_len,
+        } => {
+            // Names display as @{id}: there is no interner access here. Args
+            // ARE renderable now that this fn takes the Cfg.
+            let args: Vec<String> = cfg
+                .get_call_args(*args_start, *args_len)
+                .iter()
+                .map(|a| format!("{}", a.value))
+                .collect();
+            format!("call @{}({})", name.into_usize(), args.join(", "))
         }
-        CfgInstData::Intrinsic { name, .. } => {
-            // Note: Can't show args without Cfg access; just show name
-            // Display symbol as @{id} since we don't have interner access
-            format!("intrinsic @{}(...)", name.into_usize())
+        CfgInstData::Intrinsic {
+            name,
+            args_start,
+            args_len,
+        } => {
+            let args: Vec<String> = cfg
+                .get_extra(*args_start, *args_len)
+                .iter()
+                .map(|v| format!("{}", v))
+                .collect();
+            format!("intrinsic @{}({})", name.into_usize(), args.join(", "))
         }
-        CfgInstData::StructInit { struct_id, .. } => {
-            // Note: Can't show fields without Cfg access; just show struct_id
-            format!("struct_init #{} {{...}}", struct_id.0)
+        CfgInstData::StructInit {
+            struct_id,
+            fields_start,
+            fields_len,
+        } => {
+            let fields: Vec<String> = cfg
+                .get_extra(*fields_start, *fields_len)
+                .iter()
+                .map(|v| format!("{}", v))
+                .collect();
+            format!("struct_init #{} {{{}}}", struct_id.0, fields.join(", "))
         }
         CfgInstData::FieldSet {
             slot,
@@ -253,10 +279,10 @@ pub fn format_cfg_inst_data(data: &rue_cfg::CfgInstData) -> String {
         CfgInstData::StorageDead { slot } => format!("storage_dead ${}", slot),
         // Place operations (ADR-0030)
         CfgInstData::PlaceRead { place } => {
-            format!("place_read {}", place)
+            format!("place_read {}", cfg.place_to_string(place))
         }
         CfgInstData::PlaceWrite { place, value } => {
-            format!("place_write {} = {}", place, value)
+            format!("place_write {} = {}", cfg.place_to_string(place), value)
         }
     }
 }

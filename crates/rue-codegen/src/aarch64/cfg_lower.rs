@@ -490,7 +490,7 @@ impl<'a> CfgLower<'a> {
                 if !mir_insts.is_empty() {
                     block_info.instructions.push(LoweringDecision {
                         cfg_value: value,
-                        cfg_inst_desc: format_cfg_inst_data(&inst.data),
+                        cfg_inst_desc: format_cfg_inst_data(self.ctx.cfg, &inst.data),
                         cfg_type: inst.ty.name().to_string(),
                         mir_insts,
                         rationale,
