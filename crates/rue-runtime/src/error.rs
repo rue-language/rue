@@ -235,8 +235,8 @@ crate::define_for_all_platforms! {
     /// sequence that is not well-formed UTF-8. Rue's `String` is a byte string
     /// that may hold arbitrary bytes; the "trap, don't corrupt" discipline
     /// applies at the decode boundary, so interpreting invalid bytes as
-    /// Unicode scalars traps loudly (a `.chars_lossy()` that substitutes
-    /// `U+FFFD` is a future addition).
+    /// Unicode scalars traps loudly; the lossy `.chars_lossy()` variant
+    /// substitutes `U+FFFD` instead of trapping.
     ///
     /// # Behavior
     ///

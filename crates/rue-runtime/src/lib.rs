@@ -51,8 +51,7 @@
 //! | Code | Meaning |
 //! |------|---------|
 //! | 0 | Success (or whatever `main()` returned) |
-//! | 1 | Panic (from Rust runtime, shouldn't happen in normal operation) |
-//! | 101 | Runtime error (division by zero, overflow) |
+//! | 101 | Any panic or runtime trap — overflow, division by zero, bounds check, cast overflow, invalid UTF-8, `@panic`/`@assert`, allocation failure, and the Rust `panic_handler` (spec Appendix B) |
 //!
 //! # Integration with the Compiler
 //!

@@ -645,8 +645,8 @@ crate::define_for_all_platforms! {
 /// This backs `for c in s.chars()` (RUE-220, ADR-0035). Rue's `String` is a
 /// byte string that may hold arbitrary bytes; decoding is where invalidity is
 /// caught, so any malformed, truncated, overlong, or surrogate sequence traps
-/// (`__rue_invalid_utf8`, exit 101) rather than producing `U+FFFD` (a lossy
-/// `.chars_lossy()` is a future addition). Callers only invoke this when
+/// (`__rue_invalid_utf8`, exit 101) rather than producing `U+FFFD` (the lossy
+/// `.chars_lossy()` variant substitutes it instead of trapping). Callers only invoke this when
 /// `offset < len` (the loop's end test guarantees a byte remains), but a
 /// multi-byte sequence that runs past `len` is a truncated sequence and traps.
 ///
@@ -963,6 +963,18 @@ crate::define_for_all_platforms! {
         };
         let new_ptr = heap::alloc(new_cap, 1);
 
+        // Check for allocation failure before the copy to avoid UB (mirrors
+        // __rue_String_clone): on OOM, publish an empty String and return.
+        if new_ptr.is_null() {
+            // SAFETY: writing to `out` is valid — see __rue_String_new.
+            unsafe {
+                (*out).ptr = core::ptr::null_mut();
+                (*out).len = 0;
+                (*out).cap = 0;
+            }
+            return;
+        }
+
         // SAFETY: `start + sub_len <= len` (checked above) so the source range
         // is in bounds; `new_ptr` was just allocated with `new_cap >= sub_len`
         // bytes; the regions don't overlap (fresh allocation).
@@ -1137,6 +1149,18 @@ crate::define_for_all_platforms! {
         };
         let new_ptr = heap::alloc(new_cap, 1);
 
+        // Check for allocation failure before the copy to avoid UB (mirrors
+        // __rue_String_clone): on OOM, publish an empty String and return.
+        if new_ptr.is_null() {
+            // SAFETY: writing to `out` is valid — see __rue_String_new.
+            unsafe {
+                (*out).ptr = core::ptr::null_mut();
+                (*out).len = 0;
+                (*out).cap = 0;
+            }
+            return;
+        }
+
         // SAFETY: `new_ptr` was just allocated with `new_cap >= len` bytes; the
         // source range `buf[i..]` holds exactly `len` initialized bytes; the
         // regions don't overlap (fresh allocation). `out` is a valid sret
@@ -1198,6 +1222,18 @@ crate::define_for_all_platforms! {
             len
         };
         let new_ptr = heap::alloc(new_cap, 1);
+
+        // Check for allocation failure before the copy to avoid UB (mirrors
+        // __rue_String_clone): on OOM, publish an empty String and return.
+        if new_ptr.is_null() {
+            // SAFETY: writing to `out` is valid — see __rue_String_new.
+            unsafe {
+                (*out).ptr = core::ptr::null_mut();
+                (*out).len = 0;
+                (*out).cap = 0;
+            }
+            return;
+        }
 
         // SAFETY: `new_ptr` was just allocated with `new_cap >= len` bytes; the
         // source range `buf[i..]` holds exactly `len` initialized bytes; the
@@ -1262,6 +1298,18 @@ crate::define_for_all_platforms! {
             total
         };
         let new_ptr = heap::alloc(new_cap, 1);
+
+        // Check for allocation failure before the copy to avoid UB (mirrors
+        // __rue_String_clone): on OOM, publish an empty String and return.
+        if new_ptr.is_null() {
+            // SAFETY: writing to `out` is valid — see __rue_String_new.
+            unsafe {
+                (*out).ptr = core::ptr::null_mut();
+                (*out).len = 0;
+                (*out).cap = 0;
+            }
+            return;
+        }
 
         // SAFETY: `new_ptr` has `new_cap >= total = len1 + len2` bytes. The two
         // source ranges are each in bounds for their lengths and don't overlap
