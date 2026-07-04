@@ -214,6 +214,14 @@ struct Options {
 /// `--version` banner and ICE reports can never drift apart).
 const VERSION: &str = rue_compiler::VERSION;
 
+/// Highest explicit `-j`/`--jobs` value accepted by the CLI.
+///
+/// `0` still means auto-detect. A fixed generous ceiling catches accidental
+/// values like `-j 100000` before Rayon tries to spawn an impractical number
+/// of worker threads, while still leaving ample room above current CI and
+/// workstation core counts.
+const MAX_EXPLICIT_JOBS: usize = 256;
+
 fn print_version() {
     println!("rue {}", VERSION);
 }
@@ -234,7 +242,9 @@ fn print_usage() {
     eprintln!("                       like 'clang', 'gcc', or 'ld' for system linker");
     eprintln!("  -O<level>            Set optimization level (default: -O0)");
     eprintln!("                       Levels: {}", OptLevel::all_names());
-    eprintln!("  -j, --jobs <N>       Set number of parallel jobs (default: 0 = auto)");
+    eprintln!(
+        "  -j, --jobs <N>       Set number of parallel jobs (default: 0 = auto; max: {MAX_EXPLICIT_JOBS})"
+    );
     eprintln!("                       Use -j1 for single-threaded compilation");
     eprintln!("  --emit <stage>       Emit intermediate representation and exit");
     eprintln!("                       Can be specified multiple times for multiple outputs");
@@ -295,6 +305,25 @@ fn clobber_key(path: &str) -> PathBuf {
         }
         _ => p.to_path_buf(),
     }
+}
+
+fn parse_jobs_value(jobs_str: &str) -> Option<usize> {
+    let jobs = match jobs_str.parse::<usize>() {
+        Ok(jobs) => jobs,
+        Err(_) => {
+            eprintln!("Error: --jobs value must be a non-negative integer");
+            return None;
+        }
+    };
+
+    if jobs > MAX_EXPLICIT_JOBS {
+        eprintln!(
+            "Error: --jobs value {jobs} is too large; maximum explicit value is {MAX_EXPLICIT_JOBS} (use 0 for auto-detect)"
+        );
+        return None;
+    }
+
+    Some(jobs)
 }
 
 /// Parse arguments from a slice of strings (for testing).
@@ -413,13 +442,10 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
                     eprintln!("Error: --jobs requires a value");
                     return ParseResult::Error;
                 };
-                match jobs_str.parse::<usize>() {
-                    Ok(j) => jobs = Some(j),
-                    Err(_) => {
-                        eprintln!("Error: --jobs value must be a non-negative integer");
-                        return ParseResult::Error;
-                    }
-                }
+                let Some(parsed_jobs) = parse_jobs_value(jobs_str) else {
+                    return ParseResult::Error;
+                };
+                jobs = Some(parsed_jobs);
             }
             "-o" | "--output" => {
                 let Some(out_str) = args_iter.next() else {
@@ -457,13 +483,10 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
             _ if arg.starts_with("-j") && arg.len() > 2 => {
                 // Parse -j1, -j4, etc. (attached form)
                 let jobs_str = &arg[2..];
-                match jobs_str.parse::<usize>() {
-                    Ok(j) => jobs = Some(j),
-                    Err(_) => {
-                        eprintln!("Error: --jobs value must be a non-negative integer");
-                        return ParseResult::Error;
-                    }
-                }
+                let Some(parsed_jobs) = parse_jobs_value(jobs_str) else {
+                    return ParseResult::Error;
+                };
+                jobs = Some(parsed_jobs);
             }
             _ if arg.starts_with('-') => {
                 eprintln!("Unknown option: {}", arg);
@@ -2109,6 +2132,13 @@ mod tests {
     }
 
     #[test]
+    fn parse_jobs_accepts_max_explicit_value() {
+        let max_jobs = MAX_EXPLICIT_JOBS.to_string();
+        let opts = unwrap_options(parse_args_from(&["--jobs", &max_jobs, "source.rue"]));
+        assert_eq!(opts.jobs, MAX_EXPLICIT_JOBS);
+    }
+
+    #[test]
     fn parse_jobs_missing_value() {
         assert!(is_error(&parse_args_from(&["source.rue", "--jobs"])));
     }
@@ -2127,6 +2157,22 @@ mod tests {
     fn parse_jobs_negative_value() {
         // Negative values should fail to parse as usize
         assert!(is_error(&parse_args_from(&["--jobs", "-1", "source.rue"])));
+    }
+
+    #[test]
+    fn parse_jobs_rejects_excessive_value() {
+        let excessive = (MAX_EXPLICIT_JOBS + 1).to_string();
+        assert!(is_error(&parse_args_from(&[
+            "--jobs",
+            &excessive,
+            "source.rue"
+        ])));
+    }
+
+    #[test]
+    fn parse_jobs_rejects_excessive_attached_value() {
+        let excessive = format!("-j{}", MAX_EXPLICIT_JOBS + 1);
+        assert!(is_error(&parse_args_from(&[&excessive, "source.rue"])));
     }
 
     #[test]
