@@ -172,16 +172,28 @@ static RUNTIME_BYTES: &[u8] = include_bytes!("librue_runtime.a");
 /// asm`, `--emit mir`, ...) fully usable. ADR-0034 describes the full fix
 /// (per-target runtime archives selected at link time).
 fn runtime_for_target(target: Target) -> CompileResult<&'static [u8]> {
-    let host = Target::host();
-    if target == host {
-        Ok(RUNTIME_BYTES)
-    } else {
-        Err(CompileError::without_span(ErrorKind::LinkError(format!(
+    runtime_for_target_with_host(target, Target::host(), Target::host_description())
+}
+
+fn runtime_for_target_with_host(
+    target: Target,
+    host: Option<Target>,
+    host_description: &str,
+) -> CompileResult<&'static [u8]> {
+    match host {
+        Some(host) if target == host => Ok(RUNTIME_BYTES),
+        Some(host) => Err(CompileError::without_span(ErrorKind::LinkError(format!(
             "cannot link an executable for {target}: this rue compiler was built for {host} \
              and only embeds the {host} runtime library, so the result would not run on \
              {target} (RUE-36). Cross-target code generation still works: use \
              `--emit asm` to inspect {target} assembly.",
-        ))))
+        )))),
+        None => Err(CompileError::without_span(ErrorKind::LinkError(format!(
+            "cannot link an executable for {target}: this rue compiler was built on {} \
+             and does not have a supported host runtime to embed (RUE-36). Cross-target \
+             code generation still works: use `--emit asm` to inspect {target} assembly.",
+            host_description
+        )))),
     }
 }
 
@@ -691,7 +703,7 @@ impl Default for LinkerMode {
 ///
 /// ```ignore
 /// let options = CompileOptions {
-///     target: Target::host(),
+///     target: Target::host().unwrap(),
 ///     linker: LinkerMode::Internal,
 ///     opt_level: OptLevel::O1,
 ///     preview_features: PreviewFeatures::new(),
@@ -716,7 +728,8 @@ pub struct CompileOptions {
 impl Default for CompileOptions {
     fn default() -> Self {
         Self {
-            target: Target::host(),
+            target: Target::host()
+                .expect("Rue cannot choose a default compile target on this unsupported host"),
             linker: LinkerMode::Internal,
             opt_level: OptLevel::default(),
             preview_features: PreviewFeatures::new(),
@@ -1889,23 +1902,33 @@ mod tests {
     /// an error that names both targets and points at `--emit asm`.
     #[test]
     fn test_runtime_only_available_for_host_target() {
-        assert!(runtime_for_target(Target::host()).is_ok());
+        let host = Target::host().unwrap();
+        assert!(runtime_for_target(host).is_ok());
 
         for &target in Target::all() {
-            if target == Target::host() {
+            if target == host {
                 continue;
             }
             let err =
                 runtime_for_target(target).expect_err("cross-target link must be refused (RUE-36)");
             let msg = err.to_string();
             assert!(msg.contains(&target.to_string()), "names target: {msg}");
-            assert!(
-                msg.contains(&Target::host().to_string()),
-                "names host: {msg}"
-            );
+            assert!(msg.contains(&host.to_string()), "names host: {msg}");
             assert!(msg.contains("RUE-36"), "references RUE-36: {msg}");
             assert!(msg.contains("--emit asm"), "suggests --emit asm: {msg}");
         }
+    }
+
+    #[test]
+    fn test_runtime_refused_on_unsupported_host() {
+        let err = runtime_for_target_with_host(Target::X86_64Linux, None, "x86-64-macos")
+            .expect_err("unsupported host must not link by pretending to be another target");
+        let msg = err.to_string();
+
+        assert!(msg.contains("x86-64-linux"), "names target: {msg}");
+        assert!(msg.contains("x86-64-macos"), "names host: {msg}");
+        assert!(msg.contains("RUE-36"), "references RUE-36: {msg}");
+        assert!(msg.contains("--emit asm"), "suggests --emit asm: {msg}");
     }
 
     #[test]

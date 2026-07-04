@@ -550,11 +550,21 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
         );
     }
 
+    let Some(final_target) = target.or_else(Target::host) else {
+        eprintln!(
+            "Error: no --target specified and this host ({}) is not a supported Rue target",
+            Target::host_description()
+        );
+        eprintln!("Specify an explicit target with --target <target>.");
+        eprintln!("Valid targets: {}", Target::all_names());
+        return ParseResult::Error;
+    };
+
     ParseResult::Options(Options {
         source_paths,
         output_path: final_output_path,
         emit_stages,
-        target: target.unwrap_or_else(Target::host),
+        target: final_target,
         linker: linker.unwrap_or_default(),
         opt_level: opt_level.unwrap_or_default(),
         preview_features,

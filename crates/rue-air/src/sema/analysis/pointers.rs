@@ -807,7 +807,9 @@ impl<'a> Sema<'a> {
 
         // Determine variant index based on host architecture (compile-time evaluation)
         // Currently we always compile for the host architecture
-        let variant_index = match rue_target::Target::host().arch() {
+        let host = rue_target::Target::host()
+            .expect("@target_arch() requires a supported Rue host target");
+        let variant_index = match host.arch() {
             Arch::X86_64 => 0,
             Arch::Aarch64 => 1,
         };
@@ -854,7 +856,9 @@ impl<'a> Sema<'a> {
 
         // Determine variant index based on host OS (compile-time evaluation)
         // Currently we always compile for the host OS
-        let variant_index = match rue_target::Target::host().os() {
+        let host =
+            rue_target::Target::host().expect("@target_os() requires a supported Rue host target");
+        let variant_index = match host.os() {
             Os::Linux => 0,
             Os::Macos => 1,
         };
