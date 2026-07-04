@@ -4,9 +4,10 @@ set -euo pipefail
 # Run all tests for the rue compiler.
 #
 # Every suite is a Buck test target, so one `buck2 test //...` runs the unit
-# tests for ALL crates plus the spec/UI/CLI harness suites (the root BUCK
-# file's sh_tests, which declare the rue binary, cases/, and std/ as inputs —
-# Buck owns the binary handoff instead of a shell pipeline). Using //...
+# tests for ALL crates plus the spec/UI/CLI harness suites and tutorial snippet
+# checker (the root BUCK file's sh_tests, which declare the rue binary, cases/,
+# std/, and tutorial markdown as inputs — Buck owns the binary handoff instead
+# of a shell pipeline). Using //...
 # rather than a hand-maintained target list also keeps new crates from being
 # silently omitted. (RUE-132, RUE-144)
 #

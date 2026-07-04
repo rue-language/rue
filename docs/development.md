@@ -80,6 +80,35 @@ treats an unexpected pass as a failure so obsolete markers cannot linger.
 Preview-language cases must enable their feature explicitly and do not count as
 stable normative coverage.
 
+## Tutorial snippets
+
+Tutorial Rue fences are checked when their info string opts in:
+
+- ````markdown
+  ```rue check
+  ```
+  ```` compiles successfully.
+- ````markdown
+  ```rue compile-fail
+  ```
+  ```` must fail compilation, for intentionally invalid examples.
+- ````markdown
+  ```rue skip
+  ```
+  ```` is an explicit prose-only or context-dependent snippet.
+
+Run the checker directly while editing tutorial chapters:
+
+```bash
+scripts/check-tutorial-snippets.py
+```
+
+Or run the Buck target used by CI-style validation:
+
+```bash
+./buck2 test //:tutorial-snippet-tests
+```
+
 During implementation, use the narrowest relevant command. Before submitting:
 
 ```bash

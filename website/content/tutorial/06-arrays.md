@@ -10,7 +10,7 @@ Rue has fixed-size arrays with bounds checking at runtime.
 
 ## Creating Arrays
 
-```rue
+```rue check
 fn main() -> i32 {
     let numbers = [10, 20, 30, 40, 50];
 
@@ -28,7 +28,7 @@ Array indices are zero-based and must be `u64`.
 
 The type of an array includes its element type and length:
 
-```rue
+```rue check
 fn main() -> i32 {
     let a: [i32; 3] = [1, 2, 3];     // 3 elements
     let b: [bool; 2] = [true, false]; // 2 booleans
@@ -42,7 +42,7 @@ fn main() -> i32 {
 
 Use a while loop with an index:
 
-```rue
+```rue check
 fn main() -> i32 {
     let numbers = [10, 20, 30, 40, 50];
 
@@ -62,7 +62,7 @@ fn main() -> i32 {
 
 Arrays are mutable if declared with `let mut`:
 
-```rue
+```rue check
 fn main() -> i32 {
     let mut scores = [0, 0, 0];
     scores[0] = 100;
@@ -76,21 +76,22 @@ fn main() -> i32 {
 
 ## Bounds Checking
 
-Rue checks array bounds at runtime. Accessing an invalid index causes a panic:
+Rue checks array bounds. A constant out-of-bounds index is rejected at compile time:
 
-```rue
+```rue compile-fail
 fn main() -> i32 {
     let arr = [1, 2, 3];
-    @dbg(arr[10]);  // Runtime panic: index out of bounds
+    @dbg(arr[10]);  // Error: index out of bounds
     0
 }
 ```
 
-This prevents memory safety bugs common in C and C++.
+Dynamic out-of-bounds indexes are checked at runtime. Together, these checks
+prevent memory safety bugs common in C and C++.
 
 ## Example: Finding Maximum
 
-```rue
+```rue check
 fn main() -> i32 {
     let numbers = [64, 34, 25, 12, 22];
 

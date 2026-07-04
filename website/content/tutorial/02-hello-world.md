@@ -8,7 +8,7 @@ template = "tutorial/page.html"
 
 Let's start with the simplest possible program. Create a file called `hello.rue`:
 
-```rue
+```rue check
 fn main() -> i32 {
     0
 }
@@ -32,7 +32,7 @@ The compiler takes the source file (`hello.rue`) and produces an executable (`he
 
 To see output, use the `@dbg` intrinsic:
 
-```rue
+```rue check
 fn main() -> i32 {
     @dbg(42);
     0
