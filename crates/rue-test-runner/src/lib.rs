@@ -380,12 +380,125 @@ fn substitute_placeholders(template: &str, params: &HashMap<String, toml::Value>
     result
 }
 
+const PARAM_OVERRIDE_KEYS: &[&str] = &[
+    "exit_code",
+    "compile_fail",
+    "compile_only",
+    "skip",
+    "runtime_exit_code",
+    "no_warnings",
+    "opt_level",
+    "target",
+    "preview",
+    "preview_should_pass",
+    "timeout_ms",
+    "error_contains",
+    "expected_error",
+    "spec_extra",
+];
+
+fn contains_placeholder(template: &str, key: &str) -> bool {
+    template.contains(&format!("{{{key}}}"))
+}
+
+fn value_contains_placeholder(value: &toml::Value, key: &str) -> bool {
+    match value {
+        toml::Value::String(value) => contains_placeholder(value, key),
+        toml::Value::Array(values) => values
+            .iter()
+            .any(|value| value_contains_placeholder(value, key)),
+        toml::Value::Table(values) => values
+            .values()
+            .any(|value| value_contains_placeholder(value, key)),
+        _ => false,
+    }
+}
+
+fn case_contains_placeholder(case: &Case, key: &str) -> bool {
+    contains_placeholder(&case.name, key)
+        || contains_placeholder(&case.source, key)
+        || case
+            .error_contains
+            .iter()
+            .any(|value| contains_placeholder(value, key))
+        || case
+            .expected_error
+            .as_ref()
+            .is_some_and(|value| contains_placeholder(value, key))
+        || case
+            .runtime_error
+            .as_ref()
+            .is_some_and(|value| contains_placeholder(value, key))
+        || case
+            .expected_stdout
+            .as_ref()
+            .is_some_and(|value| contains_placeholder(value, key))
+        || case
+            .stdin
+            .as_ref()
+            .is_some_and(|value| contains_placeholder(value, key))
+        || case
+            .stderr_contains
+            .as_ref()
+            .is_some_and(|value| contains_placeholder(value, key))
+}
+
+fn param_values_contain_placeholder(param_set: &ParamSet, key: &str) -> bool {
+    param_set
+        .values
+        .values()
+        .any(|value| value_contains_placeholder(value, key))
+}
+
+fn is_valid_param_key(case: &Case, param_set: &ParamSet, key: &str) -> bool {
+    if PARAM_OVERRIDE_KEYS.contains(&key) {
+        return true;
+    }
+
+    case_contains_placeholder(case, key) || param_values_contain_placeholder(param_set, key)
+}
+
+fn unknown_param_keys(case: &Case) -> Vec<&str> {
+    let mut unknown_keys = Vec::new();
+
+    for param_set in &case.params {
+        for key in param_set.values.keys() {
+            if is_valid_param_key(case, param_set, key) {
+                continue;
+            }
+            unknown_keys.push(key.as_str());
+        }
+    }
+
+    unknown_keys.sort_unstable();
+    unknown_keys.dedup();
+    unknown_keys
+}
+
+fn validate_param_keys(case: &Case) {
+    let unknown_keys = unknown_param_keys(case);
+    if unknown_keys.is_empty() {
+        return;
+    }
+
+    panic!(
+        "test '{}' has params key(s) that are neither field overrides nor referenced \
+         placeholders: {}. Parameter keys must be one of the reserved override keys \
+         ({}) or appear as a {{key}} placeholder in a substituted field.",
+        case.name,
+        unknown_keys.join(", "),
+        PARAM_OVERRIDE_KEYS.join(", ")
+    );
+}
+
 /// Expand a single case with params into multiple concrete cases.
 /// If the case has no params, returns the case unchanged (in a vec).
 pub fn expand_case(case: Case) -> Vec<Case> {
     if case.params.is_empty() {
         return vec![case];
     }
+
+    validate_param_keys(&case);
 
     case.params
         .iter()
@@ -1931,6 +2044,52 @@ params = [
         // The guard accepts the failing variant and ignores the succeeding one.
         assert!(validate_compile_fail_assertions(&expanded).is_empty());
         assert!(validate_error_assertions(&expanded).is_empty());
+    }
+
+    #[test]
+    fn test_expand_case_rejects_unknown_param_key() {
+        let toml = r#"
+[section]
+id = "t.section"
+name = "T"
+
+[[case]]
+name = "bad_{variant}"
+source = "fn main() -> i32 { {body} }"
+params = [
+  { variant = "typo", body = "0", exit_cod = 42 },
+]
+"#;
+        let tf: TestFile = toml::from_str(toml).expect("valid TOML");
+        let unknown = unknown_param_keys(&tf.case[0]);
+
+        assert_eq!(unknown, vec!["exit_cod"]);
+    }
+
+    #[test]
+    fn test_expand_case_allows_param_key_used_only_in_error_contains() {
+        let toml = r#"
+[section]
+id = "t.section"
+name = "T"
+
+[[case]]
+name = "uses_error_placeholder"
+source = "fn main() -> i32 { true }"
+compile_fail = true
+error_contains = "expected {ty}"
+params = [
+  { ty = "i32" },
+]
+"#;
+        let tf: TestFile = toml::from_str(toml).expect("valid TOML");
+        let expanded = expand_test_file(tf);
+
+        assert_eq!(expanded.case.len(), 1);
+        assert_eq!(
+            expanded.case[0].error_contains,
+            ErrorContains(vec!["expected i32".to_string()])
+        );
     }
 
     #[test]
