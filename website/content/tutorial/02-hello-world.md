@@ -8,7 +8,7 @@ template = "tutorial/page.html"
 
 Let's start with the simplest possible program. Create a file called `hello.rue`:
 
-```rue
+```rue check
 fn main() -> i32 {
     0
 }
@@ -42,7 +42,7 @@ echo $?  # prints: 0
 
 To see output, use the `@dbg` intrinsic:
 
-```rue
+```rue check
 fn main() -> i32 {
     @dbg(42);
     0

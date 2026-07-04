@@ -17,7 +17,7 @@ Quicksort is a classic divide-and-conquer sorting algorithm:
 
 ## The Implementation
 
-```rue
+```rue check
 fn partition(inout arr: [i32; 5], lo: u64, hi: u64) -> u64 {
     let pivot = arr[hi];
     let mut i = lo;

@@ -38,6 +38,13 @@ filegroup(
     srcs = glob(["examples/**"]),
 )
 
+# Tutorial markdown is an input to the snippet checker. The checker only
+# compiles fences explicitly marked with `rue check` or `rue compile-fail`.
+filegroup(
+    name = "tutorial",
+    srcs = glob(["website/content/tutorial/**"]),
+)
+
 sh_test(
     name = "spec-tests",
     test = "//crates/rue-spec:rue-spec",
@@ -67,5 +74,17 @@ sh_test(
         "RUE_CLI_CASES": "$(location //crates/rue-cli-tests:cases)/cases",
         "RUE_EXAMPLES_DIR": "$(location :examples)/examples",
         "RUE_STD_DIR": "$(location :std)/std",
+    },
+)
+
+sh_test(
+    name = "tutorial-snippet-tests",
+    test = "scripts/check-tutorial-snippets.py",
+    args = [
+        "--quiet",
+        "$(location :tutorial)/website/content/tutorial",
+    ],
+    env = {
+        "RUE_BINARY": "$(exe_target //crates/rue:rue)",
     },
 )

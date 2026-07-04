@@ -10,7 +10,7 @@ Functions are declared with `fn`, followed by parameters and a return type.
 
 ## Basic Functions
 
-```rue
+```rue check
 fn add(a: i32, b: i32) -> i32 {
     a + b
 }
@@ -34,7 +34,7 @@ fn main() -> i32 {
 
 The last expression in a function is its return value—no `return` keyword needed:
 
-```rue
+```rue skip
 fn double(x: i32) -> i32 {
     x * 2  // this value is returned
 }
@@ -46,7 +46,7 @@ Note the lack of a semicolon. Adding one would make it a statement instead of an
 
 You can use `return` for early exits:
 
-```rue
+```rue check
 fn absolute(n: i32) -> i32 {
     if n < 0 {
         return -n;
