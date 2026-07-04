@@ -116,7 +116,6 @@ no_warnings = true
 [[case]]
 name = "allow_unknown_warning_error"
 spec = ["2.5:14"]
-skip = true  # TODO: This error isn't implemented yet
 source = """
 fn main() -> i32 {
     @allow(nonexistent_warning)
@@ -125,7 +124,7 @@ fn main() -> i32 {
 }
 """
 compile_fail = true
-error_contains = "unrecognized warning"
+error_contains = "unrecognized warning name"
 
 [[case]]
 name = "allow_unused_variable_on_let"

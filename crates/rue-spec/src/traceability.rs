@@ -168,11 +168,6 @@ pub const KNOWN_UNCOVERED_NORMATIVE: &[(&str, &str)] = &[
          (lexical/builtins.toml::directive_must_precede_item, skipped)",
     ),
     (
-        "2.5:14",
-        "unrecognized-warning-name error not implemented \
-         (lexical/builtins.toml::allow_unknown_warning_error, skipped)",
-    ),
-    (
         "2.5:17",
         "function-level @allow(unused_variable) not implemented \
          (lexical/builtins.toml::allow_unused_variable_on_function, skipped)",
