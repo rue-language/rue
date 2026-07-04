@@ -331,13 +331,30 @@ fn regs_read(inst: &Aarch64Inst) -> Vec<Reg> {
         Aarch64Inst::LdpPost { .. } => {
             result.push(Reg::Sp); // Post-indexed LDP reads SP before writing
         }
-        Aarch64Inst::LdrIndexed { .. }
-        | Aarch64Inst::StrIndexed { .. }
-        | Aarch64Inst::LdrIndexedOffset { .. }
-        | Aarch64Inst::StrIndexedOffset { .. } => {
-            // base is VReg, handled separately
+        Aarch64Inst::LdrIndexed { .. } | Aarch64Inst::LdrIndexedOffset { .. } => {
+            // Pre-regalloc indexed load. The scheduler runs after regalloc,
+            // which rewrites this variant; the virtual base has no physical
+            // register to record here.
         }
-        _ => {}
+        Aarch64Inst::StrIndexed { src, .. } | Aarch64Inst::StrIndexedOffset { src, .. } => {
+            // Pre-regalloc indexed store. The scheduler runs after regalloc,
+            // which rewrites this variant; the virtual base has no physical
+            // register to record here.
+            add_if_phys(src, &mut result);
+        }
+        Aarch64Inst::Cset { .. }
+        | Aarch64Inst::B { .. }
+        | Aarch64Inst::BCond { .. }
+        | Aarch64Inst::Bvs { .. }
+        | Aarch64Inst::Bvc { .. }
+        | Aarch64Inst::Label { .. }
+        | Aarch64Inst::Bl { .. }
+        | Aarch64Inst::Ret
+        | Aarch64Inst::Brk
+        | Aarch64Inst::Svc { .. }
+        | Aarch64Inst::StringConstPtr { .. }
+        | Aarch64Inst::StringConstLen { .. }
+        | Aarch64Inst::StringConstCap { .. } => {}
     }
 
     result
@@ -433,7 +450,18 @@ fn regs_written(inst: &Aarch64Inst) -> Vec<Reg> {
         Aarch64Inst::Bl { .. } => {
             // Clobbers handled separately via clobbers()
         }
-        _ => {}
+        Aarch64Inst::Svc { .. } => {
+            // Clobbers handled separately via clobbers()
+        }
+        Aarch64Inst::B { .. }
+        | Aarch64Inst::BCond { .. }
+        | Aarch64Inst::Bvs { .. }
+        | Aarch64Inst::Bvc { .. }
+        | Aarch64Inst::Cbz { .. }
+        | Aarch64Inst::Cbnz { .. }
+        | Aarch64Inst::Label { .. }
+        | Aarch64Inst::Ret
+        | Aarch64Inst::Brk => {}
     }
 
     result

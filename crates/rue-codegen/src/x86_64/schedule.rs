@@ -365,9 +365,14 @@ fn regs_read(inst: &X86Inst) -> Vec<Reg> {
             add_if_phys(count, &mut result);
         }
         X86Inst::MovRMIndexed { .. } => {
-            // base is VReg, handled separately
+            // Pre-regalloc indexed load. The scheduler runs after regalloc,
+            // which rewrites this variant; the virtual base has no physical
+            // register to record here.
         }
         X86Inst::MovMRIndexed { src, .. } => {
+            // Pre-regalloc indexed store. The scheduler runs after regalloc,
+            // which rewrites this variant; the virtual base has no physical
+            // register to record here.
             add_if_phys(src, &mut result);
         }
         X86Inst::MovRMSib { base, index, .. } => {
@@ -381,7 +386,24 @@ fn regs_read(inst: &X86Inst) -> Vec<Reg> {
             add_if_phys(index, &mut result);
             add_if_phys(src, &mut result);
         }
-        _ => {}
+        X86Inst::StringConstPtr { .. }
+        | X86Inst::StringConstLen { .. }
+        | X86Inst::StringConstCap { .. }
+        | X86Inst::CallRel { .. }
+        | X86Inst::Syscall
+        | X86Inst::Jz { .. }
+        | X86Inst::Jnz { .. }
+        | X86Inst::Jo { .. }
+        | X86Inst::Jno { .. }
+        | X86Inst::Jb { .. }
+        | X86Inst::Jae { .. }
+        | X86Inst::Jbe { .. }
+        | X86Inst::Jge { .. }
+        | X86Inst::Jle { .. }
+        | X86Inst::Jmp { .. }
+        | X86Inst::Label { .. }
+        | X86Inst::Ret
+        | X86Inst::Ud2 => {}
     }
 
     result
@@ -490,7 +512,25 @@ fn regs_written(inst: &X86Inst) -> Vec<Reg> {
         | X86Inst::StringConstCap { dst, .. } => {
             add_if_phys(dst, &mut result);
         }
-        _ => {}
+        X86Inst::CmpRR { .. }
+        | X86Inst::Cmp64RR { .. }
+        | X86Inst::CmpRI { .. }
+        | X86Inst::Cmp64RI { .. }
+        | X86Inst::TestRR { .. }
+        | X86Inst::Test64RR { .. }
+        | X86Inst::Jz { .. }
+        | X86Inst::Jnz { .. }
+        | X86Inst::Jo { .. }
+        | X86Inst::Jno { .. }
+        | X86Inst::Jb { .. }
+        | X86Inst::Jae { .. }
+        | X86Inst::Jbe { .. }
+        | X86Inst::Jge { .. }
+        | X86Inst::Jle { .. }
+        | X86Inst::Jmp { .. }
+        | X86Inst::Label { .. }
+        | X86Inst::Ret
+        | X86Inst::Ud2 => {}
     }
 
     result
