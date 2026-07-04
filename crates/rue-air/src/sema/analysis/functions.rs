@@ -307,7 +307,16 @@ impl<'a> Sema<'a> {
             // Inout and Borrow parameters are passed by reference.
             // Comptime parameters are VALUE params (like `comptime n: i32`), passed by value.
             // Normal parameters are passed by value.
-            let is_by_ref = *mode == RirParamMode::Inout || *mode == RirParamMode::Borrow;
+            //
+            // Exception (ADR-0043, RUE-322): a slice parameter `borrow s: [T]`
+            // is itself a two-word fat pointer `{ptr, len}`. The `borrow`/`inout`
+            // keyword marks shared-vs-exclusive access, not an extra level of
+            // indirection, so the slice value is passed BY VALUE through the
+            // existing multi-slot aggregate ABI (2 slots) rather than as a
+            // pointer-to-slice. The call site materializes the fat pointer.
+            let is_slice = self.slice_element_type(*ptype).is_some();
+            let is_by_ref =
+                (*mode == RirParamMode::Inout || *mode == RirParamMode::Borrow) && !is_slice;
             let slot_count = if is_by_ref {
                 // By-ref parameters are always 1 slot (pointer)
                 1

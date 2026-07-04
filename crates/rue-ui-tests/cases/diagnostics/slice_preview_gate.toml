@@ -12,10 +12,9 @@ argument position and may not escape. These cases pin the second-class
 enforcement — return position is E0487, a struct field / enum payload is
 E0488, and a `let` / `const` binding is E0489 — which fire *before* the
 runtime is consulted. In argument position (the one legal spot) the slice
-type is accepted by resolution but reports E0486, because the fat-pointer
-runtime (ABI + codegen on both backends) is not yet implemented. These UI
-cases pin the gating + enforcement behaviour; the E0486 case becomes a
-regression test for the follow-up phase that lands the runtime.
+type is accepted and its fat-pointer runtime (`.len()`, bounds-checked
+`s[i]`) runs; that end-to-end behaviour is pinned in the CLI suite
+(slices_mvp.toml). These UI cases pin the gating + enforcement diagnostics.
 """
 
 [[case]]
@@ -37,16 +36,6 @@ fn main() -> i32 { let s: [i32] = other(); 0 }
 compile_fail = true
 error_contains = "requires preview feature"
 
-[[case]]
-name = "slice_param_under_preview_not_yet_implemented"
-description = "Under --preview slices, a slice parameter (the one legal position) parses but reports E0486 (runtime unimplemented)."
-preview = "slices"
-source = """
-fn sum(borrow s: [i32]) -> i32 { 0 }
-fn main() -> i32 { 0 }
-"""
-compile_fail = true
-error_contains = "not yet fully implemented"
 
 [[case]]
 name = "slice_return_is_second_class_e0487"

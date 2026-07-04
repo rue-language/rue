@@ -280,6 +280,23 @@ impl<'a> ConstraintGenerator<'a> {
         }
     }
 
+    /// Is `ty` the synthetic slice struct `[T]` (ADR-0043, RUE-322)? A slice
+    /// parameter accepts an array argument by coercion (`sum(borrow a)`), so the
+    /// constraint generator must NOT impose strict `arg == param` equality when
+    /// the parameter is a slice; the real element-compatibility check and the
+    /// fat-pointer materialization happen in semantic analysis.
+    fn is_slice_struct_type(&self, ty: InferType) -> bool {
+        if let InferType::Concrete(t) = ty
+            && let Some(id) = t.as_struct()
+        {
+            let name = &self.type_pool.struct_def(id).name;
+            return name.starts_with('[')
+                && name.ends_with(']')
+                && crate::types::parse_array_type_syntax(name).is_none();
+        }
+        false
+    }
+
     /// Provide file-level constant types (name -> declared type) for `VarRef`
     /// resolution. See the `const_types` field for details (RUE-142).
     pub fn with_const_types(mut self, const_types: &'a HashMap<Spur, Type>) -> Self {
@@ -900,6 +917,11 @@ impl<'a> ConstraintGenerator<'a> {
                             } else {
                                 declared.clone()
                             };
+                            // Slice parameters coerce from an array argument
+                            // (ADR-0043, RUE-322); see the non-generic path.
+                            if self.is_slice_struct_type(expected.clone()) {
+                                continue;
+                            }
                             self.add_constraint(Constraint::equal(
                                 arg_info.ty.clone(),
                                 expected,
@@ -966,6 +988,12 @@ impl<'a> ConstraintGenerator<'a> {
                         // Generate constraints for each argument
                         for (arg, param_ty) in args.iter().zip(func.param_types.iter()) {
                             let arg_info = self.generate(arg.value, ctx);
+                            // Slice parameters coerce from an array argument
+                            // (`borrow arr`); skip strict equality and let sema
+                            // materialize the fat pointer (ADR-0043, RUE-322).
+                            if self.is_slice_struct_type(param_ty.clone()) {
+                                continue;
+                            }
                             self.add_constraint(Constraint::equal(
                                 arg_info.ty,
                                 param_ty.clone(),

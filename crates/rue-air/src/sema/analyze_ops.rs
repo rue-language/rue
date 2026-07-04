@@ -4253,6 +4253,23 @@ impl<'a> Sema<'a> {
             );
         }
 
+        // Slice read-indexing `s[i]` (ADR-0043, RUE-322): the base is the
+        // synthetic 2-word fat-pointer struct `{ptr, len}`. Lower to a
+        // runtime-bounds-checked pointer load through the fat pointer's `ptr`
+        // word — no array place is involved.
+        if let Some(elem_ty) = self.slice_element_type(base_type) {
+            return self.analyze_slice_index_get(
+                air,
+                base_result,
+                base_root,
+                base_move_state_before,
+                index,
+                elem_ty,
+                span,
+                ctx,
+            );
+        }
+
         let index_result = self.analyze_inst(air, index, ctx)?;
 
         // Verify base is an array
@@ -4421,6 +4438,198 @@ impl<'a> Sema<'a> {
             span,
         });
         Ok(AnalysisResult::new(call_ref, Type::U8))
+    }
+
+    /// Analyze a slice read-index `s[i]` (ADR-0043, RUE-322).
+    ///
+    /// The slice `base_result` is the synthetic 2-word fat-pointer struct
+    /// `{ptr: ptr const T, len: u64}`. The read desugars to, in order:
+    ///
+    /// 1. a runtime bounds check `@assert(i < len)` — traps with exit 101 (the
+    ///    same discipline as array indexing) when the index is out of range;
+    /// 2. `@ptr_read(@ptr_offset(ptr, i))` — `@ptr_offset` scales by
+    ///    `size_of(T)`, so this reads the i-th element.
+    ///
+    /// Everything is built from existing intrinsics, so no new codegen (or
+    /// backend-specific work) is required; the fat pointer flows through the
+    /// same struct/field/pointer paths the manual `{ptr,len}` form already uses.
+    #[allow(clippy::too_many_arguments)]
+    fn analyze_slice_index_get(
+        &mut self,
+        air: &mut Air,
+        base_result: AnalysisResult,
+        base_root: Option<Spur>,
+        base_move_state_before: Option<VariableMoveState>,
+        index: InstRef,
+        elem_ty: Type,
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AnalysisResult> {
+        // Indexing reads (never consumes) the slice receiver; undo any move the
+        // receiver analysis recorded (mirrors the String index / ByRef paths).
+        if let Some(var) = base_root {
+            match base_move_state_before {
+                Some(state) => {
+                    ctx.moved_vars.insert(var, state);
+                }
+                None => {
+                    ctx.moved_vars.remove(&var);
+                }
+            }
+        }
+        air.cancel_move_marker(base_result.air_ref);
+
+        let slice_struct_id = base_result
+            .ty
+            .as_struct()
+            .expect("slice receiver is a synthetic struct");
+        let ptr_ty = self.type_pool.struct_def(slice_struct_id).fields[0].ty;
+
+        // The index is an ordinary rvalue; require an integer (spec 7.1:7).
+        let index_result = self.analyze_inst(air, index, ctx)?;
+        if !index_result.ty.is_integer() && !index_result.ty.is_error() {
+            return Err(CompileError::new(
+                ErrorKind::TypeMismatch {
+                    expected: "an integer".to_string(),
+                    found: index_result.ty.safe_name_with_pool(Some(&self.type_pool)),
+                },
+                self.rir.get(index).span,
+            ));
+        }
+
+        // Read the fat pointer's two words from the slice value.
+        let ptr_ref = air.add_inst(AirInst {
+            data: AirInstData::FieldGet {
+                base: base_result.air_ref,
+                struct_id: slice_struct_id,
+                field_index: 0,
+            },
+            ty: ptr_ty,
+            span,
+        });
+        let len_ref = air.add_inst(AirInst {
+            data: AirInstData::FieldGet {
+                base: base_result.air_ref,
+                struct_id: slice_struct_id,
+                field_index: 1,
+            },
+            ty: Type::U64,
+            span,
+        });
+
+        // Runtime bounds check: `@assert(index < len)` traps (exit 101) when the
+        // index is out of range.
+        let cond_ref = air.add_inst(AirInst {
+            data: AirInstData::Lt(index_result.air_ref, len_ref),
+            ty: Type::BOOL,
+            span,
+        });
+        let assert_args = air.add_extra(&[cond_ref.as_u32()]);
+        let assert_ref = air.add_inst(AirInst {
+            data: AirInstData::Intrinsic {
+                name: self.known.assert,
+                args_start: assert_args,
+                args_len: 1,
+            },
+            ty: Type::UNIT,
+            span,
+        });
+
+        // element = @ptr_read(@ptr_offset(ptr, index)).
+        let off_args = air.add_extra(&[ptr_ref.as_u32(), index_result.air_ref.as_u32()]);
+        let off_ref = air.add_inst(AirInst {
+            data: AirInstData::Intrinsic {
+                name: self.known.ptr_offset,
+                args_start: off_args,
+                args_len: 2,
+            },
+            ty: ptr_ty,
+            span,
+        });
+        let read_args = air.add_extra(&[off_ref.as_u32()]);
+        let elem_ref = air.add_inst(AirInst {
+            data: AirInstData::Intrinsic {
+                name: self.known.ptr_read,
+                args_start: read_args,
+                args_len: 1,
+            },
+            ty: elem_ty,
+            span,
+        });
+
+        // Demand-driven lowering only pulls the returned value's dependencies,
+        // so the bounds-check assertion (a pure side effect) must be an explicit
+        // statement of the block that yields the element.
+        let stmts = air.add_extra(&[assert_ref.as_u32()]);
+        let block_ref = air.add_inst(AirInst {
+            data: AirInstData::Block {
+                stmts_start: stmts,
+                stmts_len: 1,
+                value: elem_ref,
+            },
+            ty: elem_ty,
+            span,
+        });
+        Ok(AnalysisResult::new(block_ref, elem_ty))
+    }
+
+    /// Analyze a slice method call (ADR-0043, RUE-322). Only `.len()` is
+    /// supported today: it reads the fat pointer's `len` word (runtime length).
+    pub(crate) fn analyze_slice_method(
+        &mut self,
+        air: &mut Air,
+        receiver: InstRef,
+        receiver_var: Option<Spur>,
+        method_name: &str,
+        arg_count: usize,
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AnalysisResult> {
+        // The receiver is read, not consumed: analyze it as a borrow and undo
+        // the move the analysis records.
+        let move_state_before = receiver_var.and_then(|v| ctx.moved_vars.get(&v).cloned());
+        let prev_byref_root = std::mem::replace(&mut ctx.byref_arg_root, receiver_var);
+        let recv_result = self.analyze_inst(air, receiver, ctx);
+        ctx.byref_arg_root = prev_byref_root;
+        let recv_result = recv_result?;
+        if let Some(var) = receiver_var {
+            match move_state_before {
+                Some(state) => {
+                    ctx.moved_vars.insert(var, state);
+                }
+                None => {
+                    ctx.moved_vars.remove(&var);
+                }
+            }
+        }
+        air.cancel_move_marker(recv_result.air_ref);
+
+        let slice_struct_id = recv_result
+            .ty
+            .as_struct()
+            .expect("slice receiver is a synthetic struct");
+
+        if method_name == "len" && arg_count == 0 {
+            // Read the `len` word (field 1) from the fat pointer.
+            let len_ref = air.add_inst(AirInst {
+                data: AirInstData::FieldGet {
+                    base: recv_result.air_ref,
+                    struct_id: slice_struct_id,
+                    field_index: 1,
+                },
+                ty: Type::U64,
+                span,
+            });
+            return Ok(AnalysisResult::new(len_ref, Type::U64));
+        }
+
+        Err(CompileError::new(
+            ErrorKind::UndefinedMethod {
+                method_name: method_name.to_string(),
+                type_name: self.type_pool.struct_def(slice_struct_id).name.clone(),
+            },
+            span,
+        ))
     }
 
     /// Analyze an array index write.
@@ -4819,8 +5028,9 @@ impl<'a> Sema<'a> {
             }
         }
 
-        // Analyze all arguments
-        let air_args = self.analyze_call_args(air, &args, ctx)?;
+        // Analyze all arguments. Slice parameters (ADR-0043, RUE-322) coerce a
+        // `borrow arr` argument into a by-value fat pointer here.
+        let air_args = self.analyze_call_args_coerced(air, &args, &param_types, ctx)?;
 
         // Handle generic function calls differently
         if is_generic {

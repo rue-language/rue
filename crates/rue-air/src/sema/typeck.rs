@@ -171,22 +171,102 @@ impl<'a> Sema<'a> {
     /// canonical type string is slice syntax so the caller short-circuits;
     /// `None` otherwise (a genuinely unknown type falls through to E0204).
     ///
-    /// This gates the surface behind `--preview slices` and, until the
-    /// fat-pointer runtime (ABI + codegen on both backends) lands, reports
-    /// [`ErrorKind::SliceNotYetImplemented`] (E0486) rather than letting an
-    /// unfinished slice reach lowering.
-    fn try_resolve_slice_type(&self, type_name: &str, span: Span) -> Option<CompileResult<Type>> {
+    /// This gates the surface behind `--preview slices` and, when enabled,
+    /// resolves the slice to its synthetic fat-pointer struct
+    /// (see [`Self::get_or_create_slice_struct`]) so it flows through the
+    /// existing aggregate ABI, field, and pointer codegen paths (ADR-0043
+    /// Phase 1 runtime, RUE-322). Escape positions (return / field / binding)
+    /// are rejected by [`Self::reject_slice_escape`] before reaching here.
+    fn try_resolve_slice_type(
+        &mut self,
+        type_name: &str,
+        span: Span,
+    ) -> Option<CompileResult<Type>> {
         if type_name.starts_with('[')
             && type_name.ends_with(']')
             && parse_array_type_syntax(type_name).is_none()
         {
             Some(
                 self.require_preview(PreviewFeature::Slices, "the slice type `[T]`", span)
-                    .and_then(|()| Err(CompileError::new(ErrorKind::SliceNotYetImplemented, span))),
+                    .and_then(|()| self.get_or_create_slice_struct(type_name, span)),
             )
         } else {
             None
         }
+    }
+
+    /// Get (or lazily create) the synthetic 2-field struct that represents the
+    /// second-class slice type `[T]` (ADR-0043, RUE-322).
+    ///
+    /// A slice is a fat pointer `{ ptr: ptr const T, len: u64 }`. Rather than
+    /// invent a new `TypeKind`, the slice is modeled as a `@copy` synthetic
+    /// struct so it flows through the existing multi-slot aggregate ABI, field
+    /// reads (for `.len()`), and by-ref (`borrow`) parameter passing — exactly
+    /// like the builtin `String` fat pointer. The struct is keyed by its slice
+    /// syntax name (`[i32]`), so repeated references share one `StructId`.
+    ///
+    /// The element type is parsed out of the bracket syntax and resolved first;
+    /// the pointer field is `ptr const T` so that `s[i]` can lower to
+    /// `@ptr_read(@ptr_offset(ptr, i))` with the correct element stride.
+    fn get_or_create_slice_struct(&mut self, type_name: &str, span: Span) -> CompileResult<Type> {
+        use crate::types::{StructDef, StructField};
+
+        let type_sym = self.interner.get_or_intern(type_name);
+        if let Some(&struct_id) = self.structs.get(&type_sym) {
+            return Ok(Type::new_struct(struct_id));
+        }
+
+        // Parse `[T]` -> element type name `T` and resolve it.
+        let element_name = type_name[1..type_name.len() - 1].trim().to_string();
+        let element_sym = self.interner.get_or_intern(&element_name);
+        let element_ty = self.resolve_type(element_sym, span)?;
+        let ptr_type_id = self.type_pool.intern_ptr_const_from_type(element_ty);
+        let ptr_ty = Type::new_ptr_const(ptr_type_id);
+
+        let struct_def = StructDef {
+            name: type_name.to_string(),
+            fields: vec![
+                StructField {
+                    name: "ptr".to_string(),
+                    ty: ptr_ty,
+                },
+                StructField {
+                    name: "len".to_string(),
+                    ty: Type::U64,
+                },
+            ],
+            // A slice is a copyable view (no ownership of the backing store).
+            is_copy: true,
+            is_linear: false,
+            destructor: None,
+            // Marked builtin so it never participates in user drop-glue etc.
+            is_builtin: true,
+            is_pub: true,
+            file_id: rue_span::FileId::new(0),
+        };
+        let (struct_id, _) = self.type_pool.register_struct(type_sym, struct_def);
+        self.structs.insert(type_sym, struct_id);
+        Ok(Type::new_struct(struct_id))
+    }
+
+    /// If `ty` is a synthetic slice struct `[T]` (ADR-0043, RUE-322), return its
+    /// element type `T`; otherwise `None`. Detected by the struct name being
+    /// slice syntax (`[..]` that is not a fixed-array `[T; N]`), the same naming
+    /// trick used for anonymous structs.
+    pub(crate) fn slice_element_type(&self, ty: Type) -> Option<Type> {
+        if let TypeKind::Struct(struct_id) = ty.kind() {
+            let def = self.type_pool.struct_def(struct_id);
+            if def.name.starts_with('[')
+                && def.name.ends_with(']')
+                && parse_array_type_syntax(&def.name).is_none()
+            {
+                // Field 0 is `ptr const T`; recover T from its pointee.
+                if let TypeKind::PtrConst(ptr_id) = def.fields[0].ty.kind() {
+                    return Some(self.type_pool.ptr_const_def(ptr_id));
+                }
+            }
+        }
+        None
     }
 
     /// Is `type_sym` the syntax of a slice type `[T]` (as opposed to a fixed
@@ -219,7 +299,11 @@ impl<'a> Sema<'a> {
     }
 
     pub(crate) fn resolve_type(&mut self, type_sym: Spur, span: Span) -> CompileResult<Type> {
-        let type_name = self.interner.resolve(&type_sym);
+        // Own the name so the read-only branches below borrow this local rather
+        // than `self.interner`, leaving `self` free for the `&mut self` slice
+        // path (`try_resolve_slice_type` lazily registers a synthetic struct).
+        let type_name_owned = self.interner.resolve(&type_sym).to_string();
+        let type_name = type_name_owned.as_str();
 
         // Check primitive types first (single shared table, RUE-155).
         // Note: String is handled below via struct lookup (it's a builtin struct).
