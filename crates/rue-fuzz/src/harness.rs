@@ -30,7 +30,7 @@
 //! The parent process never executes target code, so a target that corrupts
 //! memory or blows the stack cannot damage the fuzzer itself.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -42,6 +42,15 @@ const PANIC_EXIT_CODE: i32 = 101;
 /// compile finishes in milliseconds, so anything still running after this
 /// long is a hang/superlinear bug, not a slow success.
 pub const DEFAULT_PER_INPUT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Number of additional distinct reproducers saved for coarse crash buckets.
+///
+/// Signals and timeouts intentionally have broad signatures because the forked
+/// harness cannot cheaply recover a precise crash site from the dying child.
+/// Saving a small amount of duplicate evidence keeps flood control while
+/// avoiding a single `signal:SIGSEGV` or `timeout` bucket hiding later,
+/// materially different inputs.
+const MAX_DUPLICATE_REPRODUCERS_PER_SIGNATURE: u64 = 5;
 
 /// The outcome of running one fuzz input.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -325,36 +334,68 @@ fn run_in_process<F: FnOnce()>(f: F) -> RunOutcome {
 
 /// Records crashes to disk, collapsing duplicates by [`RunOutcome::signature`].
 ///
-/// A reproducer is written for the *first* occurrence of each distinct crash
-/// signature; subsequent identical crashes bump the duplicate counter and are
-/// not written again, so a single flooding bug can't fill the crashes dir.
+/// A reproducer is always written for the *first* occurrence of each distinct
+/// crash signature. For coarse signatures (`signal:*` and `timeout`), the first
+/// few duplicate inputs are also saved as bounded evidence; exact same-input
+/// reruns are still deduped so retry loops do not rewrite the same artifact.
 pub struct CrashReporter {
     crash_dir: Option<PathBuf>,
-    seen: HashSet<String>,
+    signatures: HashMap<String, SignatureState>,
     pub unique_crashes: u64,
     pub duplicate_crashes: u64,
+}
+
+#[derive(Default)]
+struct SignatureState {
+    total_seen: u64,
+    saved_input_hashes: HashSet<u64>,
+    duplicate_reproducers_saved: u64,
 }
 
 impl CrashReporter {
     pub fn new(crash_dir: Option<PathBuf>) -> Self {
         Self {
             crash_dir,
-            seen: HashSet::new(),
+            signatures: HashMap::new(),
             unique_crashes: 0,
             duplicate_crashes: 0,
         }
     }
 
-    /// Report a crash. Returns the reproducer path if a *new* one was written,
-    /// or `None` if the crash was a duplicate (or `outcome` was not a crash).
+    /// Report a crash. Returns the reproducer path if one was written, or
+    /// `None` if the crash was fully deduped (or `outcome` was not a crash).
     pub fn report(&mut self, target: &str, input: &[u8], outcome: &RunOutcome) -> Option<PathBuf> {
         let signature = outcome.signature()?;
+        let input_hash = fnv1a(input);
 
-        if !self.seen.insert(signature.clone()) {
+        let state = self.signatures.entry(signature.clone()).or_default();
+        let first_for_signature = state.total_seen == 0;
+        state.total_seen += 1;
+
+        let should_save = if first_for_signature {
+            self.unique_crashes += 1;
+            state.saved_input_hashes.insert(input_hash);
+            true
+        } else {
             self.duplicate_crashes += 1;
+
+            if !state.saved_input_hashes.insert(input_hash) {
+                return None;
+            }
+
+            if saves_duplicate_evidence(outcome)
+                && state.duplicate_reproducers_saved < MAX_DUPLICATE_REPRODUCERS_PER_SIGNATURE
+            {
+                state.duplicate_reproducers_saved += 1;
+                true
+            } else {
+                false
+            }
+        };
+
+        if !should_save {
             return None;
         }
-        self.unique_crashes += 1;
 
         eprintln!(
             "[{target}] new crash ({}) [signature: {signature}]",
@@ -376,8 +417,12 @@ impl CrashReporter {
 
     /// Number of distinct crash signatures seen so far.
     pub fn distinct_signatures(&self) -> usize {
-        self.seen.len()
+        self.signatures.len()
     }
+}
+
+fn saves_duplicate_evidence(outcome: &RunOutcome) -> bool {
+    matches!(outcome, RunOutcome::Signal(_) | RunOutcome::Timeout(_))
 }
 
 /// Write the crashing input to `crash_dir` under a name that includes both a
@@ -547,17 +592,91 @@ mod tests {
         assert_eq!(reporter.unique_crashes, 1);
         assert_eq!(reporter.duplicate_crashes, 0);
 
-        // Same signature again (even with different input bytes): deduped.
+        // Same coarse signature with different input bytes: saved as bounded
+        // duplicate evidence, but still counted as a duplicate signature.
         let second = reporter.report("parser", b"deep[[[[", &outcome);
-        assert!(second.is_none(), "duplicate crash should be deduped");
+        let second = second.expect("distinct signal input should be saved");
+        assert_eq!(std::fs::read(&second).unwrap(), b"deep[[[[");
         assert_eq!(reporter.unique_crashes, 1);
         assert_eq!(reporter.duplicate_crashes, 1);
         assert_eq!(reporter.distinct_signatures(), 1);
+
+        // Exact same input reruns still dedup.
+        let repeated = reporter.report("parser", b"deep[[[[", &outcome);
+        assert!(
+            repeated.is_none(),
+            "same signal and same input should be deduped"
+        );
+        assert_eq!(reporter.unique_crashes, 1);
+        assert_eq!(reporter.duplicate_crashes, 2);
 
         // A genuinely different crash: written.
         let other = reporter.report("parser", b"x", &RunOutcome::Panic("nope".into()));
         assert!(other.is_some(), "distinct crash should be saved");
         assert_eq!(reporter.unique_crashes, 2);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reporter_caps_duplicate_signal_reproducers() {
+        let dir =
+            std::env::temp_dir().join(format!("rue-fuzz-signal-cap-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut reporter = CrashReporter::new(Some(dir.clone()));
+        let outcome = RunOutcome::Signal(libc::SIGSEGV);
+
+        assert!(reporter.report("parser", b"first", &outcome).is_some());
+
+        let mut duplicate_reproducers = 0;
+        for i in 0..MAX_DUPLICATE_REPRODUCERS_PER_SIGNATURE {
+            let input = format!("duplicate-{i}");
+            if reporter
+                .report("parser", input.as_bytes(), &outcome)
+                .is_some()
+            {
+                duplicate_reproducers += 1;
+            }
+        }
+
+        assert_eq!(
+            duplicate_reproducers,
+            MAX_DUPLICATE_REPRODUCERS_PER_SIGNATURE
+        );
+        assert!(
+            reporter
+                .report("parser", b"duplicate-overflow", &outcome)
+                .is_none(),
+            "duplicate signal reproducers should be capped"
+        );
+        assert_eq!(reporter.unique_crashes, 1);
+        assert_eq!(
+            reporter.duplicate_crashes,
+            MAX_DUPLICATE_REPRODUCERS_PER_SIGNATURE + 1
+        );
+        assert_eq!(reporter.distinct_signatures(), 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reporter_saves_bounded_timeout_duplicate_evidence() {
+        let dir = std::env::temp_dir().join(format!(
+            "rue-fuzz-timeout-duplicates-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut reporter = CrashReporter::new(Some(dir.clone()));
+        let outcome = RunOutcome::Timeout(5);
+
+        assert!(reporter.report("parser", b"slow-one", &outcome).is_some());
+        let duplicate = reporter.report("parser", b"slow-two", &outcome);
+        let duplicate = duplicate.expect("distinct timeout input should be saved");
+        let meta = std::fs::read_to_string(duplicate.with_extension("txt.meta")).unwrap();
+        assert!(meta.contains("signature: timeout"), "meta: {meta}");
+        assert_eq!(reporter.unique_crashes, 1);
+        assert_eq!(reporter.duplicate_crashes, 1);
+        assert_eq!(reporter.distinct_signatures(), 1);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
