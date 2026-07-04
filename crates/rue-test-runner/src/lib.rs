@@ -19,6 +19,7 @@ use std::fs;
 use std::io::{Read as IoRead, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 /// A section header in a test file.
@@ -1195,11 +1196,64 @@ fn run_golden_ir_test(
     check_golden(&actual, expected, header_name)
 }
 
-/// Helper to read all bytes from a reader.
-fn read_all_bytes<R: IoRead>(mut reader: R) -> Vec<u8> {
+enum DrainMessage {
+    Bytes(Vec<u8>),
+    Done,
+}
+
+/// How long `run_with_timeout` waits for pipe-drain helpers after the child has
+/// exited or been killed.
+///
+/// A well-behaved child closes stdout/stderr promptly, so this normally just
+/// observes `DrainMessage::Done`. If a descendant process inherited a pipe fd
+/// and keeps it open, the reader thread may block forever; bounding collection
+/// keeps the harness moving and returns whatever bytes were already drained.
+const PIPE_DRAIN_FINISH_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// Drain a pipe on a helper thread, sending chunks as they arrive.
+///
+/// Sending chunks incrementally matters: if the reader never reaches EOF
+/// because a daemonized descendant inherited the write end, the caller can
+/// still recover the bytes that were already read instead of blocking on a
+/// thread join.
+fn spawn_pipe_drain<R: IoRead + Send + 'static>(pipe: Option<R>) -> mpsc::Receiver<DrainMessage> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        if let Some(mut reader) = pipe {
+            let mut buf = [0; 8192];
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        if tx.send(DrainMessage::Bytes(buf[..n].to_vec())).is_err() {
+                            return;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        }
+        let _ = tx.send(DrainMessage::Done);
+    });
+    rx
+}
+
+fn collect_drained_bytes(rx: mpsc::Receiver<DrainMessage>, timeout: Duration) -> Vec<u8> {
+    let deadline = Instant::now() + timeout;
     let mut bytes = Vec::new();
-    reader.read_to_end(&mut bytes).unwrap_or_default();
-    bytes
+
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return bytes;
+        }
+
+        match rx.recv_timeout(remaining) {
+            Ok(DrainMessage::Bytes(chunk)) => bytes.extend(chunk),
+            Ok(DrainMessage::Done) | Err(mpsc::RecvTimeoutError::Disconnected) => return bytes,
+            Err(mpsc::RecvTimeoutError::Timeout) => return bytes,
+        }
+    }
 }
 
 /// Marker prefix identifying a timeout failure. A timed-out run is a distinct
@@ -1290,12 +1344,11 @@ pub fn run_with_timeout(
 
     // Drain stdout and stderr on their own threads, started right after spawn so
     // neither pipe can fill and wedge the child (see the RUE-338 note above).
-    let stdout_pipe = child.stdout.take();
-    let stderr_pipe = child.stderr.take();
-    let stdout_reader =
-        std::thread::spawn(move || stdout_pipe.map(read_all_bytes).unwrap_or_default());
-    let stderr_reader =
-        std::thread::spawn(move || stderr_pipe.map(read_all_bytes).unwrap_or_default());
+    // The drains send chunks over channels instead of being joined directly:
+    // if a descendant process inherits a pipe fd and keeps it open after the
+    // direct child exits, a reader thread can block forever waiting for EOF.
+    let stdout_rx = spawn_pipe_drain(child.stdout.take());
+    let stderr_rx = spawn_pipe_drain(child.stderr.take());
 
     // Feed stdin on its own thread so a large input can't block the drain (and
     // vice versa). A program may exit without reading all of its input; a broken
@@ -1313,14 +1366,11 @@ pub fn run_with_timeout(
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
-                // Process finished: its write ends are closed, so the reader
-                // threads hit EOF and finish. Join to collect the fully-drained
-                // output.
-                let stdout = stdout_reader.join().unwrap_or_default();
-                let stderr = stderr_reader.join().unwrap_or_default();
-                if let Some(writer) = stdin_writer {
-                    let _ = writer.join();
-                }
+                // Process finished: collect any fully-drained output, but do
+                // not wait forever if a descendant inherited a pipe fd.
+                let stdout = collect_drained_bytes(stdout_rx, PIPE_DRAIN_FINISH_TIMEOUT);
+                let stderr = collect_drained_bytes(stderr_rx, PIPE_DRAIN_FINISH_TIMEOUT);
+                drop(stdin_writer);
                 return Ok(Output {
                     status,
                     stdout,
@@ -1330,15 +1380,13 @@ pub fn run_with_timeout(
             Ok(None) => {
                 // Still running - check timeout
                 if start.elapsed() > timeout {
-                    // Kill the whole process group, then join the helper threads:
-                    // killing closes the child's fds, so the readers hit EOF and
-                    // the stdin writer's `write_all` gets EPIPE, and none leak.
+                    // Kill the whole process group, then collect whatever the
+                    // drain helpers already captured without waiting forever
+                    // for EOF from an escaped descendant.
                     kill_process_group(&mut child);
-                    let _ = stdout_reader.join();
-                    let _ = stderr_reader.join();
-                    if let Some(writer) = stdin_writer {
-                        let _ = writer.join();
-                    }
+                    let _stdout = collect_drained_bytes(stdout_rx, PIPE_DRAIN_FINISH_TIMEOUT);
+                    let _stderr = collect_drained_bytes(stderr_rx, PIPE_DRAIN_FINISH_TIMEOUT);
+                    drop(stdin_writer);
                     return Err(format!(
                         "{} test execution timed out after {} ms (process group killed)",
                         TIMEOUT_PREFIX,
@@ -2653,6 +2701,28 @@ params = [
             .expect("large stdin echoed to stdout should complete");
         assert!(output.status.success());
         assert_eq!(output.stdout.len(), 200_000);
+    }
+
+    #[test]
+    fn test_run_with_timeout_does_not_join_forever_on_inherited_stdout() {
+        // The direct child exits immediately, but the background process
+        // inherits stdout and keeps the pipe's write end open. A direct
+        // reader-thread join waits for that descendant to exit; bounded drain
+        // collection returns promptly with the bytes already captured.
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg("sleep 5 & printf done");
+
+        let start = Instant::now();
+        let output = run_with_timeout(cmd, Duration::from_secs(10), None)
+            .expect("direct child exits successfully");
+        let elapsed = start.elapsed();
+
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"done");
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "run_with_timeout waited for inherited stdout to close: {elapsed:?}"
+        );
     }
 
     // Tests for the load-time guard requiring every `compile_fail` case to
