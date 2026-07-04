@@ -110,6 +110,13 @@ fn main() -> i32 {
 }
 ```
 
+{{ rule(id="6.1:35", cat="legality-rule") }}
+
+The body of a function **MUST NOT** move out of an `inout` parameter. An `inout`
+parameter may be read, assigned, mutated through its fields or elements, and
+forwarded to another `inout` parameter, but it cannot be returned, stored in
+another owned value, or passed to a by-value parameter in a way that consumes it.
+
 ## Borrow Parameters
 
 {{ rule(id="6.1:22", cat="normative") }}

@@ -93,6 +93,11 @@ Adopt **access-point-based exclusivity, enforced fully statically.**
 - **Allowed** (the whole point): `v.push(v.len())` and friends — an argument that
   merely *reads* the receiver, because the read access ends before the receiver's
   `inout` access begins.
+- A move is a **consuming access**, not an instantaneous read. If one argument
+  loans a root for the call and another argument moves that same root by value,
+  the accesses conflict regardless of their source order; the loan begins at call
+  entry after argument evaluation, and the moved root is no longer owned at that
+  point.
 - **Rejected** — genuine overlap: passing the receiver itself as an
   `inout`/`borrow` argument to its own `inout` method (`s.push(inout s)`); or an
   argument that yields a *live projection* into the object that is still open when
