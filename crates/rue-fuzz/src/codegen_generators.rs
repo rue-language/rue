@@ -1,10 +1,13 @@
-//! Proptest strategies for generating x86-64 MIR instructions.
+//! Proptest strategies for generating machine MIR instructions.
 //!
 //! These generators produce random instruction sequences for fuzzing the
 //! emitter (single instructions and whole-function sequences).
 
 use proptest::prelude::*;
 use proptest::strategy::BoxedStrategy;
+use rue_codegen::aarch64::{
+    Aarch64Inst, Aarch64Mir, Cond as Aarch64Cond, Operand as Aarch64Operand, Reg as Aarch64Reg,
+};
 use rue_codegen::x86_64::{LabelId, Operand, Reg, X86Inst, X86Mir};
 
 /// Generate a random physical register.
@@ -251,6 +254,205 @@ pub fn arb_x86_mir(inst_count: usize, num_labels: usize) -> impl Strategy<Value 
     })
 }
 
+/// Generate a random physical AArch64 register suitable for ordinary ALU ops.
+pub fn arb_aarch64_reg() -> BoxedStrategy<Aarch64Reg> {
+    prop_oneof![
+        Just(Aarch64Reg::X0),
+        Just(Aarch64Reg::X1),
+        Just(Aarch64Reg::X2),
+        Just(Aarch64Reg::X3),
+        Just(Aarch64Reg::X4),
+        Just(Aarch64Reg::X5),
+        Just(Aarch64Reg::X6),
+        Just(Aarch64Reg::X7),
+        Just(Aarch64Reg::X8),
+        Just(Aarch64Reg::X9),
+        Just(Aarch64Reg::X10),
+        Just(Aarch64Reg::X11),
+        Just(Aarch64Reg::X12),
+        Just(Aarch64Reg::X13),
+        Just(Aarch64Reg::X14),
+        Just(Aarch64Reg::X15),
+        Just(Aarch64Reg::X16),
+        Just(Aarch64Reg::X17),
+        Just(Aarch64Reg::X19),
+        Just(Aarch64Reg::X20),
+        Just(Aarch64Reg::X21),
+        Just(Aarch64Reg::X22),
+        Just(Aarch64Reg::X23),
+        Just(Aarch64Reg::X24),
+        Just(Aarch64Reg::X25),
+        Just(Aarch64Reg::X26),
+        Just(Aarch64Reg::X27),
+        Just(Aarch64Reg::X28),
+    ]
+    .boxed()
+}
+
+/// Generate a physical AArch64 operand.
+pub fn arb_aarch64_physical_operand() -> BoxedStrategy<Aarch64Operand> {
+    arb_aarch64_reg().prop_map(Aarch64Operand::Physical).boxed()
+}
+
+/// Generate an AArch64 immediate accepted by ADD/SUB immediate encoding.
+pub fn arb_aarch64_add_sub_imm() -> impl Strategy<Value = i32> {
+    prop_oneof![
+        Just(0i32),
+        0i32..=4095,
+        (1i32..=4095).prop_map(|n| n << 12),
+        0i32..(1 << 20),
+    ]
+}
+
+/// Generate an AArch64 memory offset that avoids intentional large-offset asserts.
+pub fn arb_aarch64_mem_offset() -> impl Strategy<Value = i32> {
+    prop_oneof![
+        (-256i32..=255),
+        (0i32..4096).prop_map(|n| n * 8),
+        Just(0i32),
+    ]
+}
+
+/// Generate a random AArch64 condition code.
+pub fn arb_aarch64_cond() -> BoxedStrategy<Aarch64Cond> {
+    prop_oneof![
+        Just(Aarch64Cond::Eq),
+        Just(Aarch64Cond::Ne),
+        Just(Aarch64Cond::Lt),
+        Just(Aarch64Cond::Gt),
+        Just(Aarch64Cond::Le),
+        Just(Aarch64Cond::Ge),
+        Just(Aarch64Cond::Hi),
+        Just(Aarch64Cond::Ls),
+        Just(Aarch64Cond::Hs),
+        Just(Aarch64Cond::Lo),
+    ]
+    .boxed()
+}
+
+/// Generate a single AArch64 instruction with physical registers.
+pub fn arb_aarch64_inst_physical() -> BoxedStrategy<Aarch64Inst> {
+    prop_oneof![
+        (arb_aarch64_physical_operand(), arb_imm64())
+            .prop_map(|(dst, imm)| Aarch64Inst::MovImm { dst, imm }),
+        (
+            arb_aarch64_physical_operand(),
+            arb_aarch64_physical_operand(),
+        )
+            .prop_map(|(dst, src)| Aarch64Inst::MovRR { dst, src }),
+        (
+            arb_aarch64_physical_operand(),
+            arb_aarch64_reg(),
+            arb_aarch64_mem_offset(),
+        )
+            .prop_map(|(dst, base, offset)| Aarch64Inst::Ldr { dst, base, offset }),
+        (
+            arb_aarch64_physical_operand(),
+            arb_aarch64_reg(),
+            arb_aarch64_mem_offset(),
+        )
+            .prop_map(|(src, base, offset)| Aarch64Inst::Str { src, base, offset }),
+        (
+            arb_aarch64_physical_operand(),
+            arb_aarch64_physical_operand(),
+            0u8..=63,
+        )
+            .prop_map(|(dst, src, imm)| Aarch64Inst::LslImm { dst, src, imm }),
+        (
+            arb_aarch64_physical_operand(),
+            arb_aarch64_physical_operand(),
+            0u8..=31,
+        )
+            .prop_map(|(dst, src, imm)| Aarch64Inst::Lsl32Imm { dst, src, imm }),
+        (
+            arb_aarch64_physical_operand(),
+            arb_aarch64_physical_operand(),
+            0u8..=31,
+        )
+            .prop_map(|(dst, src, imm)| Aarch64Inst::Lsr32Imm { dst, src, imm }),
+        (
+            arb_aarch64_physical_operand(),
+            arb_aarch64_physical_operand(),
+            0u8..=31,
+        )
+            .prop_map(|(dst, src, imm)| Aarch64Inst::Asr32Imm { dst, src, imm }),
+        (
+            arb_aarch64_physical_operand(),
+            arb_aarch64_physical_operand(),
+            arb_aarch64_physical_operand(),
+        )
+            .prop_map(|(dst, src1, src2)| Aarch64Inst::AddRR { dst, src1, src2 }),
+        (
+            arb_aarch64_physical_operand(),
+            arb_aarch64_physical_operand(),
+            arb_aarch64_physical_operand(),
+        )
+            .prop_map(|(dst, src1, src2)| Aarch64Inst::SubRR { dst, src1, src2 }),
+        (
+            arb_aarch64_physical_operand(),
+            arb_aarch64_physical_operand(),
+            arb_aarch64_add_sub_imm(),
+        )
+            .prop_map(|(dst, src, imm)| Aarch64Inst::AddImm { dst, src, imm }),
+        (
+            arb_aarch64_physical_operand(),
+            arb_aarch64_physical_operand(),
+            arb_aarch64_add_sub_imm(),
+        )
+            .prop_map(|(dst, src, imm)| Aarch64Inst::SubImm { dst, src, imm }),
+        (
+            arb_aarch64_physical_operand(),
+            arb_aarch64_physical_operand(),
+            arb_aarch64_physical_operand(),
+        )
+            .prop_map(|(dst, src1, src2)| Aarch64Inst::MulRR { dst, src1, src2 }),
+        (
+            arb_aarch64_physical_operand(),
+            arb_aarch64_physical_operand(),
+            arb_aarch64_physical_operand(),
+        )
+            .prop_map(|(dst, src1, src2)| Aarch64Inst::AndRR { dst, src1, src2 }),
+        (
+            arb_aarch64_physical_operand(),
+            arb_aarch64_physical_operand(),
+            arb_aarch64_physical_operand(),
+        )
+            .prop_map(|(dst, src1, src2)| Aarch64Inst::OrrRR { dst, src1, src2 }),
+        (
+            arb_aarch64_physical_operand(),
+            arb_aarch64_physical_operand(),
+            arb_aarch64_physical_operand(),
+        )
+            .prop_map(|(dst, src1, src2)| Aarch64Inst::EorRR { dst, src1, src2 }),
+        (
+            arb_aarch64_physical_operand(),
+            arb_aarch64_physical_operand(),
+        )
+            .prop_map(|(dst, src)| Aarch64Inst::MvnRR { dst, src }),
+        (
+            arb_aarch64_physical_operand(),
+            arb_aarch64_physical_operand(),
+        )
+            .prop_map(|(src1, src2)| Aarch64Inst::CmpRR { src1, src2 }),
+        (arb_aarch64_physical_operand(), arb_aarch64_cond())
+            .prop_map(|(dst, cond)| Aarch64Inst::Cset { dst, cond }),
+        Just(Aarch64Inst::Ret),
+        Just(Aarch64Inst::Brk),
+    ]
+    .boxed()
+}
+
+/// Generate an Aarch64Mir with physical-register instruction sequences.
+pub fn arb_aarch64_mir(inst_count: usize) -> impl Strategy<Value = Aarch64Mir> {
+    prop::collection::vec(arb_aarch64_inst_physical(), inst_count).prop_map(|insts| {
+        let mut mir = Aarch64Mir::new();
+        for inst in insts {
+            mir.push(inst);
+        }
+        mir
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -287,6 +489,27 @@ mod tests {
             let mir = arb_x86_mir(10, 2).new_tree(&mut runner).unwrap().current();
             // Verify it has the expected structure
             assert!(mir.instructions().len() >= 10);
+        }
+    }
+
+    #[test]
+    fn test_arb_aarch64_inst_physical_generates_valid_insts() {
+        let mut runner = TestRunner::default();
+        for _ in 0..50 {
+            let inst = arb_aarch64_inst_physical()
+                .new_tree(&mut runner)
+                .unwrap()
+                .current();
+            let _ = format!("{}", inst);
+        }
+    }
+
+    #[test]
+    fn test_arb_aarch64_mir_generates_valid_mir() {
+        let mut runner = TestRunner::default();
+        for _ in 0..10 {
+            let mir = arb_aarch64_mir(10).new_tree(&mut runner).unwrap().current();
+            assert_eq!(mir.instructions().len(), 10);
         }
     }
 }
