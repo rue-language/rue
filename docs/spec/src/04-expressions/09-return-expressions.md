@@ -10,7 +10,7 @@ template = "spec/page.html"
 
 A return expression exits the current function and provides its return value.
 
-{{ rule(id="4.9:2", cat="normative") }}
+{{ rule(id="4.9:2", cat="syntax") }}
 
 ```ebnf
 return_expr = "return" expression? ;
@@ -22,11 +22,15 @@ If the expression is omitted, it is equivalent to `return ()`.
 
 {{ rule(id="4.9:4", cat="legality-rule") }}
 
-The expression following `return` (or the implicit `()`) **MUST** have a type compatible with the function's declared return type.
+The operand of `return` — the written expression, or the `()` of the omitted form (4.9:3) — **MUST** have the function's declared return type. As everywhere, the one admitted coercion is from the never type (3.4:3); no other type difference is accepted.
 
 {{ rule(id="4.9:5", cat="normative") }}
 
-A return expression has the never type `!` because it never produces a local value.
+A return expression has the never type `!` (core calculus `docs/formal/01-core-calculus.md` §5.7, rule `(Return)`).
+
+{{ rule(id="4.9:11", cat="informative") }}
+
+`return` transfers control away instead of yielding a value to its own surrounding context; 3.4:2 lists the control-transfer forms that have type `!`.
 
 {{ rule(id="4.9:6") }}
 
@@ -43,13 +47,13 @@ fn main() -> i32 {
 }
 ```
 
-{{ rule(id="4.9:7", cat="normative") }}
+{{ rule(id="4.9:7", cat="dynamic-semantics") }}
 
-When a return expression is evaluated, the function immediately returns the value of the expression. No further code in the function is executed.
+When a return expression is evaluated, its operand's value becomes the function's return value and control leaves the function: the live bindings of the function's still-open scopes are dropped (3.9:18), and no further expression in the function is evaluated (core calculus `docs/formal/01-core-calculus.md` §6.9, rule `(D-Return)`).
 
 {{ rule(id="4.9:8", cat="normative") }}
 
-Because return has type `!`, it can appear in contexts that expect any type.
+Because a return expression has type `!`, it may appear in any context where a value of any type is expected (3.4:4).
 
 {{ rule(id="4.9:9") }}
 

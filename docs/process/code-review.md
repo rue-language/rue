@@ -49,7 +49,7 @@ Are changes adequately tested?
 
 If the change affects language semantics:
 - Is `docs/spec/src/` updated?
-- Do spec paragraphs have proper IDs (`r[X.Y:Z#category]`)?
+- Do spec paragraphs have proper ID markers (`{{ rule(id="X.Y:Z", cat="category") }}`)? Does the prose follow [the spec prose rubric](spec-prose-rubric.md)?
 - Do spec tests reference the new paragraphs?
 - Will traceability check pass (100% coverage required)?
 
