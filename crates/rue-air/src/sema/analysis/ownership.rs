@@ -580,4 +580,178 @@ impl<'a> Sema<'a> {
         }
         Ok(air_args)
     }
+
+    /// Analyze call arguments, materializing a fat-pointer slice value for any
+    /// argument whose parameter is a slice type (ADR-0043, RUE-322).
+    ///
+    /// `borrow arr` (where `arr: [T; N]`) passed to a `borrow s: [T]` parameter
+    /// is coerced to a by-value slice `{ptr: @raw(arr[0]), len: N}`, which flows
+    /// through the existing by-value aggregate ABI (the parameter is by-value —
+    /// see [`crate::sema::Sema`] parameter setup). Non-slice parameters use the
+    /// ordinary [`Self::analyze_call_args`] argument path unchanged.
+    pub(crate) fn analyze_call_args_coerced(
+        &mut self,
+        air: &mut Air,
+        args: &[RirCallArg],
+        param_types: &[Type],
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<Vec<AirCallArg>> {
+        let mut air_args = Vec::with_capacity(args.len());
+        for (i, arg) in args.iter().enumerate() {
+            let is_slice_param = param_types
+                .get(i)
+                .is_some_and(|pt| self.slice_element_type(*pt).is_some());
+            if is_slice_param {
+                let slice_ty = param_types[i];
+                let value = self.coerce_borrow_array_to_slice(air, arg, slice_ty, ctx)?;
+                air_args.push(AirCallArg {
+                    value,
+                    // The fat pointer is passed BY VALUE (multi-slot aggregate).
+                    mode: AirArgMode::Normal,
+                });
+                continue;
+            }
+
+            let byref_root = if arg.is_inout() || arg.is_borrow() {
+                let root = require_byref_place_arg(self.rir, arg)?;
+                if arg.is_inout()
+                    && ctx
+                        .params
+                        .iter()
+                        .any(|p| p.name == root && p.mode == RirParamMode::Borrow)
+                {
+                    return Err(CompileError::new(
+                        ErrorKind::MutateBorrowedValue {
+                            variable: self.interner.resolve(&root).to_string(),
+                        },
+                        self.rir.get(arg.value).span,
+                    ));
+                }
+                Some(root)
+            } else {
+                None
+            };
+            let prev_byref_root = std::mem::replace(&mut ctx.byref_arg_root, byref_root);
+            let arg_result = self.analyze_inst(air, arg.value, ctx);
+            ctx.byref_arg_root = prev_byref_root;
+            let arg_result = arg_result?;
+            air_args.push(AirCallArg {
+                value: arg_result.air_ref,
+                mode: Self::convert_arg_mode(arg.mode),
+            });
+        }
+        Ok(air_args)
+    }
+
+    /// Build a by-value slice `{ptr, len}` value from a `borrow arr` argument
+    /// (ADR-0043, RUE-322). The array must be a place whose element type matches
+    /// the slice's; the pointer word is `@raw(arr[0])` and the length word is
+    /// the array's compile-time length `N`.
+    fn coerce_borrow_array_to_slice(
+        &mut self,
+        air: &mut Air,
+        arg: &RirCallArg,
+        slice_ty: Type,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AirRef> {
+        use crate::inst::{AirInstData, AirProjection};
+
+        let span = self.rir.get(arg.value).span;
+        let slice_struct_id = slice_ty
+            .as_struct()
+            .expect("slice type is a synthetic struct");
+        let slice_elem = self
+            .slice_element_type(slice_ty)
+            .expect("slice type has an element");
+        let ptr_ty = self.type_pool.struct_def(slice_struct_id).fields[0].ty;
+
+        // A slice argument must be `borrow arr` (the shared form; `inout` slices
+        // are a later phase). The array is borrowed (address taken), not moved.
+        if !arg.is_borrow() {
+            return Err(CompileError::new(ErrorKind::BorrowKeywordMissing, span));
+        }
+        let root = require_byref_place_arg(self.rir, arg)?;
+        let prev_byref_root = ctx.byref_arg_root.replace(root);
+        let trace = self.try_trace_place(arg.value, air, ctx);
+        ctx.byref_arg_root = prev_byref_root;
+        let trace = trace?.ok_or_else(|| CompileError::new(ErrorKind::BorrowNonLvalue, span))?;
+
+        let arr_ty = trace.result_type();
+
+        // Forwarding an existing slice (`inner(borrow s)` where `s: [T]`): the
+        // fat pointer is already built, so read it by value (a slice is `@copy`)
+        // and pass it through — no re-materialization.
+        if arr_ty == slice_ty {
+            let projs: Vec<AirProjection> = trace.projections.iter().map(|p| p.proj).collect();
+            let place_ref = air.make_place(trace.base, projs);
+            let val = air.add_inst(AirInst {
+                data: AirInstData::PlaceRead { place: place_ref },
+                ty: slice_ty,
+                span,
+            });
+            return Ok(val);
+        }
+
+        let (arr_elem, arr_len) = match arr_ty.as_array() {
+            Some(id) => self.type_pool.array_def(id),
+            None => {
+                // Only whole-array borrow-to-slice is supported in Phase 1.
+                return Err(self.type_mismatch_error(slice_ty, arr_ty, span));
+            }
+        };
+        if arr_elem != slice_elem {
+            return Err(self.type_mismatch_error(slice_ty, arr_ty, span));
+        }
+
+        // ptr word = @raw(arr[0]) : ptr const T. Build a place read of element 0
+        // and take its address, exactly as source `@raw(arr[0])` would.
+        let zero_ref = air.add_inst(AirInst {
+            data: AirInstData::Const(0),
+            ty: Type::U64,
+            span,
+        });
+        let mut projs: Vec<AirProjection> = trace.projections.iter().map(|p| p.proj).collect();
+        projs.push(AirProjection::Index {
+            array_type: arr_ty,
+            index: zero_ref,
+        });
+        let place_ref = air.make_place(trace.base, projs);
+        let elem0_read = air.add_inst(AirInst {
+            data: AirInstData::PlaceRead { place: place_ref },
+            ty: arr_elem,
+            span,
+        });
+        let raw_args = air.add_extra(&[elem0_read.as_u32()]);
+        let ptr_ref = air.add_inst(AirInst {
+            data: AirInstData::Intrinsic {
+                name: self.known.raw,
+                args_start: raw_args,
+                args_len: 1,
+            },
+            ty: ptr_ty,
+            span,
+        });
+
+        // len word = N (compile-time array length).
+        let len_ref = air.add_inst(AirInst {
+            data: AirInstData::Const(arr_len),
+            ty: Type::U64,
+            span,
+        });
+
+        // Materialize the fat pointer `{ptr, len}` struct value.
+        let fields = air.add_extra(&[ptr_ref.as_u32(), len_ref.as_u32()]);
+        let source_order = air.add_extra(&[0u32, 1u32]);
+        let slice_val = air.add_inst(AirInst {
+            data: AirInstData::StructInit {
+                struct_id: slice_struct_id,
+                fields_start: fields,
+                fields_len: 2,
+                source_order_start: source_order,
+            },
+            ty: slice_ty,
+            span,
+        });
+        Ok(slice_val)
+    }
 }

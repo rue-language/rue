@@ -2,13 +2,12 @@
 # RUE-322). A slice `[T]` is a second-class fat-pointer view (ADR-0037): valid
 # only in argument position. These cases drive the real `rue` binary with
 # `--preview slices` on real files and pin the escape-family diagnostics
-# (E0487 return / E0488 aggregate field / E0489 let-or-const) plus the E0486
-# "runtime not yet implemented" gate for the one legal position (a parameter).
+# (E0487 return / E0488 aggregate field / E0489 let-or-const) and confirm the
+# one legal position (a parameter) is accepted.
 #
-# The fat-pointer runtime (ABI + slice index/len codegen on both backends) is a
-# follow-up sub-phase; until it lands, a slice *parameter* compiles no further
-# than E0486, so there is no runtime behaviour (trap exit code, sums) to pin
-# here yet.
+# The fat-pointer runtime (the by-value `{ptr, len}` ABI plus slice `.len()` and
+# bounds-checked read-indexing on both backends) has landed; its end-to-end
+# runtime behaviour (sums, the OOB trap) is pinned in slices_mvp.toml.
 
 [section]
 id = "cli.slice_second_class"
@@ -50,19 +49,19 @@ fn main() -> i32 { let s: [i32] = 0; 0 }
 compile_fail = true
 error_contains = ["E0489", "can only name a function parameter"]
 
-# Argument position (the one legal spot): resolves, but the runtime is not yet
-# implemented, so it stops at E0486 rather than reaching an unfinished codegen
-# path or ICE-ing.
+# Argument position (the one legal spot): a slice parameter compiles and runs
+# (ADR-0043 Phase 1 fat-pointer runtime, RUE-322). The end-to-end runtime
+# behaviour — `.len()`, bounds-checked `s[i]`, the OOB trap — is pinned in
+# slices_mvp.toml; here we only confirm the legal position is accepted.
 [[case]]
-name = "slice_param_runtime_not_yet_implemented_e0486"
-description = "A slice parameter is the one legal position; it reports E0486 until the fat-pointer runtime lands."
+name = "slice_param_position_compiles"
+description = "A slice parameter is the one legal position; it compiles and runs."
 args = ["main.rue", "--preview", "slices", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 fn sum(borrow s: [i32]) -> i32 { 0 }
 fn main() -> i32 { 0 }
 """ }]
-compile_fail = true
-error_contains = ["E0486", "not yet fully implemented"]
+exit_code = 0
 
 # Without the preview flag, the same parameter is gated at E1100.
 [[case]]

@@ -1,21 +1,16 @@
-# ADR-0043 Phase 1 slice runtime — executable acceptance tests (RUE-322).
+# ADR-0043 Phase 1 slice runtime — executable regression tests (RUE-322).
 #
-# The slice front-end (parser + `--preview slices` gate + E0486 stub) and the
-# second-class escape enforcement (E0487-E0489) have landed, but the RUNTIME —
-# the {ptr, len} fat-pointer ABI, `borrow arr` -> slice materialization, slice
-# `.len()`, and bounds-checked read-indexing `s[i]` on BOTH backends — is not
-# yet implemented, so `borrow s: [T]` in argument position still reports E0486
-# ("slice types are not yet fully implemented").
+# The second-class slice `[T]` is a two-word fat pointer `{ptr, len}` modeled as
+# a synthetic `@copy` struct (so it reuses the multi-slot aggregate ABI, struct
+# field reads, and by-value parameter passing — no new codegen, both backends).
+# A `borrow s: [T]` parameter is passed by value; `borrow arr` at the call site
+# materializes `{ptr: @raw(arr[0]), len: N}`; `s.len()` reads the runtime `len`
+# word; and `s[i]` lowers to `@ptr_read(@ptr_offset(ptr, i))` guarded by a
+# runtime bounds check that traps (exit 101) like array indexing.
 #
-# These cases pin the exact end-to-end behavior the MVP runtime must produce.
-# They are `known_bug = "RUE-322"` xfails today (the compile fails cleanly with
-# E0486); when the fat-pointer runtime lands, drop the `known_bug` markers and
-# they become the runtime's regression tests. See the ABI analysis in the
-# RUE-322 worklog: the blockers are (1) `borrow` currently passes a single
-# pointer, not a 2-word aggregate; (2) `emit_bounds_check` takes a compile-time
-# constant length, but a slice length is runtime; (3) array indexing lowers via
-# `Place` projections tied to a compile-time `array_type`, whereas a slice index
-# is a raw-pointer load off the fat pointer's `ptr` word.
+# Deferred to later phases (still reported cleanly, not runnable here):
+# `inout [T]` write-slices, range slicing `x[a..b]`, ArrayBuf/Vec slices, and
+# returning/storing a slice (E0487-E0489 second-class enforcement).
 
 [section]
 id = "cli.slices"
@@ -26,7 +21,6 @@ description = "borrow-a-whole-array slice parameter: len() and bounds-checked re
 # through a `borrow s: [i32]` slice parameter using `s.len()` and `s[i]`.
 [[case]]
 name = "slice_param_sum_len_index"
-known_bug = "RUE-322"
 files = [{ path = "main.rue", source = """
 fn sum(borrow s: [i32]) -> i32 {
     let mut t = 0;
@@ -46,10 +40,9 @@ args = ["main.rue", "--preview", "slices", "-o", "prog"]
 exit_code = 60
 
 # Out-of-bounds read-index through a slice parameter must trap at runtime with
-# the same abort discipline as array indexing (`__rue_bounds_check`, exit 101).
+# the same abort discipline as array indexing (exit 101).
 [[case]]
 name = "slice_param_index_out_of_bounds_traps"
-known_bug = "RUE-322"
 files = [{ path = "main.rue", source = """
 fn get(borrow s: [i32], i: u64) -> i32 {
     s[i]
@@ -61,3 +54,113 @@ fn main() -> i32 {
 """ }]
 args = ["main.rue", "--preview", "slices", "-o", "prog"]
 exit_code = 101
+
+# A constant read-index resolves the element position (discriminating value: the
+# middle element 5 catches an off-by-one or wrong-stride lowering).
+[[case]]
+name = "slice_param_constant_index"
+files = [{ path = "main.rue", source = """
+fn second(borrow s: [i32]) -> i32 {
+    s[1]
+}
+fn main() -> i32 {
+    let a: [i32; 4] = [3, 5, 7, 9];
+    second(borrow a)
+}
+""" }]
+args = ["main.rue", "--preview", "slices", "-o", "prog"]
+exit_code = 5
+
+# `.len()` returns the runtime length word (whole-array borrow -> N).
+[[case]]
+name = "slice_param_len"
+files = [{ path = "main.rue", source = """
+fn ln(borrow s: [i32]) -> i32 {
+    @intCast(s.len())
+}
+fn main() -> i32 {
+    let a: [i32; 6] = [9, 9, 9, 9, 9, 9];
+    ln(borrow a)
+}
+""" }]
+args = ["main.rue", "--preview", "slices", "-o", "prog"]
+exit_code = 6
+
+# A `[u8]` slice exercises a different element type: the pointer field is
+# `ptr const u8` and `@ptr_offset` stride must still land on each element
+# (sum 1+2+3+4 = 10).
+[[case]]
+name = "slice_param_u8_element"
+files = [{ path = "main.rue", source = """
+fn sum(borrow s: [u8]) -> i32 {
+    let mut t: i32 = 0;
+    let mut i: u64 = 0;
+    while i < s.len() {
+        t = t + @intCast(s[i]);
+        i = i + 1;
+    }
+    t
+}
+fn main() -> i32 {
+    let a: [u8; 4] = [1, 2, 3, 4];
+    sum(borrow a)
+}
+""" }]
+args = ["main.rue", "--preview", "slices", "-o", "prog"]
+exit_code = 10
+
+# A slice parameter can be forwarded to another slice parameter (`borrow s`
+# where `s` is itself a slice): the fat pointer is passed through by value
+# rather than re-materialized.
+[[case]]
+name = "slice_param_forwarding"
+files = [{ path = "main.rue", source = """
+fn sum(borrow s: [i32]) -> i32 {
+    let mut t = 0;
+    let mut i: u64 = 0;
+    while i < s.len() {
+        t = t + s[i];
+        i = i + 1;
+    }
+    t
+}
+fn outer(borrow s: [i32]) -> i32 {
+    sum(borrow s)
+}
+fn main() -> i32 {
+    let a: [i32; 3] = [10, 20, 30];
+    outer(borrow a)
+}
+""" }]
+args = ["main.rue", "--preview", "slices", "-o", "prog"]
+exit_code = 60
+
+# Passing an array whose element type does not match the slice element type is
+# a clean compile error (the coercion validates element compatibility, since
+# inference relaxes the whole-type equality for slice parameters).
+[[case]]
+name = "slice_param_element_mismatch"
+files = [{ path = "main.rue", source = """
+fn h(borrow s: [u8]) -> i32 { 0 }
+fn main() -> i32 {
+    let a: [i32; 3] = [1, 2, 3];
+    h(borrow a)
+}
+""" }]
+args = ["main.rue", "--preview", "slices", "-o", "prog"]
+compile_fail = true
+error_contains = ["type mismatch"]
+
+# The slice surface stays gated behind `--preview slices`.
+[[case]]
+name = "slice_param_requires_preview"
+files = [{ path = "main.rue", source = """
+fn ln(borrow s: [i32]) -> i32 { @intCast(s.len()) }
+fn main() -> i32 {
+    let a: [i32; 2] = [1, 2];
+    ln(borrow a)
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["requires preview feature"]

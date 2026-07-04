@@ -21,6 +21,26 @@ impl<'a> Sema<'a> {
         let receiver_var = self.extract_root_variable(receiver);
         let method_name_str = self.interner.resolve(&method).to_string();
 
+        // Slice methods (ADR-0043, RUE-322): `s.len()` reads the fat pointer's
+        // runtime `len` word. Detected from the receiver's inferred type so it
+        // is intercepted before user/builtin method resolution.
+        if ctx
+            .resolved_types
+            .get(&receiver)
+            .copied()
+            .is_some_and(|ty| self.slice_element_type(ty).is_some())
+        {
+            return self.analyze_slice_method(
+                air,
+                receiver,
+                receiver_var,
+                &method_name_str,
+                args.len(),
+                span,
+                ctx,
+            );
+        }
+
         // Check if this is a builtin (String) mutation method. Gate the
         // name-only match on the receiver's resolved type actually being the
         // builtin: a user struct method that merely shares a name with a String
