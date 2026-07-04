@@ -515,6 +515,24 @@ impl<'a> CfgLowerContext<'a> {
         }
     }
 
+    /// Check if a type has string byte-content equality semantics.
+    ///
+    /// `StrBuf` is the growable string type. The `string_trio` preview also
+    /// represents `str` and `Str(N)` as synthetic structs, but equality for
+    /// those types is still byte-content equality, not structural pointer/len
+    /// equality.
+    pub fn is_string_like_for_equality(&self, ty: Type) -> bool {
+        match ty.kind() {
+            TypeKind::Struct(struct_id) => {
+                let struct_def = self.type_pool.struct_def(struct_id);
+                self.is_builtin_string(ty)
+                    || struct_def.name == "str"
+                    || (struct_def.name.starts_with("Str(") && struct_def.name.ends_with(')'))
+            }
+            _ => false,
+        }
+    }
+
     /// Get the builtin operator runtime function for a type and operation.
     ///
     /// Returns `Some((runtime_fn, invert_result))` if the type has a builtin
