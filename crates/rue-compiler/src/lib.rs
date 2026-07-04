@@ -348,19 +348,6 @@ pub struct MergedProgram {
     pub interner: ThreadedRodeo,
 }
 
-/// Result of validating and generating RIR from multiple parsed files.
-///
-/// This is the parallel-optimized path: RIR is generated per-file in parallel,
-/// then merged. Used by `compile_multi_file_with_options`.
-pub struct ValidatedProgram {
-    /// The merged RIR from all files.
-    pub rir: Rir,
-    /// Merged interner containing all symbols from all files.
-    pub interner: ThreadedRodeo,
-    /// Maps FileId to source file path (for module resolution).
-    pub file_paths: std::collections::HashMap<FileId, String>,
-}
-
 /// Information about a symbol definition for duplicate detection.
 #[derive(Debug, Clone)]
 struct SymbolDef {
@@ -393,9 +380,8 @@ pub(crate) struct DuplicateSymbolCheck {
 /// one error pointing at the redefinition, with a label at the first
 /// definition.
 ///
-/// This is the single source of truth for duplicate-symbol detection — it is
-/// shared by [`merge_symbols`], [`validate_and_generate_rir_parallel`], and
-/// `CompilationUnit::parse`.
+/// This is the single source of truth for duplicate-symbol detection, shared
+/// by [`merge_symbols`] and `CompilationUnit::parse`.
 pub(crate) fn detect_duplicate_symbols<'a>(
     files: impl IntoIterator<Item = (&'a str, &'a Ast)>,
     interner: &ThreadedRodeo,
@@ -579,89 +565,6 @@ pub fn merge_symbols(program: ParsedProgram) -> MultiErrorResult<MergedProgram> 
     Ok(MergedProgram {
         ast: Ast { items: all_items },
         interner: program.interner,
-    })
-}
-
-/// Validate symbols and generate RIR in parallel for multi-file compilation.
-///
-/// This is the optimized path for multi-file compilation:
-/// 1. Validates that there are no duplicate symbol definitions across files
-/// 2. Generates RIR for each file in parallel using Rayon
-/// 3. Merges the per-file RIRs into a single RIR with renumbered references
-///
-/// This is more efficient than the sequential path for projects with many files,
-/// as RIR generation is embarrassingly parallel (no cross-file dependencies
-/// at the RIR level).
-///
-/// # Arguments
-///
-/// * `program` - The parsed program containing all files and shared interner
-///
-/// # Returns
-///
-/// A `ValidatedProgram` containing the merged RIR, or errors if duplicates are found.
-pub fn validate_and_generate_rir_parallel(
-    program: ParsedProgram,
-) -> MultiErrorResult<ValidatedProgram> {
-    use std::collections::HashMap;
-
-    let _span = info_span!(
-        "validate_and_generate_rir",
-        file_count = program.files.len()
-    )
-    .entered();
-
-    // Step 0: Build file_id -> path mapping for module resolution
-    let file_paths: HashMap<FileId, String> = program
-        .files
-        .iter()
-        .map(|f| (f.file_id, f.path.clone()))
-        .collect();
-
-    // Step 1: Validate symbols for duplicates (same logic as merge_symbols)
-    let check = detect_duplicate_symbols(
-        program.files.iter().map(|f| (f.path.as_str(), &f.ast)),
-        &program.interner,
-    );
-
-    if !check.errors.is_empty() {
-        return Err(CompileErrors::from(check.errors));
-    }
-
-    info!(
-        function_count = check.function_count,
-        struct_count = check.struct_count,
-        enum_count = check.enum_count,
-        "symbol validation complete"
-    );
-
-    // Step 2: Generate RIR per-file in parallel
-    let interner = program.interner;
-    let rirs: Vec<Rir> = {
-        let _span = info_span!("parallel_astgen").entered();
-
-        program
-            .files
-            .par_iter()
-            .map(|file| {
-                let astgen = AstGen::new(&file.ast, &interner);
-                astgen.generate()
-            })
-            .collect()
-    };
-
-    // Step 3: Merge RIRs
-    let rir = {
-        let _span = info_span!("merge_rirs", rir_count = rirs.len()).entered();
-        Rir::merge(&rirs)
-    };
-
-    info!(instruction_count = rir.len(), "RIR generation complete");
-
-    Ok(ValidatedProgram {
-        rir,
-        interner,
-        file_paths,
     })
 }
 
@@ -977,163 +880,6 @@ pub fn compile_frontend_from_ast_with_file_paths(
         strings: sema_output.strings,
         warnings,
     })
-}
-
-/// Compile from already-generated RIR through remaining frontend phases.
-///
-/// This runs: semantic analysis → CFG construction → optimization.
-/// This is the optimized path used by parallel multi-file compilation, where
-/// RIR has already been generated per-file in parallel and merged.
-///
-/// # Arguments
-///
-/// * `rir` - The RIR (already merged if from multiple files)
-/// * `interner` - The shared string interner
-/// * `opt_level` - Optimization level
-/// * `preview_features` - Enabled preview features
-///
-/// # Returns
-///
-/// A `CompileStateFromRir` containing the compilation state.
-pub fn compile_frontend_from_rir_with_options(
-    rir: Rir,
-    interner: ThreadedRodeo,
-    opt_level: OptLevel,
-    preview_features: &PreviewFeatures,
-) -> MultiErrorResult<CompileStateFromRir> {
-    compile_frontend_from_rir_with_file_paths(
-        rir,
-        interner,
-        opt_level,
-        preview_features,
-        std::collections::HashMap::new(),
-    )
-}
-
-/// Compile frontend from RIR with file paths for module resolution.
-///
-/// This is the full version that accepts file_id -> path mapping for
-/// multi-file compilation with module imports.
-pub fn compile_frontend_from_rir_with_file_paths(
-    rir: Rir,
-    interner: ThreadedRodeo,
-    opt_level: OptLevel,
-    preview_features: &PreviewFeatures,
-    file_paths: std::collections::HashMap<FileId, String>,
-) -> MultiErrorResult<CompileStateFromRir> {
-    // Semantic analysis (RIR to AIR)
-    let sema_output = {
-        let _span = info_span!("sema").entered();
-        let mut sema = Sema::new(&rir, &interner, preview_features.clone());
-        sema.set_file_paths(file_paths);
-        let output = sema.analyze_all()?;
-        info!(
-            function_count = output.functions.len(),
-            struct_count = output.type_pool.stats().struct_count,
-            "semantic analysis complete"
-        );
-        output
-    };
-
-    // Synthesize drop glue functions for structs that need them
-    let drop_glue_functions = drop_glue::synthesize_drop_glue(&sema_output.type_pool);
-
-    // Combine user functions with synthesized drop glue functions
-    // Filter out comptime-only functions (those returning `type`) as they don't generate runtime code
-    let all_functions: Vec<_> = sema_output
-        .functions
-        .into_iter()
-        .filter(|f| f.air.return_type() != Type::COMPTIME_TYPE)
-        .chain(drop_glue_functions)
-        .collect();
-
-    // Build CFGs from AIR (one per function) in parallel, collecting warnings
-    let (functions, warnings) = {
-        let _span = info_span!("cfg_construction").entered();
-
-        // Build CFGs in parallel - each function is independent
-        let results: Vec<Result<(FunctionWithCfg, Vec<CompileWarning>), CompileErrors>> =
-            all_functions
-                .into_par_iter()
-                .map(|func| {
-                    let cfg_output = CfgBuilder::build(
-                        &func.air,
-                        func.num_locals,
-                        func.num_param_slots,
-                        &func.name,
-                        &sema_output.type_pool,
-                        func.param_modes.clone(),
-                        &interner,
-                    );
-
-                    // A non-empty `errors` means the CFG builder hit malformed
-                    // AIR (an internal compiler error, RUE-7). Abort before
-                    // optimizing the discarded CFG rather than working on it.
-                    if !cfg_output.errors.is_empty() {
-                        let mut errs = CompileErrors::new();
-                        for e in cfg_output.errors {
-                            errs.push(e);
-                        }
-                        return Err(errs);
-                    }
-
-                    // Apply optimizations to the CFG
-                    let mut cfg = cfg_output.cfg;
-                    rue_cfg::opt::optimize(&mut cfg, opt_level);
-
-                    Ok((
-                        FunctionWithCfg {
-                            analyzed: func,
-                            cfg,
-                        },
-                        cfg_output.warnings,
-                    ))
-                })
-                .collect();
-
-        // Unzip the results and collect all warnings
-        let mut functions = Vec::with_capacity(results.len());
-        let mut warnings = sema_output.warnings;
-        for result in results {
-            let (func, func_warnings) = result?;
-            functions.push(func);
-            warnings.extend(func_warnings);
-        }
-
-        info!(
-            function_count = functions.len(),
-            "CFG construction complete"
-        );
-        (functions, warnings)
-    };
-
-    Ok(CompileStateFromRir {
-        interner,
-        rir,
-        functions,
-        type_pool: sema_output.type_pool,
-        strings: sema_output.strings,
-        warnings,
-    })
-}
-
-/// Intermediate compilation state after frontend processing from RIR.
-///
-/// Similar to `CompileState` but without the AST (since we started from RIR directly
-/// in the parallel compilation path).
-pub struct CompileStateFromRir {
-    /// String interner used during compilation.
-    pub interner: ThreadedRodeo,
-    /// The untyped IR (RIR).
-    pub rir: Rir,
-    /// Analyzed functions with typed IR and control flow graphs.
-    pub functions: Vec<FunctionWithCfg>,
-    /// Type intern pool containing all struct and enum definitions.
-    pub type_pool: TypeInternPool,
-    /// String literals indexed by their string_const index.
-    pub strings: Vec<String>,
-    /// Warnings collected during compilation.
-    pub warnings: Vec<CompileWarning>,
 }
 
 /// Compile source code to an ELF binary.
