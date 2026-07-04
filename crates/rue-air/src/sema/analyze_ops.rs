@@ -2448,7 +2448,8 @@ impl<'a> Sema<'a> {
                             ErrorKind::UseAfterMove(name_str.to_string()),
                             span,
                         )
-                        .with_label("value moved here", moved_span));
+                        .with_label("value moved here", moved_span)
+                        .with_help(super::analysis::borrow_instead_of_move_help(name_str)));
                     }
                 }
 
@@ -2545,7 +2546,8 @@ impl<'a> Sema<'a> {
                         ErrorKind::UseAfterMove(name_str.to_string()),
                         span,
                     )
-                    .with_label("value moved here", moved_span));
+                    .with_label("value moved here", moved_span)
+                    .with_help(super::analysis::borrow_instead_of_move_help(name_str)));
                 }
             }
 
@@ -3320,7 +3322,8 @@ impl<'a> Sema<'a> {
                         ErrorKind::UseAfterMove(root_name.to_string()),
                         span,
                     )
-                    .with_label("value moved here", moved_span));
+                    .with_label("value moved here", moved_span)
+                    .with_help(super::analysis::borrow_instead_of_move_help(root_name)));
                 }
             }
 

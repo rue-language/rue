@@ -11,7 +11,7 @@
 [section]
 id = "diagnostics.rust_refugees"
 name = "Rust-refugee diagnostics"
-description = "Targeted errors for `as` casts."
+description = "Targeted errors for Rust-isms: `as` casts and `impl` blocks."
 
 [[case]]
 name = "as_cast_targeted_error"
@@ -47,6 +47,35 @@ source = """
 fn main() -> i32 {
     let as = 40;
     as + 2
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "impl_block_hint"
+description = """
+RUE-19 item 4: `impl` is Rust muscle memory. Rue has no `impl` blocks, so it
+lexes as a plain identifier and dies at item position with an opaque
+"expected item, found identifier". The error must point the user at where
+methods actually go (inside the struct body).
+"""
+source = """
+struct Block { x: i32 }
+impl Block {
+    fn foo(self) -> i32 { self.x }
+}
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["Rue has no `impl` blocks", "inside the struct body"]
+
+[[case]]
+name = "impl_still_valid_as_identifier"
+description = "`impl` is NOT reserved; only an `impl` at item position gets the hint."
+source = """
+fn main() -> i32 {
+    let impl = 42;
+    impl
 }
 """
 exit_code = 42

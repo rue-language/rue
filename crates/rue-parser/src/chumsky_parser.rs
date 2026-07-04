@@ -2826,7 +2826,7 @@ fn format_pattern(pattern: &chumsky::error::RichPattern<'_, TokenKind>) -> Strin
 /// The `file_id` is threaded in from the parser so that error spans point at
 /// the file being parsed; without it, spans would default to `FileId::DEFAULT`
 /// and multi-file compilations would attribute errors to the wrong file.
-fn convert_error(err: Rich<'_, TokenKind>, file_id: FileId) -> CompileError {
+fn convert_error(err: Rich<'_, TokenKind>, file_id: FileId, impl_spur: Spur) -> CompileError {
     let span = to_rue_span_with_file(*err.span(), file_id);
 
     // Build the base error from the reason
@@ -2872,6 +2872,14 @@ fn convert_error(err: Rich<'_, TokenKind>, file_id: FileId) -> CompileError {
             // opaque, so point the user at the rule. (RUE-19)
             let found_is_self =
                 matches!(found.as_ref(), Some(t) if t.name() == TokenKind::SelfValue.name());
+            // `impl` is Rust muscle memory: Rue has no `impl` blocks, so it
+            // lexes as a plain identifier and dies at item position with an
+            // opaque "expected item, found identifier". Point the user at where
+            // methods actually go. (RUE-19 item 4)
+            let found_is_impl = matches!(
+                found.as_ref().map(|m| &**m),
+                Some(TokenKind::Ident(s)) if *s == impl_spur
+            );
             let mut err = CompileError::new(
                 ErrorKind::UnexpectedToken {
                     expected: expected_str,
@@ -2881,6 +2889,11 @@ fn convert_error(err: Rich<'_, TokenKind>, file_id: FileId) -> CompileError {
             );
             if found_is_self {
                 err = err.with_help("methods take `self` as the first parameter");
+            } else if found_is_impl {
+                err = err.with_help(
+                    "Rue has no `impl` blocks; define methods inside the struct body, \
+                     e.g. `struct S { x: i32, fn m(self) -> i32 { self.x } }`",
+                );
             }
             err
         }
@@ -3109,6 +3122,12 @@ impl ChumskyParser {
         // (tens of KB per nesting level), so a 256-deep parse would blow the
         // default thread stack. The nesting pre-scan above caps the depth; the
         // roomy stack here ensures the capped depth parses cleanly.
+        // Pre-intern `impl` so `convert_error` (which runs on the parse thread
+        // without the interner) can recognize the Rust-muscle-memory `impl`
+        // identifier and offer a targeted hint (RUE-19 item 4). Interning here
+        // shares the lexer's interner, so the returned spur matches any lexed
+        // `impl` token.
+        let impl_spur = self.interner.get_or_intern("impl");
         let tokens = std::mem::take(&mut self.tokens);
         let source_len = self.source_len;
         let file_id = self.file_id;
@@ -3132,7 +3151,7 @@ impl ChumskyParser {
                     .map_err(|errs| {
                         let mut errors: Vec<CompileError> = errs
                             .into_iter()
-                            .map(|err| convert_error(err, file_id))
+                            .map(|err| convert_error(err, file_id, impl_spur))
                             .collect();
                         dedupe_parse_errors(&mut errors);
                         CompileErrors::from(errors)

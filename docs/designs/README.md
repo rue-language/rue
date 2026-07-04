@@ -169,3 +169,4 @@ See [ADR-0005: Preview Features](0005-preview-features.md) for details on the ga
 | [0009](0009-struct-methods.md) | Struct Methods | Proposal | types, syntax |
 | [0044](0044-optimization-levels.md) | Optimization Levels (-O0/-O1/-O2/-O3) | Accepted | compiler, codegen, process |
 | [0045](0045-lazy-semantic-analysis.md) | Lazy Semantic Analysis (compile-on-reference) | Accepted | compiler, semantics, comptime |
+| [0046](0046-delete-flat-mode.md) | Delete Flat Multi-File Mode | Accepted | modules, semantics, cli |

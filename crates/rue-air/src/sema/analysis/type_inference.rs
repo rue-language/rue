@@ -172,7 +172,10 @@ impl<'a> Sema<'a> {
                 },
                 UnifyResult::OccursCheck { var, ty } => ErrorKind::TypeMismatch {
                     expected: "non-recursive type".to_string(),
-                    found: format!("{var} = {ty} (infinite type)"),
+                    found: format!(
+                        "{var} = {} (infinite type)",
+                        ty.name_with_pool(&self.type_pool)
+                    ),
                 },
                 UnifyResult::NotSigned { ty } => {
                     ErrorKind::CannotNegate(ty.safe_name_with_pool(Some(&self.type_pool)))
@@ -259,7 +262,8 @@ impl<'a> Sema<'a> {
                                 ErrorKind::UseAfterMove(name_str.to_string()),
                                 inst.span,
                             )
-                            .with_label("value moved here", moved_span));
+                            .with_label("value moved here", moved_span)
+                            .with_help(super::borrow_instead_of_move_help(name_str)));
                         }
                     }
 
@@ -300,7 +304,8 @@ impl<'a> Sema<'a> {
                         ErrorKind::UseAfterMove(name_str.to_string()),
                         inst.span,
                     )
-                    .with_label("value moved here", moved_span));
+                    .with_label("value moved here", moved_span)
+                    .with_help(super::borrow_instead_of_move_help(name_str)));
                 }
             }
 
