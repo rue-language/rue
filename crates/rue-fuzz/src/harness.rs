@@ -32,10 +32,16 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 /// Exit code the child uses to signal "I caught a panic" (distinct from a
 /// signal death and from a clean exit). 101 matches rustc's own convention.
 const PANIC_EXIT_CODE: i32 = 101;
+
+/// Default per-input wall-clock budget. Fuzz inputs are tiny; a healthy
+/// compile finishes in milliseconds, so anything still running after this
+/// long is a hang/superlinear bug, not a slow success.
+pub const DEFAULT_PER_INPUT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The outcome of running one fuzz input.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,6 +54,11 @@ pub enum RunOutcome {
     /// SIGABRT=6, SIGFPE=8). This is the case the old in-process harness was
     /// completely blind to.
     Signal(i32),
+    /// The child exceeded the per-input timeout and was SIGKILLed by the
+    /// harness. Carries the budget in seconds. Hangs (infinite loops,
+    /// superlinear parse blowups) are compiler bugs too — and without this,
+    /// one hung input wedges the whole run in `waitpid`.
+    Timeout(u64),
 }
 
 impl RunOutcome {
@@ -68,6 +79,9 @@ impl RunOutcome {
             RunOutcome::Ok => None,
             RunOutcome::Panic(msg) => Some(format!("panic:{}", first_line(msg))),
             RunOutcome::Signal(sig) => Some(format!("signal:{}", signal_name(*sig))),
+            // All hangs collapse to one bucket — same flood-control rationale
+            // as signals (one superlinear-parse bug makes *many* inputs hang).
+            RunOutcome::Timeout(_) => Some("timeout".to_string()),
         }
     }
 
@@ -77,6 +91,7 @@ impl RunOutcome {
             RunOutcome::Ok => "ok".to_string(),
             RunOutcome::Panic(msg) => format!("panic: {}", first_line(msg)),
             RunOutcome::Signal(sig) => format!("signal: {} ({})", signal_name(*sig), sig),
+            RunOutcome::Timeout(secs) => format!("timeout: hung for more than {secs}s"),
         }
     }
 }
@@ -100,16 +115,25 @@ pub fn signal_name(sig: i32) -> String {
     name.to_string()
 }
 
+/// Run `f` in a forked child with the [default][DEFAULT_PER_INPUT_TIMEOUT]
+/// per-input timeout. See [`run_forked_with_timeout`].
+pub fn run_forked<F: FnOnce()>(f: F) -> RunOutcome {
+    run_forked_with_timeout(f, DEFAULT_PER_INPUT_TIMEOUT)
+}
+
 /// Run `f` in a forked child process and report how it terminated.
 ///
 /// The child runs the closure under `catch_unwind`; the parent `waitpid`s and
 /// classifies the result. Fatal signals become [`RunOutcome::Signal`], panics
-/// become [`RunOutcome::Panic`], a clean run is [`RunOutcome::Ok`].
+/// become [`RunOutcome::Panic`], a clean run is [`RunOutcome::Ok`]. A child
+/// still running after `timeout` is SIGKILLed and reported as
+/// [`RunOutcome::Timeout`] — without this, a hung compile blocks the parent
+/// in `waitpid` forever and the entire hang/DoS bug class is undetectable.
 ///
 /// If `fork`/`pipe` themselves fail (extremely unlikely), we degrade gracefully
 /// to an in-process `catch_unwind` run — that still catches panics, we just lose
-/// signal detection for that one input.
-pub fn run_forked<F: FnOnce()>(f: F) -> RunOutcome {
+/// signal detection (and hang detection) for that one input.
+pub fn run_forked_with_timeout<F: FnOnce()>(f: F, timeout: Duration) -> RunOutcome {
     // Pipe for streaming the panic message from child to parent.
     let mut fds = [0 as libc::c_int; 2];
     if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
@@ -158,29 +182,108 @@ pub fn run_forked<F: FnOnce()>(f: F) -> RunOutcome {
         }
     }
 
-    // ---- Parent: collect any panic message, then reap the child.
+    // ---- Parent: collect any panic message, then reap the child — both
+    // bounded by the per-input deadline. The pipe read must be bounded too: a
+    // hung child holds its write end open and never writes, so an unbounded
+    // read() would block before we ever reached waitpid.
     unsafe { libc::close(write_fd) };
+    let deadline = Instant::now() + timeout;
     let mut msg = Vec::new();
     let mut buf = [0u8; 4096];
+    let mut timed_out = false;
     loop {
-        let n = unsafe { libc::read(read_fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
-        if n <= 0 {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            timed_out = true;
             break;
+        }
+        let mut pfd = libc::pollfd {
+            fd: read_fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let wait_ms = remaining.as_millis().min(i32::MAX as u128) as libc::c_int;
+        let r = unsafe { libc::poll(&mut pfd, 1, wait_ms.max(1)) };
+        if r < 0 {
+            if std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
+                continue;
+            }
+            break; // poll error: give up on the message, fall through to reap
+        }
+        if r == 0 {
+            // Deadline expired with the child still holding the pipe open.
+            timed_out = true;
+            break;
+        }
+        let n = unsafe { libc::read(read_fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
+        if n < 0 {
+            if std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
+                continue;
+            }
+            break;
+        }
+        if n == 0 {
+            break; // EOF: the child closed its end (normal exit or death)
         }
         msg.extend_from_slice(&buf[..n as usize]);
     }
     unsafe { libc::close(read_fd) };
 
-    let mut status: libc::c_int = 0;
-    // Loop over EINTR.
-    loop {
-        let r = unsafe { libc::waitpid(pid, &mut status, 0) };
-        if r != -1 || std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
-            break;
+    if timed_out {
+        unsafe {
+            libc::kill(pid, libc::SIGKILL);
         }
     }
 
+    // Reap, still bounded: even after pipe EOF a pathological child could
+    // linger (e.g. the closure closed our write end itself and then hung), so
+    // poll with WNOHANG and escalate to SIGKILL at the deadline.
+    let mut status: libc::c_int = 0;
+    let mut killed = timed_out;
+    loop {
+        let r = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
+        if r == pid {
+            break;
+        }
+        if r == -1 {
+            if std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
+                continue;
+            }
+            // ECHILD or another wait error: nothing reapable; classify by what
+            // we know.
+            return if timed_out {
+                RunOutcome::Timeout(timeout.as_secs())
+            } else {
+                outcome_from_status_exited_unknown(msg)
+            };
+        }
+        // r == 0: child still running.
+        if !killed && Instant::now() >= deadline {
+            timed_out = true;
+            killed = true;
+            unsafe {
+                libc::kill(pid, libc::SIGKILL);
+            }
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+
+    if timed_out {
+        // We killed it (or it died at the boundary): either way the input
+        // exceeded its budget.
+        return RunOutcome::Timeout(timeout.as_secs());
+    }
     outcome_from_status(status, msg)
+}
+
+/// Reached only if `waitpid` errored with no status available: fall back to
+/// classifying on the panic message alone.
+fn outcome_from_status_exited_unknown(panic_msg: Vec<u8>) -> RunOutcome {
+    let msg = String::from_utf8_lossy(&panic_msg);
+    if !msg.trim().is_empty() {
+        return RunOutcome::Panic(msg.into_owned());
+    }
+    RunOutcome::Ok
 }
 
 fn outcome_from_status(status: libc::c_int, panic_msg: Vec<u8>) -> RunOutcome {
@@ -259,7 +362,7 @@ impl CrashReporter {
         );
 
         let crash_dir = self.crash_dir.as_ref()?;
-        match write_reproducer(crash_dir, target, input, &signature) {
+        match write_reproducer(crash_dir, target, input, &signature, &outcome.describe()) {
             Ok(path) => {
                 eprintln!("[{target}] saved reproducer: {}", path.display());
                 Some(path)
@@ -280,11 +383,16 @@ impl CrashReporter {
 /// Write the crashing input to `crash_dir` under a name that includes both a
 /// signature hash and an input hash, so identical inputs overwrite (not
 /// accumulate) and distinct crashes never collide.
+///
+/// A `.meta` sibling records the target, signature, and human-readable crash
+/// description, so a downloaded CI artifact is self-describing — without it
+/// the crash class survives only as a non-invertible hash in the filename.
 fn write_reproducer(
     crash_dir: &Path,
     target: &str,
     input: &[u8],
     signature: &str,
+    description: &str,
 ) -> std::io::Result<PathBuf> {
     use std::io::Write;
 
@@ -298,6 +406,9 @@ fn write_reproducer(
 
     let mut file = std::fs::File::create(&path)?;
     file.write_all(input)?;
+
+    let meta = format!("target: {target}\nsignature: {signature}\noutcome: {description}\n");
+    std::fs::write(path.with_extension("txt.meta"), meta)?;
     Ok(path)
 }
 
@@ -371,6 +482,49 @@ mod tests {
         }
     }
 
+    // The hang-detection analog of the RUE-43 abort test: a child that never
+    // terminates must be killed at the deadline and reported as a Timeout,
+    // not wedge the harness in waitpid forever.
+    #[test]
+    fn hang_is_detected_as_timeout() {
+        let started = std::time::Instant::now();
+        let outcome = run_forked_with_timeout(
+            || loop {
+                std::thread::sleep(Duration::from_millis(50));
+            },
+            Duration::from_millis(300),
+        );
+        assert_eq!(outcome, RunOutcome::Timeout(0)); // 300ms rounds to 0s
+        assert!(outcome.is_crash());
+        assert_eq!(outcome.signature().as_deref(), Some("timeout"));
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "harness must not block anywhere near beyond the deadline"
+        );
+    }
+
+    // A child that hangs while holding the panic-message pipe open must not
+    // block the parent's pipe read either (the read is deadline-bounded).
+    #[test]
+    fn hang_with_partial_pipe_write_is_still_a_timeout() {
+        let outcome = run_forked_with_timeout(
+            || {
+                // Simulates a target that got partway through work then hung.
+                loop {
+                    std::hint::spin_loop();
+                }
+            },
+            Duration::from_millis(300),
+        );
+        assert!(matches!(outcome, RunOutcome::Timeout(_)));
+    }
+
+    #[test]
+    fn fast_run_is_not_a_timeout() {
+        let outcome = run_forked_with_timeout(|| (), Duration::from_secs(30));
+        assert_eq!(outcome, RunOutcome::Ok);
+    }
+
     #[test]
     fn signal_and_panic_have_distinct_signatures() {
         let sig = RunOutcome::Signal(libc::SIGSEGV).signature();
@@ -423,6 +577,11 @@ mod tests {
         let path = path.expect("abort should be saved as a reproducer");
         assert!(path.exists(), "reproducer file must exist on disk");
         assert_eq!(std::fs::read(&path).unwrap(), input);
+
+        // The .meta sibling makes the artifact self-describing for triage.
+        let meta = std::fs::read_to_string(path.with_extension("txt.meta")).unwrap();
+        assert!(meta.contains("target: synthetic"), "meta: {meta}");
+        assert!(meta.contains("signature: signal:SIGABRT"), "meta: {meta}");
 
         let outcome2 = run_forked(|| std::process::abort());
         assert!(reporter.report("synthetic", input, &outcome2).is_none());

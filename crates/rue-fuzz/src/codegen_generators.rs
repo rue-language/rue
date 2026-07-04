@@ -1,11 +1,11 @@
 //! Proptest strategies for generating x86-64 MIR instructions.
 //!
-//! These generators produce random instruction sequences for fuzzing
-//! the emitter, register allocator, and liveness analysis.
+//! These generators produce random instruction sequences for fuzzing the
+//! emitter (single instructions and whole-function sequences).
 
 use proptest::prelude::*;
 use proptest::strategy::BoxedStrategy;
-use rue_codegen::x86_64::{LabelId, Operand, Reg, VReg, X86Inst, X86Mir};
+use rue_codegen::x86_64::{LabelId, Operand, Reg, X86Inst, X86Mir};
 
 /// Generate a random physical register.
 pub fn arb_reg() -> BoxedStrategy<Reg> {
@@ -32,18 +32,6 @@ pub fn arb_reg() -> BoxedStrategy<Reg> {
 /// Generate a physical operand (for post-regalloc instructions).
 pub fn arb_physical_operand() -> BoxedStrategy<Operand> {
     arb_reg().prop_map(Operand::Physical).boxed()
-}
-
-/// Generate a virtual operand (for pre-regalloc instructions).
-pub fn arb_virtual_operand(max_vreg: u32) -> BoxedStrategy<Operand> {
-    (0..max_vreg.max(1))
-        .prop_map(|idx| Operand::Virtual(VReg::new(idx)))
-        .boxed()
-}
-
-/// Generate an operand that can be either virtual or physical.
-pub fn arb_operand(max_vreg: u32) -> BoxedStrategy<Operand> {
-    prop_oneof![arb_physical_operand(), arb_virtual_operand(max_vreg),].boxed()
 }
 
 /// Generate a 32-bit immediate value.
@@ -104,11 +92,6 @@ pub fn arb_stack_offset() -> impl Strategy<Value = i32> {
         // Any aligned offset
         any::<i16>().prop_map(|x| (x as i32) * 8),
     ]
-}
-
-/// Generate a label ID.
-pub fn arb_label_id(max_labels: u32) -> impl Strategy<Value = LabelId> {
-    (0..max_labels.max(1)).prop_map(LabelId::new)
 }
 
 /// Generate a single x86-64 instruction with physical registers.
@@ -266,37 +249,6 @@ pub fn arb_x86_mir(inst_count: usize, num_labels: usize) -> impl Strategy<Value 
         }
         mir
     })
-}
-
-/// Generate an X86Mir with virtual registers for regalloc testing.
-pub fn arb_x86_mir_with_vregs(inst_count: usize, num_vregs: u32) -> BoxedStrategy<X86Mir> {
-    prop::collection::vec(
-        prop_oneof![
-            // Simple register-to-register operations that regalloc handles
-            (arb_operand(num_vregs), arb_imm32())
-                .prop_map(|(dst, imm)| X86Inst::MovRI32 { dst, imm }),
-            (arb_operand(num_vregs), arb_operand(num_vregs))
-                .prop_map(|(dst, src)| X86Inst::MovRR { dst, src }),
-            (arb_operand(num_vregs), arb_operand(num_vregs))
-                .prop_map(|(dst, src)| X86Inst::AddRR { dst, src }),
-            (arb_operand(num_vregs), arb_operand(num_vregs))
-                .prop_map(|(dst, src)| X86Inst::SubRR { dst, src }),
-            arb_operand(num_vregs).prop_map(|dst| X86Inst::Neg { dst }),
-        ],
-        inst_count,
-    )
-    .prop_map(move |insts| {
-        let mut mir = X86Mir::new();
-        // Allocate the vregs
-        for _ in 0..num_vregs {
-            mir.alloc_vreg();
-        }
-        for inst in insts {
-            mir.push(inst);
-        }
-        mir
-    })
-    .boxed()
 }
 
 #[cfg(test)]

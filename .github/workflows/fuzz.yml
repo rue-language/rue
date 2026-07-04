@@ -5,9 +5,20 @@ on:
     - cron: '0 0 * * *'  # Daily at midnight UTC
   workflow_dispatch:  # Allow manual triggering
 
+# The default GITHUB_TOKEN is read-only; without issues:write the
+# "notify on failure" step below fails with "Resource not accessible by
+# integration" and nightly crashes are found but never reported (this
+# silently ate real crash reports for at least 2026-07-03/04).
+permissions:
+  contents: read
+  issues: write
+
 jobs:
   fuzz:
     runs-on: ubuntu-latest
+    # A wedged step can otherwise burn a runner to GitHub's 6h job cap.
+    # Generous vs the ~40min expected total, tight vs the 6h default.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v6
 
@@ -29,22 +40,44 @@ jobs:
       - name: Create seed corpus
         run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --init-corpus crates/rue-fuzz/corpus
 
+      # Each fuzz step is continue-on-error so one crashing target no longer
+      # skips every later target (a single sema crash used to reduce the whole
+      # night to lexer+parser coverage). The aggregation step at the end turns
+      # any step failure back into a red job, so nothing is masked.
       - name: Fuzz lexer (5 minutes)
+        id: fuzz-lexer
+        continue-on-error: true
+        timeout-minutes: 10
         run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 lexer crates/rue-fuzz/corpus
 
       - name: Fuzz parser (5 minutes)
+        id: fuzz-parser
+        continue-on-error: true
+        timeout-minutes: 10
         run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 parser crates/rue-fuzz/corpus
 
       - name: Fuzz sema (5 minutes)
+        id: fuzz-sema
+        continue-on-error: true
+        timeout-minutes: 10
         run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 sema crates/rue-fuzz/corpus
 
       - name: Fuzz compiler (5 minutes)
+        id: fuzz-compiler
+        continue-on-error: true
+        timeout-minutes: 10
         run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 compiler crates/rue-fuzz/corpus
 
       - name: Fuzz x86-64 emitter (5 minutes)
+        id: fuzz-emitter
+        continue-on-error: true
+        timeout-minutes: 10
         run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 emitter crates/rue-fuzz/corpus
 
       - name: Fuzz x86-64 emitter sequences (5 minutes)
+        id: fuzz-emitter-sequence
+        continue-on-error: true
+        timeout-minutes: 10
         run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 emitter_sequence crates/rue-fuzz/corpus
 
       # Differential fuzzing: generate valid programs and cross-check the
@@ -53,45 +86,72 @@ jobs:
       # miscompile; the step exits non-zero and a self-contained repro (named by
       # its seed) lands in crates/rue-fuzz/crashes/ for the upload step below.
       - name: Differential fuzz (oracle vs compiled, 500 seeds)
+        id: fuzz-differential
+        continue-on-error: true
+        timeout-minutes: 20
         run: |
           RUE_BINARY="$(scripts/rue-bin)" ./buck2 run //crates/rue-oracle-diff:rue-oracle-diff -- \
             fuzz --seeds 500 --crash-dir crates/rue-fuzz/crashes
 
+      # With continue-on-error above, step failures don't mark the job failed
+      # until the aggregation step — so the upload must run unconditionally.
       - name: Upload crash artifacts
-        if: failure()
+        if: always()
         uses: actions/upload-artifact@v6
         with:
           name: fuzz-crashes
           path: crates/rue-fuzz/crashes/
           if-no-files-found: ignore
 
-      - name: Create issue on failure
+      - name: Fail if any fuzz step found crashes
+        if: >-
+          steps.fuzz-lexer.outcome == 'failure' ||
+          steps.fuzz-parser.outcome == 'failure' ||
+          steps.fuzz-sema.outcome == 'failure' ||
+          steps.fuzz-compiler.outcome == 'failure' ||
+          steps.fuzz-emitter.outcome == 'failure' ||
+          steps.fuzz-emitter-sequence.outcome == 'failure' ||
+          steps.fuzz-differential.outcome == 'failure'
+        run: |
+          echo "One or more fuzz targets found crashes (see step outcomes above)."
+          exit 1
+
+      - name: Notify on failure (create or comment on the fuzz-crash issue)
         if: failure()
         uses: actions/github-script@v9
         with:
           script: |
-            const title = `Fuzz testing found a crash (${new Date().toISOString().split('T')[0]})`;
+            const failed = [
+              ['lexer', '${{ steps.fuzz-lexer.outcome }}'],
+              ['parser', '${{ steps.fuzz-parser.outcome }}'],
+              ['sema', '${{ steps.fuzz-sema.outcome }}'],
+              ['compiler', '${{ steps.fuzz-compiler.outcome }}'],
+              ['emitter', '${{ steps.fuzz-emitter.outcome }}'],
+              ['emitter_sequence', '${{ steps.fuzz-emitter-sequence.outcome }}'],
+              ['differential', '${{ steps.fuzz-differential.outcome }}'],
+            ].filter(([, o]) => o === 'failure').map(([n]) => n);
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const summary = `**Run:** ${runUrl}\n**Failed targets:** ${failed.join(', ') || '(job-level failure)'}\n`;
             const body = `## Fuzz Testing Failure
 
             The daily fuzz testing workflow found a crash.
 
-            **Run:** ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}
-
-            Please check the workflow logs and crash artifacts for details.
-
+            ${summary}
             ### Next Steps
             1. Download the crash artifacts from the workflow run. Each
-               reproducer is named \`crash-<target>-<sighash>-<inputhash>.txt\`;
-               the fuzzer detects both panics and *aborts* (stack overflow /
-               SIGABRT / SIGSEGV / SIGFPE), and dedups by crash signature so
-               each distinct crash is saved once (RUE-43).
+               reproducer is named \`crash-<target>-<sighash>-<inputhash>.txt\`
+               with a \`.meta\` sibling recording the crash class and
+               signature; the fuzzer detects panics, *aborts* (stack overflow /
+               SIGABRT / SIGSEGV / SIGFPE), hangs (per-input timeout), and
+               graceful ICEs, deduping by crash signature (RUE-43).
             2. Reproduce locally by feeding the saved input to the target named
                in the filename, e.g. for a source-level target:
                \`./buck2 run //crates/rue-fuzz:rue-fuzz -- <target> <dir-with-the-file>\`
             3. Fix the issue and add a regression test
             `;
 
-            // Check if an open issue already exists
+            // One open tracking issue at a time; new crashes while it is open
+            // are appended as comments instead of being silently dropped.
             const issues = await github.rest.issues.listForRepo({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -100,11 +160,19 @@ jobs:
             });
 
             if (issues.data.length === 0) {
+              const title = `Fuzz testing found a crash (${new Date().toISOString().split('T')[0]})`;
               await github.rest.issues.create({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 title: title,
                 body: body,
                 labels: ['fuzz-crash', 'bug']
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issues.data[0].number,
+                body: `Another nightly fuzz failure while this issue is open.\n\n${summary}`
               });
             }

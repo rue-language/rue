@@ -40,6 +40,8 @@ Fuzz testing infrastructure for the Rue compiler. This crate helps find edge cas
 | `--max-runs=<n>` | Maximum number of runs |
 | `--crash-dir=<dir>` | Directory to save crashes |
 | `--print-interval=<n>` | Print progress every N runs |
+| `--per-input-timeout=<secs>` | Kill and report inputs running longer than this (default 5) |
+| `--seed=<n>` | Mutation RNG seed; defaults to a per-run value, printed at start for replay |
 
 ## Corpus
 
@@ -76,10 +78,22 @@ builds with `panic = abort`, it could not actually catch panics either — they
 abort). The child streams the panic message over a pipe from its panic hook so
 panics keep a source-location dedup signature even under `panic = abort`.
 
+Two further failure classes are covered:
+
+- **Hangs**: each input has a wall-clock budget (`--per-input-timeout`,
+  default 5s). A child still running at the deadline is SIGKILLed and
+  reported as a `timeout` crash — infinite loops and superlinear blowups
+  are compiler bugs too, and without the deadline a single hung input would
+  wedge the whole run in `waitpid`.
+- **Graceful ICEs**: the sema/compiler targets inspect the returned errors
+  and panic on `ErrorKind::InternalError` — an `ice_error!` that returns a
+  normal `Err` is still a compiler bug, even though it doesn't crash.
+
 When a crash is detected, the crashing input is saved to the crash directory
 (defaults to `crashes/` next to the corpus) as
-`crash-<target>-<sighash>-<inputhash>.txt`. Crashes are **deduplicated by
-signature** (panic message + location, or signal type), so one flooding bug
+`crash-<target>-<sighash>-<inputhash>.txt`, with a `.meta` sibling recording
+the target, signature, and crash description so downloaded CI artifacts are
+self-describing. Crashes are **deduplicated by signature** (panic message + location, or signal type), so one flooding bug
 saves a single reproducer instead of thousands. To reproduce, feed the saved
 input back to the target named in the filename:
 

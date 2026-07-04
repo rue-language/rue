@@ -51,10 +51,12 @@ jobs:
 
       - name: Cold build (populates the remote cache)
         run: |
+          set -o pipefail  # without it, `| tee | tail` makes a failed build exit 0
           /usr/bin/time -v ./buck2 build //crates/rue:rue 2>&1 | tee cold.log | tail -3
 
       - name: Clear local buck-out, rebuild (should hit the remote cache)
         run: |
+          set -o pipefail  # without it, `| tee | tail` makes a failed build exit 0
           ./buck2 clean
           /usr/bin/time -v ./buck2 build //crates/rue:rue 2>&1 | tee warm.log | tail -3
 
