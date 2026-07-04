@@ -16,7 +16,11 @@ array_literal = "[" [ expression { "," expression } ] "]" ;
 
 {{ rule(id="7.1:2", cat="normative") }}
 
-An array literal creates an array with the given elements.
+An array literal `[e0, …, e_{n-1}]` evaluates its element expressions left to
+right and evaluates to an array value of type `[T; n]` that owns those `n`
+elements in index order; every element is a value-context use of the one shared
+element type `T` (core calculus `docs/formal/01-core-calculus.md` §5.8, rule
+`(Array-Intro)`, and the reduction `(D-Array)` of §6.5).
 
 {{ rule(id="7.1:3", cat="legality-rule") }}
 
@@ -81,7 +85,12 @@ fn main() -> i32 {
 
 {{ rule(id="7.1:6", cat="normative") }}
 
-Array elements are accessed using bracket notation `arr[index]`.
+An index expression `arr[i]` denotes the place of the element at position `i`.
+Used in value context it evaluates to that element — the value stored at that
+position, copied out for a `Copy` element type and moved out for a move type
+(core calculus `docs/formal/01-core-calculus.md` §6.5, rule `(D-Index)`:
+`[v0, …, v_{n-1}][i]` yields `vi` once `i` is in range, which §6.3 then copies or
+moves; the move case is governed by 7.1:28).
 
 {{ rule(id="7.1:7", cat="legality-rule") }}
 
@@ -100,15 +109,25 @@ fn main() -> i32 {
 
 {{ rule(id="7.1:9", cat="legality-rule") }}
 
-For constant indices, bounds **MUST** be checked at compile time.
+For constant indices, bounds **MUST** be checked at compile time. A constant
+index that is out of range is rejected during compilation and so never reaches
+the runtime check (core calculus `docs/formal/01-core-calculus.md` §6.5; see
+also 8.2:3).
 
 {{ rule(id="7.1:10", cat="dynamic-semantics") }}
 
-For variable indices, bounds **MUST** be checked at runtime.
+For variable indices, bounds **MUST** be checked at runtime, before the element
+is read, at the moment the index navigates into the array (core calculus
+`docs/formal/01-core-calculus.md` §6.5: the check precedes the projection that
+reads the element; see also 8.2:5).
 
 {{ rule(id="7.1:11", cat="dynamic-semantics") }}
 
-Out-of-bounds access **MUST** cause a runtime panic.
+A read whose index is out of range — `i` negative or `i ≥ n` for an `[T; n]` —
+**MUST** trap: the bounds check that guards the projection fails, abandoning
+evaluation to the `bounds` trap and halting the program with exit code 101 (core
+calculus `docs/formal/01-core-calculus.md` §6.5, rule `(D-Index-Trap)`, and the
+`bounds` trap category of §6.12; see also 8.2:1–8.2:2).
 
 ## Mutable Arrays
 
