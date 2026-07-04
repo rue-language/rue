@@ -1931,11 +1931,14 @@ where
         })
 }
 
-/// Suffix for assignment targets: either .field or [index]
+/// Suffix for assignment targets: either .field or [index]. The index form
+/// carries the offset of its closing `]` so the resulting place span covers
+/// the whole `base[index]`, not just up to the end of `index` (mirrors the
+/// RHS index suffix, `Suffix::Index`).
 #[derive(Clone)]
 enum AssignSuffix {
     Field(Ident),
-    Index(Expr),
+    Index(Expr, u32),
 }
 
 /// Parser for assignment target: variable, field access, or index access
@@ -1952,7 +1955,7 @@ where
 
     let index_suffix = expr
         .delimited_by(just(TokenKind::LBracket), just(TokenKind::RBracket))
-        .map(AssignSuffix::Index);
+        .map_with(|index, e| AssignSuffix::Index(index, offset_to_u32(e.span().end)));
 
     let suffix = choice((field_suffix, index_suffix));
 
@@ -2003,8 +2006,8 @@ fn build_projected_assign_target(base: Expr, suffixes: Vec<AssignSuffix>) -> Ass
                         span,
                     })
                 }
-                AssignSuffix::Index(index) => {
-                    let span = base_expr.span().extend_to(index.span().end);
+                AssignSuffix::Index(index, bracket_end) => {
+                    let span = base_expr.span().extend_to(bracket_end);
                     AssignTarget::Index(IndexExpr {
                         base: Box::new(base_expr),
                         index: Box::new(index),
@@ -2022,8 +2025,8 @@ fn build_projected_assign_target(base: Expr, suffixes: Vec<AssignSuffix>) -> Ass
                     span,
                 });
             }
-            AssignSuffix::Index(index) => {
-                let span = base_expr.span().extend_to(index.span().end);
+            AssignSuffix::Index(index, bracket_end) => {
+                let span = base_expr.span().extend_to(bracket_end);
                 base_expr = Expr::Index(IndexExpr {
                     base: Box::new(base_expr),
                     index: Box::new(index),
@@ -2977,7 +2980,7 @@ fn dedupe_parse_errors(errors: &mut Vec<CompileError>) {
 /// tracked value `(levels.len() - 1) + sum(levels)` is a sound upper bound on
 /// the depth of the AST that would be produced: every construct that adds a
 /// level of AST nesting — an opening bracket, a prefix/infix operator, a
-/// postfix `.`/`[`, an `else`, or a `ptr` — bumps it by at least one. Counters
+/// postfix `.`/`[`/`?`, an `else`, or a `ptr` — bumps it by at least one. Counters
 /// reset at expression separators (`;`, `,`, `=>`, `=`, `:`, `->`) so that a
 /// long *sequence* of shallow expressions (many statements, many call
 /// arguments, many match arms) is not mistaken for deep nesting. The bound can
@@ -3070,6 +3073,7 @@ fn check_nesting_depth(
             | TokenKind::GtGt
             | TokenKind::Bang
             | TokenKind::Dot
+            | TokenKind::Question
             | TokenKind::Else
             | TokenKind::Ptr => {
                 *levels.last_mut().unwrap() += 1;
