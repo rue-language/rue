@@ -1,31 +1,47 @@
 # Contributing to Rue
 
-Thanks for your interest in contributing to Rue!
+Rue is early-stage software: language behavior and internal interfaces can
+change quickly. Discuss substantial language or architecture changes before
+implementing them, and keep normative behavior synchronized with the
+specification and its tests.
 
-## Getting Started
+## Setup
 
-See [docs/development.md](docs/development.md) for:
-- Building the compiler
-- Running tests
-- Repository structure
-- Common development tasks
+Install [Dotslash](https://dotslash-cli.com/), clone the repository, then use
+the repository wrappers:
+
+```bash
+scripts/rue build
+scripts/rue exec examples/fibonacci.rue
+scripts/rue quick
+scripts/rue test
+```
+
+The wrappers bootstrap Buck2 and a hermetic Rust toolchain. macOS also requires
+Xcode Command Line Tools for linking Rue executables.
+
+## Before submitting a change
+
+```bash
+scripts/rue fmt
+scripts/rue test
+```
+
+Use a targeted spec, UI, or CLI test while iterating. Language behavior belongs
+in specification tests; diagnostic presentation belongs in UI tests; driver,
+ABI, multi-file, and runtime-I/O behavior belongs in CLI tests. New language
+features must be preview-gated until complete.
+
+Rue uses Jujutsu (`jj`) for local version control and Linear (`RUE-NN`) for
+issue tracking. Do not commit directly on `trunk`.
 
 ## Documentation
 
-- [docs/architecture.md](docs/architecture.md) - How the compiler is structured
-- [docs/design-decisions.md](docs/design-decisions.md) - Why things are the way they are
-- [docs/language.md](docs/language.md) - Language reference
+- [Development guide](docs/development.md)
+- [Compiler architecture](docs/architecture.md)
+- [Language overview](docs/language.md)
+- [Language specification](docs/spec/)
+- [Architecture decision records](docs/designs/)
+- [Project processes](docs/process/)
 
-## Quick Start
-
-```bash
-# Run all tests
-./test.sh
-
-# Build and run the compiler
-./buck2 run //crates/rue:rue -- source.rue output
-```
-
-## Questions?
-
-Open an issue to discuss.
+Open a GitHub issue for public bug reports and discussion.
