@@ -995,3 +995,67 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = "bound more than once"
+
+# =============================================================================
+# Scrutinee access mode (RUE-299): a match uses its scrutinee in value context.
+# =============================================================================
+
+# A Copy scrutinee is copied by the match and remains valid afterward (4.7:33).
+[[case]]
+name = "match_copy_scrutinee_remains_valid"
+spec = ["4.7:33"]
+source = """
+enum E { A(i32), B }
+fn use_again(e: E) -> i32 { 2 }
+fn main() -> i32 {
+    let e = E::A(40);
+    let r = match e {
+        E::A(x) => x,
+        E::B => 0,
+    };
+    r + use_again(e)
+}
+"""
+exit_code = 42
+
+# A move-type scrutinee is consumed by the match; using it afterward is a
+# use-after-move error (4.7:33).
+[[case]]
+name = "match_move_scrutinee_consumed"
+spec = ["4.7:33"]
+source = """
+struct Big { value: i32 }
+enum E { A(Big), B }
+fn use_again(e: E) -> i32 { 0 }
+fn main() -> i32 {
+    let e = E::A(Big { value: 7 });
+    let r = match e {
+        E::A(s) => s.value,
+        E::B => 0,
+    };
+    r + use_again(e)
+}
+"""
+compile_fail = true
+error_contains = "use of moved value 'e'"
+
+# A move-type scrutinee is consumed even when the matched arm binds no payload
+# (4.7:34).
+[[case]]
+name = "match_move_scrutinee_consumed_without_binding"
+spec = ["4.7:34"]
+source = """
+struct Big { value: i32 }
+enum E { A(Big), B }
+fn use_again(e: E) -> i32 { 0 }
+fn main() -> i32 {
+    let e = E::A(Big { value: 7 });
+    let r = match e {
+        E::A => 1,
+        E::B => 2,
+    };
+    r + use_again(e)
+}
+"""
+compile_fail = true
+error_contains = "use of moved value 'e'"

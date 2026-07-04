@@ -64,12 +64,55 @@ pub struct Unsupported(pub String);
 /// program in the supported subset always yields `Ok`.
 pub fn run_source(source: &str) -> Result<Outcome, Unsupported> {
     let state = compile_to_cfg(source).map_err(|e| Unsupported(format!("compile: {e:?}")))?;
-    Interp {
-        state: &state,
-        stdout: String::new(),
-    }
-    .run()
+    // Interpret on a dedicated large-stack worker thread. The tree-walking
+    // interpreter recurses per expression *and* per call, so deep-but-valid
+    // programs need far more stack than a default thread provides. Running on
+    // our own generous stack makes `run_source` safe to call from any thread
+    // (a 2 MiB Rust test thread included) and, together with `MAX_DEPTH`, lets
+    // unbounded recursion resolve to an `Unsupported` skip *before* the Rust
+    // stack is exhausted rather than aborting the process (RUE-340).
+    std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .stack_size(WORKER_STACK)
+            .spawn_scoped(scope, || {
+                Interp {
+                    state: &state,
+                    stdout: String::new(),
+                    budget: STEP_BUDGET,
+                    depth: 0,
+                }
+                .run()
+            })
+            .expect("spawn oracle interpreter worker thread")
+            .join()
+            .expect("oracle interpreter worker thread panicked")
+    })
 }
+
+/// Stack size of the interpreter worker thread. Sized so all `MAX_DEPTH`
+/// activations (each ~a few tens of KiB of Rust stack in an unoptimized build,
+/// so ~tens of MiB total) fit with several-fold headroom, plus room for
+/// per-expression eval recursion. Only touched pages are committed, so the
+/// large reservation is cheap; it matches the harness's own worker stack.
+const WORKER_STACK: usize = 256 * 1024 * 1024;
+
+/// Total interpreter step budget, shared across **all** call activations (not
+/// per-frame): every instruction executed anywhere in the run decrements it, so
+/// it bounds *total work* — a runaway loop, deep/unbounded recursion, or any
+/// combination — and reports [`Unsupported`] instead of hanging. Generous
+/// enough that no legitimate program in the differential corpus reaches it.
+const STEP_BUDGET: u64 = 50_000_000;
+
+/// Maximum interpreter call-recursion depth, shared across all activations.
+/// Each Rue call activation is a nested `call` -> `eval` Rust recursion, so
+/// unbounded Rue recursion would otherwise overflow the *Rust* stack — an
+/// uncatchable process abort that kills the whole differential harness rather
+/// than yielding a clean skip (RUE-340). This bound fires first, turning
+/// deep/infinite recursion into an [`Unsupported`] skip. It sits far above any
+/// legitimately-recursive corpus/fuzzer program yet far below the number of
+/// activations that fit in `WORKER_STACK`, so the skip always wins the race
+/// against stack exhaustion.
+const MAX_DEPTH: u32 = 2_000;
 
 /// A runtime value. Integers are held in `i128` (wide enough for every Rue
 /// integer type, and to detect overflow of any of them before range-checking).
@@ -132,6 +175,13 @@ impl From<Unsupported> for Flow {
 struct Interp<'a> {
     state: &'a CompileState,
     stdout: String,
+    /// Remaining total step budget (see [`STEP_BUDGET`]). Shared across every
+    /// activation and decremented per instruction, so it bounds total work
+    /// including recursion, not just per-frame loops.
+    budget: u64,
+    /// Current call-recursion depth (see [`MAX_DEPTH`]). Incremented on entry to
+    /// each `call` and decremented on exit, bounding Rust-stack recursion.
+    depth: u32,
 }
 
 /// Per-call activation record. `cache` is scoped to a *single block execution*
@@ -194,6 +244,22 @@ impl<'a> Interp<'a> {
     /// can copy out `inout` parameters (Rue `inout` is copy-in / copy-out, which
     /// is observably identical to by-reference under the law of exclusivity).
     fn call(&mut self, name: &str, args: &[Value]) -> Step<(Value, Vec<Option<Value>>)> {
+        // Bound recursion *depth* (shared across activations) before descending,
+        // so unbounded Rue recursion resolves to a clean `Unsupported` skip
+        // instead of overflowing the Rust stack and aborting the process
+        // (RUE-340). Decrement on every exit path by capturing the result.
+        if self.depth >= MAX_DEPTH {
+            return Err(Flow::Unsupported(Unsupported(
+                "recursion depth budget exhausted".into(),
+            )));
+        }
+        self.depth += 1;
+        let result = self.call_inner(name, args);
+        self.depth -= 1;
+        result
+    }
+
+    fn call_inner(&mut self, name: &str, args: &[Value]) -> Step<(Value, Vec<Option<Value>>)> {
         let cfg = self
             .find_cfg(name)
             .ok_or_else(|| Flow::Unsupported(Unsupported(format!("call to '{name}'"))))?;
@@ -215,8 +281,6 @@ impl<'a> Interp<'a> {
 
         let mut current = cfg.entry;
         let mut incoming: Vec<Value> = Vec::new();
-        // A generous step budget so a mis-modeled loop reports instead of hanging.
-        let mut budget: u64 = 50_000_000;
 
         loop {
             let block = cfg.get_block(current);
@@ -229,7 +293,10 @@ impl<'a> Interp<'a> {
                 frame.cache.insert(pv.as_u32(), val);
             }
             for &v in &block.insts {
-                budget = budget.checked_sub(1).ok_or_else(|| {
+                // Decrement the shared total-work budget (see `STEP_BUDGET`): a
+                // runaway loop or deep recursion reports `Unsupported` here
+                // rather than hanging.
+                self.budget = self.budget.checked_sub(1).ok_or_else(|| {
                     Flow::Unsupported(Unsupported("step budget exhausted".into()))
                 })?;
                 self.eval(cfg, &mut frame, v)?;

@@ -29,31 +29,70 @@ enum PatchHome {
     Data,
 }
 
-/// Is this a code section? Accepts both ELF (`.text*`) and Mach-O
-/// (`__TEXT,__text` / `__text*`) names.
-fn is_text_section(name: &str) -> bool {
-    name.starts_with(".text") || name == "__TEXT,__text" || name.starts_with("__text")
+/// The output-segment class a section merges into. Derived purely from the
+/// section name so both the ELF (`link_elf`) and Mach-O (`link_macho`) paths
+/// classify sections through the single [`classify_section`] source of truth
+/// instead of re-deriving it inline (RUE-336).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SectionKind {
+    /// Executable code (`.text*` / `__TEXT,__text` / `__text*`).
+    Text,
+    /// Read-only data (`.rodata*` / `.cstring*` / Mach-O `__const`/`__cstring`).
+    Rodata,
+    /// Writable initialized data (`.data*` / `__DATA,__data` / `__data*`).
+    Data,
+    /// Zero-initialized data (`.bss*` / `__DATA,__bss` / `__bss*`).
+    Bss,
+    /// Anything else (debug info, notes, etc.) — not merged into a segment.
+    Other,
 }
 
-/// Is this a read-only data section? Accepts both ELF and Mach-O names.
-fn is_rodata_section(name: &str) -> bool {
-    name.starts_with(".rodata")
+/// Classify a section by name, accepting both ELF (`.text*`, `.rodata*`, …) and
+/// Mach-O (`__TEXT,__text`, `__DATA,__const`, …) conventions. This is the sole
+/// section-classification authority; every merge/base-address decision routes
+/// through it so the classes cannot drift out of sync (RUE-336).
+///
+/// The prefix sets are mutually exclusive, so the check order is immaterial.
+fn classify_section(name: &str) -> SectionKind {
+    if name.starts_with(".text") || name == "__TEXT,__text" || name.starts_with("__text") {
+        SectionKind::Text
+    } else if name.starts_with(".rodata")
         || name == "__DATA,__const"
         || name == "__TEXT,__const"
         || name == "__TEXT,__cstring"
         || name == "__TEXT,__rodata"
         || name.starts_with("__const")
         || name.starts_with(".cstring")
+    {
+        SectionKind::Rodata
+    } else if name.starts_with(".data") || name == "__DATA,__data" || name.starts_with("__data") {
+        SectionKind::Data
+    } else if name.starts_with(".bss") || name == "__DATA,__bss" || name.starts_with("__bss") {
+        SectionKind::Bss
+    } else {
+        SectionKind::Other
+    }
+}
+
+/// Is this a code section? Accepts both ELF (`.text*`) and Mach-O
+/// (`__TEXT,__text` / `__text*`) names.
+fn is_text_section(name: &str) -> bool {
+    classify_section(name) == SectionKind::Text
+}
+
+/// Is this a read-only data section? Accepts both ELF and Mach-O names.
+fn is_rodata_section(name: &str) -> bool {
+    classify_section(name) == SectionKind::Rodata
 }
 
 /// Is this a writable data section? Accepts both ELF and Mach-O names.
 fn is_data_section(name: &str) -> bool {
-    name.starts_with(".data") || name == "__DATA,__data" || name.starts_with("__data")
+    classify_section(name) == SectionKind::Data
 }
 
 /// Is this a zero-initialized (bss) section? Accepts both ELF and Mach-O names.
 fn is_bss_section(name: &str) -> bool {
-    name.starts_with(".bss") || name == "__DATA,__bss" || name.starts_with("__bss")
+    classify_section(name) == SectionKind::Bss
 }
 
 /// Apply a single already-resolved relocation by patching `buf` in place.
@@ -1260,7 +1299,7 @@ impl Linker {
         // Merge code sections (.text*)
         for (obj_idx, obj) in self.objects.iter().enumerate() {
             for (sec_idx, section) in obj.sections.iter().enumerate() {
-                if !section.name.starts_with(".text") || section.data.is_empty() {
+                if classify_section(&section.name) != SectionKind::Text || section.data.is_empty() {
                     continue;
                 }
 
@@ -1290,7 +1329,7 @@ impl Linker {
         // memory protections at runtime.
         for (obj_idx, obj) in self.objects.iter().enumerate() {
             for (sec_idx, section) in obj.sections.iter().enumerate() {
-                if !section.name.starts_with(".rodata") {
+                if classify_section(&section.name) != SectionKind::Rodata {
                     continue;
                 }
                 // Note: we don't skip empty sections because they may still have
@@ -1320,7 +1359,7 @@ impl Linker {
         // Merge .data sections (initialized data - placed in data segment)
         for (obj_idx, obj) in self.objects.iter().enumerate() {
             for (sec_idx, section) in obj.sections.iter().enumerate() {
-                if !section.name.starts_with(".data") {
+                if classify_section(&section.name) != SectionKind::Data {
                     continue;
                 }
                 // Skip empty .data sections
@@ -1354,7 +1393,7 @@ impl Linker {
 
         for (obj_idx, obj) in self.objects.iter().enumerate() {
             for (sec_idx, section) in obj.sections.iter().enumerate() {
-                if !section.name.starts_with(".bss") {
+                if classify_section(&section.name) != SectionKind::Bss {
                     continue;
                 }
 
@@ -1417,16 +1456,12 @@ impl Linker {
                     }
                     if let Some(&section_offset) = section_offsets.get(&(obj_idx, sec_idx)) {
                         let section = &obj.sections[sec_idx];
-                        let base = if section.name.starts_with(".text") {
-                            code_vaddr
-                        } else if section.name.starts_with(".rodata") {
-                            rodata_vaddr
-                        } else if section.name.starts_with(".data") {
-                            data_vaddr
-                        } else if section.name.starts_with(".bss") {
-                            bss_vaddr
-                        } else {
-                            continue;
+                        let base = match classify_section(&section.name) {
+                            SectionKind::Text => code_vaddr,
+                            SectionKind::Rodata => rodata_vaddr,
+                            SectionKind::Data => data_vaddr,
+                            SectionKind::Bss => bss_vaddr,
+                            SectionKind::Other => continue,
                         };
 
                         let addr = base + section_offset + sym.value;
@@ -1463,16 +1498,12 @@ impl Linker {
         for (obj_idx, obj) in self.objects.iter().enumerate() {
             for (sec_idx, section) in obj.sections.iter().enumerate() {
                 if let Some(&offset) = section_offsets.get(&(obj_idx, sec_idx)) {
-                    let addr = if section.name.starts_with(".text") {
-                        code_vaddr + offset
-                    } else if section.name.starts_with(".rodata") {
-                        rodata_vaddr + offset
-                    } else if section.name.starts_with(".data") {
-                        data_vaddr + offset
-                    } else if section.name.starts_with(".bss") {
-                        bss_vaddr + offset
-                    } else {
-                        continue;
+                    let addr = match classify_section(&section.name) {
+                        SectionKind::Text => code_vaddr + offset,
+                        SectionKind::Rodata => rodata_vaddr + offset,
+                        SectionKind::Data => data_vaddr + offset,
+                        SectionKind::Bss => bss_vaddr + offset,
+                        SectionKind::Other => continue,
                     };
                     // Use section name as fallback
                     symbol_addresses
@@ -1525,19 +1556,17 @@ impl Linker {
                     }
                     let section = &obj.sections[sec_idx];
                     if let Some(&sec_offset) = section_offsets.get(&(obj_idx, sec_idx)) {
-                        let base = if section.name.starts_with(".text") {
-                            code_vaddr
-                        } else if section.name.starts_with(".rodata") {
-                            rodata_vaddr
-                        } else if section.name.starts_with(".data") {
-                            data_vaddr
-                        } else if section.name.starts_with(".bss") {
-                            bss_vaddr
-                        } else {
-                            return Err(LinkError::UndefinedSymbol(format!(
-                                "{} (in section '{}')",
-                                sym_name, section.name
-                            )));
+                        let base = match classify_section(&section.name) {
+                            SectionKind::Text => code_vaddr,
+                            SectionKind::Rodata => rodata_vaddr,
+                            SectionKind::Data => data_vaddr,
+                            SectionKind::Bss => bss_vaddr,
+                            SectionKind::Other => {
+                                return Err(LinkError::UndefinedSymbol(format!(
+                                    "{} (in section '{}')",
+                                    sym_name, section.name
+                                )));
+                            }
                         };
                         base + sec_offset
                     } else {

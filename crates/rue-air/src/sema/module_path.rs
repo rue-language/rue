@@ -28,23 +28,9 @@
 //! same source text always imports the file next to it rather than an
 //! unrelated same-named file elsewhere in the program (RUE-266).
 
-use std::path::{Component, Path, PathBuf};
+use std::path::Path;
 
-/// Lexically normalize a path for equivalence comparison by dropping `.`
-/// (current-directory) components, so `./foo.rue`, `sub/./foo.rue` and
-/// `sub/foo.rue` compare equal. Parent (`..`) and normal components are
-/// preserved, so the normalization is purely lexical and never touches the
-/// filesystem. Mirrors `file_paths::normalize_module_path`.
-fn normalize(path: &str) -> String {
-    let mut out = PathBuf::new();
-    for comp in Path::new(path).components() {
-        match comp {
-            Component::CurDir => {}
-            other => out.push(other.as_os_str()),
-        }
-    }
-    out.to_string_lossy().into_owned()
-}
+use crate::path_norm::normalize_module_path as normalize;
 
 /// Join a base directory with a relative path. An empty base directory yields
 /// the relative path unchanged (the importer sits at the search root).
@@ -144,8 +130,9 @@ impl ModulePath {
     /// match, the result is [`DirResolution::NotFound`].
     ///
     /// Matching is by lexically-normalized path equality (dropping `.`
-    /// components), so `./foo.rue` and `foo.rue` are the same file (spec
-    /// 10.2:4). The returned string is the original loaded path.
+    /// components and collapsing `..`), so `./foo.rue` and `foo.rue`, or a
+    /// `../`-relative import and a command-line-listed file, are the same file
+    /// (spec 10.2:4, RUE-317). The returned string is the original loaded path.
     pub fn resolve_in_dirs<'a, I>(&self, base_dirs: &[&str], loaded_paths: I) -> DirResolution
     where
         I: Iterator<Item = &'a String>,

@@ -251,3 +251,59 @@ fn main() -> i32 {
     }
 }
 ```
+
+## Scrutinee Access Mode
+
+{{ rule(id="4.7:33", cat="normative") }}
+
+The scrutinee of a match is used in **value context** (3.8:76): evaluating a match
+*uses* its scrutinee. If the scrutinee's type is `Copy`, the match copies it and the
+scrutinee remains valid after the match. If the scrutinee's type is a move type, the
+match consumes — moves — the scrutinee, which is invalid after the match. Rue has no
+`borrow` or `inout` scrutinee form (those access modes apply only to function
+parameters and arguments, 6.1); `match e` always uses `e` by value. The payload
+bindings introduced by a matched arm (4.7:31) then project sub-places of the value
+the match has already used.
+
+{{ rule(id="4.7:34", cat="legality-rule") }}
+
+A move-type scrutinee is consumed by the match independently of whether the matched
+arm binds a payload. A match whose selected arm binds nothing — a bare variant
+pattern, a wildcard `_`, or a literal pattern — still moves a move-type scrutinee,
+because the scrutinee occurs in value context regardless of the pattern. Using the
+scrutinee after such a match is therefore a use-after-move error (3.8:5).
+
+{{ rule(id="4.7:35", cat="example") }}
+
+```rue
+enum E { A(i32), B }
+
+fn use_again(e: E) -> i32 { 2 }
+
+fn main() -> i32 {
+    let e = E::A(40);       // payload is Copy, so E is a Copy type
+    let r = match e {
+        E::A(x) => x,
+        E::B => 0,
+    };
+    r + use_again(e)        // OK: Copy scrutinee still valid -> 42
+}
+```
+
+{{ rule(id="4.7:36", cat="example") }}
+
+```rue
+struct Big { value: i32 }
+enum E { A(Big), B }
+
+fn use_again(e: E) -> i32 { 0 }
+
+fn main() -> i32 {
+    let e = E::A(Big { value: 7 });   // move type: Big is not Copy
+    let r = match e {
+        E::A => 1,                    // binds nothing, yet consumes `e`
+        E::B => 2,
+    };
+    r + use_again(e)                  // ERROR: use of moved value 'e'
+}
+```

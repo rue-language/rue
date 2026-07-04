@@ -1,0 +1,86 @@
+//! Lexical path normalization shared across module resolution.
+//!
+//! Module identity is keyed by a file's *resolved* path (spec 10.2:4: an import
+//! that resolves to an already-loaded file refers to that same module). But the
+//! same physical file reaches the resolver under several spellings — a
+//! command-line source might be listed as `std/opt.rue` while a `../`-relative
+//! `@import("../std/opt.rue")` from a sibling directory resolves to
+//! `a/../std/opt.rue`. These must collapse to one key, or the file is
+//! double-registered and member access fails (E0707, RUE-317).
+//!
+//! [`normalize_module_path`] performs that collapse **lexically**: it drops `.`
+//! (current-dir) components and resolves `..` against the preceding *normal*
+//! component. It never touches the filesystem, so it does not follow symlinks;
+//! a leading `..` with nothing to cancel (or a `..` after the root) is
+//! preserved verbatim. Every module-registry / file-table key must pass through
+//! this one function so all spellings of a file agree.
+
+use std::path::{Component, Path, PathBuf};
+
+/// Lexically normalize a path for equivalence comparison: drop `.` components
+/// and collapse `..` against a preceding normal component. Purely lexical —
+/// never touches the filesystem (no symlink resolution).
+///
+/// Examples (`/` shown for clarity; output uses the platform separator):
+/// - `./foo.rue` -> `foo.rue`
+/// - `sub/./foo.rue` -> `sub/foo.rue`
+/// - `a/../std/opt.rue` -> `std/opt.rue`
+/// - `../std/opt.rue` -> `../std/opt.rue` (leading `..` has nothing to cancel)
+pub(crate) fn normalize_module_path(path: &str) -> String {
+    let mut out: Vec<Component> = Vec::new();
+    for comp in Path::new(path).components() {
+        match comp {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                // Cancel a preceding *normal* component; otherwise (empty, a
+                // leading `..`, or a root/prefix) keep the `..` verbatim so the
+                // normalization stays purely lexical.
+                if matches!(out.last(), Some(Component::Normal(_))) {
+                    out.pop();
+                } else {
+                    out.push(comp);
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    let mut buf = PathBuf::new();
+    for comp in out {
+        buf.push(comp.as_os_str());
+    }
+    buf.to_string_lossy().into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_module_path as n;
+
+    #[test]
+    fn drops_cur_dir() {
+        assert_eq!(n("./foo.rue"), "foo.rue");
+        assert_eq!(n("sub/./foo.rue"), "sub/foo.rue");
+    }
+
+    #[test]
+    fn collapses_parent_dir() {
+        // The RUE-317 case: a `../`-relative import from `a/` reconciles with a
+        // command-line-listed `std/opt.rue`.
+        assert_eq!(n("a/../std/opt.rue"), "std/opt.rue");
+        assert_eq!(n("a/b/../../std/opt.rue"), "std/opt.rue");
+        assert_eq!(n("a/b/../c.rue"), "a/c.rue");
+    }
+
+    #[test]
+    fn preserves_uncancelable_parent() {
+        // A leading `..` has no preceding normal component to cancel.
+        assert_eq!(n("../std/opt.rue"), "../std/opt.rue");
+        assert_eq!(n("../../x.rue"), "../../x.rue");
+    }
+
+    #[test]
+    fn both_spellings_agree() {
+        // The two spellings of the same physical file must normalize equal.
+        assert_eq!(n("a/../std/opt.rue"), n("std/opt.rue"));
+        assert_eq!(n("./std/opt.rue"), n("std/opt.rue"));
+    }
+}
