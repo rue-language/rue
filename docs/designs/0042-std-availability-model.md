@@ -8,6 +8,7 @@ accepted: 2026-07-03
 implemented:
 spec-sections: ["2 (lexical/literals)", "3.7 (String)", "10 (modules)"]
 supersedes:
+amended-by: [0043]
 relates: ["ADR-0020", "ADR-0037", "RUE-315", "RUE-287", "RUE-6", "RUE-1"]
 ---
 

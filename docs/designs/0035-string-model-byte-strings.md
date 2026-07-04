@@ -9,6 +9,7 @@ accepted: 2026-07-02
 implemented:
 spec-sections: ["3.7"]
 superseded-by:
+amended-by: [0043]
 ---
 
 # ADR-0035: String model — byte strings with loud pragmatism

@@ -51,3 +51,6 @@ echo "Running spec traceability check..."
 RUE_SPEC_DIR="docs/spec/src" \
 RUE_SPEC_CASES="crates/rue-spec/cases" \
 ./buck2 run //crates/rue-spec:rue-spec -- --traceability
+
+echo "Validating ADR registry..."
+scripts/validate-adrs.py

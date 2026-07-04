@@ -1,7 +1,7 @@
 ---
 id: 0032
 title: Data Structure Selection for Small Collections
-status: accepted
+status: implemented
 tags: [performance, implementation]
 feature-flag: null
 created: 2026-01-11

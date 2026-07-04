@@ -1,7 +1,23 @@
+---
+id: 0034
+title: Per-Target Runtime Archives for Cross-Compilation
+status: accepted
+tags: [runtime, cross-compilation, build-system, targets]
+created: 2026-06-11
+accepted: 2026-06-11
+implemented:
+spec-sections: []
+superseded-by:
+---
+
 # ADR-0034: Per-Target Runtime Archives for Cross-Compilation
 
-**Status:** Accepted (ratified by Steve 2026-06-11: option B now, option A acknowledged as the probable eventual destination; stopgap C shipped in #978)
-**Tracking:** RUE-36 (cross-compilation embeds the host runtime), RUE-144 item 7 (build-graph root cause), RUE-85 (Mach-O cross-linking)
+## Status
+
+Accepted. Option B was ratified for the current implementation; option A is the
+probable eventual destination. The stopgap refusal behavior shipped in PR #978.
+
+**Tracking:** RUE-36, RUE-144 item 7, RUE-85
 
 ## Problem
 
