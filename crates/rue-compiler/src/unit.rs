@@ -25,13 +25,12 @@
 use std::collections::HashMap;
 
 use lasso::ThreadedRodeo;
-use rayon::prelude::*;
 use tracing::{info, info_span};
 
 use crate::{
-    AnalyzedFunction, Ast, AstGen, CfgBuilder, CompileErrors, CompileOptions, CompileOutput,
-    CompileWarning, FunctionWithCfg, Lexer, MultiErrorResult, Parser, Rir, Sema, SourceFile, Type,
-    TypeInternPool, compile_backend,
+    Ast, AstGen, CompileErrors, CompileOptions, CompileOutput, CompileWarning, FunctionWithCfg,
+    Lexer, MultiErrorResult, Parser, Rir, Sema, SourceFile, TypeInternPool,
+    build_functions_and_cfgs, compile_backend,
 };
 use rue_span::FileId;
 
@@ -300,92 +299,14 @@ impl<'src> CompilationUnit<'src> {
             output
         };
 
-        // Synthesize drop glue functions
-        let drop_glue_functions = crate::drop_glue::synthesize_drop_glue(&sema_output.type_pool);
+        let cfg_output = build_functions_and_cfgs(sema_output, self.options.opt_level, interner)?;
 
-        // Combine user functions with drop glue, filtering out comptime-only functions
-        let all_functions: Vec<_> = sema_output
-            .functions
-            .into_iter()
-            .filter(|f| f.air.return_type() != Type::COMPTIME_TYPE)
-            .chain(drop_glue_functions)
-            .collect();
-
-        // Build CFGs in parallel
-        let (functions, cfg_warnings) = self.build_cfgs(all_functions, &sema_output.type_pool)?;
-
-        self.functions = Some(functions);
-        self.type_pool = Some(sema_output.type_pool);
-        self.strings = Some(sema_output.strings);
-        self.warnings.extend(sema_output.warnings);
-        self.warnings.extend(cfg_warnings);
+        self.functions = Some(cfg_output.functions);
+        self.type_pool = Some(cfg_output.type_pool);
+        self.strings = Some(cfg_output.strings);
+        self.warnings.extend(cfg_output.warnings);
 
         Ok(())
-    }
-
-    /// Build CFGs for all functions in parallel.
-    fn build_cfgs(
-        &self,
-        functions: Vec<AnalyzedFunction>,
-        type_pool: &TypeInternPool,
-    ) -> MultiErrorResult<(Vec<FunctionWithCfg>, Vec<CompileWarning>)> {
-        let interner = self.interner.as_ref().expect("interner not initialized");
-        let opt_level = self.options.opt_level;
-
-        let _span = info_span!("cfg_construction").entered();
-
-        let results: Vec<Result<(FunctionWithCfg, Vec<CompileWarning>), CompileErrors>> = functions
-            .into_par_iter()
-            .map(|func| {
-                let cfg_output = CfgBuilder::build(
-                    &func.air,
-                    func.num_locals,
-                    func.num_param_slots,
-                    &func.name,
-                    type_pool,
-                    func.param_modes.clone(),
-                    interner,
-                );
-
-                // A non-empty `errors` means the CFG builder hit malformed AIR
-                // (an internal compiler error, RUE-7). Abort before optimizing
-                // the discarded CFG rather than working on it.
-                if !cfg_output.errors.is_empty() {
-                    let mut errs = CompileErrors::new();
-                    for e in cfg_output.errors {
-                        errs.push(e);
-                    }
-                    return Err(errs);
-                }
-
-                // Apply optimizations
-                let mut cfg = cfg_output.cfg;
-                rue_cfg::opt::optimize(&mut cfg, opt_level);
-
-                Ok((
-                    FunctionWithCfg {
-                        analyzed: func,
-                        cfg,
-                    },
-                    cfg_output.warnings,
-                ))
-            })
-            .collect();
-
-        let mut functions = Vec::with_capacity(results.len());
-        let mut warnings = Vec::new();
-        for result in results {
-            let (func, func_warnings) = result?;
-            functions.push(func);
-            warnings.extend(func_warnings);
-        }
-
-        info!(
-            function_count = functions.len(),
-            "CFG construction complete"
-        );
-
-        Ok((functions, warnings))
     }
 
     // =========================================================================

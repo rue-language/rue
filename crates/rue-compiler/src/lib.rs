@@ -694,6 +694,104 @@ pub struct CompileState {
     pub warnings: Vec<CompileWarning>,
 }
 
+/// Frontend artifacts after semantic analysis has been lowered to CFGs.
+struct CfgFrontendOutput {
+    /// Analyzed functions paired with their optimized CFGs.
+    functions: Vec<FunctionWithCfg>,
+    /// Type intern pool containing all struct and enum definitions.
+    type_pool: TypeInternPool,
+    /// String literals indexed by their AIR string_const index.
+    strings: Vec<String>,
+    /// Warnings collected during semantic analysis and CFG construction.
+    warnings: Vec<CompileWarning>,
+}
+
+/// Lower semantic-analysis output through drop-glue synthesis, comptime filtering,
+/// CFG construction, and CFG optimization.
+///
+/// This is shared by the `CompilationUnit` pipeline and the `--emit` frontend
+/// helpers so the live frontend tail stays in one place.
+fn build_functions_and_cfgs(
+    sema_output: SemaOutput,
+    opt_level: OptLevel,
+    interner: &ThreadedRodeo,
+) -> MultiErrorResult<CfgFrontendOutput> {
+    let SemaOutput {
+        functions,
+        strings,
+        mut warnings,
+        type_pool,
+    } = sema_output;
+
+    // Synthesize drop glue functions.
+    let drop_glue_functions = drop_glue::synthesize_drop_glue(&type_pool);
+
+    // Combine user functions with drop glue, filtering out comptime-only functions.
+    let all_functions: Vec<_> = functions
+        .into_iter()
+        .filter(|f| f.air.return_type() != Type::COMPTIME_TYPE)
+        .chain(drop_glue_functions)
+        .collect();
+
+    let _span = info_span!("cfg_construction").entered();
+
+    let results: Vec<Result<(FunctionWithCfg, Vec<CompileWarning>), CompileErrors>> = all_functions
+        .into_par_iter()
+        .map(|func| {
+            let cfg_output = CfgBuilder::build(
+                &func.air,
+                func.num_locals,
+                func.num_param_slots,
+                &func.name,
+                &type_pool,
+                func.param_modes.clone(),
+                interner,
+            );
+
+            // A non-empty `errors` means the CFG builder hit malformed AIR
+            // (an internal compiler error, RUE-7). Abort before optimizing
+            // the discarded CFG rather than working on it.
+            if !cfg_output.errors.is_empty() {
+                let mut errs = CompileErrors::new();
+                for e in cfg_output.errors {
+                    errs.push(e);
+                }
+                return Err(errs);
+            }
+
+            let mut cfg = cfg_output.cfg;
+            rue_cfg::opt::optimize(&mut cfg, opt_level);
+
+            Ok((
+                FunctionWithCfg {
+                    analyzed: func,
+                    cfg,
+                },
+                cfg_output.warnings,
+            ))
+        })
+        .collect();
+
+    let mut functions = Vec::with_capacity(results.len());
+    for result in results {
+        let (func, func_warnings) = result?;
+        functions.push(func);
+        warnings.extend(func_warnings);
+    }
+
+    info!(
+        function_count = functions.len(),
+        "CFG construction complete"
+    );
+
+    Ok(CfgFrontendOutput {
+        functions,
+        type_pool,
+        strings,
+        warnings,
+    })
+}
+
 /// Output from successful compilation.
 ///
 /// Contains the compiled executable binary and any warnings generated
@@ -833,86 +931,16 @@ pub fn compile_frontend_from_ast_with_file_paths(
         output
     };
 
-    // Synthesize drop glue functions for structs that need them
-    let drop_glue_functions = drop_glue::synthesize_drop_glue(&sema_output.type_pool);
-
-    // Combine user functions with synthesized drop glue functions
-    // Filter out comptime-only functions (those returning `type`) as they don't generate runtime code
-    let all_functions: Vec<_> = sema_output
-        .functions
-        .into_iter()
-        .filter(|f| f.air.return_type() != Type::COMPTIME_TYPE)
-        .chain(drop_glue_functions)
-        .collect();
-
-    // Build CFGs from AIR (one per function) in parallel, collecting warnings
-    let (functions, warnings) = {
-        let _span = info_span!("cfg_construction").entered();
-
-        // Build CFGs in parallel - each function is independent
-        let results: Vec<Result<(FunctionWithCfg, Vec<CompileWarning>), CompileErrors>> =
-            all_functions
-                .into_par_iter()
-                .map(|func| {
-                    let cfg_output = CfgBuilder::build(
-                        &func.air,
-                        func.num_locals,
-                        func.num_param_slots,
-                        &func.name,
-                        &sema_output.type_pool,
-                        func.param_modes.clone(),
-                        &interner,
-                    );
-
-                    // A non-empty `errors` means the CFG builder hit malformed
-                    // AIR (an internal compiler error, RUE-7). Abort before
-                    // optimizing the discarded CFG rather than working on it.
-                    if !cfg_output.errors.is_empty() {
-                        let mut errs = CompileErrors::new();
-                        for e in cfg_output.errors {
-                            errs.push(e);
-                        }
-                        return Err(errs);
-                    }
-
-                    // Apply optimizations to the CFG
-                    let mut cfg = cfg_output.cfg;
-                    rue_cfg::opt::optimize(&mut cfg, opt_level);
-
-                    Ok((
-                        FunctionWithCfg {
-                            analyzed: func,
-                            cfg,
-                        },
-                        cfg_output.warnings,
-                    ))
-                })
-                .collect();
-
-        // Unzip the results and collect all warnings
-        let mut functions = Vec::with_capacity(results.len());
-        let mut warnings = sema_output.warnings;
-        for result in results {
-            let (func, func_warnings) = result?;
-            functions.push(func);
-            warnings.extend(func_warnings);
-        }
-
-        info!(
-            function_count = functions.len(),
-            "CFG construction complete"
-        );
-        (functions, warnings)
-    };
+    let cfg_output = build_functions_and_cfgs(sema_output, opt_level, &interner)?;
 
     Ok(CompileState {
         ast,
         interner,
         rir,
-        functions,
-        type_pool: sema_output.type_pool,
-        strings: sema_output.strings,
-        warnings,
+        functions: cfg_output.functions,
+        type_pool: cfg_output.type_pool,
+        strings: cfg_output.strings,
+        warnings: cfg_output.warnings,
     })
 }
 
