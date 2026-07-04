@@ -7,7 +7,7 @@
 # byte as `u8`, bounds-checked (an out-of-range index traps, exit 101).
 #
 # Gated behind `--preview string_trio`. Deferred to later phases: `str`
-# concatenation, comparison/equality, `str`<->`String` interop, methods beyond
+# concatenation, ordering comparison, `str`<->`String` interop, methods beyond
 # `.len()`/index, and char iteration.
 
 [section]
@@ -184,3 +184,38 @@ fn main() -> i32 {
 }
 """
 exit_code = 2
+
+# 3.7:10 / 4.3:3 — `str` equality is byte-content equality, not pointer+len
+# structural equality. The returned literal may occupy a distinct rodata slot.
+[[case]]
+name = "str_equality_compares_byte_content"
+spec = ["3.7:10", "4.3:3"]
+preview = "string_trio"
+preview_should_pass = true
+source = """
+fn choose(c: bool) -> str {
+    if c { "hello" } else { "world" }
+}
+fn main() -> i32 {
+    let s: str = "hello";
+    if s == choose(true) { 0 } else { 1 }
+}
+"""
+exit_code = 0
+
+# 3.7:10 / 4.3:3 — `str != str` is the inverse of byte-content equality.
+[[case]]
+name = "str_inequality_compares_byte_content"
+spec = ["3.7:10", "4.3:3"]
+preview = "string_trio"
+preview_should_pass = true
+source = """
+fn choose(c: bool) -> str {
+    if c { "hello" } else { "world" }
+}
+fn main() -> i32 {
+    let s: str = "hello";
+    if s != choose(false) { 0 } else { 1 }
+}
+"""
+exit_code = 0

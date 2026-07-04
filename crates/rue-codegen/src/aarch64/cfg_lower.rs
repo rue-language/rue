@@ -1081,8 +1081,9 @@ impl<'a> CfgLower<'a> {
             CfgInstData::Eq(lhs, rhs) => {
                 let lhs_ty = self.ctx.cfg.get_inst(*lhs).ty;
 
-                if self.ctx.is_builtin_string(lhs_ty) {
-                    // String equality: call __rue_str_eq(ptr1, len1, ptr2, len2)
+                if self.ctx.is_string_like_for_equality(lhs_ty) {
+                    // String-like equality compares byte content, not the
+                    // pointer/len/cap fields structurally.
                     let vreg = self.emit_string_eq_call(*lhs, *rhs);
                     self.value_map.insert(value, vreg);
                 } else if lhs_ty == Type::UNIT {
@@ -1105,8 +1106,9 @@ impl<'a> CfgLower<'a> {
             CfgInstData::Ne(lhs, rhs) => {
                 let lhs_ty = self.ctx.cfg.get_inst(*lhs).ty;
 
-                if self.ctx.is_builtin_string(lhs_ty) {
-                    // String inequality: call __rue_str_eq and invert result
+                if self.ctx.is_string_like_for_equality(lhs_ty) {
+                    // String-like inequality is the inverse of byte-content
+                    // equality.
                     let vreg = self.emit_string_eq_call(*lhs, *rhs);
                     self.value_map.insert(value, vreg);
                     // Invert result: 0 -> 1, 1 -> 0
@@ -3735,9 +3737,9 @@ impl<'a> CfgLower<'a> {
         let lhs_ty = self.ctx.cfg.get_inst(lhs).ty;
 
         // Special handling for string comparisons
-        if self.ctx.is_builtin_string(lhs_ty) {
-            // String comparison requires calling __rue_str_eq runtime function
-            // Strings are fat pointers: [ptr_vreg, len_vreg] in struct_slot_vregs
+        if self.ctx.is_string_like_for_equality(lhs_ty) {
+            // String-like comparison requires calling __rue_str_eq. Both
+            // `str`/`Str(N)` and `StrBuf` have ptr/len in the first two slots.
 
             // Get left string fat pointer
             let lhs_fields = self
@@ -3907,14 +3909,15 @@ impl<'a> CfgLower<'a> {
         }
     }
 
-    /// Emit a call to __rue_str_eq for string comparison.
+    /// Emit a call to __rue_str_eq for string-like comparison.
     ///
     /// Returns the vreg containing the result (0 or 1).
     fn emit_string_eq_call(&mut self, lhs: CfgValue, rhs: CfgValue) -> VReg {
         let result_vreg = self.mir.alloc_vreg();
 
-        // Get string fields (ptr, len, cap) from struct_slot_vregs
-        // For comparison, we only use ptr and len (cap is not compared)
+        // Get string-like fields from struct_slot_vregs. For comparison, we
+        // use ptr and len: `str`/`Str(N)` have exactly those two slots, while
+        // `StrBuf` has an additional cap slot that is not compared.
         let lhs_fields = self
             .get_or_compute_field_vregs(lhs)
             .expect("string should have fat pointer fields");
@@ -3923,25 +3926,21 @@ impl<'a> CfgLower<'a> {
             .expect("string should have fat pointer fields");
 
         // Correctness guard (must run in release): reading ptr/len from a
-        // String with the wrong field count would index garbage, so plain
+        // string-like value with the wrong field count would index garbage, so plain
         // `assert!` not `debug_assert!` (RUE-45).
-        assert_eq!(
-            lhs_fields.len(),
-            3,
-            "string should have 3 fields (ptr, len, cap)"
+        assert!(
+            lhs_fields.len() >= 2,
+            "string-like value should have at least 2 fields (ptr, len)"
         );
-        assert_eq!(
-            rhs_fields.len(),
-            3,
-            "string should have 3 fields (ptr, len, cap)"
+        assert!(
+            rhs_fields.len() >= 2,
+            "string-like value should have at least 2 fields (ptr, len)"
         );
 
         let lhs_ptr = lhs_fields[0];
         let lhs_len = lhs_fields[1];
-        // lhs_fields[2] is cap, not used for comparison
         let rhs_ptr = rhs_fields[0];
         let rhs_len = rhs_fields[1];
-        // rhs_fields[2] is cap, not used for comparison
 
         // Move arguments to calling convention registers (AAPCS64)
         // X0 = ptr1, X1 = len1, X2 = ptr2, X3 = len2

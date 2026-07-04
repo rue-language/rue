@@ -10,7 +10,8 @@
 # `str` view (§3.7:43) so it reads through the universal `str` interface.
 #
 # Gated behind `--preview string_trio` (shared with `str`). Deferred to later
-# phases: mutation/append to `Str(N)`, and methods beyond `.len()`/index/borrow.
+# phases: mutation/append to `Str(N)`, ordering comparison, and methods beyond
+# `.len()`/index/borrow.
 
 [section]
 id = "types.str_fixed_type"
@@ -179,6 +180,24 @@ fn first(s: str) -> u8 {
 fn main() -> i32 {
     let s: Str(8) = "hello";
     if len_of(s) == 5 && first(s) == 104 { 0 } else { 1 }
+}
+"""
+exit_code = 0
+
+# 3.7:10 / 4.3:3 — fixed string equality is byte-content equality, not
+# structural equality over the compiler's representation.
+[[case]]
+name = "str_fixed_equality_compares_byte_content"
+spec = ["3.7:10", "4.3:3"]
+preview = "string_trio"
+preview_should_pass = true
+source = """
+fn choose(c: bool) -> Str(8) {
+    if c { "hello" } else { "world" }
+}
+fn main() -> i32 {
+    let s: Str(8) = "hello";
+    if s == choose(true) { 0 } else { 1 }
 }
 """
 exit_code = 0

@@ -1566,8 +1566,13 @@ impl<'a> CfgLower<'a> {
             CfgInstData::Eq(lhs, rhs) => {
                 let lhs_ty = self.ctx.cfg.get_inst(*lhs).ty;
 
-                // Check for builtin operator (e.g., String equality via __rue_str_eq)
-                if let Some((runtime_fn, invert)) = self.ctx.get_builtin_operator(lhs_ty, BinOp::Eq)
+                if self.ctx.is_string_like_for_equality(lhs_ty) {
+                    // String-like equality compares byte content, not the
+                    // pointer/len/cap fields structurally.
+                    let vreg = self.emit_builtin_eq_call(*lhs, *rhs, "__rue_str_eq");
+                    self.value_map.insert(value, vreg);
+                } else if let Some((runtime_fn, invert)) =
+                    self.ctx.get_builtin_operator(lhs_ty, BinOp::Eq)
                 {
                     let vreg = self.emit_builtin_eq_call(*lhs, *rhs, runtime_fn);
                     self.value_map.insert(value, vreg);
@@ -1601,8 +1606,17 @@ impl<'a> CfgLower<'a> {
             CfgInstData::Ne(lhs, rhs) => {
                 let lhs_ty = self.ctx.cfg.get_inst(*lhs).ty;
 
-                // Check for builtin operator (e.g., String inequality via __rue_str_eq + invert)
-                if let Some((runtime_fn, invert)) = self.ctx.get_builtin_operator(lhs_ty, BinOp::Ne)
+                if self.ctx.is_string_like_for_equality(lhs_ty) {
+                    // String-like inequality is the inverse of byte-content
+                    // equality.
+                    let vreg = self.emit_builtin_eq_call(*lhs, *rhs, "__rue_str_eq");
+                    self.value_map.insert(value, vreg);
+                    self.mir.push(X86Inst::XorRI {
+                        dst: Operand::Virtual(vreg),
+                        imm: 1,
+                    });
+                } else if let Some((runtime_fn, invert)) =
+                    self.ctx.get_builtin_operator(lhs_ty, BinOp::Ne)
                 {
                     let vreg = self.emit_builtin_eq_call(*lhs, *rhs, runtime_fn);
                     self.value_map.insert(value, vreg);
