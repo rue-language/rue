@@ -12,7 +12,12 @@ Bitwise operators perform bit-level operations on integer values.
 
 {{ rule(id="4.3a:1", cat="normative") }}
 
-Binary bitwise operators take two operands of the same integer type and produce a result of that type.
+Binary bitwise operators take two operands of the same integer type and produce
+a value of that same type. Each operator acts on the two operands' `w`-bit
+two's-complement representations bit-by-bit and the result is that bit pattern
+reinterpreted at the operand type's signedness; unlike arithmetic, a bitwise
+operation never traps (core calculus `docs/formal/01-core-calculus.md` §6.4,
+rule `(D-Bit)`).
 
 | Operator | Name | Description |
 |----------|------|-------------|
@@ -41,7 +46,10 @@ The bitwise NOT operator `~` inverts all bits of its operand.
 
 {{ rule(id="4.3a:4", cat="normative") }}
 
-Bitwise NOT takes a single integer operand and produces a result of the same type.
+Bitwise NOT takes a single integer operand and produces a value of the same
+type whose bits are the complement of the operand's `w`-bit two's-complement
+representation, reinterpreted at that signedness (core calculus
+`docs/formal/01-core-calculus.md` §6.4, the `~` case of rule `(D-Bit)`).
 
 {{ rule(id="4.3a:5") }}
 
@@ -74,13 +82,16 @@ For right shift (`>>`), the behavior depends on the signedness of the operand ty
 - For unsigned types, vacated bit positions are filled with zeros (logical shift).
 - For signed types, vacated bit positions are filled with copies of the sign bit (arithmetic shift).
 
+(Core calculus `docs/formal/01-core-calculus.md` §6.4, rule `(D-Shr)`:
+sign-replicating on a signed operand type, zero-filling on an unsigned one.)
+
 {{ rule(id="4.3a:9", cat="normative") }}
 
 The shift amount operand **MUST** have the same type as the value being shifted.
 
 {{ rule(id="4.3a:10", cat="normative") }}
 
-If the shift amount is greater than or equal to the bit width of the type, the behavior is defined as shifting by the amount modulo the bit width. For example, shifting an `i32` by 33 positions is equivalent to shifting by 1 position.
+If the shift amount is greater than or equal to the bit width of the type, the behavior is defined as shifting by the amount modulo the bit width. For example, shifting an `i32` by 33 positions is equivalent to shifting by 1 position. (Core calculus `docs/formal/01-core-calculus.md` §6.4, rules `(D-Shl)`/`(D-Shr)`: the shift amount is reduced modulo the operand width `w` before shifting. Shifting never traps.)
 
 {{ rule(id="4.3a:11") }}
 

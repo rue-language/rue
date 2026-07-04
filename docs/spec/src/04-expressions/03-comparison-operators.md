@@ -8,7 +8,11 @@ template = "spec/page.html"
 
 {{ rule(id="4.3:1", cat="normative") }}
 
-Comparison operators compare two values and produce a `bool` result.
+A comparison operator takes two operands of the same type and produces a `bool`
+(core calculus `docs/formal/01-core-calculus.md` §5.8, rule `(Eq)` for `==`/`!=`;
+§6.4, rules `(D-Eq)` and the ordering compares): the value produced is `true`
+exactly when the two operand values stand in the operator's relation, and
+`false` otherwise.
 
 ## Equality Operators
 
@@ -34,9 +38,10 @@ Two unit values are always equal.
 
 Equality on the aggregate types is **structural**: two aggregate values are
 equal if and only if they have the same type and their components — determined
-recursively by this rule down to scalar leaves — are equal. Specifically, two
-struct values are equal if and only if they have the same struct type and all
-corresponding fields are equal.
+recursively by this rule down to scalar leaves — are equal (core calculus
+`docs/formal/01-core-calculus.md` §6.4, the structural-equality relation `≈` of
+rule `(D-Eq)`). Specifically, two struct values are equal if and only if they
+have the same struct type and all corresponding fields are equal.
 
 {{ rule(id="4.3:3c", cat="normative") }}
 
@@ -59,8 +64,11 @@ and only if they hold the same address. The pointees are not examined.
 {{ rule(id="4.3:3f", cat="dynamic-semantics") }}
 
 Equality **borrows** its operands: evaluating `a == b` or `a != b` reads both
-operands without consuming them. An affine or linear value may therefore be
-compared without discharging its move obligation, and both operands remain
+operands without consuming them. When an operand is a named place it is read
+through a comparison-scoped shared loan rather than moved (core calculus
+`docs/formal/01-core-calculus.md` §4.1, §5.4, and the operand side condition of
+rule `(Eq)` in §5.8; dynamically §6.3). An affine or linear value may therefore
+be compared without discharging its move obligation, and both operands remain
 usable afterward.
 
 {{ rule(id="4.3:3g", cat="informative") }}
@@ -117,7 +125,11 @@ fn main() -> i32 {
 
 {{ rule(id="4.3:5", cat="normative") }}
 
-Ordering operators work only on integers.
+Ordering operators work only on integers. They compare the two operands by their
+integer values, respecting the signedness of the shared operand type — a signed
+type orders negatives below non-negatives, an unsigned type orders by magnitude
+(core calculus `docs/formal/01-core-calculus.md` §6.4: scalars compare by their
+integer value, respecting signedness).
 
 | Operator | Name | Description |
 |----------|------|-------------|

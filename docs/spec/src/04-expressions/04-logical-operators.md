@@ -14,7 +14,10 @@ Logical operators operate on `bool` values and produce `bool` results.
 
 {{ rule(id="4.4:2", cat="normative") }}
 
-The logical NOT operator `!` negates its operand.
+The logical NOT operator `!` takes a single `bool` operand and produces a
+`bool`: the result is `true` when the operand is `false` and `false` when the
+operand is `true` (core calculus `docs/formal/01-core-calculus.md` §6.4: `not
+true → false`, `not false → true`).
 
 {{ rule(id="4.4:3") }}
 
@@ -35,7 +38,7 @@ The logical AND operator `&&` returns `true` if both operands are `true`.
 
 {{ rule(id="4.4:5", cat="normative") }}
 
-The `&&` operator uses short-circuit evaluation: if the left operand is `false`, the right operand is not evaluated.
+The `&&` operator uses short-circuit evaluation: if the left operand is `false`, the right operand is not evaluated. This short-circuiting is why the core calculus carries no `&&` form of its own: elaboration removes the sugar by lowering `a && b` to an `if` that evaluates the right operand only on the branch the left operand selects (core calculus `docs/formal/01-core-calculus.md` §1; the taken-branch-only evaluation is §6.2).
 
 {{ rule(id="4.4:6") }}
 
@@ -54,7 +57,7 @@ The logical OR operator `||` returns `true` if either operand is `true`.
 
 {{ rule(id="4.4:8", cat="normative") }}
 
-The `||` operator uses short-circuit evaluation: if the left operand is `true`, the right operand is not evaluated.
+The `||` operator uses short-circuit evaluation: if the left operand is `true`, the right operand is not evaluated. As with `&&`, the core calculus carries no `||` form: elaboration lowers `a || b` to an `if` that evaluates the right operand only on the branch the left operand selects (core calculus `docs/formal/01-core-calculus.md` §1; the taken-branch-only evaluation is §6.2).
 
 {{ rule(id="4.4:9") }}
 

@@ -1090,6 +1090,15 @@ fn format_move_path(interner: &ThreadedRodeo, root_var: Spur, path: &[Spur]) -> 
     out
 }
 
+/// The standard fix hint appended to every use-after-move (E0205) diagnostic:
+/// Rue's mechanism for using a value without consuming it is to pass it by
+/// `borrow`, so naming the moved value makes the suggestion copy-pasteable
+/// (RUE-19 item 4). `name` is the value as it appears in the message (a bare
+/// variable like `b`, or a path like `o.a`).
+pub(crate) fn borrow_instead_of_move_help(name: &str) -> String {
+    format!("to use `{name}` after the move, pass it by borrow instead: `borrow {name}`")
+}
+
 /// Build the use-after-move error for a field access whose path (or one of
 /// its ancestor prefixes) was moved at `moved_span`.
 pub(crate) fn use_after_move_path_error(
@@ -1100,8 +1109,10 @@ pub(crate) fn use_after_move_path_error(
     moved_span: Span,
 ) -> CompileError {
     let path_str = format_move_path(interner, root_var, field_path);
+    let help = borrow_instead_of_move_help(&path_str);
     CompileError::new(ErrorKind::UseAfterMove(path_str), span)
         .with_label("value moved here", moved_span)
+        .with_help(help)
 }
 
 /// Build the error for a linear value that goes out of scope without being

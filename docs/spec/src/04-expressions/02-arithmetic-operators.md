@@ -10,7 +10,15 @@ template = "spec/page.html"
 
 {{ rule(id="4.2:1", cat="normative") }}
 
-Binary arithmetic operators take two operands of the same integer type and produce a result of that type.
+Binary arithmetic operators take two operands of the same integer type and
+produce a value of that same type (core calculus
+`docs/formal/01-core-calculus.md` §5.8, rule `(Arith)`). Each operator denotes
+the corresponding operation on the two operands' integer values, computed
+exactly over the mathematical integers: when that exact result lies within the
+operand type's range it is the value produced, and when it does not the
+operation traps at runtime rather than wrapping (§6.4, rules
+`(D-Arith)`/`(D-Arith-Trap)`; see 4.2:9). Division and remainder additionally
+trap on a zero divisor (4.2:11).
 
 | Operator | Name | Description |
 |----------|------|-------------|
@@ -58,7 +66,12 @@ fn main() -> i32 {
 
 {{ rule(id="4.2:6", cat="normative") }}
 
-The unary negation operator `-` takes a single signed integer operand and produces its arithmetic negation.
+The unary negation operator `-` takes a single signed integer operand and
+produces the arithmetic negation of the operand's value, computed exactly over
+the mathematical integers (core calculus `docs/formal/01-core-calculus.md` §6.4,
+the `neg` case of `(D-Arith)`). The only value whose negation is not
+representable is the type's minimum: negating it has no in-range result and
+traps at runtime (4.2:16), except for the compile-time literal case of 4.2:15.
 
 {{ rule(id="4.2:14", cat="legality-rule") }}
 
@@ -87,7 +100,10 @@ When a negated integer literal represents the minimum value of a signed integer 
 
 {{ rule(id="4.2:16", cat="dynamic-semantics") }}
 
-When negation is applied to a non-literal expression holding the minimum value of a signed integer type, the operation overflows and **MUST** cause a runtime panic.
+When negation is applied to a non-literal expression holding the minimum value
+of a signed integer type, the operation overflows and **MUST** cause a runtime
+panic (core calculus `docs/formal/01-core-calculus.md` §6.4: `neg (min_T)_T →
+↯overflow`).
 
 {{ rule(id="4.2:17") }}
 
@@ -103,7 +119,9 @@ fn main() -> i32 {
 
 {{ rule(id="4.2:9", cat="dynamic-semantics") }}
 
-Arithmetic operations that overflow the range of their type **MUST** cause a runtime panic.
+Arithmetic operations that overflow the range of their type **MUST** cause a
+runtime panic; the result is never silently wrapped or truncated (core calculus
+`docs/formal/01-core-calculus.md` §6.4, rule `(D-Arith-Trap)`).
 
 {{ rule(id="4.2:10") }}
 
@@ -117,7 +135,11 @@ fn main() -> i32 {
 
 {{ rule(id="4.2:11", cat="dynamic-semantics") }}
 
-Division or remainder by zero **MUST** cause a runtime panic.
+Division or remainder by zero **MUST** cause a runtime panic (core calculus
+`docs/formal/01-core-calculus.md` §6.4, rules `(D-Div-Zero)` and the
+corresponding `↯rem-zero` trap for `%`). Signed division or remainder of a
+type's minimum value by `-1` likewise traps as an overflow (§6.4,
+`(D-Div-Overflow)`).
 
 {{ rule(id="4.2:12") }}
 

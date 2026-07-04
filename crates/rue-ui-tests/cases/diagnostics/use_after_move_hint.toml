@@ -1,0 +1,53 @@
+# Use-after-move (E0205) fix hints (RUE-19 item 4).
+#
+# A use-after-move already carries a beautiful labeled span ("value moved
+# here"), but it never told the user how to fix it. Rue's mechanism for using a
+# value without consuming it is to pass it by `borrow`, so every E0205 now ends
+# with a copy-pasteable hint naming the moved value.
+
+[section]
+id = "diagnostics.use_after_move_hint"
+name = "Use-after-move fix hints"
+description = "E0205 suggests passing the value by `borrow` instead of moving it."
+
+[[case]]
+name = "moved_variable_suggests_borrow"
+description = "A whole-variable move re-used at a later call site."
+source = """
+struct Big { a: i32, b: i32, c: i32, d: i32, e: i32 }
+fn consume(x: Big) -> i32 { x.a }
+fn main() -> i32 {
+    let b = Big { a: 1, b: 2, c: 3, d: 4, e: 5 };
+    let r1 = consume(b);
+    let r2 = consume(b);
+    r1 + r2
+}
+"""
+compile_fail = true
+error_contains = [
+    "use of moved value 'b'",
+    "value moved here",
+    "pass it by borrow instead: `borrow b`",
+]
+
+[[case]]
+name = "moved_field_path_names_the_path"
+description = """
+A moved field path re-used later names the exact path in the hint
+(`borrow o.i`), not just the root variable.
+"""
+source = """
+struct Inner { a: i32, b: i32, c: i32, d: i32 }
+struct Outer { i: Inner, x: i32 }
+fn consume(v: Inner) -> i32 { v.a }
+fn main() -> i32 {
+    let o = Outer { i: Inner { a: 1, b: 2, c: 3, d: 4 }, x: 5 };
+    let r = consume(o.i);
+    r + o.i.a
+}
+"""
+compile_fail = true
+error_contains = [
+    "use of moved value 'o.i",
+    "pass it by borrow instead: `borrow o.i",
+]
