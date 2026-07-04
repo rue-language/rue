@@ -148,6 +148,7 @@ impl<'src> CompilationUnit<'src> {
         // Parse all files with a shared interner
         let mut parsed_files = Vec::with_capacity(self.sources.len());
         let mut interner = ThreadedRodeo::new();
+        let mut errors = CompileErrors::new();
 
         for source in &self.sources {
             let _file_span = info_span!("parse_file", path = %source.path).entered();
@@ -156,15 +157,33 @@ impl<'src> CompilationUnit<'src> {
             let lexer = Lexer::with_interner_and_file_id(source.source, interner, source.file_id);
 
             // Tokenize
-            let (tokens, returned_interner) = lexer.tokenize().map_err(CompileErrors::from)?;
-            interner = returned_interner;
+            let tokens = match lexer.tokenize_preserving_interner() {
+                Ok((tokens, returned_interner)) => {
+                    interner = returned_interner;
+                    tokens
+                }
+                Err((error, returned_interner)) => {
+                    interner = returned_interner;
+                    errors.push(error);
+                    continue;
+                }
+            };
 
             info!(token_count = tokens.len(), "lexing complete");
 
             // Parse
             let parser = Parser::new(tokens, interner);
-            let (ast, returned_interner) = parser.parse()?;
-            interner = returned_interner;
+            let ast = match parser.parse_preserving_interner() {
+                Ok((ast, returned_interner)) => {
+                    interner = returned_interner;
+                    ast
+                }
+                Err((parse_errors, returned_interner)) => {
+                    interner = returned_interner;
+                    errors.extend(parse_errors);
+                    continue;
+                }
+            };
 
             info!(item_count = ast.items.len(), "parsing complete");
 
@@ -172,6 +191,10 @@ impl<'src> CompilationUnit<'src> {
                 path: source.path.to_string(),
                 ast,
             });
+        }
+
+        if !errors.is_empty() {
+            return Err(errors);
         }
 
         // Merge symbols and check for duplicates
@@ -633,6 +656,29 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("function"));
+    }
+
+    #[test]
+    fn test_parse_collects_cross_file_lex_and_parse_errors() {
+        let sources = vec![
+            SourceFile::new("lex.rue", "fn lex() -> i32 { $ }", FileId::new(1)),
+            SourceFile::new("parse.rue", "fn parse( { }", FileId::new(2)),
+            SourceFile::new("good.rue", "fn good() -> i32 { 42 }", FileId::new(3)),
+        ];
+        let mut unit = CompilationUnit::new(sources, CompileOptions::default());
+
+        let errors = unit.parse().expect_err("both broken files should report");
+        assert_eq!(errors.len(), 2);
+        let file_ids: Vec<_> = errors
+            .iter()
+            .map(|error| {
+                error
+                    .span()
+                    .expect("parse errors should be spanned")
+                    .file_id
+            })
+            .collect();
+        assert_eq!(file_ids, vec![FileId::new(1), FileId::new(2)]);
     }
 
     #[test]

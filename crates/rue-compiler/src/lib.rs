@@ -318,19 +318,36 @@ pub fn parse_all_files(sources: &[SourceFile<'_>]) -> MultiErrorResult<ParsedPro
     // This ensures Spur values are consistent across files for cross-file symbol resolution
     let mut parsed_files = Vec::with_capacity(sources.len());
     let mut interner = ThreadedRodeo::new();
+    let mut errors = CompileErrors::new();
 
     for source in sources {
         // Create lexer with shared interner and file ID for proper error reporting
         let lexer = Lexer::with_interner_and_file_id(source.source, interner, source.file_id);
 
-        // Tokenize - propagate error immediately (interner is consumed)
-        let (tokens, returned_interner) = lexer.tokenize().map_err(CompileErrors::from)?;
-        interner = returned_interner;
+        let tokens = match lexer.tokenize_preserving_interner() {
+            Ok((tokens, returned_interner)) => {
+                interner = returned_interner;
+                tokens
+            }
+            Err((error, returned_interner)) => {
+                interner = returned_interner;
+                errors.push(error);
+                continue;
+            }
+        };
 
-        // Parse the tokens - propagate error immediately (interner is consumed)
         let parser = Parser::new(tokens, interner);
-        let (ast, returned_interner) = parser.parse()?;
-        interner = returned_interner;
+        let ast = match parser.parse_preserving_interner() {
+            Ok((ast, returned_interner)) => {
+                interner = returned_interner;
+                ast
+            }
+            Err((parse_errors, returned_interner)) => {
+                interner = returned_interner;
+                errors.extend(parse_errors);
+                continue;
+            }
+        };
 
         parsed_files.push(ParsedFile {
             path: source.path.to_string(),
@@ -340,6 +357,10 @@ pub fn parse_all_files(sources: &[SourceFile<'_>]) -> MultiErrorResult<ParsedPro
             // The real interner is in the returned ParsedProgram
             interner: ThreadedRodeo::new(),
         });
+    }
+
+    if !errors.is_empty() {
+        return Err(errors);
     }
 
     Ok(ParsedProgram {
@@ -3472,6 +3493,28 @@ mod integration_tests {
             // The error should still report, and we should get at least one error
             let errors = result.unwrap_err();
             assert!(!errors.is_empty());
+        }
+
+        #[test]
+        fn parse_all_files_collects_cross_file_lex_and_parse_errors() {
+            let sources = vec![
+                SourceFile::new("lex.rue", "fn lex() -> i32 { $ }", FileId::new(1)),
+                SourceFile::new("parse.rue", "fn parse( { }", FileId::new(2)),
+                SourceFile::new("good.rue", "fn good() -> i32 { 42 }", FileId::new(3)),
+            ];
+
+            let errors = parse_all_files(&sources).expect_err("both broken files should report");
+            assert_eq!(errors.len(), 2);
+            let file_ids: Vec<_> = errors
+                .iter()
+                .map(|error| {
+                    error
+                        .span()
+                        .expect("parse errors should be spanned")
+                        .file_id
+                })
+                .collect();
+            assert_eq!(file_ids, vec![FileId::new(1), FileId::new(2)]);
         }
 
         #[test]

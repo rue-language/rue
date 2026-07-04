@@ -577,6 +577,17 @@ impl<'a> LogosLexer<'a> {
 
     /// Tokenize the entire source, returning all tokens and the interner.
     pub fn tokenize(self) -> CompileResult<(Vec<Token>, ThreadedRodeo)> {
+        self.tokenize_preserving_interner()
+            .map_err(|(error, _interner)| error)
+    }
+
+    /// Tokenize the entire source, preserving the interner even on error.
+    ///
+    /// Multi-file compilation uses this to keep lexing later files after an
+    /// earlier file fails, while still sharing one interner across all files.
+    pub fn tokenize_preserving_interner(
+        self,
+    ) -> Result<(Vec<Token>, ThreadedRodeo), (CompileError, ThreadedRodeo)> {
         // Estimate capacity: source length / 4 is a rough heuristic for token density
         let mut tokens = Vec::with_capacity(self.source.len() / 4);
 
@@ -717,7 +728,7 @@ impl<'a> LogosLexer<'a> {
                                      mark (BOM); save the file without a BOM",
                                 );
                             }
-                            return Err(error);
+                            return Err((error, lexer.extras));
                         }
                     }
                 }
