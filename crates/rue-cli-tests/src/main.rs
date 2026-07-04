@@ -68,12 +68,13 @@
 //!
 //! # Timeouts
 //!
-//! The compiled program is run under a per-case wall-clock timeout (default
-//! [`rue_test_runner::DEFAULT_TIMEOUT_MS`], overridable per case with
-//! `timeout_ms`). If it runs long — e.g. an infinite loop in generated code —
+//! Both the COMPILE step and the compiled program run under a per-case
+//! wall-clock timeout (default [`rue_test_runner::DEFAULT_TIMEOUT_MS`],
+//! overridable per case with `timeout_ms`). If either runs long — an infinite
+//! loop in generated code, or a compile-time hang in comptime evaluation —
 //! its whole process group is killed and the case is reported as a distinct
 //! TIMEOUT failure (see [`rue_test_runner::TIMEOUT_PREFIX`]), so one bad
-//! program can never hang the suite. `compile_only = true` still skips the run
+//! case can never hang the suite. `compile_only = true` still skips the run
 //! entirely for sources that are meant only to compile.
 
 use std::collections::HashMap;
@@ -82,7 +83,9 @@ use std::process::Command;
 use std::time::Duration;
 
 use libtest2_mimic::{Harness, RunContext, RunError, Trial};
-use rue_test_runner::{DEFAULT_TIMEOUT_MS, find_dir, find_rue_binary, run_with_timeout};
+use rue_test_runner::{
+    DEFAULT_TIMEOUT_MS, find_dir, find_rue_binary, ice_message, run_with_timeout,
+};
 use serde::Deserialize;
 
 /// Possible paths for the cases directory.
@@ -335,24 +338,6 @@ struct RunOutcome {
     stdout: String,
 }
 
-/// Check a finished process for signs of a compiler panic / ICE.
-fn ice_message(status: &std::process::ExitStatus, stderr: &str) -> Option<String> {
-    if stderr.contains("panicked at") || stderr.contains("internal compiler error") {
-        return Some(format!(
-            "INTERNAL COMPILER ERROR: compiler panicked\n--- compiler stderr ---\n{}",
-            stderr
-        ));
-    }
-    // Death by signal (e.g. SIGABRT after a Rust abort) has no exit code on unix.
-    if status.code().is_none() {
-        return Some(format!(
-            "INTERNAL COMPILER ERROR: compiler killed by signal ({:?})\n--- compiler stderr ---\n{}",
-            status, stderr
-        ));
-    }
-    None
-}
-
 /// Expand `${REAL_STD}` in env values to the absolute path of the repo's std/.
 fn expand_env_value(value: &str, real_std: &Path) -> String {
     value.replace("${REAL_STD}", &real_std.to_string_lossy())
@@ -407,9 +392,11 @@ fn run_case(
     for (key, value) in &case.env {
         cmd.env(key, expand_env_value(value, real_std));
     }
-    let compile_output = cmd
-        .output()
-        .map_err(|e| format!("failed to invoke rue compiler: {}", e))?;
+    // The COMPILE step runs under the same per-case timeout as execution: a
+    // compile-time hang (comptime/parser loop) must fail this one case as a
+    // TIMEOUT, not wedge the suite. Mirrors the spec runner's compile step.
+    let compile_timeout = Duration::from_millis(case.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS));
+    let compile_output = run_with_timeout(cmd, compile_timeout, None)?;
 
     let compile_stderr = String::from_utf8_lossy(&compile_output.stderr).to_string();
     let compile_stdout = String::from_utf8_lossy(&compile_output.stdout).to_string();
@@ -761,9 +748,9 @@ fn run_example(
 
     let mut cmd = Command::new(rue_binary);
     cmd.args([src_name.as_str(), "-o", "prog"]).current_dir(dir);
-    let compile_output = cmd
-        .output()
-        .map_err(|e| format!("failed to invoke rue compiler: {}", e))?;
+    // Compile under the default timeout too (see run_case): an example that
+    // hangs the compiler fails as one TIMEOUT, not a wedged suite.
+    let compile_output = run_with_timeout(cmd, Duration::from_millis(DEFAULT_TIMEOUT_MS), None)?;
     let compile_stderr = String::from_utf8_lossy(&compile_output.stderr).to_string();
     let compile_stdout = String::from_utf8_lossy(&compile_output.stdout).to_string();
 
