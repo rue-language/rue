@@ -851,6 +851,8 @@ impl<'a> Sema<'a> {
                 }
 
                 InstData::FnDecl {
+                    directives_start,
+                    directives_len,
                     is_pub,
                     is_unchecked,
                     name,
@@ -898,6 +900,8 @@ impl<'a> Sema<'a> {
                         inst.span,
                         *is_pub,
                         *is_unchecked,
+                        *directives_start,
+                        *directives_len,
                     )?;
                 }
 
@@ -1116,6 +1120,8 @@ impl<'a> Sema<'a> {
         span: Span,
         is_pub: bool,
         is_unchecked: bool,
+        directives_start: u32,
+        directives_len: u32,
     ) -> CompileResult<()> {
         // Reject user functions whose name collides with a runtime/codegen helper
         // symbol (e.g. `__rue_String_len`, `__rue_alloc`, `_start`). Without this, such a
@@ -1132,6 +1138,8 @@ impl<'a> Sema<'a> {
         }
 
         let params = self.rir.get_params(params_start, params_len);
+        let directives = self.rir.get_directives(directives_start, directives_len);
+        let allow_unused_function = self.has_allow_directive(&directives, "unused_function");
 
         let param_names: Vec<Spur> = params.iter().map(|p| p.name).collect();
         let param_modes: Vec<RirParamMode> = params.iter().map(|p| p.mode).collect();
@@ -1226,6 +1234,7 @@ impl<'a> Sema<'a> {
                 is_generic,
                 is_pub,
                 is_unchecked,
+                allow_unused_function,
                 file_id: span.file_id,
             },
         );

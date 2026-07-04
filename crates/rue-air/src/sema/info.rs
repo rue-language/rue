@@ -35,6 +35,8 @@ pub struct FunctionInfo {
     /// Whether this function carries the `unchecked` modifier. Calling it
     /// requires a `checked` block at the call site (spec 9.1:1).
     pub is_unchecked: bool,
+    /// Whether `@allow(unused_function)` was applied to this function.
+    pub allow_unused_function: bool,
     /// File ID this function was declared in (for visibility checking)
     pub file_id: FileId,
 }

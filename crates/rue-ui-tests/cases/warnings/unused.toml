@@ -350,11 +350,8 @@ expected_warning_count = 1
 # Unused Functions
 # =============================================================================
 
-# TODO: Unused function warnings are defined but not yet implemented
-# See bd issue tree1-11z for warning suppression feature
 [[case]]
 name = "unused_function_warning"
-skip = true
 source = """
 fn unused_helper() -> i32 { 42 }
 
@@ -378,10 +375,8 @@ fn main() -> i32 {
 exit_code = 42
 no_warnings = true
 
-# TODO: Unused function warnings are defined but not yet implemented
 [[case]]
 name = "multiple_unused_functions"
-skip = true
 source = """
 fn helper1() -> i32 { 1 }
 fn helper2() -> i32 { 2 }
@@ -453,11 +448,8 @@ no_warnings = true
 # Mixed unused warnings
 # =============================================================================
 
-# TODO: Unused function warnings are defined but not yet implemented
-# Once implemented, this test should produce 2 warnings (function + variable)
 [[case]]
 name = "mixed_unused_warnings"
-skip = true
 source = """
 fn unused_fn() -> i32 { 42 }
 

@@ -178,11 +178,6 @@ pub const KNOWN_UNCOVERED_NORMATIVE: &[(&str, &str)] = &[
          (lexical/builtins.toml::allow_unused_variable_on_function, skipped)",
     ),
     (
-        "2.5:19",
-        "unused-function warning not implemented \
-         (lexical/builtins.toml::allow_unused_function, skipped)",
-    ),
-    (
         "2.5:21",
         "@allow(unreachable_code) suppression not implemented \
          (lexical/builtins.toml::allow_unreachable_code, skipped)",
