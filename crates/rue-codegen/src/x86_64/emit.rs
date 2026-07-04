@@ -2502,10 +2502,15 @@ impl<'a> Emitter<'a> {
     fn emit_setcc(&mut self, opcode: u8, dst: Reg) {
         let dst_enc = dst.encoding();
 
-        // REX prefix if needed for extended registers
-        // Note: SETcc operates on 8-bit registers, but we use 64-bit names
-        if dst.needs_rex() {
-            self.code.push(0x41); // REX.B
+        // REX prefix. SETcc's r/m8 byte operand needs a REX prefix not only for
+        // the extended r8-r15 (REX.B) but also for encodings 4-7
+        // (SPL/BPL/SIL/DIL): without any REX, a byte r/m with encoding 4-7
+        // decodes as the legacy high-byte registers AH/CH/DH/BH — a
+        // wrong-register access. We always name 64-bit registers, so a bare
+        // REX (0x40) is always correct.
+        if dst_enc >= 4 {
+            self.code
+                .push(0x40 | if dst.needs_rex() { 0x01 } else { 0x00 }); // REX(.B)
         }
 
         // Two-byte opcode: 0F 9x
@@ -2524,8 +2529,11 @@ impl<'a> Emitter<'a> {
         let dst_enc = dst.encoding();
         let src_enc = src.encoding();
 
-        // REX prefix if needed
-        if dst.needs_rex() || src.needs_rex() {
+        // REX prefix. Beyond REX.R/REX.B for r8-r15, the byte source operand
+        // (`src`, the r/m8) also needs a REX prefix when its encoding is 4-7
+        // (SPL/BPL/SIL/DIL): without one it decodes as AH/CH/DH/BH. We always
+        // name 64-bit registers, so forcing REX is always correct.
+        if dst.needs_rex() || src.needs_rex() || src_enc >= 4 {
             let rex = 0x40
                 | if dst.needs_rex() { 0x04 } else { 0x00 }  // REX.R
                 | if src.needs_rex() { 0x01 } else { 0x00 }; // REX.B
@@ -3632,6 +3640,18 @@ mod tests {
         assert_eq!(code, vec![0x41, 0x0F, 0x94, 0xC2]);
     }
 
+    #[test]
+    fn test_setcc_rsi_needs_rex() {
+        // sete sil: encoding 6 (RSI/SIL) needs a bare REX (0x40) so the r/m8
+        // names SIL, not the legacy high-byte DH. Without it this would
+        // decode as `sete dh`.
+        let code = emit_single(X86Inst::Sete {
+            dst: Operand::Physical(Reg::Rsi),
+        });
+        // sete sil -> 40 0F 94 C6
+        assert_eq!(code, vec![0x40, 0x0F, 0x94, 0xC6]);
+    }
+
     // --- Move with extension ---
 
     #[test]
@@ -3642,6 +3662,18 @@ mod tests {
         });
         // movzx eax, cl -> 0F B6 C1 (0F B6 /r)
         assert_eq!(code, vec![0x0F, 0xB6, 0xC1]);
+    }
+
+    #[test]
+    fn test_movzx_byte_src_rdi_needs_rex() {
+        // movzx eax, dil: the byte SOURCE has encoding 7 (RDI/DIL) and needs a
+        // bare REX (0x40) so the r/m8 names DIL, not the legacy high-byte BH.
+        let code = emit_single(X86Inst::Movzx {
+            dst: Operand::Physical(Reg::Rax),
+            src: Operand::Physical(Reg::Rdi),
+        });
+        // movzx eax, dil -> 40 0F B6 C7
+        assert_eq!(code, vec![0x40, 0x0F, 0xB6, 0xC7]);
     }
 
     #[test]

@@ -85,7 +85,14 @@ fn cmp_zero_to_tst_safe(instructions: &[Aarch64Inst], idx: usize) -> bool {
             }
             // V is 0 after both cmp r, #0 and tst r, r.
             Aarch64Inst::Bvs { .. } | Aarch64Inst::Bvc { .. } => {}
-            Aarch64Inst::B { .. } | Aarch64Inst::Label { .. } => return false,
+            // An unconditional branch or a label ends the straight-line
+            // window. Cbz/Cbnz are conditional branches whose TAKEN edge also
+            // escapes the window (the cmp's flags are live-out along it), so
+            // they are escape boundaries too — matching x86's treatment.
+            Aarch64Inst::B { .. }
+            | Aarch64Inst::Label { .. }
+            | Aarch64Inst::Cbz { .. }
+            | Aarch64Inst::Cbnz { .. } => return false,
             Aarch64Inst::Bl { .. } | Aarch64Inst::Svc { .. } | Aarch64Inst::Ret => return true,
             inst if writes_flags(inst) => return true,
             _ => {}

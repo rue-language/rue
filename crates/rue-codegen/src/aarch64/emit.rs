@@ -1028,7 +1028,7 @@ impl<'a> Emitter<'a> {
                 let rm = src2.as_physical();
                 // 64-bit CMP is SUBS with XZR destination (64-bit form)
                 self.begin_inst();
-                self.emit_sub64_rr(Reg::Xzr, rn, rm, true);
+                self.emit_sub_rr(Reg::Xzr, rn, rm, true);
                 end_inst!(self, "cmp {}, {}", rn, rm);
             }
 
@@ -1735,20 +1735,6 @@ impl<'a> Emitter<'a> {
         self.emit_u32(inst);
     }
 
-    fn emit_sub64_rr(&mut self, rd: Reg, rn: Reg, rm: Reg, set_flags: bool) {
-        // 64-bit subtract for comparing 64-bit values (e.g., SMULL results).
-        let base = if set_flags {
-            OPCODE_SUBS_X
-        } else {
-            OPCODE_SUB_X
-        };
-        let inst = base
-            | (rm.encoding() as u32) << 16
-            | (rn.encoding() as u32) << 5
-            | rd.encoding() as u32;
-        self.emit_u32(inst);
-    }
-
     fn emit_sub_imm(&mut self, rd: Reg, rn: Reg, imm: u32) {
         // SUB Xd, Xn, #imm. The immediate field is 12 bits; larger values use
         // the shifted form (LSL #12, bit 22) for the high part plus a second
@@ -2031,11 +2017,21 @@ impl<'a> Emitter<'a> {
     }
 
     fn emit_cmp_imm(&mut self, rn: Reg, imm: u32) {
-        // CMP Xn, #imm (alias for SUBS XZR, Xn, #imm)
-        let inst = OPCODE_CMP_IMM_X
-            | ((imm & 0xFFF) << 10)
-            | (rn.encoding() as u32) << 5
-            | Reg::Xzr.encoding() as u32;
+        // CMP Xn, #imm (alias for SUBS XZR, Xn, #imm). The immediate is a
+        // 12-bit field, optionally shifted left by 12 (bit 22). Unlike
+        // ADD/SUB there is NO two-instruction accumulate form here (the
+        // destination is XZR), so an immediate that fits neither the plain nor
+        // the shifted 12-bit form must be materialized by the caller. Guard
+        // against silent truncation (was a bare `imm & 0xFFF`, the RUE-45
+        // class); every current caller passes < 4096.
+        let inst = if imm <= 0xFFF {
+            OPCODE_CMP_IMM_X | ((imm & 0xFFF) << 10)
+        } else if imm & 0xFFF == 0 && (imm >> 12) <= 0xFFF {
+            OPCODE_CMP_IMM_X | (1 << 22) | (((imm >> 12) & 0xFFF) << 10)
+        } else {
+            panic!("CMP immediate not encodable as 12 bits (optionally <<12): {imm}");
+        };
+        let inst = inst | (rn.encoding() as u32) << 5 | Reg::Xzr.encoding() as u32;
         self.emit_u32(inst);
     }
 
