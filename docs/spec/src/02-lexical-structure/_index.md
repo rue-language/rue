@@ -33,3 +33,31 @@ fn main() -> i32 {
     if true && false { 0 } else { 1 }  // && is a single logical AND token
 }
 ```
+
+## Source Encoding
+
+{{ rule(id="2.0:5", cat="normative") }}
+
+Source text is encoded in UTF-8. The compiler reads each source file as a
+sequence of Unicode scalar values decoded from its UTF-8 bytes. A file whose
+bytes are not valid UTF-8 is rejected before lexing begins.
+
+{{ rule(id="2.0:6", cat="legality-rule") }}
+
+A Unicode scalar value outside the ASCII range (`U+0080` and above) **MAY**
+appear only within a comment or a string literal. Everywhere else — in
+identifiers, keywords, numeric literals, operators, and delimiters — the lexer
+recognizes only ASCII characters, and a non-ASCII character encountered in such
+a position is a lexical error (E0001). Identifiers are therefore limited to
+ASCII letters, digits, and underscores (2.1), while the *contents* of a comment
+or string literal may be any UTF-8 text.
+
+{{ rule(id="2.0:7", cat="example") }}
+
+```rue
+fn main() -> i32 {
+    // Non-ASCII text is fine in a comment: café résumé π
+    let s = "héllo, 世界";   // and inside a string literal
+    0
+}
+```

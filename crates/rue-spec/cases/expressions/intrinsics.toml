@@ -164,6 +164,29 @@ fn main() -> i32 {
 exit_code = 0
 
 [[case]]
+name = "dbg_output_format_pinned"
+spec = ["4.13:8", "4.13:8a"]
+description = "The exact textual form @dbg prints: decimal integers (signed with -), true/false, raw String bytes, each newline-terminated (RUE-299)"
+source = """
+fn main() -> i32 {
+    @dbg(42);
+    @dbg(-17);
+    @dbg(true);
+    @dbg(false);
+    @dbg("hi");
+    0
+}
+"""
+expected_stdout = """
+42
+-17
+true
+false
+hi
+"""
+exit_code = 0
+
+[[case]]
 name = "dbg_expression"
 spec = ["4.13:6", "4.13:7"]
 source = """

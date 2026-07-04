@@ -1,6 +1,6 @@
 # Comptime type-function composition and array-of-type diagnostics.
 #
-# Type-returning functions (`-> type`) are load-bearing for Option/Result/Vec,
+# Type-returning functions (`-> type`) are load-bearing for Option/Result/ArrayBuf,
 # so their calls must reduce compositionally — in a delegating return body and
 # as a nested argument — and an array literal of `type` values must produce a
 # clean diagnostic instead of an ICE. These exercise the real driver

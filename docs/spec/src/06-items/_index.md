@@ -21,6 +21,23 @@ This chapter describes items in Rue.
 
 Items are top-level definitions in a program. Unlike statements, items are visible throughout the module.
 
+{{ rule(id="6.0:1a", cat="informative") }}
+
+The item kinds are:
+
+- **Functions** (`fn`, 6.1), including the program entry point `main`.
+- **Structs** (`struct`, 6.2), which may declare methods and associated
+  functions in the struct body (6.4).
+- **Enums** (`enum`, 6.3).
+- **Constants** (`const`, 6.5).
+- **Top-level destructors** (`drop fn`, 3.9), which are declared at the top
+  level rather than inside any enclosing block.
+
+Rue has no separate `impl` block: methods and associated functions are written
+inside the struct body (6.4), and a user-defined destructor for a named struct
+is a top-level `drop fn` item (3.9). There is no item form that groups
+implementations under a type the way an `impl` block does in other languages.
+
 ## Type Name Uniqueness
 
 {{ rule(id="6.0:2", cat="legality-rule") }}

@@ -75,6 +75,33 @@ const SMALL: u8 = 200;           // u8: annotation adopted, value fits
 // const NONE = 5;               // error: missing type annotation (E0475)
 ```
 
+{{ rule(id="6.5:12", cat="legality-rule") }}
+
+If evaluating a constant initializer would trap — an arithmetic operation that
+overflows its result type, or a division or remainder by zero — the constant is
+rejected at compile time (E1200). The trap is reported as a compile-time error
+rather than deferring to a runtime panic, because the initializer is evaluated
+during compilation (6.5:2). This applies whether the trapping operation is the
+whole initializer or a sub-expression of it.
+
+{{ rule(id="6.5:13", cat="example") }}
+
+```rue
+// const OVF: i32 = 2147483647 + 1;  // error: integer overflow (E1200)
+// const DIV: i32 = 5 / 0;           // error: division by zero (E1200)
+// const REM: i32 = 5 % 0;           // error: remainder by zero (E1200)
+const OK: i32 = 2147483647;          // in range: fine
+```
+
+{{ rule(id="6.5:14", cat="informative") }}
+
+In the current revision the compile-time-evaluable expression forms (6.5:2)
+produce only scalar values — integers and `bool` — so a value constant's type
+is in practice a scalar type. There is no const-evaluable form that yields a
+struct or an array: an aggregate initializer such as a struct literal or an
+array literal is not compile-time evaluable and is rejected (E0434). Constants
+of aggregate type may be revisited in a future revision.
+
 ## Evaluation Order
 
 {{ rule(id="6.5:7", cat="normative") }}

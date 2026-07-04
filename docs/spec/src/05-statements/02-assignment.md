@@ -8,7 +8,7 @@ template = "spec/page.html"
 
 {{ rule(id="5.2:1", cat="normative") }}
 
-An assignment statement assigns a new value to a mutable variable.
+An assignment statement evaluates its right-hand side to a value and stores that value into the *place* named by its target (the target is a place, not merely a variable; see 5.2:2). If the target place currently holds a live (owned) value, that value is dropped before the new value is stored (overwrite-drop); storing into a moved-out place reinitializes it. The assignment itself evaluates to unit. These ownership effects are those of the core calculus's `assign p = e` form (`docs/formal/01-core-calculus.md` §5.2, §6.8) and of 3.8:55–56.
 
 {{ rule(id="5.2:2", cat="normative") }}
 
@@ -33,7 +33,10 @@ evaluated first to produce the value to be stored. The assignment target names
 a *place*; any index subexpressions appearing in the target (the `[e]` in an
 `arr[e]` target) are evaluated after the right-hand side, in source order
 (left-to-right). Once the place has been resolved, the produced value is
-written into it.
+written into it. This matches the core calculus's evaluation order: the
+assignment context `assign p = E` reduces the right-hand side `E` first, and
+the target place's index subexpressions are reduced as part of resolving the
+place for the store (`docs/formal/01-core-calculus.md` §6.2, §6.8).
 
 {{ rule(id="5.2:15") }}
 

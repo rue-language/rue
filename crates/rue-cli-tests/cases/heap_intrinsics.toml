@@ -1,7 +1,7 @@
 # @alloc / @free / @realloc heap intrinsics driven the way a user does — real
 # files, the real driver, real program exit codes and stdout (RUE-1).
 #
-# These are the unchecked heap primitives a source-level Vec is built on. The
+# These are the unchecked heap primitives a source-level ArrayBuf is built on. The
 # runtime __rue_alloc/__rue_free/__rue_realloc are already used by String, so
 # these cases also confirm the archive symbols resolve when referenced only
 # from user code.

@@ -260,3 +260,52 @@ fn main() -> i32 { 0 }
 """
 compile_fail = true
 error_contains = "cycle detected in constant initializers"
+
+# =============================================================================
+# Const-evaluation trapping (6.5:12) — RUE-299
+# =============================================================================
+
+[[case]]
+name = "const_overflow_is_compile_error"
+spec = ["6.5:12"]
+description = "Integer overflow while evaluating a const initializer is a compile-time error (E1200)"
+source = """
+const OVF: i32 = 2147483647 + 1;
+fn main() -> i32 { OVF }
+"""
+compile_fail = true
+error_contains = ["E1200", "overflow"]
+
+[[case]]
+name = "const_division_by_zero_is_compile_error"
+spec = ["6.5:12"]
+description = "Division by zero while evaluating a const initializer is a compile-time error (E1200)"
+source = """
+const DIV: i32 = 5 / 0;
+fn main() -> i32 { DIV }
+"""
+compile_fail = true
+error_contains = ["E1200", "division by zero"]
+
+[[case]]
+name = "const_remainder_by_zero_is_compile_error"
+spec = ["6.5:12"]
+description = "Remainder by zero while evaluating a const initializer is a compile-time error (E1200)"
+source = """
+const REM: i32 = 5 % 0;
+fn main() -> i32 { REM }
+"""
+compile_fail = true
+error_contains = ["E1200", "remainder by zero"]
+
+[[case]]
+name = "const_aggregate_initializer_rejected"
+spec = ["6.5:2"]
+description = "A struct literal is not compile-time evaluable, so an aggregate value const is rejected (E0434) (RUE-299)"
+source = """
+struct P { x: i32, y: i32 }
+const O: P = P { x: 1, y: 2 };
+fn main() -> i32 { O.x }
+"""
+compile_fail = true
+error_contains = ["E0434"]

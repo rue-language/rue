@@ -157,6 +157,48 @@ fn main() -> i32 {
 """
 exit_code = 20
 
+[[case]]
+name = "block_tail_diverges_has_never_type"
+spec = ["3.4:6a"]
+description = "A block whose tail expression diverges has type ! and coerces (RUE-299)"
+source = """
+fn test(x: i32) -> i32 {
+    let y = { return 100 };
+    y * 2
+}
+fn main() -> i32 { test(3) }
+"""
+exit_code = 100
+
+[[case]]
+name = "block_inner_statement_diverges_has_never_type"
+spec = ["3.4:6a"]
+description = "A block with a diverging statement (making its end unreachable) has type ! (RUE-299)"
+source = """
+fn test() -> i32 {
+    let y = {
+        return 7;
+        0
+    };
+    y * 2
+}
+fn main() -> i32 { test() }
+"""
+exit_code = 7
+
+[[case]]
+name = "infinite_loop_value_coerces"
+spec = ["3.4:6a"]
+description = "An infinite loop with no reachable break has type ! and coerces into a binding (RUE-299)"
+source = """
+fn pick(x: i32) -> i32 {
+    let y: i32 = if x > 0 { 42 } else { loop { } };
+    y
+}
+fn main() -> i32 { pick(1) }
+"""
+exit_code = 42
+
 # =============================================================================
 # Diverging Functions (3.4:8)
 # =============================================================================
