@@ -78,6 +78,11 @@ pub unsafe extern "C" fn _start() -> ! {
             // But first we need to align to 16 bytes before call, so subtract 8.
             "sub rsp, 8",
             "call {main}",
+            // Restore RSP to its entry value: the asm block does not use
+            // `options(noreturn)` and control falls through to
+            // `platform::exit` below, so the inline-asm contract requires RSP
+            // to be left unchanged on exit from the block.
+            "add rsp, 8",
             // Return value is in eax
             "mov edi, eax",
             main = sym main,

@@ -1537,6 +1537,19 @@ pub extern "C" fn __rue_String_push_str(
 ) {
     let (new_ptr, new_cap) = string_ensure_capacity(ptr, len, cap, other_len);
 
+    // On allocation failure `string_ensure_capacity` returns a null pointer;
+    // writing to `new_ptr.add(len)` would be a wild write. Republish the
+    // original string unchanged instead (matching the null-guard every sibling
+    // allocator uses).
+    if new_ptr.is_null() {
+        unsafe {
+            (*out).ptr = ptr;
+            (*out).len = len;
+            (*out).cap = cap;
+        }
+        return;
+    }
+
     if other_len > 0 && !other_ptr.is_null() {
         // SAFETY: Copying is safe because:
         // - Caller guarantees `other_ptr` is valid for reads of `other_len` bytes
@@ -1576,6 +1589,19 @@ pub extern "C" fn __rue_String_push_str(
 ) {
     let (new_ptr, new_cap) = string_ensure_capacity(ptr, len, cap, other_len);
 
+    // On allocation failure `string_ensure_capacity` returns a null pointer;
+    // writing to `new_ptr.add(len)` would be a wild write. Republish the
+    // original string unchanged instead (matching the null-guard every sibling
+    // allocator uses).
+    if new_ptr.is_null() {
+        unsafe {
+            (*out).ptr = ptr;
+            (*out).len = len;
+            (*out).cap = cap;
+        }
+        return;
+    }
+
     if other_len > 0 && !other_ptr.is_null() {
         // SAFETY: Copying is safe because:
         // - Caller guarantees `other_ptr` is valid for reads of `other_len` bytes
@@ -1614,6 +1640,19 @@ pub extern "C" fn __rue_String_push_str(
     _other_cap: u64,
 ) {
     let (new_ptr, new_cap) = string_ensure_capacity(ptr, len, cap, other_len);
+
+    // On allocation failure `string_ensure_capacity` returns a null pointer;
+    // writing to `new_ptr.add(len)` would be a wild write. Republish the
+    // original string unchanged instead (matching the null-guard every sibling
+    // allocator uses).
+    if new_ptr.is_null() {
+        unsafe {
+            (*out).ptr = ptr;
+            (*out).len = len;
+            (*out).cap = cap;
+        }
+        return;
+    }
 
     if other_len > 0 && !other_ptr.is_null() {
         // SAFETY: Copying is safe because:
@@ -1661,6 +1700,17 @@ pub extern "C" fn __rue_String_push(
 ) {
     let (new_ptr, new_cap) = string_ensure_capacity(ptr, len, cap, 1);
 
+    // On allocation failure `new_ptr` is null; republish the original string
+    // unchanged rather than write through null + len.
+    if new_ptr.is_null() {
+        unsafe {
+            (*out).ptr = ptr;
+            (*out).len = len;
+            (*out).cap = cap;
+        }
+        return;
+    }
+
     // SAFETY: Writing the byte is safe because:
     // - `string_ensure_capacity` guarantees `new_ptr` has room for `len + 1` bytes
     // - `new_ptr.add(len)` points to the first unused byte after existing content
@@ -1691,6 +1741,17 @@ pub extern "C" fn __rue_String_push(
 ) {
     let (new_ptr, new_cap) = string_ensure_capacity(ptr, len, cap, 1);
 
+    // On allocation failure `new_ptr` is null; republish the original string
+    // unchanged rather than write through null + len.
+    if new_ptr.is_null() {
+        unsafe {
+            (*out).ptr = ptr;
+            (*out).len = len;
+            (*out).cap = cap;
+        }
+        return;
+    }
+
     // SAFETY: Writing the byte is safe because:
     // - `string_ensure_capacity` guarantees `new_ptr` has room for `len + 1` bytes
     // - `new_ptr.add(len)` points to the first unused byte after existing content
@@ -1720,6 +1781,17 @@ pub extern "C" fn __rue_String_push(
     byte: u8,
 ) {
     let (new_ptr, new_cap) = string_ensure_capacity(ptr, len, cap, 1);
+
+    // On allocation failure `new_ptr` is null; republish the original string
+    // unchanged rather than write through null + len.
+    if new_ptr.is_null() {
+        unsafe {
+            (*out).ptr = ptr;
+            (*out).len = len;
+            (*out).cap = cap;
+        }
+        return;
+    }
 
     // SAFETY: Writing the byte is safe because:
     // - `string_ensure_capacity` guarantees `new_ptr` has room for `len + 1` bytes
