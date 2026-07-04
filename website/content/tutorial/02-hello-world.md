@@ -21,12 +21,22 @@ Every Rue program needs a `main` function that returns an `i32`. This return val
 Compile and run it:
 
 ```bash
-./buck2 run //crates/rue:rue -- hello.rue hello
+RUE="$(scripts/rue-bin)"
+"$RUE" hello.rue -o hello
 ./hello
 echo $?  # prints: 0
 ```
 
-The compiler takes the source file (`hello.rue`) and produces an executable (`hello`).
+The compiler takes the source file (`hello.rue`) and produces an executable
+(`hello`).
+
+For quick experiments, you can also let the repository wrapper build the
+compiler, compile your file to a temporary executable, and run it:
+
+```bash
+scripts/rue exec hello.rue
+echo $?  # prints: 0
+```
 
 ## Printing Output
 
