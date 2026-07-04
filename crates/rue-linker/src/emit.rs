@@ -996,8 +996,10 @@ impl ObjectBuilder {
     }
 }
 
+/// `usize` adapter over the shared [`crate::util::align_up`] used by the ELF/Mach-O
+/// object emitters, whose offsets are all `usize`.
 fn align_up(value: usize, align: usize) -> usize {
-    (value + align - 1) & !(align - 1)
+    crate::util::align_up(value as u64, align as u64) as usize
 }
 
 #[cfg(test)]

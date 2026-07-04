@@ -182,6 +182,13 @@ pub struct LoopInfo {
     /// Loop depth for each instruction index.
     /// 0 = not in a loop, 1 = in one loop, 2 = nested two levels, etc.
     pub depths: Vec<u32>,
+    /// Maximum loop depth across all instructions, cached so that loop-free code
+    /// (`max_depth == 0`) answers range-max queries in O(1) instead of scanning
+    /// the range. Register allocation queries the max depth over a vreg's whole
+    /// live range once per vreg; on loop-free code with long live ranges (e.g. a
+    /// large array literal) the scan was O(range) per vreg and quadratic overall
+    /// (RUE-302).
+    max_depth: u32,
 }
 
 impl LoopInfo {
@@ -189,7 +196,14 @@ impl LoopInfo {
     pub fn no_loops(instruction_count: usize) -> Self {
         Self {
             depths: vec![0; instruction_count],
+            max_depth: 0,
         }
+    }
+
+    /// Create loop info from a per-instruction depth vector, caching the max.
+    pub fn from_depths(depths: Vec<u32>) -> Self {
+        let max_depth = depths.iter().copied().max().unwrap_or(0);
+        Self { depths, max_depth }
     }
 
     /// Get the loop depth for an instruction.
@@ -199,6 +213,10 @@ impl LoopInfo {
 
     /// Get the maximum loop depth across a range of instructions.
     pub fn max_depth_in_range(&self, start: usize, end: usize) -> u32 {
+        // Loop-free code: the max is trivially 0, no scan needed.
+        if self.max_depth == 0 {
+            return 0;
+        }
         if start > end || start >= self.depths.len() {
             return 0;
         }
@@ -805,6 +823,14 @@ struct SpillSlotAllocator {
     /// For each spill slot, the end point of its current occupant.
     /// None means the slot is free (never used or occupant has ended).
     slots: Vec<Option<usize>>,
+    /// Smallest occupant end point across all slots (`None` when there are no
+    /// occupied slots). A slot is reusable for a range starting at `start` only
+    /// if some occupant ends before `start`; when `min_slot_end >= start` no slot
+    /// can be reused, so the O(slots) scan is skipped. Without this, spilling many
+    /// simultaneously-live values (e.g. a large array literal, where no slot is
+    /// ever reusable) rescans the whole growing slot list per spill — O(spills²)
+    /// (RUE-302).
+    min_slot_end: Option<usize>,
     /// Base offset for spill slots (after existing locals).
     base_offset: i32,
 }
@@ -817,6 +843,7 @@ impl SpillSlotAllocator {
     fn new(existing_locals: u32) -> Self {
         Self {
             slots: Vec::new(),
+            min_slot_end: None,
             base_offset: -((existing_locals as i32 + 1) * 8),
         }
     }
@@ -828,23 +855,37 @@ impl SpillSlotAllocator {
     ///
     /// Returns the stack offset for the spill slot.
     fn allocate(&mut self, live_range_start: usize, live_range_end: usize) -> i32 {
-        // Try to find a reusable slot whose occupant ended before this range starts
-        for (i, slot_end) in self.slots.iter_mut().enumerate() {
-            if let Some(end) = slot_end {
-                // The occupant is dead if its end point is strictly before our start.
-                // Note: We use < not <= because at the same instruction index,
-                // both ranges are considered live (inclusive endpoints).
-                if *end < live_range_start {
-                    // Reuse this slot
-                    *slot_end = Some(live_range_end);
-                    return self.offset_for_slot(i);
+        // Try to find a reusable slot whose occupant ended before this range
+        // starts. Skip the scan entirely when no occupant can possibly qualify
+        // (the common case when many live ranges overlap); this scan is otherwise
+        // O(slots) per call and quadratic overall (RUE-302).
+        if self
+            .min_slot_end
+            .is_some_and(|min_end| min_end < live_range_start)
+        {
+            for (i, slot_end) in self.slots.iter_mut().enumerate() {
+                if let Some(end) = slot_end {
+                    // The occupant is dead if its end point is strictly before our start.
+                    // Note: We use < not <= because at the same instruction index,
+                    // both ranges are considered live (inclusive endpoints).
+                    if *end < live_range_start {
+                        // Reuse this slot. Its end point grows, so the cached
+                        // minimum may no longer hold; recompute it exactly.
+                        *slot_end = Some(live_range_end);
+                        self.min_slot_end = self.slots.iter().flatten().copied().min();
+                        return self.offset_for_slot(i);
+                    }
                 }
             }
         }
 
-        // No reusable slot found, allocate a new one
+        // No reusable slot found, allocate a new one.
         let slot_index = self.slots.len();
         self.slots.push(Some(live_range_end));
+        self.min_slot_end = Some(match self.min_slot_end {
+            Some(min_end) => min_end.min(live_range_end),
+            None => live_range_end,
+        });
         self.offset_for_slot(slot_index)
     }
 
@@ -978,6 +1019,7 @@ pub fn linear_scan<Reg: Copy + Eq + std::hash::Hash>(
         liveness,
         allocatable_regs,
         existing_locals,
+        false,
         &cost_model,
         &loop_info,
     );
@@ -1019,6 +1061,7 @@ pub fn linear_scan_with_cost_model<Reg: Copy + Eq + std::hash::Hash>(
         liveness,
         allocatable_regs,
         existing_locals,
+        false,
         cost_model,
         loop_info,
     );
@@ -1062,6 +1105,7 @@ pub fn linear_scan_with_remat<Reg: Copy + Eq + std::hash::Hash>(
         liveness,
         allocatable_regs,
         existing_locals,
+        false,
         &cost_model,
         &loop_info,
         vreg_info,
@@ -1095,6 +1139,7 @@ pub fn linear_scan_with_debug<Reg: Copy + Eq + std::hash::Hash>(
         liveness,
         allocatable_regs,
         existing_locals,
+        true,
         &cost_model,
         &loop_info,
     )
@@ -1122,6 +1167,7 @@ pub fn linear_scan_with_cost_model_and_debug<Reg: Copy + Eq + std::hash::Hash>(
         liveness,
         allocatable_regs,
         existing_locals,
+        true,
         cost_model,
         loop_info,
     )
@@ -1130,13 +1176,17 @@ pub fn linear_scan_with_cost_model_and_debug<Reg: Copy + Eq + std::hash::Hash>(
 /// Internal implementation of linear scan register allocation.
 ///
 /// This is the shared implementation used by both [`linear_scan`] and
-/// [`linear_scan_with_debug`]. It always collects debug information,
-/// which is discarded by [`linear_scan`].
+/// [`linear_scan_with_debug`]. When `collect_debug` is `false` (the normal
+/// compilation path, where callers discard the debug info) the O(V²)
+/// interference-graph construction is skipped — it feeds only `--emit regalloc`
+/// output and building it on every compile made allocation quadratic in the
+/// number of virtual registers (e.g. large array literals) (RUE-302).
 fn linear_scan_impl<Reg: Copy + Eq + std::hash::Hash>(
     vreg_count: u32,
     liveness: &LivenessInfo<Reg>,
     allocatable_regs: &[Reg],
     existing_locals: u32,
+    collect_debug: bool,
     cost_model: &CostModel,
     loop_info: &LoopInfo,
 ) -> (
@@ -1167,18 +1217,23 @@ fn linear_scan_impl<Reg: Copy + Eq + std::hash::Hash>(
         let vreg = VReg::new(vreg_idx);
         if let Some(&range) = liveness.range(vreg) {
             vregs_by_start.push((vreg, range));
-            debug_live_ranges.push((vreg_idx, range.start, range.end));
+            if collect_debug {
+                debug_live_ranges.push((vreg_idx, range.start, range.end));
+            }
         }
     }
     vregs_by_start.sort_by_key(|(_, range)| range.start);
 
-    // Build interference graph: vregs that overlap
-    for i in 0..vregs_by_start.len() {
-        for j in (i + 1)..vregs_by_start.len() {
-            let (vreg1, range1) = &vregs_by_start[i];
-            let (vreg2, range2) = &vregs_by_start[j];
-            if range1.overlaps(range2) {
-                debug_interference.push((vreg1.index(), vreg2.index()));
+    // Build interference graph: vregs that overlap. This is O(V²) and feeds only
+    // `--emit regalloc`; skip it on the normal compilation path (RUE-302).
+    if collect_debug {
+        for i in 0..vregs_by_start.len() {
+            for j in (i + 1)..vregs_by_start.len() {
+                let (vreg1, range1) = &vregs_by_start[i];
+                let (vreg2, range2) = &vregs_by_start[j];
+                if range1.overlaps(range2) {
+                    debug_interference.push((vreg1.index(), vreg2.index()));
+                }
             }
         }
     }
@@ -1292,6 +1347,7 @@ fn linear_scan_impl_with_remat<Reg: Copy + Eq + std::hash::Hash>(
     liveness: &LivenessInfo<Reg>,
     allocatable_regs: &[Reg],
     existing_locals: u32,
+    collect_debug: bool,
     cost_model: &CostModel,
     loop_info: &LoopInfo,
     vreg_info: &IndexMap<VReg, VRegInfo>,
@@ -1327,18 +1383,23 @@ fn linear_scan_impl_with_remat<Reg: Copy + Eq + std::hash::Hash>(
         let vreg = VReg::new(vreg_idx);
         if let Some(&range) = liveness.range(vreg) {
             vregs_by_start.push((vreg, range));
-            debug_live_ranges.push((vreg_idx, range.start, range.end));
+            if collect_debug {
+                debug_live_ranges.push((vreg_idx, range.start, range.end));
+            }
         }
     }
     vregs_by_start.sort_by_key(|(_, range)| range.start);
 
-    // Build interference graph: vregs that overlap
-    for i in 0..vregs_by_start.len() {
-        for j in (i + 1)..vregs_by_start.len() {
-            let (vreg1, range1) = &vregs_by_start[i];
-            let (vreg2, range2) = &vregs_by_start[j];
-            if range1.overlaps(range2) {
-                debug_interference.push((vreg1.index(), vreg2.index()));
+    // Build interference graph: vregs that overlap. This is O(V²) and feeds only
+    // `--emit regalloc`; skip it on the normal compilation path (RUE-302).
+    if collect_debug {
+        for i in 0..vregs_by_start.len() {
+            for j in (i + 1)..vregs_by_start.len() {
+                let (vreg1, range1) = &vregs_by_start[i];
+                let (vreg2, range2) = &vregs_by_start[j];
+                if range1.overlaps(range2) {
+                    debug_interference.push((vreg1.index(), vreg2.index()));
+                }
             }
         }
     }
@@ -2271,9 +2332,7 @@ mod tests {
 
     #[test]
     fn test_loop_info_with_depths() {
-        let info = LoopInfo {
-            depths: vec![0, 0, 1, 1, 1, 2, 2, 1, 0, 0],
-        };
+        let info = LoopInfo::from_depths(vec![0, 0, 1, 1, 1, 2, 2, 1, 0, 0]);
 
         assert_eq!(info.depth(0), 0);
         assert_eq!(info.depth(2), 1);
@@ -2304,9 +2363,7 @@ mod tests {
         loop_depths: Vec<u32>,
     ) -> (LivenessInfo<TestReg>, LoopInfo) {
         let liveness = make_liveness(ranges);
-        let loop_info = LoopInfo {
-            depths: loop_depths,
-        };
+        let loop_info = LoopInfo::from_depths(loop_depths);
         (liveness, loop_info)
     }
 

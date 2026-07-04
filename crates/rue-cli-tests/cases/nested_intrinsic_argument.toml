@@ -1,0 +1,67 @@
+# Regression pin for RUE-343: a bare intrinsic call CAN be a direct argument to
+# another intrinsic. `@dbg(@size_of(i32))` was reported (2026-07-03) to fail to
+# parse, but it does not reproduce — the intrinsic-argument grammar
+# (`intrinsic_arg` in rue-parser/src/chumsky_parser.rs) has accepted a full
+# expression, including a nested intrinsic-call atom, since the intrinsics
+# landed (Dec 2025). These cases lock that behavior in against regression:
+# nested intrinsic-call expressions compose in every value-argument position,
+# while the type-first argument position (@size_of/@offset_of's first arg) still
+# parses a type.
+#
+# NOTE: what these cases pin is PARSING (RUE-343), not any intrinsic's value.
+# Value assertions here use @offset_of, which yields correct, field-distinct
+# offsets (x=0, y=8). @size_of currently reports 8 for every width — a separate,
+# unrelated codegen bug — so the pure-@size_of repro below only checks that it
+# parses and runs, not that 8 is the right size of an i32.
+
+[section]
+id = "cli.nested_intrinsic_argument"
+name = "Nested intrinsic-call arguments"
+description = "An intrinsic call is a full expression and composes as a direct argument to another intrinsic (RUE-343)."
+
+# The exact RUE-343 repro: a bare @size_of(i32) call passed directly as the
+# argument to @dbg. The point is that it PARSES and runs; the printed value
+# reflects @size_of's current (buggy) behavior, tracked separately.
+[[case]]
+name = "dbg_of_size_of"
+description = "@dbg(@size_of(i32)) parses and runs (exact RUE-343 repro)."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    @dbg(@size_of(i32));
+    0
+}
+""" }]
+stdout = "8\n"
+exit_code = 0
+
+# A second intrinsic (@offset_of) whose own first argument is a TYPE, nested as
+# a direct @dbg argument: exercises the type-first + value-argument mix in the
+# nested position, with field-distinct values proving real evaluation.
+[[case]]
+name = "dbg_of_offset_of"
+description = "@dbg(@offset_of(Pair, field)) composes a type-first intrinsic inside @dbg."
+files = [{ path = "main.rue", source = """
+struct Pair { x: i32, y: i64 }
+fn main() -> i32 {
+    @dbg(@offset_of(Pair, x));
+    @dbg(@offset_of(Pair, y));
+    0
+}
+""" }]
+stdout = "0\n8\n"
+exit_code = 0
+
+# The "works fine" comparison form from the issue: an intrinsic call embedded in
+# a larger expression that is itself the argument to another intrinsic.
+[[case]]
+name = "dbg_of_intrinsic_arithmetic"
+description = "An intrinsic call inside a larger expression is a valid argument to @dbg."
+files = [{ path = "main.rue", source = """
+struct Pair { x: i32, y: i64 }
+fn main() -> i32 {
+    @dbg(@offset_of(Pair, y) + 1);
+    0
+}
+""" }]
+stdout = "9\n"
+exit_code = 0

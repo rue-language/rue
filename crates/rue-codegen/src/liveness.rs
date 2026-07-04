@@ -86,8 +86,15 @@ where
         compute_dataflow(num_insts, vreg_count, &successors, &inst_uses, &inst_defs);
 
     // Step 5: Build live ranges from dataflow results
+    let has_back_edge = has_back_edge(&successors);
     let ranges = build_live_ranges(
-        num_insts, vreg_count, &inst_uses, &inst_defs, &live_in, &live_out,
+        num_insts,
+        vreg_count,
+        &inst_uses,
+        &inst_defs,
+        &live_in,
+        &live_out,
+        has_back_edge,
     );
 
     // Step 6: Compute live_at for each instruction (union of live_in and live_out)
@@ -143,8 +150,15 @@ where
         compute_dataflow(num_insts, vreg_count, &successors, &inst_uses, &inst_defs);
 
     // Step 5: Build live ranges from dataflow results
+    let has_back_edge = has_back_edge(&successors);
     let live_ranges = build_live_ranges(
-        num_insts, vreg_count, &inst_uses, &inst_defs, &live_in, &live_out,
+        num_insts,
+        vreg_count,
+        &inst_uses,
+        &inst_defs,
+        &live_in,
+        &live_out,
+        has_back_edge,
     );
 
     // Step 6: Build per-instruction liveness info
@@ -198,6 +212,16 @@ fn build_successor_lists<I>(
         .enumerate()
         .map(|(idx, inst)| get_successors(idx, inst, label_to_idx))
         .collect()
+}
+
+/// Return `true` if any instruction has a successor at an index `<= its own`,
+/// i.e. the control-flow graph contains a back-edge (a loop). Used to pick the
+/// fast, loop-free live-range construction path in [`build_live_ranges`].
+fn has_back_edge(successors: &[Vec<usize>]) -> bool {
+    successors
+        .iter()
+        .enumerate()
+        .any(|(from, succs)| succs.iter().any(|&to| to <= from))
 }
 
 /// Perform backward dataflow analysis to compute live-in and live-out sets.
@@ -254,6 +278,21 @@ fn compute_dataflow(
 }
 
 /// Build live ranges from dataflow results.
+///
+/// `has_back_edge` selects the algorithm:
+///
+/// * **No back-edges (loop-free control flow):** a vreg's live range is exactly
+///   `[first def/use, last def/use]`. Scanning `live_in`/`live_out` cannot widen
+///   it — a vreg can only be live at an instruction that is neither a def nor a
+///   use of it if that instruction sits *between* a def and a later use (already
+///   inside the def/use span) or across a back-edge (excluded here). So we skip
+///   the per-instruction bitset scan entirely and read ranges off the def/use
+///   lists in O(defs + uses). This matters because a single basic block can hold
+///   many simultaneously-live vregs (e.g. a large array literal materializes N
+///   element values before storing them); the bitset scan is then O(N²) in the
+///   number of live bits, whereas this path stays linear (RUE-302).
+/// * **Has back-edges (loops):** loop-carried values are live past their textual
+///   last use, so we fall back to the exact `live_in`/`live_out` scan.
 fn build_live_ranges(
     num_insts: usize,
     vreg_count: u32,
@@ -261,7 +300,36 @@ fn build_live_ranges(
     inst_defs: &[Vec<VReg>],
     live_in: &[FixedBitSet],
     live_out: &[FixedBitSet],
+    has_back_edge: bool,
 ) -> IndexMap<VReg, Option<LiveRange>> {
+    let mut ranges: IndexMap<VReg, Option<LiveRange>> =
+        IndexMap::with_capacity(vreg_count as usize);
+    ranges.resize(vreg_count as usize, None);
+
+    if !has_back_edge {
+        // Fast O(defs + uses) path: no loops, so def/use extents are the range.
+        let mut extend = |vreg: VReg, idx: usize| match &mut ranges[vreg] {
+            Some(range) => {
+                if idx < range.start {
+                    range.start = idx;
+                }
+                if idx > range.end {
+                    range.end = idx;
+                }
+            }
+            slot @ None => *slot = Some(LiveRange::new(idx, idx)),
+        };
+        for idx in 0..num_insts {
+            for vreg in &inst_defs[idx] {
+                extend(*vreg, idx);
+            }
+            for vreg in &inst_uses[idx] {
+                extend(*vreg, idx);
+            }
+        }
+        return ranges;
+    }
+
     let mut first_live: HashMap<VReg, usize> = HashMap::new();
     let mut last_live: HashMap<VReg, usize> = HashMap::new();
 
@@ -295,9 +363,6 @@ fn build_live_ranges(
     }
 
     // Build ranges using dense Vec storage
-    let mut ranges: IndexMap<VReg, Option<LiveRange>> =
-        IndexMap::with_capacity(vreg_count as usize);
-    ranges.resize(vreg_count as usize, None);
     for vreg_idx in 0..vreg_count {
         let vreg = VReg::new(vreg_idx);
         if let (Some(&start), Some(&end)) = (first_live.get(&vreg), last_live.get(&vreg)) {
@@ -384,7 +449,7 @@ pub fn compute_loop_info(num_insts: usize, successors: &[Vec<usize>]) -> LoopInf
         }
     }
 
-    LoopInfo { depths }
+    LoopInfo::from_depths(depths)
 }
 
 /// Compute loop info from instructions using the provided callbacks.
