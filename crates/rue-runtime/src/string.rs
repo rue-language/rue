@@ -1865,3 +1865,420 @@ fn string_ensure_capacity(ptr: *mut u8, len: u64, cap: u64, additional: u64) -> 
         (ptr, cap)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn blank_result() -> StringResult {
+        StringResult {
+            ptr: core::ptr::null_mut(),
+            len: u64::MAX,
+            cap: u64::MAX,
+        }
+    }
+
+    fn result_bytes(result: &StringResult) -> &[u8] {
+        if result.len == 0 {
+            &[]
+        } else {
+            assert!(!result.ptr.is_null());
+            // SAFETY: Runtime constructors tested here publish `ptr` with at
+            // least `len` initialized bytes. For empty strings we return above
+            // to avoid forming a slice from a null pointer.
+            unsafe { core::slice::from_raw_parts(result.ptr, result.len as usize) }
+        }
+    }
+
+    fn assert_string_result(result: &StringResult, bytes: &[u8]) {
+        assert_eq!(result.len, bytes.len() as u64);
+        assert_eq!(result_bytes(result), bytes);
+        if bytes.is_empty() {
+            assert_eq!(result.cap, 0);
+        } else {
+            assert!(result.cap >= result.len);
+        }
+    }
+
+    #[test]
+    fn test_str_eq_compares_content_and_length() {
+        let a = b"same";
+        let b = b"same";
+        let c = b"same!";
+        let d = b"diff";
+
+        assert_eq!(
+            __rue_str_eq(a.as_ptr(), a.len() as u64, b.as_ptr(), b.len() as u64),
+            1
+        );
+        assert_eq!(
+            __rue_str_eq(a.as_ptr(), a.len() as u64, c.as_ptr(), c.len() as u64),
+            0
+        );
+        assert_eq!(
+            __rue_str_eq(a.as_ptr(), a.len() as u64, d.as_ptr(), d.len() as u64),
+            0
+        );
+        assert_eq!(__rue_str_eq(a.as_ptr(), 0, d.as_ptr(), 0), 1);
+    }
+
+    #[test]
+    fn test_string_new_and_query_methods() {
+        let mut out = blank_result();
+
+        __rue_String_new(&mut out);
+
+        assert!(out.ptr.is_null());
+        assert_eq!(out.len, 0);
+        assert_eq!(out.cap, 0);
+        assert_eq!(__rue_String_len(out.ptr, out.len, out.cap), 0);
+        assert_eq!(__rue_String_capacity(out.ptr, out.len, out.cap), 0);
+        assert_eq!(__rue_String_is_empty(out.ptr, out.len, out.cap), 1);
+
+        let bytes = b"abc";
+        assert_eq!(__rue_String_len(bytes.as_ptr(), bytes.len() as u64, 0), 3);
+        assert_eq!(
+            __rue_String_capacity(bytes.as_ptr(), bytes.len() as u64, 99),
+            99
+        );
+        assert_eq!(
+            __rue_String_is_empty(bytes.as_ptr(), bytes.len() as u64, 0),
+            0
+        );
+    }
+
+    #[test]
+    fn test_string_with_capacity_allocates_at_least_minimum() {
+        let mut out = blank_result();
+
+        __rue_String_with_capacity(&mut out, 3);
+
+        assert!(!out.ptr.is_null());
+        assert_eq!(out.len, 0);
+        assert!(out.cap >= STRING_MIN_CAPACITY);
+    }
+
+    #[test]
+    fn test_ensure_capacity_promotes_literals_and_preserves_bytes() {
+        let source = b"abc";
+
+        let (ptr, cap) = string_ensure_capacity(source.as_ptr() as *mut u8, 3, 0, 2);
+
+        assert!(!ptr.is_null());
+        assert!(cap >= STRING_MIN_CAPACITY);
+        assert!(cap >= 5);
+        assert_ne!(ptr as *const u8, source.as_ptr());
+        unsafe {
+            assert_eq!(core::slice::from_raw_parts(ptr, 3), source);
+        }
+    }
+
+    #[test]
+    fn test_ensure_capacity_grows_real_allocation_to_recorded_capacity() {
+        let ptr = heap::alloc(4, 1);
+        assert!(!ptr.is_null());
+        unsafe {
+            core::ptr::copy_nonoverlapping(b"abcd".as_ptr(), ptr, 4);
+        }
+
+        let (new_ptr, new_cap) = string_ensure_capacity(ptr, 4, 4, 1);
+
+        assert!(!new_ptr.is_null());
+        assert!(new_cap >= 8);
+        unsafe {
+            assert_eq!(core::slice::from_raw_parts(new_ptr, 4), b"abcd");
+            *new_ptr.add((new_cap - 1) as usize) = b'!';
+            assert_eq!(*new_ptr.add((new_cap - 1) as usize), b'!');
+        }
+    }
+
+    #[test]
+    fn test_ensure_capacity_returns_null_on_unrepresentable_growth() {
+        let (ptr, cap) = string_ensure_capacity(core::ptr::null_mut(), 0, 0, u64::MAX);
+
+        assert!(ptr.is_null());
+        assert_eq!(cap, 0);
+    }
+
+    #[test]
+    fn test_byte_access_returns_zero_extended_bytes() {
+        let bytes = [0x00, 0x7f, 0x80, 0xff];
+
+        assert_eq!(
+            __rue_String_byte_at(bytes.as_ptr(), bytes.len() as u64, 0, 0),
+            0
+        );
+        assert_eq!(
+            __rue_String_byte_at(bytes.as_ptr(), bytes.len() as u64, 0, 2),
+            0x80
+        );
+        assert_eq!(
+            __rue_str_byte_at(bytes.as_ptr(), bytes.len() as u64, 3),
+            0xff
+        );
+    }
+
+    #[test]
+    fn test_utf8_char_scalar_and_next_decode_multibyte_scalars() {
+        let bytes = "aé🙂".as_bytes();
+
+        assert_eq!(
+            __rue_String_char_scalar(bytes.as_ptr(), bytes.len() as u64, 0, 0),
+            'a' as u64
+        );
+        assert_eq!(
+            __rue_String_char_next(bytes.as_ptr(), bytes.len() as u64, 0, 0),
+            1
+        );
+        assert_eq!(
+            __rue_String_char_scalar(bytes.as_ptr(), bytes.len() as u64, 0, 1),
+            'é' as u64
+        );
+        assert_eq!(
+            __rue_String_char_next(bytes.as_ptr(), bytes.len() as u64, 0, 1),
+            3
+        );
+        assert_eq!(
+            __rue_String_char_scalar(bytes.as_ptr(), bytes.len() as u64, 0, 3),
+            '🙂' as u64
+        );
+        assert_eq!(
+            __rue_String_char_next(bytes.as_ptr(), bytes.len() as u64, 0, 3),
+            bytes.len() as u64
+        );
+    }
+
+    #[test]
+    fn test_utf8_lossy_replaces_invalid_sequences_and_advances() {
+        const FFFD: u64 = 0xfffd;
+        let bytes = [b'a', 0xf0, 0x9f, b'!', 0xff, b'z'];
+
+        assert_eq!(
+            __rue_String_char_scalar_lossy(bytes.as_ptr(), bytes.len() as u64, 0, 0),
+            b'a' as u64
+        );
+        assert_eq!(
+            __rue_String_char_next_lossy(bytes.as_ptr(), bytes.len() as u64, 0, 0),
+            1
+        );
+        assert_eq!(
+            __rue_String_char_scalar_lossy(bytes.as_ptr(), bytes.len() as u64, 0, 1),
+            FFFD
+        );
+        assert_eq!(
+            __rue_String_char_next_lossy(bytes.as_ptr(), bytes.len() as u64, 0, 1),
+            3
+        );
+        assert_eq!(
+            __rue_String_char_scalar_lossy(bytes.as_ptr(), bytes.len() as u64, 0, 4),
+            FFFD
+        );
+        assert_eq!(
+            __rue_String_char_next_lossy(bytes.as_ptr(), bytes.len() as u64, 0, 4),
+            5
+        );
+    }
+
+    #[test]
+    fn test_substring_copies_requested_byte_range() {
+        let bytes = b"abcdef";
+        let mut out = blank_result();
+
+        __rue_String_substring(&mut out, bytes.as_ptr(), bytes.len() as u64, 0, 2, 3);
+
+        assert_string_result(&out, b"cde");
+        assert_ne!(out.ptr as *const u8, bytes.as_ptr());
+    }
+
+    #[test]
+    fn test_substring_empty_range_is_literal_like_empty_string() {
+        let bytes = b"abcdef";
+        let mut out = blank_result();
+
+        __rue_String_substring(&mut out, bytes.as_ptr(), bytes.len() as u64, 0, 3, 0);
+
+        assert!(out.ptr.is_null());
+        assert_eq!(out.len, 0);
+        assert_eq!(out.cap, 0);
+    }
+
+    #[test]
+    fn test_contains_and_starts_with_are_byte_based() {
+        let haystack = b"bananas";
+
+        assert_eq!(
+            __rue_String_contains(
+                haystack.as_ptr(),
+                haystack.len() as u64,
+                0,
+                b"nan".as_ptr(),
+                3,
+                0,
+            ),
+            1
+        );
+        assert_eq!(
+            __rue_String_contains(
+                haystack.as_ptr(),
+                haystack.len() as u64,
+                0,
+                b"nab".as_ptr(),
+                3,
+                0,
+            ),
+            0
+        );
+        assert_eq!(
+            __rue_String_starts_with(
+                haystack.as_ptr(),
+                haystack.len() as u64,
+                0,
+                b"ban".as_ptr(),
+                3,
+                0,
+            ),
+            1
+        );
+        assert_eq!(
+            __rue_String_starts_with(
+                haystack.as_ptr(),
+                haystack.len() as u64,
+                0,
+                b"nan".as_ptr(),
+                3,
+                0,
+            ),
+            0
+        );
+        assert_eq!(
+            __rue_String_contains(
+                haystack.as_ptr(),
+                haystack.len() as u64,
+                0,
+                b"".as_ptr(),
+                0,
+                0
+            ),
+            1
+        );
+        assert_eq!(
+            __rue_String_starts_with(
+                haystack.as_ptr(),
+                haystack.len() as u64,
+                0,
+                b"".as_ptr(),
+                0,
+                0,
+            ),
+            1
+        );
+    }
+
+    #[test]
+    fn test_to_string_formats_signed_extremes() {
+        let mut out = blank_result();
+
+        __rue_to_string(&mut out, 0);
+        assert_string_result(&out, b"0");
+
+        __rue_to_string(&mut out, -42);
+        assert_string_result(&out, b"-42");
+
+        __rue_to_string(&mut out, i64::MIN);
+        assert_string_result(&out, b"-9223372036854775808");
+    }
+
+    #[test]
+    fn test_to_string_unsigned_formats_full_u64_range() {
+        let mut out = blank_result();
+
+        __rue_to_string_unsigned(&mut out, 0);
+        assert_string_result(&out, b"0");
+
+        __rue_to_string_unsigned(&mut out, u64::MAX);
+        assert_string_result(&out, b"18446744073709551615");
+    }
+
+    #[test]
+    fn test_concat_allocates_joined_bytes() {
+        let left = b"hello, ";
+        let right = b"world";
+        let mut out = blank_result();
+
+        __rue_String_concat(
+            &mut out,
+            left.as_ptr(),
+            left.len() as u64,
+            0,
+            right.as_ptr(),
+            right.len() as u64,
+            0,
+        );
+
+        assert_string_result(&out, b"hello, world");
+    }
+
+    #[test]
+    fn test_clone_deep_copies_literal_bytes() {
+        let source = b"literal";
+        let mut out = blank_result();
+
+        __rue_String_clone(&mut out, source.as_ptr(), source.len() as u64, 0);
+
+        assert_string_result(&out, source);
+        assert_ne!(out.ptr as *const u8, source.as_ptr());
+    }
+
+    #[test]
+    fn test_push_promotes_literal_and_appends_byte() {
+        let source = b"abc";
+        let mut out = blank_result();
+
+        __rue_String_push(
+            &mut out,
+            source.as_ptr() as *mut u8,
+            source.len() as u64,
+            0,
+            b'd',
+        );
+
+        assert_string_result(&out, b"abcd");
+        assert_ne!(out.ptr as *const u8, source.as_ptr());
+    }
+
+    #[test]
+    fn test_push_str_appends_without_reallocation_when_capacity_suffices() {
+        let mut base = blank_result();
+        __rue_String_with_capacity(&mut base, STRING_MIN_CAPACITY);
+        let start = base.ptr;
+        unsafe {
+            *base.ptr.add(0) = b'a';
+            *base.ptr.add(1) = b'b';
+        }
+        base.len = 2;
+
+        let mut out = blank_result();
+        __rue_String_push_str(&mut out, base.ptr, base.len, base.cap, b"cd".as_ptr(), 2, 0);
+
+        assert_eq!(out.ptr, start);
+        assert_string_result(&out, b"abcd");
+    }
+
+    #[test]
+    fn test_clear_preserves_capacity_and_reserve_grows() {
+        let mut base = blank_result();
+        __rue_String_with_capacity(&mut base, 2);
+        let original_cap = base.cap;
+
+        let mut reserved = blank_result();
+        __rue_String_reserve(&mut reserved, base.ptr, 0, base.cap, original_cap + 1);
+        assert_eq!(reserved.len, 0);
+        assert!(reserved.cap > original_cap);
+
+        let mut cleared = blank_result();
+        __rue_String_clear(&mut cleared, reserved.ptr, 7, reserved.cap);
+        assert_eq!(cleared.ptr, reserved.ptr);
+        assert_eq!(cleared.len, 0);
+        assert_eq!(cleared.cap, reserved.cap);
+    }
+}
