@@ -314,9 +314,18 @@ impl<'a> Sema<'a> {
             // indirection, so the slice value is passed BY VALUE through the
             // existing multi-slot aggregate ABI (2 slots) rather than as a
             // pointer-to-slice. The call site materializes the fat pointer.
+            //
+            // `str` intentionally diverges for `inout`: it is first-class and
+            // reassignable, so assigning to an `inout str` parameter must
+            // rebind the caller's `{ptr, len}` fat pointer. That requires a
+            // normal by-reference parameter slot; otherwise AIR emits
+            // ParamStore but codegen sees a by-value param slot and panics
+            // (RUE-385).
             let is_slice = self.slice_element_type(*ptype).is_some();
-            let is_by_ref =
-                (*mode == RirParamMode::Inout || *mode == RirParamMode::Borrow) && !is_slice;
+            let is_inout_str = *mode == RirParamMode::Inout && self.is_str_struct(*ptype);
+            let is_slice_by_value = is_slice && !is_inout_str;
+            let is_by_ref = (*mode == RirParamMode::Inout || *mode == RirParamMode::Borrow)
+                && !is_slice_by_value;
             let slot_count = if is_by_ref {
                 // By-ref parameters are always 1 slot (pointer)
                 1

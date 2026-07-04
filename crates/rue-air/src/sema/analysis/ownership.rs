@@ -604,8 +604,15 @@ impl<'a> Sema<'a> {
             // a `str` variable is passed through by value. Either way it flows
             // through the by-value aggregate ABI, so it is handled here before
             // the array→slice `borrow` coercion below.
+            //
+            // Exception (RUE-385): `inout str` must pass the caller's storage by
+            // address. Unlike a slice view, `str` is first-class and
+            // reassignable, so an assignment to the parameter rebinds the
+            // caller's fat pointer via ParamStore.
             let is_str_param = param_types.get(i).is_some_and(|pt| self.is_str_like(*pt));
-            if is_str_param {
+            let is_inout_str_param =
+                arg.is_inout() && param_types.get(i).is_some_and(|pt| self.is_str_struct(*pt));
+            if is_str_param && !is_inout_str_param {
                 let str_ty = param_types[i];
                 let prev_expected = ctx.expected_type.replace(str_ty);
                 let arg_result = self.analyze_inst(air, arg.value, ctx);
@@ -621,7 +628,7 @@ impl<'a> Sema<'a> {
             let is_slice_param = param_types
                 .get(i)
                 .is_some_and(|pt| self.slice_element_type(*pt).is_some());
-            if is_slice_param {
+            if is_slice_param && !is_inout_str_param {
                 let slice_ty = param_types[i];
                 let value = self.coerce_borrow_array_to_slice(air, arg, slice_ty, ctx)?;
                 air_args.push(AirCallArg {
