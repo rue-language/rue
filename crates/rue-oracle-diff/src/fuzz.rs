@@ -372,48 +372,111 @@ fn compile_and_run(
     // child's own exit code / terminating signal unambiguously. stderr is
     // captured (not `Stdio::null`) so a trap's message is available to
     // `classify` for panic-category comparison (RUE-339).
-    let mut child = Command::new(&bin_path)
-        .current_dir(dir)
+    let mut cmd = Command::new(&bin_path);
+    cmd.current_dir(dir);
+    run_with_timeout(cmd, timeout)
+}
+
+/// Maximum stderr bytes retained from a run. Trap messages are short; the cap
+/// only bounds how much we *keep* — the pipe is still drained to EOF (see
+/// [`read_capped`]) so a chatty program can never deadlock the wait loop.
+const STDERR_CAP: usize = 8192;
+
+/// Spawn `cmd` with piped stdout/stderr, drain both pipes **concurrently** via
+/// reader threads, and wait with a manual timeout.
+///
+/// Draining concurrently is essential (RUE-338): if the pipes were only read
+/// after the child exits, a program that writes more than the OS pipe capacity
+/// (~64KB on Linux) would block on `write()` forever, `try_wait` would never
+/// report an exit, and the timeout would manufacture a false `Compiled::Timeout`
+/// (→ a fabricated `Verdict::Disagree`). The reader threads start immediately
+/// after `spawn` so the child always has a consumer. On timeout we kill first,
+/// then join the readers — killing closes the child's write ends, the pipes hit
+/// EOF, and the readers finish, so no thread leaks.
+fn run_with_timeout(mut cmd: Command, timeout: Duration) -> std::io::Result<Compiled> {
+    let mut child = cmd
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
 
+    // stdout is captured in full (the oracle compares complete output, so it
+    // cannot be truncated); stderr is drained to EOF but only `STDERR_CAP` bytes
+    // are retained. Both readers run on their own thread so neither pipe can
+    // fill and block the child.
+    let stdout_pipe = child.stdout.take();
+    let stderr_pipe = child.stderr.take();
+    let stdout_reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(mut out) = stdout_pipe {
+            out.read_to_end(&mut buf).ok();
+        }
+        buf
+    });
+    let stderr_reader =
+        std::thread::spawn(move || stderr_pipe.map(|err| read_capped(err, STDERR_CAP)));
+
     let start = Instant::now();
-    loop {
+    let status = loop {
         match child.try_wait()? {
-            Some(status) => {
-                let mut stdout = String::new();
-                if let Some(mut out) = child.stdout.take() {
-                    out.read_to_string(&mut stdout).ok();
-                }
-                // Bounded read: trap messages are short, and the child has
-                // already exited, so its full output is buffered in the pipe —
-                // no drain-deadlock. The cap just guards against a chatty
-                // program making us buffer unbounded stderr.
-                let mut stderr = String::new();
-                if let Some(err) = child.stderr.take() {
-                    err.take(8192).read_to_string(&mut stderr).ok();
-                }
-                return Ok(match status.code() {
-                    Some(code) => Compiled::Ran {
-                        exit: code,
-                        stdout,
-                        stderr,
-                    },
-                    None => Compiled::Crash(status.signal().unwrap_or(0)),
-                });
-            }
+            Some(status) => break status,
             None => {
                 if start.elapsed() > timeout {
                     let _ = child.kill();
                     let _ = child.wait();
+                    // Join so the reader threads don't leak; the killed child's
+                    // closed fds give them EOF, so these return promptly.
+                    let _ = stdout_reader.join();
+                    let _ = stderr_reader.join();
                     return Ok(Compiled::Timeout);
                 }
                 std::thread::sleep(Duration::from_millis(10));
             }
         }
+    };
+
+    // The child has exited; its write ends are closed, so the readers hit EOF
+    // and finish. Join to collect the fully-drained output.
+    let stdout_bytes = stdout_reader.join().unwrap_or_default();
+    let stderr_bytes = stderr_reader.join().unwrap_or_default().unwrap_or_default();
+    // Lossy decode so garbage bytes from a miscompile surface as a stdout
+    // mismatch rather than silently becoming empty (as `read_to_string` would).
+    let stdout = String::from_utf8_lossy(&stdout_bytes).into_owned();
+    let stderr = String::from_utf8_lossy(&stderr_bytes).into_owned();
+
+    Ok(match status.code() {
+        Some(code) => Compiled::Ran {
+            exit: code,
+            stdout,
+            stderr,
+        },
+        None => Compiled::Crash(status.signal().unwrap_or(0)),
+    })
+}
+
+/// Read `r` to EOF, retaining at most `cap` bytes. Reading all the way to EOF
+/// (rather than stopping after `cap`, as `Read::take` would) is what prevents a
+/// drain-deadlock: a program that writes more than `cap` to this pipe must still
+/// have every byte consumed or it blocks on a full pipe forever (RUE-338). The
+/// cap bounds only the memory we keep, not how much we drain.
+fn read_capped<R: Read>(mut r: R, cap: usize) -> Vec<u8> {
+    let mut kept = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        match r.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => {
+                if kept.len() < cap {
+                    let take = (cap - kept.len()).min(n);
+                    kept.extend_from_slice(&chunk[..take]);
+                }
+                // Bytes beyond `cap` are read and discarded — draining, not
+                // storing — so the pipe never fills.
+            }
+            Err(_) => break,
+        }
     }
+    kept
 }
 
 struct Disagreement {
@@ -608,6 +671,89 @@ mod tests {
         )));
         assert!(is_disagree(classify(&oc(0, ""), &Compiled::Crash(11))));
         assert!(is_disagree(classify(&oc(0, ""), &Compiled::Timeout)));
+    }
+
+    #[test]
+    fn large_stdout_does_not_deadlock() {
+        // RUE-338: a program that writes far more than the OS pipe capacity
+        // (~64KB) must be drained concurrently while it runs. Before the fix the
+        // pipe filled, the writer blocked on `write()`, `try_wait` never saw an
+        // exit, and the 10s timeout fabricated a `Compiled::Timeout` (→ a false
+        // Disagree). Emit ~200KB and assert we capture every byte as `Ran`.
+        let n = 200_000usize;
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg(format!("yes y | head -c {n}"));
+        let result = run_with_timeout(cmd, Duration::from_secs(30)).expect("spawn");
+        match result {
+            Compiled::Ran { exit, stdout, .. } => {
+                assert_eq!(exit, 0, "pipeline should exit cleanly");
+                assert_eq!(
+                    stdout.len(),
+                    n,
+                    "full stdout must be captured, not truncated"
+                );
+            }
+            other => panic!("expected Ran with full stdout, got {}", describe(&other)),
+        }
+    }
+
+    #[test]
+    fn large_stderr_does_not_deadlock() {
+        // The stderr cap must not reintroduce the deadlock: even though we retain
+        // only STDERR_CAP bytes, the pipe is drained to EOF, so a program spewing
+        // >64KB to stderr still terminates as `Ran` (RUE-338).
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg("yes e | head -c 200000 1>&2");
+        let result = run_with_timeout(cmd, Duration::from_secs(30)).expect("spawn");
+        match result {
+            Compiled::Ran { exit, stderr, .. } => {
+                assert_eq!(exit, 0);
+                assert!(!stderr.is_empty(), "some stderr should be retained");
+                assert!(
+                    stderr.len() <= STDERR_CAP,
+                    "stderr retained ({}) must not exceed the cap {STDERR_CAP}",
+                    stderr.len()
+                );
+            }
+            other => panic!("expected Ran, got {}", describe(&other)),
+        }
+    }
+
+    #[test]
+    fn read_capped_drains_to_eof_but_keeps_only_cap() {
+        // The drain-vs-keep contract in isolation: given more bytes than the cap,
+        // we consume all of them (Cursor reaches EOF) but retain exactly `cap`.
+        let data = vec![b'z'; 100_000];
+        let kept = read_capped(std::io::Cursor::new(data), STDERR_CAP);
+        assert_eq!(kept.len(), STDERR_CAP);
+        assert!(kept.iter().all(|&b| b == b'z'));
+        // Fewer bytes than the cap: keep them all.
+        let kept = read_capped(std::io::Cursor::new(vec![b'q'; 10]), STDERR_CAP);
+        assert_eq!(kept.len(), 10);
+    }
+
+    #[test]
+    fn timeout_still_reported_for_a_hung_child() {
+        // A genuine non-terminating program must still yield `Timeout` (and the
+        // reader threads must be joined, not leaked). We exec `sleep` directly
+        // (not via `sh -c`): the harness always runs a single-process compiled
+        // binary, so killing the child closes every pipe write-end, the readers
+        // hit EOF, and the post-kill join returns at once. `sleep` writes
+        // nothing, so this is the honest timeout path, distinct from the false
+        // one the large-output tests guard against.
+        let mut cmd = Command::new("sleep");
+        cmd.arg("30");
+        let start = Instant::now();
+        let result = run_with_timeout(cmd, Duration::from_millis(200)).expect("spawn");
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "kill-then-join must return promptly, not block on the child's full runtime"
+        );
+        assert!(
+            matches!(result, Compiled::Timeout),
+            "a truly hung child must report Timeout, got {}",
+            describe(&result)
+        );
     }
 
     #[test]

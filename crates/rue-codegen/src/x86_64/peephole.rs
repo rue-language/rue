@@ -44,9 +44,17 @@ use super::schedule::{reads_flags, writes_flags};
 pub fn optimize(instructions: &mut Vec<X86Inst>) -> usize {
     let mut changes = 0;
 
+    // Precompute FLAGS-liveness for every index in one backward pass. Pass 1
+    // only inspects the FLAGS state of instructions *after* `i`, which it does
+    // not mutate during the pass (it only rewrites index `i` in place), so this
+    // snapshot is valid for the whole pass. Without it, each `mov r, 0` rewrite
+    // rescans the tail via `flags_dead_after`, making pass 1 O(n²) on long
+    // flag-neutral runs such as large array-literal stores (RUE-302).
+    let flags_dead = compute_flags_dead(instructions);
+
     // Pass 1: Single-instruction transforms (mov 0 -> xor, cmp 0 -> test)
     for i in 0..instructions.len() {
-        if let Some(new_inst) = transform_single(instructions, i) {
+        if let Some(new_inst) = transform_single(instructions, i, flags_dead[i]) {
             instructions[i] = new_inst;
             changes += 1;
         }
@@ -103,6 +111,39 @@ fn flags_dead_after(instructions: &[X86Inst], idx: usize) -> bool {
     true
 }
 
+/// Compute [`flags_dead_after`] for every index in a single backward pass.
+///
+/// `result[i] == flags_dead_after(instructions, i)`. Each entry depends only on
+/// the instructions after `i`, so scanning once from the end (carrying the
+/// answer for `i + 1` into `i`) yields all of them in O(n) instead of O(n) per
+/// query (RUE-302).
+fn compute_flags_dead(instructions: &[X86Inst]) -> Vec<bool> {
+    let n = instructions.len();
+    let mut result = vec![true; n];
+    // `scan_after` holds `flags_dead_after(j)` for the index just processed,
+    // i.e. the result of scanning the tail starting at `j + 1`. Seeded with the
+    // empty-tail case (`flags_dead_after(n - 1) == true`).
+    let mut scan_after = true;
+    for j in (0..n).rev() {
+        result[j] = scan_after;
+        let inst = &instructions[j];
+        scan_after = if is_shift_by_zero(inst) {
+            scan_after
+        } else if reads_flags(inst) {
+            false
+        } else if writes_flags(inst) {
+            true
+        } else {
+            match inst {
+                X86Inst::CallRel { .. } | X86Inst::Syscall | X86Inst::Ret => true,
+                X86Inst::Jmp { .. } | X86Inst::Label { .. } => false,
+                _ => scan_after,
+            }
+        };
+    }
+    result
+}
+
 /// Shift-immediate-by-zero forms: architecturally, a shift count of 0
 /// leaves FLAGS unmodified, so these are neither flag writers (despite
 /// [`writes_flags`] reporting the non-zero forms) nor unsafe to remove.
@@ -133,19 +174,20 @@ fn removal_preserves_flags(instructions: &[X86Inst], idx: usize) -> bool {
 
 /// Transform the instruction at `idx` to a more efficient form.
 ///
+/// `flags_dead` must equal `flags_dead_after(instructions, idx)` (precomputed by
+/// the caller so a whole pass costs O(n), not O(n²)).
+///
 /// Returns `Some(new_inst)` if a transformation applies, `None` otherwise.
-fn transform_single(instructions: &[X86Inst], idx: usize) -> Option<X86Inst> {
+fn transform_single(instructions: &[X86Inst], idx: usize, flags_dead: bool) -> Option<X86Inst> {
     match &instructions[idx] {
         // mov r, 0 → xor r, r (smaller encoding: 5 bytes → 2 bytes)
         // Also breaks false dependencies on modern CPUs.
         // XOR writes FLAGS where MOV does not, so this is only legal where
         // the flags state at this point is dead (RUE-152).
-        X86Inst::MovRI32 { dst, imm: 0 } if flags_dead_after(instructions, idx) => {
-            Some(X86Inst::XorRR {
-                dst: *dst,
-                src: *dst,
-            })
-        }
+        X86Inst::MovRI32 { dst, imm: 0 } if flags_dead => Some(X86Inst::XorRR {
+            dst: *dst,
+            src: *dst,
+        }),
 
         // cmp r, 0 → test r, r (same flags, often faster)
         // Flag-equivalent for every consumed flag: both set CF=0, OF=0 and

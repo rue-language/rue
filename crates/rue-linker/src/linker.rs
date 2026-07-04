@@ -11,6 +11,7 @@ use crate::constants::{
 };
 use crate::elf::Section;
 use crate::elf::{ObjectFile, RelocationType, Symbol, SymbolBinding};
+use crate::util::align_up;
 
 /// Which merged output buffer a relocation's patch site lives in.
 ///
@@ -1781,11 +1782,6 @@ impl Default for Linker {
     }
 }
 
-/// Align a value up to the given alignment.
-fn align_up(value: u64, align: u64) -> u64 {
-    (value + align - 1) & !(align - 1)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1800,14 +1796,6 @@ mod tests {
     // Use X86_64Linux explicitly for ELF tests since ObjectFile only parses ELF
     // and the Linker produces ELF executables
     const ELF_TARGET: Target = Target::X86_64Linux;
-
-    #[test]
-    fn test_align_up() {
-        assert_eq!(align_up(0, 16), 0);
-        assert_eq!(align_up(1, 16), 16);
-        assert_eq!(align_up(16, 16), 16);
-        assert_eq!(align_up(17, 16), 32);
-    }
 
     #[test]
     fn test_linker_x86_64_linux() {

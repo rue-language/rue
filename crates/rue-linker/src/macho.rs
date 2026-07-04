@@ -23,6 +23,7 @@
 //! ```
 
 use crate::constants::*;
+use crate::util::align_up;
 
 /// ARM64 macOS page size (16KB).
 pub const PAGE_SIZE: u64 = 0x4000;
@@ -1141,11 +1142,6 @@ impl Default for MachOBuilder {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// Align a value up to the given alignment.
-fn align_up(value: u64, align: u64) -> u64 {
-    (value + align - 1) & !(align - 1)
 }
 
 #[cfg(test)]
