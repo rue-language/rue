@@ -227,8 +227,11 @@ impl<'a> DiagnosticFormatter<'a> {
         span: Option<Span>,
         diagnostic: &Diagnostic,
     ) -> String {
-        // For diagnostics without a span, just format the message with any footers
-        let Some(span) = span else {
+        // For diagnostics without a primary span, promote the first attached
+        // label to the rendered snippet. Labels carry their own spans, so
+        // dropping them here would silently hide source context.
+        let promoted_label = span.is_none().then(|| diagnostic.labels.first()).flatten();
+        let Some(span) = span.or_else(|| promoted_label.map(|label| label.span)) else {
             let mut report = level.title(message);
             // Add notes and helps as footers
             for note in &diagnostic.notes {
@@ -246,13 +249,23 @@ impl<'a> DiagnosticFormatter<'a> {
         let end = (span.end as usize).min(source_len).max(start);
 
         // Build snippet with primary annotation
+        let primary_annotation = level.span(start..end);
+        let primary_annotation = if let Some(label) = promoted_label {
+            primary_annotation.label(&label.message)
+        } else {
+            primary_annotation
+        };
         let mut snippet = Snippet::source(self.source_info.source)
             .origin(self.source_info.path)
             .fold(true)
-            .annotation(level.span(start..end));
+            .annotation(primary_annotation);
 
         // Add secondary labels as Info annotations
-        for label in &diagnostic.labels {
+        for label in diagnostic
+            .labels
+            .iter()
+            .skip(usize::from(promoted_label.is_some()))
+        {
             let label_start = (label.span.start as usize).min(source_len);
             let label_end = (label.span.end as usize).min(source_len).max(label_start);
             snippet = snippet.annotation(
@@ -500,8 +513,11 @@ impl<'a> MultiFileFormatter<'a> {
         span: Option<Span>,
         diagnostic: &Diagnostic,
     ) -> String {
-        // For diagnostics without a span, just format the message with any footers
-        let Some(primary_span) = span else {
+        // For diagnostics without a primary span, promote the first attached
+        // label to the rendered snippet. Labels carry their own file IDs and
+        // spans, so dropping them here would silently hide source context.
+        let promoted_label = span.is_none().then(|| diagnostic.labels.first()).flatten();
+        let Some(primary_span) = span.or_else(|| promoted_label.map(|label| label.span)) else {
             let mut report = level.title(message);
             for note in &diagnostic.notes {
                 report = report.footer(Level::Note.title(note.0.as_str()));
@@ -516,13 +532,18 @@ impl<'a> MultiFileFormatter<'a> {
         let mut file_spans: HashMap<FileId, Vec<(Span, Option<&str>, Level)>> = HashMap::new();
 
         // Add primary span
-        file_spans
-            .entry(primary_span.file_id)
-            .or_default()
-            .push((primary_span, None, level));
+        file_spans.entry(primary_span.file_id).or_default().push((
+            primary_span,
+            promoted_label.map(|label| label.message.as_str()),
+            level,
+        ));
 
         // Add secondary labels
-        for label in &diagnostic.labels {
+        for label in diagnostic
+            .labels
+            .iter()
+            .skip(usize::from(promoted_label.is_some()))
+        {
             file_spans.entry(label.span.file_id).or_default().push((
                 label.span,
                 Some(label.message.as_str()),
@@ -1214,6 +1235,22 @@ mod tests {
     }
 
     #[test]
+    fn test_format_error_without_span_promotes_label() {
+        let source = "fn foo() -> i32 { 42 }";
+        let source_info = SourceInfo::new(source, "test.rue");
+        let formatter = DiagnosticFormatter::new(&source_info);
+
+        let error = CompileError::without_span(ErrorKind::NoMainFunction)
+            .with_label("candidate function is here", Span::new(3, 6));
+
+        let output = formatter.format_error(&error);
+        assert!(output.contains("[E0200]"));
+        assert!(output.contains("no main function"));
+        assert!(output.contains("test.rue"));
+        assert!(output.contains("candidate function is here"));
+    }
+
+    #[test]
     fn test_format_warning() {
         let source = "fn main() -> i32 { let x = 42; 0 }";
         let source_info = SourceInfo::new(source, "test.rue");
@@ -1699,6 +1736,28 @@ mod tests {
         let output = formatter.format_error(&error);
         assert!(output.contains("[E0200]"));
         assert!(output.contains("no main function"));
+    }
+
+    #[test]
+    fn test_multi_file_formatter_without_span_promotes_label() {
+        let source1 = "fn main() -> i32 { helper() }";
+        let source2 = "fn helper() -> bool { true }";
+        let sources = vec![
+            (FileId::new(1), SourceInfo::new(source1, "main.rue")),
+            (FileId::new(2), SourceInfo::new(source2, "helper.rue")),
+        ];
+        let formatter = MultiFileFormatter::new(sources);
+
+        let error = CompileError::without_span(ErrorKind::NoMainFunction).with_label(
+            "candidate function is here",
+            Span::with_file(FileId::new(2), 3, 9),
+        );
+
+        let output = formatter.format_error(&error);
+        assert!(output.contains("[E0200]"));
+        assert!(output.contains("no main function"));
+        assert!(output.contains("helper.rue"));
+        assert!(output.contains("candidate function is here"));
     }
 
     #[test]
