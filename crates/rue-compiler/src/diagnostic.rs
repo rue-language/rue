@@ -24,6 +24,7 @@ use std::collections::HashMap;
 use std::io::IsTerminal;
 
 use annotate_snippets::{Level, Renderer, Snippet};
+use rue_span::offset_to_line_col;
 
 use crate::{CompileError, CompileErrors, CompileWarning, Diagnostic, ErrorCode, FileId, Span};
 
@@ -771,32 +772,12 @@ impl<'a> JsonDiagnosticFormatter<'a> {
         Self { source_info }
     }
 
-    /// Calculate line and column for a byte offset.
-    fn offset_to_line_col(&self, offset: u32) -> (u32, u32) {
-        let offset = offset as usize;
-        let source = self.source_info.source;
-        let mut line = 1u32;
-        let mut col = 1u32;
-        for (i, ch) in source.char_indices() {
-            if i >= offset {
-                break;
-            }
-            if ch == '\n' {
-                line += 1;
-                col = 1;
-            } else {
-                col += 1;
-            }
-        }
-        (line, col)
-    }
-
     /// Format a compile error as JSON.
     pub fn format_error(&self, error: &CompileError) -> JsonDiagnostic {
         let diag = error.diagnostic();
         let (line, col) = error
             .span()
-            .map(|s| self.offset_to_line_col(s.start))
+            .map(|s| offset_to_line_col(self.source_info.source, s.start))
             .unwrap_or((1, 1));
 
         let primary_span = error.span().map(|span| JsonSpan {
@@ -813,7 +794,7 @@ impl<'a> JsonDiagnosticFormatter<'a> {
             .labels
             .iter()
             .map(|label| {
-                let (line, col) = self.offset_to_line_col(label.span.start);
+                let (line, col) = offset_to_line_col(self.source_info.source, label.span.start);
                 JsonSpan {
                     file: self.source_info.path.to_string(),
                     start: label.span.start,
@@ -858,7 +839,7 @@ impl<'a> JsonDiagnosticFormatter<'a> {
         let diag = warning.diagnostic();
         let (line, col) = warning
             .span()
-            .map(|s| self.offset_to_line_col(s.start))
+            .map(|s| offset_to_line_col(self.source_info.source, s.start))
             .unwrap_or((1, 1));
 
         let primary_span = warning.span().map(|span| JsonSpan {
@@ -875,7 +856,7 @@ impl<'a> JsonDiagnosticFormatter<'a> {
             .labels
             .iter()
             .map(|label| {
-                let (line, col) = self.offset_to_line_col(label.span.start);
+                let (line, col) = offset_to_line_col(self.source_info.source, label.span.start);
                 JsonSpan {
                     file: self.source_info.path.to_string(),
                     start: label.span.start,
@@ -990,25 +971,6 @@ impl<'a> MultiFileJsonFormatter<'a> {
         })
     }
 
-    /// Calculate line and column for a byte offset in a specific source.
-    fn offset_to_line_col(&self, source: &str, offset: u32) -> (u32, u32) {
-        let offset = offset as usize;
-        let mut line = 1u32;
-        let mut col = 1u32;
-        for (i, ch) in source.char_indices() {
-            if i >= offset {
-                break;
-            }
-            if ch == '\n' {
-                line += 1;
-                col = 1;
-            } else {
-                col += 1;
-            }
-        }
-        (line, col)
-    }
-
     /// Get the path and source for a span, using the span's file ID.
     fn source_for_span(&self, span: Span) -> Option<(&str, &str)> {
         self.get_source(span.file_id)
@@ -1022,7 +984,7 @@ impl<'a> MultiFileJsonFormatter<'a> {
 
         let primary_span = error.span().and_then(|span| {
             self.source_for_span(span).map(|(path, source)| {
-                let (line, col) = self.offset_to_line_col(source, span.start);
+                let (line, col) = offset_to_line_col(source, span.start);
                 JsonSpan {
                     file: path.to_string(),
                     start: span.start,
@@ -1040,7 +1002,7 @@ impl<'a> MultiFileJsonFormatter<'a> {
             .iter()
             .filter_map(|label| {
                 self.source_for_span(label.span).map(|(path, source)| {
-                    let (line, col) = self.offset_to_line_col(source, label.span.start);
+                    let (line, col) = offset_to_line_col(source, label.span.start);
                     JsonSpan {
                         file: path.to_string(),
                         start: label.span.start,
@@ -1090,7 +1052,7 @@ impl<'a> MultiFileJsonFormatter<'a> {
 
         let primary_span = warning.span().and_then(|span| {
             self.source_for_span(span).map(|(path, source)| {
-                let (line, col) = self.offset_to_line_col(source, span.start);
+                let (line, col) = offset_to_line_col(source, span.start);
                 JsonSpan {
                     file: path.to_string(),
                     start: span.start,
@@ -1108,7 +1070,7 @@ impl<'a> MultiFileJsonFormatter<'a> {
             .iter()
             .filter_map(|label| {
                 self.source_for_span(label.span).map(|(path, source)| {
-                    let (line, col) = self.offset_to_line_col(source, label.span.start);
+                    let (line, col) = offset_to_line_col(source, label.span.start);
                     JsonSpan {
                         file: path.to_string(),
                         start: label.span.start,

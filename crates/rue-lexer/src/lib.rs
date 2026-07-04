@@ -5,7 +5,8 @@
 
 mod logos_lexer;
 
-pub use lasso::{Key, Spur, ThreadedRodeo};
+use lasso::Key;
+pub use lasso::Spur;
 pub use logos_lexer::LogosLexer as Lexer;
 pub use rue_span::FileId;
 use rue_span::Span;

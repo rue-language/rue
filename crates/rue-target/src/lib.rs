@@ -105,34 +105,6 @@ impl Target {
         }
     }
 
-    /// Returns the pointer size in bytes for this target.
-    pub fn pointer_size(&self) -> u32 {
-        match self.arch() {
-            Arch::X86_64 | Arch::Aarch64 => 8, // 64-bit architectures
-        }
-    }
-
-    /// Returns the required stack alignment in bytes for this target.
-    ///
-    /// This is the alignment required at function call boundaries.
-    pub fn stack_alignment(&self) -> u32 {
-        match self {
-            // System V AMD64, AAPCS64, and Apple's ABI all require 16-byte alignment.
-            Target::X86_64Linux | Target::Aarch64Linux | Target::Aarch64Macos => 16,
-        }
-    }
-
-    /// Returns the triple string for this target (e.g., "x86_64-unknown-linux-gnu").
-    ///
-    /// This can be useful for invoking external tools like system linkers.
-    pub fn triple(&self) -> &'static str {
-        match self {
-            Target::X86_64Linux => "x86_64-unknown-linux-gnu",
-            Target::Aarch64Linux => "aarch64-unknown-linux-gnu",
-            Target::Aarch64Macos => "aarch64-apple-darwin",
-        }
-    }
-
     /// Returns whether this target uses Mach-O object format (macOS).
     pub fn is_macho(&self) -> bool {
         matches!(self, Target::Aarch64Macos)
@@ -339,27 +311,6 @@ mod tests {
         assert_eq!(Target::X86_64Linux.os(), Os::Linux);
         assert_eq!(Target::Aarch64Linux.os(), Os::Linux);
         assert_eq!(Target::Aarch64Macos.os(), Os::Macos);
-    }
-
-    #[test]
-    fn test_pointer_size() {
-        assert_eq!(Target::X86_64Linux.pointer_size(), 8);
-        assert_eq!(Target::Aarch64Linux.pointer_size(), 8);
-        assert_eq!(Target::Aarch64Macos.pointer_size(), 8);
-    }
-
-    #[test]
-    fn test_stack_alignment() {
-        assert_eq!(Target::X86_64Linux.stack_alignment(), 16);
-        assert_eq!(Target::Aarch64Linux.stack_alignment(), 16);
-        assert_eq!(Target::Aarch64Macos.stack_alignment(), 16);
-    }
-
-    #[test]
-    fn test_triple() {
-        assert_eq!(Target::X86_64Linux.triple(), "x86_64-unknown-linux-gnu");
-        assert_eq!(Target::Aarch64Linux.triple(), "aarch64-unknown-linux-gnu");
-        assert_eq!(Target::Aarch64Macos.triple(), "aarch64-apple-darwin");
     }
 
     #[test]
