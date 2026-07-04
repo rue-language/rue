@@ -21,33 +21,36 @@ pub enum Target {
 impl Target {
     /// Detect the host target at compile time.
     ///
-    /// Returns the target that matches the current compilation environment.
-    /// This is useful for defaulting to native compilation.
-    #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
-    pub fn host() -> Self {
-        Target::X86_64Linux
+    /// Returns `None` when the current compilation environment is not a
+    /// supported Rue target. Callers that need a default target must handle
+    /// that case explicitly instead of silently compiling for some other
+    /// platform.
+    pub fn host() -> Option<Self> {
+        if cfg!(all(target_arch = "x86_64", target_os = "linux")) {
+            Some(Target::X86_64Linux)
+        } else if cfg!(all(target_arch = "aarch64", target_os = "linux")) {
+            Some(Target::Aarch64Linux)
+        } else if cfg!(all(target_arch = "aarch64", target_os = "macos")) {
+            Some(Target::Aarch64Macos)
+        } else {
+            None
+        }
     }
 
-    #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
-    pub fn host() -> Self {
-        Target::Aarch64Linux
-    }
-
-    #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
-    pub fn host() -> Self {
-        Target::Aarch64Macos
-    }
-
-    #[cfg(not(any(
-        all(target_arch = "x86_64", target_os = "linux"),
-        all(target_arch = "aarch64", target_os = "linux"),
-        all(target_arch = "aarch64", target_os = "macos")
-    )))]
-    pub fn host() -> Self {
-        // For unsupported hosts, default to x86-64 Linux as a reasonable
-        // cross-compilation target. This allows the compiler to be built
-        // and tested on any platform.
-        Target::X86_64Linux
+    /// Returns a best-effort name for the host this compiler binary was built
+    /// for, including unsupported hosts. Used in diagnostics.
+    pub fn host_description() -> &'static str {
+        if cfg!(all(target_arch = "x86_64", target_os = "linux")) {
+            "x86-64-linux"
+        } else if cfg!(all(target_arch = "aarch64", target_os = "linux")) {
+            "aarch64-linux"
+        } else if cfg!(all(target_arch = "aarch64", target_os = "macos")) {
+            "aarch64-macos"
+        } else if cfg!(all(target_arch = "x86_64", target_os = "macos")) {
+            "x86-64-macos"
+        } else {
+            "unsupported host"
+        }
     }
 
     /// Returns the architecture component of this target.
@@ -213,7 +216,7 @@ impl Default for Target {
     /// This allows code to write `Target::default()` instead of `Target::host()`,
     /// which is useful for struct initialization with `..Default::default()`.
     fn default() -> Self {
-        Self::host()
+        Self::host().expect("Rue cannot choose a default target on this unsupported host")
     }
 }
 
@@ -391,7 +394,12 @@ mod tests {
 
     #[test]
     fn test_default_returns_host() {
-        assert_eq!(Target::default(), Target::host());
+        assert_eq!(Target::default(), Target::host().unwrap());
+    }
+
+    #[test]
+    fn test_host_description_present() {
+        assert!(!Target::host_description().is_empty());
     }
 
     #[test]

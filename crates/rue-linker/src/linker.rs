@@ -1778,7 +1778,10 @@ impl Linker {
 
 impl Default for Linker {
     fn default() -> Self {
-        Self::new(Target::host())
+        Self::new(
+            Target::host()
+                .expect("Rue linker cannot choose a default target on this unsupported host"),
+        )
     }
 }
 
