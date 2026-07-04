@@ -604,7 +604,7 @@ impl<'a> Sema<'a> {
             // a `str` variable is passed through by value. Either way it flows
             // through the by-value aggregate ABI, so it is handled here before
             // the array→slice `borrow` coercion below.
-            let is_str_param = param_types.get(i).is_some_and(|pt| self.is_str_struct(*pt));
+            let is_str_param = param_types.get(i).is_some_and(|pt| self.is_str_like(*pt));
             if is_str_param {
                 let str_ty = param_types[i];
                 let prev_expected = ctx.expected_type.replace(str_ty);

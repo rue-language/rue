@@ -8,20 +8,25 @@ template = "spec/page.html"
 
 {{ rule(id="6.5:1", cat="normative") }}
 
-A constant item binds a name to a compile-time value at the top level of a
-file. The grammar is given in Appendix A (`const_decl`): an optional `pub`,
-the `const` keyword, a name, an optional type annotation, and an initializer
-expression.
+A constant item binds a name, at the top level of a file, to the value
+obtained by evaluating its initializer expression at compile time; that
+initializer is a comptime-evaluable expression (4.14:26–29, 6.5:2), and the
+name denotes that single compile-time value at every use. The grammar is
+given in Appendix A (`const_decl`): an optional `pub`, the `const` keyword, a
+name, an optional type annotation, and an initializer expression.
 
 {{ rule(id="6.5:2", cat="legality-rule") }}
 
-The initializer of a constant **MUST** be evaluable at compile time.
-Compile-time evaluable expressions include literals, the arithmetic,
-comparison, logical, bitwise, and shift operators applied to compile-time
-evaluable operands, `comptime` block expressions, references to other
-constants, and module expressions (`@import(...)` and module member access
-— chapter 10). An initializer that is not compile-time evaluable produces a
-compile-time error (E0434).
+The initializer of a constant **MUST** be *comptime-evaluable* — a member of
+the comptime-evaluable set defined in 4.14:26–29 (the same set governing a
+`comptime` argument position). As they arise in a constant initializer, those
+forms are: literals (4.14:26); the arithmetic, comparison, logical, bitwise,
+and shift operators applied to comptime-evaluable operands (4.14:27);
+`comptime` block expressions (4.14:2, 4.14:27); references to other constants
+(4.14:26); and module expressions (`@import(...)` and module member access —
+chapter 10, 6.5:10). An initializer outside this set is a compile-time error
+(E0434) — the same diagnostic 4.14:29 names for a `const` initializer that is
+not comptime-evaluable.
 
 {{ rule(id="6.5:3", cat="example") }}
 

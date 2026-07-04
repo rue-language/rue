@@ -280,19 +280,21 @@ impl<'a> ConstraintGenerator<'a> {
         }
     }
 
-    /// Is `ty` the synthetic slice struct `[T]` (ADR-0043, RUE-322) or the
-    /// `str` string type (RUE-324)? A slice parameter accepts an array argument
-    /// by coercion (`sum(borrow a)`), and a `str` position accepts a string
-    /// literal (whose HM type is `String`) by coercion, so the constraint
-    /// generator must NOT impose strict `arg == expected` equality when the
-    /// expected type is a slice or `str`; the real compatibility check and the
-    /// fat-pointer/`str` materialization happen in semantic analysis.
+    /// Is `ty` the synthetic slice struct `[T]` (ADR-0043, RUE-322), the `str`
+    /// string type (RUE-324), or a fixed-capacity string `Str(N)` (RUE-326)? A
+    /// slice parameter accepts an array argument by coercion (`sum(borrow a)`),
+    /// and a `str`/`Str(N)` position accepts a string literal (whose HM type is
+    /// `String`) by coercion, so the constraint generator must NOT impose strict
+    /// `arg == expected` equality when the expected type is one of these; the
+    /// real compatibility check (including the `Str(N)` capacity-fits rule) and
+    /// the fat-pointer/`str` materialization happen in semantic analysis.
     fn is_slice_struct_type(&self, ty: InferType) -> bool {
         if let InferType::Concrete(t) = ty
             && let Some(id) = t.as_struct()
         {
             let name = &self.type_pool.struct_def(id).name;
             return name == "str"
+                || (name.starts_with("Str(") && name.ends_with(')'))
                 || (name.starts_with('[')
                     && name.ends_with(']')
                     && crate::types::parse_array_type_syntax(name).is_none());

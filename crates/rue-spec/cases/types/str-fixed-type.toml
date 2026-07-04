@@ -1,0 +1,184 @@
+# The `Str(N)` fixed-capacity string type (ADR-0043 Phase 5, RUE-326).
+#
+# `Str(N)` is the FIXED string rung — `[u8; N]` + the UTF-8 byte-string
+# convention — the string analogue of the fixed array `[T; N]`: an inline value
+# type parameterized by a comptime capacity `N`, storing up to `N` bytes plus a
+# current byte length, with no heap. It is constructed from a string literal
+# that FITS (a literal exceeding `N` is a clean compile error, E0492), supports
+# `.len()` (current byte length) and byte-indexing `s[i]` (bounds-checked
+# against the length; an out-of-range index traps, exit 101), and coerces to a
+# `str` view (§3.7:43) so it reads through the universal `str` interface.
+#
+# Gated behind `--preview string_trio` (shared with `str`). Deferred to later
+# phases: mutation/append to `Str(N)`, and methods beyond `.len()`/index/borrow.
+
+[section]
+id = "types.str_fixed_type"
+spec_chapter = "3.7"
+name = "The Str(N) Type"
+description = "Str(N) is the fixed-capacity [u8; N] string rung: literal-constructed, len/index, coercible to str."
+
+# 3.7:49 — `Str(N)` is a resolvable type, gated behind `--preview string_trio`.
+[[case]]
+name = "str_fixed_requires_preview"
+spec = ["3.7:49"]
+source = """
+fn main() -> i32 {
+    let s: Str(8) = "hello";
+    0
+}
+"""
+compile_fail = true
+error_contains = "requires preview feature"
+
+# 3.7:49 / 3.7:50 — a fitting string literal has type `Str(N)` where a `Str(N)`
+# is expected, and is storable in a binding.
+[[case]]
+name = "str_fixed_literal_binding"
+spec = ["3.7:49", "3.7:50"]
+preview = "string_trio"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    let s: Str(8) = "hello";
+    0
+}
+"""
+exit_code = 0
+
+# 3.7:50 — a `Str(N)` value is storable in a struct field (first-class).
+[[case]]
+name = "str_fixed_in_struct_field"
+spec = ["3.7:50"]
+preview = "string_trio"
+preview_should_pass = true
+source = """
+struct Holder { s: Str(8) }
+fn main() -> i32 {
+    let h = Holder { s: "hi" };
+    @intCast(h.s.len())
+}
+"""
+exit_code = 2
+
+# 3.7:50 — a `Str(N)` value is returnable from a function.
+[[case]]
+name = "str_fixed_returnable"
+spec = ["3.7:50"]
+preview = "string_trio"
+preview_should_pass = true
+source = """
+fn make() -> Str(8) {
+    "hi there"
+}
+fn main() -> i32 {
+    let s: Str(8) = make();
+    @intCast(s.len())
+}
+"""
+exit_code = 8
+
+# 3.7:51 — a literal whose byte length exceeds N is a compile-time error (E0492).
+[[case]]
+name = "str_fixed_over_capacity_is_error"
+spec = ["3.7:51"]
+preview = "string_trio"
+source = """
+fn main() -> i32 {
+    let s: Str(3) = "hello";
+    0
+}
+"""
+compile_fail = true
+error_contains = "E0492"
+
+# 3.7:51 — a literal exactly at capacity is accepted (boundary).
+[[case]]
+name = "str_fixed_exact_capacity_ok"
+spec = ["3.7:51"]
+preview = "string_trio"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    let s: Str(5) = "hello";
+    @intCast(s.len())
+}
+"""
+exit_code = 5
+
+# 3.7:52 — `.len()` is the current byte length (≤ N), not the capacity.
+[[case]]
+name = "str_fixed_len_is_current_not_capacity"
+spec = ["3.7:52"]
+preview = "string_trio"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    let s: Str(64) = "hello";
+    @intCast(s.len())   // 5, not 64
+}
+"""
+exit_code = 5
+
+# 3.7:53 — `s[i]` is the i-th byte as `u8`; packed bytes, not char boundaries.
+[[case]]
+name = "str_fixed_byte_index"
+spec = ["3.7:53"]
+preview = "string_trio"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    let s: Str(8) = "hello";
+    @intCast(s[0])   // 104 ('h')
+}
+"""
+exit_code = 104
+
+# 3.7:53 — byte indexing sees raw UTF-8 bytes of a multibyte char.
+[[case]]
+name = "str_fixed_byte_index_multibyte"
+spec = ["3.7:53"]
+preview = "string_trio"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    let s: Str(8) = "café";   // 5 bytes: c a f 0xC3 0xA9
+    @intCast(s[3])            // 195 (0xC3)
+}
+"""
+exit_code = 195
+
+# 3.7:54 — an out-of-range byte index traps (exit 101).
+[[case]]
+name = "str_fixed_index_out_of_bounds_traps"
+spec = ["3.7:54"]
+preview = "string_trio"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    let s: Str(8) = "hi";
+    let b: u8 = s[5];       // 5 >= len 2
+    @intCast(b)
+}
+"""
+exit_code = 101
+
+# 3.7:55 — a `Str(N)` coerces to a `str` parameter and is read through it.
+[[case]]
+name = "str_fixed_coerces_to_str_param"
+spec = ["3.7:55"]
+preview = "string_trio"
+preview_should_pass = true
+source = """
+fn len_of(s: str) -> u64 {
+    s.len()
+}
+fn first(s: str) -> u8 {
+    s[0]
+}
+fn main() -> i32 {
+    let s: Str(8) = "hello";
+    if len_of(s) == 5 && first(s) == 104 { 0 } else { 1 }
+}
+"""
+exit_code = 0

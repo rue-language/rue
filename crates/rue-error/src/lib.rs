@@ -225,6 +225,12 @@ impl ErrorCode {
     /// (RUE-349, a sibling of [`Self::DUPLICATE_PATTERN_BINDING`] (E0484) and
     /// analogous to Rust's E0415).
     pub const DUPLICATE_PARAMETER: Self = Self(491);
+    /// A string literal assigned to a fixed-capacity string `Str(N)` does not
+    /// fit: its UTF-8 byte length exceeds the capacity `N` (ADR-0043 Phase 5,
+    /// RUE-326). `Str(N)` is the fixed string rung (`[u8; N]` + UTF-8) with no
+    /// heap, so an over-long literal cannot be stored — the fit is checked at
+    /// compile time.
+    pub const STR_FIXED_CAPACITY_EXCEEDED: Self = Self(492);
 
     // ========================================================================
     // Control flow errors (E0500-E0599)
@@ -1165,6 +1171,13 @@ pub enum ErrorKind {
     /// `@field_ptr` operand is not a field-access expression `s.field`
     #[error("@field_ptr requires a field access expression (for example `s.field`)")]
     FieldPtrRequiresField,
+    /// A string literal does not fit the fixed-capacity string `Str(N)` it is
+    /// assigned to: its UTF-8 byte length exceeds `N` (ADR-0043 Phase 5,
+    /// RUE-326).
+    #[error(
+        "string literal of {byte_len} bytes does not fit in `Str({capacity})` (capacity {capacity} bytes)"
+    )]
+    StrFixedCapacityExceeded { capacity: u64, byte_len: u64 },
     /// Inout argument is not an lvalue (variable, field, or array element)
     #[error("inout argument must be an lvalue (variable, field, or array element)")]
     InoutNonLvalue,
@@ -1463,6 +1476,7 @@ impl ErrorKind {
             ErrorKind::InvalidAssignmentTarget => ErrorCode::INVALID_ASSIGNMENT_TARGET,
             ErrorKind::RawRequiresPlace => ErrorCode::RAW_REQUIRES_PLACE,
             ErrorKind::FieldPtrRequiresField => ErrorCode::FIELD_PTR_REQUIRES_FIELD,
+            ErrorKind::StrFixedCapacityExceeded { .. } => ErrorCode::STR_FIXED_CAPACITY_EXCEEDED,
             ErrorKind::InoutNonLvalue => ErrorCode::INOUT_NON_LVALUE,
             ErrorKind::InoutExclusiveAccess { .. } => ErrorCode::INOUT_EXCLUSIVE_ACCESS,
             ErrorKind::BorrowNonLvalue => ErrorCode::BORROW_NON_LVALUE,

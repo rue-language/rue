@@ -415,6 +415,77 @@ fn main() -> i32 {
 }
 ```
 
+## The `Str(N)` Type
+
+{{ preview_feature(feature="string_trio", adr="ADR-0043") }}
+
+{{ rule(id="3.7:49", cat="normative") }}
+
+The type `Str(N)` is the fixed-capacity string type: it is `[u8; N]` (an inline
+buffer of `N` bytes, with no heap allocation) carrying the same byte-string
+convention as `String` (§3.7:15), plus a byte length. The capacity `N` is a
+compile-time constant (an integer literal or a `const`), so `Str(N)` is a
+value type parameterized by `N`, the string analogue of the fixed array
+`[T; N]`. A `Str(N)` value stores up to `N` bytes together with its current
+byte length.
+
+{{ rule(id="3.7:50", cat="normative") }}
+
+Where a `Str(N)` is expected, a string literal whose UTF-8 byte length is at
+most `N` has type `Str(N)`. Such a value is `@copy`, storable in a binding or a
+struct field, reassignable, returnable from a function, and passable as an
+argument.
+
+{{ rule(id="3.7:51", cat="legality-rule") }}
+
+Constructing a `Str(N)` from a string literal whose UTF-8 byte length exceeds
+`N` is a compile-time error (E0492). Because `Str(N)` has a fixed capacity and
+no heap, an over-long literal cannot be stored, and the fit is checked at
+compile time.
+
+{{ rule(id="3.7:52", cat="normative") }}
+
+For a `Str(N)` value `s`, `s.len()` evaluates to the current byte length of `s`
+as a `u64`, which is at most `N`. The operation is `O(1)`.
+
+{{ rule(id="3.7:53", cat="normative") }}
+
+Indexing a `Str(N)` with an integer, `s[i]`, evaluates to the byte at byte
+offset `i` as a value of type `u8`. Like `String` byte access (§3.7:16) it
+operates on the raw bytes and never inspects UTF-8 character boundaries. The
+operation is `O(1)`.
+
+{{ rule(id="3.7:54", cat="dynamic-semantics") }}
+
+If the index `i` is greater than or equal to `s.len()`, evaluating `s[i]` traps
+(index out of bounds), terminating the program the same way an out-of-bounds
+array, `String`, or `str` index does.
+
+{{ rule(id="3.7:55", cat="normative") }}
+
+A `Str(N)` value is usable where a `str` (§3.7:43) is expected: it coerces to a
+`str` view over its bytes, so a `Str(N)` may be passed to a `str` parameter and
+read through the `str` interface (`.len()`, byte indexing). This makes `str` the
+universal read interface over both the fixed (`Str(N)`) and static-literal
+string rungs.
+
+{{ rule(id="3.7:56") }}
+
+```rue
+fn len_of(s: str) -> u64 {
+    s.len()               // read a Str(N) through the str view
+}
+
+fn main() -> i32 {
+    let s: Str(8) = "hello";   // fits in 8 bytes
+    @dbg(s.len());             // 5
+    @dbg(s[0]);                // 104 ('h')
+    @dbg(len_of(s));           // 5   (coerced to str)
+    // let bad: Str(3) = "hello";  // ERROR (E0492): 5 bytes exceed capacity 3
+    0
+}
+```
+
 ## Limitations
 
 {{ rule(id="3.7:14", cat="informative") }}

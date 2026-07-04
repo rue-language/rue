@@ -311,6 +311,91 @@ impl<'a> Sema<'a> {
         }
     }
 
+    /// Get (or lazily create) the synthetic 2-field struct representing a
+    /// fixed-capacity string `Str(N)` (ADR-0043 Phase 5, RUE-326).
+    ///
+    /// `Str(N)` is the **fixed string rung** — `[u8; N]` + the UTF-8
+    /// byte-string convention (ADR-0035) — the string analogue of the fixed
+    /// array `[T; N]`: no heap, no allocator, a value type holding up to `N`
+    /// bytes plus a current byte length. Each distinct capacity is its own
+    /// named struct (`Str(8)`, keyed by that canonical name) so every reference
+    /// to the same capacity shares one `StructId`.
+    ///
+    /// Representation note (this phase): `Str(N)` reuses the `str` fat-pointer
+    /// shape `{ ptr: ptr const u8, len: u64 }`, and construction from a string
+    /// literal is currently static-backed (bytes in `.rodata`, which cannot
+    /// dangle). This makes `.len()`, byte-indexing, and coercion to `str` reuse
+    /// the `str` machinery verbatim while the capacity `N` enforces the
+    /// literal-fits legality rule. Genuine inline-stack storage and mutation
+    /// (`push`/append) are deferred; for the literal-only, immutable surface of
+    /// this phase the two are observationally identical.
+    fn get_or_create_str_fixed_struct(&mut self, capacity: u64, span: Span) -> CompileResult<Type> {
+        use crate::types::{StructDef, StructField};
+
+        let name = format!("Str({})", capacity);
+        let type_sym = self.interner.get_or_intern(&name);
+        if let Some(&struct_id) = self.structs.get(&type_sym) {
+            return Ok(Type::new_struct(struct_id));
+        }
+
+        let ptr_type_id = self.type_pool.intern_ptr_const_from_type(Type::U8);
+        let ptr_ty = Type::new_ptr_const(ptr_type_id);
+
+        let struct_def = StructDef {
+            name,
+            fields: vec![
+                StructField {
+                    name: "ptr".to_string(),
+                    ty: ptr_ty,
+                },
+                StructField {
+                    name: "len".to_string(),
+                    ty: Type::U64,
+                },
+            ],
+            is_copy: true,
+            is_linear: false,
+            destructor: None,
+            is_builtin: true,
+            is_pub: true,
+            file_id: rue_span::FileId::new(0),
+        };
+        let (struct_id, _) = self.type_pool.register_struct(type_sym, struct_def);
+        self.structs.insert(type_sym, struct_id);
+        let _ = span;
+        Ok(Type::new_struct(struct_id))
+    }
+
+    /// Is `ty` a fixed-capacity string `Str(N)` (ADR-0043 Phase 5, RUE-326)?
+    /// Detected by the struct name matching `Str(<digits>)`, mirroring the
+    /// name-keyed detection used for `str` and slices.
+    pub(crate) fn is_str_fixed_struct(&self, ty: Type) -> bool {
+        self.str_fixed_capacity(ty).is_some()
+    }
+
+    /// If `ty` is a fixed-capacity string `Str(N)`, return its capacity `N`
+    /// (ADR-0043 Phase 5, RUE-326); otherwise `None`. The capacity is parsed
+    /// back out of the canonical struct name `Str(<N>)`.
+    pub(crate) fn str_fixed_capacity(&self, ty: Type) -> Option<u64> {
+        if let TypeKind::Struct(struct_id) = ty.kind() {
+            let name = &self.type_pool.struct_def(struct_id).name;
+            let digits = name.strip_prefix("Str(")?.strip_suffix(')')?;
+            digits.parse::<u64>().ok()
+        } else {
+            None
+        }
+    }
+
+    /// Is `ty` `str`-like — either the `str` slice view or a fixed-capacity
+    /// `Str(N)` (ADR-0043 Phases 3/5)? Both share the 2-word `{ptr, len}`
+    /// representation and the UTF-8 byte-string convention, so string-literal
+    /// materialization, `.len()`, packed byte-indexing, and by-value passing all
+    /// treat them identically. The capacity-fits legality rule is the only place
+    /// `Str(N)` diverges from `str`.
+    pub(crate) fn is_str_like(&self, ty: Type) -> bool {
+        self.is_str_struct(ty) || self.is_str_fixed_struct(ty)
+    }
+
     /// If `ty` is a synthetic slice struct `[T]` (ADR-0043, RUE-322), return its
     /// element type `T`; otherwise `None`. Detected by the struct name being
     /// slice syntax (`[..]` that is not a fixed-array `[T; N]`), the same naming
@@ -324,7 +409,11 @@ impl<'a> Sema<'a> {
             let is_slice = def.name.starts_with('[')
                 && def.name.ends_with(']')
                 && parse_array_type_syntax(&def.name).is_none();
-            if is_slice || def.name == "str" {
+            // A fixed-capacity `Str(N)` (ADR-0043 Phase 5, RUE-326) is `[u8; N]`
+            // + UTF-8 and shares the `{ptr, len}` shape, so `.len()` and byte
+            // indexing route through the same slice/str path as `str`.
+            let is_str_fixed = def.name.starts_with("Str(") && def.name.ends_with(')');
+            if is_slice || def.name == "str" || is_str_fixed {
                 // Field 0 is `ptr const T`; recover T from its pointee.
                 if let TypeKind::PtrConst(ptr_id) = def.fields[0].ty.kind() {
                     return Some(self.type_pool.ptr_const_def(ptr_id));
@@ -440,6 +529,17 @@ impl<'a> Sema<'a> {
                 let ptr_type_id = self.type_pool.intern_ptr_mut_from_type(pointee_ty);
                 Ok(Type::new_ptr_mut(ptr_type_id))
             } else if let Some((call_name, arg_strs)) = parse_type_call_syntax(type_name) {
+                // Fixed-capacity string `Str(N)` (ADR-0043 Phase 5, RUE-326):
+                // the fixed string rung, `[u8; N]` + UTF-8. Gated behind
+                // `--preview string_trio` (shared with `str`). The capacity `N`
+                // is a literal (`Str(8)`, produced by `TypeExpr::StrFixed`) or a
+                // `const` name that resolved to a literal on the `TypeCall`
+                // path; either way it arrives here as the single argument
+                // string. It is reduced to a 2-word fat-pointer struct so it
+                // flows through the existing `str`/slice paths.
+                if call_name == "Str" {
+                    return self.resolve_str_fixed_type(&call_name, &arg_strs, span);
+                }
                 // A type-function application written directly in type position
                 // (`Result(i32, i32)`; RUE-241). Reduce the comptime type call
                 // to its monomorphized concrete type. No analysis context is
@@ -516,6 +616,14 @@ impl<'a> Sema<'a> {
             let ptr_type_id = self.type_pool.intern_ptr_mut_from_type(pointee_ty);
             Ok(Type::new_ptr_mut(ptr_type_id))
         } else if let Some((call_name, arg_strs)) = parse_type_call_syntax(type_name) {
+            // Fixed-capacity string `Str(N)` (ADR-0043 Phase 5, RUE-326): the
+            // context-aware annotation path (`let s: Str(8)`). Intercepted here,
+            // as in the context-free `resolve_type`, before the general
+            // type-function reduction so `Str` is not looked up as a `-> type`
+            // constructor.
+            if call_name == "Str" {
+                return self.resolve_str_fixed_type(&call_name, &arg_strs, span);
+            }
             // A type-function application in an annotation position whose
             // arguments may name enclosing comptime type parameters or local
             // comptime type variables (`let x: Option(T)` / `let x: Option(P)`).
@@ -800,6 +908,48 @@ impl<'a> Sema<'a> {
     /// (RUE-16). On the comptime-evaluation path the caller passes a dummy span
     /// and discards the error; on the diagnostic path (`resolve_type`) the
     /// error surfaces to the user as E0481.
+    /// Reduce a fixed-capacity string `Str(N)` type-call to its concrete
+    /// 2-word fat-pointer struct (ADR-0043 Phase 5, RUE-326). Shared by the
+    /// context-free (`resolve_type`) and context-aware (`resolve_type_with_ctx`)
+    /// annotation paths so both spellings resolve identically. Gated behind
+    /// `--preview string_trio` (shared with `str`); a non-single-argument form
+    /// (`Str()`, `Str(a, b)`) is a clean unknown-type error.
+    fn resolve_str_fixed_type(
+        &mut self,
+        call_name: &str,
+        arg_strs: &[String],
+        span: Span,
+    ) -> CompileResult<Type> {
+        self.require_preview(
+            PreviewFeature::StringTrio,
+            "the fixed string type `Str(N)`",
+            span,
+        )?;
+        let capacity = match arg_strs {
+            [arg] => self.resolve_str_fixed_capacity(arg, span)?,
+            _ => {
+                return Err(CompileError::new(
+                    ErrorKind::UnknownType(format!("{}({})", call_name, arg_strs.join(", "))),
+                    span,
+                ));
+            }
+        };
+        self.get_or_create_str_fixed_struct(capacity, span)
+    }
+
+    /// Resolve the capacity argument `N` of a fixed-capacity string `Str(N)`
+    /// (ADR-0043 Phase 5, RUE-326) to a concrete `u64`. The argument arrives as
+    /// the raw substring of the interned type name: an integer literal
+    /// (`Str(8)`) or a `const` name (`Str(CAP)`). Both routes reuse the array
+    /// length machinery, so `Str(N)` and `[u8; N]` accept exactly the same
+    /// length forms.
+    fn resolve_str_fixed_capacity(&mut self, arg: &str, span: Span) -> CompileResult<u64> {
+        if let Ok(n) = arg.parse::<u64>() {
+            return Ok(n);
+        }
+        self.resolve_array_length(&ArrayLen::Named(arg.to_string()), span, None)
+    }
+
     pub(crate) fn resolve_array_length(
         &mut self,
         len: &ArrayLen,

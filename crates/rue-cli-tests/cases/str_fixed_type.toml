@@ -1,0 +1,144 @@
+# The `Str(N)` fixed-capacity string type — executable regression tests
+# (ADR-0043 Phase 5, RUE-326).
+#
+# `Str(N)` is the fixed string rung: `[u8; N]` + the UTF-8 byte-string
+# convention, a value type parameterized by a comptime capacity `N`, storing up
+# to `N` bytes plus a current byte length, with no heap. Construction is from a
+# string literal that FITS (a literal exceeding `N` is a clean compile error,
+# E0492). `.len()` reads the current byte length (≤ N); `s[i]` reads the i-th
+# PACKED byte (bounds-checked against the length, traps exit 101). A `Str(N)`
+# coerces to a `str` view, so it reads through the universal `str` interface.
+#
+# Gated behind `--preview string_trio`. Deferred: mutation/append; methods
+# beyond len/index/borrow.
+
+[section]
+id = "cli.str_fixed_type"
+name = "Str(N) fixed string type (ADR-0043 Phase 5)"
+description = "Literal-constructed fixed-capacity strings: len(), packed byte-indexing, capacity check, coercion to str."
+
+# The canonical verify-by-execution: a Str(8) local from a fitting literal,
+# `.len()` == 5 (current length, not capacity), and s[0] the first byte 'h'.
+[[case]]
+name = "str_fixed_len_and_first_byte"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let s: Str(8) = "hello";
+    let n: u64 = s.len();
+    let b: u8 = s[0];
+    if n == 5 && b == 104 { 42 } else { 0 }
+}
+""" }]
+args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+exit_code = 42
+
+# `.len()` is the current byte length, independent of the capacity N.
+[[case]]
+name = "str_fixed_len_independent_of_capacity"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: Str(8)  = "hi";
+    let b: Str(64) = "hi";
+    @dbg(a.len());   // 2
+    @dbg(b.len());   // 2
+    0
+}
+""" }]
+args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+exit_code = 0
+stdout = "2\n2\n"
+
+# Byte indexing sees raw packed bytes; a multibyte char decomposes into its
+# UTF-8 bytes. "café" = c a f 0xC3 0xA9.
+[[case]]
+name = "str_fixed_packed_byte_indexing"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let s: Str(8) = "café";
+    @dbg(s.len());   // 5 bytes
+    @dbg(s[2]);      // 102 'f'
+    @dbg(s[3]);      // 195 0xC3
+    @dbg(s[4]);      // 169 0xA9
+    0
+}
+""" }]
+args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+exit_code = 0
+stdout = "5\n102\n195\n169\n"
+
+# An out-of-range byte index traps at runtime (exit 101), like array/String/str.
+[[case]]
+name = "str_fixed_index_out_of_bounds_traps"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let s: Str(8) = "hi";
+    let b: u8 = s[5];
+    @intCast(b)
+}
+""" }]
+args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+exit_code = 101
+
+# A string literal exceeding the capacity N is a clean compile error (E0492),
+# never a silent truncation or a crash.
+[[case]]
+name = "str_fixed_over_capacity_is_clean_error"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let s: Str(3) = "hello";
+    0
+}
+""" }]
+args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0492"]
+
+# A `Str(N)` value coerces to a `str` parameter and is read through the str
+# interface — both a materialized literal and a forwarded Str(N) variable.
+[[case]]
+name = "str_fixed_coerces_to_str_param"
+files = [{ path = "main.rue", source = """
+fn len_of(s: str) -> u64 {
+    s.len()
+}
+fn first(s: str) -> u8 {
+    s[0]
+}
+fn main() -> i32 {
+    let s: Str(8) = "hello";
+    let n: u64 = len_of(s);
+    let b: u8 = first(s);
+    if n == 5 && b == 104 { 42 } else { 0 }
+}
+""" }]
+args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+exit_code = 42
+
+# A Str(N) is a value type: passing it to a Str(N) parameter and reading .len()
+# there round-trips.
+[[case]]
+name = "str_fixed_param_roundtrip"
+files = [{ path = "main.rue", source = """
+fn take(s: Str(8)) -> u64 {
+    s.len()
+}
+fn main() -> i32 {
+    let s: Str(8) = "hello";
+    if take(s) == 5 { 42 } else { 0 }
+}
+""" }]
+args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+exit_code = 42
+
+# `Str(N)` requires the preview flag; without it, a clean gate error.
+[[case]]
+name = "str_fixed_requires_preview"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let s: Str(8) = "hello";
+    0
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E1100"]

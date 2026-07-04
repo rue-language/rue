@@ -32,11 +32,12 @@ A zero-variant enum can never be constructed.
 {{ rule(id="6.3:4", cat="normative") }}
 
 Enum variants are referenced using path syntax: `EnumName::VariantName`.
-An error is raised if the enum type does not exist.
+It is a compile-time error (E0421) if the named enum type does not exist.
 
 {{ rule(id="6.3:5", cat="normative") }}
 
-An error is raised if the variant does not exist within the enum.
+It is a compile-time error (E0420) if the named variant does not exist within
+the enum.
 
 {{ rule(id="6.3:6") }}
 
