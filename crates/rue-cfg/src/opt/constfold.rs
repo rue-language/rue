@@ -164,16 +164,23 @@ fn fold_enum_comparison<F>(cfg: &Cfg, lhs: CfgValue, rhs: CfgValue, op: F) -> Op
 where
     F: FnOnce(u32, u32) -> bool,
 {
-    let (lhs_enum_id, lhs_variant) = get_enum_variant(cfg, lhs)?;
-    let (rhs_enum_id, rhs_variant) = get_enum_variant(cfg, rhs)?;
+    let (lhs_enum_id, lhs_variant, lhs_payload_len) = get_enum_variant(cfg, lhs)?;
+    let (rhs_enum_id, rhs_variant, rhs_payload_len) = get_enum_variant(cfg, rhs)?;
 
-    // Only fold if both operands are from the same enum type
-    if lhs_enum_id == rhs_enum_id {
+    // Only fold when both operands are the same enum AND payload-less: comparing
+    // the variant index alone is correct only for fieldless variants (e.g.
+    // `@target_arch() == Arch::X86_64`). For payload-carrying variants,
+    // structural equality must also compare the payloads — `Opt::Some(5)` and
+    // `Opt::Some(6)` share variant index 1 but are NOT equal — so those must fall
+    // through to codegen's `emit_aggregate_equality` rather than folding on the
+    // tag alone (RUE-348).
+    if lhs_enum_id == rhs_enum_id && lhs_payload_len == 0 && rhs_payload_len == 0 {
         let result = op(lhs_variant, rhs_variant);
         Some(CfgInstData::BoolConst(result))
     } else {
-        // Different enum types - this would be a type error,
-        // but let it pass through unfold for error reporting
+        // Different enum types (a type error, left to pass through for error
+        // reporting) or a payload-carrying comparison (folded structurally by
+        // codegen instead). Do not fold.
         None
     }
 }
@@ -219,8 +226,12 @@ fn fold_shift(
 
     // Shift amount must be less than the bit width
     let bits = type_bits(ty);
+    // A shift amount >= the bit width is masked modulo the width at runtime
+    // (spec 4.3a:10), consistent with dce.rs treating shifts as non-trapping —
+    // it is NOT UB. This fold path assumes rhs < bits (it does not re-narrow the
+    // result for the masked count), so defer the masked case to the backend,
+    // which masks the count correctly.
     if rhs_val >= bits as u64 {
-        // Would be UB at runtime - don't fold
         return None;
     }
 
@@ -278,13 +289,14 @@ fn get_const_bool(cfg: &Cfg, value: CfgValue) -> Option<bool> {
 }
 
 /// Get the enum variant info of an instruction, if it's an EnumVariant.
-fn get_enum_variant(cfg: &Cfg, value: CfgValue) -> Option<(EnumId, u32)> {
+fn get_enum_variant(cfg: &Cfg, value: CfgValue) -> Option<(EnumId, u32, u32)> {
     match &cfg.get_inst(value).data {
         CfgInstData::EnumVariant {
             enum_id,
             variant_index,
+            payload_len,
             ..
-        } => Some((*enum_id, *variant_index)),
+        } => Some((*enum_id, *variant_index, *payload_len)),
         _ => None,
     }
 }
