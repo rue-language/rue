@@ -1182,6 +1182,68 @@ impl<'a> Sema<'a> {
         false
     }
 
+    /// Validate array lengths inside a signature type that will otherwise be
+    /// deferred until generic specialization.
+    ///
+    /// A composite signature such as `[T; 3]` cannot be resolved at declaration
+    /// time because the element type is a comptime type parameter. Its length is
+    /// still a declaration-time legality question, though: `[T; A]` must reject
+    /// an undefined `A` immediately instead of surviving until specialization
+    /// and becoming an ICE (RUE-381). Lengths may be literals, file constants, or
+    /// comptime value parameters owned by the same function.
+    pub(crate) fn validate_deferred_signature_type_lengths(
+        &mut self,
+        type_sym: Spur,
+        value_params: &[Spur],
+        span: Span,
+    ) -> CompileResult<()> {
+        self.validate_deferred_signature_type_name_lengths(
+            self.interner.resolve(&type_sym).to_string(),
+            value_params,
+            span,
+        )
+    }
+
+    fn validate_deferred_signature_type_name_lengths(
+        &mut self,
+        type_name: String,
+        value_params: &[Spur],
+        span: Span,
+    ) -> CompileResult<()> {
+        if let Some((element_type, len)) = parse_array_type_syntax(&type_name) {
+            if let ArrayLen::Named(name) = &len {
+                let sym = self.interner.get_or_intern(name);
+                if !value_params.contains(&sym) {
+                    self.resolve_array_length(&len, span, None)?;
+                }
+            }
+            return self.validate_deferred_signature_type_name_lengths(
+                element_type,
+                value_params,
+                span,
+            );
+        }
+
+        if let Some(pointee) = type_name
+            .strip_prefix("ptr const ")
+            .or_else(|| type_name.strip_prefix("ptr mut "))
+        {
+            return self.validate_deferred_signature_type_name_lengths(
+                pointee.to_string(),
+                value_params,
+                span,
+            );
+        }
+
+        if let Some((_call_name, arg_strs)) = parse_type_call_syntax(&type_name) {
+            for arg in arg_strs {
+                self.validate_deferred_signature_type_name_lengths(arg, value_params, span)?;
+            }
+        }
+
+        Ok(())
+    }
+
     /// Get or create an array type for the given element type and length.
     pub(crate) fn get_or_create_array_type(
         &mut self,
