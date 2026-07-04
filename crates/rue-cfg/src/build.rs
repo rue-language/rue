@@ -610,131 +610,9 @@ impl<'a> CfgBuilder<'a> {
                 }
             }
 
-            AirInstData::And(lhs, rhs) => {
-                // Short-circuit: if lhs is false, result is false
-                // We need to create blocks for this
-                let Some(lhs_val) = self.lower_value(*lhs) else {
-                    return Self::diverged();
-                };
+            AirInstData::And(lhs, rhs) => self.lower_short_circuit(air_ref, *lhs, *rhs, true, span),
 
-                let rhs_block = self.cfg.new_block();
-                let join_block = self.cfg.new_block();
-
-                // Add block parameter for the result
-                let result_param = self.cfg.add_block_param(join_block, Type::BOOL);
-
-                // Branch: if lhs is false, go to join with false; else evaluate rhs
-                let false_val = self.emit(CfgInstData::BoolConst(false), Type::BOOL, span);
-                let (then_args_start, then_args_len) = self.cfg.push_extra(std::iter::empty());
-                let (else_args_start, else_args_len) =
-                    self.cfg.push_extra(std::iter::once(false_val));
-                self.cfg.set_terminator(
-                    self.current_block,
-                    Terminator::Branch {
-                        cond: lhs_val,
-                        then_block: rhs_block,
-                        then_args_start,
-                        then_args_len,
-                        else_block: join_block,
-                        else_args_start,
-                        else_args_len,
-                    },
-                );
-
-                // In rhs_block, evaluate rhs and go to join.
-                // If the rhs diverges (e.g. `true && return 5`), its block already
-                // ends in the diverging terminator and contributes no edge to the
-                // join — but the join is STILL reachable via the short-circuit
-                // (lhs-false) edge, so we must continue lowering there rather than
-                // propagate divergence (which would leave the join unterminated).
-                // The rhs only runs on one of the two paths into the join, so
-                // moves inside it are not "moved on all paths": restore the
-                // pre-rhs move state afterwards.
-                let moved_before_rhs = self.moved.clone();
-                self.current_block = rhs_block;
-                if let Some(rhs_val) = self.lower_value(*rhs) {
-                    let (args_start, args_len) = self.cfg.push_extra(std::iter::once(rhs_val));
-                    self.cfg.set_terminator(
-                        self.current_block,
-                        Terminator::Goto {
-                            target: join_block,
-                            args_start,
-                            args_len,
-                        },
-                    );
-                }
-
-                // Continue in join block
-                self.moved = moved_before_rhs;
-                self.current_block = join_block;
-                self.cache(air_ref, result_param);
-                ExprResult {
-                    value: Some(result_param),
-                    continuation: Continuation::Continues,
-                }
-            }
-
-            AirInstData::Or(lhs, rhs) => {
-                // Short-circuit: if lhs is true, result is true
-                let Some(lhs_val) = self.lower_value(*lhs) else {
-                    return Self::diverged();
-                };
-
-                let rhs_block = self.cfg.new_block();
-                let join_block = self.cfg.new_block();
-
-                // Add block parameter for the result
-                let result_param = self.cfg.add_block_param(join_block, Type::BOOL);
-
-                // Branch: if lhs is true, go to join with true; else evaluate rhs
-                let true_val = self.emit(CfgInstData::BoolConst(true), Type::BOOL, span);
-                let (then_args_start, then_args_len) =
-                    self.cfg.push_extra(std::iter::once(true_val));
-                let (else_args_start, else_args_len) = self.cfg.push_extra(std::iter::empty());
-                self.cfg.set_terminator(
-                    self.current_block,
-                    Terminator::Branch {
-                        cond: lhs_val,
-                        then_block: join_block,
-                        then_args_start,
-                        then_args_len,
-                        else_block: rhs_block,
-                        else_args_start,
-                        else_args_len,
-                    },
-                );
-
-                // In rhs_block, evaluate rhs and go to join.
-                // If the rhs diverges (e.g. `false || return 7`), its block already
-                // ends in the diverging terminator and contributes no edge to the
-                // join — but the join is STILL reachable via the short-circuit
-                // (lhs-true) edge, so we must continue lowering there rather than
-                // propagate divergence (which would leave the join unterminated).
-                // The rhs only runs on one of the two paths into the join:
-                // restore the pre-rhs move state afterwards (see And above).
-                let moved_before_rhs = self.moved.clone();
-                self.current_block = rhs_block;
-                if let Some(rhs_val) = self.lower_value(*rhs) {
-                    let (args_start, args_len) = self.cfg.push_extra(std::iter::once(rhs_val));
-                    self.cfg.set_terminator(
-                        self.current_block,
-                        Terminator::Goto {
-                            target: join_block,
-                            args_start,
-                            args_len,
-                        },
-                    );
-                }
-
-                // Continue in join block
-                self.moved = moved_before_rhs;
-                self.current_block = join_block;
-                self.cache(air_ref, result_param);
-                ExprResult {
-                    value: Some(result_param),
-                    continuation: Continuation::Continues,
-                }
-            }
+            AirInstData::Or(lhs, rhs) => self.lower_short_circuit(air_ref, *lhs, *rhs, false, span),
 
             AirInstData::Neg(operand) => {
                 let Some(op_val) = self.lower_value(*operand) else {
@@ -1426,15 +1304,7 @@ impl<'a> CfgBuilder<'a> {
                 let moved_before_loop = self.moved.clone();
 
                 // Jump to header
-                let (args_start, args_len) = self.cfg.push_extra(std::iter::empty());
-                self.cfg.set_terminator(
-                    self.current_block,
-                    Terminator::Goto {
-                        target: header_block,
-                        args_start,
-                        args_len,
-                    },
-                );
+                self.goto_no_args(self.current_block, header_block);
 
                 // Lower condition in header — BEFORE pushing this while's loop
                 // context, so a break/continue inside the condition resolves via
@@ -1488,15 +1358,7 @@ impl<'a> CfgBuilder<'a> {
 
                 // After body, go back to header (unless diverged)
                 if !matches!(body_result.continuation, Continuation::Diverged) {
-                    let (args_start, args_len) = self.cfg.push_extra(std::iter::empty());
-                    self.cfg.set_terminator(
-                        self.current_block,
-                        Terminator::Goto {
-                            target: header_block,
-                            args_start,
-                            args_len,
-                        },
-                    );
+                    self.goto_no_args(self.current_block, header_block);
                 }
 
                 self.loop_stack.pop();
@@ -1532,15 +1394,7 @@ impl<'a> CfgBuilder<'a> {
                 let moved_before_loop = self.moved.clone();
 
                 // Jump to body
-                let (args_start, args_len) = self.cfg.push_extra(std::iter::empty());
-                self.cfg.set_terminator(
-                    self.current_block,
-                    Terminator::Goto {
-                        target: body_block,
-                        args_start,
-                        args_len,
-                    },
-                );
+                self.goto_no_args(self.current_block, body_block);
 
                 // Push loop context (body_block is the continue target).
                 // The scope depth is captured BEFORE the loop body is lowered,
@@ -1557,15 +1411,7 @@ impl<'a> CfgBuilder<'a> {
 
                 // After body, go back to start (unless diverged via return/break/continue)
                 if !matches!(body_result.continuation, Continuation::Diverged) {
-                    let (args_start, args_len) = self.cfg.push_extra(std::iter::empty());
-                    self.cfg.set_terminator(
-                        self.current_block,
-                        Terminator::Goto {
-                            target: body_block,
-                            args_start,
-                            args_len,
-                        },
-                    );
+                    self.goto_no_args(self.current_block, body_block);
                 }
 
                 self.loop_stack.pop();
@@ -1748,15 +1594,7 @@ impl<'a> CfgBuilder<'a> {
                 let exit_block = loop_ctx.exit;
                 self.emit_drops_for_loop_exit(target_depth, span);
 
-                let (args_start, args_len) = self.cfg.push_extra(std::iter::empty());
-                self.cfg.set_terminator(
-                    self.current_block,
-                    Terminator::Goto {
-                        target: exit_block,
-                        args_start,
-                        args_len,
-                    },
-                );
+                self.goto_no_args(self.current_block, exit_block);
 
                 ExprResult {
                     value: None,
@@ -1771,15 +1609,7 @@ impl<'a> CfgBuilder<'a> {
                 let header_block = loop_ctx.header;
                 self.emit_drops_for_loop_exit(target_depth, span);
 
-                let (args_start, args_len) = self.cfg.push_extra(std::iter::empty());
-                self.cfg.set_terminator(
-                    self.current_block,
-                    Terminator::Goto {
-                        target: header_block,
-                        args_start,
-                        args_len,
-                    },
-                );
+                self.goto_no_args(self.current_block, header_block);
 
                 ExprResult {
                     value: None,
@@ -2331,6 +2161,112 @@ impl<'a> CfgBuilder<'a> {
             .add_inst_to_block(self.current_block, CfgInst { data, ty, span })
     }
 
+    /// Lower a boolean short-circuit operation.
+    ///
+    /// `is_and` selects `&&` semantics (`lhs == false` short-circuits to
+    /// false). Otherwise this lowers `||` (`lhs == true` short-circuits to
+    /// true). In both cases the RHS runs on only one path, so move state from
+    /// that path is restored before continuing at the join block.
+    fn lower_short_circuit(
+        &mut self,
+        air_ref: AirRef,
+        lhs: AirRef,
+        rhs: AirRef,
+        is_and: bool,
+        span: rue_span::Span,
+    ) -> ExprResult {
+        let Some(lhs_val) = self.lower_value(lhs) else {
+            return Self::diverged();
+        };
+
+        let rhs_block = self.cfg.new_block();
+        let join_block = self.cfg.new_block();
+        let result_param = self.cfg.add_block_param(join_block, Type::BOOL);
+        let short_circuit_value = self.emit(CfgInstData::BoolConst(!is_and), Type::BOOL, span);
+
+        let (short_args_start, short_args_len) =
+            self.cfg.push_extra(std::iter::once(short_circuit_value));
+        let (rhs_args_start, rhs_args_len) = self.cfg.push_extra(std::iter::empty::<CfgValue>());
+
+        let (
+            then_block,
+            then_args_start,
+            then_args_len,
+            else_block,
+            else_args_start,
+            else_args_len,
+        ) = if is_and {
+            (
+                rhs_block,
+                rhs_args_start,
+                rhs_args_len,
+                join_block,
+                short_args_start,
+                short_args_len,
+            )
+        } else {
+            (
+                join_block,
+                short_args_start,
+                short_args_len,
+                rhs_block,
+                rhs_args_start,
+                rhs_args_len,
+            )
+        };
+
+        self.cfg.set_terminator(
+            self.current_block,
+            Terminator::Branch {
+                cond: lhs_val,
+                then_block,
+                then_args_start,
+                then_args_len,
+                else_block,
+                else_args_start,
+                else_args_len,
+            },
+        );
+
+        // If the RHS diverges, its block already has a diverging terminator and
+        // contributes no edge to the join. The join is still reachable via the
+        // short-circuit edge, so continue there rather than propagating divergence.
+        let moved_before_rhs = self.moved.clone();
+        self.current_block = rhs_block;
+        if let Some(rhs_val) = self.lower_value(rhs) {
+            let (args_start, args_len) = self.cfg.push_extra(std::iter::once(rhs_val));
+            self.cfg.set_terminator(
+                self.current_block,
+                Terminator::Goto {
+                    target: join_block,
+                    args_start,
+                    args_len,
+                },
+            );
+        }
+
+        self.moved = moved_before_rhs;
+        self.current_block = join_block;
+        self.cache(air_ref, result_param);
+        ExprResult {
+            value: Some(result_param),
+            continuation: Continuation::Continues,
+        }
+    }
+
+    /// Terminate `exit_block` with a `Goto` to `target` and no block args.
+    fn goto_no_args(&mut self, exit_block: BlockId, target: BlockId) {
+        let (args_start, args_len) = self.cfg.push_extra(std::iter::empty::<CfgValue>());
+        self.cfg.set_terminator(
+            exit_block,
+            Terminator::Goto {
+                target,
+                args_start,
+                args_len,
+            },
+        );
+    }
+
     /// Terminate `exit_block` with a `Goto` into `join_block`, passing the
     /// branch's value as the single block arg IFF the join has a result
     /// param. This is the ONE place the value-branch/join-param arity
@@ -2730,15 +2666,7 @@ impl<'a> CfgBuilder<'a> {
     /// guarded body block with a jump to the continuation block and continue
     /// building there.
     fn end_flag_guard(&mut self, cont_block: BlockId) {
-        let (args_start, args_len) = self.cfg.push_extra(std::iter::empty());
-        self.cfg.set_terminator(
-            self.current_block,
-            Terminator::Goto {
-                target: cont_block,
-                args_start,
-                args_len,
-            },
-        );
+        self.goto_no_args(self.current_block, cont_block);
         self.current_block = cont_block;
     }
 
