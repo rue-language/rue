@@ -480,6 +480,7 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
     }
 
     // Determine source files and output path based on argument count and -o flag
+    let explicit_output = output_path.is_some();
     let (source_paths, final_output_path) = if let Some(out) = output_path {
         // -o was specified: all positional args are source files
         (positional, out)
@@ -517,19 +518,29 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
         return ParseResult::Error;
     };
 
-    // In every mode: the output must not clobber an input. Compare RESOLVED
-    // filesystem paths, not raw strings, so different spellings of the same
-    // file are all caught — `rue a.rue -o a.rue`, `rue ./prog -o prog`, or an
-    // extensionless source `rue prog -o prog`. The earlier guard keyed off a
-    // `.rue` suffix, so extensionless sources slipped through and the compiled
-    // output silently overwrote the source (RUE-351).
-    let output_key = clobber_key(&final_output_path);
-    if source_paths.iter().any(|s| clobber_key(s) == output_key) {
-        eprintln!(
-            "Error: output path '{}' is also an input source file; refusing to overwrite it",
-            final_output_path
-        );
-        return ParseResult::Error;
+    if !emit_stages.is_empty() {
+        // --emit prints IR to stdout and never writes the output path, so the
+        // clobber guard below does not apply (nothing can be clobbered) — but
+        // an explicit -o deserves a warning, since it is silently ignored.
+        if explicit_output {
+            eprintln!("Warning: -o is ignored with --emit; IR goes to stdout");
+        }
+    } else {
+        // In every executable-producing mode: the output must not clobber an
+        // input. Compare RESOLVED filesystem paths, not raw strings, so
+        // different spellings of the same file are all caught — `rue a.rue -o
+        // a.rue`, `rue ./prog -o prog`, or an extensionless source `rue prog
+        // -o prog`. The earlier guard keyed off a `.rue` suffix, so
+        // extensionless sources slipped through and the compiled output
+        // silently overwrote the source (RUE-351).
+        let output_key = clobber_key(&final_output_path);
+        if source_paths.iter().any(|s| clobber_key(s) == output_key) {
+            eprintln!(
+                "Error: output path '{}' is also an input source file; refusing to overwrite it",
+                final_output_path
+            );
+            return ParseResult::Error;
+        }
     }
 
     if log_format.is_some() && log_level.is_none() {
@@ -910,6 +921,16 @@ fn discover_and_load_imports(sources: &mut Vec<(String, String)>) {
 }
 
 fn main() {
+    // Rust's startup ignores SIGPIPE, so a write to a closed pipe
+    // (`rue --emit tokens x.rue | head`) returns EPIPE and `println!` panics
+    // — which the ICE hook below then mislabels as a compiler bug asking the
+    // user to file an issue. Restore the conventional Unix behavior: die
+    // silently with SIGPIPE (exit 141), like every other CLI in a pipeline.
+    #[cfg(unix)]
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+
     // Present compiler panics as internal compiler errors with a report
     // banner instead of a raw Rust backtrace pointer (RUE-130). The default
     // hook still runs first so RUST_BACKTRACE=1 output is preserved.
@@ -1571,6 +1592,16 @@ mod tests {
     fn parse_emit_tokens() {
         let opts = unwrap_options(parse_args_from(&["--emit", "tokens", "source.rue"]));
         assert_eq!(opts.emit_stages, vec![EmitStage::Tokens]);
+    }
+
+    #[test]
+    fn emit_mode_skips_output_clobber_guard() {
+        // --emit writes nothing to the output path, so -o naming a source
+        // file is NOT a clobber (it is merely ignored, with a warning); the
+        // same spelling without --emit is still refused.
+        let opts = unwrap_options(parse_args_from(&["--emit", "ast", "x.rue", "-o", "x.rue"]));
+        assert_eq!(opts.emit_stages, vec![EmitStage::Ast]);
+        assert!(is_error(&parse_args_from(&["x.rue", "-o", "x.rue"])));
     }
 
     #[test]
