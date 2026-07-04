@@ -1178,6 +1178,12 @@ impl<'a> Sema<'a> {
                     // parameter (`arr: [i32; N]`, RUE-16). Use ComptimeType as a
                     // placeholder - the actual type is determined at
                     // specialization.
+                    //
+                    // The deferred type still needs declaration-time validation
+                    // for array lengths that do *not* depend on specialization:
+                    // `[T; A]` with an undefined `A` should be E0481 here, not
+                    // an ICE when the function is later instantiated (RUE-381).
+                    self.validate_deferred_signature_type_lengths(p.ty, &value_param_names, span)?;
                     Ok(Type::COMPTIME_TYPE)
                 } else {
                     // Regular params OR comptime VALUE params (comptime n: i32)
@@ -1196,6 +1202,11 @@ impl<'a> Sema<'a> {
             // Return type references a type parameter (`-> T`, `-> [T; 3]`) or
             // an array length naming a comptime value parameter (`-> [i32; N]`,
             // RUE-16) - use placeholder, resolved at specialization.
+            self.validate_deferred_signature_type_lengths(
+                return_type_sym,
+                &value_param_names,
+                span,
+            )?;
             Type::COMPTIME_TYPE
         } else {
             // A slice type `[T]` is second-class (ADR-0037, ADR-0043,

@@ -387,6 +387,19 @@ fn main() -> i32 { f(i32, 5) }
 exit_code = 5
 
 [[case]]
+name = "generic_array_length_undefined_name_rue381"
+description = "RUE-381: `[T; A]` in a comptime-generic signature must reject undefined length A as E0481, not ICE during specialization."
+files = [{ path = "main.rue", source = """
+fn f(comptime T: type, a: [T; A]) -> T { a[0] }
+fn main() -> i32 {
+    let xs = [7, 8];
+    f(i32, xs)
+}
+""" }]
+compile_fail = true
+error_contains = ["E0481", "invalid array length", "'A' is not a compile-time constant"]
+
+[[case]]
 name = "borrow_const_not_lvalue_rue52"
 description = "RUE-52: `borrow CONST` reached codegen as an immediate `Const` and hit panic!(\"by-ref argument must be a place\") in byref_args -> SIGABRT. Now a clean E0427."
 files = [{ path = "main.rue", source = """
