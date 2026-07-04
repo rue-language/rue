@@ -20,6 +20,7 @@
 //! eprintln!("{}", warning_output);
 //! ```
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io::IsTerminal;
 
@@ -27,6 +28,77 @@ use annotate_snippets::{Level, Renderer, Snippet};
 use rue_span::offset_to_line_col;
 
 use crate::{CompileError, CompileErrors, CompileWarning, Diagnostic, ErrorCode, FileId, Span};
+
+/// Source text prepared for human snippet rendering.
+///
+/// Compiler spans are byte offsets into the original source. For terminal
+/// diagnostics, however, two byte-preserving source forms render badly:
+///
+/// - `\t`: annotate-snippets expands the source tab to spaces but computes
+///   annotation columns as if the tab had zero width, shifting carets left.
+/// - `\r\n`: the literal `\r` is printed in the source line, moving terminal
+///   cursors and corrupting the visual diagnostic.
+///
+/// Normalize only the snippet text and remap original byte offsets into that
+/// normalized text. This leaves the parser, semantic spans, and JSON diagnostics
+/// on original-source coordinates while making human output stable.
+struct RenderSource<'a> {
+    source: Cow<'a, str>,
+    byte_map: Option<Vec<usize>>,
+}
+
+impl<'a> RenderSource<'a> {
+    fn new(source: &'a str) -> Self {
+        if !source.as_bytes().iter().any(|b| matches!(b, b'\t' | b'\r')) {
+            return Self {
+                source: Cow::Borrowed(source),
+                byte_map: None,
+            };
+        }
+
+        let mut rendered = String::with_capacity(source.len());
+        let mut byte_map = vec![0; source.len() + 1];
+
+        for (idx, ch) in source.char_indices() {
+            let mapped = rendered.len();
+            let next_idx = idx + ch.len_utf8();
+            for slot in &mut byte_map[idx..next_idx] {
+                *slot = mapped;
+            }
+
+            match ch {
+                '\t' => rendered.push_str("    "),
+                '\r' => {}
+                _ => rendered.push(ch),
+            }
+            byte_map[next_idx] = rendered.len();
+        }
+
+        Self {
+            source: Cow::Owned(rendered),
+            byte_map: Some(byte_map),
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.source.len()
+    }
+
+    fn map_offset(&self, offset: usize) -> usize {
+        match &self.byte_map {
+            Some(byte_map) => byte_map[offset.min(byte_map.len() - 1)],
+            None => offset.min(self.source.len()),
+        }
+    }
+
+    fn map_span(&self, span: Span, original_source_len: usize) -> (usize, usize) {
+        let start = (span.start as usize).min(original_source_len);
+        let end = (span.end as usize).min(original_source_len).max(start);
+        let mapped_start = self.map_offset(start).min(self.len());
+        let mapped_end = self.map_offset(end).min(self.len()).max(mapped_start);
+        (mapped_start, mapped_end)
+    }
+}
 
 /// Source code information for diagnostic rendering.
 ///
@@ -244,10 +316,9 @@ impl<'a> DiagnosticFormatter<'a> {
             return format!("{}", self.renderer.render(report));
         };
 
-        // Validate and clamp the span to prevent annotate-snippets panics
+        let render_source = RenderSource::new(self.source_info.source);
         let source_len = self.source_info.source.len();
-        let start = (span.start as usize).min(source_len);
-        let end = (span.end as usize).min(source_len).max(start);
+        let (start, end) = render_source.map_span(span, source_len);
 
         // Build snippet with primary annotation
         let primary_annotation = level.span(start..end);
@@ -256,7 +327,7 @@ impl<'a> DiagnosticFormatter<'a> {
         } else {
             primary_annotation
         };
-        let mut snippet = Snippet::source(self.source_info.source)
+        let mut snippet = Snippet::source(render_source.source.as_ref())
             .origin(self.source_info.path)
             .fold(true)
             .annotation(primary_annotation);
@@ -267,8 +338,7 @@ impl<'a> DiagnosticFormatter<'a> {
             .iter()
             .skip(usize::from(promoted_label.is_some()))
         {
-            let label_start = (label.span.start as usize).min(source_len);
-            let label_end = (label.span.end as usize).min(source_len).max(label_start);
+            let (label_start, label_end) = render_source.map_span(label.span, source_len);
             snippet = snippet.annotation(
                 Level::Info
                     .span(label_start..label_end)
@@ -559,11 +629,9 @@ impl<'a> MultiFileFormatter<'a> {
         let mut file_ids: Vec<_> = file_spans.keys().copied().collect();
         file_ids.sort_by_key(|id| id.0);
 
-        for file_id in file_ids {
-            let spans = &file_spans[&file_id];
-
-            // Get source info for this file
-            let source_info = self.get_source(file_id).or_else(|| self.fallback_source());
+        let mut render_sources = Vec::with_capacity(file_ids.len());
+        for file_id in &file_ids {
+            let source_info = self.get_source(*file_id).or_else(|| self.fallback_source());
 
             let Some(source_info) = source_info else {
                 // No source available for this file. Refuse to guess a file
@@ -576,16 +644,20 @@ impl<'a> MultiFileFormatter<'a> {
                 continue;
             };
 
+            render_sources.push((*file_id, source_info, RenderSource::new(source_info.source)));
+        }
+
+        for (file_id, source_info, render_source) in &render_sources {
+            let spans = &file_spans[file_id];
+
             // Build snippet with all annotations for this file
-            let mut snippet = Snippet::source(source_info.source)
+            let mut snippet = Snippet::source(render_source.source.as_ref())
                 .origin(source_info.path)
                 .fold(true);
 
             let source_len = source_info.source.len();
             for (span, label, span_level) in spans {
-                // Validate and clamp the span to prevent annotate-snippets panics
-                let start = (span.start as usize).min(source_len);
-                let end = (span.end as usize).min(source_len).max(start);
+                let (start, end) = render_source.map_span(*span, source_len);
 
                 let annotation = span_level.span(start..end);
                 let annotation = if let Some(label_text) = label {
@@ -1180,6 +1252,51 @@ mod tests {
         assert!(output.contains("expected i32"));
         assert!(output.contains("found bool"));
         assert!(output.contains("test.rue"));
+    }
+
+    #[test]
+    fn test_format_error_expands_tabs_before_mapping_caret() {
+        let source = "fn main() -> i32 {\n\treturn nope;\n}";
+        let source_info = SourceInfo::new(source, "test.rue");
+        let formatter = DiagnosticFormatter::with_color_choice(&source_info, ColorChoice::Never);
+
+        let start = source.find("nope").unwrap() as u32;
+        let error = CompileError::new(
+            ErrorKind::UndefinedVariable("nope".to_string()),
+            Span::new(start, start + 4),
+        );
+
+        let output = formatter.format_error(&error);
+
+        assert!(output.contains("2 |     return nope;"));
+        assert!(
+            output.contains("  |            ^^^^"),
+            "caret should stay under `nope` after expanding the leading tab:\n{}",
+            output
+        );
+    }
+
+    #[test]
+    fn test_format_error_strips_crlf_without_shifting_span() {
+        let source = "fn main() -> i32 {\r\n    let x: i32 = true;\r\n    x\r\n}\r\n";
+        let source_info = SourceInfo::new(source, "test.rue");
+        let formatter = DiagnosticFormatter::with_color_choice(&source_info, ColorChoice::Never);
+
+        let start = source.find("let").unwrap() as u32;
+        let end = source.find(';').unwrap() as u32 + 1;
+        let error = CompileError::new(
+            ErrorKind::TypeMismatch {
+                expected: "i32".to_string(),
+                found: "bool".to_string(),
+            },
+            Span::new(start, end),
+        );
+
+        let output = formatter.format_error(&error);
+
+        assert!(!output.contains('\r'), "diagnostic leaked CR:\n{}", output);
+        assert!(output.contains("2 |     let x: i32 = true;"));
+        assert!(output.contains("  |     ^^^^^^^^^^^^^^^^^^"));
     }
 
     #[test]
