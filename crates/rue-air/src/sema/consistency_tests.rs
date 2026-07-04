@@ -2,7 +2,7 @@
 //!
 //! The sema module traverses the RIR twice with parallel match statements:
 //! 1. Constraint generation (inference/generate.rs) - Walks RIR to generate type constraints
-//! 2. AIR emission (sema/analysis.rs) - Walks RIR again to emit typed AIR
+//! 2. AIR emission (sema/analysis/ modules) - Walks RIR again to emit typed AIR
 //!
 //! These tests ensure both passes handle the same instruction types, preventing:
 //! - Duplication risk: Easy to add handling for a new instruction in one pass but forget the other
@@ -92,7 +92,21 @@ mod tests {
     // Include the source files at compile time
     // These paths are relative to the current source file
     const GENERATE_SOURCE: &str = include_str!("../inference/generate.rs");
-    const ANALYSIS_SOURCE: &str = include_str!("analysis.rs");
+    // The AIR-emission pass was split out of `analysis.rs` into per-category
+    // submodules (RUE-4); the RIR-walking `InstData::` match arms now live in
+    // those submodules, so scan the whole `analysis/` tree, not just the root.
+    const ANALYSIS_SOURCE: &str = concat!(
+        include_str!("analysis.rs"),
+        include_str!("analysis/functions.rs"),
+        include_str!("analysis/type_inference.rs"),
+        include_str!("analysis/instructions.rs"),
+        include_str!("analysis/calls.rs"),
+        include_str!("analysis/intrinsics.rs"),
+        include_str!("analysis/builtin_ops.rs"),
+        include_str!("analysis/ownership.rs"),
+        include_str!("analysis/anon_methods.rs"),
+        include_str!("analysis/pointers.rs"),
+    );
 
     /// Extract InstData variant names from source code.
     ///
