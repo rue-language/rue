@@ -843,8 +843,8 @@ where
                 None => Ok(parsed),
                 Some(span) => Err(Rich::custom(
                     span,
-                    "Rue has no 'as' cast operator; use '@intCast(T, value)' or give the target \
-                     type on the binding: 'let x: i64 = value'",
+                    "Rue has no 'as' cast operator; use '@intCast(value)' (the target type comes \
+                     from context) or give the target type on the binding: 'let x: i64 = value'",
                 )),
             })
     })
