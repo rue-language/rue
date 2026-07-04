@@ -193,6 +193,33 @@ fn main() -> i32 {
 }
 ```
 
+## Fields and Methods Are Separate Name Spaces
+
+{{ rule(id="6.4:33", cat="normative") }}
+
+Field names (6.2:3) and method names (6.4:16) occupy separate name spaces
+within a struct: a struct **MAY** declare a field and a method with the same
+name. The two are disambiguated by the form of the access. A postfix access
+without an argument list, `receiver.name`, is a field access (4.12) and denotes
+the field. An access with an argument list, `receiver.name(args)`, is a method
+call (6.4:6) and invokes the method. The two forms never conflict, so the shared
+name is unambiguous at every use site.
+
+{{ rule(id="6.4:34", cat="example") }}
+
+```rue
+struct P {
+    x: i32,
+
+    fn x(self) -> i32 { 99 }
+}
+
+fn main() -> i32 {
+    let p = P { x: 5 };
+    p.x + p.x()   // 5 (field) + 99 (method) = 104
+}
+```
+
 ## Error Conditions
 
 {{ rule(id="6.4:20", cat="legality-rule") }}

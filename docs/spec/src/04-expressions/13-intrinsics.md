@@ -122,6 +122,14 @@ not occurred.
 
 `@dbg` prints the value followed by a newline character.
 
+{{ rule(id="4.13:8a", cat="normative") }}
+
+The textual form `@dbg` prints for its argument is determined by the argument's
+type: an integer is printed in base 10, with a leading `-` when a signed integer
+is negative and no sign otherwise; a boolean is printed as `true` or `false`; a
+`String` is printed as its exact bytes, byte-for-byte, with no quoting or
+escaping (mirroring `print`, 3.7). The newline of 4.13:8 follows this text.
+
 {{ rule(id="4.13:9", cat="normative") }}
 
 The return type of `@dbg` is `()`.

@@ -397,3 +397,65 @@ fn main() -> i32 {
 }
 """
 exit_code = 42
+
+# =============================================================================
+# Parameter shadowing (5.1:14) — RUE-299
+# =============================================================================
+
+[[case]]
+name = "let_shadows_parameter"
+spec = ["5.1:14"]
+description = "A let binding may shadow a parameter; the initializer reads the parameter (RUE-299)"
+source = """
+fn f(x: i32) -> i32 {
+    let x = x + 100;
+    x
+}
+fn main() -> i32 { f(5) }
+"""
+exit_code = 105
+
+# =============================================================================
+# Wildcard bindings (5.1:16) — RUE-299
+# =============================================================================
+
+[[case]]
+name = "wildcard_let_discards_value"
+spec = ["5.1:16"]
+description = "let _ evaluates and discards its initializer, introducing no binding (RUE-299)"
+source = """
+fn main() -> i32 {
+    let _ = 5 + 5;
+    let _ = 99;
+    3
+}
+"""
+exit_code = 3
+
+[[case]]
+name = "wildcard_let_moves_affine_value"
+spec = ["5.1:16"]
+description = "let _ = affine_value moves out of the place, which is then no longer usable (RUE-299)"
+source = """
+fn main() -> i32 {
+    let s = "hello";
+    let _ = s;
+    @intCast(s.len())
+}
+"""
+compile_fail = true
+error_contains = ["E0205"]
+
+[[case]]
+name = "wildcard_let_does_not_consume_linear"
+spec = ["5.1:16"]
+description = "Discarding a linear value with let _ is a compile-time error; it is not consumed (RUE-299)"
+source = """
+linear struct R { fd: i32 }
+fn main() -> i32 {
+    let _ = R { fd: 3 };
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0478"]

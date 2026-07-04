@@ -103,15 +103,27 @@ const fn is_power_of_two(n: u64) -> bool {
     n != 0 && (n & (n - 1)) == 0
 }
 
-/// Allocate a new arena of at least `min_size` bytes.
+/// Allocate a new arena with room for a `min_size` allocation at `align`.
+///
+/// The arena must hold the header plus the requested block *after* the block
+/// has been aligned. The allocation is placed at `align_up(header_size, align)`
+/// (see `alloc_from_arena`), so the arena must be at least
+/// `align_up(header_size, align) + min_size` bytes — the alignment padding
+/// between the header and the block counts against the arena size. Sizing it
+/// as merely `header_size + min_size` (ignoring the padding) would under-size
+/// the region and let the fresh-arena fast path hand out a block past the
+/// mmap'd mapping (RUE-344).
 ///
 /// Returns a pointer to the arena header, or null on failure.
-fn alloc_arena(min_size: usize) -> *mut ArenaHeader {
-    // Ensure we have room for the header plus the requested size
+fn alloc_arena(min_size: usize, align: usize) -> *mut ArenaHeader {
+    // Ensure we have room for the header, the alignment padding, and the block.
     let header_size = core::mem::size_of::<ArenaHeader>();
 
+    // Offset at which alloc_from_arena will place the block (header + padding).
+    let aligned_header = align_up(header_size, align);
+
     // Use checked_add to prevent overflow
-    let Some(total) = header_size.checked_add(min_size) else {
+    let Some(total) = aligned_header.checked_add(min_size) else {
         return ptr::null_mut();
     };
     let total_size = align_up(total, 4096); // Page-align
@@ -184,7 +196,7 @@ pub fn alloc(size: u64, align: u64) -> *mut u8 {
 
         if arena.is_null() {
             // No arena yet - try to create one
-            let new_arena = alloc_arena(size);
+            let new_arena = alloc_arena(size, align);
             if new_arena.is_null() {
                 return ptr::null_mut();
             }
@@ -263,7 +275,7 @@ pub fn alloc(size: u64, align: u64) -> *mut u8 {
             }
 
             // Allocation doesn't fit in current arena - create a new one
-            let new_arena = alloc_arena(size);
+            let new_arena = alloc_arena(size, align);
             if new_arena.is_null() {
                 return ptr::null_mut();
             }
@@ -309,13 +321,17 @@ fn alloc_from_arena(arena: *mut ArenaHeader, size: usize, align: usize) -> *mut 
     // - `arena` was just created by alloc_arena and is valid
     // - We just installed it via compare_exchange, so we have logical ownership
     // - No other thread can see this arena yet (we're the first to allocate)
-    // - The offset store and pointer arithmetic are within the arena bounds
-    //   (alloc_arena ensures the arena is large enough for header + size)
+    // - The offset store and pointer arithmetic are within the arena bounds:
+    //   alloc_arena was called with this same `align` and sized the region as
+    //   align_up(align_up(header_size, align) + size, 4096), so the block at
+    //   align_up(header_size, align) spanning `size` bytes fits with room to
+    //   spare. This is why no bounds check is needed on this fast path.
     unsafe {
         let header_size = core::mem::size_of::<ArenaHeader>();
         let aligned_offset = align_up(header_size, align);
-        // Note: overflow is impossible here because alloc_arena already ensured
-        // the arena is large enough for header_size + size (with alignment padding)
+        // Overflow is impossible: alloc_arena computed the same
+        // align_up(header_size, align) + size via checked_add and only returned
+        // non-null if it did not overflow, and the arena is at least that large.
         let new_offset = aligned_offset + size;
         (*arena).offset.store(new_offset, Ordering::Relaxed);
         (arena as *mut u8).add(aligned_offset)
@@ -661,6 +677,72 @@ mod tests {
         // Zero alignment should fail
         let result = realloc(ptr, 64, 128, 0);
         assert!(result.is_null());
+    }
+
+    #[test]
+    fn test_alloc_arena_sizes_in_alignment_padding() {
+        // RUE-344: alloc_arena must reserve room for the alignment padding
+        // between the header and the block, not just header_size + min_size.
+        // For align > 8, alloc_from_arena places the block at
+        // align_up(header_size, align) > header_size, so that padding counts.
+        let header_size = core::mem::size_of::<ArenaHeader>();
+        for &align in &[1usize, 8, 16, 32, 64, 256, 4096] {
+            let min_size = 65512;
+            let arena = alloc_arena(min_size, align);
+            assert!(!arena.is_null(), "alloc_arena failed for align={align}");
+
+            // SAFETY: arena is a valid, freshly-created arena we own.
+            unsafe {
+                let arena_size = (*arena).size;
+                let aligned_offset = align_up(header_size, align);
+
+                // The whole aligned block must fit inside the mapping.
+                assert!(
+                    aligned_offset + min_size <= arena_size,
+                    "arena under-sized for align={align}: offset {aligned_offset} + \
+                     size {min_size} = {} exceeds arena_size {arena_size}",
+                    aligned_offset + min_size
+                );
+
+                // Now actually place the allocation and prove its end is within
+                // the mmap'd region, then write the final byte (would corrupt
+                // adjacent memory / segfault under the RUE-344 bug).
+                let base = arena as usize;
+                let block = alloc_from_arena(arena, min_size, align);
+                assert!(!block.is_null());
+                assert_eq!(block as usize % align, 0, "bad alignment for align={align}");
+                let end = block as usize + min_size;
+                assert!(
+                    end <= base + arena_size,
+                    "block end {end} past mapping end {} for align={align}",
+                    base + arena_size
+                );
+
+                // Touch first and last byte of the block.
+                *block = 0xAA;
+                *block.add(min_size - 1) = 0xBB;
+                assert_eq!(*block, 0xAA);
+                assert_eq!(*block.add(min_size - 1), 0xBB);
+
+                platform::munmap(arena as *mut u8, arena_size);
+            }
+        }
+    }
+
+    #[test]
+    fn test_alloc_high_align_boundary() {
+        // End-to-end through the public alloc() with a >8 alignment and a size
+        // near the arena boundary. Under RUE-344 the returned block spilled
+        // past the mmap region; writing the last byte must be safe now.
+        let ptr = alloc(65512, 16);
+        assert!(!ptr.is_null());
+        assert_eq!(ptr as usize % 16, 0);
+        unsafe {
+            *ptr = 1;
+            *ptr.add(65512 - 1) = 2;
+            assert_eq!(*ptr, 1);
+            assert_eq!(*ptr.add(65512 - 1), 2);
+        }
     }
 
     #[test]

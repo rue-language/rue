@@ -33,6 +33,14 @@ struct Point {
 }
 ```
 
+{{ rule(id="6.2:11", cat="informative") }}
+
+A struct definition **MAY** be prefixed with the `linear` keyword, making it a
+*linear* (must-consume) type: a value of a `linear struct` type must be
+explicitly consumed and cannot be implicitly dropped. The `linear` modifier and
+its full semantics — including infectious linearity through fields and arrays —
+are specified with move semantics (3.8), not repeated here.
+
 ## Struct Instantiation
 
 {{ rule(id="6.2:5", cat="legality-rule") }}

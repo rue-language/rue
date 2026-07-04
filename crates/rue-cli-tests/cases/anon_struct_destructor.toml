@@ -8,7 +8,7 @@
 # These cases pin EXACT stdout (order matters) so the destructor's presence,
 # count, and ordering are all regression-tested. The heap case proves the
 # buffer is freed AUTOMATICALLY at scope exit with no explicit free() call —
-# the last gap to a "real" RAII Vec (RUE-1).
+# the last gap to a "real" RAII ArrayBuf (RUE-1).
 
 [section]
 id = "cli.anon_struct_destructor"

@@ -544,3 +544,33 @@ fn main() -> i32 {
 }
 """
 exit_code = 1
+
+# =============================================================================
+# Source encoding (2.0:5, 2.0:6) — RUE-299
+# =============================================================================
+
+[[case]]
+name = "utf8_source_in_comment_and_string"
+spec = ["2.0:5", "2.0:6"]
+description = "Non-ASCII UTF-8 is accepted inside comments and string literals"
+source = """
+fn main() -> i32 {
+    // Non-ASCII text is fine in a comment: café résumé π
+    let s = "héllo, 世界";
+    @intCast(s.len())
+}
+"""
+exit_code = 14
+
+[[case]]
+name = "non_ascii_identifier_rejected"
+spec = ["2.0:6"]
+description = "A non-ASCII character outside a comment or string literal is a lexical error (E0001)"
+source = """
+fn main() -> i32 {
+    let café = 5;
+    café
+}
+"""
+compile_fail = true
+error_contains = ["E0001"]

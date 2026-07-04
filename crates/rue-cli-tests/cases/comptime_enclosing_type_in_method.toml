@@ -2,7 +2,7 @@
 # usable throughout its anonymous struct's method BODIES — not just the
 # field/method signatures (RUE-313). Before the fix, referencing `T` inside a
 # method body (to declare a `T`-typed local, or to build `Option(T)`) failed
-# with "unknown type 'T'" (E0204), so a source-level `Vec(T)` could not return
+# with "unknown type 'T'" (E0204), so a source-level `ArrayBuf(T)` could not return
 # `Option(T)`.
 
 [section]

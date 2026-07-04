@@ -91,7 +91,7 @@ fn main() -> i32 {
 The `@alloc`, `@free`, and `@realloc` intrinsics provide raw, unchecked access
 to the heap. Like the raw-pointer intrinsics they may only appear inside a
 `checked` block (§9.1). They are the primitives on which safe, owned
-collections (for example a source-level `Vec`) are built: the unsafety is
+collections (for example a source-level `ArrayBuf`) are built: the unsafety is
 confined to the collection's internals behind a checked API.
 
 {{ rule(id="9.2:10", cat="dynamic-semantics") }}

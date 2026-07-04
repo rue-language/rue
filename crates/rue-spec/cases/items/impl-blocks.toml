@@ -532,3 +532,25 @@ fn main() -> i32 {
     P::make(5).get()
 }
 """
+
+# =============================================================================
+# Fields and methods are separate name spaces (6.4:33) — RUE-299
+# =============================================================================
+
+[[case]]
+name = "field_and_method_same_name"
+spec = ["6.4:33"]
+description = "A field and a method may share a name; r.name is the field, r.name() the method (RUE-299)"
+source = """
+struct P {
+    x: i32,
+
+    fn x(self) -> i32 { 99 }
+}
+
+fn main() -> i32 {
+    let p = P { x: 5 };
+    p.x + p.x()
+}
+"""
+exit_code = 104

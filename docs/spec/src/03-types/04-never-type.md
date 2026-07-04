@@ -58,6 +58,30 @@ fn diverges(x: i32) -> i32 {
 fn main() -> i32 { diverges(5) }
 ```
 
+{{ rule(id="3.4:6a", cat="normative") }}
+
+`!` propagates through any composite expression that control cannot fall out
+of, not only `if` and `match`. A block expression has type `!` when control
+cannot reach its end: either its tail expression has type `!`, or a statement
+within it diverges — for example an expression statement whose expression has
+type `!` — which makes the remainder of the block, and thus the block's end,
+unreachable. A `loop` expression with no reachable `break` likewise has type
+`!` (3.4:2). By the coercion of 3.4:3, such an expression may appear wherever a
+value of any type is expected.
+
+{{ rule(id="3.4:6b") }}
+
+```rue
+fn test(x: i32) -> i32 {
+    // The block's tail expression is `return`, so the block has type !,
+    // which coerces to the i32 the `let` expects.
+    let y = { return 100 };
+    y * 2
+}
+
+fn main() -> i32 { test(3) }  // exit code 100
+```
+
 ## Diverging Functions
 
 {{ rule(id="3.4:8", cat="normative") }}

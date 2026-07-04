@@ -18,7 +18,7 @@ expr_stmt = expression ";" ;
 
 {{ rule(id="5.3:3", cat="normative") }}
 
-The value of the expression is discarded. The type of an expression statement is `()`.
+The expression is evaluated and its value is discarded; the expression statement itself has type `()`. This is the core calculus's discarding sequence `e1 ; e2` (`docs/formal/01-core-calculus.md` §5.3, §6.7, rule `(D-Seq)`): `e1` is reduced to a value, that value is dropped, and control passes to the following statement `e2` — whose value is the value of the enclosing block.
 
 {{ rule(id="5.3:4") }}
 
