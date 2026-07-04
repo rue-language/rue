@@ -8,11 +8,17 @@ template = "spec/page.html"
 
 {{ rule(id="8.3:1", cat="dynamic-semantics") }}
 
-Division or remainder by zero **MUST** cause a runtime panic.
+Evaluating `/` or `%` with a zero divisor **MUST** cause a runtime panic: the
+operation traps before it computes a result (core calculus
+`docs/formal/01-core-calculus.md` §6.4, rule `(D-Div-Zero)` and its remainder
+analogue — these are the distinct `div-zero` and `rem-zero` trap categories of
+§6.12).
 
 {{ rule(id="8.3:2", cat="dynamic-semantics") }}
 
-On division by zero, the program **MUST** terminate with exit code 101 and print an error message.
+On a division- or remainder-by-zero trap, the program **MUST** terminate with exit
+code 101 — the panic exit code of Appendix B — after printing an error message
+(core calculus `docs/formal/01-core-calculus.md` §6.12, rule `(Result-Panic)`).
 
 {{ rule(id="8.3:3", cat="normative") }}
 

@@ -2,8 +2,7 @@ use std::env;
 use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
-#[cfg(unix)]
-use std::path::Path;
+use std::path::{Path, PathBuf};
 #[cfg(target_os = "macos")]
 use std::process::Command;
 
@@ -16,9 +15,9 @@ mod timing;
 use rue_compiler::{
     CompileOptions, FileId, Lexer, LinkerMode, MultiFileFormatter, OptLevel, ParsedProgram,
     PreviewFeature, PreviewFeatures, SourceFile, SourceInfo, TokenKind,
-    compile_multi_file_with_options, generate_emitted_asm, generate_liveness_info,
-    generate_lowering_info, generate_mir, generate_regalloc_info, generate_stack_frame_info,
-    merge_symbols, parse_all_files,
+    compile_multi_file_with_options, configure_thread_pool, generate_emitted_asm,
+    generate_liveness_info, generate_lowering_info, generate_mir, generate_regalloc_info,
+    generate_stack_frame_info, merge_symbols, parse_all_files,
 };
 use rue_rir::RirPrinter;
 use rue_target::Target;
@@ -265,6 +264,38 @@ enum ParseResult {
     Exit,
 }
 
+/// Resolve a path to a canonical key for the output-clobber comparison.
+///
+/// Sources always exist, so they canonicalize directly. The output file
+/// usually does NOT exist yet, so `canonicalize` fails on it; in that case we
+/// canonicalize the parent directory and re-attach the file name, which still
+/// collapses `./prog` and `prog` (or `dir/../prog`) to the same key. When even
+/// the parent can't be resolved — as in unit tests with fake paths that touch
+/// no real files — we fall back to the raw path, preserving the old
+/// exact-string behavior. Extension is irrelevant; only the resolved location
+/// matters (RUE-351).
+fn clobber_key(path: &str) -> PathBuf {
+    let p = Path::new(path);
+    if let Ok(canon) = fs::canonicalize(p) {
+        return canon;
+    }
+    match (p.parent(), p.file_name()) {
+        (Some(parent), Some(name)) => {
+            // An empty parent means the path is a bare file name in the cwd.
+            let parent = if parent.as_os_str().is_empty() {
+                Path::new(".")
+            } else {
+                parent
+            };
+            match fs::canonicalize(parent) {
+                Ok(canon_parent) => canon_parent.join(name),
+                Err(_) => p.to_path_buf(),
+            }
+        }
+        _ => p.to_path_buf(),
+    }
+}
+
 /// Parse arguments from a slice of strings (for testing).
 fn parse_args_from(args: &[&str]) -> ParseResult {
     if args.is_empty() {
@@ -486,9 +517,14 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
         return ParseResult::Error;
     };
 
-    // In every mode: the output must not clobber an input. (Catches explicit
-    // footguns like `rue a.rue -o a.rue` too.)
-    if source_paths.contains(&final_output_path) {
+    // In every mode: the output must not clobber an input. Compare RESOLVED
+    // filesystem paths, not raw strings, so different spellings of the same
+    // file are all caught — `rue a.rue -o a.rue`, `rue ./prog -o prog`, or an
+    // extensionless source `rue prog -o prog`. The earlier guard keyed off a
+    // `.rue` suffix, so extensionless sources slipped through and the compiled
+    // output silently overwrote the source (RUE-351).
+    let output_key = clobber_key(&final_output_path);
+    if source_paths.iter().any(|s| clobber_key(s) == output_key) {
         eprintln!(
             "Error: output path '{}' is also an input source file; refusing to overwrite it",
             final_output_path
@@ -900,6 +936,13 @@ fn main() {
         options.time_passes,
         options.benchmark_json,
     );
+
+    // Configure Rayon's global thread pool ONCE, before dispatching to either
+    // the `--emit` path or the normal compile path. `build_global()` panics if
+    // called twice, so it lives here rather than inside a per-compilation entry
+    // point — the previous placement meant `--emit` ignored `-j`/`--jobs`
+    // entirely (RUE-352).
+    configure_thread_pool(options.jobs);
 
     // Read all source files into memory
     let mut sources: Vec<(String, String)> = options
@@ -1457,6 +1500,29 @@ mod tests {
     fn parse_multi_file_without_output_flag_error() {
         // Three positional args without -o should error
         assert!(is_error(&parse_args_from(&["a.rue", "b.rue", "c.rue"])));
+    }
+
+    #[test]
+    fn parse_output_equals_extensionless_input_error() {
+        // RUE-351: `-o` targeting an extensionless input source is refused. The
+        // old guard only recognized inputs by a `.rue` suffix. Paths resolve
+        // against the cwd; neither file needs to exist for the keys to match.
+        assert!(is_error(&parse_args_from(&["prog", "-o", "prog"])));
+    }
+
+    #[test]
+    fn parse_output_equals_input_different_spelling_error() {
+        // RUE-351: resolved-path comparison catches `./prog` vs `prog` — the
+        // same file spelled two ways — not just a byte-for-byte string match.
+        assert!(is_error(&parse_args_from(&["./prog", "-o", "prog"])));
+    }
+
+    #[test]
+    fn parse_distinct_output_and_input_ok() {
+        // A genuinely different output path must still be accepted.
+        let opts = unwrap_options(parse_args_from(&["prog.rue", "-o", "prog"]));
+        assert_eq!(opts.source_paths, vec!["prog.rue"]);
+        assert_eq!(opts.output_path, "prog");
     }
 
     #[test]

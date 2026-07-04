@@ -24,6 +24,10 @@ param = IDENT ":" type ;
 
 Parameters **MUST** have explicit type annotations.
 
+{{ rule(id="6.1:34", cat="legality-rule") }}
+
+The parameters in a single parameter list **MUST** have distinct names. It is a compile-time error for a function or method to declare two parameters with the same name (for example, `fn f(x: i32, x: i32)`); the diagnostic identifies the second occurrence. A method's `self` receiver is not a named parameter for the purpose of this rule.
+
 {{ rule(id="6.1:4", cat="dynamic-semantics") }}
 
 A function call evaluates to the value the function's body block evaluates to (see 4.5). Reaching the end of the body is not a distinct "implicit return": the body is an expression, and the call's value *is* that expression's value.

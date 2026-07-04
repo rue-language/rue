@@ -218,6 +218,13 @@ impl ErrorCode {
     /// so its operand MUST name a struct field. Use `@raw`/`@raw_mut` for the
     /// address of a whole variable or array element.
     pub const FIELD_PTR_REQUIRES_FIELD: Self = Self(490);
+    /// A function or method parameter list names the same parameter twice
+    /// (e.g. `fn f(x: i32, x: i32)`). Every parameter in a single list must
+    /// have a distinct name (spec 6.1); a repeated name silently shadows the
+    /// earlier binding on a first-wins basis, so the declaration is rejected
+    /// (RUE-349, a sibling of [`Self::DUPLICATE_PATTERN_BINDING`] (E0484) and
+    /// analogous to Rust's E0415).
+    pub const DUPLICATE_PARAMETER: Self = Self(491);
 
     // ========================================================================
     // Control flow errors (E0500-E0599)
@@ -1065,6 +1072,10 @@ pub enum ErrorKind {
         type_name: String,
         method_name: String,
     },
+    /// A function or method parameter list names the same parameter twice.
+    /// The span points at the second (duplicate) occurrence (RUE-349).
+    #[error("duplicate parameter name '{name}'")]
+    DuplicateParameter { name: String },
     /// Method not found on a type
     #[error("no method named '{method_name}' found for type '{type_name}'")]
     UndefinedMethod {
@@ -1430,6 +1441,7 @@ impl ErrorKind {
                 ErrorCode::LINEAR_FIELD_DROPPED_BY_DESTRUCTURE
             }
             ErrorKind::DuplicateMethod { .. } => ErrorCode::DUPLICATE_METHOD,
+            ErrorKind::DuplicateParameter { .. } => ErrorCode::DUPLICATE_PARAMETER,
             ErrorKind::UndefinedMethod { .. } => ErrorCode::UNDEFINED_METHOD,
             ErrorKind::UndefinedAssocFn { .. } => ErrorCode::UNDEFINED_ASSOC_FN,
             ErrorKind::MethodCallOnNonStruct { .. } => ErrorCode::METHOD_CALL_ON_NON_STRUCT,
