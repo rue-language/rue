@@ -110,6 +110,25 @@ fn main() -> i32 {
 args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
 exit_code = 8
 
+# `inout str` rebinds the caller's first-class `{ptr, len}` value. This used to
+# ICE in both backends when the callee assigned to the parameter: sema emitted a
+# ParamStore, but function ABI lowering had treated `inout str` like a by-value
+# slice view (RUE-385).
+[[case]]
+name = "str_inout_rebinds_caller_fat_pointer"
+files = [{ path = "main.rue", source = """
+fn set_hi(inout s: str) {
+    s = "hi";
+}
+fn main() -> i32 {
+    let mut s: str = "hello";
+    set_hi(inout s);
+    @intCast(s.len())
+}
+""" }]
+args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+exit_code = 2
+
 # Without the preview flag, `str` is gated with a clear diagnostic (not an ICE).
 [[case]]
 name = "str_requires_preview_flag"
