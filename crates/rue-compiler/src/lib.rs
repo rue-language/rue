@@ -1875,6 +1875,18 @@ pub fn compile_to_cfg(source: &str) -> MultiErrorResult<CompileState> {
     compile_frontend(source)
 }
 
+/// Compile source code up to CFG with explicit preview features enabled.
+///
+/// This is the preview-aware form of [`compile_to_cfg`], used by tools that
+/// intentionally exercise unstable language surfaces without going through the
+/// command-line flag parser.
+pub fn compile_to_cfg_with_preview_features(
+    source: &str,
+    preview_features: &PreviewFeatures,
+) -> MultiErrorResult<CompileState> {
+    compile_frontend_with_options(source, OptLevel::default(), preview_features)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

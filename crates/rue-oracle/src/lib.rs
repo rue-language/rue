@@ -55,13 +55,15 @@
 //!   heap layout (ptr, len, cap) is implementation-defined, so `capacity` is
 //!   reported [`Unsupported`] rather than guessed.
 //! - **Non-ASCII `String::push`** — a byte `>= 0x80` is not standalone valid
-//!   UTF-8, which the Rust-`String`-backed `Value::Str` cannot represent.
+//!   UTF-8, which the oracle's Rust-`String` text storage cannot represent.
 //! - **Deeply-nested `inout` field writes** (non-zero inner offset).
 
 use lasso::ThreadedRodeo;
 use rue_air::{Type, TypeKind};
 use rue_cfg::{Cfg, CfgArgMode, CfgInstData, CfgValue, Place, PlaceBase, Projection, Terminator};
-use rue_compiler::{CompileState, compile_to_cfg};
+use rue_compiler::{
+    CompileState, PreviewFeatures, compile_to_cfg, compile_to_cfg_with_preview_features,
+};
 use std::collections::HashMap;
 
 /// Observable result of running a program under the oracle.
@@ -90,6 +92,25 @@ pub struct Unsupported(pub String);
 /// program in the supported subset always yields `Ok`.
 pub fn run_source(source: &str) -> Result<Outcome, Unsupported> {
     let state = compile_to_cfg(source).map_err(|e| Unsupported(format!("compile: {e:?}")))?;
+    run_state(state)
+}
+
+/// Compile `source` with explicit preview features, then run it under the
+/// reference semantics.
+///
+/// This is the preview-aware form of [`run_source`]. It lets differential
+/// harnesses opt individual cases into the same preview gates the compiler CLI
+/// uses, while keeping the default oracle API stable-only.
+pub fn run_source_with_preview_features(
+    source: &str,
+    preview_features: &PreviewFeatures,
+) -> Result<Outcome, Unsupported> {
+    let state = compile_to_cfg_with_preview_features(source, preview_features)
+        .map_err(|e| Unsupported(format!("compile: {e:?}")))?;
+    run_state(state)
+}
+
+fn run_state(state: CompileState) -> Result<Outcome, Unsupported> {
     // Interpret on a dedicated large-stack worker thread. The tree-walking
     // interpreter recurses per expression *and* per call, so deep-but-valid
     // programs need far more stack than a default thread provides. Running on
@@ -154,27 +175,47 @@ enum Value {
     /// variant's payload fields in declaration order (RUE-285). A
     /// discriminant-only enum (or C-like enum) stays a bare `Int` tag.
     Aggregate(Vec<Value>),
-    /// A `String`, modeled by its content only; the heap layout (ptr, len, cap)
-    /// and capacity are implementation details the oracle abstracts over
-    /// (`capacity`/`reserve` are unmodeled — see the builtin dispatch).
-    Str(String),
+    /// Textual data, modeled by content plus ABI slot width.
+    ///
+    /// `String`/`StrBuf` occupies three slots (`ptr`, `len`, `cap`), while
+    /// preview `str`/`Str(N)` occupies two (`ptr`, `len`). Keeping the width on
+    /// the value prevents a `str` parameter from shifting later parameters as if
+    /// it were a growable string.
+    Str {
+        text: String,
+        slots: usize,
+    },
 }
 
 impl Value {
+    fn string(text: impl Into<String>) -> Self {
+        Self::Str {
+            text: text.into(),
+            slots: 3,
+        }
+    }
+
+    fn str_view(text: impl Into<String>) -> Self {
+        Self::Str {
+            text: text.into(),
+            slots: 2,
+        }
+    }
+
     fn as_int(&self) -> i128 {
         match self {
             Value::Int(n) => *n,
             Value::Bool(b) => *b as i128,
             // Unreachable for a well-typed program (aggregates/strings never
             // reach a scalar context); defined so callers need not thread an error.
-            Value::Unit | Value::Aggregate(_) | Value::Str(_) => 0,
+            Value::Unit | Value::Aggregate(_) | Value::Str { .. } => 0,
         }
     }
     fn as_bool(&self) -> bool {
         match self {
             Value::Bool(b) => *b,
             Value::Int(n) => *n != 0,
-            Value::Unit | Value::Aggregate(_) | Value::Str(_) => false,
+            Value::Unit | Value::Aggregate(_) | Value::Str { .. } => false,
         }
     }
 }
@@ -233,14 +274,30 @@ struct Frame {
 fn slot_width(v: &Value) -> usize {
     match v {
         Value::Aggregate(elems) => elems.iter().map(slot_width).sum(),
-        // A String is a fat value occupying three ABI slots (ptr, len, cap).
-        Value::Str(_) => 3,
+        Value::Str { slots, .. } => *slots,
         Value::Unit => 0,
         _ => 1,
     }
 }
 
 impl<'a> Interp<'a> {
+    fn string_literal_value(&self, text: String, ty: Type) -> Value {
+        if self.is_str_like_type(ty) {
+            Value::str_view(text)
+        } else {
+            Value::string(text)
+        }
+    }
+
+    fn is_str_like_type(&self, ty: Type) -> bool {
+        if let TypeKind::Struct(struct_id) = ty.kind() {
+            let name = &self.state.type_pool.struct_def(struct_id).name;
+            name == "str" || (name.starts_with("Str(") && name.ends_with(')'))
+        } else {
+            false
+        }
+    }
+
     fn run(mut self) -> Result<Outcome, Unsupported> {
         match self.call("main", &[]) {
             Ok((v, _)) => Ok(Outcome {
@@ -444,7 +501,7 @@ impl<'a> Interp<'a> {
         // signature has a string is drift, not an empty string.
         let s = |v: &Value| -> Result<String, Flow> {
             match v {
-                Value::Str(s) => Ok(s.clone()),
+                Value::Str { text, .. } => Ok(text.clone()),
                 _ => Err(Flow::Unsupported(Unsupported(format!(
                     "builtin '{name}' received a non-string argument (signature drift?)"
                 )))),
@@ -455,11 +512,11 @@ impl<'a> Interp<'a> {
             // 64-bit value by sema (sign-extended to i64 for signed types,
             // zero-extended to u64 for unsigned); format it with the matching
             // signedness so a high-bit-set unsigned value prints unsigned.
-            "__rue_to_string" => Value::Str((args[0].as_int() as i64).to_string()),
-            "__rue_to_string_unsigned" => Value::Str((args[0].as_int() as u64).to_string()),
-            "__rue_String_new" => Value::Str(String::new()),
-            "__rue_String_with_capacity" => Value::Str(String::new()),
-            "__rue_String_push_str" => Value::Str(s(&args[0])? + &s(&args[1])?),
+            "__rue_to_string" => Value::string((args[0].as_int() as i64).to_string()),
+            "__rue_to_string_unsigned" => Value::string((args[0].as_int() as u64).to_string()),
+            "__rue_String_new" => Value::string(String::new()),
+            "__rue_String_with_capacity" => Value::string(String::new()),
+            "__rue_String_push_str" => Value::string(s(&args[0])? + &s(&args[1])?),
             "__rue_String_push" => {
                 let mut base = s(&args[0])?;
                 let byte = args[1].as_int() as u8;
@@ -470,20 +527,21 @@ impl<'a> Interp<'a> {
                 } else {
                     // push takes a u8 and a Rue String is a raw byte buffer, but
                     // a byte >= 0x80 is not valid standalone UTF-8, which
-                    // Value::Str (a Rust String) cannot represent. The runtime
-                    // stores the single raw byte; encoding a char here would
-                    // store two. Skip rather than silently diverge (see RUE-342).
+                    // The oracle stores textual values as Rust Strings, which
+                    // cannot represent this byte. The runtime stores the single
+                    // raw byte; encoding a char here would store two. Skip
+                    // rather than silently diverge (see RUE-342).
                     return Err(Flow::Unsupported(Unsupported(
                         "String::push of a non-ASCII byte (oracle cannot model non-UTF-8 String content)".into(),
                     )));
                 }
-                Value::Str(base)
+                Value::string(base)
             }
             "__rue_String_len" => Value::Int(s(&args[0])?.len() as i128),
             "__rue_String_is_empty" => Value::Bool(s(&args[0])?.is_empty()),
-            "__rue_String_clear" => Value::Str(String::new()),
-            "__rue_String_clone" => Value::Str(s(&args[0])?),
-            "__rue_String_reserve" => Value::Str(s(&args[0])?),
+            "__rue_String_clear" => Value::string(String::new()),
+            "__rue_String_clone" => Value::string(s(&args[0])?),
+            "__rue_String_reserve" => Value::string(s(&args[0])?),
             // `s[i]` byte indexing (ADR-0035): the runtime `__rue_String_byte_at`
             // bounds-checks `index >= len` — trapping like array indexing — and
             // returns the raw byte zero-extended. Model it over the byte content
@@ -516,11 +574,11 @@ impl<'a> Interp<'a> {
             // decodes the Unicode scalar at byte `offset`, and
             // `__rue_String_char_next` returns the byte offset of the following
             // character (`offset + utf8_width`). Both trap on invalid UTF-8 in the
-            // runtime, but the oracle models String content as *valid* UTF-8
-            // (`Value::Str` is a Rust `String`; a non-ASCII `push` bails to
-            // `Unsupported`), so decoding never hits that trap in practice and the
-            // strict and `_lossy` variants coincide over the modeled content — a
-            // well-formed loop only ever passes whole-character-boundary offsets.
+            // runtime, but the oracle models textual content as *valid* UTF-8
+            // (a non-ASCII `push` bails to `Unsupported`), so decoding never
+            // hits that trap in practice and the strict and `_lossy` variants
+            // coincide over the modeled content — a well-formed loop only ever
+            // passes whole-character-boundary offsets.
             "__rue_String_char_scalar" | "__rue_String_char_scalar_lossy" => {
                 let text = s(&args[0])?;
                 match char_at(&text, args[1].as_int()) {
@@ -672,13 +730,15 @@ impl<'a> Interp<'a> {
                 }
             }
             CfgInstData::BoolConst(b) => Value::Bool(*b),
-            CfgInstData::StringConst(idx) => Value::Str(
-                self.state
+            CfgInstData::StringConst(idx) => {
+                let text = self
+                    .state
                     .strings
                     .get(*idx as usize)
                     .cloned()
-                    .ok_or_else(|| Flow::Unsupported(Unsupported("string const index".into())))?,
-            ),
+                    .ok_or_else(|| Flow::Unsupported(Unsupported("string const index".into())))?;
+                self.string_literal_value(text, ty)
+            }
             CfgInstData::Param { index } => {
                 if self.is_zero_sized(ty) {
                     // A zero-sized parameter occupies NO slot (abi_slot_count
@@ -1039,7 +1099,7 @@ impl<'a> Interp<'a> {
         // equal and an arbitrary non-`Equal` ordering otherwise — enough for
         // `pick` to decide `==`/`!=`. Everything else compares by integer value.
         let ord = match (&x, &y) {
-            (Value::Str(sx), Value::Str(sy)) => sx.cmp(sy),
+            (Value::Str { text: sx, .. }, Value::Str { text: sy, .. }) => sx.cmp(sy),
             (Value::Aggregate(_), _) | (_, Value::Aggregate(_)) => {
                 if x == y {
                     std::cmp::Ordering::Equal
@@ -1350,8 +1410,8 @@ fn from_bits(bits_val: u128, bits: u32, signed: bool) -> i128 {
 /// integers respecting signedness, `true`/`false` for bool), sans the newline.
 fn format_dbg(val: &Value, ty: Type) -> Result<String, Flow> {
     // `@dbg` of a String prints its content (matches __rue_dbg_str).
-    if let Value::Str(s) = val {
-        return Ok(s.clone());
+    if let Value::Str { text, .. } = val {
+        return Ok(text.clone());
     }
     Ok(match ty.kind() {
         TypeKind::Bool => val.as_bool().to_string(),

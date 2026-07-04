@@ -23,8 +23,9 @@
 //!   preview assertions — so we lean on [`rue_test_runner`] (the spec runner's
 //!   own crate) to parse and template-expand every case exactly as the spec
 //!   suite does, then filter to the runnable subset the oracle can model
-//!   (concrete `source` + expected exit/stdout; golden-IR-only, preview-gated,
-//!   `compile_fail`, multi-file and stdin cases are skipped, not disagreements).
+//!   (concrete `source` + expected exit/stdout; golden-IR-only, `compile_fail`,
+//!   multi-file and stdin cases are skipped, not disagreements). Preview-gated
+//!   cases run with their declared preview feature.
 //!   Dir resolution mirrors corpus mode: argv; else `RUE_ORACLE_DIFF_SPEC_CASES`
 //!   (how the `buck2 test` sh_test feeds the rue-spec `cases` filegroup); else
 //!   `crates/rue-spec/cases`.
@@ -38,10 +39,12 @@
 mod fuzz;
 mod generator;
 
-use rue_oracle::run_source;
+use rue_error::{PreviewFeature, PreviewFeatures};
+use rue_oracle::run_source_with_preview_features;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::str::FromStr;
 
 #[derive(Deserialize)]
 struct TestFile {
@@ -276,9 +279,9 @@ fn spec_mode(raw_args: Vec<String>) -> ExitCode {
 ///
 /// Skipped (as a non-runnable shape, never a disagreement) when the case is not
 /// a single concrete program the oracle can execute and compare: `compile_fail`
-/// (no runtime output), `preview`-gated (the oracle models only stable
-/// semantics), `compile_only` (never executed), golden-IR-only (an IR dump, not
-/// a run), or a shape with no oracle model (stdin, multi-file `aux_files`).
+/// (no runtime output), `compile_only` (never executed), golden-IR-only (an IR
+/// dump, not a run), or a shape with no oracle model (stdin, multi-file
+/// `aux_files`). Preview-gated cases run with their declared preview feature.
 /// Cases the oracle simply can't model yet return [`Unsupported`] and count as
 /// unmodeled skips.
 fn check_spec_case(ident: &str, case: &rue_test_runner::Case, report: &mut Report) {
@@ -292,7 +295,6 @@ fn check_spec_case(ident: &str, case: &rue_test_runner::Case, report: &mut Repor
         case.target.is_some() || rue_test_runner::should_skip_for_platform(&case.only_on).is_some();
     if case.skip
         || case.compile_fail
-        || case.preview.is_some()
         || case.compile_only
         || case.stdin.is_some()
         || !case.aux_files.is_empty()
@@ -321,7 +323,9 @@ fn check_spec_case(ident: &str, case: &rue_test_runner::Case, report: &mut Repor
         .iter()
         .any(|(i, n, _)| *i == ident && *n == case.name);
 
-    match run_source(&case.source) {
+    let preview_features = spec_preview_features(case);
+
+    match run_source_with_preview_features(&case.source, &preview_features) {
         // Oracle bailed (unmodeled construct). For a tracked gap this is the
         // "skip Unsupported cleanly" outcome; either way it's a skip, not a bug.
         Err(_unsupported) => report.skip_unsupported += 1,
@@ -380,6 +384,16 @@ fn check_spec_case(ident: &str, case: &rue_test_runner::Case, report: &mut Repor
     }
 }
 
+fn spec_preview_features(case: &rue_test_runner::Case) -> PreviewFeatures {
+    let mut features = empty_preview_features();
+    if let Some(feature_name) = &case.preview {
+        let feature = PreviewFeature::from_str(feature_name)
+            .expect("rue-test-runner validates preview feature names while loading cases");
+        features.insert(feature);
+    }
+    features
+}
+
 /// Spec-corpus cases the oracle is known to model incorrectly (returning a
 /// wrong-but-`Ok` result rather than [`Unsupported`]), each paired with the
 /// tracking issue. These are **not** miscompiles — the compiler is correct; the
@@ -397,12 +411,16 @@ const KNOWN_ORACLE_GAPS: &[(&str, &str, &str)] = &[
 ];
 
 fn check_case(path: &Path, case: &Case, report: &mut Report) {
+    let Some(preview_features) = corpus_preview_features(case) else {
+        report.skip_nonrunnable += 1;
+        return;
+    };
+
     // Shapes the harness cannot drive through the single-source oracle.
     if case.skip
         || case.compile_fail
         || case.compile_only
         || case.known_bug.is_some()
-        || case.args.is_some()
         || case.stdin.is_some()
         || case.files.len() != 1
     {
@@ -420,7 +438,7 @@ fn check_case(path: &Path, case: &Case, report: &mut Report) {
             101
         });
 
-    match run_source(source) {
+    match run_source_with_preview_features(source, &preview_features) {
         Err(_unsupported) => report.skip_unsupported += 1,
         Ok(outcome) => {
             let exit_ok = outcome.exit_code == expected_exit;
@@ -446,6 +464,50 @@ fn check_case(path: &Path, case: &Case, report: &mut Report) {
             }
         }
     }
+}
+
+fn empty_preview_features() -> PreviewFeatures {
+    PreviewFeatures::new()
+}
+
+fn parse_preview_feature(name: &str) -> Option<PreviewFeature> {
+    PreviewFeature::from_str(name).ok()
+}
+
+fn corpus_preview_features(case: &Case) -> Option<PreviewFeatures> {
+    let Some(args) = &case.args else {
+        return Some(empty_preview_features());
+    };
+    let only_source = case.files.first()?;
+    let mut features = empty_preview_features();
+    let mut saw_source = false;
+    let mut i = 0;
+
+    while i < args.len() {
+        match args[i].as_str() {
+            "--preview" => {
+                let feature = args
+                    .get(i + 1)
+                    .and_then(|name| parse_preview_feature(name))?;
+                features.insert(feature);
+                i += 2;
+            }
+            "-o" | "--output" => {
+                args.get(i + 1)?;
+                i += 2;
+            }
+            arg if !arg.starts_with('-') => {
+                if arg != only_source.path {
+                    return None;
+                }
+                saw_source = true;
+                i += 1;
+            }
+            _ => return None,
+        }
+    }
+
+    saw_source.then_some(features)
 }
 
 fn rel(path: &Path) -> String {

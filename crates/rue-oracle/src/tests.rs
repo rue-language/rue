@@ -11,6 +11,13 @@ fn run(src: &str) -> Outcome {
     run_source(src).unwrap_or_else(|u| panic!("unsupported: {}", u.0))
 }
 
+fn run_string_trio(src: &str) -> Outcome {
+    let mut preview_features = PreviewFeatures::new();
+    preview_features.insert(rue_compiler::PreviewFeature::StringTrio);
+    run_source_with_preview_features(src, &preview_features)
+        .unwrap_or_else(|u| panic!("unsupported: {}", u.0))
+}
+
 fn exit(src: &str) -> i32 {
     run(src).exit_code
 }
@@ -78,6 +85,29 @@ fn dbg_output() {
     let out = run("fn main() -> i32 { @dbg(7); @dbg(true); 0 }");
     assert_eq!(out.stdout, "7\ntrue\n");
     assert_eq!(out.exit_code, 0);
+}
+
+#[test]
+fn preview_features_reach_oracle_frontend() {
+    let src = r#"fn main() -> i32 {
+        let s: str = "hi";
+        0
+    }"#;
+
+    assert!(run_source(src).is_err(), "str should stay gated by default");
+    assert_eq!(run_string_trio(src).exit_code, 0);
+}
+
+#[test]
+fn str_arguments_use_two_abi_slots() {
+    let src = r#"fn take(s: str, n: i32) -> i32 {
+        n
+    }
+    fn main() -> i32 {
+        take("hi", 7)
+    }"#;
+
+    assert_eq!(run_string_trio(src).exit_code, 7);
 }
 
 #[test]
