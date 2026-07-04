@@ -25,12 +25,38 @@
 //! by-reference under the law of exclusivity); and drop/destructors, executed in
 //! spec-3.9 order (user destructor, then fields in declaration order / elements
 //! ascending) so the oracle validates drop *order* and drop-exactly-once, not
-//! just final values; and `String` (content modeled directly — `new`, `push`,
-//! `push_str`, `len`, `is_empty`, `clear`, `clone`; `capacity`/`reserve` are
-//! implementation-defined and reported [`Unsupported`] rather than guessed).
-//! The interpreter now covers every CFG instruction; a program is only
-//! [`Unsupported`] where a specific case is deliberately not modeled (e.g.
-//! `String::capacity`, deeply-nested inout field writes).
+//! just final values; and `String` — content modeled directly, covering `new`,
+//! `push` (ASCII), `push_str`, `len`, `is_empty`, `clear`, `clone`, `@to_string`,
+//! byte indexing `s[i]` (`__rue_String_byte_at`), and the `.chars()` /
+//! `.chars_lossy()` scalar view (`__rue_String_char_scalar`/`_char_next`, whose
+//! strict and lossy forms coincide over the oracle's always-valid-UTF-8 content).
+//!
+//! Note that many intrinsics never reach the interpreter *as* intrinsics because
+//! sema lowers them earlier: `@target_arch`/`@target_os` fold to a compile-time
+//! `EnumVariant` against `Target::host()` (the oracle runs on that same host, so
+//! the discriminant it evaluates agrees with the compiled binary); `@to_string`,
+//! `@parse*`, byte indexing, and `.chars()` become `Call`s; `@intCast` becomes
+//! `IntCast`. Those are all covered through the resulting instruction paths.
+//!
+//! ## What is *not* modeled (reported [`Unsupported`], never guessed)
+//!
+//! A program hitting any of these is **skipped** by the differential harness, so
+//! "compiles + runs under the oracle" is NOT the same as "differentially
+//! checked" — the gaps below are genuinely unvalidated:
+//!
+//! - **All CFG intrinsics except `@dbg`.** The `Intrinsic` arm models only
+//!   `@dbg`; every other intrinsic that survives to the CFG bails: the
+//!   non-deterministic `@read_line`, `@random_u32`/`@random_u64`, `@syscall`;
+//!   the heap intrinsics `@alloc`/`@free`/`@realloc`; the raw-pointer intrinsics
+//!   `@raw`/`@raw_mut`/`@field_ptr`/`@ptr_read`/`@ptr_write`/`@ptr_offset`/
+//!   `@ptr_to_int`/`@int_to_ptr` (heap-/layout-dependent, and `checked`-only);
+//!   and `@panic`/`@assert` (deterministic, but not yet modeled).
+//! - **`String::capacity`/`reserve`/`with_capacity` capacity behavior** — the
+//!   heap layout (ptr, len, cap) is implementation-defined, so `capacity` is
+//!   reported [`Unsupported`] rather than guessed.
+//! - **Non-ASCII `String::push`** — a byte `>= 0x80` is not standalone valid
+//!   UTF-8, which the Rust-`String`-backed `Value::Str` cannot represent.
+//! - **Deeply-nested `inout` field writes** (non-zero inner offset).
 
 use lasso::ThreadedRodeo;
 use rue_air::{Type, TypeKind};
@@ -410,6 +436,44 @@ impl<'a> Interp<'a> {
             "__rue_String_clear" => Value::Str(String::new()),
             "__rue_String_clone" => Value::Str(s(&args[0])),
             "__rue_String_reserve" => Value::Str(s(&args[0])),
+            // `s[i]` byte indexing (ADR-0035): the runtime `__rue_String_byte_at`
+            // bounds-checks `index >= len` — trapping like array indexing — and
+            // returns the raw byte zero-extended. Model it over the byte content
+            // directly. A negative index is passed to the runtime as a huge u64,
+            // so it is likewise out of bounds and traps.
+            "__rue_String_byte_at" => {
+                let text = s(&args[0]);
+                let bytes = text.as_bytes();
+                let idx = args[1].as_int();
+                if idx < 0 || idx as u128 >= bytes.len() as u128 {
+                    return Err(Flow::Panic(Panic("index out of bounds".into())));
+                }
+                Value::Int(bytes[idx as usize] as i128)
+            }
+            // `for c in s.chars()` scalar view (RUE-220): `__rue_String_char_scalar`
+            // decodes the Unicode scalar at byte `offset`, and
+            // `__rue_String_char_next` returns the byte offset of the following
+            // character (`offset + utf8_width`). Both trap on invalid UTF-8 in the
+            // runtime, but the oracle models String content as *valid* UTF-8
+            // (`Value::Str` is a Rust `String`; a non-ASCII `push` bails to
+            // `Unsupported`), so decoding never hits that trap in practice and the
+            // strict and `_lossy` variants coincide over the modeled content — a
+            // well-formed loop only ever passes whole-character-boundary offsets.
+            "__rue_String_char_scalar" | "__rue_String_char_scalar_lossy" => {
+                let text = s(&args[0]);
+                match char_at(&text, args[1].as_int()) {
+                    Some((scalar, _)) => Value::Int(scalar as i128),
+                    None => return Err(Flow::Panic(Panic("invalid UTF-8".into()))),
+                }
+            }
+            "__rue_String_char_next" | "__rue_String_char_next_lossy" => {
+                let text = s(&args[0]);
+                let offset = args[1].as_int();
+                match char_at(&text, offset) {
+                    Some((_, width)) => Value::Int(offset + width as i128),
+                    None => return Err(Flow::Panic(Panic("invalid UTF-8".into()))),
+                }
+            }
             "__rue_String_capacity" => {
                 return Err(Flow::Unsupported(Unsupported(
                     "String::capacity is implementation-defined".into(),
@@ -1070,6 +1134,25 @@ impl<'a> Interp<'a> {
             ))),
         }
     }
+}
+
+/// Decode the character starting at byte `offset` in a valid-UTF-8 string,
+/// returning `(scalar, utf8_width)`. Backs the oracle's model of the
+/// `__rue_String_char_scalar`/`__rue_String_char_next` runtime primitives.
+/// Returns `None` when `offset` is out of range or not on a char boundary — a
+/// case a well-formed `.chars()` loop never produces, since it starts at 0 and
+/// advances by whole-character widths (and the oracle only ever holds valid
+/// UTF-8, so every in-range boundary offset decodes).
+fn char_at(text: &str, offset: i128) -> Option<(u32, u64)> {
+    if offset < 0 || offset as u128 > text.len() as u128 {
+        return None;
+    }
+    let off = offset as usize;
+    if !text.is_char_boundary(off) {
+        return None;
+    }
+    let ch = text[off..].chars().next()?;
+    Some((ch as u32, ch.len_utf8() as u64))
 }
 
 // ---- integer type helpers -------------------------------------------------

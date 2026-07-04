@@ -448,6 +448,104 @@ fn string_literal_dbg() {
     assert_eq!(run(src).stdout, "hello\n");
 }
 
+// --- deterministic intrinsics & String primitives (RUE-341) ---
+
+#[test]
+fn target_arch_and_os_fold_to_host() {
+    // `@target_arch()`/`@target_os()` are folded to a compile-time `EnumVariant`
+    // in sema against `Target::host()`. The oracle runs on that same host, so the
+    // folded discriminant must agree with this test binary's own host `cfg`.
+    let src = "fn main() -> i32 {
+        let a = match @target_arch() { Arch::X86_64 => 1, Arch::Aarch64 => 2 };
+        let o = match @target_os() { Os::Linux => 10, Os::Macos => 20 };
+        a + o
+    }";
+    let expected_arch = if cfg!(target_arch = "x86_64") { 1 } else { 2 };
+    let expected_os = if cfg!(target_os = "linux") { 10 } else { 20 };
+    assert_eq!(exit(src), expected_arch + expected_os);
+}
+
+#[test]
+fn string_byte_indexing() {
+    // `s[i]` lowers to `__rue_String_byte_at`. "café" is c=99, a=97, f=102, then
+    // the two UTF-8 bytes of é: 0xC3=195, 0xA9=169 (matches the spec corpus case
+    // `string_index_utf8_bytes`).
+    let src = "fn main() -> i32 {
+        let s = \"café\";
+        @dbg(s[0]);
+        @dbg(s[3]);
+        @dbg(s[4]);
+        0
+    }";
+    assert_eq!(run(src).stdout, "99\n195\n169\n");
+}
+
+#[test]
+fn string_byte_index_out_of_bounds_traps() {
+    // An in-`u8`-range but out-of-`len` byte index traps like array indexing.
+    let src = "fn main() -> i32 {
+        let s = \"café\";
+        @dbg(s[5]);
+        0
+    }";
+    let out = run(src);
+    assert_eq!(out.exit_code, 101);
+    assert_eq!(out.panic.as_deref(), Some("index out of bounds"));
+}
+
+#[test]
+fn string_byte_iteration_counts_bytes() {
+    // Byte view (`for _b in s`): "café" is 5 bytes (é is 2 UTF-8 bytes). Uses
+    // `__rue_String_byte_at` for the element and `__rue_String_len` for the bound.
+    let src = "fn main() -> i32 {
+        let s = \"café\";
+        let mut count = 0;
+        for _b in s {
+            count = count + 1;
+        }
+        count
+    }";
+    assert_eq!(exit(src), 5);
+}
+
+#[test]
+fn string_chars_iteration_scalars() {
+    // Scalar view (`for c in s.chars()`): yields Unicode scalars via
+    // `__rue_String_char_scalar` and advances via `__rue_String_char_next`.
+    // "café" → c=99, a=97, f=102, é=U+00E9=233; 4 scalars (matches the spec
+    // corpus case `for_chars_scalars`).
+    let src = "fn main() -> i32 {
+        let s = \"café\";
+        let mut count = 0;
+        for c in s.chars() {
+            @dbg(c);
+            count = count + 1;
+        }
+        count
+    }";
+    let out = run(src);
+    assert_eq!(out.stdout, "99\n97\n102\n233\n");
+    assert_eq!(out.exit_code, 4);
+}
+
+#[test]
+fn string_chars_lossy_matches_strict_over_valid_utf8() {
+    // Over well-formed UTF-8 the lossy view decodes identically to `.chars()`.
+    let src = "fn main() -> i32 {
+        let s = \"az€\";
+        let mut count = 0;
+        for c in s.chars_lossy() {
+            @dbg(c);
+            count = count + 1;
+        }
+        count
+    }";
+    // a=97, z=122, €=U+20AC=8364; 3 scalars.
+    let out = run(src);
+    assert_eq!(out.stdout, "97\n122\n8364\n");
+    assert_eq!(out.exit_code, 3);
+}
+
 #[test]
 fn string_is_empty_and_clear() {
     let src = "fn main() -> i32 {
