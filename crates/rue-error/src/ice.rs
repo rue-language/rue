@@ -40,8 +40,7 @@ use std::fmt;
 /// # Example
 /// ```ignore
 /// let ice = IceContext::new("unexpected type in codegen")
-///     .with_version("0.1.0")
-///     .with_target("x86_64-unknown-linux-gnu")
+///     .with_version(rue_error::VERSION)
 ///     .with_phase("codegen/emit")
 ///     .with_backtrace();
 /// ```
@@ -49,10 +48,9 @@ use std::fmt;
 pub struct IceContext {
     /// The error message describing what went wrong.
     pub message: String,
-    /// Compiler version (from CARGO_PKG_VERSION).
+    /// Compiler version ([`crate::VERSION`]; attached automatically by the
+    /// `ice!`/`ice_error!` macros).
     pub version: Option<String>,
-    /// Target architecture (e.g., "x86_64-unknown-linux-gnu").
-    pub target: Option<String>,
     /// Compilation phase (e.g., "codegen/emit", "sema", "cfg_builder").
     pub phase: Option<String>,
     /// Additional context-specific details.
@@ -73,7 +71,6 @@ impl IceContext {
         Self {
             message: message.into(),
             version: None,
-            target: None,
             phase: None,
             details: Vec::new(),
             backtrace: None,
@@ -83,12 +80,6 @@ impl IceContext {
     /// Set the compiler version.
     pub fn with_version(mut self, version: impl Into<String>) -> Self {
         self.version = Some(version.into());
-        self
-    }
-
-    /// Set the target architecture.
-    pub fn with_target(mut self, target: impl Into<String>) -> Self {
-        self.target = Some(target.into());
         self
     }
 
@@ -123,10 +114,6 @@ impl IceContext {
 
         if let Some(version) = &self.version {
             output.push_str(&format!("  rue version: {}\n", version));
-        }
-
-        if let Some(target) = &self.target {
-            output.push_str(&format!("  target: {}\n", target));
         }
 
         if let Some(phase) = &self.phase {
@@ -169,10 +156,8 @@ impl fmt::Display for IceContext {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "internal compiler error: {}", self.message)?;
 
-        let has_details = self.version.is_some()
-            || self.target.is_some()
-            || self.phase.is_some()
-            || !self.details.is_empty();
+        let has_details =
+            self.version.is_some() || self.phase.is_some() || !self.details.is_empty();
 
         if has_details {
             write!(f, "\n\ndebug info:\n{}", self.format_details())?;
@@ -217,19 +202,21 @@ impl fmt::Display for IceContext {
 ///
 /// The macro automatically:
 /// - Captures a backtrace
-///
-/// Callers should add version information using `.with_version()` when creating ICEs.
+/// - Attaches the compiler version ([`crate::VERSION`]), so graceful ICE
+///   reports carry the same version line as the panic-hook banner
 #[macro_export]
 macro_rules! ice {
     // Just message
     ($msg:expr) => {
         $crate::ice::IceContext::new($msg)
+            .with_version($crate::VERSION)
             .with_backtrace()
     };
 
     // Message + phase
     ($msg:expr, phase: $phase:expr) => {
         $crate::ice::IceContext::new($msg)
+            .with_version($crate::VERSION)
             .with_phase($phase)
             .with_backtrace()
     };
@@ -237,6 +224,7 @@ macro_rules! ice {
     // Message + details
     ($msg:expr, details: { $($key:expr => $value:expr),+ $(,)? }) => {{
         let mut ctx = $crate::ice::IceContext::new($msg)
+            .with_version($crate::VERSION)
             .with_backtrace();
         $(
             ctx = ctx.with_detail($key, $value);
@@ -247,6 +235,7 @@ macro_rules! ice {
     // Message + phase + details
     ($msg:expr, phase: $phase:expr, details: { $($key:expr => $value:expr),+ $(,)? }) => {{
         let mut ctx = $crate::ice::IceContext::new($msg)
+            .with_version($crate::VERSION)
             .with_phase($phase)
             .with_backtrace();
         $(
@@ -289,7 +278,6 @@ mod tests {
         let ice = IceContext::new("test error");
         assert_eq!(ice.message, "test error");
         assert!(ice.version.is_none());
-        assert!(ice.target.is_none());
         assert!(ice.phase.is_none());
         assert!(ice.details.is_empty());
     }
@@ -298,12 +286,6 @@ mod tests {
     fn test_ice_context_with_version() {
         let ice = IceContext::new("test error").with_version("0.1.0");
         assert_eq!(ice.version.as_deref(), Some("0.1.0"));
-    }
-
-    #[test]
-    fn test_ice_context_with_target() {
-        let ice = IceContext::new("test error").with_target("x86_64-unknown-linux-gnu");
-        assert_eq!(ice.target.as_deref(), Some("x86_64-unknown-linux-gnu"));
     }
 
     #[test]
@@ -332,14 +314,12 @@ mod tests {
     fn test_ice_context_builder_chain() {
         let ice = IceContext::new("unexpected type")
             .with_version("0.1.0")
-            .with_target("x86_64-unknown-linux-gnu")
             .with_phase("codegen/emit")
             .with_detail("function", "main")
             .with_detail("instruction", "Call");
 
         assert_eq!(ice.message, "unexpected type");
         assert_eq!(ice.version.as_deref(), Some("0.1.0"));
-        assert_eq!(ice.target.as_deref(), Some("x86_64-unknown-linux-gnu"));
         assert_eq!(ice.phase.as_deref(), Some("codegen/emit"));
         assert_eq!(ice.details.len(), 2);
     }
@@ -362,13 +342,11 @@ mod tests {
     fn test_ice_context_format_details_full() {
         let ice = IceContext::new("test error")
             .with_version("0.1.0")
-            .with_target("x86_64-unknown-linux-gnu")
             .with_phase("codegen")
             .with_detail("function", "main");
 
         let formatted = ice.format_details();
         assert!(formatted.contains("rue version: 0.1.0"));
-        assert!(formatted.contains("target: x86_64-unknown-linux-gnu"));
         assert!(formatted.contains("phase: codegen"));
         assert!(formatted.contains("relevant state:"));
         assert!(formatted.contains("function: main"));
@@ -431,14 +409,12 @@ mod tests {
         // Test the full builder chain with backtrace
         let ice = IceContext::new("unexpected type")
             .with_version("0.1.0")
-            .with_target("x86_64-unknown-linux-gnu")
             .with_phase("codegen/emit")
             .with_detail("function", "main")
             .with_backtrace();
 
         assert_eq!(ice.message, "unexpected type");
         assert!(ice.version.is_some());
-        assert!(ice.target.is_some());
         assert!(ice.phase.is_some());
         assert_eq!(ice.details.len(), 1);
         assert!(ice.backtrace.is_some());
@@ -455,6 +431,9 @@ mod tests {
         assert!(ctx.backtrace.is_some());
         assert!(ctx.phase.is_none());
         assert!(ctx.details.is_empty());
+        // The macro attaches the compiler version automatically, so graceful
+        // ICE reports match the panic-hook banner.
+        assert_eq!(ctx.version.as_deref(), Some(crate::VERSION));
     }
 
     #[test]
