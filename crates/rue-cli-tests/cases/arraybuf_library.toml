@@ -1,4 +1,5 @@
-# The source-level ArrayBuf(T) library (examples/std/arraybuf.rue) driven
+# The source-level ArrayBuf(T) library (now available as std.arraybuf.ArrayBuf)
+# driven
 # end-to-end as a user would: a flat multi-file compile of a program that
 # exercises push / len / get / set / pop / a while-loop sum / out-of-bounds
 # access on an ArrayBuf(i32) (RUE-1, ADR-0041; renamed from Vec to ArrayBuf,
@@ -245,7 +246,7 @@ exit_code = 0
 # at scope exit — the program never calls free(). This exercises the real
 # ArrayBuf destructor end-to-end (parse + monomorphize + drop-glue + @free), the
 # last gap to a real ArrayBuf (RUE-312). The `drop fn(self)` here mirrors
-# examples/std/arraybuf.rue. Output is the same as the explicit-free dogfood; the
+# std/arraybuf.rue. Output is the same as the explicit-free dogfood; the
 # destructor's @free is a silent no-op under the bump allocator, so correctness
 # is that the program compiles, runs, and exits cleanly with the buffer released
 # by the destructor rather than a manual call.

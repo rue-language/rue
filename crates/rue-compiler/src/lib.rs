@@ -2284,6 +2284,42 @@ mod tests {
     }
 
     #[test]
+    fn test_module_type_constructor_anonymous_method_is_emitted() {
+        // A module-qualified comptime type constructor may return an anonymous
+        // struct with methods. The lazy frontend must treat a later receiver
+        // method call as a dependency, or backend linking sees a call to
+        // `__anon_struct_N.method` without an emitted method body.
+        let sources = vec![
+            SourceFile::new(
+                "main.rue",
+                r#"fn main() -> i32 {
+                    let lib = @import("lib.rue");
+                    let Box = lib.Box(i32);
+                    let boxed = Box { value: 42 };
+                    boxed.get()
+                }"#,
+                FileId::new(1),
+            ),
+            SourceFile::new(
+                "lib.rue",
+                r#"pub fn Box(comptime T: type) -> type {
+                    struct {
+                        value: T,
+                        fn get(borrow self) -> T { self.value }
+                    }
+                }"#,
+                FileId::new(2),
+            ),
+        ];
+        let result = compile_multi_file_with_options(&sources, &CompileOptions::default());
+        assert!(
+            result.is_ok(),
+            "module-qualified anonymous method should be emitted: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
     fn test_module_undefined_function_error() {
         // Test that accessing an undefined function in a module produces an error
         let sources = vec![

@@ -2,23 +2,23 @@
 // ADR-0041; renamed from Vec to ArrayBuf, the growable rung of the collection
 // trio `[T; N]` / `borrow [T]` / `ArrayBuf(T)`, ADR-0043 / RUE-323).
 //
-// This is a *source-level* standard-library type: it owns a heap buffer
-// addressed by a raw `ptr mut T` and grows it (amortized 2x) with the unchecked
+// This is a source-level standard-library type: it owns a heap buffer addressed
+// by a raw `ptr mut T` and grows it (amortized 2x) with the unchecked
 // heap intrinsics `@alloc`/`@realloc`/`@free`, all confined to `checked {}`
 // blocks behind a safe method API. It exercises comptime generics, `inout self`
 // mutation, and the raw-pointer intrinsics all at once — exactly the "stdlib on
 // unchecked code" framing of RUE-1.
 //
-// `get`/`pop` return `Option(T)` (from the sibling `option.rue`), so ArrayBuf
-// must be compiled together with `option.rue` in the same flat multi-file
-// namespace:
+// `get`/`pop` return `Option(T)` from the std bundle:
 //
-//     rue my_program.rue arraybuf.rue option.rue -o my_program
+//     const std = @import("std");
+//     let V = std.arraybuf.ArrayBuf(i32);
+//     let O = std.option.Option(i32);
 //
 // Usage (the element type is chosen when you instantiate the type function):
 //
-//     let V = ArrayBuf(i32);
-//     let O = Option(i32);
+//     let V = std.arraybuf.ArrayBuf(i32);
+//     let O = std.option.Option(i32);
 //     let mut v = V::new();
 //     v.push(10);
 //     v.push(20);

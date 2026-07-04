@@ -579,6 +579,7 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
     let mut analyzed_functions: HashSet<Spur> = HashSet::new();
     let mut pending_methods: Vec<(StructId, Spur)> = Vec::new();
     let mut analyzed_methods: HashSet<(StructId, Spur)> = HashSet::new();
+    let drop_marker_sym = sema.interner.get_or_intern("__drop");
 
     // Collect results
     let mut functions_with_strings: Vec<(AnalyzedFunction, Vec<String>)> = Vec::new();
@@ -756,15 +757,35 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
                     .cloned()
                     .unwrap_or_else(HashMap::new);
 
-                match sema.analyze_method_body(
-                    &infer_ctx,
-                    method_info.return_type,
-                    &param_info,
-                    method_info.body,
-                    method_info.struct_type,
-                    &captured_values,
-                    &enclosing_type_subst,
-                ) {
+                // A `drop fn(self)` in an anonymous struct body is carried
+                // under the reserved `__drop` method name (RUE-312). Analyze it
+                // as a destructor in the lazy pipeline too: drop glue adds the
+                // call implicitly, and destructor analysis has different
+                // self-move/drop semantics from an ordinary method.
+                let is_destructor = method_name == drop_marker_sym;
+                let analysis_result = if is_destructor {
+                    sema.analyze_anon_destructor_body(
+                        &infer_ctx,
+                        &param_info,
+                        method_info.body,
+                        method_info.struct_type,
+                        &captured_values,
+                        &full_name,
+                        &enclosing_type_subst,
+                    )
+                } else {
+                    sema.analyze_method_body(
+                        &infer_ctx,
+                        method_info.return_type,
+                        &param_info,
+                        method_info.body,
+                        method_info.struct_type,
+                        &captured_values,
+                        &enclosing_type_subst,
+                    )
+                };
+
+                match analysis_result {
                     Ok((
                         air,
                         num_locals,
@@ -875,6 +896,23 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
                             }
                         }
                     }
+                }
+            }
+        }
+
+        // Anonymous destructors are not referenced by user-written call AIR;
+        // drop glue adds those calls later for instantiated anonymous types.
+        // Once comptime evaluation has registered such a destructor, enqueue it
+        // so lazy analysis emits `__anon_struct_N.__drop` before the backend
+        // links drop glue.
+        if pending_functions.is_empty() && pending_methods.is_empty() {
+            for (&method_key @ (struct_id, method_name), _) in sema.methods.iter() {
+                if method_name != drop_marker_sym || analyzed_methods.contains(&method_key) {
+                    continue;
+                }
+                let struct_def = sema.type_pool.struct_def(struct_id);
+                if struct_def.name.starts_with("__anon_struct_") {
+                    pending_methods.push(method_key);
                 }
             }
         }

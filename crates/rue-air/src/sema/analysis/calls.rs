@@ -168,6 +168,13 @@ impl<'a> Sema<'a> {
             span,
         )?;
 
+        // Track this method as referenced (for lazy analysis). Anonymous
+        // struct methods are often registered while reducing a comptime type
+        // constructor; without this edge the lazy pipeline can emit a call to
+        // `__anon_struct_N.method` without analyzing and emitting that method
+        // body.
+        ctx.referenced_methods.insert(method_key);
+
         // Check that this is a method (has self), not an associated function
         if !method_info.has_self {
             return Err(CompileError::new(
