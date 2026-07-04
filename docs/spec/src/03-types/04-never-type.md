@@ -8,7 +8,7 @@ template = "spec/page.html"
 
 {{ rule(id="3.4:1", cat="normative") }}
 
-The never type, written `!`, is the type of expressions that never produce a value.
+The never type, written `!`, is the type of an expression that transfers control away from its context rather than producing a value — a diverging expression (`docs/formal/01-core-calculus.md` §5.7).
 
 {{ rule(id="3.4:2", cat="normative") }}
 
@@ -22,11 +22,11 @@ Expressions of type `!` include:
 
 {{ rule(id="3.4:3", cat="normative") }}
 
-A type coercion is an implicit type conversion that occurs automatically during type checking. Rue has exactly one coercion: the never type coerces to any type.
+A type coercion is an implicit type conversion applied during type checking. Rue has exactly one coercion: the never type coerces to any type. The core states this as subsumption on the bottom type — the (Sub-Never) rule of `docs/formal/01-core-calculus.md` §5.7 — while every other typing rule demands exact type identity.
 
 {{ rule(id="3.4:4", cat="normative") }}
 
-When type checking requires a value of type `T`, a value of type `!` is accepted. This allows diverging expressions to appear in any context where a value is expected.
+When type checking requires a value of type `T`, an expression of type `!` is accepted at `T`. The conversion is vacuously sound: `!` has no values (3.4:9), so re-typing a diverging expression at `T` converts no run-time value and creates no ownership obligation (`docs/formal/01-core-calculus.md` §5.7). This lets diverging expressions appear in any context where a value is expected.
 
 {{ rule(id="3.4:5") }}
 

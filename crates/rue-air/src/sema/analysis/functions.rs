@@ -390,8 +390,17 @@ impl<'a> Sema<'a> {
         // ======================================================================
         // Phase 3: AIR Emission
         // ======================================================================
-        // Analyze the body expression, emitting AIR with resolved types
+        // Analyze the body expression, emitting AIR with resolved types. A
+        // `str`-returning function (ADR-0043 Phase 3, RUE-324) supplies `str` as
+        // the expected type so an implicit-return string literal (the block's
+        // tail expression) materializes as a static-backed first-class `str`.
+        // Inner `let`s clear `expected_type` for their own initializers (they
+        // `take()` it), so this only reaches the tail value.
+        if self.is_str_struct(return_type) {
+            ctx.expected_type = Some(return_type);
+        }
         let body_result = self.analyze_inst(&mut air, body, &mut ctx)?;
+        ctx.expected_type = None;
 
         // Linear parameters: the callee owns its pass-by-value parameters and
         // drops them at exit unless moved out (RUE-61), so a by-value

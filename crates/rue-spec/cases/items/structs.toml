@@ -38,6 +38,7 @@ exit_code = 42
 
 [[case]]
 name = "duplicate_field_names_error"
+error_contains = "[E0402]"
 spec = ["6.2:3"]
 source = """
 struct Bad { x: i32, x: i32 }
@@ -63,6 +64,7 @@ exit_code = 30
 
 [[case]]
 name = "missing_field_error"
+error_contains = "[E0400]"
 spec = ["6.2:5"]
 source = """
 struct Point { x: i32, y: i32 }
@@ -174,6 +176,7 @@ exit_code = 42
 
 [[case]]
 name = "immutable_field_assign_error"
+error_contains = "[E0203]"
 spec = ["6.2:9"]
 source = """
 struct Point { x: i32, y: i32 }

@@ -265,6 +265,7 @@ exit_code = 0
 
 [[case]]
 name = "dbg_wrong_arg_count_zero"
+error_contains = "[E0701]"
 spec = ["4.13:4", "4.13:7"]
 source = """
 fn main() -> i32 {
@@ -276,6 +277,7 @@ compile_fail = true
 
 [[case]]
 name = "dbg_wrong_arg_count_two"
+error_contains = "[E0701]"
 spec = ["4.13:4", "4.13:7"]
 source = """
 fn main() -> i32 {
@@ -287,6 +289,7 @@ compile_fail = true
 
 [[case]]
 name = "dbg_invalid_type_unit"
+error_contains = "[E0702]"
 spec = ["4.13:7"]
 source = """
 fn main() -> i32 {
@@ -298,6 +301,7 @@ compile_fail = true
 
 [[case]]
 name = "dbg_invalid_type_array"
+error_contains = "[E0702]"
 spec = ["4.13:7"]
 source = """
 fn main() -> i32 {
@@ -310,6 +314,7 @@ compile_fail = true
 
 [[case]]
 name = "dbg_invalid_type_struct"
+error_contains = "[E0702]"
 spec = ["4.13:7"]
 source = """
 struct Point { x: i32, y: i32 }
@@ -627,6 +632,7 @@ error_contains = "integer"
 
 [[case]]
 name = "intcast_wrong_arg_count_zero"
+error_contains = "[E0701]"
 spec = ["4.13:4", "4.13:25"]
 source = """
 fn main() -> i32 {
@@ -638,6 +644,7 @@ compile_fail = true
 
 [[case]]
 name = "intcast_wrong_arg_count_two"
+error_contains = "[E0701]"
 spec = ["4.13:4", "4.13:25"]
 source = """
 fn main() -> i32 {
@@ -1113,6 +1120,7 @@ exit_code = 99
 
 [[case]]
 name = "parse_wrong_arg_count_zero"
+error_contains = "[E0701]"
 spec = ["4.13:4", "4.13:45"]
 source = """
 fn main() -> i32 {
@@ -1123,6 +1131,7 @@ compile_fail = true
 
 [[case]]
 name = "parse_wrong_arg_count_two"
+error_contains = "[E0701]"
 spec = ["4.13:4", "4.13:45"]
 source = """
 fn main() -> i32 {

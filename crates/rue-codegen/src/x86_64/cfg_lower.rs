@@ -871,9 +871,13 @@ impl<'a> CfgLower<'a> {
             }
 
             CfgInstData::StringConst(string_id) => {
+                // A string literal is a fat pointer to its `.rodata` bytes. The
+                // slot count comes from the value's type: a `str` (ADR-0043
+                // Phase 3, RUE-324) is 2 words `{ptr, len}`; a `String` is 3
+                // words `{ptr, len, cap}`. The ptr/len words are identical in
+                // both — only `str` drops the (static, non-owning) cap word.
                 let ptr_vreg = self.mir.alloc_vreg();
                 let len_vreg = self.mir.alloc_vreg();
-                let cap_vreg = self.mir.alloc_vreg();
 
                 self.mir.push(X86Inst::StringConstPtr {
                     dst: Operand::Virtual(ptr_vreg),
@@ -885,14 +889,17 @@ impl<'a> CfgLower<'a> {
                     string_id: *string_id,
                 });
 
-                self.mir.push(X86Inst::StringConstCap {
-                    dst: Operand::Virtual(cap_vreg),
-                    string_id: *string_id,
-                });
+                let mut slot_vregs = vec![ptr_vreg, len_vreg];
+                if self.ctx.type_slot_count(ty) >= 3 {
+                    let cap_vreg = self.mir.alloc_vreg();
+                    self.mir.push(X86Inst::StringConstCap {
+                        dst: Operand::Virtual(cap_vreg),
+                        string_id: *string_id,
+                    });
+                    slot_vregs.push(cap_vreg);
+                }
 
-                // Store all three in struct_slot_vregs for String (ptr, len, cap)
-                self.struct_slot_vregs
-                    .insert(value, vec![ptr_vreg, len_vreg, cap_vreg]);
+                self.struct_slot_vregs.insert(value, slot_vregs);
                 self.value_map.insert(value, ptr_vreg);
             }
 

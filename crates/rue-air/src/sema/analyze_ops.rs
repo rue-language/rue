@@ -405,8 +405,19 @@ impl<'a> Sema<'a> {
             }
 
             InstData::StringConst(symbol) => {
-                // String literals use the builtin String struct type.
-                let ty = self.builtin_string_type();
+                // A string literal is static-backed: its bytes live in `.rodata`
+                // (the local string table), and the value is the fat pointer to
+                // them. When a `str` is expected (ADR-0043 Phase 3, RUE-324) the
+                // literal materializes as the 2-word `str` `{ptr, len}`; the same
+                // `StringConst` AIR node lowers to only the ptr+len words there
+                // (the cap word is dropped in codegen). Otherwise it is the
+                // 3-word heap `String` as before.
+                let want_str = ctx.expected_type.is_some_and(|ty| self.is_str_struct(ty));
+                let ty = if want_str {
+                    ctx.expected_type.unwrap()
+                } else {
+                    self.builtin_string_type()
+                };
                 // Add string to the local string table (per-function for parallel analysis)
                 let string_content = self.interner.resolve(&*symbol).to_string();
                 let local_string_id = ctx.add_local_string(string_content);
@@ -2050,8 +2061,19 @@ impl<'a> Sema<'a> {
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
         let inner_air_ref = if let Some(inner) = inner {
-            // Explicit return with value
-            let inner_result = self.analyze_inst(air, inner, ctx)?;
+            // Explicit return with value. A `str`-returning function
+            // (ADR-0043 Phase 3, RUE-324) supplies `str` as the expected type so
+            // a string-literal `return "..."` materializes as a static-backed,
+            // first-class `str` (it cannot dangle, so returning it is sound).
+            let ret_ty = ctx.return_type;
+            let inner_result = if self.is_str_struct(ret_ty) {
+                let prev_expected = ctx.expected_type.replace(ret_ty);
+                let r = self.analyze_inst(air, inner, ctx);
+                ctx.expected_type = prev_expected;
+                r?
+            } else {
+                self.analyze_inst(air, inner, ctx)?
+            };
             let inner_ty = inner_result.ty;
 
             // Type check: returned value must match function's return type.
@@ -2272,7 +2294,11 @@ impl<'a> Sema<'a> {
         // thread it. Narrow to enums so unrelated `let`s are unaffected.
         let prev_expected = ctx.expected_type.take();
         if let Some(annot) = annotation_type {
-            if annot.is_enum() {
+            // A `str` annotation is the expected type for the initializer so a
+            // string literal `"..."` materializes as a 2-word static-backed
+            // `str` rather than the 3-word heap `String` (ADR-0043 Phase 3,
+            // RUE-324). Enums do the same for fallible-intrinsic `Option(T)`.
+            if annot.is_enum() || self.is_str_struct(annot) {
                 ctx.expected_type = Some(annot);
             }
         }
@@ -2859,9 +2885,21 @@ impl<'a> Sema<'a> {
         }
 
         let slot = local.slot;
+        let local_ty = local.ty;
 
-        // Analyze the value
-        let value_result = self.analyze_inst(air, value, ctx)?;
+        // Analyze the value. When the target is a `str` (ADR-0043 Phase 3,
+        // RUE-324), supply it as the expected type so a string literal RHS
+        // materializes as a 2-word `str` rather than a 3-word `String` (which
+        // would corrupt the 2-slot local); this is what makes `let mut s: str;
+        // s = "hi";` reassignment sound.
+        let value_result = if self.is_str_struct(local_ty) {
+            let prev_expected = ctx.expected_type.replace(local_ty);
+            let r = self.analyze_inst(air, value, ctx);
+            ctx.expected_type = prev_expected;
+            r?
+        } else {
+            self.analyze_inst(air, value, ctx)?
+        };
 
         // Assignment to a mutable variable resets its move state.
         ctx.moved_vars.remove(&name);
@@ -3074,6 +3112,15 @@ impl<'a> Sema<'a> {
                     span: field_inst.span,
                 });
                 AnalysisResult::new(air_ref, expected_field_type)
+            } else if self.is_str_struct(expected_field_type) {
+                // A `str`-typed field (ADR-0043 Phase 3, RUE-324): supply the
+                // field type as the expected type so a string-literal value
+                // materializes as a static-backed 2-word `str` (first-class,
+                // storable in a struct) rather than a 3-word `String`.
+                let prev_expected = ctx.expected_type.replace(expected_field_type);
+                let r = self.analyze_inst(air, *field_value, ctx);
+                ctx.expected_type = prev_expected;
+                r?
             } else {
                 // Not an integer literal - analyze normally
                 self.analyze_inst(air, *field_value, ctx)?
@@ -4256,6 +4303,25 @@ impl<'a> Sema<'a> {
             );
         }
 
+        // `str` byte indexing: `s[i]` reads the i-th BYTE of a `str` as `u8`
+        // (ADR-0043 Phase 3, RUE-324). A `str` is `[u8]` + UTF-8, but its bytes
+        // are PACKED (1 byte each in `.rodata`), unlike an array slice whose
+        // elements are 8-byte-slotted. So it cannot reuse the slice
+        // `@ptr_offset`/`@ptr_read` path (which strides by `slot_count * 8`);
+        // it lowers to the same packed-byte runtime read as `String`, but with
+        // the 2-word `{ptr, len}` receiver: `__rue_str_byte_at(ptr, len, index)`.
+        if self.is_str_struct(base_type) {
+            return self.analyze_str_index_get(
+                air,
+                base_result,
+                base_root,
+                base_move_state_before,
+                index,
+                span,
+                ctx,
+            );
+        }
+
         // Slice read-indexing `s[i]` (ADR-0043, RUE-322): the base is the
         // synthetic 2-word fat-pointer struct `{ptr, len}`. Lower to a
         // runtime-bounds-checked pointer load through the fat pointer's `ptr`
@@ -4424,6 +4490,77 @@ impl<'a> Sema<'a> {
         // argument registers, as for other builtin String methods); the move
         // was already cancelled above so this is a non-consuming read.
         let call_name = self.interner.get_or_intern("__rue_String_byte_at");
+        let extra = [
+            base_result.air_ref.as_u32(),
+            AirArgMode::Normal.as_u32(),
+            index_result.air_ref.as_u32(),
+            AirArgMode::Normal.as_u32(),
+        ];
+        let args_start = air.add_extra(&extra);
+        let call_ref = air.add_inst(AirInst {
+            data: AirInstData::Call {
+                name: call_name,
+                args_start,
+                args_len: 2,
+            },
+            ty: Type::U8,
+            span,
+        });
+        Ok(AnalysisResult::new(call_ref, Type::U8))
+    }
+
+    /// Analyze a `str` byte index read: `s[i] -> u8` (ADR-0043 Phase 3,
+    /// RUE-324).
+    ///
+    /// A `str` is `[u8]` + UTF-8, but its bytes are PACKED (1 byte each, in
+    /// `.rodata` for a literal), so indexing yields the i-th BYTE via a checked
+    /// runtime call `__rue_str_byte_at(ptr, len, index)` — the same packed-byte
+    /// read as `String`, minus the (nonexistent) `cap` word. The bounds check
+    /// lives in the runtime: an `index >= len` traps (exit 101), mirroring array
+    /// and `String` indexing rather than producing UB.
+    ///
+    /// Like `String` indexing, the read only *borrows* the receiver (a `str` is
+    /// `Copy` anyway), so the pre-analysis move state is restored and the move
+    /// marker cancelled.
+    fn analyze_str_index_get(
+        &mut self,
+        air: &mut Air,
+        base_result: AnalysisResult,
+        base_root: Option<Spur>,
+        base_move_state_before: Option<VariableMoveState>,
+        index: InstRef,
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AnalysisResult> {
+        // Un-move the borrowed receiver (mirrors the String index path).
+        if let Some(var) = base_root {
+            match base_move_state_before {
+                Some(state) => {
+                    ctx.moved_vars.insert(var, state);
+                }
+                None => {
+                    ctx.moved_vars.remove(&var);
+                }
+            }
+        }
+        air.cancel_move_marker(base_result.air_ref);
+
+        // The index is an ordinary rvalue; require an integer (spec 7.1:7).
+        let index_result = self.analyze_inst(air, index, ctx)?;
+        if !index_result.ty.is_integer() && !index_result.ty.is_error() {
+            return Err(CompileError::new(
+                ErrorKind::TypeMismatch {
+                    expected: "an integer".to_string(),
+                    found: index_result.ty.safe_name_with_pool(Some(&self.type_pool)),
+                },
+                self.rir.get(index).span,
+            ));
+        }
+
+        // Lower to `__rue_str_byte_at(self, index) -> u8`. The 2-word `str`
+        // value is passed by value; codegen decomposes it into ptr/len argument
+        // registers, exactly as it decomposes the 3-word String for byte_at.
+        let call_name = self.interner.get_or_intern("__rue_str_byte_at");
         let extra = [
             base_result.air_ref.as_u32(),
             AirArgMode::Normal.as_u32(),

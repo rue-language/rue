@@ -38,6 +38,7 @@ exit_code = 42
 
 [[case]]
 name = "field_not_found"
+error_contains = "[E0401]"
 spec = ["4.12:4"]
 source = """
 struct Point { x: i32, y: i32 }
@@ -84,6 +85,7 @@ exit_code = 42
 
 [[case]]
 name = "immutable_field_assignment_error"
+error_contains = "[E0203]"
 spec = ["4.12:7"]
 source = """
 struct Point { x: i32, y: i32 }

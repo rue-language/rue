@@ -202,6 +202,7 @@ exit_code = 0
 
 [[case]]
 name = "string_invalid_escape"
+error_contains = "[E0003]"
 spec = ["3.7:7", "2.1:8"]
 source = """
 fn main() -> i32 {
@@ -267,6 +268,7 @@ exit_code = 0
 
 [[case]]
 name = "string_no_ordering_lt"
+error_contains = "[E0206]"
 spec = ["3.7:9", "4.3:6"]
 source = """
 fn main() -> i32 {
@@ -277,6 +279,7 @@ compile_fail = true
 
 [[case]]
 name = "string_no_ordering_gt"
+error_contains = "[E0206]"
 spec = ["3.7:9", "4.3:6"]
 source = """
 fn main() -> i32 {
@@ -287,6 +290,7 @@ compile_fail = true
 
 [[case]]
 name = "string_no_ordering_le"
+error_contains = "[E0206]"
 spec = ["3.7:9", "4.3:6"]
 source = """
 fn main() -> i32 {
@@ -297,6 +301,7 @@ compile_fail = true
 
 [[case]]
 name = "string_no_ordering_ge"
+error_contains = "[E0206]"
 spec = ["3.7:9", "4.3:6"]
 source = """
 fn main() -> i32 {

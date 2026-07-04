@@ -77,6 +77,7 @@ exit_code = 1
 
 [[case]]
 name = "bool_no_ordering_lt"
+error_contains = "[E0206]"
 spec = ["3.2:4"]
 source = """
 fn main() -> i32 {
@@ -87,6 +88,7 @@ compile_fail = true
 
 [[case]]
 name = "bool_no_ordering_gt"
+error_contains = "[E0206]"
 spec = ["3.2:4"]
 source = """
 fn main() -> i32 {
@@ -97,6 +99,7 @@ compile_fail = true
 
 [[case]]
 name = "bool_no_ordering_le"
+error_contains = "[E0206]"
 spec = ["3.2:4"]
 source = """
 fn main() -> i32 {
@@ -107,6 +110,7 @@ compile_fail = true
 
 [[case]]
 name = "bool_no_ordering_ge"
+error_contains = "[E0206]"
 spec = ["3.2:4"]
 source = """
 fn main() -> i32 {

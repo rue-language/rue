@@ -670,6 +670,16 @@ fn differential_opt_missing_pin(case: &Case) -> bool {
     case.differential_opt && (case.stdout.is_none() || case.exit_code.is_none())
 }
 
+/// A `compile_fail` case that pins nothing about *why* compilation fails passes
+/// on ANY rejection — a diagnostic for an unrelated reason, or (before ICE
+/// detection) even a compiler crash. Require it to assert on the compiler's
+/// output via `error_contains` or `compile_stderr_contains`, so it verifies the
+/// specific error it is testing (RUE-132). Returns true when the case is
+/// `compile_fail` but carries neither assertion — a load-time error.
+fn compile_fail_missing_assertion(case: &Case) -> bool {
+    case.compile_fail && case.error_contains.is_empty() && case.compile_stderr_contains.is_empty()
+}
+
 fn load_cases(cases_dir: &Path) -> Vec<(String, TestFile)> {
     let mut toml_files = Vec::new();
     rue_test_runner::collect_toml_files(cases_dir, &mut toml_files);
@@ -698,6 +708,18 @@ fn load_cases(cases_dir: &Path) -> Vec<(String, TestFile)> {
                             "error: {}: differential_opt case '{}' must declare both an explicit \
                              `stdout` and `exit_code` (each opt level is checked against them, so \
                              the cross-level compare can't pass a consistently-wrong program)",
+                            path.display(),
+                            case.name
+                        );
+                        std::process::exit(1);
+                    }
+                    // A compile_fail case with no error assertion passes on any
+                    // rejection, verifying nothing about why it failed (RUE-132).
+                    if compile_fail_missing_assertion(case) {
+                        eprintln!(
+                            "error: {}: compile_fail case '{}' declares neither `error_contains` \
+                             nor `compile_stderr_contains`, so it would pass on ANY rejection. \
+                             Add an assertion pinning the specific error.",
                             path.display(),
                             case.name
                         );
@@ -948,5 +970,36 @@ mod tests {
             ..Default::default()
         };
         assert!(!differential_opt_missing_pin(&case));
+    }
+
+    #[test]
+    fn compile_fail_case_must_pin_an_error() {
+        // Bare compile_fail -> rejected.
+        let mut case = Case {
+            name: "c".to_string(),
+            compile_fail: true,
+            ..Default::default()
+        };
+        assert!(compile_fail_missing_assertion(&case));
+
+        // error_contains satisfies the guard.
+        case.error_contains = vec!["[E0206]".to_string()];
+        assert!(!compile_fail_missing_assertion(&case));
+
+        // compile_stderr_contains also satisfies it (pins stderr content).
+        case.error_contains = vec![];
+        case.compile_stderr_contains = vec!["bad.rue:".to_string()];
+        assert!(!compile_fail_missing_assertion(&case));
+    }
+
+    #[test]
+    fn non_compile_fail_case_not_required_to_pin_error() {
+        // A compile-and-run case needs no compile-error assertion.
+        let case = Case {
+            name: "c".to_string(),
+            compile_fail: false,
+            ..Default::default()
+        };
+        assert!(!compile_fail_missing_assertion(&case));
     }
 }

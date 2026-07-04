@@ -363,6 +363,58 @@ fn main() -> i32 {
 }
 ```
 
+## The `str` Type
+
+{{ preview_feature(feature="string_trio", adr="ADR-0043") }}
+
+{{ rule(id="3.7:43", cat="normative") }}
+
+The type `str` is the byte-string slice type: it is `[u8]` (a read-only slice of
+bytes) carrying the same byte-string convention as `String` (§3.7:15) — its
+contents are conventionally UTF-8 but are not required to be valid UTF-8. A `str`
+value is a two-word view `{ptr, len}`: a pointer to the bytes and a byte length.
+
+{{ rule(id="3.7:44", cat="normative") }}
+
+Where a `str` is expected, a string literal has type `str` and is *static-backed*
+and *first-class*: its bytes reside in read-only data that cannot dangle, so the
+`str` value is `@copy`, storable in a binding or a struct field, reassignable,
+returnable from a function, and passable as an argument.
+
+{{ rule(id="3.7:45", cat="normative") }}
+
+For a `str` value `s`, `s.len()` evaluates to the length of `s` in bytes as a
+`u64`. The operation is `O(1)`.
+
+{{ rule(id="3.7:46", cat="normative") }}
+
+Indexing a `str` with an integer, `s[i]`, evaluates to the byte at byte offset
+`i` as a value of type `u8`. Like `String` byte access (§3.7:16) it operates on
+the raw bytes and never inspects UTF-8 character boundaries. The operation is
+`O(1)`.
+
+{{ rule(id="3.7:47", cat="dynamic-semantics") }}
+
+If the index `i` is greater than or equal to `s.len()`, evaluating `s[i]` traps
+(index out of bounds), terminating the program the same way an out-of-bounds
+array or `String` index does.
+
+{{ rule(id="3.7:48") }}
+
+```rue
+fn describe(s: str) -> u8 {
+    s[0]              // first byte
+}
+
+fn main() -> i32 {
+    let s: str = "hello";
+    @dbg(s.len());    // 5
+    @dbg(s[0]);       // 104 ('h')
+    @dbg(describe("hi"));  // 104
+    0
+}
+```
+
 ## Limitations
 
 {{ rule(id="3.7:14", cat="informative") }}

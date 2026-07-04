@@ -249,6 +249,68 @@ impl<'a> Sema<'a> {
         Ok(Type::new_struct(struct_id))
     }
 
+    /// Get (or lazily create) the synthetic 2-field struct that represents the
+    /// `str` string type (ADR-0043 Phase 3, RUE-324).
+    ///
+    /// `str` is `[u8]` + the UTF-8 byte-string convention (ADR-0035): a
+    /// read-only slice of bytes `{ ptr: ptr const u8, len: u64 }`, sharing the
+    /// slice fat-pointer representation so `.len()` and byte-indexing `s[i]`
+    /// reuse the slice machinery verbatim. Unlike a plain `[T]` slice, `str` is
+    /// **first-class**: string literals are static-backed (their bytes live in
+    /// `.rodata`, which cannot dangle), so a `str` value is storable, `Copy`,
+    /// and reassignable — it is exempt from the second-class-escape rule. The
+    /// struct is keyed by the name `str`, so every reference shares one
+    /// `StructId`.
+    fn get_or_create_str_struct(&mut self, span: Span) -> CompileResult<Type> {
+        use crate::types::{StructDef, StructField};
+
+        let type_sym = self.interner.get_or_intern("str");
+        if let Some(&struct_id) = self.structs.get(&type_sym) {
+            return Ok(Type::new_struct(struct_id));
+        }
+
+        let ptr_type_id = self.type_pool.intern_ptr_const_from_type(Type::U8);
+        let ptr_ty = Type::new_ptr_const(ptr_type_id);
+
+        let struct_def = StructDef {
+            name: "str".to_string(),
+            fields: vec![
+                StructField {
+                    name: "ptr".to_string(),
+                    ty: ptr_ty,
+                },
+                StructField {
+                    name: "len".to_string(),
+                    ty: Type::U64,
+                },
+            ],
+            // `str` is a copyable, static-backed view (no ownership of bytes).
+            is_copy: true,
+            is_linear: false,
+            destructor: None,
+            // Builtin so it never participates in user drop-glue etc.
+            is_builtin: true,
+            is_pub: true,
+            file_id: rue_span::FileId::new(0),
+        };
+        let (struct_id, _) = self.type_pool.register_struct(type_sym, struct_def);
+        self.structs.insert(type_sym, struct_id);
+        let _ = span;
+        Ok(Type::new_struct(struct_id))
+    }
+
+    /// Is `ty` the synthetic `str` struct (ADR-0043 Phase 3, RUE-324)? Detected
+    /// by the struct name being exactly `str`. Used to route string literals and
+    /// slice-style `.len()`/index operations through the fat-pointer paths while
+    /// keeping `str` first-class (exempt from the slice second-class rule).
+    pub(crate) fn is_str_struct(&self, ty: Type) -> bool {
+        if let TypeKind::Struct(struct_id) = ty.kind() {
+            self.type_pool.struct_def(struct_id).name == "str"
+        } else {
+            false
+        }
+    }
+
     /// If `ty` is a synthetic slice struct `[T]` (ADR-0043, RUE-322), return its
     /// element type `T`; otherwise `None`. Detected by the struct name being
     /// slice syntax (`[..]` that is not a fixed-array `[T; N]`), the same naming
@@ -256,10 +318,13 @@ impl<'a> Sema<'a> {
     pub(crate) fn slice_element_type(&self, ty: Type) -> Option<Type> {
         if let TypeKind::Struct(struct_id) = ty.kind() {
             let def = self.type_pool.struct_def(struct_id);
-            if def.name.starts_with('[')
+            // A `[T]` slice, or the `str` string type which is `[u8]` + UTF-8
+            // (ADR-0043 Phase 3, RUE-324): both are `{ptr: ptr const E, len}`
+            // fat pointers, so `.len()` and `s[i]` reuse one path.
+            let is_slice = def.name.starts_with('[')
                 && def.name.ends_with(']')
-                && parse_array_type_syntax(&def.name).is_none()
-            {
+                && parse_array_type_syntax(&def.name).is_none();
+            if is_slice || def.name == "str" {
                 // Field 0 is `ptr const T`; recover T from its pointee.
                 if let TypeKind::PtrConst(ptr_id) = def.fields[0].ty.kind() {
                     return Some(self.type_pool.ptr_const_def(ptr_id));
@@ -309,6 +374,14 @@ impl<'a> Sema<'a> {
         // Note: String is handled below via struct lookup (it's a builtin struct).
         if let Some(ty) = Type::from_primitive_name(type_name) {
             return Ok(ty);
+        }
+
+        // The `str` string type (ADR-0043 Phase 3, RUE-324): `[u8]` + UTF-8,
+        // gated behind `--preview string_trio`. Resolved to a first-class 2-word
+        // fat-pointer struct so it flows through the existing slice/struct paths.
+        if type_name == "str" {
+            self.require_preview(PreviewFeature::StringTrio, "the string type `str`", span)?;
+            return self.get_or_create_str_struct(span);
         }
 
         if let Some(&struct_id) = self.structs.get(&type_sym) {

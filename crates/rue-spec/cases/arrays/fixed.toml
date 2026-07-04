@@ -47,6 +47,7 @@ exit_code = 6
 
 [[case]]
 name = "array_elements_type_mismatch"
+error_contains = "[E0206]"
 spec = ["7.1:3"]
 source = """
 fn main() -> i32 {
@@ -73,6 +74,7 @@ exit_code = 30
 
 [[case]]
 name = "array_too_few_elements"
+error_contains = "[E0901]"
 spec = ["7.1:4"]
 source = """
 fn main() -> i32 {
@@ -84,6 +86,7 @@ compile_fail = true
 
 [[case]]
 name = "array_too_many_elements"
+error_contains = "[E0901]"
 spec = ["7.1:4"]
 source = """
 fn main() -> i32 {
@@ -137,6 +140,7 @@ exit_code = 20
 
 [[case]]
 name = "array_index_bool_error"
+error_contains = "[E0206]"
 spec = ["7.1:7"]
 source = """
 fn main() -> i32 {
@@ -163,6 +167,7 @@ exit_code = 30
 
 [[case]]
 name = "constant_index_out_of_bounds"
+error_contains = "[E0902]"
 spec = ["7.1:9"]
 source = """
 fn main() -> i32 {
@@ -232,6 +237,7 @@ exit_code = 42
 
 [[case]]
 name = "immutable_array_assign_error"
+error_contains = "[E0203]"
 spec = ["7.1:12"]
 source = """
 fn main() -> i32 {
@@ -1153,6 +1159,7 @@ exit_code = 42
 # (7.1:47).
 [[case]]
 name = "array_linear_partial_consumption_rejected"
+error_contains = "[E0406]"
 spec = ["7.1:47"]
 source = """
 linear struct MustUse { value: i32 }

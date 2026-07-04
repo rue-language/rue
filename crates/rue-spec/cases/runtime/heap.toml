@@ -112,6 +112,7 @@ exit_code = 99
 
 [[case]]
 name = "alloc_requires_checked"
+error_contains = "[E1300]"
 spec = ["9.2:13"]
 source = """
 fn main() -> i32 {
@@ -123,6 +124,7 @@ compile_fail = true
 
 [[case]]
 name = "free_requires_checked"
+error_contains = "[E1300]"
 spec = ["9.2:13"]
 source = """
 fn main() -> i32 {

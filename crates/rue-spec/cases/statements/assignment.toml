@@ -38,6 +38,7 @@ exit_code = 42
 
 [[case]]
 name = "assign_immutable_error"
+error_contains = "[E0203]"
 spec = ["5.2:3"]
 source = """
 fn main() -> i32 {
@@ -54,6 +55,7 @@ compile_fail = true
 
 [[case]]
 name = "assign_type_mismatch"
+error_contains = "[E0206]"
 spec = ["5.2:4"]
 source = """
 fn main() -> i32 {
@@ -82,6 +84,7 @@ exit_code = 42
 
 [[case]]
 name = "assign_immutable_array_error"
+error_contains = "[E0203]"
 spec = ["5.2:6"]
 source = """
 fn main() -> i32 {
@@ -111,6 +114,7 @@ exit_code = 42
 
 [[case]]
 name = "assign_immutable_struct_error"
+error_contains = "[E0203]"
 spec = ["5.2:8"]
 source = """
 struct Point { x: i32, y: i32 }
@@ -172,6 +176,7 @@ exit_code = 42
 
 [[case]]
 name = "assign_nested_immutable_error"
+error_contains = "[E0203]"
 spec = ["5.2:12"]
 source = """
 struct Inner { value: i32 }
@@ -205,6 +210,7 @@ exit_code = 45
 
 [[case]]
 name = "assignment_not_expression"
+error_contains = "[E0100]"
 spec = ["5.2:10"]
 source = """
 fn main() -> i32 {

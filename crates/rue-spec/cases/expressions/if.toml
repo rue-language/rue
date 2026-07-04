@@ -34,6 +34,7 @@ exit_code = 42
 
 [[case]]
 name = "condition_must_be_bool"
+error_contains = "[E0206]"
 spec = ["4.6:3"]
 source = """
 fn main() -> i32 {
@@ -69,6 +70,7 @@ exit_code = 10
 
 [[case]]
 name = "branches_different_types"
+error_contains = "[E0206]"
 spec = ["4.6:4"]
 source = """
 fn main() -> i32 {

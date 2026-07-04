@@ -22,14 +22,15 @@ impl<'a> Sema<'a> {
         let method_name_str = self.interner.resolve(&method).to_string();
 
         // Slice methods (ADR-0043, RUE-322): `s.len()` reads the fat pointer's
-        // runtime `len` word. Detected from the receiver's inferred type so it
-        // is intercepted before user/builtin method resolution.
-        if ctx
-            .resolved_types
-            .get(&receiver)
-            .copied()
-            .is_some_and(|ty| self.slice_element_type(ty).is_some())
-        {
+        // runtime `len` word. Detected from the receiver's type. The `str`
+        // string type (RUE-324) shares this path; a `str` local's HM-inferred
+        // type is `String` (inference does not model `str`), so the sema place
+        // type is consulted first (via `peek_place_type`) and only then the
+        // inferred type — otherwise `str.len()` would miss this route.
+        let receiver_slice_ty = receiver_var
+            .and_then(|_| self.peek_place_type(receiver, ctx))
+            .or_else(|| ctx.resolved_types.get(&receiver).copied());
+        if receiver_slice_ty.is_some_and(|ty| self.slice_element_type(ty).is_some()) {
             return self.analyze_slice_method(
                 air,
                 receiver,

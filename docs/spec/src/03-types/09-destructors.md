@@ -5,17 +5,17 @@ weight = 9
 
 # Destructors
 
-This section describes when and how values are cleaned up in Rue.
+This section describes when and how values are dropped in Rue.
 
 ## Drop Semantics
 
 {{ rule(id="3.9:1", cat="normative") }}
 
-When a value's owning binding goes out of scope and the value has not been moved elsewhere, the value is *dropped*. Dropping a value runs its destructor, if it has one.
+When a value's owning binding goes out of scope and the value has not been moved out of it, the value is *dropped*. Dropping runs the value's *drop glue* — its user destructor if it has one, then the drop of its droppable contents (3.9:28) — as fixed by the drop relation in `docs/formal/01-core-calculus.md` §6.11.
 
 {{ rule(id="3.9:2", cat="normative") }}
 
-A value is dropped exactly once. Values that are moved are not dropped at their original binding site; they are dropped at their final destination.
+A value is dropped exactly once. A move sets the source place to moved-out, and the drop relation skips a moved-out place (`docs/formal/01-core-calculus.md` §6.11): so a moved value is not dropped at its original binding site but through its final owner. This is the no-double-free guarantee (`docs/formal/01-core-calculus.md` §7).
 
 {{ rule(id="3.9:3", cat="example") }}
 

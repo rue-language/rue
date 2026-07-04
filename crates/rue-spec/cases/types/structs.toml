@@ -54,6 +54,7 @@ exit_code = 42
 
 [[case]]
 name = "struct_missing_field_error"
+error_contains = "[E0400]"
 spec = ["3.6:5"]
 source = """
 struct Point { x: i32, y: i32 }

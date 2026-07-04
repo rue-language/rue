@@ -140,7 +140,56 @@ pub struct TraceabilityReport {
     pub orphan_references: Vec<(String, String)>,
 }
 
+/// Normative paragraphs that currently have no *running* test, tracked as known
+/// gaps pending compiler-feature implementation.
+///
+/// Each entry is `(paragraph_id, reason)`. These are rules whose only spec tests
+/// are `skip = true` because the behavior they pin isn't implemented yet — the
+/// tests are written and ready to un-skip the moment the feature lands. Before
+/// RUE-132, such a skipped test silently *counted* as coverage, so the report
+/// falsely claimed 100%. Now skipped tests don't count, and these genuine gaps
+/// are listed here explicitly: the gate stays green while the report tells the
+/// truth (the rules are shown as known-uncovered, not as covered).
+///
+/// **Maintenance:** when a feature ships and its test un-skips, the rule regains
+/// real coverage and its entry here becomes stale — the gate will fail and tell
+/// you to remove it (see [`TraceabilityReport::stale_known_uncovered`]). This
+/// mirrors the `known_bug` xfail convention: an exemption that starts passing
+/// must be retired so it converts back into an enforced check.
+pub const KNOWN_UNCOVERED_NORMATIVE: &[(&str, &str)] = &[
+    (
+        "2.5:10",
+        "'@directive must precede item' error not implemented \
+         (lexical/builtins.toml::directive_must_precede_item, skipped)",
+    ),
+    (
+        "2.5:14",
+        "unrecognized-warning-name error not implemented \
+         (lexical/builtins.toml::allow_unknown_warning_error, skipped)",
+    ),
+    (
+        "2.5:17",
+        "function-level @allow(unused_variable) not implemented \
+         (lexical/builtins.toml::allow_unused_variable_on_function, skipped)",
+    ),
+    (
+        "2.5:19",
+        "unused-function warning not implemented \
+         (lexical/builtins.toml::allow_unused_function, skipped)",
+    ),
+    (
+        "2.5:21",
+        "@allow(unreachable_code) suppression not implemented \
+         (lexical/builtins.toml::allow_unreachable_code, skipped)",
+    ),
+];
+
 impl TraceabilityReport {
+    /// Whether `id` is on the [`KNOWN_UNCOVERED_NORMATIVE`] allowlist.
+    fn is_known_uncovered(id: &str) -> bool {
+        KNOWN_UNCOVERED_NORMATIVE.iter().any(|(k, _)| *k == id)
+    }
+
     /// Check if a paragraph is normative (requires test coverage).
     /// Normative categories: normative, legality-rule, dynamic-semantics, syntax, undefined-behavior
     fn is_normative(para: &SpecParagraph) -> bool {
@@ -203,6 +252,51 @@ impl TraceabilityReport {
             .collect()
     }
 
+    /// Uncovered normative paragraphs that are **not** on the
+    /// [`KNOWN_UNCOVERED_NORMATIVE`] allowlist.
+    ///
+    /// This is the set the traceability gate fails on: a genuinely-uncovered
+    /// normative rule that isn't a tracked, known gap. Allowlisted rules are
+    /// reported separately (see [`Self::print_summary`]) but don't fail the gate.
+    pub fn unexpected_uncovered_normative_paragraphs(&self) -> Vec<&String> {
+        self.uncovered_normative_paragraphs()
+            .into_iter()
+            .filter(|id| !Self::is_known_uncovered(id))
+            .collect()
+    }
+
+    /// Stale [`KNOWN_UNCOVERED_NORMATIVE`] entries: allowlisted IDs that are no
+    /// longer legitimately-uncovered normative rules — either the paragraph now
+    /// has a running test (the feature shipped; un-skip happened) or the ID no
+    /// longer names a normative paragraph at all.
+    ///
+    /// A non-empty result fails the gate, demanding the stale entry be removed —
+    /// so the allowlist can never silently mask a rule that regained coverage.
+    pub fn stale_known_uncovered(&self) -> Vec<&'static str> {
+        KNOWN_UNCOVERED_NORMATIVE
+            .iter()
+            .filter(|(id, _)| {
+                let is_uncovered_normative =
+                    self.paragraphs.get(*id).is_some_and(Self::is_normative)
+                        && self
+                            .coverage
+                            .get(*id)
+                            .map(|tests| tests.is_empty())
+                            .unwrap_or(true);
+                !is_uncovered_normative
+            })
+            .map(|(id, _)| *id)
+            .collect()
+    }
+
+    /// Whether the traceability gate should fail: any *unexpected* uncovered
+    /// normative rule, any stale allowlist entry, or any orphan reference.
+    pub fn gate_failing(&self) -> bool {
+        !self.unexpected_uncovered_normative_paragraphs().is_empty()
+            || !self.stale_known_uncovered().is_empty()
+            || !self.orphan_references.is_empty()
+    }
+
     /// Returns the coverage percentage for normative paragraphs (0.0 to 100.0).
     ///
     /// Returns 100.0 if there are no normative paragraphs.
@@ -248,12 +342,14 @@ impl TraceabilityReport {
         // Normative coverage stats (what matters for pass/fail)
         let normative_total = self.normative_count();
         let normative_covered = self.normative_covered_count();
-        let normative_uncovered = self.normative_uncovered_count();
         let normative_pct = self.normative_coverage_percentage();
 
         println!(
-            "Normative Coverage: {:.1}% ({}/{} paragraphs)",
-            normative_pct, normative_covered, normative_total
+            "Normative Coverage: {:.1}% ({}/{} paragraphs, {} uncovered)",
+            normative_pct,
+            normative_covered,
+            normative_total,
+            self.normative_uncovered_count()
         );
 
         // Overall stats (informative)
@@ -307,10 +403,54 @@ impl TraceabilityReport {
         }
         println!();
 
-        // Uncovered normative paragraphs (what needs to be fixed)
-        let uncovered_normative = self.uncovered_normative_paragraphs();
+        // Known-gap normative paragraphs: uncovered, but explicitly allowlisted
+        // as pending a compiler feature (their only tests are skipped). Reported
+        // honestly but not gate-failing.
+        let known_gaps: Vec<&String> = self
+            .uncovered_normative_paragraphs()
+            .into_iter()
+            .filter(|id| Self::is_known_uncovered(id))
+            .collect();
+        if !known_gaps.is_empty() {
+            println!(
+                "Known-uncovered normative paragraphs ({}, pending implementation):",
+                known_gaps.len()
+            );
+            for id in known_gaps {
+                let reason = KNOWN_UNCOVERED_NORMATIVE
+                    .iter()
+                    .find(|(k, _)| k == id)
+                    .map(|(_, r)| *r)
+                    .unwrap_or("");
+                if let Some(para) = self.paragraphs.get(id) {
+                    println!("  {} [{}]: {}", id, para.category, reason);
+                }
+            }
+            println!();
+        }
+
+        // Stale allowlist entries: an allowlisted rule that regained coverage (or
+        // no longer exists) must be de-listed — this fails the gate.
+        let stale = self.stale_known_uncovered();
+        if !stale.is_empty() {
+            println!("Stale KNOWN_UNCOVERED_NORMATIVE entries ({}):", stale.len());
+            for id in stale {
+                println!(
+                    "  {} is now covered (or not a normative paragraph) — remove it \
+                     from KNOWN_UNCOVERED_NORMATIVE",
+                    id
+                );
+            }
+            println!();
+        }
+
+        // Unexpected uncovered normative paragraphs (what needs to be fixed).
+        let uncovered_normative = self.unexpected_uncovered_normative_paragraphs();
         if !uncovered_normative.is_empty() {
-            println!("Uncovered normative paragraphs ({}):", normative_uncovered);
+            println!(
+                "Uncovered normative paragraphs ({}):",
+                uncovered_normative.len()
+            );
             for id in uncovered_normative {
                 if let Some(para) = self.paragraphs.get(id) {
                     let text = truncate_with_ellipsis(&para.text, 60);
@@ -508,6 +648,16 @@ pub struct TestCase {
     pub name: String,
     /// Specification paragraph IDs that this test covers (e.g., ["3.1:5", "3.1:6"]).
     pub spec_refs: Vec<String>,
+    /// Whether this case actually *runs* and so can satisfy coverage.
+    ///
+    /// A rule's behavior is only exercised by a test that runs and is required
+    /// to pass. A case does **not** count as coverage if it is `skip = true`, or
+    /// if it is a preview-feature test that is allowed to fail (`preview` set
+    /// without `preview_should_pass`). Such a case's spec references still count
+    /// for orphan detection — a dangling reference is broken whether or not the
+    /// case runs — but they do not mark a normative paragraph as covered
+    /// (RUE-132).
+    pub counts_as_coverage: bool,
 }
 
 /// Parses test files and extracts specification references.
@@ -581,6 +731,21 @@ pub fn parse_test_files(cases_dir: &Path) -> Vec<TestFile> {
                     })
                     .unwrap_or_default();
 
+                // A case only counts as coverage if it actually runs and is
+                // required to pass (RUE-132): a `skip = true` case never runs,
+                // and a preview-feature test without `preview_should_pass` is
+                // allowed to fail, so neither exercises the rule it references.
+                let base_skip = case.get("skip").and_then(|s| s.as_bool()).unwrap_or(false);
+                let is_preview = case
+                    .get("preview")
+                    .and_then(|p| p.as_str())
+                    .is_some_and(|s| !s.is_empty());
+                let preview_should_pass = case
+                    .get("preview_should_pass")
+                    .and_then(|p| p.as_bool())
+                    .unwrap_or(false);
+                let preview_allowed_to_fail = is_preview && !preview_should_pass;
+
                 // Check if this is a parameterized test
                 if let Some(params_array) = case.get("params").and_then(|p| p.as_array()) {
                     // Expand parameterized test - each param set becomes a test case
@@ -614,9 +779,19 @@ pub fn parse_test_files(cases_dir: &Path) -> Vec<TestFile> {
                             }
                         }
 
+                        // A per-param `skip = true` override also disqualifies
+                        // just that instance from counting as coverage.
+                        let param_skip = param_table
+                            .get("skip")
+                            .and_then(|s| s.as_bool())
+                            .unwrap_or(false);
+                        let counts_as_coverage =
+                            !base_skip && !param_skip && !preview_allowed_to_fail;
+
                         cases.push(TestCase {
                             name: expanded_name,
                             spec_refs,
+                            counts_as_coverage,
                         });
                     }
                 } else {
@@ -624,6 +799,7 @@ pub fn parse_test_files(cases_dir: &Path) -> Vec<TestFile> {
                     cases.push(TestCase {
                         name: base_name,
                         spec_refs: base_spec_refs,
+                        counts_as_coverage: !base_skip && !preview_allowed_to_fail,
                     });
                 }
             }
@@ -682,9 +858,15 @@ pub fn generate_report(spec_dir: &Path, cases_dir: &Path) -> TraceabilityReport 
 
             for spec_ref in &case.spec_refs {
                 if let Some(tests) = coverage.get_mut(spec_ref) {
-                    tests.push(TestReference {
-                        test_name: test_name.clone(),
-                    });
+                    // A skipped or preview-allowed-to-fail case never exercises
+                    // the rule, so it must not mark the paragraph as covered
+                    // (RUE-132). Its reference is still valid, so it is not an
+                    // orphan — it simply doesn't contribute coverage.
+                    if case.counts_as_coverage {
+                        tests.push(TestReference {
+                            test_name: test_name.clone(),
+                        });
+                    }
                 } else {
                     orphan_references.push((test_name.clone(), spec_ref.clone()));
                 }
@@ -827,6 +1009,143 @@ fn main() { }
         // One of the two paragraphs is uncovered.
         assert_eq!(report.paragraphs.len() - report.covered_count(), 1);
         assert_eq!(report.coverage_percentage(), 50.0);
+    }
+
+    #[test]
+    fn test_skipped_and_preview_tests_do_not_count_as_coverage() {
+        // Four paragraphs, each referenced by exactly one test: a normal test, a
+        // skipped test, a preview test allowed to fail, and a preview test
+        // required to pass. Only the normal and the required-to-pass tests
+        // should count as coverage (RUE-132).
+        let spec = r#"
+{{ rule(id="1.1:1", cat="normative") }}
+Covered by a normal test.
+
+{{ rule(id="1.1:2", cat="normative") }}
+Referenced only by a skipped test.
+
+{{ rule(id="1.1:3", cat="normative") }}
+Referenced only by a preview test allowed to fail.
+
+{{ rule(id="1.1:4", cat="normative") }}
+Referenced by a preview test required to pass.
+"#;
+        let cases = r#"
+[section]
+id = "t.section"
+name = "T"
+
+[[case]]
+name = "normal"
+spec = ["1.1:1"]
+source = "fn main() -> i32 { 0 }"
+exit_code = 0
+
+[[case]]
+name = "skipped"
+spec = ["1.1:2"]
+skip = true
+source = "fn main() -> i32 { 0 }"
+exit_code = 0
+
+[[case]]
+name = "preview_may_fail"
+spec = ["1.1:3"]
+preview = "some_feature"
+source = "fn main() -> i32 { 0 }"
+exit_code = 0
+
+[[case]]
+name = "preview_must_pass"
+spec = ["1.1:4"]
+preview = "some_feature"
+preview_should_pass = true
+source = "fn main() -> i32 { 0 }"
+exit_code = 0
+"#;
+        let spec_dir = tempfile::tempdir().unwrap();
+        fs::write(spec_dir.path().join("s.md"), spec).unwrap();
+        let cases_dir = tempfile::tempdir().unwrap();
+        fs::write(cases_dir.path().join("c.toml"), cases).unwrap();
+
+        let report = generate_report(spec_dir.path(), cases_dir.path());
+
+        // Only 1.1:1 and 1.1:4 are exercised by a running, must-pass test.
+        assert!(!report.coverage["1.1:1"].is_empty(), "normal test covers");
+        assert!(
+            report.coverage["1.1:2"].is_empty(),
+            "skipped test must not count as coverage"
+        );
+        assert!(
+            report.coverage["1.1:3"].is_empty(),
+            "preview-allowed-to-fail test must not count as coverage"
+        );
+        assert!(
+            !report.coverage["1.1:4"].is_empty(),
+            "preview-must-pass test covers"
+        );
+        assert_eq!(report.normative_covered_count(), 2);
+        assert_eq!(report.normative_uncovered_count(), 2);
+        // The skipped/preview references are valid, so they are not orphans.
+        assert!(report.orphan_references.is_empty());
+    }
+
+    #[test]
+    fn test_known_uncovered_allowlist_gates_correctly() {
+        // Build a report seeding EVERY allowlisted rule as an uncovered
+        // normative paragraph (mirroring production, where they all exist), plus
+        // any extra `(id, covered)` paragraphs the caller wants.
+        fn report_with(extra: &[(&str, bool)]) -> TraceabilityReport {
+            let mut paragraphs = BTreeMap::new();
+            let mut coverage = BTreeMap::new();
+            let mut add = |id: &str, covered: bool| {
+                paragraphs.insert(
+                    id.to_string(),
+                    SpecParagraph {
+                        id: id.to_string(),
+                        category: "normative".to_string(),
+                        text: "t".to_string(),
+                    },
+                );
+                let tests = if covered {
+                    vec![TestReference {
+                        test_name: "t::c".to_string(),
+                    }]
+                } else {
+                    vec![]
+                };
+                coverage.insert(id.to_string(), tests);
+            };
+            for (id, _) in KNOWN_UNCOVERED_NORMATIVE {
+                add(id, false);
+            }
+            for (id, covered) in extra {
+                add(id, *covered);
+            }
+            TraceabilityReport {
+                paragraphs,
+                coverage,
+                orphan_references: vec![],
+            }
+        }
+
+        // All allowlisted rules uncovered, nothing else: reported, but the gate
+        // passes and nothing is stale.
+        let r = report_with(&[]);
+        assert!(r.unexpected_uncovered_normative_paragraphs().is_empty());
+        assert!(r.stale_known_uncovered().is_empty());
+        assert!(!r.gate_failing());
+
+        // A non-allowlisted uncovered normative rule fails the gate.
+        let r = report_with(&[("99.9:1", false)]);
+        assert_eq!(r.unexpected_uncovered_normative_paragraphs().len(), 1);
+        assert!(r.gate_failing());
+
+        // An allowlisted rule that is now COVERED is stale and fails the gate.
+        let allow_id = KNOWN_UNCOVERED_NORMATIVE[0].0;
+        let r = report_with(&[(allow_id, true)]);
+        assert_eq!(r.stale_known_uncovered(), vec![allow_id]);
+        assert!(r.gate_failing());
     }
 
     #[test]
