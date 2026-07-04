@@ -238,7 +238,7 @@ fn print_usage() {
     eprintln!("                       Use -j1 for single-threaded compilation");
     eprintln!("  --emit <stage>       Emit intermediate representation and exit");
     eprintln!("                       Can be specified multiple times for multiple outputs");
-    eprintln!("                       Stages: tokens, ast, rir, air, cfg, mir, asm");
+    eprintln!("                       Stages: {}", EmitStage::all_names());
     eprintln!("  --preview <feature>  Enable a preview feature (can be repeated)");
     eprintln!(
         "                       Features: {}",
@@ -494,6 +494,12 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
             final_output_path
         );
         return ParseResult::Error;
+    }
+
+    if log_format.is_some() && log_level.is_none() {
+        eprintln!(
+            "Warning: --log-format has no effect without --log-level (logging is off by default)"
+        );
     }
 
     ParseResult::Options(Options {
@@ -961,6 +967,13 @@ fn main() {
     } else {
         None
     };
+
+    // --emit and --benchmark-json both own stdout, so combining them would
+    // interleave IR text with the benchmark JSON and corrupt it — reject early.
+    if options.benchmark_json && !options.emit_stages.is_empty() {
+        eprintln!("Error: --emit cannot be combined with --benchmark-json (both write to stdout)");
+        std::process::exit(1);
+    }
 
     // Handle emit modes with multi-file support
     if !options.emit_stages.is_empty() {
