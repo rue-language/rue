@@ -83,7 +83,7 @@ impl Target {
     /// Returns the default page size for this target in bytes.
     ///
     /// This is used for executable segment alignment.
-    pub fn page_size(&self) -> u64 {
+    pub const fn page_size(&self) -> u64 {
         match self {
             // x86-64 and AArch64 Linux typically use 4KB pages.
             Target::X86_64Linux | Target::Aarch64Linux => 0x1000, // 4KB
@@ -95,7 +95,7 @@ impl Target {
     /// Returns the default base address for executables on this target.
     ///
     /// This is the virtual address where the executable is loaded.
-    pub fn default_base_addr(&self) -> u64 {
+    pub const fn default_base_addr(&self) -> u64 {
         match self {
             // Standard Linux load address for both architectures.
             Target::X86_64Linux | Target::Aarch64Linux => 0x400000,
@@ -172,15 +172,20 @@ impl Target {
     pub fn all_names() -> &'static str {
         "x86-64-linux, aarch64-linux, aarch64-macos"
     }
+
+    /// Returns the canonical Rue spelling of this target.
+    pub const fn name(&self) -> &'static str {
+        match self {
+            Target::X86_64Linux => "x86-64-linux",
+            Target::Aarch64Linux => "aarch64-linux",
+            Target::Aarch64Macos => "aarch64-macos",
+        }
+    }
 }
 
 impl fmt::Display for Target {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Target::X86_64Linux => write!(f, "x86-64-linux"),
-            Target::Aarch64Linux => write!(f, "aarch64-linux"),
-            Target::Aarch64Macos => write!(f, "aarch64-macos"),
-        }
+        f.write_str(self.name())
     }
 }
 

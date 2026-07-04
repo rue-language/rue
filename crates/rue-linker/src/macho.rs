@@ -24,12 +24,13 @@
 
 use crate::constants::*;
 use crate::util::align_up;
+use rue_target::Target;
 
 /// ARM64 macOS page size (16KB).
-pub const PAGE_SIZE: u64 = 0x4000;
+pub const PAGE_SIZE: u64 = Target::Aarch64Macos.page_size();
 
 /// Default VM base address for executables.
-pub const VM_BASE: u64 = 0x100000000;
+pub const VM_BASE: u64 = Target::Aarch64Macos.default_base_addr();
 
 /// Computed file/VM layout for a dynamic executable — produced only by
 /// `compute_dynamic_layout` so relocation pre-pass and the actual build can

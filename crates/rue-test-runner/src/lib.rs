@@ -4,6 +4,7 @@
 //! including test case parsing, execution, and output comparison.
 
 use rue_error::PreviewFeature;
+use rue_target::Target;
 use serde::{Deserialize, Deserializer};
 
 /// Default timeout for test execution in milliseconds (10 seconds).
@@ -301,15 +302,15 @@ pub type TestResult = Result<(), String>;
 pub fn get_host_target() -> &'static str {
     #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
     {
-        "x86-64-linux"
+        Target::X86_64Linux.name()
     }
     #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
     {
-        "aarch64-linux"
+        Target::Aarch64Linux.name()
     }
     #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
     {
-        "aarch64-macos"
+        Target::Aarch64Macos.name()
     }
     #[cfg(all(target_arch = "x86_64", target_os = "macos"))]
     {
@@ -332,9 +333,11 @@ pub fn get_host_target() -> &'static str {
 /// silently run NOWHERE while still counting as spec coverage (the RUE-132
 /// skipped-test-counts-as-coverage class, via the platform axis).
 pub const KNOWN_TARGETS: &[&str] = &[
-    "x86-64-linux",
-    "aarch64-linux",
-    "aarch64-macos",
+    Target::X86_64Linux.name(),
+    Target::Aarch64Linux.name(),
+    Target::Aarch64Macos.name(),
+    // Host-only: Rue can run tests on Intel macOS, but does not currently have
+    // an x86-64 macOS compiler target.
     "x86-64-macos",
 ];
 
@@ -2567,5 +2570,15 @@ exit_code = 42
 "#;
         let tf: TestFile = toml::from_str(toml).expect("valid TOML");
         assert!(validate_compile_fail_assertions(&tf).is_empty());
+    }
+
+    #[test]
+    fn test_known_targets_cover_compiler_targets() {
+        for target in Target::all() {
+            assert!(
+                KNOWN_TARGETS.contains(&target.name()),
+                "test harness target whitelist is missing compiler target {target}"
+            );
+        }
     }
 }
