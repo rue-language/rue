@@ -74,6 +74,10 @@ fn area(rect: Rectangle) -> i32 {
     rect.width * rect.height
 }
 
+fn origin_x(borrow rect: Rectangle) -> i32 {
+    rect.origin.x
+}
+
 fn main() -> i32 {
     let rect = Rectangle {
         origin: Point { x: 10, y: 20 },
@@ -81,8 +85,8 @@ fn main() -> i32 {
         height: 50,
     };
 
-    @dbg(area(rect));          // prints: 5000
-    @dbg(rect.origin.x);       // prints: 10
+    @dbg(origin_x(borrow rect));  // prints: 10
+    @dbg(area(rect));             // prints: 5000
 
     0
 }
@@ -107,9 +111,11 @@ fn main() -> i32 {
 }
 ```
 
-## Move Semantics
+## Ownership: Moves and Copies
 
-By default, structs *move* when assigned or passed to functions. After a move, the original variable can't be used:
+Integers and booleans are copied when you use them. Structs are different:
+unless you opt in to copying, a struct value is *moved* when it is assigned or
+passed by value. After a move, the old place no longer owns a live value.
 
 ```rue
 struct Point {
@@ -122,15 +128,35 @@ fn use_point(p: Point) {
 }
 
 fn main() -> i32 {
-    let p1 = Point { x: 1, y: 2 };
-    use_point(p1);    // p1 moves here
-    // use_point(p1); // ERROR: value already moved
+    let p = Point { x: 1, y: 2 };
+    use_point(p);     // p moves here
+    // use_point(p);  // ERROR: value already moved
 
     0
 }
 ```
 
-If you want a type to be copyable instead, mark it with `@copy`:
+The same rule applies to assignment:
+
+```rue
+struct Point {
+    x: i32,
+    y: i32,
+}
+
+fn main() -> i32 {
+    let p1 = Point { x: 1, y: 2 };
+    let p2 = p1;      // p1 moves into p2
+
+    @dbg(p2.x);       // prints: 1
+    // @dbg(p1.x);    // ERROR: p1 was moved
+
+    0
+}
+```
+
+If a struct is just data and duplicating it is safe, mark it with `@copy`.
+Copies leave the source usable:
 
 ```rue
 @copy
@@ -141,7 +167,7 @@ struct Point {
 
 fn main() -> i32 {
     let p1 = Point { x: 1, y: 2 };
-    let mut p2 = p1;  // p2 is a copy of p1
+    let mut p2 = p1;  // p2 is a copy; p1 is still valid
 
     p2.x = 100;
 
@@ -151,3 +177,7 @@ fn main() -> i32 {
     0
 }
 ```
+
+Use the default move behavior for values that represent ownership, resources, or
+anything that should not be duplicated accidentally. Use `@copy` only for small
+plain-data structs whose fields can all be copied.
