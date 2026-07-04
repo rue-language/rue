@@ -1542,3 +1542,89 @@ pub fn mk() -> Secret(i32) { let S = Secret(i32); S { v: 7 } }
 """ },
 ]
 exit_code = 7
+
+# ---------------------------------------------------------------------------
+# RUE-317: a `../`-relative @import reconciles with the SAME physical file
+# listed on the command line. Module identity is keyed by a file's
+# lexically-normalized resolved path (`.`/`..` collapsed), so
+# `a/../std/opt.rue` (the resolved `@import("../std/opt.rue")` from `a/`) and
+# the command-line-listed `std/opt.rue` are ONE module — not two, which used
+# to spuriously fail member access with E0707.
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "dotdot_import_reconciles_with_cli_listed_pub_fn"
+description = "RUE-317: `a/main.rue` @imports `../std/opt.rue` while `std/opt.rue` is also listed on the CLI; the pub fn member resolves through the module (single module identity, no E0707)."
+args = ["a/main.rue", "std/opt.rue", "-o", "prog"]
+files = [
+    { path = "a/main.rue", source = """
+fn main() -> i32 {
+    let o = @import("../std/opt.rue");
+    o.make()
+}
+""" },
+    { path = "std/opt.rue", source = """
+pub fn make() -> i32 {
+    42
+}
+""" },
+]
+exit_code = 42
+
+[[case]]
+name = "dotdot_import_reconciles_with_cli_listed_pub_const"
+description = "RUE-317: same reconciliation for a pub const member accessed through a `../`-relative import that is also CLI-listed."
+args = ["a/main.rue", "std/opt.rue", "-o", "prog"]
+files = [
+    { path = "a/main.rue", source = """
+const opt = @import("../std/opt.rue");
+
+fn main() -> i32 {
+    opt.ANSWER
+}
+""" },
+    { path = "std/opt.rue", source = """
+pub const ANSWER: i32 = 7;
+""" },
+]
+exit_code = 7
+
+[[case]]
+name = "dotdot_import_unknown_member_still_errors"
+description = "RUE-317 negative control: path reconciliation must not mask a genuinely absent member — accessing a non-existent member of the reconciled module still fails with E0707."
+args = ["a/main.rue", "std/opt.rue", "-o", "prog"]
+files = [
+    { path = "a/main.rue", source = """
+fn main() -> i32 {
+    let o = @import("../std/opt.rue");
+    o.nope()
+}
+""" },
+    { path = "std/opt.rue", source = """
+pub fn make() -> i32 {
+    42
+}
+""" },
+]
+compile_fail = true
+error_contains = ["E0707", "has no member `nope`"]
+
+[[case]]
+name = "dotdot_import_private_member_cross_dir_still_rejected"
+description = "RUE-317 negative control: reconciling the path must not weaken privacy — a NON-pub member of the reconciled module in another directory is still private (E0706)."
+args = ["a/main.rue", "std/opt.rue", "-o", "prog"]
+files = [
+    { path = "a/main.rue", source = """
+fn main() -> i32 {
+    let o = @import("../std/opt.rue");
+    o.secret()
+}
+""" },
+    { path = "std/opt.rue", source = """
+fn secret() -> i32 {
+    42
+}
+""" },
+]
+compile_fail = true
+error_contains = ["E0706", "function `secret` is private"]

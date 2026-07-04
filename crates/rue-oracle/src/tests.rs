@@ -129,6 +129,67 @@ fn intcast_in_range_and_overflow() {
 }
 
 #[test]
+fn unbounded_recursion_is_unsupported() {
+    // A recursive function with no base case would recurse forever and overflow
+    // the Rust stack (an uncatchable abort). The shared recursion-depth bound
+    // (MAX_DEPTH) must turn it into a clean `Unsupported` skip instead (RUE-340).
+    let src = "fn r(n: i32) -> i32 { r(n) }
+    fn main() -> i32 { r(0) }";
+    let err = run_source(src).expect_err("unbounded recursion must not produce an Outcome");
+    assert!(
+        err.0.contains("depth budget"),
+        "expected a depth-budget skip, got: {}",
+        err.0
+    );
+}
+
+#[test]
+fn deep_bounded_recursion_is_unsupported() {
+    // Recursion that is bounded but far deeper than MAX_DEPTH must also skip
+    // cleanly (hitting the depth bound) rather than overflow the stack.
+    let src = "fn r(n: i32) -> i32 { if n <= 0 { 0 } else { r(n - 1) } }
+    fn main() -> i32 { r(100000) }";
+    let err = run_source(src).expect_err("deep recursion must not produce an Outcome");
+    assert!(
+        err.0.contains("depth budget"),
+        "expected a depth-budget skip, got: {}",
+        err.0
+    );
+}
+
+#[test]
+fn shallow_recursion_still_runs() {
+    // Recursion well within MAX_DEPTH must still execute and agree, so the depth
+    // bound doesn't reject legitimate programs. Fibonacci(15) = 610.
+    let src = "fn fib(n: i32) -> i32 { if n < 2 { n } else { fib(n - 1) + fib(n - 2) } }
+    fn main() -> i32 { fib(15) & 0xFF }";
+    // 610 & 0xFF = 98.
+    assert_eq!(exit(src), 98);
+    // And a linear recursion right up to (just under) the depth bound resolves.
+    let src = "fn r(n: i32) -> i32 { if n <= 0 { 7 } else { r(n - 1) } }
+    fn main() -> i32 { r(1500) }";
+    assert_eq!(exit(src), 7);
+}
+
+// Ignored by default: exercises the full 50M-step budget, which takes ~12s in
+// an unoptimized build. Run explicitly (`--ignored`) as a loop-bounding
+// regression guard.
+#[test]
+#[ignore = "burns the full step budget (~12s in debug); run with --ignored"]
+fn runaway_loop_is_unsupported() {
+    // A loop that never terminates must be bounded by the shared step budget and
+    // reported `Unsupported`, never hang. Each iteration flips `b` (a `Not`
+    // instruction), so the budget is decremented every turn of the loop.
+    let src = "fn main() -> i32 { let mut b = true; loop { b = !b; } }";
+    let err = run_source(src).expect_err("a runaway loop must not produce an Outcome");
+    assert!(
+        err.0.contains("step budget"),
+        "expected a step-budget skip, got: {}",
+        err.0
+    );
+}
+
+#[test]
 fn loop_via_recursion_sum() {
     // Gauss sum 1..=10 = 55, exercised through recursion + branch joins.
     let src = "fn sum(n: i32, acc: i32) -> i32 {

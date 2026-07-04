@@ -1039,3 +1039,146 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = "Copy"
+
+# =============================================================================
+# Array Element Moves (RUE-299): the array-chapter statement of the move
+# legality rules cross-referenced from the Move Semantics chapter (3.8:68-73).
+# =============================================================================
+
+# A constant-index move takes a non-Copy element out of an array variable; the
+# sibling element remains usable (7.1:43).
+[[case]]
+name = "array_element_constant_index_move"
+spec = ["7.1:43"]
+source = """
+struct Big { value: i32 }
+fn consume(b: Big) -> i32 { b.value }
+fn main() -> i32 {
+    let xs = [Big { value: 40 }, Big { value: 2 }];
+    let a = consume(xs[0]);
+    let b = consume(xs[1]);
+    a + b
+}
+"""
+exit_code = 42
+
+# While an element is moved out, the array cannot be used as a whole value
+# (7.1:45).
+[[case]]
+name = "array_partial_move_whole_use_rejected"
+spec = ["7.1:45"]
+source = """
+struct Big { value: i32 }
+fn consume(b: Big) -> i32 { b.value }
+fn take_all(xs: [Big; 2]) -> i32 { 0 }
+fn main() -> i32 {
+    let xs = [Big { value: 1 }, Big { value: 2 }];
+    let a = consume(xs[0]);
+    a + take_all(xs)
+}
+"""
+compile_fail = true
+error_contains = "use of moved value 'xs'"
+
+# While an element is moved out, a moved-out element cannot be used again
+# (7.1:45).
+[[case]]
+name = "array_partial_move_element_reuse_rejected"
+spec = ["7.1:45"]
+source = """
+struct Big { value: i32 }
+fn consume(b: Big) -> i32 { b.value }
+fn main() -> i32 {
+    let xs = [Big { value: 1 }, Big { value: 2 }];
+    let a = consume(xs[0]);
+    let b = consume(xs[0]);
+    a + b
+}
+"""
+compile_fail = true
+error_contains = "use of moved value 'xs[0]'"
+
+# While an element is moved out, assigning into the array is rejected; the whole
+# array must be reinitialized instead (7.1:46).
+[[case]]
+name = "array_partial_move_assign_rejected"
+spec = ["7.1:46"]
+source = """
+struct Big { value: i32 }
+fn consume(b: Big) -> i32 { b.value }
+fn main() -> i32 {
+    let mut xs = [Big { value: 40 }, Big { value: 2 }];
+    let a = consume(xs[0]);
+    xs[1] = Big { value: 5 };
+    a
+}
+"""
+compile_fail = true
+error_contains = "cannot assign into 'xs'"
+
+# Reinitializing the whole array reinstates per-element ownership, so it can be
+# used again after a partial move (7.1:46).
+[[case]]
+name = "array_reinit_after_partial_move"
+spec = ["7.1:46"]
+source = """
+struct Big { value: i32 }
+fn consume(b: Big) -> i32 { b.value }
+fn take_all(xs: [Big; 2]) -> i32 { xs[0].value + xs[1].value }
+fn main() -> i32 {
+    let mut xs = [Big { value: 40 }, Big { value: 2 }];
+    let a = consume(xs[0]);
+    xs = [Big { value: 1 }, Big { value: 1 }];
+    a + take_all(xs)
+}
+"""
+exit_code = 42
+
+# An array of a linear (must-consume) element type is consumed element-wise by
+# moving every element out (7.1:47).
+[[case]]
+name = "array_linear_elementwise_consumption"
+spec = ["7.1:47"]
+source = """
+linear struct MustUse { value: i32 }
+fn consume(m: MustUse) -> i32 { m.value }
+fn main() -> i32 {
+    let xs = [MustUse { value: 40 }, MustUse { value: 2 }];
+    consume(xs[0]) + consume(xs[1])
+}
+"""
+exit_code = 42
+
+# Consuming only some elements of a linear array is an error naming the rest
+# (7.1:47).
+[[case]]
+name = "array_linear_partial_consumption_rejected"
+spec = ["7.1:47"]
+source = """
+linear struct MustUse { value: i32 }
+fn consume(m: MustUse) -> i32 { m.value }
+fn main() -> i32 {
+    let xs = [MustUse { value: 1 }, MustUse { value: 2 }];
+    consume(xs[0])
+}
+"""
+compile_fail = true
+
+# A moved-out element is dropped by its new owner, not at the array's scope
+# exit; the unmoved elements still drop in ascending index order (7.1:48).
+[[case]]
+name = "array_partial_move_drop_order"
+spec = ["7.1:48"]
+source = """
+struct D { value: i32 }
+drop fn D(self) { @dbg(self.value); }
+fn consume(d: D) -> i32 { d.value }
+fn main() -> i32 {
+    let xs = [D { value: 1 }, D { value: 2 }, D { value: 3 }];
+    let got = consume(xs[1]);
+    @dbg(100);
+    got - 2
+}
+"""
+exit_code = 0
+expected_stdout = "2\n100\n1\n3\n"

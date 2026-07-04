@@ -10,23 +10,17 @@
 //! parallel-analysis pipeline and was removed per ADR-0033 phase 1b.
 
 use std::collections::HashMap;
-use std::path::{Component, Path, PathBuf};
 use std::sync::{PoisonError, RwLock};
 
+use crate::path_norm::normalize_module_path;
 use crate::types::{ModuleDef, ModuleId};
 
-/// Lexically normalize a resolved file path for use as a registry key, dropping
-/// `.` (current-directory) components so `./foo.rue` and `foo.rue` key to the
-/// same module (spec 10.2:4). Purely lexical — never touches the filesystem.
+/// Lexically normalize a resolved file path for use as a registry key so all
+/// spellings of the same physical file key to one module (spec 10.2:4):
+/// `./foo.rue` == `foo.rue`, and `a/../std/opt.rue` == `std/opt.rue`
+/// (RUE-317). Purely lexical — never touches the filesystem.
 fn normalize_key(path: &str) -> String {
-    let mut out = PathBuf::new();
-    for comp in Path::new(path).components() {
-        match comp {
-            Component::CurDir => {}
-            other => out.push(other.as_os_str()),
-        }
-    }
-    out.to_string_lossy().into_owned()
+    normalize_module_path(path)
 }
 
 /// Thread-safe registry for modules.

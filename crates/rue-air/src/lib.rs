@@ -14,6 +14,7 @@ mod inference;
 mod inst;
 mod intern_pool;
 mod param_arena;
+mod path_norm;
 mod scope;
 mod sema;
 mod sema_context;

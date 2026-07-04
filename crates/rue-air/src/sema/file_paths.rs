@@ -4,26 +4,11 @@
 //! for module resolution and relative imports.
 
 use std::collections::HashMap;
-use std::path::{Component, Path, PathBuf};
 
 use rue_span::FileId;
 
 use super::Sema;
-
-/// Normalize a source-file path for equivalence comparison by dropping `.`
-/// (current-directory) components, so `./helper.rue` and `helper.rue` compare
-/// equal. Parent (`..`) and normal components are preserved, so the
-/// normalization is purely lexical and never touches the filesystem.
-fn normalize_module_path(path: &str) -> String {
-    let mut out = PathBuf::new();
-    for comp in Path::new(path).components() {
-        match comp {
-            Component::CurDir => {}
-            other => out.push(other.as_os_str()),
-        }
-    }
-    out.to_string_lossy().into_owned()
-}
+use crate::path_norm::normalize_module_path;
 
 impl<'a> Sema<'a> {
     /// Set file paths for module resolution in multi-file compilation.
@@ -68,7 +53,9 @@ impl<'a> Sema<'a> {
     /// through that binding spuriously failed (E0707, RUE-240). Comparing by
     /// normalized path (dropping `.` components) makes both spellings resolve
     /// to the same file, matching spec 10.2:4 (an import resolving to an
-    /// already-loaded file refers to that same module).
+    /// already-loaded file refers to that same module). Normalization also
+    /// collapses `..`, so a `../`-relative `@import` and a command-line-listed
+    /// file resolve to the same file (RUE-317).
     pub(crate) fn canonical_file_id(&self, path: &str) -> Option<FileId> {
         if let Some(id) = self.get_file_id(path) {
             return Some(id);

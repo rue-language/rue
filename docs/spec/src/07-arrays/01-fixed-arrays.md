@@ -329,3 +329,65 @@ fn main() -> i32 {
     arr[0] + arr[1]     // 30
 }
 ```
+
+## Array Element Moves
+
+The general move framework — value versus place context, and the copy-versus-move
+effect of a *use* — is defined in the Move Semantics chapter (3.8:76). The rules in
+this section are its array-chapter statement, and are the legality rules referenced
+from that chapter (3.8:68).
+
+{{ rule(id="7.1:43", cat="normative") }}
+
+A non-`Copy` array element **MAY** be moved out of an array. Using `arr[i]` in a
+value context moves the indexed element out of the array — but, per 7.1:28, only
+when `i` is a compile-time constant and the indexing applies directly to an array
+variable or by-value array parameter (a *constant-index move*). The move is a
+partial move: only the indexed element is invalidated, and the sibling elements
+remain usable (3.8:68).
+
+{{ rule(id="7.1:44") }}
+
+```rue
+struct Big { value: i32 }
+
+fn consume(b: Big) -> i32 { b.value }
+
+fn main() -> i32 {
+    let xs = [Big { value: 40 }, Big { value: 2 }];
+    let a = consume(xs[0]);   // moves element 0 out
+    let b = consume(xs[1]);   // sibling element 1 still usable
+    a + b                     // 42
+}
+```
+
+{{ rule(id="7.1:45", cat="legality-rule") }}
+
+While one or more elements of an array have been moved out, it is a compile-time
+error to use the array as a whole value, to use a moved-out element (including
+reading a field through it), or to index the array with a non-constant index. The
+non-constant-index restriction is required for soundness: with a runtime index the
+compiler cannot know at compile time which element was moved. The sibling elements
+that were not moved remain usable through constant-index projection (3.8:70).
+
+{{ rule(id="7.1:46", cat="legality-rule") }}
+
+While one or more elements of an array have been moved out, it is a compile-time
+error to assign into the array — to an element (`arr[k] = …`) or through an element
+(`arr[k].f = …`). An element write does not reinstate per-element ownership; the
+whole array **MUST** be reinitialized (`arr = [ … ]`) instead, which makes every
+element owned — and therefore droppable — again (3.8:72).
+
+{{ rule(id="7.1:47", cat="normative") }}
+
+An array whose element type carries a must-consume (linear) value satisfies its
+consumption obligation when every element has been moved out on every non-diverging
+path. Moving out only some elements, or moving an element on only some paths, is a
+compile-time error naming the elements that remain unconsumed (3.8:71).
+
+{{ rule(id="7.1:48", cat="dynamic-semantics") }}
+
+At scope exit — and when an array variable is overwritten — elements that were moved
+out on every path reaching that point are not dropped; an element moved out on only
+some paths is dropped exactly on the paths that did not move it; untouched elements
+are dropped in ascending index order (3.8:73).
