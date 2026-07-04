@@ -5,6 +5,10 @@
 //
 // The standard library provides common utilities organized into submodules:
 // - std.math: Mathematical functions
+// - std.option.Option: Optional values
+// - std.arraybuf.ArrayBuf: Growable heap-backed collections
 
-// Re-export the math module
+// Re-export library modules.
 pub const math = @import("math.rue");
+pub const option = @import("option.rue");
+pub const arraybuf = @import("arraybuf.rue");

@@ -1,0 +1,16 @@
+// Option(T) — an optional value, written in Rue as a comptime-generic enum.
+//
+//     const std = @import("std");
+//     let OptI = std.option.Option(i32);
+//     let x: OptI = OptI::Some(42);
+//     match x {
+//         OptI::Some(v) => v,
+//         OptI::None => 0,
+//     }
+//
+pub fn Option(comptime T: type) -> type {
+    enum {
+        Some(T),
+        None,
+    }
+}

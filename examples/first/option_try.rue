@@ -1,6 +1,6 @@
 // The `?` operator: Option propagation (RUE-6, ADR-0038).
 //
-//   $ rue examples/first/option_try.rue examples/std/option.rue -o try && ./try
+//   $ rue examples/first/option_try.rue -o try && ./try
 //   triple: 12
 //   triple: none
 //
@@ -18,7 +18,7 @@
 // `expr?` evaluates to the `Some` payload, and early-returns `None` from the
 // enclosing function (whose return type must itself be an `Option`) when `expr`
 // is `None`. The library `Option` is an ordinary comptime-generic enum, not a
-// builtin (examples/std/option.rue); `?` recognises it by shape (Some(T)/None).
+// builtin (see std/option.rue); `?` recognises it by shape (Some(T)/None).
 //
 // NOTE: `Option(i64)` names the type directly in a return position (RUE-241),
 // but constructing a variant or matching still needs a bound name

@@ -1,19 +1,19 @@
-// Dogfood for the source-level ArrayBuf(T) library (examples/std/arraybuf.rue,
-// RUE-1).
+// Dogfood for the source-level std.arraybuf.ArrayBuf(T) library (RUE-1,
+// RUE-315).
 //
-// Compile (flat multi-file namespace; names resolve across the listed files,
-// and ArrayBuf's `get`/`pop` return `Option(T)` from option.rue):
-//   rue examples/std/arraybuf_demo.rue examples/std/arraybuf.rue \
-//       examples/std/option.rue -o arraybuf_demo
+// Compile:
+//   RUE_STD_PATH=std rue examples/std/arraybuf_demo.rue -o arraybuf_demo
 //
 // Exercises push/len/get/set/pop/while-sum/out-of-bounds on an ArrayBuf(i32)
 // with the `Option(T)`-returning accessors (RUE-313). The buffer is freed
 // automatically when `v` goes out of scope (ArrayBuf's `drop fn`, RUE-312) — no
 // explicit `free()`.
 
+const std = @import("std");
+
 fn main() -> i32 {
-    let V = ArrayBuf(i32);
-    let O = Option(i32);
+    let V = std.arraybuf.ArrayBuf(i32);
+    let O = std.option.Option(i32);
 
     let mut v = V::new();
     v.push(10);
