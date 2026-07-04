@@ -598,7 +598,8 @@ mod tests {
 
     #[test]
     fn test_string_type_injected() {
-        // String type should exist after builtin injection
+        // StrBuf type should exist after builtin injection (ADR-0043; the
+        // growable-string type, formerly `String`).
         let output = compile_to_air(
             "fn main() -> i32 {
                 let s = \"hello\";
@@ -607,14 +608,14 @@ mod tests {
         )
         .unwrap();
 
-        // String struct should exist in the pool
+        // StrBuf struct should exist in the pool
         assert!(
             output
                 .type_pool
                 .all_struct_ids()
                 .iter()
                 .map(|id| output.type_pool.struct_def(*id))
-                .any(|s| s.name == "String")
+                .any(|s| s.name == "StrBuf")
         );
     }
 
@@ -889,26 +890,36 @@ mod tests {
 
     #[test]
     fn test_type_pool_populated_with_builtin_string() {
-        // The String type should be in the pool after builtin injection
+        // The StrBuf type should be in the pool after builtin injection
+        // (ADR-0043; formerly `String`).
         let sema = gather_declarations_for_testing("fn main() -> i32 { 0 }");
 
-        let string_name = sema.interner.get("String").unwrap();
-        let pool_string = sema.type_pool.get_struct_by_name(string_name);
+        let strbuf_name = sema.interner.get("StrBuf").unwrap();
+        let pool_string = sema.type_pool.get_struct_by_name(strbuf_name);
 
-        assert!(pool_string.is_some(), "String should be in the type pool");
+        assert!(pool_string.is_some(), "StrBuf should be in the type pool");
 
         // Verify the struct lookup has it
-        let registry_string = sema.structs.get(&string_name);
+        let registry_string = sema.structs.get(&strbuf_name);
         assert!(
             registry_string.is_some(),
-            "String should be in struct registry"
+            "StrBuf should be in struct registry"
+        );
+
+        // The deprecated `String` alias resolves to the *same* struct id in the
+        // registry, so existing `s: String` annotations keep type-checking.
+        let alias_name = sema.interner.get("String").unwrap();
+        assert_eq!(
+            sema.structs.get(&alias_name),
+            registry_string,
+            "`String` alias should resolve to the StrBuf struct"
         );
 
         // Check the pool definition
         let pool_def = sema.type_pool.get_struct_def(pool_string.unwrap()).unwrap();
 
-        assert_eq!(pool_def.name, "String");
-        assert!(pool_def.is_builtin, "String should be marked as builtin");
+        assert_eq!(pool_def.name, "StrBuf");
+        assert!(pool_def.is_builtin, "StrBuf should be marked as builtin");
     }
 
     #[test]

@@ -325,6 +325,22 @@ impl TypeInternPool {
         (StructId::from_pool_index(pool_index), true)
     }
 
+    /// Register an additional (alias) name for an already-registered struct.
+    ///
+    /// The alias resolves to the *same* struct via [`Self::get_struct_by_name`]
+    /// without creating a second struct entry, keeping the registry/pool
+    /// by-name invariant intact. Used for deprecated built-in type-name aliases
+    /// (ADR-0043: `String` is an alias for `StrBuf`). A no-op if `alias` is
+    /// already registered.
+    pub fn alias_struct_name(&self, alias: Spur, struct_id: StructId) {
+        let mut inner = self.inner.write().unwrap_or_else(PoisonError::into_inner);
+        if inner.struct_by_name.contains_key(&alias) {
+            return;
+        }
+        let interned = InternedType::from_pool_index(struct_id.pool_index());
+        inner.struct_by_name.insert(alias, interned);
+    }
+
     /// Reserve a struct ID without registering the full definition yet.
     ///
     /// This is used for anonymous structs where we need to know the ID before
@@ -916,12 +932,19 @@ impl TypeInternPool {
     /// structs (e.g., for drop glue synthesis).
     pub fn all_struct_ids(&self) -> Vec<StructId> {
         let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
+        // A struct may be reachable under more than one name (a deprecated
+        // type-name alias registered via `alias_struct_name`, e.g. ADR-0043's
+        // `String` -> `StrBuf`). De-duplicate by pool index so each struct is
+        // returned exactly once — callers such as drop-glue generation must not
+        // process the same struct twice.
+        let mut seen = std::collections::HashSet::new();
         inner
             .struct_by_name
             .values()
-            .map(|interned| {
+            .filter_map(|interned| {
                 let pool_index = interned.pool_index().expect("struct must have pool index");
-                StructId::from_pool_index(pool_index)
+                seen.insert(pool_index)
+                    .then(|| StructId::from_pool_index(pool_index))
             })
             .collect()
     }

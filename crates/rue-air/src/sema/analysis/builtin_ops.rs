@@ -71,13 +71,13 @@ impl<'a> Sema<'a> {
         let rhs_result = self.analyze_inst_for_projection(air, rhs, ctx)?;
         air.cancel_move_marker(rhs_result.air_ref);
 
-        // Defensive type check (HM inference already guarantees both are String
+        // Defensive type check (HM inference already guarantees both are StrBuf
         // when we get here; this guards against error-recovery paths).
         for operand in [&lhs_result, &rhs_result] {
             if !self.is_builtin_string(operand.ty) && !operand.ty.is_error() {
                 return Err(CompileError::new(
                     ErrorKind::TypeMismatch {
-                        expected: "String".to_string(),
+                        expected: "StrBuf".to_string(),
                         found: operand.ty.safe_name_with_pool(Some(&self.type_pool)),
                     },
                     span,
@@ -150,7 +150,7 @@ impl<'a> Sema<'a> {
                 },
                 span,
             )
-            .with_help(format!("`{fn_name}` takes exactly one String argument")));
+            .with_help(format!("`{fn_name}` takes exactly one StrBuf argument")));
         }
         let arg_value = args[0].value;
 
@@ -163,13 +163,13 @@ impl<'a> Sema<'a> {
         if !self.is_builtin_string(arg_result.ty) && !arg_result.ty.is_error() {
             return Err(CompileError::new(
                 ErrorKind::TypeMismatch {
-                    expected: "String".to_string(),
+                    expected: "StrBuf".to_string(),
                     found: arg_result.ty.safe_name_with_pool(Some(&self.type_pool)),
                 },
                 self.rir.get(arg_value).span,
             )
             .with_help(format!(
-                "`{fn_name}` takes a String; build one with `@to_string`, `+`, or String methods"
+                "`{fn_name}` takes a StrBuf; build one with `@to_string`, `+`, or StrBuf methods"
             )));
         }
 

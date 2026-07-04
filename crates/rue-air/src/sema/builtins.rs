@@ -1,7 +1,8 @@
 //! Built-in type injection for semantic analysis.
 //!
-//! This module handles injection of built-in types like String as synthetic
-//! structs, and built-in enums like Arch and Os as synthetic enums.
+//! This module handles injection of built-in types like `StrBuf` (the
+//! growable-string type, ADR-0043; formerly `String`) as synthetic structs,
+//! and built-in enums like Arch and Os as synthetic enums.
 //! Built-in types are registered before user code is processed,
 //! enabling collision detection and proper type resolution.
 
@@ -59,8 +60,21 @@ impl<'a> Sema<'a> {
             self.structs.insert(name_spur, struct_id);
 
             // Store special IDs for quick access
-            if builtin.name == "String" {
+            if builtin.name == "StrBuf" {
                 self.builtin_string_id = Some(struct_id);
+
+                // ADR-0043 renamed `String` -> `StrBuf`. Keep `String` as a
+                // deprecated source-level alias for one migration cycle: it
+                // resolves to the *same* synthetic struct, so existing code
+                // (`let s: String = ...`) keeps type-checking while new code
+                // uses `StrBuf`. The name also stays reserved
+                // (`is_reserved_type_name`) so users cannot shadow it.
+                let alias_spur = self.interner.get_or_intern(rue_builtins::STRING_ALIAS_NAME);
+                self.structs.insert(alias_spur, struct_id);
+                // Also alias the name in the type pool so pool-by-name lookups
+                // (`get_struct_by_name`) resolve `String`, keeping the
+                // registry/pool by-name invariant consistent.
+                self.type_pool.alias_struct_name(alias_spur, struct_id);
             }
 
             // Note: Associated functions and methods are not registered here.

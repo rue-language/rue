@@ -78,7 +78,7 @@ error_contains = "use of moved value"
 [[case]]
 name = "string_not_copy_field"
 spec = ["3.7:39"]
-description = "String is not Copy: a @copy struct with a String field is rejected."
+description = "StrBuf is not Copy: a @copy struct with a StrBuf field is rejected (via the deprecated `String` alias spelling)."
 source = """
 @copy
 struct Bad { s: String }
@@ -88,7 +88,7 @@ fn main() -> i32 {
 }
 """
 compile_fail = true
-error_contains = "non-Copy type 'String'"
+error_contains = "non-Copy type 'StrBuf'"
 
 # 3.7:39 — an unused String is dropped implicitly (affine, not linear).
 [[case]]
