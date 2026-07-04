@@ -110,7 +110,7 @@
 //!         let data_ptr = *ptr as *mut u8;
 //!         let cap = *ptr.add(2);
 //!         if cap > 0 {
-//!             __rue_free(data_ptr, cap as usize);
+//!             __rue_free(data_ptr, cap as usize, 1); // (ptr, size, align)
 //!         }
 //!     }
 //! }
@@ -477,8 +477,11 @@ pub static STRING_TYPE: BuiltinTypeDef = BuiltinTypeDef {
 // are lowered directly by Sema into `extern "C"` runtime calls (routed through
 // the ordinary sret / by-value call convention), and their runtime symbols live
 // under the reserved `__rue_` prefix like every other builtin runtime helper.
-// The names are collected here so there is a single source of truth for what
-// the compiler emits and what `rue-runtime` must define.
+// The formatting/print symbols below are collected here as consts. Note this is
+// NOT the complete set of directly-lowered runtime calls: String/str byte
+// indexing (`__rue_String_byte_at`, `__rue_str_byte_at`) and `chars()`
+// (`__rue_String_char_*`) are also Sema-lowered `extern "C"` calls, declared
+// near their use rather than in this block.
 
 /// Runtime symbol for `@to_string(n)` on a signed integer: formats an `i64` as
 /// its decimal representation into a freshly heap-allocated `String` (full range
@@ -770,6 +773,8 @@ mod tests {
             "push",
             "clear",
             "reserve",
+            "contains",
+            "starts_with",
         ];
         for name in expected_methods {
             assert!(
