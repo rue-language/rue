@@ -147,3 +147,29 @@ stdout = """610
 0
 """
 exit_code = 98
+
+# Enum structural equality with payloads: the same variant with a DIFFERENT
+# payload must not compare equal. Regression for RUE-348 — const-folding compared
+# only the variant tag, so `Opt::Some(5) == Opt::Some(6)` folded to `true` at
+# -O1+ while -O0 (deferring to codegen's structural compare) was correct.
+[[case]]
+name = "enum_payload_equality_across_opt_levels"
+differential_opt = true
+files = [{ path = "main.rue", source = """
+enum Opt { None, Some(i32) }
+
+fn main() -> i32 {
+    let ne: bool = Opt::Some(5) == Opt::Some(6);   // false: same variant, diff payload
+    let eq: bool = Opt::Some(5) == Opt::Some(5);   // true
+    let tag: bool = Opt::None == Opt::Some(0);     // false: different variant
+    if ne { @dbg(1); } else { @dbg(0); }
+    if eq { @dbg(1); } else { @dbg(0); }
+    if tag { @dbg(1); } else { @dbg(0); }
+    0
+}
+""" }]
+stdout = """0
+1
+0
+"""
+exit_code = 0
