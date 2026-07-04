@@ -68,6 +68,7 @@ exit_code = 30
 
 [[case]]
 name = "variable_not_visible_outside_block"
+error_contains = "[E0201]"
 spec = ["4.5:4", "4.5:6"]
 source = """
 fn main() -> i32 {

@@ -359,18 +359,21 @@ exit_code = 42
 
 [[case]]
 name = "identifier_cannot_be_keyword_fn"
+error_contains = "[E0100]"
 spec = ["2.1:12"]
 source = "fn main() -> i32 { let fn = 1; fn }"
 compile_fail = true
 
 [[case]]
 name = "identifier_cannot_be_keyword_let"
+error_contains = "[E0100]"
 spec = ["2.1:12"]
 source = "fn main() -> i32 { let let = 1; 0 }"
 compile_fail = true
 
 [[case]]
 name = "identifier_cannot_be_keyword_if"
+error_contains = "[E0100]"
 spec = ["2.1:12"]
 source = "fn main() -> i32 { let if = 1; 0 }"
 compile_fail = true

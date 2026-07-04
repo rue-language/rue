@@ -73,9 +73,13 @@ fn run_traceability(detailed: bool) {
         report.print_summary();
     }
 
-    // Exit with error if there are uncovered normative paragraphs or orphan references
-    // Informative paragraphs don't require test coverage
-    if report.normative_uncovered_count() > 0 || !report.orphan_references.is_empty() {
+    // Exit with error if the gate is failing: an *unexpected* uncovered
+    // normative paragraph (one not on the known-gap allowlist), a stale
+    // allowlist entry, or an orphan reference. Rules whose only tests are
+    // skipped/preview-allowed-to-fail no longer count as coverage (RUE-132);
+    // the ones tracked in KNOWN_UNCOVERED_NORMATIVE are reported but don't fail
+    // the gate. Informative paragraphs never require coverage.
+    if report.gate_failing() {
         std::process::exit(1);
     }
 }

@@ -10,96 +10,112 @@ description = "Keywords are reserved words with special meaning and cannot be us
 
 [[case]]
 name = "keyword_fn_reserved"
+error_contains = "[E0100]"
 spec = ["2.4:1", "2.4:2"]
 source = "fn main() -> i32 { let fn = 1; fn }"
 compile_fail = true
 
 [[case]]
 name = "keyword_let_reserved"
+error_contains = "[E0100]"
 spec = ["2.4:1", "2.4:2"]
 source = "fn main() -> i32 { let let = 1; 0 }"
 compile_fail = true
 
 [[case]]
 name = "keyword_mut_reserved"
+error_contains = "[E0100]"
 spec = ["2.4:1", "2.4:2"]
 source = "fn main() -> i32 { let mut = 1; 0 }"
 compile_fail = true
 
 [[case]]
 name = "keyword_if_reserved"
+error_contains = "[E0100]"
 spec = ["2.4:1", "2.4:2"]
 source = "fn main() -> i32 { let if = 1; 0 }"
 compile_fail = true
 
 [[case]]
 name = "keyword_else_reserved"
+error_contains = "[E0100]"
 spec = ["2.4:1", "2.4:2"]
 source = "fn main() -> i32 { let else = 1; 0 }"
 compile_fail = true
 
 [[case]]
 name = "keyword_while_reserved"
+error_contains = "[E0100]"
 spec = ["2.4:1", "2.4:2"]
 source = "fn main() -> i32 { let while = 1; 0 }"
 compile_fail = true
 
 [[case]]
 name = "keyword_loop_reserved"
+error_contains = "[E0100]"
 spec = ["2.4:1", "2.4:2"]
 source = "fn main() -> i32 { let loop = 1; 0 }"
 compile_fail = true
 
 [[case]]
 name = "keyword_match_reserved"
+error_contains = "[E0100]"
 spec = ["2.4:1", "2.4:2"]
 source = "fn main() -> i32 { let match = 1; 0 }"
 compile_fail = true
 
 [[case]]
 name = "keyword_return_reserved"
+error_contains = "[E0100]"
 spec = ["2.4:1", "2.4:2"]
 source = "fn main() -> i32 { let return = 1; 0 }"
 compile_fail = true
 
 [[case]]
 name = "keyword_break_reserved"
+error_contains = "[E0100]"
 spec = ["2.4:1", "2.4:2"]
 source = "fn main() -> i32 { let break = 1; 0 }"
 compile_fail = true
 
 [[case]]
 name = "keyword_continue_reserved"
+error_contains = "[E0100]"
 spec = ["2.4:1", "2.4:2"]
 source = "fn main() -> i32 { let continue = 1; 0 }"
 compile_fail = true
 
 [[case]]
 name = "keyword_true_reserved"
+error_contains = "[E0100]"
 spec = ["2.4:1", "2.4:2"]
 source = "fn main() -> i32 { let true = 1; 0 }"
 compile_fail = true
 
 [[case]]
 name = "keyword_false_reserved"
+error_contains = "[E0100]"
 spec = ["2.4:1", "2.4:2"]
 source = "fn main() -> i32 { let false = 1; 0 }"
 compile_fail = true
 
 [[case]]
 name = "keyword_struct_reserved"
+error_contains = "[E0100]"
 spec = ["2.4:1", "2.4:2"]
 source = "fn main() -> i32 { let struct = 1; 0 }"
 compile_fail = true
 
 [[case]]
 name = "keyword_inout_reserved"
+error_contains = "[E0100]"
 spec = ["2.4:1", "2.4:2"]
 source = "fn main() -> i32 { let inout = 1; 0 }"
 compile_fail = true
 
 [[case]]
 name = "keyword_borrow_reserved"
+error_contains = "[E0100]"
 spec = ["2.4:1", "2.4:2"]
 source = "fn main() -> i32 { let borrow = 1; 0 }"
 compile_fail = true
@@ -110,6 +126,7 @@ compile_fail = true
 
 [[case]]
 name = "type_i8_as_variable"
+error_contains = "[E0100]"
 spec = ["2.4:3"]
 source = """
 fn main() -> i32 {
@@ -121,6 +138,7 @@ compile_fail = true
 
 [[case]]
 name = "type_i16_as_variable"
+error_contains = "[E0100]"
 spec = ["2.4:3"]
 source = """
 fn main() -> i32 {
@@ -132,6 +150,7 @@ compile_fail = true
 
 [[case]]
 name = "type_i32_as_variable"
+error_contains = "[E0100]"
 spec = ["2.4:3"]
 source = """
 fn main() -> i32 {
@@ -143,6 +162,7 @@ compile_fail = true
 
 [[case]]
 name = "type_i64_as_variable"
+error_contains = "[E0100]"
 spec = ["2.4:3"]
 source = """
 fn main() -> i32 {
@@ -154,6 +174,7 @@ compile_fail = true
 
 [[case]]
 name = "type_u8_as_variable"
+error_contains = "[E0100]"
 spec = ["2.4:3"]
 source = """
 fn main() -> i32 {
@@ -165,6 +186,7 @@ compile_fail = true
 
 [[case]]
 name = "type_bool_as_variable"
+error_contains = "[E0100]"
 spec = ["2.4:3"]
 source = """
 fn main() -> i32 {
@@ -176,6 +198,7 @@ compile_fail = true
 
 [[case]]
 name = "type_i32_as_function_name"
+error_contains = "[E0100]"
 spec = ["2.4:3"]
 source = """
 fn i32() -> i32 { 0 }
@@ -185,6 +208,7 @@ compile_fail = true
 
 [[case]]
 name = "type_bool_as_parameter"
+error_contains = "[E0100]"
 spec = ["2.4:3"]
 source = """
 fn foo(bool: i32) -> i32 { 0 }
@@ -194,6 +218,7 @@ compile_fail = true
 
 [[case]]
 name = "type_i32_as_struct_name"
+error_contains = "[E0100]"
 spec = ["2.4:3"]
 source = """
 struct i32 { x: i64 }
@@ -203,6 +228,7 @@ compile_fail = true
 
 [[case]]
 name = "type_bool_as_struct_field"
+error_contains = "[E0100]"
 spec = ["2.4:3"]
 source = """
 struct Foo { bool: i32 }

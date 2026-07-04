@@ -65,6 +65,7 @@ params = [
 
 [[case]]
 name = "ordering_{op}_on_bool"
+error_contains = "[E0206]"
 spec = ["4.3:5"]
 source = """
 fn main() -> i32 {
@@ -106,6 +107,7 @@ params = [
 
 [[case]]
 name = "type_mismatch_{types}"
+error_contains = "[E0206]"
 spec = ["4.3:10"]
 source = """
 fn main() -> i32 {
@@ -187,6 +189,7 @@ params = [
 
 [[case]]
 name = "unit_ordering_disallowed"
+error_contains = "[E0206]"
 spec = ["4.3:6"]
 source = """
 fn main() -> i32 {
@@ -248,6 +251,7 @@ exit_code = 1
 
 [[case]]
 name = "struct_ordering_disallowed"
+error_contains = "[E0206]"
 spec = ["4.3:6"]
 source = """
 struct Point { x: i32, y: i32 }
@@ -346,6 +350,7 @@ exit_code = 1
 
 [[case]]
 name = "array_ordering_disallowed"
+error_contains = "[E0206]"
 spec = ["4.3:6"]
 source = """
 fn main() -> i32 {
@@ -414,6 +419,7 @@ params = [
 
 [[case]]
 name = "enum_clike_ordering_disallowed"
+error_contains = "[E0206]"
 spec = ["4.3:6"]
 source = """
 enum Color { Red, Green }

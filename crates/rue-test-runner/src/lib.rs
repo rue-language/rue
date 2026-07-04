@@ -496,6 +496,34 @@ pub fn expand_case(case: Case) -> Vec<Case> {
                     expanded.timeout_ms = Some(i as u64);
                 }
             }
+            // A per-param `error_contains` / `expected_error` lets a
+            // parameterized case give each variant its own diagnostic assertion
+            // (e.g. a mix of failing and succeeding variants). Without honoring
+            // it here, the override was silently dropped and never checked — the
+            // same vacuous-pass hole RUE-132 closes elsewhere. Accepts a string
+            // or an array of strings, matching the case-level field.
+            if let Some(value) = params.get("error_contains") {
+                match value {
+                    toml::Value::String(s) => {
+                        expanded.error_contains =
+                            ErrorContains(vec![substitute_placeholders(s, params)]);
+                    }
+                    toml::Value::Array(arr) => {
+                        expanded.error_contains = ErrorContains(
+                            arr.iter()
+                                .filter_map(|v| v.as_str())
+                                .map(|s| substitute_placeholders(s, params))
+                                .collect(),
+                        );
+                    }
+                    _ => {}
+                }
+            }
+            if let Some(value) = params.get("expected_error") {
+                if let Some(s) = value.as_str() {
+                    expanded.expected_error = Some(substitute_placeholders(s, params));
+                }
+            }
 
             // Merge spec_extra into spec
             if let Some(value) = params.get("spec_extra") {
@@ -629,6 +657,62 @@ pub fn validate_error_assertions(test_file: &TestFile) -> Vec<StrayErrorAssertio
     errors
 }
 
+/// An error indicating a `compile_fail` case declares no error assertion at all
+/// (neither `error_contains` nor `expected_error`).
+///
+/// Without an assertion, such a case passes on *any* rejection — a diagnostic
+/// for an unrelated reason, or (before ICE detection) even a compiler crash —
+/// so it verifies nothing about *why* the program is rejected. Requiring at
+/// least one assertion at load time forces every `compile_fail` case to pin the
+/// specific error it is testing (RUE-132).
+#[derive(Debug, Clone)]
+pub struct BareCompileFailError {
+    /// The name of the offending test case.
+    pub test_name: String,
+    /// The section ID the test belongs to.
+    pub section_id: String,
+}
+
+impl std::fmt::Display for BareCompileFailError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "test '{}::{}' is `compile_fail` but declares no `error_contains` or \
+             `expected_error` — it would pass on ANY rejection, verifying nothing \
+             about why the program is rejected. Add an assertion pinning the \
+             specific error (e.g. `error_contains = \"[E0206]\"`).",
+            self.section_id, self.test_name
+        )
+    }
+}
+
+impl std::error::Error for BareCompileFailError {}
+
+/// Validate that every `compile_fail` case declares at least one error
+/// assertion. Returns one error per offending case.
+///
+/// This is the inverse of [`validate_error_assertions`]: that check rejects a
+/// compile-error assertion on a case that is *not* `compile_fail`; this one
+/// rejects a `compile_fail` case that carries *no* such assertion.
+pub fn validate_compile_fail_assertions(test_file: &TestFile) -> Vec<BareCompileFailError> {
+    let mut errors = Vec::new();
+    for case in &test_file.case {
+        if !case.compile_fail {
+            continue;
+        }
+        let has_error_contains = !case.error_contains.is_empty();
+        let has_expected_error = case.expected_error.is_some();
+        if has_error_contains || has_expected_error {
+            continue;
+        }
+        errors.push(BareCompileFailError {
+            test_name: case.name.clone(),
+            section_id: test_file.section.id.clone(),
+        });
+    }
+    errors
+}
+
 /// Recursively collect all files with the given extension from a directory.
 pub fn collect_files_by_ext(dir: &Path, ext: &str, files: &mut Vec<PathBuf>) {
     if let Ok(entries) = fs::read_dir(dir) {
@@ -664,6 +748,7 @@ pub fn load_test_files(cases_dir: &Path) -> Vec<(String, TestFile)> {
     let mut specs = Vec::new();
     let mut preview_errors: Vec<UnknownPreviewFeatureError> = Vec::new();
     let mut stray_error_assertions: Vec<StrayErrorAssertionError> = Vec::new();
+    let mut bare_compile_fail: Vec<BareCompileFailError> = Vec::new();
 
     if !cases_dir.exists() {
         eprintln!(
@@ -697,6 +782,9 @@ pub fn load_test_files(cases_dir: &Path) -> Vec<(String, TestFile)> {
 
                 // Reject compile-error assertions on cases that aren't compile_fail
                 stray_error_assertions.extend(validate_error_assertions(&spec));
+
+                // Reject `compile_fail` cases that carry no error assertion at all
+                bare_compile_fail.extend(validate_compile_fail_assertions(&spec));
 
                 // Build a relative path from cases_dir to create the identifier
                 // e.g., "expressions/match" for "cases/expressions/match.toml"
@@ -761,6 +849,23 @@ Error: {} test file(s) failed to load:",
             "Test loading failed: {} case(s) set `error_contains`/`expected_error` without \
              `compile_fail`. See errors above for details.",
             stray_error_assertions.len()
+        );
+    }
+
+    // Report bare compile_fail cases and fail if any were found
+    if !bare_compile_fail.is_empty() {
+        eprintln!(
+            "\nError: Found {} `compile_fail` case(s) with no error assertion:",
+            bare_compile_fail.len()
+        );
+        for error in &bare_compile_fail {
+            eprintln!("  - {}", error);
+        }
+        panic!(
+            "Test loading failed: {} `compile_fail` case(s) declare neither \
+             `error_contains` nor `expected_error`, so they pass on any rejection. \
+             See errors above for details.",
+            bare_compile_fail.len()
         );
     }
 
@@ -1701,6 +1806,48 @@ mod tests {
     }
 
     #[test]
+    fn test_expand_case_per_param_error_contains_override() {
+        // A mixed parameterized case: one failing variant with its own
+        // `error_contains`, one succeeding variant with none. The per-param
+        // override must land on the failing variant (and be substituted), while
+        // the succeeding variant carries no assertion — so the bare-compile_fail
+        // guard is satisfied for the former and doesn't fire on the latter.
+        let toml = r#"
+[section]
+id = "t.section"
+name = "T"
+
+[[case]]
+name = "mixed_{variant}"
+source = "fn f() -> {ty} { {body} }"
+params = [
+  { variant = "bad", ty = "i32", body = "true", compile_fail = true, error_contains = "expected {ty}" },
+  { variant = "ok", ty = "i32", body = "0", compile_fail = false, exit_code = 0 },
+]
+"#;
+        let tf: TestFile = toml::from_str(toml).expect("valid TOML");
+        let expanded = expand_test_file(tf);
+        let cases = &expanded.case;
+        assert_eq!(cases.len(), 2);
+
+        let bad = cases.iter().find(|c| c.name == "mixed_bad").unwrap();
+        assert!(bad.compile_fail);
+        // Placeholder in the override is substituted with the param value.
+        assert_eq!(
+            bad.error_contains,
+            ErrorContains(vec!["expected i32".to_string()])
+        );
+
+        let ok = cases.iter().find(|c| c.name == "mixed_ok").unwrap();
+        assert!(!ok.compile_fail);
+        assert!(ok.error_contains.is_empty());
+
+        // The guard accepts the failing variant and ignores the succeeding one.
+        assert!(validate_compile_fail_assertions(&expanded).is_empty());
+        assert!(validate_error_assertions(&expanded).is_empty());
+    }
+
+    #[test]
     fn test_toml_value_to_string() {
         assert_eq!(
             toml_value_to_string(&toml::Value::String("hello".to_string())),
@@ -2261,5 +2408,78 @@ mod tests {
             .expect("large stdin echoed to stdout should complete");
         assert!(output.status.success());
         assert_eq!(output.stdout.len(), 200_000);
+    }
+
+    // Tests for the load-time guard requiring every `compile_fail` case to
+    // declare an error assertion (RUE-132). A bare `compile_fail` case passes on
+    // ANY rejection, verifying nothing about *why* the program is rejected.
+
+    #[test]
+    fn test_bare_compile_fail_case_is_rejected() {
+        let toml = r#"
+[section]
+id = "test.section"
+name = "Test"
+
+[[case]]
+name = "bare_reject"
+compile_fail = true
+source = "fn main() -> i32 { true }"
+"#;
+        let tf: TestFile = toml::from_str(toml).expect("valid TOML");
+        let errors = validate_compile_fail_assertions(&tf);
+        assert_eq!(errors.len(), 1, "bare compile_fail case must be flagged");
+        assert_eq!(errors[0].test_name, "bare_reject");
+        assert_eq!(errors[0].section_id, "test.section");
+    }
+
+    #[test]
+    fn test_compile_fail_with_error_contains_is_accepted() {
+        let toml = r#"
+[section]
+id = "test.section"
+name = "Test"
+
+[[case]]
+name = "pinned_reject"
+compile_fail = true
+error_contains = "[E0206]"
+source = "fn main() -> i32 { true }"
+"#;
+        let tf: TestFile = toml::from_str(toml).expect("valid TOML");
+        assert!(validate_compile_fail_assertions(&tf).is_empty());
+    }
+
+    #[test]
+    fn test_compile_fail_with_expected_error_is_accepted() {
+        let toml = r#"
+[section]
+id = "test.section"
+name = "Test"
+
+[[case]]
+name = "golden_reject"
+compile_fail = true
+expected_error = "error: [E0206]: type mismatch"
+source = "fn main() -> i32 { true }"
+"#;
+        let tf: TestFile = toml::from_str(toml).expect("valid TOML");
+        assert!(validate_compile_fail_assertions(&tf).is_empty());
+    }
+
+    #[test]
+    fn test_non_compile_fail_case_needs_no_error_assertion() {
+        let toml = r#"
+[section]
+id = "test.section"
+name = "Test"
+
+[[case]]
+name = "runs_fine"
+source = "fn main() -> i32 { 42 }"
+exit_code = 42
+"#;
+        let tf: TestFile = toml::from_str(toml).expect("valid TOML");
+        assert!(validate_compile_fail_assertions(&tf).is_empty());
     }
 }

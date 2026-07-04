@@ -450,6 +450,20 @@ impl<'a> Interp<'a> {
                 }
                 Value::Int(bytes[idx as usize] as i128)
             }
+            // `str` byte indexing `s[i]` (ADR-0043 Phase 3, RUE-324): the runtime
+            // `__rue_str_byte_at(ptr, len, index)` is the 2-word analog of
+            // `__rue_String_byte_at`, reading the i-th PACKED byte with the same
+            // bounds-check-and-trap discipline. Modeled identically over the byte
+            // content (the `str` receiver is `arg[0]`, the index `arg[1]`).
+            "__rue_str_byte_at" => {
+                let text = s(&args[0]);
+                let bytes = text.as_bytes();
+                let idx = args[1].as_int();
+                if idx < 0 || idx as u128 >= bytes.len() as u128 {
+                    return Err(Flow::Panic(Panic("index out of bounds".into())));
+                }
+                Value::Int(bytes[idx as usize] as i128)
+            }
             // `for c in s.chars()` scalar view (RUE-220): `__rue_String_char_scalar`
             // decodes the Unicode scalar at byte `offset`, and
             // `__rue_String_char_next` returns the byte offset of the following

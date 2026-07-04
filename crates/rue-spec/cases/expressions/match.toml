@@ -433,6 +433,7 @@ exit_code = 1
 
 [[case]]
 name = "non_exhaustive_int"
+error_contains = "[E0600]"
 spec = ["4.7:9", "4.7:10"]
 source = """
 fn main() -> i32 {
@@ -446,6 +447,7 @@ compile_fail = true
 
 [[case]]
 name = "non_exhaustive_bool_missing_false"
+error_contains = "[E0600]"
 spec = ["4.7:9", "4.7:10"]
 source = """
 fn main() -> i32 {
@@ -458,6 +460,7 @@ compile_fail = true
 
 [[case]]
 name = "non_exhaustive_bool_missing_true"
+error_contains = "[E0600]"
 spec = ["4.7:9", "4.7:10"]
 source = """
 fn main() -> i32 {
@@ -474,6 +477,7 @@ compile_fail = true
 
 [[case]]
 name = "empty_match"
+error_contains = "[E0601]"
 spec = ["4.7:9"]
 source = """
 fn main() -> i32 {
@@ -492,6 +496,7 @@ compile_fail = true
 
 [[case]]
 name = "arm_type_mismatch"
+error_contains = "[E0206]"
 spec = ["4.7:12"]
 source = """
 fn main() -> i32 {
@@ -509,6 +514,7 @@ compile_fail = true
 
 [[case]]
 name = "pattern_type_mismatch"
+error_contains = "[E0206]"
 spec = ["4.7:13"]
 source = """
 fn main() -> i32 {
@@ -835,6 +841,7 @@ error_contains = "unary operator"
 
 [[case]]
 name = "negative_pattern_on_u8_scrutinee"
+error_contains = "[E0801]"
 spec = ["4.7:24"]
 source = """
 fn main() -> i32 {
@@ -968,6 +975,7 @@ exit_code = 20
 # Wrong number of bindings for a variant's payload arity is rejected (4.7:30).
 [[case]]
 name = "match_payload_binding_wrong_arity"
+error_contains = "[E0207]"
 spec = ["4.7:30"]
 source = """
 enum Shape { Rect(i32, i32) }

@@ -280,19 +280,22 @@ impl<'a> ConstraintGenerator<'a> {
         }
     }
 
-    /// Is `ty` the synthetic slice struct `[T]` (ADR-0043, RUE-322)? A slice
-    /// parameter accepts an array argument by coercion (`sum(borrow a)`), so the
-    /// constraint generator must NOT impose strict `arg == param` equality when
-    /// the parameter is a slice; the real element-compatibility check and the
-    /// fat-pointer materialization happen in semantic analysis.
+    /// Is `ty` the synthetic slice struct `[T]` (ADR-0043, RUE-322) or the
+    /// `str` string type (RUE-324)? A slice parameter accepts an array argument
+    /// by coercion (`sum(borrow a)`), and a `str` position accepts a string
+    /// literal (whose HM type is `String`) by coercion, so the constraint
+    /// generator must NOT impose strict `arg == expected` equality when the
+    /// expected type is a slice or `str`; the real compatibility check and the
+    /// fat-pointer/`str` materialization happen in semantic analysis.
     fn is_slice_struct_type(&self, ty: InferType) -> bool {
         if let InferType::Concrete(t) = ty
             && let Some(id) = t.as_struct()
         {
             let name = &self.type_pool.struct_def(id).name;
-            return name.starts_with('[')
-                && name.ends_with(']')
-                && crate::types::parse_array_type_syntax(name).is_none();
+            return name == "str"
+                || (name.starts_with('[')
+                    && name.ends_with(']')
+                    && crate::types::parse_array_type_syntax(name).is_none());
         }
         false
     }
@@ -751,11 +754,19 @@ impl<'a> ConstraintGenerator<'a> {
                         .map(|ty| self.type_to_infer(ty))
                         .or_else(|| self.resolve_type_name(self.interner.resolve(ty_sym)));
                     if let Some(annotated_ty) = annotated {
-                        self.add_constraint(Constraint::equal(
-                            init_info.ty,
-                            annotated_ty.clone(),
-                            span,
-                        ));
+                        // A `str` annotation (ADR-0043 Phase 3, RUE-324) accepts
+                        // a string literal (HM type `String`) by coercion, and a
+                        // `[T]` slice annotation is second-class (rejected by
+                        // sema anyway); in both cases skip strict equality and
+                        // let sema materialize the value (mirrors the call-arg
+                        // slice/`str` coercion below).
+                        if !self.is_slice_struct_type(annotated_ty.clone()) {
+                            self.add_constraint(Constraint::equal(
+                                init_info.ty,
+                                annotated_ty.clone(),
+                                span,
+                            ));
+                        }
                         annotated_ty
                     } else {
                         // Unknown type name (e.g., struct/enum) - use init type for now.
@@ -788,8 +799,14 @@ impl<'a> ConstraintGenerator<'a> {
             InstData::Assign { name, value } => {
                 let value_info = self.generate(*value, ctx);
                 if let Some(local) = ctx.locals.get(name) {
-                    // Constrain value to match variable type
-                    self.add_constraint(Constraint::equal(value_info.ty, local.ty.clone(), span));
+                    let local_ty = local.ty.clone();
+                    // A `str` target (ADR-0043 Phase 3, RUE-324) accepts a string
+                    // literal (HM type `String`) by coercion; skip strict
+                    // equality and let sema materialize the `str` on the store.
+                    if !self.is_slice_struct_type(local_ty.clone()) {
+                        // Constrain value to match variable type
+                        self.add_constraint(Constraint::equal(value_info.ty, local_ty, span));
+                    }
                 }
                 // Assignment produces unit
                 InferType::Concrete(Type::UNIT)
@@ -799,12 +816,17 @@ impl<'a> ConstraintGenerator<'a> {
             InstData::Ret(value) => {
                 if let Some(val_ref) = value {
                     let value_info = self.generate(*val_ref, ctx);
-                    // Constrain return value to match function return type
-                    self.add_constraint(Constraint::equal(
-                        value_info.ty,
-                        InferType::Concrete(ctx.return_type),
-                        span,
-                    ));
+                    // Constrain return value to match function return type. A
+                    // `str` return (ADR-0043 Phase 3, RUE-324) accepts a string
+                    // literal (HM type `String`) by coercion; skip strict
+                    // equality there and let sema materialize the `str`.
+                    if !self.is_slice_struct_type(InferType::Concrete(ctx.return_type)) {
+                        self.add_constraint(Constraint::equal(
+                            value_info.ty,
+                            InferType::Concrete(ctx.return_type),
+                            span,
+                        ));
+                    }
                 } else {
                     // Return without value - function must return unit
                     self.add_constraint(Constraint::equal(
@@ -1560,7 +1582,16 @@ impl<'a> ConstraintGenerator<'a> {
                         let value_info = self.generate(*value_ref, ctx);
                         if let Some(field_ty) = self.field_type_of(struct_ty, *field_name) {
                             let expected = self.type_to_infer(field_ty);
-                            self.add_constraint(Constraint::equal(value_info.ty, expected, span));
+                            // A `str` field (ADR-0043 Phase 3, RUE-324) accepts a
+                            // string literal (HM type `String`) by coercion; skip
+                            // strict equality and let sema materialize the `str`.
+                            if !self.is_slice_struct_type(expected.clone()) {
+                                self.add_constraint(Constraint::equal(
+                                    value_info.ty,
+                                    expected,
+                                    span,
+                                ));
+                            }
                         }
                     }
                     InferType::Concrete(struct_ty)

@@ -42,6 +42,7 @@ exit_code = 101
 
 [[case]]
 name = "constant_index_checked"
+error_contains = "[E0902]"
 spec = ["8.2:3"]
 source = """
 fn main() -> i32 {
@@ -57,6 +58,7 @@ compile_fail = true
 
 [[case]]
 name = "constant_expression_addition_checked"
+error_contains = "[E0902]"
 spec = ["8.2:3", "8.2:4"]
 source = """
 fn main() -> i32 {
@@ -68,6 +70,7 @@ compile_fail = true
 
 [[case]]
 name = "constant_expression_multiplication_checked"
+error_contains = "[E0902]"
 spec = ["8.2:3", "8.2:4"]
 source = """
 fn main() -> i32 {
@@ -90,6 +93,7 @@ exit_code = 30
 
 [[case]]
 name = "constant_expression_complex_checked"
+error_contains = "[E0902]"
 spec = ["8.2:3", "8.2:4"]
 source = """
 fn main() -> i32 {
@@ -126,6 +130,7 @@ exit_code = 30
 
 [[case]]
 name = "constant_expression_division_out_of_bounds"
+error_contains = "[E0902]"
 spec = ["8.2:3", "8.2:4"]
 source = """
 fn main() -> i32 {

@@ -81,6 +81,7 @@ exit_code = 42
 
 [[case]]
 name = "array_bounds_compile_time"
+error_contains = "[E0902]"
 spec = ["3.5:7"]
 source = """
 fn main() -> i32 {

@@ -1,0 +1,186 @@
+# The `str` string type (ADR-0043 Phase 3, RUE-324).
+#
+# `str` is `[u8]` + the UTF-8 byte-string convention: a read-only two-word view
+# `{ptr, len}`. String literals have type `str` where a `str` is expected, are
+# static-backed (bytes in .rodata), and are first-class (Copy, storable,
+# reassignable, returnable). `.len()` is the byte length; `s[i]` is the i-th
+# byte as `u8`, bounds-checked (an out-of-range index traps, exit 101).
+#
+# Gated behind `--preview string_trio`. Deferred to later phases: `str`
+# concatenation, comparison/equality, `str`<->`String` interop, methods beyond
+# `.len()`/index, and char iteration.
+
+[section]
+id = "types.str_type"
+spec_chapter = "3.7"
+name = "The str Type"
+description = "str is the read-only [u8] byte-string slice with static-backed first-class literals."
+
+# 3.7:43 — `str` is a resolvable type, gated behind `--preview string_trio`.
+[[case]]
+name = "str_type_requires_preview"
+spec = ["3.7:43"]
+source = """
+fn main() -> i32 {
+    let s: str = "hello";
+    0
+}
+"""
+compile_fail = true
+error_contains = "requires preview feature"
+
+# 3.7:43 / 3.7:44 — a string literal has type `str` where a `str` is expected,
+# static-backed and storable in a binding.
+[[case]]
+name = "str_literal_binding"
+spec = ["3.7:43", "3.7:44"]
+preview = "string_trio"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    let s: str = "hello";
+    0
+}
+"""
+exit_code = 0
+
+# 3.7:45 — `.len()` is the byte length.
+[[case]]
+name = "str_len_bytes"
+spec = ["3.7:45"]
+preview = "string_trio"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    let s: str = "hello";
+    @intCast(s.len())
+}
+"""
+exit_code = 5
+
+# 3.7:45 — `.len()` counts bytes, not scalars (a multibyte char).
+[[case]]
+name = "str_len_multibyte"
+spec = ["3.7:45"]
+preview = "string_trio"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    let s: str = "café";   // 5 bytes ('é' is 2 bytes)
+    @intCast(s.len())
+}
+"""
+exit_code = 5
+
+# 3.7:46 — `s[i]` is the i-th byte as `u8`.
+[[case]]
+name = "str_byte_index"
+spec = ["3.7:46"]
+preview = "string_trio"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    let s: str = "hello";
+    @dbg(s[0]);   // 104 'h'
+    @dbg(s[1]);   // 101 'e'
+    @dbg(s[4]);   // 111 'o'
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "104\n101\n111\n"
+
+# 3.7:46 — byte indexing sees raw bytes, not char boundaries.
+[[case]]
+name = "str_byte_index_multibyte"
+spec = ["3.7:46"]
+preview = "string_trio"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    let s: str = "café";   // 'c' 'a' 'f' 0xC3 0xA9
+    @dbg(s[3]);   // 195 (0xC3)
+    @dbg(s[4]);   // 169 (0xA9)
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "195\n169\n"
+
+# 3.7:47 — an out-of-bounds byte index traps (exit 101).
+[[case]]
+name = "str_byte_index_oob_traps"
+spec = ["3.7:47"]
+preview = "string_trio"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    let s: str = "hi";
+    let b: u8 = s[9];
+    @intCast(b)
+}
+"""
+exit_code = 101
+
+# 3.7:44 — a literal `str` is first-class: passable as a `str` argument.
+[[case]]
+name = "str_first_class_param"
+spec = ["3.7:44"]
+preview = "string_trio"
+preview_should_pass = true
+source = """
+fn first(s: str) -> u8 {
+    s[0]
+}
+fn main() -> i32 {
+    @intCast(first("hello"))
+}
+"""
+exit_code = 104
+
+# 3.7:44 — a literal `str` is first-class: returnable from a function.
+[[case]]
+name = "str_first_class_return"
+spec = ["3.7:44"]
+preview = "string_trio"
+preview_should_pass = true
+source = """
+fn greeting() -> str {
+    "hello"
+}
+fn main() -> i32 {
+    let s: str = greeting();
+    @intCast(s.len())
+}
+"""
+exit_code = 5
+
+# 3.7:44 — a literal `str` is first-class: storable in a struct field.
+[[case]]
+name = "str_first_class_struct_field"
+spec = ["3.7:44"]
+preview = "string_trio"
+preview_should_pass = true
+source = """
+struct Named { label: str }
+fn main() -> i32 {
+    let n: Named = Named { label: "hey" };
+    @intCast(n.label.len())
+}
+"""
+exit_code = 3
+
+# 3.7:44 — a `str` is `@copy` and reassignable.
+[[case]]
+name = "str_first_class_reassign"
+spec = ["3.7:44"]
+preview = "string_trio"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    let mut s: str = "hello";
+    s = "hi";
+    @intCast(s.len())
+}
+"""
+exit_code = 2

@@ -140,11 +140,18 @@ impl<'a> Sema<'a> {
         // The function body's type must match the return type.
         // This handles implicit returns like `fn foo() -> i8 { 42 }`.
         // For arrays, we need to convert Type to InferType structurally.
-        cgen.add_constraint(Constraint::equal(
-            body_info.ty,
-            self.type_to_infer_type(return_type),
-            body_info.span,
-        ));
+        //
+        // A `str` return type (ADR-0043 Phase 3, RUE-324) accepts an
+        // implicit-return string literal (HM type `String`) by coercion; skip
+        // strict equality there and let sema materialize the static-backed
+        // first-class `str` at the tail expression.
+        if !self.is_str_struct(return_type) {
+            cgen.add_constraint(Constraint::equal(
+                body_info.ty,
+                self.type_to_infer_type(return_type),
+                body_info.span,
+            ));
+        }
 
         // Consume the constraint generator to release borrows
         let (constraints, int_literal_vars, expr_types, type_var_count) = cgen.into_parts();

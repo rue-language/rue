@@ -639,6 +639,46 @@ crate::define_for_all_platforms! {
     }
 }
 
+crate::define_for_all_platforms! {
+    /// Read the byte at `index` in a `str`, returning it as `u8` (ADR-0043
+    /// Phase 3, RUE-324).
+    ///
+    /// Implements `s[i]` for the `str` string type. A `str` is `[u8]` + UTF-8:
+    /// its bytes are PACKED (1 byte each, in `.rodata` for a literal), so like
+    /// `String` this reads a single byte at `ptr + index` after a bounds check.
+    /// It is the 2-word (`{ptr, len}`) analog of `__rue_String_byte_at`, without
+    /// the (nonexistent) `cap` word. An `index >= len` traps at runtime
+    /// (index-out-of-bounds panic, exit 101), matching array/`String` indexing.
+    ///
+    /// # ABI
+    ///
+    /// ```text
+    /// extern "C" fn __rue_str_byte_at(ptr: *const u8, len: u64, index: u64) -> u64
+    /// ```
+    ///
+    /// The `str` is passed by value as its two fields (ptr, len); the byte is
+    /// returned zero-extended in the return register — see the
+    /// `__rue_String_byte_at` ABI note on why a clean full register is required.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure `ptr` points to a valid buffer of at least `len`
+    /// bytes. The in-range read below is then sound because the bounds check
+    /// guarantees `index < len`.
+    #[allow(non_snake_case)]
+    pub extern "C" fn __rue_str_byte_at(ptr: *const u8, len: u64, index: u64) -> u64 {
+        if index >= len {
+            // Never returns: prints "error: index out of bounds" and exits 101.
+            crate::error::__rue_bounds_check();
+        }
+        // SAFETY: `index < len` (checked above) and the caller guarantees `ptr`
+        // is valid for `len` bytes, so `ptr.add(index)` is in bounds. u8 has no
+        // alignment requirement. Zero-extend to u64 so the whole return
+        // register is clean (see the `__rue_String_byte_at` ABI note).
+        unsafe { *ptr.add(index as usize) as u64 }
+    }
+}
+
 /// Strictly decode one UTF-8 scalar starting at byte `offset` in the `len`-byte
 /// buffer at `ptr`, returning `(scalar, width_in_bytes)`.
 ///

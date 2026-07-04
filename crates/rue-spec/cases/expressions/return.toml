@@ -72,6 +72,7 @@ exit_code = 42
 
 [[case]]
 name = "return_type_mismatch"
+error_contains = "[E0206]"
 spec = ["4.9:4"]
 source = """
 fn main() -> i32 {

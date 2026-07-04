@@ -1,0 +1,138 @@
+# The `str` string type — executable regression tests (ADR-0043 Phase 3,
+# RUE-324).
+#
+# `str` is `[u8]` + the UTF-8 byte-string convention: a read-only two-word view
+# `{ptr, len}` that reuses the slice representation. String literals have type
+# `str` where a `str` is expected, and are STATIC-BACKED — their bytes live in
+# `.rodata`, and the value is `{ptr -> rodata bytes, len = byte length}` (a
+# 2-word value, not the 3-word heap `String`). Because static data cannot
+# dangle, a literal `str` is FIRST-CLASS: `@copy`, storable, reassignable,
+# returnable, passable.
+#
+# `.len()` reads the runtime `len` word (byte length). `s[i]` reads the i-th
+# PACKED byte via `__rue_str_byte_at(ptr, len, index)` (bounds-checked, traps
+# exit 101) — packed bytes, NOT the 8-byte-slotted stride an array slice uses.
+#
+# Deferred to later phases: `str` concat/comparison, `str`<->`String` interop,
+# methods beyond `.len()`/index, and char iteration.
+
+[section]
+id = "cli.str_type"
+name = "str type (ADR-0043 Phase 3)"
+description = "Static-backed first-class string literals: len(), packed byte-indexing, params, storage."
+
+# The canonical verify-by-execution: a `str` local, `.len()` == 5, and s[0] the
+# first byte 'h' == 104.
+[[case]]
+name = "str_len_and_first_byte"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let s: str = "hello";
+    let n: u64 = s.len();
+    let b: u8 = s[0];
+    if n == 5 && b == 104 { 42 } else { 0 }
+}
+""" }]
+args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+exit_code = 42
+
+# Byte indexing sees raw packed bytes (a multibyte char decomposes into its
+# UTF-8 bytes), never char boundaries. "café" = c a f 0xC3 0xA9.
+[[case]]
+name = "str_packed_byte_indexing"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let s: str = "café";
+    @dbg(s.len());   // 5 bytes
+    @dbg(s[2]);      // 102 'f'
+    @dbg(s[3]);      // 195 0xC3
+    @dbg(s[4]);      // 169 0xA9
+    0
+}
+""" }]
+args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+exit_code = 0
+stdout = "5\n102\n195\n169\n"
+
+# An out-of-bounds byte index traps at runtime (exit 101), like array/String.
+[[case]]
+name = "str_index_out_of_bounds_traps"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let s: str = "hi";
+    let b: u8 = s[5];
+    @intCast(b)
+}
+""" }]
+args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+exit_code = 101
+
+# A `str` parameter receives a string literal (first-class argument) and a
+# forwarded `str` variable, both by value.
+[[case]]
+name = "str_param_literal_and_forward"
+files = [{ path = "main.rue", source = """
+fn first_byte(s: str) -> u8 {
+    s[0]
+}
+fn len_of(s: str) -> u64 {
+    s.len()
+}
+fn main() -> i32 {
+    let lit: u8 = first_byte("hello");     // 104
+    let s: str = "world";
+    let n: u64 = len_of(s);                 // 5 (forwarded str var)
+    if lit == 104 && n == 5 { 7 } else { 0 }
+}
+""" }]
+args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+exit_code = 7
+
+# A literal `str` is first-class: returned from a function, stored in a struct
+# field, and reassigned through a `let mut`.
+[[case]]
+name = "str_first_class_return_store_reassign"
+files = [{ path = "main.rue", source = """
+struct Tag { name: str }
+fn pick(b: bool) -> str {
+    if b { return "yes"; }
+    "no"
+}
+fn main() -> i32 {
+    let t: Tag = Tag { name: "abc" };       // stored in a field
+    let picked: str = pick(true);           // returned
+    let mut m: str = "hello";
+    m = "hi";                               // reassigned
+    // 3 (field) + 3 (picked "yes") + 2 (m "hi") = 8
+    @intCast(t.name.len() + picked.len() + m.len())
+}
+""" }]
+args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+exit_code = 8
+
+# Without the preview flag, `str` is gated with a clear diagnostic (not an ICE).
+[[case]]
+name = "str_requires_preview_flag"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let s: str = "hello";
+    @intCast(s.len())
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["requires preview feature"]
+
+# A string literal with NO `str` expectation stays the 3-word heap `String`, so
+# existing String operations are unaffected by the `str` preview.
+[[case]]
+name = "str_preview_does_not_change_string_default"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let s = "hello";        // no annotation -> String
+    let t: String = s;      // String, not str
+    @intCast(t.len())
+}
+""" }]
+args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+exit_code = 5

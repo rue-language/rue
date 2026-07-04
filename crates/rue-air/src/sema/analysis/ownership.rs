@@ -598,6 +598,26 @@ impl<'a> Sema<'a> {
     ) -> CompileResult<Vec<AirCallArg>> {
         let mut air_args = Vec::with_capacity(args.len());
         for (i, arg) in args.iter().enumerate() {
+            // A `str` parameter (ADR-0043 Phase 3, RUE-324) is a first-class
+            // 2-word value, not a `borrow`-materialized fat pointer. A string
+            // literal argument materializes as a `str` under the expected type;
+            // a `str` variable is passed through by value. Either way it flows
+            // through the by-value aggregate ABI, so it is handled here before
+            // the array→slice `borrow` coercion below.
+            let is_str_param = param_types.get(i).is_some_and(|pt| self.is_str_struct(*pt));
+            if is_str_param {
+                let str_ty = param_types[i];
+                let prev_expected = ctx.expected_type.replace(str_ty);
+                let arg_result = self.analyze_inst(air, arg.value, ctx);
+                ctx.expected_type = prev_expected;
+                let arg_result = arg_result?;
+                air_args.push(AirCallArg {
+                    value: arg_result.air_ref,
+                    mode: AirArgMode::Normal,
+                });
+                continue;
+            }
+
             let is_slice_param = param_types
                 .get(i)
                 .is_some_and(|pt| self.slice_element_type(*pt).is_some());

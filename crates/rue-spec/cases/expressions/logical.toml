@@ -146,6 +146,7 @@ exit_code = 1
 
 [[case]]
 name = "and_requires_bool_left"
+error_contains = "[E0206]"
 spec = ["4.4:12"]
 source = """
 fn main() -> i32 {
@@ -156,6 +157,7 @@ compile_fail = true
 
 [[case]]
 name = "and_requires_bool_right"
+error_contains = "[E0206]"
 spec = ["4.4:12"]
 source = """
 fn main() -> i32 {
@@ -166,6 +168,7 @@ compile_fail = true
 
 [[case]]
 name = "or_requires_bool_left"
+error_contains = "[E0206]"
 spec = ["4.4:12"]
 source = """
 fn main() -> i32 {
@@ -176,6 +179,7 @@ compile_fail = true
 
 [[case]]
 name = "not_requires_bool"
+error_contains = "[E0206]"
 spec = ["4.4:12"]
 source = """
 fn main() -> i32 {

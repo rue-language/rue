@@ -42,6 +42,7 @@ exit_code = 0
 
 [[case]]
 name = "while_condition_must_be_bool"
+error_contains = "[E0206]"
 spec = ["4.8:3"]
 source = """
 fn main() -> i32 {
@@ -145,6 +146,7 @@ exit_code = 4
 
 [[case]]
 name = "break_outside_loop"
+error_contains = "[E0500]"
 spec = ["4.8:9"]
 source = """
 fn main() -> i32 {
@@ -156,6 +158,7 @@ compile_fail = true
 
 [[case]]
 name = "continue_outside_loop"
+error_contains = "[E0501]"
 spec = ["4.8:9"]
 source = """
 fn main() -> i32 {
