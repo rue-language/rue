@@ -4,10 +4,10 @@
 //! diagnostic) and therefore can't easily run inside the chumsky
 //! combinators, which only carry pre-interned symbols in their state.
 //!
-//! Currently this validates @-directive names: an unknown directive such as
-//! `@important fn main() ...` used to be silently accepted and ignored,
-//! turning typos like `@alllow(...)` into no-ops. Unknown directives are now
-//! a compile error naming the directive. (RUE-133)
+//! Currently this validates @-directive names, arguments, and placement: an
+//! unknown directive such as `@important fn main() ...` used to be silently
+//! accepted and ignored, turning typos like `@alllow(...)` into no-ops.
+//! Unknown directives are now a compile error naming the directive. (RUE-133)
 //!
 //! Note this covers *directive* position only (before items and `let`
 //! statements). Expression-position `@name(...)` intrinsics (`@dbg`,
@@ -27,6 +27,14 @@ use rue_error::{CompileError, ErrorKind};
 /// - `copy`   — marks a struct as a copy type (see `has_copy_directive`)
 pub const KNOWN_DIRECTIVES: &[&str] = &["allow", "copy"];
 
+/// Warning names accepted by `@allow(...)`.
+///
+/// This validates spelling at parse time even for warnings whose emission or
+/// suppression is still pending, so typos like `@allow(unused_variabl)` fail
+/// loudly instead of becoming no-op directives (RUE-356).
+pub const KNOWN_WARNING_NAMES: &[&str] =
+    &["unused_variable", "unused_function", "unreachable_code"];
+
 /// Walk the AST and report every directive whose name is not in
 /// [`KNOWN_DIRECTIVES`].
 pub fn check_directives(ast: &Ast, interner: &ThreadedRodeo) -> Vec<CompileError> {
@@ -45,8 +53,29 @@ struct Validator<'a> {
     errors: Vec<CompileError>,
 }
 
+#[derive(Clone, Copy)]
+enum DirectiveSite {
+    Function,
+    Struct,
+    Method,
+    Const,
+    Let,
+}
+
+impl DirectiveSite {
+    fn description(self) -> &'static str {
+        match self {
+            DirectiveSite::Function => "functions",
+            DirectiveSite::Struct => "structs",
+            DirectiveSite::Method => "methods",
+            DirectiveSite::Const => "const declarations",
+            DirectiveSite::Let => "let statements",
+        }
+    }
+}
+
 impl Validator<'_> {
-    fn check_directives(&mut self, directives: &[Directive]) {
+    fn check_directives(&mut self, directives: &[Directive], site: DirectiveSite) {
         for directive in directives {
             let name = self.interner.resolve(&directive.name.name);
             if !KNOWN_DIRECTIVES.contains(&name) {
@@ -57,13 +86,57 @@ impl Validator<'_> {
                     )),
                     directive.span,
                 ));
-            } else if name == "copy" && !directive.args.is_empty() {
-                // Arity is per-directive: @copy takes no arguments (spec
-                // 2.5), while @allow legitimately takes lint names.
-                self.errors.push(CompileError::new(
-                    ErrorKind::ParseError("@copy takes no arguments".to_string()),
-                    directive.span,
-                ));
+                continue;
+            }
+
+            match name {
+                "copy" => {
+                    if !matches!(site, DirectiveSite::Struct) {
+                        self.errors.push(CompileError::new(
+                            ErrorKind::ParseError(format!(
+                                "@copy can only be applied to structs, not {}",
+                                site.description()
+                            )),
+                            directive.span,
+                        ));
+                    } else if !directive.args.is_empty() {
+                        // Arity is per-directive: @copy takes no arguments
+                        // (spec 2.5), while @allow legitimately takes lint names.
+                        self.errors.push(CompileError::new(
+                            ErrorKind::ParseError("@copy takes no arguments".to_string()),
+                            directive.span,
+                        ));
+                    }
+                }
+                "allow" => {
+                    if !matches!(
+                        site,
+                        DirectiveSite::Function | DirectiveSite::Method | DirectiveSite::Let
+                    ) {
+                        self.errors.push(CompileError::new(
+                            ErrorKind::ParseError(format!(
+                                "@allow can only be applied to functions, methods, or let statements, not {}",
+                                site.description()
+                            )),
+                            directive.span,
+                        ));
+                    }
+
+                    for arg in &directive.args {
+                        let crate::ast::DirectiveArg::Ident(ident) = arg;
+                        let warning = self.interner.resolve(&ident.name);
+                        if !KNOWN_WARNING_NAMES.contains(&warning) {
+                            self.errors.push(CompileError::new(
+                                ErrorKind::ParseError(format!(
+                                    "unrecognized warning name '{warning}' in @allow; known warnings are {}",
+                                    KNOWN_WARNING_NAMES.join(", ")
+                                )),
+                                ident.span,
+                            ));
+                        }
+                    }
+                }
+                _ => unreachable!("known directive list and validator are out of sync"),
             }
         }
     }
@@ -71,11 +144,11 @@ impl Validator<'_> {
     fn check_item(&mut self, item: &Item) {
         match item {
             Item::Function(f) => {
-                self.check_directives(&f.directives);
+                self.check_directives(&f.directives, DirectiveSite::Function);
                 self.check_expr(&f.body);
             }
             Item::Struct(s) => {
-                self.check_directives(&s.directives);
+                self.check_directives(&s.directives, DirectiveSite::Struct);
                 for method in &s.methods {
                     self.check_method(method);
                 }
@@ -83,7 +156,7 @@ impl Validator<'_> {
             Item::Enum(_) => {}
             Item::DropFn(d) => self.check_expr(&d.body),
             Item::Const(c) => {
-                self.check_directives(&c.directives);
+                self.check_directives(&c.directives, DirectiveSite::Const);
                 self.check_expr(&c.init);
             }
             Item::Error(_) => {}
@@ -91,14 +164,14 @@ impl Validator<'_> {
     }
 
     fn check_method(&mut self, method: &Method) {
-        self.check_directives(&method.directives);
+        self.check_directives(&method.directives, DirectiveSite::Method);
         self.check_expr(&method.body);
     }
 
     fn check_statement(&mut self, statement: &Statement) {
         match statement {
             Statement::Let(l) => {
-                self.check_directives(&l.directives);
+                self.check_directives(&l.directives, DirectiveSite::Let);
                 self.check_expr(&l.init);
             }
             Statement::Assign(a) => self.check_expr(&a.value),

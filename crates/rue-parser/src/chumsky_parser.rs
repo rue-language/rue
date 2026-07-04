@@ -3549,7 +3549,8 @@ mod tests {
     fn test_struct_method_with_directive() {
         // Must use a KNOWN directive: unknown ones are rejected post-parse
         // by `validate::check_directives` (RUE-133).
-        let result = parse("struct Foo { @allow(something) fn bar(self) -> i32 { 42 } }").unwrap();
+        let result =
+            parse("struct Foo { @allow(unused_variable) fn bar(self) -> i32 { 42 } }").unwrap();
         match &result.ast.items[0] {
             Item::Struct(struct_decl) => {
                 let method = &struct_decl.methods[0];
@@ -3581,6 +3582,36 @@ mod tests {
         let msg = format!("{}", err.first().expect("expected at least one error"));
         assert!(
             msg.contains("unknown directive '@alllow'"),
+            "unexpected message: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_unknown_allow_warning_rejected() {
+        let err = parse("fn main() -> i32 { @allow(unused_variabl) let x = 1; 0 }").unwrap_err();
+        let msg = format!("{}", err.first().expect("expected at least one error"));
+        assert!(
+            msg.contains("unrecognized warning name 'unused_variabl'"),
+            "unexpected message: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_copy_directive_on_function_rejected() {
+        let err = parse("@copy\nfn main() -> i32 { 0 }").unwrap_err();
+        let msg = format!("{}", err.first().expect("expected at least one error"));
+        assert!(
+            msg.contains("@copy can only be applied to structs"),
+            "unexpected message: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_copy_directive_on_let_rejected() {
+        let err = parse("fn main() -> i32 { @copy let x = 1; x }").unwrap_err();
+        let msg = format!("{}", err.first().expect("expected at least one error"));
+        assert!(
+            msg.contains("@copy can only be applied to structs"),
             "unexpected message: {msg}"
         );
     }
