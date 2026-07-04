@@ -23,7 +23,7 @@ pub mod harness;
 mod mutate;
 mod targets;
 
-use harness::{CrashReporter, RunOutcome, run_forked};
+use harness::{CrashReporter, DEFAULT_PER_INPUT_TIMEOUT, RunOutcome, run_forked_with_timeout};
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -48,6 +48,7 @@ pub struct FuzzStats {
     pub crashes: u64,
     pub panics: u64,
     pub signals: u64,
+    pub timeouts: u64,
     pub unique_crashes: u64,
     pub elapsed: Duration,
 }
@@ -66,11 +67,12 @@ impl std::fmt::Display for FuzzStats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "runs: {}, crashes: {} (panics: {}, signals: {}, unique: {}), exec/s: {:.1}, elapsed: {:.1}s",
+            "runs: {}, crashes: {} (panics: {}, signals: {}, timeouts: {}, unique: {}), exec/s: {:.1}, elapsed: {:.1}s",
             self.runs,
             self.crashes,
             self.panics,
             self.signals,
+            self.timeouts,
             self.unique_crashes,
             self.exec_per_sec(),
             self.elapsed.as_secs_f64()
@@ -86,6 +88,13 @@ pub struct FuzzConfig {
     pub mutate: bool,
     pub crash_dir: Option<PathBuf>,
     pub print_interval: u64,
+    /// Wall-clock budget per input; a child still running after this is
+    /// SIGKILLed and counted as a Timeout crash.
+    pub per_input_timeout: Duration,
+    /// Mutation RNG seed. `None` = derive from the clock (each run explores a
+    /// fresh sequence); the chosen seed is printed so any run can be replayed
+    /// with `--seed=`.
+    pub seed: Option<u64>,
 }
 
 impl Default for FuzzConfig {
@@ -96,6 +105,8 @@ impl Default for FuzzConfig {
             mutate: false,
             crash_dir: None,
             print_interval: 1000,
+            per_input_timeout: DEFAULT_PER_INPUT_TIMEOUT,
+            seed: None,
         }
     }
 }
@@ -121,6 +132,7 @@ pub fn run_fuzzer<T: FuzzTarget + ?Sized>(
     let mut runs: u64 = 0;
     let mut panics: u64 = 0;
     let mut signals: u64 = 0;
+    let mut timeouts: u64 = 0;
     let mut crashes: u64 = 0;
 
     // Reproducer writing + dedup lives here; each distinct crash signature is
@@ -128,7 +140,20 @@ pub fn run_fuzzer<T: FuzzTarget + ?Sized>(
     // can't bury the crashes dir under thousands of identical files.
     let mut reporter = CrashReporter::new(config.crash_dir.clone());
 
-    let mut rng = mutate::SimpleRng::new(42);
+    // A fixed default seed would make every nightly run explore a byte-identical
+    // input sequence (a regression re-run, not fuzzing). Default to a per-run
+    // seed and print it so any run is still reproducible.
+    let seed = config.seed.unwrap_or_else(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(42)
+    });
+    eprintln!(
+        "[{}] seed: {seed} (replay with --seed={seed})",
+        target.name()
+    );
+    let mut rng = mutate::SimpleRng::new(seed);
 
     loop {
         let elapsed = start.elapsed();
@@ -153,13 +178,14 @@ pub fn run_fuzzer<T: FuzzTarget + ?Sized>(
         // Run each input in a forked child so that *aborts* (stack overflow,
         // OOM, SIGABRT/SIGSEGV/SIGFPE) are detected via the child's wait-status,
         // not just Rust panics. This is the core RUE-43 fix.
-        let outcome = run_forked(|| target.fuzz(&input));
+        let outcome = run_forked_with_timeout(|| target.fuzz(&input), config.per_input_timeout);
 
         if outcome.is_crash() {
             crashes += 1;
             match &outcome {
                 RunOutcome::Panic(_) => panics += 1,
                 RunOutcome::Signal(_) => signals += 1,
+                RunOutcome::Timeout(_) => timeouts += 1,
                 RunOutcome::Ok => unreachable!(),
             }
             reporter.report(target.name(), &input, &outcome);
@@ -173,6 +199,7 @@ pub fn run_fuzzer<T: FuzzTarget + ?Sized>(
                 crashes,
                 panics,
                 signals,
+                timeouts,
                 unique_crashes: reporter.unique_crashes,
                 elapsed,
             };
@@ -185,6 +212,7 @@ pub fn run_fuzzer<T: FuzzTarget + ?Sized>(
         crashes,
         panics,
         signals,
+        timeouts,
         unique_crashes: reporter.unique_crashes,
         elapsed: start.elapsed(),
     })
@@ -231,6 +259,11 @@ fn main() {
             config.crash_dir = Some(PathBuf::from(&arg["--crash-dir=".len()..]));
         } else if arg.starts_with("--print-interval=") {
             config.print_interval = arg["--print-interval=".len()..].parse().unwrap_or(1000);
+        } else if arg.starts_with("--per-input-timeout=") {
+            let secs: u64 = arg["--per-input-timeout=".len()..].parse().unwrap_or(5);
+            config.per_input_timeout = Duration::from_secs(secs.max(1));
+        } else if arg.starts_with("--seed=") {
+            config.seed = arg["--seed=".len()..].parse().ok();
         } else if !arg.starts_with('-') {
             if target_name.is_none() {
                 target_name = Some(arg.clone());
@@ -304,8 +337,12 @@ fn main() {
             eprintln!("\nFuzzing complete: {}", stats);
             if stats.crashes > 0 {
                 eprintln!(
-                    "Found {} crash(es): {} panic(s), {} signal(s); {} unique reproducer(s) saved.",
-                    stats.crashes, stats.panics, stats.signals, stats.unique_crashes
+                    "Found {} crash(es): {} panic(s), {} signal(s), {} timeout(s); {} unique reproducer(s) saved.",
+                    stats.crashes,
+                    stats.panics,
+                    stats.signals,
+                    stats.timeouts,
+                    stats.unique_crashes
                 );
                 std::process::exit(1);
             }
@@ -334,18 +371,21 @@ fn print_usage(program: &str) {
         program
     );
     eprintln!();
+    // Driven from all_targets() so this list can't drift from reality again
+    // (it used to omit emitter/emitter_sequence).
     eprintln!("Targets:");
-    eprintln!("  lexer       Fuzz the lexer (tokenization)");
-    eprintln!("  parser      Fuzz the parser (AST construction)");
-    eprintln!("  sema        Fuzz semantic analysis (type checking, inference)");
-    eprintln!("  compiler    Fuzz the full frontend (through sema)");
+    for target in targets::all_targets() {
+        eprintln!("  {}", target.name());
+    }
     eprintln!();
     eprintln!("Options:");
-    eprintln!("  --mutate              Enable input mutation");
-    eprintln!("  --max-time=<secs>     Maximum time to run");
-    eprintln!("  --max-runs=<n>        Maximum number of runs");
-    eprintln!("  --crash-dir=<dir>     Directory to save crashes");
-    eprintln!("  --print-interval=<n>  Print progress every N runs");
+    eprintln!("  --mutate                   Enable input mutation");
+    eprintln!("  --max-time=<secs>          Maximum time to run");
+    eprintln!("  --max-runs=<n>             Maximum number of runs");
+    eprintln!("  --crash-dir=<dir>          Directory to save crashes");
+    eprintln!("  --print-interval=<n>       Print progress every N runs");
+    eprintln!("  --per-input-timeout=<secs> Kill+report inputs running longer (default 5)");
+    eprintln!("  --seed=<n>                 Mutation RNG seed (default: per-run, printed)");
     eprintln!();
     eprintln!("Examples:");
     eprintln!("  {} --init-corpus corpus/", program);

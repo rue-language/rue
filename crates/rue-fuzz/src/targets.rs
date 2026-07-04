@@ -5,11 +5,31 @@
 //! - Parser: AST construction
 //! - Sema: semantic analysis (type checking, name resolution)
 //! - Compiler: full compilation pipeline (frontend only, no codegen)
-//! - Emitter: x86-64 instruction encoding
-//! - Regalloc: register allocation stress testing
+//! - Emitter: x86-64 instruction encoding (single instructions and sequences)
 
 use super::FuzzTarget;
 use rue_codegen::x86_64::{Emitter, Operand, Reg, X86Inst, X86Mir};
+
+/// Panic if the frontend reported an *internal* error.
+///
+/// A graceful ICE (`ice_error!` -> `ErrorKind::InternalError`) is an ordinary
+/// `Err` value, not a panic — so without this check the harness classifies it
+/// as a clean run and the #1 thing fuzzing exists to find is invisible.
+/// Panicking here (in the forked child) surfaces it with the ICE text as its
+/// dedup signature. Legitimate user-facing errors pass through silently.
+fn assert_no_ice<T>(result: &rue_compiler::MultiErrorResult<T>) {
+    if let Err(errors) = result {
+        for e in errors.iter() {
+            if matches!(
+                e.kind,
+                rue_compiler::ErrorKind::InternalError(_)
+                    | rue_compiler::ErrorKind::InternalCodegenError(_)
+            ) {
+                panic!("graceful ICE: {e}");
+            }
+        }
+    }
+}
 
 /// Fuzz target for the lexer.
 ///
@@ -83,7 +103,8 @@ impl FuzzTarget for SemaTarget {
             // - Affine type checking (partial moves, linearity)
             // - Name resolution
             // - Multi-error collection
-            let _ = rue_compiler::compile_frontend(source);
+            let result = rue_compiler::compile_frontend(source);
+            assert_no_ice(&result);
         }
     }
 }
@@ -103,7 +124,8 @@ impl FuzzTarget for CompilerTarget {
         if let Ok(source) = std::str::from_utf8(input) {
             // Use compile_frontend to avoid code generation (which is slower)
             // and focus on the analysis phases where bugs are more likely
-            let _ = rue_compiler::compile_frontend(source);
+            let result = rue_compiler::compile_frontend(source);
+            assert_no_ice(&result);
         }
     }
 }
