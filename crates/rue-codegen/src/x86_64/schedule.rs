@@ -727,30 +727,54 @@ fn build_dep_graph(instructions: &[X86Inst], start: usize, end: usize) -> Vec<Sc
 }
 
 /// Calculate priority for each node (critical path length to exit).
+///
+/// `priority[idx] = latency[idx] + max(priority[u] for u in users[idx])`, i.e.
+/// the longest path from `idx` to any exit node in the dependency DAG. This is
+/// computed with an explicit-stack, memoized post-order traversal rather than
+/// recursion: a straight-line block of N dependent instructions forms a
+/// user-chain of depth N, and a recursive DFS would overflow the Rust stack on
+/// large inputs (e.g. a several-thousand-element array literal — RUE-346).
+/// The traversal visits each node/edge a bounded number of times, so it stays
+/// linear (no O(n²) regression — cf. RUE-302).
 fn calculate_priorities(nodes: &mut [SchedNode]) {
     let mut memo: HashMap<usize, u32> = HashMap::new();
+    // Each stack entry is `(node, expanded)`. On first pop (`expanded == false`)
+    // we re-push the node as expanded and push its not-yet-computed users above
+    // it; on the second pop (`expanded == true`) every user is memoized, so we
+    // can finalize this node. The `memo` guard makes duplicate pushes (a shared
+    // user reached via several parents) harmless.
+    let mut stack: Vec<(usize, bool)> = Vec::new();
 
-    fn dfs(nodes: &[SchedNode], idx: usize, memo: &mut HashMap<usize, u32>) -> u32 {
-        if let Some(&cached) = memo.get(&idx) {
-            return cached;
+    for start in 0..nodes.len() {
+        if memo.contains_key(&start) {
+            continue;
         }
-
-        let node = &nodes[idx];
-        let max_user = node
-            .users
-            .iter()
-            .map(|&u| dfs(nodes, u, memo))
-            .max()
-            .unwrap_or(0);
-
-        let result = node.latency + max_user;
-        memo.insert(idx, result);
-        result
+        stack.push((start, false));
+        while let Some((idx, expanded)) = stack.pop() {
+            if memo.contains_key(&idx) {
+                continue;
+            }
+            if expanded {
+                let max_user = nodes[idx]
+                    .users
+                    .iter()
+                    .map(|&u| memo[&u])
+                    .max()
+                    .unwrap_or(0);
+                memo.insert(idx, nodes[idx].latency + max_user);
+            } else {
+                stack.push((idx, true));
+                for &u in &nodes[idx].users {
+                    if !memo.contains_key(&u) {
+                        stack.push((u, false));
+                    }
+                }
+            }
+        }
     }
 
     for i in 0..nodes.len() {
-        let priority = dfs(nodes, i, &mut memo);
-        nodes[i].priority = priority;
+        nodes[i].priority = memo[&i];
     }
 }
 

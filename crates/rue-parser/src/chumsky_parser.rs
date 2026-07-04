@@ -152,6 +152,12 @@ where
             span: span_from_extra(e),
         },
     }
+    // A bare `select!` filter cannot enumerate its accepted tokens, so on
+    // failure chumsky would report the useless catch-all "expected something
+    // else". `ident_parser` is used pervasively (parameter/field/method names,
+    // directive and intrinsic names, ...), so naming what is wanted here fixes
+    // that message across the whole grammar. (RUE-19)
+    .labelled("identifier")
 }
 
 /// Parser for the `?` (try) postfix suffix (RUE-6, ADR-0038). Kept as a
@@ -1836,7 +1842,13 @@ where
         comptime_expr,
         checked_expr,
         block_expr,
-    ));
+    ))
+    // When every atom alternative fails at this position none of them can
+    // enumerate its accepted token set (the literal/`self` branches are bare
+    // `select!` filters), so chumsky would otherwise report the useless
+    // catch-all "expected something else". Describe the syntactic context
+    // instead: at an atom position what is wanted is an expression. (RUE-19)
+    .labelled("expression");
 
     // Wrap primary expressions with field access, method call, and indexing suffixes
     with_suffix_parser(primary, expr)
@@ -2823,14 +2835,31 @@ fn convert_error(err: Rich<'_, TokenKind>, file_id: FileId) -> CompileError {
             let expected_str: Cow<'static, str> = if expected.is_empty() {
                 Cow::Borrowed("something")
             } else {
-                Cow::Owned(
-                    expected
-                        .iter()
-                        .take(3) // Limit to first 3 for readability
-                        .map(format_pattern)
-                        .collect::<Vec<_>>()
-                        .join(" or "),
-                )
+                // Format every expected pattern, then dedupe: chumsky can list
+                // the *same* pattern once per failed alternative that wanted it
+                // (e.g. `identifier` from several branches). Preserve order.
+                let mut names: Vec<String> = Vec::new();
+                for pat in expected.iter() {
+                    let s = format_pattern(pat);
+                    if !names.contains(&s) {
+                        names.push(s);
+                    }
+                }
+                // Drop the useless "something else" catch-all whenever a
+                // concrete alternative is present — it carries no information
+                // next to a real token or a named context. Only when it is the
+                // *sole* expectation do we keep it as a last resort. (RUE-19)
+                if names.iter().any(|n| n != "something else") {
+                    names.retain(|n| n != "something else");
+                }
+                // Cap the enumeration so a position that accepts many operators
+                // does not produce a wall of text.
+                const MAX_EXPECTED: usize = 4;
+                if names.len() > MAX_EXPECTED {
+                    names.truncate(MAX_EXPECTED);
+                    names.push("…".to_string());
+                }
+                Cow::Owned(names.join(" or "))
             };
 
             let found_str: Cow<'static, str> = match found.as_ref() {

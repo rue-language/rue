@@ -3,6 +3,11 @@
 # These pin the user-facing wording of common syntax errors: type-position
 # expectations, the array-length position, the `self`-placement help, and that
 # a `self` in the wrong place is reported exactly once (no cascading duplicate).
+#
+# They also pin RUE-19 item 1: the parser no longer emits the opaque catch-all
+# "expected something else". A missing identifier now says `expected
+# identifier`, a missing atom says `expected expression`, and the catch-all is
+# dropped from any enumeration that already lists a concrete alternative.
 
 [section]
 id = "diagnostics.parser_messages"
@@ -58,3 +63,47 @@ struct Foo {
 """
 compile_fail = true
 error_contains = ["found 'self'", "methods take `self` as the first parameter"]
+
+[[case]]
+name = "missing_identifier_names_identifier"
+description = """
+RUE-19 item 1: `ident_parser` is a bare `select!` filter that used to render as
+the opaque "expected something else". A directive name that is not an identifier
+now reports `expected identifier` and never the catch-all.
+"""
+source = """
+@ 3 struct Foo {}
+"""
+compile_fail = true
+error_contains = ["expected identifier"]
+
+[[case]]
+name = "missing_expression_names_expression"
+description = """
+RUE-19 item 1: an atom position that starts with none of the literal/`self`/etc.
+branches (all bare `select!` filters) now summarizes the whole atom grammar as
+`expected ... or expression`, never the opaque "something else".
+"""
+source = """
+fn main() -> i32 {
+    let x = ;
+    0
+}
+"""
+compile_fail = true
+error_contains = ["expression"]
+
+[[case]]
+name = "catch_all_dropped_beside_concrete"
+description = """
+RUE-19 item 1: when a concrete alternative is available (here the `drop`
+keyword, valid as an intrinsic name after `@`), the useless "something else"
+catch-all is dropped from the enumeration rather than shown alongside it.
+"""
+source = """
+fn main() -> i32 {
+    @ 4
+}
+"""
+compile_fail = true
+error_contains = ["expected identifier or 'drop'"]
