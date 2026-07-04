@@ -207,13 +207,13 @@ impl<'a> Sema<'a> {
 
         Err(CompileError::new(
             ErrorKind::TypeMismatch {
-                expected: "an array or a String".to_string(),
+                expected: "an array or a StrBuf".to_string(),
                 found: coll_type.safe_name_with_pool(Some(&self.type_pool)),
             },
             span,
         )
         .with_help(
-            "`for` can iterate an array, a String's bytes, or a String's \
+            "`for` can iterate an array, a StrBuf's bytes, or a StrBuf's \
              `.chars()` view",
         ))
     }
@@ -240,12 +240,12 @@ impl<'a> Sema<'a> {
         if !self.is_builtin_string(coll_result.ty) && !coll_result.ty.is_error() {
             return Err(CompileError::new(
                 ErrorKind::TypeMismatch {
-                    expected: "String".to_string(),
+                    expected: "StrBuf".to_string(),
                     found: coll_result.ty.safe_name_with_pool(Some(&self.type_pool)),
                 },
                 span,
             )
-            .with_help("`.chars()` iteration is only available on a String"));
+            .with_help("`.chars()` iteration is only available on a StrBuf"));
         }
 
         let pos_result = self.analyze_inst(air, pos, ctx)?;
@@ -802,12 +802,12 @@ impl<'a> Sema<'a> {
             inst_ref,
             string_type,
             "read_line",
-            "String",
+            "StrBuf",
             span,
         )?;
 
         // The intrinsic lowers to a runtime call whose result codegen packs
-        // into this `Option(String)` enum (discriminant + String payload).
+        // into this `Option(StrBuf)` enum (discriminant + StrBuf payload).
         let air_ref = air.add_inst(AirInst {
             data: AirInstData::Intrinsic {
                 name,
@@ -935,17 +935,17 @@ impl<'a> Sema<'a> {
             ));
         }
 
-        // Analyze the argument - String borrows are handled by
-        // analyze_inst_for_projection to avoid consuming the String
+        // Analyze the argument - StrBuf borrows are handled by
+        // analyze_inst_for_projection to avoid consuming the StrBuf
         let arg_result = self.analyze_inst_for_projection(air, args[0].value, ctx)?;
         let arg_type = arg_result.ty;
 
-        // Argument must be a String
+        // Argument must be a StrBuf
         if !self.is_builtin_string(arg_type) {
             return Err(CompileError::new(
                 ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
                     name: format!("@{}", intrinsic_name_str),
-                    expected: "String".to_string(),
+                    expected: "StrBuf".to_string(),
                     found: arg_type.safe_name_with_pool(Some(&self.type_pool)),
                 })),
                 span,

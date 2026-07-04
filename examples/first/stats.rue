@@ -9,7 +9,7 @@
 //   max: 7
 //
 // This is a *natural read-until-EOF loop* — no count prefix. Error handling
-// landed (RUE-6, ADR-0038), so @read_line returns Option(String) (None at EOF)
+// landed (RUE-6, ADR-0038), so @read_line returns Option(StrBuf) (None at EOF)
 // and @parse_i64 returns Option(i64) (None on a non-numeric line) instead of
 // trapping. The `read_num` helper chains them with the `?` operator (RUE-318):
 // `@read_line()?` short-circuits the helper to `None` at end-of-input, and the
@@ -28,7 +28,7 @@
 // optional type built in.
 //
 // Exercises the dogfooding set end to end: @read_line, @parse_i64, the `?`
-// operator, a generic Option, String concatenation + @to_string, println, a
+// operator, a generic Option, StrBuf concatenation + @to_string, println, a
 // loop, and match.
 
 fn Option(comptime T: type) -> type {

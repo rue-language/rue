@@ -1149,7 +1149,8 @@ fn main() -> i32 {
 }
 """
 compile_fail = true
-error_contains = "String"
+# ADR-0043: the growable-string type is now named `StrBuf` in diagnostics.
+error_contains = "StrBuf"
 
 [[case]]
 name = "parse_empty_string_yields_none"

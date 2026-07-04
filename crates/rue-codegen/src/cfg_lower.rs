@@ -371,7 +371,7 @@ pub fn type_uses_sret_return(type_pool: &TypeInternPool, ty: Type, ret_reg_budge
     match ty.kind() {
         TypeKind::Struct(struct_id) => {
             let struct_def = type_pool.struct_def(struct_id);
-            if struct_def.is_builtin && struct_def.name == "String" {
+            if struct_def.is_builtin && struct_def.name == "StrBuf" {
                 return true;
             }
             types::type_slot_count(type_pool, ty) > ret_reg_budget
@@ -475,14 +475,15 @@ impl<'a> CfgLowerContext<'a> {
     // Builtin type helpers
     // ========================================================================
 
-    /// Check if a type is the builtin String struct.
+    /// Check if a type is the builtin growable-string struct (`StrBuf`).
     ///
-    /// Returns true if the type is a struct that is marked as builtin with name "String".
+    /// Returns true if the type is a struct marked as builtin with name
+    /// "StrBuf" (ADR-0043; formerly "String").
     pub fn is_builtin_string(&self, ty: Type) -> bool {
         match ty.kind() {
             TypeKind::Struct(struct_id) => {
                 let struct_def = self.type_pool.struct_def(struct_id);
-                struct_def.is_builtin && struct_def.name == "String"
+                struct_def.is_builtin && struct_def.name == "StrBuf"
             }
             _ => false,
         }

@@ -10,6 +10,18 @@ template = "spec/page.html"
 
 The type `String` represents an immutable sequence of UTF-8 encoded bytes.
 
+{{ rule(id="3.7:57", cat="informative") }}
+
+ADR-0043 renames this growable-string type `String` → `StrBuf` (the string
+analog of the growable collection `ArrayBuf`), reframing it as the *growable
+rung* of the string trio (`str` / `Str(N)` / `StrBuf`) rather than a blessed
+built-in. During the migration, `StrBuf` is the canonical spelling and `String`
+is accepted as a deprecated alias that resolves to the same type: everywhere
+this chapter says `String`, `StrBuf` may be written instead, with identical
+representation, ownership, and semantics. The alias will be removed once the
+trio (str-as-slice, `Str(N)`) is complete; the remaining normative paragraphs
+below continue to use the `String` spelling until that migration finishes.
+
 {{ rule(id="3.7:2", cat="normative") }}
 
 A `String` value occupies three machine words — a pointer to the string data,

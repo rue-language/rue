@@ -1,0 +1,72 @@
+# StrBuf — the growable-string rung of ADR-0043 (RUE-325).
+#
+# ADR-0043 de-blesses `String` into `StrBuf`, the string analog of `ArrayBuf`.
+# `StrBuf` is now the canonical name for the 3-word {ptr,len,cap} heap-backed
+# growable string; `String` remains a deprecated source-level alias for one
+# migration cycle. These cases pin the runtime-visible behavior (exact stdout)
+# of the canonical `StrBuf` spelling and prove the `String` alias compiles and
+# runs identically.
+
+[section]
+id = "cli.strbuf_library"
+name = "StrBuf growable string"
+description = "The StrBuf canonical name (ADR-0043) builds, mutates, concatenates, and prints; the deprecated String alias behaves identically."
+
+[[case]]
+name = "strbuf_new_push_str_len_print"
+description = "StrBuf::new(), push_str, len, and println on the canonical name."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut s = StrBuf::new();
+    s.push_str("hello");
+    s.push_str(", world");
+    println(s);
+    println("len is " + @to_string(s.len()));
+    if s == "hello, world" { 0 } else { 1 }
+}
+""" }]
+stdout = "hello, world\nlen is 12\n"
+exit_code = 0
+
+[[case]]
+name = "strbuf_with_capacity_concat"
+description = "StrBuf::with_capacity plus @to_string concatenation build a StrBuf value."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let cap: u64 = 8;
+    let mut s = StrBuf::with_capacity(cap);
+    s.push_str("n=");
+    let combined = s + @to_string(42);
+    println(combined);
+    0
+}
+""" }]
+stdout = "n=42\n"
+exit_code = 0
+
+[[case]]
+name = "string_alias_parity"
+description = "The deprecated `String` alias resolves to the same StrBuf type: annotation, assoc fn, and equality against a StrBuf all work."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut a: String = String::new();
+    a.push_str("abc");
+    let mut b = StrBuf::new();
+    b.push_str("abc");
+    if a == b { 0 } else { 1 }
+}
+""" }]
+exit_code = 0
+
+[[case]]
+name = "strbuf_reserved_name"
+description = "StrBuf is a reserved built-in type name: users cannot define their own."
+files = [{ path = "main.rue", source = """
+struct StrBuf { x: i32 }
+
+fn main() -> i32 {
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0404", "StrBuf", "reserved"]

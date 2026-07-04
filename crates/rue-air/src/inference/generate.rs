@@ -569,14 +569,15 @@ impl<'a> ConstraintGenerator<'a> {
 
             InstData::BoolConst(_) => InferType::Concrete(Type::BOOL),
 
-            // String constants use the builtin String struct type.
+            // String literals have the builtin growable-string type `StrBuf`
+            // (ADR-0043; formerly `String`).
             InstData::StringConst(_) => {
-                // Look up the String type from the structs map
-                if let Some(string_spur) = self.interner.get("String") {
+                // Look up the StrBuf type from the structs map
+                if let Some(string_spur) = self.interner.get("StrBuf") {
                     if let Some(&string_ty) = self.structs.get(&string_spur) {
                         InferType::Concrete(string_ty)
                     } else {
-                        // Fallback if String struct not found (shouldn't happen after builtin injection)
+                        // Fallback if StrBuf struct not found (shouldn't happen after builtin injection)
                         InferType::Concrete(Type::ERROR)
                     }
                 } else {
@@ -2133,11 +2134,11 @@ impl<'a> ConstraintGenerator<'a> {
         result_ty
     }
 
-    /// The builtin `String` type as an [`InferType::Concrete`], or
-    /// `Concrete(ERROR)` if it hasn't been injected (should not happen once
-    /// builtin types are registered).
+    /// The builtin growable-string type `StrBuf` (ADR-0043; formerly `String`)
+    /// as an [`InferType::Concrete`], or `Concrete(ERROR)` if it hasn't been
+    /// injected (should not happen once builtin types are registered).
     fn string_infer_type(&self) -> InferType {
-        if let Some(string_spur) = self.interner.get("String") {
+        if let Some(string_spur) = self.interner.get("StrBuf") {
             if let Some(&string_ty) = self.structs.get(&string_spur) {
                 return InferType::Concrete(string_ty);
             }
@@ -2145,11 +2146,11 @@ impl<'a> ConstraintGenerator<'a> {
         InferType::Concrete(Type::ERROR)
     }
 
-    /// Whether `ty` is *concretely* the builtin `String` struct (not a type
+    /// Whether `ty` is *concretely* the builtin `StrBuf` struct (not a type
     /// variable that might later resolve to it).
     fn is_string_concrete(&self, ty: &InferType) -> bool {
         if let InferType::Concrete(t) = ty {
-            if let Some(string_spur) = self.interner.get("String") {
+            if let Some(string_spur) = self.interner.get("StrBuf") {
                 if let Some(&string_ty) = self.structs.get(&string_spur) {
                     return *t == string_ty;
                 }
