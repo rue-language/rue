@@ -165,7 +165,9 @@ impl RirPattern {
 const CALL_ARG_SIZE: u32 = 2;
 
 /// Stored representation of RirParam in the extra array.
-/// Layout: [name: u32, ty: u32, mode: u32, is_comptime: u32] = 4 u32s per param
+/// Layout: [name: u32, ty: u32, mode: u32, is_comptime: u32,
+///          span.file_id: u32, span.start: u32, span.end: u32] = 7 u32s per
+/// param (must match `add_params`/`get_params`)
 const PARAM_SIZE: u32 = 7;
 
 /// Stored representation of match arm in the extra array.
@@ -1883,6 +1885,20 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
             .join(", ")
     }
 
+    /// Format an item's directives as a `"@copy @allow(..) "` prefix
+    /// (empty string when there are none).
+    fn format_directives(&self, start: u32, len: u32) -> String {
+        let directives = self.rir.get_directives(start, len);
+        if directives.is_empty() {
+            return String::new();
+        }
+        let dir_names: Vec<String> = directives
+            .iter()
+            .map(|d| format!("@{}", self.interner.resolve(&d.name)))
+            .collect();
+        format!("{} ", dir_names.join(" "))
+    }
+
     /// Format a pattern for printing.
     fn format_pattern(&self, pat: &RirPattern) -> String {
         match pat {
@@ -1981,8 +1997,11 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     }
                 }
                 InstData::Loop { cond, body } => writeln!(out, "loop {}, {}", cond, body).unwrap(),
-                InstData::InfiniteLoop { body, .. } => {
-                    writeln!(out, "infinite_loop {}", body).unwrap()
+                InstData::InfiniteLoop { body, iter_borrow } => {
+                    let borrow_str = iter_borrow
+                        .map(|c| format!(" borrows {}", self.interner.resolve(&c)))
+                        .unwrap_or_default();
+                    writeln!(out, "infinite_loop {}{}", body, borrow_str).unwrap()
                 }
                 InstData::Match {
                     scrutinee,
@@ -2004,8 +2023,8 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
 
                 // Functions
                 InstData::FnDecl {
-                    directives_start: _,
-                    directives_len: _,
+                    directives_start,
+                    directives_len,
                     is_pub,
                     is_unchecked,
                     name,
@@ -2047,9 +2066,11 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                             )
                         })
                         .collect();
+                    let directives_str = self.format_directives(*directives_start, *directives_len);
                     writeln!(
                         out,
-                        "{}{}fn {}({}{}) -> {} {{",
+                        "{}{}{}fn {}({}{}) -> {} {{",
+                        directives_str,
                         pub_str,
                         unchecked_str,
                         name_str,
@@ -2062,19 +2083,25 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     writeln!(out, "}}").unwrap();
                 }
                 InstData::ConstDecl {
-                    directives_start: _,
-                    directives_len: _,
+                    directives_start,
+                    directives_len,
                     is_pub,
                     name,
                     ty,
                     init,
                 } => {
+                    let directives_str = self.format_directives(*directives_start, *directives_len);
                     let pub_str = if *is_pub { "pub " } else { "" };
                     let name_str = self.interner.resolve(&*name);
                     let ty_str = ty
                         .map(|t| format!(": {}", self.interner.resolve(&t)))
                         .unwrap_or_default();
-                    writeln!(out, "{}const {}{} = {}", pub_str, name_str, ty_str, init).unwrap();
+                    writeln!(
+                        out,
+                        "{}{}const {}{} = {}",
+                        directives_str, pub_str, name_str, ty_str, init
+                    )
+                    .unwrap();
                 }
                 InstData::Ret(inner) => {
                     if let Some(inner) = inner {
@@ -2121,14 +2148,15 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
 
                 // Variables
                 InstData::Alloc {
-                    directives_start: _,
-                    directives_len: _,
+                    directives_start,
+                    directives_len,
                     name,
                     is_mut,
                     ty,
                     init,
-                    iter_elem: _,
+                    iter_elem,
                 } => {
+                    let directives_str = self.format_directives(*directives_start, *directives_len);
                     let name_str = name
                         .map(|n| self.interner.resolve(&n).to_string())
                         .unwrap_or_else(|| "_".to_string());
@@ -2136,7 +2164,13 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     let ty_str = ty
                         .map(|t| format!(": {}", self.interner.resolve(&t)))
                         .unwrap_or_default();
-                    writeln!(out, "alloc {}{}{}= {}", mut_str, name_str, ty_str, init).unwrap();
+                    let iter_str = if *iter_elem { " [iter_elem]" } else { "" };
+                    writeln!(
+                        out,
+                        "{}alloc {}{}{}= {}{}",
+                        directives_str, mut_str, name_str, ty_str, init, iter_str
+                    )
+                    .unwrap();
                 }
                 InstData::VarRef { name } => {
                     writeln!(out, "var_ref {}", self.interner.resolve(&*name)).unwrap();
@@ -2170,17 +2204,8 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                             )
                         })
                         .collect();
-                    let directives = self.rir.get_directives(*directives_start, *directives_len);
                     let linear_str = if *is_linear { "linear " } else { "" };
-                    let directives_str = if directives.is_empty() {
-                        String::new()
-                    } else {
-                        let dir_names: Vec<String> = directives
-                            .iter()
-                            .map(|d| format!("@{}", self.interner.resolve(&d.name)))
-                            .collect();
-                        format!("{} ", dir_names.join(" "))
-                    };
+                    let directives_str = self.format_directives(*directives_start, *directives_len);
                     let methods = self.rir.get_inst_refs(*methods_start, *methods_len);
                     let methods_str = if methods.is_empty() {
                         String::new()

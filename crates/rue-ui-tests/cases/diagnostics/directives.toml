@@ -79,6 +79,26 @@ exit_code = 0
 no_warnings = true
 
 [[case]]
+name = "copy_directive_with_args_rejected"
+description = """
+@copy takes no arguments (spec 2.5); bogus args used to be silently accepted
+and ignored (rue-rir component review, 2026-07-04). Arity is per-directive:
+@allow legitimately takes lint-name args (covered above).
+"""
+source = """
+@copy(garbage, nonsense)
+struct S { x: i32 }
+
+fn main() -> i32 {
+    let s = S { x: 5 };
+    let t = s;
+    s.x + t.x
+}
+"""
+compile_fail = true
+error_contains = ["@copy takes no arguments"]
+
+[[case]]
 name = "known_directive_copy_still_works"
 source = """
 @copy

@@ -1202,10 +1202,14 @@ impl<'a> AstGen<'a> {
         outer_stmts.push(p_alloc.as_u32());
 
         // let __len: u64 = @__rue_iter_len(__coll);
+        // These two nodes carry the ITERABLE's span, not the whole statement's:
+        // Sema's not-iterable type error (E0206) anchors on the intrinsic, and
+        // it should underline the offending iterable expression.
+        let iter_span = coll_expr.span();
         let len_name = self.interner.get_or_intern(format!("__rue_for_len_{n}"));
         let coll_for_len = self.rir.add_inst(Inst {
             data: InstData::VarRef { name: coll_name },
-            span,
+            span: iter_span,
         });
         let iter_len_sym = self.interner.get_or_intern("__rue_iter_len");
         let (la_start, la_len) = self.rir.add_inst_refs(&[coll_for_len]);
@@ -1215,7 +1219,7 @@ impl<'a> AstGen<'a> {
                 args_start: la_start,
                 args_len: la_len,
             },
-            span,
+            span: iter_span,
         });
         let (ds, dl) = self.rir.add_directives(&[]);
         let len_alloc = self.rir.add_inst(Inst {
