@@ -1162,6 +1162,27 @@ pub fn compile_with_options(
     compile_multi_file_with_options(&sources, options)
 }
 
+/// Configure Rayon's global thread pool for the requested number of jobs.
+///
+/// Call this **exactly once**, early in the driver's `main()`, before any
+/// parallel work and before dispatching to the emit-vs-compile branches.
+/// `ThreadPoolBuilder::build_global()` panics if called twice, so this must
+/// live in the single-entry driver, not inside a per-compilation function
+/// like [`compile_multi_file_with_options`] which several code paths call
+/// (and which the `--emit` path skips entirely — the RUE-352 bug).
+///
+/// `jobs == 0` means auto-detect (Rayon's default: all available cores), so
+/// the global pool is left untouched.
+pub fn configure_thread_pool(jobs: usize) {
+    if jobs > 0 {
+        // Ignore the error if the pool was already initialized (e.g. a test
+        // harness in the same process). We only want to set the thread count.
+        let _ = rayon::ThreadPoolBuilder::new()
+            .num_threads(jobs)
+            .build_global();
+    }
+}
+
 /// Compile multiple source files to an ELF binary.
 ///
 /// This is the main entry point for multi-file compilation. It:
@@ -1200,16 +1221,11 @@ pub fn compile_multi_file_with_options(
     sources: &[SourceFile<'_>],
     options: &CompileOptions,
 ) -> MultiErrorResult<CompileOutput> {
-    // Configure Rayon's global thread pool based on the jobs setting.
-    // This must happen before any parallel operations.
-    // 0 means auto-detect (use all cores), which is Rayon's default.
-    if options.jobs > 0 {
-        // Ignore the error if the pool has already been initialized (e.g., in tests).
-        // This is safe because we're just trying to set the thread count.
-        let _ = rayon::ThreadPoolBuilder::new()
-            .num_threads(options.jobs)
-            .build_global();
-    }
+    // NOTE: the Rayon global thread pool is deliberately NOT configured here.
+    // `build_global()` panics if called twice, and the `--emit` driver path
+    // never reaches this function, so it was silently ignoring `-j`/`--jobs`
+    // (RUE-352). The jobs setting is now applied once in the driver's `main()`
+    // via `configure_thread_pool` before dispatching to any path.
 
     let total_source_bytes: usize = sources.iter().map(|s| s.source.len()).sum();
     let _span = info_span!(

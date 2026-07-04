@@ -8,15 +8,24 @@ template = "spec/page.html"
 
 {{ rule(id="8.1:1", cat="dynamic-semantics") }}
 
-Integer overflow during arithmetic operations **MUST** cause a runtime panic.
+Integer overflow during an arithmetic operation **MUST** cause a runtime panic:
+when the mathematical result of the operation falls outside the range
+`[min, max]` of its integer type, the operation traps rather than wrapping or
+truncating (core calculus `docs/formal/01-core-calculus.md` §6.4, rule
+`(D-Arith-Trap)`, and the `neg (min_T)_T → ↯overflow` case for unary negation).
 
 {{ rule(id="8.1:2", cat="dynamic-semantics") }}
 
-On overflow, the program **MUST** terminate with exit code 101 and print an error message.
+On an overflow trap, the program **MUST** terminate with exit code 101 — the panic
+exit code of Appendix B — after printing an error message identifying the overflow
+(core calculus `docs/formal/01-core-calculus.md` §6.12, rule `(Result-Panic)`).
 
 {{ rule(id="8.1:3", cat="normative") }}
 
-The following operations **MAY** overflow:
+The following operations **MAY** overflow (core calculus
+`docs/formal/01-core-calculus.md` §6.4: `+`, `-`, `*`, and `neg` trap by rule
+`(D-Arith-Trap)`; the `min / -1` and `min % -1` cases trap by rule
+`(D-Div-Overflow)`):
 - Addition (`+`)
 - Subtraction (`-`)
 - Multiplication (`*`)

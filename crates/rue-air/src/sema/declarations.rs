@@ -861,6 +861,15 @@ impl<'a> Sema<'a> {
                     has_self,
                     ..
                 } => {
+                    // Reject duplicate parameter names (RUE-349) for EVERY
+                    // function/method form. `rir.iter()` visits every `FnDecl`
+                    // in the arena exactly once — free functions, named-struct
+                    // methods, associated functions, and anonymous-struct
+                    // methods alike — so checking here before the
+                    // signature-collection skips below covers them all in one
+                    // place without double-reporting.
+                    self.check_duplicate_param_names(*params_start, *params_len)?;
+
                     // Skip methods (has_self = true) - these are handled elsewhere:
                     // - Named struct methods are collected via ImplDecl
                     if *has_self {
@@ -1068,6 +1077,32 @@ impl<'a> Sema<'a> {
             }
         }
         None
+    }
+
+    /// Reject a parameter list that names the same parameter twice, e.g.
+    /// `fn f(x: i32, x: i32)` (RUE-349). Without this check the later binding
+    /// silently shadows the earlier one on a first-wins basis, so a typo'd or
+    /// duplicated name compiles instead of erroring and which parameter a
+    /// reference resolves to is an unstated policy. The diagnostic points at
+    /// the second (duplicate) occurrence, mirroring the duplicate
+    /// pattern-binding check (E0484). `self` is never in this list — a method
+    /// receiver is carried separately (`has_self`) — so `fn m(self, a, a)`
+    /// still errors on the repeated `a` while `self` plus one distinct param
+    /// is fine.
+    fn check_duplicate_param_names(&self, params_start: u32, params_len: u32) -> CompileResult<()> {
+        let params = self.rir.get_params(params_start, params_len);
+        let mut seen: HashSet<Spur> = HashSet::with_capacity(params.len());
+        for param in &params {
+            if !seen.insert(param.name) {
+                return Err(CompileError::new(
+                    ErrorKind::DuplicateParameter {
+                        name: self.interner.resolve(&param.name).to_string(),
+                    },
+                    param.span,
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Collect a function signature for forward reference.

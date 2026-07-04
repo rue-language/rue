@@ -341,6 +341,7 @@ impl<'a> AstGen<'a> {
                 ty: self.intern_type(&p.ty),
                 mode: self.convert_param_mode(p.mode),
                 is_comptime: p.mode == ParamMode::Comptime,
+                span: p.name.span,
             })
             .collect();
         let (params_start, params_len) = self.rir.add_params(&params);
@@ -454,6 +455,7 @@ impl<'a> AstGen<'a> {
                 ty: self.intern_type(&p.ty),
                 mode: self.convert_param_mode(p.mode),
                 is_comptime: p.mode == ParamMode::Comptime,
+                span: p.name.span,
             })
             .collect();
         let (params_start, params_len) = self.rir.add_params(&params);

@@ -35,3 +35,22 @@ name = "legacy_non_rue_output_still_works"
 files = [{ path = "a.rue", source = "fn main() -> i32 { 5 }\n" }]
 args = ["a.rue", "prog"]
 exit_code = 5
+
+[[case]]
+# RUE-351: an EXTENSIONLESS source used as `-o` must be refused. The old guard
+# only recognized inputs by a `.rue` suffix, so `rue prog -o prog` (prog is a
+# source) slipped through and the compiled ELF silently overwrote the source.
+name = "extensionless_output_equal_to_input_refused"
+files = [{ path = "prog", source = "fn main() -> i32 { 7 }\n" }]
+args = ["prog", "-o", "prog"]
+compile_fail = true
+error_contains = ["also an input source file"]
+
+[[case]]
+# RUE-351: the guard compares RESOLVED paths, so a different spelling of the
+# same file (`./prog` vs `prog`) is caught too, not just a byte-for-byte match.
+name = "output_equal_to_input_different_spelling_refused"
+files = [{ path = "prog", source = "fn main() -> i32 { 7 }\n" }]
+args = ["./prog", "-o", "prog"]
+compile_fail = true
+error_contains = ["also an input source file"]

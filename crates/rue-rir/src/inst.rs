@@ -6,7 +6,7 @@
 use std::fmt;
 
 use lasso::{Key, Spur};
-use rue_span::Span;
+use rue_span::{FileId, Span};
 
 /// A reference to an instruction in the RIR.
 ///
@@ -71,6 +71,9 @@ pub struct RirParam {
     /// the `comptime` modifier; carried separately from `mode`, which stays
     /// `Normal` for comptime parameters)
     pub is_comptime: bool,
+    /// Span of the parameter's name, used to point diagnostics (e.g. the
+    /// duplicate-parameter error, RUE-349) at the offending occurrence.
+    pub span: Span,
 }
 
 /// Argument passing mode in RIR.
@@ -163,7 +166,7 @@ const CALL_ARG_SIZE: u32 = 2;
 
 /// Stored representation of RirParam in the extra array.
 /// Layout: [name: u32, ty: u32, mode: u32, is_comptime: u32] = 4 u32s per param
-const PARAM_SIZE: u32 = 4;
+const PARAM_SIZE: u32 = 7;
 
 /// Stored representation of match arm in the extra array.
 /// Layout: pattern data + [body: u32]
@@ -360,7 +363,8 @@ impl Rir {
     }
 
     /// Store RirParams and return (start, len).
-    /// Layout: [name: u32, ty: u32, mode: u32, is_comptime: u32] per param
+    /// Layout: [name: u32, ty: u32, mode: u32, is_comptime: u32,
+    ///          span.file_id: u32, span.start: u32, span.end: u32] per param
     pub fn add_params(&mut self, params: &[RirParam]) -> (u32, u32) {
         let mut data = Vec::with_capacity(params.len() * PARAM_SIZE as usize);
         for param in params {
@@ -368,6 +372,9 @@ impl Rir {
             data.push(param.ty.into_usize() as u32);
             data.push(param.mode as u32);
             data.push(param.is_comptime as u32);
+            data.push(param.span.file_id.index());
+            data.push(param.span.start);
+            data.push(param.span.end);
         }
         let start = self.add_extra(&data);
         (start, params.len() as u32)
@@ -388,11 +395,13 @@ impl Rir {
                 _ => RirParamMode::Normal, // Fallback
             };
             let is_comptime = chunk[3] != 0;
+            let span = Span::with_file(FileId::new(chunk[4]), chunk[5], chunk[6]);
             params.push(RirParam {
                 name,
                 ty,
                 mode,
                 is_comptime,
+                span,
             });
         }
         params
@@ -2911,6 +2920,7 @@ mod tests {
             ty: param_type,
             mode: RirParamMode::Normal,
             is_comptime: false,
+            span: Span::default(),
         }]);
 
         rir.add_inst(Inst {
@@ -2995,18 +3005,21 @@ mod tests {
                 ty: param1_type,
                 mode: RirParamMode::Normal,
                 is_comptime: false,
+                span: Span::default(),
             },
             RirParam {
                 name: param2_name,
                 ty: param2_type,
                 mode: RirParamMode::Inout,
                 is_comptime: false,
+                span: Span::default(),
             },
             RirParam {
                 name: param3_name,
                 ty: param3_type,
                 mode: RirParamMode::Borrow,
                 is_comptime: false,
+                span: Span::default(),
             },
         ]);
 
