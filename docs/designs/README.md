@@ -167,3 +167,5 @@ See [ADR-0005: Preview Features](0005-preview-features.md) for details on the ga
 | [0007](0007-hindley-milner-inference.md) | Hindley-Milner Type Inference | Implemented | types, compiler |
 | [0008](0008-affine-types-mvs.md) | Affine Types and Mutable Value Semantics | Accepted | types, semantics, ownership |
 | [0009](0009-struct-methods.md) | Struct Methods | Proposal | types, syntax |
+| [0044](0044-optimization-levels.md) | Optimization Levels (-O0/-O1/-O2/-O3) | Accepted | compiler, codegen, process |
+| [0045](0045-lazy-semantic-analysis.md) | Lazy Semantic Analysis (compile-on-reference) | Accepted | compiler, semantics, comptime |

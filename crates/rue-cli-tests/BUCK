@@ -1,10 +1,10 @@
 load("//crates:defs.bzl", "rue_binary")
 
-# tests = False: this binary IS the CLI integration test harness; its sources
-# contain no #[test] functions, so a rust_test target would be empty.
+# This binary IS the CLI integration test harness, but its sources also carry a
+# small #[cfg(test)] module unit-testing the case-file load-time validation
+# (e.g. differential_opt pinning), so the generated rust_test target is kept.
 rue_binary(
     name = "rue-cli-tests",
-    tests = False,
     deps = [
         "//crates/rue-test-runner:rue-test-runner",
         "//third-party:libtest2-mimic",

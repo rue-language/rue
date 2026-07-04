@@ -230,7 +230,11 @@ fn parse_based_literal(lex: &mut logos::Lexer<'_, LogosTokenKind>) -> Result<u64
 #[derive(Logos, Debug, Clone, PartialEq, Eq)]
 #[logos(error = LexError)]
 #[logos(extras = ThreadedRodeo)]
-#[logos(skip r"[ \t\n\r\f]+")]
+// Whitespace per spec 2.3:1 — space, tab, newline, carriage return only.
+// Deliberately excludes form-feed (U+000C): Rust treats FF as whitespace
+// (Pattern_White_Space), but Zig does not, and Rue follows Zig's strict,
+// explicit set here (RUE-333). A stray FF byte therefore lexes to an error.
+#[logos(skip r"[ \t\n\r]+")]
 #[logos(skip r"//[^\n]*")]
 pub enum LogosTokenKind {
     // Keywords - logos prefers longer/specific matches over shorter/generic ones

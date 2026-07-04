@@ -569,6 +569,66 @@ pub fn validate_preview_features(test_file: &TestFile) -> Vec<UnknownPreviewFeat
     errors
 }
 
+/// An error indicating a case declares a compile-error assertion
+/// (`error_contains` / `expected_error`) without `compile_fail = true`.
+///
+/// Those assertions are only ever checked inside the `compile_fail` branch of
+/// [`run_test_case`]; on a case expected to compile they would silently never
+/// run, turning a typo'd expectation into a vacuous pass. Rejecting the
+/// combination at load time is cleaner than half-honoring it (RUE-132).
+#[derive(Debug, Clone)]
+pub struct StrayErrorAssertionError {
+    /// The name of the offending test case.
+    pub test_name: String,
+    /// The section ID the test belongs to.
+    pub section_id: String,
+    /// Which field(s) were set: `error_contains`, `expected_error`, or both.
+    pub fields: String,
+}
+
+impl std::fmt::Display for StrayErrorAssertionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "test '{}::{}' sets {} but is not `compile_fail` — that assertion is \
+             only checked when compilation is expected to fail, so it would never \
+             run. Add `compile_fail = true`, or (for a runtime failure) use \
+             `runtime_error`, or remove the field.",
+            self.section_id, self.test_name, self.fields
+        )
+    }
+}
+
+impl std::error::Error for StrayErrorAssertionError {}
+
+/// Validate that no case carries a compile-error assertion without
+/// `compile_fail`. Returns one error per offending case.
+pub fn validate_error_assertions(test_file: &TestFile) -> Vec<StrayErrorAssertionError> {
+    let mut errors = Vec::new();
+    for case in &test_file.case {
+        if case.compile_fail {
+            continue;
+        }
+        let has_error_contains = !case.error_contains.is_empty();
+        let has_expected_error = case.expected_error.is_some();
+        if !has_error_contains && !has_expected_error {
+            continue;
+        }
+        let fields = match (has_error_contains, has_expected_error) {
+            (true, true) => "`error_contains` and `expected_error`",
+            (true, false) => "`error_contains`",
+            (false, true) => "`expected_error`",
+            (false, false) => unreachable!(),
+        };
+        errors.push(StrayErrorAssertionError {
+            test_name: case.name.clone(),
+            section_id: test_file.section.id.clone(),
+            fields: fields.to_string(),
+        });
+    }
+    errors
+}
+
 /// Recursively collect all files with the given extension from a directory.
 pub fn collect_files_by_ext(dir: &Path, ext: &str, files: &mut Vec<PathBuf>) {
     if let Ok(entries) = fs::read_dir(dir) {
@@ -603,6 +663,7 @@ pub fn collect_toml_files(dir: &Path, files: &mut Vec<PathBuf>) {
 pub fn load_test_files(cases_dir: &Path) -> Vec<(String, TestFile)> {
     let mut specs = Vec::new();
     let mut preview_errors: Vec<UnknownPreviewFeatureError> = Vec::new();
+    let mut stray_error_assertions: Vec<StrayErrorAssertionError> = Vec::new();
 
     if !cases_dir.exists() {
         eprintln!(
@@ -633,6 +694,9 @@ pub fn load_test_files(cases_dir: &Path) -> Vec<(String, TestFile)> {
 
                 // Validate preview feature names
                 preview_errors.extend(validate_preview_features(&spec));
+
+                // Reject compile-error assertions on cases that aren't compile_fail
+                stray_error_assertions.extend(validate_error_assertions(&spec));
 
                 // Build a relative path from cases_dir to create the identifier
                 // e.g., "expressions/match" for "cases/expressions/match.toml"
@@ -684,6 +748,22 @@ Error: {} test file(s) failed to load:",
         );
     }
 
+    // Report stray compile-error assertions and fail if any were found
+    if !stray_error_assertions.is_empty() {
+        eprintln!(
+            "\nError: Found {} case(s) with a compile-error assertion but no `compile_fail`:",
+            stray_error_assertions.len()
+        );
+        for error in &stray_error_assertions {
+            eprintln!("  - {}", error);
+        }
+        panic!(
+            "Test loading failed: {} case(s) set `error_contains`/`expected_error` without \
+             `compile_fail`. See errors above for details.",
+            stray_error_assertions.len()
+        );
+    }
+
     // Sort by identifier for deterministic ordering
     specs.sort_by(|a, b| a.0.cmp(&b.0));
     specs
@@ -698,6 +778,30 @@ pub fn normalize_golden(s: &str) -> String {
         .join("\n")
         .trim()
         .to_string()
+}
+
+/// Strip the single boundary newline that a TOML `"""` multi-line block adds
+/// around authored content: at most one leading and at most one trailing
+/// newline (`\r\n` or `\n`).
+///
+/// This is the *only* leniency applied when comparing a spec case's
+/// `expected_stdout` against a program's actual stdout — the compare is
+/// otherwise byte-exact (matching the CLI runner in rue-cli-tests). Unlike
+/// [`normalize_golden`], it does NOT trim per-line trailing whitespace or
+/// internal blank lines, so a stdout-formatting regression (e.g. a stray
+/// trailing space or an extra blank line) is still caught. It exists purely so
+/// the readable `"""` authoring convention — closing delimiter on its own line,
+/// which forces a trailing newline — doesn't force every expectation to be
+/// written on one crowded line. Reserve [`normalize_golden`] for `--emit` IR
+/// golden dumps, which are inherently multi-line and formatting-insensitive.
+fn strip_block_boundary_newlines(s: &str) -> &str {
+    let s = s
+        .strip_prefix("\r\n")
+        .or_else(|| s.strip_prefix('\n'))
+        .unwrap_or(s);
+    s.strip_suffix("\r\n")
+        .or_else(|| s.strip_suffix('\n'))
+        .unwrap_or(s)
 }
 
 /// Normalize error output for golden test comparison.
@@ -765,12 +869,15 @@ fn run_golden_ir_test(
     stage: &str,
     expected: &str,
     build_command: impl Fn(&Path) -> Command,
+    timeout: Duration,
 ) -> TestResult {
-    let output = build_command(rue_binary)
-        .arg("--emit")
-        .arg(stage)
-        .arg(source_path)
-        .output()
+    // Run the emit under the same timeout as the rest of the case, so a compiler
+    // that hangs while dumping an IR fails this one case instead of wedging the
+    // whole suite (RUE-132). `run_with_timeout` surfaces a hang as a distinct
+    // [`TIMEOUT_PREFIX`] error.
+    let mut cmd = build_command(rue_binary);
+    cmd.arg("--emit").arg(stage).arg(source_path);
+    let output = run_with_timeout(cmd, timeout, None)
         .map_err(|e| format!("Failed to run rue --emit {}: {}", stage, e))?;
 
     if !output.status.success() {
@@ -838,9 +945,21 @@ fn kill_process_group(child: &mut std::process::Child) {
 
 /// Run a command with a timeout and optional stdin input.
 ///
-/// This function spawns a child process (in its own process group), writes to
-/// its stdin if provided, and polls for completion, killing the whole process
-/// group if it exceeds the specified timeout.
+/// This function spawns a child process (in its own process group), drains its
+/// stdout and stderr on dedicated reader threads, feeds it stdin (if provided)
+/// on its own writer thread, and polls for completion, killing the whole
+/// process group if it exceeds the specified timeout.
+///
+/// # Why the reader/writer threads (RUE-338 deadlock class)
+///
+/// Draining stdout AND stderr **concurrently**, starting immediately after
+/// spawn, is essential: if the pipes were read only after the child exits, a
+/// program that writes more than the OS pipe capacity (~64KB on Linux) would
+/// block forever in `write()`, `try_wait` would never report an exit, and the
+/// timeout would manufacture a false failure. For the same reason stdin is
+/// written on its own thread — a large input can't block the drain, and the
+/// drain can't block the stdin write. Mirrors the oracle-diff fuzzer's
+/// `run_with_timeout` (RUE-338).
 ///
 /// # Arguments
 /// * `cmd` - The command to run (already configured with arguments)
@@ -869,24 +988,39 @@ pub fn run_with_timeout(
         .spawn()
         .map_err(|e| format!("Failed to spawn process: {}", e))?;
 
-    // Write stdin input if provided. A program may exit without reading all of
-    // its input; a broken pipe here is not a test failure, so errors are
-    // ignored (matching the CLI harness).
-    if let Some(input) = stdin_input {
-        if let Some(mut stdin) = child.stdin.take() {
+    // Drain stdout and stderr on their own threads, started right after spawn so
+    // neither pipe can fill and wedge the child (see the RUE-338 note above).
+    let stdout_pipe = child.stdout.take();
+    let stderr_pipe = child.stderr.take();
+    let stdout_reader =
+        std::thread::spawn(move || stdout_pipe.map(read_all_bytes).unwrap_or_default());
+    let stderr_reader =
+        std::thread::spawn(move || stderr_pipe.map(read_all_bytes).unwrap_or_default());
+
+    // Feed stdin on its own thread so a large input can't block the drain (and
+    // vice versa). A program may exit without reading all of its input; a broken
+    // pipe here is not a test failure, so errors are ignored (matching the CLI
+    // harness). Dropping the pipe when the closure ends closes it, signaling EOF.
+    let stdin_writer = child.stdin.take().map(|mut stdin| {
+        let input = stdin_input.unwrap_or_default().to_string();
+        std::thread::spawn(move || {
             let _ = stdin.write_all(input.as_bytes());
-            // Dropping `stdin` closes it, signaling EOF to the child.
-        }
-    }
+        })
+    });
 
     let start = Instant::now();
 
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
-                // Process finished - collect output
-                let stdout = child.stdout.take().map(read_all_bytes).unwrap_or_default();
-                let stderr = child.stderr.take().map(read_all_bytes).unwrap_or_default();
+                // Process finished: its write ends are closed, so the reader
+                // threads hit EOF and finish. Join to collect the fully-drained
+                // output.
+                let stdout = stdout_reader.join().unwrap_or_default();
+                let stderr = stderr_reader.join().unwrap_or_default();
+                if let Some(writer) = stdin_writer {
+                    let _ = writer.join();
+                }
                 return Ok(Output {
                     status,
                     stdout,
@@ -896,8 +1030,15 @@ pub fn run_with_timeout(
             Ok(None) => {
                 // Still running - check timeout
                 if start.elapsed() > timeout {
-                    // Kill the whole process group and return a timeout error.
+                    // Kill the whole process group, then join the helper threads:
+                    // killing closes the child's fds, so the readers hit EOF and
+                    // the stdin writer's `write_all` gets EPIPE, and none leak.
                     kill_process_group(&mut child);
+                    let _ = stdout_reader.join();
+                    let _ = stderr_reader.join();
+                    if let Some(writer) = stdin_writer {
+                        let _ = writer.join();
+                    }
                     return Err(format!(
                         "{} test execution timed out after {} ms (process group killed)",
                         TIMEOUT_PREFIX,
@@ -981,6 +1122,11 @@ pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
         cmd
     };
 
+    // Timeout applied to every compiler invocation in this case (golden-IR
+    // emits and the compile step), so a compiler hang fails the case instead of
+    // wedging the whole suite.
+    let compile_timeout = Duration::from_millis(case.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS));
+
     // Check for golden IR tests (tokens, AST, RIR, AIR, CFG, MIR)
     if case.has_golden_ir_assertions() {
         // A program that fails to compile has no IR to dump, so this
@@ -994,23 +1140,58 @@ pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
 
         // Run dump commands and check golden output
         if let Some(ref expected) = case.expected_tokens {
-            run_golden_ir_test(rue_binary, &source_path, "tokens", expected, &build_command)?;
+            run_golden_ir_test(
+                rue_binary,
+                &source_path,
+                "tokens",
+                expected,
+                &build_command,
+                compile_timeout,
+            )?;
         }
 
         if let Some(ref expected) = case.expected_ast {
-            run_golden_ir_test(rue_binary, &source_path, "ast", expected, &build_command)?;
+            run_golden_ir_test(
+                rue_binary,
+                &source_path,
+                "ast",
+                expected,
+                &build_command,
+                compile_timeout,
+            )?;
         }
 
         if let Some(ref expected) = case.expected_rir {
-            run_golden_ir_test(rue_binary, &source_path, "rir", expected, &build_command)?;
+            run_golden_ir_test(
+                rue_binary,
+                &source_path,
+                "rir",
+                expected,
+                &build_command,
+                compile_timeout,
+            )?;
         }
 
         if let Some(ref expected) = case.expected_air {
-            run_golden_ir_test(rue_binary, &source_path, "air", expected, &build_command)?;
+            run_golden_ir_test(
+                rue_binary,
+                &source_path,
+                "air",
+                expected,
+                &build_command,
+                compile_timeout,
+            )?;
         }
 
         if let Some(ref expected) = case.expected_cfg {
-            run_golden_ir_test(rue_binary, &source_path, "cfg", expected, &build_command)?;
+            run_golden_ir_test(
+                rue_binary,
+                &source_path,
+                "cfg",
+                expected,
+                &build_command,
+                compile_timeout,
+            )?;
         }
 
         if let Some(ref expected) = case.expected_mir {
@@ -1021,7 +1202,14 @@ pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
                         .to_string(),
                 );
             }
-            run_golden_ir_test(rue_binary, &source_path, "mir", expected, &build_command)?;
+            run_golden_ir_test(
+                rue_binary,
+                &source_path,
+                "mir",
+                expected,
+                &build_command,
+                compile_timeout,
+            )?;
         }
 
         // A case may combine golden-IR assertions with execution assertions
@@ -1045,9 +1233,9 @@ pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
         }
     }
     compile_cmd.arg("-o").arg(&output_path);
-    // Run the compiler under the same timeout as the compiled program, so a
-    // compiler hang fails the case instead of wedging the whole suite.
-    let compile_timeout = Duration::from_millis(case.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS));
+    // Run the compiler under the same timeout as the golden emits and the
+    // compiled program, so a compiler hang fails the case instead of wedging
+    // the whole suite.
     let compile_output = run_with_timeout(compile_cmd, compile_timeout, None)
         .map_err(|e| format!("Failed to run rue compiler: {}", e))?;
 
@@ -1175,15 +1363,23 @@ pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
         return Ok(());
     }
 
-    // Check expected stdout output (e.g., from @dbg calls)
+    // Check expected stdout output (e.g., from @dbg calls).
+    //
+    // The compare is byte-exact — matching the CLI runner in rue-cli-tests —
+    // except for the single boundary newline the TOML `"""` block adds (see
+    // `strip_block_boundary_newlines`). It deliberately does NOT run
+    // `normalize_golden`, which would trim per-line trailing whitespace and
+    // internal blank lines and thereby let a stdout-formatting regression pass
+    // the spec suite while failing the byte-exact CLI runner (RUE-132). Values
+    // are shown `{:?}`-quoted so a whitespace-only difference is visible.
     if let Some(ref expected) = case.expected_stdout {
         let stdout = String::from_utf8_lossy(&run_output.stdout);
-        let expected_normalized = normalize_golden(expected);
-        let actual_normalized = normalize_golden(&stdout);
-        if actual_normalized != expected_normalized {
+        let expected_cmp = strip_block_boundary_newlines(expected);
+        let actual_cmp = strip_block_boundary_newlines(&stdout);
+        if actual_cmp != expected_cmp {
             return Err(format!(
-                "Stdout mismatch:\n--- expected ---\n{}\n--- actual ---\n{}\n  source: {}",
-                expected_normalized, actual_normalized, case.source
+                "Stdout mismatch:\n--- expected ---\n{:?}\n--- actual ---\n{:?}\n  source: {}",
+                expected_cmp, actual_cmp, case.source
             ));
         }
     }
@@ -1950,5 +2146,120 @@ mod tests {
         assert!(msg.contains("my_test"), "Should contain test name");
         assert!(msg.contains("section.id"), "Should contain section ID");
         assert!(msg.contains("test_infra"), "Should list valid features");
+    }
+
+    // Tests for strip_block_boundary_newlines (RUE-132: exact stdout compare).
+
+    #[test]
+    fn test_strip_block_boundary_newlines_strips_one_each_end() {
+        // A leading and a trailing newline (the TOML `"""` authoring boundary)
+        // are stripped; content in between is untouched.
+        assert_eq!(strip_block_boundary_newlines("\n2\n1\n"), "2\n1");
+        assert_eq!(strip_block_boundary_newlines("2\n1\n"), "2\n1");
+        assert_eq!(strip_block_boundary_newlines("2\n1"), "2\n1");
+    }
+
+    #[test]
+    fn test_strip_block_boundary_newlines_preserves_internal_and_trailing_ws() {
+        // Internal blank lines and per-line trailing whitespace survive, so a
+        // stdout-formatting regression is still caught by the byte-exact compare
+        // (unlike normalize_golden, which would erase both).
+        assert_eq!(strip_block_boundary_newlines("a\n\nb\n"), "a\n\nb");
+        assert_eq!(strip_block_boundary_newlines("a \nb\n"), "a \nb");
+    }
+
+    #[test]
+    fn test_strip_block_boundary_newlines_only_one_trailing() {
+        // Only ONE trailing newline is stripped: an extra trailing blank line
+        // survives and would (correctly) fail the compare.
+        assert_eq!(strip_block_boundary_newlines("a\n\n"), "a\n");
+    }
+
+    #[test]
+    fn test_strip_block_boundary_newlines_handles_crlf() {
+        assert_eq!(strip_block_boundary_newlines("\r\na\r\n"), "a");
+    }
+
+    // Tests for validate_error_assertions (RUE-132: reject stray compile-error
+    // assertions on cases that aren't compile_fail).
+
+    #[test]
+    fn test_validate_error_assertions_rejects_error_contains_without_compile_fail() {
+        // make_test_case sets compile_fail = false, exit_code = Some(0).
+        let mut case = make_test_case("stray", None);
+        case.error_contains = ErrorContains(vec!["type mismatch".to_string()]);
+        let tf = make_test_file("sec", vec![case]);
+        let errors = validate_error_assertions(&tf);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].test_name, "stray");
+        assert!(errors[0].fields.contains("error_contains"));
+    }
+
+    #[test]
+    fn test_validate_error_assertions_rejects_expected_error_without_compile_fail() {
+        let mut case = make_test_case("stray2", None);
+        case.expected_error = Some("error[E0001]".to_string());
+        let tf = make_test_file("sec", vec![case]);
+        let errors = validate_error_assertions(&tf);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].fields.contains("expected_error"));
+    }
+
+    #[test]
+    fn test_validate_error_assertions_allows_error_contains_with_compile_fail() {
+        let mut case = make_test_case("ok", None);
+        case.compile_fail = true;
+        case.exit_code = None;
+        case.error_contains = ErrorContains(vec!["type mismatch".to_string()]);
+        let tf = make_test_file("sec", vec![case]);
+        assert!(validate_error_assertions(&tf).is_empty());
+    }
+
+    #[test]
+    fn test_validate_error_assertions_clean_case_ok() {
+        let case = make_test_case("plain", None);
+        let tf = make_test_file("sec", vec![case]);
+        assert!(validate_error_assertions(&tf).is_empty());
+    }
+
+    // Tests for run_with_timeout draining large output without deadlock
+    // (RUE-132 / same class as RUE-338). With the pre-fix code — write all
+    // stdin, then read the pipes only after exit — each of these would fill the
+    // ~64KB OS pipe buffer, block the child in write(), and time out.
+
+    #[test]
+    fn test_run_with_timeout_drains_large_stdout() {
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg("head -c 200000 /dev/zero");
+        let output = run_with_timeout(cmd, Duration::from_secs(10), None)
+            .expect("large-stdout program should complete, not time out");
+        assert!(output.status.success());
+        assert_eq!(output.stdout.len(), 200_000);
+    }
+
+    #[test]
+    fn test_run_with_timeout_drains_large_stdout_and_stderr() {
+        // Both pipes must be drained concurrently; filling either alone wedges
+        // the child.
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c")
+            .arg("head -c 200000 /dev/zero; head -c 200000 /dev/zero >&2");
+        let output = run_with_timeout(cmd, Duration::from_secs(10), None)
+            .expect("large stdout+stderr program should complete");
+        assert!(output.status.success());
+        assert_eq!(output.stdout.len(), 200_000);
+        assert_eq!(output.stderr.len(), 200_000);
+    }
+
+    #[test]
+    fn test_run_with_timeout_large_stdin_and_stdout() {
+        // `cat` echoes stdin to stdout: feeding a large stdin and draining a
+        // large stdout must proceed concurrently, or both sides deadlock.
+        let big = "a".repeat(200_000);
+        let cmd = Command::new("cat");
+        let output = run_with_timeout(cmd, Duration::from_secs(10), Some(&big))
+            .expect("large stdin echoed to stdout should complete");
+        assert!(output.status.success());
+        assert_eq!(output.stdout.len(), 200_000);
     }
 }
