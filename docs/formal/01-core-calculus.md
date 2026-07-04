@@ -118,7 +118,7 @@ Assignment of the class:
   For a struct  S { f1: T1, ..., fk: Tk }  with declared attribute attr(S):
     let base = ⊔ { class(Ti) }            -- the join (Copy ⊑ Affine ⊑ Linear) over fields
     class(S) = Linear         if attr(S) = linear   OR base = Linear    -- infectious (3.8:58, 3.8:57)
-             = Copy           if attr(S) = @copy    (well-formed only if base = Copy — 3.8:18)
+             = Copy           if attr(S) = @copy    (well-formed only if base = Copy and S declares no destructor — 3.8:18, 3.9:31)
              = Affine         otherwise
 
   For an enum  E { K1(T̄1), ..., Kn(T̄n) }  with T̄i = Ti1..Ti_{ai}:
@@ -139,8 +139,9 @@ payload (§5.6, §6).
 The lattice order is `Copy ⊑ Affine ⊑ Linear` (more restrictive is higher); `⊔`
 is the least upper bound. **Infectiousness is just the join**: a struct is at
 least as restrictive as its most-restrictive field. A `@copy` declaration is
-well-formed only when the field join is already `Copy` (`3.8:18`); a `linear`
-declaration forces `Linear` regardless of fields.
+well-formed only when the field join is already `Copy` (`3.8:18`) and the struct
+declares no destructor (`3.9:31`); a `linear` declaration forces `Linear`
+regardless of fields.
 
 > This replaces the prose enumerations `3.8:2` (the Copy list, which includes
 > discriminant-only enums), `3.8:3` (structs affine by default), `3.8:18/20`
@@ -256,6 +257,14 @@ Ownership is flow-sensitive, so the type judgment threads an **ownership state**
     Λ : set of currently-outstanding loans, each  ( root(p), {shared | exclusive} )
 ```
 
+`Σ(p)` is the state recorded for the exact path `p`. A base path can be `Owned`
+while one of its descendants is `MovedOut` after a partial move; rules that hand
+an aggregate to another context therefore use the stronger predicate
+`fully-owned(Σ,p)`, meaning `Σ(p)=Owned` and no path strictly under `p` is
+`MovedOut`. A place `p` is **mutable** when its root is a `mut` local, an `inout`
+parameter, or a mutable projection through either; immutable parameters and
+`borrow` parameters are not mutable roots.
+
 The main judgment:
 
 ```
@@ -267,6 +276,28 @@ well-formed, has type `T`, and leaves ownership Σ'." (Λ is scoped to a single 
 and does not change across `e`; it is threaded only so the use/assign rules can
 consult it — see 5.4. It is written on the turnstile, not on the output, for that
 reason.)
+
+Function bodies are checked with an entry ownership state and parameter
+discipline determined by the signature:
+
+```
+  g : fn (m1 x1:T1, ..., mm xm:Tm) -> Tr { e_body }
+  Γ0 = [x1↦T1, ..., xm↦Tm]
+  Σ0 = [xi↦Owned for every parameter xi]
+  Γ0;Σ0;∅ ⊢ e_body ⇒ Tr ⊣ Σf
+  for every parameter xi:
+    mi = borrow  ⇒ xi and every path under xi is read-only, never moved out, and may be re-lent only as borrow
+    mi = inout   ⇒ xi may be read, written, and forwarded, but never moved out
+    mi = ∅       ⇒ xi is an owned by-value local subject to the ordinary use/drop rules
+  ───────────────────────────────────────────────────────────────────────── (Fn)
+  g is well-formed
+```
+
+The `borrow` and `inout` restrictions are **callee-polarity** rules: the caller
+may not touch a lent place while the loan is live, while the callee may touch the
+parameter only in the mode it received. They are not represented by inserting the
+parameters into ambient `Λ`; doing so would make an `inout` parameter unreadable
+by the ordinary `(Use-Copy)` premise.
 
 ### 5.1 Use and copy (the keystone, as a rule)
 
@@ -323,6 +354,23 @@ Linear` for every type — including enums, whose class is the payload join.
 `let x = e1 ; e2` is like `Seq` but binds `x` (with `x` Owned in Σ for `e2`) and
 imposes no discard check on `e1`.
 
+The `@drop(p)` intrinsic is the deliberate, visible discharge of a value's drop
+obligation (`3.9`). For `Affine`/`Linear` operands it consumes the operand, runs
+the same drop glue that scope exit would run, and leaves the source moved out so
+no later scope-exit drop runs for that place. It is the only non-move operation
+that can satisfy a linear obligation. For `Copy` operands, `@drop` has no drop
+glue and no ownership effect.
+
+```
+  Γ ⊢ p : T        class(T)=Copy        Σ(p)=Owned
+  ─────────────────────────────────────────────────────── (@Drop-Copy)
+  Γ;Σ;Λ ⊢ @drop(p) ⇒ unit ⊣ Σ
+
+  Γ ⊢ p : T        class(T)∈{Affine,Linear}        Σ(p)=Owned        p not loaned in Λ
+  ─────────────────────────────────────────────────────── (@Drop)
+  Γ;Σ;Λ ⊢ @drop(p) ⇒ unit ⊣ Σ[ p ↦ MovedOut, and every path strictly under p removed ]
+```
+
 ### 5.4 Borrows and the law of exclusivity
 
 A call evaluates its arguments and then, for the duration of the call, holds
@@ -331,21 +379,28 @@ A call evaluates its arguments and then, for the duration of the call, holds
 ```
   For each argument a_i of call g(a1..am):
     a_i = e         : ordinary value context — Use-Copy / Use-Move on any places in e
-    a_i = borrow p  : requires Σ(p)=Owned; adds (root(p), shared)   to Λ_call
-    a_i = inout p   : requires Σ(p)=Owned; adds (root(p), exclusive) to Λ_call; p mutable
+    a_i = borrow p  : requires fully-owned(Σ,p); adds (root(p), shared)   to Λ_call
+    a_i = inout p   : requires fully-owned(Σ,p); adds (root(p), exclusive) to Λ_call; p mutable
 
   Well-formed only if Λ_call is CONSISTENT:  a root may appear
     - any number of times as shared,  OR
     - exactly once as exclusive,
     - never both.                                            -- law of exclusivity (6.1:20, 6.1:30)
+  At the concrete `(Call)` rule, every loaned root is rechecked against the final
+  argument state at call entry.
 ```
 
 While `(root(p), _) ∈ Λ`, `p` and every path under/over it may not be moved
-(`Use-Move` premise) nor, for a shared loan, mutated. Loans are **second-class**:
-they exist only for the call's dynamic extent and cannot be returned, stored, or
-outlive the call — this is what lets Rue omit lifetimes. **[open]** The core
-models loans as strictly call-scoped; if a future first-class-reference feature is
-adopted (a live ADR question, deferred), this section is where it lands.
+(`Use-Move` premise) nor, for a shared loan, mutated. Loan consistency is
+deliberately **root-granular**: a loan of any projection or subrange covers the
+entire root, so two `inout` loans of disjoint fields or ranges of the same root
+are ill-formed. This is a conservative static rule; future `split_at_mut`-style
+APIs must express disjointness by producing distinct roots. Loans are
+**second-class**: they exist only for the call's dynamic extent and cannot be
+returned, stored, or outlive the call — this is what lets Rue omit lifetimes.
+**[open]** The core models loans as strictly call-scoped; if a future
+first-class-reference feature is adopted (a live ADR question, deferred), this
+section is where it lands.
 
 An **equality compare** `e1 ≟ e2` reads each place operand through the same
 kind of shared loan, scoped to the compare rather than a call: it requires
@@ -353,7 +408,12 @@ kind of shared loan, scoped to the compare rather than a call: it requires
 and leaves Σ unchanged (no move — §4.1, `4.3:3f`). Two shared reads are always
 consistent, so an operand may even appear on both sides (`a == a` is
 well-formed). This is why comparing an affine or linear value does not
-discharge its move obligation.
+discharge its move obligation. This eager-read model keeps the left operand's
+temporary shared loan from overlapping evaluation of the right operand. If future
+slice/view equality defers reading either side, it must add an explicit
+loan-extent rule; otherwise an expression such as `v[0..2] == g(inout v)` could
+dangle after `g` reallocates. The executable oracle's current copy-in/copy-out
+model masks that class and is not evidence that deferred view equality is sound.
 
 ### 5.5 Control flow and the branch join
 
@@ -506,8 +566,11 @@ and since the `else` arm's outgoing state is `⊥` the branch join is just the
 `then` arm's state. When *every* arm diverges (`3.4:6`, e.g.
 `if c { return 1 } else { return 0 }`), the principal type is `never`, which
 (Sub-Never) then coerces to whatever the surrounding context needs (there, the
-function's `i32` return type). This is the **only** coercion in the language:
-every other typing rule demands exact type identity.
+function's `i32` return type). This is the only coercion **on values**: every
+other value-typing rule demands exact type identity. Mode-position compatibility
+for by-reference arguments is a separate relation on places and views (for
+example `[T;N] ⊳ [T]`, `Str(N) ⊳ str`, and static string storage `⊳ str`) and
+does not create a stored value of another type.
 
 ### 5.8 Leaf, operator, aggregate, and call forms
 
@@ -619,9 +682,10 @@ and leave Σ unchanged, per §5.4.
   the m argument forms a1..am match the m parameters in count and mode  (4.10:3)
   for each i, threading Σ left-to-right (Σ0 = Σ):
       a_i = e          (mi = ∅):       Γ;Σ_{i-1};Λ ⊢ e ⇒ Ti ⊣ Σi                          -- by value: value-context use, §4.2
-      a_i = borrow p   (mi = borrow):  Σ_{i-1}(p)=Owned;            Σi = Σ_{i-1};  add (root(p), shared)    to Λ_call   -- §5.4
-      a_i = inout p    (mi = inout):   Σ_{i-1}(p)=Owned, p mutable; Σi = Σ_{i-1};  add (root(p), exclusive) to Λ_call   -- §5.4
+      a_i = borrow p   (mi = borrow):  fully-owned(Σ_{i-1},p);            Σi = Σ_{i-1};  add (root(p), shared)    to Λ_call   -- §5.4
+      a_i = inout p    (mi = inout):   fully-owned(Σ_{i-1},p), p mutable; Σi = Σ_{i-1};  add (root(p), exclusive) to Λ_call   -- §5.4
   Λ_call is CONSISTENT  (law of exclusivity, §5.4)
+  for every (r, _) in Λ_call: fully-owned(Σm,r)       -- loans begin at call entry, after all argument evaluation
   ─────────────────────────────────────────────────────────────────────────────── (Call)
   Γ;Σ;Λ ⊢ g ( a1, ..., am ) ⇒ Tr ⊣ Σm
 ```
@@ -631,11 +695,15 @@ must match the parameter count (`4.10:3`) and each argument's type its parameter
 (`4.10:4`). A by-value argument moves a non-`Copy` value into the parameter and
 copies a `Copy` one (§4.2), recording that in Σ; a `borrow`/`inout` argument
 leaves Σ unchanged and instead contributes a loan to `Λ_call`, which must satisfy
-the law of exclusivity (§5.4). The loans are second-class — released when the
-call returns — so the outgoing Σm carries only the moves performed by the
-by-value arguments. Because the core is fully monomorphic (§1), `g` names a
-single concrete signature: there is no overload or generic instantiation to
-resolve at the call.
+the law of exclusivity (§5.4). Those loans begin at call entry, not at the
+syntactic point where their argument forms are checked, so the final `Σm` must
+still fully own every loaned root. This rejects a same-argument-list loan plus
+consuming or partial move of the same root while preserving access-point
+evaluation patterns where a read finishes before the `inout` access begins. The
+loans are second-class — released when the call returns — so the outgoing Σm
+carries only the moves performed by the by-value arguments. Because the core is
+fully monomorphic (§1), `g` names a single concrete signature: there is no
+overload or generic instantiation to resolve at the call.
 
 ---
 
@@ -1013,18 +1081,25 @@ parameter is visible to the caller on return (`6.1:18`), and a `borrow` paramete
 is read-only. Let `g` be `fn g(m1 x1:T1, …, mm xm:Tm) -> Tr { e_body }`:
 
 ```
-  for each i:  arg a_i  is  either  a value v_i (by-value: fresh cell ℓ_i, H'(ℓ_i)=v_i)
-                          or  a by-ref place p_i (inout/borrow: ℓ_i = ρ(root(p_i)) shared, no copy)
-  ρ_g = [ x1↦ℓ1, …, xm↦ℓm ]        φ_g = ⟨ ρ_g ; [ [by-value ℓ_i only] ] ⟩        -- by-ref params owe NO drop (§5.6)
+  for each i:  arg a_i  is  either  a value v_i (by-value: fresh cell ℓ_i, H'(ℓ_i)=v_i, parameter path ε)
+                          or  a by-ref place p_i resolving to root cell ℓ_i = ρ(root(p_i)) and projection path π_i
+  ρ_g = [ xi↦(ℓ_i, ε) for by-value params; xi↦(ℓ_i, π_i) for by-ref params ]
+  φ_g = ⟨ ρ_g ; [ [by-value ℓ_i only] ] ⟩        -- by-ref params owe NO drop (§5.6)
   ────────────────────────────────────────────────────────────────────────────────────────────── (D-Call)
   ⟨ H ; φ ; K ; E[ g(a1,…,am) ] ⟩ → ⟨ H' ; φ_g ; ret(E, φ)·K ; e_body ⟩
 ```
 
 The callee's entry scope owes a drop **only** for the by-value parameter cells;
 `inout`/`borrow` parameters are owned by the caller and are exempt (§5.6,
-`3.8:62`). When the body reduces to a value `v`, the frame is popped: its open
-scopes' drops run (freeing the by-value params and any still-live locals), and `v`
-is handed back to the suspended caller context:
+`3.8:62`). A by-ref binding carries both the root cell and the projection path
+that was passed; reading or writing parameter `xi` therefore reaches exactly the
+field/element argument, not the caller's whole root cell. By-value bindings are
+the special case with projection path `ε`; earlier notation such as
+`ρ(root(p)) = ℓ` refers to the first component of this binding and composes the
+stored parameter path with the source projection `π`. When the body reduces to a
+value `v`, the frame is popped: its open scopes' drops run (freeing the by-value
+params and any still-live locals), and `v` is handed back to the suspended caller
+context:
 
 ```
   ────────────────────────────────────────────────────────────────────────── (D-Return-Value)
@@ -1115,6 +1190,12 @@ as the oracle would, since `run_drop` calls back into `call`). Drops are therefo
 sequenced, not atomic; `endscope`/`return`/`break`/overwrite all expand to `drop`
 applications in the orders fixed above.
 
+The surface intrinsic `@drop(p)` is the explicit version of the same relation.
+For a non-`Copy` place resolving to `ℓ@π`, it runs `drop(H, H(ℓ)@π)`, writes `⊘`
+back to `ℓ@π`, and returns `⟨⟩`; for a `Copy` place it returns `⟨⟩` without
+changing the store. Thus an explicit drop consumes a linear value exactly once
+and suppresses the later scope-exit drop through the original place.
+
 ### 6.12 Traps and the top-level result
 
 The four trap categories — `overflow` (arithmetic, `neg`, `min_T / -1`),
@@ -1199,6 +1280,23 @@ rather than hopes. Stated now; proved in `03-metatheory.md`.
   shared loans of a root, never both, and loans are second-class (do not escape
   the call). This is the data-race-freedom precondition and the MVS invariant.
 
+The eventual metatheory proof also owes these explicit lemmas:
+
+- **Loan/drop non-interference.** No live loan root may be in a scope record that
+  is being dropped or in an overwrite target whose old contents are being
+  dropped. This is what prevents drop glue from invalidating storage reachable
+  through a live by-ref parameter.
+- **Loan-extent nesting.** If a callee forwards a by-ref parameter as another
+  loan, the inner loan's extent is dominated by the outer loan's call extent.
+  This makes root-granular checking compose transitively across calls.
+- **Root separation.** Distinct roots occupy disjoint storage in the tree store.
+  Exclusivity is stated per root, so the proof must justify that different roots
+  cannot alias the same mutable location.
+- **View-intact.** For the lifetime of a loaned root, there is no `⊘` beneath the
+  loaned place. This follows from `fully-owned` at loan creation plus the
+  no-move-while-loaned premise, and it is the invariant future slice/view rules
+  need when runtime indices prevent per-element ownership tracking.
+
 These six are the memory-safety-without-GC claim, decomposed. Note which of them
 was *unprovable* against the prose spec until now: all of them, because each rests
 on "use", "moved", "consumed", "dropped" being defined — which §3–§6 finally do.
@@ -1214,7 +1312,7 @@ witness of the dynamic semantics (RUE-50), cited inline in each §6 rule group.
 
 | Formal notion | Prose paragraphs it formalizes / replaces |
 |---|---|
-| §3 multiplicity lattice | 3.8:1–3, 3.8:14/16/18/20, 3.8:30/32/37, 3.8:57/58, 3.8:74, 6.3:19 |
+| §3 multiplicity lattice | 3.8:1–3, 3.8:14/16/18/20, 3.8:30/32/37, 3.8:57/58, 3.8:74, 3.9:31, 6.3:19 |
 | §4.2 definition of *use* | 3.8:5, 3.8:7, 3.8:9, 3.8:11, 3.8:22, 3.8:33, 3.8:53 |
 | §4.1/§5.4 equality borrows its operands | 4.3:3f |
 | §5.5 match / enum elim + intro | 6.3:17, 3.8:33 (destructure), 4.7 (match) |
@@ -1222,8 +1320,8 @@ witness of the dynamic semantics (RUE-50), cited inline in each §6 rule group.
 | §5.6 enum drop (active payload) | 6.3:20 |
 | §4.3 expression/return value | 4.5:3 (→ value, not just type), 6.1:4/5, 4.9:1/7 |
 | §5.2 assignment / reinit | 3.8:55/56, 3.8:72 |
-| §5.3 discard leak check | 3.8:64/65 |
-| §5.4 borrows / exclusivity | 6.1:14–33, 6.1:20, 6.1:30 |
+| §5.3 discard leak check / explicit `@drop` | 3.8:64/65, 3.9:31–33 |
+| §5.4 borrows / exclusivity | 6.1:14–35, 6.1:20, 6.1:30 |
 | §5.5 branch join | 3.8:50/51, 3.8:73 |
 | §5.6 scope exit: drop + leak | 3.8:32/62/66, 3.9 (drop order) |
 | §5.7 divergence + never-coercion | 3.4:1/2/3/4/6/8, 3.4:9 |
@@ -1235,7 +1333,7 @@ witness of the dynamic semantics (RUE-50), cited inline in each §6 rule group.
 | §6.7/§6.8 let/seq/scope-drop, assignment overwrite-drop | 4.5:3, 3.8:55/64, 3.9 |
 | §6.9 call / return / inout copy-out | 6.1:4/5/18, 4.9:1/7 |
 | §6.10 loop / break dynamics | 4.9 (loop), 3.4:2 |
-| §6.11 drop relation (active enum payload; skip moved) | 3.9, 6.3:20 |
+| §6.11 drop relation (active enum payload; skip moved; explicit `@drop`) | 3.9, 6.3:20 |
 | §6.12 overflow/bounds/div-zero panics + exit code | 3.1:6/13, 8.1, 8.2, 8.3, Appendix B |
 | §7 soundness | the informal safety intent throughout ch. 3 and 8 |
 
