@@ -396,7 +396,7 @@ impl<'a> Sema<'a> {
         // tail expression) materializes as a static-backed first-class `str`.
         // Inner `let`s clear `expected_type` for their own initializers (they
         // `take()` it), so this only reaches the tail value.
-        if self.is_str_struct(return_type) {
+        if self.is_str_like(return_type) {
             ctx.expected_type = Some(return_type);
         }
         let body_result = self.analyze_inst(&mut air, body, &mut ctx)?;

@@ -145,7 +145,7 @@ impl<'a> Sema<'a> {
         // implicit-return string literal (HM type `String`) by coercion; skip
         // strict equality there and let sema materialize the static-backed
         // first-class `str` at the tail expression.
-        if !self.is_str_struct(return_type) {
+        if !self.is_str_like(return_type) {
             cgen.add_constraint(Constraint::equal(
                 body_info.ty,
                 self.type_to_infer_type(return_type),

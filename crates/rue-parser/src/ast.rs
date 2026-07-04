@@ -372,6 +372,20 @@ pub enum TypeExpr {
         args: Vec<TypeExpr>,
         span: Span,
     },
+    /// A fixed-capacity string type written with an integer-literal capacity:
+    /// `Str(N)` where `N` is an integer literal (ADR-0043 Phase 5, RUE-326).
+    /// `Str(N)` is the fixed string rung — `[u8; N]` + the UTF-8 byte-string
+    /// convention — storing up to `N` bytes with no heap. This node exists only
+    /// for the literal-capacity spelling (`Str(8)`); the const-capacity spelling
+    /// (`Str(N)` where `N` names a `const`) parses as a `TypeCall` and reduces
+    /// to the same canonical `Str(N)` type name. `name` is the callee ident (so
+    /// a non-`Str` name like `Foo(8)` still resolves to a clean unknown-type
+    /// error rather than being silently treated as a fixed string).
+    StrFixed {
+        name: Ident,
+        length: u64,
+        span: Span,
+    },
 }
 
 /// The length of an array type `[T; N]`.
@@ -441,6 +455,7 @@ impl TypeExpr {
             TypeExpr::PointerConst { span, .. } => *span,
             TypeExpr::PointerMut { span, .. } => *span,
             TypeExpr::TypeCall { span, .. } => *span,
+            TypeExpr::StrFixed { span, .. } => *span,
         }
     }
 }
@@ -504,6 +519,9 @@ impl fmt::Display for TypeExpr {
                     write!(f, "{}", arg)?;
                 }
                 write!(f, ")")
+            }
+            TypeExpr::StrFixed { name, length, .. } => {
+                write!(f, "sym:{}({})", name.name.into_usize(), length)
             }
         }
     }

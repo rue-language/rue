@@ -393,6 +393,25 @@ where
                 span: span_from_extra(e),
             });
 
+        // Fixed-capacity string type with a LITERAL capacity: `Str(8)`
+        // (ADR-0043 Phase 5, RUE-326). The integer capacity is not a type, so
+        // it cannot ride the `type_call` grammar (whose args are types); this
+        // dedicated rule matches `ident ( INT )`. Placed AFTER `type_call` in
+        // the choice so the const-capacity spelling `Str(N)` (where `N` names a
+        // `const`) still parses as a `TypeCall` with a `Named` type argument and
+        // reduces to the same canonical `Str(N)` type name. `name` is kept so a
+        // non-`Str` callee resolves to a clean unknown-type error.
+        let str_fixed_type = ident_parser()
+            .then(
+                select! { TokenKind::Int(n) => n as u64 }
+                    .delimited_by(just(TokenKind::LParen), just(TokenKind::RParen)),
+            )
+            .map_with(|(name, length), e| TypeExpr::StrFixed {
+                name,
+                length,
+                span: span_from_extra(e),
+            });
+
         // Named type: user-defined types like MyStruct
         let named_type = ident_parser().map(TypeExpr::Named);
 
@@ -416,6 +435,7 @@ where
             primitive_type_parser(),
             self_type,
             type_call,
+            str_fixed_type,
             named_type,
         ))
         // Summarize the whole type grammar as a single "type" expectation, so a

@@ -71,7 +71,10 @@ Struct fields are accessed using dot notation.
 
 {{ rule(id="6.2:9", cat="normative") }}
 
-Mutable struct values allow field reassignment.
+A field of a mutable struct binding is a *place* and may be the target of an
+assignment (5.2:1, 5.2:2); assigning to it drops the field's prior value, if
+live, before storing the new one (overwrite-drop, 5.2:1). Assigning to a field
+of an immutable binding is a compile-time error (5.2:8).
 
 {{ rule(id="6.2:10") }}
 

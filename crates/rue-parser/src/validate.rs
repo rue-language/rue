@@ -244,6 +244,9 @@ impl Validator<'_> {
                     self.check_type_expr(arg);
                 }
             }
+            // Fixed-capacity string `Str(N)`: a scalar literal capacity, no
+            // nested type expressions to validate (ADR-0043 Phase 5, RUE-326).
+            TypeExpr::StrFixed { .. } => {}
         }
     }
 }

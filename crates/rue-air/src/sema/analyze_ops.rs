@@ -412,7 +412,7 @@ impl<'a> Sema<'a> {
                 // `StringConst` AIR node lowers to only the ptr+len words there
                 // (the cap word is dropped in codegen). Otherwise it is the
                 // 3-word heap `String` as before.
-                let want_str = ctx.expected_type.is_some_and(|ty| self.is_str_struct(ty));
+                let want_str = ctx.expected_type.is_some_and(|ty| self.is_str_like(ty));
                 let ty = if want_str {
                     ctx.expected_type.unwrap()
                 } else {
@@ -420,6 +420,21 @@ impl<'a> Sema<'a> {
                 };
                 // Add string to the local string table (per-function for parallel analysis)
                 let string_content = self.interner.resolve(&*symbol).to_string();
+
+                // Capacity-fits legality (ADR-0043 Phase 5, RUE-326): a string
+                // literal materialized as a fixed `Str(N)` must fit — its UTF-8
+                // byte length must be ≤ N — else it is a clean compile error
+                // (E0210). `str` (no capacity) never triggers this.
+                if let Some(capacity) = self.str_fixed_capacity(ty) {
+                    let byte_len = string_content.len() as u64;
+                    if byte_len > capacity {
+                        return Err(CompileError::new(
+                            ErrorKind::StrFixedCapacityExceeded { capacity, byte_len },
+                            inst.span,
+                        ));
+                    }
+                }
+
                 let local_string_id = ctx.add_local_string(string_content);
 
                 let air_ref = air.add_inst(AirInst {
@@ -2066,7 +2081,7 @@ impl<'a> Sema<'a> {
             // a string-literal `return "..."` materializes as a static-backed,
             // first-class `str` (it cannot dangle, so returning it is sound).
             let ret_ty = ctx.return_type;
-            let inner_result = if self.is_str_struct(ret_ty) {
+            let inner_result = if self.is_str_like(ret_ty) {
                 let prev_expected = ctx.expected_type.replace(ret_ty);
                 let r = self.analyze_inst(air, inner, ctx);
                 ctx.expected_type = prev_expected;
@@ -2298,7 +2313,7 @@ impl<'a> Sema<'a> {
             // string literal `"..."` materializes as a 2-word static-backed
             // `str` rather than the 3-word heap `String` (ADR-0043 Phase 3,
             // RUE-324). Enums do the same for fallible-intrinsic `Option(T)`.
-            if annot.is_enum() || self.is_str_struct(annot) {
+            if annot.is_enum() || self.is_str_like(annot) {
                 ctx.expected_type = Some(annot);
             }
         }
@@ -2892,7 +2907,7 @@ impl<'a> Sema<'a> {
         // materializes as a 2-word `str` rather than a 3-word `String` (which
         // would corrupt the 2-slot local); this is what makes `let mut s: str;
         // s = "hi";` reassignment sound.
-        let value_result = if self.is_str_struct(local_ty) {
+        let value_result = if self.is_str_like(local_ty) {
             let prev_expected = ctx.expected_type.replace(local_ty);
             let r = self.analyze_inst(air, value, ctx);
             ctx.expected_type = prev_expected;
@@ -3112,7 +3127,7 @@ impl<'a> Sema<'a> {
                     span: field_inst.span,
                 });
                 AnalysisResult::new(air_ref, expected_field_type)
-            } else if self.is_str_struct(expected_field_type) {
+            } else if self.is_str_like(expected_field_type) {
                 // A `str`-typed field (ADR-0043 Phase 3, RUE-324): supply the
                 // field type as the expected type so a string-literal value
                 // materializes as a static-backed 2-word `str` (first-class,
@@ -4310,7 +4325,7 @@ impl<'a> Sema<'a> {
         // `@ptr_offset`/`@ptr_read` path (which strides by `slot_count * 8`);
         // it lowers to the same packed-byte runtime read as `String`, but with
         // the 2-word `{ptr, len}` receiver: `__rue_str_byte_at(ptr, len, index)`.
-        if self.is_str_struct(base_type) {
+        if self.is_str_like(base_type) {
             return self.analyze_str_index_get(
                 air,
                 base_result,

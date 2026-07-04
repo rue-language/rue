@@ -184,6 +184,15 @@ impl<'a> AstGen<'a> {
                 s.push(')');
                 self.interner.get_or_intern(&s)
             }
+            TypeExpr::StrFixed { name, length, .. } => {
+                // Fixed-capacity string `Str(N)` with a literal capacity
+                // (ADR-0043 Phase 5, RUE-326). Canonicalize to `Name(N)` — the
+                // same string the const-capacity `TypeCall` spelling produces —
+                // so sema's `resolve_type` reduces both to one `Str(N)` type.
+                let callee = self.interner.resolve(&name.name);
+                let s = format!("{}({})", callee, length);
+                self.interner.get_or_intern(&s)
+            }
         }
     }
 
@@ -1003,6 +1012,12 @@ impl<'a> AstGen<'a> {
                                 // ordinary call expression, not a TypeLit, so it
                                 // does not normally reach here. Intern its
                                 // canonical string for completeness (RUE-241).
+                                self.intern_type(&type_lit.type_expr)
+                            }
+                            TypeExpr::StrFixed { .. } => {
+                                // Fixed-capacity string `Str(N)` in value position
+                                // (ADR-0043 Phase 5, RUE-326). Intern its canonical
+                                // `Str(N)` string for completeness; sema resolves it.
                                 self.intern_type(&type_lit.type_expr)
                             }
                         };
