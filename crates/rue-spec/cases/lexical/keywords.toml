@@ -120,6 +120,41 @@ spec = ["2.4:1", "2.4:2"]
 source = "fn main() -> i32 { let borrow = 1; 0 }"
 compile_fail = true
 
+[[case]]
+name = "keyword_pub_reserved"
+error_contains = "[E0100]"
+spec = ["2.4:1", "2.4:2"]
+source = "fn main() -> i32 { let pub = 1; 0 }"
+compile_fail = true
+
+[[case]]
+name = "keyword_const_reserved"
+error_contains = "[E0100]"
+spec = ["2.4:1", "2.4:2"]
+source = "fn main() -> i32 { let const = 1; 0 }"
+compile_fail = true
+
+[[case]]
+name = "keyword_checked_reserved"
+error_contains = "[E0100]"
+spec = ["2.4:1", "2.4:2"]
+source = "fn main() -> i32 { let checked = 1; 0 }"
+compile_fail = true
+
+[[case]]
+name = "keyword_unchecked_reserved"
+error_contains = "[E0100]"
+spec = ["2.4:1", "2.4:2"]
+source = "fn main() -> i32 { let unchecked = 1; 0 }"
+compile_fail = true
+
+[[case]]
+name = "keyword_ptr_reserved"
+error_contains = "[E0100]"
+spec = ["2.4:1", "2.4:2"]
+source = "fn main() -> i32 { let ptr = 1; 0 }"
+compile_fail = true
+
 # =============================================================================
 # Type Names Are Reserved
 # =============================================================================
@@ -233,5 +268,17 @@ spec = ["2.4:3"]
 source = """
 struct Foo { bool: i32 }
 fn main() -> i32 { 0 }
+"""
+compile_fail = true
+
+[[case]]
+name = "type_Self_as_variable"
+error_contains = "[E0100]"
+spec = ["2.4:3"]
+source = """
+fn main() -> i32 {
+    let Self = 42;
+    0
+}
 """
 compile_fail = true

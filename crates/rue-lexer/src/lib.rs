@@ -15,7 +15,7 @@ use rue_span::Span;
 /// This enum is `Copy` since all variants contain only small, copyable data:
 /// - Most variants are unit (no data)
 /// - `Int` contains a `u64` (8 bytes)
-/// - `Ident` and `String` contain a `Symbol` (4 bytes, an interned string handle)
+/// - `Ident` and `String` contain a `Spur` (4 bytes, an interned string handle)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TokenKind {
     // Keywords

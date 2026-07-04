@@ -298,6 +298,15 @@ source = 'fn main() -> i32 { "'
 compile_fail = true
 error_contains = "unterminated string"
 
+# A bare CR is a line terminator (spec 2.3:1), so it ends the line and leaves
+# the string unterminated, same as a bare LF. (TOML \r escape = raw CR byte.)
+[[case]]
+name = "string_literal_unterminated_bare_cr"
+spec = ["2.1:9"]
+source = "fn main() -> i32 {\n    let _s = \"hello\rworld\";\n    0\n}\n"
+compile_fail = true
+error_contains = "unterminated string"
+
 # =============================================================================
 # Identifiers (syntax and legality)
 # =============================================================================

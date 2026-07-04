@@ -124,9 +124,11 @@ fn process_string_from_quote(lex: &mut logos::Lexer<'_, LogosTokenKind>) -> Resu
                     return Err(LexError::UnterminatedString);
                 }
             }
-        } else if c == '\n' {
-            // Newline in string - string is unterminated at this line
-            // Don't consume the newline so error span points to string start
+        } else if c == '\n' || c == '\r' {
+            // Line terminator in string - string is unterminated at this line.
+            // A bare CR counts too: spec 2.3:1 classes it as a newline, and the
+            // backslash-before-EOL path above already treats it as one.
+            // Don't consume the terminator so error span points to string start
             lex.bump(consumed);
             return Err(LexError::UnterminatedString);
         } else {
@@ -703,7 +705,19 @@ impl<'a> LogosLexer<'a> {
                                     )
                                 }
                             };
-                            return Err(CompileError::new(kind, rue_span));
+                            let mut error = CompileError::new(kind, rue_span);
+                            if matches!(error.kind, ErrorKind::UnexpectedCharacter('\u{feff}')) {
+                                // The "character" is an invisible UTF-8
+                                // byte-order mark (typically emitted by Windows
+                                // editors at the start of the file), so the
+                                // default message and caret point at nothing
+                                // visible. Explain what is actually there.
+                                error = error.with_help(
+                                    "this invisible character is a UTF-8 byte-order \
+                                     mark (BOM); save the file without a BOM",
+                                );
+                            }
+                            return Err(error);
                         }
                     }
                 }
@@ -1271,6 +1285,36 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(matches!(err.kind, ErrorKind::UnterminatedString));
+
+        // A bare CR is a line terminator (spec 2.3:1) and must end the
+        // string like a bare LF does, not be swallowed as content.
+        let lexer = LogosLexer::new("\"hello\rworld\"");
+        let result = lexer.tokenize();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err.kind, ErrorKind::UnterminatedString));
+    }
+
+    #[test]
+    fn test_logos_leading_bom_gets_targeted_help() {
+        // A leading UTF-8 BOM is not accepted (the spec whitespace set is
+        // space/tab/LF/CR only), but the error must explain the invisible
+        // character instead of pointing a caret at nothing.
+        let lexer = LogosLexer::new("\u{feff}fn main() -> i32 { 42 }");
+        let result = lexer.tokenize();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(
+            err.kind,
+            ErrorKind::UnexpectedCharacter('\u{feff}')
+        ));
+        assert!(
+            err.diagnostic()
+                .helps
+                .iter()
+                .any(|h| h.0.contains("byte-order mark")),
+            "BOM error should carry the explanatory help"
+        );
     }
 
     #[test]
