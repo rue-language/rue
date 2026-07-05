@@ -59,6 +59,7 @@ use lasso::{Spur, ThreadedRodeo};
 use rue_error::{CompileErrors, MultiErrorResult, PreviewFeatures};
 use rue_rir::Rir;
 use rue_span::{FileId, Span};
+use rue_target::Target;
 
 use crate::intern_pool::TypeInternPool;
 use crate::param_arena::ParamArena;
@@ -88,6 +89,8 @@ pub struct Sema<'a> {
     pub(crate) module_bindings: HashMap<(FileId, Spur), ConstInfo>,
     /// Enabled preview features
     pub(crate) preview_features: PreviewFeatures,
+    /// Requested compilation target.
+    pub(crate) target: Target,
     /// StructId of the synthetic String type.
     pub(crate) builtin_string_id: Option<StructId>,
     /// EnumId of the synthetic Arch enum (for @target_arch intrinsic).
@@ -147,6 +150,22 @@ impl<'a> Sema<'a> {
         interner: &'a ThreadedRodeo,
         preview_features: PreviewFeatures,
     ) -> Self {
+        Self::new_for_target(
+            rir,
+            interner,
+            preview_features,
+            Target::host()
+                .expect("Rue cannot choose a default sema target on this unsupported host"),
+        )
+    }
+
+    /// Create a new semantic analyzer for an explicit compilation target.
+    pub fn new_for_target(
+        rir: &'a Rir,
+        interner: &'a ThreadedRodeo,
+        preview_features: PreviewFeatures,
+        target: Target,
+    ) -> Self {
         Self {
             rir,
             interner,
@@ -157,6 +176,7 @@ impl<'a> Sema<'a> {
             constants: HashMap::new(),
             module_bindings: HashMap::new(),
             preview_features,
+            target,
             builtin_string_id: None,
             builtin_arch_id: None,
             builtin_os_id: None,

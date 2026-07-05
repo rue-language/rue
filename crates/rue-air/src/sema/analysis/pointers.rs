@@ -805,11 +805,10 @@ impl<'a> Sema<'a> {
             .builtin_arch_id
             .expect("Arch enum not injected - internal compiler error");
 
-        // Determine variant index based on host architecture (compile-time evaluation)
-        // Currently we always compile for the host architecture
-        let host = rue_target::Target::host()
-            .expect("@target_arch() requires a supported Rue host target");
-        let variant_index = match host.arch() {
+        // Determine variant index from the requested compilation target, not
+        // the host running the compiler. Cross-target `--emit` must specialize
+        // target intrinsics for the emitted target (RUE-417).
+        let variant_index = match self.target.arch() {
             Arch::X86_64 => 0,
             Arch::Aarch64 => 1,
         };
@@ -854,11 +853,10 @@ impl<'a> Sema<'a> {
             .builtin_os_id
             .expect("Os enum not injected - internal compiler error");
 
-        // Determine variant index based on host OS (compile-time evaluation)
-        // Currently we always compile for the host OS
-        let host =
-            rue_target::Target::host().expect("@target_os() requires a supported Rue host target");
-        let variant_index = match host.os() {
+        // Determine variant index from the requested compilation target, not
+        // the host running the compiler. Cross-target `--emit` must specialize
+        // target intrinsics for the emitted target (RUE-417).
+        let variant_index = match self.target.os() {
             Os::Linux => 0,
             Os::Macos => 1,
         };

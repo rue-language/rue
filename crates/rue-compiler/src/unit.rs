@@ -288,7 +288,12 @@ impl<'src> CompilationUnit<'src> {
         // Semantic analysis
         let sema_output = {
             let _span = info_span!("sema").entered();
-            let mut sema = Sema::new(rir, interner, self.options.preview_features.clone());
+            let mut sema = Sema::new_for_target(
+                rir,
+                interner,
+                self.options.preview_features.clone(),
+                self.options.target,
+            );
             sema.set_file_paths(self.file_paths.clone());
             let output = sema.analyze_all()?;
             info!(

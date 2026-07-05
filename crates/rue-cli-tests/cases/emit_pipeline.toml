@@ -79,3 +79,33 @@ fn main() -> i32 { 42 }
 args = ["--emit", "asm", "-j1", "main.rue"]
 compile_only = true
 compile_stdout_contains = ["=== Assembly", "main"]
+
+[[case]]
+name = "emit_air_target_arch_uses_requested_target"
+description = "@target_arch() in --emit uses --target, not the compiler host (RUE-417)."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    match @target_arch() {
+        Arch::X86_64 => 86,
+        Arch::Aarch64 => 64,
+    }
+}
+""" }]
+args = ["--target", "aarch64-linux", "--emit", "air", "main.rue"]
+compile_only = true
+compile_stdout_contains = ["enum_variant #1::1"]
+
+[[case]]
+name = "emit_air_target_os_uses_requested_target"
+description = "@target_os() in --emit uses --target, not the compiler host (RUE-417)."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    match @target_os() {
+        Os::Linux => 1,
+        Os::Macos => 2,
+    }
+}
+""" }]
+args = ["--target", "aarch64-macos", "--emit", "air", "main.rue"]
+compile_only = true
+compile_stdout_contains = ["enum_variant #2::1"]

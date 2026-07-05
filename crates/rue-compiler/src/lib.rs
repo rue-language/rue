@@ -889,11 +889,12 @@ pub fn compile_frontend_from_ast_with_options(
     opt_level: OptLevel,
     preview_features: &PreviewFeatures,
 ) -> MultiErrorResult<CompileState> {
-    compile_frontend_from_ast_with_file_paths(
+    compile_frontend_from_ast_with_file_paths_and_target(
         ast,
         interner,
         opt_level,
         preview_features,
+        CompileOptions::default().target,
         std::collections::HashMap::new(),
     )
 }
@@ -909,6 +910,27 @@ pub fn compile_frontend_from_ast_with_file_paths(
     preview_features: &PreviewFeatures,
     file_paths: std::collections::HashMap<FileId, String>,
 ) -> MultiErrorResult<CompileState> {
+    compile_frontend_from_ast_with_file_paths_and_target(
+        ast,
+        interner,
+        opt_level,
+        preview_features,
+        CompileOptions::default().target,
+        file_paths,
+    )
+}
+
+/// Like [`compile_frontend_from_ast_with_file_paths`], but with the explicit
+/// target sema needs for target-dependent intrinsics such as `@target_arch()`
+/// and `@target_os()` under cross-target `--emit` (RUE-417).
+pub fn compile_frontend_from_ast_with_file_paths_and_target(
+    ast: Ast,
+    interner: ThreadedRodeo,
+    opt_level: OptLevel,
+    preview_features: &PreviewFeatures,
+    target: Target,
+    file_paths: std::collections::HashMap<FileId, String>,
+) -> MultiErrorResult<CompileState> {
     // AST to RIR (untyped IR)
     let (rir, interner) = {
         let _span = info_span!("astgen").entered();
@@ -921,7 +943,7 @@ pub fn compile_frontend_from_ast_with_file_paths(
     // Semantic analysis (RIR to AIR) - this now collects multiple errors
     let sema_output = {
         let _span = info_span!("sema").entered();
-        let mut sema = Sema::new(&rir, &interner, preview_features.clone());
+        let mut sema = Sema::new_for_target(&rir, &interner, preview_features.clone(), target);
         sema.set_file_paths(file_paths);
         let output = sema.analyze_all()?;
         info!(
