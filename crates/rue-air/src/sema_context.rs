@@ -93,12 +93,6 @@ impl ModuleRegistry {
             .expect("Invalid ModuleId")
     }
 
-    /// Update a module definition.
-    pub fn update_def(&self, id: ModuleId, def: ModuleDef) {
-        let mut defs = self.defs.write().unwrap_or_else(PoisonError::into_inner);
-        defs[id.index() as usize] = def;
-    }
-
     /// Get the number of modules in the registry.
     pub fn len(&self) -> usize {
         self.defs
@@ -110,13 +104,6 @@ impl ModuleRegistry {
     /// Check if the registry is empty.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
-    }
-
-    /// Extract the module definitions (consumes the registry).
-    pub fn into_defs(self) -> Vec<ModuleDef> {
-        self.defs
-            .into_inner()
-            .unwrap_or_else(PoisonError::into_inner)
     }
 }
 
