@@ -1149,6 +1149,7 @@ impl<'a> Sema<'a> {
         let params = self.rir.get_params(params_start, params_len);
         let directives = self.rir.get_directives(directives_start, directives_len);
         let allow_unused_function = self.has_allow_directive(&directives, "unused_function");
+        let allow_unused_variable = self.has_allow_directive(&directives, "unused_variable");
 
         let param_names: Vec<Spur> = params.iter().map(|p| p.name).collect();
         let param_modes: Vec<RirParamMode> = params.iter().map(|p| p.mode).collect();
@@ -1255,6 +1256,7 @@ impl<'a> Sema<'a> {
                 is_pub,
                 is_unchecked,
                 allow_unused_function,
+                allow_unused_variable,
                 file_id: span.file_id,
             },
         );

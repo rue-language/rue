@@ -36,6 +36,12 @@ impl<'a> Sema<'a> {
         };
 
         for (symbol, _old_value) in current_scope {
+            // A function-level `@allow(unused_variable)` suppresses unused
+            // variable warnings for all bindings in the function body.
+            if ctx.allow_unused_variables {
+                continue;
+            }
+
             // Skip if variable was used
             if ctx.used_locals.contains(symbol) {
                 continue;

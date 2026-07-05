@@ -178,11 +178,12 @@ fn analyze_all_function_bodies_sequential(sema: &mut Sema<'_>) -> MultiErrorResu
                 continue;
             }
 
+            let Some(fn_info) = sema.functions.get(name).copied() else {
+                continue;
+            };
             // Skip functions with comptime parameters - they are analyzed per specialization
-            if let Some(fn_info) = sema.functions.get(name) {
-                if fn_info.is_generic {
-                    continue;
-                }
+            if fn_info.is_generic {
+                continue;
             }
 
             let fn_name = sema.interner.resolve(&*name).to_string();
@@ -195,6 +196,7 @@ fn analyze_all_function_bodies_sequential(sema: &mut Sema<'_>) -> MultiErrorResu
                 &params,
                 *body,
                 inst.span,
+                fn_info.allow_unused_variable,
             ) {
                 Ok((analyzed, warnings, local_strings, mut ref_fns, _ref_meths)) => {
                     functions_with_strings.push((analyzed, local_strings));
@@ -647,6 +649,7 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
                             &params,
                             *body,
                             inst.span,
+                            fn_info.allow_unused_variable,
                         ) {
                             Ok((
                                 analyzed,
