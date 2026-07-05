@@ -2330,7 +2330,8 @@ impl<'a> CfgBuilder<'a> {
     /// recursively check if struct fields or array elements need drop.
     ///
     /// A type needs drop if dropping it requires cleanup actions:
-    /// - Primitives, bool, unit, never, error, enums: trivially droppable (no)
+    /// - Primitives, bool, unit, never, error: trivially droppable (no)
+    /// - Enum: needs drop if any variant payload needs drop
     /// - String: will need drop when mutable strings land (currently no)
     /// - Struct: needs drop if any field needs drop
     /// - Array: needs drop if element type needs drop
