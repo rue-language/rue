@@ -210,6 +210,23 @@ compile_stdout_contains = [
 compile_stdout_not_contains = ["unused.rue"]
 
 [[case]]
+name = "emit_deps_rejects_unresolved_import"
+description = "RUE-450: --emit deps validates the loaded root import graph before printing dependency JSON."
+files = [
+    { path = "main.rue", source = """
+const missing = @import("missing");
+
+fn main() -> i32 {
+    missing.answer()
+}
+""" },
+]
+args = ["--emit", "deps", "main.rue"]
+compile_fail = true
+error_contains = ["E0704", "missing"]
+compile_stdout_not_contains = ["\"version\": 1"]
+
+[[case]]
 name = "emit_deps_rejects_mixed_emit_stages"
 description = "RUE-446: dependency JSON must not be interleaved with other --emit output."
 files = [

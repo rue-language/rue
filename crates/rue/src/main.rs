@@ -1403,34 +1403,6 @@ fn main() {
     }
     let sources = sources;
 
-    if options.emit_stages.contains(&EmitStage::Deps) {
-        if options.emit_stages.len() != 1 {
-            eprintln!("Error: --emit deps cannot be combined with other --emit stages");
-            std::process::exit(1);
-        }
-        if options.benchmark_json {
-            eprintln!(
-                "Error: --emit cannot be combined with --benchmark-json (both write to stdout)"
-            );
-            std::process::exit(1);
-        }
-        match serde_json::to_string_pretty(&dependency_graph.to_output()) {
-            Ok(json) => println!("{json}"),
-            Err(e) => {
-                eprintln!("Error emitting dependency graph: {e}");
-                std::process::exit(1);
-            }
-        }
-        print_timing_output(
-            &timing_data,
-            options.time_passes,
-            options.benchmark_json,
-            &options.target,
-            None,
-        );
-        return;
-    }
-
     // Build SourceFile structs for multi-file compilation
     let source_files: Vec<SourceFile<'_>> = sources
         .iter()
@@ -1452,6 +1424,37 @@ fn main() {
         })
         .collect();
     let diagnostics = DiagnosticOutput::new(options.error_format, source_infos);
+
+    if options.emit_stages.contains(&EmitStage::Deps) {
+        if options.emit_stages.len() != 1 {
+            eprintln!("Error: --emit deps cannot be combined with other --emit stages");
+            std::process::exit(1);
+        }
+        if options.benchmark_json {
+            eprintln!(
+                "Error: --emit cannot be combined with --benchmark-json (both write to stdout)"
+            );
+            std::process::exit(1);
+        }
+        if let Err(()) = validate_deps_emit_sources(&source_files, &options, &diagnostics) {
+            std::process::exit(1);
+        }
+        match serde_json::to_string_pretty(&dependency_graph.to_output()) {
+            Ok(json) => println!("{json}"),
+            Err(e) => {
+                eprintln!("Error emitting dependency graph: {e}");
+                std::process::exit(1);
+            }
+        }
+        print_timing_output(
+            &timing_data,
+            options.time_passes,
+            options.benchmark_json,
+            &options.target,
+            None,
+        );
+        return;
+    }
 
     // Compute source metrics if benchmark JSON is requested
     let source_metrics = if options.benchmark_json {
@@ -1596,6 +1599,48 @@ fn main() {
         Err(errors) => {
             diagnostics.print_errors(&errors);
             std::process::exit(1);
+        }
+    }
+}
+
+fn validate_deps_emit_sources(
+    sources: &[SourceFile<'_>],
+    options: &Options,
+    diagnostics: &DiagnosticOutput<'_>,
+) -> Result<(), ()> {
+    let parsed = match parse_all_files(sources) {
+        Ok(program) => program,
+        Err(errors) => {
+            diagnostics.print_errors(&errors);
+            return Err(());
+        }
+    };
+
+    let merged = match merge_symbols(parsed) {
+        Ok(merged) => merged,
+        Err(errors) => {
+            diagnostics.print_errors(&errors);
+            return Err(());
+        }
+    };
+
+    let file_paths: std::collections::HashMap<FileId, String> = sources
+        .iter()
+        .map(|source| (source.file_id, source.path.to_string()))
+        .collect();
+
+    match rue_compiler::compile_frontend_from_ast_with_file_paths_and_target(
+        merged.ast,
+        merged.interner,
+        options.opt_level,
+        &options.preview_features,
+        options.target,
+        file_paths,
+    ) {
+        Ok(_state) => Ok(()),
+        Err(errors) => {
+            diagnostics.print_errors(&errors);
+            Err(())
         }
     }
 }
