@@ -41,6 +41,7 @@ macro_rules! end_inst {
     };
 }
 
+mod schedule_core;
 mod stack_frame;
 mod stack_verify;
 

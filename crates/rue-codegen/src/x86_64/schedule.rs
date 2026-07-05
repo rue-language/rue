@@ -28,54 +28,45 @@
 //! Currently schedules only within basic blocks (no cross-block motion).
 //! Memory dependencies are handled conservatively (all loads/stores ordered).
 
-use std::cmp::Ordering;
-use std::collections::{BinaryHeap, HashMap, HashSet};
-
 use super::mir::{Operand, Reg, X86Inst, X86Mir};
+use crate::schedule_core::{self, SchedulerAdapter};
 
-/// A node in the scheduling dependency graph.
-#[derive(Debug)]
-struct SchedNode {
-    /// Instructions this depends on (must execute before this).
-    deps: Vec<usize>,
-    /// Instructions that depend on this (must execute after this).
-    users: Vec<usize>,
-    /// Scheduling priority (higher = schedule earlier).
-    priority: u32,
-    /// Latency in cycles until result is ready.
-    latency: u32,
-}
+struct X86Scheduler;
 
-impl SchedNode {
-    fn new(latency: u32) -> Self {
-        Self {
-            deps: Vec::new(),
-            users: Vec::new(),
-            priority: 0,
-            latency,
-        }
+impl SchedulerAdapter for X86Scheduler {
+    type Inst = X86Inst;
+    type Reg = Reg;
+
+    fn latency(&self, inst: &Self::Inst) -> u32 {
+        get_latency(inst)
     }
-}
 
-/// A ready instruction with its priority, for the scheduling queue.
-#[derive(Debug, Eq, PartialEq)]
-struct ReadyInst {
-    priority: u32,
-    idx: usize,
-}
-
-impl Ord for ReadyInst {
-    fn cmp(&self, other: &Self) -> Ordering {
-        // Higher priority first, break ties by lower index (original order)
-        self.priority
-            .cmp(&other.priority)
-            .then_with(|| other.idx.cmp(&self.idx))
+    fn is_barrier(&self, inst: &Self::Inst) -> bool {
+        is_barrier(inst)
     }
-}
 
-impl PartialOrd for ReadyInst {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
+    fn accesses_memory(&self, inst: &Self::Inst) -> bool {
+        accesses_memory(inst)
+    }
+
+    fn regs_read(&self, inst: &Self::Inst) -> Vec<Self::Reg> {
+        regs_read(inst)
+    }
+
+    fn regs_written(&self, inst: &Self::Inst) -> Vec<Self::Reg> {
+        regs_written(inst)
+    }
+
+    fn clobbers(&self, inst: &Self::Inst) -> Vec<Self::Reg> {
+        inst.clobbers().to_vec()
+    }
+
+    fn writes_flags(&self, inst: &Self::Inst) -> bool {
+        writes_flags(inst)
+    }
+
+    fn reads_flags(&self, inst: &Self::Inst) -> bool {
+        reads_flags(inst)
     }
 }
 
@@ -621,246 +612,23 @@ pub(super) fn reads_flags(inst: &X86Inst) -> bool {
     )
 }
 
-/// Build the dependency graph for a basic block of instructions.
-fn build_dep_graph(instructions: &[X86Inst], start: usize, end: usize) -> Vec<SchedNode> {
-    let block_len = end - start;
-    let mut nodes: Vec<SchedNode> = instructions[start..end]
-        .iter()
-        .map(|inst| SchedNode::new(get_latency(inst)))
-        .collect();
-
-    // Track last writer of each register
-    let mut last_writer: HashMap<Reg, usize> = HashMap::new();
-    // Track last readers of each register (for WAR dependencies)
-    let mut last_readers: HashMap<Reg, Vec<usize>> = HashMap::new();
-    // Track last memory access (conservative)
-    let mut last_memory_access: Option<usize> = None;
-    // Track last FLAGS writer and readers
-    let mut last_flags_writer: Option<usize> = None;
-    let mut last_flags_readers: Vec<usize> = Vec::new();
-
-    for i in 0..block_len {
-        let inst = &instructions[start + i];
-        let reads = regs_read(inst);
-        let writes = regs_written(inst);
-
-        // RAW (Read After Write): this instruction reads what another wrote
-        for reg in &reads {
-            if let Some(&writer) = last_writer.get(reg) {
-                if !nodes[i].deps.contains(&writer) {
-                    nodes[i].deps.push(writer);
-                    nodes[writer].users.push(i);
-                }
-            }
-        }
-
-        // WAW (Write After Write): this instruction writes what another wrote
-        for reg in &writes {
-            if let Some(&prev_writer) = last_writer.get(reg) {
-                if !nodes[i].deps.contains(&prev_writer) {
-                    nodes[i].deps.push(prev_writer);
-                    nodes[prev_writer].users.push(i);
-                }
-            }
-        }
-
-        // WAR (Write After Read): this instruction writes what another read
-        for reg in &writes {
-            if let Some(readers) = last_readers.get(reg) {
-                for &reader in readers {
-                    if reader != i && !nodes[i].deps.contains(&reader) {
-                        nodes[i].deps.push(reader);
-                        nodes[reader].users.push(i);
-                    }
-                }
-            }
-        }
-
-        // FLAGS dependencies
-        // RAW: instruction reads flags written by another
-        if reads_flags(inst) {
-            if let Some(writer) = last_flags_writer {
-                if !nodes[i].deps.contains(&writer) {
-                    nodes[i].deps.push(writer);
-                    nodes[writer].users.push(i);
-                }
-            }
-        }
-
-        // WAW: instruction writes flags written by another
-        if writes_flags(inst) {
-            if let Some(prev_writer) = last_flags_writer {
-                if !nodes[i].deps.contains(&prev_writer) {
-                    nodes[i].deps.push(prev_writer);
-                    nodes[prev_writer].users.push(i);
-                }
-            }
-        }
-
-        // WAR: instruction writes flags read by another
-        if writes_flags(inst) {
-            for &reader in &last_flags_readers {
-                if reader != i && !nodes[i].deps.contains(&reader) {
-                    nodes[i].deps.push(reader);
-                    nodes[reader].users.push(i);
-                }
-            }
-        }
-
-        // Memory dependencies (conservative: order all memory accesses)
-        if accesses_memory(inst) {
-            if let Some(prev) = last_memory_access {
-                if !nodes[i].deps.contains(&prev) {
-                    nodes[i].deps.push(prev);
-                    nodes[prev].users.push(i);
-                }
-            }
-            last_memory_access = Some(i);
-        }
-
-        // Clobber dependencies
-        for &clobbered in inst.clobbers() {
-            // This instruction clobbers the register, so it must come after any readers
-            if let Some(readers) = last_readers.get(&clobbered) {
-                for &reader in readers {
-                    if reader != i && !nodes[i].deps.contains(&reader) {
-                        nodes[i].deps.push(reader);
-                        nodes[reader].users.push(i);
-                    }
-                }
-            }
-            // And after the last writer
-            if let Some(&writer) = last_writer.get(&clobbered) {
-                if !nodes[i].deps.contains(&writer) {
-                    nodes[i].deps.push(writer);
-                    nodes[writer].users.push(i);
-                }
-            }
-        }
-
-        // Update tracking. Clobbers count as writes here: a later instruction
-        // that writes (WAW) or reads (RAW) a clobbered register must not be
-        // scheduled above the clobberer, or the clobber destroys its value.
-        for &clobbered in inst.clobbers() {
-            last_writer.insert(clobbered, i);
-            last_readers.remove(&clobbered);
-        }
-        for reg in writes {
-            last_writer.insert(reg, i);
-            last_readers.remove(&reg);
-        }
-        for reg in reads {
-            last_readers.entry(reg).or_default().push(i);
-        }
-
-        // Update FLAGS tracking
-        if writes_flags(inst) {
-            last_flags_writer = Some(i);
-            last_flags_readers.clear();
-        }
-        if reads_flags(inst) {
-            last_flags_readers.push(i);
-        }
-    }
-
-    nodes
+#[cfg(test)]
+fn build_dep_graph(
+    instructions: &[X86Inst],
+    start: usize,
+    end: usize,
+) -> Vec<schedule_core::SchedNode> {
+    schedule_core::build_dep_graph(instructions, start, end, &X86Scheduler)
 }
 
-/// Calculate priority for each node (critical path length to exit).
-///
-/// `priority[idx] = latency[idx] + max(priority[u] for u in users[idx])`, i.e.
-/// the longest path from `idx` to any exit node in the dependency DAG. This is
-/// computed with an explicit-stack, memoized post-order traversal rather than
-/// recursion: a straight-line block of N dependent instructions forms a
-/// user-chain of depth N, and a recursive DFS would overflow the Rust stack on
-/// large inputs (e.g. a several-thousand-element array literal — RUE-346).
-/// The traversal visits each node/edge a bounded number of times, so it stays
-/// linear (no O(n²) regression — cf. RUE-302).
-fn calculate_priorities(nodes: &mut [SchedNode]) {
-    let mut memo: HashMap<usize, u32> = HashMap::new();
-    // Each stack entry is `(node, expanded)`. On first pop (`expanded == false`)
-    // we re-push the node as expanded and push its not-yet-computed users above
-    // it; on the second pop (`expanded == true`) every user is memoized, so we
-    // can finalize this node. The `memo` guard makes duplicate pushes (a shared
-    // user reached via several parents) harmless.
-    let mut stack: Vec<(usize, bool)> = Vec::new();
-
-    for start in 0..nodes.len() {
-        if memo.contains_key(&start) {
-            continue;
-        }
-        stack.push((start, false));
-        while let Some((idx, expanded)) = stack.pop() {
-            if memo.contains_key(&idx) {
-                continue;
-            }
-            if expanded {
-                let max_user = nodes[idx]
-                    .users
-                    .iter()
-                    .map(|&u| memo[&u])
-                    .max()
-                    .unwrap_or(0);
-                memo.insert(idx, nodes[idx].latency + max_user);
-            } else {
-                stack.push((idx, true));
-                for &u in &nodes[idx].users {
-                    if !memo.contains_key(&u) {
-                        stack.push((u, false));
-                    }
-                }
-            }
-        }
-    }
-
-    for i in 0..nodes.len() {
-        nodes[i].priority = memo[&i];
-    }
+#[cfg(test)]
+fn calculate_priorities(nodes: &mut [schedule_core::SchedNode]) {
+    schedule_core::calculate_priorities(nodes);
 }
 
-/// Schedule instructions within a basic block using list scheduling.
-fn schedule_block(nodes: &[SchedNode]) -> Vec<usize> {
-    if nodes.is_empty() {
-        return Vec::new();
-    }
-
-    let mut scheduled = Vec::with_capacity(nodes.len());
-    let mut completed: HashSet<usize> = HashSet::new();
-    let mut ready: BinaryHeap<ReadyInst> = BinaryHeap::new();
-
-    // Seed with instructions that have no dependencies
-    for (idx, node) in nodes.iter().enumerate() {
-        if node.deps.is_empty() {
-            ready.push(ReadyInst {
-                priority: node.priority,
-                idx,
-            });
-        }
-    }
-
-    while let Some(ReadyInst { idx, .. }) = ready.pop() {
-        if completed.contains(&idx) {
-            continue;
-        }
-
-        scheduled.push(idx);
-        completed.insert(idx);
-
-        // Add newly ready instructions
-        for &user in &nodes[idx].users {
-            if !completed.contains(&user) {
-                let all_deps_complete = nodes[user].deps.iter().all(|d| completed.contains(d));
-                if all_deps_complete {
-                    ready.push(ReadyInst {
-                        priority: nodes[user].priority,
-                        idx: user,
-                    });
-                }
-            }
-        }
-    }
-
-    scheduled
+#[cfg(test)]
+fn schedule_block(nodes: &[schedule_core::SchedNode]) -> Vec<usize> {
+    schedule_core::schedule_block(nodes)
 }
 
 /// Schedule instructions in the MIR.
@@ -868,70 +636,7 @@ fn schedule_block(nodes: &[SchedNode]) -> Vec<usize> {
 /// This function reorders instructions within basic blocks to improve performance.
 /// Control flow boundaries (branches, labels) are respected.
 pub fn schedule(mir: &mut X86Mir) {
-    let instructions = mir.instructions_vec_mut();
-    if instructions.len() < 3 {
-        // Not worth scheduling very small functions
-        return;
-    }
-
-    // Find basic block boundaries
-    let mut block_starts = vec![0usize];
-    for (i, inst) in instructions.iter().enumerate() {
-        if is_barrier(inst) {
-            // The barrier is the last instruction of the current block
-            // Next block starts after the barrier
-            if i + 1 < instructions.len() {
-                block_starts.push(i + 1);
-            }
-        }
-    }
-    block_starts.push(instructions.len());
-
-    // Schedule each basic block
-    let mut new_instructions = Vec::with_capacity(instructions.len());
-
-    for window in block_starts.windows(2) {
-        let start = window[0];
-        let end = window[1];
-
-        // Don't schedule blocks that are too small or end with a barrier at start
-        // Also skip if block has only 1-2 instructions
-        if end - start <= 2 {
-            for i in start..end {
-                new_instructions.push(instructions[i].clone());
-            }
-            continue;
-        }
-
-        // Check if block ends with barrier, and if so, exclude it from scheduling
-        let last_is_barrier = is_barrier(&instructions[end - 1]);
-        let sched_end = if last_is_barrier { end - 1 } else { end };
-
-        if sched_end - start <= 2 {
-            // Not enough instructions to schedule
-            for i in start..end {
-                new_instructions.push(instructions[i].clone());
-            }
-            continue;
-        }
-
-        // Build dependency graph and schedule
-        let mut nodes = build_dep_graph(instructions, start, sched_end);
-        calculate_priorities(&mut nodes);
-        let order = schedule_block(&nodes);
-
-        // Emit instructions in scheduled order
-        for &idx in &order {
-            new_instructions.push(instructions[start + idx].clone());
-        }
-
-        // Emit the barrier at the end if there was one
-        if last_is_barrier {
-            new_instructions.push(instructions[end - 1].clone());
-        }
-    }
-
-    *instructions = new_instructions;
+    schedule_core::schedule_instructions(mir.instructions_vec_mut(), &X86Scheduler);
 }
 
 #[cfg(test)]
