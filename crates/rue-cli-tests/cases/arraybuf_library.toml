@@ -238,7 +238,6 @@ pub fn ArrayBuf(comptime T: type) -> type {
 }
 """ },
 ]
-args = ["main.rue", "arraybuf.rue", "-o", "prog"]
 stdout = "3\n3\n4\n90\n91\n5\n6\n2\n"
 exit_code = 0
 
@@ -314,6 +313,5 @@ pub fn ArrayBuf(comptime T: type) -> type {
 }
 """ },
 ]
-args = ["main.rue", "arraybuf.rue", "-o", "prog"]
 stdout = "3\n10\n30\n60\n"
 exit_code = 60

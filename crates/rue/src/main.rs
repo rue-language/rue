@@ -234,8 +234,9 @@ impl ErrorFormat {
 }
 
 struct Options {
-    /// Source files to compile. In single-file mode, contains one path.
-    /// In multi-file mode, contains multiple paths.
+    /// Source files named positionally on the command line. The first path is
+    /// the root source; additional paths are legacy flat-mode inputs and must
+    /// not also be reachable through `@import`.
     source_paths: Vec<String>,
     output_path: String,
     emit_stages: Vec<EmitStage>,
@@ -270,10 +271,10 @@ fn print_version() {
 
 fn print_usage() {
     eprintln!("Usage: rue [options] <source.rue> [output]");
-    eprintln!("       rue [options] <source1.rue> <source2.rue> ... -o <output>");
+    eprintln!("       rue [options] <root.rue> -o <output>");
     eprintln!();
     eprintln!("Options:");
-    eprintln!("  -o, --output <path>  Set output path (required for multiple source files)");
+    eprintln!("  -o, --output <path>  Set output path");
     eprintln!("  --target <target>    Set compilation target (default: host)");
     eprintln!(
         "                       Valid targets: {}",
@@ -591,17 +592,20 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
                 "Error: refusing to use '{}' as the output path: it looks like a source file",
                 positional[1]
             );
-            eprintln!("To compile multiple source files, specify the output with -o:");
-            eprintln!("       rue {} {} -o <output>", positional[0], positional[1]);
+            eprintln!("Compile the root source and import helper modules with @import:");
+            eprintln!("       rue {} -o <output>", positional[0]);
             return ParseResult::Error;
         }
         let mut pos = positional;
         let out = pos.pop().unwrap();
         (pos, out)
     } else {
-        // Multiple source files without -o: error
-        eprintln!("Error: multiple source files require -o to specify output path");
-        eprintln!("Usage: rue a.rue b.rue -o output");
+        // Multiple source files without -o: error. The root-module workflow is
+        // `rue main.rue -o output`; helper modules are discovered through
+        // `@import`, not by listing them positionally.
+        eprintln!("Error: multiple source files require an explicit root-module compile");
+        eprintln!("Compile the root source and import helper modules with @import:");
+        eprintln!("       rue {} -o <output>", positional[0]);
         return ParseResult::Error;
     };
 
@@ -935,7 +939,7 @@ fn get_peak_memory_bytes() -> Option<u64> {
 
 /// Discover `@import("...")` references in the given sources and load the
 /// referenced module files from disk, transitively, appending them to
-/// `sources` as if the user had listed them on the command line.
+/// `sources`.
 ///
 /// Sema resolves import paths only against loaded files (see
 /// `resolve_import_path` in rue-air), so this is the step that makes
@@ -955,9 +959,13 @@ fn get_peak_memory_bytes() -> Option<u64> {
 ///
 /// Unresolvable imports are left for sema to report (E0704 with candidate
 /// context); this function only loads what it can find.
-fn discover_and_load_imports(sources: &mut Vec<(String, String)>) {
+///
+/// Returns non-root positional sources that were also reached through an
+/// import. That mixed mode is rejected by the CLI after discovery (RUE-434),
+/// because the file should be part of the root import graph, not also an
+/// additional flat positional input.
+fn discover_and_load_imports(sources: &mut Vec<(String, String)>) -> Vec<PathBuf> {
     use std::collections::HashSet;
-    use std::path::PathBuf;
 
     let root_dir = Path::new(&sources[0].0)
         .parent()
@@ -969,6 +977,13 @@ fn discover_and_load_imports(sources: &mut Vec<(String, String)>) {
         .iter()
         .filter_map(|(p, _)| fs::canonicalize(p).ok())
         .collect();
+    let explicit_non_root: HashSet<PathBuf> = sources
+        .iter()
+        .skip(1)
+        .filter_map(|(p, _)| fs::canonicalize(p).ok())
+        .collect();
+    let mut mixed_imports = Vec::new();
+    let mut mixed_seen = HashSet::new();
 
     let mut i = 0;
     while i < sources.len() {
@@ -1041,6 +1056,11 @@ fn discover_and_load_imports(sources: &mut Vec<(String, String)>) {
                         continue;
                     }
                     if loaded.contains(&canonical) {
+                        if explicit_non_root.contains(&canonical)
+                            && mixed_seen.insert(canonical.clone())
+                        {
+                            mixed_imports.push(canonical);
+                        }
                         group_hit = true; // already loaded (or a cycle)
                         continue;
                     }
@@ -1057,6 +1077,8 @@ fn discover_and_load_imports(sources: &mut Vec<(String, String)>) {
             }
         }
     }
+
+    mixed_imports
 }
 
 fn main() {
@@ -1121,7 +1143,22 @@ fn main() {
     // resolves imports only against already-loaded files, so without this
     // step `const utils = @import("utils")` fails with E0704 unless the
     // user hand-lists every module on the command line (RUE-14).
-    discover_and_load_imports(&mut sources);
+    let mixed_imports = discover_and_load_imports(&mut sources);
+    if !mixed_imports.is_empty() {
+        eprintln!(
+            "Error: source files listed after the root must not also be loaded through @import"
+        );
+        for path in &mixed_imports {
+            eprintln!("  imported and explicitly listed: {}", path.display());
+        }
+        eprintln!("Compile the root source only and let @import discover helper modules:");
+        eprintln!(
+            "       rue {} -o {}",
+            options.source_paths[0], options.output_path
+        );
+        eprintln!("Build-system source manifests are tracked separately from positional inputs.");
+        std::process::exit(1);
+    }
     let sources = sources;
 
     // Build SourceFile structs for multi-file compilation

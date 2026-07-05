@@ -24,7 +24,6 @@ fn internal_helper() -> i32 {
     42
 }
 """ }
-pass_aux_files = true
 exit_code = 42
 
 [[case]]
@@ -42,7 +41,6 @@ pub fn public_helper() -> i32 {
     42
 }
 """ }
-pass_aux_files = true
 exit_code = 42
 
 [[case]]
@@ -61,7 +59,6 @@ aux_files = { "utils.rue" = """
 // Private struct - no pub keyword
 struct InternalPoint { x: i32, y: i32 }
 """ }
-pass_aux_files = true
 exit_code = 42
 
 [[case]]
@@ -82,7 +79,6 @@ aux_files = { "utils.rue" = """
 // Private enum - no pub keyword
 enum InternalStatus { Active, Inactive }
 """ }
-pass_aux_files = true
 exit_code = 42
 
 # =============================================================================
@@ -105,7 +101,6 @@ pub fn public_fn() -> i32 {
     42
 }
 """ }
-pass_aux_files = true
 exit_code = 42
 
 [[case]]
@@ -123,7 +118,6 @@ fn private_fn() -> i32 {
     42
 }
 """ }
-pass_aux_files = true
 compile_fail = true
 error_contains = "private"
 
@@ -142,7 +136,6 @@ fn main() -> i32 {
 aux_files = { "subdir/utils.rue" = """
 pub struct PublicPoint { x: i32, y: i32 }
 """ }
-pass_aux_files = true
 exit_code = 42
 
 [[case]]
@@ -160,7 +153,6 @@ fn main() -> i32 {
 aux_files = { "subdir/utils.rue" = """
 struct PrivatePoint { x: i32, y: i32 }
 """ }
-pass_aux_files = true
 compile_fail = true
 error_contains = "private"
 
@@ -181,7 +173,6 @@ fn main() -> i32 {
 aux_files = { "subdir/utils.rue" = """
 pub enum PublicStatus { On, Off }
 """ }
-pass_aux_files = true
 exit_code = 42
 
 [[case]]
@@ -198,7 +189,6 @@ fn main() -> i32 {
 aux_files = { "subdir/utils.rue" = """
 enum PrivateStatus { On, Off }
 """ }
-pass_aux_files = true
 compile_fail = true
 error_contains = "private"
 
@@ -230,7 +220,6 @@ fn internal_format() -> i32 {
     42
 }
 """ }
-pass_aux_files = true
 exit_code = 42
 
 # =============================================================================

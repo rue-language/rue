@@ -148,7 +148,6 @@ fn main() -> i32 {
 pub fn Option(comptime T: type) -> type { enum { Some(T), None } }
 """ },
 ]
-args = ["main.rue", "opt.rue", "-o", "prog"]
 stdin = "yes"
 stdout = "affirmative\n"
 

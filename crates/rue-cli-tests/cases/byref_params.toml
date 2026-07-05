@@ -392,7 +392,6 @@ exit_code = 7
 [[case]]
 name = "move_out_of_inout_rejected_in_imported_module"
 description = "The lazy (import-driven) analysis path enforces the same rule as the single-file path."
-args = ["main.rue", "lib.rue", "-o", "prog"]
 files = [
     { path = "main.rue", source = """
 const lib = @import("lib.rue");

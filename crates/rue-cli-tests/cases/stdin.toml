@@ -35,7 +35,6 @@ fn main() -> i32 {
 pub fn Option(comptime T: type) -> type { enum { Some(T), None } }
 """ },
 ]
-args = ["main.rue", "opt.rue", "-o", "prog"]
 stdin = "42\n"
 stdout = "42\n"
 
@@ -75,7 +74,6 @@ fn main() -> i32 {
 pub fn Option(comptime T: type) -> type { enum { Some(T), None } }
 """ },
 ]
-args = ["main.rue", "opt.rue", "-o", "prog"]
 stdin = "50\n90\n73\n"
 stdout = """
 Too low!
@@ -110,7 +108,6 @@ fn main() -> i32 {
 pub fn Option(comptime T: type) -> type { enum { Some(T), None } }
 """ },
 ]
-args = ["main.rue", "opt.rue", "-o", "prog"]
 stdin = "banana\n"
 exit_code = 7
 
@@ -131,6 +128,5 @@ fn main() -> i32 {
 pub fn Option(comptime T: type) -> type { enum { Some(T), None } }
 """ },
 ]
-args = ["main.rue", "opt.rue", "-o", "prog"]
 stdin = ""
 exit_code = 0

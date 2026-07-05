@@ -39,7 +39,7 @@ pub fn triple(x: i32) -> i32 {
 }
 """ },
 ]
-args = ["--emit", "air", "main.rue", "utils.rue"]
+args = ["--emit", "air", "main.rue"]
 compile_only = true
 compile_stdout_contains = ["=== AIR ==="]
 compile_stderr_not_contains = ["E0704"]
