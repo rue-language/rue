@@ -57,6 +57,12 @@ pub struct PrimitiveTypeSpurs {
     /// carried as an ordinary method under this reserved name and later
     /// registered as the struct's `{name}.__drop` destructor (RUE-312).
     pub drop_marker: Spur,
+    /// Known directive name `allow`. Pre-interned so expression-position
+    /// `@allow(...)` can be rejected as a misplaced directive (RUE-403).
+    pub allow_directive: Spur,
+    /// Known directive name `copy`. Pre-interned so expression-position
+    /// `@copy(...)` can be rejected as a misplaced directive (RUE-403).
+    pub copy_directive: Spur,
 }
 
 impl PrimitiveTypeSpurs {
@@ -76,6 +82,8 @@ impl PrimitiveTypeSpurs {
             as_kw: interner.get_or_intern("as"),
             drop_kw: interner.get_or_intern("drop"),
             drop_marker: interner.get_or_intern("__drop"),
+            allow_directive: interner.get_or_intern("allow"),
+            copy_directive: interner.get_or_intern("copy"),
         }
     }
 }
@@ -1851,11 +1859,18 @@ where
                 .delimited_by(just(TokenKind::LParen), just(TokenKind::RParen)),
         )
         .map_with(|(name, args), e| {
-            Expr::IntrinsicCall(IntrinsicCallExpr {
+            let syms = e.state().0.syms;
+            (name, args, span_from_extra(e), syms)
+        })
+        .try_map(|(name, args, expr_span, syms), span| {
+            if name.name == syms.allow_directive || name.name == syms.copy_directive {
+                return Err(Rich::custom(span, "directive must precede a statement"));
+            }
+            Ok(Expr::IntrinsicCall(IntrinsicCallExpr {
                 name,
                 args,
-                span: span_from_extra(e),
-            })
+                span: expr_span,
+            }))
         });
 
     // @import(args) - lexer tokenizes @import as a single token with interned "import" Spur
@@ -2106,8 +2121,21 @@ fn let_statement_parser<'src, I>(
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    directives_parser()
-        .then(just(TokenKind::Let).ignore_then(just(TokenKind::Mut).or_not().map(|m| m.is_some())))
+    let plain_let = just(TokenKind::Let).to(smallvec::SmallVec::new());
+    let directed_let = directive_parser()
+        .repeated()
+        .at_least(1)
+        .collect::<Vec<_>>()
+        .then(just(TokenKind::Let).or_not())
+        .try_map(|(directives, let_token), span| {
+            if let_token.is_none() {
+                return Err(Rich::custom(span, "directive must precede a statement"));
+            }
+            Ok(directives.into_iter().collect())
+        });
+
+    choice((directed_let, plain_let))
+        .then(just(TokenKind::Mut).or_not().map(|m| m.is_some()))
         .then(let_pattern_parser())
         .then(just(TokenKind::Colon).ignore_then(type_parser()).or_not())
         .then_ignore(just(TokenKind::Eq))
@@ -3956,6 +3984,22 @@ mod tests {
         assert!(
             msg.contains("unknown directive '@alllow'"),
             "unexpected message: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_misplaced_block_directive_rejected() {
+        // RUE-403: a directive without a following statement used to parse as
+        // an intrinsic-like expression and surface later as a type mismatch.
+        let err = parse("fn main() -> i32 { @allow(unused_variable) }").unwrap_err();
+        let messages = err
+            .iter()
+            .map(|e| e.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            messages.contains("directive must precede a statement"),
+            "unexpected messages: {messages}"
         );
     }
 
