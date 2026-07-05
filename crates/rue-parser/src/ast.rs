@@ -316,6 +316,8 @@ pub struct Ident {
 pub enum TypeExpr {
     /// A simple named type (e.g., i32, bool, MyStruct)
     Named(Ident),
+    /// A module-qualified named type (e.g., std.option.OptionAlias).
+    Qualified { segments: Vec<Ident>, span: Span },
     /// Unit type: ()
     Unit(Span),
     /// Never type: !
@@ -369,6 +371,13 @@ pub enum TypeExpr {
     /// (`Result(Option(i32), i32)`) compose.
     TypeCall {
         name: Ident,
+        args: Vec<TypeExpr>,
+        span: Span,
+    },
+    /// A module-qualified type-function application in type position:
+    /// `std.option.Option(i64)`.
+    QualifiedTypeCall {
+        segments: Vec<Ident>,
         args: Vec<TypeExpr>,
         span: Span,
     },
@@ -446,6 +455,7 @@ impl TypeExpr {
     pub fn span(&self) -> Span {
         match self {
             TypeExpr::Named(ident) => ident.span,
+            TypeExpr::Qualified { span, .. } => *span,
             TypeExpr::Unit(span) => *span,
             TypeExpr::Never(span) => *span,
             TypeExpr::Array { span, .. } => *span,
@@ -455,6 +465,7 @@ impl TypeExpr {
             TypeExpr::PointerConst { span, .. } => *span,
             TypeExpr::PointerMut { span, .. } => *span,
             TypeExpr::TypeCall { span, .. } => *span,
+            TypeExpr::QualifiedTypeCall { span, .. } => *span,
             TypeExpr::StrFixed { span, .. } => *span,
         }
     }
@@ -464,6 +475,15 @@ impl fmt::Display for TypeExpr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             TypeExpr::Named(ident) => write!(f, "sym:{}", ident.name.into_usize()),
+            TypeExpr::Qualified { segments, .. } => {
+                for (i, segment) in segments.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ".")?;
+                    }
+                    write!(f, "sym:{}", segment.name.into_usize())?;
+                }
+                Ok(())
+            }
             TypeExpr::Unit(_) => write!(f, "()"),
             TypeExpr::Never(_) => write!(f, "!"),
             TypeExpr::Array {
@@ -512,6 +532,22 @@ impl fmt::Display for TypeExpr {
             TypeExpr::PointerMut { pointee, .. } => write!(f, "ptr mut {}", pointee),
             TypeExpr::TypeCall { name, args, .. } => {
                 write!(f, "sym:{}(", name.name.into_usize())?;
+                for (i, arg) in args.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", arg)?;
+                }
+                write!(f, ")")
+            }
+            TypeExpr::QualifiedTypeCall { segments, args, .. } => {
+                for (i, segment) in segments.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ".")?;
+                    }
+                    write!(f, "sym:{}", segment.name.into_usize())?;
+                }
+                write!(f, "(")?;
                 for (i, arg) in args.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;

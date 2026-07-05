@@ -10,10 +10,12 @@ use std::collections::HashMap;
 
 use lasso::Spur;
 use rue_error::{CompileError, CompileResult, ErrorKind, PreviewFeature};
-use rue_span::Span;
+use rue_rir::InstData;
+use rue_span::{FileId, Span};
 
 use super::Sema;
 use super::context::AnalysisContext;
+use super::info::ConstInfo;
 use crate::inference::InferType;
 use crate::sema::ConstValue;
 use crate::types::{
@@ -551,6 +553,10 @@ impl<'a> Sema<'a> {
                 if call_name == "Str" {
                     return self.resolve_str_fixed_type(&call_name, &arg_strs, span);
                 }
+                if call_name.contains('.') {
+                    return self
+                        .resolve_qualified_type_function_call(&call_name, &arg_strs, span, None);
+                }
                 // A type-function application written directly in type position
                 // (`Result(i32, i32)`; RUE-241). Reduce the comptime type call
                 // to its monomorphized concrete type. No analysis context is
@@ -561,6 +567,8 @@ impl<'a> Sema<'a> {
             } else if let Some(result) = self.try_resolve_slice_type(type_name, span) {
                 // Slice type `[T]` (ADR-0043, RUE-322): gated + not-yet-runnable.
                 result
+            } else if type_name.contains('.') {
+                self.resolve_qualified_type_name(type_name, span)
             } else {
                 Err(CompileError::new(
                     ErrorKind::UnknownType(type_name.to_string()),
@@ -635,6 +643,14 @@ impl<'a> Sema<'a> {
             if call_name == "Str" {
                 return self.resolve_str_fixed_type(&call_name, &arg_strs, span);
             }
+            if call_name.contains('.') {
+                return self.resolve_qualified_type_function_call(
+                    &call_name,
+                    &arg_strs,
+                    span,
+                    Some(ctx),
+                );
+            }
             // A type-function application in an annotation position whose
             // arguments may name enclosing comptime type parameters or local
             // comptime type variables (`let x: Option(T)` / `let x: Option(P)`).
@@ -648,6 +664,305 @@ impl<'a> Sema<'a> {
             // checks, and the E0204 on a genuinely-unknown name.
             self.resolve_type(type_sym, span)
         }
+    }
+
+    fn resolve_qualified_type_name(&mut self, path: &str, span: Span) -> CompileResult<Type> {
+        let segments: Vec<&str> = path.split('.').collect();
+        if segments.len() < 2 || segments.iter().any(|s| s.is_empty()) {
+            return Err(CompileError::new(
+                ErrorKind::UnknownType(path.to_string()),
+                span,
+            ));
+        }
+        let (module_id, module_file_id, _module_file_path) =
+            self.resolve_type_module_prefix(&segments[..segments.len() - 1], span)?;
+        let member = segments[segments.len() - 1];
+        let member_sym = self.interner.get_or_intern(member);
+
+        if let Some(&struct_id) = self.structs.get(&member_sym) {
+            let struct_def = self.type_pool.struct_def(struct_id);
+            if module_file_id == Some(struct_def.file_id) {
+                self.check_unqualified_visibility(
+                    "struct",
+                    member,
+                    struct_def.file_id,
+                    struct_def.is_pub,
+                    span,
+                )?;
+                return Ok(Type::new_struct(struct_id));
+            }
+        }
+        if let Some(&enum_id) = self.enums.get(&member_sym) {
+            let enum_def = self.type_pool.enum_def(enum_id);
+            if module_file_id == Some(enum_def.file_id) {
+                self.check_unqualified_visibility(
+                    "enum",
+                    member,
+                    enum_def.file_id,
+                    enum_def.is_pub,
+                    span,
+                )?;
+                return Ok(Type::new_enum(enum_id));
+            }
+        }
+        if let Some(info) = self.constants.get(&member_sym)
+            && module_file_id == Some(info.span.file_id)
+            && let ConstValue::Type(alias_ty) = info.value
+        {
+            self.check_unqualified_visibility(
+                "constant",
+                member,
+                info.span.file_id,
+                info.is_pub,
+                span,
+            )?;
+            return Ok(alias_ty);
+        }
+
+        let module_def = self.module_registry.get_def(module_id);
+        Err(CompileError::new(
+            ErrorKind::UnknownModuleMember {
+                module_name: module_def.import_path.clone(),
+                member_name: member.to_string(),
+            },
+            span,
+        ))
+    }
+
+    fn resolve_qualified_type_function_call(
+        &mut self,
+        call_path: &str,
+        arg_strs: &[String],
+        span: Span,
+        ctx: Option<&AnalysisContext>,
+    ) -> CompileResult<Type> {
+        let segments: Vec<&str> = call_path.split('.').collect();
+        if segments.len() < 2 || segments.iter().any(|s| s.is_empty()) {
+            return Err(CompileError::new(
+                ErrorKind::UnknownType(format!("{}(...)", call_path)),
+                span,
+            ));
+        }
+        let (_module_id, module_file_id, _module_file_path) =
+            self.resolve_type_module_prefix(&segments[..segments.len() - 1], span)?;
+        let member = segments[segments.len() - 1];
+        let member_sym = self.interner.get_or_intern(member);
+        if let Some(module_file_id) = module_file_id {
+            self.ensure_free_function_signature(member_sym, Some(module_file_id))?;
+        }
+
+        let Some(fn_info) = self
+            .functions
+            .get(&member_sym)
+            .copied()
+            .filter(|info| module_file_id == Some(info.file_id))
+        else {
+            return Err(CompileError::new(
+                ErrorKind::UnknownType(format!("{}(...)", call_path)),
+                span,
+            ));
+        };
+        self.check_unqualified_visibility(
+            "function",
+            member,
+            fn_info.file_id,
+            fn_info.is_pub,
+            span,
+        )?;
+        if fn_info.return_type != Type::COMPTIME_TYPE {
+            return Err(CompileError::new(
+                ErrorKind::ComptimeEvaluationFailed {
+                    reason: format!(
+                        "'{}' is not a type: only a function returning `type` (a type \
+                         constructor) can be applied as a type here",
+                        call_path
+                    ),
+                },
+                span,
+            ));
+        }
+
+        let params = fn_info.params;
+        let param_names = self.param_arena.names(params).to_vec();
+        let param_comptime = self.param_arena.comptime(params).to_vec();
+        if arg_strs.len() != param_names.len()
+            || !(param_names.is_empty() || param_comptime.iter().all(|&c| c))
+        {
+            return Err(CompileError::new(
+                ErrorKind::ComptimeEvaluationFailed {
+                    reason: format!(
+                        "type constructor '{}' expects {} comptime type argument(s), \
+                         but {} were provided",
+                        call_path,
+                        param_names.len(),
+                        arg_strs.len()
+                    ),
+                },
+                span,
+            ));
+        }
+
+        let mut callee_types: HashMap<Spur, Type> = HashMap::new();
+        for (i, arg) in arg_strs.iter().enumerate() {
+            let arg_sym = self.interner.get_or_intern(arg);
+            let arg_ty = match ctx {
+                Some(ctx) => self.resolve_type_with_ctx(arg_sym, span, ctx)?,
+                None => self.resolve_type(arg_sym, span)?,
+            };
+            callee_types.insert(param_names[i], arg_ty);
+        }
+        let empty_values: HashMap<Spur, ConstValue> = HashMap::new();
+        match self.reduce_type_ctor_body(member_sym, &callee_types, &empty_values)? {
+            Some(ConstValue::Type(t)) => Ok(t),
+            _ => Err(CompileError::new(
+                ErrorKind::ComptimeEvaluationFailed {
+                    reason: format!(
+                        "the type constructor '{}' did not reduce to a concrete type \
+                         at compile time",
+                        call_path
+                    ),
+                },
+                span,
+            )),
+        }
+    }
+
+    fn resolve_type_module_prefix(
+        &mut self,
+        segments: &[&str],
+        span: Span,
+    ) -> CompileResult<(crate::types::ModuleId, Option<FileId>, String)> {
+        let Some((first, rest)) = segments.split_first() else {
+            return Err(CompileError::new(
+                ErrorKind::UnknownType(String::new()),
+                span,
+            ));
+        };
+        let first_sym = self.interner.get_or_intern(first);
+        let Some(binding) = self
+            .module_bindings
+            .get(&(span.file_id, first_sym))
+            .cloned()
+            .or_else(|| self.resolve_direct_import_module_binding(span.file_id, first_sym, span))
+        else {
+            return Err(CompileError::new(
+                ErrorKind::UnknownType((*first).to_string()),
+                span,
+            ));
+        };
+        let mut module_id = binding
+            .ty
+            .as_module()
+            .expect("module binding holds a module type");
+
+        for segment in rest {
+            let module_def = self.module_registry.get_def(module_id);
+            let module_file_id = self.canonical_file_id(&module_def.file_path);
+            let segment_sym = self.interner.get_or_intern(segment);
+            let Some(module_file_id) = module_file_id else {
+                return Err(CompileError::new(
+                    ErrorKind::UnknownModuleMember {
+                        module_name: module_def.import_path.clone(),
+                        member_name: (*segment).to_string(),
+                    },
+                    span,
+                ));
+            };
+            let Some(binding) = self
+                .module_bindings
+                .get(&(module_file_id, segment_sym))
+                .cloned()
+                .or_else(|| {
+                    self.resolve_direct_import_module_binding(module_file_id, segment_sym, span)
+                })
+            else {
+                return Err(CompileError::new(
+                    ErrorKind::UnknownModuleMember {
+                        module_name: module_def.import_path.clone(),
+                        member_name: (*segment).to_string(),
+                    },
+                    span,
+                ));
+            };
+            let (binding_is_pub, binding_ty) = (binding.is_pub, binding.ty);
+            self.check_unqualified_visibility(
+                "constant",
+                segment,
+                module_file_id,
+                binding_is_pub,
+                span,
+            )?;
+            module_id = binding_ty
+                .as_module()
+                .expect("module binding holds a module type");
+        }
+
+        let module_def = self.module_registry.get_def(module_id);
+        let module_file_id = self.canonical_file_id(&module_def.file_path);
+        let module_file_path = module_file_id
+            .and_then(|id| self.get_file_path(id))
+            .map(str::to_string)
+            .unwrap_or_else(|| module_def.file_path.clone());
+        Ok((module_id, module_file_id, module_file_path))
+    }
+
+    fn resolve_direct_import_module_binding(
+        &mut self,
+        file_id: FileId,
+        name: Spur,
+        _span: Span,
+    ) -> Option<ConstInfo> {
+        let found = self.rir.iter().find_map(|(_inst_ref, inst)| {
+            let InstData::ConstDecl {
+                is_pub,
+                name: const_name,
+                init,
+                ..
+            } = inst.data
+            else {
+                return None;
+            };
+            if inst.span.file_id != file_id || const_name != name {
+                return None;
+            }
+            Some((is_pub, init, inst.span))
+        })?;
+
+        let (is_pub, init, const_span) = found;
+        let init_inst = self.rir.get(init);
+        let InstData::Intrinsic {
+            name: intrinsic_name,
+            args_start,
+            args_len,
+        } = &init_inst.data
+        else {
+            return None;
+        };
+        if *intrinsic_name != self.known.import || *args_len != 1 {
+            return None;
+        }
+        let arg_refs = self.rir.get_inst_refs(*args_start, *args_len);
+        let arg_inst = self.rir.get(arg_refs[0]);
+        let InstData::StringConst(path_spur) = &arg_inst.data else {
+            return None;
+        };
+        let import_path = self.interner.resolve(path_spur).to_string();
+        let resolved_path = self
+            .resolve_import_path(&import_path, init_inst.span)
+            .ok()?;
+        let (module_id, _is_new) = self
+            .module_registry
+            .get_or_create(import_path, resolved_path);
+        let ty = Type::new_module(module_id);
+        let info = ConstInfo {
+            is_pub,
+            ty,
+            init,
+            value: ConstValue::Type(ty),
+            span: const_span,
+        };
+        self.module_bindings.insert((file_id, name), info.clone());
+        Some(info)
     }
 
     /// Resolve a type-function application written directly in type position

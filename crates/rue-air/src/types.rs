@@ -1146,15 +1146,19 @@ pub fn parse_type_call_syntax(type_name: &str) -> Option<(String, Vec<String>)> 
     }
     let open = s.find('(')?;
     let name = &s[..open];
-    // The callee name must be a bare identifier. This is what excludes
-    // anonymous type strings like `enum { Ok(i32) }`, whose text before the
-    // first `(` contains spaces/braces.
+    // The callee name must be a bare identifier or a dotted module-qualified
+    // identifier. This excludes anonymous type strings like
+    // `enum { Ok(i32) }`, whose text before the first `(` contains
+    // spaces/braces.
     let mut name_chars = name.chars();
     match name_chars.next() {
         Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
         _ => return None,
     }
-    if !name_chars.all(|c| c.is_ascii_alphanumeric() || c == '_') {
+    if name.ends_with('.') || name.contains("..") {
+        return None;
+    }
+    if !name_chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.') {
         return None;
     }
 

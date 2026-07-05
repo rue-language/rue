@@ -304,7 +304,10 @@ impl Validator<'_> {
     /// which carry directives and bodies of their own.
     fn check_type_expr(&mut self, ty: &TypeExpr) {
         match ty {
-            TypeExpr::Named(_) | TypeExpr::Unit(_) | TypeExpr::Never(_) => {}
+            TypeExpr::Named(_)
+            | TypeExpr::Qualified { .. }
+            | TypeExpr::Unit(_)
+            | TypeExpr::Never(_) => {}
             TypeExpr::Array { element, .. } => self.check_type_expr(element),
             TypeExpr::Slice { element, .. } => self.check_type_expr(element),
             TypeExpr::AnonymousStruct { methods, .. } => {
@@ -319,7 +322,7 @@ impl Validator<'_> {
                 self.check_type_expr(pointee)
             }
             // Type-function application: recurse into each type argument.
-            TypeExpr::TypeCall { args, .. } => {
+            TypeExpr::TypeCall { args, .. } | TypeExpr::QualifiedTypeCall { args, .. } => {
                 for arg in args {
                     self.check_type_expr(arg);
                 }

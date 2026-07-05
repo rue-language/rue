@@ -80,6 +80,10 @@ impl<'a> AstGen<'a> {
     fn intern_type(&mut self, ty: &TypeExpr) -> Spur {
         match ty {
             TypeExpr::Named(ident) => ident.name, // Already a Spur
+            TypeExpr::Qualified { segments, .. } => {
+                let name = self.render_type_path(segments);
+                self.interner.get_or_intern(&name)
+            }
             TypeExpr::Unit(_) => self.interner.get_or_intern("()"),
             TypeExpr::Never(_) => self.interner.get_or_intern("!"),
             TypeExpr::Array {
@@ -184,6 +188,19 @@ impl<'a> AstGen<'a> {
                 s.push(')');
                 self.interner.get_or_intern(&s)
             }
+            TypeExpr::QualifiedTypeCall { segments, args, .. } => {
+                let mut s = self.render_type_path(segments);
+                s.push('(');
+                for (i, arg) in args.iter().enumerate() {
+                    if i > 0 {
+                        s.push_str(", ");
+                    }
+                    let arg_sym = self.intern_type(arg);
+                    s.push_str(self.interner.resolve(&arg_sym));
+                }
+                s.push(')');
+                self.interner.get_or_intern(&s)
+            }
             TypeExpr::StrFixed { name, length, .. } => {
                 // Fixed-capacity string `Str(N)` with a literal capacity
                 // (ADR-0043 Phase 5, RUE-326). Canonicalize to `Name(N)` — the
@@ -194,6 +211,17 @@ impl<'a> AstGen<'a> {
                 self.interner.get_or_intern(&s)
             }
         }
+    }
+
+    fn render_type_path(&self, segments: &[rue_parser::ast::Ident]) -> String {
+        let mut s = String::new();
+        for (i, segment) in segments.iter().enumerate() {
+            if i > 0 {
+                s.push('.');
+            }
+            s.push_str(self.interner.resolve(&segment.name));
+        }
+        s
     }
 
     /// Render an array-length component to its canonical string form for the
@@ -985,6 +1013,7 @@ impl<'a> AstGen<'a> {
                         // For named types, unit, never, arrays, and pointers, generate TypeConst
                         let type_name = match &type_lit.type_expr {
                             TypeExpr::Named(ident) => ident.name,
+                            TypeExpr::Qualified { .. } => self.intern_type(&type_lit.type_expr),
                             TypeExpr::Unit(_) => self.interner.get_or_intern_static("()"),
                             TypeExpr::Never(_) => self.interner.get_or_intern_static("!"),
                             TypeExpr::Array { .. } => {
@@ -1006,7 +1035,7 @@ impl<'a> AstGen<'a> {
                                 // Pointer types as values - use intern_type to get representation
                                 self.intern_type(&type_lit.type_expr)
                             }
-                            TypeExpr::TypeCall { .. } => {
+                            TypeExpr::TypeCall { .. } | TypeExpr::QualifiedTypeCall { .. } => {
                                 // A type-function application in *value* position
                                 // (`let R = Result(i32, i32)`) is parsed as an
                                 // ordinary call expression, not a TypeLit, so it
