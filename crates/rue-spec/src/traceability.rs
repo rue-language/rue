@@ -161,18 +161,11 @@ pub struct TraceabilityReport {
 /// you to remove it (see [`TraceabilityReport::stale_known_uncovered`]). This
 /// mirrors the `known_bug` xfail convention: an exemption that starts passing
 /// must be retired so it converts back into an enforced check.
-pub const KNOWN_UNCOVERED_NORMATIVE: &[(&str, &str)] = &[
-    (
-        "2.5:10",
-        "'@directive must precede item' error not implemented \
-         (lexical/builtins.toml::directive_must_precede_item, skipped)",
-    ),
-    (
-        "2.5:21",
-        "@allow(unreachable_code) suppression not implemented \
+pub const KNOWN_UNCOVERED_NORMATIVE: &[(&str, &str)] = &[(
+    "2.5:21",
+    "@allow(unreachable_code) suppression not implemented \
          (lexical/builtins.toml::allow_unreachable_code, skipped)",
-    ),
-];
+)];
 
 impl TraceabilityReport {
     /// Whether `id` is on the [`KNOWN_UNCOVERED_NORMATIVE`] allowlist.

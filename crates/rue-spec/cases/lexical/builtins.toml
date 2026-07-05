@@ -74,7 +74,6 @@ no_warnings = true
 [[case]]
 name = "directive_must_precede_item"
 spec = ["2.5:10"]
-skip = true  # TODO: This error isn't implemented yet
 source = """
 fn main() -> i32 {
     @allow(unused_variable)
