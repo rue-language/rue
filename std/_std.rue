@@ -13,7 +13,7 @@ pub const math = @import("math.rue");
 pub const option = @import("option.rue");
 pub const arraybuf = @import("arraybuf.rue");
 
-fn exit_syscall_number() -> u64 {
+fn _exit_syscall_number() -> u64 {
     match @target_arch() {
         Arch::X86_64 => {
             match @target_os() {
@@ -34,7 +34,7 @@ fn exit_syscall_number() -> u64 {
 ///
 /// This terminates immediately and does not return.
 pub fn exit(code: u64) -> ! {
-    let syscall_num = exit_syscall_number();
+    let syscall_num = _exit_syscall_number();
     checked {
         @syscall(syscall_num, code);
     };

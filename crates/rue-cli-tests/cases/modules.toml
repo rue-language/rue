@@ -323,6 +323,7 @@ fn main() -> i32 {
 }
 """ }]
 env = { RUE_STD_PATH = "${REAL_STD}" }
+compile_stderr_not_contains = ["unused function", "exit_syscall_number"]
 stdout = "5\n"
 
 # A genuinely missing module should be a clean error (works today).
