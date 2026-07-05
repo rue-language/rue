@@ -240,11 +240,6 @@ pub struct Case {
     /// Example: `{ "math.rue" = "pub fn add(a: i32, b: i32) -> i32 { a + b }" }`
     #[serde(default)]
     pub aux_files: HashMap<String, String>,
-    /// If true, pass aux_files to the compiler on the command line (multi-file compilation).
-    /// If false (default), aux_files are just written to disk for @import to find.
-    /// Use this when tests need to call functions from imported modules.
-    #[serde(default)]
-    pub pass_aux_files: bool,
     /// List of target triples on which this test should run.
     /// If specified, the test is skipped on hosts that don't match any of the targets.
     /// Example: `only_on = ["x86-64-linux", "aarch64-linux"]`
@@ -562,7 +557,6 @@ pub fn expand_case(case: Case) -> Vec<Case> {
                 opt_level: case.opt_level,
                 timeout_ms: case.timeout_ms,
                 aux_files: case.aux_files.clone(),
-                pass_aux_files: case.pass_aux_files,
                 only_on: case.only_on.clone(),
 
                 // Clear params on expanded case
@@ -1449,7 +1443,6 @@ pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
         .map_err(|e| format!("Failed to write source: {}", e))?;
 
     // Write auxiliary files for multi-file tests (module imports)
-    let mut aux_paths = Vec::new();
     for (filename, content) in &case.aux_files {
         // Create subdirectories if needed (e.g., "foo/bar.rue")
         let aux_path = temp_dir.path().join(filename);
@@ -1459,7 +1452,6 @@ pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
         }
         fs::write(&aux_path, content)
             .map_err(|e| format!("Failed to write aux file {}: {}", filename, e))?;
-        aux_paths.push(aux_path);
     }
 
     // Build base command with target, preview, and optimization flags if needed
@@ -1576,17 +1568,11 @@ pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
         }
     }
 
-    // Compile with rue
-    // By default, aux_files are just written to disk for @import to find.
-    // When pass_aux_files is true, they're passed on the command line for
-    // multi-file compilation (needed when tests call functions from imported modules).
+    // Compile with rue. Auxiliary files are written to disk so the root
+    // module's import graph can discover them; they are not appended as
+    // positional source files.
     let mut compile_cmd = build_command(rue_binary);
     compile_cmd.arg(&source_path);
-    if case.pass_aux_files {
-        for aux_path in &aux_paths {
-            compile_cmd.arg(aux_path);
-        }
-    }
     compile_cmd.arg("-o").arg(&output_path);
     // Run the compiler under the same timeout as the golden emits and the
     // compiled program, so a compiler hang fails the case instead of wedging
@@ -1877,7 +1863,6 @@ mod tests {
             stderr_contains: None,
             params: vec![],
             aux_files: HashMap::new(),
-            pass_aux_files: false,
             only_on: vec![],
         };
 
@@ -1928,7 +1913,6 @@ mod tests {
             stderr_contains: None,
             params: vec![ParamSet { values: param1 }, ParamSet { values: param2 }],
             aux_files: HashMap::new(),
-            pass_aux_files: false,
             only_on: vec![],
         };
 
@@ -1987,7 +1971,6 @@ mod tests {
             stderr_contains: None,
             params: vec![ParamSet { values: params }],
             aux_files: HashMap::new(),
-            pass_aux_files: false,
             only_on: vec![],
         };
 
@@ -2038,7 +2021,6 @@ mod tests {
             stderr_contains: None,
             params: vec![ParamSet { values: params }],
             aux_files: HashMap::new(),
-            pass_aux_files: false,
             only_on: vec![],
         };
 
@@ -2440,7 +2422,6 @@ params = [
             stderr_contains: None,
             params: vec![],
             aux_files: HashMap::new(),
-            pass_aux_files: false,
             only_on: vec![],
         }
     }

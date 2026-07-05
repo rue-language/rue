@@ -464,10 +464,12 @@ exit_code = 42
 [[case]]
 name = "same_dir_private_assoc_fn_allowed"
 spec = ["10.4:19"]
-description = "Intra-directory visibility is unchanged: an associated-function call on a private struct in another listed file in the same directory is allowed"
+description = "Intra-directory visibility is unchanged: an associated-function call on a private struct in an imported same-directory module is allowed"
 source = """
+const lib = @import("lib");
+
 fn main() -> i32 {
-    let s = Secret::make();
+    let s = lib.Secret::make();
     s.n
 }
 """
@@ -477,7 +479,6 @@ struct Secret {
     fn make() -> Secret { Secret { n: 42 } }
 }
 """ }
-pass_aux_files = true
 exit_code = 42
 
 [[case]]
