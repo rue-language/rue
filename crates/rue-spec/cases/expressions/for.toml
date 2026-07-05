@@ -26,6 +26,35 @@ fn main() -> i32 {
 """
 exit_code = 60
 
+# =============================================================================
+# Struct Literal Ambiguity
+# =============================================================================
+
+[[case]]
+name = "empty_for_body_after_identifier_iterable"
+spec = ["4.8:31"]
+source = """
+fn main() -> i32 {
+    let a: [i32; 3] = [10, 20, 30];
+    for x in a {}
+    42
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "bare_struct_literal_for_iterable_requires_parens"
+spec = ["4.8:31"]
+source = """
+struct Point { x: i32 }
+fn main() -> i32 {
+    for x in Point { x: 1 } {}
+    0
+}
+"""
+compile_fail = true
+error_contains = "bare for iterable"
+
 # Iteration is a shared read (4.8:26): a non-Copy element type is bound by
 # shared borrow, NOT moved out of the array, so the loop compiles and reads
 # fields fine (RUE-259 — previously wrongly rejected E0904 "cannot move out of
