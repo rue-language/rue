@@ -17,17 +17,15 @@ loops, mutable accumulator state, string concatenation, and `println`.
 ## The Program
 
 ```rue check
-fn Option(comptime T: type) -> type {
-    enum { Some(T), None }
-}
+const std = @import("std");
 
-fn read_num() -> Option(i64) {
+fn read_num() -> std.option.Option(i64) {
     let line = @read_line()?;
     @parse_i64(line)
 }
 
 fn main() -> i32 {
-    let OptInt = Option(i64);
+    let OptInt = std.option.Option(i64);
 
     let mut count: i64 = 0;
     let mut sum: i64 = 0;
@@ -95,11 +93,11 @@ The complete checked-in version lives at
 
 ## Current Rough Edges
 
-There is no prelude yet, so `Option` is not automatically in scope. This example
-defines a small generic `Option(T)` inline because `read_num` names
-`Option(i64)` in its return type. As the standard library and type-position
-imports mature, tutorial code should move toward the explicit standard-library
-form taught in the modules and arrays chapters.
+There is no prelude yet, so `Option` is not automatically in scope. Import the
+standard library explicitly with `const std = @import("std");`, then name the
+standard-library optional type through that module: `std.option.Option(i64)`.
+The local `OptInt` binding is only a short alias for matching on `Some` and
+`None` without repeating the full module-qualified path.
 
 ## More Examples
 
