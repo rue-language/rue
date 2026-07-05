@@ -156,13 +156,13 @@ match pattern (`m.Color::Red`), and an associated function in a call
 corresponding *bare* path — `Point { .. }`, `Color::Red`, `Point::origin()` —
 is accepted, and has the same meaning.
 
-{{ rule(id="10.4:16", cat="legality-rule") }}
+{{ rule(id="10.4:16", cat="normative") }}
 
-A module-qualified path is **not** accepted in a *type* position — a type
-annotation, a field type, or a parameter or return type. In those positions a
-type is named only by a bare identifier (resolved through the flat namespace,
-10.5:2); writing `m.Type` where a type is expected is a compile-time error
-reported during parsing (E0100).
+A module-qualified path **MAY** be used in a *type* position — a type
+annotation, a field type, or a parameter or return type. In those positions,
+`m.Type` names the type member reached through the module binding `m`, and
+`m.Type(T)` applies a module-qualified type constructor. This is the preferred
+form for referring to standard-library types such as `std.option.Option(i64)`.
 
 {{ rule(id="10.4:17") }}
 
@@ -217,9 +217,9 @@ fn main() -> i32 {
     let p = lib.Point { x: 40, y: 2 };     // qualified struct literal
     let q = lib.Point::origin();           // qualified associated fn
     let c = lib.Color::Green;              // qualified variant expression
-    // let bad: lib.Point = p;           // error E0100: no qualified path in a type position
+    let typed: lib.Point = p;           // qualified type annotation
     // let h = lib.Hidden::A;            // error E0706: `Hidden` is private outside sub/
-    let base = p.x + p.y + q.x + q.y;    // 40 + 2 + 30 + 12 = 84
+    let base = typed.x + typed.y + q.x + q.y; // 40 + 2 + 30 + 12 = 84
     match c {
         lib.Color::Red => 0,             // qualified variant pattern
         lib.Color::Green => base,        // 84

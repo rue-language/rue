@@ -305,8 +305,8 @@ error_contains = "private"
 # =============================================================================
 # A module's types, enum variants, and associated functions are referenced
 # through a module binding in expression/pattern positions (10.4:15); a
-# qualified path is rejected in a type position (10.4:16); privacy is uniform
-# (10.4:18).
+# qualified path is also accepted in type position (10.4:16); privacy is
+# uniform (10.4:18).
 
 [[case]]
 name = "qualified_type_variant_and_assoc_fn_forms"
@@ -338,9 +338,9 @@ pub enum Color { Red, Green, Blue, }
 exit_code = 84
 
 [[case]]
-name = "qualified_path_in_type_position_rejected"
+name = "qualified_path_in_type_position_allowed"
 spec = ["10.4:16"]
-description = "A module-qualified path in a type-annotation position is a parse error (E0100); types are named by bare identifier only"
+description = "A module-qualified path in a type-annotation position resolves through the importing module."
 source = """
 const lib = @import("sub/lib");
 
@@ -352,8 +352,7 @@ fn main() -> i32 {
 aux_files = { "sub/lib.rue" = """
 pub struct Point { x: i32, y: i32, }
 """ }
-compile_fail = true
-error_contains = ["E0100"]
+exit_code = 3
 
 [[case]]
 name = "qualified_private_struct_literal_rejected"

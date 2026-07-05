@@ -217,10 +217,11 @@ Notes:
   legality rule enforced during semantic analysis (6.1:17), not a syntactic
   restriction. A non-place argument such as `inout a + 1` parses but is
   rejected with an lvalue error (E0425).
-- **Type-function application in type position** (`type_call`): a name applied
-  to type arguments, e.g. `Pair(i32)` or `Result(Option(i32), i32)`, denotes
-  the type produced by a comptime `-> type` constructor (RUE-241). Nested
-  applications compose. Its result cannot yet head a struct literal
+- **Type-function application in type position** (`type_call`): a name or
+  module-qualified path applied to type arguments, e.g. `Pair(i32)`,
+  `Result(Option(i32), i32)`, or `std.option.Option(i64)`, denotes the type
+  produced by a comptime `-> type` constructor (RUE-241). Nested applications
+  compose. Its result cannot yet head a struct literal
   (`Pair(i32) { … }` does not parse); bind it via a `let` of that type instead.
 - **Anonymous struct types** carry inline methods only when a `struct { … }`
   appears as a *value* (e.g. the body of a comptime `-> type` function); in

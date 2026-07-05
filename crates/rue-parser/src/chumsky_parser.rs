@@ -401,6 +401,27 @@ where
                 span: span_from_extra(e),
             });
 
+        // Module-qualified type-function application in type position:
+        // `std.option.Option(i64)` (RUE-419). Keep this distinct from the
+        // existing bare type-call node so downstream stages can resolve the
+        // module prefix before applying the constructor.
+        let qualified_type_call = ident_parser()
+            .separated_by(just(TokenKind::Dot))
+            .at_least(2)
+            .collect::<Vec<_>>()
+            .then(
+                ty.clone()
+                    .separated_by(just(TokenKind::Comma))
+                    .allow_trailing()
+                    .collect::<Vec<_>>()
+                    .delimited_by(just(TokenKind::LParen), just(TokenKind::RParen)),
+            )
+            .map_with(|(segments, args), e| TypeExpr::QualifiedTypeCall {
+                segments,
+                args,
+                span: span_from_extra(e),
+            });
+
         // Fixed-capacity string type with a LITERAL capacity: `Str(8)`
         // (ADR-0043 Phase 5, RUE-326). The integer capacity is not a type, so
         // it cannot ride the `type_call` grammar (whose args are types); this
@@ -423,6 +444,16 @@ where
         // Named type: user-defined types like MyStruct
         let named_type = ident_parser().map(TypeExpr::Named);
 
+        // Module-qualified named type in type position: `lib.Point` (RUE-419).
+        let qualified_type = ident_parser()
+            .separated_by(just(TokenKind::Dot))
+            .at_least(2)
+            .collect::<Vec<_>>()
+            .map_with(|segments, e| TypeExpr::Qualified {
+                segments,
+                span: span_from_extra(e),
+            });
+
         // Self type: Self keyword used in methods to refer to the containing struct
         let self_type = just(TokenKind::SelfType).map_with(|_, e| {
             let span = span_from_extra(e);
@@ -442,8 +473,10 @@ where
             ptr_mut_type,
             primitive_type_parser(),
             self_type,
+            qualified_type_call,
             type_call,
             str_fixed_type,
+            qualified_type,
             named_type,
         ))
         // Summarize the whole type grammar as a single "type" expectation, so a

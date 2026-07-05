@@ -1,0 +1,47 @@
+# Standard-library type paths in type position (RUE-419).
+
+[section]
+id = "cli.std_type_paths"
+name = "Standard-library type paths"
+description = "Module-qualified std paths work in type annotations and return types."
+
+[[case]]
+name = "std_option_type_path_in_return_type"
+description = "`std.option.Option(i64)` can be named directly in a function return type."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn read_num() -> std.option.Option(i64) {
+    let O = std.option.Option(i64);
+    O::None
+}
+
+fn main() -> i32 {
+    let O = std.option.Option(i64);
+    match read_num() {
+        O::None => 0,
+        O::Some(n) => @intCast(n),
+    }
+}
+""" }]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+exit_code = 0
+
+[[case]]
+name = "std_option_type_path_in_let_annotation"
+description = "`std.option.Option(i64)` can be named directly in a local type annotation."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let O = std.option.Option(i64);
+    let n: i64 = 42;
+    let x: std.option.Option(i64) = O::Some(n);
+    match x {
+        O::None => 0,
+        O::Some(n) => @intCast(n),
+    }
+}
+""" }]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+exit_code = 42

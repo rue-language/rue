@@ -2411,7 +2411,7 @@ impl<'a> Sema<'a> {
     /// Ensure a free function's signature is available during const
     /// collection, which can run before the main declaration walk reaches the
     /// callee's `FnDecl`.
-    fn ensure_free_function_signature(
+    pub(crate) fn ensure_free_function_signature(
         &mut self,
         target: Spur,
         file_id: Option<FileId>,
