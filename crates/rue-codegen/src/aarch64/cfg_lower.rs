@@ -134,7 +134,10 @@ impl<'a> CfgLower<'a> {
     }
 
     /// Emit `count_vreg * element_size` (a compile-time constant stride) into a
-    /// fresh vreg. Mirrors the scaling used by `@ptr_offset`.
+    /// fresh vreg, trapping if the hidden byte-size computation overflows.
+    /// Mirrors the scaling used by `@ptr_offset`, but heap intrinsic sizes are
+    /// part of the runtime ABI: silently wrapping here would under-allocate or
+    /// pass the wrong size to free/realloc (RUE-345).
     fn scale_by_size(&mut self, count_vreg: VReg, element_size: u64) -> VReg {
         let out = self.mir.alloc_vreg();
         if element_size == 0 {
@@ -158,6 +161,21 @@ impl<'a> CfgLower<'a> {
                 src1: Operand::Virtual(count_vreg),
                 src2: Operand::Virtual(size_vreg),
             });
+            let high_vreg = self.mir.alloc_vreg();
+            self.mir.push(Aarch64Inst::UmulhRR {
+                dst: Operand::Virtual(high_vreg),
+                src1: Operand::Virtual(count_vreg),
+                src2: Operand::Virtual(size_vreg),
+            });
+
+            let ok_label = self.mir.alloc_label();
+            self.mir.push(Aarch64Inst::Cbz {
+                src: Operand::Virtual(high_vreg),
+                label: ok_label,
+            });
+            let symbol_id = self.intern_symbol("__rue_overflow");
+            self.mir.push(Aarch64Inst::Bl { symbol_id });
+            self.mir.push(Aarch64Inst::Label { id: ok_label });
         }
         out
     }

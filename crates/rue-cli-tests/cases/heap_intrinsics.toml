@@ -104,6 +104,39 @@ fn main() -> i32 {
 compile_fail = true
 error_contains = ["heap intrinsic `@alloc`", "checked"]
 
+# The hidden `count * size_of(T)` performed by heap intrinsics is part of the
+# runtime allocation ABI. It must trap instead of wrapping to a smaller byte
+# count, which would under-allocate the buffer the source pointer describes
+# (RUE-345).
+[[case]]
+name = "alloc_count_size_overflow_traps"
+description = "@alloc traps when count * size_of(T) overflows u64."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    checked {
+        let p: ptr mut i64 = @alloc(2305843009213693952);
+        if @ptr_to_int(p) == 0 { 0 } else { 1 }
+    }
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+exit_code = 101
+
+[[case]]
+name = "realloc_count_size_overflow_traps"
+description = "@realloc traps when the new count * size_of(T) overflows u64."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    checked {
+        let p: ptr mut i64 = @alloc(1);
+        let q: ptr mut i64 = @realloc(p, 1, 2305843009213693952);
+        if @ptr_to_int(q) == 0 { 0 } else { 1 }
+    }
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+exit_code = 101
+
 # A near-usize::MAX @alloc once wrapped the arena's page round-up to zero,
 # handed out a huge block backed by a 64 KiB mapping, and let a later write
 # corrupt memory / SIGSEGV (rue-runtime component review, 2026-07-04). The
@@ -114,7 +147,7 @@ description = "A near-usize::MAX @alloc returns null instead of an unbacked poin
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
     checked {
-        let p: ptr mut u8 = @alloc(18446744073709551491);
+        let p: ptr mut u8 = @alloc(2305843009213693951);
         let addr: u64 = @ptr_to_int(p);
         if addr == 0 { 0 } else { 1 }
     }
