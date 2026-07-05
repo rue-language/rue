@@ -1182,8 +1182,8 @@ impl<'a> Sema<'a> {
         false
     }
 
-    /// Validate array lengths inside a signature type that will otherwise be
-    /// deferred until generic specialization.
+    /// Validate the non-deferred parts of a signature type that will otherwise
+    /// be deferred until generic specialization.
     ///
     /// A composite signature such as `[T; 3]` cannot be resolved at declaration
     /// time because the element type is a comptime type parameter. Its length is
@@ -1191,14 +1191,22 @@ impl<'a> Sema<'a> {
     /// an undefined `A` immediately instead of surviving until specialization
     /// and becoming an ICE (RUE-381). Lengths may be literals, file constants, or
     /// comptime value parameters owned by the same function.
+    ///
+    /// Non-deferred leaf types are declaration-time legality questions too:
+    /// `[i3; N]` mentions the comptime value parameter `N`, so the array type as
+    /// a whole is deferred, but the element type `i3` is not deferred and should
+    /// be reported as E0204 immediately instead of becoming a failed
+    /// specialization substitution later.
     pub(crate) fn validate_deferred_signature_type_lengths(
         &mut self,
         type_sym: Spur,
+        type_params: &[Spur],
         value_params: &[Spur],
         span: Span,
     ) -> CompileResult<()> {
         self.validate_deferred_signature_type_name_lengths(
             self.interner.resolve(&type_sym).to_string(),
+            type_params,
             value_params,
             span,
         )
@@ -1207,6 +1215,7 @@ impl<'a> Sema<'a> {
     fn validate_deferred_signature_type_name_lengths(
         &mut self,
         type_name: String,
+        type_params: &[Spur],
         value_params: &[Spur],
         span: Span,
     ) -> CompileResult<()> {
@@ -1219,6 +1228,7 @@ impl<'a> Sema<'a> {
             }
             return self.validate_deferred_signature_type_name_lengths(
                 element_type,
+                type_params,
                 value_params,
                 span,
             );
@@ -1230,6 +1240,7 @@ impl<'a> Sema<'a> {
         {
             return self.validate_deferred_signature_type_name_lengths(
                 pointee.to_string(),
+                type_params,
                 value_params,
                 span,
             );
@@ -1237,11 +1248,27 @@ impl<'a> Sema<'a> {
 
         if let Some((_call_name, arg_strs)) = parse_type_call_syntax(&type_name) {
             for arg in arg_strs {
-                self.validate_deferred_signature_type_name_lengths(arg, value_params, span)?;
+                self.validate_deferred_signature_type_name_lengths(
+                    arg,
+                    type_params,
+                    value_params,
+                    span,
+                )?;
+            }
+            return Ok(());
+        }
+
+        // A leaf that is one of this function's comptime type parameters is
+        // exactly what makes the signature deferred; leave it for
+        // specialization. Every other leaf must be a real declaration-time type.
+        if let Some(sym) = self.interner.get(&type_name) {
+            if type_params.contains(&sym) {
+                return Ok(());
             }
         }
 
-        Ok(())
+        let sym = self.interner.get_or_intern(&type_name);
+        self.resolve_type(sym, span).map(|_| ())
     }
 
     /// Get or create an array type for the given element type and length.

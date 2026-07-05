@@ -1202,7 +1202,12 @@ impl<'a> Sema<'a> {
                     // for array lengths that do *not* depend on specialization:
                     // `[T; A]` with an undefined `A` should be E0481 here, not
                     // an ICE when the function is later instantiated (RUE-381).
-                    self.validate_deferred_signature_type_lengths(p.ty, &value_param_names, span)?;
+                    self.validate_deferred_signature_type_lengths(
+                        p.ty,
+                        &type_param_names,
+                        &value_param_names,
+                        span,
+                    )?;
                     Ok(Type::COMPTIME_TYPE)
                 } else {
                     // Regular params OR comptime VALUE params (comptime n: i32)
@@ -1223,6 +1228,7 @@ impl<'a> Sema<'a> {
             // RUE-16) - use placeholder, resolved at specialization.
             self.validate_deferred_signature_type_lengths(
                 return_type_sym,
+                &type_param_names,
                 &value_param_names,
                 span,
             )?;
