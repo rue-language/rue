@@ -49,6 +49,18 @@ The manifest format is intentionally narrow: one source path per line, resolved
 relative to the manifest file; blank lines and `#` comments are ignored. Entries
 are allowed reads for `@import` resolution, not extra semantic roots.
 
+Build-system integrations can also ask Rue what it actually read while
+discovering the root import graph:
+
+```bash
+"$RUE" --emit deps main.rue
+```
+
+This prints JSON containing the canonical root source, all observed
+root/positional/imported source files, and resolved `@import` edges. It is the
+observed dependency graph; a source manifest is still the declared allowed-read
+set.
+
 Run `"$RUE" --help` for targets, preview features, optimization levels,
 logging, timing, manifests, and all emit stages.
 

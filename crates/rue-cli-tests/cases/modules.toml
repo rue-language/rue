@@ -141,6 +141,58 @@ args = ["--source-manifest", "sources.manifest", "main.rue", "-o", "prog"]
 compile_fail = true
 error_contains = ["undefined function", "helper"]
 
+[[case]]
+name = "emit_deps_reports_root_and_import_graph"
+description = "RUE-446: --emit deps reports the observed root/import source graph as machine-readable JSON."
+files = [
+    { path = "main.rue", source = """
+const utils = @import("utils");
+
+fn main() -> i32 {
+    utils.answer()
+}
+""" },
+    { path = "utils.rue", source = """
+const leaf = @import("leaf");
+
+pub fn answer() -> i32 {
+    leaf.value()
+}
+""" },
+    { path = "leaf.rue", source = """
+pub fn value() -> i32 {
+    42
+}
+""" },
+]
+args = ["--emit", "deps", "main.rue"]
+compile_only = true
+compile_stdout_contains = [
+    "\"version\": 1",
+    "\"root\":",
+    "\"path\":",
+    "main.rue",
+    "\"kind\": \"root\"",
+    "utils.rue",
+    "\"kind\": \"import\"",
+    "leaf.rue",
+    "\"specifier\": \"utils\"",
+    "\"specifier\": \"leaf\"",
+    "\"resolved\":",
+]
+
+[[case]]
+name = "emit_deps_rejects_mixed_emit_stages"
+description = "RUE-446: dependency JSON must not be interleaved with other --emit output."
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 { 0 }
+""" },
+]
+args = ["--emit", "deps", "--emit", "air", "main.rue"]
+compile_fail = true
+error_contains = ["--emit deps cannot be combined"]
+
 # The `.rue`-suffixed form resolves from disk (when the module is not used).
 [[case]]
 name = "import_with_rue_extension"

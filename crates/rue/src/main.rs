@@ -22,6 +22,7 @@ use rue_compiler::{
 };
 use rue_rir::RirPrinter;
 use rue_target::Target;
+use serde::Serialize;
 
 /// Compilation stages that can be emitted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +49,8 @@ enum EmitStage {
     Asm,
     /// Emit stack frame layout per function.
     StackFrame,
+    /// Emit the source dependency graph discovered while loading imports.
+    Deps,
 }
 
 /// Error returned when parsing an emit stage name fails.
@@ -78,6 +81,7 @@ impl std::str::FromStr for EmitStage {
             "regalloc" => Ok(EmitStage::RegAlloc),
             "asm" => Ok(EmitStage::Asm),
             "stackframe" => Ok(EmitStage::StackFrame),
+            "deps" => Ok(EmitStage::Deps),
             _ => Err(ParseEmitStageError(s.to_string())),
         }
     }
@@ -85,7 +89,7 @@ impl std::str::FromStr for EmitStage {
 
 impl EmitStage {
     fn all_names() -> &'static str {
-        "tokens, ast, rir, air, cfg, lowering, mir, liveness, regalloc, asm, stackframe"
+        "tokens, ast, rir, air, cfg, lowering, mir, liveness, regalloc, asm, stackframe, deps"
     }
 }
 
@@ -1040,6 +1044,82 @@ fn validate_manifest_allows_source(
     Err(())
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct DependencySource {
+    path: String,
+    kind: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct DependencyImport {
+    from: String,
+    specifier: String,
+    resolved: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct DependencyOutput {
+    version: u32,
+    root: String,
+    sources: Vec<DependencySource>,
+    imports: Vec<DependencyImport>,
+}
+
+#[derive(Debug, Default)]
+struct DependencyGraph {
+    root: Option<PathBuf>,
+    sources: std::collections::BTreeMap<PathBuf, &'static str>,
+    imports: Vec<(PathBuf, String, PathBuf)>,
+    import_seen: std::collections::HashSet<(PathBuf, String, PathBuf)>,
+}
+
+impl DependencyGraph {
+    fn record_source(&mut self, path: PathBuf, kind: &'static str) {
+        if kind == "root" {
+            self.root = Some(path.clone());
+        }
+        self.sources.entry(path).or_insert(kind);
+    }
+
+    fn record_import(&mut self, from: PathBuf, specifier: &str, resolved: PathBuf) {
+        let key = (from.clone(), specifier.to_string(), resolved.clone());
+        if self.import_seen.insert(key.clone()) {
+            self.imports.push(key);
+        }
+    }
+
+    fn to_output(&self) -> DependencyOutput {
+        let sources = self
+            .sources
+            .iter()
+            .map(|(path, kind)| DependencySource {
+                path: path.display().to_string(),
+                kind,
+            })
+            .collect();
+        let imports = self
+            .imports
+            .iter()
+            .map(|(from, specifier, resolved)| DependencyImport {
+                from: from.display().to_string(),
+                specifier: specifier.clone(),
+                resolved: resolved.display().to_string(),
+            })
+            .collect();
+
+        DependencyOutput {
+            version: 1,
+            root: self
+                .root
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_default(),
+            sources,
+            imports,
+        }
+    }
+}
+
 /// Discover `@import("...")` references in the given sources and load the
 /// referenced module files from disk, transitively, appending them to
 /// `sources`.
@@ -1070,6 +1150,7 @@ fn validate_manifest_allows_source(
 fn discover_and_load_imports(
     sources: &mut Vec<(String, String)>,
     source_manifest: Option<&SourceManifest>,
+    dependency_graph: &mut DependencyGraph,
 ) -> Result<Vec<PathBuf>, ()> {
     use std::collections::HashSet;
 
@@ -1094,6 +1175,7 @@ fn discover_and_load_imports(
     let mut i = 0;
     while i < sources.len() {
         let (importer_path, content) = (sources[i].0.clone(), sources[i].1.clone());
+        let importer_canonical = fs::canonicalize(&importer_path).ok();
         i += 1;
 
         let lexer = Lexer::new(&content);
@@ -1161,6 +1243,13 @@ fn discover_and_load_imports(
                     if !canonical.is_file() {
                         continue;
                     }
+                    if let Some(importer_canonical) = &importer_canonical {
+                        dependency_graph.record_import(
+                            importer_canonical.clone(),
+                            import_str,
+                            canonical.clone(),
+                        );
+                    }
                     if let Some(manifest) = source_manifest
                         && !manifest.allows_canonical(&canonical)
                     {
@@ -1187,7 +1276,8 @@ fn discover_and_load_imports(
                     let Ok(module_content) = fs::read_to_string(&candidate) else {
                         continue;
                     };
-                    loaded.insert(canonical);
+                    loaded.insert(canonical.clone());
+                    dependency_graph.record_source(canonical, "import");
                     sources.push((candidate.to_string_lossy().into_owned(), module_content));
                     group_hit = true;
                 }
@@ -1280,7 +1370,19 @@ fn main() {
     // resolves imports only against already-loaded files, so without this
     // step `const utils = @import("utils")` fails with E0704 unless the
     // user hand-lists every module on the command line (RUE-14).
-    let mixed_imports = match discover_and_load_imports(&mut sources, source_manifest.as_ref()) {
+    let mut dependency_graph = DependencyGraph::default();
+    for (index, (path, _content)) in sources.iter().enumerate() {
+        if let Ok(canonical) = fs::canonicalize(path) {
+            let kind = if index == 0 { "root" } else { "positional" };
+            dependency_graph.record_source(canonical, kind);
+        }
+    }
+
+    let mixed_imports = match discover_and_load_imports(
+        &mut sources,
+        source_manifest.as_ref(),
+        &mut dependency_graph,
+    ) {
         Ok(mixed_imports) => mixed_imports,
         Err(()) => std::process::exit(1),
     };
@@ -1300,6 +1402,34 @@ fn main() {
         std::process::exit(1);
     }
     let sources = sources;
+
+    if options.emit_stages.contains(&EmitStage::Deps) {
+        if options.emit_stages.len() != 1 {
+            eprintln!("Error: --emit deps cannot be combined with other --emit stages");
+            std::process::exit(1);
+        }
+        if options.benchmark_json {
+            eprintln!(
+                "Error: --emit cannot be combined with --benchmark-json (both write to stdout)"
+            );
+            std::process::exit(1);
+        }
+        match serde_json::to_string_pretty(&dependency_graph.to_output()) {
+            Ok(json) => println!("{json}"),
+            Err(e) => {
+                eprintln!("Error emitting dependency graph: {e}");
+                std::process::exit(1);
+            }
+        }
+        print_timing_output(
+            &timing_data,
+            options.time_passes,
+            options.benchmark_json,
+            &options.target,
+            None,
+        );
+        return;
+    }
 
     // Build SourceFile structs for multi-file compilation
     let source_files: Vec<SourceFile<'_>> = sources
@@ -1764,6 +1894,7 @@ fn handle_emit_multi_file(
                     }
                 }
             }
+            EmitStage::Deps => unreachable!("--emit deps is handled before frontend emission"),
         }
     }
 
@@ -1973,6 +2104,12 @@ mod tests {
     fn parse_emit_asm() {
         let opts = unwrap_options(parse_args_from(&["--emit", "asm", "source.rue"]));
         assert_eq!(opts.emit_stages, vec![EmitStage::Asm]);
+    }
+
+    #[test]
+    fn parse_emit_deps() {
+        let opts = unwrap_options(parse_args_from(&["--emit", "deps", "source.rue"]));
+        assert_eq!(opts.emit_stages, vec![EmitStage::Deps]);
     }
 
     #[test]
@@ -2560,6 +2697,7 @@ mod tests {
             "stackframe".parse::<EmitStage>().unwrap(),
             EmitStage::StackFrame
         );
+        assert_eq!("deps".parse::<EmitStage>().unwrap(), EmitStage::Deps);
     }
 
     #[test]
@@ -2572,7 +2710,7 @@ mod tests {
     fn emit_stage_all_names() {
         assert_eq!(
             EmitStage::all_names(),
-            "tokens, ast, rir, air, cfg, lowering, mir, liveness, regalloc, asm, stackframe"
+            "tokens, ast, rir, air, cfg, lowering, mir, liveness, regalloc, asm, stackframe, deps"
         );
     }
 
