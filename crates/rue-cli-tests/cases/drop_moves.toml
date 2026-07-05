@@ -25,9 +25,9 @@
 # full paths of any depth (`eat(o.a.b)`, RUE-157), with each affected
 # field's scope-exit drop guarded by its own flag.
 #
-# Known residual: assigning over a still-owned struct FIELD does not drop
-# the old field value (pre-existing drop-on-overwrite gap, tracked
-# separately); these cases avoid pinning that behavior.
+# Assignment-overwrite drops are covered separately in `overwrite_drops.toml`
+# (RUE-64), including field and array-element writes. This file stays focused
+# on move/drop suppression rather than the overwrite matrix.
 
 [section]
 id = "cli.drop_moves"
