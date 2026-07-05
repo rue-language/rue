@@ -3360,6 +3360,14 @@ impl<'a> Sema<'a> {
         // We need to peek at the base type to detect module.Type access patterns.
         let base_inst = self.rir.get(base);
         if let InstData::VarRef { name } = &base_inst.data {
+            if !self.is_runtime_value_binding(*name, ctx) {
+                if let Some(result) =
+                    self.try_analyze_dotted_enum_variant(air, *name, field, span, ctx)?
+                {
+                    return Ok(result);
+                }
+            }
+
             // Check if this VarRef refers to a module
             if let Some(local) = ctx.locals.get(name) {
                 if let Some(module_id) = local.ty.as_module() {
@@ -3952,6 +3960,68 @@ impl<'a> Sema<'a> {
             ));
         }
         Ok(())
+    }
+
+    /// Return true when `name` is a runtime local or parameter in this function.
+    ///
+    /// Dotted type-member compatibility for RUE-196 (`Type.member`) must not
+    /// steal ordinary value field/method access when a binding shadows a type
+    /// name. Comptime type variables are intentionally not runtime bindings:
+    /// `let O = Option(i32); O.Some(1)` should behave like `O::Some(1)`.
+    pub(crate) fn is_runtime_value_binding(&self, name: Spur, ctx: &AnalysisContext) -> bool {
+        ctx.locals.contains_key(&name) || ctx.params.iter().any(|param| param.name == name)
+    }
+
+    /// Try to resolve `Enum.Variant` as an additive dotted alias for
+    /// `Enum::Variant` (RUE-196).
+    fn try_analyze_dotted_enum_variant(
+        &mut self,
+        air: &mut Air,
+        type_name: Spur,
+        variant: Spur,
+        span: Span,
+        ctx: &AnalysisContext,
+    ) -> CompileResult<Option<AnalysisResult>> {
+        let Some((enum_id, via_comptime)) = self.resolve_enum_type_name(type_name, ctx) else {
+            return Ok(None);
+        };
+
+        let enum_def = self.type_pool.enum_def(enum_id);
+        let variant_name = self.interner.resolve(&variant);
+        let Some(variant_index) = enum_def.find_variant(variant_name) else {
+            return Ok(None);
+        };
+
+        if !via_comptime {
+            self.check_unqualified_visibility(
+                "enum",
+                self.interner.resolve(&type_name),
+                enum_def.file_id,
+                enum_def.is_pub,
+                span,
+            )?;
+        }
+
+        let expected = enum_def.variant_payload(variant_index).len();
+        if expected > 0 {
+            return Err(CompileError::new(
+                ErrorKind::WrongArgumentCount { expected, found: 0 },
+                span,
+            ));
+        }
+
+        let ty = Type::new_enum(enum_id);
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::EnumVariant {
+                enum_id,
+                variant_index: variant_index as u32,
+                payload_start: 0,
+                payload_len: 0,
+            },
+            ty,
+            span,
+        });
+        Ok(Some(AnalysisResult::new(air_ref, ty)))
     }
 
     /// Analyze an array initialization.
@@ -5501,7 +5571,7 @@ impl<'a> Sema<'a> {
     /// Analyze an associated function call.
     ///
     /// This is a complex operation. The full implementation is in analysis.rs.
-    fn analyze_assoc_fn_call(
+    pub(crate) fn analyze_assoc_fn_call(
         &mut self,
         air: &mut Air,
         type_name: Spur,

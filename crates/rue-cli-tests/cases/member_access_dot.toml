@@ -1,0 +1,69 @@
+[section]
+id = "cli.member_access_dot"
+name = "Dotted type-member access"
+description = "RUE-196 additive dotted aliases for enum variants, tuple variants, associated functions, and match patterns."
+
+[[case]]
+name = "enum_variant_expression_dot"
+files = [{ path = "main.rue", source = """
+enum Color { Red, Green, Blue }
+fn main() -> i32 {
+    let c = Color.Green;
+    match c {
+        Color.Red => 1,
+        Color.Green => 42,
+        Color.Blue => 3,
+    }
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+exit_code = 42
+
+[[case]]
+name = "tuple_variant_expression_dot"
+files = [{ path = "main.rue", source = """
+enum Opt { Some(i32), None }
+fn main() -> i32 {
+    let x = Opt.Some(42);
+    match x {
+        Opt.Some(n) => n,
+        Opt.None => 0,
+    }
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+exit_code = 42
+
+[[case]]
+name = "associated_function_call_dot"
+files = [{ path = "main.rue", source = """
+struct Box {
+    value: i32,
+    fn make(v: i32) -> Box {
+        Box { value: v }
+    }
+}
+fn main() -> i32 {
+    let b = Box.make(42);
+    b.value
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+exit_code = 42
+
+[[case]]
+name = "local_shadow_preserves_field_and_method_access"
+files = [{ path = "main.rue", source = """
+struct Box {
+    value: i32,
+    fn value(self) -> i32 {
+        self.value
+    }
+}
+fn main() -> i32 {
+    let Box = Box { value: 42 };
+    Box.value()
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+exit_code = 42
