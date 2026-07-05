@@ -1116,11 +1116,12 @@ impl<'a> Sema<'a> {
     /// Resolve an import path to an absolute file path.
     ///
     /// Resolution order (per ADR-0026):
-    /// 1. Standard library: `@import("std")` resolves to the bundled std library
-    /// 2. Pre-loaded files (multi-file compilation)
-    /// 3. `foo.rue` (simple file module)
-    /// 4. `_foo.rue` with `foo/` directory (directory module)
-    /// 5. (Future) Dependency from rue.toml
+    /// 1. Standard library: `@import("std")` resolves to a pre-loaded std facade
+    /// 2. Pre-loaded source files from the driver/import graph
+    ///
+    /// All filesystem probing/loading belongs to the driver. Sema only matches
+    /// against `file_paths`, so normal compilation, source manifests, and
+    /// `--emit deps` share one import graph source of truth.
     pub(crate) fn resolve_import_path(
         &self,
         import_path: &str,
@@ -1128,16 +1129,16 @@ impl<'a> Sema<'a> {
     ) -> CompileResult<String> {
         use std::path::Path;
 
-        // Phase 0: Check for standard library import
-        // @import("std") resolves to the compiler's bundled standard library
+        // Standard library imports resolve only when the driver/test harness
+        // has already loaded the std facade into `file_paths`.
         if import_path == "std" {
             return self.resolve_std_import(span);
         }
 
-        // Phase 1: Check if the import path matches an already-loaded file
-        // (unit tests, multi-file compilation, and files the driver's import
-        // discovery loaded). Delegates to the structured ModulePath resolver
-        // so loaded-path matching has exactly one implementation.
+        // Check whether the import path matches an already-loaded file (unit
+        // tests, multi-file compilation, and files the driver's import
+        // discovery loaded). Delegates to the structured ModulePath resolver so
+        // loaded-path matching has exactly one implementation.
         //
         // Resolution is importer-relative (spec 10.2:2, RUE-266): candidates
         // are anchored to base directories searched in order — the importing
@@ -1190,65 +1191,13 @@ impl<'a> Sema<'a> {
             super::super::module_path::DirResolution::NotFound => {}
         }
 
-        // Phase 2: Try to find the file on disk (for directory modules and actual file imports)
-        // Get the directory of the current source file
-        let source_path = self.get_source_path(span);
-        let source_dir = source_path
-            .and_then(|p| Path::new(p).parent())
-            .unwrap_or(Path::new("."));
-
-        let mut candidates = Vec::new();
-
-        // Strip .rue extension if present for base name calculation
-        let base_name = import_path.strip_suffix(".rue").unwrap_or(import_path);
-
-        // Both module forms existing at once is ambiguous, not a precedence
-        // question — mirror Rust's E0761 and refuse (RUE-137).
-        let file_candidate = source_dir.join(format!("{}.rue", base_name));
-        let facade_candidate = source_dir
-            .join(base_name)
-            .join(format!("_{}.rue", base_name));
-        if !import_path.ends_with(".rue") && file_candidate.exists() && facade_candidate.exists() {
-            return Err(CompileError::new(
-                ErrorKind::AmbiguousModule(Box::new(rue_error::AmbiguousModuleData {
-                    path: import_path.to_string(),
-                    file_module: file_candidate.to_string_lossy().to_string(),
-                    dir_module: facade_candidate.to_string_lossy().to_string(),
-                })),
-                span,
-            ));
-        }
-
-        // Resolution order:
-        // 1. Try foo.rue (simple file module)
-        candidates.push(file_candidate.display().to_string());
-        if file_candidate.exists() {
-            return Ok(file_candidate.to_string_lossy().to_string());
-        }
-
-        // 2. If the path already ends in .rue, also try it directly
-        if import_path.ends_with(".rue") {
-            let candidate = source_dir.join(import_path);
-            if !candidates.contains(&candidate.display().to_string()) {
-                candidates.push(candidate.display().to_string());
-            }
-            if candidate.exists() {
-                return Ok(candidate.to_string_lossy().to_string());
-            }
-        }
-
-        // 3. Try the directory module: foo/ containing the facade foo/_foo.rue
-        // (the facade lives INSIDE the directory, like std/_std.rue — RUE-137).
-        candidates.push(facade_candidate.display().to_string());
-        if facade_candidate.exists() {
-            return Ok(facade_candidate.to_string_lossy().to_string());
-        }
-
-        // Module not found - report error with candidates tried
+        // Module not found among loaded files. Report the candidate spellings
+        // the driver would have had to load, without probing the filesystem
+        // here.
         Err(CompileError::new(
             ErrorKind::ModuleNotFound {
                 path: import_path.to_string(),
-                candidates,
+                candidates: import_candidates(import_path, &base_dirs),
             },
             span,
         ))
@@ -1256,51 +1205,18 @@ impl<'a> Sema<'a> {
 
     /// Resolve the standard library import.
     ///
-    /// The standard library is located using the following resolution order:
-    /// 1. `RUE_STD_PATH` environment variable (if set)
-    /// 2. `std/` directory relative to the source file
-    /// 3. Known installation paths
-    ///
-    /// Returns the path to `_std.rue`, the standard library root module.
+    /// The driver is responsible for locating and loading the standard library
+    /// facade. Sema only verifies that a loaded `_std.rue` is present.
     pub(super) fn resolve_std_import(&self, span: Span) -> CompileResult<String> {
-        use std::path::Path;
-
-        // Check if we have a pre-loaded std library in file_paths
-        for (_file_id, path) in &self.file_paths {
-            // Check for _std.rue
-            if path.ends_with("_std.rue") || path.ends_with("std/_std.rue") {
-                return Ok(path.clone());
+        match super::super::module_path::ModulePath::Std
+            .resolve_in_dirs(&[], self.file_paths.values())
+        {
+            super::super::module_path::DirResolution::Resolved(path) => Ok(path),
+            super::super::module_path::DirResolution::Ambiguous { .. }
+            | super::super::module_path::DirResolution::NotFound => {
+                Err(CompileError::new(ErrorKind::StdLibNotFound, span))
             }
         }
-
-        // 1. Check RUE_STD_PATH environment variable
-        if let Ok(std_path) = std::env::var("RUE_STD_PATH") {
-            let std_root = Path::new(&std_path).join("_std.rue");
-            if std_root.exists() {
-                return Ok(std_root.to_string_lossy().to_string());
-            }
-        }
-
-        // 2. Look for std/ relative to the source file
-        if let Some(source_path) = self.get_source_path(span) {
-            let source_dir = Path::new(source_path).parent().unwrap_or(Path::new("."));
-
-            // Try std/_std.rue relative to source
-            let std_root = source_dir.join("std").join("_std.rue");
-            if std_root.exists() {
-                return Ok(std_root.to_string_lossy().to_string());
-            }
-        }
-
-        // Note: We intentionally do NOT check the current working directory
-        // because it's unreliable and may find the wrong std library.
-        // Users should either:
-        // 1. Set RUE_STD_PATH environment variable
-        // 2. Have std/ in the same directory as their source files
-        // 3. Use aux_files in tests to provide std
-
-        // Standard library not found
-        Err(CompileError::new(ErrorKind::StdLibNotFound, span))
     }
 
     // Note: The old analyze_inst body from here onwards is now handled by the
@@ -1309,4 +1225,95 @@ impl<'a> Sema<'a> {
     // ========================================================================
     // Helper methods for analysis
     // ========================================================================
+}
+
+fn import_candidates(import_path: &str, base_dirs: &[String]) -> Vec<String> {
+    use std::path::Path;
+
+    let mut candidates = Vec::new();
+    let push_unique = |candidates: &mut Vec<String>, candidate: String| {
+        if !candidates.contains(&candidate) {
+            candidates.push(candidate);
+        }
+    };
+
+    for base in base_dirs {
+        let base_path = Path::new(base);
+        if import_path.ends_with(".rue") {
+            push_unique(
+                &mut candidates,
+                base_path.join(import_path).to_string_lossy().into_owned(),
+            );
+        } else {
+            let rel = Path::new(import_path);
+            let basename = rel
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or(import_path);
+            push_unique(
+                &mut candidates,
+                base_path
+                    .join(format!("{import_path}.rue"))
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+            push_unique(
+                &mut candidates,
+                base_path
+                    .join(import_path)
+                    .join(format!("_{basename}.rue"))
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+        }
+    }
+
+    candidates
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use lasso::ThreadedRodeo;
+    use rue_error::{ErrorKind, PreviewFeatures};
+    use rue_rir::Rir;
+    use rue_span::{FileId, Span};
+
+    use crate::sema::Sema;
+
+    #[test]
+    fn import_resolution_does_not_probe_unloaded_disk_files() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "rue-sema-import-no-disk-probe-{unique}-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+
+        let main_path = dir.join("main.rue");
+        let helper_path = dir.join("helper.rue");
+        fs::write(&main_path, "const helper = @import(\"helper\");").unwrap();
+        fs::write(&helper_path, "pub fn answer() -> i32 { 42 }").unwrap();
+
+        let rir = Rir::new();
+        let interner = ThreadedRodeo::new();
+        let mut sema = Sema::new(&rir, &interner, PreviewFeatures::new());
+        sema.set_file_paths(HashMap::from([(
+            FileId::new(1),
+            main_path.to_string_lossy().into_owned(),
+        )]));
+
+        let err = sema
+            .resolve_import_path("helper", Span::with_file(FileId::new(1), 0, 0))
+            .unwrap_err();
+        assert!(matches!(err.kind, ErrorKind::ModuleNotFound { .. }));
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
 }
