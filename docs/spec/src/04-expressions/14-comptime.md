@@ -17,7 +17,11 @@ comptime_expr = "comptime" "{" block "}" ;
 block         = { statement } [ expression ] ;
 ```
 
-The block inside a comptime expression is evaluated during compilation. It may contain `let` statements followed by a tail expression; the comptime expression evaluates to the value of the tail expression. The following operations are supported within comptime blocks:
+The block inside a comptime expression is evaluated during compilation using
+the ordinary block-expression value rules (4.5): a tail expression supplies the
+block's value, and a block without a tail expression evaluates to `()`. The
+comptime expression evaluates to that compile-time value. The following
+operations are supported within comptime blocks:
 
 - Integer literals
 - Boolean literals (`true`, `false`)

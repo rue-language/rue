@@ -46,7 +46,10 @@ checked_expr = "checked" "{" block "}" ;
 
 {{ rule(id="9.1:6", cat="dynamic-semantics") }}
 
-A `checked` block evaluates its body and returns the value of the final expression. The type of a `checked` block is the type of its body expression.
+A `checked` block evaluates its body block using the ordinary block-expression
+rules (4.5). Its value is the body block's value: the tail expression's value
+when present, or `()` when the body has no tail expression. The type of a
+`checked` block is the type of that body block.
 
 {{ rule(id="9.1:7", cat="example") }}
 
