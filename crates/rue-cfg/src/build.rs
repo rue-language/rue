@@ -190,6 +190,8 @@ pub struct CfgBuilder<'a> {
     value_cache: Vec<Option<CfgValue>>,
     /// Warnings collected during CFG construction (e.g., unreachable code)
     warnings: Vec<CompileWarning>,
+    /// Whether this function suppresses CFG unreachable-code warnings.
+    allow_unreachable_code: bool,
     /// Internal-compiler-error diagnostics collected during CFG construction
     /// (RUE-7). These signal malformed AIR that upstream passes should have
     /// ruled out (e.g. an un-specialized `CallGeneric`); rather than panicking
@@ -251,6 +253,7 @@ impl<'a> CfgBuilder<'a> {
         type_pool: &'a TypeInternPool,
         param_modes: Vec<bool>,
         interner: &'a ThreadedRodeo,
+        allow_unreachable_code: bool,
     ) -> CfgOutput {
         let mut builder = CfgBuilder {
             air,
@@ -267,6 +270,7 @@ impl<'a> CfgBuilder<'a> {
             loop_stack: Vec::new(),
             value_cache: vec![None; air.len()],
             warnings: Vec::new(),
+            allow_unreachable_code,
             errors: Vec::new(),
             scope_stack: vec![Vec::new()], // Start with one scope for the function body
             drop_flags: std::collections::HashMap::new(),
@@ -1087,17 +1091,7 @@ impl<'a> CfgBuilder<'a> {
                             // Warn about the first unreachable statement
                             let unreachable_stmt = remaining[0];
                             let unreachable_span = self.air.get(unreachable_stmt).span;
-                            self.warnings.push(
-                                CompileWarning::new(WarningKind::UnreachableCode, unreachable_span)
-                                    .with_label(
-                                        "any code following this expression is unreachable",
-                                        diverging_span,
-                                    )
-                                    .with_note(
-                                        "this warning occurs because the preceding expression \
-                                         diverges (e.g., returns, breaks, or continues)",
-                                    ),
-                            );
+                            self.emit_unreachable_warning(unreachable_span, diverging_span);
                         } else {
                             // The final value expression is unreachable.
                             // However, don't warn about synthetic unit values (created by parser
@@ -1106,17 +1100,7 @@ impl<'a> CfgBuilder<'a> {
                             let value_span = self.air.get(*value).span;
                             let is_synthetic = value_span.start == value_span.end;
                             if !is_synthetic {
-                                self.warnings.push(
-                                    CompileWarning::new(WarningKind::UnreachableCode, value_span)
-                                        .with_label(
-                                            "any code following this expression is unreachable",
-                                            diverging_span,
-                                        )
-                                        .with_note(
-                                            "this warning occurs because the preceding expression \
-                                             diverges (e.g., returns, breaks, or continues)",
-                                        ),
-                                );
+                                self.emit_unreachable_warning(value_span, diverging_span);
                             }
                         }
                         // Note: drops were already emitted by the diverging statement
@@ -3161,6 +3145,28 @@ impl<'a> CfgBuilder<'a> {
         Some(value)
     }
 
+    fn emit_unreachable_warning(
+        &mut self,
+        unreachable_span: rue_span::Span,
+        diverging_span: rue_span::Span,
+    ) {
+        if self.allow_unreachable_code {
+            return;
+        }
+
+        self.warnings.push(
+            CompileWarning::new(WarningKind::UnreachableCode, unreachable_span)
+                .with_label(
+                    "any code following this expression is unreachable",
+                    diverging_span,
+                )
+                .with_note(
+                    "this warning occurs because the preceding expression diverges \
+                     (e.g., returns, breaks, or continues)",
+                ),
+        );
+    }
+
     /// Lower an AIR place reference to a CFG Place.
     ///
     /// This converts AirPlaceRef -> AirPlace -> CFG Place, translating projections
@@ -3264,6 +3270,7 @@ mod tests {
             &output.type_pool,
             func.param_modes.clone(),
             &interner,
+            func.allow_unreachable_code,
         )
         .cfg
     }
@@ -3675,7 +3682,16 @@ mod tests {
             span: Span::new(0, 1),
         });
 
-        let output = CfgBuilder::build(&air, 0, 0, "generic_fn", &type_pool, vec![], &interner);
+        let output = CfgBuilder::build(
+            &air,
+            0,
+            0,
+            "generic_fn",
+            &type_pool,
+            vec![],
+            &interner,
+            false,
+        );
 
         assert!(
             !output.errors.is_empty(),

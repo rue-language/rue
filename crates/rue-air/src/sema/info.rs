@@ -39,6 +39,8 @@ pub struct FunctionInfo {
     pub allow_unused_function: bool,
     /// Whether `@allow(unused_variable)` was applied to this function.
     pub allow_unused_variable: bool,
+    /// Whether `@allow(unreachable_code)` was applied to this function.
+    pub allow_unreachable_code: bool,
     /// File ID this function was declared in (for visibility checking)
     pub file_id: FileId,
 }

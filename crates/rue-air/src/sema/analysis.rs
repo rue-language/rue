@@ -197,6 +197,7 @@ fn analyze_all_function_bodies_sequential(sema: &mut Sema<'_>) -> MultiErrorResu
                 *body,
                 inst.span,
                 fn_info.allow_unused_variable,
+                fn_info.allow_unreachable_code,
             ) {
                 Ok((analyzed, warnings, local_strings, mut ref_fns, _ref_meths)) => {
                     functions_with_strings.push((analyzed, local_strings));
@@ -457,6 +458,7 @@ fn analyze_all_function_bodies_sequential(sema: &mut Sema<'_>) -> MultiErrorResu
                         num_locals,
                         num_param_slots,
                         param_modes: param_modes_result,
+                        allow_unreachable_code: false,
                     };
                     functions_with_strings.push((analyzed, local_strings));
                     all_warnings.extend(warnings);
@@ -650,6 +652,7 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
                             *body,
                             inst.span,
                             fn_info.allow_unused_variable,
+                            fn_info.allow_unreachable_code,
                         ) {
                             Ok((
                                 analyzed,
@@ -805,6 +808,7 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
                             num_locals,
                             num_param_slots,
                             param_modes: param_modes_result,
+                            allow_unreachable_code: false,
                         };
                         functions_with_strings.push((analyzed, local_strings));
                         all_warnings.extend(warnings);
@@ -1559,6 +1563,7 @@ mod error_invariant_tests {
             num_locals: 0,
             num_param_slots: 0,
             param_modes: Vec::new(),
+            allow_unreachable_code: false,
         }
     }
 

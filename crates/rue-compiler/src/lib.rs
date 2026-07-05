@@ -746,6 +746,7 @@ fn build_functions_and_cfgs(
                 &type_pool,
                 func.param_modes.clone(),
                 interner,
+                func.allow_unreachable_code,
             );
 
             // A non-empty `errors` means the CFG builder hit malformed AIR

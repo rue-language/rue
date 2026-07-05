@@ -328,6 +328,7 @@ fn create_struct_drop_glue_function(
         num_locals: 0,
         num_param_slots,
         param_modes,
+        allow_unreachable_code: false,
     }
 }
 
@@ -448,6 +449,7 @@ fn create_array_drop_glue_function(
         num_locals: 0,
         num_param_slots,
         param_modes,
+        allow_unreachable_code: false,
     }
 }
 
@@ -577,6 +579,7 @@ fn create_enum_drop_glue_function(enum_id: EnumId, type_pool: &TypeInternPool) -
         num_locals: 0,
         num_param_slots,
         param_modes,
+        allow_unreachable_code: false,
     }
 }
 
