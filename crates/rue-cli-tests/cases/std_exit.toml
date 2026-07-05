@@ -1,0 +1,23 @@
+# Standard-library process exit behavior.
+
+[section]
+id = "cli.std_exit"
+name = "Standard-library process exit"
+description = "Source-level std.exit terminates the process with the requested status."
+
+[[case]]
+name = "std_exit_terminates_with_status"
+description = "std.exit exits immediately with the provided status code."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    @dbg(1);
+    std.exit(7);
+    @dbg(2);
+    0
+}
+""" }]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+stdout = "1\n"
+exit_code = 7
