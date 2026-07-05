@@ -61,24 +61,26 @@ fn main() -> i32 {
 
 Visibility is uniform across every multi-file compilation: an item is
 visible outside its defining directory if and only if it is `pub`,
-whether its defining file was loaded via `@import` or only listed
-explicitly in the compilation. It is a compile-time error to reference a
-private item by its unqualified name from a source file in a different
-directory than the item's defining file (error E0460). This covers every
-form of unqualified reference: calling a private function, naming a
-private struct (in a type annotation, a signature, or a struct literal),
-naming a private enum (in a type annotation, a signature, a variant
+whether its defining file was loaded via `@import` or, while the legacy
+flat multi-file mode still exists, only listed explicitly in the
+compilation. It is a compile-time error to reference a private item by
+its unqualified name from a source file in a different directory than the
+item's defining file (error E0460). This covers every form of
+unqualified reference: calling a private function, naming a private
+struct (in a type annotation, a signature, or a struct literal), naming
+a private enum (in a type annotation, a signature, a variant
 construction, or a match pattern), and reading a private constant —
 including from another constant's initializer.
 
 {{ rule(id="10.3:8", cat="normative") }}
 
-The transitional flat namespace (10.5:2) affects only *name resolution*:
-an unqualified reference may resolve to an item in any file of the
-compilation without an import, but the visibility rules of this section
-apply regardless of how the item's file was loaded. A `pub` item in
-another directory is therefore usable unqualified without any import;
-a private one is not.
+The legacy flat namespace (10.5:2) affects only *name resolution*: an
+unqualified reference may currently resolve to an item in any explicitly
+loaded source file without an import, but the visibility rules of this
+section apply regardless of how the item's file was loaded. A `pub` item
+in another directory is therefore usable unqualified without any import
+only through this transitional mode; new code should use `@import`, and
+RUE-434 tracks removing the unqualified cross-file fallback.
 
 {{ rule(id="10.3:9", cat="example") }}
 
@@ -93,7 +95,7 @@ pub enum Level { Low, High, }
 const LIMIT: i32 = 8;           // private to sub/
 pub const MAX: i32 = 16;
 
-// main.rue — a different directory; no import needed (10.5:2)
+// main.rue — a different directory, relying on legacy flat mode (10.5:2)
 fn main() -> i32 {
     // secret()                  // error E0460: private to sub/lib.rue
     // let h = Hidden { n: 1 };  // error E0460: private to sub/lib.rue

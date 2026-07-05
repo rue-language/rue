@@ -559,6 +559,41 @@ pub fn abs(x: i32) -> i32 {
 stdout = "35\n"
 
 [[case]]
+name = "root_module_graph_same_file_reached_by_normalized_paths"
+description = "Root-only import discovery treats two normalized paths to the same file as one loaded module, not two semantic roots."
+files = [
+    { path = "main.rue", source = """
+const left = @import("pkg/left");
+const right = @import("pkg/nested/right");
+
+fn main() -> i32 {
+    @dbg(left.left_value() + right.right_value());
+    0
+}
+""" },
+    { path = "pkg/left.rue", source = """
+const shared = @import("shared");
+
+pub fn left_value() -> i32 {
+    shared.value()
+}
+""" },
+    { path = "pkg/nested/right.rue", source = """
+const shared = @import("../shared.rue");
+
+pub fn right_value() -> i32 {
+    shared.value()
+}
+""" },
+    { path = "pkg/shared.rue", source = """
+pub fn value() -> i32 {
+    21
+}
+""" },
+]
+stdout = "42\n"
+
+[[case]]
 name = "root_module_graph_private_helper_not_visible_from_root"
 description = "A private helper loaded as part of the root module graph is not callable across the directory boundary."
 files = [
