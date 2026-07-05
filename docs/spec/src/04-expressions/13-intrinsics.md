@@ -55,13 +55,13 @@ Expression intrinsics (usable in any expression position):
 | `@align_of` | Get type alignment in bytes | 1 type | `i32` |
 | `@offset_of` | Get a struct field's byte offset | 1 type, 1 field name | `u64` |
 | `@intCast` | Convert between integer types | 1 expression (integer) | inferred integer type |
-| `@to_string` | Format an integer as its decimal `String` | 1 expression (any integer) | `String` |
+| `@to_string` | Format an integer as its decimal `StrBuf` | 1 expression (any integer) | `StrBuf` |
 | `@drop` | Run a value's drop glue and consume it (RUE-187) | 1 expression (any type) | `()` |
-| `@read_line` | Read line from stdin | none | `Option(String)` |
-| `@parse_i32` | Parse string to i32 | 1 expression (`String`) | `Option(i32)` |
-| `@parse_i64` | Parse string to i64 | 1 expression (`String`) | `Option(i64)` |
-| `@parse_u32` | Parse string to u32 | 1 expression (`String`) | `Option(u32)` |
-| `@parse_u64` | Parse string to u64 | 1 expression (`String`) | `Option(u64)` |
+| `@read_line` | Read line from stdin | none | `Option(StrBuf)` |
+| `@parse_i32` | Parse string to i32 | 1 expression (`StrBuf`) | `Option(i32)` |
+| `@parse_i64` | Parse string to i64 | 1 expression (`StrBuf`) | `Option(i64)` |
+| `@parse_u32` | Parse string to u32 | 1 expression (`StrBuf`) | `Option(u32)` |
+| `@parse_u64` | Parse string to u64 | 1 expression (`StrBuf`) | `Option(u64)` |
 | `@random_u32` | Generate random u32 | none | `u32` |
 | `@random_u64` | Generate random u64 | none | `u64` |
 | `@target_arch` | Get target architecture | none | `Arch` |
@@ -110,7 +110,7 @@ from the normative inventory above, but they are no longer no-ops (RUE-319):
 
 The `@dbg` intrinsic prints a value to standard output for debugging purposes.
 It *borrows* its argument: the value is read but not consumed, so a non-`Copy`
-argument (such as a `String`) remains valid after the `@dbg` call and is dropped
+argument (such as a `StrBuf`) remains valid after the `@dbg` call and is dropped
 by its owner at the end of the enclosing scope, exactly as if the `@dbg` call had
 not occurred.
 
@@ -127,7 +127,7 @@ not occurred.
 The textual form `@dbg` prints for its argument is determined by the argument's
 type: an integer is printed in base 10, with a leading `-` when a signed integer
 is negative and no sign otherwise; a boolean is printed as `true` or `false`; a
-`String` is printed as its exact bytes, byte-for-byte, with no quoting or
+`StrBuf` is printed as its exact bytes, byte-for-byte, with no quoting or
 escaping (mirroring `print`, 3.7). The newline of 4.13:8 follows this text.
 
 {{ rule(id="4.13:9", cat="normative") }}
@@ -355,7 +355,7 @@ The `@read_line` intrinsic reads a line of text from standard input.
 
 {{ rule(id="4.13:35", cat="normative") }}
 
-The return type of `@read_line` is `Option(String)`, where `Option` is the ordinary comptime-generic library enum (`enum { Some(T), None }`, ADR-0038). The concrete `Option(String)` type is taken from the surrounding context — a `let` binding annotation, or the arms of a `match` on the result — so `Option` must be in scope (e.g. imported) at the call site. As a special case, when `@read_line()` is the operand of the `?` operator (§4.15), the context supplies no annotation, so the intrinsic instantiates its own `Option(String)` directly (see rule 4.15:9).
+The return type of `@read_line` is `Option(StrBuf)`, where `Option` is the ordinary comptime-generic library enum (`enum { Some(T), None }`, ADR-0038). The concrete `Option(StrBuf)` type is taken from the surrounding context — a `let` binding annotation, or the arms of a `match` on the result — so `Option` must be in scope (e.g. imported) at the call site. As a special case, when `@read_line()` is the operand of the `?` operator (§4.15), the context supplies no annotation, so the intrinsic instantiates its own `Option(StrBuf)` directly (see rule 4.15:9).
 
 {{ rule(id="4.13:36", cat="dynamic-semantics") }}
 
@@ -363,7 +363,7 @@ The return type of `@read_line` is `Option(String)`, where `Option` is the ordin
 
 {{ rule(id="4.13:37", cat="dynamic-semantics") }}
 
-On a successful read the result is `Some(line)`, where the `line` `String` does **not** include the trailing newline character.
+On a successful read the result is `Some(line)`, where the `line` `StrBuf` does **not** include the trailing newline character.
 
 {{ rule(id="4.13:38", cat="dynamic-semantics") }}
 
@@ -381,7 +381,7 @@ If a read error occurs, a runtime panic occurs with the message "input error". (
 
 ```rue
 fn main() -> i32 {
-    let Opt = @import("std/option.rue").Option(String);
+    let Opt = @import("std/option.rue").Option(StrBuf);
     @dbg("What is your name?");
     match @read_line() {
         Opt::Some(name) => @dbg(name),
@@ -397,7 +397,7 @@ Reading every line until end-of-input:
 
 ```rue
 fn main() -> i32 {
-    let Opt = @import("std/option.rue").Option(String);
+    let Opt = @import("std/option.rue").Option(StrBuf);
     loop {
         let line: Opt = @read_line();
         match line {
@@ -427,7 +427,7 @@ The concrete `Option(T)` type is taken from the surrounding context (a `let` ann
 
 {{ rule(id="4.13:45", cat="normative") }}
 
-Each parsing intrinsic accepts exactly one argument, which **MUST** be of type `String`.
+Each parsing intrinsic accepts exactly one argument, which **MUST** be of type `StrBuf`.
 
 {{ rule(id="4.13:46", cat="normative") }}
 
@@ -484,7 +484,7 @@ fn main() -> i32 {
 fn main() -> i32 {
     let Opt = @import("std/option.rue").Option(i32);
     let s = "42";
-    // String is borrowed, not consumed
+    // StrBuf is borrowed, not consumed
     let parsed: Opt = @parse_i32(s);
     @dbg(s);  // s is still valid
     match parsed {
@@ -558,7 +558,7 @@ Using `@random_u32` in a guessing game:
 
 ```rue
 fn main() -> i32 {
-    let OptStr = @import("std/option.rue").Option(String);
+    let OptStr = @import("std/option.rue").Option(StrBuf);
     let OptU32 = @import("std/option.rue").Option(u32);
     let secret: u32 = (@random_u32() % 100) + 1;  // 1-100
     @dbg("Guess the number between 1 and 100!");
