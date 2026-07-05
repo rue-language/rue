@@ -730,34 +730,52 @@ impl<'a> Sema<'a> {
             return Err(self.type_mismatch_error(slice_ty, arr_ty, span));
         }
 
-        // ptr word = @raw(arr[0]) : ptr const T. Build a place read of element 0
-        // and take its address, exactly as source `@raw(arr[0])` would.
         let zero_ref = air.add_inst(AirInst {
             data: AirInstData::Const(0),
             ty: Type::U64,
             span,
         });
-        let mut projs: Vec<AirProjection> = trace.projections.iter().map(|p| p.proj).collect();
-        projs.push(AirProjection::Index {
-            array_type: arr_ty,
-            index: zero_ref,
-        });
-        let place_ref = air.make_place(trace.base, projs);
-        let elem0_read = air.add_inst(AirInst {
-            data: AirInstData::PlaceRead { place: place_ref },
-            ty: arr_elem,
-            span,
-        });
-        let raw_args = air.add_extra(&[elem0_read.as_u32()]);
-        let ptr_ref = air.add_inst(AirInst {
-            data: AirInstData::Intrinsic {
-                name: self.known.raw,
-                args_start: raw_args,
-                args_len: 1,
-            },
-            ty: ptr_ty,
-            span,
-        });
+        let ptr_ref = if arr_len == 0 {
+            // A zero-length slice never dereferences its pointer: every read is
+            // guarded by `i < len`, and `len` is 0. Do not form `@raw(arr[0])`
+            // for `[T; 0]`; that is not a valid place and underflows in some
+            // codegen paths. Use a conventional null pointer word instead.
+            let ptr_args = air.add_extra(&[zero_ref.as_u32()]);
+            air.add_inst(AirInst {
+                data: AirInstData::Intrinsic {
+                    name: self.known.int_to_ptr,
+                    args_start: ptr_args,
+                    args_len: 1,
+                },
+                ty: ptr_ty,
+                span,
+            })
+        } else {
+            // ptr word = @raw(arr[0]) : ptr const T. Build a place read of
+            // element 0 and take its address, exactly as source `@raw(arr[0])`
+            // would.
+            let mut projs: Vec<AirProjection> = trace.projections.iter().map(|p| p.proj).collect();
+            projs.push(AirProjection::Index {
+                array_type: arr_ty,
+                index: zero_ref,
+            });
+            let place_ref = air.make_place(trace.base, projs);
+            let elem0_read = air.add_inst(AirInst {
+                data: AirInstData::PlaceRead { place: place_ref },
+                ty: arr_elem,
+                span,
+            });
+            let raw_args = air.add_extra(&[elem0_read.as_u32()]);
+            air.add_inst(AirInst {
+                data: AirInstData::Intrinsic {
+                    name: self.known.raw,
+                    args_start: raw_args,
+                    args_len: 1,
+                },
+                ty: ptr_ty,
+                span,
+            })
+        };
 
         // len word = N (compile-time array length).
         let len_ref = air.add_inst(AirInst {
