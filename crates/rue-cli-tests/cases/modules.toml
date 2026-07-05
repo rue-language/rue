@@ -95,6 +95,28 @@ args = ["--source-manifest", "sources.manifest", "main.rue", "-o", "prog"]
 stdout = "42\n"
 
 [[case]]
+name = "source_manifest_rejects_undeclared_root"
+description = "RUE-448: the root source itself must be listed in the build-system manifest."
+files = [
+    { path = "sources.manifest", source = """
+helper.rue
+""" },
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "helper.rue", source = """
+pub fn helper() -> i32 {
+    42
+}
+""" },
+]
+args = ["--source-manifest", "sources.manifest", "main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["root source", "main.rue", "not listed"]
+
+[[case]]
 name = "source_manifest_rejects_undeclared_import"
 description = "RUE-445: import discovery must not read a source file outside the build-system manifest."
 files = [
