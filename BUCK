@@ -1,10 +1,10 @@
 # Repo-root test-suite targets (RUE-144 / RUE-132).
 #
 # Each sh_test ties a test-harness binary to the rue compiler and the on-disk
-# inputs the suite actually reads (cases/, std/), so Buck owns the binary
+# inputs the suite actually reads (cases/, std/, docs/), so Buck owns the binary
 # handoff and caches each suite against its real inputs:
 #
-#   buck2 test //...        # runs unit tests + spec + UI + CLI suites
+#   buck2 test //...        # runs unit tests + spec/UI/CLI suites + repo gates
 #
 # An edit under crates/rue-spec/cases/ re-runs only the spec suite; an edit
 # under std/ re-runs the CLI suite (std/ MUST be a declared input here or the
@@ -45,6 +45,16 @@ filegroup(
     srcs = glob(["website/content/tutorial/**"]),
 )
 
+filegroup(
+    name = "spec-docs",
+    srcs = glob(["docs/spec/src/**"]),
+)
+
+filegroup(
+    name = "adr-designs",
+    srcs = glob(["docs/designs/**"]),
+)
+
 sh_test(
     name = "spec-tests",
     test = "//crates/rue-spec:rue-spec",
@@ -52,6 +62,16 @@ sh_test(
     env = {
         "RUE_BINARY": "$(exe_target //crates/rue:rue)",
         "RUE_SPEC_CASES": "$(location //crates/rue-spec:cases)/cases",
+    },
+)
+
+sh_test(
+    name = "spec-traceability",
+    test = "//crates/rue-spec:rue-spec",
+    args = ["--traceability"],
+    env = {
+        "RUE_SPEC_CASES": "$(location //crates/rue-spec:cases)/cases",
+        "RUE_SPEC_DIR": "$(location :spec-docs)/docs/spec/src",
     },
 )
 
@@ -87,4 +107,13 @@ sh_test(
     env = {
         "RUE_BINARY": "$(exe_target //crates/rue:rue)",
     },
+)
+
+sh_test(
+    name = "adr-registry-validation",
+    test = "scripts/validate-adrs.py",
+    args = [
+        "--adr-dir",
+        "$(location :adr-designs)/docs/designs",
+    ],
 )

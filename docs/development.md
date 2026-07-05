@@ -137,6 +137,13 @@ Or run the Buck target used by CI-style validation:
 ./buck2 test //:tutorial-snippet-tests
 ```
 
+Repository-wide quality gates are also Buck targets, so `./buck2 test //...`
+includes spec traceability and ADR registry validation. To run them directly:
+
+```bash
+./buck2 test //:spec-traceability //:adr-registry-validation
+```
+
 During implementation, use the narrowest relevant command. Before submitting:
 
 ```bash
