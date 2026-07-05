@@ -5,7 +5,7 @@
 
 use lasso::{Spur, ThreadedRodeo};
 use logos::Logos;
-use rue_error::{CompileError, CompileResult, ErrorKind};
+use rue_error::{CompileError, CompileErrors, CompileResult, ErrorKind};
 use rue_span::{FileId, Span};
 
 /// Error type for lexing failures.
@@ -578,7 +578,7 @@ impl<'a> LogosLexer<'a> {
     /// Tokenize the entire source, returning all tokens and the interner.
     pub fn tokenize(self) -> CompileResult<(Vec<Token>, ThreadedRodeo)> {
         self.tokenize_preserving_interner()
-            .map_err(|(error, _interner)| error)
+            .map_err(|(errors, _interner)| CompileError::from(errors))
     }
 
     /// Tokenize the entire source, preserving the interner even on error.
@@ -587,9 +587,10 @@ impl<'a> LogosLexer<'a> {
     /// earlier file fails, while still sharing one interner across all files.
     pub fn tokenize_preserving_interner(
         self,
-    ) -> Result<(Vec<Token>, ThreadedRodeo), (CompileError, ThreadedRodeo)> {
+    ) -> Result<(Vec<Token>, ThreadedRodeo), (CompileErrors, ThreadedRodeo)> {
         // Estimate capacity: source length / 4 is a rough heuristic for token density
         let mut tokens = Vec::with_capacity(self.source.len() / 4);
+        let mut errors = CompileErrors::new();
 
         let mut lexer = LogosTokenKind::lexer_with_extras(self.source, self.interner);
 
@@ -728,7 +729,7 @@ impl<'a> LogosLexer<'a> {
                                      mark (BOM); save the file without a BOM",
                                 );
                             }
-                            return Err((error, lexer.extras));
+                            errors.push(error);
                         }
                     }
                 }
@@ -745,6 +746,10 @@ impl<'a> LogosLexer<'a> {
 
         // Extract the interner from the logos lexer
         let interner = lexer.extras;
+
+        if !errors.is_empty() {
+            return Err((errors, interner));
+        }
 
         Ok((tokens, interner))
     }
@@ -794,6 +799,19 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(matches!(err.kind, ErrorKind::UnexpectedCharacter('$')));
+    }
+
+    #[test]
+    fn test_logos_collects_multiple_unexpected_characters() {
+        let lexer = LogosLexer::new("fn main() { $ # }");
+        let (errors, _interner) = lexer
+            .tokenize_preserving_interner()
+            .expect_err("both invalid characters should report");
+
+        assert_eq!(errors.len(), 2);
+        let kinds: Vec<_> = errors.iter().map(|error| &error.kind).collect();
+        assert!(matches!(kinds[0], ErrorKind::UnexpectedCharacter('$')));
+        assert!(matches!(kinds[1], ErrorKind::UnexpectedCharacter('#')));
     }
 
     #[test]
