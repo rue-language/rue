@@ -36,8 +36,21 @@ RUE="$(scripts/rue-bin)"
 The normal model is one root source file per compile; additional files should
 be reached through `@import` and are discovered transitively from the root.
 Passing extra `.rue` files positionally is legacy flat-mode behavior being
-removed. Run `"$RUE" --help` for targets, preview features, optimization
-levels, logging, timing, and all emit stages.
+removed.
+
+Build-system integrations can constrain module reads with a source manifest:
+
+```bash
+printf 'main.rue\nhelper.rue\n' > sources.manifest
+"$RUE" --source-manifest sources.manifest main.rue -o program
+```
+
+The manifest format is intentionally narrow: one source path per line, resolved
+relative to the manifest file; blank lines and `#` comments are ignored. Entries
+are allowed reads for `@import` resolution, not extra semantic roots.
+
+Run `"$RUE" --help` for targets, preview features, optimization levels,
+logging, timing, manifests, and all emit stages.
 
 Long-form Buck commands remain useful when working on build targets:
 

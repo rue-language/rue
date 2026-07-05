@@ -238,6 +238,9 @@ struct Options {
     /// the root source; additional paths are legacy flat-mode inputs and must
     /// not also be reachable through `@import`.
     source_paths: Vec<String>,
+    /// Optional build-system-facing manifest of source files the compiler may
+    /// read while resolving the root module's import graph.
+    source_manifest_path: Option<String>,
     output_path: String,
     emit_stages: Vec<EmitStage>,
     target: Target,
@@ -275,6 +278,8 @@ fn print_usage() {
     eprintln!();
     eprintln!("Options:");
     eprintln!("  -o, --output <path>  Set output path");
+    eprintln!("  --source-manifest <path>");
+    eprintln!("                       Restrict source imports to a line-oriented manifest");
     eprintln!("  --target <target>    Set compilation target (default: host)");
     eprintln!(
         "                       Valid targets: {}",
@@ -392,6 +397,7 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
     let mut time_passes = false;
     let mut benchmark_json = false;
     let mut jobs: Option<usize> = None;
+    let mut source_manifest_path: Option<String> = None;
     let mut output_path: Option<String> = None;
     let mut positional = Vec::new();
     let mut args_iter = args.iter().peekable();
@@ -517,6 +523,13 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
                     return ParseResult::Error;
                 };
                 output_path = Some(out_str.to_string());
+            }
+            "--source-manifest" => {
+                let Some(path) = args_iter.next() else {
+                    eprintln!("Error: --source-manifest requires a path");
+                    return ParseResult::Error;
+                };
+                source_manifest_path = Some(path.to_string());
             }
             "--time-passes" => {
                 time_passes = true;
@@ -652,6 +665,7 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
 
     ParseResult::Options(Options {
         source_paths,
+        source_manifest_path,
         output_path: final_output_path,
         emit_stages,
         target: final_target,
@@ -937,6 +951,95 @@ fn get_peak_memory_bytes() -> Option<u64> {
     }
 }
 
+struct SourceManifest {
+    path: PathBuf,
+    allowed: std::collections::HashSet<PathBuf>,
+}
+
+impl SourceManifest {
+    fn load(path: &str) -> Result<Self, String> {
+        let manifest_path = Path::new(path);
+        let content = fs::read_to_string(manifest_path)
+            .map_err(|e| format!("Error reading source manifest '{}': {}", path, e))?;
+        let base_dir = manifest_path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+
+        let mut allowed = std::collections::HashSet::new();
+        for (line_index, raw_line) in content.lines().enumerate() {
+            let line_number = line_index + 1;
+            let entry = raw_line
+                .split_once('#')
+                .map_or(raw_line, |(before_comment, _)| before_comment)
+                .trim();
+            if entry.is_empty() {
+                continue;
+            }
+
+            let entry_path = Path::new(entry);
+            let resolved = if entry_path.is_absolute() {
+                entry_path.to_path_buf()
+            } else {
+                base_dir.join(entry_path)
+            };
+            let canonical = fs::canonicalize(&resolved).map_err(|e| {
+                format!(
+                    "Error reading source manifest '{}': line {} entry '{}' cannot be resolved: {}",
+                    path, line_number, entry, e
+                )
+            })?;
+            if !canonical.is_file() {
+                return Err(format!(
+                    "Error reading source manifest '{}': line {} entry '{}' is not a file",
+                    path, line_number, entry
+                ));
+            }
+            allowed.insert(canonical);
+        }
+
+        Ok(Self {
+            path: manifest_path.to_path_buf(),
+            allowed,
+        })
+    }
+
+    fn allows_canonical(&self, canonical: &Path) -> bool {
+        self.allowed.contains(canonical)
+    }
+
+    fn display_path(&self) -> String {
+        self.path.display().to_string()
+    }
+}
+
+fn validate_manifest_allows_source(
+    manifest: Option<&SourceManifest>,
+    source_path: &str,
+    role: &str,
+) -> Result<(), ()> {
+    let Some(manifest) = manifest else {
+        return Ok(());
+    };
+
+    let Ok(canonical) = fs::canonicalize(source_path) else {
+        // The normal source read path will produce the precise filesystem error.
+        return Ok(());
+    };
+
+    if manifest.allows_canonical(&canonical) {
+        return Ok(());
+    }
+
+    eprintln!(
+        "Error: {role} source '{}' is not listed in source manifest '{}'",
+        source_path,
+        manifest.display_path()
+    );
+    eprintln!("Manifest entries are allowed source reads, not extra semantic roots.");
+    Err(())
+}
+
 /// Discover `@import("...")` references in the given sources and load the
 /// referenced module files from disk, transitively, appending them to
 /// `sources`.
@@ -964,7 +1067,10 @@ fn get_peak_memory_bytes() -> Option<u64> {
 /// import. That mixed mode is rejected by the CLI after discovery (RUE-434),
 /// because the file should be part of the root import graph, not also an
 /// additional flat positional input.
-fn discover_and_load_imports(sources: &mut Vec<(String, String)>) -> Vec<PathBuf> {
+fn discover_and_load_imports(
+    sources: &mut Vec<(String, String)>,
+    source_manifest: Option<&SourceManifest>,
+) -> Result<Vec<PathBuf>, ()> {
     use std::collections::HashSet;
 
     let root_dir = Path::new(&sources[0].0)
@@ -1055,6 +1161,20 @@ fn discover_and_load_imports(sources: &mut Vec<(String, String)>) -> Vec<PathBuf
                     if !canonical.is_file() {
                         continue;
                     }
+                    if let Some(manifest) = source_manifest
+                        && !manifest.allows_canonical(&canonical)
+                    {
+                        eprintln!(
+                            "Error: import '{}' resolved to '{}' which is not listed in source manifest '{}'",
+                            import_str,
+                            candidate.display(),
+                            manifest.display_path()
+                        );
+                        eprintln!(
+                            "Source manifests constrain allowed reads; add the file to the manifest or remove the import."
+                        );
+                        return Err(());
+                    }
                     if loaded.contains(&canonical) {
                         if explicit_non_root.contains(&canonical)
                             && mixed_seen.insert(canonical.clone())
@@ -1077,8 +1197,7 @@ fn discover_and_load_imports(sources: &mut Vec<(String, String)>) -> Vec<PathBuf
             }
         }
     }
-
-    mixed_imports
+    Ok(mixed_imports)
 }
 
 fn main() {
@@ -1126,6 +1245,24 @@ fn main() {
     // entirely (RUE-352).
     configure_thread_pool(options.jobs);
 
+    let source_manifest = match options.source_manifest_path.as_deref() {
+        Some(path) => match SourceManifest::load(path) {
+            Ok(manifest) => Some(manifest),
+            Err(message) => {
+                eprintln!("{message}");
+                std::process::exit(1);
+            }
+        },
+        None => None,
+    };
+
+    for (index, path) in options.source_paths.iter().enumerate() {
+        let role = if index == 0 { "root" } else { "positional" };
+        if validate_manifest_allows_source(source_manifest.as_ref(), path, role).is_err() {
+            std::process::exit(1);
+        }
+    }
+
     // Read all source files into memory
     let mut sources: Vec<(String, String)> = options
         .source_paths
@@ -1143,7 +1280,10 @@ fn main() {
     // resolves imports only against already-loaded files, so without this
     // step `const utils = @import("utils")` fails with E0704 unless the
     // user hand-lists every module on the command line (RUE-14).
-    let mixed_imports = discover_and_load_imports(&mut sources);
+    let mixed_imports = match discover_and_load_imports(&mut sources, source_manifest.as_ref()) {
+        Ok(mixed_imports) => mixed_imports,
+        Err(()) => std::process::exit(1),
+    };
     if !mixed_imports.is_empty() {
         eprintln!(
             "Error: source files listed after the root must not also be loaded through @import"
@@ -1667,6 +1807,28 @@ mod tests {
         let opts = unwrap_options(parse_args_from(&["source.rue", "output"]));
         assert_eq!(opts.source_paths, vec!["source.rue"]);
         assert_eq!(opts.output_path, "output");
+    }
+
+    #[test]
+    fn parse_source_manifest() {
+        let opts = unwrap_options(parse_args_from(&[
+            "--source-manifest",
+            "sources.manifest",
+            "source.rue",
+        ]));
+        assert_eq!(opts.source_paths, vec!["source.rue"]);
+        assert_eq!(
+            opts.source_manifest_path.as_deref(),
+            Some("sources.manifest")
+        );
+    }
+
+    #[test]
+    fn parse_source_manifest_missing_value() {
+        assert!(is_error(&parse_args_from(&[
+            "source.rue",
+            "--source-manifest",
+        ])));
     }
 
     #[test]
