@@ -46,14 +46,14 @@ crate::define_for_all_platforms! {
     /// # ABI
     ///
     /// ```text
-    /// extern "C" fn __rue_str_eq(ptr1: *const u8, len1: u64, ptr2: *const u8, len2: u64) -> u8
+    /// extern "C" fn __rue_str_eq(ptr1: *const u8, len1: u64, ptr2: *const u8, len2: u64) -> u64
     /// ```
     ///
     /// - `ptr1` is passed in the first argument register (rdi on x86_64, x0 on aarch64)
     /// - `len1` is passed in the second argument register (rsi on x86_64, x1 on aarch64)
     /// - `ptr2` is passed in the third argument register (rdx on x86_64, x2 on aarch64)
     /// - `len2` is passed in the fourth argument register (rcx on x86_64, x3 on aarch64)
-    /// - Returns 1 if strings are equal, 0 otherwise (in `al`/`w0` register)
+    /// - Returns 1 if strings are equal, 0 otherwise (in the full `rax`/`x0` register)
     ///
     /// # Implementation
     ///
@@ -67,7 +67,7 @@ crate::define_for_all_platforms! {
     /// - `ptr1` points to a valid buffer of at least `len1` bytes
     /// - `ptr2` points to a valid buffer of at least `len2` bytes
     /// - Both pointers remain valid for the duration of the call
-    pub extern "C" fn __rue_str_eq(ptr1: *const u8, len1: u64, ptr2: *const u8, len2: u64) -> u8 {
+    pub extern "C" fn __rue_str_eq(ptr1: *const u8, len1: u64, ptr2: *const u8, len2: u64) -> u64 {
         // Fast path 1: different lengths means not equal
         if len1 != len2 {
             return 0;
@@ -449,21 +449,21 @@ pub extern "C" fn __rue_String_capacity(_ptr: *const u8, _len: u64, cap: u64) ->
 #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn __rue_String_is_empty(_ptr: *const u8, len: u64, _cap: u64) -> u8 {
+pub extern "C" fn __rue_String_is_empty(_ptr: *const u8, len: u64, _cap: u64) -> u64 {
     if len == 0 { 1 } else { 0 }
 }
 
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn __rue_String_is_empty(_ptr: *const u8, len: u64, _cap: u64) -> u8 {
+pub extern "C" fn __rue_String_is_empty(_ptr: *const u8, len: u64, _cap: u64) -> u64 {
     if len == 0 { 1 } else { 0 }
 }
 
 #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn __rue_String_is_empty(_ptr: *const u8, len: u64, _cap: u64) -> u8 {
+pub extern "C" fn __rue_String_is_empty(_ptr: *const u8, len: u64, _cap: u64) -> u64 {
     if len == 0 { 1 } else { 0 }
 }
 
@@ -918,9 +918,11 @@ crate::define_for_all_platforms! {
 // `s.contains(needle)` and `s.starts_with(prefix)` are byte-level: they compare
 // raw bytes and never inspect UTF-8 character boundaries. Both take the receiver
 // and argument String by borrow (as three fields each: ptr, len, cap; the caps
-// are part of the ABI but unused) and return `u8` (0 or 1) in the return
-// register, matching the sub-word return convention used by `__rue_str_eq` and
-// `__rue_String_is_empty`. The empty needle / empty prefix always matches.
+// are part of the ABI but unused) and return `u64` (0 or 1) in the full return
+// register. This matches the clean-return-register convention documented for
+// `__rue_String_byte_at`: generated code consumes these booleans as full-slot
+// values, so the runtime must not leave upper return bits unspecified. The
+// empty needle / empty prefix always matches.
 
 crate::define_for_all_platforms! {
     /// True (1) iff the bytes of `needle` occur as a contiguous run inside the
@@ -939,7 +941,7 @@ crate::define_for_all_platforms! {
         needle_ptr: *const u8,
         needle_len: u64,
         _needle_cap: u64,
-    ) -> u8 {
+    ) -> u64 {
         // The empty needle is contained in every string.
         if needle_len == 0 {
             return 1;
@@ -989,7 +991,7 @@ crate::define_for_all_platforms! {
         prefix_ptr: *const u8,
         prefix_len: u64,
         _prefix_cap: u64,
-    ) -> u8 {
+    ) -> u64 {
         // The empty prefix matches every string.
         if prefix_len == 0 {
             return 1;
