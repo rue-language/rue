@@ -83,8 +83,9 @@ All match arms **MUST** have the same type. The type of the match expression is 
 
 {{ rule(id="4.7:13", cat="normative") }}
 
-The type of each pattern **MUST** be compatible with the type of the scrutinee.
-A pattern with an incompatible type is rejected with a compile-time error.
+The type of each pattern **MUST** be identical to the type of the scrutinee, up
+to the one admitted never-type coercion (3.4:3). A pattern with any other type
+difference is rejected with a compile-time error.
 
 ## Arm Bodies
 
@@ -109,11 +110,12 @@ fn main() -> i32 {
 
 ## Execution
 
-{{ rule(id="4.7:16", cat="normative") }}
+{{ rule(id="4.7:16", cat="dynamic-semantics") }}
 
 Arms are evaluated in order. The first arm whose pattern matches the scrutinee value
 is selected, and its body expression is evaluated. The result of that evaluation
-becomes the value of the match expression.
+becomes the value of the match expression (core calculus
+`docs/formal/01-core-calculus.md` §6.6, rule `(D-Match)`).
 
 ## Unreachable Patterns
 
@@ -135,7 +137,7 @@ is unreachable, since the earlier pattern will match first.
 {{ rule(id="4.7:20", cat="normative") }}
 
 An unreachable pattern produces a compile-time warning. The program remains
-well-formed and the unreachable arm is not executed at runtime.
+well-formed and the unreachable arm body is not evaluated at runtime.
 
 {{ rule(id="4.7:21") }}
 

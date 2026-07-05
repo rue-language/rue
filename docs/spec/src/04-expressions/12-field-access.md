@@ -10,17 +10,17 @@ template = "spec/page.html"
 
 A field access expression accesses a field of a struct.
 
-{{ rule(id="4.12:2", cat="normative") }}
+{{ rule(id="4.12:2", cat="syntax") }}
 
 ```ebnf
 field_access = expression "." IDENT ;
 ```
 
-{{ rule(id="4.12:3", cat="normative") }}
+{{ rule(id="4.12:3", cat="legality-rule") }}
 
 The expression before the dot **MUST** have a struct type.
 
-{{ rule(id="4.12:4", cat="normative") }}
+{{ rule(id="4.12:4", cat="legality-rule") }}
 
 The identifier **MUST** be a valid field name for that struct type.
 
@@ -33,7 +33,9 @@ The type of a field access expression is the type of the accessed field.
 A field access expression `base.field` evaluates to the value currently held in
 the named `field` of the struct denoted by `base`. The base expression is
 evaluated first (section 4.0); the result is the value of that field at the
-point the access is evaluated.
+point the access is evaluated (core calculus
+`docs/formal/01-core-calculus.md` §6.5; projection in value context is governed
+by §6.3).
 
 {{ rule(id="4.12:6") }}
 

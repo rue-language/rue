@@ -1328,11 +1328,11 @@ witness of the dynamic semantics (RUE-50), cited inline in each §6 rule group.
 | §6.2 evaluation order (contexts, left-to-right) | 4.0:3–9 |
 | §6.3 dynamic use: copy vs. move; equality borrows | 3.8:5/7/22, 4.3:3f |
 | §6.4 operator dynamics: arith/div/mod, compare, bitwise/shift | 4.2:1, 4.3:1/2, 4.3a:10, 3.1:6/13 |
-| §6.5 aggregate intro + projection (bounds) | 3.5:2, 3.6:16, 8.2 |
-| §6.6 enum intro + match dynamics | 6.3:17, 4.7 |
+| §6.5 aggregate intro + projection (bounds) | 3.5:2, 3.6:16, 4.11:14, 4.12:9, 8.2 |
+| §6.6 enum intro + match dynamics | 6.3:17, 4.7:16 |
 | §6.7/§6.8 let/seq/scope-drop, assignment overwrite-drop | 4.5:3, 3.8:55/64, 3.9 |
 | §6.9 call / return / inout copy-out | 6.1:4/5/18, 4.9:1/7 |
-| §6.10 loop / break dynamics | 4.9 (loop), 3.4:2 |
+| §6.10 loop / break dynamics | 4.8:18/21, 4.9 (loop), 3.4:2 |
 | §6.11 drop relation (active enum payload; skip moved; explicit `@drop`) | 3.9, 6.3:20 |
 | §6.12 overflow/bounds/div-zero panics + exit code | 3.1:6/13, 8.1, 8.2, 8.3, Appendix B |
 | §7 soundness | the informal safety intent throughout ch. 3 and 8 |

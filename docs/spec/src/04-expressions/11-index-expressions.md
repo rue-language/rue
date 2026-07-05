@@ -10,7 +10,7 @@ template = "spec/page.html"
 
 An index expression accesses an element of an array.
 
-{{ rule(id="4.11:2", cat="normative") }}
+{{ rule(id="4.11:2", cat="syntax") }}
 
 ```ebnf
 index_expr = expression "[" expression "]" ;
@@ -36,7 +36,9 @@ The type of an index expression is the element type `T`.
 An index expression `base[index]` evaluates to the element stored at position
 `index` of the array denoted by `base` (elements are numbered from zero). The
 base expression is evaluated before the index expression (section 4.0), and the
-resulting index is bounds-checked (see below) before the element is read.
+resulting index is bounds-checked (see below) before the element is read (core
+calculus `docs/formal/01-core-calculus.md` §6.5, rules `(D-Index)` and
+`(D-Index-Trap)`).
 
 {{ rule(id="4.11:6") }}
 

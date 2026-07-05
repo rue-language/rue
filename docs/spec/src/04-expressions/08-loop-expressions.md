@@ -10,9 +10,9 @@ template = "spec/page.html"
 
 {{ rule(id="4.8:1", cat="normative") }}
 
-A while loop repeatedly executes its body while a condition is true.
+A while loop repeatedly evaluates its body while a condition is true.
 
-{{ rule(id="4.8:2", cat="normative") }}
+{{ rule(id="4.8:2", cat="syntax") }}
 
 ```ebnf
 while_expr = "while" expression "{" block "}" ;
@@ -26,9 +26,12 @@ The condition expression **MUST** have type `bool`.
 
 A while expression has type `()`.
 
-{{ rule(id="4.8:5", cat="normative") }}
+{{ rule(id="4.8:5", cat="dynamic-semantics") }}
 
-The condition is evaluated before each iteration. If it is `true`, the body is executed and the condition is re-evaluated. If it is `false`, the loop terminates.
+The condition is evaluated before each iteration. If it is `true`, the body
+block is evaluated and the condition is re-evaluated. If it is `false`, the
+while expression evaluates to `()` (core calculus
+`docs/formal/01-core-calculus.md` §6.2 and §6.10).
 
 {{ rule(id="4.8:6") }}
 
@@ -50,7 +53,7 @@ fn main() -> i32 {
 
 An infinite loop repeatedly executes its body unconditionally.
 
-{{ rule(id="4.8:16", cat="normative") }}
+{{ rule(id="4.8:16", cat="syntax") }}
 
 ```ebnf
 loop_expr = "loop" "{" block "}" ;
@@ -60,9 +63,13 @@ loop_expr = "loop" "{" block "}" ;
 
 A loop expression that contains no `break` targeting it has type `!` (never), because it never produces a value.
 
-{{ rule(id="4.8:18", cat="normative") }}
+{{ rule(id="4.8:18", cat="dynamic-semantics") }}
 
-The only way to exit a `loop` is via `break` or `return`.
+The only way a `loop` yields a value to its enclosing expression is via
+`break`, which makes the `loop` evaluate to `()`. A `return` inside the loop
+exits the enclosing function instead (core calculus
+`docs/formal/01-core-calculus.md` §6.10, rule `(D-Break)`, and §6.9, rule
+`(D-Return)`).
 
 {{ rule(id="4.8:19") }}
 
@@ -113,9 +120,13 @@ Both `break` and `continue` **MUST** appear within a loop. Using them outside a 
 
 Both `break` and `continue` have the never type `!`.
 
-{{ rule(id="4.8:21", cat="normative") }}
+{{ rule(id="4.8:21", cat="dynamic-semantics") }}
 
-A `loop` expression that contains a `break` targeting it has type `()`: executing the `break` exits the loop, which then evaluates to `()`. This holds even if the `break` is unreachable.
+A `loop` expression that contains a `break` targeting it has type `()`.
+Executing the `break` exits the loop, runs the drops for scopes unwound by that
+exit, and makes the loop evaluate to `()` (core calculus
+`docs/formal/01-core-calculus.md` §6.10, rule `(D-Break)`). The static type is
+`()`, even if the `break` is unreachable.
 
 {{ rule(id="4.8:22", cat="legality-rule") }}
 
@@ -185,7 +196,7 @@ fn main() -> i32 {
 {{ rule(id="4.8:23", cat="normative") }}
 
 A `for` loop iterates over a built-in iterable, binding each element in turn and
-executing its body once per element (see ADR-0037).
+evaluating its body once per element (see ADR-0037).
 
 {{ rule(id="4.8:24", cat="syntax") }}
 
