@@ -463,40 +463,24 @@ impl EnumDef {
 
 /// Definition of a module (imported file).
 ///
-/// A module contains the public declarations from an imported file.
-/// When code accesses `math.add()`, the module definition is consulted
-/// to find the corresponding function.
+/// A module records the import spelling and resolved file identity. Member
+/// lookup uses the compiler's global declaration tables plus this file identity
+/// for visibility checks; declarations are not duplicated here.
 #[derive(Debug, Clone)]
 pub struct ModuleDef {
     /// The path used in @import (e.g., "math.rue")
     pub import_path: String,
     /// The resolved absolute file path
     pub file_path: String,
-    /// Public functions in this module: name -> mangled name
-    /// The mangled name includes the module path (e.g., "math::add")
-    pub functions: std::collections::HashMap<String, String>,
-    /// Public structs in this module
-    pub structs: Vec<String>,
-    /// Public enums in this module
-    pub enums: Vec<String>,
 }
 
 impl ModuleDef {
-    /// Create a new empty module definition.
+    /// Create a new module definition.
     pub fn new(import_path: String, file_path: String) -> Self {
         Self {
             import_path,
             file_path,
-            functions: std::collections::HashMap::new(),
-            structs: Vec::new(),
-            enums: Vec::new(),
         }
-    }
-
-    /// Find a function by name in this module.
-    /// Returns the mangled function name if found.
-    pub fn find_function(&self, name: &str) -> Option<&str> {
-        self.functions.get(name).map(|s| s.as_str())
     }
 }
 
