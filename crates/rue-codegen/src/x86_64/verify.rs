@@ -31,9 +31,8 @@
 //!
 //! The prologue's alignment is correct by construction (see `emit_prologue` in emit.rs).
 
-use std::collections::HashMap;
-
 use super::mir::{LabelId, Operand, Reg, X86Inst, X86Mir};
+use crate::stack_verify::{self, StackVerifyAdapter};
 use rue_error::{CompileError, CompileResult, ice_error};
 
 /// Verifies that the stack is properly aligned throughout function execution.
@@ -52,103 +51,56 @@ use rue_error::{CompileError, CompileResult, ice_error};
 /// `Ok(())` if verification passes, or `Err(CompileError)` with details about
 /// the first alignment violation found.
 pub fn verify_stack_alignment(mir: &X86Mir) -> CompileResult<()> {
-    let mut verifier = StackVerifier::new();
-    verifier.verify(mir)
+    stack_verify::verify(&X86StackVerifyAdapter { mir })
 }
 
-/// Internal state for stack verification.
-struct StackVerifier {
-    /// Stack depth at each label (for join point verification).
-    /// After prologue, depth should be 0 (aligned).
-    label_depths: HashMap<LabelId, i64>,
-    /// Current stack depth in bytes relative to 16-byte aligned RSP.
-    /// 0 = aligned, 8 = misaligned by 8, etc.
-    current_depth: i64,
+struct X86StackVerifyAdapter<'a> {
+    mir: &'a X86Mir,
 }
 
-impl StackVerifier {
-    fn new() -> Self {
-        Self {
-            label_depths: HashMap::new(),
-            current_depth: 0,
-        }
+impl StackVerifyAdapter for X86StackVerifyAdapter<'_> {
+    type Inst = X86Inst;
+
+    fn instructions(&self) -> &[Self::Inst] {
+        self.mir.instructions()
     }
 
-    fn verify(&mut self, mir: &X86Mir) -> CompileResult<()> {
-        // First pass: collect label positions and do basic verification
-        for (idx, inst) in mir.iter().enumerate() {
-            self.verify_instruction(idx, inst)?;
-        }
-        Ok(())
-    }
-
-    fn verify_instruction(&mut self, idx: usize, inst: &X86Inst) -> CompileResult<()> {
+    fn stack_delta(&self, inst: &Self::Inst) -> i64 {
         match inst {
-            // Instructions that increase stack depth (push onto stack)
-            X86Inst::Push { .. } => {
-                self.current_depth += 8;
-            }
+            // Instructions that increase stack depth (push onto stack).
+            X86Inst::Push { .. } => 8,
 
-            // Instructions that decrease stack depth (pop from stack)
-            X86Inst::Pop { .. } => {
-                self.current_depth -= 8;
-                // Note: We allow negative depths since the epilogue may pop
-                // callee-saved registers before we've tracked their pushes
-                // (they're in the prologue which isn't in the MIR)
-            }
+            // Instructions that decrease stack depth (pop from stack). Negative
+            // depths are allowed: the epilogue may pop callee-saved registers
+            // before we've tracked their pushes (they're in the prologue, not
+            // MIR).
+            X86Inst::Pop { .. } => -8,
 
             // AddRI on RSP: used to deallocate stack space (positive imm) or
-            // allocate stack space (negative imm, though rare in current codegen)
+            // allocate stack space (negative imm, though rare in current codegen).
             X86Inst::AddRI { dst, imm } => {
                 if let Operand::Physical(Reg::Rsp) = dst {
                     // add rsp, N → decreases depth (deallocates)
                     // add rsp, -N → increases depth (allocates)
-                    self.current_depth -= *imm as i64;
-                }
-            }
-
-            // Call instructions require 16-byte alignment
-            X86Inst::CallRel { .. } => {
-                // At a call site, RSP must be 16-byte aligned.
-                // Since the call will push an 8-byte return address,
-                // the callee will see RSP 8 bytes below a 16-byte boundary,
-                // which is correct (they'll push RBP to realign).
-                //
-                // Our depth tracking starts at 0 (aligned after prologue).
-                // If depth % 16 != 0, we're misaligned.
-                if self.current_depth % 16 != 0 {
-                    return Err(self.alignment_error(
-                        idx,
-                        inst,
-                        format!(
-                            "call requires 16-byte aligned RSP, but stack is {} bytes off",
-                            self.current_depth % 16
-                        ),
-                    ));
-                }
-            }
-
-            // Labels mark potential join points
-            X86Inst::Label { id } => {
-                if let Some(&expected_depth) = self.label_depths.get(id) {
-                    // We've seen a jump to this label before
-                    if expected_depth != self.current_depth {
-                        return Err(self.alignment_error(
-                            idx,
-                            inst,
-                            format!(
-                                "control flow join has inconsistent stack depth: expected {}, got {}",
-                                expected_depth, self.current_depth
-                            ),
-                        ));
-                    }
+                    -(*imm as i64)
                 } else {
-                    // First time seeing this label, record current depth
-                    self.label_depths.insert(*id, self.current_depth);
+                    0
                 }
             }
 
-            // Jump instructions record target depths
+            _ => 0,
+        }
+    }
+
+    fn label(&self, inst: &Self::Inst) -> Option<LabelId> {
+        match inst {
+            X86Inst::Label { id } => Some(*id),
+            _ => None,
+        }
+    }
+
+    fn jump_targets<'a>(&self, inst: &'a Self::Inst) -> &'a [LabelId] {
+        match inst {
             X86Inst::Jz { label }
             | X86Inst::Jnz { label }
             | X86Inst::Jo { label }
@@ -158,40 +110,48 @@ impl StackVerifier {
             | X86Inst::Jbe { label }
             | X86Inst::Jge { label }
             | X86Inst::Jle { label }
-            | X86Inst::Jmp { label } => {
-                self.record_jump_target(*label);
-            }
-
-            // Ret doesn't affect our verification (epilogue handles cleanup)
-            X86Inst::Ret => {
-                // The epilogue (generated by emitter) will restore RSP.
-                // We don't verify epilogue correctness here since it's
-                // generated separately and correct by construction.
-            }
-
-            // All other instructions don't affect stack depth
-            _ => {}
+            | X86Inst::Jmp { label } => std::slice::from_ref(label),
+            _ => &[],
         }
-
-        Ok(())
     }
 
-    fn record_jump_target(&mut self, label: LabelId) {
-        // Record the expected depth at this jump target.
-        // If we've already seen the label, the depth was recorded there.
-        // If not, this is a forward jump and we record the expected depth.
-        // Mismatches are caught when the label is encountered in verify_instruction.
-        self.label_depths.entry(label).or_insert(self.current_depth);
+    fn alignment_violation(&self, inst: &Self::Inst, current_depth: i64) -> Option<String> {
+        match inst {
+            X86Inst::CallRel { .. } => {
+                // At a call site, RSP must be 16-byte aligned.
+                // Since the call will push an 8-byte return address,
+                // the callee will see RSP 8 bytes below a 16-byte boundary,
+                // which is correct (they'll push RBP to realign).
+                //
+                // Our depth tracking starts at 0 (aligned after prologue).
+                // If depth % 16 != 0, we're misaligned.
+                if current_depth % 16 != 0 {
+                    Some(format!(
+                        "call requires 16-byte aligned RSP, but stack is {} bytes off",
+                        current_depth % 16
+                    ))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
     }
 
-    fn alignment_error(&self, idx: usize, inst: &X86Inst, message: String) -> CompileError {
+    fn error(
+        &self,
+        idx: usize,
+        inst: &Self::Inst,
+        current_depth: i64,
+        message: String,
+    ) -> CompileError {
         ice_error!(
             "stack alignment verification failed",
             phase: "codegen/verify",
             details: {
                 "instruction_index" => idx.to_string(),
                 "instruction" => inst.to_string(),
-                "stack_depth_bytes" => self.current_depth.to_string(),
+                "stack_depth_bytes" => current_depth.to_string(),
                 "message" => message
             }
         )
