@@ -227,8 +227,8 @@ exit_code = 42
 # =============================================================================
 # Privacy is uniform (10.3:7): a private function in a file in another
 # directory is rejected when called unqualified (E0460), whether that file
-# was imported or only listed explicitly. The flat namespace (10.5:2) only
-# resolves names — pub items remain callable without imports (10.3:8).
+# was imported. The flat namespace (10.5:2) only resolves names — pub items
+# remain callable without qualification (10.3:8).
 
 [[case]]
 name = "cross_dir_unqualified_private_fn_error"
@@ -251,7 +251,7 @@ error_contains = "is private (defined in"
 
 [[case]]
 name = "cross_dir_unqualified_pub_fn_allowed"
-spec = ["10.3:7", "10.5:2"]
+spec = ["10.3:7", "10.3:8", "10.5:2"]
 description = "Unqualified call to a pub function of an imported module still resolves (transitional flat namespace)"
 source = """
 const utils = @import("subdir/utils");
@@ -285,64 +285,12 @@ fn internal_fn() -> i32 {
 """ }
 exit_code = 42
 
-[[case]]
-name = "flat_multifile_unqualified_private_fn_error"
-spec = ["10.3:7", "10.3:8"]
-description = "Uniform privacy (RUE-180): a never-imported file listed explicitly is still private — cross-directory unqualified private call is E0460"
-source = """
-fn main() -> i32 {
-    internal_fn()
-}
-"""
-aux_files = { "subdir/utils.rue" = """
-fn internal_fn() -> i32 {
-    42
-}
-""" }
-pass_aux_files = true
-compile_fail = true
-error_contains = "is private (defined in"
-
-[[case]]
-name = "flat_multifile_unqualified_pub_fn_allowed"
-spec = ["10.3:8", "10.5:2"]
-description = "The flat namespace still resolves names without imports: a pub function in another never-imported directory is callable unqualified"
-source = """
-fn main() -> i32 {
-    public_fn()
-}
-"""
-aux_files = { "subdir/utils.rue" = """
-pub fn public_fn() -> i32 {
-    42
-}
-""" }
-pass_aux_files = true
-exit_code = 42
-
-[[case]]
-name = "flat_multifile_same_dir_private_fn_allowed"
-spec = ["10.3:2", "10.3:8"]
-description = "Intra-directory visibility (ADR-0026) is unchanged: a private function in another listed file in the same directory is callable unqualified"
-source = """
-fn main() -> i32 {
-    internal_fn()
-}
-"""
-aux_files = { "utils.rue" = """
-fn internal_fn() -> i32 {
-    42
-}
-""" }
-pass_aux_files = true
-exit_code = 42
-
 # =============================================================================
 # Unqualified Cross-Directory Access: Structs and Constants (RUE-183)
 # =============================================================================
 # The uniform privacy rule (10.3:7) covers every item kind, not just
 # functions: naming a private struct (annotation or literal) or reading a
-# private constant from another directory is E0460, imported or flat-listed.
+# private constant from another directory is E0460 through an imported module.
 
 [[case]]
 name = "cross_dir_unqualified_private_struct_error"
@@ -382,106 +330,12 @@ const LIMIT: i32 = 42;
 compile_fail = true
 error_contains = "constant `LIMIT` is private (defined in"
 
-[[case]]
-name = "flat_multifile_unqualified_private_struct_error"
-spec = ["10.3:7", "10.3:8"]
-description = "Uniform privacy: a private struct in a never-imported, explicitly listed file in another directory is not nameable unqualified"
-source = """
-fn main() -> i32 {
-    let p: Point = Point { x: 40, y: 2 };
-    p.x + p.y
-}
-"""
-aux_files = { "subdir/defs.rue" = """
-struct Point {
-    x: i32,
-    y: i32,
-}
-""" }
-pass_aux_files = true
-compile_fail = true
-error_contains = "struct `Point` is private (defined in"
-
-[[case]]
-name = "flat_multifile_unqualified_private_const_error"
-spec = ["10.3:7", "10.3:8"]
-description = "Uniform privacy: a private constant in a never-imported, explicitly listed file in another directory is not readable unqualified"
-source = """
-fn main() -> i32 {
-    LIMIT
-}
-"""
-aux_files = { "subdir/defs.rue" = """
-const LIMIT: i32 = 42;
-""" }
-pass_aux_files = true
-compile_fail = true
-error_contains = "constant `LIMIT` is private (defined in"
-
-[[case]]
-name = "cross_dir_const_initializer_private_const_error"
-spec = ["10.3:7"]
-description = "A constant initializer reading a private constant from another directory is rejected too"
-source = """
-const X: i32 = LIMIT;
-
-fn main() -> i32 {
-    X
-}
-"""
-aux_files = { "subdir/defs.rue" = """
-const LIMIT: i32 = 42;
-""" }
-pass_aux_files = true
-compile_fail = true
-error_contains = "constant `LIMIT` is private (defined in"
-
-[[case]]
-name = "flat_multifile_unqualified_pub_struct_and_const_allowed"
-spec = ["10.3:8", "10.5:2"]
-description = "The flat namespace still resolves pub structs and constants across directories without imports"
-source = """
-fn main() -> i32 {
-    let p: Point = Point { x: 30, y: 2 };
-    p.x + p.y + BONUS
-}
-"""
-aux_files = { "subdir/defs.rue" = """
-pub struct Point {
-    x: i32,
-    y: i32,
-}
-pub const BONUS: i32 = 10;
-""" }
-pass_aux_files = true
-exit_code = 42
-
-[[case]]
-name = "flat_multifile_same_dir_private_struct_and_const_allowed"
-spec = ["10.3:2", "10.3:8"]
-description = "Intra-directory visibility (ADR-0026) is unchanged: private structs and constants in another listed file in the same directory are usable unqualified"
-source = """
-fn main() -> i32 {
-    let p: Point = Point { x: 30, y: 2 };
-    p.x + p.y + BONUS
-}
-"""
-aux_files = { "defs.rue" = """
-struct Point {
-    x: i32,
-    y: i32,
-}
-const BONUS: i32 = 10;
-""" }
-pass_aux_files = true
-exit_code = 42
-
 # =============================================================================
 # Unqualified Cross-Directory Access: Enums (RUE-185)
 # =============================================================================
 # The uniform privacy rule (10.3:7) covers enums too: naming a private enum
 # from another directory — in a type annotation, a variant construction, or a
-# match pattern — is E0460, imported or flat-listed.
+# match pattern — is E0460 through an imported module.
 
 [[case]]
 name = "cross_dir_unqualified_private_enum_error"
@@ -504,158 +358,3 @@ enum Color {
 """ }
 compile_fail = true
 error_contains = "enum `Color` is private (defined in"
-
-[[case]]
-name = "flat_multifile_unqualified_private_enum_construction_error"
-spec = ["10.3:7", "10.3:8"]
-description = "Uniform privacy: constructing a variant of a private enum in a never-imported, explicitly listed file in another directory is rejected"
-source = """
-fn main() -> i32 {
-    let c = Color::Blue;
-    0
-}
-"""
-aux_files = { "subdir/defs.rue" = """
-enum Color {
-    Red,
-    Green,
-    Blue,
-}
-""" }
-pass_aux_files = true
-compile_fail = true
-error_contains = "enum `Color` is private (defined in"
-
-[[case]]
-name = "flat_multifile_private_enum_match_pattern_error"
-spec = ["10.3:7", "10.3:8"]
-description = "A match pattern names the enum unqualified too: matching on a private cross-directory enum is rejected even when the scrutinee arrives through a pub function"
-source = """
-fn main() -> i32 {
-    match make() {
-        Color::Red => 1,
-        Color::Green => 2,
-        Color::Blue => 3,
-    }
-}
-"""
-aux_files = { "subdir/defs.rue" = """
-enum Color {
-    Red,
-    Green,
-    Blue,
-}
-pub fn make() -> Color {
-    Color::Green
-}
-""" }
-pass_aux_files = true
-compile_fail = true
-error_contains = "enum `Color` is private (defined in"
-
-[[case]]
-name = "flat_multifile_unqualified_pub_enum_allowed"
-spec = ["10.3:8", "10.5:2"]
-description = "The flat namespace still resolves pub enums across directories without imports: annotation, construction, and match all work"
-source = """
-fn main() -> i32 {
-    let c: Color = Color::Blue;
-    match c {
-        Color::Red => 10,
-        Color::Green => 20,
-        Color::Blue => 42,
-    }
-}
-"""
-aux_files = { "subdir/defs.rue" = """
-pub enum Color {
-    Red,
-    Green,
-    Blue,
-}
-""" }
-pass_aux_files = true
-exit_code = 42
-
-[[case]]
-name = "flat_multifile_same_dir_private_enum_allowed"
-spec = ["10.3:2", "10.3:8"]
-description = "Intra-directory visibility (ADR-0026) is unchanged: a private enum in another listed file in the same directory is usable unqualified"
-source = """
-fn main() -> i32 {
-    let c: Color = Color::Green;
-    match c {
-        Color::Red => 1,
-        Color::Green => 42,
-        Color::Blue => 3,
-    }
-}
-"""
-aux_files = { "defs.rue" = """
-enum Color {
-    Red,
-    Green,
-    Blue,
-}
-""" }
-pass_aux_files = true
-exit_code = 42
-
-# The uniform privacy rule (10.3:7) also covers a comptime type constructor
-# (`fn Secret(comptime T) -> type`) applied in type-annotation position: naming
-# a private constructor from another directory in a `let x: Secret(i32)`
-# annotation is E0460, exactly as a value/call reference is. Before RUE-283 the
-# annotation path skipped this check, leaking the private constructor
-# cross-directory (a privacy-soundness hole).
-
-[[case]]
-name = "cross_dir_private_type_ctor_annotation_error"
-spec = ["10.3:7"]
-description = "Applying a private comptime type constructor in type-annotation position from another directory is rejected (E0460)"
-source = """
-fn main() -> i32 {
-    let s: Secret(i32) = mk();
-    s.v
-}
-"""
-aux_files = { "subdir/lib.rue" = """
-fn Secret(comptime T: type) -> type { struct { v: T } }
-pub fn mk() -> Secret(i32) { let S = Secret(i32); S { v: 7 } }
-""" }
-pass_aux_files = true
-compile_fail = true
-error_contains = "function `Secret` is private (defined in"
-
-[[case]]
-name = "cross_dir_pub_type_ctor_annotation_allowed"
-spec = ["10.3:7", "10.3:8"]
-description = "A pub comptime type constructor applied as an annotation across directories is allowed (flat namespace resolves the name)"
-source = """
-fn main() -> i32 {
-    let s: Secret(i32) = mk();
-    s.v
-}
-"""
-aux_files = { "subdir/lib.rue" = """
-pub fn Secret(comptime T: type) -> type { struct { v: T } }
-pub fn mk() -> Secret(i32) { let S = Secret(i32); S { v: 7 } }
-""" }
-pass_aux_files = true
-exit_code = 7
-
-[[case]]
-name = "same_dir_private_type_ctor_annotation_allowed"
-spec = ["10.3:2", "10.3:7"]
-description = "Intra-directory visibility (ADR-0026) is unchanged: a private comptime type constructor applied as an annotation in another listed file in the same directory is allowed"
-source = """
-fn main() -> i32 {
-    let s: Secret(i32) = mk();
-    s.v
-}
-"""
-aux_files = { "lib.rue" = """
-fn Secret(comptime T: type) -> type { struct { v: T } }
-pub fn mk() -> Secret(i32) { let S = Secret(i32); S { v: 7 } }
-""" }
-pass_aux_files = true
-exit_code = 7

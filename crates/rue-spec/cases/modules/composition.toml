@@ -2,7 +2,7 @@
 id = "modules.composition"
 spec_chapter = "10.5"
 name = "Program Composition"
-description = "Cross-file name collisions in the (transitional) flat namespace (spec chapter 10.5)."
+description = "Cross-file name collisions among modules loaded through the root import graph (spec chapter 10.5)."
 
 [[case]]
 name = "duplicate_symbol_across_imported_files_error"
@@ -39,33 +39,3 @@ pub fn go2() -> i32 { LIMIT }
 """ }
 compile_fail = true
 error_contains = "duplicate"
-
-# Cross-KIND collisions across files: a top-level item is a function, struct,
-# enum, OR constant, and all four share one name space (RUE-239). A function
-# in one file and a struct with the same name in another collide (E0436),
-# regardless of order or visibility.
-[[case]]
-name = "duplicate_fn_and_struct_across_files_error"
-spec = ["10.5:1"]
-description = "A function and a struct with the same name collide across files (one shared top-level name space)"
-source = """
-fn Thing() -> i32 { 5 }
-fn main() -> i32 { Thing() }
-"""
-aux_files = { "other.rue" = "pub struct Thing { n: i32 }" }
-pass_aux_files = true
-compile_fail = true
-error_contains = "E0436"
-
-[[case]]
-name = "duplicate_enum_and_const_across_files_error"
-spec = ["10.5:1"]
-description = "An enum and a constant with the same name collide across files (E0436)"
-source = """
-enum Color { Red, Green }
-fn main() -> i32 { 0 }
-"""
-aux_files = { "other.rue" = "pub const Color: i32 = 5;" }
-pass_aux_files = true
-compile_fail = true
-error_contains = "E0436"
