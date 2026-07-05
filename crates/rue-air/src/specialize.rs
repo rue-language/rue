@@ -528,6 +528,7 @@ fn create_specialized_function(
         num_locals,
         num_param_slots,
         param_modes,
+        allow_unreachable_code: base_info.allow_unreachable_code,
     })
 }
 

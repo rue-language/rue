@@ -23,6 +23,9 @@ pub struct AnalyzedFunction {
     /// Length matches num_param_slots - for struct params, all slots share
     /// the same mode as the original parameter.
     pub param_modes: Vec<bool>,
+    /// Whether function-level `@allow(unreachable_code)` suppresses CFG
+    /// unreachable-code warnings while lowering this function.
+    pub allow_unreachable_code: bool,
 }
 
 /// Output from semantic analysis.

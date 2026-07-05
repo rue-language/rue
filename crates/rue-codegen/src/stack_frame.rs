@@ -616,7 +616,8 @@ mod tests {
 
         let interner = ThreadedRodeo::new();
         let type_pool = TypeInternPool::new();
-        let cfg_output = CfgBuilder::build(&air, 0, 0, "test", &type_pool, vec![], &interner);
+        let cfg_output =
+            CfgBuilder::build(&air, 0, 0, "test", &type_pool, vec![], &interner, false);
         (cfg_output.cfg, type_pool, interner)
     }
 

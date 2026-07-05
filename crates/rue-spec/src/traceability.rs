@@ -161,11 +161,7 @@ pub struct TraceabilityReport {
 /// you to remove it (see [`TraceabilityReport::stale_known_uncovered`]). This
 /// mirrors the `known_bug` xfail convention: an exemption that starts passing
 /// must be retired so it converts back into an enforced check.
-pub const KNOWN_UNCOVERED_NORMATIVE: &[(&str, &str)] = &[(
-    "2.5:21",
-    "@allow(unreachable_code) suppression not implemented \
-         (lexical/builtins.toml::allow_unreachable_code, skipped)",
-)];
+pub const KNOWN_UNCOVERED_NORMATIVE: &[(&str, &str)] = &[];
 
 impl TraceabilityReport {
     /// Whether `id` is on the [`KNOWN_UNCOVERED_NORMATIVE`] allowlist.
@@ -1191,11 +1187,14 @@ exit_code = 0
         assert_eq!(r.unexpected_uncovered_normative_paragraphs().len(), 1);
         assert!(r.gate_failing());
 
-        // An allowlisted rule that is now COVERED is stale and fails the gate.
-        let allow_id = KNOWN_UNCOVERED_NORMATIVE[0].0;
-        let r = report_with(&[(allow_id, true)]);
-        assert_eq!(r.stale_known_uncovered(), vec![allow_id]);
-        assert!(r.gate_failing());
+        // If there are any allowlisted rules, a covered one is stale and fails
+        // the gate. The allowlist may legitimately be empty when all written
+        // skipped normative cases have been implemented.
+        if let Some((allow_id, _)) = KNOWN_UNCOVERED_NORMATIVE.first() {
+            let r = report_with(&[(allow_id, true)]);
+            assert_eq!(r.stale_known_uncovered(), vec![*allow_id]);
+            assert!(r.gate_failing());
+        }
     }
 
     #[test]

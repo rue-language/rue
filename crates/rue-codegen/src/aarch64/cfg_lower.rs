@@ -4929,6 +4929,7 @@ mod tests {
             type_pool,
             func.param_modes.clone(),
             &interner,
+            func.allow_unreachable_code,
         );
 
         // Use host target for tests

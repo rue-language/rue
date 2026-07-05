@@ -358,7 +358,8 @@ mod tests {
         // Build CFG from AIR (no struct/array types in this simple test)
         let interner = ThreadedRodeo::new();
         let type_pool = rue_air::TypeInternPool::new();
-        let cfg_output = CfgBuilder::build(&air, 0, 0, "main", &type_pool, vec![], &interner);
+        let cfg_output =
+            CfgBuilder::build(&air, 0, 0, "main", &type_pool, vec![], &interner, false);
 
         // Test the generate function
         let machine_code = generate(&cfg_output.cfg, &type_pool, &[], &interner).unwrap();

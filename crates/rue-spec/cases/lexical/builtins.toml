@@ -173,7 +173,6 @@ no_warnings = true
 [[case]]
 name = "allow_unreachable_code"
 spec = ["2.5:21"]
-skip = true  # TODO: Need to propagate directives to CFG
 source = """
 @allow(unreachable_code)
 fn example() -> i32 {
