@@ -21,6 +21,19 @@ impl<'a> Sema<'a> {
         let receiver_var = self.extract_root_variable(receiver);
         let method_name_str = self.interner.resolve(&method).to_string();
 
+        // RUE-196: `Type.function(args)` is an additive dotted alias for the
+        // existing `Type::function(args)` form. Preserve ordinary value-method
+        // dispatch when a runtime local/parameter shadows the type name; only
+        // reinterpret an unbound identifier receiver as a type namespace.
+        if let InstData::VarRef { name } = self.rir.get(receiver).data
+            && !self.is_runtime_value_binding(name, ctx)
+            && self
+                .resolve_type(name, span)
+                .is_ok_and(|ty| matches!(ty.kind(), TypeKind::Struct(_) | TypeKind::Enum(_)))
+        {
+            return self.analyze_assoc_fn_call(air, name, method, args_start, args_len, span, ctx);
+        }
+
         // Slice methods (ADR-0043, RUE-322): `s.len()` reads the fat pointer's
         // runtime `len` word. Detected from the receiver's type. The `str`
         // string type (RUE-324) shares this path; a `str` local's HM-inferred

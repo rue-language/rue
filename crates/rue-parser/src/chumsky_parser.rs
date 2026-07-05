@@ -915,7 +915,7 @@ where
 
     // Simple path pattern: Enum::Variant (no module prefix), optionally with
     // payload bindings `Enum::Variant(a, b)`.
-    let simple_path_pat = ident_parser()
+    let simple_colon_path_pat = ident_parser()
         .then_ignore(just(TokenKind::ColonColon))
         .then(ident_parser())
         .then(pattern_bindings.clone())
@@ -932,10 +932,25 @@ where
             })
         });
 
+    // Dotted alias for a simple enum path pattern: Enum.Variant (RUE-196).
+    let simple_dot_path_pat = ident_parser()
+        .then_ignore(just(TokenKind::Dot))
+        .then(ident_parser())
+        .then(pattern_bindings.clone())
+        .map_with(|((type_name, variant), bindings), e| {
+            Pattern::Path(PathPattern {
+                base: None,
+                type_name,
+                variant,
+                bindings,
+                span: span_from_extra(e),
+            })
+        });
+
     // Qualified path pattern: module.Enum::Variant or module.sub.Enum::Variant
     // Parses: ident ("." ident)+ "::" ident
     // where the part before "::" is module.Type and after is Variant
-    let qualified_path_pat = ident_parser()
+    let qualified_colon_path_pat = ident_parser()
         .then(
             just(TokenKind::Dot)
                 .ignore_then(ident_parser())
@@ -945,7 +960,7 @@ where
         )
         .then_ignore(just(TokenKind::ColonColon))
         .then(ident_parser())
-        .then(pattern_bindings)
+        .then(pattern_bindings.clone())
         .map_with(|(((first, mut rest), variant), bindings), e| {
             // first is the first module identifier
             // rest contains all subsequent identifiers up to and including type_name
@@ -979,15 +994,60 @@ where
             })
         });
 
+    // Dotted alias for qualified enum path patterns:
+    // module.Enum.Variant or module.sub.Enum.Variant (RUE-196). The final two
+    // identifiers are the enum type and variant; any earlier identifiers form
+    // the module/member base expression.
+    let qualified_dot_path_pat = ident_parser()
+        .then(
+            just(TokenKind::Dot)
+                .ignore_then(ident_parser())
+                .repeated()
+                .at_least(2)
+                .collect::<Vec<_>>(),
+        )
+        .then(pattern_bindings)
+        .map_with(|((first, mut rest), bindings), e| {
+            let variant = rest.pop().expect("at_least(2) guarantees variant");
+            let type_name = rest.pop().expect("at_least(2) guarantees type name");
+
+            let base_expr = if rest.is_empty() {
+                Expr::Ident(first.clone())
+            } else {
+                let mut base = Expr::Ident(first.clone());
+                for field in rest {
+                    let span = base.span().extend_to(field.span.end);
+                    base = Expr::Field(FieldExpr {
+                        base: Box::new(base),
+                        field,
+                        span,
+                    });
+                }
+                base
+            };
+
+            Pattern::Path(PathPattern {
+                base: Some(Box::new(base_expr)),
+                type_name,
+                variant,
+                bindings,
+                span: span_from_extra(e),
+            })
+        });
+
     choice((
         wildcard,
         neg_int_pat,
         int_pat,
         bool_true,
         bool_false,
-        // Try qualified path first (has more structure), then simple path
-        qualified_path_pat,
-        simple_path_pat,
+        // Keep the existing `::` precedence, then accept the simple dotted
+        // alias. The qualified dotted parser is last so `Type.Variant` does
+        // not report a spurious "expected '.'" from the longer form.
+        qualified_colon_path_pat,
+        simple_colon_path_pat,
+        simple_dot_path_pat,
+        qualified_dot_path_pat,
     ))
 }
 
