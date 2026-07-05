@@ -77,6 +77,7 @@ impl<'a> Sema<'a> {
         )
         .with_const_types(&infer_ctx.const_types)
         .with_const_values(&infer_ctx.const_values)
+        .with_const_function_aliases(&infer_ctx.const_function_aliases)
         .with_module_binding_types(&infer_ctx.module_binding_types)
         .with_comptime_local_types(&comptime_local_types)
         .with_comptime_values(value_subst)
@@ -123,6 +124,7 @@ impl<'a> Sema<'a> {
                     }
                     ConstValue::Bool(_) => Type::BOOL,
                     ConstValue::Type(t) => *t,
+                    ConstValue::Function(_) => Type::COMPTIME_TYPE,
                     ConstValue::Unit => Type::UNIT,
                 };
                 param_vars.entry(*name).or_insert(ParamVarInfo {

@@ -2454,6 +2454,9 @@ impl<'a> Sema<'a> {
             ConstValue::Integer(v) => (AirInstData::Const(v as u64), ty),
             ConstValue::Bool(b) => (AirInstData::BoolConst(b), Type::BOOL),
             ConstValue::Unit => (AirInstData::UnitConst, Type::UNIT),
+            ConstValue::Function(_) => unreachable!(
+                "function-valued constants are callable aliases and must not be materialized"
+            ),
             // Value constants never hold type values (declaration collection
             // rejects them); this arm only fires defensively.
             ConstValue::Type(t) => (AirInstData::TypeConst(t), ty),
@@ -2696,6 +2699,14 @@ impl<'a> Sema<'a> {
                     });
                     return Ok(AnalysisResult::new(air_ref, Type::COMPTIME_TYPE));
                 }
+                ConstValue::Function(_) => {
+                    return Err(CompileError::new(
+                        ErrorKind::ConstExprNotSupported {
+                            expr_kind: "a function reference".to_string(),
+                        },
+                        span,
+                    ));
+                }
                 ConstValue::Unit => {
                     let air_ref = air.add_inst(AirInst {
                         data: AirInstData::Const(0),
@@ -2740,6 +2751,14 @@ impl<'a> Sema<'a> {
                 const_info.is_pub,
                 span,
             )?;
+            if matches!(const_info.value, ConstValue::Function(_)) {
+                return Err(CompileError::new(
+                    ErrorKind::ConstExprNotSupported {
+                        expr_kind: "a function reference".to_string(),
+                    },
+                    span,
+                ));
+            }
             let (data, ty) = Self::materialize_const_value(const_info.value, const_info.ty);
             let air_ref = air.add_inst(AirInst { data, ty, span });
             return Ok(AnalysisResult::new(air_ref, ty));
@@ -3870,6 +3889,14 @@ impl<'a> Sema<'a> {
                     span,
                 });
                 return Ok(AnalysisResult::new(air_ref, module_ty));
+            }
+            if matches!(const_info.value, ConstValue::Function(_)) {
+                return Err(CompileError::new(
+                    ErrorKind::ConstExprNotSupported {
+                        expr_kind: "a function reference".to_string(),
+                    },
+                    span,
+                ));
             }
             // A value const (e.g. `pub const ANSWER = ...`) accessed as a
             // module member: materialize the value that was evaluated at
@@ -5094,6 +5121,21 @@ impl<'a> Sema<'a> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
+        let mut name = name;
+        if let Some(const_info) = self.constants.get(&name)
+            && let Some(callee) = const_info.value.as_function()
+        {
+            let alias_name = self.interner.resolve(&name).to_string();
+            self.check_unqualified_visibility(
+                "constant",
+                &alias_name,
+                const_info.span.file_id,
+                const_info.is_pub,
+                span,
+            )?;
+            name = callee;
+        }
+
         // `print(s)` / `println(s)` are builtin free functions (RUE-1), not
         // user-defined ones: intercept them here before the function lookup,
         // but only when the program hasn't shadowed the name with its own

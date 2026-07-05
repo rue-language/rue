@@ -102,11 +102,11 @@ add(1, 2)
 > RUE-136/RUE-122). Member access is also const-evaluable for modules and
 > value constants (RUE-160): `const math = std.math;` aliases a nested
 > module, and `const X = m.ANSWER;` / `m.ANSWER` at a use site resolve a
-> member value constant. The last form above — binding a *function* member
-> (`const add = @import("math.rue").add`) — is **not yet supported**:
-> fn-valued constants need function values in the type system (RUE-173;
-> diagnosed precisely as E0434 "a function reference is not supported in
-> const context").
+> member value constant. Binding a *function* member (`const add =
+> @import("math.rue").add`) is supported as a callable alias (RUE-173). These
+> aliases are not first-class runtime values: `add(1, 2)` is accepted, but
+> using `add` as an ordinary expression is still rejected as a function
+> reference in const/runtime value context.
 
 The key insight: `@import("foo.rue")` is equivalent to a struct containing the file's contents:
 

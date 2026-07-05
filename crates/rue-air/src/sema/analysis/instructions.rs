@@ -233,6 +233,12 @@ impl<'a> Sema<'a> {
                             inst.span,
                         ))
                     }
+                    Some(ConstValue::Function(_)) => Err(CompileError::new(
+                        ErrorKind::ComptimeEvaluationFailed {
+                            reason: "function references cannot exist at runtime".to_string(),
+                        },
+                        inst.span,
+                    )),
                     Some(ConstValue::Unit) => {
                         let ty = Type::UNIT;
                         let air_ref = air.add_inst(AirInst {

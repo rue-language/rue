@@ -217,16 +217,15 @@ pub fn touch() -> i32 { SECRET }
 ]
 exit_code = 33
 
-# Binding a FUNCTION member in a const is a type-system gap (RUE-173): it
-# must be diagnosed precisely (E0434 "a function reference"), not as a
-# bogus "no member" (E0707).
+# Binding a FUNCTION member in a const creates a callable alias (RUE-173).
 [[case]]
-name = "fn_member_in_const_precise_error"
+name = "fn_member_const_alias_call"
+description = "A module-member function const creates a callable alias (spec 6.5:15), and calling the alias is equivalent to calling the function (spec 4.10:12)."
 files = [
     { path = "main.rue", source = """
-const abs = @import("math").abs;
+const abs_alias = @import("math").abs;
 
-fn main() -> i32 { 0 }
+fn main() -> i32 { abs_alias(0 - 42) }
 """ },
     { path = "math.rue", source = """
 pub fn abs(x: i32) -> i32 {
@@ -234,6 +233,36 @@ pub fn abs(x: i32) -> i32 {
 }
 """ },
 ]
+exit_code = 42
+
+# The same callable-alias machinery supports local function aliases.
+[[case]]
+name = "local_fn_const_alias_call"
+description = "A local function const creates a callable alias (spec 6.5:15), and calling the alias is equivalent to calling the function (spec 4.10:12)."
+files = [{ path = "main.rue", source = """
+const f = answer;
+
+fn answer() -> i32 { 42 }
+
+fn main() -> i32 { f() }
+""" }]
+exit_code = 42
+
+# Function-valued constants are callable aliases only, not first-class runtime
+# values.
+[[case]]
+name = "fn_const_alias_not_runtime_value"
+description = "Function-valued constants are callable aliases only, not first-class runtime values (spec 6.5:15)."
+files = [{ path = "main.rue", source = """
+const f = answer;
+
+fn answer() -> i32 { 42 }
+
+fn main() -> i32 {
+    let x = f;
+    0
+}
+""" }]
 compile_fail = true
 error_contains = ["E0434", "a function reference is not supported in const context"]
 

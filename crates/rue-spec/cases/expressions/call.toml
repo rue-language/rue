@@ -129,3 +129,33 @@ fn main() -> i32 {
 }
 """
 exit_code = 42
+
+[[case]]
+name = "callable_const_alias_invokes_function"
+spec = ["4.10:12", "6.5:15"]
+description = "A function-valued const is a callable alias, and calling it is equivalent to calling the aliased function."
+source = """
+const f = answer;
+
+fn answer() -> i32 { 42 }
+
+fn main() -> i32 { f() }
+"""
+exit_code = 42
+
+[[case]]
+name = "callable_const_alias_not_runtime_value"
+spec = ["6.5:15"]
+description = "A function-valued const is not a first-class runtime value."
+source = """
+const f = answer;
+
+fn answer() -> i32 { 42 }
+
+fn main() -> i32 {
+    let x = f;
+    0
+}
+"""
+compile_fail = true
+error_contains = "[E0434]"

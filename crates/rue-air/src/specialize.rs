@@ -27,7 +27,7 @@
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 
-use lasso::{Spur, ThreadedRodeo};
+use lasso::{Key, Spur, ThreadedRodeo};
 use rue_error::{CompileError, CompileResult, ErrorKind};
 use rue_rir::RirParamMode;
 use rue_span::Span;
@@ -65,6 +65,8 @@ const CV_TAG_BOOL: u32 = 1;
 const CV_TAG_UNIT: u32 = 2;
 /// Tag for `ConstValue::Type` (payload: 1 word, `Type::as_u32`).
 const CV_TAG_TYPE: u32 = 3;
+/// Tag for `ConstValue::Function` (payload: 1 word, interned symbol key).
+const CV_TAG_FUNCTION: u32 = 4;
 
 /// Encode comptime value arguments as a tagged `u32` word stream for the AIR
 /// extra array. Decoded by [`decode_const_values`].
@@ -87,6 +89,10 @@ pub fn encode_const_values(values: &[ConstValue]) -> Vec<u32> {
             ConstValue::Type(ty) => {
                 words.push(CV_TAG_TYPE);
                 words.push(ty.as_u32());
+            }
+            ConstValue::Function(name) => {
+                words.push(CV_TAG_FUNCTION);
+                words.push(name.into_usize() as u32);
             }
         }
     }
@@ -119,6 +125,12 @@ pub fn decode_const_values(words: &[u32]) -> Vec<ConstValue> {
                 let ty = Type::from_u32(words[i]);
                 i += 1;
                 ConstValue::Type(ty)
+            }
+            CV_TAG_FUNCTION => {
+                let name = lasso::Spur::try_from_usize(words[i] as usize)
+                    .expect("invalid function symbol key in extra array");
+                i += 1;
+                ConstValue::Function(name)
             }
             _ => unreachable!("invalid ConstValue tag {tag} in extra array"),
         };
@@ -377,6 +389,7 @@ fn mangle_const_value(value: &ConstValue) -> String {
         ConstValue::Bool(b) => format!("v{}", b),
         ConstValue::Unit => "vunit".to_string(),
         ConstValue::Type(ty) => format!("v{}", mangle_type(*ty)),
+        ConstValue::Function(name) => format!("vfn{}", name.into_usize()),
     }
 }
 
