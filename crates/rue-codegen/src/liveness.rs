@@ -26,6 +26,122 @@ use crate::index_map::IndexMap;
 use crate::regalloc::{InstructionLiveness, LiveRange, LivenessDebugInfo, LivenessInfo, LoopInfo};
 use crate::vreg::{LabelId, VReg};
 
+/// Backend-specific facts required by the shared liveness orchestration.
+///
+/// Backends own instruction semantics (`uses`, `defs`, labels, successors, and
+/// physical-register clobbers). This module owns the repeated wrapper shape:
+/// fetch the instruction slice and vreg count, then run normal liveness,
+/// debug-liveness, or loop analysis through the same callbacks.
+pub trait LivenessAdapter {
+    /// Backend MIR instruction type.
+    type Inst;
+    /// Backend physical register type.
+    type Reg: Copy + Eq + std::hash::Hash;
+
+    /// Instruction sequence to analyze.
+    fn instructions(&self) -> &[Self::Inst];
+
+    /// Number of virtual registers allocated in the MIR.
+    fn vreg_count(&self) -> u32;
+
+    /// Return the label ID if `inst` is a label.
+    fn label(&self, inst: &Self::Inst) -> Option<LabelId>;
+
+    /// Return successor instruction indices for `inst`.
+    fn successors(
+        &self,
+        idx: usize,
+        inst: &Self::Inst,
+        label_to_idx: &HashMap<LabelId, usize>,
+    ) -> Vec<usize>;
+
+    /// Return virtual registers read by `inst`.
+    fn uses(&self, inst: &Self::Inst) -> Vec<VReg>;
+
+    /// Return virtual registers written by `inst`.
+    fn defs(&self, inst: &Self::Inst) -> Vec<VReg>;
+
+    /// Return physical registers clobbered by `inst`.
+    fn clobbers(&self, inst: &Self::Inst) -> Vec<Self::Reg>;
+}
+
+/// Compute liveness for any backend implementing [`LivenessAdapter`].
+pub fn analyze_adapter<A>(adapter: &A) -> LivenessInfo<A::Reg>
+where
+    A: LivenessAdapter,
+{
+    analyze(
+        adapter.instructions(),
+        adapter.vreg_count(),
+        |inst| adapter.label(inst),
+        |idx, inst, label_to_idx| adapter.successors(idx, inst, label_to_idx),
+        |inst| adapter.uses(inst),
+        |inst| adapter.defs(inst),
+        |inst| adapter.clobbers(inst),
+    )
+}
+
+/// Compute detailed debug liveness for any backend implementing
+/// [`LivenessAdapter`].
+pub fn analyze_debug_adapter<A>(adapter: &A) -> LivenessDebugInfo
+where
+    A: LivenessAdapter,
+{
+    analyze_debug::<_, A::Reg>(
+        adapter.instructions(),
+        adapter.vreg_count(),
+        |inst| adapter.label(inst),
+        |idx, inst, label_to_idx| adapter.successors(idx, inst, label_to_idx),
+        |inst| adapter.uses(inst),
+        |inst| adapter.defs(inst),
+    )
+}
+
+/// Compute loop information for any backend implementing [`LivenessAdapter`].
+pub fn analyze_loops_adapter<A>(adapter: &A) -> LoopInfo
+where
+    A: LivenessAdapter,
+{
+    analyze_loops(
+        adapter.instructions(),
+        |inst| adapter.label(inst),
+        |idx, inst, label_to_idx| adapter.successors(idx, inst, label_to_idx),
+    )
+}
+
+/// Successor list for an instruction that falls through to the next
+/// instruction, if there is one.
+pub fn fallthrough_successor(idx: usize, num_insts: usize) -> Vec<usize> {
+    if idx + 1 < num_insts {
+        vec![idx + 1]
+    } else {
+        Vec::new()
+    }
+}
+
+/// Successor list for an unconditional branch to `label`.
+pub fn branch_successor(label: LabelId, label_to_idx: &HashMap<LabelId, usize>) -> Vec<usize> {
+    label_to_idx.get(&label).copied().into_iter().collect()
+}
+
+/// Successor list for a conditional branch: fall-through first, then branch
+/// target if the label was found.
+pub fn conditional_successors(
+    idx: usize,
+    label: LabelId,
+    label_to_idx: &HashMap<LabelId, usize>,
+    num_insts: usize,
+) -> Vec<usize> {
+    let mut succs = Vec::with_capacity(2);
+    if idx + 1 < num_insts {
+        succs.push(idx + 1);
+    }
+    if let Some(&target) = label_to_idx.get(&label) {
+        succs.push(target);
+    }
+    succs
+}
+
 /// Compute liveness information using the generic dataflow algorithm.
 ///
 /// This function performs backward dataflow analysis to compute which virtual
