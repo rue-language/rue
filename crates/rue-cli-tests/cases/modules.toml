@@ -253,6 +253,27 @@ pub fn add(x: i32, y: i32) -> i32 {
 ]
 stdout = "42\n"
 
+[[case]]
+name = "mixed_positional_and_import_reachable_file_rejected"
+description = "RUE-434: a helper file must not be both listed positionally and loaded through the root import graph."
+files = [
+    { path = "main.rue", source = """
+const helper = @import("helper");
+
+fn main() -> i32 {
+    helper.value()
+}
+""" },
+    { path = "helper.rue", source = """
+pub fn value() -> i32 {
+    42
+}
+""" },
+]
+args = ["main.rue", "helper.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["must not also be loaded through @import", "rue main.rue -o prog"]
+
 # Direct member access on a loaded std (no const re-export chain): proves
 # std loading itself works; the re-export chain is RUE-136.
 [[case]]
@@ -387,7 +408,7 @@ error_contains = ["E0707", "has no member `abs`"]
 
 [[case]]
 name = "per_file_import_bindings_same_module"
-description = "Two files each bind `const utils = @import(...)` to the same module; all files hand-listed on the CLI (the original RUE-113 repro)."
+description = "Two files each bind `const utils = @import(...)` to the same module; the root import graph discovers both files."
 files = [
     { path = "main.rue", source = """
 const a = @import("a.rue");
@@ -417,7 +438,6 @@ pub fn one() -> i32 {
 }
 """ },
 ]
-args = ["main.rue", "a.rue", "b.rue", "utils.rue", "-o", "prog"]
 exit_code = 3
 
 [[case]]
@@ -686,7 +706,7 @@ error_contains = ["E0460", "function `secret` is private (defined in `sub/lib.ru
 
 [[case]]
 name = "private_fn_cross_dir_unqualified_rejected_when_also_listed"
-description = "Privacy does not depend on how the file was loaded: a file both listed on the CLI and imported is still private cross-directory (E0460)."
+description = "RUE-434: a file both listed on the CLI and imported is rejected before legacy flat name resolution runs."
 args = ["main.rue", "sub/lib.rue", "-o", "prog"]
 files = [
     { path = "main.rue", source = """
@@ -703,7 +723,7 @@ fn secret() -> i32 {
 """ },
 ]
 compile_fail = true
-error_contains = ["E0460", "function `secret` is private (defined in `sub/lib.rue`)"]
+error_contains = ["must not also be loaded through @import", "rue main.rue -o prog"]
 
 [[case]]
 name = "private_fn_same_dir_module_access_allowed"
@@ -1639,8 +1659,7 @@ exit_code = 7
 
 [[case]]
 name = "dotdot_import_reconciles_with_cli_listed_pub_fn"
-description = "RUE-317: `a/main.rue` @imports `../std/opt.rue` while `std/opt.rue` is also listed on the CLI; the pub fn member resolves through the module (single module identity, no E0707)."
-args = ["a/main.rue", "std/opt.rue", "-o", "prog"]
+description = "RUE-317: `a/main.rue` @imports `../std/opt.rue`; the pub fn member resolves through one normalized module identity."
 files = [
     { path = "a/main.rue", source = """
 fn main() -> i32 {
@@ -1658,8 +1677,7 @@ exit_code = 42
 
 [[case]]
 name = "dotdot_import_reconciles_with_cli_listed_pub_const"
-description = "RUE-317: same reconciliation for a pub const member accessed through a `../`-relative import that is also CLI-listed."
-args = ["a/main.rue", "std/opt.rue", "-o", "prog"]
+description = "RUE-317: same normalized-path reconciliation for a pub const member accessed through a `../`-relative import."
 files = [
     { path = "a/main.rue", source = """
 const opt = @import("../std/opt.rue");
@@ -1677,7 +1695,6 @@ exit_code = 7
 [[case]]
 name = "dotdot_import_unknown_member_still_errors"
 description = "RUE-317 negative control: path reconciliation must not mask a genuinely absent member — accessing a non-existent member of the reconciled module still fails with E0707."
-args = ["a/main.rue", "std/opt.rue", "-o", "prog"]
 files = [
     { path = "a/main.rue", source = """
 fn main() -> i32 {
@@ -1697,7 +1714,6 @@ error_contains = ["E0707", "has no member `nope`"]
 [[case]]
 name = "dotdot_import_private_member_cross_dir_still_rejected"
 description = "RUE-317 negative control: reconciling the path must not weaken privacy — a NON-pub member of the reconciled module in another directory is still private (E0706)."
-args = ["a/main.rue", "std/opt.rue", "-o", "prog"]
 files = [
     { path = "a/main.rue", source = """
 fn main() -> i32 {
