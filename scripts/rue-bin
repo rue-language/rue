@@ -4,13 +4,11 @@
 #
 # Buck2's `--show-output` prints a path relative to the repo root, and that
 # path contains a toolchain hash, so it is neither stable nor usable once the
-# working directory changes. This script resolves it to an absolute path,
-# refreshes a stable `bin/rue` symlink, and prints the absolute path on stdout
-# (all build chatter goes to stderr), so callers can do:
+# working directory changes. This script resolves it to an absolute path and
+# prints that path on stdout (all build chatter goes to stderr), so callers can do:
 #
 #   RUE_BINARY="$(scripts/rue-bin)"        # for the test harnesses
 #   "$(scripts/rue-bin)" prog.rue out      # to compile directly
-#   bin/rue prog.rue out                   # via the stable symlink
 #
 # Any extra arguments are passed through to `buck2 build`, e.g. a release build:
 #
@@ -38,13 +36,6 @@ abs_path="$repo_root/$rel_path"
 if [[ ! -x "$abs_path" ]]; then
     echo "rue-bin: built path is not executable: $abs_path" >&2
     exit 1
-fi
-
-# Refresh the stable symlink (only for the default/no-extra-args build, so a
-# release build doesn't clobber the debug symlink and vice versa).
-if [[ $# -eq 0 ]]; then
-    mkdir -p "$repo_root/bin"
-    ln -sfn "$abs_path" "$repo_root/bin/rue"
 fi
 
 echo "$abs_path"

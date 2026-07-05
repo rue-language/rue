@@ -9,7 +9,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 The 9 commands that cover ~90% of work here (all runnable from anywhere in the repo):
 
 ```bash
-scripts/rue build                    # build the compiler -> refreshes bin/rue symlink
+scripts/rue build                    # build the compiler and print its path
 scripts/rue exec prog.rue            # compile prog.rue to a temp file AND run it (quick check)
 RUE="$(scripts/rue-bin)"; "$RUE" a.rue b.rue -o out   # drive the real CLI (modules, multi-file)
 scripts/rue test [pattern]           # full suite (= ./test.sh): unit + spec + UI + CLI + traceability

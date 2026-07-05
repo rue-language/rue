@@ -3,7 +3,7 @@
 # rue — convenience wrapper around the common Buck2 targets, so you don't have
 # to memorize `//crates/...` paths. Run from anywhere in the repo.
 #
-#   scripts/rue build              Build the compiler (refreshes bin/rue)
+#   scripts/rue build              Build the compiler and print its path
 #   scripts/rue run prog.rue out   Compile a program (then run ./out yourself)
 #   scripts/rue exec prog.rue      Compile prog.rue to a temp file AND run it
 #   scripts/rue test [pattern]     Full suite (./test.sh), optional filter
@@ -26,8 +26,8 @@ shift || true
 
 case "$cmd" in
     build)
-        scripts/rue-bin "$@" >/dev/null
-        echo "Built: bin/rue -> $(readlink bin/rue)"
+        bin="$(scripts/rue-bin "$@")"
+        echo "Built: $bin"
         ;;
     path)
         scripts/rue-bin "$@"

@@ -15,8 +15,8 @@
 //! Determinism: programs are a pure function of their `u64` seed, so the fuzzer
 //! is fully reproducible (`fuzz --start S --seeds 1` re-runs exactly seed `S`).
 //!
-//! The compiler binary is located via `RUE_BINARY` (what `scripts/rue` /
-//! `test.sh` set) or the `bin/rue` symlink, mirroring `rue-test-runner`.
+//! The compiler binary is located via `RUE_BINARY`, which `scripts/rue`,
+//! `test.sh`, and Buck test targets set from `scripts/rue-bin`.
 
 use crate::generator;
 use rue_oracle::run_source;
@@ -99,22 +99,14 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
 }
 
 /// Locate the `rue` compiler binary the same way the rest of the test harness
-/// does: `RUE_BINARY` override, else the `bin/rue` symlink.
+/// does: via an explicit `RUE_BINARY` override.
 fn find_rue_binary() -> Result<PathBuf, String> {
     if let Ok(p) = std::env::var("RUE_BINARY") {
         return Ok(PathBuf::from(p));
     }
-    let sym = Path::new("bin/rue");
-    if sym.exists() {
-        // Canonicalize to an absolute path: each generated program is compiled
-        // with `current_dir` set to the temp workdir, so a relative `bin/rue`
-        // would no longer resolve. (The harness normally runs with an absolute
-        // RUE_BINARY; this keeps the bare `bin/rue` fallback working too.)
-        return Ok(sym.canonicalize().unwrap_or_else(|_| sym.to_path_buf()));
-    }
     Err(
         "cannot locate the rue compiler: set RUE_BINARY to an explicit path, \
-         or run `scripts/rue build` to refresh the bin/rue symlink"
+         for example `RUE_BINARY=$(scripts/rue-bin)`"
             .to_string(),
     )
 }
