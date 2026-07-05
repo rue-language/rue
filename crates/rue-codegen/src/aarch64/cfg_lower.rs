@@ -3824,73 +3824,7 @@ impl<'a> CfgLower<'a> {
         ty: Type,
         invert: bool,
     ) {
-        let result_vreg = self.mir.alloc_vreg();
-        self.value_map.insert(value, result_vreg);
-
-        let leaf_types = types::aggregate_leaf_types(self.ctx.type_pool, ty);
-
-        if leaf_types.is_empty() {
-            // Zero-slot aggregate (empty struct, zero-length array): always equal.
-            self.mir.push(Aarch64Inst::MovImm {
-                dst: Operand::Virtual(result_vreg),
-                imm: if invert { 0 } else { 1 },
-            });
-            return;
-        }
-
-        // Flattened slot vregs, one per leaf.
-        let lhs_slots = self
-            .get_or_compute_field_vregs(lhs)
-            .expect("aggregate should have slot vregs");
-        let rhs_slots = self
-            .get_or_compute_field_vregs(rhs)
-            .expect("aggregate should have slot vregs");
-        debug_assert_eq!(lhs_slots.len(), leaf_types.len());
-        debug_assert_eq!(rhs_slots.len(), leaf_types.len());
-
-        // Start with 1 (true), AND each slot comparison result.
-        self.mir.push(Aarch64Inst::MovImm {
-            dst: Operand::Virtual(result_vreg),
-            imm: 1,
-        });
-
-        for (i, leaf_ty) in leaf_types.iter().enumerate() {
-            let lhs_slot_vreg = lhs_slots[i];
-            let rhs_slot_vreg = rhs_slots[i];
-            let cmp_vreg = self.mir.alloc_vreg();
-
-            if types::slot_needs_wide_compare(*leaf_ty) {
-                self.mir.push(Aarch64Inst::Cmp64RR {
-                    src1: Operand::Virtual(lhs_slot_vreg),
-                    src2: Operand::Virtual(rhs_slot_vreg),
-                });
-            } else {
-                self.mir.push(Aarch64Inst::CmpRR {
-                    src1: Operand::Virtual(lhs_slot_vreg),
-                    src2: Operand::Virtual(rhs_slot_vreg),
-                });
-            }
-            self.mir.push(Aarch64Inst::Cset {
-                dst: Operand::Virtual(cmp_vreg),
-                cond: Cond::Eq,
-            });
-
-            // AND with accumulator
-            self.mir.push(Aarch64Inst::AndRR {
-                dst: Operand::Virtual(result_vreg),
-                src1: Operand::Virtual(result_vreg),
-                src2: Operand::Virtual(cmp_vreg),
-            });
-        }
-
-        // Invert result if needed (for !=)
-        if invert {
-            self.mir.push(Aarch64Inst::EorImm {
-                dst: Operand::Virtual(result_vreg),
-                src: Operand::Virtual(result_vreg),
-                imm: 1,
-            });
-        }
+        crate::aggregate_eq::emit_aggregate_equality(self, value, lhs, rhs, ty, invert);
     }
 
     /// Emit a call to __rue_str_eq for string-like comparison.
@@ -4843,6 +4777,58 @@ impl crate::agg_slots::SlotBackend for CfgLower<'_> {
     }
     fn emit_place_addr(&mut self, dst: VReg, place: &Place) {
         CfgLower::lower_place_addr(self, dst, place)
+    }
+}
+
+impl crate::aggregate_eq::AggregateEqBackend for CfgLower<'_> {
+    fn ctx(&self) -> &crate::cfg_lower::CfgLowerContext<'_> {
+        &self.ctx
+    }
+    fn alloc_vreg(&mut self) -> VReg {
+        self.mir.alloc_vreg()
+    }
+    fn map_value(&mut self, value: CfgValue, vreg: VReg) {
+        self.value_map.insert(value, vreg);
+    }
+    fn aggregate_slots(&mut self, value: CfgValue) -> Option<Vec<VReg>> {
+        self.get_or_compute_field_vregs(value)
+    }
+    fn emit_bool_const(&mut self, dst: VReg, value: bool) {
+        self.mir.push(Aarch64Inst::MovImm {
+            dst: Operand::Virtual(dst),
+            imm: if value { 1 } else { 0 },
+        });
+    }
+    fn emit_slot_eq(&mut self, dst: VReg, lhs: VReg, rhs: VReg, wide: bool) {
+        if wide {
+            self.mir.push(Aarch64Inst::Cmp64RR {
+                src1: Operand::Virtual(lhs),
+                src2: Operand::Virtual(rhs),
+            });
+        } else {
+            self.mir.push(Aarch64Inst::CmpRR {
+                src1: Operand::Virtual(lhs),
+                src2: Operand::Virtual(rhs),
+            });
+        }
+        self.mir.push(Aarch64Inst::Cset {
+            dst: Operand::Virtual(dst),
+            cond: Cond::Eq,
+        });
+    }
+    fn emit_bool_and(&mut self, acc: VReg, rhs: VReg) {
+        self.mir.push(Aarch64Inst::AndRR {
+            dst: Operand::Virtual(acc),
+            src1: Operand::Virtual(acc),
+            src2: Operand::Virtual(rhs),
+        });
+    }
+    fn emit_bool_not(&mut self, value: VReg) {
+        self.mir.push(Aarch64Inst::EorImm {
+            dst: Operand::Virtual(value),
+            src: Operand::Virtual(value),
+            imm: 1,
+        });
     }
 }
 
