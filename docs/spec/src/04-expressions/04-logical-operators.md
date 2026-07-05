@@ -12,7 +12,7 @@ Logical operators operate on `bool` values and produce `bool` results.
 
 ## Logical NOT
 
-{{ rule(id="4.4:2", cat="normative") }}
+{{ rule(id="4.4:2", cat="dynamic-semantics") }}
 
 The logical NOT operator `!` takes a single `bool` operand and produces a
 `bool`: the result is `true` when the operand is `false` and `false` when the
@@ -32,11 +32,11 @@ fn main() -> i32 {
 
 ## Logical AND
 
-{{ rule(id="4.4:4", cat="normative") }}
+{{ rule(id="4.4:4", cat="dynamic-semantics") }}
 
 The logical AND operator `&&` returns `true` if both operands are `true`.
 
-{{ rule(id="4.4:5", cat="normative") }}
+{{ rule(id="4.4:5", cat="dynamic-semantics") }}
 
 The `&&` operator uses short-circuit evaluation: if the left operand is `false`, the right operand is not evaluated. This short-circuiting is why the core calculus carries no `&&` form of its own: elaboration removes the sugar by lowering `a && b` to an `if` that evaluates the right operand only on the branch the left operand selects (core calculus `docs/formal/01-core-calculus.md` §1; the taken-branch-only evaluation is §6.2).
 
@@ -51,11 +51,11 @@ fn main() -> i32 {
 
 ## Logical OR
 
-{{ rule(id="4.4:7", cat="normative") }}
+{{ rule(id="4.4:7", cat="dynamic-semantics") }}
 
 The logical OR operator `||` returns `true` if either operand is `true`.
 
-{{ rule(id="4.4:8", cat="normative") }}
+{{ rule(id="4.4:8", cat="dynamic-semantics") }}
 
 The `||` operator uses short-circuit evaluation: if the left operand is `true`, the right operand is not evaluated. As with `&&`, the core calculus carries no `||` form: elaboration lowers `a || b` to an `if` that evaluates the right operand only on the branch the left operand selects (core calculus `docs/formal/01-core-calculus.md` §1; the taken-branch-only evaluation is §6.2).
 
