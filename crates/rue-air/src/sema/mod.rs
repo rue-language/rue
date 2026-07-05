@@ -11,8 +11,7 @@
 //! - [`declarations`] - Declaration gathering (register_type_names, resolve_declarations)
 //! - [`builtins`] - Built-in type injection (String, etc.)
 //! - [`typeck`] - Type resolution and checking helpers
-//! - [`analysis`] - Function analysis and type inference coordination
-//! - [`airgen`] - RIR instruction to AIR instruction lowering
+//! - [`analysis`] - Function analysis, type inference coordination, and RIR-to-AIR lowering
 //! - [`info`] - Function, method, and constant info types
 //! - [`gather`] - Declaration gathering output
 //! - [`output`] - Semantic analysis output types
@@ -26,7 +25,6 @@
 //! - [`Sema::analyze_all`] - Perform full semantic analysis
 //! - [`Sema::analyze_all_bodies`] - Analyze function bodies after declarations
 
-mod airgen;
 mod analysis;
 mod analyze_ops;
 mod anon_structs;
