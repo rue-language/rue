@@ -34,20 +34,11 @@ use crate::{
 };
 use rue_span::FileId;
 
-/// Result of parsing a single file within a compilation unit.
-#[derive(Debug)]
-struct ParsedFileData {
-    /// Path to the source file.
-    path: String,
-    /// The parsed abstract syntax tree.
-    ast: Ast,
-}
-
 /// A unified compilation unit that owns all artifacts from source to machine code.
 ///
 /// The compilation unit progresses through phases:
 /// 1. **New**: Just source files
-/// 2. **Parsed**: ASTs and interner from parsing
+/// 2. **Parsed**: merged AST and interner from parsing
 /// 3. **Lowered**: RIR (untyped intermediate representation)
 /// 4. **Analyzed**: AIR (typed IR) and CFGs for all functions
 ///
@@ -70,8 +61,6 @@ pub struct CompilationUnit<'src> {
     sources: Vec<SourceFile<'src>>,
 
     // === Phase 1: Parsing ===
-    /// Parsed ASTs for each file (populated by `parse()`).
-    parsed_files: Option<Vec<ParsedFileData>>,
     /// Merged AST containing all items (populated by `parse()`).
     merged_ast: Option<Ast>,
     /// String interner shared across all files.
@@ -114,7 +103,6 @@ impl<'src> CompilationUnit<'src> {
         Self {
             options,
             sources,
-            parsed_files: None,
             merged_ast: None,
             interner: None,
             file_paths,
@@ -186,10 +174,7 @@ impl<'src> CompilationUnit<'src> {
 
             info!(item_count = ast.items.len(), "parsing complete");
 
-            parsed_files.push(ParsedFileData {
-                path: source.path.to_string(),
-                ast,
-            });
+            parsed_files.push((source.path.to_string(), ast));
         }
 
         if !errors.is_empty() {
@@ -199,7 +184,6 @@ impl<'src> CompilationUnit<'src> {
         // Merge symbols and check for duplicates
         let merged_ast = self.merge_symbols(&parsed_files, &interner)?;
 
-        self.parsed_files = Some(parsed_files);
         self.merged_ast = Some(merged_ast);
         self.interner = Some(interner);
 
@@ -209,13 +193,13 @@ impl<'src> CompilationUnit<'src> {
     /// Merge symbols from all parsed files, checking for duplicates.
     fn merge_symbols(
         &self,
-        files: &[ParsedFileData],
+        files: &[(String, Ast)],
         interner: &ThreadedRodeo,
     ) -> MultiErrorResult<Ast> {
         let _span = info_span!("merge_symbols", file_count = files.len()).entered();
 
         let check = crate::detect_duplicate_symbols(
-            files.iter().map(|f| (f.path.as_str(), &f.ast)),
+            files.iter().map(|(path, ast)| (path.as_str(), ast)),
             interner,
         );
 
@@ -225,7 +209,7 @@ impl<'src> CompilationUnit<'src> {
 
         let all_items: Vec<_> = files
             .iter()
-            .flat_map(|file| file.ast.items.iter().cloned())
+            .flat_map(|(_, ast)| ast.items.iter().cloned())
             .collect();
 
         info!(
