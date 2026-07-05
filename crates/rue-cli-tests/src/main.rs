@@ -430,6 +430,24 @@ fn run_case(
         }
     }
 
+    for expected in &case.compile_stdout_contains {
+        if !compile_stdout.contains(expected) {
+            return Err(format!(
+                "compiler stdout mismatch:\n  expected to contain: {}\n--- actual stdout ---\n{}",
+                expected, compile_stdout
+            ));
+        }
+    }
+
+    for forbidden in &case.compile_stdout_not_contains {
+        if compile_stdout.contains(forbidden) {
+            return Err(format!(
+                "compiler stdout contained forbidden substring: {}\n--- actual stdout ---\n{}",
+                forbidden, compile_stdout
+            ));
+        }
+    }
+
     let compile_succeeded = compile_output.status.success();
 
     if case.compile_fail {
@@ -454,24 +472,6 @@ fn run_case(
             compile_stdout,
             compile_stderr
         ));
-    }
-
-    for expected in &case.compile_stdout_contains {
-        if !compile_stdout.contains(expected) {
-            return Err(format!(
-                "compiler stdout mismatch:\n  expected to contain: {}\n--- actual stdout ---\n{}",
-                expected, compile_stdout
-            ));
-        }
-    }
-
-    for forbidden in &case.compile_stdout_not_contains {
-        if compile_stdout.contains(forbidden) {
-            return Err(format!(
-                "compiler stdout contained forbidden substring: {}\n--- actual stdout ---\n{}",
-                forbidden, compile_stdout
-            ));
-        }
     }
 
     if case.compile_only {
