@@ -493,6 +493,91 @@ pub fn twenty() -> i32 {
 ]
 exit_code = 30
 
+# ---------------------------------------------------------------------------
+# Root-module graph dogfood (RUE-425 / RUE-424).
+#
+# These fixtures compile only main.rue. All other files are present on disk for
+# @import discovery, which is the user-facing root-module workflow RUE-424 wants
+# to dogfood. The graph combines repeated local alias names in different
+# directories, a nested directory-module facade, and private helper boundaries.
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "root_module_graph_multidir_facade_reexports"
+description = "A root-only compile discovers a multi-directory graph with duplicate local aliases and a nested facade re-export chain."
+files = [
+    { path = "main.rue", source = """
+const app = @import("app");
+
+fn main() -> i32 {
+    @dbg(app.run());
+    0
+}
+""" },
+    { path = "app/_app.rue", source = """
+pub const left = @import("left/entry.rue");
+pub const right = @import("right/entry.rue");
+pub const nested = @import("nested");
+
+pub fn run() -> i32 {
+    left.left_value() + right.right_value() + nested.math.abs(0 - 5)
+}
+""" },
+    { path = "app/left/entry.rue", source = """
+const helper = @import("helper.rue");
+
+pub fn left_value() -> i32 {
+    helper.left_local_value()
+}
+""" },
+    { path = "app/left/helper.rue", source = """
+fn left_local_value() -> i32 {
+    10
+}
+""" },
+    { path = "app/right/entry.rue", source = """
+const helper = @import("helper.rue");
+
+pub fn right_value() -> i32 {
+    helper.right_local_value()
+}
+""" },
+    { path = "app/right/helper.rue", source = """
+fn right_local_value() -> i32 {
+    20
+}
+""" },
+    { path = "app/nested/_nested.rue", source = """
+pub const math = @import("math.rue");
+""" },
+    { path = "app/nested/math.rue", source = """
+pub fn abs(x: i32) -> i32 {
+    if x < 0 { 0 - x } else { x }
+}
+""" },
+]
+stdout = "35\n"
+
+[[case]]
+name = "root_module_graph_private_helper_not_visible_from_root"
+description = "A private helper loaded as part of the root module graph is not callable across the directory boundary."
+files = [
+    { path = "main.rue", source = """
+const helper = @import("app/left/helper.rue");
+
+fn main() -> i32 {
+    helper.local_value()
+}
+""" },
+    { path = "app/left/helper.rue", source = """
+fn local_value() -> i32 {
+    10
+}
+""" },
+]
+compile_fail = true
+error_contains = ["E0706", "function `local_value` is private"]
+
 [[case]]
 name = "duplicate_import_binding_same_file_still_errors"
 description = "Per-file scoping does not excuse a duplicate binding WITHIN one file: still E0418."
