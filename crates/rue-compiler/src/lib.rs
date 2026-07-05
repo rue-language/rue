@@ -995,7 +995,7 @@ pub fn configure_thread_pool(jobs: usize) {
 /// Compile multiple source files to an ELF binary.
 ///
 /// This is the main entry point for multi-file compilation. It:
-/// 1. Parses all files in parallel
+/// 1. Parses all files sequentially with a shared interner
 /// 2. Merges symbols into a unified program
 /// 3. Performs semantic analysis across all files
 /// 4. Generates code for the combined program
@@ -3504,8 +3504,8 @@ mod integration_tests {
         }
 
         #[test]
-        fn parse_many_files_in_parallel() {
-            // Create 10 files to exercise parallel parsing
+        fn parse_many_files_with_shared_interner() {
+            // Create 10 files to exercise multi-file parsing with the shared interner.
             let sources: Vec<_> = (1..=10)
                 .map(|i| {
                     SourceFile::new(
