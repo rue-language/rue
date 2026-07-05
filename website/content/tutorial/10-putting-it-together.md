@@ -6,122 +6,116 @@ template = "tutorial/page.html"
 
 # Putting It Together
 
-Let's combine everything we've learned into a complete program: Quicksort.
+Let's combine the pieces from the tutorial into a small command-line program:
+read integers from standard input, then print how many were read, their sum, and
+the maximum value.
 
-## The Algorithm
+This is closer to the kind of program Rue is trying to make pleasant than a
+fixed-size algorithm demo. It uses input, parsing, optional values, matching,
+loops, mutable accumulator state, string concatenation, and `println`.
 
-Quicksort is a classic divide-and-conquer sorting algorithm:
-1. Pick a "pivot" element
-2. Partition the array so elements less than the pivot come before it
-3. Recursively sort the left and right partitions
-
-## The Implementation
+## The Program
 
 ```rue check
-fn partition(inout arr: [i32; 5], lo: u64, hi: u64) -> u64 {
-    let pivot = arr[hi];
-    let mut i = lo;
-    let mut j = lo;
-
-    while j < hi {
-        if arr[j] <= pivot {
-            // Swap arr[i] and arr[j]
-            let tmp = arr[i];
-            arr[i] = arr[j];
-            arr[j] = tmp;
-            i = i + 1;
-        }
-        j = j + 1;
-    }
-
-    // Move pivot to its final position
-    let tmp = arr[i];
-    arr[i] = arr[hi];
-    arr[hi] = tmp;
-    i
+fn Option(comptime T: type) -> type {
+    enum { Some(T), None }
 }
 
-fn quicksort(inout arr: [i32; 5], lo: u64, hi: u64) {
-    if lo < hi {
-        let p = partition(inout arr, lo, hi);
-        if p > lo {
-            quicksort(inout arr, lo, p - 1);
-        }
-        quicksort(inout arr, p + 1, hi);
-    }
+fn read_num() -> Option(i64) {
+    let line = @read_line()?;
+    @parse_i64(line)
 }
 
 fn main() -> i32 {
-    let mut nums = [64, 25, 12, 22, 11];
+    let OptInt = Option(i64);
 
-    // Print before sorting
-    @dbg(nums[0]);
-    @dbg(nums[1]);
-    @dbg(nums[2]);
-    @dbg(nums[3]);
-    @dbg(nums[4]);
+    let mut count: i64 = 0;
+    let mut sum: i64 = 0;
+    let mut max: OptInt = OptInt::None;
 
-    quicksort(inout nums, 0, 4);
+    loop {
+        match read_num() {
+            OptInt::Some(x) => {
+                count = count + 1;
+                sum = sum + x;
+                max = match max {
+                    OptInt::None => OptInt::Some(x),
+                    OptInt::Some(m) => if x > m { OptInt::Some(x) } else { OptInt::Some(m) },
+                };
+            },
+            OptInt::None => break,
+        }
+    }
 
-    // Print after sorting
-    @dbg(0);  // separator
-    @dbg(nums[0]);
-    @dbg(nums[1]);
-    @dbg(nums[2]);
-    @dbg(nums[3]);
-    @dbg(nums[4]);
+    println("count: " + @to_string(count));
+    println("sum: " + @to_string(sum));
+    match max {
+        OptInt::Some(m) => println("max: " + @to_string(m)),
+        OptInt::None => println("max: (no input)"),
+    }
 
-    nums[0]  // Returns 11 (smallest)
+    @intCast(count)
 }
 ```
 
-## What This Demonstrates
+## What It Does
 
-This example uses almost everything from the tutorial:
+The program reads one line at a time:
 
-- **Functions**: `partition` and `quicksort` with parameters and return values
-- **Variables**: Both mutable (`let mut`) and immutable (`let`)
-- **Control flow**: `if` conditions and `while` loops
-- **Arrays**: Fixed-size arrays with indexing
-- **Inout parameters**: Modifying the array in place
-- **Recursion**: `quicksort` calls itself
+- `@read_line()` returns `Option(StrBuf)`: `Some(line)` for input, `None` at EOF.
+- `@parse_i64(line)` returns `Option(i64)`: `Some(n)` for a valid integer,
+  `None` for a line that is not an `i64`.
+- The `?` operator in `read_num` returns early with `None` if either operation
+  fails.
+
+The main loop stops on the first `None`. That means it reads numbers until
+end-of-input or the first non-number line.
 
 ## Running It
 
+Save the program as `stats.rue`, then run it with the repository wrapper:
+
 ```bash
-./buck2 run //crates/rue:rue -- quicksort.rue quicksort
-./quicksort
+printf '7\n5\n1\n' | scripts/rue exec stats.rue
 ```
 
 Output:
-```
-64
-25
-12
-22
-11
-0
-11
-12
-22
-25
-64
+
+```text
+count: 3
+sum: 13
+max: 7
 ```
 
-The array is sorted!
+This version returns the count as its process exit code, so the sample run exits
+with status `3` after printing the output above.
+
+The complete checked-in version lives at
+[`examples/first/stats.rue`](https://github.com/rue-language/rue/blob/trunk/examples/first/stats.rue).
+
+## Current Rough Edges
+
+There is no prelude yet, so `Option` is not automatically in scope. This example
+defines a small generic `Option(T)` inline because `read_num` names
+`Option(i64)` in its return type. As the standard library and type-position
+imports mature, tutorial code should move toward the explicit standard-library
+form taught in the modules and arrays chapters.
 
 ## More Examples
 
-The [GitHub repository](https://github.com/rue-language/rue) has more examples in the `examples/` directory:
+The [GitHub repository](https://github.com/rue-language/rue) has more examples
+in the `examples/` directory:
 
-- `fibonacci.rue` - Iterative and recursive Fibonacci
-- `primes.rue` - Prime number sieve with trial division
-- `binary_search.rue` - Binary search on a sorted array
-- `quicksort.rue` - Full quicksort with 10-element arrays
-- `structs.rue` - Working with Points and Rectangles
+- `examples/first/stats.rue` - Streaming integer statistics
+- `examples/std/arraybuf_demo.rue` - Growable buffers with `std.arraybuf.ArrayBuf`
+- `examples/fibonacci.rue` - Iterative and recursive Fibonacci
+- `examples/binary_search.rue` - Binary search on a sorted array
+- `examples/structs.rue` - Working with points and rectangles
 
 ## Next Steps
 
-You've learned the core of Rue! For the complete language reference, read the [Language Specification](/spec/).
+You've learned the current core of Rue. For the complete language reference,
+read the [Language Specification](/spec/).
 
-Rue is still in early development. If you find bugs or have ideas, please [file an issue](https://github.com/rue-language/rue/issues)!
+Rue is still in early development. If you find bugs or have ideas, please
+[file an issue](https://github.com/rue-language/rue/issues).
