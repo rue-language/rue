@@ -115,6 +115,10 @@ impl StackVerifyAdapter for X86StackVerifyAdapter<'_> {
         }
     }
 
+    fn is_return(&self, inst: &Self::Inst) -> bool {
+        matches!(inst, X86Inst::Ret)
+    }
+
     fn alignment_violation(&self, inst: &Self::Inst, current_depth: i64) -> Option<String> {
         match inst {
             X86Inst::CallRel { .. } => {
@@ -324,5 +328,36 @@ mod tests {
 
         let result = verify_stack_alignment(&mir);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_unbalanced_push_before_return_fails() {
+        let mir = make_mir(vec![
+            X86Inst::Push {
+                src: Operand::Physical(Reg::Rax),
+            },
+            X86Inst::Ret,
+        ]);
+
+        let result = verify_stack_alignment(&mir);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("balanced stack depth"));
+    }
+
+    #[test]
+    fn test_unbalanced_sub_rsp_before_return_fails() {
+        let mir = make_mir(vec![
+            X86Inst::AddRI {
+                dst: Operand::Physical(Reg::Rsp),
+                imm: -8,
+            },
+            X86Inst::Ret,
+        ]);
+
+        let result = verify_stack_alignment(&mir);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("balanced stack depth"));
     }
 }
