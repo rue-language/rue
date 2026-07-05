@@ -22,7 +22,8 @@ fn main() -> i32 {
 }
 ```
 
-Array indices are zero-based and must be `u64`.
+Array indices are zero-based and must have an integer type. Loop examples often
+use `u64` because lengths are represented as `u64`.
 
 ## Array Types
 
@@ -108,3 +109,47 @@ fn main() -> i32 {
     max
 }
 ```
+
+## Fixed Arrays vs Growable Buffers
+
+Fixed arrays are best when the length is known at compile time. Their length is
+part of the type: `[i32; 3]` and `[i32; 5]` are different types.
+
+When you need a collection that grows at runtime, use the standard library's
+`ArrayBuf(T)`. Import the standard library explicitly and access the buffer
+through the `std.arraybuf` namespace:
+
+```rue check
+const std = @import("std");
+
+fn main() -> i32 {
+    let Buffer = std.arraybuf.ArrayBuf(i32);
+    let MaybeI32 = std.option.Option(i32);
+
+    let mut values = Buffer::new();
+    values.push(10);
+    values.push(20);
+    values.push(30);
+
+    println("len = " + @to_string(values.len()));
+
+    let second = match values.get(1) {
+        MaybeI32::Some(n) => n,
+        MaybeI32::None => -1,
+    };
+    println("second = " + @to_string(second));
+
+    second
+}
+```
+
+`ArrayBuf(i32)` owns heap storage and frees it automatically when the buffer is
+dropped. Its `get` method returns `Option(i32)` rather than trapping:
+
+- `Option::Some(value)` means the index was in bounds.
+- `Option::None` means there was no element at that index.
+
+Use fixed arrays for small, known-size data and `ArrayBuf(T)` when the program
+discovers the number of elements as it runs. The slice and growable string parts
+of Rue's collection/string design are still in progress, so this tutorial keeps
+to the implemented fixed-array and `ArrayBuf` path.

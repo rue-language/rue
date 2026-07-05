@@ -98,7 +98,20 @@ def collect_snippets(root: Path) -> tuple[list[Snippet], int]:
     return snippets, unmarked_rue_fences
 
 
-def compile_snippet(rue_binary: str, snippet: Snippet, tempdir: Path) -> subprocess.CompletedProcess[str]:
+def snippet_env() -> dict[str, str]:
+    env = os.environ.copy()
+    std_path = Path("std")
+    if std_path.is_dir():
+        env.setdefault("RUE_STD_PATH", str(std_path.resolve()))
+    return env
+
+
+def compile_snippet(
+    rue_binary: str,
+    snippet: Snippet,
+    tempdir: Path,
+    env: dict[str, str],
+) -> subprocess.CompletedProcess[str]:
     source_path = tempdir / f"{snippet.path.stem}-{snippet.line}.rue"
     output_path = tempdir / f"{snippet.path.stem}-{snippet.line}"
     source_path.write_text(snippet.source, encoding="utf-8")
@@ -108,6 +121,7 @@ def compile_snippet(rue_binary: str, snippet: Snippet, tempdir: Path) -> subproc
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        env=env,
         check=False,
     )
 
@@ -149,10 +163,11 @@ def main() -> int:
     rue_binary = find_rue_binary()
 
     failures = 0
+    env = snippet_env()
     with tempfile.TemporaryDirectory(prefix="rue-tutorial-snippets-") as temp:
         tempdir = Path(temp)
         for snippet in snippets:
-            result = compile_snippet(rue_binary, snippet, tempdir)
+            result = compile_snippet(rue_binary, snippet, tempdir, env)
             compiled = result.returncode == 0
             expected_success = snippet.action == "check"
 
