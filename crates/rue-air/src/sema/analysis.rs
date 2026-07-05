@@ -469,6 +469,24 @@ fn analyze_all_function_bodies_sequential(sema: &mut Sema<'_>) -> MultiErrorResu
         }
     }
 
+    finalize_function_body_analysis(
+        sema,
+        &infer_ctx,
+        functions_with_strings,
+        all_warnings,
+        &referenced_functions,
+        errors,
+    )
+}
+
+fn finalize_function_body_analysis(
+    sema: &mut Sema<'_>,
+    infer_ctx: &InferenceContext,
+    functions_with_strings: Vec<(AnalyzedFunction, Vec<String>)>,
+    mut all_warnings: Vec<CompileWarning>,
+    unused_function_roots: &HashSet<Spur>,
+    mut errors: CompileErrors,
+) -> MultiErrorResult<SemaOutput> {
     // Merge strings from all functions into a global table with deduplication.
     let mut global_string_table: HashMap<String, u32> = HashMap::new();
     let mut global_strings: Vec<String> = Vec::new();
@@ -494,7 +512,7 @@ fn analyze_all_function_bodies_sequential(sema: &mut Sema<'_>) -> MultiErrorResu
         functions.push(analyzed);
     }
 
-    add_unused_function_warnings(sema, &referenced_functions, &mut all_warnings);
+    add_unused_function_warnings(sema, unused_function_roots, &mut all_warnings);
     all_warnings.sort_by_key(|w| w.span().map(|s| s.start));
 
     let mut output = SemaOutput {
@@ -510,7 +528,7 @@ fn analyze_all_function_bodies_sequential(sema: &mut Sema<'_>) -> MultiErrorResu
 
     // Run specialization pass to rewrite CallGeneric instructions to Call
     // and create specialized function bodies
-    if let Err(e) = crate::specialize::specialize(&mut output, sema, &infer_ctx, sema.interner) {
+    if let Err(e) = crate::specialize::specialize(&mut output, sema, infer_ctx, sema.interner) {
         errors.push(e);
     }
 
@@ -953,55 +971,14 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
         }
     }
 
-    // Merge strings from all functions into a global table with deduplication.
-    let mut global_string_table: HashMap<String, u32> = HashMap::new();
-    let mut global_strings: Vec<String> = Vec::new();
-
-    let mut functions: Vec<AnalyzedFunction> = Vec::new();
-    for (mut analyzed, local_strings) in functions_with_strings {
-        if !local_strings.is_empty() {
-            let local_to_global: Vec<u32> = local_strings
-                .into_iter()
-                .map(|s| {
-                    *global_string_table.entry(s.clone()).or_insert_with(|| {
-                        let id = global_strings.len() as u32;
-                        global_strings.push(s);
-                        id
-                    })
-                })
-                .collect();
-
-            analyzed
-                .air
-                .remap_string_ids(|local_id| local_to_global[local_id as usize]);
-        }
-        functions.push(analyzed);
-    }
-
-    add_unused_function_warnings(sema, &analyzed_functions, &mut all_warnings);
-    all_warnings.sort_by_key(|w| w.span().map(|s| s.start));
-
-    let mut output = SemaOutput {
-        functions,
-        strings: global_strings,
-        warnings: all_warnings,
-        // Provisional: refreshed after specialization below (see the eager
-        // path's note). Specialized bodies may intern new composite types.
-        type_pool: sema.type_pool.clone(),
-    };
-
-    // Run specialization pass to rewrite CallGeneric instructions to Call
-    // and create specialized function bodies
-    if let Err(e) = crate::specialize::specialize(&mut output, sema, &infer_ctx, sema.interner) {
-        errors.push(e);
-    }
-
-    // Re-snapshot the pool after specialization so specialization-only composite
-    // types (e.g. `[i32; N]` from `let y: [T; 2]`) reach CFG/codegen; otherwise
-    // an out-of-bounds ArrayTypeId ICE'd in drop analysis (RUE-282).
-    output.type_pool = sema.type_pool.clone();
-
-    errors.into_result_with(output)
+    finalize_function_body_analysis(
+        sema,
+        &infer_ctx,
+        functions_with_strings,
+        all_warnings,
+        &analyzed_functions,
+        errors,
+    )
 }
 
 /// Reject moving `self` out of a destructor body (RUE-139).
