@@ -257,8 +257,8 @@ impl<'a> SourceFile<'a> {
 
 /// Result of parsing a single file.
 ///
-/// Contains the AST and interner from parsing. The interner contains all
-/// string literals and identifiers interned during lexing.
+/// Per-file ASTs share the [`ParsedProgram::interner`] returned by
+/// [`parse_all_files`]; there is no per-file interner state.
 #[derive(Debug)]
 pub struct ParsedFile {
     /// Path to the source file.
@@ -267,18 +267,16 @@ pub struct ParsedFile {
     pub file_id: FileId,
     /// The parsed abstract syntax tree.
     pub ast: Ast,
-    /// String interner from lexing.
-    pub interner: ThreadedRodeo,
 }
 
 /// Result of parsing all source files.
 ///
-/// Contains all parsed files and a merged interner for use in later phases.
+/// Contains all parsed files and the shared interner for use in later phases.
 #[derive(Debug)]
 pub struct ParsedProgram {
     /// Parsed files with their ASTs.
     pub files: Vec<ParsedFile>,
-    /// Merged interner containing all symbols from all files.
+    /// Shared interner containing all symbols from all files.
     pub interner: ThreadedRodeo,
 }
 
@@ -287,10 +285,6 @@ pub struct ParsedProgram {
 /// Each file is lexed and parsed sequentially with a single shared interner.
 /// This ensures Spur values are consistent across all files, enabling cross-file
 /// symbol resolution during semantic analysis.
-///
-/// Note: This uses sequential parsing rather than parallel to share the interner.
-/// A future optimization could add parallel parsing with interner merging and
-/// AST Spur remapping.
 ///
 /// # Arguments
 ///
@@ -353,9 +347,6 @@ pub fn parse_all_files(sources: &[SourceFile<'_>]) -> MultiErrorResult<ParsedPro
             path: source.path.to_string(),
             file_id: source.file_id,
             ast,
-            // Note: interner is shared, but we store a dummy here for API compatibility
-            // The real interner is in the returned ParsedProgram
-            interner: ThreadedRodeo::new(),
         });
     }
 
@@ -371,13 +362,13 @@ pub fn parse_all_files(sources: &[SourceFile<'_>]) -> MultiErrorResult<ParsedPro
 
 /// Result of merging symbols from multiple parsed files.
 ///
-/// Contains a merged AST with all items from all files and the merged interner.
+/// Contains a merged AST with all items from all files and the shared interner.
 /// Used as input to RIR generation for multi-file compilation.
 #[derive(Debug)]
 pub struct MergedProgram {
     /// The merged AST containing items from all files.
     pub ast: Ast,
-    /// Merged interner containing all symbols from all files.
+    /// Shared interner containing all symbols from all files.
     pub interner: ThreadedRodeo,
 }
 
@@ -3618,7 +3609,7 @@ mod integration_tests {
 
             let program = parse_all_files(&sources).unwrap();
 
-            // The merged interner should contain both "foo" and "bar"
+            // The shared interner should contain both "foo" and "bar"
             let has_foo = program.interner.iter().any(|(_, s)| s == "foo");
             let has_bar = program.interner.iter().any(|(_, s)| s == "bar");
 
