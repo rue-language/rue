@@ -74,7 +74,7 @@ fn main() -> i32 {
 
 {{ rule(id="4.1:10", cat="normative") }}
 
-A string literal is a sequence of characters enclosed in double quotes, of type `String`.
+A string literal is a sequence of characters enclosed in double quotes, of type `StrBuf`.
 
 {{ rule(id="4.1:11", cat="normative") }}
 

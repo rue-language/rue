@@ -46,13 +46,13 @@ User-defined type names (structs and enums) **MUST** be unique within a program.
 
 {{ rule(id="6.0:3", cat="legality-rule") }}
 
-User-defined types **MUST NOT** use names reserved for built-in types. Currently, the only reserved type name is `String`.
+User-defined types **MUST NOT** use names reserved for built-in types. Currently, the reserved growable-string type names are `StrBuf` and its deprecated alias `String`.
 
 {{ rule(id="6.0:4", cat="example") }}
 
 ```rue
 // Error: cannot define type with reserved name
-struct String { data: i32 }  // compile error
+struct StrBuf { data: i32 }  // compile error
 ```
 
 {{ rule(id="6.0:5", cat="legality-rule") }}

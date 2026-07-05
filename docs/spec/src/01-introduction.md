@@ -72,7 +72,7 @@ Beyond the paragraph categories above, this specification classifies the *behavi
 
 {{ rule(id="1.3:6", cat="informative") }}
 
-**Implementation-defined behavior** is behavior for which this specification permits a set of possibilities and requires the implementation to choose one and **document** its choice. Examples: the growth strategy and resulting capacity of `String` (3.7); the in-memory layout of struct and array types (3.6); the width of `usize` and `isize` on a target (3.1); and the implementation limits of Appendix C.
+**Implementation-defined behavior** is behavior for which this specification permits a set of possibilities and requires the implementation to choose one and **document** its choice. Examples: the growth strategy and resulting capacity of `StrBuf` (3.7); the in-memory layout of struct and array types (3.6); the width of `usize` and `isize` on a target (3.1); and the implementation limits of Appendix C.
 
 {{ rule(id="1.3:7", cat="informative") }}
 
