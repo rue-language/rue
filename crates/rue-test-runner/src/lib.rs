@@ -1797,23 +1797,19 @@ pub fn find_dir(env_var: &str, possible_paths: &[&str], fallback: &str) -> PathB
 /// this function selects the most recently modified binary to avoid using
 /// stale binaries from previous builds.
 pub fn find_rue_binary() -> PathBuf {
-    // 1. Explicit override — what test.sh and scripts/rue always set.
+    // Explicit override — what test.sh, Buck targets, and scripts/rue set.
     if let Ok(p) = std::env::var("RUE_BINARY") {
         return PathBuf::from(p);
     }
-    // 2. The stable symlink maintained by `scripts/rue build`.
-    let bin_rue = Path::new("bin/rue");
-    if bin_rue.exists() {
-        return bin_rue.to_path_buf();
-    }
-    // 3. Refuse to guess. The old fallback globbed every buck-out config-hash
+    // Refuse to guess. The old fallback globbed every buck-out config-hash
     // directory and picked the NEWEST binary by mtime — with debug/release/
     // historical configs side by side, that silently selected the wrong
-    // compiler and produced false test failures (a real incident). Guessing
-    // wrong silently is strictly worse than failing loudly.
+    // compiler and produced false test failures (a real incident). A repo-local
+    // bin/rue symlink had the same stale-binary and source-tree-churn risk.
+    // Guessing wrong silently is strictly worse than failing loudly.
     panic!(
         "cannot locate the rue compiler: set RUE_BINARY to an explicit path, \
-         or run `scripts/rue build` to refresh the bin/rue symlink"
+         for example `RUE_BINARY=$(scripts/rue-bin)`"
     );
 }
 

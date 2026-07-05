@@ -8,7 +8,7 @@ load("//crates:defs.bzl", "rue_binary")
 #    programs and cross-checks the oracle against the real compiler + native
 #    binary, reporting any exit/stdout disagreement as a miscompile with a
 #    seed-based repro. Driven by `.github/workflows/fuzz.yml` nightly; needs the
-#    `rue` binary via RUE_BINARY (or the bin/rue symlink).
+#    `rue` binary via RUE_BINARY.
 # The harness driver itself has no #[test] functions — it IS the harness — but
 # the `generator` module carries unit tests (determinism + always-emits-main),
 # so the rust_test target (`:rue-oracle-diff-test`) is kept enabled.
