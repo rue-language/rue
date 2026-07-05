@@ -42,7 +42,8 @@
 //! - `stdin`: piped to the compiled program when it runs
 //! - `compile_fail` + `error_contains`: expect compilation failure
 //! - `compile_only`: don't run the produced binary
-//! - `compile_stdout_contains`: assert on compiler stdout (e.g. `--emit`)
+//! - `compile_stdout_contains`: substrings that must appear in compiler stdout (e.g. `--emit`)
+//! - `compile_stdout_not_contains`: substrings that must not appear in compiler stdout
 //! - `stdout` / `stdout_contains`: assert on the program's stdout
 //! - `runtime_error_contains`: assert on the program's stderr
 //! - `exit_code`: expected program exit code (default 0)
@@ -263,6 +264,9 @@ struct Case {
     /// Substrings expected in the compiler's stdout (e.g. `--emit` output).
     #[serde(default)]
     compile_stdout_contains: Vec<String>,
+    /// Substrings that must NOT appear in the compiler's stdout.
+    #[serde(default)]
+    compile_stdout_not_contains: Vec<String>,
     /// Substrings that MUST appear in the compiler's stderr, regardless of
     /// whether compilation succeeds or fails. Use for warnings that must
     /// survive a successful compile (e.g. under `--emit`).
@@ -457,6 +461,15 @@ fn run_case(
             return Err(format!(
                 "compiler stdout mismatch:\n  expected to contain: {}\n--- actual stdout ---\n{}",
                 expected, compile_stdout
+            ));
+        }
+    }
+
+    for forbidden in &case.compile_stdout_not_contains {
+        if compile_stdout.contains(forbidden) {
+            return Err(format!(
+                "compiler stdout contained forbidden substring: {}\n--- actual stdout ---\n{}",
+                forbidden, compile_stdout
             ));
         }
     }
