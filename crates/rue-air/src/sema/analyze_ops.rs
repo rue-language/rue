@@ -4672,18 +4672,45 @@ impl<'a> Sema<'a> {
             span,
         });
 
-        // Runtime bounds check: `@assert(index < len)` traps (exit 101) when the
-        // index is out of range.
-        let cond_ref = air.add_inst(AirInst {
+        // Runtime bounds check: `@assert(index >= 0); @assert(index < len)`
+        // traps (exit 101) when the index is out of range. Unsigned indices only
+        // need the upper-bound check; signed indices also need the lower-bound
+        // check so `s[-1]` cannot pass the signed `index < len` comparison and
+        // read before the backing array.
+        let lower_assert_ref = if index_result.ty.is_signed() {
+            let zero_ref = air.add_inst(AirInst {
+                data: AirInstData::Const(0),
+                ty: index_result.ty,
+                span,
+            });
+            let lower_bound_ref = air.add_inst(AirInst {
+                data: AirInstData::Ge(index_result.air_ref, zero_ref),
+                ty: Type::BOOL,
+                span,
+            });
+            let assert_args = air.add_extra(&[lower_bound_ref.as_u32()]);
+            Some(air.add_inst(AirInst {
+                data: AirInstData::Intrinsic {
+                    name: self.known.assert,
+                    args_start: assert_args,
+                    args_len: 1,
+                },
+                ty: Type::UNIT,
+                span,
+            }))
+        } else {
+            None
+        };
+        let upper_bound_ref = air.add_inst(AirInst {
             data: AirInstData::Lt(index_result.air_ref, len_ref),
             ty: Type::BOOL,
             span,
         });
-        let assert_args = air.add_extra(&[cond_ref.as_u32()]);
-        let assert_ref = air.add_inst(AirInst {
+        let upper_assert_args = air.add_extra(&[upper_bound_ref.as_u32()]);
+        let upper_assert_ref = air.add_inst(AirInst {
             data: AirInstData::Intrinsic {
                 name: self.known.assert,
-                args_start: assert_args,
+                args_start: upper_assert_args,
                 args_len: 1,
             },
             ty: Type::UNIT,
@@ -4715,11 +4742,16 @@ impl<'a> Sema<'a> {
         // Demand-driven lowering only pulls the returned value's dependencies,
         // so the bounds-check assertion (a pure side effect) must be an explicit
         // statement of the block that yields the element.
-        let stmts = air.add_extra(&[assert_ref.as_u32()]);
+        let stmt_refs: Vec<u32> = lower_assert_ref
+            .into_iter()
+            .chain(std::iter::once(upper_assert_ref))
+            .map(AirRef::as_u32)
+            .collect();
+        let stmts = air.add_extra(&stmt_refs);
         let block_ref = air.add_inst(AirInst {
             data: AirInstData::Block {
                 stmts_start: stmts,
-                stmts_len: 1,
+                stmts_len: stmt_refs.len() as u32,
                 value: elem_ref,
             },
             ty: elem_ty,

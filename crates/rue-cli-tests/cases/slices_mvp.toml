@@ -55,6 +55,23 @@ fn main() -> i32 {
 args = ["main.rue", "--preview", "slices", "-o", "prog"]
 exit_code = 101
 
+# Signed negative indices must trap too. Slice indexing should match array
+# bounds semantics: any index below zero is out of bounds, not a huge pointer
+# offset or a read before the backing array.
+[[case]]
+name = "slice_param_negative_signed_index_traps"
+files = [{ path = "main.rue", source = """
+fn get(borrow s: [i32], i: i32) -> i32 {
+    s[i]
+}
+fn main() -> i32 {
+    let a: [i32; 3] = [10, 20, 30];
+    get(borrow a, -1)
+}
+""" }]
+args = ["main.rue", "--preview", "slices", "-o", "prog"]
+exit_code = 101
+
 # A constant read-index resolves the element position (discriminating value: the
 # middle element 5 catches an off-by-one or wrong-stride lowering).
 [[case]]
