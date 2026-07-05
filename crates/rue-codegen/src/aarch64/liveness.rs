@@ -6,6 +6,9 @@
 use std::collections::HashMap;
 
 use super::mir::{Aarch64Inst, Aarch64Mir, Operand, Reg};
+use crate::liveness::{
+    LivenessAdapter, branch_successor, conditional_successors, fallthrough_successor,
+};
 use crate::vreg::{LabelId, VReg};
 
 // Re-export shared types from the regalloc module
@@ -14,57 +17,61 @@ pub use crate::regalloc::{InstructionLiveness, LiveRange, LivenessDebugInfo, Loo
 /// Type alias for aarch64-specific liveness info.
 pub type LivenessInfo = crate::regalloc::LivenessInfo<Reg>;
 
-/// Compute liveness information for Aarch64Mir.
-///
-/// This performs proper dataflow analysis that handles control flow:
-/// 1. Build a map of labels to instruction indices
-/// 2. For each instruction, compute successors (next instruction or branch targets)
-/// 3. Do backward dataflow to compute live-in/live-out sets
-/// 4. Build live ranges from the dataflow results
-pub fn analyze(mir: &Aarch64Mir) -> LivenessInfo {
-    let instructions = mir.instructions();
-    let num_insts = instructions.len();
+struct Aarch64LivenessAdapter<'a> {
+    mir: &'a Aarch64Mir,
+}
 
-    crate::liveness::analyze(
-        instructions,
-        mir.vreg_count(),
-        get_label,
-        |idx, inst, label_to_idx| get_successors(idx, inst, label_to_idx, num_insts),
-        uses,
-        defs,
-        |inst| inst.clobbers().to_vec(),
-    )
+impl LivenessAdapter for Aarch64LivenessAdapter<'_> {
+    type Inst = Aarch64Inst;
+    type Reg = Reg;
+
+    fn instructions(&self) -> &[Self::Inst] {
+        self.mir.instructions()
+    }
+
+    fn vreg_count(&self) -> u32 {
+        self.mir.vreg_count()
+    }
+
+    fn label(&self, inst: &Self::Inst) -> Option<LabelId> {
+        get_label(inst)
+    }
+
+    fn successors(
+        &self,
+        idx: usize,
+        inst: &Self::Inst,
+        label_to_idx: &HashMap<LabelId, usize>,
+    ) -> Vec<usize> {
+        get_successors(idx, inst, label_to_idx, self.instructions().len())
+    }
+
+    fn uses(&self, inst: &Self::Inst) -> Vec<VReg> {
+        uses(inst)
+    }
+
+    fn defs(&self, inst: &Self::Inst) -> Vec<VReg> {
+        defs(inst)
+    }
+
+    fn clobbers(&self, inst: &Self::Inst) -> Vec<Self::Reg> {
+        inst.clobbers().to_vec()
+    }
+}
+
+/// Compute liveness information for Aarch64Mir.
+pub fn analyze(mir: &Aarch64Mir) -> LivenessInfo {
+    crate::liveness::analyze_adapter(&Aarch64LivenessAdapter { mir })
 }
 
 /// Compute detailed liveness debug information for Aarch64Mir.
-///
-/// This provides more detailed output than `analyze()`, including per-instruction
-/// live-in/live-out sets and def/use information. Used by `--emit liveness`.
 pub fn analyze_debug(mir: &Aarch64Mir) -> LivenessDebugInfo {
-    let instructions = mir.instructions();
-    let num_insts = instructions.len();
-
-    crate::liveness::analyze_debug::<_, Reg>(
-        instructions,
-        mir.vreg_count(),
-        get_label,
-        |idx, inst, label_to_idx| get_successors(idx, inst, label_to_idx, num_insts),
-        uses,
-        defs,
-    )
+    crate::liveness::analyze_debug_adapter(&Aarch64LivenessAdapter { mir })
 }
 
 /// Compute loop information for Aarch64Mir.
-///
-/// This detects loops by finding back-edges (jumps to earlier instructions)
-/// and returns loop depth information for each instruction.
 pub fn analyze_loops(mir: &Aarch64Mir) -> LoopInfo {
-    let instructions = mir.instructions();
-    let num_insts = instructions.len();
-
-    crate::liveness::analyze_loops(instructions, get_label, |idx, inst, label_to_idx| {
-        get_successors(idx, inst, label_to_idx, num_insts)
-    })
+    crate::liveness::analyze_loops_adapter(&Aarch64LivenessAdapter { mir })
 }
 
 // ============================================================================
@@ -88,42 +95,21 @@ fn get_successors(
 ) -> Vec<usize> {
     match inst {
         // Unconditional branch - only successor is the target
-        Aarch64Inst::B { label } => label_to_idx.get(label).copied().into_iter().collect(),
+        Aarch64Inst::B { label } => branch_successor(*label, label_to_idx),
         // Conditional branches - successor is both target and fall-through
         Aarch64Inst::BCond { label, .. }
         | Aarch64Inst::Bvs { label }
         | Aarch64Inst::Bvc { label }
         | Aarch64Inst::Cbz { label, .. }
         | Aarch64Inst::Cbnz { label, .. } => {
-            let mut succs = Vec::with_capacity(2);
-            // Fall-through to next instruction
-            if idx + 1 < num_insts {
-                succs.push(idx + 1);
-            }
-            // Branch target
-            if let Some(&target) = label_to_idx.get(label) {
-                succs.push(target);
-            }
-            succs
+            conditional_successors(idx, *label, label_to_idx, num_insts)
         }
         // Return and trap have no successors
         Aarch64Inst::Ret | Aarch64Inst::Brk => Vec::new(),
         // Function calls fall through (callee returns)
-        Aarch64Inst::Bl { .. } => {
-            if idx + 1 < num_insts {
-                vec![idx + 1]
-            } else {
-                Vec::new()
-            }
-        }
+        Aarch64Inst::Bl { .. } => fallthrough_successor(idx, num_insts),
         // All other instructions fall through to the next
-        _ => {
-            if idx + 1 < num_insts {
-                vec![idx + 1]
-            } else {
-                Vec::new()
-            }
-        }
+        _ => fallthrough_successor(idx, num_insts),
     }
 }
 
