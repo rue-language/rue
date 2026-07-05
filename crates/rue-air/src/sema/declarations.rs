@@ -135,6 +135,14 @@ impl<'a> Sema<'a> {
             .filter_map(|(name, info)| info.value.as_int_value().map(|v| (*name, v)))
             .collect();
 
+        // Function-valued constants are callable aliases only. Constraint
+        // generation uses this map to type `alias(...)` like the real callee.
+        let const_function_aliases: HashMap<Spur, Spur> = self
+            .constants
+            .iter()
+            .filter_map(|(name, info)| info.value.as_function().map(|callee| (*name, callee)))
+            .collect();
+
         // Module-binding types (`const utils = @import(...)`), keyed by the
         // declaring file: bindings are per-file scoped (RUE-113), so a
         // reference resolves against the file it appears in.
@@ -151,6 +159,7 @@ impl<'a> Sema<'a> {
             method_sigs,
             const_types,
             const_values,
+            const_function_aliases,
             module_binding_types,
         }
     }
@@ -1630,6 +1639,13 @@ impl<'a> Sema<'a> {
                     )?;
                     return Ok(ConstInit::Value(info.value));
                 }
+                if let Some((fn_file_id, is_pub)) = self.find_free_function_decl(name, None) {
+                    let fn_name = self.interner.resolve(&name).to_string();
+                    self.check_unqualified_visibility(
+                        "function", &fn_name, fn_file_id, is_pub, span,
+                    )?;
+                    return Ok(ConstInit::Value(ConstValue::Function(name)));
+                }
                 // Not a constant: let the comptime engine decide (it rejects
                 // unknown names and type names as non-evaluable).
                 self.eval_const_value_expr(init, file_id, st, span, declared_ty)
@@ -2140,24 +2156,20 @@ impl<'a> Sema<'a> {
             }
         }
 
-        // A function member is a value the constant machinery cannot hold:
-        // there is no function type or function const-value yet (fn-valued
-        // constants are a type-system gap, RUE-173). Diagnose it
-        // precisely rather than "unknown member". The RIR is scanned directly
-        // because function signatures are collected in the same declaration
-        // walk and may not have been reached yet.
+        // A function member yields a callable alias. It is intentionally not a
+        // first-class runtime value: call analysis rewrites calls through this
+        // ConstValue to the real callee, and expression materialization rejects
+        // it.
         if let Some(mfile) = module_file_id {
-            let is_fn = self.rir.iter().any(|(_, inst)| {
-                matches!(&inst.data, InstData::FnDecl { name, .. } if *name == member)
-                    && inst.span.file_id == mfile
-            });
-            if is_fn {
-                return Err(CompileError::new(
-                    ErrorKind::ConstExprNotSupported {
-                        expr_kind: "a function reference".to_string(),
-                    },
+            if let Some((_fn_file_id, is_pub)) = self.find_free_function_decl(member, Some(mfile)) {
+                self.check_const_member_visibility(
+                    is_pub,
+                    &member_str,
+                    &module_file_path,
+                    accessing_file,
                     span,
-                ));
+                )?;
+                return Ok(ConstInit::Value(ConstValue::Function(member)));
             }
         }
 
@@ -2179,6 +2191,35 @@ impl<'a> Sema<'a> {
             },
             span,
         ))
+    }
+
+    /// Find a free function declaration in RIR, optionally restricted to one
+    /// source file. This is used during const collection, which is
+    /// dependency-ordered and can run before the main function-signature pass
+    /// has populated `self.functions`.
+    fn find_free_function_decl(
+        &self,
+        target: Spur,
+        file_id: Option<FileId>,
+    ) -> Option<(FileId, bool)> {
+        self.rir.iter().find_map(|(_, inst)| {
+            let InstData::FnDecl {
+                is_pub,
+                name,
+                has_self,
+                ..
+            } = &inst.data
+            else {
+                return None;
+            };
+            if *has_self || *name != target {
+                return None;
+            }
+            if file_id.is_some_and(|wanted| inst.span.file_id != wanted) {
+                return None;
+            }
+            Some((inst.span.file_id, *is_pub))
+        })
     }
 
     /// The visibility rule for module members accessed in const context
@@ -2248,6 +2289,7 @@ impl<'a> Sema<'a> {
             }
             ConstValue::Bool(_) => Type::BOOL,
             ConstValue::Unit => Type::UNIT,
+            ConstValue::Function(_) => Type::COMPTIME_TYPE,
             // Type values are rejected before this point (and module
             // bindings never take this path); keep the type if one slips
             // through so the mismatch error below names it.
@@ -2255,6 +2297,9 @@ impl<'a> Sema<'a> {
         };
 
         let Some(ty_sym) = ty_sym else {
+            if matches!(value, ConstValue::Function(_)) {
+                return Ok(inferred);
+            }
             // Type values are not annotatable (no syntax names them), so a
             // hypothetical unannotated type-valued constant is not an
             // annotation error; today they are rejected upstream anyway.

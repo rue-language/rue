@@ -636,6 +636,12 @@ pub enum ConstValue {
     /// This is used when a `comptime T: type` parameter is instantiated
     /// with a specific type like `i32` or `bool`.
     Type(Type),
+    /// Function reference - stores the callee symbol.
+    ///
+    /// Function-valued constants are currently callable aliases only: they can
+    /// be used as the callee of a call expression, but cannot be materialized
+    /// as ordinary runtime values.
+    Function(lasso::Spur),
     /// Unit value - the value of `()`.
     // TODO(rue-c6gi): Remove #[allow] when Unit const evaluation is implemented
     #[allow(dead_code)]
@@ -683,6 +689,14 @@ impl ConstValue {
         }
     }
 
+    /// Try to extract a function reference.
+    pub fn as_function(self) -> Option<lasso::Spur> {
+        match self {
+            ConstValue::Function(name) => Some(name),
+            _ => None,
+        }
+    }
+
     /// Check if this is a unit value.
     // TODO(rue-c6gi): Remove #[allow] when Unit const evaluation is implemented
     #[allow(dead_code)]
@@ -698,6 +712,7 @@ impl ConstValue {
             ConstValue::Integer(_) => Type::I64, // Default to i64 for comptime integers
             ConstValue::Bool(_) => Type::BOOL,
             ConstValue::Type(_) => Type::COMPTIME_TYPE,
+            ConstValue::Function(_) => Type::COMPTIME_TYPE,
             ConstValue::Unit => Type::UNIT,
         }
     }

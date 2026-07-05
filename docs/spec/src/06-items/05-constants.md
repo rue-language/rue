@@ -24,9 +24,10 @@ forms are: literals (4.14:26); the arithmetic, comparison, logical, bitwise,
 and shift operators applied to comptime-evaluable operands (4.14:27);
 `comptime` block expressions (4.14:2, 4.14:27); references to other constants
 (4.14:26); and module expressions (`@import(...)` and module member access —
-chapter 10, 6.5:10). An initializer outside this set is a compile-time error
-(E0434) — the same diagnostic 4.14:29 names for a `const` initializer that is
-not comptime-evaluable.
+chapter 10, 6.5:10). A reference to a function item is comptime-evaluable only
+for the purpose of forming a callable alias (6.5:15). An initializer outside
+this set is a compile-time error (E0434) — the same diagnostic 4.14:29 names
+for a `const` initializer that is not comptime-evaluable.
 
 {{ rule(id="6.5:3", cat="example") }}
 
@@ -44,6 +45,15 @@ so it composes in any operand position of a constant initializer just like a
 reference to a local constant: `const N: i32 = m.LIMIT + 1;` is accepted, as
 is the whole-initializer form `const N: i32 = m.LIMIT;`.
 
+{{ rule(id="6.5:15", cat="normative") }}
+
+A constant initializer may name a function item, either directly (`const f =
+some_fn;`) or as a module member (`const f = @import("math").abs;`). Such a
+constant is a **callable alias**: it may appear as the callee of a call
+expression (`f(1, 2)`) and has the same call behavior as the aliased function.
+It is not a runtime value and may not be used as an ordinary expression,
+stored in a local, passed as an argument, or placed in an aggregate value.
+
 ## Types of Constants
 
 {{ rule(id="6.5:4", cat="legality-rule") }}
@@ -53,7 +63,9 @@ rather than a module — **MUST** have a type annotation. A value constant
 declared without one is a compile-time error (E0475). Module bindings
 (`const m = @import(...)`, aliases of module bindings, and re-exports —
 chapter 10) are not value constants: they take no annotation (no type
-annotation can name a module type) and require none.
+annotation can name a module type) and require none. Callable function aliases
+(6.5:15) likewise take no annotation because no source-level type names a
+function reference.
 
 {{ rule(id="6.5:11", cat="informative") }}
 

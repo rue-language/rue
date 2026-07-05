@@ -10,6 +10,12 @@ template = "spec/page.html"
 
 A call expression invokes a function with a list of arguments.
 
+{{ rule(id="4.10:12", cat="normative") }}
+
+The callee may be either a function name or a callable function alias defined
+by a constant item (6.5:12). Calling an alias is equivalent to calling the
+function it aliases.
+
 {{ rule(id="4.10:2", cat="syntax") }}
 
 ```ebnf

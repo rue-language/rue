@@ -46,6 +46,9 @@ pub struct InferenceContext {
     /// (`[i32; K]`) can be resolved to a concrete length during constraint
     /// generation (RUE-16). Only integer-valued constants appear here.
     pub const_values: HashMap<Spur, i128>,
+    /// Function-valued constants: alias name -> callee function name. These
+    /// are callable aliases only, not first-class runtime values.
+    pub const_function_aliases: HashMap<Spur, Spur>,
     /// Module-binding types (`const utils = @import(...)`): (declaring file,
     /// name) -> module type. Module bindings are per-file scoped (RUE-113),
     /// so they're keyed by file rather than living in `const_types`.

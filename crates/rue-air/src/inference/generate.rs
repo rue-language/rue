@@ -213,6 +213,9 @@ pub struct ConstraintGenerator<'a> {
     /// constraint generation (RUE-16). `None` only in unit tests; production
     /// passes the map via [`Self::with_const_values`].
     const_values: Option<&'a HashMap<Spur, i128>>,
+    /// Function-valued constants: alias name -> callee function name. These
+    /// let constraint generation type `alias(...)` as a direct call.
+    const_function_aliases: Option<&'a HashMap<Spur, Spur>>,
     /// Comptime *value* parameters known for the specialization currently being
     /// analyzed (`comptime n: i32` → `n = 0` for the call `f(0)`). Lets a
     /// `match` on a comptime-known scrutinee prune to its selected arm during
@@ -275,6 +278,7 @@ impl<'a> ConstraintGenerator<'a> {
             comptime_local_types: None,
             extra_method_sigs: None,
             const_values: None,
+            const_function_aliases: None,
             comptime_values: None,
             type_pool,
         }
@@ -346,6 +350,16 @@ impl<'a> ConstraintGenerator<'a> {
     /// `const_values` field (RUE-16).
     pub fn with_const_values(mut self, const_values: &'a HashMap<Spur, i128>) -> Self {
         self.const_values = Some(const_values);
+        self
+    }
+
+    /// Provide function-valued constants so `alias(...)` gets the callee's
+    /// signature during constraint generation.
+    pub fn with_const_function_aliases(
+        mut self,
+        const_function_aliases: &'a HashMap<Spur, Spur>,
+    ) -> Self {
+        self.const_function_aliases = Some(const_function_aliases);
         self
     }
 
@@ -848,6 +862,10 @@ impl<'a> ConstraintGenerator<'a> {
                 args_start,
                 args_len,
             } => {
+                let name = self
+                    .const_function_aliases
+                    .and_then(|aliases| aliases.get(name))
+                    .unwrap_or(name);
                 let args = self.rir.get_call_args(*args_start, *args_len);
                 // `print(s)` / `println(s)` builtin free functions (RUE-1):
                 // constrain the single argument to String and yield unit, so a
