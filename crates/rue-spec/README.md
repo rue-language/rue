@@ -167,12 +167,14 @@ Generate a report showing test coverage of spec paragraphs:
 ```bash
 # Summary report
 ./buck2 run //crates/rue-spec:rue-spec -- --traceability
+./buck2 test //:spec-traceability
 
 # Detailed matrix (shows all paragraphs and their covering tests)
 ./buck2 run //crates/rue-spec:rue-spec -- --traceability --detailed
 ```
 
-The traceability check is run as part of `./test.sh` and fails if:
+The traceability check is run as the `//:spec-traceability` Buck target and is
+included in `./test.sh` and `./buck2 test //...`. It fails if:
 - Any spec paragraph has no covering test (coverage < 100%)
 - Any test references a non-existent spec paragraph ID
 

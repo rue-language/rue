@@ -10,8 +10,6 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent.parent
-ADR_DIR = ROOT / "docs" / "designs"
-README = ADR_DIR / "README.md"
 START = "<!-- ADR-INDEX:START -->"
 END = "<!-- ADR-INDEX:END -->"
 ALLOWED_STATUSES = {"proposal", "accepted", "implemented", "stable", "superseded", "rejected"}
@@ -73,22 +71,32 @@ def build_index(adrs: list[tuple[Path, dict[str, str]]]) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--write", action="store_true", help="regenerate the README index")
+    parser.add_argument(
+        "--adr-dir",
+        type=Path,
+        default=ROOT / "docs" / "designs",
+        help="directory containing ADR markdown files and README.md",
+    )
     args = parser.parse_args()
+
+    adr_dir = args.adr_dir.resolve()
+    readme_path = adr_dir / "README.md"
+    display_root = adr_dir.parent.parent
 
     errors: list[str] = []
     adrs: list[tuple[Path, dict[str, str]]] = []
     ids: dict[str, Path] = {}
-    paths = sorted(ADR_DIR.glob("[0-9][0-9][0-9][0-9]-*.md"))
+    paths = sorted(adr_dir.glob("[0-9][0-9][0-9][0-9]-*.md"))
 
     for path in paths:
         try:
             fields = parse_frontmatter(path)
         except ValueError as error:
-            errors.append(f"{path.relative_to(ROOT)}: {error}")
+            errors.append(f"{path.relative_to(display_root)}: {error}")
             continue
         for key in ("id", "title", "status", "tags", "created"):
             if not fields.get(key):
-                errors.append(f"{path.relative_to(ROOT)}: missing required field {key!r}")
+                errors.append(f"{path.relative_to(display_root)}: missing required field {key!r}")
         adr_id = unquote(fields.get("id", ""))
         status = unquote(fields.get("status", ""))
         fields["id"] = adr_id
@@ -111,11 +119,11 @@ def main() -> int:
                 by_filename = any(candidate.stem == normalized for candidate, _ in adrs)
                 if not by_filename:
                     errors.append(
-                        f"{path.relative_to(ROOT)}: {key} target {target!r} does not resolve"
+                        f"{path.relative_to(display_root)}: {key} target {target!r} does not resolve"
                     )
 
     expected = build_index(adrs)
-    readme = README.read_text()
+    readme = readme_path.read_text()
     if START not in readme or END not in readme:
         errors.append("docs/designs/README.md: missing generated index markers")
     else:
@@ -124,7 +132,7 @@ def main() -> int:
         actual = START + remainder.split(END, 1)[0] + END
         if actual != expected:
             if args.write:
-                README.write_text(before + expected + after)
+                readme_path.write_text(before + expected + after)
             else:
                 errors.append("docs/designs/README.md: ADR index is stale; run scripts/validate-adrs.py --write")
 
