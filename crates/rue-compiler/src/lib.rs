@@ -622,7 +622,6 @@ impl Default for LinkerMode {
 ///     linker: LinkerMode::Internal,
 ///     opt_level: OptLevel::O1,
 ///     preview_features: PreviewFeatures::new(),
-///     jobs: 0, // 0 = auto-detect
 /// };
 /// let output = compile_with_options(source, &options)?;
 /// ```
@@ -636,8 +635,6 @@ pub struct CompileOptions {
     pub opt_level: OptLevel,
     /// Enabled preview features.
     pub preview_features: PreviewFeatures,
-    /// Number of parallel jobs (0 = auto-detect, use all cores).
-    pub jobs: usize,
 }
 
 impl Default for CompileOptions {
@@ -648,7 +645,6 @@ impl Default for CompileOptions {
             linker: LinkerMode::Internal,
             opt_level: OptLevel::default(),
             preview_features: PreviewFeatures::new(),
-            jobs: 0, // 0 = auto-detect
         }
     }
 }

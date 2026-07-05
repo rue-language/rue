@@ -1509,7 +1509,6 @@ fn main() {
         linker: options.linker.clone(),
         opt_level: options.opt_level,
         preview_features: options.preview_features.clone(),
-        jobs: options.jobs,
     };
     match compile_multi_file_with_options(&source_files, &compile_options) {
         Ok(output) => {
