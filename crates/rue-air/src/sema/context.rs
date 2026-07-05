@@ -348,6 +348,10 @@ pub(crate) struct AnalysisContext<'a> {
     /// Warnings collected during function analysis.
     /// This is per-function to enable future parallel analysis.
     pub warnings: Vec<CompileWarning>,
+    /// Whether the current function carries `@allow(unused_variable)`.
+    /// When set, every local unused-variable warning in this body is
+    /// suppressed (spec 2.5:17).
+    pub allow_unused_variables: bool,
     /// Local string table: maps string content to local index (for deduplication within function).
     /// This is per-function to enable parallel analysis - strings are merged globally after.
     pub local_string_table: HashMap<String, u32>,
@@ -474,6 +478,7 @@ impl<'a> AnalysisContext<'a> {
             resolved_types: self.resolved_types,
             moved_vars: self.moved_vars.clone(),
             warnings: Vec::new(),
+            allow_unused_variables: self.allow_unused_variables,
             local_string_table: self.local_string_table.clone(),
             local_strings: self.local_strings.clone(),
             comptime_type_vars: self.comptime_type_vars.clone(),

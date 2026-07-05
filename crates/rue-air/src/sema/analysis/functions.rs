@@ -14,6 +14,7 @@ impl<'a> Sema<'a> {
         params: &[rue_rir::RirParam],
         body: InstRef,
         span: Span,
+        allow_unused_variable: bool,
     ) -> CompileResult<(
         AnalyzedFunction,
         Vec<CompileWarning>,
@@ -46,7 +47,13 @@ impl<'a> Sema<'a> {
             local_strings,
             ref_fns,
             ref_meths,
-        ) = self.analyze_function(infer_ctx, ret_type, &param_info, body)?;
+        ) = self.analyze_function(
+            infer_ctx,
+            ret_type,
+            &param_info,
+            body,
+            allow_unused_variable,
+        )?;
 
         Ok((
             AnalyzedFunction {
@@ -134,6 +141,7 @@ impl<'a> Sema<'a> {
             Some(&type_subst),
             None,
             false,
+            false,
         )?;
 
         Ok((
@@ -192,6 +200,7 @@ impl<'a> Sema<'a> {
             None,
             None,
             /* is_destructor */ true,
+            false,
         )?;
 
         reject_self_move_in_destructor(&air, full_name)?;
@@ -228,6 +237,7 @@ impl<'a> Sema<'a> {
         return_type: Type,
         params: &[(Spur, Type, RirParamMode, bool)], // (name, type, mode, is_comptime)
         body: InstRef,
+        allow_unused_variable: bool,
     ) -> CompileResult<(
         Air,
         u32,
@@ -238,7 +248,16 @@ impl<'a> Sema<'a> {
         HashSet<Spur>,
         HashSet<(StructId, Spur)>,
     )> {
-        self.analyze_function_internal(infer_ctx, return_type, params, body, None, None, false)
+        self.analyze_function_internal(
+            infer_ctx,
+            return_type,
+            params,
+            body,
+            None,
+            None,
+            false,
+            allow_unused_variable,
+        )
     }
 
     /// Internal function analysis with optional type substitutions.
@@ -262,6 +281,7 @@ impl<'a> Sema<'a> {
         type_subst: Option<&std::collections::HashMap<Spur, Type>>,
         value_subst: Option<&std::collections::HashMap<Spur, ConstValue>>,
         is_destructor: bool,
+        allow_unused_variable: bool,
     ) -> CompileResult<(
         Air,
         u32,
@@ -383,6 +403,7 @@ impl<'a> Sema<'a> {
             resolved_types: &resolved_types,
             moved_vars: HashMap::new(),
             warnings: Vec::new(),
+            allow_unused_variables: allow_unused_variable,
             local_string_table: HashMap::new(),
             local_strings: Vec::new(),
             comptime_type_vars,
@@ -515,6 +536,7 @@ impl<'a> Sema<'a> {
             Some(type_subst),
             Some(value_subst),
             false,
+            false,
         )
     }
 
@@ -558,6 +580,7 @@ impl<'a> Sema<'a> {
             body,
             Some(&type_subst),
             Some(captured_comptime_values),
+            false,
             false,
         )
     }
@@ -618,6 +641,7 @@ impl<'a> Sema<'a> {
             Some(&type_subst),
             Some(captured_comptime_values),
             /* is_destructor */ true,
+            false,
         )?;
 
         reject_self_move_in_destructor(&air, full_name)?;

@@ -142,7 +142,6 @@ no_warnings = true
 [[case]]
 name = "allow_unused_variable_on_function"
 spec = ["2.5:17"]
-skip = true  # TODO: Function-level @allow not yet implemented
 source = """
 @allow(unused_variable)
 fn example() -> i32 {
