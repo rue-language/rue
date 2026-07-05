@@ -13,11 +13,12 @@ use tracing_subscriber::{EnvFilter, fmt};
 mod timing;
 
 use rue_compiler::{
-    CompileOptions, FileId, Lexer, LinkerMode, MultiFileFormatter, OptLevel, ParsedProgram,
-    PreviewFeature, PreviewFeatures, SourceFile, SourceInfo, TokenKind,
-    compile_multi_file_with_options, configure_thread_pool, generate_emitted_asm,
-    generate_liveness_info, generate_lowering_info, generate_mir, generate_regalloc_info,
-    generate_stack_frame_info, merge_symbols, parse_all_files,
+    CompileError, CompileErrors, CompileOptions, CompileWarning, FileId, Lexer, LinkerMode,
+    MultiFileFormatter, MultiFileJsonFormatter, OptLevel, ParsedProgram, PreviewFeature,
+    PreviewFeatures, SourceFile, SourceInfo, TokenKind, compile_multi_file_with_options,
+    configure_thread_pool, generate_emitted_asm, generate_liveness_info, generate_lowering_info,
+    generate_mir, generate_regalloc_info, generate_stack_frame_info, merge_symbols,
+    parse_all_files,
 };
 use rue_rir::RirPrinter;
 use rue_target::Target;
@@ -192,6 +193,46 @@ impl LogFormat {
     }
 }
 
+/// Format for compiler diagnostics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum ErrorFormat {
+    /// Human-readable diagnostics with source snippets.
+    #[default]
+    Text,
+    /// Machine-readable JSON diagnostics.
+    Json,
+}
+
+/// Error returned when parsing a diagnostic format fails.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParseErrorFormatError(String);
+
+impl std::fmt::Display for ParseErrorFormatError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "unknown error format '{}'", self.0)
+    }
+}
+
+impl std::error::Error for ParseErrorFormatError {}
+
+impl std::str::FromStr for ErrorFormat {
+    type Err = ParseErrorFormatError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "text" => Ok(ErrorFormat::Text),
+            "json" => Ok(ErrorFormat::Json),
+            _ => Err(ParseErrorFormatError(s.to_string())),
+        }
+    }
+}
+
+impl ErrorFormat {
+    fn all_names() -> &'static str {
+        "text, json"
+    }
+}
+
 struct Options {
     /// Source files to compile. In single-file mode, contains one path.
     /// In multi-file mode, contains multiple paths.
@@ -204,6 +245,7 @@ struct Options {
     preview_features: PreviewFeatures,
     log_level: LogLevel,
     log_format: LogFormat,
+    error_format: ErrorFormat,
     time_passes: bool,
     benchmark_json: bool,
     /// Number of parallel jobs (0 = auto-detect, use all cores).
@@ -259,6 +301,11 @@ fn print_usage() {
     eprintln!("                       Can also use RUST_LOG environment variable");
     eprintln!("  --log-format <fmt>   Set logging format (default: text)");
     eprintln!("                       Formats: {}", LogFormat::all_names());
+    eprintln!("  --error-format <fmt> Set diagnostic format (default: text)");
+    eprintln!(
+        "                       Formats: {}",
+        ErrorFormat::all_names()
+    );
     eprintln!("  --time-passes        Show timing for each compilation pass");
     eprintln!("  --benchmark-json     Output timing as JSON (for benchmarking)");
     eprintln!("  --version            Show version information");
@@ -340,6 +387,7 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
     let mut preview_features = PreviewFeatures::new();
     let mut log_level: Option<LogLevel> = None;
     let mut log_format: Option<LogFormat> = None;
+    let mut error_format: Option<ErrorFormat> = None;
     let mut time_passes = false;
     let mut benchmark_json = false;
     let mut jobs: Option<usize> = None;
@@ -433,6 +481,21 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
                     Err(e) => {
                         eprintln!("Error: {}", e);
                         eprintln!("Valid formats: {}", LogFormat::all_names());
+                        return ParseResult::Error;
+                    }
+                }
+            }
+            "--error-format" => {
+                let Some(format_str) = args_iter.next() else {
+                    eprintln!("Error: --error-format requires a value");
+                    eprintln!("Valid formats: {}", ErrorFormat::all_names());
+                    return ParseResult::Error;
+                };
+                match format_str.parse::<ErrorFormat>() {
+                    Ok(format) => error_format = Some(format),
+                    Err(e) => {
+                        eprintln!("Error: {}", e);
+                        eprintln!("Valid formats: {}", ErrorFormat::all_names());
                         return ParseResult::Error;
                     }
                 }
@@ -593,6 +656,7 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
         preview_features,
         log_level: log_level.unwrap_or_default(),
         log_format: log_format.unwrap_or_default(),
+        error_format: error_format.unwrap_or_default(),
         time_passes,
         benchmark_json,
         jobs: jobs.unwrap_or(0),
@@ -607,6 +671,47 @@ fn parse_args() -> Option<Options> {
         ParseResult::Options(opts) => Some(opts),
         ParseResult::Error => None,
         ParseResult::Exit => std::process::exit(0),
+    }
+}
+
+struct DiagnosticOutput<'a> {
+    format: ErrorFormat,
+    text: MultiFileFormatter<'a>,
+    json: MultiFileJsonFormatter<'a>,
+}
+
+impl<'a> DiagnosticOutput<'a> {
+    fn new(format: ErrorFormat, sources: Vec<(FileId, SourceInfo<'a>)>) -> Self {
+        Self {
+            format,
+            text: MultiFileFormatter::new(sources.clone()),
+            json: MultiFileJsonFormatter::new(sources),
+        }
+    }
+
+    fn print_error(&self, error: &CompileError) {
+        match self.format {
+            ErrorFormat::Text => eprintln!("{}", self.text.format_error(error)),
+            ErrorFormat::Json => eprintln!("{}", self.json.format_error(error).to_json()),
+        }
+    }
+
+    fn print_errors(&self, errors: &CompileErrors) {
+        match self.format {
+            ErrorFormat::Text => eprintln!("{}", self.text.format_errors(errors)),
+            ErrorFormat::Json => eprintln!("{}", self.json.format_errors(errors)),
+        }
+    }
+
+    fn print_warnings(&self, warnings: &[CompileWarning]) {
+        if warnings.is_empty() {
+            return;
+        }
+
+        match self.format {
+            ErrorFormat::Text => eprintln!("{}", self.text.format_warnings(warnings)),
+            ErrorFormat::Json => eprintln!("{}", self.json.format_warnings(warnings)),
+        }
     }
 }
 
@@ -1028,7 +1133,7 @@ fn main() {
         })
         .collect();
 
-    // Create multi-file formatter for diagnostics that may span multiple files
+    // Create multi-file diagnostic formatters for diagnostics that may span multiple files.
     let source_infos: Vec<_> = sources
         .iter()
         .enumerate()
@@ -1039,7 +1144,7 @@ fn main() {
             )
         })
         .collect();
-    let formatter = MultiFileFormatter::new(source_infos);
+    let diagnostics = DiagnosticOutput::new(options.error_format, source_infos);
 
     // Compute source metrics if benchmark JSON is requested
     let source_metrics = if options.benchmark_json {
@@ -1075,7 +1180,7 @@ fn main() {
 
     // Handle emit modes with multi-file support
     if !options.emit_stages.is_empty() {
-        if let Err(()) = handle_emit_multi_file(&source_files, &options, &formatter) {
+        if let Err(()) = handle_emit_multi_file(&source_files, &options, &diagnostics) {
             std::process::exit(1);
         }
         print_timing_output(
@@ -1099,9 +1204,7 @@ fn main() {
     match compile_multi_file_with_options(&source_files, &compile_options) {
         Ok(output) => {
             // Print warnings using the diagnostic formatter
-            if !output.warnings.is_empty() {
-                eprintln!("{}", formatter.format_warnings(&output.warnings));
-            }
+            diagnostics.print_warnings(&output.warnings);
 
             // Write output
             if let Err(e) = fs::write(&options.output_path, &output.elf) {
@@ -1184,7 +1287,7 @@ fn main() {
             );
         }
         Err(errors) => {
-            eprintln!("{}", formatter.format_errors(&errors));
+            diagnostics.print_errors(&errors);
             std::process::exit(1);
         }
     }
@@ -1197,7 +1300,7 @@ fn main() {
 fn handle_emit_multi_file(
     sources: &[SourceFile<'_>],
     options: &Options,
-    formatter: &MultiFileFormatter,
+    diagnostics: &DiagnosticOutput<'_>,
 ) -> Result<(), ()> {
     // Determine which stages we need
     let needs_tokens = options.emit_stages.contains(&EmitStage::Tokens);
@@ -1230,7 +1333,7 @@ fn handle_emit_multi_file(
                     file_tokens.push((source.path.to_string(), tokens));
                 }
                 Err(e) => {
-                    eprintln!("{}", formatter.format_error(&e));
+                    diagnostics.print_error(&e);
                     return Err(());
                 }
             }
@@ -1245,7 +1348,7 @@ fn handle_emit_multi_file(
         match parse_all_files(sources) {
             Ok(program) => Some(program),
             Err(errors) => {
-                eprintln!("{}", formatter.format_errors(&errors));
+                diagnostics.print_errors(&errors);
                 return Err(());
             }
         }
@@ -1276,7 +1379,7 @@ fn handle_emit_multi_file(
         let merged = match merge_symbols(program) {
             Ok(m) => m,
             Err(errors) => {
-                eprintln!("{}", formatter.format_errors(&errors));
+                diagnostics.print_errors(&errors);
                 return Err(());
             }
         };
@@ -1296,15 +1399,13 @@ fn handle_emit_multi_file(
         ) {
             Ok(state) => state,
             Err(errors) => {
-                eprintln!("{}", formatter.format_errors(&errors));
+                diagnostics.print_errors(&errors);
                 return Err(());
             }
         };
 
         // Warnings used to be silently dropped in all --emit modes (RUE-130).
-        if !state.warnings.is_empty() {
-            eprintln!("{}", formatter.format_warnings(&state.warnings));
-        }
+        diagnostics.print_warnings(&state.warnings);
 
         Some(state)
     } else {
@@ -1387,7 +1488,7 @@ fn handle_emit_multi_file(
                         ) {
                             Ok(mir) => mir,
                             Err(e) => {
-                                eprintln!("{}", formatter.format_error(&e));
+                                diagnostics.print_error(&e);
                                 return Err(());
                             }
                         };
@@ -1410,7 +1511,7 @@ fn handle_emit_multi_file(
                         ) {
                             Ok(info) => info,
                             Err(e) => {
-                                eprintln!("{}", formatter.format_error(&e));
+                                diagnostics.print_error(&e);
                                 return Err(());
                             }
                         };
@@ -1432,7 +1533,7 @@ fn handle_emit_multi_file(
                         ) {
                             Ok(info) => info,
                             Err(e) => {
-                                eprintln!("{}", formatter.format_error(&e));
+                                diagnostics.print_error(&e);
                                 return Err(());
                             }
                         };
@@ -1456,7 +1557,7 @@ fn handle_emit_multi_file(
                         ) {
                             Ok(asm) => asm,
                             Err(e) => {
-                                eprintln!("{}", formatter.format_error(&e));
+                                diagnostics.print_error(&e);
                                 return Err(());
                             }
                         };
@@ -1477,7 +1578,7 @@ fn handle_emit_multi_file(
                         ) {
                             Ok(info) => info,
                             Err(e) => {
-                                eprintln!("{}", formatter.format_error(&e));
+                                diagnostics.print_error(&e);
                                 return Err(());
                             }
                         };
@@ -1910,6 +2011,37 @@ mod tests {
         ])));
     }
 
+    // ========== --error-format tests ==========
+
+    #[test]
+    fn parse_error_format_text() {
+        let opts = unwrap_options(parse_args_from(&["--error-format", "text", "source.rue"]));
+        assert_eq!(opts.error_format, ErrorFormat::Text);
+    }
+
+    #[test]
+    fn parse_error_format_json() {
+        let opts = unwrap_options(parse_args_from(&["--error-format", "json", "source.rue"]));
+        assert_eq!(opts.error_format, ErrorFormat::Json);
+    }
+
+    #[test]
+    fn parse_error_format_missing_value() {
+        assert!(is_error(&parse_args_from(&[
+            "source.rue",
+            "--error-format"
+        ])));
+    }
+
+    #[test]
+    fn parse_error_format_invalid() {
+        assert!(is_error(&parse_args_from(&[
+            "--error-format",
+            "invalid",
+            "source.rue"
+        ])));
+    }
+
     // ========== --help and --version tests ==========
 
     #[test]
@@ -2029,6 +2161,12 @@ mod tests {
     fn parse_defaults_log_format() {
         let opts = unwrap_options(parse_args_from(&["source.rue"]));
         assert_eq!(opts.log_format, LogFormat::Text);
+    }
+
+    #[test]
+    fn parse_defaults_error_format() {
+        let opts = unwrap_options(parse_args_from(&["source.rue"]));
+        assert_eq!(opts.error_format, ErrorFormat::Text);
     }
 
     #[test]
