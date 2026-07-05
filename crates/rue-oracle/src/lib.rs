@@ -26,10 +26,12 @@
 //! spec-3.9 order (user destructor, then fields in declaration order / elements
 //! ascending) so the oracle validates drop *order* and drop-exactly-once, not
 //! just final values; and `String` — content modeled directly, covering `new`,
-//! `push` (ASCII), `push_str`, `len`, `is_empty`, `clear`, `clone`, `@to_string`,
-//! byte indexing `s[i]` (`__rue_String_byte_at`), and the `.chars()` /
-//! `.chars_lossy()` scalar view (`__rue_String_char_scalar`/`_char_next`, whose
-//! strict and lossy forms coincide over the oracle's always-valid-UTF-8 content).
+//! `push`, `push_str`, `len`, `is_empty`, `clear`, `clone`, `@to_string`, byte
+//! indexing `s[i]` (`__rue_String_byte_at`), and the `.chars()` /
+//! `.chars_lossy()` scalar view (`__rue_String_char_scalar`/`_char_next`). String
+//! content is modeled as raw bytes, matching the runtime's byte-string buffer:
+//! strict `.chars()` traps on invalid UTF-8, while `.chars_lossy()` substitutes
+//! U+FFFD.
 //!
 //! Note that many intrinsics never reach the interpreter *as* intrinsics because
 //! sema lowers them earlier: `@target_arch`/`@target_os` fold to a compile-time
@@ -54,8 +56,6 @@
 //! - **`String::capacity`/`reserve`/`with_capacity` capacity behavior** — the
 //!   heap layout (ptr, len, cap) is implementation-defined, so `capacity` is
 //!   reported [`Unsupported`] rather than guessed.
-//! - **Non-ASCII `String::push`** — a byte `>= 0x80` is not standalone valid
-//!   UTF-8, which the oracle's Rust-`String` text storage cannot represent.
 //! - **Deeply-nested `inout` field writes** (non-zero inner offset).
 
 use lasso::ThreadedRodeo;
@@ -175,29 +175,37 @@ enum Value {
     /// variant's payload fields in declaration order (RUE-285). A
     /// discriminant-only enum (or C-like enum) stays a bare `Int` tag.
     Aggregate(Vec<Value>),
-    /// Textual data, modeled by content plus ABI slot width.
+    /// String-like data, modeled as raw byte content plus ABI slot width.
     ///
     /// `String`/`StrBuf` occupies three slots (`ptr`, `len`, `cap`), while
     /// preview `str`/`Str(N)` occupies two (`ptr`, `len`). Keeping the width on
     /// the value prevents a `str` parameter from shifting later parameters as if
     /// it were a growable string.
     Str {
-        text: String,
+        bytes: Vec<u8>,
         slots: usize,
     },
 }
 
 impl Value {
     fn string(text: impl Into<String>) -> Self {
+        Self::string_bytes(text.into().into_bytes())
+    }
+
+    fn string_bytes(bytes: impl Into<Vec<u8>>) -> Self {
         Self::Str {
-            text: text.into(),
+            bytes: bytes.into(),
             slots: 3,
         }
     }
 
     fn str_view(text: impl Into<String>) -> Self {
+        Self::str_view_bytes(text.into().into_bytes())
+    }
+
+    fn str_view_bytes(bytes: impl Into<Vec<u8>>) -> Self {
         Self::Str {
-            text: text.into(),
+            bytes: bytes.into(),
             slots: 2,
         }
     }
@@ -499,9 +507,9 @@ impl<'a> Interp<'a> {
         }
         // Same honesty rule for argument TYPES: a non-string where the modeled
         // signature has a string is drift, not an empty string.
-        let s = |v: &Value| -> Result<String, Flow> {
+        let s = |v: &Value| -> Result<Vec<u8>, Flow> {
             match v {
-                Value::Str { text, .. } => Ok(text.clone()),
+                Value::Str { bytes, .. } => Ok(bytes.clone()),
                 _ => Err(Flow::Unsupported(Unsupported(format!(
                     "builtin '{name}' received a non-string argument (signature drift?)"
                 )))),
@@ -516,40 +524,33 @@ impl<'a> Interp<'a> {
             "__rue_to_string_unsigned" => Value::string((args[0].as_int() as u64).to_string()),
             "__rue_String_new" => Value::string(String::new()),
             "__rue_String_with_capacity" => Value::string(String::new()),
-            "__rue_String_push_str" => Value::string(s(&args[0])? + &s(&args[1])?),
+            "__rue_String_push_str" => {
+                let mut base = s(&args[0])?;
+                base.extend_from_slice(&s(&args[1])?);
+                Value::string_bytes(base)
+            }
             "__rue_String_push" => {
                 let mut base = s(&args[0])?;
                 let byte = args[1].as_int() as u8;
-                if byte < 0x80 {
-                    // ASCII: exactly one byte, matching the runtime's raw-byte
-                    // buffer (__rue_String_push writes a single byte).
-                    base.push(byte as char);
-                } else {
-                    // push takes a u8 and a Rue String is a raw byte buffer, but
-                    // a byte >= 0x80 is not valid standalone UTF-8, which
-                    // The oracle stores textual values as Rust Strings, which
-                    // cannot represent this byte. The runtime stores the single
-                    // raw byte; encoding a char here would store two. Skip
-                    // rather than silently diverge (see RUE-342).
-                    return Err(Flow::Unsupported(Unsupported(
-                        "String::push of a non-ASCII byte (oracle cannot model non-UTF-8 String content)".into(),
-                    )));
-                }
-                Value::string(base)
+                // `String::push` appends exactly one raw byte. A byte >= 0x80
+                // may make the buffer invalid UTF-8; that is permitted for the
+                // byte-string `String` model, and only strict UTF-8 operations
+                // such as `.chars()` trap later.
+                base.push(byte);
+                Value::string_bytes(base)
             }
             "__rue_String_len" => Value::Int(s(&args[0])?.len() as i128),
             "__rue_String_is_empty" => Value::Bool(s(&args[0])?.is_empty()),
             "__rue_String_clear" => Value::string(String::new()),
-            "__rue_String_clone" => Value::string(s(&args[0])?),
-            "__rue_String_reserve" => Value::string(s(&args[0])?),
+            "__rue_String_clone" => Value::string_bytes(s(&args[0])?),
+            "__rue_String_reserve" => Value::string_bytes(s(&args[0])?),
             // `s[i]` byte indexing (ADR-0035): the runtime `__rue_String_byte_at`
             // bounds-checks `index >= len` — trapping like array indexing — and
             // returns the raw byte zero-extended. Model it over the byte content
             // directly. A negative index is passed to the runtime as a huge u64,
             // so it is likewise out of bounds and traps.
             "__rue_String_byte_at" => {
-                let text = s(&args[0])?;
-                let bytes = text.as_bytes();
+                let bytes = s(&args[0])?;
                 let idx = args[1].as_int();
                 if idx < 0 || idx as u128 >= bytes.len() as u128 {
                     return Err(Flow::Panic(Panic("index out of bounds".into())));
@@ -562,37 +563,42 @@ impl<'a> Interp<'a> {
             // bounds-check-and-trap discipline. Modeled identically over the byte
             // content (the `str` receiver is `arg[0]`, the index `arg[1]`).
             "__rue_str_byte_at" => {
-                let text = s(&args[0])?;
-                let bytes = text.as_bytes();
+                let bytes = s(&args[0])?;
                 let idx = args[1].as_int();
                 if idx < 0 || idx as u128 >= bytes.len() as u128 {
                     return Err(Flow::Panic(Panic("index out of bounds".into())));
                 }
                 Value::Int(bytes[idx as usize] as i128)
             }
-            // `for c in s.chars()` scalar view (RUE-220): `__rue_String_char_scalar`
-            // decodes the Unicode scalar at byte `offset`, and
-            // `__rue_String_char_next` returns the byte offset of the following
-            // character (`offset + utf8_width`). Both trap on invalid UTF-8 in the
-            // runtime, but the oracle models textual content as *valid* UTF-8
-            // (a non-ASCII `push` bails to `Unsupported`), so decoding never
-            // hits that trap in practice and the strict and `_lossy` variants
-            // coincide over the modeled content — a well-formed loop only ever
-            // passes whole-character-boundary offsets.
-            "__rue_String_char_scalar" | "__rue_String_char_scalar_lossy" => {
-                let text = s(&args[0])?;
-                match char_at(&text, args[1].as_int()) {
+            // `for c in s.chars()` scalar view (RUE-220): strict decoding traps
+            // on invalid UTF-8, matching `__rue_String_char_scalar`.
+            "__rue_String_char_scalar" => {
+                let bytes = s(&args[0])?;
+                match char_at(&bytes, args[1].as_int()) {
                     Some((scalar, _)) => Value::Int(scalar as i128),
                     None => return Err(Flow::Panic(Panic("invalid UTF-8".into()))),
                 }
             }
-            "__rue_String_char_next" | "__rue_String_char_next_lossy" => {
-                let text = s(&args[0])?;
+            "__rue_String_char_next" => {
+                let bytes = s(&args[0])?;
                 let offset = args[1].as_int();
-                match char_at(&text, offset) {
+                match char_at(&bytes, offset) {
                     Some((_, width)) => Value::Int(offset + width as i128),
                     None => return Err(Flow::Panic(Panic("invalid UTF-8".into()))),
                 }
+            }
+            // The lossy character view never traps: invalid UTF-8 becomes U+FFFD
+            // and advances by the same maximal-subpart width as the runtime.
+            "__rue_String_char_scalar_lossy" => {
+                let bytes = s(&args[0])?;
+                let (scalar, _) = char_at_lossy(&bytes, args[1].as_int());
+                Value::Int(scalar as i128)
+            }
+            "__rue_String_char_next_lossy" => {
+                let bytes = s(&args[0])?;
+                let offset = args[1].as_int();
+                let (_, width) = char_at_lossy(&bytes, offset);
+                Value::Int(offset + width as i128)
             }
             "__rue_String_capacity" => {
                 return Err(Flow::Unsupported(Unsupported(
@@ -1099,7 +1105,7 @@ impl<'a> Interp<'a> {
         // equal and an arbitrary non-`Equal` ordering otherwise — enough for
         // `pick` to decide `==`/`!=`. Everything else compares by integer value.
         let ord = match (&x, &y) {
-            (Value::Str { text: sx, .. }, Value::Str { text: sy, .. }) => sx.cmp(sy),
+            (Value::Str { bytes: sx, .. }, Value::Str { bytes: sy, .. }) => sx.cmp(sy),
             (Value::Aggregate(_), _) | (_, Value::Aggregate(_)) => {
                 if x == y {
                     std::cmp::Ordering::Equal
@@ -1314,23 +1320,96 @@ impl<'a> Interp<'a> {
     }
 }
 
-/// Decode the character starting at byte `offset` in a valid-UTF-8 string,
-/// returning `(scalar, utf8_width)`. Backs the oracle's model of the
+/// Strictly decode the UTF-8 scalar starting at byte `offset`, returning
+/// `(scalar, utf8_width)`. Backs the oracle's model of the
 /// `__rue_String_char_scalar`/`__rue_String_char_next` runtime primitives.
-/// Returns `None` when `offset` is out of range or not on a char boundary — a
-/// case a well-formed `.chars()` loop never produces, since it starts at 0 and
-/// advances by whole-character widths (and the oracle only ever holds valid
-/// UTF-8, so every in-range boundary offset decodes).
-fn char_at(text: &str, offset: i128) -> Option<(u32, u64)> {
-    if offset < 0 || offset as u128 > text.len() as u128 {
+/// Returns `None` when `offset` is out of range or the byte sequence at that
+/// offset is invalid UTF-8; callers translate that to the runtime's
+/// `invalid UTF-8` trap.
+fn char_at(bytes: &[u8], offset: i128) -> Option<(u32, u64)> {
+    if offset < 0 || offset as u128 >= bytes.len() as u128 {
         return None;
     }
     let off = offset as usize;
-    if !text.is_char_boundary(off) {
+    let b0 = bytes[off];
+    if b0 < 0x80 {
+        return Some((b0 as u32, 1));
+    }
+    let (width, min, mut cp) = if (0xC2..=0xDF).contains(&b0) {
+        (2usize, 0x80u32, (b0 as u32) & 0x1F)
+    } else if (0xE0..=0xEF).contains(&b0) {
+        (3usize, 0x800u32, (b0 as u32) & 0x0F)
+    } else if (0xF0..=0xF4).contains(&b0) {
+        (4usize, 0x10000u32, (b0 as u32) & 0x07)
+    } else {
+        return None;
+    };
+    if off + width > bytes.len() {
         return None;
     }
-    let ch = text[off..].chars().next()?;
-    Some((ch as u32, ch.len_utf8() as u64))
+    for b in &bytes[off + 1..off + width] {
+        if b & 0xC0 != 0x80 {
+            return None;
+        }
+        cp = (cp << 6) | ((*b as u32) & 0x3F);
+    }
+    if cp < min || (0xD800..=0xDFFF).contains(&cp) || cp > 0x10FFFF {
+        return None;
+    }
+    Some((cp, width as u64))
+}
+
+/// Leniently decode the UTF-8 scalar starting at byte `offset`, replacing
+/// invalid UTF-8 with U+FFFD and advancing by the runtime's maximal-subpart
+/// width. Backs the oracle's model of the lossy character runtime primitives.
+fn char_at_lossy(bytes: &[u8], offset: i128) -> (u32, u64) {
+    const FFFD: u32 = 0xFFFD;
+    if offset < 0 || offset as u128 >= bytes.len() as u128 {
+        return (FFFD, 1);
+    }
+    let off = offset as usize;
+    let b0 = bytes[off];
+    if b0 < 0x80 {
+        return (b0 as u32, 1);
+    }
+    let (width, second_lo, second_hi) = match b0 {
+        0xC2..=0xDF => (2usize, 0x80u8, 0xBFu8),
+        0xE0 => (3, 0xA0, 0xBF),
+        0xE1..=0xEC => (3, 0x80, 0xBF),
+        0xED => (3, 0x80, 0x9F),
+        0xEE..=0xEF => (3, 0x80, 0xBF),
+        0xF0 => (4, 0x90, 0xBF),
+        0xF1..=0xF3 => (4, 0x80, 0xBF),
+        0xF4 => (4, 0x80, 0x8F),
+        _ => return (FFFD, 1),
+    };
+    let mask = match width {
+        2 => 0x1F,
+        3 => 0x0F,
+        _ => 0x07,
+    };
+    let mut cp = (b0 as u32) & mask;
+    if off + 1 >= bytes.len() {
+        return (FFFD, 1);
+    }
+    let b1 = bytes[off + 1];
+    if b1 < second_lo || b1 > second_hi {
+        return (FFFD, 1);
+    }
+    cp = (cp << 6) | ((b1 as u32) & 0x3F);
+    let mut consumed = 2usize;
+    while consumed < width {
+        if off + consumed >= bytes.len() {
+            return (FFFD, consumed as u64);
+        }
+        let b = bytes[off + consumed];
+        if b & 0xC0 != 0x80 {
+            return (FFFD, consumed as u64);
+        }
+        cp = (cp << 6) | ((b as u32) & 0x3F);
+        consumed += 1;
+    }
+    (cp, width as u64)
 }
 
 // ---- integer type helpers -------------------------------------------------
@@ -1410,8 +1489,8 @@ fn from_bits(bits_val: u128, bits: u32, signed: bool) -> i128 {
 /// integers respecting signedness, `true`/`false` for bool), sans the newline.
 fn format_dbg(val: &Value, ty: Type) -> Result<String, Flow> {
     // `@dbg` of a String prints its content (matches __rue_dbg_str).
-    if let Value::Str { text, .. } = val {
-        return Ok(text.clone());
+    if let Value::Str { bytes, .. } = val {
+        return Ok(String::from_utf8_lossy(bytes).into_owned());
     }
     Ok(match ty.kind() {
         TypeKind::Bool => val.as_bool().to_string(),
