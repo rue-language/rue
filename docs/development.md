@@ -33,8 +33,11 @@ RUE="$(scripts/rue-bin)"
 "$RUE" --emit air --emit cfg main.rue
 ```
 
-Multiple source files require `-o`. Run `"$RUE" --help` for targets, preview
-features, optimization levels, logging, timing, and all emit stages.
+The normal model is one root source file per compile; additional files should
+be reached through `@import` and are discovered transitively from the root.
+Passing extra `.rue` files positionally is legacy flat-mode behavior being
+removed. Run `"$RUE" --help` for targets, preview features, optimization
+levels, logging, timing, and all emit stages.
 
 Long-form Buck commands remain useful when working on build targets:
 

@@ -114,3 +114,25 @@ pub fn go2() -> i32 { shared2.value() }
 pub fn value() -> i32 { 42 }
 """ }
 exit_code = 42
+
+[[case]]
+name = "normalized_relative_paths_load_same_file_once"
+spec = ["10.2:4"]
+description = "Two different relative import spellings that normalize to the same file refer to one loaded module"
+source = """
+fn main() -> i32 {
+    let left = @import("pkg/left");
+    let right = @import("pkg/nested/right");
+    left.left_value() + right.right_value()
+}
+"""
+aux_files = { "pkg/left.rue" = """
+const shared = @import("shared");
+pub fn left_value() -> i32 { shared.value() }
+""", "pkg/nested/right.rue" = """
+const shared = @import("../shared.rue");
+pub fn right_value() -> i32 { shared.value() }
+""", "pkg/shared.rue" = """
+pub fn value() -> i32 { 21 }
+""" }
+exit_code = 42

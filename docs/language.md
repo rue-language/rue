@@ -66,9 +66,11 @@ rules.
 
 ## Modules and programs
 
-A program may span multiple files. `@import("path.rue")` introduces a module
-object, and public declarations can be selected from it or re-exported through
-public constants. The standard library is imported as `@import("std")`.
+A program may span multiple files. A normal compile names one root source file;
+that root's `@import` graph is discovered transitively. `@import("path.rue")`
+introduces a module object, and public declarations can be selected from it or
+re-exported through public constants. The standard library is imported as
+`@import("std")`.
 
 ```rue
 const math = @import("math.rue");
@@ -79,8 +81,8 @@ fn main() -> i32 {
 ```
 
 The transitional flat multi-file namespace is being removed; new code should
-use module imports rather than relying on unqualified names from separately
-listed files.
+compile the root source and use module imports rather than relying on
+unqualified names from separately listed files.
 
 ## Runtime and targets
 

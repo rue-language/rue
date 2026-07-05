@@ -42,17 +42,20 @@ at the same relative path found relative to the root file.
 {{ rule(id="10.2:3", cat="normative") }}
 
 Importing a module loads it *transitively*: imports appearing in an imported
-file are themselves resolved and loaded, and so on, as if every reachable
-module had been listed on the command line. The importer of a transitively
-loaded file — not the root file — is the base for that file's own relative
-imports (per 10.2:2).
+file are themselves resolved and loaded, and so on, into the root module's
+import graph. Loading a file through this graph makes it available as a
+module; it does not inject the file's declarations into the importing
+scope. The importer of a transitively loaded file — not the root file — is
+the base for that file's own relative imports (per 10.2:2).
 
 {{ rule(id="10.2:4", cat="normative") }}
 
-Each source file is loaded at most once per compilation. An import that
-resolves to an already-loaded file refers to that same module. Import cycles
-are therefore legal: two modules may import each other, and a chain of
-imports may return to its starting file.
+Each source file is loaded at most once per compilation, after resolving the
+import path to the file's canonical location. An import that resolves to an
+already-loaded file refers to that same module, even if the import used a
+different relative spelling. Import cycles are therefore legal: two modules
+may import each other, and a chain of imports may return to its starting
+file.
 
 {{ rule(id="10.2:5", cat="example") }}
 
