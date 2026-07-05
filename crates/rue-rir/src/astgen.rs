@@ -2352,25 +2352,6 @@ mod tests {
     }
 
     #[test]
-    fn test_astgen_never_produces_param_ref() {
-        // AstGen lowers parameter references as `VarRef`; sema resolves them
-        // to parameters. `InstData::ParamRef` is never produced here — see the
-        // note on the variant definition in `inst.rs`.
-        let (rir, _interner) = gen_rir("fn add(x: i32, y: i32) -> i32 { x + y }");
-
-        assert!(
-            rir.iter()
-                .all(|(_, inst)| !matches!(inst.data, InstData::ParamRef { .. })),
-            "AstGen should not emit ParamRef"
-        );
-        assert!(
-            rir.iter()
-                .any(|(_, inst)| matches!(inst.data, InstData::VarRef { .. })),
-            "parameter references should be emitted as VarRef"
-        );
-    }
-
-    #[test]
     fn test_anon_struct_with_methods() {
         // Test that anonymous structs with methods generate AnonStructType with method references
         let source = r#"

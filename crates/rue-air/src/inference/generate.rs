@@ -737,15 +737,6 @@ impl<'a> ConstraintGenerator<'a> {
                 }
             }
 
-            // Parameter reference
-            InstData::ParamRef { name, .. } => {
-                if let Some(param) = ctx.params.get(name) {
-                    param.ty.clone()
-                } else {
-                    InferType::Concrete(Type::ERROR)
-                }
-            }
-
             // Local variable allocation
             InstData::Alloc {
                 directives_start: _,
@@ -2250,7 +2241,7 @@ impl<'a> ConstraintGenerator<'a> {
             }
             // A struct/enum name or forwarded type parameter used as a value
             // parses as a variable reference, not a type literal.
-            InstData::VarRef { name } | InstData::ParamRef { name, .. } => {
+            InstData::VarRef { name } => {
                 // A local bound to a type value (`let X = i32; identity(X, 42)`
                 // or `let P = Pair(i32); f(P, ..)`) resolves to that bound type
                 // via the precomputed comptime-local-types map — the same map
@@ -2298,9 +2289,7 @@ impl<'a> ConstraintGenerator<'a> {
                     None
                 }
             }
-            InstData::VarRef { name } | InstData::ParamRef { name, .. } => {
-                self.const_values.and_then(|m| m.get(name).copied())
-            }
+            InstData::VarRef { name } => self.const_values.and_then(|m| m.get(name).copied()),
             _ => None,
         }
     }
@@ -2330,9 +2319,7 @@ impl<'a> ConstraintGenerator<'a> {
         // here; richer scrutinees are left to sema's own selection.
         // `ConstValue` is `Copy`, so take an owned copy for the match below.
         let value: ConstValue = match &self.rir.get(scrutinee).data {
-            InstData::VarRef { name } | InstData::ParamRef { name, .. } => {
-                *self.comptime_values?.get(name)?
-            }
+            InstData::VarRef { name } => *self.comptime_values?.get(name)?,
             _ => return None,
         };
 

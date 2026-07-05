@@ -474,7 +474,6 @@ impl<'a> Sema<'a> {
     ///
     /// Returns Some(symbol) for:
     /// - VarRef { name } -> the variable symbol
-    /// - ParamRef { name, .. } -> the parameter symbol
     /// - FieldGet { base, .. } -> recursively extract from base
     /// - IndexGet { base, .. } -> recursively extract from base
     ///

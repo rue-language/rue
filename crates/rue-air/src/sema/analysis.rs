@@ -1235,7 +1235,6 @@ pub(crate) fn root_variable_of(rir: &Rir, inst_ref: InstRef) -> Option<Spur> {
     let inst = rir.get(inst_ref);
     match &inst.data {
         InstData::VarRef { name } => Some(*name),
-        InstData::ParamRef { name, .. } => Some(*name),
         InstData::FieldGet { base, .. } => root_variable_of(rir, *base),
         InstData::IndexGet { base, .. } => root_variable_of(rir, *base),
         _ => None,
