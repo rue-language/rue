@@ -47,17 +47,15 @@ error_contains = "standard library not found"
 # =============================================================================
 # Standard Library Submodule Access
 # =============================================================================
-# Note: These tests require module member access to be fully implemented.
-# For now, they verify that the std library can be found and parsed.
 
 [[case]]
 name = "import_std_with_submodule"
 spec = ["4.13:81", "4.13:82", "10.2:6"]
-description = "std library with submodules can be imported"
+description = "std library with submodules can be imported and accessed"
 source = """
 fn main() -> i32 {
     let std = @import("std");
-    0
+    std.math.abs(0 - 42)
 }
 """
 aux_files = { "std/_std.rue" = """
@@ -67,4 +65,28 @@ pub fn abs(x: i32) -> i32 {
     if x < 0 { -x } else { x }
 }
 """ }
-exit_code = 0
+exit_code = 42
+
+[[case]]
+name = "import_std_with_generic_submodule"
+spec = ["4.13:81", "4.13:82", "10.2:6"]
+description = "std library generic submodule members can be accessed and instantiated"
+source = """
+fn main() -> i32 {
+    let std = @import("std");
+    let O = std.option.Option(i32);
+    let x = O::Some(7);
+    match x {
+        O::Some(n) => n,
+        O::None => 1,
+    }
+}
+"""
+aux_files = { "std/_std.rue" = """
+pub const option = @import("option.rue");
+""", "std/option.rue" = """
+pub fn Option(comptime T: type) -> type {
+    enum { Some(T), None }
+}
+""" }
+exit_code = 7
