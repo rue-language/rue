@@ -90,12 +90,13 @@ const std = @import("std");
 ```
 
 The intent is that standard-library types and functions are accessed through
-that namespace, for example `std.Option` or `std.ArrayBuf`.
+that namespace, for example `std.option.Option` or
+`std.arraybuf.ArrayBuf`.
 
-At the moment, this tutorial does not rely on `@import("std")`: the standard
-module is still being wired up, and a current compiler may report
-`standard library not found`. Until that lands, examples that need library
-helpers either define them inline or use checked-in example files directly.
+The repository wrapper commands know where the checked-in `std/` directory
+lives. If you invoke the compiler binary directly from somewhere else and see
+`standard library not found`, set `RUE_STD_PATH` to the repository's `std`
+directory.
 
 The important habit is still the same: use explicit module imports and
 namespace-qualified access rather than hidden global names.
