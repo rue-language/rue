@@ -402,7 +402,7 @@ fn main() -> i32 {
 }
 ```
 
-### Phase 2: @copy directive (historical bd ID rue-dfr8.2, pre-Linear)
+### Phase 2: @copy directive (historical bd ID rue-dfr8.2, pre-Linear) ✅ COMPLETE
 
 Allow opting structs into Copy semantics.
 
@@ -423,14 +423,14 @@ fn main() -> i32 {
 }
 ```
 
-### Phase 3: Inout parameters (historical bd ID rue-dfr8.3, pre-Linear)
+### Phase 3: Inout parameters (historical bd ID rue-dfr8.3, pre-Linear) ✅ COMPLETE
 
 Add mutation-without-ownership-transfer.
 
-- Add `inout` keyword in function parameter position
-- Add `inout` syntax at call sites
-- Exclusive access checking (can't pass same var as two inout args)
-- Codegen: pass by pointer internally
+- [x] Add `inout` keyword in function parameter position
+- [x] Add `inout` syntax at call sites
+- [x] Exclusive access checking (can't pass same var as two inout args)
+- [x] Codegen: pass by pointer internally
 
 **Testable**: Mutate a value through inout parameter.
 
@@ -445,14 +445,16 @@ fn main() -> i32 {
 }
 ```
 
-### Phase 4: Linear types (historical bd ID rue-dfr8.4, pre-Linear)
+### Phase 4: Linear types (historical bd ID rue-dfr8.4, pre-Linear) ✅ COMPLETE
 
-Add must-consume semantics.
+Add must-consume semantics. Implemented by the 2026-07 linearity work, including
+must-consume-on-all-non-diverging-paths, infectious linearity for containers, and
+element-wise consumption of linear arrays (RUE-40, RUE-176, RUE-186).
 
-- Add `linear` keyword for struct definitions
-- Check that linear values are consumed (not just dropped)
-- Error on implicit drop of linear values
-- Linear types cannot be `@copy`
+- [x] Add `linear` keyword for struct definitions
+- [x] Check that linear values are consumed (not just dropped)
+- [x] Error on implicit drop of linear values
+- [x] Linear types cannot be `@copy`
 
 **Testable**: Dropping a linear value without consuming it is an error.
 
@@ -489,16 +491,20 @@ fn main() -> i32 {
 }
 ```
 
-### Phase 6: @handle directive (historical bd ID rue-dfr8.6, pre-Linear)
+### Phase 6: @handle directive (historical bd ID rue-dfr8.6, pre-Linear) ❌ RETIRED
 
-Add explicit duplication for reference-counted types.
+Retired by RUE-199. The formal-core review found no separate `@handle`
+capability is needed: a type that wants explicit duplication can expose an
+ordinary method or function returning another owned value. The syntax and
+semantics below are retained only as historical design context.
 
-- Add `@handle` directive parsing
-- Types with `@handle` must provide `.handle()` method
-- `.handle()` returns a new owned value
-- Useful for: Rc, Arc, interned strings, etc.
+- [x] Remove `@handle` directive parsing and semantic support
+- [x] Treat `.handle()` as an ordinary method name, not a language capability
+- [x] Leave future explicit duplication APIs to ordinary library design
+- [x] Record the retirement in the ADR status section
 
-**Testable**: Call `.handle()` to explicitly duplicate.
+**Historical sketch**: the retired design would have called `.handle()` to
+explicitly duplicate.
 
 ```rue
 @handle
