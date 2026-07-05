@@ -209,4 +209,5 @@ The table is generated from ADR frontmatter. Run
 | [0044](0044-optimization-levels.md) | Optimization Levels (-O0/-O1/-O2/-O3) | Accepted | compiler, codegen, process |
 | [0045](0045-lazy-semantic-analysis.md) | Lazy semantic analysis (compile-on-reference) | Accepted | compiler, semantics, comptime, modules, stdlib, language-shape |
 | [0046](0046-delete-flat-mode.md) | Delete flat multi-file mode (all cross-file references go through @import) | Accepted | modules, semantics, cli, language-shape, ergonomics |
+| [0047](0047-root-module-build-inputs.md) | Root-module compilation units and build-system inputs | Accepted | modules, compiler, build-system, packages, cli, language-shape |
 <!-- ADR-INDEX:END -->
