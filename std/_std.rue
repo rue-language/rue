@@ -12,3 +12,32 @@
 pub const math = @import("math.rue");
 pub const option = @import("option.rue");
 pub const arraybuf = @import("arraybuf.rue");
+
+fn exit_syscall_number() -> u64 {
+    match @target_arch() {
+        Arch::X86_64 => {
+            match @target_os() {
+                Os::Linux => 60,
+                Os::Macos => 1,
+            }
+        },
+        Arch::Aarch64 => {
+            match @target_os() {
+                Os::Linux => 93,
+                Os::Macos => 1,
+            }
+        },
+    }
+}
+
+/// Exit the process with `code`.
+///
+/// This terminates immediately and does not return.
+pub fn exit(code: u64) -> ! {
+    let syscall_num = exit_syscall_number();
+    checked {
+        @syscall(syscall_num, code);
+    };
+
+    loop {}
+}

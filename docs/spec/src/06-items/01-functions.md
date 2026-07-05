@@ -228,6 +228,11 @@ A program **MUST** have a function named `main`.
 
 The `main` function **MUST** return either `i32` or `()`. When it returns `i32`, that value becomes the program's exit code. When it returns `()`, the exit code is 0.
 
+Programs can also terminate explicitly through the standard library:
+`std.exit(code)` terminates the process immediately with the provided `u64`
+status code and does not return. This bypasses `main`'s return value; if
+`std.exit` is reached, code after that call is not evaluated.
+
 {{ rule(id="6.1:9") }}
 
 ```rue
