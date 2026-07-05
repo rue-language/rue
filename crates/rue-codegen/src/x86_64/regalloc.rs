@@ -721,6 +721,9 @@ impl RegAlloc {
             }
 
             X86Inst::MovRMIndexed { dst, base, offset } => {
+                // Lifecycle boundary: Mov*Indexed are pre-regalloc pseudos
+                // whose address base is still virtual. After this pass, emit
+                // only sees concrete memory operations with physical bases.
                 // Load base vreg into scratch register
                 let base_op = Operand::Virtual(base);
                 let base_reg = self.load_operand(mir, base_op, Reg::Rax)?;
@@ -763,6 +766,7 @@ impl RegAlloc {
             }
 
             X86Inst::MovMRIndexed { base, offset, src } => {
+                // Lifecycle boundary: see MovRMIndexed above.
                 let src_op = self.load_operand(mir, src, Reg::Rdx)?;
                 let base_op = Operand::Virtual(base);
                 let base_reg = self.load_operand(mir, base_op, Reg::Rax)?;
@@ -1289,6 +1293,69 @@ mod tests {
         };
 
         assert_ne!(d0, d1, "interfering vregs should get different registers");
+    }
+
+    #[test]
+    fn test_indexed_memory_pseudos_lowered_before_emit() {
+        let mut mir = X86Mir::new();
+        let base = mir.alloc_vreg();
+        let src = mir.alloc_vreg();
+        let loaded = mir.alloc_vreg();
+
+        mir.push(X86Inst::MovRI64 {
+            dst: Operand::Virtual(base),
+            imm: 1024,
+        });
+        mir.push(X86Inst::MovRI64 {
+            dst: Operand::Virtual(src),
+            imm: 7,
+        });
+        mir.push(X86Inst::MovRMIndexed {
+            dst: Operand::Virtual(loaded),
+            base,
+            offset: 16,
+        });
+        mir.push(X86Inst::MovMRIndexed {
+            base,
+            offset: 24,
+            src: Operand::Virtual(src),
+        });
+        mir.push(X86Inst::MovRR {
+            dst: Operand::Physical(Reg::Rdi),
+            src: Operand::Virtual(loaded),
+        });
+
+        let mir = RegAlloc::new(mir, 0).allocate().unwrap();
+
+        assert!(
+            mir.instructions().iter().all(|inst| !matches!(
+                inst,
+                X86Inst::MovRMIndexed { .. } | X86Inst::MovMRIndexed { .. }
+            )),
+            "regalloc must eliminate indexed memory pseudos before emit"
+        );
+        assert!(
+            mir.instructions().iter().any(|inst| matches!(
+                inst,
+                X86Inst::MovRM {
+                    dst: Operand::Physical(_),
+                    base,
+                    offset: 16,
+                } if *base != Reg::Rbp
+            )),
+            "MovRMIndexed should lower to MovRM with a physical address base"
+        );
+        assert!(
+            mir.instructions().iter().any(|inst| matches!(
+                inst,
+                X86Inst::MovMR {
+                    base,
+                    offset: 24,
+                    src: Operand::Physical(_),
+                } if *base != Reg::Rbp
+            )),
+            "MovMRIndexed should lower to MovMR with a physical address base"
+        );
     }
 
     // ========================================
