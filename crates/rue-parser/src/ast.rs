@@ -552,7 +552,8 @@ pub enum Expr {
     Unary(UnaryExpr),
     /// Parenthesized expression (e.g., `(a + b)`)
     Paren(ParenExpr),
-    /// Block with statements and final expression
+    /// Block with statements and an optional final expression.
+    /// Blocks without an explicit final expression store implicit unit.
     Block(BlockExpr),
     /// If expression (e.g., `if cond { a } else { b }`)
     If(IfExpr),
@@ -685,12 +686,15 @@ pub struct ParenExpr {
     pub span: Span,
 }
 
-/// A block expression containing statements and a final expression.
+/// A block expression containing statements and a value expression.
+///
+/// A source block may omit its final expression; in that case the parser stores
+/// an implicit unit expression here so later phases always have a block value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlockExpr {
     /// Statements in the block
     pub statements: Vec<Statement>,
-    /// Final expression (the value of the block)
+    /// Value of the block, either the explicit final expression or implicit unit.
     pub expr: Box<Expr>,
     pub span: Span,
 }

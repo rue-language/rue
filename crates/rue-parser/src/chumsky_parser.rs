@@ -1213,7 +1213,7 @@ where
     let if_expr = recursive(|if_expr_rec| {
         just(TokenKind::If)
             .ignore_then(expr.clone())
-            .then(maybe_unit_block_parser(expr.clone(), block_like.clone()).or_not())
+            .then(block_parser(expr.clone(), block_like.clone()).or_not())
             .then(
                 just(TokenKind::Else)
                     .ignore_then(choice((
@@ -1227,7 +1227,7 @@ where
                             }
                         }),
                         // else { ... }: parse a regular block
-                        maybe_unit_block_parser(expr.clone(), block_like.clone()),
+                        block_parser(expr.clone(), block_like.clone()),
                     )))
                     .or_not(),
             )
@@ -1277,7 +1277,7 @@ where
     // the zero-field struct literal's braces as the empty loop body.
     let while_expr = just(TokenKind::While)
         .ignore_then(expr.clone())
-        .then(maybe_unit_block_parser(expr.clone(), block_like.clone()).or_not())
+        .then(block_parser(expr.clone(), block_like.clone()).or_not())
         .try_map_with(|(cond, body), e| {
             let span = span_from_extra(e);
             match (cond, body) {
@@ -1317,7 +1317,7 @@ where
 
     // Loop expression (infinite loop)
     let loop_expr = just(TokenKind::Loop)
-        .ignore_then(maybe_unit_block_parser(expr.clone(), block_like.clone()))
+        .ignore_then(block_parser(expr.clone(), block_like.clone()))
         .map_with(|body, e| {
             Expr::Loop(LoopExpr {
                 body,
@@ -1335,7 +1335,7 @@ where
         .ignore_then(let_pattern_parser())
         .then_ignore(just(TokenKind::In))
         .then(expr.clone())
-        .then(maybe_unit_block_parser(expr.clone(), block_like.clone()).or_not())
+        .then(block_parser(expr.clone(), block_like.clone()).or_not())
         .try_map_with(|((binder, iterable), body), e| {
             let span = span_from_extra(e);
             match (iterable, body) {
@@ -1751,11 +1751,11 @@ where
         });
 
     // Block expression
-    let block_expr = block_parser(expr.clone(), block_like.clone());
+    let block_expr = block_parser(expr.clone(), block_like.clone()).map(Expr::Block);
 
     // Comptime block expression: comptime { expr }
     let comptime_expr = just(TokenKind::Comptime)
-        .ignore_then(block_parser(expr.clone(), block_like.clone()))
+        .ignore_then(block_parser(expr.clone(), block_like.clone()).map(Expr::Block))
         .map_with(|inner_expr, e| {
             Expr::Comptime(ComptimeBlockExpr {
                 expr: Box::new(inner_expr),
@@ -1766,7 +1766,7 @@ where
     // Checked block expression: checked { expr }
     // Unchecked operations are only allowed inside checked blocks
     let checked_expr = just(TokenKind::Checked)
-        .ignore_then(block_parser(expr.clone(), block_like.clone()))
+        .ignore_then(block_parser(expr.clone(), block_like.clone()).map(Expr::Block))
         .map_with(|inner_expr, e| {
             Expr::Checked(CheckedBlockExpr {
                 expr: Box::new(inner_expr),
@@ -2523,7 +2523,7 @@ fn process_block_items(items: Vec<BlockItem>, block_span: Span) -> (Vec<Statemen
 /// The final expression is optional: a block without one evaluates to unit
 /// (see [`process_block_items`], which also promotes a trailing diverging
 /// statement like `break`/`continue`/`return` to the final expression).
-fn maybe_unit_block_parser<'src, I>(
+fn block_parser<'src, I>(
     expr: impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone + 'src,
     block_like: impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone + 'src,
 ) -> impl Parser<'src, I, BlockExpr, ParserExtras<'src>> + Clone
@@ -2543,18 +2543,6 @@ where
                 span,
             }
         })
-}
-
-/// Same as [`maybe_unit_block_parser`], but wraps the result in [`Expr::Block`]
-/// for positions that need an expression (function bodies, standalone blocks).
-fn block_parser<'src, I>(
-    expr: impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone + 'src,
-    block_like: impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone + 'src,
-) -> impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone
-where
-    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
-{
-    maybe_unit_block_parser(expr, block_like).map(Expr::Block)
 }
 
 /// Standalone parser for a *block-like* expression (`if`/`match`/`while`/
@@ -2604,7 +2592,7 @@ where
     recursive(|block_like| {
         choice((
             control_flow_parser(expr.clone(), block_like.clone()),
-            block_parser(expr.clone(), block_like.clone()),
+            block_parser(expr.clone(), block_like.clone()).map(Expr::Block),
         ))
         .try_map(|e, span| {
             if is_block_like(&e) {
@@ -2664,7 +2652,7 @@ where
                 name,
                 params,
                 return_type,
-                body,
+                body: Expr::Block(body),
                 span: span_from_extra(e),
             },
         )
@@ -2836,7 +2824,7 @@ where
                 receiver: Some(self_param),
                 params: Vec::new(),
                 return_type: None,
-                body,
+                body: Expr::Block(body),
                 span,
             }
         })
@@ -2898,7 +2886,7 @@ where
                 receiver,
                 params,
                 return_type,
-                body,
+                body: Expr::Block(body),
                 span: span_from_extra(e),
             },
         )
@@ -2925,7 +2913,7 @@ where
         .map_with(|((type_name, self_param), body), e| DropFn {
             type_name,
             self_param,
-            body,
+            body: Expr::Block(body),
             span: span_from_extra(e),
         })
 }
