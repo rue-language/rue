@@ -124,7 +124,26 @@ impl<'a> Sema<'a> {
         let const_types: HashMap<Spur, Type> = self
             .constants
             .iter()
-            .map(|(name, info)| (*name, info.ty))
+            .map(|(name, info)| {
+                let ty = match info.value {
+                    ConstValue::Type(_) => Type::COMPTIME_TYPE,
+                    _ => info.ty,
+                };
+                (*name, ty)
+            })
+            .collect();
+
+        // File-level type aliases (`const T = SomeType(...)`) map the alias
+        // name to the concrete type value it denotes. Constraint generation
+        // consults this in type positions; expression positions still use
+        // `const_types` above and see the binding itself as `type`.
+        let const_type_aliases: HashMap<Spur, Type> = self
+            .constants
+            .iter()
+            .filter_map(|(name, info)| match info.value {
+                ConstValue::Type(ty) => Some((*name, ty)),
+                _ => None,
+            })
             .collect();
 
         // Integer constant values, so an array length naming a `const`
@@ -158,6 +177,7 @@ impl<'a> Sema<'a> {
             enum_types,
             method_sigs,
             const_types,
+            const_type_aliases,
             const_values,
             const_function_aliases,
             module_binding_types,
@@ -1682,6 +1702,37 @@ impl<'a> Sema<'a> {
                 }
             }
 
+            // Module-member call: `const OptI = std.option.Option(i64);`.
+            // In expression syntax this parses as a method call on the module
+            // receiver. In const context we only reduce it when the target is a
+            // module function returning `type` with compile-time-known args;
+            // ordinary runtime module function calls remain non-const.
+            InstData::MethodCall {
+                receiver,
+                method,
+                args_start,
+                args_len,
+            } => {
+                let (receiver, method, args_start, args_len) =
+                    (*receiver, *method, *args_start, *args_len);
+                match self.eval_const_initializer(receiver, file_id, st, None)? {
+                    ConstInit::Module(module_ty) => {
+                        let module_id = module_ty
+                            .as_module()
+                            .expect("ConstInit::Module holds a module type");
+                        self.eval_module_member_comptime_call(
+                            module_id, method, args_start, args_len, file_id, span, st,
+                        )
+                    }
+                    ConstInit::Value(_) => Err(CompileError::new(
+                        ErrorKind::ConstExprNotSupported {
+                            expr_kind: "method call on a non-module value".to_string(),
+                        },
+                        span,
+                    )),
+                }
+            }
+
             // String constants would need the String type; not supported in
             // const context yet.
             InstData::StringConst(_) => Err(CompileError::new(
@@ -1742,14 +1793,6 @@ impl<'a> Sema<'a> {
             &const_module_members,
         );
         match self.eval_const_expr(init, &mut env)? {
-            // Type values (e.g. `const T = i32;`) are not supported as
-            // constants: nothing can materialize them at a use site yet.
-            Some(ConstValue::Type(_)) => Err(CompileError::new(
-                ErrorKind::ConstExprNotSupported {
-                    expr_kind: "a type value".to_string(),
-                },
-                span,
-            )),
             Some(value) => Ok(ConstInit::Value(value)),
             None => Err(CompileError::new(
                 ErrorKind::ConstExprNotSupported {
@@ -2203,6 +2246,139 @@ impl<'a> Sema<'a> {
         ))
     }
 
+    /// Evaluate `module.member(args...)` in const context when `member` is a
+    /// module function returning `type`. This is the module-scope analogue of
+    /// function-local `let O = std.option.Option(i64);`: the alias is a
+    /// compile-time type value, not a runtime call.
+    fn eval_module_member_comptime_call(
+        &mut self,
+        module_id: crate::types::ModuleId,
+        member: Spur,
+        args_start: u32,
+        args_len: u32,
+        accessing_file: FileId,
+        span: Span,
+        st: &mut ConstCollector,
+    ) -> CompileResult<ConstInit> {
+        let module_def = self.module_registry.get_def(module_id);
+        let import_path = module_def.import_path.clone();
+        let member_str = self.interner.resolve(&member).to_string();
+        let module_file_id = self.canonical_file_id(&module_def.file_path);
+        let module_file_path = module_file_id
+            .and_then(|id| self.get_file_path(id))
+            .map(str::to_string)
+            .unwrap_or(module_def.file_path);
+
+        let Some(mfile) = module_file_id else {
+            return Err(CompileError::new(
+                ErrorKind::UnknownModuleMember {
+                    module_name: import_path,
+                    member_name: member_str,
+                },
+                span,
+            ));
+        };
+        let Some((_fn_file_id, is_pub)) =
+            self.ensure_free_function_signature(member, Some(mfile))?
+        else {
+            return Err(CompileError::new(
+                ErrorKind::UnknownModuleMember {
+                    module_name: import_path,
+                    member_name: member_str,
+                },
+                span,
+            ));
+        };
+        self.check_const_member_visibility(
+            is_pub,
+            &member_str,
+            &module_file_path,
+            accessing_file,
+            span,
+        )?;
+
+        let Some(fn_info) = self.functions.get(&member) else {
+            return Err(CompileError::new(
+                ErrorKind::UnknownModuleMember {
+                    module_name: import_path,
+                    member_name: member_str,
+                },
+                span,
+            ));
+        };
+        if fn_info.return_type != Type::COMPTIME_TYPE {
+            return Err(CompileError::new(
+                ErrorKind::ConstExprNotSupported {
+                    expr_kind: format!("call to non-type function `{member_str}`"),
+                },
+                span,
+            ));
+        }
+
+        let params = fn_info.params;
+        let param_names = self.param_arena.names(params).to_vec();
+        let param_comptime = self.param_arena.comptime(params).to_vec();
+        let args = self.rir.get_call_args(args_start, args_len).to_vec();
+        let all_params_comptime = !param_names.is_empty() && param_comptime.iter().all(|&c| c);
+        let eligible = param_names.is_empty() || all_params_comptime;
+        if args.len() != param_names.len() || !eligible {
+            return Err(CompileError::new(
+                ErrorKind::ConstExprNotSupported {
+                    expr_kind: format!("call to `{member_str}`"),
+                },
+                span,
+            ));
+        }
+
+        let mut callee_types: HashMap<Spur, Type> = HashMap::new();
+        let mut callee_values: HashMap<Spur, ConstValue> = HashMap::new();
+        for (i, arg) in args.iter().enumerate() {
+            self.ensure_const_init_deps_collected(arg.value, accessing_file, st)?;
+            let mut const_module_members: HashMap<InstRef, ConstValue> = HashMap::new();
+            self.collect_const_module_members(
+                arg.value,
+                accessing_file,
+                st,
+                &mut const_module_members,
+            )?;
+            let resolved_types: HashMap<InstRef, Type> = HashMap::new();
+            let mut env = super::comptime_eval::ComptimeEnv::for_const_init(
+                &resolved_types,
+                &const_module_members,
+            );
+            let Some(value) = self.eval_const_expr(arg.value, &mut env)? else {
+                return Err(CompileError::new(
+                    ErrorKind::ConstExprNotSupported {
+                        expr_kind: format!("argument to `{member_str}`"),
+                    },
+                    self.rir.get(arg.value).span,
+                ));
+            };
+            match value {
+                ConstValue::Type(ty) => {
+                    callee_types.insert(param_names[i], ty);
+                }
+                value => {
+                    callee_values.insert(param_names[i], value);
+                }
+            }
+        }
+
+        match self.reduce_type_ctor_body(member, &callee_types, &callee_values)? {
+            Some(ConstValue::Type(ty)) => Ok(ConstInit::Value(ConstValue::Type(ty))),
+            _ => Err(CompileError::new(
+                ErrorKind::ComptimeEvaluationFailed {
+                    reason: format!(
+                        "the type constructor '{}' did not reduce to a concrete type \
+                         at compile time",
+                        member_str
+                    ),
+                },
+                span,
+            )),
+        }
+    }
+
     /// Find a free function declaration in RIR, optionally restricted to one
     /// source file. This is used during const collection, which is
     /// dependency-ordered and can run before the main function-signature pass
@@ -2230,6 +2406,80 @@ impl<'a> Sema<'a> {
             }
             Some((inst.span.file_id, *is_pub))
         })
+    }
+
+    /// Ensure a free function's signature is available during const
+    /// collection, which can run before the main declaration walk reaches the
+    /// callee's `FnDecl`.
+    fn ensure_free_function_signature(
+        &mut self,
+        target: Spur,
+        file_id: Option<FileId>,
+    ) -> CompileResult<Option<(FileId, bool)>> {
+        let Some((
+            span,
+            is_pub,
+            params_start,
+            params_len,
+            return_type,
+            body,
+            is_unchecked,
+            directives_start,
+            directives_len,
+        )) = self.rir.iter().find_map(|(_, inst)| {
+            let InstData::FnDecl {
+                is_pub,
+                name,
+                params_start,
+                params_len,
+                return_type,
+                body,
+                has_self,
+                is_unchecked,
+                directives_start,
+                directives_len,
+                ..
+            } = &inst.data
+            else {
+                return None;
+            };
+            if *has_self || *name != target {
+                return None;
+            }
+            if file_id.is_some_and(|wanted| inst.span.file_id != wanted) {
+                return None;
+            }
+            Some((
+                inst.span,
+                *is_pub,
+                *params_start,
+                *params_len,
+                *return_type,
+                *body,
+                *is_unchecked,
+                *directives_start,
+                *directives_len,
+            ))
+        })
+        else {
+            return Ok(None);
+        };
+
+        if !self.functions.contains_key(&target) {
+            self.collect_function_signature(
+                target,
+                params_start,
+                params_len,
+                return_type,
+                body,
+                span,
+                is_pub,
+                is_unchecked,
+                directives_start,
+                directives_len,
+            )?;
+        }
+        Ok(Some((span.file_id, is_pub)))
     }
 
     /// The visibility rule for module members accessed in const context
@@ -2299,20 +2549,15 @@ impl<'a> Sema<'a> {
             }
             ConstValue::Bool(_) => Type::BOOL,
             ConstValue::Unit => Type::UNIT,
-            ConstValue::Function(_) => Type::COMPTIME_TYPE,
-            // Type values are rejected before this point (and module
-            // bindings never take this path); keep the type if one slips
-            // through so the mismatch error below names it.
-            ConstValue::Type(t) => t,
+            ConstValue::Function(_) | ConstValue::Type(_) => Type::COMPTIME_TYPE,
         };
 
         let Some(ty_sym) = ty_sym else {
             if matches!(value, ConstValue::Function(_)) {
                 return Ok(inferred);
             }
-            // Type values are not annotatable (no syntax names them), so a
-            // hypothetical unannotated type-valued constant is not an
-            // annotation error; today they are rejected upstream anyway.
+            // Type aliases are compile-time-only bindings, like function
+            // aliases: they do not require a runtime value annotation.
             if matches!(value, ConstValue::Type(_)) {
                 return Ok(inferred);
             }

@@ -185,6 +185,9 @@ pub struct ConstraintGenerator<'a> {
     /// (RUE-142). `None` only in unit tests; production passes the map via
     /// [`Self::with_const_types`].
     const_types: Option<&'a HashMap<Spur, Type>>,
+    /// File-level type aliases (`const T = SomeType(...)`) resolved during
+    /// declaration gathering. Consulted in type positions.
+    const_type_aliases: Option<&'a HashMap<Spur, Type>>,
     /// Module-binding types (`const utils = @import(...)`): (declaring file,
     /// name) -> module type. Per-file scoped (RUE-113), so `VarRef` consults
     /// this with the reference's own `span.file_id` before `const_types`.
@@ -274,6 +277,7 @@ impl<'a> ConstraintGenerator<'a> {
             int_literal_vars: Vec::new(),
             type_subst,
             const_types: None,
+            const_type_aliases: None,
             module_binding_types: None,
             comptime_local_types: None,
             extra_method_sigs: None,
@@ -310,6 +314,12 @@ impl<'a> ConstraintGenerator<'a> {
     /// resolution. See the `const_types` field for details (RUE-142).
     pub fn with_const_types(mut self, const_types: &'a HashMap<Spur, Type>) -> Self {
         self.const_types = Some(const_types);
+        self
+    }
+
+    /// Provide file-level type aliases for type-position resolution.
+    pub fn with_const_type_aliases(mut self, const_type_aliases: &'a HashMap<Spur, Type>) -> Self {
+        self.const_type_aliases = Some(const_type_aliases);
         self
     }
 
@@ -759,6 +769,10 @@ impl<'a> ConstraintGenerator<'a> {
                     let annotated = self
                         .comptime_local_types
                         .and_then(|aliases| aliases.get(ty_sym).copied())
+                        .or_else(|| {
+                            self.const_type_aliases
+                                .and_then(|aliases| aliases.get(ty_sym).copied())
+                        })
                         .map(|ty| self.type_to_infer(ty))
                         .or_else(|| self.resolve_type_name(self.interner.resolve(ty_sym)));
                     if let Some(annotated_ty) = annotated {
@@ -2492,6 +2506,12 @@ impl<'a> ConstraintGenerator<'a> {
             }
             if let Some(&enum_ty) = self.enums.get(&name_spur) {
                 return Some(InferType::Concrete(enum_ty));
+            }
+            if let Some(&alias_ty) = self
+                .const_type_aliases
+                .and_then(|aliases| aliases.get(&name_spur))
+            {
+                return Some(InferType::Concrete(alias_ty));
             }
         }
         None

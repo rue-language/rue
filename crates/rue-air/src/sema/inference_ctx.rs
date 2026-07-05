@@ -41,6 +41,11 @@ pub struct InferenceContext {
     /// Without this map a const reference inferred to `<error>` and poisoned
     /// every expression it touched (RUE-142).
     pub const_types: HashMap<Spur, Type>,
+    /// File-level type aliases: name -> concrete type denoted by a
+    /// type-valued constant (`const OptI = std.option.Option(i64)`). These are
+    /// consulted in type positions; expression positions see the binding's
+    /// own type as `type` through `const_types`.
+    pub const_type_aliases: HashMap<Spur, Type>,
     /// File-level integer constant values (name -> value). Constants are fully
     /// evaluated during declaration gathering, so an array length naming one
     /// (`[i32; K]`) can be resolved to a concrete length during constraint

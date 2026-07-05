@@ -502,6 +502,17 @@ impl<'a> Sema<'a> {
                 span,
             )?;
             Ok(Type::new_enum(enum_id))
+        } else if let Some(info) = self.constants.get(&type_sym)
+            && let ConstValue::Type(alias_ty) = info.value
+        {
+            self.check_unqualified_visibility(
+                "constant",
+                type_name,
+                info.span.file_id,
+                info.is_pub,
+                span,
+            )?;
+            Ok(alias_ty)
         } else {
             // Check for array type syntax: [T; N]
             if let Some((element_type, len)) = parse_array_type_syntax(type_name) {
@@ -811,6 +822,11 @@ impl<'a> Sema<'a> {
             Some(Type::new_struct(struct_id))
         } else if let Some(&enum_id) = self.enums.get(&type_sym) {
             Some(Type::new_enum(enum_id))
+        } else if let Some(info) = self.constants.get(&type_sym) {
+            match info.value {
+                ConstValue::Type(alias_ty) => Some(alias_ty),
+                _ => None,
+            }
         } else if let Some((element_type, len)) = parse_array_type_syntax(type_name) {
             // Resolve the element type first
             let element_sym = self.interner.get_or_intern(&element_type);
