@@ -22,7 +22,7 @@ fn main() -> i32 {
     let index: u64 = 0;
     let byte: u8 = 255;
 
-    @dbg(x);
+    println("x = " + @to_string(x));
     x
 }
 ```
@@ -38,7 +38,7 @@ fn main() -> i32 {
     let x = 42;        // inferred as i32 (the default)
     let y = true;      // inferred as bool
 
-    @dbg(x);
+    println("x = " + @to_string(x));
     x
 }
 ```
@@ -54,8 +54,8 @@ fn main() -> i32 {
     let flag: bool = true;
     let done = false;
 
-    @dbg(flag);   // prints: 1 (true)
-    @dbg(done);   // prints: 0 (false)
+    @dbg(flag);   // prints: true
+    @dbg(done);   // prints: false
 
     0
 }
@@ -70,7 +70,7 @@ fn main() -> i32 {
     let mut count = 0;
     count = count + 1;
     count = count + 1;
-    @dbg(count);  // prints: 2
+    println("count = " + @to_string(count));
     count
 }
 ```
