@@ -46,6 +46,7 @@ mod stack_verify;
 
 pub mod aarch64;
 pub mod agg_slots;
+pub mod aggregate_eq;
 pub mod byref_args;
 pub mod cfg_lower;
 pub mod index_map;
