@@ -68,6 +68,79 @@ pub fn triple(x: i32) -> i32 {
 ]
 stdout = "42\n"
 
+[[case]]
+name = "source_manifest_allows_declared_import"
+description = "RUE-445: a source manifest lists files the import graph is allowed to read."
+files = [
+    { path = "sources.manifest", source = """
+# One source path per line, relative to this manifest file.
+main.rue
+utils.rue
+""" },
+    { path = "main.rue", source = """
+const utils = @import("utils");
+
+fn main() -> i32 {
+    @dbg(utils.triple(14));
+    0
+}
+""" },
+    { path = "utils.rue", source = """
+pub fn triple(x: i32) -> i32 {
+    x * 3
+}
+""" },
+]
+args = ["--source-manifest", "sources.manifest", "main.rue", "-o", "prog"]
+stdout = "42\n"
+
+[[case]]
+name = "source_manifest_rejects_undeclared_import"
+description = "RUE-445: import discovery must not read a source file outside the build-system manifest."
+files = [
+    { path = "sources.manifest", source = """
+main.rue
+""" },
+    { path = "main.rue", source = """
+const utils = @import("utils");
+
+fn main() -> i32 {
+    utils.triple(14)
+}
+""" },
+    { path = "utils.rue", source = """
+pub fn triple(x: i32) -> i32 {
+    x * 3
+}
+""" },
+]
+args = ["--source-manifest", "sources.manifest", "main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["source manifest", "utils.rue", "not listed"]
+
+[[case]]
+name = "source_manifest_entries_are_not_semantic_roots"
+description = "RUE-445: declaring a file in the manifest makes it available to import, but does not load it or make its bare names visible."
+files = [
+    { path = "sources.manifest", source = """
+main.rue
+helper.rue
+""" },
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    helper()
+}
+""" },
+    { path = "helper.rue", source = """
+pub fn helper() -> i32 {
+    42
+}
+""" },
+]
+args = ["--source-manifest", "sources.manifest", "main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["undefined function", "helper"]
+
 # The `.rue`-suffixed form resolves from disk (when the module is not used).
 [[case]]
 name = "import_with_rue_extension"
