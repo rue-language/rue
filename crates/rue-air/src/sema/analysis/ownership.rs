@@ -65,7 +65,7 @@ impl<'a> Sema<'a> {
                 continue;
             }
 
-            // Emit warning with help suggestion (to ctx.warnings for parallel safety)
+            // Emit warning with help suggestion into this function's warning buffer.
             ctx.warnings.push(
                 CompileWarning::new(WarningKind::UnusedVariable(name.to_string()), local.span)
                     .with_help(format!(

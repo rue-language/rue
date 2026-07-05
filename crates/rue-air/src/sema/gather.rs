@@ -21,14 +21,14 @@ use super::{KnownSymbols, Sema};
 ///
 /// This contains the state built during declaration gathering that is needed
 /// for function body analysis. After gathering, this can be converted back
-/// into a `Sema` for sequential analysis, or used to drive parallel analysis.
+/// into a `Sema` for the eager or lazy analysis drivers.
 ///
 /// # Architecture
 ///
 /// The separation of declaration gathering from body analysis enables:
-/// 1. **Parallel type checking** - Each function can be analyzed independently
+/// 1. **Independent body analysis** - Each function body has an explicit analysis boundary
 /// 2. **Clearer architecture** - Separation of concerns
-/// 3. **Foundation for incremental** - Can cache SemaContext across compilations
+/// 3. **Foundation for incremental** - Gathered declarations can become cacheable inputs
 /// 4. **Better error recovery** - One function's error doesn't block others
 ///
 /// # Usage
@@ -38,12 +38,10 @@ use super::{KnownSymbols, Sema};
 /// let sema = Sema::new(rir, interner, preview);
 /// let output = sema.analyze_all()?;
 ///
-/// // Option B: Parallel path (work in progress)
-/// // Build SemaContext and analyze in parallel
-/// let ctx = sema.build_sema_context();
-/// let results: Vec<_> = functions.par_iter()
-///     .map(|f| analyze_function_body(&ctx, f))
-///     .collect();
+/// // Option B: Split path - gather declarations, then analyze bodies
+/// let gather = sema.gather_declarations()?;
+/// let sema = gather.into_sema();
+/// let output = sema.analyze_all()?;
 /// ```
 #[derive(Debug)]
 pub struct GatherOutput<'a> {
@@ -102,7 +100,7 @@ impl<'a> GatherOutput<'a> {
             builtin_os_id: self.builtin_os_id,
             known: KnownSymbols::new(self.interner),
             type_pool: self.type_pool,
-            module_registry: crate::sema_context::ModuleRegistry::new(),
+            module_registry: crate::module_registry::ModuleRegistry::new(),
             file_paths: HashMap::new(),
             param_arena: self.param_arena,
             anon_struct_method_sigs: HashMap::new(),

@@ -403,7 +403,7 @@ impl<'a> Sema<'a> {
                 } else {
                     self.builtin_string_type()
                 };
-                // Add string to the local string table (per-function for parallel analysis)
+                // Add string to the local per-function string table.
                 let string_content = self.interner.resolve(&*symbol).to_string();
 
                 // Capacity-fits legality (ADR-0043 Phase 5, RUE-326): a string

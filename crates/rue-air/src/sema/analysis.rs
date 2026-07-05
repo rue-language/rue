@@ -8,9 +8,7 @@
 //!
 //! Two drivers share these analysis functions: the eager path (single-file
 //! compilation analyzes every function) and the lazy path (multi-file
-//! compilation analyzes only reachable functions, per ADR-0026). A third,
-//! parallel `SemaContext`-based pipeline and its hand-mirrored `_ctx`
-//! function family were dead code and were removed per ADR-0033 phase 1.
+//! compilation analyzes only reachable functions, per ADR-0026).
 
 use std::collections::{HashMap, HashSet};
 
@@ -41,8 +39,8 @@ use crate::types::{ModuleId, StructField, StructId, Type, TypeKind};
 /// Main entry point for analyzing all function bodies.
 ///
 /// Called from Sema::analyze_all after declarations are collected.
-/// Currently uses the sequential analysis path while the parallel infrastructure
-/// is being completed.
+/// Uses the lazy driver for import graphs and the eager driver for single-file
+/// compilations.
 pub(crate) fn analyze_all_function_bodies(mut sema: Sema<'_>) -> MultiErrorResult<SemaOutput> {
     // Use lazy analysis when imports are present (multi-file compilation)
     // This ensures only reachable code is analyzed, per ADR-0026

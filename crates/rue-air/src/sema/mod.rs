@@ -100,7 +100,7 @@ pub struct Sema<'a> {
     /// Type intern pool for unified type representation (ADR-0024 Phase 1).
     pub(crate) type_pool: TypeInternPool,
     /// Module registry for tracking imported modules (Phase 1 modules).
-    pub(crate) module_registry: crate::sema_context::ModuleRegistry,
+    pub(crate) module_registry: crate::module_registry::ModuleRegistry,
     /// Maps FileId to source file paths (for module resolution).
     pub(crate) file_paths: HashMap<FileId, String>,
     /// Arena storage for function/method parameter data.
@@ -180,7 +180,7 @@ impl<'a> Sema<'a> {
             builtin_os_id: None,
             known: KnownSymbols::new(interner),
             type_pool: TypeInternPool::new(),
-            module_registry: crate::sema_context::ModuleRegistry::new(),
+            module_registry: crate::module_registry::ModuleRegistry::new(),
             file_paths: HashMap::new(),
             param_arena: ParamArena::new(),
             anon_struct_method_sigs: HashMap::new(),

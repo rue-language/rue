@@ -6,9 +6,6 @@
 //! `RwLock` with double-checked locking (read lock for lookups, write lock
 //! only for new insertions).
 //!
-//! The `SemaContext` type that gave this file its name was part of the dead
-//! parallel-analysis pipeline and was removed per ADR-0033 phase 1b.
-
 use std::collections::HashMap;
 use std::sync::{PoisonError, RwLock};
 
@@ -25,8 +22,8 @@ fn normalize_key(path: &str) -> String {
 
 /// Thread-safe registry for modules.
 ///
-/// This registry allows concurrent lookups and insertions of imported modules during
-/// parallel function analysis. It uses double-checked locking to minimize contention.
+/// This registry allows concurrent lookups and insertions of imported modules.
+/// It uses double-checked locking to minimize contention.
 #[derive(Debug)]
 pub struct ModuleRegistry {
     /// Maps a module's *resolved* file path (normalized) to its ModuleId.
