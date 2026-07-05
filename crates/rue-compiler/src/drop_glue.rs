@@ -271,12 +271,24 @@ fn create_struct_drop_glue_function(
                     });
                     drop_statements.push(drop_ref);
                 }
-                // A payload-carrying enum *field* is not yet dropped by struct
-                // glue (RUE-221 follow-up): active-variant drop glue currently
-                // fires only for a top-level enum value at scope exit, not for
-                // one nested inside another aggregate. Such a field leaks (but
-                // never double-drops); `type_slot_count` still counts its slots
-                // so later fields stay correctly offset.
+                TypeKind::Enum(enum_id) => {
+                    // Payload-carrying enum field - load it and drop it. The
+                    // enum drop glue dispatches on the active discriminant and
+                    // drops only the selected variant's payload.
+                    let param_ref = air.add_inst(AirInst {
+                        data: AirInstData::Param {
+                            index: current_param_slot,
+                        },
+                        ty: Type::new_enum(enum_id),
+                        span,
+                    });
+                    let drop_ref = air.add_inst(AirInst {
+                        data: AirInstData::Drop { value: param_ref },
+                        ty: Type::UNIT,
+                        span,
+                    });
+                    drop_statements.push(drop_ref);
+                }
                 _ => {}
             }
         }
@@ -401,9 +413,21 @@ fn create_array_drop_glue_function(
                 });
                 drop_statements.push(drop_ref);
             }
-            // A payload-carrying enum element is not yet dropped by array glue
-            // (RUE-221 follow-up, same interim as struct glue above): it leaks
-            // rather than double-dropping.
+            TypeKind::Enum(enum_id) => {
+                let param_ref = air.add_inst(AirInst {
+                    data: AirInstData::Param {
+                        index: current_param_slot,
+                    },
+                    ty: Type::new_enum(enum_id),
+                    span,
+                });
+                let drop_ref = air.add_inst(AirInst {
+                    data: AirInstData::Drop { value: param_ref },
+                    ty: Type::UNIT,
+                    span,
+                });
+                drop_statements.push(drop_ref);
+            }
             _ => {}
         }
     }

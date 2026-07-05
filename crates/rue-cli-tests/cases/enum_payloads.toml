@@ -71,6 +71,47 @@ fn main() -> i32 {
 stdout = "-1\n9\n"
 exit_code = 0
 
+# A payload enum nested inside a struct field must still run active-variant drop
+# glue when the containing struct is dropped. This used to leak because struct
+# drop glue skipped TypeKind::Enum fields.
+[[case]]
+name = "struct_field_enum_payload_drop_glue"
+description = "A droppable payload inside an enum field of a struct is dropped exactly once: prints -1 then 11."
+args = ["main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+struct D { v: i32 }
+drop fn D(self) { @dbg(self.v); }
+enum E { Has(D), None }
+struct Box { e: E }
+fn main() -> i32 {
+    let b = Box { e: E::Has(D { v: 11 }) };
+    @dbg(-1);
+    0
+}
+""" }]
+stdout = "-1\n11\n"
+exit_code = 0
+
+# The same active-variant drop must happen when the payload enum is an array
+# element. This used to leak because array drop glue skipped TypeKind::Enum
+# elements.
+[[case]]
+name = "array_element_enum_payload_drop_glue"
+description = "Droppable payloads inside enum array elements are dropped exactly once in element order: prints -1, 21, 22."
+args = ["main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+struct D { v: i32 }
+drop fn D(self) { @dbg(self.v); }
+enum E { Has(D), None }
+fn main() -> i32 {
+    let a = [E::Has(D { v: 21 }), E::Has(D { v: 22 })];
+    @dbg(-1);
+    0
+}
+""" }]
+stdout = "-1\n21\n22\n"
+exit_code = 0
+
 # The inactive (discriminant-only) variant has no payload to drop: only -1 prints.
 [[case]]
 name = "active_variant_drop_glue_none"
