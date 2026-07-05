@@ -539,6 +539,56 @@ fn string_byte_iteration_counts_bytes() {
 }
 
 #[test]
+fn string_push_models_raw_non_utf8_byte() {
+    // `String::push` appends one byte, not one Unicode scalar. 0xC3 alone is
+    // not valid UTF-8, but the byte-string model permits storing it; byte
+    // operations must still see the raw byte.
+    let src = "fn main() -> i32 {
+        let mut s = String::new();
+        s.push(195);
+        @dbg(s.len());
+        @dbg(s[0]);
+        0
+    }";
+    assert_eq!(run(src).stdout, "1\n195\n");
+}
+
+#[test]
+fn string_chars_traps_on_raw_invalid_utf8_byte() {
+    // Strict `.chars()` is the UTF-8 validation boundary for byte strings.
+    let src = "fn main() -> i32 {
+        let mut s = String::new();
+        s.push(195);
+        for c in s.chars() {
+            @dbg(c);
+        }
+        0
+    }";
+    let out = run(src);
+    assert_eq!(out.exit_code, 101);
+    assert_eq!(out.panic.as_deref(), Some("invalid UTF-8"));
+}
+
+#[test]
+fn string_chars_lossy_replaces_raw_invalid_utf8_byte() {
+    // The lossy view mirrors the runtime's replacement behavior: a lone invalid
+    // lead byte becomes U+FFFD and advances by one byte.
+    let src = "fn main() -> i32 {
+        let mut s = String::new();
+        s.push(195);
+        let mut count = 0;
+        for c in s.chars_lossy() {
+            @dbg(c);
+            count = count + 1;
+        }
+        count
+    }";
+    let out = run(src);
+    assert_eq!(out.stdout, "65533\n");
+    assert_eq!(out.exit_code, 1);
+}
+
+#[test]
 fn string_chars_iteration_scalars() {
     // Scalar view (`for c in s.chars()`): yields Unicode scalars via
     // `__rue_String_char_scalar` and advances via `__rue_String_char_next`.
