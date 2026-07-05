@@ -137,7 +137,10 @@ impl<'a> CfgLower<'a> {
     }
 
     /// Emit `count_vreg * element_size` (a compile-time constant stride) into a
-    /// fresh vreg. Mirrors the scaling used by `@ptr_offset`.
+    /// fresh vreg, trapping if the hidden byte-size computation overflows.
+    /// Mirrors the scaling used by `@ptr_offset`, but heap intrinsic sizes are
+    /// part of the runtime ABI: silently wrapping here would under-allocate or
+    /// pass the wrong size to free/realloc (RUE-345).
     fn scale_by_size(&mut self, count_vreg: VReg, element_size: u64) -> VReg {
         let out = self.mir.alloc_vreg();
         if element_size == 0 {
@@ -157,13 +160,24 @@ impl<'a> CfgLower<'a> {
                 imm: element_size as i64,
             });
             self.mir.push(X86Inst::MovRR {
-                dst: Operand::Virtual(out),
+                dst: Operand::Physical(Reg::Rax),
                 src: Operand::Virtual(count_vreg),
             });
-            self.mir.push(X86Inst::ImulRR64 {
-                dst: Operand::Virtual(out),
+            self.mir.push(X86Inst::Mul64R {
                 src: Operand::Virtual(size_vreg),
             });
+            self.mir.push(X86Inst::MovRR {
+                dst: Operand::Virtual(out),
+                src: Operand::Physical(Reg::Rax),
+            });
+
+            // MOV does not modify flags, so MUL's carry flag still records
+            // whether the unsigned product's high half was non-zero.
+            let ok_label = self.new_label();
+            self.mir.push(X86Inst::Jae { label: ok_label });
+            let symbol_id = self.intern_symbol("__rue_overflow");
+            self.mir.push(X86Inst::CallRel { symbol_id });
+            self.mir.push(X86Inst::Label { id: ok_label });
         }
         out
     }
