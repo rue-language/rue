@@ -22,6 +22,13 @@ while_expr = "while" expression "{" block "}" ;
 
 The condition expression **MUST** have type `bool`.
 
+{{ rule(id="4.8:30", cat="normative") }}
+
+A struct literal **MUST NOT** appear as the outermost expression of a `while`
+condition; a program that requires one parenthesizes the condition.
+Consequently, in `while v {}` the braces denote the `while` expression's empty
+body block, not a struct literal `v {}`.
+
 {{ rule(id="4.8:4", cat="normative") }}
 
 A while expression has type `()`.
@@ -215,6 +222,13 @@ element type and iteration order:
 - the character view `s.chars()` of a `String` — each Unicode scalar value is
   bound as `u32`, in ascending byte order (or `s.chars_lossy()`, which decodes
   invalid UTF-8 to `U+FFFD` instead of trapping).
+
+{{ rule(id="4.8:31", cat="normative") }}
+
+A struct literal **MUST NOT** appear as the outermost expression of a `for`
+iterable; a program that requires one parenthesizes the iterable. Consequently,
+in `for x in v {}` the braces denote the `for` expression's empty body block,
+not a struct literal `v {}`.
 
 {{ rule(id="4.8:26", cat="normative") }}
 

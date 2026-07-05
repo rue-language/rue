@@ -53,6 +53,35 @@ fn main() -> i32 {
 compile_fail = true
 
 # =============================================================================
+# Struct Literal Ambiguity
+# =============================================================================
+
+[[case]]
+name = "empty_while_body_after_identifier_condition"
+spec = ["4.8:30"]
+source = """
+fn main() -> i32 {
+    let done: bool = false;
+    while done {}
+    42
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "bare_struct_literal_while_condition_requires_parens"
+spec = ["4.8:30"]
+source = """
+struct Point { x: i32 }
+fn main() -> i32 {
+    while Point { x: 1 } {}
+    0
+}
+"""
+compile_fail = true
+error_contains = "bare while condition"
+
+# =============================================================================
 # While Has Unit Type
 # =============================================================================
 

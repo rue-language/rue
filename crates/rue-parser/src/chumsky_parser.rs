@@ -1116,6 +1116,33 @@ where
     choice((int_lit, string_lit, bool_true, bool_false, unit_lit))
 }
 
+fn empty_body_from_reclaimed_struct_lit(lit: &StructLitExpr) -> BlockExpr {
+    let span = Span::with_file(lit.span.file_id, lit.name.span.end, lit.span.end);
+    BlockExpr {
+        statements: Vec::new(),
+        expr: Box::new(Expr::Unit(UnitLit { span })),
+        span,
+    }
+}
+
+fn reclaim_empty_struct_lit_head(lit: StructLitExpr) -> Option<Expr> {
+    if !lit.fields.is_empty() {
+        return None;
+    }
+
+    Some(match lit.base {
+        None => Expr::Ident(lit.name),
+        Some(base) => {
+            let span = base.span().extend_to(lit.name.span.end);
+            Expr::Field(FieldExpr {
+                base,
+                field: lit.name,
+                span,
+            })
+        }
+    })
+}
+
 /// Parser for control flow expressions: break, continue, return, if, while, loop, match
 ///
 /// `block_like` is the standalone block-like-statement parser threaded down to
@@ -1167,10 +1194,18 @@ where
         });
 
     // If expression - defined with recursive reference to allow `else if` chains
+    //
+    // The then block is `.or_not()` because of a brace ambiguity: in `if v {}`
+    // the expression parser greedily parses `v {}` as a zero-field struct
+    // literal, swallowing the braces meant to be the empty then block. Per spec
+    // 4.6:13 a struct literal may not appear unparenthesized as the condition,
+    // so the `try_map_with` below reinterprets that case as an empty block and
+    // rejects any other bare struct-literal condition with a targeted
+    // diagnostic (RUE-373, mirroring RUE-169 for `match`).
     let if_expr = recursive(|if_expr_rec| {
         just(TokenKind::If)
             .ignore_then(expr.clone())
-            .then(maybe_unit_block_parser(expr.clone(), block_like.clone()))
+            .then(maybe_unit_block_parser(expr.clone(), block_like.clone()).or_not())
             .then(
                 just(TokenKind::Else)
                     .ignore_then(choice((
@@ -1188,27 +1223,87 @@ where
                     )))
                     .or_not(),
             )
-            .map_with(|((cond, then_block), else_block), e| {
-                Expr::If(IfExpr {
-                    cond: Box::new(cond),
-                    then_block,
-                    else_block,
-                    span: span_from_extra(e),
-                })
+            .try_map_with(|((cond, then_block), else_block), e| {
+                let span = span_from_extra(e);
+                match (cond, then_block) {
+                    (Expr::StructLit(lit), None) => {
+                        let then_block = empty_body_from_reclaimed_struct_lit(&lit);
+                        let Some(cond) = reclaim_empty_struct_lit_head(lit) else {
+                            return Err(Rich::custom(
+                                e.span(),
+                                "struct literals are not allowed as a bare if condition; \
+                                 wrap the condition in parentheses",
+                            ));
+                        };
+
+                        Ok(Expr::If(IfExpr {
+                            cond: Box::new(cond),
+                            then_block,
+                            else_block,
+                            span,
+                        }))
+                    }
+                    (Expr::StructLit(_), _) => Err(Rich::custom(
+                        e.span(),
+                        "struct literals are not allowed as a bare if condition; \
+                         wrap the condition in parentheses",
+                    )),
+                    (cond, Some(then_block)) => Ok(Expr::If(IfExpr {
+                        cond: Box::new(cond),
+                        then_block,
+                        else_block,
+                        span,
+                    })),
+                    (_, None) => Err(Rich::custom(
+                        e.span(),
+                        "expected '{' and then block after the if condition",
+                    )),
+                }
             })
     })
     .boxed();
 
     // While expression
+    //
+    // As with `if`, the body is optional at first so `while v {}` can reclaim
+    // the zero-field struct literal's braces as the empty loop body.
     let while_expr = just(TokenKind::While)
         .ignore_then(expr.clone())
-        .then(maybe_unit_block_parser(expr.clone(), block_like.clone()))
-        .map_with(|(cond, body), e| {
-            Expr::While(WhileExpr {
-                cond: Box::new(cond),
-                body,
-                span: span_from_extra(e),
-            })
+        .then(maybe_unit_block_parser(expr.clone(), block_like.clone()).or_not())
+        .try_map_with(|(cond, body), e| {
+            let span = span_from_extra(e);
+            match (cond, body) {
+                (Expr::StructLit(lit), None) => {
+                    let body = empty_body_from_reclaimed_struct_lit(&lit);
+                    let Some(cond) = reclaim_empty_struct_lit_head(lit) else {
+                        return Err(Rich::custom(
+                            e.span(),
+                            "struct literals are not allowed as a bare while condition; \
+                             wrap the condition in parentheses",
+                        ));
+                    };
+
+                    Ok(Expr::While(WhileExpr {
+                        cond: Box::new(cond),
+                        body,
+                        span,
+                    }))
+                }
+                (Expr::StructLit(_), _) => Err(Rich::custom(
+                    e.span(),
+                    "struct literals are not allowed as a bare while condition; \
+                     wrap the condition in parentheses",
+                )),
+                (cond, Some(body)) => Ok(Expr::While(WhileExpr {
+                    cond: Box::new(cond),
+                    body,
+                    span,
+                })),
+                (_, None) => Err(Rich::custom(
+                    e.span(),
+                    "expected '{' and body block after the while condition",
+                )),
+            }
         })
         .boxed();
 
@@ -1225,22 +1320,50 @@ where
 
     // For expression (RUE-220): `for <binder> in <iterable> { body }`.
     //
-    // The iterable is a full expression followed by the body block. Like
-    // `while`, a bare struct literal cannot appear unparenthesized as the
-    // iterable (a `{ ident: ... }` would be reinterpreted as the body), which
-    // is fine: a struct is not iterable anyway.
+    // The iterable is a full expression followed by the body block. Like `if`
+    // and `while`, the body is optional at first so `for x in v {}` can reclaim
+    // the zero-field struct literal's braces as the empty loop body.
     let for_expr = just(TokenKind::For)
         .ignore_then(let_pattern_parser())
         .then_ignore(just(TokenKind::In))
         .then(expr.clone())
-        .then(maybe_unit_block_parser(expr.clone(), block_like.clone()))
-        .map_with(|((binder, iterable), body), e| {
-            Expr::For(ForExpr {
-                binder,
-                iterable: Box::new(iterable),
-                body,
-                span: span_from_extra(e),
-            })
+        .then(maybe_unit_block_parser(expr.clone(), block_like.clone()).or_not())
+        .try_map_with(|((binder, iterable), body), e| {
+            let span = span_from_extra(e);
+            match (iterable, body) {
+                (Expr::StructLit(lit), None) => {
+                    let body = empty_body_from_reclaimed_struct_lit(&lit);
+                    let Some(iterable) = reclaim_empty_struct_lit_head(lit) else {
+                        return Err(Rich::custom(
+                            e.span(),
+                            "struct literals are not allowed as a bare for iterable; \
+                             wrap the iterable in parentheses",
+                        ));
+                    };
+
+                    Ok(Expr::For(ForExpr {
+                        binder,
+                        iterable: Box::new(iterable),
+                        body,
+                        span,
+                    }))
+                }
+                (Expr::StructLit(_), _) => Err(Rich::custom(
+                    e.span(),
+                    "struct literals are not allowed as a bare for iterable; \
+                     wrap the iterable in parentheses",
+                )),
+                (iterable, Some(body)) => Ok(Expr::For(ForExpr {
+                    binder,
+                    iterable: Box::new(iterable),
+                    body,
+                    span,
+                })),
+                (_, None) => Err(Rich::custom(
+                    e.span(),
+                    "expected '{' and body block after the for iterable",
+                )),
+            }
         })
         .boxed();
 
@@ -3549,6 +3672,110 @@ mod tests {
         // While with assignment
         let result = parse("fn main() -> i32 { while true { x = 1; } 0 }").unwrap();
         assert_eq!(result.ast.items.len(), 1);
+    }
+
+    #[test]
+    fn test_empty_if_body_with_ident_condition() {
+        let result = parse("fn main() -> i32 { if done {} 0 }").unwrap();
+        let Item::Function(f) = &result.ast.items[0] else {
+            panic!("expected function");
+        };
+        let Expr::Block(block) = &f.body else {
+            panic!("expected block body");
+        };
+        let Statement::Expr(Expr::If(if_expr)) = &block.statements[0] else {
+            panic!("expected first statement to be an If expression");
+        };
+        let Expr::Ident(cond) = if_expr.cond.as_ref() else {
+            panic!("expected identifier condition, got {:?}", if_expr.cond);
+        };
+        assert_eq!(result.get(cond.name), "done");
+        assert!(if_expr.then_block.statements.is_empty());
+        assert!(matches!(if_expr.then_block.expr.as_ref(), Expr::Unit(_)));
+    }
+
+    #[test]
+    fn test_empty_if_body_with_field_condition() {
+        let result = parse("fn main() -> i32 { if state.done {} 0 }").unwrap();
+        let Item::Function(f) = &result.ast.items[0] else {
+            panic!("expected function");
+        };
+        let Expr::Block(block) = &f.body else {
+            panic!("expected block body");
+        };
+        let Statement::Expr(Expr::If(if_expr)) = &block.statements[0] else {
+            panic!("expected first statement to be an If expression");
+        };
+        let Expr::Field(cond) = if_expr.cond.as_ref() else {
+            panic!("expected field condition, got {:?}", if_expr.cond);
+        };
+        assert_eq!(result.get(cond.field.name), "done");
+        let Expr::Ident(base) = cond.base.as_ref() else {
+            panic!("expected identifier field base, got {:?}", cond.base);
+        };
+        assert_eq!(result.get(base.name), "state");
+        assert!(if_expr.then_block.statements.is_empty());
+        assert!(matches!(if_expr.then_block.expr.as_ref(), Expr::Unit(_)));
+    }
+
+    #[test]
+    fn test_empty_while_body_with_ident_condition() {
+        let result = parse("fn main() -> i32 { while done {} 0 }").unwrap();
+        let Item::Function(f) = &result.ast.items[0] else {
+            panic!("expected function");
+        };
+        let Expr::Block(block) = &f.body else {
+            panic!("expected block body");
+        };
+        let Statement::Expr(Expr::While(while_expr)) = &block.statements[0] else {
+            panic!("expected first statement to be a While expression");
+        };
+        let Expr::Ident(cond) = while_expr.cond.as_ref() else {
+            panic!("expected identifier condition, got {:?}", while_expr.cond);
+        };
+        assert_eq!(result.get(cond.name), "done");
+        assert!(while_expr.body.statements.is_empty());
+        assert!(matches!(while_expr.body.expr.as_ref(), Expr::Unit(_)));
+    }
+
+    #[test]
+    fn test_empty_for_body_with_ident_iterable() {
+        let result = parse("fn main() -> i32 { for item in items {} 0 }").unwrap();
+        let Item::Function(f) = &result.ast.items[0] else {
+            panic!("expected function");
+        };
+        let Expr::Block(block) = &f.body else {
+            panic!("expected block body");
+        };
+        let Statement::Expr(Expr::For(for_expr)) = &block.statements[0] else {
+            panic!("expected first statement to be a For expression");
+        };
+        let Expr::Ident(iterable) = for_expr.iterable.as_ref() else {
+            panic!("expected identifier iterable, got {:?}", for_expr.iterable);
+        };
+        assert_eq!(result.get(iterable.name), "items");
+        assert!(for_expr.body.statements.is_empty());
+        assert!(matches!(for_expr.body.expr.as_ref(), Expr::Unit(_)));
+    }
+
+    #[test]
+    fn test_bare_struct_literal_if_condition_is_targeted_error() {
+        let lines = error_lines("fn main() -> i32 { if Point { x: 1 } {} 0 }");
+        assert!(
+            lines.iter().any(|line| line.contains(
+                "struct literals are not allowed as a bare if condition"
+            )),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn test_parenthesized_struct_literal_if_condition_still_parses() {
+        let result = parse("fn main() -> i32 { if (Point { x: 1 }) {} 0 }");
+        assert!(
+            result.is_ok(),
+            "parenthesized struct literal conditions remain syntactically valid"
+        );
     }
 
     #[test]

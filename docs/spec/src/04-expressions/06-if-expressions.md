@@ -21,6 +21,13 @@ else_clause = "else" ( "{" block "}" | if_expr ) ;
 
 The condition expression **MUST** have type `bool`.
 
+{{ rule(id="4.6:13", cat="normative") }}
+
+A struct literal **MUST NOT** appear as the outermost expression of an `if`
+condition; a program that requires one parenthesizes the condition.
+Consequently, in `if v {}` the braces denote the `if` expression's empty then
+branch, not a struct literal `v {}`.
+
 {{ rule(id="4.6:4", cat="legality-rule") }}
 
 If an `else` branch is present, both branches **MUST** have the same type. (A diverging branch has type `!`, which coerces to the other branch's type — 3.4:3; core calculus `docs/formal/01-core-calculus.md` §5.7, rule `(Sub-Never)`.)
