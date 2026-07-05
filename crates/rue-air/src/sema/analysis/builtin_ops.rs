@@ -620,7 +620,7 @@ impl<'a> Sema<'a> {
     /// typed place chain rooted at a variable (call results, literals, ...).
     pub(super) fn peek_place_type(&self, inst_ref: InstRef, ctx: &AnalysisContext) -> Option<Type> {
         match &self.rir.get(inst_ref).data {
-            InstData::VarRef { name } | InstData::ParamRef { name, .. } => {
+            InstData::VarRef { name } => {
                 if let Some(local) = ctx.locals.get(name) {
                     return Some(local.ty);
                 }

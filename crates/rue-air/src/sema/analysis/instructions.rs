@@ -23,7 +23,7 @@ impl<'a> Sema<'a> {
     /// - **Logical**: And, Or
     /// - **Unary**: Neg, Not, BitNot
     /// - **Control flow**: Branch, Loop, InfiniteLoop, Match, Break, Continue, Ret, Block
-    /// - **Variables**: Alloc, VarRef, ParamRef, Assign
+    /// - **Variables**: Alloc, VarRef, Assign
     /// - **Structs**: StructDecl, StructInit, FieldGet, FieldSet
     /// - **Arrays**: ArrayInit, IndexGet, IndexSet
     /// - **Enums**: EnumDecl, EnumVariant
@@ -122,10 +122,9 @@ impl<'a> Sema<'a> {
             | InstData::Block { .. } => self.analyze_control_flow(air, inst_ref, ctx),
 
             // Variable operations
-            InstData::Alloc { .. }
-            | InstData::VarRef { .. }
-            | InstData::ParamRef { .. }
-            | InstData::Assign { .. } => self.analyze_variable_ops(air, inst_ref, ctx),
+            InstData::Alloc { .. } | InstData::VarRef { .. } | InstData::Assign { .. } => {
+                self.analyze_variable_ops(air, inst_ref, ctx)
+            }
 
             // Struct operations
             InstData::StructDecl { .. }

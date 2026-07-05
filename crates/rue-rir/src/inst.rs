@@ -731,10 +731,6 @@ impl Rir {
             InstData::UnitConst => InstData::UnitConst,
             InstData::Continue => InstData::Continue,
             InstData::VarRef { name } => InstData::VarRef { name: *name },
-            InstData::ParamRef { index, name } => InstData::ParamRef {
-                index: *index,
-                name: *name,
-            },
             InstData::EnumVariant {
                 module,
                 type_name,
@@ -1309,7 +1305,6 @@ impl Rir {
                 | InstData::Continue
                 | InstData::Ret(_)
                 | InstData::VarRef { .. }
-                | InstData::ParamRef { .. }
                 | InstData::Alloc { .. }
                 | InstData::Assign { .. }
                 | InstData::FnDecl { .. }
@@ -1561,20 +1556,6 @@ pub enum InstData {
         type_arg: Spur,
         /// Field name whose offset is requested.
         field: Spur,
-    },
-
-    /// Reference to a function parameter.
-    ///
-    /// NOTE: AstGen never produces this variant — parameter references are
-    /// emitted as [`InstData::VarRef`] and resolved to parameters during
-    /// semantic analysis (which handles `ParamRef` alongside `VarRef` in case
-    /// a future producer distinguishes them). The
-    /// `test_astgen_never_produces_param_ref` test in `astgen.rs` pins this.
-    ParamRef {
-        /// Parameter index (0-based)
-        index: u32,
-        /// Parameter name (for error messages)
-        name: Spur,
     },
 
     /// Return value from function (None for `return;` in unit-returning functions)
@@ -2138,9 +2119,6 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     let type_str = self.interner.resolve(&*type_arg);
                     let field_str = self.interner.resolve(&*field);
                     writeln!(out, "offset_of @offset_of({}, {})", type_str, field_str).unwrap();
-                }
-                InstData::ParamRef { index, name } => {
-                    writeln!(out, "param {} ({})", index, self.interner.resolve(&*name)).unwrap();
                 }
                 InstData::Block { extra_start, len } => {
                     writeln!(out, "block({}, {})", extra_start, len).unwrap();
@@ -3191,21 +3169,6 @@ mod tests {
         let printer = RirPrinter::new(&rir, &interner);
         let output = printer.to_string();
         assert!(output.contains("type_intrinsic @size_of(i32)"));
-    }
-
-    #[test]
-    fn test_printer_param_ref() {
-        let (mut rir, interner) = create_printer_test_rir();
-        let name = interner.get_or_intern("x");
-
-        rir.add_inst(Inst {
-            data: InstData::ParamRef { index: 0, name },
-            span: Span::new(0, 1),
-        });
-
-        let printer = RirPrinter::new(&rir, &interner);
-        let output = printer.to_string();
-        assert!(output.contains("param 0 (x)"));
     }
 
     #[test]

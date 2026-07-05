@@ -6,7 +6,7 @@
 //! - [`analyze_literal`] - Integer, boolean, string, and unit constants
 //! - [`analyze_unary_op`] - Negation, logical NOT, bitwise NOT
 //! - [`analyze_control_flow`] - Branch, Loop, InfiniteLoop, Match, Break, Continue, Ret, Block
-//! - [`analyze_variable_ops`] - Alloc, VarRef, ParamRef, Assign
+//! - [`analyze_variable_ops`] - Alloc, VarRef, Assign
 //! - [`analyze_struct_ops`] - StructDecl, StructInit, FieldGet, FieldSet
 //! - [`analyze_array_ops`] - ArrayInit, IndexGet, IndexSet
 //! - [`analyze_enum_ops`] - EnumDecl, EnumVariant
@@ -145,7 +145,7 @@ impl<'a> Sema<'a> {
     /// Try to trace an RIR expression to a place (lvalue).
     ///
     /// This walks the RIR instruction chain backward from a `FieldGet` or `IndexGet`
-    /// to find the root `VarRef` or `ParamRef`, collecting projections along the way.
+    /// to find the root `VarRef`, collecting projections along the way.
     ///
     /// Returns `None` if the expression is not a place (e.g., a function call result).
     ///
@@ -218,21 +218,6 @@ impl<'a> Sema<'a> {
                 }
 
                 // Not a variable - might be a constant or type name
-                Ok(None)
-            }
-
-            // Base case: explicit parameter reference
-            InstData::ParamRef { name, .. } => {
-                if let Some(param_info) = ctx.params.iter().find(|p| p.name == *name) {
-                    return Ok(Some(PlaceTrace {
-                        base: AirPlaceBase::Param(param_info.abi_slot),
-                        base_type: param_info.ty,
-                        projections: Vec::new(),
-                        root_var: *name,
-                        is_root_mutable: matches!(param_info.mode, RirParamMode::Inout),
-                        is_borrow_param: matches!(param_info.mode, RirParamMode::Borrow),
-                    }));
-                }
                 Ok(None)
             }
 
@@ -2208,12 +2193,12 @@ impl<'a> Sema<'a> {
     }
 
     // ========================================================================
-    // Variable operations: Alloc, VarRef, ParamRef, Assign
+    // Variable operations: Alloc, VarRef, Assign
     // ========================================================================
 
     /// Analyze a variable operation instruction.
     ///
-    /// Handles: Alloc, VarRef, ParamRef, Assign
+    /// Handles: Alloc, VarRef, Assign
     pub(crate) fn analyze_variable_ops(
         &mut self,
         air: &mut Air,
@@ -2247,10 +2232,6 @@ impl<'a> Sema<'a> {
             InstData::VarRef { name } => {
                 let resolved_ty = ctx.resolved_types.get(&inst_ref).copied();
                 self.analyze_var_ref(air, *name, inst.span, resolved_ty, ctx)
-            }
-
-            InstData::ParamRef { index: _, name } => {
-                self.analyze_param_ref(air, *name, inst.span, ctx)
             }
 
             InstData::Assign { name, value } => {
@@ -2792,33 +2773,6 @@ impl<'a> Sema<'a> {
             ErrorKind::UndefinedVariable(name_str.to_string()),
             span,
         ))
-    }
-
-    /// Analyze a parameter reference.
-    fn analyze_param_ref(
-        &mut self,
-        air: &mut Air,
-        name: Spur,
-        span: Span,
-        ctx: &mut AnalysisContext,
-    ) -> CompileResult<AnalysisResult> {
-        let name_str = self.interner.resolve(&name);
-        let param_info = ctx
-            .params
-            .iter()
-            .find(|p| p.name == name)
-            .ok_or_compile_error(ErrorKind::UndefinedVariable(name_str.to_string()), span)?;
-
-        let ty = param_info.ty;
-
-        let air_ref = air.add_inst(AirInst {
-            data: AirInstData::Param {
-                index: param_info.abi_slot,
-            },
-            ty,
-            span,
-        });
-        Ok(AnalysisResult::new(air_ref, ty))
     }
 
     /// Analyze an assignment.
@@ -3704,7 +3658,7 @@ impl<'a> Sema<'a> {
 
     /// Analyze a field assignment.
     ///
-    /// This is a complex operation that handles VarRef, ParamRef, and chained field access.
+    /// This is a complex operation that handles VarRef and chained field access.
     /// The full implementation is in analysis.rs as it's quite large (~200 lines).
     fn analyze_field_set(
         &mut self,
@@ -4918,7 +4872,7 @@ impl<'a> Sema<'a> {
 
     /// Analyze an array index write.
     ///
-    /// This is a complex operation that handles VarRef and ParamRef bases.
+    /// This is a complex operation that handles VarRef bases.
     /// The full implementation is in analysis.rs as it's quite large.
     fn analyze_index_set(
         &mut self,
