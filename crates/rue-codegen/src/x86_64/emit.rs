@@ -363,8 +363,9 @@ impl<'a> Emitter<'a> {
 
     /// Internal implementation of emit.
     fn emit_internal(&mut self) -> CompileResult<()> {
-        // Verify no MovRMIndexed or MovMRIndexed survived into emission
-        // These should have been lowered by regalloc into MovRM/MovMR
+        // Verify no MovRMIndexed or MovMRIndexed survived into emission.
+        // These are pre-regalloc pseudos whose virtual address bases must have
+        // been lowered by regalloc into MovRM/MovMR with physical bases.
         for (i, inst) in self.mir.iter().enumerate() {
             if matches!(
                 inst,
@@ -1096,7 +1097,7 @@ impl<'a> Emitter<'a> {
             }
 
             X86Inst::MovRMIndexed { .. } | X86Inst::MovMRIndexed { .. } => {
-                // Regalloc lowers these into MovRM/MovMR (or the SIB variants), and
+                // Regalloc lowers these into MovRM/MovMR, and
                 // emit_internal() verifies none survive before this dispatch loop runs,
                 // returning an ICE instead of ever reaching this arm.
                 unreachable!("MovRMIndexed/MovMRIndexed rejected by pre-emission verification")

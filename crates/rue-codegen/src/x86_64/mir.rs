@@ -449,14 +449,22 @@ pub enum X86Inst {
     /// `shl dst, count` - Shift left (multiply by 2^count).
     Shl { dst: Operand, count: Operand },
 
-    /// `mov dst, [base]` - Load from memory via register.
+    /// `mov dst, [base]` - Load from memory via a virtual base register.
+    ///
+    /// This is a pre-register-allocation pseudo-instruction. CFG lowering uses
+    /// it when the address base is still a virtual register; register allocation
+    /// must lower it to `MovRM` with a physical base register before emission.
     MovRMIndexed {
         dst: Operand,
         base: VReg,
         offset: i32,
     },
 
-    /// `mov [base], src` - Store to memory via register.
+    /// `mov [base], src` - Store to memory via a virtual base register.
+    ///
+    /// This is a pre-register-allocation pseudo-instruction. CFG lowering uses
+    /// it when the address base is still a virtual register; register allocation
+    /// must lower it to `MovMR` with a physical base register before emission.
     MovMRIndexed {
         base: VReg,
         offset: i32,
