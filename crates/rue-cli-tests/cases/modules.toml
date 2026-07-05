@@ -186,6 +186,11 @@ pub fn value() -> i32 {
     42
 }
 """ },
+    { path = "unused.rue", source = """
+pub fn unused() -> i32 {
+    99
+}
+""" },
 ]
 args = ["--emit", "deps", "main.rue"]
 compile_only = true
@@ -202,6 +207,7 @@ compile_stdout_contains = [
     "\"specifier\": \"leaf\"",
     "\"resolved\":",
 ]
+compile_stdout_not_contains = ["unused.rue"]
 
 [[case]]
 name = "emit_deps_rejects_mixed_emit_stages"
