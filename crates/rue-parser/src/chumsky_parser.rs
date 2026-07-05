@@ -2886,6 +2886,14 @@ fn convert_error(err: Rich<'_, TokenKind>, file_id: FileId, impl_spur: Spur) -> 
                 if names.iter().any(|n| n != "something else") {
                     names.retain(|n| n != "something else");
                 }
+                // When a parser labels a whole syntactic context, prefer that
+                // context over low-level first tokens from alternatives inside
+                // it. For example, an empty expression after `=` should say
+                // `expected expression`, not enumerate every unary-prefix
+                // token plus `expression`. (RUE-19)
+                if names.iter().any(|n| n == "expression") {
+                    names.retain(|n| n == "expression");
+                }
                 // Cap the enumeration so a position that accepts many operators
                 // does not produce a wall of text.
                 const MAX_EXPECTED: usize = 4;
@@ -4356,6 +4364,24 @@ mod tests {
     }
 
     #[test]
+    fn test_expression_position_expects_expression() {
+        // RUE-19: atom-parser failures used to bubble up chumsky's catch-all
+        // "expected something else". Expression positions should name the
+        // syntactic context instead.
+        let lines = error_lines("fn main() -> i32 { let x = ; }");
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("expected expression, found ';'")),
+            "{lines:?}"
+        );
+        assert!(
+            lines.iter().all(|l| !l.contains("something else")),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
     fn test_parse_error_variant_display() {
         // Directly test that ParseError displays correctly
         let error = CompileError::new(
@@ -4979,13 +5005,32 @@ mod tests {
         // RUE-19: `self` after a regular parameter used to produce the identical
         // E0100 twice (both the self-param and the regular-param branch failed
         // at the same token). Duplicates must be collapsed to one diagnostic.
-        let lines = error_lines("struct Foo { fn bar(x: i32, self) -> i32 { x } }");
+        let source = "struct Foo { fn bar(x: i32, self) -> i32 { x } }";
+        let lines = error_lines(source);
         assert_eq!(
             lines.len(),
             1,
             "duplicate parse errors not deduped: {lines:?}"
         );
         assert!(lines[0].contains("found 'self'"), "{lines:?}");
+
+        let lexer = Lexer::new(source);
+        let (tokens, interner) = lexer.tokenize().expect("tokenize");
+        let parser = ChumskyParser::new(tokens, interner);
+        let errs = parser.parse().expect_err("expected a parse error");
+        let help = errs
+            .first()
+            .expect("expected a parse error")
+            .diagnostic()
+            .helps
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        assert!(
+            help.iter()
+                .any(|h| h.contains("methods take `self` as the first parameter")),
+            "{help:?}"
+        );
     }
 
     #[test]
