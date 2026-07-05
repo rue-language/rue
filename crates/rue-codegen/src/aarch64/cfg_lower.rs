@@ -389,28 +389,7 @@ impl<'a> CfgLower<'a> {
                     .insert((block.id, param_idx as u32), vreg);
                 self.value_map.insert(*param_val, vreg);
 
-                // For any multi-slot aggregate (struct, builtin String,
-                // fixed-size array, or payload enum), also allocate vregs for
-                // each slot. Arrays included: their primary vreg is just a
-                // placeholder, so without slot vregs every element would be
-                // dropped at the join (RUE-167). Routed through the single
-                // is_multislot_aggregate predicate so enum payloads are handled
-                // by construction (RUE-248), matching the x86_64 backend.
-                // Exactly slot_count vregs: a zero-slot aggregate ([T; 0],
-                // fieldless struct) gets an EMPTY list, matching the empty
-                // slot lists its sources cache — a phantom slot here tripped
-                // the join's count assert (RUE-194).
-                if self.ctx.is_multislot_aggregate(*ty) {
-                    let slot_count = self.ctx.type_slot_count(*ty);
-                    let mut slot_vregs = Vec::with_capacity(slot_count as usize);
-                    if slot_count > 0 {
-                        slot_vregs.push(vreg); // First slot uses main vreg
-                    }
-                    for _ in 1..slot_count {
-                        slot_vregs.push(self.mir.alloc_vreg());
-                    }
-                    self.struct_slot_vregs.insert(*param_val, slot_vregs);
-                }
+                crate::agg_slots::preallocate_block_param_slots(&mut self, *param_val, *ty, vreg);
             }
         }
 
@@ -449,20 +428,7 @@ impl<'a> CfgLower<'a> {
                     .insert((block.id, param_idx as u32), vreg);
                 self.value_map.insert(*param_val, vreg);
 
-                if self.ctx.is_multislot_aggregate(*ty) {
-                    // Exactly slot_count vregs; zero-slot aggregates get an
-                    // empty list (RUE-194) — same as lower(). Single predicate
-                    // covers struct/array/payload-enum (RUE-248).
-                    let slot_count = self.ctx.type_slot_count(*ty);
-                    let mut slot_vregs = Vec::with_capacity(slot_count as usize);
-                    if slot_count > 0 {
-                        slot_vregs.push(vreg);
-                    }
-                    for _ in 1..slot_count {
-                        slot_vregs.push(self.mir.alloc_vreg());
-                    }
-                    self.struct_slot_vregs.insert(*param_val, slot_vregs);
-                }
+                crate::agg_slots::preallocate_block_param_slots(&mut self, *param_val, *ty, vreg);
             }
         }
 

@@ -28,7 +28,7 @@
 
 use std::collections::HashMap;
 
-use rue_air::TypeKind;
+use rue_air::{Type, TypeKind};
 use rue_cfg::{CfgInstData, CfgValue, Place, PlaceBase, Projection};
 
 use crate::cfg_lower::CfgLowerContext;
@@ -236,6 +236,36 @@ pub fn root_slot_count<B: SlotBackend>(b: &B, projections: &[Projection], fallba
         Some(Projection::Index { array_type, .. }) => b.ctx().type_slot_count(*array_type),
         None => fallback,
     }
+}
+
+/// Pre-allocate the per-slot vregs for an aggregate block parameter.
+///
+/// Block-parameter lowering is a special case: each backend has already
+/// allocated and mapped the parameter's primary vreg before aggregate-slot
+/// bookkeeping runs. For multi-slot aggregate params, the slot cache must hold
+/// exactly `type_slot_count(ty)` vregs, using the primary vreg for logical slot
+/// 0 and freshly-allocated vregs for the remaining slots. Zero-slot aggregates
+/// intentionally cache an empty list, matching their source values and keeping
+/// join-edge slot-count checks honest (RUE-167, RUE-194, RUE-248).
+pub fn preallocate_block_param_slots<B: SlotBackend>(
+    b: &mut B,
+    param_value: CfgValue,
+    ty: Type,
+    primary_vreg: VReg,
+) {
+    if !b.ctx().is_multislot_aggregate(ty) {
+        return;
+    }
+
+    let slot_count = b.ctx().type_slot_count(ty);
+    let mut slot_vregs = Vec::with_capacity(slot_count as usize);
+    if slot_count > 0 {
+        slot_vregs.push(primary_vreg);
+    }
+    for _ in 1..slot_count {
+        slot_vregs.push(b.alloc_vreg());
+    }
+    b.slot_cache().insert(param_value, slot_vregs);
 }
 
 /// Lower a `StructInit`: flatten the field values into one vreg per slot,
