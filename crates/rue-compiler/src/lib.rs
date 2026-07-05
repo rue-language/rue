@@ -329,9 +329,9 @@ pub fn parse_all_files(sources: &[SourceFile<'_>]) -> MultiErrorResult<ParsedPro
                 interner = returned_interner;
                 tokens
             }
-            Err((error, returned_interner)) => {
+            Err((lex_errors, returned_interner)) => {
                 interner = returned_interner;
-                errors.push(error);
+                errors.extend(lex_errors);
                 continue;
             }
         };
@@ -3579,6 +3579,21 @@ mod integration_tests {
                 })
                 .collect();
             assert_eq!(file_ids, vec![FileId::new(1), FileId::new(2)]);
+        }
+
+        #[test]
+        fn parse_all_files_collects_multiple_lex_errors_in_one_file() {
+            let sources = vec![SourceFile::new(
+                "lex.rue",
+                "fn lex() -> i32 { $ # }",
+                FileId::new(1),
+            )];
+
+            let errors = parse_all_files(&sources).expect_err("both lexer errors should report");
+            assert_eq!(errors.len(), 2);
+            let kinds: Vec<_> = errors.iter().map(|error| &error.kind).collect();
+            assert!(matches!(kinds[0], ErrorKind::UnexpectedCharacter('$')));
+            assert!(matches!(kinds[1], ErrorKind::UnexpectedCharacter('#')));
         }
 
         #[test]

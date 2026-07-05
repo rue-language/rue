@@ -161,9 +161,9 @@ impl<'src> CompilationUnit<'src> {
                     interner = returned_interner;
                     tokens
                 }
-                Err((error, returned_interner)) => {
+                Err((lex_errors, returned_interner)) => {
                     interner = returned_interner;
-                    errors.push(error);
+                    errors.extend(lex_errors);
                     continue;
                 }
             };
@@ -600,6 +600,30 @@ mod tests {
             })
             .collect();
         assert_eq!(file_ids, vec![FileId::new(1), FileId::new(2)]);
+    }
+
+    #[test]
+    fn test_parse_collects_multiple_lex_errors_in_one_file() {
+        let sources = vec![SourceFile::new(
+            "lex.rue",
+            "fn lex() -> i32 { $ # }",
+            FileId::new(1),
+        )];
+        let mut unit = CompilationUnit::new(sources, CompileOptions::default());
+
+        let errors = unit
+            .parse()
+            .expect_err("both lexer errors in one file should report");
+        assert_eq!(errors.len(), 2);
+        let kinds: Vec<_> = errors.iter().map(|error| &error.kind).collect();
+        assert!(matches!(
+            kinds[0],
+            crate::ErrorKind::UnexpectedCharacter('$')
+        ));
+        assert!(matches!(
+            kinds[1],
+            crate::ErrorKind::UnexpectedCharacter('#')
+        ));
     }
 
     #[test]
