@@ -1,0 +1,26 @@
+[section]
+id = "cli.diagnostic_json"
+name = "JSON diagnostic output"
+description = """
+Regression coverage for RUE-365: --error-format json routes compiler
+diagnostics through the JSON formatter instead of the human-rendered formatter.
+"""
+
+[[case]]
+name = "compile_error_is_json"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 { true }
+""" }]
+args = ["--error-format", "json", "main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = [
+  '"severity":"error"',
+  '"code":"E0206"',
+  '"message":"type mismatch: expected i32, found bool"',
+  '"spans":[{',
+  '"primary":true',
+]
+compile_stderr_not_contains = [
+  "error[E0206]",
+  "-->",
+]
