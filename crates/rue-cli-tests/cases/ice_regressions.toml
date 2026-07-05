@@ -23,6 +23,20 @@ name = "ICE regressions"
 description = "Minimal programs that used to crash the compiler; each must now compile-or-cleanly-error with no signal (RUE-51)."
 
 [[case]]
+name = "generic_array_value_length_unknown_element_type_rue407"
+description = "RUE-407 / GitHub #1225: a deferred generic array type `[i3; N]` validated only the `N` length, then specialization panicked when the unknown element type failed substitution. Now it is a clean E0204."
+files = [{ path = "main.rue", source = """
+fn first(comptime N: i32, arr: [i3; N]) -> i32 {
+    arr[0]
+}
+fn main() -> i32 {
+    first(3, [42, 1, 2])
+}
+""" }]
+compile_fail = true
+error_contains = ["E0204", "unknown type 'i3'"]
+
+[[case]]
 name = "nested_struct_field_into_if_merge_rue24"
 description = "RUE-24: a nested struct field flowing into an if/else merge block had no field vregs -> SIGABRT at cfg_lower."
 files = [{ path = "main.rue", source = """
