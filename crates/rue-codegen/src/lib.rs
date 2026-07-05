@@ -42,6 +42,7 @@ macro_rules! end_inst {
 }
 
 mod stack_frame;
+mod stack_verify;
 
 pub mod aarch64;
 pub mod agg_slots;

@@ -31,9 +31,8 @@
 //!
 //! The prologue's alignment is correct by construction (see `emit_prologue` in emit.rs).
 
-use std::collections::HashMap;
-
 use super::mir::{Aarch64Inst, Aarch64Mir, LabelId, Operand, Reg};
+use crate::stack_verify::{self, StackVerifyAdapter};
 use rue_error::{CompileError, CompileResult, ErrorKind};
 
 /// Verifies that the stack is properly aligned throughout function execution.
@@ -52,44 +51,28 @@ use rue_error::{CompileError, CompileResult, ErrorKind};
 /// `Ok(())` if verification passes, or `Err(CompileError)` with details about
 /// the first alignment violation found.
 pub fn verify_stack_alignment(mir: &Aarch64Mir) -> CompileResult<()> {
-    let mut verifier = StackVerifier::new();
-    verifier.verify(mir)
+    stack_verify::verify(&Aarch64StackVerifyAdapter { mir })
 }
 
-/// Internal state for stack verification.
-struct StackVerifier {
-    /// Stack depth at each label (for join point verification).
-    /// After prologue, depth should be 0 (aligned).
-    label_depths: HashMap<LabelId, i64>,
-    /// Current stack depth in bytes relative to 16-byte aligned SP.
-    /// 0 = aligned, 8 = misaligned by 8, etc.
-    current_depth: i64,
+struct Aarch64StackVerifyAdapter<'a> {
+    mir: &'a Aarch64Mir,
 }
 
-impl StackVerifier {
-    fn new() -> Self {
-        Self {
-            label_depths: HashMap::new(),
-            current_depth: 0,
-        }
+impl StackVerifyAdapter for Aarch64StackVerifyAdapter<'_> {
+    type Inst = Aarch64Inst;
+
+    fn instructions(&self) -> &[Self::Inst] {
+        self.mir.instructions()
     }
 
-    fn verify(&mut self, mir: &Aarch64Mir) -> CompileResult<()> {
-        // First pass: collect label positions and do basic verification
-        for (idx, inst) in mir.iter().enumerate() {
-            self.verify_instruction(idx, inst)?;
-        }
-        Ok(())
-    }
-
-    fn verify_instruction(&mut self, idx: usize, inst: &Aarch64Inst) -> CompileResult<()> {
+    fn stack_delta(&self, inst: &Self::Inst) -> i64 {
         match inst {
             // Store pair with pre-decrement: stp x1, x2, [sp, #offset]!
             // This pushes two registers onto the stack
             Aarch64Inst::StpPre { offset, .. } => {
                 // offset is typically negative (e.g., -16 to allocate 16 bytes)
                 // depth increases by |offset|
-                self.current_depth += (-*offset) as i64;
+                (-*offset) as i64
             }
 
             // Load pair with post-increment: ldp x1, x2, [sp], #offset
@@ -97,14 +80,16 @@ impl StackVerifier {
             Aarch64Inst::LdpPost { offset, .. } => {
                 // offset is typically positive (e.g., 16 to deallocate 16 bytes)
                 // depth decreases by offset
-                self.current_depth -= *offset as i64;
+                -(*offset as i64)
             }
 
             // SubImm on SP: allocates stack space
             Aarch64Inst::SubImm { dst, src, imm } => {
                 if is_sp(dst) && is_sp(src) {
                     // sub sp, sp, #imm → increases depth (allocates)
-                    self.current_depth += *imm as i64;
+                    *imm as i64
+                } else {
+                    0
                 }
             }
 
@@ -112,83 +97,64 @@ impl StackVerifier {
             Aarch64Inst::AddImm { dst, src, imm } => {
                 if is_sp(dst) && is_sp(src) {
                     // add sp, sp, #imm → decreases depth (deallocates)
-                    self.current_depth -= *imm as i64;
-                }
-            }
-
-            // Call instructions require 16-byte alignment
-            Aarch64Inst::Bl { .. } => {
-                // At a call site, SP must be 16-byte aligned.
-                // Unlike x86-64, the return address goes into LR, not pushed to stack,
-                // so the callee sees SP at the same alignment as the caller.
-                if self.current_depth % 16 != 0 {
-                    return Err(self.alignment_error(
-                        idx,
-                        inst,
-                        format!(
-                            "call requires 16-byte aligned SP, but stack is {} bytes off",
-                            self.current_depth % 16
-                        ),
-                    ));
-                }
-            }
-
-            // Labels mark potential join points
-            Aarch64Inst::Label { id } => {
-                if let Some(&expected_depth) = self.label_depths.get(id) {
-                    // We've seen a jump to this label before
-                    if expected_depth != self.current_depth {
-                        return Err(self.alignment_error(
-                            idx,
-                            inst,
-                            format!(
-                                "control flow join has inconsistent stack depth: expected {}, got {}",
-                                expected_depth, self.current_depth
-                            ),
-                        ));
-                    }
+                    -(*imm as i64)
                 } else {
-                    // First time seeing this label, record current depth
-                    self.label_depths.insert(*id, self.current_depth);
+                    0
                 }
             }
 
-            // Jump instructions record target depths
+            _ => 0,
+        }
+    }
+
+    fn label(&self, inst: &Self::Inst) -> Option<LabelId> {
+        match inst {
+            Aarch64Inst::Label { id } => Some(*id),
+            _ => None,
+        }
+    }
+
+    fn jump_targets<'a>(&self, inst: &'a Self::Inst) -> &'a [LabelId] {
+        match inst {
             Aarch64Inst::B { label }
             | Aarch64Inst::BCond { label, .. }
             | Aarch64Inst::Bvs { label }
             | Aarch64Inst::Bvc { label }
             | Aarch64Inst::Cbz { label, .. }
-            | Aarch64Inst::Cbnz { label, .. } => {
-                self.record_jump_target(*label);
-            }
-
-            // Ret doesn't affect our verification (epilogue handles cleanup)
-            Aarch64Inst::Ret => {
-                // The epilogue (generated by emitter) will restore SP.
-                // We don't verify epilogue correctness here since it's
-                // generated separately and correct by construction.
-            }
-
-            // All other instructions don't affect stack depth
-            _ => {}
+            | Aarch64Inst::Cbnz { label, .. } => std::slice::from_ref(label),
+            _ => &[],
         }
-
-        Ok(())
     }
 
-    fn record_jump_target(&mut self, label: LabelId) {
-        // Record the expected depth at this jump target.
-        // If we've already seen the label, the depth was recorded there.
-        // If not, this is a forward jump and we record the expected depth.
-        // Mismatches are caught when the label is encountered in verify_instruction.
-        self.label_depths.entry(label).or_insert(self.current_depth);
+    fn alignment_violation(&self, inst: &Self::Inst, current_depth: i64) -> Option<String> {
+        match inst {
+            Aarch64Inst::Bl { .. } => {
+                // At a call site, SP must be 16-byte aligned.
+                // Unlike x86-64, the return address goes into LR, not pushed to stack,
+                // so the callee sees SP at the same alignment as the caller.
+                if current_depth % 16 != 0 {
+                    Some(format!(
+                        "call requires 16-byte aligned SP, but stack is {} bytes off",
+                        current_depth % 16
+                    ))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
     }
 
-    fn alignment_error(&self, idx: usize, inst: &Aarch64Inst, message: String) -> CompileError {
+    fn error(
+        &self,
+        idx: usize,
+        inst: &Self::Inst,
+        current_depth: i64,
+        message: String,
+    ) -> CompileError {
         CompileError::without_span(ErrorKind::InternalCodegenError(format!(
             "stack alignment verification failed at instruction {}: {} (depth: {} bytes) - {}",
-            idx, inst, self.current_depth, message
+            idx, inst, current_depth, message
         )))
     }
 }
