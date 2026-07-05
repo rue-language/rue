@@ -21,10 +21,10 @@ fn is_positive(n: i32) -> bool {
 
 fn main() -> i32 {
     let sum = add(3, 4);
-    @dbg(sum);  // prints: 7
+    println("sum = " + @to_string(sum));
 
-    @dbg(is_positive(sum));   // prints: 1 (true)
-    @dbg(is_positive(-5));    // prints: 0 (false)
+    @dbg(is_positive(sum));   // prints: true
+    @dbg(is_positive(-5));    // prints: false
 
     sum
 }
@@ -55,8 +55,8 @@ fn absolute(n: i32) -> i32 {
 }
 
 fn main() -> i32 {
-    @dbg(absolute(-42));  // prints: 42
-    @dbg(absolute(17));   // prints: 17
+    println("abs(-42) = " + @to_string(absolute(-42)));
+    println("abs(17) = " + @to_string(absolute(17)));
     0
 }
 ```
@@ -65,9 +65,9 @@ fn main() -> i32 {
 
 Functions that don't return a meaningful value return the unit type `()`:
 
-```rue
+```rue check
 fn greet() {
-    @dbg(42);  // side effect only
+    println("hello from greet");
 }
 
 fn main() -> i32 {

@@ -40,7 +40,25 @@ echo $?  # prints: 0
 
 ## Printing Output
 
-To see output, use the `@dbg` intrinsic:
+To print user-facing text, use `println`:
+
+```rue check
+fn main() -> i32 {
+    println("Hello, Rue!");
+    0
+}
+```
+
+Run this program and you'll see:
+
+```
+Hello, Rue!
+```
+
+`println` writes a string followed by a newline. Use `print` when you do not
+want the trailing newline.
+
+For quick debugging, Rue also provides the `@dbg` intrinsic:
 
 ```rue check
 fn main() -> i32 {
@@ -49,12 +67,12 @@ fn main() -> i32 {
 }
 ```
 
-This prints `42` to the console. The `@` prefix indicates a compiler intrinsic—a built-in operation provided by the compiler.
-
-Run this program and you'll see:
+This prints the value followed by a newline:
 
 ```
 42
 ```
 
-The `@dbg` intrinsic works with any type: integers, booleans, and more. It's your primary debugging tool while developing.
+The `@` prefix indicates a compiler intrinsic—a built-in operation provided by
+the compiler. Use `println` for normal program output and `@dbg` when you want
+to inspect a value while developing.
