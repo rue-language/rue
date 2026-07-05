@@ -2438,9 +2438,7 @@ impl<'a> Sema<'a> {
             ConstValue::Function(_) => unreachable!(
                 "function-valued constants are callable aliases and must not be materialized"
             ),
-            // Value constants never hold type values (declaration collection
-            // rejects them); this arm only fires defensively.
-            ConstValue::Type(t) => (AirInstData::TypeConst(t), ty),
+            ConstValue::Type(t) => (AirInstData::TypeConst(t), Type::COMPTIME_TYPE),
         }
     }
 
@@ -5559,6 +5557,11 @@ impl<'a> Sema<'a> {
         ctx: &AnalysisContext,
     ) -> Option<(crate::types::EnumId, bool)> {
         if let Some(&ty) = ctx.comptime_type_vars.get(&type_name) {
+            return ty.as_enum().map(|id| (id, true));
+        }
+        if let Some(info) = self.constants.get(&type_name)
+            && let ConstValue::Type(ty) = info.value
+        {
             return ty.as_enum().map(|id| (id, true));
         }
         self.enums.get(&type_name).map(|&id| (id, false))

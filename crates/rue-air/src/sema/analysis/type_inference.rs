@@ -76,6 +76,7 @@ impl<'a> Sema<'a> {
             type_subst,
         )
         .with_const_types(&infer_ctx.const_types)
+        .with_const_type_aliases(&infer_ctx.const_type_aliases)
         .with_const_values(&infer_ctx.const_values)
         .with_const_function_aliases(&infer_ctx.const_function_aliases)
         .with_module_binding_types(&infer_ctx.module_binding_types)

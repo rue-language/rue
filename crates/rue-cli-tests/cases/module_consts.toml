@@ -124,6 +124,25 @@ fn main() -> i32 {
 env = { RUE_STD_PATH = "${REAL_STD}" }
 stdout = "7\n"
 
+[[case]]
+name = "module_scope_type_alias_from_std_type_constructor"
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const OptI = std.option.Option(i64);
+
+fn read_num() -> OptI {
+    let n: i64 = 42;
+    OptI::Some(n)
+}
+
+fn main() -> i32 {
+    let _x: OptI = read_num();
+    0
+}
+""" }]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+exit_code = 0
+
 # Module alias through local files: alias a re-export, then call through it.
 [[case]]
 name = "module_alias_of_local_reexport"
