@@ -126,6 +126,10 @@ impl StackVerifyAdapter for Aarch64StackVerifyAdapter<'_> {
         }
     }
 
+    fn is_return(&self, inst: &Self::Inst) -> bool {
+        matches!(inst, Aarch64Inst::Ret)
+    }
+
     fn alignment_violation(&self, inst: &Self::Inst, current_depth: i64) -> Option<String> {
         match inst {
             Aarch64Inst::Bl { .. } => {
@@ -355,5 +359,22 @@ mod tests {
         mir.push(Aarch64Inst::Ret);
 
         assert!(verify_stack_alignment(&mir).is_ok());
+    }
+
+    #[test]
+    fn test_unbalanced_sub_sp_before_return_fails() {
+        let mir = make_mir(vec![
+            Aarch64Inst::SubImm {
+                dst: Operand::Physical(Reg::Sp),
+                src: Operand::Physical(Reg::Sp),
+                imm: 16,
+            },
+            Aarch64Inst::Ret,
+        ]);
+
+        let result = verify_stack_alignment(&mir);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("balanced stack depth"));
     }
 }

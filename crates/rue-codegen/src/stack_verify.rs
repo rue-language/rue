@@ -29,6 +29,9 @@ pub trait StackVerifyAdapter {
     /// Jump target labels referenced by `inst`.
     fn jump_targets<'a>(&self, inst: &'a Self::Inst) -> &'a [LabelId];
 
+    /// Whether `inst` returns from the current function.
+    fn is_return(&self, inst: &Self::Inst) -> bool;
+
     /// Return an alignment error message if `inst` observes an invalid stack
     /// depth for this target.
     fn alignment_violation(&self, inst: &Self::Inst, current_depth: i64) -> Option<String>;
@@ -84,6 +87,18 @@ where
 
         if let Some(message) = self.adapter.alignment_violation(inst, self.current_depth) {
             return Err(self.adapter.error(idx, inst, self.current_depth, message));
+        }
+
+        if self.adapter.is_return(inst) && self.current_depth != 0 {
+            return Err(self.adapter.error(
+                idx,
+                inst,
+                self.current_depth,
+                format!(
+                    "return requires balanced stack depth, but depth is {} bytes",
+                    self.current_depth
+                ),
+            ));
         }
 
         if let Some(label) = self.adapter.label(inst) {
