@@ -6,15 +6,15 @@ template = "spec/page.html"
 
 # Mutable Strings
 
-This section describes the mutable string capabilities, building on the core `String` type from section 3.7.
+This section describes the mutable string capabilities, building on the core `StrBuf` type from section 3.7.
 
 {{ preview_feature(feature="mutable_strings", adr="ADR-0014") }}
 
-## String Representation
+## StrBuf Representation
 
 {{ rule(id="3.10:1", cat="normative") }}
 
-A `String` value consists of three components: a pointer to the string data, the length in bytes, and the allocated capacity.
+A `StrBuf` value consists of three components: a pointer to the string data, the length in bytes, and the allocated capacity.
 
 {{ rule(id="3.10:2", cat="normative") }}
 
@@ -24,20 +24,20 @@ When capacity is zero, the string data points to read-only memory (a string lite
 
 This representation allows string literals to remain cheap (no allocation) while enabling mutation when needed. Mutation methods automatically promote read-only strings to the heap.
 
-## String Ownership
+## StrBuf Ownership
 
 {{ rule(id="3.10:4", cat="normative") }}
 
-`String` is an affine type: a `String` value is consumed when used and cannot be used again unless explicitly cloned.
+`StrBuf` is an affine type: a `StrBuf` value is consumed when used and cannot be used again unless explicitly cloned.
 
 {{ rule(id="3.10:5", cat="normative") }}
 
-`String` is not `@copy`. Passing a string to a function or assigning it to another binding moves the string.
+`StrBuf` is not `@copy`. Passing a string to a function or assigning it to another binding moves the string.
 
 {{ rule(id="3.10:6", cat="example") }}
 
 ```rue
-fn takes_string(s: String) -> i32 { 0 }
+fn takes_string(s: StrBuf) -> i32 { 0 }
 
 fn main() -> i32 {
     let mut s = "hello";
@@ -51,18 +51,18 @@ fn main() -> i32 {
 
 {{ rule(id="3.10:7", cat="normative") }}
 
-`String::new()` returns an empty string with no allocation.
+`StrBuf::new()` returns an empty string with no allocation.
 
 {{ rule(id="3.10:8", cat="normative") }}
 
-`String::with_capacity(cap: u64)` returns an empty string with pre-allocated capacity for `cap` bytes.
+`StrBuf::with_capacity(cap: u64)` returns an empty string with pre-allocated capacity for `cap` bytes.
 
 {{ rule(id="3.10:9", cat="example") }}
 
 ```rue
 fn main() -> i32 {
-    let empty = String::new();
-    let prealloc = String::with_capacity(1024);
+    let empty = StrBuf::new();
+    let prealloc = StrBuf::with_capacity(1024);
     0
 }
 ```
@@ -102,7 +102,7 @@ fn main() -> i32 {
 
 {{ rule(id="3.10:15", cat="normative") }}
 
-`fn push_str(inout self, other: String)` appends the contents of `other` to the string. If the string is a literal (capacity zero), it is first promoted to the heap.
+`fn push_str(inout self, other: StrBuf)` appends the contents of `other` to the string. If the string is a literal (capacity zero), it is first promoted to the heap.
 
 {{ rule(id="3.10:16", cat="normative") }}
 
@@ -124,7 +124,7 @@ Mutation methods use `inout self` to modify the string in place. The variable mu
 
 ```rue
 fn main() -> i32 {
-    let mut s = String::new();
+    let mut s = StrBuf::new();
     s.push_str("hello");
     s.push_str(" world");
     s.push(33);  // '!' character
@@ -171,7 +171,7 @@ The doubling growth strategy amortizes allocation cost over many appends, provid
 
 {{ rule(id="3.10:26", cat="normative") }}
 
-`fn clone(borrow self) -> String` creates a deep copy of the string, allocating a new heap buffer with the same content.
+`fn clone(borrow self) -> StrBuf` creates a deep copy of the string, allocating a new heap buffer with the same content.
 
 {{ rule(id="3.10:27", cat="informative") }}
 
@@ -192,7 +192,7 @@ fn main() -> i32 {
 
 {{ rule(id="3.10:29", cat="dynamic-semantics") }}
 
-When a `String` value is dropped:
+When a `StrBuf` value is dropped:
 - If capacity is zero (literal), no action is taken
 - If capacity is greater than zero (heap-allocated), the heap buffer is freed
 
