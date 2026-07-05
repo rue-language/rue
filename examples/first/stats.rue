@@ -20,30 +20,25 @@
 // read a stream cleanly, with the postfix `?` doing the early-exit plumbing.
 //
 // The one rough edge that remains (RUE-287): no prelude yet, so `Option` is not
-// in scope automatically. Here it must be a *top-level* comptime-generic type
-// function, because a helper that returns `Option(i64)` names that type in its
-// signature — and an `@import`ed type cannot yet be named at a type position
-// (only bound to a local `let`). So `Option` is defined inline rather than
-// imported from the std library. Every peer language (Rust, Swift, Zig) has an
-// optional type built in.
+// in scope automatically. Import `std` explicitly, name the optional type as
+// `std.option.Option(i64)` in the helper signature, and use a local `OptInt`
+// alias for matching on `Some` and `None` in the loop below.
 //
 // Exercises the dogfooding set end to end: @read_line, @parse_i64, the `?`
-// operator, a generic Option, StrBuf concatenation + @to_string, println, a
+// operator, std.option.Option, StrBuf concatenation + @to_string, println, a
 // loop, and match.
 
-fn Option(comptime T: type) -> type {
-    enum { Some(T), None }
-}
+const std = @import("std");
 
 // Read one line and parse it as an integer. `?` on @read_line short-circuits to
 // None at end-of-input; the tail @parse_i64 is None if the line isn't a number.
-fn read_num() -> Option(i64) {
+fn read_num() -> std.option.Option(i64) {
     let line = @read_line()?;
     @parse_i64(line)
 }
 
 fn main() -> i32 {
-    let OptInt = Option(i64);
+    let OptInt = std.option.Option(i64);
 
     let mut count: i64 = 0;
     let mut sum: i64 = 0;

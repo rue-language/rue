@@ -36,7 +36,7 @@ case "$cmd" in
         # Compile via the real driver (so module resolution, -o, etc. behave
         # exactly as a user would see).
         bin="$(scripts/rue-bin)"
-        "$bin" "$@"
+        RUE_STD_PATH="${RUE_STD_PATH:-$repo_root/std}" "$bin" "$@"
         ;;
     exec)
         # Compile a single source to a temp executable and run it.
@@ -52,7 +52,7 @@ case "$cmd" in
         # skips a trailing `rm`, leaking the temp file (RUE-212). The trap
         # fires regardless of exit code, so cleanup always happens.
         trap 'rm -f "$out"' EXIT
-        "$bin" "$src" "$out"
+        RUE_STD_PATH="${RUE_STD_PATH:-$repo_root/std}" "$bin" "$src" "$out"
         # Run the program, capturing its exit code without letting `set -e`
         # abort first (`|| rc=$?`), then propagate it as our own exit code.
         rc=0
