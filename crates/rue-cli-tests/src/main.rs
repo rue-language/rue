@@ -36,6 +36,8 @@
 //!
 //! Optional fields:
 //! - `args`: explicit compiler args (default: `[<first file>, "-o", "prog"]`)
+//! - `source_path`: repo-root-relative source path to compile instead of
+//!   inline `files`, for cases that should pin a checked-in example/program
 //! - `output`: name of produced executable (default `"prog"`)
 //! - `env`: extra env vars for the compiler; the value `"${REAL_STD}"`
 //!   expands to the absolute path of the repo's `std/` directory
@@ -102,7 +104,7 @@ const STD_DIR_PATHS: &[&str] = &["std", "../std", "../../std"];
 /// Possible paths for the repo's `examples/` directory (RUE-48 smoke tests).
 const EXAMPLES_DIR_PATHS: &[&str] = &["examples", "../../examples", "../examples"];
 
-/// Expected outcome of compiling and running one `examples/*.rue` program.
+/// Expected outcome of compiling and running one `examples/**/*.rue` program.
 ///
 /// Every file under `examples/` is compiled and run by the suite (see
 /// [`example_trials`]); this table pins the *deterministic* ones to an exact
@@ -117,89 +119,124 @@ const EXAMPLES_DIR_PATHS: &[&str] = &["examples", "../../examples", "../examples
 /// is 0-255), e.g. `power.rue` returns 5^6 = 15625, which exits as 15625 % 256
 /// = 9.
 struct ExampleExpectation {
-    /// File stem: the basename without the `.rue` extension.
-    name: &'static str,
+    /// Path relative to `examples/`, using `/` separators.
+    path: &'static str,
     /// Expected process exit code.
     exit_code: i32,
     /// Exact expected stdout.
     stdout: &'static str,
+    /// Optional stdin to pipe to the example.
+    stdin: Option<&'static str>,
 }
 
 const EXAMPLE_EXPECTATIONS: &[ExampleExpectation] = &[
     ExampleExpectation {
-        name: "arrays",
+        path: "arrays.rue",
         exit_code: 157,
         stdout: "157\n64\n12\n60\n",
+        stdin: None,
     },
     ExampleExpectation {
-        name: "binary_search",
+        path: "binary_search.rue",
         exit_code: 4,
         stdout: "4\n",
+        stdin: None,
     },
     ExampleExpectation {
-        name: "collatz",
+        path: "collatz.rue",
         exit_code: 97,
         stdout: "27\n111\n",
+        stdin: None,
     },
     ExampleExpectation {
-        name: "dbg",
+        path: "dbg.rue",
         exit_code: 0,
         stdout: "42\n-17\ntrue\nfalse\n70\ntrue\ntrue\n120\n0\n1\n2\n3\n4\n",
+        stdin: None,
     },
     ExampleExpectation {
-        name: "fibonacci",
+        path: "fibonacci.rue",
         exit_code: 55,
         stdout: "0\n1\n1\n2\n3\n5\n8\n13\n21\n34\n55\n89\n144\n233\n377\n610\n987\n1597\n2584\n4181\n",
+        stdin: None,
     },
     ExampleExpectation {
-        name: "fizzbuzz",
+        path: "first/option_try.rue",
+        exit_code: 0,
+        stdout: "triple: 12\ntriple: none\n",
+        stdin: None,
+    },
+    ExampleExpectation {
+        path: "first/stats.rue",
+        exit_code: 3,
+        stdout: "count: 3\nsum: 13\nmax: 7\n",
+        stdin: Some("7\n5\n1\n"),
+    },
+    ExampleExpectation {
+        path: "fizzbuzz.rue",
         exit_code: 0,
         stdout: "1\n2\n1\n4\n2\n1\n7\n8\n1\n2\n11\n1\n13\n14\n3\n16\n17\n1\n19\n2\n1\n22\n23\n1\n2\n26\n1\n28\n29\n3\n",
+        stdin: None,
     },
     ExampleExpectation {
-        name: "gcd",
+        path: "gcd.rue",
         exit_code: 21,
         stdout: "6\n1\n36\n",
+        stdin: None,
     },
     ExampleExpectation {
-        name: "generics",
+        path: "generics.rue",
         exit_code: 72,
         stdout: "42\n20\n10\n100\n8\n17\n",
+        stdin: None,
     },
     ExampleExpectation {
-        name: "hello",
+        path: "hello.rue",
         exit_code: 42,
         stdout: "",
+        stdin: None,
     },
     ExampleExpectation {
-        name: "match",
+        path: "match.rue",
         exit_code: 5,
         stdout: "5\n",
+        stdin: None,
     },
     ExampleExpectation {
-        name: "power",
+        path: "power.rue",
         exit_code: 9,
         stdout: "1\n2\n1024\n243\n2401\n1024\n",
+        stdin: None,
     },
     ExampleExpectation {
-        name: "primes",
+        path: "primes.rue",
         exit_code: 25,
         stdout: "2\n3\n5\n7\n11\n13\n17\n19\n23\n29\n31\n37\n41\n43\n47\n",
+        stdin: None,
     },
     ExampleExpectation {
-        name: "quicksort",
+        path: "quicksort.rue",
         exit_code: 11,
         stdout: "0\n64\n34\n25\n12\n22\n11\n90\n42\n15\n77\n1\n11\n12\n15\n22\n25\n34\n42\n64\n77\n90\n",
+        stdin: None,
     },
     ExampleExpectation {
-        name: "sqrt",
+        path: "sqrt.rue",
         exit_code: 12,
         stdout: "0\n1\n2\n2\n3\n3\n4\n10\n31\n",
+        stdin: None,
     },
     ExampleExpectation {
-        name: "structs",
+        path: "std/arraybuf_demo.rue",
+        exit_code: 119,
+        stdout: "3\n20\n99\n30\n2\n-1\n119\n",
+        stdin: None,
+    },
+    ExampleExpectation {
+        path: "structs.rue",
         exit_code: 50,
         stdout: "25\n50\n30\ntrue\n",
+        stdin: None,
     },
 ];
 
@@ -239,7 +276,13 @@ struct Case {
     #[serde(default)]
     description: Option<String>,
     /// Files written to the temp directory before invoking the compiler.
+    #[serde(default)]
     files: Vec<SourceFile>,
+    /// Repo-root-relative source file to compile directly instead of copying
+    /// inline source into the temp directory. Use this when a CLI case should
+    /// pin a checked-in example/program rather than duplicating its source.
+    #[serde(default)]
+    source_path: Option<String>,
     /// Compiler arguments, relative to the temp dir (default: first file + `-o prog`).
     #[serde(default)]
     args: Option<Vec<String>>,
@@ -347,6 +390,16 @@ fn expand_env_value(value: &str, real_std: &Path) -> String {
     value.replace("${REAL_STD}", &real_std.to_string_lossy())
 }
 
+fn resolve_source_path(path: &str, real_std: &Path) -> PathBuf {
+    if let Some(rest) = path.strip_prefix("examples/") {
+        return find_dir("RUE_EXAMPLES_DIR", EXAMPLES_DIR_PATHS, "examples").join(rest);
+    }
+    if let Some(rest) = path.strip_prefix("std/") {
+        return real_std.join(rest);
+    }
+    PathBuf::from(path)
+}
+
 /// Compile and run one case, returning the program's outcome.
 ///
 /// When `opt_level` is `Some("-O2")` etc., that flag is appended to the
@@ -360,6 +413,10 @@ fn run_case(
 ) -> Result<RunOutcome, String> {
     let temp_dir = tempfile::tempdir().map_err(|e| format!("failed to create temp dir: {}", e))?;
     let dir = temp_dir.path();
+    let source_path = case
+        .source_path
+        .as_ref()
+        .map(|path| resolve_source_path(path, real_std));
 
     // Write the case's files to disk, creating subdirectories as needed.
     for file in &case.files {
@@ -379,7 +436,10 @@ fn run_case(
     let mut args: Vec<String> = match &case.args {
         Some(args) => args.clone(),
         None => {
-            let first = case.files.first().ok_or("case has no files")?.path.clone();
+            let first = match &source_path {
+                Some(path) => path.display().to_string(),
+                None => case.files.first().ok_or("case has no files")?.path.clone(),
+            };
             vec![first, "-o".to_string(), output_name.clone()]
         }
     };
@@ -737,30 +797,30 @@ fn load_cases(cases_dir: &Path) -> Vec<(String, TestFile)> {
     out
 }
 
-/// Compile and run one `examples/*.rue` program end to end (RUE-48).
+/// Compile and run one `examples/**/*.rue` program end to end (RUE-48).
 ///
-/// The example is written to a temp dir and compiled with the real driver
-/// (`rue <file> -o prog`), exactly as a user would. A compiler panic is an ICE;
-/// a compile failure fails the case. The produced binary is then run under the
-/// standard wall-clock timeout, and — crucially — must exit *normally*: a
-/// program killed by a signal (SIGSEGV/SIGABRT show up as a `None` exit code on
-/// unix) fails as a crash. If the example is in [`EXAMPLE_EXPECTATIONS`], its
-/// exact exit code and stdout are asserted; otherwise passing this "no crash"
-/// bar is enough (self-maintaining smoke coverage for newly added examples).
+/// The real example file is compiled with the real driver (`rue <file> -o
+/// prog`). The produced binary lives in a temp dir, but the compiler sees the
+/// source at its repository path, so relative imports are exercised exactly as
+/// they are written. A compiler panic is an ICE; a compile failure fails the
+/// case. The produced binary is then run under the standard wall-clock timeout,
+/// and — crucially — must exit *normally*: a program killed by a signal
+/// (SIGSEGV/SIGABRT show up as a `None` exit code on unix) fails as a crash. If
+/// the example is in [`EXAMPLE_EXPECTATIONS`], its exact exit code and stdout
+/// are asserted; otherwise passing this "no crash" bar is enough
+/// (self-maintaining smoke coverage for newly added examples).
 fn run_example(
-    name: &str,
-    source: &str,
+    path: &Path,
     expectation: Option<&ExampleExpectation>,
     rue_binary: &Path,
+    real_std: &Path,
 ) -> TestResult {
     let temp_dir = tempfile::tempdir().map_err(|e| format!("failed to create temp dir: {}", e))?;
     let dir = temp_dir.path();
-    let src_name = format!("{}.rue", name);
-    std::fs::write(dir.join(&src_name), source)
-        .map_err(|e| format!("failed to write {}: {}", src_name, e))?;
 
     let mut cmd = Command::new(rue_binary);
-    cmd.args([src_name.as_str(), "-o", "prog"]).current_dir(dir);
+    cmd.arg(path).args(["-o", "prog"]).current_dir(dir);
+    cmd.env("RUE_STD_PATH", real_std);
     // Compile under the default timeout too (see run_case): an example that
     // hangs the compiler fails as one TIMEOUT, not a wedged suite.
     let compile_output = run_with_timeout(cmd, Duration::from_millis(DEFAULT_TIMEOUT_MS), None)?;
@@ -786,7 +846,11 @@ fn run_example(
 
     let mut run_cmd = Command::new(&program);
     run_cmd.current_dir(dir);
-    let run_output = run_with_timeout(run_cmd, Duration::from_millis(DEFAULT_TIMEOUT_MS), None)?;
+    let run_output = run_with_timeout(
+        run_cmd,
+        Duration::from_millis(DEFAULT_TIMEOUT_MS),
+        expectation.and_then(|exp| exp.stdin),
+    )?;
     let run_stdout = String::from_utf8_lossy(&run_output.stdout).to_string();
     let run_stderr = String::from_utf8_lossy(&run_output.stderr).to_string();
 
@@ -820,25 +884,55 @@ fn run_example(
     Ok(())
 }
 
-/// Discover `examples/*.rue` and build one smoke-test trial per file (RUE-48).
+fn collect_example_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
+    for entry in std::fs::read_dir(dir)
+        .map_err(|e| format!("cannot read examples directory '{}': {}", dir.display(), e))?
+    {
+        let entry = entry.map_err(|e| format!("cannot read examples entry: {}", e))?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_example_files(&path, out)?;
+        } else if path.extension().is_some_and(|ext| ext == "rue") {
+            out.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn example_relative_path(examples_dir: &Path, path: &Path) -> String {
+    path.strip_prefix(examples_dir)
+        .unwrap_or(path)
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn example_test_name(relative_path: &str) -> String {
+    let name = relative_path
+        .strip_suffix(".rue")
+        .unwrap_or(relative_path)
+        .replace('/', "::");
+    format!("cli.examples::{name}")
+}
+
+/// Discover `examples/**/*.rue` and build one smoke-test trial per file (RUE-48).
 ///
 /// This is self-maintaining: it enumerates the directory at run time, so a new
 /// example is picked up automatically. If the directory can't be found or holds
 /// no `.rue` files, a single loud failing trial is emitted rather than silently
 /// running zero example tests (which would let example rot slip through CI).
-fn example_trials(rue_binary: &Path) -> Vec<Trial> {
+fn example_trials(rue_binary: &Path, real_std: &Path) -> Vec<Trial> {
     let examples_dir = find_dir("RUE_EXAMPLES_DIR", EXAMPLES_DIR_PATHS, "examples");
 
-    let mut example_files: Vec<PathBuf> = match std::fs::read_dir(&examples_dir) {
-        Ok(entries) => entries
-            .filter_map(|e| e.ok().map(|e| e.path()))
-            .filter(|p| p.extension().is_some_and(|ext| ext == "rue"))
-            .collect(),
+    let mut example_files = Vec::new();
+    match collect_example_files(&examples_dir, &mut example_files) {
+        Ok(()) => {}
         Err(e) => {
             let msg = format!(
-                "cannot read examples directory '{}': {} (set RUE_EXAMPLES_DIR)",
+                "{} (set RUE_EXAMPLES_DIR to override '{}')",
+                e,
                 examples_dir.display(),
-                e
             );
             return vec![Trial::test("cli.examples::_discovery", move |_ctx| {
                 Err(RunError::fail(msg.clone()))
@@ -859,26 +953,15 @@ fn example_trials(rue_binary: &Path) -> Vec<Trial> {
 
     let mut trials = Vec::with_capacity(example_files.len());
     for path in example_files {
-        let name = path
-            .file_stem()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_default();
-        let source = match std::fs::read_to_string(&path) {
-            Ok(s) => s,
-            Err(e) => {
-                let msg = format!("failed to read {}: {}", path.display(), e);
-                trials.push(Trial::test(
-                    format!("cli.examples::{}", name),
-                    move |_ctx| Err(RunError::fail(msg.clone())),
-                ));
-                continue;
-            }
-        };
+        let relative_path = example_relative_path(&examples_dir, &path);
         let rue_binary = rue_binary.to_path_buf();
-        let test_name = format!("cli.examples::{}", name);
+        let real_std = real_std.to_path_buf();
+        let test_name = example_test_name(&relative_path);
         trials.push(Trial::test(test_name, move |_ctx| {
-            let expectation = EXAMPLE_EXPECTATIONS.iter().find(|e| e.name == name);
-            run_example(&name, &source, expectation, &rue_binary).map_err(RunError::fail)
+            let expectation = EXAMPLE_EXPECTATIONS
+                .iter()
+                .find(|e| e.path == relative_path);
+            run_example(&path, expectation, &rue_binary, &real_std).map_err(RunError::fail)
         }));
     }
     trials
@@ -924,10 +1007,10 @@ fn main() {
         );
     }
 
-    // RUE-48: compile+run every examples/*.rue through the real driver, so a
+    // RUE-48: compile+run every examples/**/*.rue through the real driver, so a
     // regression that breaks a shipped example (or an example referencing a
     // removed flag) can't slip past CI unnoticed.
-    tests.extend(example_trials(&rue_binary));
+    tests.extend(example_trials(&rue_binary, &real_std));
 
     Harness::with_env().discover(tests).main();
 }

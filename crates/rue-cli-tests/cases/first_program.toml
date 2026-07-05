@@ -1,14 +1,8 @@
 # The first real Rue program (RUE-226 dogfooding milestone): examples/first/stats.rue.
-# A natural read-until-EOF loop (no count prefix) — reads integers one per line
-# until end-of-input and prints count/sum/max. Regression-locks the dogfooding
-# set working together end to end now that error handling has landed (RUE-6,
-# ADR-0038) and the `?` operator resolves a bare fallible intrinsic (RUE-318).
-# @read_line returns Option(String) (None at EOF) and @parse_i64 returns
-# Option(i64) (None on a non-numeric line); the `read_num` helper chains them
-# with `?`: `@read_line()?` short-circuits to None at EOF, the tail @parse_i64
-# is None on a non-numeric line, and the loop breaks the first time read_num()
-# is None. Option is a top-level comptime-generic enum defined inline (no
-# prelude yet, and an @imported type cannot be named at a signature position).
+#
+# These cases compile the checked-in example directly via `source_path` instead
+# of duplicating its source inline. That keeps the CLI regression tests pinned
+# to the dogfood program users actually see.
 
 [section]
 id = "cli.first_program"
@@ -17,44 +11,8 @@ description = "read-until-EOF integers -> count/sum/max via read_num() chaining 
 
 [[case]]
 name = "stats_read_until_eof"
-files = [
-  { path = "stats.rue", source = """
-fn Option(comptime T: type) -> type {
-    enum { Some(T), None }
-}
-fn read_num() -> Option(i64) {
-    let line = @read_line()?;
-    @parse_i64(line)
-}
-fn main() -> i32 {
-    let OptInt = Option(i64);
-    let mut count: i64 = 0;
-    let mut sum: i64 = 0;
-    let mut max: OptInt = OptInt::None;
-    loop {
-        match read_num() {
-            OptInt::Some(x) => {
-                count = count + 1;
-                sum = sum + x;
-                max = match max {
-                    OptInt::None => OptInt::Some(x),
-                    OptInt::Some(m) => if x > m { OptInt::Some(x) } else { OptInt::Some(m) },
-                };
-            },
-            OptInt::None => break,
-        }
-    }
-    println("count: " + @to_string(count));
-    println("sum: " + @to_string(sum));
-    match max {
-        OptInt::Some(m) => println("max: " + @to_string(m)),
-        OptInt::None => println("max: (no input)"),
-    }
-    @intCast(count)
-}
-""" },
-]
-args = ["stats.rue", "-o", "prog"]
+source_path = "examples/first/stats.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 stdin = "7\n5\n1\n"
 stdout = """
 count: 3
@@ -68,44 +26,8 @@ exit_code = 3
 # the loop breaks. Integers before it are counted; input after it is not read.
 [[case]]
 name = "stats_stops_at_non_number"
-files = [
-  { path = "stats.rue", source = """
-fn Option(comptime T: type) -> type {
-    enum { Some(T), None }
-}
-fn read_num() -> Option(i64) {
-    let line = @read_line()?;
-    @parse_i64(line)
-}
-fn main() -> i32 {
-    let OptInt = Option(i64);
-    let mut count: i64 = 0;
-    let mut sum: i64 = 0;
-    let mut max: OptInt = OptInt::None;
-    loop {
-        match read_num() {
-            OptInt::Some(x) => {
-                count = count + 1;
-                sum = sum + x;
-                max = match max {
-                    OptInt::None => OptInt::Some(x),
-                    OptInt::Some(m) => if x > m { OptInt::Some(x) } else { OptInt::Some(m) },
-                };
-            },
-            OptInt::None => break,
-        }
-    }
-    println("count: " + @to_string(count));
-    println("sum: " + @to_string(sum));
-    match max {
-        OptInt::Some(m) => println("max: " + @to_string(m)),
-        OptInt::None => println("max: (no input)"),
-    }
-    @intCast(count)
-}
-""" },
-]
-args = ["stats.rue", "-o", "prog"]
+source_path = "examples/first/stats.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 stdin = "10\n20\nnot a number\n30\n"
 stdout = """
 count: 2
@@ -115,48 +37,11 @@ max: 20
 exit_code = 2
 
 # Empty input (immediate EOF): read_num() returns None on the first call, so the
-# loop never enters and nothing traps. Before RUE-6 the first @read_line would
-# have aborted with exit 101; now `@read_line()?` cleanly short-circuits to None.
+# loop never enters and nothing traps.
 [[case]]
 name = "stats_empty_input_no_trap"
-files = [
-  { path = "stats.rue", source = """
-fn Option(comptime T: type) -> type {
-    enum { Some(T), None }
-}
-fn read_num() -> Option(i64) {
-    let line = @read_line()?;
-    @parse_i64(line)
-}
-fn main() -> i32 {
-    let OptInt = Option(i64);
-    let mut count: i64 = 0;
-    let mut sum: i64 = 0;
-    let mut max: OptInt = OptInt::None;
-    loop {
-        match read_num() {
-            OptInt::Some(x) => {
-                count = count + 1;
-                sum = sum + x;
-                max = match max {
-                    OptInt::None => OptInt::Some(x),
-                    OptInt::Some(m) => if x > m { OptInt::Some(x) } else { OptInt::Some(m) },
-                };
-            },
-            OptInt::None => break,
-        }
-    }
-    println("count: " + @to_string(count));
-    println("sum: " + @to_string(sum));
-    match max {
-        OptInt::Some(m) => println("max: " + @to_string(m)),
-        OptInt::None => println("max: (no input)"),
-    }
-    @intCast(count)
-}
-""" },
-]
-args = ["stats.rue", "-o", "prog"]
+source_path = "examples/first/stats.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 stdin = ""
 stdout = """
 count: 0
