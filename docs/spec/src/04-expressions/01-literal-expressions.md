@@ -6,13 +6,13 @@ template = "spec/page.html"
 
 # Literal Expressions
 
-{{ rule(id="4.1:1", cat="normative") }}
+{{ rule(id="4.1:1", cat="dynamic-semantics") }}
 
 A literal expression evaluates to a constant value.
 
 ## Integer Literals
 
-{{ rule(id="4.1:2", cat="normative") }}
+{{ rule(id="4.1:2", cat="dynamic-semantics") }}
 
 An integer literal is a sequence of decimal digits that evaluates to an integer value.
 
@@ -52,7 +52,7 @@ fn main() -> i32 {
 
 The unit literal `()` is an expression of type `()`.
 
-{{ rule(id="4.1:8", cat="normative") }}
+{{ rule(id="4.1:8", cat="dynamic-semantics") }}
 
 The unit literal evaluates to the single value of the unit type.
 
