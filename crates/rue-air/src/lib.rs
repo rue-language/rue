@@ -13,11 +13,11 @@
 mod inference;
 mod inst;
 mod intern_pool;
+mod module_registry;
 mod param_arena;
 mod path_norm;
 mod scope;
 mod sema;
-mod sema_context;
 pub mod specialize;
 mod types;
 
@@ -33,11 +33,11 @@ pub use inst::{
 pub use intern_pool::{
     EnumData, InternedType, StructData, TypeData, TypeInternPool, TypeInternPoolStats,
 };
+pub use module_registry::ModuleRegistry;
 pub use param_arena::{ParamArena, ParamRange};
 pub use sema::{
     AnalyzedFunction, ConstValue, FunctionInfo, GatherOutput, MethodInfo, Sema, SemaOutput,
 };
-pub use sema_context::ModuleRegistry;
 pub use types::{
     ArrayTypeId, EnumDef, EnumId, ModuleDef, ModuleId, PtrConstTypeId, PtrMutTypeId, StructDef,
     StructField, StructId, Type, TypeKind, parse_array_type_syntax,

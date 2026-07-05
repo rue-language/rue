@@ -234,7 +234,7 @@ impl<'a> Sema<'a> {
     /// avoiding the cost of rebuilding maps for each function.
     ///
     /// Returns (air, num_locals, num_param_slots, param_modes, warnings).
-    /// Warnings are collected per-function to enable future parallel analysis.
+    /// Warnings are collected per-function and merged during finalization.
     pub(super) fn analyze_function(
         &mut self,
         infer_ctx: &InferenceContext,

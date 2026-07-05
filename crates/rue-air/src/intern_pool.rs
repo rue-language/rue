@@ -1097,8 +1097,8 @@ impl Default for TypeInternPool {
 impl Clone for TypeInternPool {
     /// Clone the pool by copying all type data into a new pool.
     ///
-    /// This is used when building `SemaContext` from `Sema`, as the context
-    /// needs its own copy of the pool for thread-safe sharing.
+    /// This is used when analysis needs an independent copy of the pool while
+    /// preserving the already-interned type data.
     fn clone(&self) -> Self {
         let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
         Self {

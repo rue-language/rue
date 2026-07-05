@@ -345,15 +345,15 @@ pub(crate) struct AnalysisContext<'a> {
     /// Variables that have been moved (for affine type checking).
     /// Maps variable symbol to move state (supports partial/field-level moves).
     pub moved_vars: HashMap<Spur, VariableMoveState>,
-    /// Warnings collected during function analysis.
-    /// This is per-function to enable future parallel analysis.
+    /// Warnings collected during this function's analysis.
+    /// Finalization merges these per-function warnings into the global output.
     pub warnings: Vec<CompileWarning>,
     /// Whether the current function carries `@allow(unused_variable)`.
     /// When set, every local unused-variable warning in this body is
     /// suppressed (spec 2.5:17).
     pub allow_unused_variables: bool,
     /// Local string table: maps string content to local index (for deduplication within function).
-    /// This is per-function to enable parallel analysis - strings are merged globally after.
+    /// Finalization merges these strings globally after body analysis.
     pub local_string_table: HashMap<String, u32>,
     /// Local string data indexed by local string table index.
     /// After analysis, these are merged into the global string table with ID remapping.

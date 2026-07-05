@@ -29,8 +29,8 @@ use lasso::{Spur, ThreadedRodeo};
 
 /// Pre-interned symbols for known strings.
 ///
-/// This struct is created once during `SemaContext` construction and provides
-/// fast symbol comparison for intrinsic dispatch and other common lookups.
+/// This struct is created once during semantic-analysis setup and provides fast
+/// symbol comparison for intrinsic dispatch and other common lookups.
 #[derive(Debug, Clone, Copy)]
 pub struct KnownSymbols {
     // Intrinsic names
@@ -117,7 +117,7 @@ pub struct KnownSymbols {
 impl KnownSymbols {
     /// Create a new `KnownSymbols` by interning all known strings.
     ///
-    /// This should be called once during `SemaContext` construction.
+    /// This should be called once during semantic-analysis setup.
     pub fn new(interner: &ThreadedRodeo) -> Self {
         Self {
             // Intrinsic names

@@ -588,9 +588,9 @@ impl Air {
 
     /// Remap string constant IDs using the provided mapping function.
     ///
-    /// This is used after parallel function analysis to convert local string IDs
-    /// (per-function) to global string IDs (across all functions). The mapping
-    /// function takes a local string ID and returns the global string ID.
+    /// This is used after per-function analysis to convert local string IDs
+    /// to global string IDs across all analyzed functions. The mapping function
+    /// takes a local string ID and returns the global string ID.
     pub fn remap_string_ids<F>(&mut self, map_fn: F)
     where
         F: Fn(u32) -> u32,
