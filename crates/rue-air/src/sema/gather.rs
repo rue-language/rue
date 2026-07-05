@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use lasso::{Spur, ThreadedRodeo};
 use rue_error::PreviewFeatures;
 use rue_rir::Rir;
+use rue_target::Target;
 
 use crate::intern_pool::TypeInternPool;
 use crate::param_arena::ParamArena;
@@ -65,6 +66,8 @@ pub struct GatherOutput<'a> {
     pub module_bindings: HashMap<(rue_span::FileId, Spur), ConstInfo>,
     /// Enabled preview features.
     pub preview_features: PreviewFeatures,
+    /// Requested compilation target.
+    pub target: Target,
     /// StructId of the synthetic String type.
     pub builtin_string_id: Option<StructId>,
     /// EnumId of the synthetic Arch enum (for @target_arch intrinsic).
@@ -93,6 +96,7 @@ impl<'a> GatherOutput<'a> {
             constants: self.constants,
             module_bindings: self.module_bindings,
             preview_features: self.preview_features,
+            target: self.target,
             builtin_string_id: self.builtin_string_id,
             builtin_arch_id: self.builtin_arch_id,
             builtin_os_id: self.builtin_os_id,

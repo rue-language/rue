@@ -1390,11 +1390,12 @@ fn handle_emit_multi_file(
             .iter()
             .map(|s| (s.file_id, s.path.to_string()))
             .collect();
-        let state = match rue_compiler::compile_frontend_from_ast_with_file_paths(
+        let state = match rue_compiler::compile_frontend_from_ast_with_file_paths_and_target(
             merged.ast,
             merged.interner,
             options.opt_level,
             &options.preview_features,
+            options.target,
             file_paths,
         ) {
             Ok(state) => state,
