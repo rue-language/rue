@@ -97,8 +97,11 @@ relative profile (which passes dominate), not a hard threshold.**
    corpus time and rises to **48–79% of a single large compile**. Lexing itself
    is cheap (measured ~20 ms for the 12k-line `deep_nesting.rue`); the cost is
    in the recursive-descent **parser** and AST construction. This is the first
-   place to look for a speedup, and it is a good parallelization candidate
-   (files already parse in parallel; the win now is per-file parser throughput).
+   place to look for a speedup. It is also a good future parallelization
+   candidate, but files do **not** parse in parallel today: the compiler parses
+   them sequentially with a shared interner. Per-file parser throughput is the
+   immediate target; parse parallelism would also require interner merging and
+   AST symbol remapping.
 
 2. **`codegen` is second (~17%)**, concentrated where there is a lot of code to
    emit (`many_functions`, `large_structs`). This covers MIR lowering, register
