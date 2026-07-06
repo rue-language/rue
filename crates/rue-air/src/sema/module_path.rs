@@ -187,6 +187,21 @@ impl ModulePath {
     where
         I: Iterator<Item = &'a String>,
     {
+        self.resolve_in_dirs_with_std_dir(base_dirs, loaded_paths, None)
+    }
+
+    /// Like [`Self::resolve_in_dirs`], but lets callers provide the
+    /// `$RUE_STD_PATH` directory used by the driver when resolving
+    /// `@import("std")`.
+    pub fn resolve_in_dirs_with_std_dir<'a, I>(
+        &self,
+        base_dirs: &[&str],
+        loaded_paths: I,
+        std_dir: Option<&str>,
+    ) -> DirResolution
+    where
+        I: Iterator<Item = &'a String>,
+    {
         // Pair each loaded path with its normalized form once. When the path
         // exists on disk, also keep its filesystem-canonical identity so
         // relative/absolute aliases and symlinks still resolve to the one
@@ -213,14 +228,18 @@ impl ModulePath {
 
         match self {
             ModulePath::Std => {
-                // The standard library's entry point is `_std.rue`. The driver
-                // loads it from $RUE_STD_PATH or an adjacent std/ directory
-                // (see discover_and_load_imports in the rue crate); here we
-                // just match it among the loaded files. Std is not
-                // importer-relative, so base_dirs are ignored.
-                for (_, _, orig) in &normalized {
-                    if boundary_ends(orig, "_std.rue") {
-                        return DirResolution::Resolved((*orig).clone());
+                // Match only the standard-library candidates the driver would
+                // have loaded, not any unrelated loaded file named `_std.rue`
+                // (RUE-493).
+                let base_dirs = base_dirs
+                    .iter()
+                    .map(|base| (*base).to_string())
+                    .collect::<Vec<_>>();
+                for group in self.candidate_groups(&base_dirs, std_dir) {
+                    for candidate in group {
+                        if let Some(hit) = find_exact(&candidate) {
+                            return DirResolution::Resolved(hit);
+                        }
                     }
                 }
                 DirResolution::NotFound
@@ -277,15 +296,6 @@ pub fn import_candidate_groups(
     std_dir: Option<&str>,
 ) -> Vec<Vec<String>> {
     ModulePath::parse(import_path).candidate_groups(base_dirs, std_dir)
-}
-
-/// Whether `candidate` ends with `suffix` at a path boundary (start of string
-/// or immediately after a `/`).
-fn boundary_ends(candidate: &str, suffix: &str) -> bool {
-    candidate.ends_with(suffix) && {
-        let prefix_len = candidate.len() - suffix.len();
-        prefix_len == 0 || candidate.as_bytes()[prefix_len - 1] == b'/'
-    }
 }
 
 fn canonical_key(path: &str) -> Option<String> {
@@ -412,6 +422,26 @@ mod tests {
         assert_eq!(
             module.resolve_in_dirs(&[""], paths.iter()),
             DirResolution::Resolved("std/_std.rue".to_string())
+        );
+    }
+
+    #[test]
+    fn test_resolve_std_ignores_unrelated_loaded_std_facade_name() {
+        let paths = owned(&["main.rue", "helper/_std.rue"]);
+        let module = ModulePath::Std;
+        assert_eq!(
+            module.resolve_in_dirs(&[""], paths.iter()),
+            DirResolution::NotFound
+        );
+    }
+
+    #[test]
+    fn test_resolve_std_accepts_explicit_std_dir_candidate() {
+        let paths = owned(&["main.rue", "/opt/rue/lib/_std.rue"]);
+        let module = ModulePath::Std;
+        assert_eq!(
+            module.resolve_in_dirs_with_std_dir(&[""], paths.iter(), Some("/opt/rue/lib")),
+            DirResolution::Resolved("/opt/rue/lib/_std.rue".to_string())
         );
     }
 

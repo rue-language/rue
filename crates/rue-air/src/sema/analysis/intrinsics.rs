@@ -6,6 +6,36 @@
 use super::*;
 
 impl<'a> Sema<'a> {
+    fn import_base_dirs(&self, span: Span) -> Vec<String> {
+        use std::path::Path;
+
+        let dir_of = |p: &str| {
+            Path::new(p)
+                .parent()
+                .map(|d| d.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        };
+        let importer_dir = self.get_source_path(span).map(&dir_of);
+        let root_dir = self
+            .file_paths
+            .iter()
+            .min_by_key(|(id, _)| id.index())
+            .map(|(_, p)| dir_of(p));
+        let mut base_dirs: Vec<String> = Vec::new();
+        if let Some(d) = importer_dir {
+            base_dirs.push(d);
+        }
+        if let Some(d) = root_dir
+            && !base_dirs.contains(&d)
+        {
+            base_dirs.push(d);
+        }
+        if base_dirs.is_empty() {
+            base_dirs.push(String::new());
+        }
+        base_dirs
+    }
+
     /// Implementation for Intrinsic calls.
     pub(crate) fn analyze_intrinsic_impl(
         &mut self,
@@ -1127,8 +1157,6 @@ impl<'a> Sema<'a> {
         import_path: &str,
         span: Span,
     ) -> CompileResult<String> {
-        use std::path::Path;
-
         // Standard library imports resolve only when the driver/test harness
         // has already loaded the std facade into `file_paths`.
         if import_path == "std" {
@@ -1148,30 +1176,7 @@ impl<'a> Sema<'a> {
         // `@import("foo")` sites in different directories each resolve to their
         // own `foo` with no false cross-directory collision.
         let module_path = super::super::module_path::ModulePath::parse(import_path);
-        let dir_of = |p: &str| {
-            Path::new(p)
-                .parent()
-                .map(|d| d.to_string_lossy().into_owned())
-                .unwrap_or_default()
-        };
-        let importer_dir = self.get_source_path(span).map(&dir_of);
-        let root_dir = self
-            .file_paths
-            .iter()
-            .min_by_key(|(id, _)| id.index())
-            .map(|(_, p)| dir_of(p));
-        let mut base_dirs: Vec<String> = Vec::new();
-        if let Some(d) = importer_dir {
-            base_dirs.push(d);
-        }
-        if let Some(d) = root_dir
-            && !base_dirs.contains(&d)
-        {
-            base_dirs.push(d);
-        }
-        if base_dirs.is_empty() {
-            base_dirs.push(String::new());
-        }
+        let base_dirs = self.import_base_dirs(span);
         let base_refs: Vec<&str> = base_dirs.iter().map(|s| s.as_str()).collect();
         match module_path.resolve_in_dirs(&base_refs, self.file_paths.values()) {
             super::super::module_path::DirResolution::Ambiguous {
@@ -1206,11 +1211,17 @@ impl<'a> Sema<'a> {
     /// Resolve the standard library import.
     ///
     /// The driver is responsible for locating and loading the standard library
-    /// facade. Sema only verifies that a loaded `_std.rue` is present.
+    /// facade. Sema verifies that a loaded file matches the same std candidates
+    /// the driver would have probed.
     pub(super) fn resolve_std_import(&self, span: Span) -> CompileResult<String> {
-        match super::super::module_path::ModulePath::Std
-            .resolve_in_dirs(&[], self.file_paths.values())
-        {
+        let base_dirs = self.import_base_dirs(span);
+        let base_refs: Vec<&str> = base_dirs.iter().map(|s| s.as_str()).collect();
+        let std_dir = std::env::var("RUE_STD_PATH").ok();
+        match super::super::module_path::ModulePath::Std.resolve_in_dirs_with_std_dir(
+            &base_refs,
+            self.file_paths.values(),
+            std_dir.as_deref(),
+        ) {
             super::super::module_path::DirResolution::Resolved(path) => Ok(path),
             super::super::module_path::DirResolution::Ambiguous { .. }
             | super::super::module_path::DirResolution::NotFound => {

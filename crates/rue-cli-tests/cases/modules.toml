@@ -374,6 +374,28 @@ env = { RUE_STD_PATH = "${REAL_STD}" }
 compile_stderr_not_contains = ["unused function", "exit_syscall_number"]
 stdout = "5\n"
 
+[[case]]
+name = "import_std_ignores_unrelated_loaded_std_facade_name"
+description = "@import(\"std\") must not bind to an unrelated loaded helper/_std.rue just because its filename is _std.rue (RUE-493)."
+files = [
+    { path = "main.rue", source = """
+const fake = @import("helper/_std.rue");
+const std = @import("std");
+
+fn main() -> i32 {
+    std.answer()
+}
+""" },
+    { path = "helper/_std.rue", source = """
+pub fn answer() -> i32 {
+    7
+}
+""" },
+]
+env = { RUE_STD_PATH = "" }
+compile_fail = true
+error_contains = ["E0705", "standard library not found"]
+
 # A genuinely missing module should be a clean error (works today).
 [[case]]
 name = "import_missing_module_is_clean_error"
