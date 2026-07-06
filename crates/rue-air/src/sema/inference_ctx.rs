@@ -34,6 +34,8 @@ pub struct InferenceContext {
     pub struct_types_by_file_name: HashMap<(FileId, Spur), Type>,
     /// Enum types: name -> Type::new_enum(id).
     pub enum_types: HashMap<Spur, Type>,
+    /// Module-local enum types: (defining file, source name) -> Type::new_enum(id).
+    pub enum_types_by_file_name: HashMap<(FileId, Spur), Type>,
     /// Method signatures with InferType: (struct_id, method_name) -> MethodSig.
     pub method_sigs: HashMap<(StructId, Spur), MethodSig>,
     /// File-level constant types: name -> declared type (e.g. `Type::I32` for

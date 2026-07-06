@@ -1470,6 +1470,77 @@ fn main() -> i32 {
 exit_code = 3
 
 [[case]]
+name = "same_named_module_enums_are_nominal_same_variants"
+description = "RUE-501: module-qualified same-named enums from different modules are distinct nominal types, even when their variants match."
+files = [
+    { path = "main.rue", source = """
+const left = @import("left.rue");
+const right = @import("right.rue");
+
+fn take_left(x: left.E) -> i32 {
+    match x {
+        left.E::A => 1,
+        left.E::B => 2,
+    }
+}
+
+fn main() -> i32 {
+    let r = right.E::B;
+    take_left(r)
+}
+""" },
+    { path = "left.rue", source = """
+pub enum E {
+    A,
+    B,
+}
+""" },
+    { path = "right.rue", source = """
+pub enum E {
+    A,
+    B,
+}
+""" },
+]
+compile_fail = true
+error_contains = ["type mismatch"]
+
+[[case]]
+name = "same_named_module_enums_are_nominal_different_variants"
+description = "RUE-501: module-qualified same-named enums from different modules are distinct nominal types when variants differ too."
+files = [
+    { path = "main.rue", source = """
+const left = @import("left.rue");
+const right = @import("right.rue");
+
+fn take_left(x: left.E) -> i32 {
+    match x {
+        left.E::A => 1,
+        left.E::B => 2,
+    }
+}
+
+fn main() -> i32 {
+    let r = right.E::C;
+    take_left(r)
+}
+""" },
+    { path = "left.rue", source = """
+pub enum E {
+    A,
+    B,
+}
+""" },
+    { path = "right.rue", source = """
+pub enum E {
+    C,
+}
+""" },
+]
+compile_fail = true
+error_contains = ["type mismatch"]
+
+[[case]]
 name = "flat_multifile_private_enum_construction_rejected"
 description = "Flat listed files do not inject private enum names into another file's unqualified namespace."
 args = ["main.rue", "sub/lib.rue", "-o", "prog"]
