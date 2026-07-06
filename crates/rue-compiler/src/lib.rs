@@ -202,9 +202,18 @@ fn runtime_for_target_with_host(
 /// This is called by tests to ensure the runtime is valid at build time.
 /// Returns an error message if validation fails.
 pub fn validate_runtime() -> Result<(), String> {
-    Archive::parse(RUNTIME_BYTES)
-        .map(|_| ())
-        .map_err(|e| format!("embedded rue-runtime archive is invalid: {}", e))
+    parse_runtime_archive(RUNTIME_BYTES).map(|_| ())
+}
+
+fn parse_runtime_archive(runtime_bytes: &[u8]) -> Result<Archive, String> {
+    let archive = Archive::parse(runtime_bytes)
+        .map_err(|e| format!("embedded rue-runtime archive is invalid: {}", e))?;
+
+    if archive.is_empty() {
+        return Err("embedded rue-runtime archive contains no object files".to_string());
+    }
+
+    Ok(archive)
 }
 
 // Re-export commonly used types
@@ -1146,7 +1155,7 @@ fn link_internal_with_warnings(
     linker.require_symbol(entry_point);
 
     // Add the runtime library
-    let runtime = Archive::parse(runtime_bytes)
+    let runtime = parse_runtime_archive(runtime_bytes)
         .map_err(link_error)
         .map_err(CompileErrors::from)?;
     linker
@@ -1759,6 +1768,14 @@ mod tests {
     #[test]
     fn test_embedded_runtime_is_valid() {
         validate_runtime().expect("embedded runtime should be valid");
+    }
+
+    #[test]
+    fn test_runtime_validation_rejects_archive_without_objects() {
+        let err = parse_runtime_archive(b"!<arch>\n")
+            .expect_err("empty archive wrapper must not validate as a usable runtime");
+
+        assert_eq!(err, "embedded rue-runtime archive contains no object files");
     }
 
     /// The embedded runtime is host-only (RUE-36 / ADR-0034): linking for
