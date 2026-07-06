@@ -19,6 +19,7 @@ use rue_span::{FileId, Span};
 
 use super::{ConstInfo, ConstValue, FunctionInfo, InferenceContext, MethodInfo, Sema};
 use crate::inference::{FunctionSig, MethodSig};
+use crate::path_norm::normalize_module_path;
 use crate::types::{EnumDef, EnumId, StructDef, StructField, StructId, Type, TypeKind};
 
 /// A node in the "contains by value" type graph, used by
@@ -57,8 +58,13 @@ impl<'a> Sema<'a> {
             }
         }
         if count > 1 {
+            let module_component = self
+                .get_file_path(file_id)
+                .map(normalize_module_path)
+                .unwrap_or_else(|| format!("file{}", file_id.index()));
+            let module_component = mangle_symbol_component(&module_component);
             self.interner
-                .get_or_intern(&format!("__rue_fn_f{}_{}", file_id.index(), source))
+                .get_or_intern(&format!("__rue_fn_{}__{}", module_component, source))
         } else {
             source_name
         }
@@ -2719,6 +2725,20 @@ impl<'a> Sema<'a> {
             span,
         ))
     }
+}
+
+fn mangle_symbol_component(component: &str) -> String {
+    let mut mangled = String::new();
+    for byte in component.bytes() {
+        match byte {
+            b'0'..=b'9' | b'A'..=b'Z' | b'a'..=b'z' => mangled.push(byte as char),
+            _ => {
+                use std::fmt::Write as _;
+                write!(&mut mangled, "_{byte:02x}").expect("writing to String cannot fail");
+            }
+        }
+    }
+    mangled
 }
 
 /// A constant declaration captured by the pre-scan, waiting to be collected.

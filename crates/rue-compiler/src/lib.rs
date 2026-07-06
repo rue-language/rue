@@ -2461,6 +2461,54 @@ mod tests {
     }
 
     #[test]
+    fn test_module_duplicate_function_symbols_use_stable_paths_not_file_ids() {
+        fn duplicate_value_function_names(
+            main_id: FileId,
+            left_id: FileId,
+            right_id: FileId,
+        ) -> Vec<String> {
+            let sources = vec![
+                SourceFile::new(
+                    "main.rue",
+                    r#"fn main() -> i32 {
+                        let left = @import("left.rue");
+                        let right = @import("right.rue");
+                        left.value() + right.value()
+                    }"#,
+                    main_id,
+                ),
+                SourceFile::new("left.rue", "fn value() -> i32 { 10 }", left_id),
+                SourceFile::new("right.rue", "fn value() -> i32 { 20 }", right_id),
+            ];
+            let mut unit = CompilationUnit::new(sources, CompileOptions::default());
+            unit.run_frontend().expect("frontend should compile");
+            let mut names: Vec<_> = unit
+                .functions()
+                .iter()
+                .map(|func| func.analyzed.name.clone())
+                .filter(|name| name.ends_with("__value"))
+                .collect();
+            names.sort();
+            names
+        }
+
+        let names = duplicate_value_function_names(FileId::new(1), FileId::new(2), FileId::new(3));
+        assert_eq!(
+            names,
+            vec![
+                "__rue_fn_left_2erue__value".to_string(),
+                "__rue_fn_right_2erue__value".to_string(),
+            ]
+        );
+
+        assert_eq!(
+            names,
+            duplicate_value_function_names(FileId::new(100), FileId::new(42), FileId::new(7)),
+            "generated symbols should be stable for the same source paths even when FileIds differ"
+        );
+    }
+
+    #[test]
     fn test_module_member_access_multiple_functions() {
         // Test accessing multiple functions from an imported module
         let sources = vec![
