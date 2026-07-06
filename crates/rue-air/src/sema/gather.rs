@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use lasso::{Spur, ThreadedRodeo};
 use rue_error::PreviewFeatures;
 use rue_rir::Rir;
+use rue_span::FileId;
 use rue_target::Target;
 
 use crate::intern_pool::TypeInternPool;
@@ -49,10 +50,14 @@ pub struct GatherOutput<'a> {
     pub rir: &'a Rir,
     /// Reference to the string interner.
     pub interner: &'a ThreadedRodeo,
-    /// Struct lookup: maps struct name symbol to StructId.
+    /// Compatibility struct lookup: maps globally unique struct name symbols to StructId.
     pub structs: HashMap<Spur, StructId>,
-    /// Enum lookup: maps enum name symbol to EnumId.
+    /// Module-local struct lookup: maps (defining file, source name) to StructId.
+    pub structs_by_file_name: HashMap<(FileId, Spur), StructId>,
+    /// Compatibility enum lookup: maps globally unique enum name symbols to EnumId.
     pub enums: HashMap<Spur, EnumId>,
+    /// Module-local enum lookup: maps (defining file, source name) to EnumId.
+    pub enums_by_file_name: HashMap<(FileId, Spur), EnumId>,
     /// Function lookup: maps function name to info.
     pub functions: HashMap<Spur, FunctionInfo>,
     /// Source-level function lookup keyed by defining file and source name.
@@ -97,7 +102,9 @@ impl<'a> GatherOutput<'a> {
             functions_by_file_name: self.functions_by_file_name,
             function_source_names: self.function_source_names,
             structs: self.structs,
+            structs_by_file_name: self.structs_by_file_name,
             enums: self.enums,
+            enums_by_file_name: self.enums_by_file_name,
             methods: self.methods,
             constants: self.constants,
             constants_by_file_name: self.constants_by_file_name,

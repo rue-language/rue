@@ -246,8 +246,11 @@ impl<'a> Sema<'a> {
             is_pub: true,
             file_id: rue_span::FileId::new(0),
         };
+        let file_id = struct_def.file_id;
         let (struct_id, _) = self.type_pool.register_struct(type_sym, struct_def);
         self.structs.insert(type_sym, struct_id);
+        self.structs_by_file_name
+            .insert((file_id, type_sym), struct_id);
         Ok(Type::new_struct(struct_id))
     }
 
@@ -295,8 +298,11 @@ impl<'a> Sema<'a> {
             is_pub: true,
             file_id: rue_span::FileId::new(0),
         };
+        let file_id = struct_def.file_id;
         let (struct_id, _) = self.type_pool.register_struct(type_sym, struct_def);
         self.structs.insert(type_sym, struct_id);
+        self.structs_by_file_name
+            .insert((file_id, type_sym), struct_id);
         let _ = span;
         Ok(Type::new_struct(struct_id))
     }
@@ -362,8 +368,11 @@ impl<'a> Sema<'a> {
             is_pub: true,
             file_id: rue_span::FileId::new(0),
         };
+        let file_id = struct_def.file_id;
         let (struct_id, _) = self.type_pool.register_struct(type_sym, struct_def);
         self.structs.insert(type_sym, struct_id);
+        self.structs_by_file_name
+            .insert((file_id, type_sym), struct_id);
         let _ = span;
         Ok(Type::new_struct(struct_id))
     }
@@ -475,7 +484,11 @@ impl<'a> Sema<'a> {
             return self.get_or_create_str_struct(span);
         }
 
-        if let Some(&struct_id) = self.structs.get(&type_sym) {
+        if let Some(&struct_id) = self
+            .structs_by_file_name
+            .get(&(span.file_id, type_sym))
+            .or_else(|| self.structs.get(&type_sym))
+        {
             // Privacy (E0460, RUE-183): an unqualified type reference must
             // not reach a private struct defined in another directory —
             // privacy is uniform across item kinds (spec 10.3:1, 10.3:7).
@@ -491,7 +504,11 @@ impl<'a> Sema<'a> {
                 span,
             )?;
             Ok(Type::new_struct(struct_id))
-        } else if let Some(&enum_id) = self.enums.get(&type_sym) {
+        } else if let Some(&enum_id) = self
+            .enums_by_file_name
+            .get(&(span.file_id, type_sym))
+            .or_else(|| self.enums.get(&type_sym))
+        {
             // Privacy (E0460, RUE-185): same rule for enums — an unqualified
             // type reference must not reach a private enum defined in another
             // directory.
@@ -679,31 +696,33 @@ impl<'a> Sema<'a> {
         let member = segments[segments.len() - 1];
         let member_sym = self.interner.get_or_intern(member);
 
-        if let Some(&struct_id) = self.structs.get(&member_sym) {
+        if let Some(struct_id) = module_file_id.and_then(|file_id| {
+            self.structs_by_file_name
+                .get(&(file_id, member_sym))
+                .copied()
+        }) {
             let struct_def = self.type_pool.struct_def(struct_id);
-            if module_file_id == Some(struct_def.file_id) {
-                self.check_unqualified_visibility(
-                    "struct",
-                    member,
-                    struct_def.file_id,
-                    struct_def.is_pub,
-                    span,
-                )?;
-                return Ok(Type::new_struct(struct_id));
-            }
+            self.check_unqualified_visibility(
+                "struct",
+                member,
+                struct_def.file_id,
+                struct_def.is_pub,
+                span,
+            )?;
+            return Ok(Type::new_struct(struct_id));
         }
-        if let Some(&enum_id) = self.enums.get(&member_sym) {
+        if let Some(enum_id) = module_file_id
+            .and_then(|file_id| self.enums_by_file_name.get(&(file_id, member_sym)).copied())
+        {
             let enum_def = self.type_pool.enum_def(enum_id);
-            if module_file_id == Some(enum_def.file_id) {
-                self.check_unqualified_visibility(
-                    "enum",
-                    member,
-                    enum_def.file_id,
-                    enum_def.is_pub,
-                    span,
-                )?;
-                return Ok(Type::new_enum(enum_id));
-            }
+            self.check_unqualified_visibility(
+                "enum",
+                member,
+                enum_def.file_id,
+                enum_def.is_pub,
+                span,
+            )?;
+            return Ok(Type::new_enum(enum_id));
         }
         if let Some(info) = module_file_id
             .and_then(|file_id| self.constants_by_file_name.get(&(file_id, member_sym)))

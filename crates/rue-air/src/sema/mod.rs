@@ -77,10 +77,14 @@ pub struct Sema<'a> {
     pub(crate) functions_by_file_name: HashMap<(FileId, Spur), Spur>,
     /// Internal function key -> source-level function name.
     pub(crate) function_source_names: HashMap<Spur, Spur>,
-    /// Struct table: maps struct name symbols to their StructId
+    /// Compatibility struct table: maps globally unique struct name symbols to their StructId.
     pub(crate) structs: HashMap<Spur, StructId>,
-    /// Enum table: maps enum name symbols to their EnumId
+    /// Module-local struct table: maps (defining file, source name) to StructId.
+    pub(crate) structs_by_file_name: HashMap<(FileId, Spur), StructId>,
+    /// Compatibility enum table: maps globally unique enum name symbols to their EnumId.
     pub(crate) enums: HashMap<Spur, EnumId>,
+    /// Module-local enum table: maps (defining file, source name) to EnumId.
+    pub(crate) enums_by_file_name: HashMap<(FileId, Spur), EnumId>,
     /// Method table: maps (struct_id, method_name) to method info
     pub(crate) methods: HashMap<(StructId, Spur), MethodInfo>,
     /// Compatibility value-constant table for globally unique bare names.
@@ -183,7 +187,9 @@ impl<'a> Sema<'a> {
             functions_by_file_name: HashMap::new(),
             function_source_names: HashMap::new(),
             structs: HashMap::new(),
+            structs_by_file_name: HashMap::new(),
             enums: HashMap::new(),
+            enums_by_file_name: HashMap::new(),
             methods: HashMap::new(),
             constants: HashMap::new(),
             constants_by_file_name: HashMap::new(),

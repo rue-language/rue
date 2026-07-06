@@ -10,7 +10,7 @@ use lasso::Spur;
 use rue_builtins::BuiltinTypeDef;
 use rue_error::CompileWarning;
 use rue_rir::RirParamMode;
-use rue_span::Span;
+use rue_span::{FileId, Span};
 
 use crate::scope::ScopedContext;
 use crate::types::{StructId, Type};
@@ -311,6 +311,8 @@ pub(crate) struct ParamInfo {
 /// Bundles together the mutable state that needs to be threaded through
 /// recursive `analyze_inst` calls.
 pub(crate) struct AnalysisContext<'a> {
+    /// File that owns the function body currently being analyzed.
+    pub current_file_id: FileId,
     /// Local variables in scope
     pub locals: HashMap<Spur, LocalVar>,
     /// Function parameters (immutable reference, shared across the function)
@@ -466,6 +468,7 @@ impl<'a> AnalysisContext<'a> {
     /// context.
     pub fn fork_for_loop_recheck(&self) -> AnalysisContext<'a> {
         AnalysisContext {
+            current_file_id: self.current_file_id,
             locals: self.locals.clone(),
             params: self.params,
             next_slot: self.next_slot,

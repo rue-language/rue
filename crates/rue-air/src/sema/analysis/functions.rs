@@ -395,6 +395,7 @@ impl<'a> Sema<'a> {
         let comptime_type_vars = type_subst.map(|s| s.clone()).unwrap_or_else(HashMap::new);
         let comptime_value_vars = value_subst.map(|s| s.clone()).unwrap_or_else(HashMap::new);
         let mut ctx = AnalysisContext {
+            current_file_id: self.rir.get(body).span.file_id,
             locals: HashMap::new(),
             params: &param_vec,
             next_slot: 0,

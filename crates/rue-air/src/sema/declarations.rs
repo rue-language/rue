@@ -305,28 +305,19 @@ impl<'a> Sema<'a> {
             }
         }
 
-        // Type names stay global, and a top-level type still collides with
-        // any free function of the same source name. Free functions only
-        // duplicate-conflict with other free functions in the same defining
-        // file/module; distinct modules may each define a source-level `value`
-        // and receive different internal keys later.
-        let mut seen_types: HashMap<Spur, Span> = HashMap::new();
+        // Free functions duplicate-conflict only within their defining file
+        // (RUE-441). Types duplicate-conflict only within their defining file
+        // (RUE-454). Function/type cross-kind collisions remain global until
+        // the remaining flat-namespace compatibility rules are removed.
         let mut seen_function_names: HashMap<Spur, Span> = HashMap::new();
-        let mut seen_functions: HashMap<(FileId, Spur), Span> = HashMap::new();
+        let mut seen_functions_by_file: HashMap<(FileId, Spur), Span> = HashMap::new();
+        let mut seen_types: HashMap<Spur, Span> = HashMap::new();
+        let mut seen_types_by_file: HashMap<(FileId, Spur), Span> = HashMap::new();
         for (inst_ref, inst) in self.rir.iter() {
             match &inst.data {
                 InstData::StructDecl { name, .. } | InstData::EnumDecl { name, .. } => {
-                    if let Some(first_span) = seen_function_names.get(name) {
-                        let name_str = self.interner.resolve(name).to_string();
-                        return Err(CompileError::new(
-                            ErrorKind::DuplicateFunctionDefinition {
-                                function_name: name_str,
-                            },
-                            inst.span,
-                        )
-                        .with_label("first defined here".to_string(), *first_span));
-                    }
-                    if let Some(first_span) = seen_types.insert(*name, inst.span) {
+                    let key = (inst.span.file_id, *name);
+                    if let Some(first_span) = seen_types_by_file.get(&key).copied() {
                         let name_str = self.interner.resolve(name).to_string();
                         return Err(CompileError::new(
                             ErrorKind::DuplicateTypeDefinition {
@@ -336,12 +327,7 @@ impl<'a> Sema<'a> {
                         )
                         .with_label("first defined here".to_string(), first_span));
                     }
-                }
-                InstData::FnDecl { name, has_self, .. } => {
-                    if *has_self || method_refs.contains(&inst_ref) {
-                        continue;
-                    }
-                    if let Some(first_span) = seen_types.get(name) {
+                    if let Some(first_span) = seen_function_names.get(name).copied() {
                         let name_str = self.interner.resolve(name).to_string();
                         return Err(CompileError::new(
                             ErrorKind::DuplicateFunctionDefinition {
@@ -349,11 +335,28 @@ impl<'a> Sema<'a> {
                             },
                             inst.span,
                         )
-                        .with_label("first defined here".to_string(), *first_span));
+                        .with_label("first defined here".to_string(), first_span));
+                    }
+                    seen_types_by_file.insert(key, inst.span);
+                    seen_types.entry(*name).or_insert(inst.span);
+                }
+                InstData::FnDecl { name, has_self, .. } => {
+                    if *has_self || method_refs.contains(&inst_ref) {
+                        continue;
+                    }
+                    if let Some(first_span) = seen_types.get(name).copied() {
+                        let name_str = self.interner.resolve(name).to_string();
+                        return Err(CompileError::new(
+                            ErrorKind::DuplicateFunctionDefinition {
+                                function_name: name_str,
+                            },
+                            inst.span,
+                        )
+                        .with_label("first defined here".to_string(), first_span));
                     }
                     seen_function_names.entry(*name).or_insert(inst.span);
                     if let Some(first_span) =
-                        seen_functions.insert((inst.span.file_id, *name), inst.span)
+                        seen_functions_by_file.insert((inst.span.file_id, *name), inst.span)
                     {
                         let name_str = self.interner.resolve(name).to_string();
                         return Err(CompileError::new(
@@ -427,8 +430,14 @@ impl<'a> Sema<'a> {
                         ));
                     }
 
-                    // Check for duplicate type definitions (struct or enum with same name)
-                    if self.enums.contains_key(name) || self.structs.contains_key(name) {
+                    let key = (inst.span.file_id, *name);
+
+                    // Check for duplicate type definitions in this file
+                    // (struct or enum with same name). Same-named types in
+                    // different files have distinct module-local identities.
+                    if self.enums_by_file_name.contains_key(&key)
+                        || self.structs_by_file_name.contains_key(&key)
+                    {
                         return Err(CompileError::new(
                             ErrorKind::DuplicateTypeDefinition {
                                 type_name: enum_name,
@@ -475,8 +484,23 @@ impl<'a> Sema<'a> {
                     // Register in type pool and get pool-based EnumId
                     let (enum_id, _) = self.type_pool.register_enum(*name, enum_def);
 
-                    // Register in enum lookup with pool-based EnumId
-                    self.enums.insert(*name, enum_id);
+                    let name_was_unique = !self
+                        .enums_by_file_name
+                        .keys()
+                        .any(|(_, existing_name)| *existing_name == *name)
+                        && !self
+                            .structs_by_file_name
+                            .keys()
+                            .any(|(_, existing_name)| *existing_name == *name);
+
+                    // Register in enum lookups with pool-based EnumId.
+                    self.enums_by_file_name.insert(key, enum_id);
+                    if name_was_unique {
+                        self.enums.insert(*name, enum_id);
+                    } else {
+                        self.enums.remove(name);
+                        self.structs.remove(name);
+                    }
                 }
                 InstData::StructDecl {
                     directives_start,
@@ -498,8 +522,14 @@ impl<'a> Sema<'a> {
                         ));
                     }
 
-                    // Check for duplicate type definitions (struct or enum with same name)
-                    if self.structs.contains_key(name) || self.enums.contains_key(name) {
+                    let key = (inst.span.file_id, *name);
+
+                    // Check for duplicate type definitions in this file
+                    // (struct or enum with same name). Same-named types in
+                    // different files have distinct module-local identities.
+                    if self.structs_by_file_name.contains_key(&key)
+                        || self.enums_by_file_name.contains_key(&key)
+                    {
                         return Err(CompileError::new(
                             ErrorKind::DuplicateTypeDefinition {
                                 type_name: struct_name,
@@ -534,8 +564,23 @@ impl<'a> Sema<'a> {
                     // Register in type pool and get pool-based StructId
                     let (struct_id, _) = self.type_pool.register_struct(*name, struct_def);
 
-                    // Register in struct lookup with pool-based StructId
-                    self.structs.insert(*name, struct_id);
+                    let name_was_unique = !self
+                        .structs_by_file_name
+                        .keys()
+                        .any(|(_, existing_name)| *existing_name == *name)
+                        && !self
+                            .enums_by_file_name
+                            .keys()
+                            .any(|(_, existing_name)| *existing_name == *name);
+
+                    // Register in struct lookups with pool-based StructId.
+                    self.structs_by_file_name.insert(key, struct_id);
+                    if name_was_unique {
+                        self.structs.insert(*name, struct_id);
+                    } else {
+                        self.structs.remove(name);
+                        self.enums.remove(name);
+                    }
                 }
                 _ => {}
             }
@@ -631,7 +676,10 @@ impl<'a> Sema<'a> {
                 variant_payloads.push(payload);
             }
 
-            let enum_id = *self.enums.get(&name).expect("enum registered in phase 1");
+            let enum_id = *self
+                .enums_by_file_name
+                .get(&(span.file_id, name))
+                .expect("enum registered in phase 1");
             let mut def = self.type_pool.enum_def(enum_id);
             def.variant_payloads = variant_payloads;
             self.type_pool.update_enum_def(enum_id, def);
@@ -649,7 +697,7 @@ impl<'a> Sema<'a> {
     /// through arbitrarily deep nestings. The causing field is recorded in
     /// [`Sema::infectious_linear`] for diagnostics.
     pub(crate) fn propagate_field_linearity(&mut self) {
-        let struct_ids: Vec<StructId> = self.structs.values().copied().collect();
+        let struct_ids: Vec<StructId> = self.type_pool.all_struct_ids();
         loop {
             let mut changed = false;
             for &struct_id in &struct_ids {
@@ -688,39 +736,25 @@ impl<'a> Sema<'a> {
             } = &inst.data
             {
                 let name_str = self.interner.resolve(&*name).to_string();
-                // Verify the struct exists in our lookup table
-                if !self.structs.contains_key(name) {
-                    return Err(CompileError::new(
-                        ErrorKind::InternalError(
-                            ice!(
-                                "struct not found in struct map",
-                                phase: "sema/declarations",
-                                details: {
-                                    "struct_name" => name_str.to_string()
-                                }
-                            )
-                            .to_string(),
-                        ),
-                        inst.span,
-                    ));
-                }
-
                 // Get the struct ID from the lookup table
-                let struct_id = *self.structs.get(name).ok_or_else(|| {
-                    CompileError::new(
-                        ErrorKind::InternalError(
-                            ice!(
-                                "struct not found in structs map",
-                                phase: "sema/declarations",
-                                details: {
-                                    "struct_name" => name_str.to_string()
-                                }
-                            )
-                            .to_string(),
-                        ),
-                        inst.span,
-                    )
-                })?;
+                let struct_id = *self
+                    .structs_by_file_name
+                    .get(&(inst.span.file_id, *name))
+                    .ok_or_else(|| {
+                        CompileError::new(
+                            ErrorKind::InternalError(
+                                ice!(
+                                    "struct not found in structs map",
+                                    phase: "sema/declarations",
+                                    details: {
+                                        "struct_name" => name_str.to_string()
+                                    }
+                                )
+                                .to_string(),
+                            ),
+                            inst.span,
+                        )
+                    })?;
 
                 let struct_name = name_str.clone();
                 let fields = self.rir.get_field_decls(*fields_start, *fields_len);
@@ -807,9 +841,10 @@ impl<'a> Sema<'a> {
                 }
                 _ => continue,
             };
-            let start_ty = if let Some(&struct_id) = self.structs.get(&name_sym) {
+            let key = (span.file_id, name_sym);
+            let start_ty = if let Some(&struct_id) = self.structs_by_file_name.get(&key) {
                 Type::new_struct(struct_id)
-            } else if let Some(&enum_id) = self.enums.get(&name_sym) {
+            } else if let Some(&enum_id) = self.enums_by_file_name.get(&key) {
                 Type::new_enum(enum_id)
             } else {
                 continue;
@@ -1045,39 +1080,25 @@ impl<'a> Sema<'a> {
         }
 
         let struct_name = self.interner.resolve(&name).to_string();
-        // Verify struct exists in our lookup
-        if !self.structs.contains_key(&name) {
-            return Err(CompileError::new(
-                ErrorKind::InternalError(
-                    ice!(
-                        "struct not found during @copy validation",
-                        phase: "sema/declarations",
-                        details: {
-                            "struct_name" => struct_name.clone()
-                        }
-                    )
-                    .to_string(),
-                ),
-                span,
-            ));
-        }
-
         // Get the struct ID from the lookup table
-        let struct_id = *self.structs.get(&name).ok_or_else(|| {
-            CompileError::new(
-                ErrorKind::InternalError(
-                    ice!(
-                        "struct not found during @copy validation",
-                        phase: "sema/declarations",
-                        details: {
-                            "struct_name" => struct_name.clone()
-                        }
-                    )
-                    .to_string(),
-                ),
-                span,
-            )
-        })?;
+        let struct_id = *self
+            .structs_by_file_name
+            .get(&(span.file_id, name))
+            .ok_or_else(|| {
+                CompileError::new(
+                    ErrorKind::InternalError(
+                        ice!(
+                            "struct not found during @copy validation",
+                            phase: "sema/declarations",
+                            details: {
+                                "struct_name" => struct_name.clone()
+                            }
+                        )
+                        .to_string(),
+                    ),
+                    span,
+                )
+            })?;
 
         // Get struct definition from the pool
         let struct_def = self.type_pool.struct_def(struct_id);
@@ -1102,32 +1123,18 @@ impl<'a> Sema<'a> {
     fn collect_destructor(&mut self, type_name: Spur, span: Span) -> CompileResult<()> {
         let type_name_str = self.interner.resolve(&type_name).to_string();
 
-        // Verify the struct exists
-        if !self.structs.contains_key(&type_name) {
-            return Err(CompileError::new(
-                ErrorKind::DestructorUnknownType {
-                    type_name: type_name_str,
-                },
-                span,
-            ));
-        }
-
         // Get the struct ID from the lookup table
-        let struct_id = *self.structs.get(&type_name).ok_or_else(|| {
-            CompileError::new(
-                ErrorKind::InternalError(
-                    ice!(
-                        "struct not found during destructor collection",
-                        phase: "sema/declarations",
-                        details: {
-                            "struct_name" => type_name_str.to_string()
-                        }
-                    )
-                    .to_string(),
-                ),
-                span,
-            )
-        })?;
+        let struct_id = *self
+            .structs_by_file_name
+            .get(&(span.file_id, type_name))
+            .ok_or_else(|| {
+                CompileError::new(
+                    ErrorKind::DestructorUnknownType {
+                        type_name: type_name_str.clone(),
+                    },
+                    span,
+                )
+            })?;
 
         let mut struct_def = self.type_pool.struct_def(struct_id);
         if struct_def.destructor.is_some() {
@@ -1387,7 +1394,7 @@ impl<'a> Sema<'a> {
         methods_len: u32,
         span: Span,
     ) -> CompileResult<()> {
-        let struct_id = match self.structs.get(&type_name) {
+        let struct_id = match self.structs_by_file_name.get(&(span.file_id, type_name)) {
             Some(id) => *id,
             None => {
                 let type_name_str = self.interner.resolve(&type_name).to_string();
