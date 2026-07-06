@@ -2512,6 +2512,39 @@ mod tests {
     }
 
     #[test]
+    fn test_imported_private_helper_called_by_public_api_is_not_unused() {
+        let sources = vec![
+            SourceFile::new(
+                "main.rue",
+                r#"const lib = @import("lib.rue");
+
+                fn main() -> i32 { 0 }"#,
+                FileId::new(1),
+            ),
+            SourceFile::new(
+                "lib.rue",
+                r#"pub fn api() -> i32 { helper() }
+
+                fn helper() -> i32 { 1 }"#,
+                FileId::new(2),
+            ),
+        ];
+        let mut unit = CompilationUnit::new(sources, CompileOptions::default());
+        unit.run_frontend().expect("frontend should compile");
+
+        let warnings = unit
+            .warnings()
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !warnings.contains("helper"),
+            "a private helper with a static call site should not be reported as unused:\n{warnings}"
+        );
+    }
+
+    #[test]
     fn test_module_member_access_multiple_functions() {
         // Test accessing multiple functions from an imported module
         let sources = vec![
