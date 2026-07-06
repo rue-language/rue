@@ -514,7 +514,9 @@ fn finalize_function_body_analysis(
         functions.push(analyzed);
     }
 
-    add_unused_function_warnings(sema, unused_function_roots, &mut all_warnings);
+    let mut referenced_for_unused_warnings = collect_static_function_references(sema);
+    referenced_for_unused_warnings.extend(unused_function_roots.iter().copied());
+    add_unused_function_warnings(sema, &referenced_for_unused_warnings, &mut all_warnings);
     all_warnings.sort_by_key(|w| w.span().map(|s| s.start));
 
     let mut output = SemaOutput {
@@ -574,6 +576,31 @@ fn add_unused_function_warnings(
                 )),
         );
     }
+}
+
+fn collect_static_function_references(sema: &Sema<'_>) -> HashSet<Spur> {
+    let mut referenced = HashSet::new();
+
+    for (_, inst) in sema.rir.iter() {
+        let InstData::Call { name, .. } = &inst.data else {
+            continue;
+        };
+
+        let mut target = *name;
+        if let Some(const_info) = sema.resolve_const_info_in_file(target, inst.span.file_id)
+            && let Some(callee) = const_info.value.as_function()
+        {
+            target = callee;
+        }
+
+        if let Some(function_key) = sema.resolve_function_name_in_file(target, inst.span.file_id) {
+            referenced.insert(function_key);
+        } else if sema.functions.contains_key(&target) {
+            referenced.insert(target);
+        }
+    }
+
+    referenced
 }
 
 /// Lazy analysis path (Phase 3 of module system, ADR-0026).
