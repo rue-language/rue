@@ -81,6 +81,16 @@ impl<'a> Sema<'a> {
             })
     }
 
+    pub(crate) fn resolve_const_info_in_file(
+        &self,
+        name: Spur,
+        file_id: FileId,
+    ) -> Option<&ConstInfo> {
+        self.constants_by_file_name
+            .get(&(file_id, name))
+            .or_else(|| self.constants.get(&name))
+    }
+
     /// Build an `InferenceContext` from the collected type information.
     ///
     /// This should be called after the collection phase and builds the
@@ -373,7 +383,7 @@ impl<'a> Sema<'a> {
     /// value-constant-vs-function collision no longer depends on which was
     /// collected first (previously E0418 only when the function came first).
     pub(crate) fn check_const_cross_kind_collisions(&self) -> CompileResult<()> {
-        for (name, info) in self.constants.iter() {
+        for ((_, name), info) in self.constants_by_file_name.iter() {
             if self.functions.contains_key(name)
                 || self.structs.contains_key(name)
                 || self.enums.contains_key(name)
@@ -1466,9 +1476,10 @@ impl<'a> Sema<'a> {
     /// - **Value constants** — everything else: the initializer is evaluated
     ///   through the comptime engine (`sema::comptime_eval`), so negated
     ///   literals, arithmetic, and any other comptime-evaluable expression
-    ///   are legal initializers (RUE-171). Value constants keep the flat
-    ///   global namespace shared with functions/types, so duplicates across
-    ///   files are still E0418.
+    ///   are legal initializers (RUE-171). Value constants are stored by
+    ///   defining file and name; same-file duplicates are still E0418, while
+    ///   distinct modules may each define the same source name and expose it
+    ///   through module-qualified access.
     ///
     /// Collection is on-demand: an initializer that references another
     /// not-yet-collected constant collects that constant first (see
@@ -1560,29 +1571,24 @@ impl<'a> Sema<'a> {
                 );
             }
             ConstInit::Value(value) => {
-                // Value constants share one global namespace (10.5:1): a
-                // second declaration anywhere is E0418. (Same-file pairs of
-                // any kind were already caught by the pre-scan.)
-                if self.constants.contains_key(&name) {
-                    return Err(CompileError::new(
-                        ErrorKind::DuplicateConstant {
-                            name: name_str,
-                            kind: "constant".to_string(),
-                        },
-                        p.span,
-                    ));
-                }
                 let ty = self.const_type_for_value(value, p.ty_sym, p.init, p.span, &name_str)?;
-                self.constants.insert(
-                    name,
-                    ConstInfo {
-                        is_pub: p.is_pub,
-                        ty,
-                        init: p.init,
-                        value,
-                        span: p.span,
-                    },
-                );
+                let info = ConstInfo {
+                    is_pub: p.is_pub,
+                    ty,
+                    init: p.init,
+                    value,
+                    span: p.span,
+                };
+                self.constants_by_file_name.insert(key, info.clone());
+
+                // Preserve the old bare-name lookup only when this source name
+                // is globally unique. Same-named value constants in distinct
+                // files are resolved through their defining file/module.
+                if st.by_name.get(&name).is_some_and(|keys| keys.len() == 1) {
+                    self.constants.insert(name, info);
+                } else {
+                    self.constants.remove(&name);
+                }
             }
         }
         Ok(())
@@ -1631,10 +1637,9 @@ impl<'a> Sema<'a> {
 
     /// Collect (on demand) every constant declaration that the name `name`,
     /// referenced from `referencing_file`, could resolve to: the same-file
-    /// declaration (module bindings are per-file scoped) and any other file's
-    /// declaration (value constants share one global namespace, and the
-    /// defining file may not have been walked yet — command-line file order
-    /// is arbitrary).
+    /// declaration plus any globally unique fallback declaration whose defining
+    /// file may not have been walked yet — command-line file order is
+    /// arbitrary.
     fn ensure_const_collected(
         &mut self,
         name: Spur,
@@ -1733,11 +1738,11 @@ impl<'a> Sema<'a> {
                     // this file yields the same module (RUE-160).
                     return Ok(ConstInit::Module(binding.ty));
                 }
-                if let Some(info) = self.constants.get(&name) {
-                    // Privacy (E0460, RUE-183): the value-constant table is
-                    // global, so this alias could otherwise read a private
-                    // constant from another directory. The initializer's own
-                    // span locates the referencing file.
+                if let Some(info) = self.resolve_const_info_in_file(name, file_id) {
+                    // Privacy (E0460, RUE-183): fallback bare-name lookup can
+                    // still find a globally unique constant from another
+                    // directory. The initializer's own span locates the
+                    // referencing file.
                     self.check_unqualified_visibility(
                         "constant",
                         self.interner.resolve(&name),
@@ -1867,7 +1872,7 @@ impl<'a> Sema<'a> {
         // fallback (RUE-230). Reports E0206 on a mismatched-operand-type
         // binary op before evaluation, mirroring the runtime path.
         let mut resolved_types: HashMap<InstRef, Type> = HashMap::new();
-        self.infer_const_init_types(init, declared_ty, &mut resolved_types)?;
+        self.infer_const_init_types(init, file_id, declared_ty, &mut resolved_types)?;
 
         let mut env = super::comptime_eval::ComptimeEnv::for_const_init(
             &resolved_types,
@@ -1904,6 +1909,7 @@ impl<'a> Sema<'a> {
     fn infer_const_init_types(
         &mut self,
         expr: InstRef,
+        file_id: FileId,
         expected: Option<Type>,
         map: &mut HashMap<InstRef, Type>,
     ) -> CompileResult<Option<Type>> {
@@ -1916,8 +1922,7 @@ impl<'a> Sema<'a> {
             // A reference to another constant carries that constant's declared
             // type, regardless of the surrounding context.
             InstData::VarRef { name } => self
-                .constants
-                .get(name)
+                .resolve_const_info_in_file(*name, file_id)
                 .map(|info| info.ty)
                 .filter(|t| t.is_integer()),
 
@@ -1944,14 +1949,14 @@ impl<'a> Sema<'a> {
                 if matches!(self.rir.get(operand).data, InstData::IntConst(_)) {
                     None
                 } else {
-                    self.infer_const_init_types(operand, expected, map)?
+                    self.infer_const_init_types(operand, file_id, expected, map)?
                 }
             }
 
             // Logical NOT is a bool; still walk the operand for nested checks.
             InstData::Not { operand } => {
                 let operand = *operand;
-                self.infer_const_init_types(operand, None, map)?;
+                self.infer_const_init_types(operand, file_id, None, map)?;
                 None
             }
 
@@ -1967,8 +1972,8 @@ impl<'a> Sema<'a> {
             | InstData::BitOr { lhs, rhs }
             | InstData::BitXor { lhs, rhs } => {
                 let (lhs, rhs) = (*lhs, *rhs);
-                let lt = self.infer_const_init_types(lhs, expected, map)?;
-                let rt = self.infer_const_init_types(rhs, expected, map)?;
+                let lt = self.infer_const_init_types(lhs, file_id, expected, map)?;
+                let rt = self.infer_const_init_types(rhs, file_id, expected, map)?;
                 if let (Some(l), Some(r)) = (lt, rt) {
                     if l != r {
                         return Err(CompileError::new(
@@ -1987,8 +1992,8 @@ impl<'a> Sema<'a> {
             // independent operand (spec 4.3a:10).
             InstData::Shl { lhs, rhs } | InstData::Shr { lhs, rhs } => {
                 let (lhs, rhs) = (*lhs, *rhs);
-                let lt = self.infer_const_init_types(lhs, expected, map)?;
-                self.infer_const_init_types(rhs, None, map)?;
+                let lt = self.infer_const_init_types(lhs, file_id, expected, map)?;
+                self.infer_const_init_types(rhs, file_id, None, map)?;
                 lt
             }
 
@@ -2002,27 +2007,27 @@ impl<'a> Sema<'a> {
             | InstData::Le { lhs, rhs }
             | InstData::Ge { lhs, rhs } => {
                 let (lhs, rhs) = (*lhs, *rhs);
-                let lt = self.infer_const_init_types(lhs, None, map)?;
-                let rt = self.infer_const_init_types(rhs, None, map)?;
+                let lt = self.infer_const_init_types(lhs, file_id, None, map)?;
+                let rt = self.infer_const_init_types(rhs, file_id, None, map)?;
                 if lt.is_some() && rt.is_none() {
-                    self.infer_const_init_types(rhs, lt, map)?;
+                    self.infer_const_init_types(rhs, file_id, lt, map)?;
                 } else if rt.is_some() && lt.is_none() {
-                    self.infer_const_init_types(lhs, rt, map)?;
+                    self.infer_const_init_types(lhs, file_id, rt, map)?;
                 }
                 None
             }
 
             InstData::And { lhs, rhs } | InstData::Or { lhs, rhs } => {
                 let (lhs, rhs) = (*lhs, *rhs);
-                self.infer_const_init_types(lhs, None, map)?;
-                self.infer_const_init_types(rhs, None, map)?;
+                self.infer_const_init_types(lhs, file_id, None, map)?;
+                self.infer_const_init_types(rhs, file_id, None, map)?;
                 None
             }
 
             // `comptime { expr }` forwards the context to its inner expression.
             InstData::Comptime { expr: inner } => {
                 let inner = *inner;
-                self.infer_const_init_types(inner, expected, map)?
+                self.infer_const_init_types(inner, file_id, expected, map)?
             }
 
             // A block's tail expression carries the context; `let` initializers
@@ -2042,10 +2047,10 @@ impl<'a> Sema<'a> {
                     let stmt_expected = if is_tail { expected } else { None };
                     let t = if let InstData::Alloc { init, .. } = &self.rir.get(stmt_ref).data {
                         let init = *init;
-                        self.infer_const_init_types(init, None, map)?;
+                        self.infer_const_init_types(init, file_id, None, map)?;
                         None
                     } else {
-                        self.infer_const_init_types(stmt_ref, stmt_expected, map)?
+                        self.infer_const_init_types(stmt_ref, file_id, stmt_expected, map)?
                     };
                     if is_tail {
                         tail_ty = t;
@@ -2063,8 +2068,8 @@ impl<'a> Sema<'a> {
     }
 
     /// Walk a constant initializer expression and collect (on demand) every
-    /// constant it references, so the comptime engine sees them all in the
-    /// `constants` table regardless of declaration order.
+    /// constant it references, so declaration order does not decide whether
+    /// dependent constants are available.
     ///
     /// Only the expression forms the engine can evaluate are walked; anything
     /// else makes the expression non-evaluable anyway. A block-local `let`
@@ -2276,8 +2281,8 @@ impl<'a> Sema<'a> {
         }
 
         // A value constant declared in the module's file yields its value.
-        if let Some(info) = self.constants.get(&member) {
-            if module_file_id == Some(info.span.file_id) {
+        if let Some(mfile) = module_file_id {
+            if let Some(info) = self.constants_by_file_name.get(&(mfile, member)) {
                 let (is_pub, value) = (info.is_pub, info.value);
                 self.check_const_member_visibility(
                     is_pub,

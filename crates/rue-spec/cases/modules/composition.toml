@@ -19,9 +19,9 @@ aux_files = { "a.rue" = "pub fn shared() -> i32 { 1 }", "b.rue" = "pub fn shared
 exit_code = 1
 
 [[case]]
-name = "duplicate_const_across_imported_files_error"
+name = "same_named_consts_across_imported_files_ok"
 spec = ["10.5:1"]
-description = "Top-level value constants also collide across files (module bindings are exempt — see 10.4:8)"
+description = "Top-level value constants may share a source name across imported files when accessed through their modules"
 source = """
 fn main() -> i32 {
     let left = @import("left");
@@ -36,5 +36,4 @@ pub fn go() -> i32 { LIMIT }
 pub const LIMIT: i32 = 2;
 pub fn go2() -> i32 { LIMIT }
 """ }
-compile_fail = true
-error_contains = "duplicate"
+exit_code = 1
