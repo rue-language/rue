@@ -60,7 +60,11 @@ Paragraphs marked with rule categories are normative unless explicitly marked as
 
 {{ rule(id="1.3:3", cat="informative") }}
 
-Beyond the paragraph categories above, this specification classifies the *behavior* of a program into four categories, following C, C++, and Rust. Rue's guiding design preference for how a behavior is assigned to a category — in short, prefer the most-defined category, and confine undefined behavior to `unchecked` operations that cannot be checked otherwise — is a design decision recorded in ADR-0036, not a normative rule of this document.
+Beyond the paragraph categories above, this specification classifies the
+*behavior* of a program into four categories. These categories describe what a
+conforming implementation is required to guarantee when a program exhibits the
+behavior. ADR-0036 records the design rationale for assigning behavior to these
+categories; this section defines the terminology used below.
 
 {{ rule(id="1.3:4", cat="informative") }}
 
