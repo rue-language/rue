@@ -379,6 +379,46 @@ fn substitute_placeholders(template: &str, params: &HashMap<String, toml::Value>
     result
 }
 
+fn substitute_optional_string(
+    value: &Option<String>,
+    params: &HashMap<String, toml::Value>,
+) -> Option<String> {
+    value
+        .as_ref()
+        .map(|value| substitute_placeholders(value, params))
+}
+
+fn substitute_string_vec(values: &[String], params: &HashMap<String, toml::Value>) -> Vec<String> {
+    values
+        .iter()
+        .map(|value| substitute_placeholders(value, params))
+        .collect()
+}
+
+fn substitute_optional_string_vec(
+    values: &Option<Vec<String>>,
+    params: &HashMap<String, toml::Value>,
+) -> Option<Vec<String>> {
+    values
+        .as_ref()
+        .map(|values| substitute_string_vec(values, params))
+}
+
+fn substitute_string_map(
+    values: &HashMap<String, String>,
+    params: &HashMap<String, toml::Value>,
+) -> HashMap<String, String> {
+    values
+        .iter()
+        .map(|(key, value)| {
+            (
+                substitute_placeholders(key, params),
+                substitute_placeholders(value, params),
+            )
+        })
+        .collect()
+}
+
 const PARAM_OVERRIDE_KEYS: &[&str] = &[
     "exit_code",
     "compile_fail",
@@ -393,6 +433,14 @@ const PARAM_OVERRIDE_KEYS: &[&str] = &[
     "timeout_ms",
     "error_contains",
     "expected_error",
+    "expected_tokens",
+    "expected_ast",
+    "expected_rir",
+    "expected_air",
+    "expected_cfg",
+    "expected_mir",
+    "warning_contains",
+    "expected_warning_count",
     "spec_extra",
 ];
 
@@ -415,6 +463,10 @@ fn value_contains_placeholder(value: &toml::Value, key: &str) -> bool {
 
 fn case_contains_placeholder(case: &Case, key: &str) -> bool {
     contains_placeholder(&case.name, key)
+        || case
+            .description
+            .as_ref()
+            .is_some_and(|value| contains_placeholder(value, key))
         || contains_placeholder(&case.source, key)
         || case
             .error_contains
@@ -425,11 +477,51 @@ fn case_contains_placeholder(case: &Case, key: &str) -> bool {
             .as_ref()
             .is_some_and(|value| contains_placeholder(value, key))
         || case
+            .expected_tokens
+            .as_ref()
+            .is_some_and(|value| contains_placeholder(value, key))
+        || case
+            .expected_ast
+            .as_ref()
+            .is_some_and(|value| contains_placeholder(value, key))
+        || case
+            .expected_rir
+            .as_ref()
+            .is_some_and(|value| contains_placeholder(value, key))
+        || case
+            .expected_air
+            .as_ref()
+            .is_some_and(|value| contains_placeholder(value, key))
+        || case
+            .expected_mir
+            .as_ref()
+            .is_some_and(|value| contains_placeholder(value, key))
+        || case
+            .expected_cfg
+            .as_ref()
+            .is_some_and(|value| contains_placeholder(value, key))
+        || case
             .runtime_error
             .as_ref()
             .is_some_and(|value| contains_placeholder(value, key))
         || case
+            .warning_contains
+            .as_ref()
+            .is_some_and(|values| values.iter().any(|value| contains_placeholder(value, key)))
+        || case
+            .spec
+            .iter()
+            .any(|value| contains_placeholder(value, key))
+        || case
             .expected_stdout
+            .as_ref()
+            .is_some_and(|value| contains_placeholder(value, key))
+        || case
+            .preview
+            .as_ref()
+            .is_some_and(|value| contains_placeholder(value, key))
+        || case
+            .target
             .as_ref()
             .is_some_and(|value| contains_placeholder(value, key))
         || case
@@ -440,6 +532,13 @@ fn case_contains_placeholder(case: &Case, key: &str) -> bool {
             .stderr_contains
             .as_ref()
             .is_some_and(|value| contains_placeholder(value, key))
+        || case.aux_files.iter().any(|(path, source)| {
+            contains_placeholder(path, key) || contains_placeholder(source, key)
+        })
+        || case
+            .only_on
+            .iter()
+            .any(|value| contains_placeholder(value, key))
 }
 
 fn param_values_contain_placeholder(param_set: &ParamSet, key: &str) -> bool {
@@ -506,7 +605,7 @@ pub fn expand_case(case: Case) -> Vec<Case> {
             let mut expanded = Case {
                 // Substitute placeholders in string fields
                 name: substitute_placeholders(&case.name, params),
-                description: case.description.clone(),
+                description: substitute_optional_string(&case.description, params),
                 source: substitute_placeholders(&case.source, params),
                 error_contains: ErrorContains(
                     case.error_contains
@@ -514,50 +613,35 @@ pub fn expand_case(case: Case) -> Vec<Case> {
                         .map(|s| substitute_placeholders(s, params))
                         .collect(),
                 ),
-                expected_error: case
-                    .expected_error
-                    .as_ref()
-                    .map(|s| substitute_placeholders(s, params)),
-                runtime_error: case
-                    .runtime_error
-                    .as_ref()
-                    .map(|s| substitute_placeholders(s, params)),
-                expected_stdout: case
-                    .expected_stdout
-                    .as_ref()
-                    .map(|s| substitute_placeholders(s, params)),
-                stdin: case
-                    .stdin
-                    .as_ref()
-                    .map(|s| substitute_placeholders(s, params)),
-                stderr_contains: case
-                    .stderr_contains
-                    .as_ref()
-                    .map(|s| substitute_placeholders(s, params)),
+                expected_error: substitute_optional_string(&case.expected_error, params),
+                expected_tokens: substitute_optional_string(&case.expected_tokens, params),
+                expected_ast: substitute_optional_string(&case.expected_ast, params),
+                expected_rir: substitute_optional_string(&case.expected_rir, params),
+                expected_air: substitute_optional_string(&case.expected_air, params),
+                expected_mir: substitute_optional_string(&case.expected_mir, params),
+                expected_cfg: substitute_optional_string(&case.expected_cfg, params),
+                runtime_error: substitute_optional_string(&case.runtime_error, params),
+                warning_contains: substitute_optional_string_vec(&case.warning_contains, params),
+                spec: substitute_string_vec(&case.spec, params),
+                expected_stdout: substitute_optional_string(&case.expected_stdout, params),
+                preview: substitute_optional_string(&case.preview, params),
+                target: substitute_optional_string(&case.target, params),
+                stdin: substitute_optional_string(&case.stdin, params),
+                stderr_contains: substitute_optional_string(&case.stderr_contains, params),
+                aux_files: substitute_string_map(&case.aux_files, params),
+                only_on: substitute_string_vec(&case.only_on, params),
 
                 // Copy non-template fields with potential overrides
                 exit_code: case.exit_code,
                 compile_fail: case.compile_fail,
                 compile_only: case.compile_only,
-                expected_tokens: case.expected_tokens.clone(),
-                expected_ast: case.expected_ast.clone(),
-                expected_rir: case.expected_rir.clone(),
-                expected_air: case.expected_air.clone(),
-                expected_mir: case.expected_mir.clone(),
-                expected_cfg: case.expected_cfg.clone(),
                 runtime_exit_code: case.runtime_exit_code,
                 skip: case.skip,
-                warning_contains: case.warning_contains.clone(),
                 expected_warning_count: case.expected_warning_count,
                 no_warnings: case.no_warnings,
-                spec: case.spec.clone(),
-                preview: case.preview.clone(),
                 preview_should_pass: case.preview_should_pass,
-                target: case.target.clone(),
                 opt_level: case.opt_level,
                 timeout_ms: case.timeout_ms,
-                aux_files: case.aux_files.clone(),
-                only_on: case.only_on.clone(),
 
                 // Clear params on expanded case
                 params: vec![],
@@ -647,13 +731,64 @@ pub fn expand_case(case: Case) -> Vec<Case> {
                     expanded.expected_error = Some(substitute_placeholders(s, params));
                 }
             }
+            if let Some(value) = params.get("expected_tokens") {
+                if let Some(s) = value.as_str() {
+                    expanded.expected_tokens = Some(substitute_placeholders(s, params));
+                }
+            }
+            if let Some(value) = params.get("expected_ast") {
+                if let Some(s) = value.as_str() {
+                    expanded.expected_ast = Some(substitute_placeholders(s, params));
+                }
+            }
+            if let Some(value) = params.get("expected_rir") {
+                if let Some(s) = value.as_str() {
+                    expanded.expected_rir = Some(substitute_placeholders(s, params));
+                }
+            }
+            if let Some(value) = params.get("expected_air") {
+                if let Some(s) = value.as_str() {
+                    expanded.expected_air = Some(substitute_placeholders(s, params));
+                }
+            }
+            if let Some(value) = params.get("expected_cfg") {
+                if let Some(s) = value.as_str() {
+                    expanded.expected_cfg = Some(substitute_placeholders(s, params));
+                }
+            }
+            if let Some(value) = params.get("expected_mir") {
+                if let Some(s) = value.as_str() {
+                    expanded.expected_mir = Some(substitute_placeholders(s, params));
+                }
+            }
+            if let Some(value) = params.get("warning_contains") {
+                match value {
+                    toml::Value::String(s) => {
+                        expanded.warning_contains = Some(vec![substitute_placeholders(s, params)]);
+                    }
+                    toml::Value::Array(arr) => {
+                        expanded.warning_contains = Some(
+                            arr.iter()
+                                .filter_map(|v| v.as_str())
+                                .map(|s| substitute_placeholders(s, params))
+                                .collect(),
+                        );
+                    }
+                    _ => {}
+                }
+            }
+            if let Some(value) = params.get("expected_warning_count") {
+                if let Some(i) = value.as_integer() {
+                    expanded.expected_warning_count = Some(i as usize);
+                }
+            }
 
             // Merge spec_extra into spec
             if let Some(value) = params.get("spec_extra") {
                 if let Some(arr) = value.as_array() {
                     for item in arr {
                         if let Some(s) = item.as_str() {
-                            expanded.spec.push(s.to_string());
+                            expanded.spec.push(substitute_placeholders(s, params));
                         }
                     }
                 }
@@ -2119,6 +2254,105 @@ params = [
             expanded.case[0].error_contains,
             ErrorContains(vec!["expected i32".to_string()])
         );
+    }
+
+    #[test]
+    fn test_expand_case_substitutes_placeholders_in_warning_golden_and_aux_fields() {
+        let toml = r#"
+[section]
+id = "t.section"
+name = "T"
+
+[[case]]
+name = "case_{variant}"
+description = "description for {variant}"
+source = "fn main() -> i32 { {value} }"
+expected_air = "air {variant}"
+warning_contains = ["warning {variant}"]
+spec = ["1.0:{spec_id}"]
+expected_stdout = "stdout {variant}"
+preview = "{preview_name}"
+target = "{target_name}"
+stdin = "stdin {variant}"
+stderr_contains = "stderr {variant}"
+aux_files = { "helper_{variant}.rue" = "fn helper() -> i32 { {value} }" }
+only_on = ["{target_name}"]
+params = [
+  { variant = "alpha", value = 1, spec_id = 2, preview_name = "modules", target_name = "x86-64-linux" },
+]
+"#;
+        let tf: TestFile = toml::from_str(toml).expect("valid TOML");
+        let expanded = expand_test_file(tf);
+        let case = &expanded.case[0];
+
+        assert_eq!(case.name, "case_alpha");
+        assert_eq!(case.description.as_deref(), Some("description for alpha"));
+        assert_eq!(case.source, "fn main() -> i32 { 1 }");
+        assert_eq!(case.expected_air.as_deref(), Some("air alpha"));
+        assert_eq!(
+            case.warning_contains,
+            Some(vec!["warning alpha".to_string()])
+        );
+        assert_eq!(case.spec, vec!["1.0:2"]);
+        assert_eq!(case.expected_stdout.as_deref(), Some("stdout alpha"));
+        assert_eq!(case.preview.as_deref(), Some("modules"));
+        assert_eq!(case.target.as_deref(), Some("x86-64-linux"));
+        assert_eq!(case.stdin.as_deref(), Some("stdin alpha"));
+        assert_eq!(case.stderr_contains.as_deref(), Some("stderr alpha"));
+        assert_eq!(
+            case.aux_files.get("helper_alpha.rue").map(String::as_str),
+            Some("fn helper() -> i32 { 1 }")
+        );
+        assert_eq!(case.only_on, vec!["x86-64-linux"]);
+    }
+
+    #[test]
+    fn test_expand_case_supports_warning_and_golden_param_overrides() {
+        let toml = r#"
+[section]
+id = "t.section"
+name = "T"
+
+[[case]]
+name = "case_{variant}"
+source = "fn main() -> i32 { 0 }"
+warning_contains = ["base warning"]
+expected_warning_count = 99
+expected_cfg = "base cfg"
+expected_mir = "base mir"
+params = [
+  { variant = "warn", warning_name = "unused variable", warning_contains = ["{warning_name}", "second warning"], expected_warning_count = 2, expected_cfg = "cfg {variant}", expected_mir = "mir {variant}" },
+  { variant = "quiet", warning_contains = [], expected_warning_count = 0, expected_cfg = "cfg {variant}", expected_mir = "mir {variant}" },
+]
+"#;
+        let tf: TestFile = toml::from_str(toml).expect("valid TOML");
+        let expanded = expand_test_file(tf);
+
+        let warn = expanded
+            .case
+            .iter()
+            .find(|case| case.name == "case_warn")
+            .unwrap();
+        assert_eq!(
+            warn.warning_contains,
+            Some(vec![
+                "unused variable".to_string(),
+                "second warning".to_string()
+            ])
+        );
+        assert_eq!(warn.expected_warning_count, Some(2));
+        assert_eq!(warn.expected_cfg.as_deref(), Some("cfg warn"));
+        assert_eq!(warn.expected_mir.as_deref(), Some("mir warn"));
+
+        let quiet = expanded
+            .case
+            .iter()
+            .find(|case| case.name == "case_quiet")
+            .unwrap();
+        assert_eq!(quiet.warning_contains, Some(vec![]));
+        assert_eq!(quiet.expected_warning_count, Some(0));
+        assert_eq!(quiet.expected_cfg.as_deref(), Some("cfg quiet"));
+        assert_eq!(quiet.expected_mir.as_deref(), Some("mir quiet"));
     }
 
     #[test]
