@@ -169,6 +169,8 @@ pub struct ConstraintGenerator<'a> {
     functions: &'a HashMap<Spur, FunctionSig>,
     /// Struct types (name -> Type::new_struct(id)).
     structs: &'a HashMap<Spur, Type>,
+    /// Module-local struct types ((defining file, source name) -> Type::new_struct(id)).
+    structs_by_file_name: Option<&'a HashMap<(FileId, Spur), Type>>,
     /// Enum types (name -> Type::new_enum(id)).
     enums: &'a HashMap<Spur, Type>,
     /// Method signatures: (struct_id, method_name) -> MethodSig
@@ -194,6 +196,10 @@ pub struct ConstraintGenerator<'a> {
     /// `None` only in unit tests; production passes the map via
     /// [`Self::with_module_binding_types`].
     module_binding_types: Option<&'a HashMap<(FileId, Spur), Type>>,
+    /// Module registry file identity for inference-time `module.Type` lookup.
+    /// `None` only in unit tests; production passes the map via
+    /// [`Self::with_module_file_ids`].
+    module_file_ids: Option<&'a HashMap<crate::types::ModuleId, FileId>>,
     /// Compile-time type aliases bound by `let` in the current function body
     /// (`let P = F();` where `F` returns `type`), pre-resolved by sema before
     /// constraint generation. Consulted after `type_subst` when resolving
@@ -272,6 +278,7 @@ impl<'a> ConstraintGenerator<'a> {
             expr_types: HashMap::new(),
             functions,
             structs,
+            structs_by_file_name: None,
             enums,
             methods,
             int_literal_vars: Vec::new(),
@@ -279,6 +286,7 @@ impl<'a> ConstraintGenerator<'a> {
             const_types: None,
             const_type_aliases: None,
             module_binding_types: None,
+            module_file_ids: None,
             comptime_local_types: None,
             extra_method_sigs: None,
             const_values: None,
@@ -330,6 +338,25 @@ impl<'a> ConstraintGenerator<'a> {
         module_binding_types: &'a HashMap<(FileId, Spur), Type>,
     ) -> Self {
         self.module_binding_types = Some(module_binding_types);
+        self
+    }
+
+    /// Provide module-local struct types for file-scoped and module-qualified
+    /// struct literal resolution.
+    pub fn with_structs_by_file_name(
+        mut self,
+        structs_by_file_name: &'a HashMap<(FileId, Spur), Type>,
+    ) -> Self {
+        self.structs_by_file_name = Some(structs_by_file_name);
+        self
+    }
+
+    /// Provide module registry file identities for `module.Type` lookup.
+    pub fn with_module_file_ids(
+        mut self,
+        module_file_ids: &'a HashMap<crate::types::ModuleId, FileId>,
+    ) -> Self {
+        self.module_file_ids = Some(module_file_ids);
         self
     }
 
@@ -1578,24 +1605,49 @@ impl<'a> ConstraintGenerator<'a> {
 
             // Struct initialization
             InstData::StructInit {
+                module,
                 type_name,
                 fields_start,
                 fields_len,
                 ..
             } => {
-                // Check type_subst first (for Self and type parameters in
-                // method bodies), then comptime type aliases (`let P = F();
-                // P { ... }`, RUE-170) — mirroring sema, which consults
-                // `comptime_type_vars` before the struct table — then named
-                // structs.
-                let struct_ty = self
-                    .type_subst
-                    .and_then(|subst| subst.get(type_name).copied())
-                    .or_else(|| {
-                        self.comptime_local_types
-                            .and_then(|aliases| aliases.get(type_name).copied())
-                    })
-                    .or_else(|| self.structs.get(type_name).copied());
+                // Module-qualified literals (`m.Point { ... }`) resolve in
+                // the module's defining file, matching sema. Unqualified
+                // literals check type_subst first (for Self/type parameters),
+                // then comptime type aliases (`let P = F(); P { ... }`,
+                // RUE-170), then the current file's module-local type table,
+                // then the unique-name compatibility map.
+                let struct_ty = if let Some(module_ref) = module {
+                    let module_info = self.generate(*module_ref, ctx);
+                    let module_id = match module_info.ty {
+                        InferType::Concrete(ty) => ty.as_module(),
+                        _ => None,
+                    };
+                    module_id
+                        .and_then(|module_id| {
+                            self.module_file_ids
+                                .and_then(|module_file_ids| module_file_ids.get(&module_id))
+                                .copied()
+                        })
+                        .and_then(|file_id| {
+                            self.structs_by_file_name
+                                .and_then(|structs| structs.get(&(file_id, *type_name)))
+                                .copied()
+                        })
+                } else {
+                    self.type_subst
+                        .and_then(|subst| subst.get(type_name).copied())
+                        .or_else(|| {
+                            self.comptime_local_types
+                                .and_then(|aliases| aliases.get(type_name).copied())
+                        })
+                        .or_else(|| {
+                            self.structs_by_file_name
+                                .and_then(|structs| structs.get(&(span.file_id, *type_name)))
+                                .copied()
+                                .or_else(|| self.structs.get(type_name).copied())
+                        })
+                };
 
                 let fields = self.rir.get_field_inits(*fields_start, *fields_len);
                 if let Some(struct_ty) = struct_ty {
