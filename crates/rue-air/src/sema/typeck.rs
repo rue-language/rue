@@ -504,7 +504,7 @@ impl<'a> Sema<'a> {
                 span,
             )?;
             Ok(Type::new_enum(enum_id))
-        } else if let Some(info) = self.constants.get(&type_sym)
+        } else if let Some(info) = self.resolve_const_info_in_file(type_sym, span.file_id)
             && let ConstValue::Type(alias_ty) = info.value
         {
             self.check_unqualified_visibility(
@@ -705,8 +705,8 @@ impl<'a> Sema<'a> {
                 return Ok(Type::new_enum(enum_id));
             }
         }
-        if let Some(info) = self.constants.get(&member_sym)
-            && module_file_id == Some(info.span.file_id)
+        if let Some(info) = module_file_id
+            .and_then(|file_id| self.constants_by_file_name.get(&(file_id, member_sym)))
             && let ConstValue::Type(alias_ty) = info.value
         {
             self.check_unqualified_visibility(
@@ -1306,7 +1306,7 @@ impl<'a> Sema<'a> {
                 // 1. A `comptime` value parameter in scope (per specialization).
                 let value = if let Some(v) = value_subst.and_then(|vs| vs.get(&sym)) {
                     *v
-                } else if let Some(info) = self.constants.get(&sym) {
+                } else if let Some(info) = self.resolve_const_info_in_file(sym, span.file_id) {
                     // 2. A file-level constant, evaluated during declaration
                     //    gathering.
                     info.value

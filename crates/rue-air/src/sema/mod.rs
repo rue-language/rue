@@ -83,10 +83,14 @@ pub struct Sema<'a> {
     pub(crate) enums: HashMap<Spur, EnumId>,
     /// Method table: maps (struct_id, method_name) to method info
     pub(crate) methods: HashMap<(StructId, Spur), MethodInfo>,
-    /// Constant table: maps const name symbol to const info.
+    /// Compatibility value-constant table for globally unique bare names.
     /// Holds value constants only (e.g. `const MAX: i32 = 10`); module bindings
-    /// live in [`Self::module_bindings`].
+    /// live in [`Self::module_bindings`]. If a value-constant name appears in
+    /// multiple files, it is omitted here and remains available through
+    /// [`Self::constants_by_file_name`].
     pub(crate) constants: HashMap<Spur, ConstInfo>,
+    /// File-qualified value constants, keyed by defining file and source name.
+    pub(crate) constants_by_file_name: HashMap<(FileId, Spur), ConstInfo>,
     /// Module-binding constants (`const utils = @import("...")`), keyed by
     /// the declaring file. Unlike value constants, module bindings are
     /// per-file scoped (ADR-0026): every file writes its own imports, so two
@@ -182,6 +186,7 @@ impl<'a> Sema<'a> {
             enums: HashMap::new(),
             methods: HashMap::new(),
             constants: HashMap::new(),
+            constants_by_file_name: HashMap::new(),
             module_bindings: HashMap::new(),
             preview_features,
             target,

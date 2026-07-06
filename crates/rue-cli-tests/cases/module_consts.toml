@@ -29,6 +29,26 @@ pub const ANSWER: i32 = 42;
 ]
 exit_code = 42
 
+[[case]]
+name = "same_named_value_consts_in_distinct_modules"
+files = [
+    { path = "main.rue", source = """
+const a = @import("a");
+const b = @import("b");
+
+fn main() -> i32 {
+    a.VALUE + b.VALUE
+}
+""" },
+    { path = "a.rue", source = """
+pub const VALUE: i32 = 1;
+""" },
+    { path = "b.rue", source = """
+pub const VALUE: i32 = 2;
+""" },
+]
+exit_code = 3
+
 # Member access in const context: another const's initializer.
 [[case]]
 name = "member_const_in_const_initializer"

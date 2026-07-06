@@ -2717,12 +2717,11 @@ impl<'a> Sema<'a> {
         // checked above. The value was evaluated once during declaration
         // gathering (RUE-171); materialize it directly — the initializer is
         // never re-analyzed at use sites.
-        if let Some(const_info) = self.constants.get(&name) {
-            // Privacy (E0460, RUE-183): the constants table is global, so an
-            // unqualified reference can resolve to a private constant defined
-            // in another directory — reject it, privacy is uniform across
-            // item kinds (spec 10.3:1, 10.3:7). The declaration span's file
-            // is the constant's defining file.
+        if let Some(const_info) = self.resolve_const_info_in_file(name, span.file_id) {
+            // Privacy (E0460, RUE-183): fallback bare-name lookup can still
+            // resolve to a globally unique private constant defined in another
+            // directory — reject it, privacy is uniform across item kinds
+            // (spec 10.3:1, 10.3:7).
             self.check_unqualified_visibility(
                 "constant",
                 name_str,
@@ -3800,14 +3799,12 @@ impl<'a> Sema<'a> {
         // yields that module, so chains like `std.math.abs(...)` resolve
         // member-by-member (RUE-136). Module bindings live in the per-file
         // `module_bindings` table keyed by the facade's FileId (RUE-113);
-        // value consts are found by name in the flat constants table,
-        // filtered to the module's file via the declaration span.
+        // value consts are found by defining file and member name.
         let member_const = module_file_id
             .and_then(|file_id| self.module_bindings.get(&(file_id, member_name)))
             .or_else(|| {
-                self.constants
-                    .get(&member_name)
-                    .filter(|const_info| module_file_id == Some(const_info.span.file_id))
+                module_file_id
+                    .and_then(|file_id| self.constants_by_file_name.get(&(file_id, member_name)))
             });
         if let Some(const_info) = member_const {
             if !const_info.is_pub {
@@ -5074,7 +5071,7 @@ impl<'a> Sema<'a> {
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
         let mut name = name;
-        if let Some(const_info) = self.constants.get(&name)
+        if let Some(const_info) = self.resolve_const_info_in_file(name, span.file_id)
             && let Some(callee) = const_info.value.as_function()
         {
             let alias_name = self.interner.resolve(&name).to_string();
