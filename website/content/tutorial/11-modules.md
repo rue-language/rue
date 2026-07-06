@@ -77,10 +77,6 @@ const math = @import("lib/math.rue");
 The path string must be a string literal known at compile time. Rue does not
 dynamically load modules at runtime; imports are part of compilation.
 
-New code should prefer explicit imports. Rue still has some transitional
-support for compiling multiple files together, but relying on unqualified names
-from separately listed files is being removed.
-
 ## Standard Library Status
 
 Rue's accepted standard-library direction is an explicit standard module:
