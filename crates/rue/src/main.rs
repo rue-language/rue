@@ -13,12 +13,12 @@ use tracing_subscriber::{EnvFilter, fmt};
 mod timing;
 
 use rue_compiler::{
-    CompileError, CompileErrors, CompileOptions, CompileWarning, FileId, Lexer, LinkerMode,
-    MultiFileFormatter, MultiFileJsonFormatter, OptLevel, ParsedProgram, PreviewFeature,
-    PreviewFeatures, SourceFile, SourceInfo, TokenKind, compile_multi_file_with_options,
-    configure_thread_pool, generate_emitted_asm, generate_liveness_info, generate_lowering_info,
-    generate_mir, generate_regalloc_info, generate_stack_frame_info, import_candidate_groups,
-    merge_symbols, parse_all_files,
+    CompileError, CompileErrors, CompileOptions, CompileWarning, ErrorKind, FileId, Lexer,
+    LinkerMode, MultiFileFormatter, MultiFileJsonFormatter, OptLevel, ParsedProgram,
+    PreviewFeature, PreviewFeatures, SourceFile, SourceInfo, Span, TokenKind,
+    compile_multi_file_with_options, configure_thread_pool, generate_emitted_asm,
+    generate_liveness_info, generate_lowering_info, generate_mir, generate_regalloc_info,
+    generate_stack_frame_info, import_candidate_groups, merge_symbols, parse_all_files,
 };
 use rue_rir::RirPrinter;
 use rue_target::Target;
@@ -1130,6 +1130,19 @@ struct DependencyGraph {
     import_seen: std::collections::HashSet<(PathBuf, String, PathBuf)>,
 }
 
+#[derive(Debug, Default)]
+struct ImportDiscoveryResult {
+    mixed_imports: Vec<PathBuf>,
+    unresolved_imports: Vec<UnresolvedImport>,
+}
+
+#[derive(Debug)]
+struct UnresolvedImport {
+    path: String,
+    candidates: Vec<String>,
+    span: Span,
+}
+
 impl DependencyGraph {
     fn record_source(&mut self, path: PathBuf, kind: &'static str) {
         if kind == "root" {
@@ -1197,8 +1210,9 @@ impl DependencyGraph {
 ///   `std/_std.rue` — ratified in RUE-137), relative to the importing file,
 ///   then the root
 ///
-/// Unresolvable imports are left for sema to report (E0704 with candidate
-/// context); this function only loads what it can find.
+/// Unresolvable imports are recorded for modes like `--emit deps` that need
+/// the import graph but should not run full semantic validation. Normal
+/// compilation still lets sema report those errors from the typed import use.
 ///
 /// Returns non-root positional sources that were also reached through an
 /// import. That mixed mode is rejected by the CLI after discovery (RUE-434),
@@ -1208,7 +1222,7 @@ fn discover_and_load_imports(
     sources: &mut Vec<(String, String)>,
     source_manifest: Option<&SourceManifest>,
     dependency_graph: &mut DependencyGraph,
-) -> Result<Vec<PathBuf>, ()> {
+) -> Result<ImportDiscoveryResult, ()> {
     use std::collections::HashSet;
 
     let root_dir = Path::new(&sources[0].0)
@@ -1226,11 +1240,12 @@ fn discover_and_load_imports(
         .skip(1)
         .filter_map(|(p, _)| fs::canonicalize(p).ok())
         .collect();
-    let mut mixed_imports = Vec::new();
+    let mut result = ImportDiscoveryResult::default();
     let mut mixed_seen = HashSet::new();
 
     let mut i = 0;
     while i < sources.len() {
+        let importer_file_id = FileId::new((i + 1) as u32);
         let (importer_path, content) = (sources[i].0.clone(), sources[i].1.clone());
         let importer_canonical = fs::canonicalize(&importer_path).ok();
         i += 1;
@@ -1278,10 +1293,12 @@ fn discover_and_load_imports(
                     .collect();
 
             let mut undeclared_candidate = None;
+            let mut candidate_paths = Vec::new();
             let mut resolved_import = false;
             'groups: for group in groups {
                 let mut group_hit = false;
                 for candidate in group {
+                    candidate_paths.push(candidate.display().to_string());
                     if let Some(manifest) = source_manifest
                         && !manifest.declares_path_without_probe(&candidate)
                     {
@@ -1319,9 +1336,10 @@ fn discover_and_load_imports(
                         if explicit_non_root.contains(&canonical)
                             && mixed_seen.insert(canonical.clone())
                         {
-                            mixed_imports.push(canonical);
+                            result.mixed_imports.push(canonical);
                         }
                         group_hit = true; // already loaded (or a cycle)
+                        resolved_import = true;
                         continue;
                     }
                     let Ok(module_content) = fs::read_to_string(&candidate) else {
@@ -1331,6 +1349,7 @@ fn discover_and_load_imports(
                     dependency_graph.record_source(canonical, "import");
                     sources.push((candidate.to_string_lossy().into_owned(), module_content));
                     group_hit = true;
+                    resolved_import = true;
                 }
                 if group_hit {
                     resolved_import = true;
@@ -1351,9 +1370,16 @@ fn discover_and_load_imports(
                 );
                 return Err(());
             }
+            if !resolved_import {
+                result.unresolved_imports.push(UnresolvedImport {
+                    path: import_str.to_string(),
+                    candidates: candidate_paths,
+                    span: Span::with_file(importer_file_id, w[0].span.start, w[3].span.end),
+                });
+            }
         }
     }
-    Ok(mixed_imports)
+    Ok(result)
 }
 
 fn main() {
@@ -1444,19 +1470,19 @@ fn main() {
         }
     }
 
-    let mixed_imports = match discover_and_load_imports(
+    let import_discovery = match discover_and_load_imports(
         &mut sources,
         source_manifest.as_ref(),
         &mut dependency_graph,
     ) {
-        Ok(mixed_imports) => mixed_imports,
+        Ok(result) => result,
         Err(()) => std::process::exit(1),
     };
-    if !mixed_imports.is_empty() {
+    if !import_discovery.mixed_imports.is_empty() {
         eprintln!(
             "Error: source files listed after the root must not also be loaded through @import"
         );
-        for path in &mixed_imports {
+        for path in &import_discovery.mixed_imports {
             eprintln!("  imported and explicitly listed: {}", path.display());
         }
         eprintln!("Compile the root source only and let @import discover helper modules:");
@@ -1502,7 +1528,18 @@ fn main() {
             );
             std::process::exit(1);
         }
-        if let Err(()) = validate_deps_emit_sources(&source_files, &options, &diagnostics) {
+        if !import_discovery.unresolved_imports.is_empty() {
+            let mut errors = CompileErrors::new();
+            for import in &import_discovery.unresolved_imports {
+                errors.push(CompileError::new(
+                    ErrorKind::ModuleNotFound {
+                        path: import.path.clone(),
+                        candidates: import.candidates.clone(),
+                    },
+                    import.span,
+                ));
+            }
+            diagnostics.print_errors(&errors);
             std::process::exit(1);
         }
         match serde_json::to_string_pretty(&dependency_graph.to_output()) {
@@ -1664,48 +1701,6 @@ fn main() {
         Err(errors) => {
             diagnostics.print_errors(&errors);
             std::process::exit(1);
-        }
-    }
-}
-
-fn validate_deps_emit_sources(
-    sources: &[SourceFile<'_>],
-    options: &Options,
-    diagnostics: &DiagnosticOutput<'_>,
-) -> Result<(), ()> {
-    let parsed = match parse_all_files(sources) {
-        Ok(program) => program,
-        Err(errors) => {
-            diagnostics.print_errors(&errors);
-            return Err(());
-        }
-    };
-
-    let merged = match merge_symbols(parsed) {
-        Ok(merged) => merged,
-        Err(errors) => {
-            diagnostics.print_errors(&errors);
-            return Err(());
-        }
-    };
-
-    let file_paths: std::collections::HashMap<FileId, String> = sources
-        .iter()
-        .map(|source| (source.file_id, source.path.to_string()))
-        .collect();
-
-    match rue_compiler::compile_frontend_from_ast_with_file_paths_and_target(
-        merged.ast,
-        merged.interner,
-        options.opt_level,
-        &options.preview_features,
-        options.target,
-        file_paths,
-    ) {
-        Ok(_state) => Ok(()),
-        Err(errors) => {
-            diagnostics.print_errors(&errors);
-            Err(())
         }
     }
 }
