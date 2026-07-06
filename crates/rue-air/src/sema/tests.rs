@@ -479,6 +479,22 @@ mod tests {
     }
 
     #[test]
+    fn test_function_and_type_name_collision() {
+        let result = compile_to_air(
+            "struct Foo { x: i32 }
+             fn Foo() -> i32 { 1 }
+             fn main() -> i32 { 0 }",
+        );
+
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(matches!(
+            errors.iter().next().unwrap().kind,
+            ErrorKind::DuplicateFunctionDefinition { .. }
+        ));
+    }
+
+    #[test]
     fn test_duplicate_struct_field() {
         // Duplicate field names in a struct should error
         let result = compile_to_air(

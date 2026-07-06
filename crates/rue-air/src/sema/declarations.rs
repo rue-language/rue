@@ -32,6 +32,55 @@ enum TypeNode {
 }
 
 impl<'a> Sema<'a> {
+    pub(crate) fn source_function_name(&self, internal_name: Spur) -> Spur {
+        self.function_source_names
+            .get(&internal_name)
+            .copied()
+            .unwrap_or(internal_name)
+    }
+
+    fn internal_function_name(&self, source_name: Spur, file_id: FileId) -> Spur {
+        let source = self.interner.resolve(&source_name);
+        if source == "main" {
+            return source_name;
+        }
+        let mut count = 0;
+        for (_, inst) in self.rir.iter() {
+            let InstData::FnDecl { name, has_self, .. } = &inst.data else {
+                continue;
+            };
+            if !*has_self && *name == source_name {
+                count += 1;
+                if count > 1 {
+                    break;
+                }
+            }
+        }
+        if count > 1 {
+            self.interner
+                .get_or_intern(&format!("__rue_fn_f{}_{}", file_id.index(), source))
+        } else {
+            source_name
+        }
+    }
+
+    pub(crate) fn resolve_function_name_in_file(
+        &self,
+        source_name: Spur,
+        file_id: FileId,
+    ) -> Option<Spur> {
+        self.functions_by_file_name
+            .get(&(file_id, source_name))
+            .copied()
+            .or_else(|| {
+                if self.functions.contains_key(&source_name) {
+                    Some(source_name)
+                } else {
+                    None
+                }
+            })
+    }
+
     /// Build an `InferenceContext` from the collected type information.
     ///
     /// This should be called after the collection phase and builds the
@@ -246,43 +295,67 @@ impl<'a> Sema<'a> {
             }
         }
 
-        // For each name, whether the first item seen was a type (struct/enum);
-        // the alternative is a function.
-        let mut seen: HashMap<Spur, (bool, Span)> = HashMap::new();
+        // Type names stay global, and a top-level type still collides with
+        // any free function of the same source name. Free functions only
+        // duplicate-conflict with other free functions in the same defining
+        // file/module; distinct modules may each define a source-level `value`
+        // and receive different internal keys later.
+        let mut seen_types: HashMap<Spur, Span> = HashMap::new();
+        let mut seen_function_names: HashMap<Spur, Span> = HashMap::new();
+        let mut seen_functions: HashMap<(FileId, Spur), Span> = HashMap::new();
         for (inst_ref, inst) in self.rir.iter() {
-            let (name, is_type) = match &inst.data {
+            match &inst.data {
                 InstData::StructDecl { name, .. } | InstData::EnumDecl { name, .. } => {
-                    (*name, true)
+                    if let Some(first_span) = seen_function_names.get(name) {
+                        let name_str = self.interner.resolve(name).to_string();
+                        return Err(CompileError::new(
+                            ErrorKind::DuplicateFunctionDefinition {
+                                function_name: name_str,
+                            },
+                            inst.span,
+                        )
+                        .with_label("first defined here".to_string(), *first_span));
+                    }
+                    if let Some(first_span) = seen_types.insert(*name, inst.span) {
+                        let name_str = self.interner.resolve(name).to_string();
+                        return Err(CompileError::new(
+                            ErrorKind::DuplicateTypeDefinition {
+                                type_name: name_str,
+                            },
+                            inst.span,
+                        )
+                        .with_label("first defined here".to_string(), first_span));
+                    }
                 }
                 InstData::FnDecl { name, has_self, .. } => {
                     if *has_self || method_refs.contains(&inst_ref) {
                         continue;
                     }
-                    (*name, false)
-                }
-                _ => continue,
-            };
-
-            match seen.get(&name).copied() {
-                None => {
-                    seen.insert(name, (is_type, inst.span));
-                }
-                Some((first_is_type, first_span)) => {
-                    let name_str = self.interner.resolve(&name).to_string();
-                    // Two types collide as a duplicate type (E0405); any pair
-                    // involving a function is a duplicate function (E0436).
-                    let err_kind = if first_is_type && is_type {
-                        ErrorKind::DuplicateTypeDefinition {
-                            type_name: name_str,
-                        }
-                    } else {
-                        ErrorKind::DuplicateFunctionDefinition {
-                            function_name: name_str,
-                        }
-                    };
-                    return Err(CompileError::new(err_kind, inst.span)
+                    if let Some(first_span) = seen_types.get(name) {
+                        let name_str = self.interner.resolve(name).to_string();
+                        return Err(CompileError::new(
+                            ErrorKind::DuplicateFunctionDefinition {
+                                function_name: name_str,
+                            },
+                            inst.span,
+                        )
+                        .with_label("first defined here".to_string(), *first_span));
+                    }
+                    seen_function_names.entry(*name).or_insert(inst.span);
+                    if let Some(first_span) =
+                        seen_functions.insert((inst.span.file_id, *name), inst.span)
+                    {
+                        let name_str = self.interner.resolve(name).to_string();
+                        return Err(CompileError::new(
+                            ErrorKind::DuplicateFunctionDefinition {
+                                function_name: name_str,
+                            },
+                            inst.span,
+                        )
                         .with_label("first defined here".to_string(), first_span));
+                    }
                 }
+                _ => {}
             }
         }
         Ok(())
@@ -1269,8 +1342,13 @@ impl<'a> Sema<'a> {
             param_comptime.into_iter(),
         );
 
+        let internal_name = self.internal_function_name(name, span.file_id);
+        self.functions_by_file_name
+            .insert((span.file_id, name), internal_name);
+        self.function_source_names.insert(internal_name, name);
+
         self.functions.insert(
-            name,
+            internal_name,
             FunctionInfo {
                 params: params_range,
                 return_type: ret_type,
@@ -1670,11 +1748,14 @@ impl<'a> Sema<'a> {
                     return Ok(ConstInit::Value(info.value));
                 }
                 if let Some((fn_file_id, is_pub)) = self.find_free_function_decl(name, None) {
+                    let function_key = self
+                        .resolve_function_name_in_file(name, span.file_id)
+                        .unwrap_or_else(|| self.internal_function_name(name, fn_file_id));
                     let fn_name = self.interner.resolve(&name).to_string();
                     self.check_unqualified_visibility(
                         "function", &fn_name, fn_file_id, is_pub, span,
                     )?;
-                    return Ok(ConstInit::Value(ConstValue::Function(name)));
+                    return Ok(ConstInit::Value(ConstValue::Function(function_key)));
                 }
                 // Not a constant: let the comptime engine decide (it rejects
                 // unknown names and type names as non-evaluable).
@@ -2222,7 +2303,8 @@ impl<'a> Sema<'a> {
                     accessing_file,
                     span,
                 )?;
-                return Ok(ConstInit::Value(ConstValue::Function(member)));
+                let function_key = self.internal_function_name(member, mfile);
+                return Ok(ConstInit::Value(ConstValue::Function(function_key)));
             }
         }
 
@@ -2297,7 +2379,10 @@ impl<'a> Sema<'a> {
             span,
         )?;
 
-        let Some(fn_info) = self.functions.get(&member) else {
+        let function_key = self
+            .resolve_function_name_in_file(member, mfile)
+            .unwrap_or_else(|| self.internal_function_name(member, mfile));
+        let Some(fn_info) = self.functions.get(&function_key) else {
             return Err(CompileError::new(
                 ErrorKind::UnknownModuleMember {
                     module_name: import_path,
@@ -2364,7 +2449,7 @@ impl<'a> Sema<'a> {
             }
         }
 
-        match self.reduce_type_ctor_body(member, &callee_types, &callee_values)? {
+        match self.reduce_type_ctor_body(function_key, &callee_types, &callee_values)? {
             Some(ConstValue::Type(ty)) => Ok(ConstInit::Value(ConstValue::Type(ty))),
             _ => Err(CompileError::new(
                 ErrorKind::ComptimeEvaluationFailed {
@@ -2465,7 +2550,8 @@ impl<'a> Sema<'a> {
             return Ok(None);
         };
 
-        if !self.functions.contains_key(&target) {
+        let internal_target = self.internal_function_name(target, span.file_id);
+        if !self.functions.contains_key(&internal_target) {
             self.collect_function_signature(
                 target,
                 params_start,

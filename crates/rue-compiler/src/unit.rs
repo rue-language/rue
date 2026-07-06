@@ -556,10 +556,11 @@ mod tests {
 
     #[test]
     fn test_duplicate_function_error() {
-        let sources = vec![
-            SourceFile::new("a.rue", "fn foo() -> i32 { 1 }", FileId::new(1)),
-            SourceFile::new("b.rue", "fn foo() -> i32 { 2 }", FileId::new(2)),
-        ];
+        let sources = vec![SourceFile::new(
+            "a.rue",
+            "fn foo() -> i32 { 1 } fn foo() -> i32 { 2 }",
+            FileId::new(1),
+        )];
         let mut unit = CompilationUnit::new(sources, CompileOptions::default());
 
         let result = unit.parse();

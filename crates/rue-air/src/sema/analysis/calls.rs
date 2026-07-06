@@ -354,13 +354,14 @@ impl<'a> Sema<'a> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        // Look up the function in the global function table. Not finding it
-        // there means the module certainly has no such member.
         let fn_name_str = self.interner.resolve(&function_name).to_string();
         let module_def = self.module_registry.get_def(module_id);
+        let module_file_id = self.canonical_file_id(&module_def.file_path);
+        let function_key = module_file_id
+            .and_then(|file_id| self.resolve_function_name_in_file(function_name, file_id));
         let fn_info = self
             .functions
-            .get(&function_name)
+            .get(&function_key.unwrap_or(function_name))
             .ok_or_compile_error(
                 ErrorKind::UnknownModuleMember {
                     module_name: module_def.import_path.clone(),
@@ -371,7 +372,8 @@ impl<'a> Sema<'a> {
             .clone();
 
         // Track this function as referenced (for lazy analysis)
-        ctx.referenced_functions.insert(function_name);
+        let function_key = function_key.unwrap_or(function_name);
+        ctx.referenced_functions.insert(function_key);
 
         let param_types = self.param_arena.types(fn_info.params).to_vec();
         let param_modes = self.param_arena.modes(fn_info.params).to_vec();
@@ -380,7 +382,7 @@ impl<'a> Sema<'a> {
         check_module_member_call(
             self.rir,
             &module_def.import_path,
-            self.canonical_file_id(&module_def.file_path),
+            module_file_id,
             fn_info.file_id,
             &fn_name_str,
             &param_types,
@@ -396,7 +398,7 @@ impl<'a> Sema<'a> {
         // RUE-166). Delegate to the unqualified call path, which emits
         // CallGeneric; module membership and accessibility were checked above.
         if fn_info.is_generic {
-            return self.analyze_call(air, function_name, args_start, args_len, span, ctx);
+            return self.analyze_call(air, function_key, args_start, args_len, span, ctx);
         }
 
         // Check for exclusive access violation. (The old, pre-deduplication
@@ -408,7 +410,7 @@ impl<'a> Sema<'a> {
 
         Ok(emit_module_member_call(
             air,
-            function_name,
+            function_key,
             &air_args,
             fn_info.return_type,
             span,

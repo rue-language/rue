@@ -55,6 +55,10 @@ pub struct GatherOutput<'a> {
     pub enums: HashMap<Spur, EnumId>,
     /// Function lookup: maps function name to info.
     pub functions: HashMap<Spur, FunctionInfo>,
+    /// Source-level function lookup keyed by defining file and source name.
+    pub functions_by_file_name: HashMap<(rue_span::FileId, Spur), Spur>,
+    /// Internal function key -> source-level function name.
+    pub function_source_names: HashMap<Spur, Spur>,
     /// Method lookup: maps (struct_id, method_name) to info.
     pub methods: HashMap<(StructId, Spur), MethodInfo>,
     /// Constant lookup: maps const name to info (value constants only).
@@ -88,6 +92,8 @@ impl<'a> GatherOutput<'a> {
             rir: self.rir,
             interner: self.interner,
             functions: self.functions,
+            functions_by_file_name: self.functions_by_file_name,
+            function_source_names: self.function_source_names,
             structs: self.structs,
             enums: self.enums,
             methods: self.methods,

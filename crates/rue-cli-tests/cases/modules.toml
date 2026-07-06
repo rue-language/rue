@@ -783,7 +783,6 @@ pub fn value() -> i32 {
 ]
 stdout = "30\n"
 exit_code = 30
-known_bug = "RUE-440"
 
 [[case]]
 name = "root_module_graph_same_file_reached_by_normalized_paths"

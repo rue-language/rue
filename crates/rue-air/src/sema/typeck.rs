@@ -1000,9 +1000,12 @@ impl<'a> Sema<'a> {
         ctx: Option<&AnalysisContext>,
     ) -> CompileResult<Type> {
         let name_sym = self.interner.get_or_intern(call_name);
+        let name_key = self
+            .resolve_function_name_in_file(name_sym, span.file_id)
+            .unwrap_or(name_sym);
 
         // The callee must be a known `-> type` constructor.
-        let Some(fn_info) = self.functions.get(&name_sym) else {
+        let Some(fn_info) = self.functions.get(&name_key) else {
             return Err(CompileError::new(
                 ErrorKind::UnknownType(format!("{}(...)", call_name)),
                 span,
@@ -1068,7 +1071,7 @@ impl<'a> Sema<'a> {
         // Reduce the constructor body under the substitution. Shares the exact
         // reduction path (and E1200 recursion guard) with value-position calls.
         let empty_values: HashMap<Spur, ConstValue> = HashMap::new();
-        match self.reduce_type_ctor_body(name_sym, &callee_types, &empty_values)? {
+        match self.reduce_type_ctor_body(name_key, &callee_types, &empty_values)? {
             Some(ConstValue::Type(t)) => Ok(t),
             _ => Err(CompileError::new(
                 ErrorKind::ComptimeEvaluationFailed {
@@ -1376,7 +1379,10 @@ impl<'a> Sema<'a> {
             |reason: String| CompileError::new(ErrorKind::InvalidArrayLength { reason }, span);
 
         let callee_sym = self.interner.get_or_intern(callee);
-        let Some(fn_info) = self.functions.get(&callee_sym) else {
+        let callee_key = self
+            .resolve_function_name_in_file(callee_sym, span.file_id)
+            .unwrap_or(callee_sym);
+        let Some(fn_info) = self.functions.get(&callee_key) else {
             return Err(invalid(format!(
                 "'{callee}' is not a function; array lengths must be an integer literal, a \
                  `const`, a `comptime` value parameter, or a call to a comptime function"
@@ -1413,7 +1419,7 @@ impl<'a> Sema<'a> {
             callee_values.insert(param_names[i], ConstValue::Integer(v as i128));
         }
         let empty_types: HashMap<Spur, Type> = HashMap::new();
-        match self.reduce_type_ctor_body(callee_sym, &empty_types, &callee_values)? {
+        match self.reduce_type_ctor_body(callee_key, &empty_types, &callee_values)? {
             Some(ConstValue::Integer(n)) if n >= 0 => u64::try_from(n)
                 .map_err(|_| invalid(format!("array length '{callee}(...)' ({n}) is too large"))),
             Some(ConstValue::Integer(n)) => Err(invalid(format!(
