@@ -135,6 +135,14 @@ impl PlaceTrace {
         }
         path
     }
+
+    /// Whether this place contains an index projection whose element cannot be
+    /// named statically in the move/drop path model.
+    pub fn has_untrackable_index(&self) -> bool {
+        self.projections
+            .iter()
+            .any(|p| matches!(p.proj, AirProjection::Index { .. }) && p.index_segment.is_none())
+    }
 }
 
 impl<'a> Sema<'a> {
@@ -337,6 +345,38 @@ impl<'a> Sema<'a> {
     /// Build an AirPlaceRef from a PlaceTrace, adding projections to the Air.
     pub(crate) fn build_place_ref(air: &mut Air, trace: &PlaceTrace) -> AirPlaceRef {
         let projs = trace.projections.iter().map(|p| p.proj);
+        air.make_place(trace.base, projs)
+    }
+
+    /// Build a `MarkMoved` place from a trace.
+    ///
+    /// Normal place reads keep the user's index expression, but move markers
+    /// must be statically decodable by drop elaboration. Re-emit constant index
+    /// projections with dedicated `Const` instructions so CFG lowering can turn
+    /// paths like `arr[0].field` into the moved path `[0, field]`.
+    pub(crate) fn build_move_marker_place_ref(
+        air: &mut Air,
+        trace: &PlaceTrace,
+        span: Span,
+    ) -> AirPlaceRef {
+        let mut projs = Vec::with_capacity(trace.projections.len());
+        for p in &trace.projections {
+            match p.proj {
+                AirProjection::Field { .. } => projs.push(p.proj),
+                AirProjection::Index { array_type, .. } => {
+                    let k = p
+                        .const_index
+                        .expect("move-marker index must be statically trackable");
+                    debug_assert!(k >= 0, "move-marker index must be non-negative");
+                    let index = air.add_inst(AirInst {
+                        data: AirInstData::Const(k as u64),
+                        ty: Type::U64,
+                        span,
+                    });
+                    projs.push(AirProjection::Index { array_type, index });
+                }
+            }
+        }
         air.make_place(trace.base, projs)
     }
 
@@ -3474,6 +3514,20 @@ impl<'a> Sema<'a> {
                 // For non-linear types, check if accessing a non-Copy field
                 self.reject_move_out_of_byref_param(trace.root_var, ctx, span)?;
                 self.reject_field_move_out_of_destructor_type(&trace, span)?;
+
+                if trace.has_untrackable_index() {
+                    return Err(CompileError::new(
+                        ErrorKind::MoveOutOfIndex {
+                            element_type: field_type.safe_name_with_pool(Some(&self.type_pool)),
+                        },
+                        span,
+                    )
+                    .with_help(
+                        "moving a field out through an array index requires a \
+                         compile-time constant index",
+                    ));
+                }
+
                 let field_path = trace.field_path();
 
                 // Check if this field path is already moved. Moving the field
@@ -3500,31 +3554,24 @@ impl<'a> Sema<'a> {
                     .or_default()
                     .mark_path_moved(&field_path, span);
 
-                // Export pure-field-path moves of any depth (`o.a`, `o.a.b`)
-                // to drop elaboration so the moved path's drop inside the
-                // struct's scope-exit drop is suppressed (RUE-62, RUE-157).
-                // Paths THROUGH an array index (`arr[i].a`) get no marker:
-                // drop elaboration keeps the whole-slot drop, which re-drops
-                // the moved element (a known gap; root-level element moves
-                // `arr[K]` ARE tracked — RUE-186 — but index-interior paths
-                // are not). Only Normal params occupy a real ABI slot that
-                // drop elaboration would drop.
-                let pure_field_path = trace
-                    .projections
-                    .iter()
-                    .all(|p| matches!(p.proj, AirProjection::Field { .. }));
-                if pure_field_path {
-                    let is_droppable_param_base = match trace.base {
-                        AirPlaceBase::Local(_) => true,
-                        AirPlaceBase::Param(_) => ctx
-                            .params
-                            .iter()
-                            .any(|p| p.name == trace.root_var && p.mode == RirParamMode::Normal),
-                    };
-                    if is_droppable_param_base {
-                        emit_move_marker = true;
-                        move_is_partial = true;
-                    }
+                // Export statically-trackable partial moves to drop elaboration
+                // so the moved path's drop inside the scope-exit drop is
+                // suppressed. This covers pure field paths (`o.a`, `o.a.b`,
+                // RUE-62/RUE-157) and constant-index array subfields
+                // (`arr[0].a`, RUE-494). Dynamic index paths were rejected
+                // above because drop elaboration cannot know which element was
+                // holed. Only Normal params occupy a real ABI slot that drop
+                // elaboration would drop.
+                let is_droppable_param_base = match trace.base {
+                    AirPlaceBase::Local(_) => true,
+                    AirPlaceBase::Param(_) => ctx
+                        .params
+                        .iter()
+                        .any(|p| p.name == trace.root_var && p.mode == RirParamMode::Normal),
+                };
+                if is_droppable_param_base {
+                    emit_move_marker = true;
+                    move_is_partial = true;
                 }
             } else {
                 // Copy fields are read, not moved — but reading one THROUGH
@@ -3561,12 +3608,14 @@ impl<'a> Sema<'a> {
                     AirPlaceBase::Local(slot) => (slot, false),
                     AirPlaceBase::Param(slot) => (slot, true),
                 };
+                let marker_place =
+                    move_is_partial.then(|| Self::build_move_marker_place_ref(air, &trace, span));
                 air_ref = air.add_inst(AirInst {
                     data: AirInstData::MarkMoved {
                         value: air_ref,
                         slot,
                         is_param,
-                        place: move_is_partial.then_some(place_ref),
+                        place: marker_place,
                     },
                     ty: field_type,
                     span,
