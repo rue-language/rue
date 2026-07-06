@@ -61,6 +61,10 @@ air (return_type: i32) {
 }
 """
 
+# Target-specific backend golden tests require an explicit target:
+# expected_mir, expected_lowering, expected_liveness, expected_regalloc,
+# expected_asm, and expected_stackframe.
+
 # Preview feature test (allowed to fail)
 [[case]]
 name = "some_preview_feature"

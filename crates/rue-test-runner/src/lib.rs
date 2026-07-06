@@ -114,7 +114,9 @@ impl<'de> Deserialize<'de> for ErrorContains {
 /// # Golden-IR assertions vs execution assertions
 ///
 /// Golden-IR assertions (`expected_tokens`, `expected_ast`, `expected_rir`,
-/// `expected_air`, `expected_cfg`, `expected_mir`) are checked by running
+/// `expected_air`, `expected_cfg`, `expected_mir`, `expected_lowering`,
+/// `expected_liveness`, `expected_regalloc`, `expected_asm`, and
+/// `expected_stackframe`) are checked by running
 /// `rue --emit <stage>` and comparing the dump. Execution assertions
 /// (`exit_code`, `expected_stdout`, `runtime_error`, warning checks, ...)
 /// are checked by compiling and running the program.
@@ -166,6 +168,21 @@ pub struct Case {
     /// Expected MIR dump (golden test)
     #[serde(default)]
     pub expected_mir: Option<String>,
+    /// Expected lowering dump (golden test)
+    #[serde(default)]
+    pub expected_lowering: Option<String>,
+    /// Expected liveness dump (golden test)
+    #[serde(default)]
+    pub expected_liveness: Option<String>,
+    /// Expected register allocation dump (golden test)
+    #[serde(default)]
+    pub expected_regalloc: Option<String>,
+    /// Expected assembly dump (golden test)
+    #[serde(default)]
+    pub expected_asm: Option<String>,
+    /// Expected stack frame dump (golden test)
+    #[serde(default)]
+    pub expected_stackframe: Option<String>,
     /// Expected CFG dump (golden test)
     #[serde(default)]
     pub expected_cfg: Option<String>,
@@ -207,7 +224,7 @@ pub struct Case {
     pub preview_should_pass: bool,
     /// Target architecture (e.g., "x86-64-linux", "aarch64-macos").
     /// When specified, the compiler is invoked with `--target <target>`.
-    /// Required for MIR golden tests; optional for other test types.
+    /// Required for target-specific golden tests; optional for other test types.
     #[serde(default)]
     pub target: Option<String>,
     /// Optimization level (0, 1, 2, or 3).
@@ -258,6 +275,22 @@ impl Case {
             || self.expected_air.is_some()
             || self.expected_cfg.is_some()
             || self.expected_mir.is_some()
+            || self.expected_lowering.is_some()
+            || self.expected_liveness.is_some()
+            || self.expected_regalloc.is_some()
+            || self.expected_asm.is_some()
+            || self.expected_stackframe.is_some()
+    }
+
+    /// Whether this case carries any golden-IR assertion whose output depends
+    /// on backend lowering or target-specific code generation.
+    pub fn has_target_specific_golden_ir_assertions(&self) -> bool {
+        self.expected_mir.is_some()
+            || self.expected_lowering.is_some()
+            || self.expected_liveness.is_some()
+            || self.expected_regalloc.is_some()
+            || self.expected_asm.is_some()
+            || self.expected_stackframe.is_some()
     }
 
     /// Whether this case carries assertions that require actually compiling
@@ -439,6 +472,11 @@ const PARAM_OVERRIDE_KEYS: &[&str] = &[
     "expected_air",
     "expected_cfg",
     "expected_mir",
+    "expected_lowering",
+    "expected_liveness",
+    "expected_regalloc",
+    "expected_asm",
+    "expected_stackframe",
     "warning_contains",
     "expected_warning_count",
     "spec_extra",
@@ -494,6 +532,26 @@ fn case_contains_placeholder(case: &Case, key: &str) -> bool {
             .is_some_and(|value| contains_placeholder(value, key))
         || case
             .expected_mir
+            .as_ref()
+            .is_some_and(|value| contains_placeholder(value, key))
+        || case
+            .expected_lowering
+            .as_ref()
+            .is_some_and(|value| contains_placeholder(value, key))
+        || case
+            .expected_liveness
+            .as_ref()
+            .is_some_and(|value| contains_placeholder(value, key))
+        || case
+            .expected_regalloc
+            .as_ref()
+            .is_some_and(|value| contains_placeholder(value, key))
+        || case
+            .expected_asm
+            .as_ref()
+            .is_some_and(|value| contains_placeholder(value, key))
+        || case
+            .expected_stackframe
             .as_ref()
             .is_some_and(|value| contains_placeholder(value, key))
         || case
@@ -619,6 +677,11 @@ pub fn expand_case(case: Case) -> Vec<Case> {
                 expected_rir: substitute_optional_string(&case.expected_rir, params),
                 expected_air: substitute_optional_string(&case.expected_air, params),
                 expected_mir: substitute_optional_string(&case.expected_mir, params),
+                expected_lowering: substitute_optional_string(&case.expected_lowering, params),
+                expected_liveness: substitute_optional_string(&case.expected_liveness, params),
+                expected_regalloc: substitute_optional_string(&case.expected_regalloc, params),
+                expected_asm: substitute_optional_string(&case.expected_asm, params),
+                expected_stackframe: substitute_optional_string(&case.expected_stackframe, params),
                 expected_cfg: substitute_optional_string(&case.expected_cfg, params),
                 runtime_error: substitute_optional_string(&case.runtime_error, params),
                 warning_contains: substitute_optional_string_vec(&case.warning_contains, params),
@@ -759,6 +822,31 @@ pub fn expand_case(case: Case) -> Vec<Case> {
             if let Some(value) = params.get("expected_mir") {
                 if let Some(s) = value.as_str() {
                     expanded.expected_mir = Some(substitute_placeholders(s, params));
+                }
+            }
+            if let Some(value) = params.get("expected_lowering") {
+                if let Some(s) = value.as_str() {
+                    expanded.expected_lowering = Some(substitute_placeholders(s, params));
+                }
+            }
+            if let Some(value) = params.get("expected_liveness") {
+                if let Some(s) = value.as_str() {
+                    expanded.expected_liveness = Some(substitute_placeholders(s, params));
+                }
+            }
+            if let Some(value) = params.get("expected_regalloc") {
+                if let Some(s) = value.as_str() {
+                    expanded.expected_regalloc = Some(substitute_placeholders(s, params));
+                }
+            }
+            if let Some(value) = params.get("expected_asm") {
+                if let Some(s) = value.as_str() {
+                    expanded.expected_asm = Some(substitute_placeholders(s, params));
+                }
+            }
+            if let Some(value) = params.get("expected_stackframe") {
+                if let Some(s) = value.as_str() {
+                    expanded.expected_stackframe = Some(substitute_placeholders(s, params));
                 }
             }
             if let Some(value) = params.get("warning_contains") {
@@ -1278,8 +1366,6 @@ pub fn check_golden(actual: &str, expected: &str, label: &str) -> TestResult {
 /// Map emit stage flag to the header name used in the compiler output.
 /// For example, "rir" -> "RIR", "tokens" -> "Tokens"
 ///
-/// Only stages with a corresponding `expected_*` field on [`Case`] are
-/// listed; if an `expected_asm` field is ever added, extend this mapping.
 fn stage_to_header_name(stage: &str) -> &'static str {
     match stage {
         "tokens" => "Tokens",
@@ -1288,6 +1374,11 @@ fn stage_to_header_name(stage: &str) -> &'static str {
         "air" => "AIR",
         "cfg" => "CFG",
         "mir" => "MIR",
+        "lowering" => "Instruction Selection",
+        "liveness" => "Liveness Analysis",
+        "regalloc" => "Register Allocation",
+        "asm" => "Assembly",
+        "stackframe" => "Stack Frame",
         _ => panic!("Unknown stage: {}", stage),
     }
 }
@@ -1609,7 +1700,7 @@ pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
     // wedging the whole suite.
     let compile_timeout = Duration::from_millis(case.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS));
 
-    // Check for golden IR tests (tokens, AST, RIR, AIR, CFG, MIR)
+    // Check for golden IR tests.
     if case.has_golden_ir_assertions() {
         // A program that fails to compile has no IR to dump, so this
         // combination can never be satisfied — reject it loudly rather than
@@ -1676,18 +1767,72 @@ pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
             )?;
         }
 
+        if case.has_target_specific_golden_ir_assertions() && case.target.is_none() {
+            return Err("target-specific golden IR tests require a 'target' field \
+                 (e.g., target = \"x86-64-linux\")"
+                .to_string());
+        }
+
         if let Some(ref expected) = case.expected_mir {
-            // MIR golden tests require an explicit target since MIR is architecture-specific.
-            if case.target.is_none() {
-                return Err(
-                    "MIR golden tests require a 'target' field (e.g., target = \"x86-64-linux\")"
-                        .to_string(),
-                );
-            }
             run_golden_ir_test(
                 rue_binary,
                 &source_path,
                 "mir",
+                expected,
+                &build_command,
+                compile_timeout,
+            )?;
+        }
+
+        if let Some(ref expected) = case.expected_lowering {
+            run_golden_ir_test(
+                rue_binary,
+                &source_path,
+                "lowering",
+                expected,
+                &build_command,
+                compile_timeout,
+            )?;
+        }
+
+        if let Some(ref expected) = case.expected_liveness {
+            run_golden_ir_test(
+                rue_binary,
+                &source_path,
+                "liveness",
+                expected,
+                &build_command,
+                compile_timeout,
+            )?;
+        }
+
+        if let Some(ref expected) = case.expected_regalloc {
+            run_golden_ir_test(
+                rue_binary,
+                &source_path,
+                "regalloc",
+                expected,
+                &build_command,
+                compile_timeout,
+            )?;
+        }
+
+        if let Some(ref expected) = case.expected_asm {
+            run_golden_ir_test(
+                rue_binary,
+                &source_path,
+                "asm",
+                expected,
+                &build_command,
+                compile_timeout,
+            )?;
+        }
+
+        if let Some(ref expected) = case.expected_stackframe {
+            run_golden_ir_test(
+                rue_binary,
+                &source_path,
+                "stackframe",
                 expected,
                 &build_command,
                 compile_timeout,
@@ -1980,6 +2125,11 @@ mod tests {
             expected_rir: None,
             expected_air: None,
             expected_mir: None,
+            expected_lowering: None,
+            expected_liveness: None,
+            expected_regalloc: None,
+            expected_asm: None,
+            expected_stackframe: None,
             expected_cfg: None,
             runtime_error: None,
             runtime_exit_code: None,
@@ -2030,6 +2180,11 @@ mod tests {
             expected_rir: None,
             expected_air: None,
             expected_mir: None,
+            expected_lowering: None,
+            expected_liveness: None,
+            expected_regalloc: None,
+            expected_asm: None,
+            expected_stackframe: None,
             expected_cfg: None,
             runtime_error: None,
             runtime_exit_code: None,
@@ -2088,6 +2243,11 @@ mod tests {
             expected_rir: None,
             expected_air: None,
             expected_mir: None,
+            expected_lowering: None,
+            expected_liveness: None,
+            expected_regalloc: None,
+            expected_asm: None,
+            expected_stackframe: None,
             expected_cfg: None,
             runtime_error: None,
             runtime_exit_code: None,
@@ -2138,6 +2298,11 @@ mod tests {
             expected_rir: None,
             expected_air: None,
             expected_mir: None,
+            expected_lowering: None,
+            expected_liveness: None,
+            expected_regalloc: None,
+            expected_asm: None,
+            expected_stackframe: None,
             expected_cfg: None,
             runtime_error: None,
             runtime_exit_code: None,
@@ -2638,6 +2803,11 @@ params = [
             expected_rir: None,
             expected_air: None,
             expected_mir: None,
+            expected_lowering: None,
+            expected_liveness: None,
+            expected_regalloc: None,
+            expected_asm: None,
+            expected_stackframe: None,
             expected_cfg: None,
             runtime_error: None,
             runtime_exit_code: None,

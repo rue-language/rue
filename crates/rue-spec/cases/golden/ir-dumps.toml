@@ -795,3 +795,40 @@ expected_rir = """
     %2
 }
 """
+
+# =============================================================================
+# Backend emit stages
+# =============================================================================
+
+[[case]]
+name = "simple_return_lowering"
+spec = ["2.1:1"]
+source = "fn main() -> i32 { 42 }"
+target = "x86-64-linux"
+expected_lowering = """
+bb0:
+
+  CFG: v0 = const 42 : i32
+    -> mov v0, 42
+    Decision: 32-bit immediate (zero-extends to 64-bit)
+
+  Terminator: return v0
+    -> mov rdi, v0
+    -> call sym0
+    Decision: Main function: return value becomes exit code
+"""
+
+[[case]]
+name = "simple_return_stackframe"
+spec = ["2.1:1"]
+source = "fn main() -> i32 { 42 }"
+target = "x86-64-linux"
+expected_stackframe = """
+Frame size: 16 bytes
+Alignment: 16 bytes
+
+Layout (rbp-relative):
+  [rbp  -8] : saved r12 (callee-saved)
+
+Return: rax (Type::I32)
+"""
