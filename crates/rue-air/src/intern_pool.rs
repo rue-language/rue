@@ -39,6 +39,7 @@ use std::collections::HashMap;
 use std::sync::{PoisonError, RwLock};
 
 use lasso::Spur;
+use rue_span::FileId;
 
 use crate::types::{
     ArrayTypeId, EnumDef, EnumId, PtrConstTypeId, PtrMutTypeId, StructDef, StructId, Type, TypeKind,
@@ -269,11 +270,23 @@ struct TypeInternPoolInner {
     /// Structural type deduplication: pointee -> InternedType for ptr mut.
     ptr_mut_map: HashMap<InternedType, InternedType>,
 
-    /// Nominal type lookup: name -> InternedType for structs.
+    /// Nominal type lookup for globally unique struct names.
+    ///
+    /// Module-local user types are keyed by `(defining file, source name)` in
+    /// `struct_by_file_name`. This compatibility map keeps unqualified lookup
+    /// working for names that are still unique across the loaded source graph.
     struct_by_name: HashMap<Spur, InternedType>,
 
-    /// Nominal type lookup: name -> InternedType for enums.
+    /// Nominal struct lookup: (defining file, source name) -> InternedType.
+    struct_by_file_name: HashMap<(FileId, Spur), InternedType>,
+
+    /// Nominal type lookup for globally unique enum names.
+    ///
+    /// See `struct_by_name` for the compatibility semantics.
     enum_by_name: HashMap<Spur, InternedType>,
+
+    /// Nominal enum lookup: (defining file, source name) -> InternedType.
+    enum_by_file_name: HashMap<(FileId, Spur), InternedType>,
 }
 
 impl TypeInternPool {
@@ -286,7 +299,9 @@ impl TypeInternPool {
                 ptr_const_map: HashMap::new(),
                 ptr_mut_map: HashMap::new(),
                 struct_by_name: HashMap::new(),
+                struct_by_file_name: HashMap::new(),
                 enum_by_name: HashMap::new(),
+                enum_by_file_name: HashMap::new(),
             }),
         }
     }
@@ -294,12 +309,14 @@ impl TypeInternPool {
     /// Register a new struct (nominal - no deduplication).
     ///
     /// Returns the `StructId` (containing the pool index) and whether it was newly inserted.
-    /// If a struct with this name already exists, returns the existing StructId.
+    /// If a struct with this name in the same defining file already exists, returns the existing
+    /// StructId.
     pub fn register_struct(&self, name: Spur, def: StructDef) -> (StructId, bool) {
+        let key = (def.file_id, name);
         // Fast path: check with read lock
         {
             let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
-            if let Some(&existing) = inner.struct_by_name.get(&name) {
+            if let Some(&existing) = inner.struct_by_file_name.get(&key) {
                 // Convert InternedType back to StructId via pool_index
                 let pool_index = existing.pool_index().expect("struct must have pool index");
                 return (StructId::from_pool_index(pool_index), false);
@@ -310,7 +327,7 @@ impl TypeInternPool {
         let mut inner = self.inner.write().unwrap_or_else(PoisonError::into_inner);
 
         // Double-check after acquiring write lock
-        if let Some(&existing) = inner.struct_by_name.get(&name) {
+        if let Some(&existing) = inner.struct_by_file_name.get(&key) {
             let pool_index = existing.pool_index().expect("struct must have pool index");
             return (StructId::from_pool_index(pool_index), false);
         }
@@ -320,7 +337,16 @@ impl TypeInternPool {
         let interned = InternedType::from_pool_index(pool_index);
 
         inner.types.push(TypeData::Struct(StructData { name, def }));
-        inner.struct_by_name.insert(name, interned);
+        let name_was_unique = !inner
+            .struct_by_file_name
+            .keys()
+            .any(|(_, existing_name)| *existing_name == name);
+        inner.struct_by_file_name.insert(key, interned);
+        if name_was_unique {
+            inner.struct_by_name.insert(name, interned);
+        } else {
+            inner.struct_by_name.remove(&name);
+        }
 
         (StructId::from_pool_index(pool_index), true)
     }
@@ -412,27 +438,39 @@ impl TypeInternPool {
 
         // Check that a struct with this name doesn't already exist
         assert!(
-            !inner.struct_by_name.contains_key(&name),
+            !inner.struct_by_file_name.contains_key(&(def.file_id, name)),
             "Struct with this name already exists"
         );
 
         // Update the placeholder with actual data
+        let key = (def.file_id, name);
         inner.types[pool_index] = TypeData::Struct(StructData { name, def });
 
         // Register in the name lookup
         let interned = InternedType::from_pool_index(pool_index as u32);
-        inner.struct_by_name.insert(name, interned);
+        let name_was_unique = !inner
+            .struct_by_file_name
+            .keys()
+            .any(|(_, existing_name)| *existing_name == name);
+        inner.struct_by_file_name.insert(key, interned);
+        if name_was_unique {
+            inner.struct_by_name.insert(name, interned);
+        } else {
+            inner.struct_by_name.remove(&name);
+        }
     }
 
     /// Register a new enum (nominal - no deduplication).
     ///
     /// Returns the `EnumId` (containing the pool index) and whether it was newly inserted.
-    /// If an enum with this name already exists, returns the existing EnumId.
+    /// If an enum with this name in the same defining file already exists, returns the existing
+    /// EnumId.
     pub fn register_enum(&self, name: Spur, def: EnumDef) -> (EnumId, bool) {
+        let key = (def.file_id, name);
         // Fast path: check with read lock
         {
             let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
-            if let Some(&existing) = inner.enum_by_name.get(&name) {
+            if let Some(&existing) = inner.enum_by_file_name.get(&key) {
                 let pool_index = existing.pool_index().expect("enum must have pool index");
                 return (EnumId::from_pool_index(pool_index), false);
             }
@@ -442,7 +480,7 @@ impl TypeInternPool {
         let mut inner = self.inner.write().unwrap_or_else(PoisonError::into_inner);
 
         // Double-check after acquiring write lock
-        if let Some(&existing) = inner.enum_by_name.get(&name) {
+        if let Some(&existing) = inner.enum_by_file_name.get(&key) {
             let pool_index = existing.pool_index().expect("enum must have pool index");
             return (EnumId::from_pool_index(pool_index), false);
         }
@@ -452,7 +490,16 @@ impl TypeInternPool {
         let interned = InternedType::from_pool_index(pool_index);
 
         inner.types.push(TypeData::Enum(EnumData { name, def }));
-        inner.enum_by_name.insert(name, interned);
+        let name_was_unique = !inner
+            .enum_by_file_name
+            .keys()
+            .any(|(_, existing_name)| *existing_name == name);
+        inner.enum_by_file_name.insert(key, interned);
+        if name_was_unique {
+            inner.enum_by_name.insert(name, interned);
+        } else {
+            inner.enum_by_name.remove(&name);
+        }
 
         (EnumId::from_pool_index(pool_index), true)
     }
@@ -559,10 +606,22 @@ impl TypeInternPool {
         inner.struct_by_name.get(&name).copied()
     }
 
+    /// Look up a struct by defining file and source name.
+    pub fn get_struct_by_file_name(&self, file_id: FileId, name: Spur) -> Option<InternedType> {
+        let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
+        inner.struct_by_file_name.get(&(file_id, name)).copied()
+    }
+
     /// Look up an enum by name.
     pub fn get_enum_by_name(&self, name: Spur) -> Option<InternedType> {
         let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
         inner.enum_by_name.get(&name).copied()
+    }
+
+    /// Look up an enum by defining file and source name.
+    pub fn get_enum_by_file_name(&self, file_id: FileId, name: Spur) -> Option<InternedType> {
+        let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
+        inner.enum_by_file_name.get(&(file_id, name)).copied()
     }
 
     /// Look up an array type by element and length.
@@ -932,19 +991,13 @@ impl TypeInternPool {
     /// structs (e.g., for drop glue synthesis).
     pub fn all_struct_ids(&self) -> Vec<StructId> {
         let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
-        // A struct may be reachable under more than one name (a deprecated
-        // type-name alias registered via `alias_struct_name`, e.g. ADR-0043's
-        // `String` -> `StrBuf`). De-duplicate by pool index so each struct is
-        // returned exactly once — callers such as drop-glue generation must not
-        // process the same struct twice.
-        let mut seen = std::collections::HashSet::new();
         inner
-            .struct_by_name
-            .values()
-            .filter_map(|interned| {
-                let pool_index = interned.pool_index().expect("struct must have pool index");
-                seen.insert(pool_index)
-                    .then(|| StructId::from_pool_index(pool_index))
+            .types
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, data)| match data {
+                TypeData::Struct(_) => Some(StructId::from_pool_index(idx as u32)),
+                _ => None,
             })
             .collect()
     }
@@ -956,11 +1009,12 @@ impl TypeInternPool {
     pub fn all_enum_ids(&self) -> Vec<EnumId> {
         let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
         inner
-            .enum_by_name
-            .values()
-            .map(|interned| {
-                let pool_index = interned.pool_index().expect("enum must have pool index");
-                EnumId::from_pool_index(pool_index)
+            .types
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, data)| match data {
+                TypeData::Enum(_) => Some(EnumId::from_pool_index(idx as u32)),
+                _ => None,
             })
             .collect()
     }
@@ -1108,7 +1162,9 @@ impl Clone for TypeInternPool {
                 ptr_const_map: inner.ptr_const_map.clone(),
                 ptr_mut_map: inner.ptr_mut_map.clone(),
                 struct_by_name: inner.struct_by_name.clone(),
+                struct_by_file_name: inner.struct_by_file_name.clone(),
                 enum_by_name: inner.enum_by_name.clone(),
+                enum_by_file_name: inner.enum_by_file_name.clone(),
             }),
         }
     }

@@ -10,6 +10,7 @@ use rue_error::{CompileError, CompileResult, ErrorKind};
 use rue_span::FileId;
 
 use crate::types::EnumId;
+use rue_rir::InstData;
 
 use super::Sema;
 
@@ -114,16 +115,33 @@ impl Sema<'_> {
     /// Checks visibility: private enums are only accessible from the same directory.
     pub fn resolve_enum_through_module(
         &self,
-        _module_ref: rue_rir::InstRef,
+        module_ref: rue_rir::InstRef,
         type_name: lasso::Spur,
         span: rue_span::Span,
     ) -> CompileResult<EnumId> {
         let type_name_str = self.interner.resolve(&type_name);
 
-        // Try to find the enum globally
-        let enum_id = self.enums.get(&type_name).copied().ok_or_else(|| {
-            CompileError::new(ErrorKind::UnknownEnumType(type_name_str.to_string()), span)
-        })?;
+        let module_file_id = match &self.rir.get(module_ref).data {
+            InstData::VarRef { name } => self
+                .module_bindings
+                .get(&(span.file_id, *name))
+                .and_then(|binding| binding.ty.as_module())
+                .and_then(|module_id| {
+                    let module_def = self.module_registry.get_def(module_id);
+                    self.canonical_file_id(&module_def.file_path)
+                }),
+            _ => None,
+        };
+
+        // Try to find the enum in the referenced module. Fall back to the
+        // compatibility table for legacy/simple paths where the module
+        // expression is not a direct module binding.
+        let enum_id = module_file_id
+            .and_then(|file_id| self.enums_by_file_name.get(&(file_id, type_name)).copied())
+            .or_else(|| self.enums.get(&type_name).copied())
+            .ok_or_else(|| {
+                CompileError::new(ErrorKind::UnknownEnumType(type_name_str.to_string()), span)
+            })?;
 
         // Check visibility
         let enum_def = self.type_pool.enum_def(enum_id);

@@ -355,6 +355,58 @@ pub struct Point { x: i32, y: i32, }
 exit_code = 3
 
 [[case]]
+name = "same_named_structs_in_distinct_modules_are_distinct"
+spec = ["10.4:16"]
+description = "RUE-454: module-qualified type lookup uses the defining module, so sibling modules may each define `Point`."
+source = """
+const a = @import("a");
+const b = @import("b");
+
+fn main() -> i32 {
+    let p: a.Point = a.Point { x: 10 };
+    let q: b.Point = b.Point { y: 32 };
+    p.x + q.y
+}
+"""
+aux_files = { "a.rue" = """
+pub struct Point { x: i32, }
+""", "b.rue" = """
+pub struct Point { y: i32, }
+""" }
+exit_code = 42
+
+[[case]]
+name = "same_named_enums_in_distinct_modules_are_distinct"
+spec = ["10.4:15"]
+description = "RUE-454: module-qualified enum lookup uses the defining module, so sibling modules may each define `Color`."
+source = """
+const a = @import("a");
+const b = @import("b");
+
+fn main() -> i32 {
+    let left = a.pick_a();
+    let right = b.pick_b();
+    let x = match left {
+        a.Color::Red => 10,
+        a.Color::Green => 0,
+    };
+    let y = match right {
+        b.Color::Red => 0,
+        b.Color::Green => 32,
+    };
+    x + y
+}
+"""
+aux_files = { "a.rue" = """
+pub enum Color { Red, Green, }
+pub fn pick_a() -> Color { Color::Red }
+""", "b.rue" = """
+pub enum Color { Red, Green, }
+pub fn pick_b() -> Color { Color::Green }
+""" }
+exit_code = 42
+
+[[case]]
 name = "qualified_private_struct_literal_rejected"
 spec = ["10.4:18"]
 description = "A private struct named in a module-qualified struct literal from another directory is E0460 (resolves through the flat namespace)"

@@ -2928,12 +2928,14 @@ impl<'a> Sema<'a> {
             }
 
             InstData::StructInit {
+                module,
                 type_name,
                 fields_start,
                 fields_len,
                 ..
             } => self.analyze_struct_init(
                 air,
+                *module,
                 *type_name,
                 *fields_start,
                 *fields_len,
@@ -2963,6 +2965,7 @@ impl<'a> Sema<'a> {
     fn analyze_struct_init(
         &mut self,
         air: &mut Air,
+        module: Option<InstRef>,
         type_name: Spur,
         fields_start: u32,
         fields_len: u32,
@@ -2973,7 +2976,36 @@ impl<'a> Sema<'a> {
         // Look up the struct type
         // First check if it's a comptime type variable (e.g., `let Point = make_point(); Point { ... }`)
         let type_name_str = self.interner.resolve(&type_name);
-        let struct_id = if let Some(&ty) = ctx.comptime_type_vars.get(&type_name) {
+        let struct_id = if let Some(module_ref) = module {
+            let module_result = self.analyze_inst(air, module_ref, ctx)?;
+            let Some(module_id) = module_result.ty.as_module() else {
+                return Err(CompileError::new(
+                    ErrorKind::TypeMismatch {
+                        expected: "module".to_string(),
+                        found: module_result.ty.safe_name_with_pool(Some(&self.type_pool)),
+                    },
+                    span,
+                ));
+            };
+            let module_def = self.module_registry.get_def(module_id);
+            let module_file_id = self.canonical_file_id(&module_def.file_path);
+            let struct_id = module_file_id
+                .and_then(|file_id| {
+                    self.structs_by_file_name
+                        .get(&(file_id, type_name))
+                        .copied()
+                })
+                .ok_or_compile_error(ErrorKind::UnknownType(type_name_str.to_string()), span)?;
+            let def = self.type_pool.struct_def(struct_id);
+            self.check_unqualified_visibility(
+                "struct",
+                type_name_str,
+                def.file_id,
+                def.is_pub,
+                span,
+            )?;
+            struct_id
+        } else if let Some(&ty) = ctx.comptime_type_vars.get(&type_name) {
             // Extract struct ID from the comptime type
             match ty.kind() {
                 TypeKind::Struct(id) => id,
@@ -3709,88 +3741,88 @@ impl<'a> Sema<'a> {
         // Get the accessing file's directory for visibility check
         let accessing_file_path = self.get_source_path(span).map(|s| s.to_string());
 
-        // First, try to find a struct with this name that belongs to the module's file
-        if let Some(&struct_id) = self.structs.get(&member_name) {
+        // First, try to find a struct with this name defined by the module's
+        // file. Same-named structs in sibling modules are distinct nominal
+        // types (RUE-454).
+        if let Some(struct_id) = module_file_id.and_then(|file_id| {
+            self.structs_by_file_name
+                .get(&(file_id, member_name))
+                .copied()
+        }) {
             let struct_def = self.type_pool.struct_def(struct_id);
 
-            // Check if this struct was defined in the module's file
-            {
-                if module_file_id == Some(struct_def.file_id) {
-                    // Check visibility: pub structs are visible to all, private only to same directory
-                    if !struct_def.is_pub {
-                        // Check if accessing from same directory
-                        let same_dir = match &accessing_file_path {
-                            Some(accessing) => {
-                                let accessing_dir = std::path::Path::new(accessing).parent();
-                                let module_dir = std::path::Path::new(&module_file_path).parent();
-                                accessing_dir == module_dir
-                            }
-                            None => true, // Be permissive if we can't determine the path
-                        };
-
-                        if !same_dir {
-                            return Err(CompileError::new(
-                                ErrorKind::PrivateMemberAccess {
-                                    item_kind: "struct".to_string(),
-                                    name: member_name_str,
-                                },
-                                span,
-                            ));
-                        }
+            // Check visibility: pub structs are visible to all, private only to same directory
+            if !struct_def.is_pub {
+                // Check if accessing from same directory
+                let same_dir = match &accessing_file_path {
+                    Some(accessing) => {
+                        let accessing_dir = std::path::Path::new(accessing).parent();
+                        let module_dir = std::path::Path::new(&module_file_path).parent();
+                        accessing_dir == module_dir
                     }
+                    None => true, // Be permissive if we can't determine the path
+                };
 
-                    // Return a TypeConst instruction with the struct type
-                    let struct_type = Type::new_struct(struct_id);
-                    let air_ref = air.add_inst(AirInst {
-                        data: AirInstData::TypeConst(struct_type),
-                        ty: Type::COMPTIME_TYPE,
+                if !same_dir {
+                    return Err(CompileError::new(
+                        ErrorKind::PrivateMemberAccess {
+                            item_kind: "struct".to_string(),
+                            name: member_name_str,
+                        },
                         span,
-                    });
-                    return Ok(AnalysisResult::new(air_ref, Type::COMPTIME_TYPE));
+                    ));
                 }
             }
+
+            // Return a TypeConst instruction with the struct type
+            let struct_type = Type::new_struct(struct_id);
+            let air_ref = air.add_inst(AirInst {
+                data: AirInstData::TypeConst(struct_type),
+                ty: Type::COMPTIME_TYPE,
+                span,
+            });
+            return Ok(AnalysisResult::new(air_ref, Type::COMPTIME_TYPE));
         }
 
-        // Next, try to find an enum with this name that belongs to the module's file
-        if let Some(&enum_id) = self.enums.get(&member_name) {
+        // Next, try to find an enum with this name defined by the module's file.
+        if let Some(enum_id) = module_file_id.and_then(|file_id| {
+            self.enums_by_file_name
+                .get(&(file_id, member_name))
+                .copied()
+        }) {
             let enum_def = self.type_pool.enum_def(enum_id);
 
-            // Check if this enum was defined in the module's file
-            {
-                if module_file_id == Some(enum_def.file_id) {
-                    // Check visibility: pub enums are visible to all, private only to same directory
-                    if !enum_def.is_pub {
-                        // Check if accessing from same directory
-                        let same_dir = match &accessing_file_path {
-                            Some(accessing) => {
-                                let accessing_dir = std::path::Path::new(accessing).parent();
-                                let module_dir = std::path::Path::new(&module_file_path).parent();
-                                accessing_dir == module_dir
-                            }
-                            None => true, // Be permissive if we can't determine the path
-                        };
-
-                        if !same_dir {
-                            return Err(CompileError::new(
-                                ErrorKind::PrivateMemberAccess {
-                                    item_kind: "enum".to_string(),
-                                    name: member_name_str,
-                                },
-                                span,
-                            ));
-                        }
+            // Check visibility: pub enums are visible to all, private only to same directory
+            if !enum_def.is_pub {
+                // Check if accessing from same directory
+                let same_dir = match &accessing_file_path {
+                    Some(accessing) => {
+                        let accessing_dir = std::path::Path::new(accessing).parent();
+                        let module_dir = std::path::Path::new(&module_file_path).parent();
+                        accessing_dir == module_dir
                     }
+                    None => true, // Be permissive if we can't determine the path
+                };
 
-                    // Return a TypeConst instruction with the enum type
-                    let enum_type = Type::new_enum(enum_id);
-                    let air_ref = air.add_inst(AirInst {
-                        data: AirInstData::TypeConst(enum_type),
-                        ty: Type::COMPTIME_TYPE,
+                if !same_dir {
+                    return Err(CompileError::new(
+                        ErrorKind::PrivateMemberAccess {
+                            item_kind: "enum".to_string(),
+                            name: member_name_str,
+                        },
                         span,
-                    });
-                    return Ok(AnalysisResult::new(air_ref, Type::COMPTIME_TYPE));
+                    ));
                 }
             }
+
+            // Return a TypeConst instruction with the enum type
+            let enum_type = Type::new_enum(enum_id);
+            let air_ref = air.add_inst(AirInst {
+                data: AirInstData::TypeConst(enum_type),
+                ty: Type::COMPTIME_TYPE,
+                span,
+            });
+            return Ok(AnalysisResult::new(air_ref, Type::COMPTIME_TYPE));
         }
 
         // Next, try a const defined in the module's file. The headline case is
@@ -5565,7 +5597,10 @@ impl<'a> Sema<'a> {
         {
             return ty.as_enum().map(|id| (id, true));
         }
-        self.enums.get(&type_name).map(|&id| (id, false))
+        self.enums_by_file_name
+            .get(&(ctx.current_file_id, type_name))
+            .or_else(|| self.enums.get(&type_name))
+            .map(|&id| (id, false))
     }
 
     /// Analyze an associated function call.

@@ -396,6 +396,34 @@ fn main() -> i32 {
 args = ["color.rue", "main.rue", "-o", "prog"]
 exit_code = 2
 
+[[case]]
+name = "same_named_structs_in_sibling_modules"
+description = "RUE-454: module-local type identity allows sibling modules to export same-named structs."
+files = [
+    { path = "a.rue", source = """
+pub struct Item {
+    a: i32,
+}
+""" },
+    { path = "b.rue", source = """
+pub struct Item {
+    b: i32,
+}
+""" },
+    { path = "main.rue", source = """
+const a = @import("a");
+const b = @import("b");
+
+fn main() -> i32 {
+    let x: a.Item = a.Item { a: 19 };
+    let y: b.Item = b.Item { b: 23 };
+    x.a + y.b
+}
+""" },
+]
+args = ["main.rue", "-o", "prog"]
+exit_code = 42
+
 # Transitive discovery: main imports a, a imports b — only main.rue is on
 # the command line; the driver's import scan must load both (RUE-14).
 [[case]]
