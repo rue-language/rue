@@ -119,6 +119,55 @@ impl ModulePath {
         }
     }
 
+    /// Build ordered filesystem candidate groups for this import path.
+    ///
+    /// Each inner group contains candidates that should be considered
+    /// together within one precedence level. If any candidate in a group
+    /// exists, later groups must not be probed. This lets the CLI load both
+    /// `foo.rue` and `foo/_foo.rue` from the same base directory so sema can
+    /// report the ambiguity, while still preserving importer-dir-before-root
+    /// precedence.
+    ///
+    /// `std_dir`, when present, is the `$RUE_STD_PATH` directory and is probed
+    /// before importer/root-relative stdlib facades.
+    pub fn candidate_groups(
+        &self,
+        base_dirs: &[String],
+        std_dir: Option<&str>,
+    ) -> Vec<Vec<String>> {
+        let mut groups = Vec::new();
+
+        match self {
+            ModulePath::Std => {
+                if let Some(std_dir) = std_dir {
+                    groups.push(vec![join_base(std_dir, "_std.rue")]);
+                }
+                for base in base_dirs {
+                    groups.push(vec![join_base(base, "std/_std.rue")]);
+                }
+            }
+            ModulePath::ExplicitRue { path } => {
+                for base in base_dirs {
+                    groups.push(vec![join_base(base, path)]);
+                }
+            }
+            ModulePath::Simple { path } => {
+                let basename = Path::new(path)
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or(path);
+                for base in base_dirs {
+                    groups.push(vec![
+                        join_base(base, &format!("{path}.rue")),
+                        join_base(base, &format!("{path}/_{basename}.rue")),
+                    ]);
+                }
+            }
+        }
+
+        groups
+    }
+
     /// Resolve this import path against the loaded files, anchored to
     /// `base_dirs` (searched in order — importer's directory first, then the
     /// root file's directory; see spec 10.2:2).
@@ -176,23 +225,27 @@ impl ModulePath {
                 }
                 DirResolution::NotFound
             }
-            ModulePath::ExplicitRue { path } => {
-                for base in base_dirs {
-                    if let Some(hit) = find_exact(&join_base(base, path)) {
+            ModulePath::ExplicitRue { .. } => {
+                let base_dirs = base_dirs
+                    .iter()
+                    .map(|base| (*base).to_string())
+                    .collect::<Vec<_>>();
+                for group in self.candidate_groups(&base_dirs, None) {
+                    let candidate = &group[0];
+                    if let Some(hit) = find_exact(candidate) {
                         return DirResolution::Resolved(hit);
                     }
                 }
                 DirResolution::NotFound
             }
-            ModulePath::Simple { path } => {
-                let basename = Path::new(path)
-                    .file_name()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or(path);
-                for base in base_dirs {
-                    let file_module = find_exact(&join_base(base, &format!("{path}.rue")));
-                    let dir_module =
-                        find_exact(&join_base(base, &format!("{path}/_{basename}.rue")));
+            ModulePath::Simple { .. } => {
+                let base_dirs = base_dirs
+                    .iter()
+                    .map(|base| (*base).to_string())
+                    .collect::<Vec<_>>();
+                for group in self.candidate_groups(&base_dirs, None) {
+                    let file_module = find_exact(&group[0]);
+                    let dir_module = find_exact(&group[1]);
                     match (file_module, dir_module) {
                         (Some(file_module), Some(dir_module)) => {
                             // Both forms present in the SAME base directory:
@@ -212,6 +265,18 @@ impl ModulePath {
             }
         }
     }
+}
+
+/// Build ordered filesystem candidate groups for an import path string.
+///
+/// This is the public driver-facing entry point for the same candidate order
+/// used by [`ModulePath::resolve_in_dirs`].
+pub fn import_candidate_groups(
+    import_path: &str,
+    base_dirs: &[String],
+    std_dir: Option<&str>,
+) -> Vec<Vec<String>> {
+    ModulePath::parse(import_path).candidate_groups(base_dirs, std_dir)
 }
 
 /// Whether `candidate` ends with `suffix` at a path boundary (start of string
@@ -277,6 +342,52 @@ mod tests {
             ModulePath::Simple {
                 path: "utils/strings".to_string()
             }
+        );
+    }
+
+    // =========================================================================
+    // Candidate group tests
+    // =========================================================================
+
+    #[test]
+    fn test_candidate_groups_explicit_rue() {
+        assert_eq!(
+            import_candidate_groups("foo.rue", &owned(&["a", ""]), None),
+            vec![vec!["a/foo.rue".to_string()], vec!["foo.rue".to_string()]]
+        );
+    }
+
+    #[test]
+    fn test_candidate_groups_simple_groups_file_and_facade_per_base() {
+        assert_eq!(
+            import_candidate_groups("foo", &owned(&["a", ""]), None),
+            vec![
+                vec!["a/foo.rue".to_string(), "a/foo/_foo.rue".to_string()],
+                vec!["foo.rue".to_string(), "foo/_foo.rue".to_string()],
+            ]
+        );
+    }
+
+    #[test]
+    fn test_candidate_groups_nested_simple_uses_leaf_facade_name() {
+        assert_eq!(
+            import_candidate_groups("utils/strings", &owned(&["src"]), None),
+            vec![vec![
+                "src/utils/strings.rue".to_string(),
+                "src/utils/strings/_strings.rue".to_string(),
+            ]]
+        );
+    }
+
+    #[test]
+    fn test_candidate_groups_std_prefers_installed_facade() {
+        assert_eq!(
+            import_candidate_groups("std", &owned(&["a", ""]), Some("/opt/rue/std")),
+            vec![
+                vec!["/opt/rue/std/_std.rue".to_string()],
+                vec!["a/std/_std.rue".to_string()],
+                vec!["std/_std.rue".to_string()],
+            ]
         );
     }
 

@@ -49,6 +49,7 @@ pub use gather::GatherOutput;
 pub use inference_ctx::InferenceContext;
 pub use info::{AnonMethodSig, ConstInfo, FunctionInfo, MethodInfo};
 pub use known_symbols::KnownSymbols;
+pub use module_path::{DirResolution, ModulePath, import_candidate_groups};
 pub use output::{AnalyzedFunction, SemaOutput};
 
 use std::collections::HashMap;
