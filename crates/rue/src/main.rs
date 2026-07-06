@@ -1844,12 +1844,18 @@ fn handle_emit_multi_file(
             EmitStage::Lowering => {
                 if let Some(ref state) = frontend_state {
                     for func in &state.functions {
-                        let lowering_info = generate_lowering_info(
+                        let lowering_info = match generate_lowering_info(
                             &func.cfg,
                             &state.type_pool,
                             &state.interner,
                             options.target,
-                        );
+                        ) {
+                            Ok(info) => info,
+                            Err(e) => {
+                                diagnostics.print_error(&e);
+                                return Err(());
+                            }
+                        };
                         print!("{}", lowering_info);
                     }
                 }

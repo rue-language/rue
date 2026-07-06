@@ -408,7 +408,7 @@ impl<'a> CfgLower<'a> {
     ///
     /// This is like `lower()` but also captures detailed information about
     /// how each CFG instruction maps to MIR instructions.
-    pub fn lower_with_debug(mut self) -> (Aarch64Mir, crate::LoweringDebugInfo) {
+    pub fn lower_with_debug(mut self) -> CompileResult<(Aarch64Mir, crate::LoweringDebugInfo)> {
         use crate::cfg_lower::{format_cfg_inst_data, format_terminator};
         use crate::{
             BlockLoweringInfo, LoweringDebugInfo, LoweringDecision, TerminatorLoweringDecision,
@@ -503,7 +503,11 @@ impl<'a> CfgLower<'a> {
             debug_info.blocks.push(block_info);
         }
 
-        (self.mir, debug_info)
+        if let Some(err) = self.deferred_error.take() {
+            return Err(err);
+        }
+
+        Ok((self.mir, debug_info))
     }
 
     /// Generate rationale for instruction lowering decisions.
