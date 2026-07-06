@@ -1791,6 +1791,8 @@ fn handle_emit_multi_file(
         None
     };
 
+    use std::fmt::Write as _;
+
     // Now emit in order
     for stage in &options.emit_stages {
         match stage {
@@ -1842,6 +1844,7 @@ fn handle_emit_multi_file(
                 println!();
             }
             EmitStage::Lowering => {
+                let mut output = String::new();
                 if let Some(ref state) = frontend_state {
                     for func in &state.functions {
                         let lowering_info = match generate_lowering_info(
@@ -1856,13 +1859,15 @@ fn handle_emit_multi_file(
                                 return Err(());
                             }
                         };
-                        print!("{}", lowering_info);
+                        write!(&mut output, "{}", lowering_info).expect("write to String");
                     }
                 }
-                println!();
+                output.push('\n');
+                print!("{}", output);
             }
             EmitStage::Mir => {
-                println!("=== MIR ({}) ===", options.target);
+                let mut output = String::new();
+                writeln!(&mut output, "=== MIR ({}) ===", options.target).expect("write to String");
                 if let Some(ref state) = frontend_state {
                     for func in &state.functions {
                         let mir = match generate_mir(
@@ -1877,17 +1882,24 @@ fn handle_emit_multi_file(
                                 return Err(());
                             }
                         };
-                        println!("function {}:", func.analyzed.name);
-                        println!("{}", mir);
+                        writeln!(&mut output, "function {}:", func.analyzed.name)
+                            .expect("write to String");
+                        writeln!(&mut output, "{}", mir).expect("write to String");
                     }
                 }
-                println!();
+                output.push('\n');
+                print!("{}", output);
             }
             EmitStage::Liveness => {
-                println!("=== Liveness Analysis ({}) ===", options.target);
+                let mut output = String::new();
+                writeln!(
+                    &mut output,
+                    "=== Liveness Analysis ({}) ===",
+                    options.target
+                )
+                .expect("write to String");
                 if let Some(ref state) = frontend_state {
                     for func in &state.functions {
-                        println!("function {}:", func.analyzed.name);
                         let liveness_info = match generate_liveness_info(
                             &func.cfg,
                             &state.type_pool,
@@ -1900,16 +1912,24 @@ fn handle_emit_multi_file(
                                 return Err(());
                             }
                         };
-                        println!("{}", liveness_info);
+                        writeln!(&mut output, "function {}:", func.analyzed.name)
+                            .expect("write to String");
+                        writeln!(&mut output, "{}", liveness_info).expect("write to String");
                     }
                 }
-                println!();
+                output.push('\n');
+                print!("{}", output);
             }
             EmitStage::RegAlloc => {
-                println!("=== Register Allocation ({}) ===", options.target);
+                let mut output = String::new();
+                writeln!(
+                    &mut output,
+                    "=== Register Allocation ({}) ===",
+                    options.target
+                )
+                .expect("write to String");
                 if let Some(ref state) = frontend_state {
                     for func in &state.functions {
-                        println!("function {}:", func.analyzed.name);
                         let regalloc_info = match generate_regalloc_info(
                             &func.cfg,
                             &state.type_pool,
@@ -1922,17 +1942,20 @@ fn handle_emit_multi_file(
                                 return Err(());
                             }
                         };
-                        print!("{}", regalloc_info);
+                        writeln!(&mut output, "function {}:", func.analyzed.name)
+                            .expect("write to String");
+                        write!(&mut output, "{}", regalloc_info).expect("write to String");
                     }
                 }
-                println!();
+                output.push('\n');
+                print!("{}", output);
             }
             EmitStage::Asm => {
-                println!("=== Assembly ({}) ===", options.target);
+                let mut output = String::new();
+                writeln!(&mut output, "=== Assembly ({}) ===", options.target)
+                    .expect("write to String");
                 if let Some(ref state) = frontend_state {
                     for func in &state.functions {
-                        println!(".globl {}", func.analyzed.name);
-                        println!("{}:", func.analyzed.name);
                         let asm = match generate_emitted_asm(
                             &func.cfg,
                             &state.type_pool,
@@ -1946,12 +1969,17 @@ fn handle_emit_multi_file(
                                 return Err(());
                             }
                         };
-                        print!("{}", asm);
+                        writeln!(&mut output, ".globl {}", func.analyzed.name)
+                            .expect("write to String");
+                        writeln!(&mut output, "{}:", func.analyzed.name).expect("write to String");
+                        write!(&mut output, "{}", asm).expect("write to String");
                     }
                 }
-                println!();
+                output.push('\n');
+                print!("{}", output);
             }
             EmitStage::StackFrame => {
+                let mut output = String::new();
                 if let Some(ref state) = frontend_state {
                     for func in &state.functions {
                         let frame_info = match generate_stack_frame_info(
@@ -1967,9 +1995,10 @@ fn handle_emit_multi_file(
                                 return Err(());
                             }
                         };
-                        println!("{}", frame_info);
+                        writeln!(&mut output, "{}", frame_info).expect("write to String");
                     }
                 }
+                print!("{}", output);
             }
             EmitStage::Deps => unreachable!("--emit deps is handled before frontend emission"),
         }
