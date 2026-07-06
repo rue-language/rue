@@ -7,8 +7,8 @@
 // This is the ergonomic payoff of error handling. Compare `triple` below, which
 // unwraps with a single `?`, against the nested `match` it desugars to:
 //
-//     fn triple(n: i64) -> Option(i64) {
-//         let O = Option(i64);
+//     fn triple(n: i64) -> std.option.Option(i64) {
+//         let O = std.option.Option(i64);
 //         match parse_positive(n) {           // the `?`-free equivalent
 //             O::Some(v) => O::Some(v * 3),
 //             O::None => O::None,
@@ -18,32 +18,32 @@
 // `expr?` evaluates to the `Some` payload, and early-returns `None` from the
 // enclosing function (whose return type must itself be an `Option`) when `expr`
 // is `None`. The library `Option` is an ordinary comptime-generic enum, not a
-// builtin (see std/option.rue); `?` recognises it by shape (Some(T)/None).
+// builtin; `?` recognises it by shape (Some(T)/None).
 //
-// NOTE: `Option(i64)` names the type directly in a return position (RUE-241),
-// but constructing a variant or matching still needs a bound name
-// (`let O = Option(i64); O::Some(..)`), so each function opens with that `let`.
+// No prelude yet: import `std` explicitly. `std.option.Option(i64)` names the
+// standard-library type directly in a return position. Constructing a variant
+// or matching still needs a bound type name (`let O = std.option.Option(i64);
+// O::Some(..)`), so functions that construct or match variants bind `O`
+// locally.
 
-fn Option(comptime T: type) -> type {
-    enum { Some(T), None }
-}
+const std = @import("std");
 
 // parse_positive: Some(n) when n is positive, else None.
-fn parse_positive(n: i64) -> Option(i64) {
-    let O = Option(i64);
+fn parse_positive(n: i64) -> std.option.Option(i64) {
+    let O = std.option.Option(i64);
     if n > 0 { O::Some(n) } else { O::None }
 }
 
 // triple: unwrap the positive value with `?`, then wrap n * 3. On a None input
 // the `?` short-circuits and `triple` itself returns None.
-fn triple(n: i64) -> Option(i64) {
-    let O = Option(i64);
+fn triple(n: i64) -> std.option.Option(i64) {
+    let O = std.option.Option(i64);
     let v = parse_positive(n)?;
     O::Some(v * 3)
 }
 
 fn report(n: i64) {
-    let O = Option(i64);
+    let O = std.option.Option(i64);
     match triple(n) {
         O::Some(m) => println("triple: " + @to_string(m)),
         O::None => println("triple: none"),
