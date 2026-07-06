@@ -2464,6 +2464,49 @@ mod tests {
     }
 
     #[test]
+    fn test_module_local_unqualified_calls_with_duplicate_names() {
+        let sources = vec![
+            SourceFile::new(
+                "main.rue",
+                r#"fn main() -> i32 {
+                    let left = @import("left.rue");
+                    let right = @import("right.rue");
+                    left.entry() + right.entry()
+                }"#,
+                FileId::new(1),
+            ),
+            SourceFile::new(
+                "left.rue",
+                r#"pub fn entry() -> i32 { value() + first() + recur(1) }
+                fn value() -> i32 { 10 }
+                fn first() -> i32 { second() }
+                fn second() -> i32 { 1 }
+                fn recur(n: i32) -> i32 {
+                    if n == 0 { 0 } else { recur(n - 1) }
+                }"#,
+                FileId::new(2),
+            ),
+            SourceFile::new(
+                "right.rue",
+                r#"pub fn entry() -> i32 { value() + first() + recur(1) }
+                fn value() -> i32 { 20 }
+                fn first() -> i32 { second() }
+                fn second() -> i32 { 2 }
+                fn recur(n: i32) -> i32 {
+                    if n == 0 { 0 } else { recur(n - 1) }
+                }"#,
+                FileId::new(3),
+            ),
+        ];
+        let result = compile_multi_file_with_options(&sources, &CompileOptions::default());
+        assert!(
+            result.is_ok(),
+            "unqualified calls should resolve within the caller's module even when sibling modules define the same names: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
     fn test_module_duplicate_function_symbols_use_stable_paths_not_file_ids() {
         fn duplicate_value_function_names(
             main_id: FileId,

@@ -70,7 +70,11 @@ impl<'a> Sema<'a> {
         }
     }
 
-    pub(crate) fn resolve_function_name_in_file(
+    /// Resolve a source-level function name only in the given source file.
+    ///
+    /// This is the module-local lookup path used for unqualified calls before
+    /// considering the legacy graph-global compatibility fallback.
+    pub(crate) fn resolve_function_name_local(
         &self,
         source_name: Spur,
         file_id: FileId,
@@ -78,6 +82,16 @@ impl<'a> Sema<'a> {
         self.functions_by_file_name
             .get(&(file_id, source_name))
             .copied()
+    }
+
+    /// Resolve a source-level function name from a given file, preserving the
+    /// legacy global fallback while the flat model is being removed.
+    pub(crate) fn resolve_function_name_in_file(
+        &self,
+        source_name: Spur,
+        file_id: FileId,
+    ) -> Option<Spur> {
+        self.resolve_function_name_local(source_name, file_id)
             .or_else(|| {
                 if self.functions.contains_key(&source_name) {
                     Some(source_name)
