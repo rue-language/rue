@@ -2,7 +2,7 @@ use std::env;
 use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 #[cfg(target_os = "macos")]
 use std::process::Command;
 
@@ -958,6 +958,7 @@ fn get_peak_memory_bytes() -> Option<u64> {
 struct SourceManifest {
     path: PathBuf,
     allowed: std::collections::HashSet<PathBuf>,
+    declared_paths: std::collections::HashSet<PathBuf>,
 }
 
 impl SourceManifest {
@@ -971,6 +972,7 @@ impl SourceManifest {
             .unwrap_or_else(|| Path::new("."));
 
         let mut allowed = std::collections::HashSet::new();
+        let mut declared_paths = std::collections::HashSet::new();
         for (line_index, raw_line) in content.lines().enumerate() {
             let line_number = line_index + 1;
             let entry = parse_source_manifest_entry(raw_line);
@@ -984,6 +986,7 @@ impl SourceManifest {
             } else {
                 base_dir.join(entry_path)
             };
+            declared_paths.insert(normalize_lexical_path(&resolved));
             let canonical = fs::canonicalize(&resolved).map_err(|e| {
                 format!(
                     "Error reading source manifest '{}': line {} entry '{}' cannot be resolved: {}",
@@ -1002,6 +1005,7 @@ impl SourceManifest {
         Ok(Self {
             path: manifest_path.to_path_buf(),
             allowed,
+            declared_paths,
         })
     }
 
@@ -1009,9 +1013,35 @@ impl SourceManifest {
         self.allowed.contains(canonical)
     }
 
+    fn declares_path_without_probe(&self, path: &Path) -> bool {
+        self.declared_paths.contains(&normalize_lexical_path(path))
+    }
+
     fn display_path(&self) -> String {
         self.path.display().to_string()
     }
+}
+
+fn normalize_lexical_path(path: &Path) -> PathBuf {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(path)
+    };
+    let mut normalized = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::Normal(part) => normalized.push(part),
+            Component::RootDir | Component::Prefix(_) => normalized.push(component.as_os_str()),
+        }
+    }
+    normalized
 }
 
 fn parse_source_manifest_entry(raw_line: &str) -> String {
@@ -1247,9 +1277,17 @@ fn discover_and_load_imports(
                     .map(|group| group.into_iter().map(PathBuf::from).collect())
                     .collect();
 
+            let mut undeclared_candidate = None;
+            let mut resolved_import = false;
             'groups: for group in groups {
                 let mut group_hit = false;
                 for candidate in group {
+                    if let Some(manifest) = source_manifest
+                        && !manifest.declares_path_without_probe(&candidate)
+                    {
+                        undeclared_candidate.get_or_insert(candidate.clone());
+                        continue;
+                    }
                     let Ok(canonical) = fs::canonicalize(&candidate) else {
                         continue;
                     };
@@ -1295,8 +1333,23 @@ fn discover_and_load_imports(
                     group_hit = true;
                 }
                 if group_hit {
+                    resolved_import = true;
                     break 'groups;
                 }
+            }
+            if !resolved_import
+                && let (Some(manifest), Some(candidate)) = (source_manifest, undeclared_candidate)
+            {
+                eprintln!(
+                    "Error: import '{}' resolved to '{}' which is not listed in source manifest '{}'",
+                    import_str,
+                    candidate.display(),
+                    manifest.display_path()
+                );
+                eprintln!(
+                    "Source manifests constrain allowed reads; add the file to the manifest or remove the import."
+                );
+                return Err(());
             }
         }
     }
