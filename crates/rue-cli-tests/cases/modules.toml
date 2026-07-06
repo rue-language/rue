@@ -750,6 +750,42 @@ pub fn abs(x: i32) -> i32 {
 stdout = "35\n"
 
 [[case]]
+name = "root_module_graph_sibling_modules_may_share_function_names"
+description = "RUE-440: sibling imported modules should each be able to define `pub fn value()` when called through distinct module objects."
+files = [
+    { path = "main.rue", source = """
+const app = @import("app");
+
+fn main() -> i32 {
+    let result = app.run();
+    @dbg(result);
+    result
+}
+""" },
+    { path = "app/_app.rue", source = """
+pub const left = @import("left/entry.rue");
+pub const right = @import("right/entry.rue");
+
+pub fn run() -> i32 {
+    left.value() + right.value()
+}
+""" },
+    { path = "app/left/entry.rue", source = """
+pub fn value() -> i32 {
+    10
+}
+""" },
+    { path = "app/right/entry.rue", source = """
+pub fn value() -> i32 {
+    20
+}
+""" },
+]
+stdout = "30\n"
+exit_code = 30
+known_bug = "RUE-440"
+
+[[case]]
 name = "root_module_graph_same_file_reached_by_normalized_paths"
 description = "Root-only import discovery treats two normalized paths to the same file as one loaded module, not two semantic roots."
 files = [
