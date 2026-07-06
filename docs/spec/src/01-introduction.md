@@ -72,15 +72,15 @@ categories; this section defines the terminology used below.
 
 {{ rule(id="1.3:5", cat="informative") }}
 
-**Unspecified behavior** is behavior for which this specification permits a set of possibilities and does not require any particular one to be chosen or documented. Rue currently specifies most such choices — for example evaluation order (4.0) and drop order (3.9) — so this category has few instances today; it is defined for future use.
+**Unspecified behavior** is behavior for which this specification permits a set of possible results and does not require a conforming implementation to choose or document any particular result.
 
 {{ rule(id="1.3:6", cat="informative") }}
 
-**Implementation-defined behavior** is behavior for which this specification permits a set of possibilities and requires the implementation to choose one and **document** its choice. Examples: the growth strategy and resulting capacity of `StrBuf` (3.7); the in-memory layout of struct and array types (3.6); the width of `usize` and `isize` on a target (3.1); and the implementation limits of Appendix C.
+**Implementation-defined behavior** is behavior for which this specification permits a set of possible results and requires a conforming implementation to choose and **document** the result it provides.
 
 {{ rule(id="1.3:7", cat="informative") }}
 
-**Erroneous behavior** is behavior that is well-defined but constitutes a program error a conforming implementation is encouraged to diagnose — distinct from undefined behavior, which imposes no requirements at all. Rue currently has no erroneous behavior: conditions other languages leave erroneous, such as integer overflow, Rue instead *traps* as a defined runtime panic (3.1, 8.1). The category is defined so behaviors of this kind have a home if they later arise (for example, an opt-in wrapping-arithmetic mode).
+**Erroneous behavior** is behavior that is well-defined but constitutes a program error a conforming implementation is encouraged to diagnose.
 
 ## Normative Language
 
