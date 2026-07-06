@@ -288,9 +288,9 @@ exit_code = 42
 # =============================================================================
 # Unqualified Cross-Directory Access: Structs and Constants (RUE-183)
 # =============================================================================
-# The uniform privacy rule (10.3:7) covers every item kind, not just
-# functions: naming a private struct (annotation or literal) or reading a
-# private constant from another directory is E0460 through an imported module.
+# Unqualified lookup does not import another module's item names into the
+# current file. These references are rejected as unknown names before privacy
+# applies; module-qualified references exercise the privacy rule.
 
 [[case]]
 name = "cross_dir_unqualified_private_struct_error"
@@ -311,7 +311,7 @@ struct Point {
 }
 """ }
 compile_fail = true
-error_contains = "struct `Point` is private (defined in"
+error_contains = "unknown type 'Point'"
 
 [[case]]
 name = "cross_dir_unqualified_private_const_error"
@@ -328,14 +328,14 @@ aux_files = { "subdir/defs.rue" = """
 const LIMIT: i32 = 42;
 """ }
 compile_fail = true
-error_contains = "constant `LIMIT` is private (defined in"
+error_contains = "undefined variable 'LIMIT'"
 
 # =============================================================================
 # Unqualified Cross-Directory Access: Enums (RUE-185)
 # =============================================================================
-# The uniform privacy rule (10.3:7) covers enums too: naming a private enum
-# from another directory — in a type annotation, a variant construction, or a
-# match pattern — is E0460 through an imported module.
+# Unqualified lookup does not import enum names from another module into the
+# current file. These references are rejected as unknown names before privacy
+# applies; module-qualified references exercise the privacy rule.
 
 [[case]]
 name = "cross_dir_unqualified_private_enum_error"
@@ -357,4 +357,4 @@ enum Color {
 }
 """ }
 compile_fail = true
-error_contains = "enum `Color` is private (defined in"
+error_contains = "unknown type 'Color'"

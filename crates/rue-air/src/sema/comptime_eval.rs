@@ -1033,7 +1033,7 @@ impl Sema<'_> {
                 //    VarRef's own span locates the referencing file;
                 //    speculative callers (`try_evaluate_const*`) swallow the
                 //    error and defer to runtime analysis, which re-checks.
-                if let Some(info) = self.constants.get(name) {
+                if let Some(info) = self.constants_by_file_name.get(&(span.file_id, *name)) {
                     self.check_unqualified_visibility(
                         "constant",
                         self.interner.resolve(name),

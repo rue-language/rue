@@ -484,10 +484,11 @@ impl<'a> Sema<'a> {
             return self.get_or_create_str_struct(span);
         }
 
-        if let Some(&struct_id) = self
+        if let Some(struct_id) = self
             .structs_by_file_name
             .get(&(span.file_id, type_sym))
-            .or_else(|| self.structs.get(&type_sym))
+            .copied()
+            .or_else(|| self.resolve_builtin_struct_name(type_sym))
         {
             // Privacy (E0460, RUE-183): an unqualified type reference must
             // not reach a private struct defined in another directory —
@@ -504,10 +505,11 @@ impl<'a> Sema<'a> {
                 span,
             )?;
             Ok(Type::new_struct(struct_id))
-        } else if let Some(&enum_id) = self
+        } else if let Some(enum_id) = self
             .enums_by_file_name
             .get(&(span.file_id, type_sym))
-            .or_else(|| self.enums.get(&type_sym))
+            .copied()
+            .or_else(|| self.resolve_builtin_enum_name(type_sym))
         {
             // Privacy (E0460, RUE-185): same rule for enums — an unqualified
             // type reference must not reach a private enum defined in another

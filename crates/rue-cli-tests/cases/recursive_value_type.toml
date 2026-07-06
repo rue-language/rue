@@ -28,17 +28,19 @@ fn main() -> i32 { 0 }
 
 [[case]]
 name = "mutually_recursive_structs_multifile_is_e0483"
-description = "Cross-file mutual recursion `struct A { b: B }` / `struct B { a: A }` → clean E0483 (was SIGABRT 134)."
-args = ["a.rue", "b.rue", "-o", "prog"]
+description = "Cross-file mutual recursion through explicit module-qualified types → clean E0483 (was SIGABRT 134)."
+args = ["a.rue", "-o", "prog"]
 compile_fail = true
 error_contains = ["E0483", "infinite size"]
 files = [
     { path = "a.rue", source = """
-struct A { b: B }
+const bmod = @import("b.rue");
+pub struct A { b: bmod.B }
 fn main() -> i32 { 0 }
 """ },
     { path = "b.rue", source = """
-struct B { a: A }
+const amod = @import("a.rue");
+pub struct B { a: amod.A }
 """ },
 ]
 

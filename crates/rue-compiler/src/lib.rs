@@ -2222,16 +2222,20 @@ mod tests {
 
     #[test]
     fn test_cross_file_struct_usage() {
-        // Struct defined in types.rue, used in main.rue
+        // Struct defined in types.rue, used explicitly through its module.
         let sources = vec![
             SourceFile::new(
                 "main.rue",
-                "fn main() -> i32 { let p = Point { x: 1, y: 2 }; p.x + p.y }",
+                r#"const types = @import("types.rue");
+                fn main() -> i32 {
+                    let p = types.Point { x: 1, y: 2 };
+                    p.x + p.y
+                }"#,
                 FileId::new(1),
             ),
             SourceFile::new(
                 "types.rue",
-                "struct Point { x: i32, y: i32 }",
+                "pub struct Point { x: i32, y: i32 }",
                 FileId::new(2),
             ),
         ];
@@ -2245,21 +2249,28 @@ mod tests {
 
     #[test]
     fn test_cross_file_struct_as_function_param() {
-        // Struct defined in types.rue, function in utils.rue takes it as param
+        // Struct defined in types.rue, function in utils.rue takes it as an
+        // explicitly module-qualified param type.
         let sources = vec![
             SourceFile::new(
                 "main.rue",
-                "fn main() -> i32 { let p = Point { x: 10, y: 5 }; get_sum(p) }",
+                r#"const types = @import("types.rue");
+                const utils = @import("utils.rue");
+                fn main() -> i32 {
+                    let p = types.Point { x: 10, y: 5 };
+                    utils.get_sum(p)
+                }"#,
                 FileId::new(1),
             ),
             SourceFile::new(
                 "types.rue",
-                "struct Point { x: i32, y: i32 }",
+                "pub struct Point { x: i32, y: i32 }",
                 FileId::new(2),
             ),
             SourceFile::new(
                 "utils.rue",
-                "fn get_sum(p: Point) -> i32 { p.x + p.y }",
+                r#"const types = @import("types.rue");
+                pub fn get_sum(p: types.Point) -> i32 { p.x + p.y }"#,
                 FileId::new(3),
             ),
         ];
@@ -2273,19 +2284,24 @@ mod tests {
 
     #[test]
     fn test_cross_file_enum_usage() {
-        // Enum defined in types.rue, used in main.rue
+        // Enum defined in types.rue, used explicitly through its module.
         let sources = vec![
             SourceFile::new(
                 "main.rue",
-                r#"fn main() -> i32 {
-                    let c = Color::Red;
-                    match c { Color::Red => 1, Color::Green => 2, Color::Blue => 3 }
+                r#"const types = @import("types.rue");
+                fn main() -> i32 {
+                    let c = types.Color::Red;
+                    match c {
+                        types.Color::Red => 1,
+                        types.Color::Green => 2,
+                        types.Color::Blue => 3,
+                    }
                 }"#,
                 FileId::new(1),
             ),
             SourceFile::new(
                 "types.rue",
-                "enum Color { Red, Green, Blue }",
+                "pub enum Color { Red, Green, Blue }",
                 FileId::new(2),
             ),
         ];
@@ -2294,6 +2310,33 @@ mod tests {
             result.is_ok(),
             "cross-file enum usage should compile: {:?}",
             result.err()
+        );
+    }
+
+    #[test]
+    fn test_unqualified_sibling_type_and_const_lookup_is_rejected() {
+        let sources = vec![
+            SourceFile::new(
+                "main.rue",
+                r#"const lib = @import("lib.rue");
+                fn main() -> i32 {
+                    let s = Shared { n: LIMIT };
+                    match Mode::Fast { Mode::Fast => s.n, Mode::Slow => 0 }
+                }"#,
+                FileId::new(1),
+            ),
+            SourceFile::new(
+                "lib.rue",
+                r#"pub struct Shared { n: i32 }
+                pub enum Mode { Fast, Slow }
+                pub const LIMIT: i32 = 11;"#,
+                FileId::new(2),
+            ),
+        ];
+        let result = compile_multi_file_with_options(&sources, &CompileOptions::default());
+        assert!(
+            result.is_err(),
+            "loaded sibling modules should not inject public types or constants into the caller's unqualified namespace"
         );
     }
 

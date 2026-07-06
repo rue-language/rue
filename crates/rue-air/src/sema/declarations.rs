@@ -106,9 +106,21 @@ impl<'a> Sema<'a> {
         name: Spur,
         file_id: FileId,
     ) -> Option<&ConstInfo> {
-        self.constants_by_file_name
-            .get(&(file_id, name))
-            .or_else(|| self.constants.get(&name))
+        self.constants_by_file_name.get(&(file_id, name))
+    }
+
+    pub(crate) fn resolve_builtin_struct_name(&self, name: Spur) -> Option<StructId> {
+        self.structs
+            .get(&name)
+            .copied()
+            .filter(|id| self.type_pool.struct_def(*id).is_builtin)
+    }
+
+    pub(crate) fn resolve_builtin_enum_name(&self, name: Spur) -> Option<EnumId> {
+        self.enums
+            .get(&name)
+            .copied()
+            .filter(|id| Some(*id) == self.builtin_arch_id || Some(*id) == self.builtin_os_id)
     }
 
     /// Build an `InferenceContext` from the collected type information.

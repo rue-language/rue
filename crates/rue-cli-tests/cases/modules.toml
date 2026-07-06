@@ -1140,7 +1140,7 @@ exit_code = 42
 
 [[case]]
 name = "private_struct_cross_dir_unqualified_rejected"
-description = "Unqualified struct literal/annotation naming a private struct in another directory is E0460 (RUE-183) — fn-only privacy is not enough."
+description = "Unqualified struct literal/annotation does not see a struct from another module, even when that module is imported."
 files = [
     { path = "main.rue", source = """
 const lib = @import("sub/lib.rue");
@@ -1158,11 +1158,11 @@ struct Point {
 """ },
 ]
 compile_fail = true
-error_contains = ["E0460", "struct `Point` is private (defined in `sub/lib.rue`)"]
+error_contains = ["E0204", "unknown type 'Point'"]
 
 [[case]]
 name = "private_const_cross_dir_unqualified_rejected"
-description = "Unqualified read of a private constant in another directory is E0460 (RUE-183)."
+description = "Unqualified read does not see a constant from another module, even when that module is imported."
 files = [
     { path = "main.rue", source = """
 const lib = @import("sub/lib.rue");
@@ -1176,11 +1176,11 @@ const LIMIT: i32 = 99;
 """ },
 ]
 compile_fail = true
-error_contains = ["E0460", "constant `LIMIT` is private (defined in `sub/lib.rue`)"]
+error_contains = ["E0201", "undefined variable 'LIMIT'"]
 
 [[case]]
 name = "flat_multifile_private_struct_cross_dir_rejected"
-description = "Uniform privacy for structs (RUE-183): a private struct in a never-imported listed file is not nameable cross-directory."
+description = "Flat listed files do not inject private structs into another file's unqualified namespace."
 args = ["main.rue", "sub/lib.rue", "-o", "prog"]
 files = [
     { path = "main.rue", source = """
@@ -1197,11 +1197,11 @@ struct Point {
 """ },
 ]
 compile_fail = true
-error_contains = ["E0460", "struct `Point` is private (defined in `sub/lib.rue`)"]
+error_contains = ["E0204", "unknown type 'Point'"]
 
 [[case]]
 name = "flat_multifile_private_const_cross_dir_rejected"
-description = "Uniform privacy for constants (RUE-183): a private constant in a never-imported listed file is not readable cross-directory."
+description = "Flat listed files do not inject private constants into another file's unqualified namespace."
 args = ["main.rue", "sub/lib.rue", "-o", "prog"]
 files = [
     { path = "main.rue", source = """
@@ -1214,11 +1214,11 @@ const LIMIT: i32 = 99;
 """ },
 ]
 compile_fail = true
-error_contains = ["E0460", "constant `LIMIT` is private (defined in `sub/lib.rue`)"]
+error_contains = ["E0201", "undefined variable 'LIMIT'"]
 
 [[case]]
 name = "flat_multifile_private_const_in_const_init_rejected"
-description = "A constant initializer is a reference site too (RUE-183): `const X = LIMIT;` reading a private cross-directory constant is E0460."
+description = "A constant initializer does not see a constant from a different listed file unqualified."
 args = ["main.rue", "sub/lib.rue", "-o", "prog"]
 files = [
     { path = "main.rue", source = """
@@ -1233,11 +1233,11 @@ const LIMIT: i32 = 99;
 """ },
 ]
 compile_fail = true
-error_contains = ["E0460", "constant `LIMIT` is private (defined in `sub/lib.rue`)"]
+error_contains = ["E0434", "not supported in const context"]
 
 [[case]]
-name = "flat_multifile_pub_struct_and_const_cross_dir_allowed"
-description = "Positive control (RUE-183): pub structs and constants in another never-imported directory remain usable unqualified (spec 10.3:8)."
+name = "flat_multifile_pub_struct_and_const_cross_dir_rejected"
+description = "Pub structs and constants in another listed directory are not usable unqualified; use explicit module-qualified access."
 args = ["main.rue", "sub/lib.rue", "-o", "prog"]
 files = [
     { path = "main.rue", source = """
@@ -1254,11 +1254,12 @@ pub struct Point {
 pub const BONUS: i32 = 10;
 """ },
 ]
-exit_code = 42
+compile_fail = true
+error_contains = ["E0204", "unknown type 'Point'"]
 
 [[case]]
-name = "flat_multifile_private_struct_and_const_same_dir_allowed"
-description = "Control (RUE-183): intra-directory visibility is unchanged — private structs and constants in another listed file in the SAME directory are usable."
+name = "flat_multifile_private_struct_and_const_same_dir_rejected"
+description = "Another listed file in the same directory does not inject private structs/constants into the unqualified namespace."
 args = ["main.rue", "lib.rue", "-o", "prog"]
 files = [
     { path = "main.rue", source = """
@@ -1275,14 +1276,15 @@ struct Point {
 const BONUS: i32 = 10;
 """ },
 ]
-exit_code = 42
+compile_fail = true
+error_contains = ["E0204", "unknown type 'Point'"]
 
 # Enums obey the same uniform rule (RUE-185): naming a private enum from
 # another directory — annotation, variant construction, or match pattern —
 # is E0460, whether the file was imported or merely listed.
 [[case]]
 name = "private_enum_cross_dir_unqualified_rejected"
-description = "Unqualified annotation/construction naming a private enum in another directory is E0460 (RUE-185), imported or not."
+description = "Unqualified annotation/construction does not see an enum from another module, even when that module is imported."
 files = [
     { path = "main.rue", source = """
 const lib = @import("sub/lib.rue");
@@ -1301,11 +1303,11 @@ enum Color {
 """ },
 ]
 compile_fail = true
-error_contains = ["E0460", "enum `Color` is private (defined in `sub/lib.rue`)"]
+error_contains = ["E0204", "unknown type 'Color'"]
 
 [[case]]
 name = "flat_multifile_private_enum_construction_rejected"
-description = "Uniform privacy for enums (RUE-185): a variant of a private enum in a never-imported listed file is not constructible cross-directory."
+description = "Flat listed files do not inject private enum names into another file's unqualified namespace."
 args = ["main.rue", "sub/lib.rue", "-o", "prog"]
 files = [
     { path = "main.rue", source = """
@@ -1323,11 +1325,11 @@ enum Color {
 """ },
 ]
 compile_fail = true
-error_contains = ["E0460", "enum `Color` is private (defined in `sub/lib.rue`)"]
+error_contains = ["E0421", "unknown enum type 'Color'"]
 
 [[case]]
 name = "flat_multifile_private_enum_match_pattern_rejected"
-description = "A match pattern is a reference site too (RUE-185): matching on a private cross-directory enum is E0460 with the pattern's own file-attributed span, even when the scrutinee arrives via a pub fn."
+description = "Match patterns do not see private enum names from another listed file unqualified."
 args = ["main.rue", "sub/lib.rue", "-o", "prog"]
 files = [
     { path = "main.rue", source = """
@@ -1351,7 +1353,7 @@ pub fn make() -> Color {
 """ },
 ]
 compile_fail = true
-error_contains = ["E0460", "enum `Color` is private (defined in `sub/lib.rue`)", "main.rue"]
+error_contains = ["E0421", "unknown enum type 'Color'", "main.rue"]
 
 [[case]]
 name = "private_enum_module_qualified_pattern_rejected"
@@ -1382,8 +1384,8 @@ compile_fail = true
 error_contains = ["E0706", "enum `Color` is private"]
 
 [[case]]
-name = "flat_multifile_pub_enum_cross_dir_allowed"
-description = "Positive control (RUE-185): a pub enum in another never-imported directory remains usable unqualified — annotation, construction, and match (spec 10.3:8)."
+name = "flat_multifile_pub_enum_cross_dir_rejected"
+description = "A pub enum in another listed directory is not usable unqualified; use explicit module-qualified access."
 args = ["main.rue", "sub/lib.rue", "-o", "prog"]
 files = [
     { path = "main.rue", source = """
@@ -1404,7 +1406,8 @@ pub enum Color {
 }
 """ },
 ]
-exit_code = 42
+compile_fail = true
+error_contains = ["E0204", "unknown type 'Color'"]
 
 [[case]]
 name = "pub_enum_module_qualified_pattern_allowed"
@@ -1435,8 +1438,8 @@ pub fn make() -> Color {
 exit_code = 42
 
 [[case]]
-name = "flat_multifile_private_enum_same_dir_allowed"
-description = "Control (RUE-185): intra-directory visibility is unchanged — a private enum in another listed file in the SAME directory is usable."
+name = "flat_multifile_private_enum_same_dir_rejected"
+description = "Another listed file in the same directory does not inject private enum names into the unqualified namespace."
 args = ["main.rue", "lib.rue", "-o", "prog"]
 files = [
     { path = "main.rue", source = """
@@ -1457,7 +1460,8 @@ enum Color {
 }
 """ },
 ]
-exit_code = 42
+compile_fail = true
+error_contains = ["E0204", "unknown type 'Color'"]
 
 # ---------------------------------------------------------------------------
 # Nested module member access (RUE-122 regression coverage).
