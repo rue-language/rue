@@ -358,7 +358,7 @@ impl<'a> Sema<'a> {
         let module_def = self.module_registry.get_def(module_id);
         let module_file_id = self.canonical_file_id(&module_def.file_path);
         let function_key = module_file_id
-            .and_then(|file_id| self.resolve_function_name_in_file(function_name, file_id));
+            .and_then(|file_id| self.resolve_function_name_local(function_name, file_id));
         let fn_info = self
             .functions
             .get(&function_key.unwrap_or(function_name))
