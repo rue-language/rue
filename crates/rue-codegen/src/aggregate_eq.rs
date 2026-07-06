@@ -65,8 +65,8 @@ pub fn emit_aggregate_equality<B: AggregateEqBackend>(
     let rhs_slots = b
         .aggregate_slots(rhs)
         .expect("aggregate should have slot vregs");
-    debug_assert_eq!(lhs_slots.len(), leaf_types.len());
-    debug_assert_eq!(rhs_slots.len(), leaf_types.len());
+    assert_aggregate_slot_count("lhs", lhs_slots.len(), leaf_types.len());
+    assert_aggregate_slot_count("rhs", rhs_slots.len(), leaf_types.len());
 
     b.emit_bool_const(result_vreg, true);
 
@@ -83,5 +83,39 @@ pub fn emit_aggregate_equality<B: AggregateEqBackend>(
 
     if invert {
         b.emit_bool_not(result_vreg);
+    }
+}
+
+fn assert_aggregate_slot_count(side: &str, actual: usize, expected: usize) {
+    assert_eq!(
+        actual, expected,
+        "aggregate equality {side} slot count mismatch: value has {actual} slots, type has {expected} leaf slots"
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::assert_aggregate_slot_count;
+
+    #[test]
+    fn matching_aggregate_slot_count_is_valid() {
+        assert_aggregate_slot_count("lhs", 3, 3);
+        assert_aggregate_slot_count("rhs", 0, 0);
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "aggregate equality lhs slot count mismatch: value has 2 slots, type has 3 leaf slots"
+    )]
+    fn mismatched_lhs_aggregate_slot_count_panics() {
+        assert_aggregate_slot_count("lhs", 2, 3);
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "aggregate equality rhs slot count mismatch: value has 4 slots, type has 1 leaf slots"
+    )]
+    fn mismatched_rhs_aggregate_slot_count_panics() {
+        assert_aggregate_slot_count("rhs", 4, 1);
     }
 }
