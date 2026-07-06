@@ -173,6 +173,8 @@ pub struct ConstraintGenerator<'a> {
     structs_by_file_name: Option<&'a HashMap<(FileId, Spur), Type>>,
     /// Enum types (name -> Type::new_enum(id)).
     enums: &'a HashMap<Spur, Type>,
+    /// Module-local enum types ((defining file, source name) -> Type::new_enum(id)).
+    enums_by_file_name: Option<&'a HashMap<(FileId, Spur), Type>>,
     /// Method signatures: (struct_id, method_name) -> MethodSig
     methods: &'a HashMap<(StructId, Spur), MethodSig>,
     /// Type variables allocated for integer literals.
@@ -196,7 +198,8 @@ pub struct ConstraintGenerator<'a> {
     /// `None` only in unit tests; production passes the map via
     /// [`Self::with_module_binding_types`].
     module_binding_types: Option<&'a HashMap<(FileId, Spur), Type>>,
-    /// Module registry file identity for inference-time `module.Type` lookup.
+    /// Module registry file identity for inference-time `module.Type` and
+    /// `module.Enum` lookup.
     /// `None` only in unit tests; production passes the map via
     /// [`Self::with_module_file_ids`].
     module_file_ids: Option<&'a HashMap<crate::types::ModuleId, FileId>>,
@@ -280,6 +283,7 @@ impl<'a> ConstraintGenerator<'a> {
             structs,
             structs_by_file_name: None,
             enums,
+            enums_by_file_name: None,
             methods,
             int_literal_vars: Vec::new(),
             type_subst,
@@ -357,6 +361,16 @@ impl<'a> ConstraintGenerator<'a> {
         module_file_ids: &'a HashMap<crate::types::ModuleId, FileId>,
     ) -> Self {
         self.module_file_ids = Some(module_file_ids);
+        self
+    }
+
+    /// Provide module-local enum types for file-scoped and module-qualified
+    /// enum variant/pattern resolution.
+    pub fn with_enums_by_file_name(
+        mut self,
+        enums_by_file_name: &'a HashMap<(FileId, Spur), Type>,
+    ) -> Self {
+        self.enums_by_file_name = Some(enums_by_file_name);
         self
     }
 
@@ -1539,16 +1553,20 @@ impl<'a> ConstraintGenerator<'a> {
                     use crate::scope::ScopedContext;
                     ctx.push_scope();
                     if let rue_rir::RirPattern::Path {
+                        module,
                         type_name,
                         variant,
                         bindings,
                         span: pat_span,
-                        ..
                     } = pattern
                     {
                         if !bindings.is_empty() {
-                            if let Some(payload) = self
-                                .enum_type_for(type_name)
+                            let enum_ty = module
+                                .and_then(|module_ref| {
+                                    self.enum_type_for_module(module_ref, type_name)
+                                })
+                                .or_else(|| self.enum_type_for(type_name, pat_span.file_id));
+                            if let Some(payload) = enum_ty
                                 .and_then(|ty| ty.as_enum())
                                 .map(|id| self.type_pool.enum_def(id))
                                 .and_then(|def| {
@@ -1738,8 +1756,13 @@ impl<'a> ConstraintGenerator<'a> {
             }
 
             // Enum variant
-            InstData::EnumVariant { type_name, .. } => {
-                if let Some(enum_ty) = self.enum_type_for(type_name) {
+            InstData::EnumVariant {
+                module, type_name, ..
+            } => {
+                let enum_ty = module
+                    .and_then(|module_ref| self.enum_type_for_module(module_ref, type_name))
+                    .or_else(|| self.enum_type_for(type_name, span.file_id));
+                if let Some(enum_ty) = enum_ty {
                     InferType::Concrete(enum_ty)
                 } else {
                     InferType::Concrete(Type::ERROR)
@@ -1995,7 +2018,7 @@ impl<'a> ConstraintGenerator<'a> {
                 // (RUE-221). Checked here first so it takes precedence over the
                 // struct-method path below.
                 let enum_variant = self
-                    .enum_type_for(type_name)
+                    .enum_type_for(type_name, span.file_id)
                     .and_then(|ty| ty.as_enum().map(|id| (ty, id)))
                     .and_then(|(ty, id)| {
                         let def = self.type_pool.enum_def(id);
@@ -2239,11 +2262,35 @@ impl<'a> ConstraintGenerator<'a> {
     /// table. Mirrors sema's `resolve_enum_type_name`; without the
     /// comptime-alias lookup, generic-enum construction/matching inferred
     /// `<error>` and poisoned the surrounding constraints (RUE-6 phase 2).
-    fn enum_type_for(&self, type_name: &Spur) -> Option<Type> {
+    fn enum_type_for(&self, type_name: &Spur, file_id: FileId) -> Option<Type> {
         self.comptime_local_types
             .and_then(|aliases| aliases.get(type_name).copied())
             .filter(|ty| ty.is_enum())
+            .or_else(|| {
+                self.enums_by_file_name
+                    .and_then(|enums| enums.get(&(file_id, *type_name)))
+                    .copied()
+            })
             .or_else(|| self.enums.get(type_name).copied())
+    }
+
+    fn enum_type_for_module(&self, module: InstRef, type_name: &Spur) -> Option<Type> {
+        let inst = self.rir.get(module);
+        let InstData::VarRef { name } = &inst.data else {
+            return None;
+        };
+        let module_ty = self
+            .module_binding_types
+            .and_then(|bindings| bindings.get(&(inst.span.file_id, *name)))
+            .copied()?;
+        let module_id = module_ty.as_module()?;
+        let file_id = self
+            .module_file_ids
+            .and_then(|module_file_ids| module_file_ids.get(&module_id))
+            .copied()?;
+        self.enums_by_file_name
+            .and_then(|enums| enums.get(&(file_id, *type_name)))
+            .copied()
     }
 
     /// Get the inferred type for a pattern.
@@ -2256,8 +2303,13 @@ impl<'a> ConstraintGenerator<'a> {
             }
             rue_rir::RirPattern::Int { .. } => InferType::IntLiteral,
             rue_rir::RirPattern::Bool(_, _) => InferType::Concrete(Type::BOOL),
-            rue_rir::RirPattern::Path { type_name, .. } => {
-                if let Some(enum_ty) = self.enum_type_for(type_name) {
+            rue_rir::RirPattern::Path {
+                module, type_name, ..
+            } => {
+                let enum_ty = module
+                    .and_then(|module_ref| self.enum_type_for_module(module_ref, type_name))
+                    .or_else(|| self.enum_type_for(type_name, pattern.span().file_id));
+                if let Some(enum_ty) = enum_ty {
                     InferType::Concrete(enum_ty)
                 } else {
                     InferType::Concrete(Type::ERROR)

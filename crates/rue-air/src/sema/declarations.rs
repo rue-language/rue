@@ -187,6 +187,12 @@ impl<'a> Sema<'a> {
             .map(|(name, id)| (*name, Type::new_enum(*id)))
             .collect();
 
+        let enum_types_by_file_name: HashMap<(FileId, Spur), Type> = self
+            .enums_by_file_name
+            .iter()
+            .map(|(key, id)| (*key, Type::new_enum(*id)))
+            .collect();
+
         // Build method signatures with InferType for constraint generation
         let mut method_sigs: HashMap<(StructId, Spur), MethodSig> = self
             .methods
@@ -283,6 +289,7 @@ impl<'a> Sema<'a> {
             struct_types,
             struct_types_by_file_name,
             enum_types,
+            enum_types_by_file_name,
             method_sigs,
             const_types,
             const_type_aliases,
