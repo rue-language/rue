@@ -5087,6 +5087,9 @@ impl<'a> Sema<'a> {
             )?;
             name = callee;
         }
+        name = self
+            .resolve_function_name_in_file(name, span.file_id)
+            .unwrap_or(name);
 
         // `print(s)` / `println(s)` are builtin free functions (RUE-1), not
         // user-defined ones: intercept them here before the function lookup,
@@ -5100,7 +5103,8 @@ impl<'a> Sema<'a> {
         }
 
         // Look up the function
-        let fn_name_str = self.interner.resolve(&name).to_string();
+        let source_name = self.source_function_name(name);
+        let fn_name_str = self.interner.resolve(&source_name).to_string();
         let fn_info = self
             .functions
             .get(&name)

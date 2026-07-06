@@ -170,13 +170,17 @@ fn analyze_all_function_bodies_sequential(sema: &mut Sema<'_>) -> MultiErrorResu
                 continue;
             }
 
+            let function_key = sema
+                .resolve_function_name_in_file(*name, inst.span.file_id)
+                .unwrap_or(*name);
+
             // Skip FnDecls that are not in the functions table.
             // These are anonymous struct methods which are analyzed separately.
-            if !sema.functions.contains_key(name) {
+            if !sema.functions.contains_key(&function_key) {
                 continue;
             }
 
-            let Some(fn_info) = sema.functions.get(name).copied() else {
+            let Some(fn_info) = sema.functions.get(&function_key).copied() else {
                 continue;
             };
             // Skip functions with comptime parameters - they are analyzed per specialization
@@ -184,7 +188,7 @@ fn analyze_all_function_bodies_sequential(sema: &mut Sema<'_>) -> MultiErrorResu
                 continue;
             }
 
-            let fn_name = sema.interner.resolve(&*name).to_string();
+            let fn_name = sema.interner.resolve(&function_key).to_string();
             let params = sema.rir.get_params(*params_start, *params_len);
 
             match sema.analyze_single_function(
@@ -200,7 +204,7 @@ fn analyze_all_function_bodies_sequential(sema: &mut Sema<'_>) -> MultiErrorResu
                 Ok((analyzed, warnings, local_strings, mut ref_fns, _ref_meths)) => {
                     functions_with_strings.push((analyzed, local_strings));
                     all_warnings.extend(warnings);
-                    ref_fns.remove(name);
+                    ref_fns.remove(&function_key);
                     referenced_functions.extend(ref_fns);
                 }
                 Err(e) => errors.push(e),
@@ -552,7 +556,8 @@ fn add_unused_function_warnings(
     let main_sym = sema.interner.get("main");
 
     for (name, info) in &sema.functions {
-        let name_str = sema.interner.resolve(name);
+        let source_name = sema.source_function_name(*name);
+        let name_str = sema.interner.resolve(&source_name);
         if Some(*name) == main_sym
             || info.is_pub
             || info.allow_unused_function
@@ -656,7 +661,10 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
                     ..
                 } = &inst.data
                 {
-                    if *name == fn_name && !method_refs.contains(&inst_ref) {
+                    let function_key = sema
+                        .resolve_function_name_in_file(*name, inst.span.file_id)
+                        .unwrap_or(*name);
+                    if function_key == fn_name && !method_refs.contains(&inst_ref) {
                         found = true;
                         let params = sema.rir.get_params(*params_start, *params_len);
 

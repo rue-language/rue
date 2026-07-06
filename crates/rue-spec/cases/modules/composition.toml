@@ -5,9 +5,9 @@ name = "Program Composition"
 description = "Cross-file name collisions among modules loaded through the root import graph (spec chapter 10.5)."
 
 [[case]]
-name = "duplicate_symbol_across_imported_files_error"
+name = "same_named_functions_across_imported_files_ok"
 spec = ["10.5:1"]
-description = "Two loaded files defining the same top-level function name collide, even though each is only accessed through its own module"
+description = "Two loaded files may define the same top-level function name when each is accessed through its own module"
 source = """
 fn main() -> i32 {
     let a = @import("a");
@@ -16,8 +16,7 @@ fn main() -> i32 {
 }
 """
 aux_files = { "a.rue" = "pub fn shared() -> i32 { 1 }", "b.rue" = "pub fn shared() -> i32 { 2 }" }
-compile_fail = true
-error_contains = "duplicate"
+exit_code = 1
 
 [[case]]
 name = "duplicate_const_across_imported_files_error"

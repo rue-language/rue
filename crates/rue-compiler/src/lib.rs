@@ -398,11 +398,10 @@ pub(crate) struct DuplicateSymbolCheck {
 
 /// Detect duplicate symbol definitions across parsed files.
 ///
-/// All functions, structs, and enums share a single flat global namespace
-/// (no modules yet), so each name may be defined only once across all files;
-/// structs and enums also conflict with each other. Every duplicate produces
-/// one error pointing at the redefinition, with a label at the first
-/// definition.
+/// Free functions are scoped to their defining file/module for duplicate
+/// detection, while structs and enums still share a flat type namespace.
+/// Every duplicate produces one error pointing at the redefinition, with a
+/// label at the first definition.
 ///
 /// This is the single source of truth for duplicate-symbol detection, shared
 /// by [`merge_symbols`] and `CompilationUnit::parse`.
@@ -412,7 +411,8 @@ pub(crate) fn detect_duplicate_symbols<'a>(
 ) -> DuplicateSymbolCheck {
     use std::collections::HashMap;
 
-    let mut functions: HashMap<String, SymbolDef> = HashMap::new();
+    let mut functions: HashMap<(String, String), SymbolDef> = HashMap::new();
+    let mut function_names: HashMap<String, SymbolDef> = HashMap::new();
     let mut structs: HashMap<String, SymbolDef> = HashMap::new();
     let mut enums: HashMap<String, SymbolDef> = HashMap::new();
     let mut errors: Vec<CompileError> = Vec::new();
@@ -422,11 +422,12 @@ pub(crate) fn detect_duplicate_symbols<'a>(
             match item {
                 Item::Function(func) => {
                     let name = interner.resolve(&func.name.name).to_string();
-                    if let Some(first) = functions.get(&name) {
+                    let key = (file_path.to_string(), name.clone());
+                    if let Some(first) = functions.get(&key) {
                         // Duplicate function definition
                         let err = CompileError::new(
                             ErrorKind::DuplicateFunctionDefinition {
-                                function_name: name,
+                                function_name: name.clone(),
                             },
                             func.span,
                         )
@@ -434,17 +435,42 @@ pub(crate) fn detect_duplicate_symbols<'a>(
                         errors.push(err);
                     } else {
                         functions.insert(
-                            name,
+                            key,
                             SymbolDef {
                                 span: func.span,
                                 file_path: file_path.to_string(),
                             },
                         );
                     }
+                    if let Some(first) = structs.get(&name).or_else(|| enums.get(&name)) {
+                        let err = CompileError::new(
+                            ErrorKind::DuplicateFunctionDefinition {
+                                function_name: name.clone(),
+                            },
+                            func.span,
+                        )
+                        .with_label(format!("first defined in {}", first.file_path), first.span);
+                        errors.push(err);
+                    }
+                    function_names
+                        .entry(name.clone())
+                        .or_insert_with(|| SymbolDef {
+                            span: func.span,
+                            file_path: file_path.to_string(),
+                        });
                 }
                 Item::Struct(s) => {
                     let name = interner.resolve(&s.name.name).to_string();
-                    if let Some(first) = structs.get(&name) {
+                    if let Some(first) = function_names.get(&name) {
+                        let err = CompileError::new(
+                            ErrorKind::DuplicateFunctionDefinition {
+                                function_name: name,
+                            },
+                            s.span,
+                        )
+                        .with_label(format!("first defined in {}", first.file_path), first.span);
+                        errors.push(err);
+                    } else if let Some(first) = structs.get(&name) {
                         // Duplicate struct definition
                         let err = CompileError::new(
                             ErrorKind::DuplicateTypeDefinition {
@@ -479,7 +505,16 @@ pub(crate) fn detect_duplicate_symbols<'a>(
                 }
                 Item::Enum(e) => {
                     let name = interner.resolve(&e.name.name).to_string();
-                    if let Some(first) = enums.get(&name) {
+                    if let Some(first) = function_names.get(&name) {
+                        let err = CompileError::new(
+                            ErrorKind::DuplicateFunctionDefinition {
+                                function_name: name,
+                            },
+                            e.span,
+                        )
+                        .with_label(format!("first defined in {}", first.file_path), first.span);
+                        errors.push(err);
+                    } else if let Some(first) = enums.get(&name) {
                         // Duplicate enum definition
                         let err = CompileError::new(
                             ErrorKind::DuplicateTypeDefinition {
@@ -1894,13 +1929,17 @@ mod tests {
 
     #[test]
     fn test_merge_symbols_duplicate_function() {
-        let sources = vec![
-            SourceFile::new("a.rue", "fn foo() -> i32 { 1 }", FileId::new(1)),
-            SourceFile::new("b.rue", "fn foo() -> i32 { 2 }", FileId::new(2)),
-        ];
+        let sources = vec![SourceFile::new(
+            "a.rue",
+            "fn foo() -> i32 { 1 } fn foo() -> i32 { 2 }",
+            FileId::new(1),
+        )];
         let parsed = parse_all_files(&sources).unwrap();
         let result = merge_symbols(parsed);
-        assert!(result.is_err(), "merge should fail with duplicate function");
+        assert!(
+            result.is_err(),
+            "merge should fail with duplicate function in one file"
+        );
 
         let errors = result.unwrap_err();
         assert_eq!(errors.len(), 1, "should have 1 error");
@@ -1910,6 +1949,41 @@ mod tests {
             "error should mention the duplicate function name: {}",
             err_msg
         );
+    }
+
+    #[test]
+    fn test_merge_symbols_same_function_name_in_different_files_allowed() {
+        let sources = vec![
+            SourceFile::new("a.rue", "fn value() -> i32 { 1 }", FileId::new(1)),
+            SourceFile::new("b.rue", "fn value() -> i32 { 2 }", FileId::new(2)),
+        ];
+        let parsed = parse_all_files(&sources).unwrap();
+        let result = merge_symbols(parsed);
+        assert!(
+            result.is_ok(),
+            "module-local functions in different files may share a source name"
+        );
+    }
+
+    #[test]
+    fn test_merge_symbols_function_type_conflict() {
+        let sources = vec![
+            SourceFile::new("a.rue", "fn Foo() -> i32 { 1 }", FileId::new(1)),
+            SourceFile::new("b.rue", "struct Foo { x: i32 }", FileId::new(2)),
+        ];
+        let parsed = parse_all_files(&sources).unwrap();
+        let result = merge_symbols(parsed);
+        assert!(
+            result.is_err(),
+            "merge should reject a top-level function/type name collision"
+        );
+
+        let errors = result.unwrap_err();
+        assert_eq!(errors.len(), 1, "should have 1 error");
+        assert!(matches!(
+            errors.first().unwrap().kind,
+            ErrorKind::DuplicateFunctionDefinition { .. }
+        ));
     }
 
     #[test]
@@ -1989,18 +2063,11 @@ mod tests {
     #[test]
     fn test_merge_symbols_multiple_duplicates() {
         // Multiple duplicates should report multiple errors
-        let sources = vec![
-            SourceFile::new(
-                "a.rue",
-                "fn foo() -> i32 { 1 } fn bar() -> i32 { 2 }",
-                FileId::new(1),
-            ),
-            SourceFile::new(
-                "b.rue",
-                "fn foo() -> i32 { 3 } fn bar() -> i32 { 4 }",
-                FileId::new(2),
-            ),
-        ];
+        let sources = vec![SourceFile::new(
+            "a.rue",
+            "fn foo() -> i32 { 1 } fn bar() -> i32 { 2 } fn foo() -> i32 { 3 } fn bar() -> i32 { 4 }",
+            FileId::new(1),
+        )];
         let parsed = parse_all_files(&sources).unwrap();
         let result = merge_symbols(parsed);
         assert!(
@@ -2267,8 +2334,6 @@ mod tests {
     #[test]
     fn test_module_member_access() {
         // Test that @import returns a module type and member access works
-        // Note: In Phase 1, all files are merged into the same namespace,
-        // so math.add() looks up "add" in the global function table.
         let sources = vec![
             SourceFile::new(
                 "main.rue",
@@ -2288,6 +2353,29 @@ mod tests {
         assert!(
             result.is_ok(),
             "module member access should compile: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_module_member_access_same_function_names_in_distinct_modules() {
+        let sources = vec![
+            SourceFile::new(
+                "main.rue",
+                r#"fn main() -> i32 {
+                    let left = @import("left.rue");
+                    let right = @import("right.rue");
+                    left.value() + right.value()
+                }"#,
+                FileId::new(1),
+            ),
+            SourceFile::new("left.rue", "fn value() -> i32 { 10 }", FileId::new(2)),
+            SourceFile::new("right.rue", "fn value() -> i32 { 20 }", FileId::new(3)),
+        ];
+        let result = compile_multi_file_with_options(&sources, &CompileOptions::default());
+        assert!(
+            result.is_ok(),
+            "qualified calls to same-named functions in distinct modules should compile: {:?}",
             result.err()
         );
     }

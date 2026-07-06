@@ -67,8 +67,16 @@ use crate::types::{EnumId, StructId, Type};
 pub struct Sema<'a> {
     pub(crate) rir: &'a Rir,
     pub(crate) interner: &'a ThreadedRodeo,
-    /// Function table: maps function name symbols to their info
+    /// Function table: maps internal function name symbols to their info.
+    ///
+    /// The internal key is normally the source name, but functions with the
+    /// same source name in distinct files get deterministic module-qualified
+    /// keys so they can coexist without colliding in AIR/codegen.
     pub(crate) functions: HashMap<Spur, FunctionInfo>,
+    /// Source-level function lookup keyed by defining file and source name.
+    pub(crate) functions_by_file_name: HashMap<(FileId, Spur), Spur>,
+    /// Internal function key -> source-level function name.
+    pub(crate) function_source_names: HashMap<Spur, Spur>,
     /// Struct table: maps struct name symbols to their StructId
     pub(crate) structs: HashMap<Spur, StructId>,
     /// Enum table: maps enum name symbols to their EnumId
@@ -168,6 +176,8 @@ impl<'a> Sema<'a> {
             rir,
             interner,
             functions: HashMap::new(),
+            functions_by_file_name: HashMap::new(),
+            function_source_names: HashMap::new(),
             structs: HashMap::new(),
             enums: HashMap::new(),
             methods: HashMap::new(),
