@@ -100,6 +100,26 @@ compile_fail = true
 error_contains = ["E0425", "inout argument must be an lvalue"]
 
 [[case]]
+name = "emit_mir_suppresses_partial_stdout_on_late_lowering_error"
+description = "--emit mir buffers fallible per-function output so a later lowering error does not leave partial MIR on stdout (RUE-483)."
+files = [{ path = "main.rue", source = """
+const X: i32 = 1;
+
+fn f(inout x: i32) {
+    x = 2;
+}
+
+fn main() -> i32 {
+    f(inout X);
+    X
+}
+""" }]
+args = ["--emit", "mir", "main.rue"]
+compile_fail = true
+error_contains = ["E0425", "inout argument must be an lvalue"]
+compile_stdout_not_contains = ["=== MIR", "function f:"]
+
+[[case]]
 name = "emit_air_target_arch_uses_requested_target"
 description = "@target_arch() in --emit uses --target, not the compiler host (RUE-417)."
 files = [{ path = "main.rue", source = """
