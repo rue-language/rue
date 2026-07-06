@@ -30,13 +30,14 @@ fn main() -> i32 {
 }
 ```
 
-## Implicit Returns
+## Function Body Values
 
-The last expression in a function is its return value—no `return` keyword needed:
+Rue is expression-oriented: a function body evaluates to the value of its final
+expression. That value is the function call's result:
 
 ```rue skip
 fn double(x: i32) -> i32 {
-    x * 2  // this value is returned
+    x * 2  // this is the body expression's value
 }
 ```
 
