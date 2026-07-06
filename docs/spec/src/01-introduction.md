@@ -68,7 +68,7 @@ categories; this section defines the terminology used below.
 
 {{ rule(id="1.3:4", cat="informative") }}
 
-**Undefined behavior** imposes no requirements on a conforming implementation: a program that exhibits undefined behavior is invalid, and the implementation may do anything. In Rue, undefined behavior arises **only within `unchecked` code** — raw-pointer operations whose validity cannot be checked without changing a value's representation. The safe subset of Rue has no undefined behavior; this is the language's central memory-safety guarantee.
+**Undefined behavior** imposes no requirements on a conforming implementation: a program that exhibits undefined behavior is invalid, and the implementation may do anything. In Rue, undefined behavior is confined to `unchecked` code as specified by this specification; safe Rue programs do not exhibit undefined behavior.
 
 {{ rule(id="1.3:5", cat="informative") }}
 
