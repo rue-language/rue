@@ -30,6 +30,8 @@ pub struct InferenceContext {
     pub func_sigs: HashMap<Spur, FunctionSig>,
     /// Struct types: name -> Type::new_struct(id).
     pub struct_types: HashMap<Spur, Type>,
+    /// Module-local struct types: (defining file, source name) -> Type::new_struct(id).
+    pub struct_types_by_file_name: HashMap<(FileId, Spur), Type>,
     /// Enum types: name -> Type::new_enum(id).
     pub enum_types: HashMap<Spur, Type>,
     /// Method signatures with InferType: (struct_id, method_name) -> MethodSig.
@@ -58,4 +60,6 @@ pub struct InferenceContext {
     /// name) -> module type. Module bindings are per-file scoped (RUE-113),
     /// so they're keyed by file rather than living in `const_types`.
     pub module_binding_types: HashMap<(FileId, Spur), Type>,
+    /// Module registry file identity for inference-time member type lookup.
+    pub module_file_ids: HashMap<crate::types::ModuleId, FileId>,
 }

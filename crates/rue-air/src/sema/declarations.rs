@@ -174,6 +174,12 @@ impl<'a> Sema<'a> {
             .map(|(name, id)| (*name, Type::new_struct(*id)))
             .collect();
 
+        let struct_types_by_file_name: HashMap<(FileId, Spur), Type> = self
+            .structs_by_file_name
+            .iter()
+            .map(|(key, id)| (*key, Type::new_struct(*id)))
+            .collect();
+
         // Build enum types map (name -> Type::new_enum(id))
         let enum_types: HashMap<Spur, Type> = self
             .enums
@@ -262,9 +268,20 @@ impl<'a> Sema<'a> {
             .map(|(key, info)| (*key, info.ty))
             .collect();
 
+        let module_file_ids: HashMap<crate::types::ModuleId, FileId> =
+            (0..self.module_registry.len())
+                .filter_map(|index| {
+                    let module_id = crate::types::ModuleId::new(index as u32);
+                    let module_def = self.module_registry.get_def(module_id);
+                    self.canonical_file_id(&module_def.file_path)
+                        .map(|file_id| (module_id, file_id))
+                })
+                .collect();
+
         InferenceContext {
             func_sigs,
             struct_types,
+            struct_types_by_file_name,
             enum_types,
             method_sigs,
             const_types,
@@ -272,6 +289,7 @@ impl<'a> Sema<'a> {
             const_values,
             const_function_aliases,
             module_binding_types,
+            module_file_ids,
         }
     }
     /// Check if a directive list contains the @copy directive

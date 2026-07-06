@@ -1159,6 +1159,68 @@ compile_fail = true
 error_contains = ["E0204", "unknown type 'Point'"]
 
 [[case]]
+name = "same_named_module_structs_are_nominal_different_layouts"
+description = "RUE-500: module-qualified same-named structs from different modules are distinct nominal types, even with different layouts."
+files = [
+    { path = "main.rue", source = """
+const left = @import("left.rue");
+const right = @import("right.rue");
+
+fn take_left(x: left.Box) -> i32 {
+    x.a
+}
+
+fn main() -> i32 {
+    let r = right.Box { b: 7 };
+    take_left(r)
+}
+""" },
+    { path = "left.rue", source = """
+pub struct Box {
+    a: i32,
+}
+""" },
+    { path = "right.rue", source = """
+pub struct Box {
+    b: i32,
+}
+""" },
+]
+compile_fail = true
+error_contains = ["type mismatch"]
+
+[[case]]
+name = "same_named_module_structs_are_nominal_same_layout"
+description = "RUE-500: module-qualified same-named structs remain distinct nominal types even when their fields match."
+files = [
+    { path = "main.rue", source = """
+const left = @import("left.rue");
+const right = @import("right.rue");
+
+fn take_left(x: left.Box) -> i32 {
+    x.value
+}
+
+fn main() -> i32 {
+    let r = right.Box { value: 7 };
+    take_left(r)
+}
+""" },
+    { path = "left.rue", source = """
+pub struct Box {
+    value: i32,
+}
+""" },
+    { path = "right.rue", source = """
+pub struct Box {
+    value: i32,
+}
+""" },
+]
+compile_fail = true
+error_contains = ["type mismatch"]
+
+[[case]]
 name = "private_const_cross_dir_unqualified_rejected"
 description = "Unqualified read does not see a constant from another module, even when that module is imported."
 files = [
