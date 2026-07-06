@@ -1692,12 +1692,12 @@ fn handle_emit_multi_file(
             // Lex with the file's real FileId so a lex error in the Nth file
             // is attributed to that file, not to the first one (RUE-38).
             let lexer = Lexer::with_file_id(source.source, source.file_id);
-            match lexer.tokenize() {
+            match lexer.tokenize_preserving_interner() {
                 Ok((tokens, _interner)) => {
                     file_tokens.push((source.path.to_string(), tokens));
                 }
-                Err(e) => {
-                    diagnostics.print_error(&e);
+                Err((errors, _interner)) => {
+                    diagnostics.print_errors(&errors);
                     return Err(());
                 }
             }
