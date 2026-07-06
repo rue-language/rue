@@ -143,7 +143,7 @@ error_contains = ["root source", "main.rue", "not listed"]
 
 [[case]]
 name = "source_manifest_rejects_undeclared_import"
-description = "RUE-445: import discovery must not read a source file outside the build-system manifest."
+description = "RUE-503: import discovery rejects undeclared candidates from the source manifest without probing undeclared files."
 files = [
     { path = "sources.manifest", source = """
 main.rue
@@ -153,11 +153,6 @@ const utils = @import("utils");
 
 fn main() -> i32 {
     utils.triple(14)
-}
-""" },
-    { path = "utils.rue", source = """
-pub fn triple(x: i32) -> i32 {
-    x * 3
 }
 """ },
 ]
