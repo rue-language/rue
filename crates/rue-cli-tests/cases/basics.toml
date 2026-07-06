@@ -88,18 +88,20 @@ compile_stdout_contains = ["=== Tokens (main.rue) ===", "FN", "RBRACE"]
 name = "multi_file_compilation_with_dash_o"
 files = [
     { path = "main.rue", source = """
+const utils = @import("utils.rue");
+
 fn main() -> i32 {
-    @dbg(triple(14));
+    @dbg(utils.triple(14));
     0
 }
 """ },
     { path = "utils.rue", source = """
-fn triple(x: i32) -> i32 {
+pub fn triple(x: i32) -> i32 {
     x * 3
 }
 """ },
 ]
-args = ["main.rue", "utils.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 stdout = "42\n"
 
 # CLAUDE.md documents `rue a.rue b.rue` as an error, but the CLI currently

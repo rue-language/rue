@@ -1791,9 +1791,11 @@ impl<'a> Sema<'a> {
                     )?;
                     return Ok(ConstInit::Value(info.value));
                 }
-                if let Some((fn_file_id, is_pub)) = self.find_free_function_decl(name, None) {
+                if let Some((fn_file_id, is_pub)) =
+                    self.ensure_free_function_signature(name, Some(file_id))?
+                {
                     let function_key = self
-                        .resolve_function_name_in_file(name, span.file_id)
+                        .resolve_function_name_local(name, file_id)
                         .unwrap_or_else(|| self.internal_function_name(name, fn_file_id));
                     let fn_name = self.interner.resolve(&name).to_string();
                     self.check_unqualified_visibility(

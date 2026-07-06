@@ -171,7 +171,7 @@ fn analyze_all_function_bodies_sequential(sema: &mut Sema<'_>) -> MultiErrorResu
             }
 
             let function_key = sema
-                .resolve_function_name_in_file(*name, inst.span.file_id)
+                .resolve_function_name_local(*name, inst.span.file_id)
                 .unwrap_or(*name);
 
             // Skip FnDecls that are not in the functions table.
@@ -587,16 +587,20 @@ fn collect_static_function_references(sema: &Sema<'_>) -> HashSet<Spur> {
         };
 
         let mut target = *name;
+        let mut resolved_alias = false;
         if let Some(const_info) = sema.resolve_const_info_in_file(target, inst.span.file_id)
             && let Some(callee) = const_info.value.as_function()
         {
             target = callee;
+            resolved_alias = true;
         }
 
-        if let Some(function_key) = sema.resolve_function_name_in_file(target, inst.span.file_id) {
-            referenced.insert(function_key);
-        } else if sema.functions.contains_key(&target) {
+        if resolved_alias && sema.functions.contains_key(&target) {
             referenced.insert(target);
+        } else if let Some(function_key) =
+            sema.resolve_function_name_local(target, inst.span.file_id)
+        {
+            referenced.insert(function_key);
         }
     }
 
@@ -689,7 +693,7 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
                 } = &inst.data
                 {
                     let function_key = sema
-                        .resolve_function_name_in_file(*name, inst.span.file_id)
+                        .resolve_function_name_local(*name, inst.span.file_id)
                         .unwrap_or(*name);
                     if function_key == fn_name && !method_refs.contains(&inst_ref) {
                         found = true;

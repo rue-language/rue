@@ -247,12 +247,12 @@ fn internal_fn() -> i32 {
 }
 """ }
 compile_fail = true
-error_contains = "is private (defined in"
+error_contains = "undefined function 'internal_fn'"
 
 [[case]]
-name = "cross_dir_unqualified_pub_fn_allowed"
-spec = ["10.3:7", "10.3:8", "10.5:2"]
-description = "Unqualified call to a pub function of an imported module still resolves (transitional flat namespace)"
+name = "cross_dir_unqualified_pub_fn_rejected"
+spec = ["10.3:7", "10.3:8"]
+description = "Unqualified call to a pub function of an imported module is rejected; use module-qualified access"
 source = """
 const utils = @import("subdir/utils");
 
@@ -265,12 +265,13 @@ pub fn public_fn() -> i32 {
     42
 }
 """ }
-exit_code = 42
+compile_fail = true
+error_contains = "undefined function 'public_fn'"
 
 [[case]]
-name = "same_dir_unqualified_private_fn_allowed"
+name = "same_dir_unqualified_private_fn_rejected"
 spec = ["10.3:2", "10.3:7"]
-description = "Unqualified call to a private function of an imported file in the SAME directory is allowed (intra-directory visibility)"
+description = "Unqualified call to a private function of an imported file in the SAME directory is rejected; use module-qualified access"
 source = """
 const utils = @import("utils");
 
@@ -283,7 +284,8 @@ fn internal_fn() -> i32 {
     42
 }
 """ }
-exit_code = 42
+compile_fail = true
+error_contains = "undefined function 'internal_fn'"
 
 # =============================================================================
 # Unqualified Cross-Directory Access: Structs and Constants (RUE-183)
