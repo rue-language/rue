@@ -198,10 +198,11 @@ exit_code = 21
 # line, so collection must be dependency-ordered, not file-ordered.
 [[case]]
 name = "cross_file_chain_definer_second"
-args = ["main.rue", "config.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [
     { path = "main.rue", source = """
-const FROM_CONFIG: i32 = LIMIT + 1;
+const config = @import("config.rue");
+const FROM_CONFIG: i32 = config.LIMIT + 1;
 
 fn main() -> i32 {
     FROM_CONFIG
@@ -216,13 +217,14 @@ exit_code = 42
 # Same chain with the defining file first (both orders must agree).
 [[case]]
 name = "cross_file_chain_definer_first"
-args = ["config.rue", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [
     { path = "config.rue", source = """
 pub const LIMIT: i32 = 41;
 """ },
     { path = "main.rue", source = """
-const FROM_CONFIG: i32 = LIMIT + 1;
+const config = @import("config.rue");
+const FROM_CONFIG: i32 = config.LIMIT + 1;
 
 fn main() -> i32 {
     FROM_CONFIG

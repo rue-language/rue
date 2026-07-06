@@ -3060,9 +3060,11 @@ impl<'a> Sema<'a> {
                 }
             }
         } else {
-            let struct_id = *self
-                .structs
-                .get(&type_name)
+            let struct_id = self
+                .structs_by_file_name
+                .get(&(span.file_id, type_name))
+                .copied()
+                .or_else(|| self.resolve_builtin_struct_name(type_name))
                 .ok_or_compile_error(ErrorKind::UnknownType(type_name_str.to_string()), span)?;
             // Privacy (E0460, RUE-183): a struct literal names the type
             // unqualified, so a private struct from another directory is not
@@ -5674,15 +5676,18 @@ impl<'a> Sema<'a> {
         if let Some(&ty) = ctx.comptime_type_vars.get(&type_name) {
             return ty.as_enum().map(|id| (id, true));
         }
-        if let Some(info) = self.constants.get(&type_name)
+        if let Some(info) = self
+            .constants_by_file_name
+            .get(&(ctx.current_file_id, type_name))
             && let ConstValue::Type(ty) = info.value
         {
             return ty.as_enum().map(|id| (id, true));
         }
         self.enums_by_file_name
             .get(&(ctx.current_file_id, type_name))
-            .or_else(|| self.enums.get(&type_name))
-            .map(|&id| (id, false))
+            .copied()
+            .or_else(|| self.resolve_builtin_enum_name(type_name))
+            .map(|id| (id, false))
     }
 
     /// Analyze an associated function call.
