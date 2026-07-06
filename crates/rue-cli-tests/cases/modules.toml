@@ -69,6 +69,31 @@ pub fn triple(x: i32) -> i32 {
 stdout = "42\n"
 
 [[case]]
+name = "source_manifest_allows_escaped_hash_in_path"
+description = "RUE-481: source manifest entries can escape # when it is part of a path."
+files = [
+    { path = "sources.manifest", source = """
+main.rue
+with\\#hash.rue # comment after an escaped path character
+""" },
+    { path = "main.rue", source = """
+const helper = @import("with#hash");
+
+fn main() -> i32 {
+    @dbg(helper.answer());
+    0
+}
+""" },
+    { path = "with#hash.rue", source = """
+pub fn answer() -> i32 {
+    42
+}
+""" },
+]
+args = ["--source-manifest", "sources.manifest", "main.rue", "-o", "prog"]
+stdout = "42\n"
+
+[[case]]
 name = "source_manifest_allows_declared_import"
 description = "RUE-445: a source manifest lists files the import graph is allowed to read."
 files = [

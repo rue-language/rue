@@ -973,15 +973,12 @@ impl SourceManifest {
         let mut allowed = std::collections::HashSet::new();
         for (line_index, raw_line) in content.lines().enumerate() {
             let line_number = line_index + 1;
-            let entry = raw_line
-                .split_once('#')
-                .map_or(raw_line, |(before_comment, _)| before_comment)
-                .trim();
+            let entry = parse_source_manifest_entry(raw_line);
             if entry.is_empty() {
                 continue;
             }
 
-            let entry_path = Path::new(entry);
+            let entry_path = Path::new(&entry);
             let resolved = if entry_path.is_absolute() {
                 entry_path.to_path_buf()
             } else {
@@ -1015,6 +1012,36 @@ impl SourceManifest {
     fn display_path(&self) -> String {
         self.path.display().to_string()
     }
+}
+
+fn parse_source_manifest_entry(raw_line: &str) -> String {
+    let mut entry = String::new();
+    let mut escaped = false;
+
+    for ch in raw_line.chars() {
+        if escaped {
+            if ch == '#' {
+                entry.push('#');
+            } else {
+                entry.push('\\');
+                entry.push(ch);
+            }
+            escaped = false;
+            continue;
+        }
+
+        match ch {
+            '\\' => escaped = true,
+            '#' => break,
+            _ => entry.push(ch),
+        }
+    }
+
+    if escaped {
+        entry.push('\\');
+    }
+
+    entry.trim().to_string()
 }
 
 fn validate_manifest_allows_source(
@@ -1949,6 +1976,38 @@ fn handle_emit_multi_file(
 mod tests {
     use super::*;
 
+    struct TestDir {
+        path: PathBuf,
+    }
+
+    impl TestDir {
+        fn new(name: &str) -> Self {
+            let unique = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let path =
+                std::env::temp_dir().join(format!("rue-{name}-{}-{unique}", std::process::id()));
+            fs::create_dir_all(&path).unwrap();
+            Self { path }
+        }
+
+        fn write(&self, relative: &str, content: &str) -> PathBuf {
+            let path = self.path.join(relative);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).unwrap();
+            }
+            fs::write(&path, content).unwrap();
+            path
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
     /// Helper to extract Options from ParseResult, panicking if not Options.
     fn unwrap_options(result: ParseResult) -> Options {
         match result {
@@ -1966,6 +2025,42 @@ mod tests {
     /// Helper to check if result is an exit.
     fn is_exit(result: &ParseResult) -> bool {
         matches!(result, ParseResult::Exit)
+    }
+
+    #[test]
+    fn source_manifest_entry_parses_comments_and_escaped_hashes() {
+        assert_eq!(
+            parse_source_manifest_entry("main.rue # comment"),
+            "main.rue"
+        );
+        assert_eq!(
+            parse_source_manifest_entry("dir/has\\#hash.rue # comment"),
+            "dir/has#hash.rue"
+        );
+        assert_eq!(
+            parse_source_manifest_entry("dir/has\\\\#comment.rue"),
+            "dir/has\\\\"
+        );
+        assert_eq!(
+            parse_source_manifest_entry("dir/trailing-backslash\\"),
+            "dir/trailing-backslash\\"
+        );
+    }
+
+    #[test]
+    fn source_manifest_load_allows_escaped_hash_in_path() {
+        let dir = TestDir::new("source-manifest-escaped-hash");
+        let main = dir.write("main.rue", "fn main() -> i32 { 0 }\n");
+        let hashed = dir.write("has#hash.rue", "pub fn answer() -> i32 { 42 }\n");
+        let manifest = dir.write(
+            "sources.manifest",
+            "main.rue # normal comment\nhas\\#hash.rue # comment after escaped path\n",
+        );
+
+        let manifest = SourceManifest::load(manifest.to_str().unwrap()).unwrap();
+
+        assert!(manifest.allows_canonical(&fs::canonicalize(main).unwrap()));
+        assert!(manifest.allows_canonical(&fs::canonicalize(hashed).unwrap()));
     }
 
     // ========== Basic parsing tests ==========
