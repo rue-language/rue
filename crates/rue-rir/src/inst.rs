@@ -77,6 +77,7 @@ pub struct RirParam {
 }
 
 /// Argument passing mode in RIR.
+#[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RirArgMode {
     /// Normal pass-by-value argument
@@ -86,6 +87,27 @@ pub enum RirArgMode {
     Inout,
     /// Borrow argument - immutable borrow
     Borrow,
+}
+
+impl RirArgMode {
+    /// Convert the serialized call-argument mode from the RIR extra array.
+    ///
+    /// Invalid values indicate corrupted RIR or a producer/consumer mismatch.
+    /// They must not silently recover as normal by-value arguments, because
+    /// that changes ownership and aliasing semantics.
+    pub fn from_u32(v: u32) -> Self {
+        match v {
+            0 => RirArgMode::Normal,
+            1 => RirArgMode::Inout,
+            2 => RirArgMode::Borrow,
+            _ => panic!("invalid RirArgMode value: {}", v),
+        }
+    }
+
+    /// Serialize this mode into the RIR extra array.
+    pub fn as_u32(self) -> u32 {
+        self as u32
+    }
 }
 
 /// An argument in a function call.
@@ -341,7 +363,7 @@ impl Rir {
         let mut data = Vec::with_capacity(args.len() * CALL_ARG_SIZE as usize);
         for arg in args {
             data.push(arg.value.as_u32());
-            data.push(arg.mode as u32);
+            data.push(arg.mode.as_u32());
         }
         let start = self.add_extra(&data);
         (start, args.len() as u32)
@@ -353,12 +375,7 @@ impl Rir {
         let mut args = Vec::with_capacity(len as usize);
         for chunk in data.chunks(CALL_ARG_SIZE as usize) {
             let value = InstRef::from_raw(chunk[0]);
-            let mode = match chunk[1] {
-                0 => RirArgMode::Normal,
-                1 => RirArgMode::Inout,
-                2 => RirArgMode::Borrow,
-                _ => RirArgMode::Normal, // Fallback, shouldn't happen
-            };
+            let mode = RirArgMode::from_u32(chunk[1]);
             args.push(RirCallArg { value, mode });
         }
         args
@@ -2606,6 +2623,43 @@ mod tests {
         };
         assert!(!arg_borrow.is_inout());
         assert!(arg_borrow.is_borrow());
+    }
+
+    #[test]
+    fn test_rir_call_arg_modes_round_trip() {
+        let mut rir = Rir::new();
+        let (args_start, args_len) = rir.add_call_args(&[
+            RirCallArg {
+                value: InstRef::from_raw(1),
+                mode: RirArgMode::Normal,
+            },
+            RirCallArg {
+                value: InstRef::from_raw(2),
+                mode: RirArgMode::Inout,
+            },
+            RirCallArg {
+                value: InstRef::from_raw(3),
+                mode: RirArgMode::Borrow,
+            },
+        ]);
+
+        let args = rir.get_call_args(args_start, args_len);
+        assert_eq!(args.len(), 3);
+        assert_eq!(args[0].value, InstRef::from_raw(1));
+        assert_eq!(args[0].mode, RirArgMode::Normal);
+        assert_eq!(args[1].value, InstRef::from_raw(2));
+        assert_eq!(args[1].mode, RirArgMode::Inout);
+        assert_eq!(args[2].value, InstRef::from_raw(3));
+        assert_eq!(args[2].mode, RirArgMode::Borrow);
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid RirArgMode value: 99")]
+    fn test_rir_call_arg_invalid_mode_panics() {
+        let mut rir = Rir::new();
+        let args_start = rir.add_extra(&[InstRef::from_raw(1).as_u32(), 99]);
+
+        let _ = rir.get_call_args(args_start, 1);
     }
 
     // RirPrinter tests
