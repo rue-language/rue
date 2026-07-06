@@ -22,11 +22,14 @@ description = "A Rue-source ArrayBuf(T) on @alloc/@free with a full push/pop/get
 [[case]]
 name = "arraybuf_i32_dogfood"
 description = "push/len/get/set/pop/while-sum/out-of-bounds on ArrayBuf(i32), Option(T) accessors, flat multi-file."
+args = ["main.rue", "-o", "prog"]
 files = [
   { path = "main.rue", source = """
+const arraybuf = @import("arraybuf.rue");
+
 fn main() -> i32 {
-    let V = ArrayBuf(i32);
-    let O = Option(i32);
+    let V = arraybuf.ArrayBuf(i32);
+    let O = arraybuf.Option(i32);
 
     let mut v = V::new();
     v.push(10);
@@ -61,6 +64,10 @@ pub fn Option(comptime T: type) -> type {
 }
 """ },
   { path = "arraybuf.rue", source = """
+pub fn Option(comptime T: type) -> type {
+    enum { Some(T), None }
+}
+
 pub fn ArrayBuf(comptime T: type) -> type {
     struct {
         buf: ptr mut T,
@@ -137,7 +144,6 @@ pub fn ArrayBuf(comptime T: type) -> type {
 }
 """ },
 ]
-args = ["main.rue", "arraybuf.rue", "option.rue", "-o", "prog"]
 stdout = "3\n20\n99\n30\n2\n-1\n119\n"
 exit_code = 119
 

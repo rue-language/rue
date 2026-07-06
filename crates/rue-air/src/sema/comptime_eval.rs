@@ -831,11 +831,14 @@ impl Sema<'_> {
                     // (`comptime T: type`) and the value substitution
                     // (`comptime N: i32`, so an `[i32; N]` field gets a concrete
                     // length at each specialization; RUE-16).
-                    let Some(field_ty) = self.resolve_type_for_comptime_with_subst_and_values(
-                        type_sym,
-                        env.type_subst,
-                        env.value_subst,
-                    ) else {
+                    let Some(field_ty) = self
+                        .resolve_type_for_comptime_with_subst_and_values_at_span(
+                            type_sym,
+                            env.type_subst,
+                            env.value_subst,
+                            span,
+                        )
+                    else {
                         return Ok(None);
                     };
                     struct_fields.push(StructField {
@@ -969,11 +972,14 @@ impl Sema<'_> {
                         let ty_sym = lasso::Spur::try_from_usize(payload_words[pi] as usize)
                             .expect("valid payload type symbol");
                         pi += 1;
-                        let Some(ty) = self.resolve_type_for_comptime_with_subst_and_values(
-                            ty_sym,
-                            env.type_subst,
-                            env.value_subst,
-                        ) else {
+                        let Some(ty) = self
+                            .resolve_type_for_comptime_with_subst_and_values_at_span(
+                                ty_sym,
+                                env.type_subst,
+                                env.value_subst,
+                                span,
+                            )
+                        else {
                             return Ok(None);
                         };
                         tys.push(ty);

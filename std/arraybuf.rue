@@ -51,6 +51,10 @@
 // The enclosing element type `T` is usable throughout the method bodies below —
 // e.g. to name `Option(T)` and bind `let O = Option(T)` (RUE-313).
 
+pub fn Option(comptime T: type) -> type {
+    enum { Some(T), None }
+}
+
 pub fn ArrayBuf(comptime T: type) -> type {
     struct {
         buf: ptr mut T,
@@ -94,7 +98,7 @@ pub fn ArrayBuf(comptime T: type) -> type {
 
         // Element `i` by copy, wrapped in `Option(T)`: `Some(x)` when in
         // bounds, `None` otherwise (ADR-0041). The enclosing element type `T`
-        // is in scope here, so the method can name `Option(T)` directly
+        // is in scope here, so the method can pass it to `Option(T)`
         // (RUE-313).
         fn get(borrow self, i: u64) -> Option(T) {
             let O = Option(T);
