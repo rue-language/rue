@@ -2610,6 +2610,47 @@ mod tests {
     }
 
     #[test]
+    fn test_module_qualified_std_option_type_constructor_uses_resolved_member() {
+        let sources = vec![
+            SourceFile::new(
+                "main.rue",
+                r#"fn main() -> i32 {
+                    let std = @import("std.rue");
+                    let OptI = std.option.Option(i64);
+                    let n: i64 = 42;
+                    let value = OptI::Some(n);
+                    match value {
+                        OptI::Some(n) => 1,
+                        OptI::None => 0,
+                    }
+                }"#,
+                FileId::new(1),
+            ),
+            SourceFile::new(
+                "std.rue",
+                r#"pub const option = @import("option.rue");"#,
+                FileId::new(2),
+            ),
+            SourceFile::new(
+                "option.rue",
+                r#"pub fn Option(comptime T: type) -> type {
+                    enum {
+                        Some(T),
+                        None,
+                    }
+                }"#,
+                FileId::new(3),
+            ),
+        ];
+        let result = compile_multi_file_with_options(&sources, &CompileOptions::default());
+        assert!(
+            result.is_ok(),
+            "std.option.Option should resolve through the module member path: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
     fn test_module_undefined_function_error() {
         // Test that accessing an undefined function in a module produces an error
         let sources = vec![
