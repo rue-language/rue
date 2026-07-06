@@ -997,7 +997,7 @@ error_contains = ["E0706", "function `secret` is private"]
 
 [[case]]
 name = "private_fn_cross_dir_unqualified_rejected"
-description = "Dropping the module qualifier must not bypass privacy: unqualified call to the same private function is E0460 (RUE-37)."
+description = "Dropping the module qualifier does not see functions from the imported module; use explicit module access."
 files = [
     { path = "main.rue", source = """
 const lib = @import("sub/lib.rue");
@@ -1013,7 +1013,7 @@ fn secret() -> i32 {
 """ },
 ]
 compile_fail = true
-error_contains = ["E0460", "function `secret` is private (defined in `sub/lib.rue`)"]
+error_contains = ["E0202", "undefined function 'secret'"]
 
 [[case]]
 name = "private_fn_cross_dir_unqualified_rejected_when_also_listed"
@@ -1056,14 +1056,14 @@ fn secret() -> i32 {
 exit_code = 99
 
 [[case]]
-name = "pub_fn_cross_dir_both_forms_allowed"
-description = "Control: a pub function in another directory is callable qualified and (transitionally) unqualified."
+name = "pub_fn_cross_dir_qualified_allowed_unqualified_rejected"
+description = "Control: a pub function in another directory is callable qualified, but not injected into the caller's unqualified namespace."
 files = [
     { path = "main.rue", source = """
 const lib = @import("sub/lib.rue");
 
 fn main() -> i32 {
-    lib.open() + open()
+    open()
 }
 """ },
     { path = "sub/lib.rue", source = """
@@ -1072,11 +1072,12 @@ pub fn open() -> i32 {
 }
 """ },
 ]
-exit_code = 14
+compile_fail = true
+error_contains = ["E0202", "undefined function 'open'"]
 
 [[case]]
 name = "flat_multifile_private_fn_cross_dir_rejected"
-description = "Uniform privacy (RUE-180): a never-imported file listed explicitly is still private cross-directory — E0460, and the diagnostic names the defining file (no import exists, so no module relationship is claimed)."
+description = "A never-imported listed file does not inject private functions into another file's unqualified namespace."
 args = ["main.rue", "sub/util.rue", "-o", "prog"]
 files = [
     { path = "main.rue", source = """
@@ -1091,11 +1092,11 @@ fn secret() -> i32 {
 """ },
 ]
 compile_fail = true
-error_contains = ["E0460", "function `secret` is private (defined in `sub/util.rue`)"]
+error_contains = ["E0202", "undefined function 'secret'"]
 
 [[case]]
-name = "flat_multifile_pub_fn_cross_dir_allowed"
-description = "Positive control for uniform privacy (RUE-180): a pub function in another never-imported file is callable unqualified with no import — the flat namespace still resolves names (spec 10.3:8)."
+name = "flat_multifile_pub_fn_cross_dir_rejected"
+description = "A never-imported listed file does not inject pub functions into another file's unqualified namespace."
 args = ["main.rue", "sub/util.rue", "-o", "prog"]
 files = [
     { path = "main.rue", source = """
@@ -1109,11 +1110,12 @@ pub fn open() -> i32 {
 }
 """ },
 ]
-exit_code = 42
+compile_fail = true
+error_contains = ["E0202", "undefined function 'open'"]
 
 [[case]]
-name = "flat_multifile_private_fn_same_dir_allowed"
-description = "Control: intra-directory visibility (ADR-0026) is unchanged by RUE-180 — a private function in another listed file in the SAME directory is still callable."
+name = "flat_multifile_private_fn_same_dir_rejected"
+description = "Another listed file in the same directory does not inject private functions into the unqualified namespace."
 args = ["main.rue", "util.rue", "-o", "prog"]
 files = [
     { path = "main.rue", source = """
@@ -1127,7 +1129,8 @@ fn secret() -> i32 {
 }
 """ },
 ]
-exit_code = 42
+compile_fail = true
+error_contains = ["E0202", "undefined function 'secret'"]
 
 # Structs and constants obey the same uniform rule (RUE-183): naming a
 # private struct (annotation or literal) or reading a private constant from
@@ -1325,11 +1328,13 @@ error_contains = ["E0421", "unknown enum type 'Color'"]
 [[case]]
 name = "flat_multifile_private_enum_match_pattern_rejected"
 description = "Match patterns do not see private enum names from another listed file unqualified."
-args = ["main.rue", "sub/lib.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [
     { path = "main.rue", source = """
+const lib = @import("sub/lib.rue");
+
 fn main() -> i32 {
-    match make() {
+    match lib.make() {
         Color::Red => 1,
         Color::Green => 2,
         Color::Blue => 3,
@@ -1911,11 +1916,13 @@ error_contains = ["E0707", "NOPE"]
 [[case]]
 name = "private_type_ctor_annotation_cross_dir_rejected"
 description = "Applying a private comptime type constructor in type-annotation position from another directory is E0460 (RUE-283) — the annotation path must gate privacy like the call path."
-args = ["main.rue", "sub/lib.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [
     { path = "main.rue", source = """
+const lib = @import("sub/lib.rue");
+
 fn main() -> i32 {
-    let s: Secret(i32) = mk();
+    let s: Secret(i32) = lib.mk();
     s.v
 }
 """ },
@@ -1930,11 +1937,13 @@ error_contains = ["E0460", "function `Secret` is private (defined in `sub/lib.ru
 [[case]]
 name = "pub_type_ctor_annotation_cross_dir_allowed"
 description = "Positive control for RUE-283: a pub comptime type constructor applied as an annotation from another directory is allowed."
-args = ["main.rue", "sub/lib.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [
     { path = "main.rue", source = """
+const lib = @import("sub/lib.rue");
+
 fn main() -> i32 {
-    let s: Secret(i32) = mk();
+    let s: Secret(i32) = lib.mk();
     s.v
 }
 """ },
@@ -1948,11 +1957,13 @@ exit_code = 7
 [[case]]
 name = "private_type_ctor_annotation_same_dir_allowed"
 description = "Control for RUE-283: a private comptime type constructor applied as an annotation from the SAME directory is still allowed (intra-directory visibility, ADR-0026)."
-args = ["main.rue", "lib.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [
     { path = "main.rue", source = """
+const lib = @import("lib.rue");
+
 fn main() -> i32 {
-    let s: Secret(i32) = mk();
+    let s: Secret(i32) = lib.mk();
     s.v
 }
 """ },

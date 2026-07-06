@@ -5153,7 +5153,9 @@ impl<'a> Sema<'a> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
+        let source_name = name;
         let mut name = name;
+        let mut resolved_alias = false;
         if let Some(const_info) = self.resolve_const_info_in_file(name, span.file_id)
             && let Some(callee) = const_info.value.as_function()
         {
@@ -5166,20 +5168,47 @@ impl<'a> Sema<'a> {
                 span,
             )?;
             name = callee;
+            resolved_alias = true;
         }
-        name = self
-            .resolve_function_name_in_file(name, span.file_id)
-            .unwrap_or(name);
+
+        let local_name = (!resolved_alias)
+            .then(|| self.resolve_function_name_local(name, span.file_id))
+            .flatten();
+        if let Some(local_name) = local_name {
+            name = local_name;
+        }
 
         // `print(s)` / `println(s)` are builtin free functions (RUE-1), not
         // user-defined ones: intercept them here before the function lookup,
         // but only when the program hasn't shadowed the name with its own
         // `fn print`/`fn println` (a user definition wins, keeping these names
         // unreserved).
-        if (name == self.known.print || name == self.known.println)
-            && !self.functions.contains_key(&name)
+        if !resolved_alias
+            && local_name.is_none()
+            && (source_name == self.known.print || source_name == self.known.println)
         {
-            return self.analyze_print_builtin(air, name, args_start, args_len, span, ctx);
+            return self.analyze_print_builtin(air, source_name, args_start, args_len, span, ctx);
+        }
+
+        if !resolved_alias && local_name.is_none() {
+            // RUE-491 removes graph-global fallback for source-level value
+            // calls. Comptime type-function calls (`Option(T)`, `ArrayBuf(T)`)
+            // are intentionally left on the compatibility path for RUE-497,
+            // which removes that separate type/comptime fallback with its own
+            // std/library fixture updates.
+            if self
+                .functions
+                .get(&source_name)
+                .is_some_and(|info| info.return_type == Type::COMPTIME_TYPE)
+            {
+                name = source_name;
+            } else {
+                let fn_name_str = self.interner.resolve(&source_name).to_string();
+                return Err(CompileError::new(
+                    ErrorKind::UndefinedFunction(fn_name_str),
+                    span,
+                ));
+            }
         }
 
         // Look up the function

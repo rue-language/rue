@@ -2184,10 +2184,15 @@ mod tests {
 
     #[test]
     fn test_cross_file_function_call() {
-        // Function in main.rue calls function in utils.rue
+        // Function in main.rue calls function in utils.rue through its module.
         let sources = vec![
-            SourceFile::new("main.rue", "fn main() -> i32 { helper() }", FileId::new(1)),
-            SourceFile::new("utils.rue", "fn helper() -> i32 { 42 }", FileId::new(2)),
+            SourceFile::new(
+                "main.rue",
+                r#"const utils = @import("utils.rue");
+                fn main() -> i32 { utils.helper() }"#,
+                FileId::new(1),
+            ),
+            SourceFile::new("utils.rue", "pub fn helper() -> i32 { 42 }", FileId::new(2)),
         ];
         let result = compile_multi_file_with_options(&sources, &CompileOptions::default());
         assert!(
@@ -2200,15 +2205,17 @@ mod tests {
     #[test]
     fn test_cross_file_function_call_with_args() {
         // Function in main.rue calls function in utils.rue with arguments
+        // through its module.
         let sources = vec![
             SourceFile::new(
                 "main.rue",
-                "fn main() -> i32 { add(10, 32) }",
+                r#"const utils = @import("utils.rue");
+                fn main() -> i32 { utils.add(10, 32) }"#,
                 FileId::new(1),
             ),
             SourceFile::new(
                 "utils.rue",
-                "fn add(a: i32, b: i32) -> i32 { a + b }",
+                "pub fn add(a: i32, b: i32) -> i32 { a + b }",
                 FileId::new(2),
             ),
         ];
@@ -2403,21 +2410,23 @@ mod tests {
 
     #[test]
     fn test_cross_file_three_files_chain() {
-        // main.rue -> utils.rue -> math.rue chain of calls
+        // main.rue -> utils.rue -> math.rue chain of module-qualified calls
         let sources = vec![
             SourceFile::new(
                 "main.rue",
-                "fn main() -> i32 { compute(6, 7) }",
+                r#"const utils = @import("utils.rue");
+                fn main() -> i32 { utils.compute(6, 7) }"#,
                 FileId::new(1),
             ),
             SourceFile::new(
                 "utils.rue",
-                "fn compute(a: i32, b: i32) -> i32 { multiply(a, b) }",
+                r#"const math = @import("math.rue");
+                pub fn compute(a: i32, b: i32) -> i32 { math.multiply(a, b) }"#,
                 FileId::new(2),
             ),
             SourceFile::new(
                 "math.rue",
-                "fn multiply(x: i32, y: i32) -> i32 { x * y }",
+                "pub fn multiply(x: i32, y: i32) -> i32 { x * y }",
                 FileId::new(3),
             ),
         ];
@@ -2431,17 +2440,24 @@ mod tests {
 
     #[test]
     fn test_cross_file_mutual_calls() {
-        // Two files calling each other (mutual recursion possible)
+        // Two files calling each other through explicit module bindings
+        // (mutual recursion remains possible).
         let sources = vec![
             SourceFile::new(
                 "main.rue",
-                r#"fn main() -> i32 { is_even(4) }
-                fn is_even(n: i32) -> i32 { if n == 0 { 1 } else { is_odd(n - 1) } }"#,
+                r#"const utils = @import("utils.rue");
+                fn main() -> i32 { is_even(4) }
+                pub fn is_even(n: i32) -> i32 {
+                    if n == 0 { 1 } else { utils.is_odd(n - 1) }
+                }"#,
                 FileId::new(1),
             ),
             SourceFile::new(
                 "utils.rue",
-                "fn is_odd(n: i32) -> i32 { if n == 0 { 0 } else { is_even(n - 1) } }",
+                r#"const mainmod = @import("main.rue");
+                pub fn is_odd(n: i32) -> i32 {
+                    if n == 0 { 0 } else { mainmod.is_even(n - 1) }
+                }"#,
                 FileId::new(2),
             ),
         ];
