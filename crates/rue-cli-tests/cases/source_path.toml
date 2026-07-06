@@ -1,0 +1,10 @@
+[section]
+id = "cli.source_path"
+name = "source_path fixtures"
+description = "CLI harness source_path entries resolve checked-in sources relative to the repository root."
+
+[[case]]
+name = "repo_relative_non_special_source_path"
+description = "source_path is documented as repo-root-relative, not relative to the temp case directory (RUE-495)."
+source_path = "cli-test-fixtures/repo_relative_source_path.rue"
+stdout = "495\n"
