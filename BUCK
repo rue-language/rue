@@ -38,6 +38,12 @@ filegroup(
     srcs = glob(["examples/**"]),
 )
 
+# Checked-in repo-relative source_path fixtures for the CLI integration tests.
+filegroup(
+    name = "cli-test-fixtures",
+    srcs = glob(["cli-test-fixtures/**"]),
+)
+
 # Tutorial markdown is an input to the snippet checker. The checker only
 # compiles fences explicitly marked with `rue check` or `rue compile-fail`.
 filegroup(
@@ -93,6 +99,7 @@ sh_test(
         "RUE_BINARY": "$(exe_target //crates/rue:rue)",
         "RUE_CLI_CASES": "$(location //crates/rue-cli-tests:cases)/cases",
         "RUE_EXAMPLES_DIR": "$(location :examples)/examples",
+        "RUE_REPO_DIR": "$(location :cli-test-fixtures)",
         "RUE_STD_DIR": "$(location :std)/std",
     },
 )

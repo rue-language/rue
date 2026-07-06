@@ -390,14 +390,48 @@ fn expand_env_value(value: &str, real_std: &Path) -> String {
     value.replace("${REAL_STD}", &real_std.to_string_lossy())
 }
 
-fn resolve_source_path(path: &str, real_std: &Path) -> PathBuf {
+fn find_repo_root(cases_dir: &Path, real_std: &Path) -> PathBuf {
+    if let Ok(path) = std::env::var("RUE_REPO_DIR") {
+        return PathBuf::from(path);
+    }
+
+    let mut candidates = Vec::new();
+    if let Ok(path) = cases_dir.canonicalize() {
+        candidates.push(path);
+    }
+    if let Ok(path) = std::env::current_dir() {
+        candidates.push(path);
+    }
+    if let Some(parent) = real_std.parent() {
+        candidates.push(parent.to_path_buf());
+    }
+
+    for candidate in candidates {
+        for ancestor in candidate.ancestors() {
+            if ancestor.join("crates/rue-cli-tests/cases").is_dir()
+                && ancestor.join("std/_std.rue").is_file()
+            {
+                return ancestor.to_path_buf();
+            }
+        }
+    }
+
+    PathBuf::from(".")
+}
+
+fn resolve_source_path(path: &str, real_std: &Path, repo_root: &Path) -> PathBuf {
+    let source_path = Path::new(path);
+    if source_path.is_absolute() {
+        return source_path.to_path_buf();
+    }
+
     if let Some(rest) = path.strip_prefix("examples/") {
         return find_dir("RUE_EXAMPLES_DIR", EXAMPLES_DIR_PATHS, "examples").join(rest);
     }
     if let Some(rest) = path.strip_prefix("std/") {
         return real_std.join(rest);
     }
-    PathBuf::from(path)
+    repo_root.join(source_path)
 }
 
 /// Compile and run one case, returning the program's outcome.
@@ -409,6 +443,7 @@ fn run_case(
     case: &Case,
     rue_binary: &Path,
     real_std: &Path,
+    repo_root: &Path,
     opt_level: Option<&str>,
 ) -> Result<RunOutcome, String> {
     let temp_dir = tempfile::tempdir().map_err(|e| format!("failed to create temp dir: {}", e))?;
@@ -416,7 +451,7 @@ fn run_case(
     let source_path = case
         .source_path
         .as_ref()
-        .map(|path| resolve_source_path(path, real_std));
+        .map(|path| resolve_source_path(path, real_std, repo_root));
 
     // Write the case's files to disk, creating subdirectories as needed.
     for file in &case.files {
@@ -611,7 +646,12 @@ fn run_case(
 /// and then the levels' outcomes are cross-checked against the first level so a
 /// divergence that still matches no declared value can't slip through. On a
 /// mismatch the error names the diverging level.
-fn run_case_differential(case: &Case, rue_binary: &Path, real_std: &Path) -> TestResult {
+fn run_case_differential(
+    case: &Case,
+    rue_binary: &Path,
+    real_std: &Path,
+    repo_root: &Path,
+) -> TestResult {
     // Levels to compare. -O2/-O3 alias -O1 today; the net catches a future
     // divergence.
     const OPT_LEVELS: &[&str] = &["-O0", "-O1", "-O2", "-O3"];
@@ -635,7 +675,7 @@ fn run_case_differential(case: &Case, rue_binary: &Path, real_std: &Path) -> Tes
 
     let mut baseline: Option<(&str, RunOutcome)> = None;
     for level in OPT_LEVELS {
-        let outcome = run_case(case, rue_binary, real_std, Some(level))
+        let outcome = run_case(case, rue_binary, real_std, repo_root, Some(level))
             .map_err(|e| format!("at {}: {}", level, e))?;
         match &baseline {
             None => baseline = Some((level, outcome)),
@@ -662,6 +702,7 @@ fn run_case_wrapper(
     case: &Case,
     rue_binary: &Path,
     real_std: &Path,
+    repo_root: &Path,
     ctx: RunContext<'_>,
 ) -> Result<(), RunError> {
     if case.skip {
@@ -682,9 +723,9 @@ fn run_case_wrapper(
     }
 
     let result = if case.differential_opt {
-        run_case_differential(case, rue_binary, real_std)
+        run_case_differential(case, rue_binary, real_std, repo_root)
     } else {
-        run_case(case, rue_binary, real_std, None).map(|_| ())
+        run_case(case, rue_binary, real_std, repo_root, None).map(|_| ())
     };
 
     // A known_bug scoped to other platforms doesn't apply here: the case
@@ -982,6 +1023,7 @@ fn main() {
     let cases_dir = find_dir("RUE_CLI_CASES", CASES_DIR_PATHS, "cases");
     let real_std = find_dir("RUE_STD_DIR", STD_DIR_PATHS, "std");
     let real_std = real_std.canonicalize().unwrap_or(real_std);
+    let repo_root = find_repo_root(&cases_dir, &real_std);
 
     let files = load_cases(&cases_dir);
 
@@ -994,8 +1036,9 @@ fn main() {
             let test_name = format!("{}::{}", section_id, case.name);
             let rue_binary = rue_binary.clone();
             let real_std = real_std.clone();
+            let repo_root = repo_root.clone();
             tests.push(Trial::test(test_name, move |ctx| {
-                run_case_wrapper(&case, &rue_binary, &real_std, ctx)
+                run_case_wrapper(&case, &rue_binary, &real_std, &repo_root, ctx)
             }));
         }
     }
