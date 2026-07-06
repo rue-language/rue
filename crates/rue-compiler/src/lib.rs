@@ -1583,18 +1583,18 @@ pub fn generate_lowering_info(
     type_pool: &TypeInternPool,
     interner: &ThreadedRodeo,
     target: Target,
-) -> rue_codegen::LoweringDebugInfo {
+) -> CompileResult<rue_codegen::LoweringDebugInfo> {
     match target.arch() {
         Arch::X86_64 => {
             let (_mir, debug_info) =
-                rue_codegen::x86_64::CfgLower::new(cfg, type_pool, interner).lower_with_debug();
-            debug_info
+                rue_codegen::x86_64::CfgLower::new(cfg, type_pool, interner).lower_with_debug()?;
+            Ok(debug_info)
         }
         Arch::Aarch64 => {
             let (_mir, debug_info) =
                 rue_codegen::aarch64::CfgLower::new(cfg, type_pool, interner, target)
-                    .lower_with_debug();
-            debug_info
+                    .lower_with_debug()?;
+            Ok(debug_info)
         }
     }
 }
