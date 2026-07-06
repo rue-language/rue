@@ -32,9 +32,9 @@ use rue_rir::{InstData, InstRef, RirArgMode, RirParamMode, RirPattern};
 use crate::sema::context::ConstValue;
 use rue_span::Span;
 
-use super::Sema;
 use super::analysis::move_out_of_inout_error;
 use super::context::{AnalysisContext, AnalysisResult, LocalVar, VariableMoveState};
+use super::{FunctionInfo, Sema};
 use crate::inst::{
     Air, AirArgMode, AirCallArg, AirInst, AirInstData, AirPattern, AirPlaceBase, AirPlaceRef,
     AirProjection, AirRef,
@@ -5138,19 +5138,52 @@ impl<'a> Sema<'a> {
             .functions
             .get(&name)
             .ok_or_compile_error(ErrorKind::UndefinedFunction(fn_name_str.clone()), span)?;
+        let fn_info = fn_info.clone();
+
+        self.analyze_resolved_function_call(
+            air, name, fn_info, args_start, args_len, span, ctx, true,
+        )
+    }
+
+    /// Analyze a call after the source-level callee has already been resolved
+    /// to an internal function key.
+    ///
+    /// Unqualified source calls enter through [`Self::analyze_call`], which
+    /// performs local alias resolution, module-local name canonicalization, and
+    /// builtin interception before reaching this helper. Module-member calls
+    /// such as `std.option.Option(i64)` resolve and validate their member in
+    /// `analyze_module_member_call_impl`; generic members use this helper
+    /// directly so module-qualified type constructors do not re-enter
+    /// unqualified-call fallback lookup.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn analyze_resolved_function_call(
+        &mut self,
+        air: &mut Air,
+        name: Spur,
+        fn_info: FunctionInfo,
+        args_start: u32,
+        args_len: u32,
+        span: Span,
+        ctx: &mut AnalysisContext,
+        check_unqualified_visibility: bool,
+    ) -> CompileResult<AnalysisResult> {
+        let source_name = self.source_function_name(name);
+        let fn_name_str = self.interner.resolve(&source_name).to_string();
 
         // Visibility (E0460, RUE-37/RUE-180): an unqualified call must not
         // reach a private function defined in another directory — privacy is
         // uniform in every multi-file compilation, imports or not (spec
         // 10.3:7), so the flat namespace resolves the name but the callee
         // must be `pub` (or in the caller's directory).
-        self.check_unqualified_visibility(
-            "function",
-            &fn_name_str,
-            fn_info.file_id,
-            fn_info.is_pub,
-            span,
-        )?;
+        if check_unqualified_visibility {
+            self.check_unqualified_visibility(
+                "function",
+                &fn_name_str,
+                fn_info.file_id,
+                fn_info.is_pub,
+                span,
+            )?;
+        }
 
         // An `unchecked fn` may only be called inside a `checked` block
         // (spec 9.1:1). The callee's body is analyzed like any other function;

@@ -395,10 +395,20 @@ impl<'a> Sema<'a> {
         // Functions with comptime parameters need specialization: a plain
         // Call to the base name would reference a body that is never
         // analyzed (generic bodies are only materialized per specialization,
-        // RUE-166). Delegate to the unqualified call path, which emits
-        // CallGeneric; module membership and accessibility were checked above.
+        // RUE-166). Use the already-resolved call path so module-qualified
+        // type constructors do not re-enter unqualified-call fallback lookup;
+        // module membership and accessibility were checked above.
         if fn_info.is_generic {
-            return self.analyze_call(air, function_key, args_start, args_len, span, ctx);
+            return self.analyze_resolved_function_call(
+                air,
+                function_key,
+                fn_info,
+                args_start,
+                args_len,
+                span,
+                ctx,
+                false,
+            );
         }
 
         // Check for exclusive access violation. (The old, pre-deduplication
