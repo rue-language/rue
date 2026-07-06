@@ -1110,14 +1110,11 @@ pub enum AirInstData {
         is_param: bool,
         /// `None`: the slot's whole value moved out. `Some(place)`: only
         /// the path named by the place's projections moved out — a pure
-        /// `Field` projection chain of any depth (`o.a`, `o.a.b`), or a
-        /// single CONSTANT-index projection (`xs[K]`, RUE-186, whose index
-        /// operand is a dedicated `Const` instruction); drop elaboration
-        /// then drops the struct/array path-granularly, skipping the moved
-        /// path. Paths THROUGH an array index (`arr[i].a`) are NOT exported
-        /// (no marker), keeping the whole-slot drop — which re-drops the
-        /// moved element (a known gap: index-interior paths aren't tracked
-        /// by drop elaboration).
+        /// `Field`/constant-`Index` projection chain of any depth (`o.a`,
+        /// `o.a.b`, `xs[K]`, `xs[K].a`); every index operand in the marker is a
+        /// dedicated `Const` instruction so drop elaboration can decode the
+        /// path. Drop elaboration then drops the struct/array path-granularly,
+        /// skipping the moved path.
         place: Option<AirPlaceRef>,
     },
 }
