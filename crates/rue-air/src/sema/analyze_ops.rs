@@ -5191,24 +5191,11 @@ impl<'a> Sema<'a> {
         }
 
         if !resolved_alias && local_name.is_none() {
-            // RUE-491 removes graph-global fallback for source-level value
-            // calls. Comptime type-function calls (`Option(T)`, `ArrayBuf(T)`)
-            // are intentionally left on the compatibility path for RUE-497,
-            // which removes that separate type/comptime fallback with its own
-            // std/library fixture updates.
-            if self
-                .functions
-                .get(&source_name)
-                .is_some_and(|info| info.return_type == Type::COMPTIME_TYPE)
-            {
-                name = source_name;
-            } else {
-                let fn_name_str = self.interner.resolve(&source_name).to_string();
-                return Err(CompileError::new(
-                    ErrorKind::UndefinedFunction(fn_name_str),
-                    span,
-                ));
-            }
+            let fn_name_str = self.interner.resolve(&source_name).to_string();
+            return Err(CompileError::new(
+                ErrorKind::UndefinedFunction(fn_name_str),
+                span,
+            ));
         }
 
         // Look up the function

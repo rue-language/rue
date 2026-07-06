@@ -13,7 +13,7 @@ const std = @import("std");
 
 fn main() -> i32 {
     let V = std.arraybuf.ArrayBuf(i32);
-    let O = std.option.Option(i32);
+    let O = std.arraybuf.Option(i32);
 
     let mut v = V::new();
     v.push(10);

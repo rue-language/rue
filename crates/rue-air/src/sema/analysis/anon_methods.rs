@@ -295,10 +295,11 @@ impl<'a> Sema<'a> {
                     let resolved_ty = if type_str == "Self" {
                         struct_type
                     } else {
-                        self.resolve_type_for_comptime_with_subst_and_values(
+                        self.resolve_type_for_comptime_with_subst_and_values_at_span(
                             p.ty,
                             type_subst,
                             value_subst,
+                            method_inst.span,
                         )?
                     };
                     param_types.push(resolved_ty);
@@ -309,10 +310,11 @@ impl<'a> Sema<'a> {
                 let ret_type = if ret_type_str == "Self" {
                     struct_type
                 } else {
-                    self.resolve_type_for_comptime_with_subst_and_values(
+                    self.resolve_type_for_comptime_with_subst_and_values_at_span(
                         *return_type,
                         type_subst,
                         value_subst,
+                        method_inst.span,
                     )?
                 };
 

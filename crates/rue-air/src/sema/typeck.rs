@@ -771,10 +771,13 @@ impl<'a> Sema<'a> {
         if let Some(module_file_id) = module_file_id {
             self.ensure_free_function_signature(member_sym, Some(module_file_id))?;
         }
+        let function_key = module_file_id
+            .and_then(|file_id| self.resolve_function_name_local(member_sym, file_id))
+            .unwrap_or(member_sym);
 
         let Some(fn_info) = self
             .functions
-            .get(&member_sym)
+            .get(&function_key)
             .copied()
             .filter(|info| module_file_id == Some(info.file_id))
         else {
@@ -833,7 +836,7 @@ impl<'a> Sema<'a> {
             callee_types.insert(param_names[i], arg_ty);
         }
         let empty_values: HashMap<Spur, ConstValue> = HashMap::new();
-        match self.reduce_type_ctor_body(member_sym, &callee_types, &empty_values)? {
+        match self.reduce_type_ctor_body(function_key, &callee_types, &empty_values)? {
             Some(ConstValue::Type(t)) => Ok(t),
             _ => Err(CompileError::new(
                 ErrorKind::ComptimeEvaluationFailed {
@@ -1021,9 +1024,12 @@ impl<'a> Sema<'a> {
         ctx: Option<&AnalysisContext>,
     ) -> CompileResult<Type> {
         let name_sym = self.interner.get_or_intern(call_name);
-        let name_key = self
-            .resolve_function_name_in_file(name_sym, span.file_id)
-            .unwrap_or(name_sym);
+        let Some(name_key) = self.resolve_function_name_local(name_sym, span.file_id) else {
+            return Err(CompileError::new(
+                ErrorKind::UnknownType(format!("{}(...)", call_name)),
+                span,
+            ));
+        };
 
         // The callee must be a known `-> type` constructor.
         let Some(fn_info) = self.functions.get(&name_key) else {
@@ -1145,6 +1151,21 @@ impl<'a> Sema<'a> {
         type_subst: &std::collections::HashMap<Spur, Type>,
         value_subst: &HashMap<Spur, ConstValue>,
     ) -> Option<Type> {
+        self.resolve_type_for_comptime_with_subst_and_values_at_span(
+            type_sym,
+            type_subst,
+            value_subst,
+            Span::default(),
+        )
+    }
+
+    pub(crate) fn resolve_type_for_comptime_with_subst_and_values_at_span(
+        &mut self,
+        type_sym: Spur,
+        type_subst: &std::collections::HashMap<Spur, Type>,
+        value_subst: &HashMap<Spur, ConstValue>,
+        span: Span,
+    ) -> Option<Type> {
         // First check the substitution map for type parameters
         if let Some(&ty) = type_subst.get(&type_sym) {
             return Some(ty);
@@ -1169,17 +1190,18 @@ impl<'a> Sema<'a> {
         } else if let Some((element_type, len)) = parse_array_type_syntax(type_name) {
             // Resolve the element type first
             let element_sym = self.interner.get_or_intern(&element_type);
-            let element_ty = self.resolve_type_for_comptime_with_subst_and_values(
+            let element_ty = self.resolve_type_for_comptime_with_subst_and_values_at_span(
                 element_sym,
                 type_subst,
                 value_subst,
+                span,
             )?;
             // Resolve the length via comptime value substitution (a `comptime`
             // value parameter) or file-level constants. In comptime evaluation
             // we can't emit a diagnostic, so an unresolvable length just makes
             // the type non-evaluable (None); the caller reports it (RUE-16).
             let length = self
-                .resolve_array_length(&len, Span::default(), Some(value_subst))
+                .resolve_array_length(&len, span, Some(value_subst))
                 .ok()?;
             // Get or create the array type
             let array_type_id = self.get_or_create_array_type(element_ty, length);
@@ -1187,20 +1209,22 @@ impl<'a> Sema<'a> {
         } else if let Some(pointee_type_str) = type_name.strip_prefix("ptr const ") {
             // Pointer type syntax: ptr const T
             let pointee_sym = self.interner.get_or_intern(pointee_type_str);
-            let pointee_ty = self.resolve_type_for_comptime_with_subst_and_values(
+            let pointee_ty = self.resolve_type_for_comptime_with_subst_and_values_at_span(
                 pointee_sym,
                 type_subst,
                 value_subst,
+                span,
             )?;
             let ptr_type_id = self.type_pool.intern_ptr_const_from_type(pointee_ty);
             Some(Type::new_ptr_const(ptr_type_id))
         } else if let Some(pointee_type_str) = type_name.strip_prefix("ptr mut ") {
             // Pointer type syntax: ptr mut T
             let pointee_sym = self.interner.get_or_intern(pointee_type_str);
-            let pointee_ty = self.resolve_type_for_comptime_with_subst_and_values(
+            let pointee_ty = self.resolve_type_for_comptime_with_subst_and_values_at_span(
                 pointee_sym,
                 type_subst,
                 value_subst,
+                span,
             )?;
             let ptr_type_id = self.type_pool.intern_ptr_mut_from_type(pointee_ty);
             Some(Type::new_ptr_mut(ptr_type_id))
@@ -1219,7 +1243,12 @@ impl<'a> Sema<'a> {
             // guard) just makes the type non-evaluable (`None`); the caller
             // reports it.
             let name_sym = self.interner.get_or_intern(&call_name);
-            let fn_info = self.functions.get(&name_sym)?;
+            let function_key = if span == Span::default() {
+                name_sym
+            } else {
+                self.resolve_function_name_local(name_sym, span.file_id)?
+            };
+            let fn_info = self.functions.get(&function_key)?;
             if fn_info.return_type != Type::COMPTIME_TYPE {
                 return None;
             }
@@ -1234,16 +1263,17 @@ impl<'a> Sema<'a> {
             let mut callee_types: HashMap<Spur, Type> = HashMap::new();
             for (i, arg) in arg_strs.iter().enumerate() {
                 let arg_sym = self.interner.get_or_intern(arg);
-                let arg_ty = self.resolve_type_for_comptime_with_subst_and_values(
+                let arg_ty = self.resolve_type_for_comptime_with_subst_and_values_at_span(
                     arg_sym,
                     type_subst,
                     value_subst,
+                    span,
                 )?;
                 callee_types.insert(param_names[i], arg_ty);
             }
             let empty_values: HashMap<Spur, ConstValue> = HashMap::new();
             match self
-                .reduce_type_ctor_body(name_sym, &callee_types, &empty_values)
+                .reduce_type_ctor_body(function_key, &callee_types, &empty_values)
                 .ok()?
             {
                 Some(ConstValue::Type(t)) => Some(t),
@@ -1400,9 +1430,12 @@ impl<'a> Sema<'a> {
             |reason: String| CompileError::new(ErrorKind::InvalidArrayLength { reason }, span);
 
         let callee_sym = self.interner.get_or_intern(callee);
-        let callee_key = self
-            .resolve_function_name_in_file(callee_sym, span.file_id)
-            .unwrap_or(callee_sym);
+        let Some(callee_key) = self.resolve_function_name_local(callee_sym, span.file_id) else {
+            return Err(invalid(format!(
+                "'{callee}' is not a function; array lengths must be an integer literal, a \
+                 `const`, a `comptime` value parameter, or a call to a comptime function"
+            )));
+        };
         let Some(fn_info) = self.functions.get(&callee_key) else {
             return Err(invalid(format!(
                 "'{callee}' is not a function; array lengths must be an integer literal, a \
