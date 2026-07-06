@@ -230,6 +230,33 @@ compile_stdout_contains = [
 compile_stdout_not_contains = ["unused.rue"]
 
 [[case]]
+name = "emit_deps_ignores_unrelated_semantic_errors"
+description = "RUE-499: --emit deps reports the discovered import graph without requiring body/type validation to succeed."
+files = [
+    { path = "main.rue", source = """
+const utils = @import("utils");
+
+fn main() -> i32 {
+    utils.answer() + nope
+}
+""" },
+    { path = "utils.rue", source = """
+pub fn answer() -> i32 {
+    41
+}
+""" },
+]
+args = ["--emit", "deps", "main.rue"]
+compile_only = true
+compile_stdout_contains = [
+    "\"version\": 1",
+    "main.rue",
+    "utils.rue",
+    "\"specifier\": \"utils\"",
+]
+compile_stderr_not_contains = ["undefined variable", "nope", "E0201"]
+
+[[case]]
 name = "emit_deps_rejects_unresolved_import"
 description = "RUE-450: --emit deps validates the loaded root import graph before printing dependency JSON."
 files = [
