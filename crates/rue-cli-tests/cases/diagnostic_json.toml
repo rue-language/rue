@@ -24,3 +24,26 @@ compile_stderr_not_contains = [
   "error[E0206]",
   "-->",
 ]
+
+[[case]]
+name = "successful_compile_warning_is_json"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let unused = 42;
+    0
+}
+""" }]
+args = ["--error-format", "json", "main.rue", "-o", "prog"]
+compile_only = true
+compile_stderr_contains = [
+  '"severity":"warning"',
+  "\"message\":\"unused variable 'unused'\"",
+  '"spans":[{',
+  '"primary":true',
+]
+compile_stderr_not_contains = [
+  "warning:",
+  "warning[",
+  "-->",
+  "  |",
+]
