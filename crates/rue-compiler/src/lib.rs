@@ -218,7 +218,10 @@ fn parse_runtime_archive(runtime_bytes: &[u8]) -> Result<Archive, String> {
 
 // Re-export commonly used types
 pub use lasso::{Spur, ThreadedRodeo};
-pub use rue_air::{Air, AnalyzedFunction, Sema, SemaOutput, StructDef, Type, TypeInternPool};
+pub use rue_air::{
+    Air, AnalyzedFunction, DirResolution, ModulePath, Sema, SemaOutput, StructDef, Type,
+    TypeInternPool, import_candidate_groups,
+};
 pub use rue_cfg::{Cfg, CfgBuilder, CfgOutput, OptLevel};
 pub use rue_codegen::{
     LoweringDebugInfo, RegAllocDebugInfo, RelocationKind, StackFrameInfo, X86Mir,

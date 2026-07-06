@@ -1228,8 +1228,6 @@ impl<'a> Sema<'a> {
 }
 
 fn import_candidates(import_path: &str, base_dirs: &[String]) -> Vec<String> {
-    use std::path::Path;
-
     let mut candidates = Vec::new();
     let push_unique = |candidates: &mut Vec<String>, candidate: String| {
         if !candidates.contains(&candidate) {
@@ -1237,34 +1235,9 @@ fn import_candidates(import_path: &str, base_dirs: &[String]) -> Vec<String> {
         }
     };
 
-    for base in base_dirs {
-        let base_path = Path::new(base);
-        if import_path.ends_with(".rue") {
-            push_unique(
-                &mut candidates,
-                base_path.join(import_path).to_string_lossy().into_owned(),
-            );
-        } else {
-            let rel = Path::new(import_path);
-            let basename = rel
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or(import_path);
-            push_unique(
-                &mut candidates,
-                base_path
-                    .join(format!("{import_path}.rue"))
-                    .to_string_lossy()
-                    .into_owned(),
-            );
-            push_unique(
-                &mut candidates,
-                base_path
-                    .join(import_path)
-                    .join(format!("_{basename}.rue"))
-                    .to_string_lossy()
-                    .into_owned(),
-            );
+    for group in super::super::module_path::import_candidate_groups(import_path, base_dirs, None) {
+        for candidate in group {
+            push_unique(&mut candidates, candidate);
         }
     }
 

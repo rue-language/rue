@@ -36,7 +36,8 @@ pub use intern_pool::{
 pub use module_registry::ModuleRegistry;
 pub use param_arena::{ParamArena, ParamRange};
 pub use sema::{
-    AnalyzedFunction, ConstValue, FunctionInfo, GatherOutput, MethodInfo, Sema, SemaOutput,
+    AnalyzedFunction, ConstValue, DirResolution, FunctionInfo, GatherOutput, MethodInfo,
+    ModulePath, Sema, SemaOutput, import_candidate_groups,
 };
 pub use types::{
     ArrayTypeId, EnumDef, EnumId, ModuleDef, ModuleId, PtrConstTypeId, PtrMutTypeId, StructDef,

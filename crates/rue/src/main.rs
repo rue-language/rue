@@ -17,8 +17,8 @@ use rue_compiler::{
     MultiFileFormatter, MultiFileJsonFormatter, OptLevel, ParsedProgram, PreviewFeature,
     PreviewFeatures, SourceFile, SourceInfo, TokenKind, compile_multi_file_with_options,
     configure_thread_pool, generate_emitted_asm, generate_liveness_info, generate_lowering_info,
-    generate_mir, generate_regalloc_info, generate_stack_frame_info, merge_symbols,
-    parse_all_files,
+    generate_mir, generate_regalloc_info, generate_stack_frame_info, import_candidate_groups,
+    merge_symbols, parse_all_files,
 };
 use rue_rir::RirPrinter;
 use rue_target::Target;
@@ -1228,38 +1228,24 @@ fn discover_and_load_imports(
                 .map(PathBuf::from)
                 .unwrap_or_default();
 
-            // Candidate GROUPS, nearest base directory first. Within a
-            // group, EVERY existing candidate is loaded — if both `foo.rue`
-            // and `foo/_foo.rue` exist, loading both lets sema report the
+            // Candidate GROUPS, nearest base directory first. Within a group,
+            // EVERY existing candidate is loaded — if both `foo.rue` and
+            // `foo/_foo.rue` exist, loading both lets sema report the
             // dual-entity ambiguity (E0708) instead of the driver silently
-            // picking one. Later groups are only probed when the nearer
-            // group had nothing.
-            let mut groups: Vec<Vec<PathBuf>> = Vec::new();
-            // "std" is the general directory-module rule (std/_std.rue) plus
-            // one extra candidate group: an installed stdlib via $RUE_STD_PATH.
-            if import_str == "std"
-                && let Ok(std_path) = env::var("RUE_STD_PATH")
-            {
-                groups.push(vec![Path::new(&std_path).join("_std.rue")]);
-            }
-            if import_str.ends_with(".rue") {
-                groups.push(vec![importer_dir.join(import_str)]);
-                groups.push(vec![root_dir.join(import_str)]);
-            } else {
-                // Directory-module facade: foo/_foo.rue (inside the
-                // directory, mirroring std/_std.rue — RUE-137).
-                let rel = Path::new(import_str);
-                let basename = rel.file_name().unwrap_or_default().to_string_lossy();
-                let facade = rel.join(format!("_{basename}.rue"));
-                groups.push(vec![
-                    importer_dir.join(format!("{import_str}.rue")),
-                    importer_dir.join(&facade),
-                ]);
-                groups.push(vec![
-                    root_dir.join(format!("{import_str}.rue")),
-                    root_dir.join(&facade),
-                ]);
-            }
+            // picking one. Later groups are only probed when the nearer group
+            // had nothing.
+            let base_dirs = vec![
+                importer_dir.to_string_lossy().into_owned(),
+                root_dir.to_string_lossy().into_owned(),
+            ];
+            let std_dir = (import_str == "std")
+                .then(|| env::var("RUE_STD_PATH").ok())
+                .flatten();
+            let groups: Vec<Vec<PathBuf>> =
+                import_candidate_groups(import_str, &base_dirs, std_dir.as_deref())
+                    .into_iter()
+                    .map(|group| group.into_iter().map(PathBuf::from).collect())
+                    .collect();
 
             'groups: for group in groups {
                 let mut group_hit = false;
