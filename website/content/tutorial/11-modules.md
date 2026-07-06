@@ -96,3 +96,11 @@ directory.
 
 The important habit is still the same: use explicit module imports and
 namespace-qualified access rather than hidden global names.
+
+## Next Steps
+
+You've learned the current core of Rue. For the complete language reference,
+read the [Language Specification](/spec/).
+
+Rue is still in early development. If you find bugs or have ideas, please
+[file an issue](https://github.com/rue-language/rue/issues).

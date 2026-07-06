@@ -112,8 +112,5 @@ in the `examples/` directory:
 
 ## Next Steps
 
-You've learned the current core of Rue. For the complete language reference,
-read the [Language Specification](/spec/).
-
-Rue is still in early development. If you find bugs or have ideas, please
-[file an issue](https://github.com/rue-language/rue/issues).
+This program imports `std` as a module. The next chapter shows the same module
+system with your own files, including public and private declarations.
