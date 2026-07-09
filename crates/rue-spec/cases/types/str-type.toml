@@ -219,3 +219,103 @@ fn main() -> i32 {
 }
 """
 exit_code = 0
+
+# ============================================================================
+# Two-types string model (ADR-0043, RUE-386): first-class `str` vs. views.
+# ============================================================================
+
+# 3.7:58 — a `borrow str` view reads a buffer's bytes through the `str`
+# interface (`.len()`, indexing) and may be re-borrowed. A `Str(N)` source is
+# used because it shares the static-backed 2-word representation of `str`.
+[[case]]
+name = "borrow_str_view_reads_and_reborrows"
+spec = ["3.7:58"]
+preview = "string_trio"
+preview_should_pass = true
+source = """
+fn inner(borrow s: str) -> u64 {
+    s.len()
+}
+fn outer(borrow s: str) -> u64 {
+    inner(borrow s)          // re-borrow is allowed
+}
+fn main() -> i32 {
+    let s: Str(8) = "hello";
+    @intCast(outer(borrow s))
+}
+"""
+exit_code = 5
+
+# 3.7:59 — a borrowed `str` view laundered into a first-class `str` (returned)
+# is rejected (E0497): the view is second-class and cannot escape the call.
+[[case]]
+name = "borrow_str_view_return_rejected"
+spec = ["3.7:59"]
+preview = "string_trio"
+preview_should_pass = true
+source = """
+fn bad(borrow s: str) -> str {
+    s
+}
+fn main() -> i32 {
+    0
+}
+"""
+compile_fail = true
+error_contains = "E0497"
+
+# 3.7:59 — a borrowed `str` view stored in a struct field is rejected (E0497).
+[[case]]
+name = "borrow_str_view_struct_field_rejected"
+spec = ["3.7:59"]
+preview = "string_trio"
+preview_should_pass = true
+source = """
+struct Keep { s: str }
+fn bad(borrow s: str) -> Keep {
+    Keep { s: s }
+}
+fn main() -> i32 {
+    0
+}
+"""
+compile_fail = true
+error_contains = "E0497"
+
+# 3.7:60 — a `StrBuf` buffer coerces to an `inout str` view (exclusive) when the
+# operand is a local buffer; the view reads through the `str` interface.
+[[case]]
+name = "inout_str_accepts_local_buffer"
+spec = ["3.7:60"]
+preview = "string_trio"
+preview_should_pass = true
+source = """
+fn take(inout s: str) -> u64 {
+    s.len()
+}
+fn main() -> i32 {
+    let mut b: Str(8) = "hello";
+    @intCast(take(inout b))
+}
+"""
+exit_code = 5
+
+# 3.7:60 — a first-class / static `str` value is NOT a legal `inout str` operand
+# (E0496): an exclusive view requires local buffer provenance.
+[[case]]
+name = "inout_str_static_operand_rejected"
+spec = ["3.7:60"]
+preview = "string_trio"
+preview_should_pass = true
+source = """
+fn take(inout s: str) {
+    s = "hi";
+}
+fn main() -> i32 {
+    let mut s: str = "hello";
+    take(inout s);
+    0
+}
+"""
+compile_fail = true
+error_contains = "E0496"

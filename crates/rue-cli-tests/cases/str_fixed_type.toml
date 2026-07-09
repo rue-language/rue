@@ -93,26 +93,44 @@ args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
 compile_fail = true
 error_contains = ["E0492"]
 
-# A `Str(N)` value coerces to a `str` parameter and is read through the str
-# interface — both a materialized literal and a forwarded Str(N) variable.
+# Two-types model (ADR-0043, RUE-386): a `Str(N)` buffer is read through a
+# `borrow str` view — NOT a first-class `str` parameter (that would let the
+# buffer escape). Read via `.len()` and byte index through the shared view.
 [[case]]
-name = "str_fixed_coerces_to_str_param"
+name = "str_fixed_read_through_borrow_str_view"
 files = [{ path = "main.rue", source = """
-fn len_of(s: str) -> u64 {
+fn len_of(borrow s: str) -> u64 {
     s.len()
 }
-fn first(s: str) -> u8 {
+fn first(borrow s: str) -> u8 {
     s[0]
 }
 fn main() -> i32 {
     let s: Str(8) = "hello";
-    let n: u64 = len_of(s);
-    let b: u8 = first(s);
+    let n: u64 = len_of(borrow s);
+    let b: u8 = first(borrow s);
     if n == 5 && b == 104 { 42 } else { 0 }
 }
 """ }]
 args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
 exit_code = 42
+
+# The bare `str` parameter form of the above is rejected: a `Str(N)` buffer is
+# not a first-class `str` (E0495, RUE-386).
+[[case]]
+name = "str_fixed_to_first_class_str_param_rejected"
+files = [{ path = "main.rue", source = """
+fn len_of(s: str) -> u64 {
+    s.len()
+}
+fn main() -> i32 {
+    let s: Str(8) = "hello";
+    @intCast(len_of(s))
+}
+""" }]
+args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0495", "did you mean `borrow str`?"]
 
 # A Str(N) is a value type: passing it to a Str(N) parameter and reading .len()
 # there round-trips.

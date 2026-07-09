@@ -1,0 +1,104 @@
+[section]
+id = "diagnostics.str-two-types"
+name = "Two-types string model diagnostics (ADR-0043, RUE-386)"
+description = """
+The ADR-0043 two-types string model (RUE-386) distinguishes a first-class,
+static-backed `str` value from a second-class `borrow str` / `inout str` view.
+A string buffer (`StrBuf`/`Str(N)`) or a borrowed view used where a first-class
+`str` is required would escape its backing storage (a verified segfault), so it
+is a compile error. These cases pin the diagnostic wording — most importantly
+the targeted did-you-mean on a bare `str` parameter, which authors with a Rust
+prior will hit constantly. The end-to-end runtime behaviour and the segfault
+regressions are pinned in the CLI suite (str_type.toml).
+"""
+
+# The star diagnostic Steve asked for: passing a non-literal (a buffer) where a
+# bare `str` parameter is expected suggests `borrow str` by name.
+[[case]]
+name = "buffer_to_str_param_suggests_borrow_str"
+description = "A `StrBuf` argument to a bare `str` parameter is E0495 with the `borrow str` did-you-mean."
+preview = "string_trio"
+source = """
+fn cap(s: str) -> u64 { s.len() }
+fn main() -> i32 {
+    let b = "xx" + "yy";
+    @intCast(cap(b))
+}
+"""
+compile_fail = true
+error_contains = [
+    "E0495",
+    "parameter type `str` accepts only string literals; did you mean `borrow str`?",
+]
+
+# A fixed `Str(N)` buffer gets the same did-you-mean at a bare `str` parameter.
+[[case]]
+name = "str_fixed_to_str_param_suggests_borrow_str"
+description = "A `Str(N)` argument to a bare `str` parameter is E0495 with the `borrow str` did-you-mean."
+preview = "string_trio"
+source = """
+fn cap(s: str) -> u64 { s.len() }
+fn main() -> i32 {
+    let x: Str(8) = "hello";
+    @intCast(cap(x))
+}
+"""
+compile_fail = true
+error_contains = [
+    "E0495",
+    "did you mean `borrow str`?",
+]
+
+# A buffer bound to a `str` local is E0495 (binding site, no did-you-mean —
+# the fix is to keep the buffer's own type, so a different help fires).
+[[case]]
+name = "buffer_to_str_binding_rejected"
+description = "A `StrBuf` bound to a `str` local is E0495 (buffer is not a first-class str)."
+preview = "string_trio"
+source = """
+fn main() -> i32 {
+    let b = "xx" + "yy";
+    let s: str = b;
+    @intCast(s.len())
+}
+"""
+compile_fail = true
+error_contains = [
+    "E0495",
+    "a string buffer can be viewed with `borrow str` / `inout str`",
+]
+
+# A borrowed `str` view returned as a first-class `str` is E0497.
+[[case]]
+name = "borrow_str_view_return_is_e0497"
+description = "Returning a `borrow str` parameter as a first-class `str` is E0497 (view cannot escape)."
+preview = "string_trio"
+source = """
+fn bad(borrow s: str) -> str { s }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = [
+    "E0497",
+    "cannot escape the call",
+]
+
+# A first-class / static `str` passed as `inout str` is E0496 (needs a local
+# buffer for the exclusive view).
+[[case]]
+name = "static_str_as_inout_is_e0496"
+description = "A static `str` value as an `inout str` operand is E0496 (requires a local buffer)."
+preview = "string_trio"
+source = """
+fn take(inout s: str) { s = "hi"; }
+fn main() -> i32 {
+    let mut s: str = "hello";
+    take(inout s);
+    0
+}
+"""
+compile_fail = true
+error_contains = [
+    "E0496",
+    "`inout str` requires a local `StrBuf` or `Str(N)`",
+]

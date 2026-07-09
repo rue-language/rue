@@ -164,25 +164,46 @@ fn main() -> i32 {
 """
 exit_code = 101
 
-# 3.7:55 — a `Str(N)` coerces to a `str` parameter and is read through it.
+# 3.7:55 — a `Str(N)` coerces to a `borrow str` view and is read through it
+# (ADR-0043 two-types model, RUE-386). It does NOT coerce to a first-class `str`
+# (that would let the buffer's bytes escape); the read interface is `borrow str`.
 [[case]]
-name = "str_fixed_coerces_to_str_param"
+name = "str_fixed_coerces_to_borrow_str_param"
 spec = ["3.7:55"]
+preview = "string_trio"
+preview_should_pass = true
+source = """
+fn len_of(borrow s: str) -> u64 {
+    s.len()
+}
+fn first(borrow s: str) -> u8 {
+    s[0]
+}
+fn main() -> i32 {
+    let s: Str(8) = "hello";
+    if len_of(borrow s) == 5 && first(borrow s) == 104 { 0 } else { 1 }
+}
+"""
+exit_code = 0
+
+# 3.7:59 — a `Str(N)` buffer passed to a bare first-class `str` parameter is
+# rejected (E0495): the buffer's bytes would escape. Use `borrow str` instead.
+[[case]]
+name = "str_fixed_to_first_class_str_param_rejected"
+spec = ["3.7:59"]
 preview = "string_trio"
 preview_should_pass = true
 source = """
 fn len_of(s: str) -> u64 {
     s.len()
 }
-fn first(s: str) -> u8 {
-    s[0]
-}
 fn main() -> i32 {
     let s: Str(8) = "hello";
-    if len_of(s) == 5 && first(s) == 104 { 0 } else { 1 }
+    @intCast(len_of(s))
 }
 """
-exit_code = 0
+compile_fail = true
+error_contains = "first-class `str`"
 
 # 3.7:10 / 4.3:3 — fixed string equality is byte-content equality, not
 # structural equality over the compiler's representation.
