@@ -31,13 +31,14 @@ A zero-variant enum can never be constructed.
 
 {{ rule(id="6.3:4", cat="normative") }}
 
-Enum variants are referenced using path syntax: `EnumName::VariantName`.
-It is a compile-time error (E0421) if the named enum type does not exist.
+Enum variants are referenced using dot syntax: `EnumName.VariantName`. Because
+`.` is the sole member-access spelling, `Name.VariantName` where `Name` does not
+name a type is an ordinary undefined-name reference and is a compile-time error.
 
 {{ rule(id="6.3:5", cat="normative") }}
 
-It is a compile-time error (E0420) if the named variant does not exist within
-the enum.
+It is a compile-time error (E0420) if the named enum type exists but the named
+variant does not exist within it.
 
 {{ rule(id="6.3:6") }}
 
@@ -49,7 +50,7 @@ enum Color {
 }
 
 fn main() -> i32 {
-    let c = Color::Red;
+    let c = Color.Red;
     0
 }
 ```
@@ -72,11 +73,11 @@ either explicitly or via a wildcard pattern `_`.
 enum Color { Red, Green, Blue }
 
 fn main() -> i32 {
-    let c = Color::Green;
+    let c = Color.Green;
     match c {
-        Color::Red => 1,
-        Color::Green => 2,
-        Color::Blue => 3,
+        Color.Red => 1,
+        Color.Green => 2,
+        Color.Blue => 3,
     }
 }
 ```
@@ -94,9 +95,9 @@ enum Color { Red, Green, Blue }
 
 fn get_value(c: Color) -> i32 {
     match c {
-        Color::Red => 1,
-        Color::Green => 2,
-        Color::Blue => 3,
+        Color.Red => 1,
+        Color.Green => 2,
+        Color.Blue => 3,
     }
 }
 ```
@@ -129,10 +130,10 @@ specification.
 {{ rule(id="6.3:16", cat="normative") }}
 
 A tuple variant is constructed by applying the variant path to payload
-arguments: `EnumName::Variant(arg, ...)`. The number of arguments **MUST**
+arguments: `EnumName.Variant(arg, ...)`. The number of arguments **MUST**
 equal the variant's payload arity, and each argument's type **MUST** match the
 corresponding declared payload type. Using a payload-carrying variant as a
-bare path (`EnumName::Variant`, with no arguments) is an error.
+bare path (`EnumName.Variant`, with no arguments) is an error.
 
 {{ rule(id="6.3:17", cat="normative") }}
 
@@ -166,13 +167,13 @@ enum Shape { Circle(i32), Rect(i32, i32), Empty }
 
 fn area(s: Shape) -> i32 {
     match s {
-        Shape::Circle(r) => r,
-        Shape::Rect(w, h) => w + h,
-        Shape::Empty => 0,
+        Shape.Circle(r) => r,
+        Shape.Rect(w, h) => w + h,
+        Shape.Empty => 0,
     }
 }
 
 fn main() -> i32 {
-    area(Shape::Rect(3, 4))
+    area(Shape.Rect(3, 4))
 }
 ```

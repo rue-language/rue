@@ -19,7 +19,7 @@ fn max(a: i32, b: i32) -> i32 {
 
 fn main() -> i32 {
     let bigger = max(10, 20);
-    @dbg(bigger);  // prints: 20
+    println(@to_string(bigger));  // prints: 20
     bigger
 }
 ```
@@ -30,7 +30,7 @@ Because `if` is an expression, you can use it anywhere a value is expected:
 fn main() -> i32 {
     let x = 5;
     let description = if x > 0 { 1 } else { 0 };
-    @dbg(description);  // prints: 1
+    println(@to_string(description));  // prints: 1
     0
 }
 ```
@@ -49,7 +49,7 @@ fn main() -> i32 {
         i = i + 1;
     }
 
-    @dbg(sum);  // prints: 55 (1+2+...+10)
+    println(@to_string(sum));  // prints: 55 (1+2+...+10)
     sum
 }
 ```
@@ -69,8 +69,8 @@ fn day_type(day: i32) -> i32 {
 }
 
 fn main() -> i32 {
-    @dbg(day_type(0));  // prints: 0 (weekend)
-    @dbg(day_type(3));  // prints: 1 (weekday)
+    println(@to_string(day_type(0)));  // prints: 0 (weekend)
+    println(@to_string(day_type(3)));  // prints: 1 (weekday)
     0
 }
 ```
@@ -100,7 +100,7 @@ fn fizzbuzz(n: i32) -> i32 {
 fn main() -> i32 {
     let mut i = 1;
     while i <= 15 {
-        @dbg(fizzbuzz(i));
+        println(@to_string(fizzbuzz(i)));
         i = i + 1;
     }
     0

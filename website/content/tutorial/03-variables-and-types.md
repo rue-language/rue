@@ -54,12 +54,28 @@ fn main() -> i32 {
     let flag: bool = true;
     let done = false;
 
-    @dbg(flag);   // prints: true
-    @dbg(done);   // prints: false
+    if flag {
+        println("flag is true");
+    }
+    if done {
+        println("done");
+    } else {
+        println("not done yet");
+    }
 
     0
 }
 ```
+
+This prints:
+
+```
+flag is true
+not done yet
+```
+
+`@to_string` turns integers into strings, but a boolean is easiest to report by
+branching on it, as above.
 
 ## Mutability
 

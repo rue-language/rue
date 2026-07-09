@@ -16,9 +16,9 @@ description = "Two interleaved strings: growing one then appending in-place must
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
     let cap: u64 = 16;
-    let mut s = String::with_capacity(cap);
+    let mut s = String.with_capacity(cap);
     s.push_str("AAAAAAAAAAAAAAAAA");
-    let mut s2 = String::with_capacity(cap);
+    let mut s2 = String.with_capacity(cap);
     s2.push_str("ZZZZZZZZ");
     s.push_str("XXXXXXXXXXXXXXX");
     if s2 == "ZZZZZZZZ" { 0 } else { 1 }
@@ -31,8 +31,8 @@ name = "interleaved_repeated_growth_stress"
 description = "Two strings growing in lockstep through many cap*2 doublings stay independent and reach the right lengths."
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
-    let mut a = String::new();
-    let mut b = String::new();
+    let mut a = String.new();
+    let mut b = String.new();
     let mut i = 0;
     while i < 50 {
         a.push_str("aaaaaaaaaa");

@@ -1358,7 +1358,7 @@ impl<'a> Sema<'a> {
                         type_name, variant, ..
                     } => {
                         format!(
-                            "{}::{}",
+                            "{}.{}",
                             self.interner.resolve(&*type_name),
                             self.interner.resolve(&*variant)
                         )
@@ -1553,7 +1553,7 @@ impl<'a> Sema<'a> {
                     if let Some(first_span) = covered_variants.get(&(variant_index as u32)) {
                         if wildcard_span.is_none() {
                             let pat_str = format!(
-                                "{}::{}",
+                                "{}.{}",
                                 self.interner.resolve(&*type_name),
                                 self.interner.resolve(&*variant)
                             );
@@ -3424,6 +3424,21 @@ impl<'a> Sema<'a> {
             }
         }
 
+        // Module-qualified enum-variant path: `module.Enum.Variant` (RUE-488).
+        // The base is `module.Enum` (a field access), whose module member is an
+        // enum type; `.Variant` selects the variant.
+        if let InstData::FieldGet {
+            base: module_ref,
+            field: type_name,
+        } = base_inst.data
+        {
+            if let Some(result) = self.try_analyze_module_dotted_enum_variant(
+                air, module_ref, type_name, field, span, ctx,
+            )? {
+                return Ok(result);
+            }
+        }
+
         // Try to trace this expression to a place (lvalue)
         if let Some(trace) = self.try_trace_place(inst_ref, air, ctx)? {
             let field_type = trace.result_type();
@@ -4023,17 +4038,220 @@ impl<'a> Sema<'a> {
 
     /// Return true when `name` is a runtime local or parameter in this function.
     ///
-    /// Dotted type-member compatibility for RUE-196 (`Type.member`) must not
-    /// steal ordinary value field/method access when a binding shadows a type
-    /// name. Comptime type variables are intentionally not runtime bindings:
-    /// `let O = Option(i32); O.Some(1)` should behave like `O::Some(1)`.
+    /// Dotted type-member access (`Type.member`, RUE-196/RUE-488) must not steal
+    /// ordinary value field/method access when a binding shadows a type name.
+    /// Comptime type variables are intentionally not runtime bindings:
+    /// `let O = Option(i32); O.Some(1)` names the type, not a runtime value.
     pub(crate) fn is_runtime_value_binding(&self, name: Spur, ctx: &AnalysisContext) -> bool {
         ctx.locals.contains_key(&name) || ctx.params.iter().any(|param| param.name == name)
     }
 
-    /// Try to resolve `Enum.Variant` as an additive dotted alias for
-    /// `Enum::Variant` (RUE-196).
-    fn try_analyze_dotted_enum_variant(
+    /// Resolve the module a reference denotes, if any, without emitting AIR.
+    ///
+    /// Used to recognize module-qualified dotted member access
+    /// (`module.Enum.Variant`, `module.Type.function()`; RUE-488). Handles a
+    /// direct module binding — a `let`/`const`-bound `@import` (a local of module
+    /// type or a per-file module binding) — and a nested submodule chain
+    /// (`std.geo.Sign.Pos`), resolving `std.geo` by looking `geo` up as a module
+    /// binding re-exported from `std`'s file.
+    pub(crate) fn try_module_id_of(
+        &self,
+        inst_ref: rue_rir::InstRef,
+        span: Span,
+        ctx: &AnalysisContext,
+    ) -> Option<crate::types::ModuleId> {
+        match self.rir.get(inst_ref).data {
+            InstData::VarRef { name } => {
+                if let Some(local) = ctx.locals.get(&name) {
+                    if let Some(module_id) = local.ty.as_module() {
+                        return Some(module_id);
+                    }
+                }
+                self.module_bindings
+                    .get(&(span.file_id, name))
+                    .and_then(|binding| binding.ty.as_module())
+            }
+            // Nested submodule: `parent.sub` where `parent` is a module and `sub`
+            // is a module re-exported from `parent`'s file (`pub const sub =
+            // @import(...)`).
+            InstData::FieldGet { base, field } => {
+                let parent_id = self.try_module_id_of(base, span, ctx)?;
+                let parent_def = self.module_registry.get_def(parent_id);
+                let parent_file = self.canonical_file_id(&parent_def.file_path)?;
+                self.module_bindings
+                    .get(&(parent_file, field))
+                    .and_then(|binding| binding.ty.as_module())
+            }
+            _ => None,
+        }
+    }
+
+    /// Try to analyze a module-qualified type-member call:
+    /// `module.Type.function(args)` (RUE-488) — an associated-function call on a
+    /// struct, or a tuple-variant construction on an enum. `.` is the sole
+    /// member-access spelling; this replaces the removed
+    /// `module.Type::function(args)` form.
+    ///
+    /// Returns `Ok(None)` — falling through to ordinary value-method dispatch —
+    /// unless `module_ref` names a module and `type_name` is a struct or enum
+    /// defined by that module's file.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn try_analyze_module_qualified_type_call(
+        &mut self,
+        air: &mut Air,
+        module_ref: rue_rir::InstRef,
+        type_name: Spur,
+        method: Spur,
+        args_start: u32,
+        args_len: u32,
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<Option<AnalysisResult>> {
+        let Some(module_id) = self.try_module_id_of(module_ref, span, ctx) else {
+            return Ok(None);
+        };
+        let module_def = self.module_registry.get_def(module_id);
+        let Some(file_id) = self.canonical_file_id(&module_def.file_path) else {
+            return Ok(None);
+        };
+
+        // Enum member: `module.Enum.Variant(payload)` is tuple-variant
+        // construction. Resolve the enum through the module (the enum is not in
+        // the caller's file, so the global name resolvers cannot find it) and
+        // apply module-qualified visibility (E0706).
+        if let Some(enum_id) = self.enums_by_file_name.get(&(file_id, type_name)).copied() {
+            let enum_def = self.type_pool.enum_def(enum_id);
+            if !self.is_accessible(span.file_id, enum_def.file_id, enum_def.is_pub) {
+                return Err(CompileError::new(
+                    ErrorKind::PrivateMemberAccess {
+                        item_kind: "enum".to_string(),
+                        name: self.interner.resolve(&type_name).to_string(),
+                    },
+                    span,
+                ));
+            }
+            let variant_name = self.interner.resolve(&method);
+            let variant_index = enum_def.find_variant(variant_name).ok_or_compile_error(
+                ErrorKind::UnknownVariant {
+                    enum_name: enum_def.name.clone(),
+                    variant_name: variant_name.to_string(),
+                },
+                span,
+            )?;
+            // Visibility was checked above (E0706), so skip the internal
+            // unqualified (E0460) check.
+            return self
+                .analyze_enum_variant_construction(
+                    air,
+                    enum_id,
+                    variant_index as u32,
+                    type_name,
+                    /* privacy_exempt = */ true,
+                    args_start,
+                    args_len,
+                    span,
+                    ctx,
+                )
+                .map(Some);
+        }
+
+        // Struct member: `module.Struct.function(args)` is an associated-function
+        // call. In the transitional flat namespace struct names resolve globally
+        // — the same resolution the removed `::` form used — so dispatch on the
+        // name.
+        if self
+            .structs_by_file_name
+            .contains_key(&(file_id, type_name))
+        {
+            return self
+                .analyze_assoc_fn_call(air, type_name, method, args_start, args_len, span, ctx)
+                .map(Some);
+        }
+
+        Ok(None)
+    }
+
+    /// Try to resolve `module.Enum.Variant` as a module-qualified enum-variant
+    /// path (RUE-488). `.` is the sole member-access spelling; this mirrors what
+    /// the old `module.Enum::Variant` path did, including E0706 module-visibility
+    /// enforcement.
+    ///
+    /// Returns `Ok(None)` — falling through to ordinary field access — unless
+    /// `module_ref` names a module **and** `type_name` is an enum defined by that
+    /// module's file. Once both hold the access is unambiguously a variant path
+    /// (an enum type has no instance fields), so a bad `variant` is a real error.
+    pub(crate) fn try_analyze_module_dotted_enum_variant(
+        &mut self,
+        air: &mut Air,
+        module_ref: rue_rir::InstRef,
+        type_name: Spur,
+        variant: Spur,
+        span: Span,
+        ctx: &AnalysisContext,
+    ) -> CompileResult<Option<AnalysisResult>> {
+        let Some(module_id) = self.try_module_id_of(module_ref, span, ctx) else {
+            return Ok(None);
+        };
+        let module_def = self.module_registry.get_def(module_id);
+        let module_file_id = self.canonical_file_id(&module_def.file_path);
+        let Some(enum_id) = module_file_id
+            .and_then(|file_id| self.enums_by_file_name.get(&(file_id, type_name)).copied())
+        else {
+            // `type_name` is not an enum in this module: this is const/field
+            // access through the module, not a variant path. Fall through.
+            return Ok(None);
+        };
+
+        let enum_def = self.type_pool.enum_def(enum_id);
+        let type_name_str = self.interner.resolve(&type_name).to_string();
+
+        // Module-qualified visibility (E0706): a private enum is reachable only
+        // from its defining directory.
+        if !self.is_accessible(span.file_id, enum_def.file_id, enum_def.is_pub) {
+            return Err(CompileError::new(
+                ErrorKind::PrivateMemberAccess {
+                    item_kind: "enum".to_string(),
+                    name: type_name_str,
+                },
+                span,
+            ));
+        }
+
+        let variant_name = self.interner.resolve(&variant);
+        let variant_index = enum_def.find_variant(variant_name).ok_or_compile_error(
+            ErrorKind::UnknownVariant {
+                enum_name: enum_def.name.clone(),
+                variant_name: variant_name.to_string(),
+            },
+            span,
+        )?;
+
+        // A tuple variant used as a bare path (no payload) is missing its data.
+        let expected = enum_def.variant_payload(variant_index).len();
+        if expected > 0 {
+            return Err(CompileError::new(
+                ErrorKind::WrongArgumentCount { expected, found: 0 },
+                span,
+            ));
+        }
+
+        let ty = Type::new_enum(enum_id);
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::EnumVariant {
+                enum_id,
+                variant_index: variant_index as u32,
+                payload_start: 0,
+                payload_len: 0,
+            },
+            ty,
+            span,
+        });
+        Ok(Some(AnalysisResult::new(air_ref, ty)))
+    }
+
+    /// Try to resolve `Enum.Variant` as a dotted enum-variant path (RUE-196,
+    /// RUE-488). `.` is the sole member-access spelling.
+    pub(crate) fn try_analyze_dotted_enum_variant(
         &mut self,
         air: &mut Air,
         type_name: Spur,
@@ -4045,21 +4263,30 @@ impl<'a> Sema<'a> {
             return Ok(None);
         };
 
-        let enum_def = self.type_pool.enum_def(enum_id);
-        let variant_name = self.interner.resolve(&variant);
-        let Some(variant_index) = enum_def.find_variant(variant_name) else {
-            return Ok(None);
-        };
-
+        // `type_name` names an enum type, so `type_name.variant` is unambiguously
+        // a variant path (an enum type has no instance fields): a `variant` that
+        // is not one of its variants is a real error, not a fall-through to
+        // ordinary field access (which would report the opaque "field access on
+        // non-struct type 'type'"). RUE-488.
         if !via_comptime {
             self.check_unqualified_visibility(
                 "enum",
                 self.interner.resolve(&type_name),
-                enum_def.file_id,
-                enum_def.is_pub,
+                self.type_pool.enum_def(enum_id).file_id,
+                self.type_pool.enum_def(enum_id).is_pub,
                 span,
             )?;
         }
+
+        let enum_def = self.type_pool.enum_def(enum_id);
+        let variant_name = self.interner.resolve(&variant);
+        let variant_index = enum_def.find_variant(variant_name).ok_or_compile_error(
+            ErrorKind::UnknownVariant {
+                enum_name: enum_def.name.clone(),
+                variant_name: variant_name.to_string(),
+            },
+            span,
+        )?;
 
         let expected = enum_def.variant_payload(variant_index).len();
         if expected > 0 {
@@ -5748,9 +5975,9 @@ impl<'a> Sema<'a> {
     }
 
     /// Analyze construction of an enum tuple variant with a payload
-    /// (`Shape::Circle(5)`), producing an `EnumVariant` AIR value (RUE-221).
+    /// (`Shape.Circle(5)`), producing an `EnumVariant` AIR value (RUE-221).
     #[allow(clippy::too_many_arguments)]
-    fn analyze_enum_variant_construction(
+    pub(crate) fn analyze_enum_variant_construction(
         &mut self,
         air: &mut Air,
         enum_id: crate::types::EnumId,

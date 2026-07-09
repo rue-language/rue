@@ -19,18 +19,18 @@ fn Option(comptime T: type) -> type {
 }
 fn some_val() -> Option(i64) {
     let O = Option(i64);
-    O::Some(20)
+    O.Some(20)
 }
 fn use_it() -> Option(i64) {
     let O = Option(i64);
     let v = some_val()?;
-    O::Some(v + 1)
+    O.Some(v + 1)
 }
 fn main() -> i32 {
     let O = Option(i64);
     match use_it() {
-        O::Some(n) => @intCast(n),
-        O::None => 0,
+        O.Some(n) => @intCast(n),
+        O.None => 0,
     }
 }
 """
@@ -50,18 +50,18 @@ fn Option(comptime T: type) -> type {
 }
 fn none_val() -> Option(i64) {
     let O = Option(i64);
-    O::None
+    O.None
 }
 fn use_it() -> Option(i64) {
     let O = Option(i64);
     let v = none_val()?;
-    O::Some(v + 1)
+    O.Some(v + 1)
 }
 fn main() -> i32 {
     let O = Option(i64);
     match use_it() {
-        O::Some(n) => @intCast(n),
-        O::None => 7,
+        O.Some(n) => @intCast(n),
+        O.None => 7,
     }
 }
 """
@@ -81,17 +81,17 @@ fn Option(comptime T: type) -> type {
 }
 fn wrap(x: i64) -> Option(i64) {
     let O = Option(i64);
-    O::Some(x)
+    O.Some(x)
 }
 fn add_two(x: i64) -> Option(i64) {
     let O = Option(i64);
-    O::Some(wrap(x)? + 2)
+    O.Some(wrap(x)? + 2)
 }
 fn main() -> i32 {
     let O = Option(i64);
     match add_two(40) {
-        O::Some(n) => @intCast(n),
-        O::None => 0,
+        O.Some(n) => @intCast(n),
+        O.None => 0,
     }
 }
 """
@@ -115,7 +115,7 @@ fn f() -> Option(i64) {
     let x = 5;
     let y = x?;
     let O = Option(i64);
-    O::Some(y)
+    O.Some(y)
 }
 fn main() -> i32 { 0 }
 """
@@ -137,7 +137,7 @@ fn Option(comptime T: type) -> type {
 }
 fn some_val() -> Option(i64) {
     let O = Option(i64);
-    O::Some(1)
+    O.Some(1)
 }
 fn main() -> i32 {
     let v = some_val()?;
@@ -165,8 +165,8 @@ fn read_num() -> Option(i64) {
 fn main() -> i32 {
     let O = Option(i64);
     match read_num() {
-        O::Some(n) => @intCast(n),
-        O::None => 0,
+        O.Some(n) => @intCast(n),
+        O.None => 0,
     }
 }
 """
@@ -188,8 +188,8 @@ fn read_num() -> Option(i64) {
 fn main() -> i32 {
     let O = Option(i64);
     match read_num() {
-        O::Some(n) => @intCast(n),
-        O::None => 7,
+        O.Some(n) => @intCast(n),
+        O.None => 7,
     }
 }
 """
@@ -207,13 +207,13 @@ fn Option(comptime T: type) -> type {
 fn add_one(s: String) -> Option(i64) {
     let O = Option(i64);
     let n = @parse_i64(s)?;
-    O::Some(n + 1)
+    O.Some(n + 1)
 }
 fn main() -> i32 {
     let O = Option(i64);
     match add_one("41") {
-        O::Some(n) => @intCast(n),
-        O::None => 0,
+        O.Some(n) => @intCast(n),
+        O.None => 0,
     }
 }
 """
@@ -230,13 +230,13 @@ fn Option(comptime T: type) -> type {
 fn add_one(s: String) -> Option(i64) {
     let O = Option(i64);
     let n = @parse_i64(s)?;
-    O::Some(n + 1)
+    O.Some(n + 1)
 }
 fn main() -> i32 {
     let O = Option(i64);
     match add_one("nope") {
-        O::Some(n) => @intCast(n),
-        O::None => 9,
+        O.Some(n) => @intCast(n),
+        O.None => 9,
     }
 }
 """

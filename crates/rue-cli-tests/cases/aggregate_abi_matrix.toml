@@ -503,15 +503,15 @@ files = [{ path = "main.rue", source = """
 enum Shape { Circle(i32), Rect(i32, i32), Empty }
 fn area(s: Shape) -> i32 {
     match s {
-        Shape::Circle(r) => r,
-        Shape::Rect(w, h) => w + h,
-        Shape::Empty => 0,
+        Shape.Circle(r) => r,
+        Shape.Rect(w, h) => w + h,
+        Shape.Empty => 0,
     }
 }
 fn main() -> i32 {
-    @dbg(area(Shape::Circle(5)));
-    @dbg(area(Shape::Rect(3, 4)));
-    @dbg(area(Shape::Empty));
+    @dbg(area(Shape.Circle(5)));
+    @dbg(area(Shape.Rect(3, 4)));
+    @dbg(area(Shape.Empty));
     0
 }
 """ }]
@@ -524,9 +524,9 @@ name = "enum_return_join"
 args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 enum E { V(i32, i32), Empty }
-fn sum(e: E) -> i32 { match e { E::V(x, y) => x + y, E::Empty => 0 } }
+fn sum(e: E) -> i32 { match e { E.V(x, y) => x + y, E.Empty => 0 } }
 fn choose(cond: bool) -> E {
-    if cond { E::V(3, 4) } else { E::V(30, 40) }
+    if cond { E.V(3, 4) } else { E.V(30, 40) }
 }
 fn main() -> i32 {
     @dbg(sum(choose(true)));
@@ -543,11 +543,11 @@ name = "enum_field_write_read"
 args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 enum E { V(i32, i32), Empty }
-fn sum(e: E) -> i32 { match e { E::V(x, y) => x + y, E::Empty => 0 } }
+fn sum(e: E) -> i32 { match e { E.V(x, y) => x + y, E.Empty => 0 } }
 struct Wrap { e: E, tag: i32 }
 fn main() -> i32 {
-    let mut w = Wrap { e: E::Empty, tag: 9 };
-    w.e = E::V(7, 8);
+    let mut w = Wrap { e: E.Empty, tag: 9 };
+    w.e = E.V(7, 8);
     @dbg(sum(w.e)); @dbg(w.tag);
     0
 }
@@ -560,10 +560,10 @@ name = "enum_array_elem_rw"
 args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 enum E { V(i32, i32), Empty }
-fn sum(e: E) -> i32 { match e { E::V(x, y) => x + y, E::Empty => 0 } }
+fn sum(e: E) -> i32 { match e { E.V(x, y) => x + y, E.Empty => 0 } }
 fn main() -> i32 {
-    let mut arr: [E; 2] = [E::Empty, E::Empty];
-    arr[1] = E::V(5, 6);
+    let mut arr: [E; 2] = [E.Empty, E.Empty];
+    arr[1] = E.V(5, 6);
     @dbg(sum(arr[1]));
     0
 }
@@ -576,10 +576,10 @@ name = "enum_mut_reassign"
 args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 enum E { V(i32, i32), Empty }
-fn sum(e: E) -> i32 { match e { E::V(x, y) => x + y, E::Empty => 0 } }
+fn sum(e: E) -> i32 { match e { E.V(x, y) => x + y, E.Empty => 0 } }
 fn main() -> i32 {
-    let mut e = E::V(1, 1);
-    e = E::V(20, 30);
+    let mut e = E.V(1, 1);
+    e = E.V(20, 30);
     @dbg(sum(e));
     0
 }
@@ -593,10 +593,10 @@ name = "enum_inout_reassign"
 args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 enum E { V(i32, i32), Empty }
-fn sum(e: E) -> i32 { match e { E::V(x, y) => x + y, E::Empty => 0 } }
-fn replace(inout e: E) { e = E::V(100, 23); }
+fn sum(e: E) -> i32 { match e { E.V(x, y) => x + y, E.Empty => 0 } }
+fn replace(inout e: E) { e = E.V(100, 23); }
 fn main() -> i32 {
-    let mut e = E::V(1, 2);
+    let mut e = E.V(1, 2);
     replace(inout e);
     @dbg(sum(e));
     0
@@ -610,12 +610,12 @@ name = "enum_ptr_rw"
 args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 enum E { V(i32, i32), Empty }
-fn sum(e: E) -> i32 { match e { E::V(x, y) => x + y, E::Empty => 0 } }
+fn sum(e: E) -> i32 { match e { E.V(x, y) => x + y, E.Empty => 0 } }
 fn main() -> i32 {
-    let mut arr: [E; 1] = [E::Empty];
+    let mut arr: [E; 1] = [E.Empty];
     checked {
         let wp: ptr mut E = @raw_mut(arr[0]);
-        @ptr_write(wp, E::V(9, 8));
+        @ptr_write(wp, E.V(9, 8));
         let rp: ptr const E = @raw(arr[0]);
         let v = @ptr_read(rp);
         @dbg(sum(v));

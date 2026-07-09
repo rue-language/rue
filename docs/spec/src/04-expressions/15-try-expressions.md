@@ -69,21 +69,21 @@ fn Option(comptime T: type) -> type {
 
 fn checked_div(a: i64, b: i64) -> Option(i64) {
     let O = Option(i64);
-    if b == 0 { O::None } else { O::Some(a / b) }
+    if b == 0 { O.None } else { O.Some(a / b) }
 }
 
 fn halve_then_div(a: i64, b: i64) -> Option(i64) {
     let O = Option(i64);
     // `?` unwraps the quotient, or short-circuits to None when b == 0.
     let q = checked_div(a, b)?;
-    O::Some(q / 2)
+    O.Some(q / 2)
 }
 
 fn main() -> i32 {
     let O = Option(i64);
     match halve_then_div(40, 4) {
-        O::Some(n) => n,      // 40 / 4 / 2 == 5
-        O::None => 0 - 1,
+        O.Some(n) => n,      // 40 / 4 / 2 == 5
+        O.None => 0 - 1,
     }
 }
 ```
@@ -116,8 +116,8 @@ fn read_num() -> Option(i64) {
 fn main() -> i32 {
     let O = Option(i64);
     match read_num() {
-        O::Some(n) => @intCast(n),
-        O::None => 0,
+        O.Some(n) => @intCast(n),
+        O.None => 0,
     }
 }
 ```

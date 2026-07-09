@@ -120,7 +120,7 @@ name = "array_literal_string_element_rue96"
 description = "RUE-96: array literal with a String element inferred the element as <error> -> E9000 ICE."
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
-    let a = String::new();
+    let a = String.new();
     let arr = [a];
     0
 }
@@ -132,7 +132,7 @@ name = "array_literal_string_exprs_rue190"
 description = "RUE-190: array literal of String-producing expressions used to ICE (E9000)."
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
-    let arr = [String::new(), String::new()];
+    let arr = [String.new(), String.new()];
     0
 }
 """ }]

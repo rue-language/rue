@@ -173,7 +173,7 @@ exit_code = 8
 name = "duplicate_comptime_modifier_rejected"
 description = """
 RUE-133 item 8: `comptime comptime T: type` was silently accepted (the second
-`comptime` landed in a vestigial ParamMode::Comptime next to the is_comptime
+`comptime` landed in a vestigial ParamMode.Comptime next to the is_comptime
 flag; the duality is now collapsed and duplicates are parse errors).
 """
 source = """

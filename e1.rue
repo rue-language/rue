@@ -1,3 +1,0 @@
-enum E{A,B
- fn f(self)->i32{1} }
-fn main()->i32{ E::A.f() }

@@ -1706,6 +1706,57 @@ impl<'a> ConstraintGenerator<'a> {
 
             // Field access
             InstData::FieldGet { base, field } => {
+                // `Enum.Variant` (RUE-488): a field access on a bare enum type
+                // name is an enum-variant value. Yield the concrete enum type so
+                // a mismatch — e.g. returning `Shape.Circle` from a function
+                // declared `-> Color` — is caught here instead of a fresh
+                // variable silently unifying with the expected type. A comptime
+                // type-variable local (typed `COMPTIME_TYPE`) is a type
+                // reference, not a runtime value shadow.
+                if let InstData::VarRef { name } = self.rir.get(*base).data
+                    && !ctx.params.contains_key(&name)
+                    && ctx.locals.get(&name).is_none_or(
+                        |l| matches!(l.ty, InferType::Concrete(t) if t == Type::COMPTIME_TYPE),
+                    )
+                    && let Some(enum_ty) = self.enum_type_for(&name, span.file_id)
+                    && let Some(enum_id) = enum_ty.as_enum()
+                    && self
+                        .type_pool
+                        .enum_def(enum_id)
+                        .find_variant(self.interner.resolve(field))
+                        .is_some()
+                {
+                    return {
+                        let ty = InferType::Concrete(enum_ty);
+                        self.record_type(inst_ref, ty.clone());
+                        ExprInfo::new(ty, span)
+                    };
+                }
+
+                // Module-qualified `module.Enum.Variant` (RUE-488): the base is
+                // `module.Enum`, whose module member is an enum. Yield the
+                // concrete enum type so same-named enums from sibling modules stay
+                // distinct nominal types (a wrong one flowing into a call argument
+                // or return is caught here, not silently unified). RUE-501.
+                if let InstData::FieldGet {
+                    base: module_ref,
+                    field: type_name,
+                } = self.rir.get(*base).data
+                    && let Some(enum_ty) = self.enum_type_for_module(module_ref, &type_name)
+                    && let Some(enum_id) = enum_ty.as_enum()
+                    && self
+                        .type_pool
+                        .enum_def(enum_id)
+                        .find_variant(self.interner.resolve(field))
+                        .is_some()
+                {
+                    return {
+                        let ty = InferType::Concrete(enum_ty);
+                        self.record_type(inst_ref, ty.clone());
+                        ExprInfo::new(ty, span)
+                    };
+                }
+
                 let base_info = self.generate(*base, ctx);
                 // When the base's struct type is already concrete, the field's
                 // declared type is known RIGHT NOW — yield it so downstream
@@ -1887,6 +1938,44 @@ impl<'a> ConstraintGenerator<'a> {
                 args_start,
                 args_len,
             } => {
+                // `Type.method(args)` where the receiver names a type is an
+                // associated-function call / enum tuple-variant construction
+                // (RUE-488): forward to the type-qualified path so arguments are
+                // constrained to the callee signature (a bare `MethodCall` arm
+                // would leave a literal like the `8` in `String.with_capacity(8)`
+                // unconstrained, defaulting it to `i32` and later clashing with a
+                // `u64` parameter). Skip when a runtime value (a parameter, or a
+                // local that is not itself a comptime type value) shadows the type
+                // name — that is an ordinary value-method call. A comptime
+                // type-variable local (`let O = Option(i32)`, typed
+                // `COMPTIME_TYPE`) IS a type reference, so `O.Some(true)` resolves
+                // to its concrete enum and a wrong payload type is caught here.
+                if let InstData::VarRef { name } = self.rir.get(*receiver).data
+                    && !ctx.params.contains_key(&name)
+                    && ctx.locals.get(&name).is_none_or(
+                        |l| matches!(l.ty, InferType::Concrete(t) if t == Type::COMPTIME_TYPE),
+                    )
+                    && (self
+                        .structs
+                        .get(&name)
+                        .and_then(|t| t.as_struct())
+                        .is_some()
+                        || self.enum_type_for(&name, span.file_id).is_some())
+                {
+                    return {
+                        let ty = self.generate_type_qualified_call(
+                            name,
+                            *method,
+                            *args_start,
+                            *args_len,
+                            span,
+                            ctx,
+                        );
+                        self.record_type(inst_ref, ty.clone());
+                        ExprInfo::new(ty, span)
+                    };
+                }
+
                 // Generate type for receiver
                 let receiver_info = self.generate(*receiver, ctx);
                 let args = self.rir.get_call_args(*args_start, *args_len);
@@ -2002,86 +2091,23 @@ impl<'a> ConstraintGenerator<'a> {
                 result_type
             }
 
-            // Associated function call: Type::function(args)
+            // Associated function call: `Type.function(args)` lowers to an
+            // `AssocFnCall` only through legacy AST nodes; `.`-spelled calls
+            // reach the `MethodCall` arm above, which forwards a type-name
+            // receiver here (RUE-488).
             InstData::AssocFnCall {
                 type_name,
                 function,
                 args_start,
                 args_len,
-            } => {
-                let args = self.rir.get_call_args(*args_start, *args_len);
-
-                // Enum tuple-variant construction: `Shape::Circle(5)` parses as
-                // an associated-function call. If `type_name` is an enum and
-                // `function` names one of its variants, constrain each payload
-                // argument to the declared payload type and yield the enum type
-                // (RUE-221). Checked here first so it takes precedence over the
-                // struct-method path below.
-                let enum_variant = self
-                    .enum_type_for(type_name, span.file_id)
-                    .and_then(|ty| ty.as_enum().map(|id| (ty, id)))
-                    .and_then(|(ty, id)| {
-                        let def = self.type_pool.enum_def(id);
-                        def.find_variant(self.interner.resolve(function))
-                            .map(|vidx| (ty, def.variant_payload(vidx).to_vec()))
-                    });
-                if let Some((enum_ty, payload)) = enum_variant {
-                    for (i, arg) in args.iter().enumerate() {
-                        let arg_info = self.generate(arg.value, ctx);
-                        if let Some(&pty) = payload.get(i) {
-                            // Convert the declared payload type structurally so
-                            // an array payload (`[i32; 2]`) unifies with an
-                            // array-literal argument (`[1, 2]`) and propagates
-                            // the expected element type into its literal
-                            // elements — exactly as struct-field init does.
-                            // Using `InferType::Concrete` here left the literal
-                            // element type unconstrained, so `[{integer}; 2]`
-                            // failed to unify with `[i32; 2]` (RUE-260).
-                            let expected = self.type_to_infer(pty);
-                            self.add_constraint(Constraint::equal(
-                                arg_info.ty,
-                                expected,
-                                arg_info.span,
-                            ));
-                        }
-                    }
-                    let ty = InferType::Concrete(enum_ty);
-                    self.record_type(inst_ref, ty.clone());
-                    return ExprInfo::new(ty, span);
-                }
-
-                // Get struct ID from type name for method lookup
-                let struct_id = self.structs.get(type_name).and_then(|ty| ty.as_struct());
-                let result_type = if let Some(struct_id) = struct_id {
-                    let method_key = (struct_id, *function);
-                    if let Some(method_sig) = self.methods.get(&method_key) {
-                        // Generate constraints for arguments
-                        for (arg, param_type) in args.iter().zip(method_sig.param_types.iter()) {
-                            let arg_info = self.generate(arg.value, ctx);
-                            self.add_constraint(Constraint::equal(
-                                arg_info.ty,
-                                param_type.clone(),
-                                arg_info.span,
-                            ));
-                        }
-                        method_sig.return_type.clone()
-                    } else {
-                        // Method not found - sema will report the error
-                        // Still generate arg types to catch errors in arguments
-                        for arg in args.iter() {
-                            self.generate(arg.value, ctx);
-                        }
-                        InferType::Concrete(Type::ERROR)
-                    }
-                } else {
-                    // Type not found - sema will report the error
-                    for arg in args.iter() {
-                        self.generate(arg.value, ctx);
-                    }
-                    InferType::Concrete(Type::ERROR)
-                };
-                result_type
-            }
+            } => self.generate_type_qualified_call(
+                *type_name,
+                *function,
+                *args_start,
+                *args_len,
+                span,
+                ctx,
+            ),
 
             // Comptime block: the type depends on whether evaluation succeeds at compile time.
             // For type inference, we use a fresh type variable that can unify with
@@ -2257,8 +2283,85 @@ impl<'a> ConstraintGenerator<'a> {
         false
     }
 
+    /// Generate constraints for a type-qualified call — an associated-function
+    /// call or an enum tuple-variant construction — resolving the callee by type
+    /// name and constraining each argument to the declared parameter/payload
+    /// type. Shared by the `AssocFnCall` arm and the `MethodCall` arm's
+    /// type-name-receiver forwarding (`Type.function(args)`, RUE-488). Getting
+    /// the argument constraints here — not just in sema — is what pins a literal
+    /// like the `8` in `String.with_capacity(8)` to the declared `u64` parameter
+    /// instead of letting it default to `i32`.
+    fn generate_type_qualified_call(
+        &mut self,
+        type_name: Spur,
+        function: Spur,
+        args_start: u32,
+        args_len: u32,
+        span: Span,
+        ctx: &mut ConstraintContext,
+    ) -> InferType {
+        let args = self.rir.get_call_args(args_start, args_len);
+
+        // Enum tuple-variant construction: `Shape.Circle(5)`. If `type_name` is
+        // an enum and `function` names one of its variants, constrain each
+        // payload argument to the declared payload type and yield the enum type
+        // (RUE-221). Checked first so it takes precedence over the struct-method
+        // path below.
+        let enum_variant = self
+            .enum_type_for(&type_name, span.file_id)
+            .and_then(|ty| ty.as_enum().map(|id| (ty, id)))
+            .and_then(|(ty, id)| {
+                let def = self.type_pool.enum_def(id);
+                def.find_variant(self.interner.resolve(&function))
+                    .map(|vidx| (ty, def.variant_payload(vidx).to_vec()))
+            });
+        if let Some((enum_ty, payload)) = enum_variant {
+            for (i, arg) in args.iter().enumerate() {
+                let arg_info = self.generate(arg.value, ctx);
+                if let Some(&pty) = payload.get(i) {
+                    // Convert the declared payload type structurally so an array
+                    // payload (`[i32; 2]`) unifies with an array-literal argument
+                    // and propagates the expected element type into its literal
+                    // elements — exactly as struct-field init does (RUE-260).
+                    let expected = self.type_to_infer(pty);
+                    self.add_constraint(Constraint::equal(arg_info.ty, expected, arg_info.span));
+                }
+            }
+            return InferType::Concrete(enum_ty);
+        }
+
+        // Struct associated function: constrain each argument to the declared
+        // parameter type and yield the return type.
+        let struct_id = self.structs.get(&type_name).and_then(|ty| ty.as_struct());
+        if let Some(struct_id) = struct_id {
+            let method_key = (struct_id, function);
+            if let Some(method_sig) = self.methods.get(&method_key) {
+                for (arg, param_type) in args.iter().zip(method_sig.param_types.iter()) {
+                    let arg_info = self.generate(arg.value, ctx);
+                    self.add_constraint(Constraint::equal(
+                        arg_info.ty,
+                        param_type.clone(),
+                        arg_info.span,
+                    ));
+                }
+                return method_sig.return_type.clone();
+            }
+            // Method not found - sema reports the error; still process args.
+            for arg in args.iter() {
+                self.generate(arg.value, ctx);
+            }
+            return InferType::Concrete(Type::ERROR);
+        }
+
+        // Type not found - sema reports the error; still process args.
+        for arg in args.iter() {
+            self.generate(arg.value, ctx);
+        }
+        InferType::Concrete(Type::ERROR)
+    }
+
     /// Resolve an enum type name that may be a comptime type-variable binding
-    /// (`let O = Option(i32); O::Some(..)`), falling back to the named-enum
+    /// (`let O = Option(i32); O.Some(..)`), falling back to the named-enum
     /// table. Mirrors sema's `resolve_enum_type_name`; without the
     /// comptime-alias lookup, generic-enum construction/matching inferred
     /// `<error>` and poisoned the surrounding constraints (RUE-6 phase 2).

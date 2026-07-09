@@ -66,6 +66,6 @@ User-defined functions **MUST NOT** use names reserved for runtime and code-gene
 fn __rue_alloc() -> i32 { 0 }  // compile error: `__rue_` prefix is reserved
 
 // OK: `String__len` is an ordinary identifier, distinct from the built-in
-// `String::len` method (whose runtime symbol is `__rue_String_len`).
+// `String.len` method (whose runtime symbol is `__rue_String_len`).
 fn String__len() -> i32 { 0 }  // allowed
 ```

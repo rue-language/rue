@@ -67,9 +67,9 @@ fn main() -> i32 {
     let mut values = [10, 20, 30];
     double_all(inout values);
 
-    @dbg(values[0]);  // prints: 20
-    @dbg(values[1]);  // prints: 40
-    @dbg(values[2]);  // prints: 60
+    println(@to_string(values[0]));  // prints: 20
+    println(@to_string(values[1]));  // prints: 40
+    println(@to_string(values[2]));  // prints: 60
 
     values[0]
 }
@@ -95,7 +95,7 @@ fn sum_array(borrow arr: [i32; 5]) -> i32 {
 fn main() -> i32 {
     let numbers = [1, 2, 3, 4, 5];
     let sum = sum_array(borrow numbers);
-    @dbg(sum);  // prints: 15
+    println(@to_string(sum));  // prints: 15
     sum
 }
 ```
@@ -118,8 +118,8 @@ fn main() -> i32 {
     let p = Point { x: 10, y: 20 };
     let sum = sum_point(borrow p);
 
-    @dbg(sum);  // prints: 30
-    @dbg(p.x);  // still valid: p was borrowed, not moved
+    println(@to_string(sum));  // prints: 30
+    println(@to_string(p.x));  // still valid: p was borrowed, not moved
 
     sum
 }
@@ -144,9 +144,9 @@ fn main() -> i32 {
 
     copy_into(borrow source, inout dest);
 
-    @dbg(dest[0]);  // prints: 1
-    @dbg(dest[1]);  // prints: 2
-    @dbg(dest[2]);  // prints: 3
+    println(@to_string(dest[0]));  // prints: 1
+    println(@to_string(dest[1]));  // prints: 2
+    println(@to_string(dest[2]));  // prints: 3
 
     0
 }
@@ -192,8 +192,8 @@ fn translate(inout p: Point, dx: i32, dy: i32) {
 }
 
 fn print_point(borrow p: Point) {
-    @dbg(p.x);
-    @dbg(p.y);
+    println(@to_string(p.x));
+    println(@to_string(p.y));
 }
 
 fn main() -> i32 {
@@ -218,12 +218,12 @@ struct Guard {
 }
 
 drop fn Guard(self) {
-    @dbg(self.value);
+    println(@to_string(self.value));
 }
 
 fn main() -> i32 {
     let _guard = Guard { value: 42 };
-    @dbg(1);
+    println(@to_string(1));
 
     0
 }  // prints: 42 when _guard is dropped
@@ -238,7 +238,7 @@ struct Guard {
 }
 
 drop fn Guard(self) {
-    @dbg(self.value);
+    println(@to_string(self.value));
 }
 
 fn main() -> i32 {

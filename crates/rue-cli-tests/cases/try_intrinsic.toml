@@ -32,11 +32,11 @@ fn main() -> i32 {
     let mut sum: i64 = 0;
     loop {
         match read_num() {
-            O::Some(x) => {
+            O.Some(x) => {
                 count = count + 1;
                 sum = sum + x;
             },
-            O::None => break,
+            O.None => break,
         }
     }
     println("sum: " + @to_string(sum));
@@ -67,8 +67,8 @@ fn main() -> i32 {
     let mut count: i64 = 0;
     loop {
         match read_num() {
-            O::Some(_x) => { count = count + 1; },
-            O::None => break,
+            O.Some(_x) => { count = count + 1; },
+            O.None => break,
         }
     }
     println("done");
@@ -93,13 +93,13 @@ fn Option(comptime T: type) -> type {
 fn add_one(s: String) -> Option(i64) {
     let O = Option(i64);
     let n = @parse_i64(s)?;
-    O::Some(n + 1)
+    O.Some(n + 1)
 }
 fn main() -> i32 {
     let O = Option(i64);
     match add_one("40") {
-        O::Some(n) => @intCast(n),
-        O::None => 0,
+        O.Some(n) => @intCast(n),
+        O.None => 0,
     }
 }
 """ },
@@ -120,13 +120,13 @@ fn Option(comptime T: type) -> type {
 fn add_one(s: String) -> Option(i64) {
     let O = Option(i64);
     let n = @parse_i64(s)?;
-    O::Some(n + 1)
+    O.Some(n + 1)
 }
 fn main() -> i32 {
     let O = Option(i64);
     match add_one("not-a-number") {
-        O::Some(n) => @intCast(n),
-        O::None => 5,
+        O.Some(n) => @intCast(n),
+        O.None => 5,
     }
 }
 """ },

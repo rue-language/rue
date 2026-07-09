@@ -406,8 +406,8 @@ source = """
 enum Color { Red, Green, Blue }
 
 fn main() -> i32 {
-    let a = Color::{a};
-    let b = Color::{b};
+    let a = Color.{a};
+    let b = Color.{b};
     if a {op} b { 1 } else { 0 }
 }
 """
@@ -425,8 +425,8 @@ source = """
 enum Color { Red, Green }
 
 fn main() -> i32 {
-    let a = Color::Red;
-    let b = Color::Green;
+    let a = Color.Red;
+    let b = Color.Green;
     if a < b { 1 } else { 0 }
 }
 """
@@ -441,8 +441,8 @@ source = """
 enum Shape { Circle(i32), Square(i32) }
 
 fn main() -> i32 {
-    let a = Shape::{a};
-    let b = Shape::{b};
+    let a = Shape.{a};
+    let b = Shape.{b};
     if a {op} b { 1 } else { 0 }
 }
 """

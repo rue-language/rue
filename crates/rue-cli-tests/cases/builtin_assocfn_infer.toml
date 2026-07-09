@@ -1,7 +1,7 @@
 # Builtin associated-function signatures must reach type inference (RUE-117).
 #
-# Sibling of RUE-95 (methods): builtin associated fns (`String::new`,
-# `String::with_capacity`) live only in the rue-builtins registry and weren't
+# Sibling of RUE-95 (methods): builtin associated fns (`String.new`,
+# `String.with_capacity`) live only in the rue-builtins registry and weren't
 # registered in the HM inference method map, so an untyped literal argument
 # wasn't constrained to the param type (`with_capacity(8)` -> E0206 expected u64
 # found i32) and a result feeding a literal resolved to `<error>`.
@@ -15,7 +15,7 @@ description = "Builtin associated functions must constrain literal args and anch
 name = "with_capacity_literal_arg_is_u64"
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
-    let s = String::with_capacity(8);
+    let s = String.with_capacity(8);
     0
 }
 """ }]
@@ -25,7 +25,7 @@ exit_code = 0
 name = "string_new_result_is_empty"
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
-    let s = String::new();
+    let s = String.new();
     if s.is_empty() { 0 } else { 1 }
 }
 """ }]
@@ -35,7 +35,7 @@ exit_code = 0
 name = "string_new_len_eq_literal"
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
-    let s = String::new();
+    let s = String.new();
     if s.len() == 0 { 0 } else { 1 }
 }
 """ }]

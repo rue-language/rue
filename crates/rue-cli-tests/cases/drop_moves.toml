@@ -393,7 +393,7 @@ fn eat(s: String) -> i32 {
 }
 
 fn main() -> i32 {
-    let h = Holder { name: String::with_capacity(8), tag: String::with_capacity(8) };
+    let h = Holder { name: String.with_capacity(8), tag: String.with_capacity(8) };
     eat(h.name);
     @dbg(777);
     0
@@ -413,7 +413,7 @@ fn eat(s: String) -> i32 {
 }
 
 fn main() -> i32 {
-    let h = Holder { name: String::with_capacity(8), tag: String::with_capacity(8) };
+    let h = Holder { name: String.with_capacity(8), tag: String.with_capacity(8) };
     let c = true;
     if c {
         eat(h.name);

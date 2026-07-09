@@ -138,8 +138,8 @@ description = "@target_arch() in --emit uses --target, not the compiler host (RU
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
     match @target_arch() {
-        Arch::X86_64 => 86,
-        Arch::Aarch64 => 64,
+        Arch.X86_64 => 86,
+        Arch.Aarch64 => 64,
     }
 }
 """ }]
@@ -153,8 +153,8 @@ description = "@target_os() in --emit uses --target, not the compiler host (RUE-
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
     match @target_os() {
-        Os::Linux => 1,
-        Os::Macos => 2,
+        Os.Linux => 1,
+        Os.Macos => 2,
     }
 }
 """ }]

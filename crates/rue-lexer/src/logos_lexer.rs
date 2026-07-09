@@ -368,6 +368,10 @@ pub enum LogosTokenKind {
     Arrow,
     #[token("=>")]
     FatArrow,
+    // `::` is no longer a Rue operator (RUE-488): `.` is the sole member-access
+    // spelling. The token is still recognized so a stray `::` reaches the parser
+    // as one unit and yields a precise "use `.`" diagnostic, rather than lexing
+    // as two `:` tokens that would produce an opaque error.
     #[token("::")]
     ColonColon,
 

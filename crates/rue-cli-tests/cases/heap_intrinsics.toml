@@ -81,7 +81,7 @@ drop fn Buf(self) {
 }
 
 fn main() -> i32 {
-    let b = Buf::init();
+    let b = Buf.init();
     @dbg(b.first());
     0
 }

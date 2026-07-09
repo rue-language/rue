@@ -19,7 +19,7 @@ description = "push_str through a struct field mutates the field (observed via i
 files = [{ path = "main.rue", source = """
 struct Buf { data: String }
 fn main() -> i32 {
-    let mut b = Buf { data: String::new() };
+    let mut b = Buf { data: String.new() };
     b.data.push_str("hi");
     b.data.push_str("!!!");
     @dbg(b.data.len());
@@ -35,7 +35,7 @@ name = "array_element_const_index_push"
 description = "arr[0].push(65) mutates element 0 and leaves element 1 untouched."
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
-    let mut arr = [String::new(), String::new()];
+    let mut arr = [String.new(), String.new()];
     arr[0].push(65);
     @dbg(arr[0].len());
     @dbg(arr[1].len());
@@ -51,7 +51,7 @@ name = "array_element_dynamic_index_push"
 description = "arr[i].push(66) with a runtime index mutates exactly the selected element."
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
-    let mut arr = [String::new(), String::new()];
+    let mut arr = [String.new(), String.new()];
     let i: u64 = 1;
     arr[i].push(66);
     @dbg(arr[1].len());
@@ -71,7 +71,7 @@ fn appendit(inout s: String) {
     s.push_str("more");
 }
 fn main() -> i32 {
-    let mut s = String::new();
+    let mut s = String.new();
     appendit(inout s);
     appendit(inout s);
     @dbg(s.len());
@@ -92,7 +92,7 @@ struct Buf {
     fn append(inout self) { self.data.push_str("ab"); }
 }
 fn main() -> i32 {
-    let mut b = Buf { data: String::new() };
+    let mut b = Buf { data: String.new() };
     b.append();
     b.append();
     b.append();
@@ -109,7 +109,7 @@ name = "immutable_local_receiver_rejected"
 description = "A String mutation method on an immutable binding is still E0203."
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
-    let s = String::new();
+    let s = String.new();
     s.push_str("x");
     0
 }
@@ -123,7 +123,7 @@ name = "moved_string_receiver_rejected"
 description = "Mutating a String after it was moved is still a use-after-move error."
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
-    let mut s = String::new();
+    let mut s = String.new();
     let s2 = s;
     s.push_str("x");
     @dbg(s2.len());

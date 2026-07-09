@@ -38,8 +38,8 @@ fn main() -> i32 {
     @dbg(if arr1 == arr2 { 1 } else { 0 });
     @dbg(if arr1 != arr3 { 1 } else { 0 });
 
-    @dbg(if Color::Red == Color::Red { 1 } else { 0 });
-    @dbg(if Color::Red != Color::Green { 1 } else { 0 });
+    @dbg(if Color.Red == Color.Red { 1 } else { 0 });
+    @dbg(if Color.Red != Color.Green { 1 } else { 0 });
     0
 }
 """ }]

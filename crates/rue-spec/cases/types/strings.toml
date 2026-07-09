@@ -620,7 +620,7 @@ name = "string_new_basic"
 spec = ["3.10:7"]
 source = """
 fn main() -> i32 {
-    let s = String::new();
+    let s = String.new();
     0
 }
 """
@@ -631,7 +631,7 @@ name = "string_new_equality_with_empty"
 spec = ["3.10:7", "3.7:9"]
 source = """
 fn main() -> i32 {
-    let s = String::new();
+    let s = String.new();
     if s == "" { 1 } else { 0 }
 }
 """
@@ -643,7 +643,7 @@ spec = ["3.10:8"]
 source = """
 fn main() -> i32 {
     let cap: u64 = 1024;
-    let s = String::with_capacity(cap);
+    let s = String.with_capacity(cap);
     0
 }
 """
@@ -655,7 +655,7 @@ spec = ["3.10:8"]
 source = """
 fn main() -> i32 {
     let cap: u64 = 0;
-    let s = String::with_capacity(cap);
+    let s = String.with_capacity(cap);
     0
 }
 """
@@ -667,7 +667,7 @@ spec = ["3.10:8", "3.7:9"]
 source = """
 fn main() -> i32 {
     let cap: u64 = 64;
-    let s = String::with_capacity(cap);
+    let s = String.with_capacity(cap);
     if s == "" { 1 } else { 0 }
 }
 """
@@ -679,8 +679,8 @@ spec = ["3.10:7", "3.10:9"]
 source = """
 fn main() -> i32 {
     let cap: u64 = 1024;
-    let empty = String::new();
-    let prealloc = String::with_capacity(cap);
+    let empty = String.new();
+    let prealloc = String.with_capacity(cap);
     0
 }
 """

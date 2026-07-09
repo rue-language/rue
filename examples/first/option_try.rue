@@ -10,8 +10,8 @@
 //     fn triple(n: i64) -> std.option.Option(i64) {
 //         let O = std.option.Option(i64);
 //         match parse_positive(n) {           // the `?`-free equivalent
-//             O::Some(v) => O::Some(v * 3),
-//             O::None => O::None,
+//             O.Some(v) => O.Some(v * 3),
+//             O.None => O.None,
 //         }
 //     }
 //
@@ -23,7 +23,7 @@
 // No prelude yet: import `std` explicitly. `std.option.Option(i64)` names the
 // standard-library type directly in a return position. Constructing a variant
 // or matching still needs a bound type name (`let O = std.option.Option(i64);
-// O::Some(..)`), so functions that construct or match variants bind `O`
+// O.Some(..)`), so functions that construct or match variants bind `O`
 // locally.
 
 const std = @import("std");
@@ -31,7 +31,7 @@ const std = @import("std");
 // parse_positive: Some(n) when n is positive, else None.
 fn parse_positive(n: i64) -> std.option.Option(i64) {
     let O = std.option.Option(i64);
-    if n > 0 { O::Some(n) } else { O::None }
+    if n > 0 { O.Some(n) } else { O.None }
 }
 
 // triple: unwrap the positive value with `?`, then wrap n * 3. On a None input
@@ -39,14 +39,14 @@ fn parse_positive(n: i64) -> std.option.Option(i64) {
 fn triple(n: i64) -> std.option.Option(i64) {
     let O = std.option.Option(i64);
     let v = parse_positive(n)?;
-    O::Some(v * 3)
+    O.Some(v * 3)
 }
 
 fn report(n: i64) {
     let O = std.option.Option(i64);
     match triple(n) {
-        O::Some(m) => println("triple: " + @to_string(m)),
-        O::None => println("triple: none"),
+        O.Some(m) => println("triple: " + @to_string(m)),
+        O.None => println("triple: none"),
     }
 }
 

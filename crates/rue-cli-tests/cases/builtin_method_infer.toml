@@ -1,6 +1,6 @@
 # Builtin method-call return types must anchor integer-literal inference (RUE-95).
 #
-# `String::len`/`capacity` return u64, but builtin methods were registered only for
+# `String.len`/`capacity` return u64, but builtin methods were registered only for
 # sema/airgen — NOT for the HM inference `method_sigs` map — so a builtin method-call
 # result used in a binop with an untyped literal (`s.len() + 1`, `s.len() == 2`) left
 # the literal's type unconstrained, resolving to `<error>` and tripping the E0800

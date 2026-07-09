@@ -321,7 +321,7 @@ fn Array(comptime T: type, comptime N: i32) -> type {
 
 {{ rule(id="4.14:13", cat="normative") }}
 
-Functions defined without a `self` parameter are associated functions, called using the `Type::function()` syntax:
+Functions defined without a `self` parameter are associated functions, called using the `Type.function()` syntax:
 
 ```rue
 fn Point() -> type {
@@ -337,7 +337,7 @@ fn Point() -> type {
 
 fn main() -> i32 {
     let P = Point();
-    let p = P::origin();
+    let p = P.origin();
     p.x
 }
 ```
@@ -388,8 +388,8 @@ fn Option(comptime T: type) -> type {
 
 fn main() -> i32 {
     let O = Option(i32);
-    let x: O = O::Some(5);
-    match x { O::Some(n) => n, O::None => 0 }
+    let x: O = O.Some(5);
+    match x { O.Some(n) => n, O.None => 0 }
 }
 ```
 
@@ -405,9 +405,9 @@ fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
     let A = Option(i32);
     let B = Option(i32);
-    let x: A = A::Some(10);
+    let x: A = A.Some(10);
     let y: B = x;  // OK: A and B are structurally equal
-    match y { B::Some(n) => n, B::None => 0 }
+    match y { B.Some(n) => n, B.None => 0 }
 }
 ```
 
@@ -433,15 +433,15 @@ supplied by a `comptime` parameter or another type value.
 In *value position*, the reduced type is an ordinary compile-time type value:
 it may be bound with `let` and then used as the path of a struct-literal
 expression (`P { … }`), a method call, or an associated-function call
-(`P::origin()`), exactly as in rules 4.14:7 through 4.14:13.
+(`P.origin()`), exactly as in rules 4.14:7 through 4.14:13.
 
 ```rue
 fn Option(comptime T: type) -> type { enum { Some(T), None } }
 
 fn main() -> i32 {
     let O = Option(i32);        // type-function application in value position
-    let x: O = O::Some(42);
-    match x { O::Some(n) => n, O::None => 0 }
+    let x: O = O.Some(42);
+    match x { O.Some(n) => n, O.None => 0 }
 }
 ```
 
@@ -473,11 +473,11 @@ fn main() -> i32 {
 ```
 
 A type-constructor call is a type, not a path expression: the forms
-`F(args) { … }` (a struct literal) and `F(args)::NAME` (an associated item or
+`F(args) { … }` (a struct literal) and `F(args).NAME` (an associated item or
 enum variant) are not accepted, because a call expression is not a permitted
 struct-literal or pattern path. Bind the resulting type to a name first — with
 `let P = F(args);` — and use that name as the path in expression and pattern
-position (`P { … }`, `P::NAME`).
+position (`P { … }`, `P.NAME`).
 
 {{ rule(id="4.14:24", cat="normative") }}
 
@@ -499,7 +499,7 @@ fn Wrap(comptime T: type) -> type {
         inner: Option(T),               // T passed to another constructor
         fn get_or(self, d: T) -> T {    // T names the parameter/return type
             let O = Option(T);          // T in scope in the method body
-            match self.inner { O::Some(v) => v, O::None => d }
+            match self.inner { O.Some(v) => v, O.None => d }
         }
     }
 }
@@ -507,7 +507,7 @@ fn Wrap(comptime T: type) -> type {
 fn main() -> i32 {
     let W = Wrap(i32);
     let O = Option(i32);
-    let w: W = W { inner: O::Some(7) };
+    let w: W = W { inner: O.Some(7) };
     w.get_or(0)
 }
 ```

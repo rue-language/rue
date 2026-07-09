@@ -99,10 +99,12 @@ pub enum TokenKind {
     RParen,
     LBrace,
     RBrace,
-    LBracket,   // [
-    RBracket,   // ]
-    Arrow,      // ->
-    FatArrow,   // =>
+    LBracket, // [
+    RBracket, // ]
+    Arrow,    // ->
+    FatArrow, // =>
+    // `::` is no longer an operator (RUE-488); retained only so the parser can
+    // emit a precise "use `.`" diagnostic for a stray `::`.
     ColonColon, // ::
     Colon,
     Semi,

@@ -16,7 +16,7 @@ A match expression provides multi-way branching based on pattern matching.
 match_expr = "match" expression "{" { match_arm "," } [ match_arm ] "}" ;
 match_arm = pattern "=>" expression ;
 pattern = "_" | [ "-" ] INTEGER | BOOL | enum_variant_pattern ;
-enum_variant_pattern = IDENT "::" IDENT ;
+enum_variant_pattern = IDENT "." IDENT ;
 ```
 
 ## Patterns
@@ -228,7 +228,7 @@ fn absurd(n: Never) -> i32 {
 {{ rule(id="4.7:30", cat="normative") }}
 
 A tuple-variant pattern binds the variant's payload into fresh names:
-`EnumName::Variant(a, b)` matches a value of that variant and binds `a`, `b`
+`EnumName.Variant(a, b)` matches a value of that variant and binds `a`, `b`
 to its payload fields in order. The number of bindings **MUST** equal the
 variant's payload arity (see spec 6.3).
 
@@ -246,10 +246,10 @@ binding of the same name.
 enum Shape { Circle(i32), Rect(i32, i32), Empty }
 
 fn main() -> i32 {
-    match Shape::Rect(3, 4) {
-        Shape::Circle(r) => r,
-        Shape::Rect(w, h) => w + h,
-        Shape::Empty => 0,
+    match Shape.Rect(3, 4) {
+        Shape.Circle(r) => r,
+        Shape.Rect(w, h) => w + h,
+        Shape.Empty => 0,
     }
 }
 ```
@@ -283,10 +283,10 @@ enum E { A(i32), B }
 fn use_again(e: E) -> i32 { 2 }
 
 fn main() -> i32 {
-    let e = E::A(40);       // payload is Copy, so E is a Copy type
+    let e = E.A(40);       // payload is Copy, so E is a Copy type
     let r = match e {
-        E::A(x) => x,
-        E::B => 0,
+        E.A(x) => x,
+        E.B => 0,
     };
     r + use_again(e)        // OK: Copy scrutinee still valid -> 42
 }
@@ -301,10 +301,10 @@ enum E { A(Big), B }
 fn use_again(e: E) -> i32 { 0 }
 
 fn main() -> i32 {
-    let e = E::A(Big { value: 7 });   // move type: Big is not Copy
+    let e = E.A(Big { value: 7 });   // move type: Big is not Copy
     let r = match e {
-        E::A => 1,                    // binds nothing, yet consumes `e`
-        E::B => 2,
+        E.A => 1,                    // binds nothing, yet consumes `e`
+        E.B => 2,
     };
     r + use_again(e)                  // ERROR: use of moved value 'e'
 }

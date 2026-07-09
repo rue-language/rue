@@ -1960,6 +1960,9 @@ mod tests {
 
     #[test]
     fn test_gen_assoc_fn_call() {
+        // Associated functions are called with `.` (RUE-488). At the RIR level
+        // `Point.origin()` is a `MethodCall` whose receiver is the type name;
+        // sema reinterprets it as an associated-function call.
         let source = r#"
             struct Point {
                 x: i32,
@@ -1967,32 +1970,35 @@ mod tests {
                 fn origin() -> Point { Point { x: 0, y: 0 } }
             }
             fn main() -> i32 {
-                let p = Point::origin();
+                let p = Point.origin();
                 0
             }
         "#;
         let (rir, interner) = gen_rir(source);
 
-        // Find the AssocFnCall instruction
-        let assoc_fn_call = rir
+        // Find the MethodCall instruction
+        let method_call = rir
             .iter()
-            .find(|(_, inst)| matches!(inst.data, InstData::AssocFnCall { .. }));
-        assert!(assoc_fn_call.is_some(), "Expected AssocFnCall instruction");
+            .find(|(_, inst)| matches!(inst.data, InstData::MethodCall { .. }));
+        assert!(method_call.is_some(), "Expected MethodCall instruction");
 
-        let (_, inst) = assoc_fn_call.unwrap();
+        let (_, inst) = method_call.unwrap();
         match &inst.data {
-            InstData::AssocFnCall {
-                type_name,
-                function,
+            InstData::MethodCall {
+                receiver,
+                method,
                 args_start,
                 args_len,
             } => {
-                assert_eq!(interner.resolve(&*type_name), "Point");
-                assert_eq!(interner.resolve(&*function), "origin");
+                match &rir.get(*receiver).data {
+                    InstData::VarRef { name } => assert_eq!(interner.resolve(name), "Point"),
+                    other => panic!("expected VarRef receiver, got {other:?}"),
+                }
+                assert_eq!(interner.resolve(&*method), "origin");
                 let args = rir.get_call_args(*args_start, *args_len);
                 assert!(args.is_empty());
             }
-            _ => panic!("expected AssocFnCall"),
+            _ => panic!("expected MethodCall"),
         }
     }
 
@@ -2169,11 +2175,11 @@ mod tests {
         let source = r#"
             enum Color { Red, Green, Blue }
             fn main() -> i32 {
-                let c = Color::Red;
+                let c = Color.Red;
                 match c {
-                    Color::Red => 1,
-                    Color::Green => 2,
-                    Color::Blue => 3,
+                    Color.Red => 1,
+                    Color.Green => 2,
+                    Color.Blue => 3,
                 }
             }
         "#;
@@ -2194,7 +2200,7 @@ mod tests {
                 let arms = rir.get_match_arms(*arms_start, *arms_len);
                 assert_eq!(arms.len(), 3);
 
-                // Check first arm is Color::Red
+                // Check first arm is Color.Red
                 match &arms[0].0 {
                     RirPattern::Path {
                         type_name, variant, ..
@@ -2205,7 +2211,7 @@ mod tests {
                     _ => panic!("expected Path pattern"),
                 }
 
-                // Check second arm is Color::Green
+                // Check second arm is Color.Green
                 match &arms[1].0 {
                     RirPattern::Path {
                         type_name, variant, ..
@@ -2216,7 +2222,7 @@ mod tests {
                     _ => panic!("expected Path pattern"),
                 }
 
-                // Check third arm is Color::Blue
+                // Check third arm is Color.Blue
                 match &arms[2].0 {
                     RirPattern::Path {
                         type_name, variant, ..
@@ -2276,30 +2282,34 @@ mod tests {
 
     #[test]
     fn test_gen_enum_variant() {
+        // Enum variants are spelled with `.` (RUE-488). At the RIR level
+        // `Color.Red` is a `FieldGet` on the type name; sema reinterprets it as
+        // an enum-variant value.
         let source = r#"
             enum Color { Red, Green, Blue }
             fn main() -> i32 {
-                let c = Color::Red;
+                let c = Color.Red;
                 0
             }
         "#;
         let (rir, interner) = gen_rir(source);
 
-        // Find the EnumVariant instruction
-        let enum_variant = rir
+        // Find the FieldGet instruction
+        let field_get = rir
             .iter()
-            .find(|(_, inst)| matches!(inst.data, InstData::EnumVariant { .. }));
-        assert!(enum_variant.is_some(), "Expected EnumVariant instruction");
+            .find(|(_, inst)| matches!(inst.data, InstData::FieldGet { .. }));
+        assert!(field_get.is_some(), "Expected FieldGet instruction");
 
-        let (_, inst) = enum_variant.unwrap();
+        let (_, inst) = field_get.unwrap();
         match &inst.data {
-            InstData::EnumVariant {
-                type_name, variant, ..
-            } => {
-                assert_eq!(interner.resolve(&*type_name), "Color");
-                assert_eq!(interner.resolve(&*variant), "Red");
+            InstData::FieldGet { base, field } => {
+                match &rir.get(*base).data {
+                    InstData::VarRef { name } => assert_eq!(interner.resolve(name), "Color"),
+                    other => panic!("expected VarRef base, got {other:?}"),
+                }
+                assert_eq!(interner.resolve(&*field), "Red");
             }
-            _ => panic!("expected EnumVariant"),
+            _ => panic!("expected FieldGet"),
         }
     }
 
@@ -2361,7 +2371,7 @@ mod tests {
                 fn origin() -> Point { Point { x: 0, y: 0 } }
             }
             fn main() -> i32 {
-                let p = Point::origin();
+                let p = Point.origin();
                 p.x
             }
         "#;
@@ -2370,13 +2380,15 @@ mod tests {
         let printer = RirPrinter::new(&rir, &interner);
         let output = printer.to_string();
 
-        // Check key elements are present in the output
+        // Check key elements are present in the output. `Point.origin()` lowers
+        // to a `method_call` at the RIR level (RUE-488); sema reinterprets the
+        // type-name receiver as an associated-function call.
         assert!(output.contains("struct Point"));
         assert!(output.contains("methods: ["));
         assert!(output.contains("fn origin"));
         assert!(output.contains("fn main"));
         assert!(output.contains("struct_init Point"));
-        assert!(output.contains("assoc_fn_call Point::origin"));
+        assert!(output.contains("method_call"));
         assert!(output.contains("field_get"));
     }
 

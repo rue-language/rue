@@ -112,7 +112,7 @@ error_contains = [
 [[case]]
 name = "binary_expr_span_in_second_file"
 description = """
-RUE-175: make_binary built the merged span with Span::new, dropping the
+RUE-175: make_binary built the merged span with Span.new, dropping the
 FileId. The E0206 on the `if 1 + 2` condition in main.rue (passed second)
 alternated between main.rue:2:8 and a misaligned caret in lib.rue depending on
 hash-map iteration order. It must always point at main.rue:2:8.
@@ -167,7 +167,7 @@ compile_stderr_not_contains = ["lib.rue"]
 name = "unary_expr_span_in_second_file"
 description = """
 RUE-175: make_unary also built its merged span (operator start .. operand end)
-with Span::new. The E0206 on the `if -1` condition must point at main.rue:2:8,
+with Span.new. The E0206 on the `if -1` condition must point at main.rue:2:8,
 never at lib.rue.
 """
 files = [

@@ -912,7 +912,7 @@ enum Color {
 }
 
 fn main() -> i32 {
-    let c = Color::Red;
+    let c = Color.Red;
     match c {}
 }
 """
@@ -947,10 +947,10 @@ spec = ["4.7:30"]
 source = """
 enum Shape { Circle(i32), Rect(i32, i32), Empty }
 fn main() -> i32 {
-    match Shape::Rect(3, 4) {
-        Shape::Circle(r) => r,
-        Shape::Rect(w, h) => w + h,
-        Shape::Empty => 0,
+    match Shape.Rect(3, 4) {
+        Shape.Circle(r) => r,
+        Shape.Rect(w, h) => w + h,
+        Shape.Empty => 0,
     }
 }
 """
@@ -964,9 +964,9 @@ spec = ["4.7:31"]
 source = """
 enum Wrap { One(i32) }
 fn main() -> i32 {
-    let w = Wrap::One(10);
+    let w = Wrap.One(10);
     match w {
-        Wrap::One(x) => x + x,
+        Wrap.One(x) => x + x,
     }
 }
 """
@@ -980,8 +980,8 @@ spec = ["4.7:30"]
 source = """
 enum Shape { Rect(i32, i32) }
 fn main() -> i32 {
-    match Shape::Rect(3, 4) {
-        Shape::Rect(w) => w,
+    match Shape.Rect(3, 4) {
+        Shape.Rect(w) => w,
     }
 }
 """
@@ -996,8 +996,8 @@ spec = ["4.7:30"]
 source = """
 enum Shape { Rect(i32, i32) }
 fn main() -> i32 {
-    match Shape::Rect(3, 4) {
-        Shape::Rect(w, w) => w,
+    match Shape.Rect(3, 4) {
+        Shape.Rect(w, w) => w,
     }
 }
 """
@@ -1016,10 +1016,10 @@ source = """
 enum E { A(i32), B }
 fn use_again(e: E) -> i32 { 2 }
 fn main() -> i32 {
-    let e = E::A(40);
+    let e = E.A(40);
     let r = match e {
-        E::A(x) => x,
-        E::B => 0,
+        E.A(x) => x,
+        E.B => 0,
     };
     r + use_again(e)
 }
@@ -1036,10 +1036,10 @@ struct Big { value: i32 }
 enum E { A(Big), B }
 fn use_again(e: E) -> i32 { 0 }
 fn main() -> i32 {
-    let e = E::A(Big { value: 7 });
+    let e = E.A(Big { value: 7 });
     let r = match e {
-        E::A(s) => s.value,
-        E::B => 0,
+        E.A(s) => s.value,
+        E.B => 0,
     };
     r + use_again(e)
 }
@@ -1057,10 +1057,10 @@ struct Big { value: i32 }
 enum E { A(Big), B }
 fn use_again(e: E) -> i32 { 0 }
 fn main() -> i32 {
-    let e = E::A(Big { value: 7 });
+    let e = E.A(Big { value: 7 });
     let r = match e {
-        E::A => 1,
-        E::B => 2,
+        E.A => 1,
+        E.B => 2,
     };
     r + use_again(e)
 }

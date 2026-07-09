@@ -264,15 +264,15 @@ name = "duplicate_enum_variant_pattern"
 source = """
 enum Dir { N, S }
 fn main() -> i32 {
-    match Dir::N {
-        Dir::N => 1,
-        Dir::N => 2,
-        Dir::S => 3,
+    match Dir.N {
+        Dir.N => 1,
+        Dir.N => 2,
+        Dir.S => 3,
     }
 }
 """
 exit_code = 1
-warning_contains = ["unreachable pattern", "'Dir::N'"]
+warning_contains = ["unreachable pattern", "'Dir.N'"]
 expected_warning_count = 1
 
 # Negative control: distinct variants must NOT warn.
@@ -281,9 +281,9 @@ name = "distinct_enum_variant_patterns_no_warning"
 source = """
 enum Dir { N, S }
 fn main() -> i32 {
-    match Dir::S {
-        Dir::N => 1,
-        Dir::S => 3,
+    match Dir.S {
+        Dir.N => 1,
+        Dir.S => 3,
     }
 }
 """
@@ -298,9 +298,9 @@ name = "wildcard_after_full_enum_coverage"
 source = """
 enum Color { Red, Green }
 fn main() -> i32 {
-    match Color::Red {
-        Color::Red => 1,
-        Color::Green => 2,
+    match Color.Red {
+        Color.Red => 1,
+        Color.Green => 2,
         _ => 3,
     }
 }
@@ -331,9 +331,9 @@ name = "wildcard_covering_missing_enum_variant_no_warning"
 source = """
 enum Color { Red, Green, Blue }
 fn main() -> i32 {
-    match Color::Blue {
-        Color::Red => 1,
-        Color::Green => 2,
+    match Color.Blue {
+        Color.Red => 1,
+        Color.Green => 2,
         _ => 3,
     }
 }

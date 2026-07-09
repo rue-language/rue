@@ -35,8 +35,10 @@ Every chapter should:
 3. Add one positive example per new concept and, where it materially helps,
    one expected-error example.
 4. Prefer stable, user-facing APIs over compiler-internal or debugging-only
-   tools. Use `print`/`println` once the chapter has introduced strings and
-   standard-library access; keep `@dbg` framed as debugging output.
+   tools. Use `print`/`println` for user-facing output from the first chapter
+   that produces any output; example output should flow through `println`.
+   `@dbg` may be introduced once as a brief debugging aid, but it is not the
+   tutorial's output mechanism.
 5. Say when a feature is preview, incomplete, or dogfood-motivated. Do not
    silently teach unstable syntax as if it were settled.
 6. Avoid duplicating the specification. Link to the spec for exact normative

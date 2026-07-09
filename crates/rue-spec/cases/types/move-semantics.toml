@@ -79,13 +79,13 @@ spec = ["3.8:2"]
 source = """
 enum Color { Red, Green, Blue }
 fn main() -> i32 {
-    let c = Color::Red;
+    let c = Color.Red;
     let a = c;
     let b = c;
     match a {
-        Color::Red => 1,
-        Color::Green => 2,
-        Color::Blue => 3,
+        Color.Red => 1,
+        Color.Green => 2,
+        Color.Blue => 3,
     }
 }
 """
@@ -139,14 +139,14 @@ description = "Array of enum is Copy (enums are Copy)"
 source = """
 enum Status { On, Off }
 fn main() -> i32 {
-    let states: [Status; 2] = [Status::On, Status::Off];
+    let states: [Status; 2] = [Status.On, Status.Off];
     let s2 = states;
     match states[0] {
-        Status::On => match s2[1] {
-            Status::Off => 42,
-            Status::On => 0,
+        Status.On => match s2[1] {
+            Status.Off => 42,
+            Status.On => 0,
         },
-        Status::Off => 0,
+        Status.Off => 0,
     }
 }
 """
@@ -652,11 +652,11 @@ enum Status { Active, Inactive }
 struct Data { status: Status, value: i32 }
 
 fn main() -> i32 {
-    let d = Data { status: Status::Active, value: 10 };
+    let d = Data { status: Status.Active, value: 10 };
     let e = d;
     match d.status {
-        Status::Active => d.value + e.value,
-        Status::Inactive => 0,
+        Status.Active => d.value + e.value,
+        Status.Inactive => 0,
     }
 }
 """

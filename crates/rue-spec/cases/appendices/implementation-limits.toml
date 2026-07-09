@@ -146,18 +146,18 @@ enum Color {
 }
 
 fn main() -> i32 {
-    let c = Color::Violet;
+    let c = Color.Violet;
     match c {
-        Color::Red => 0,
-        Color::Orange => 1,
-        Color::Yellow => 2,
-        Color::Green => 3,
-        Color::Blue => 4,
-        Color::Indigo => 5,
-        Color::Violet => 6,
-        Color::Black => 7,
-        Color::White => 8,
-        Color::Gray => 9,
+        Color.Red => 0,
+        Color.Orange => 1,
+        Color.Yellow => 2,
+        Color.Green => 3,
+        Color.Blue => 4,
+        Color.Indigo => 5,
+        Color.Violet => 6,
+        Color.Black => 7,
+        Color.White => 8,
+        Color.Gray => 9,
     }
 }
 """

@@ -75,10 +75,10 @@ source = """
 fn main() -> i32 {
     let std = @import("std");
     let O = std.option.Option(i32);
-    let x = O::Some(7);
+    let x = O.Some(7);
     match x {
-        O::Some(n) => n,
-        O::None => 1,
+        O.Some(n) => n,
+        O.None => 1,
     }
 }
 """

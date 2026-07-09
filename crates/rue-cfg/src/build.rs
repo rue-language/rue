@@ -3402,9 +3402,9 @@ mod tests {
         // local (s and t) is dropped exactly once.
         let cfg = build_cfg(
             "fn main() -> i32 {\n\
-                 let mut s = String::with_capacity(8);\n\
+                 let mut s = String.with_capacity(8);\n\
                  loop {\n\
-                     let mut t = String::with_capacity(8);\n\
+                     let mut t = String.with_capacity(8);\n\
                      break;\n\
                      let unreachable_tail = 0;\n\
                  }\n\
@@ -3425,7 +3425,7 @@ mod tests {
         // scope exit; s's drop is suppressed by the MarkMoved marker.
         let cfg = build_cfg(
             "fn main() -> i32 {\n\
-                 let s = String::with_capacity(8);\n\
+                 let s = String.with_capacity(8);\n\
                  let t = s;\n\
                  0\n\
              }",
@@ -3466,7 +3466,7 @@ mod tests {
         // flag plumbing: a conditional branch on the flag around s's drop.
         let cfg = build_cfg(
             "fn main() -> i32 {\n\
-                 let s = String::with_capacity(8);\n\
+                 let s = String.with_capacity(8);\n\
                  let c = true;\n\
                  if c {\n\
                      let t = s;\n\
@@ -3496,7 +3496,7 @@ mod tests {
         // Moved in BOTH branches => moved on all paths => exit drop suppressed.
         let source = "fn consume(s: String) -> i32 { 0 }\n\
              fn main() -> i32 {\n\
-                 let s = String::with_capacity(8);\n\
+                 let s = String.with_capacity(8);\n\
                  let c = true;\n\
                  if c {\n\
                      consume(s);\n\
@@ -3528,7 +3528,7 @@ mod tests {
         let source = "fn eat(s: String) -> i32 { 0 }\n\
              struct H { a: String, b: String }\n\
              fn main() -> i32 {\n\
-                 let h = H { a: String::with_capacity(8), b: String::with_capacity(8) };\n\
+                 let h = H { a: String.with_capacity(8), b: String.with_capacity(8) };\n\
                  eat(h.a);\n\
                  0\n\
              }";
@@ -3584,9 +3584,9 @@ mod tests {
         let source = "fn eat(s: String) -> i32 { 0 }\n\
              struct H { a: String, b: String }\n\
              fn main() -> i32 {\n\
-                 let mut h = H { a: String::with_capacity(8), b: String::with_capacity(8) };\n\
+                 let mut h = H { a: String.with_capacity(8), b: String.with_capacity(8) };\n\
                  eat(h.a);\n\
-                 h.a = String::with_capacity(4);\n\
+                 h.a = String.with_capacity(4);\n\
                  0\n\
              }";
         let main_cfg = build_cfg_named(source, "main");

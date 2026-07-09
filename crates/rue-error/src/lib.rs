@@ -1110,7 +1110,7 @@ pub enum ErrorKind {
     MethodCallOnNonStruct { found: String, method_name: String },
     /// Calling a method (with self) as an associated function
     #[error(
-        "'{type_name}::{method_name}' is a method, not an associated function; use receiver.{method_name}() syntax"
+        "'{type_name}.{method_name}' is a method, not an associated function; call it on a receiver, e.g. `receiver.{method_name}()`"
     )]
     MethodCalledAsAssocFn {
         type_name: String,
@@ -1118,7 +1118,7 @@ pub enum ErrorKind {
     },
     /// Calling an associated function (without self) as a method
     #[error(
-        "'{function_name}' is an associated function, not a method; use {type_name}::{function_name}() syntax"
+        "'{function_name}' is an associated function, not a method; call it on the type, e.g. `{type_name}.{function_name}()`"
     )]
     AssocFnCalledAsMethod {
         type_name: String,
