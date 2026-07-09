@@ -2398,3 +2398,84 @@ pub fn double_max() -> i32 { MAX + MAX }
 """ },
 ]
 exit_code = 122
+
+# ---------------------------------------------------------------------------
+# Transitive-import diagnostics (RUE-432 / RUE-424).
+#
+# Errors in files discovered transitively from the root must be attributed to
+# the right file with exact line:col, and multi-file error output must be
+# deterministic across runs (the lazy-analysis work queue is sorted; RUE-513).
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "transitive_import_parse_error_attribution"
+description = "A parse error in a transitively discovered file names that file with exact line:col (RUE-432)."
+files = [
+    { path = "main.rue", source = """
+const lib = @import("lib/util.rue");
+
+fn main() -> i32 { lib.val() }
+""" },
+    { path = "lib/util.rue", source = """
+pub fn val() -> i32 { 5
+""" },
+]
+compile_fail = true
+error_contains = ["E0102", "lib/util.rue:1:23"]
+
+[[case]]
+name = "transitive_import_type_error_attribution"
+description = "A type error in a transitively discovered file names that file with exact line:col (RUE-432)."
+files = [
+    { path = "main.rue", source = """
+const lib = @import("lib/util.rue");
+
+fn main() -> i32 { lib.val() }
+""" },
+    { path = "lib/util.rue", source = """
+pub fn val() -> i32 { true }
+""" },
+]
+compile_fail = true
+error_contains = ["E0206", "lib/util.rue:1:23"]
+
+[[case]]
+name = "transitive_import_name_error_in_directory_module"
+description = "A name-resolution error inside a directory module's internal file is attributed to that file, not the facade or root (RUE-432)."
+files = [
+    { path = "main.rue", source = """
+const pkg = @import("pkg");
+
+fn main() -> i32 { pkg.api() }
+""" },
+    { path = "pkg/_pkg.rue", source = """
+const inner = @import("inner.rue");
+
+pub fn api() -> i32 { inner.broken() }
+""" },
+    { path = "pkg/inner.rue", source = """
+pub fn broken() -> i32 { missing_fn() }
+""" },
+]
+compile_fail = true
+error_contains = ["E0202", "missing_fn", "pkg/inner.rue:1:26"]
+
+[[case]]
+name = "transitive_import_independent_errors_both_reported"
+description = "Independent sema errors in two different transitive deps are BOTH reported with correct attribution, plus the count summary; emission order is deterministic across runs (RUE-513)."
+files = [
+    { path = "main.rue", source = """
+const a = @import("a/one.rue");
+const b = @import("b/two.rue");
+
+fn main() -> i32 { a.one() + b.two() }
+""" },
+    { path = "a/one.rue", source = """
+pub fn one() -> i32 { true }
+""" },
+    { path = "b/two.rue", source = """
+pub fn two() -> i32 { false }
+""" },
+]
+compile_fail = true
+error_contains = ["a/one.rue:1:23", "b/two.rue:1:23", "aborting due to 2 previous errors"]

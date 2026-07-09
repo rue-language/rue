@@ -607,6 +607,41 @@ fn collect_static_function_references(sema: &Sema<'_>) -> HashSet<Spur> {
     referenced
 }
 
+/// Move newly referenced functions/methods onto the lazy-analysis work queues
+/// in a deterministic order.
+///
+/// `analyze_single_function` (and its method/destructor siblings) collect
+/// references as `HashSet`s, whose iteration order is randomized per process.
+/// Pushing them unsorted made the whole lazy-analysis order — and with it the
+/// order diagnostics are emitted in AND the function order handed to codegen —
+/// differ between identical runs (RUE-513: two files with independent sema
+/// errors reported them in a random relative order). Sorting by resolved name
+/// (and struct id) restores run-to-run determinism at the only place the
+/// nondeterminism enters.
+fn enqueue_references_sorted(
+    interner: &ThreadedRodeo,
+    referenced_fns: HashSet<Spur>,
+    referenced_meths: HashSet<(StructId, Spur)>,
+    analyzed_functions: &HashSet<Spur>,
+    analyzed_methods: &HashSet<(StructId, Spur)>,
+    pending_functions: &mut Vec<Spur>,
+    pending_methods: &mut Vec<(StructId, Spur)>,
+) {
+    let mut fns: Vec<Spur> = referenced_fns
+        .into_iter()
+        .filter(|f| !analyzed_functions.contains(f))
+        .collect();
+    fns.sort_by_key(|f| interner.resolve(f));
+    pending_functions.extend(fns);
+
+    let mut meths: Vec<(StructId, Spur)> = referenced_meths
+        .into_iter()
+        .filter(|m| !analyzed_methods.contains(m))
+        .collect();
+    meths.sort_by_key(|&(sid, name)| (sid.0, interner.resolve(&name)));
+    pending_methods.extend(meths);
+}
+
 /// Lazy analysis path (Phase 3 of module system, ADR-0026).
 ///
 /// This implements "lazy semantic analysis" where only functions reachable from
@@ -720,16 +755,15 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
                                 all_warnings.extend(warnings);
 
                                 // Add newly referenced functions to the work queue
-                                for ref_fn in referenced_fns {
-                                    if !analyzed_functions.contains(&ref_fn) {
-                                        pending_functions.push(ref_fn);
-                                    }
-                                }
-                                for ref_meth in referenced_meths {
-                                    if !analyzed_methods.contains(&ref_meth) {
-                                        pending_methods.push(ref_meth);
-                                    }
-                                }
+                                enqueue_references_sorted(
+                                    sema.interner,
+                                    referenced_fns,
+                                    referenced_meths,
+                                    &analyzed_functions,
+                                    &analyzed_methods,
+                                    &mut pending_functions,
+                                    &mut pending_methods,
+                                );
                             }
                             Err(e) => errors.push(e),
                         }
@@ -868,16 +902,15 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
                         functions_with_strings.push((analyzed, local_strings));
                         all_warnings.extend(warnings);
 
-                        for ref_fn in referenced_fns {
-                            if !analyzed_functions.contains(&ref_fn) {
-                                pending_functions.push(ref_fn);
-                            }
-                        }
-                        for ref_meth in referenced_meths {
-                            if !analyzed_methods.contains(&ref_meth) {
-                                pending_methods.push(ref_meth);
-                            }
-                        }
+                        enqueue_references_sorted(
+                            sema.interner,
+                            referenced_fns,
+                            referenced_meths,
+                            &analyzed_functions,
+                            &analyzed_methods,
+                            &mut pending_functions,
+                            &mut pending_methods,
+                        );
                     }
                     Err(e) => errors.push(e),
                 }
@@ -943,16 +976,15 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
                                     functions_with_strings.push((analyzed, local_strings));
                                     all_warnings.extend(warnings);
 
-                                    for ref_fn in referenced_fns {
-                                        if !analyzed_functions.contains(&ref_fn) {
-                                            pending_functions.push(ref_fn);
-                                        }
-                                    }
-                                    for ref_meth in referenced_meths {
-                                        if !analyzed_methods.contains(&ref_meth) {
-                                            pending_methods.push(ref_meth);
-                                        }
-                                    }
+                                    enqueue_references_sorted(
+                                        sema.interner,
+                                        referenced_fns,
+                                        referenced_meths,
+                                        &analyzed_functions,
+                                        &analyzed_methods,
+                                        &mut pending_functions,
+                                        &mut pending_methods,
+                                    );
                                 }
                                 Err(e) => errors.push(e),
                             }
@@ -968,15 +1000,24 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
         // so lazy analysis emits `__anon_struct_N.__drop` before the backend
         // links drop glue.
         if pending_functions.is_empty() && pending_methods.is_empty() {
-            for (&method_key @ (struct_id, method_name), _) in sema.methods.iter() {
-                if method_name != drop_marker_sym || analyzed_methods.contains(&method_key) {
-                    continue;
-                }
-                let struct_def = sema.type_pool.struct_def(struct_id);
-                if struct_def.name.starts_with("__anon_struct_") {
-                    pending_methods.push(method_key);
-                }
-            }
+            // sema.methods is a HashMap: sort the enqueued keys so the
+            // destructor analysis order is deterministic too (RUE-513).
+            let mut anon_dtors: Vec<(StructId, Spur)> = sema
+                .methods
+                .keys()
+                .copied()
+                .filter(|&method_key @ (struct_id, method_name)| {
+                    method_name == drop_marker_sym
+                        && !analyzed_methods.contains(&method_key)
+                        && sema
+                            .type_pool
+                            .struct_def(struct_id)
+                            .name
+                            .starts_with("__anon_struct_")
+                })
+                .collect();
+            anon_dtors.sort_by_key(|&(sid, name)| (sid.0, sema.interner.resolve(&name)));
+            pending_methods.extend(anon_dtors);
         }
     }
 
