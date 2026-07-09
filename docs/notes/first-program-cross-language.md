@@ -135,22 +135,22 @@ fn main() -> i32 {
 
     let mut count: i64 = 0;
     let mut sum: i64 = 0;
-    let mut max: OptInt = OptInt::None;
+    let mut max: OptInt = OptInt.None;
     loop {
         let line: OptStr = @read_line();                       // None at EOF
         match line {
-            OptStr::None => break,                             // read-until-EOF
-            OptStr::Some(text) => {
+            OptStr.None => break,                             // read-until-EOF
+            OptStr.Some(text) => {
                 match @parse_i64(text) {                       // None on bad input
-                    OptInt::Some(x) => {
+                    OptInt.Some(x) => {
                         count = count + 1;
                         sum = sum + x;
                         max = match max {
-                            OptInt::None => OptInt::Some(x),
-                            OptInt::Some(m) => if x > m { OptInt::Some(x) } else { OptInt::Some(m) },
+                            OptInt.None => OptInt.Some(x),
+                            OptInt.Some(m) => if x > m { OptInt.Some(x) } else { OptInt.Some(m) },
                         };
                     },
-                    OptInt::None => {},                        // skip, no trap
+                    OptInt.None => {},                        // skip, no trap
                 }
             },
         }
@@ -159,8 +159,8 @@ fn main() -> i32 {
     println("count: " + @to_string(count));
     println("sum: " + @to_string(sum));
     match max {
-        OptInt::Some(m) => println("max: " + @to_string(m)),
-        OptInt::None => println("max: (no input)"),
+        OptInt.Some(m) => println("max: " + @to_string(m)),
+        OptInt.None => println("max: (no input)"),
     }
     @intCast(count)
 }

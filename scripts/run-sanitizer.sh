@@ -77,7 +77,7 @@ echo "run-sanitizer: workdir $work" >&2
 cat > "$work/san_str_grow.rue" <<'RUE'
 // Many push_str calls -> repeated String realloc (the RUE-34 grow path).
 fn main() -> i32 {
-    let mut s = String::new();
+    let mut s = String.new();
     let mut i = 0;
     while i < 500 {
         s.push_str("abcdefghij");
@@ -91,7 +91,7 @@ RUE
 cat > "$work/san_str_push_char.rue" <<'RUE'
 // Byte-at-a-time growth: exercises the smallest grow increments.
 fn main() -> i32 {
-    let mut s = String::new();
+    let mut s = String.new();
     let mut i = 0;
     while i < 300 {
         s.push(65);
@@ -105,7 +105,7 @@ RUE
 cat > "$work/san_str_mixed.rue" <<'RUE'
 // with_capacity + mixed appends: pre-sized buffer then repeated growth.
 fn main() -> i32 {
-    let mut s = String::with_capacity(4);
+    let mut s = String.with_capacity(4);
     s.push_str("hello");
     s.push_str(" world");
     let mut i = 0;
