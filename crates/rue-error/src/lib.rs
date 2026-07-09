@@ -280,6 +280,19 @@ impl ErrorCode {
     /// is second-class: it may only be read (`.len()`, byte indexing) or
     /// re-borrowed, never escape the call as a first-class value.
     pub const STR_VIEW_NOT_FIRST_CLASS: Self = Self(497);
+    /// An owning growable container (e.g. `ArrayBuf(T)`) was instantiated with
+    /// an element type that has a destructor (a `drop fn`), via the
+    /// `@require_droppable(T)` gate. Until container/element multiplicity
+    /// propagation is designed (RUE-388), such containers cannot yet run
+    /// per-element destructors, so a destructor-bearing element would silently
+    /// leak its `drop fn`; the instantiation is rejected instead.
+    pub const CONTAINER_ELEMENT_HAS_DESTRUCTOR: Self = Self(498);
+    /// An owning growable container (e.g. `ArrayBuf(T)`) was instantiated with a
+    /// `linear` element type, via the `@require_droppable(T)` gate. Until
+    /// container/element multiplicity propagation is designed (RUE-388), such
+    /// containers cannot yet track element linearity, so a linear element would
+    /// be leaked (never consumed); the instantiation is rejected instead.
+    pub const CONTAINER_ELEMENT_IS_LINEAR: Self = Self(499);
 
     // ========================================================================
     // Control flow errors (E0500-E0599)
@@ -1253,6 +1266,22 @@ pub enum ErrorKind {
     /// names the position, as in [`Self::BufferNotFirstClassStr`].
     #[error("a borrowed `str` view cannot be used as a first-class `str` {site}")]
     StrViewNotFirstClass { site: String },
+    /// An owning growable container (`ArrayBuf(T)`) was instantiated with an
+    /// element type that has a destructor (`drop fn`), via `@require_droppable`
+    /// (RUE-388). The container cannot yet run per-element destructors, so the
+    /// element's `drop fn` would silently leak; the instantiation is rejected.
+    #[error(
+        "`@require_droppable` requires a trivially-droppable type, but `{ty}` carries a destructor (a `drop fn`, on the type itself or one of its fields) — an owning growable container (e.g. `ArrayBuf`) cannot yet run per-element destructors, so that `drop fn` would silently leak (RUE-388)"
+    )]
+    ContainerElementHasDestructor { ty: String },
+    /// An owning growable container (`ArrayBuf(T)`) was instantiated with a
+    /// `linear` element type, via `@require_droppable` (RUE-388). The container
+    /// cannot yet track element linearity, so a linear element would be leaked
+    /// (never consumed); the instantiation is rejected.
+    #[error(
+        "`@require_droppable` requires a trivially-droppable type, but `{ty}` is `linear` — an owning growable container (e.g. `ArrayBuf`) cannot yet track element linearity, so the element would be leaked (RUE-388)"
+    )]
+    ContainerElementIsLinear { ty: String },
     /// Inout argument is not an lvalue (variable, field, or array element)
     #[error("inout argument must be an lvalue (variable, field, or array element)")]
     InoutNonLvalue,
@@ -1558,6 +1587,10 @@ impl ErrorKind {
             ErrorKind::BufferNotFirstClassStr { .. } => ErrorCode::BUFFER_NOT_FIRST_CLASS_STR,
             ErrorKind::InoutStrRequiresLocalBuffer => ErrorCode::INOUT_STR_REQUIRES_LOCAL_BUFFER,
             ErrorKind::StrViewNotFirstClass { .. } => ErrorCode::STR_VIEW_NOT_FIRST_CLASS,
+            ErrorKind::ContainerElementHasDestructor { .. } => {
+                ErrorCode::CONTAINER_ELEMENT_HAS_DESTRUCTOR
+            }
+            ErrorKind::ContainerElementIsLinear { .. } => ErrorCode::CONTAINER_ELEMENT_IS_LINEAR,
             ErrorKind::InoutNonLvalue => ErrorCode::INOUT_NON_LVALUE,
             ErrorKind::InoutExclusiveAccess { .. } => ErrorCode::INOUT_EXCLUSIVE_ACCESS,
             ErrorKind::BorrowNonLvalue => ErrorCode::BORROW_NON_LVALUE,

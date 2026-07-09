@@ -6181,11 +6181,27 @@ impl<'a> Sema<'a> {
         type_arg: Spur,
         span: Span,
     ) -> CompileResult<AnalysisResult> {
-        let intrinsic_name = self.interner.resolve(&name);
+        let intrinsic_name = self.interner.resolve(&name).to_string();
         let ty = self.resolve_type(type_arg, span)?;
 
+        // `@require_droppable(T)` is the owning-container well-formedness gate
+        // (RUE-388): it has no runtime value and evaluates to unit. It is
+        // normally consumed at comptime while reducing a `-> type` constructor
+        // body (see `Sema::check_require_droppable`), but handle it here too so
+        // that if it ever reaches runtime analysis it performs the same
+        // linear/destructor rejection instead of falling to E0700.
+        if intrinsic_name == "require_droppable" {
+            self.check_require_droppable(ty, span)?;
+            let air_ref = air.add_inst(AirInst {
+                data: AirInstData::Const(0),
+                ty: Type::UNIT,
+                span,
+            });
+            return Ok(AnalysisResult::new(air_ref, Type::UNIT));
+        }
+
         // Calculate the value based on which intrinsic
-        let value: u64 = match intrinsic_name {
+        let value: u64 = match intrinsic_name.as_str() {
             "size_of" => {
                 // Calculate size in bytes (slot count * 8)
                 let slot_count = self.abi_slot_count(ty);

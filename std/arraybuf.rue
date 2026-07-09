@@ -38,15 +38,20 @@
 // SCOPE / KNOWN LIMITATIONS (tracked separately — this file deliberately does
 // not work around them):
 //
-//   * Copy element types only. `get`/`pop` return an element *by copy* wrapped
-//     in `Option(T)` (`@ptr_read`, RUE-313). Move-out of a non-Copy element is
-//     not yet supported. (The destructor drops only the backing buffer, not
-//     per-element glue — for a Copy `T` there is none.)
-//   * Multi-slot aggregate element types (e.g. a two-field struct) now work:
-//     every aggregate is laid out ascending-in-address and `@ptr_read`/
-//     `@ptr_write` walk slots upward from the element base, matching the
-//     ascending heap layout (ADR-0040 / RUE-311). The Copy restriction above
-//     still applies (elements are transferred by copy).
+//   * Trivially-droppable element types only. `get`/`pop` return an element
+//     *by copy* wrapped in `Option(T)` (`@ptr_read`, RUE-313). Move-out of a
+//     non-Copy element is not yet supported, and the destructor drops only the
+//     backing buffer, not per-element glue. An element type that is `linear` or
+//     carries a destructor is therefore REJECTED at instantiation by the
+//     `@require_droppable(T)` gate in the constructor below (E0498 / E0499,
+//     RUE-388) — otherwise its `drop fn` would silently leak / a linear value
+//     would never be consumed. Lifting this to true per-element ownership needs
+//     container/element multiplicity propagation (a future ADR).
+//   * Multi-slot aggregate element types (e.g. a two-field struct) work as long
+//     as they are trivially droppable: every aggregate is laid out
+//     ascending-in-address and `@ptr_read`/`@ptr_write` walk slots upward from
+//     the element base, matching the ascending heap layout (ADR-0040 / RUE-311).
+//     Elements are transferred by copy.
 //
 // The enclosing element type `T` is usable throughout the method bodies below —
 // e.g. to name `Option(T)` and bind `let O = Option(T)` (RUE-313).
@@ -56,6 +61,17 @@ pub fn Option(comptime T: type) -> type {
 }
 
 pub fn ArrayBuf(comptime T: type) -> type {
+    // Well-formedness gate (RUE-388): ArrayBuf owns a heap buffer of `T` and
+    // frees it wholesale in its `drop fn` at scope exit — it does NOT yet run
+    // per-element drop glue, nor track element linearity. Instantiating it with
+    // an element type that is `linear` or carries a destructor would silently
+    // leak that element (its `drop fn` would never run / a linear value would
+    // never be consumed). Until container/element multiplicity propagation is
+    // designed (a future ADR — out of scope), reject such element types at
+    // instantiation with a clear compile error (E0498 / E0499) rather than
+    // miscompiling. Trivially-droppable elements (primitives, pointers, `Copy`
+    // structs of them) pass.
+    @require_droppable(T);
     struct {
         buf: ptr mut T,
         len: u64,

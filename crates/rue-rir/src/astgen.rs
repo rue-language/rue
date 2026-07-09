@@ -7,7 +7,14 @@ use lasso::{Key, Spur, ThreadedRodeo};
 
 /// Known type intrinsics that take a type argument rather than an expression.
 /// These intrinsics operate on types at compile time (e.g., @size_of(i32)).
-const TYPE_INTRINSICS: &[&str] = &["size_of", "align_of"];
+///
+/// `require_droppable` is the compile-time well-formedness gate an owning
+/// growable container (`std/arraybuf.rue`'s `ArrayBuf(T)`) uses to reject an
+/// element type it cannot yet correctly own — one with a destructor or a
+/// `linear` element (RUE-388). It takes the element type as its sole argument
+/// and evaluates to unit during comptime type-constructor reduction, so it must
+/// be lowered as a `TypeIntrinsic` (like `@size_of`), not an expression call.
+const TYPE_INTRINSICS: &[&str] = &["size_of", "align_of", "require_droppable"];
 use rue_parser::ast::{ConstDecl, DropFn};
 use rue_parser::{
     ArgMode, ArrayLength, AssignTarget, Ast, BinaryOp, CallArg, Directive, DirectiveArg, EnumDecl,
