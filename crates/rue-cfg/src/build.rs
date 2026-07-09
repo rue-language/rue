@@ -850,6 +850,19 @@ impl<'a> CfgBuilder<'a> {
                     ty,
                     span,
                 );
+                // A call to a `-> !` function never returns: end the block
+                // here and diverge, exactly like `return`. Handing back a
+                // NEVER-typed "result" would let an enclosing if/match join
+                // thread it into a block-parameter of the other arm's type —
+                // an ill-typed edge (RUE-347).
+                if ty == Type::NEVER {
+                    self.cfg
+                        .set_terminator(self.current_block, Terminator::Unreachable);
+                    return ExprResult {
+                        value: None,
+                        continuation: Continuation::Diverged,
+                    };
+                }
                 self.cache(air_ref, value);
                 ExprResult {
                     value: Some(value),
@@ -1410,10 +1423,19 @@ impl<'a> CfgBuilder<'a> {
                 self.cfg
                     .set_terminator(self.current_block, Terminator::Unreachable);
 
-                // A loop containing a break has type () (a loop without one is
-                // !, and its exit block is unreachable). Either way, emit a
-                // unit value as the loop expression's result for the
-                // reached-via-break path.
+                // A loop containing a break has type `()`: control continues
+                // at exit_block (reached only via break) and the loop's value
+                // is unit. A break-less loop is `!` (spec 4.8:17/4.8:21): its
+                // exit block is unreachable, and handing back a unit value
+                // here would let an enclosing if/match join thread it into a
+                // block-parameter of the *other* arm's type — an ill-typed
+                // edge (RUE-347). Diverge instead, like any `!` expression.
+                if ty == Type::NEVER {
+                    return ExprResult {
+                        value: None,
+                        continuation: Continuation::Diverged,
+                    };
+                }
                 let unit_val = self.emit(CfgInstData::Const(0), Type::UNIT, span);
                 ExprResult {
                     value: Some(unit_val),

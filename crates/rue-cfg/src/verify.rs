@@ -24,10 +24,20 @@
 //!    terminator indexes a value that actually exists in the CFG.
 //! 3. **Block-param arity** — the number of block-arguments passed along each
 //!    edge equals the arity of the successor block's parameter list.
+//! 4. **Block-param types** (RUE-347) — each block-argument's type equals the
+//!    corresponding successor parameter's type. This is the block-parameter
+//!    type invariant SSA passes and codegen rely on; a divergence-handling bug
+//!    in lowering (e.g. wiring a unit "result" of a `!`-typed arm into a join)
+//!    trips it here instead of miscompiling later.
 //!
-//! Unreachable blocks are intentionally skipped: an orphan block created but
-//! never wired in (or one left behind before DCE) may legitimately carry a
-//! `None` terminator, and it never reaches codegen.
+//! Unreachable blocks skip the termination check only: an orphan block created
+//! but never wired in (or one left behind before DCE) may legitimately carry a
+//! `None` terminator, and it never reaches codegen. But an unreachable block
+//! that *does* carry a terminator still has its edges arity- and type-checked
+//! (invariants 3 and 4): such blocks are exactly where divergence-handling
+//! bugs park ill-typed edges "harmlessly" (RUE-347), and a pass or backend
+//! change that consults edge types before checking reachability would turn
+//! one into a real miscompile.
 
 use crate::inst::{Cfg, CfgInstData, CfgValue, Projection, Terminator};
 
@@ -45,6 +55,12 @@ impl Cfg {
 
         for block in self.blocks() {
             if !reachable[block.id.as_u32() as usize] {
+                // Unreachable blocks may legitimately be unterminated (module
+                // docs), but if one carries a real terminator its edges must
+                // still be well-formed: arity- and type-check them (RUE-347).
+                if !matches!(block.terminator, Terminator::None) {
+                    self.verify_terminator(block.id, &block.terminator, value_count);
+                }
                 continue;
             }
 
@@ -113,7 +129,7 @@ impl Cfg {
                 for &arg in args {
                     self.check_value_defined(arg, value_count, block, "goto argument");
                 }
-                self.check_edge_arity(block, *target, args.len());
+                self.check_edge_args(block, *target, args);
             }
             Terminator::Branch {
                 cond,
@@ -129,12 +145,12 @@ impl Cfg {
                 for &arg in then_args {
                     self.check_value_defined(arg, value_count, block, "branch-then argument");
                 }
-                self.check_edge_arity(block, *then_block, then_args.len());
+                self.check_edge_args(block, *then_block, then_args);
                 let else_args = self.get_extra(*else_args_start, *else_args_len);
                 for &arg in else_args {
                     self.check_value_defined(arg, value_count, block, "branch-else argument");
                 }
-                self.check_edge_arity(block, *else_block, else_args.len());
+                self.check_edge_args(block, *else_block, else_args);
             }
             Terminator::Switch {
                 scrutinee,
@@ -146,9 +162,9 @@ impl Cfg {
                 // Switch edges carry no block-arguments, so every successor
                 // must have an empty parameter list.
                 for (_, target) in self.get_switch_cases(*cases_start, *cases_len) {
-                    self.check_edge_arity(block, *target, 0);
+                    self.check_edge_args(block, *target, &[]);
                 }
-                self.check_edge_arity(block, *default, 0);
+                self.check_edge_args(block, *default, &[]);
             }
             Terminator::Return { value } => {
                 if let Some(v) = value {
@@ -159,21 +175,44 @@ impl Cfg {
         }
     }
 
-    /// Panic if the number of block-arguments on an edge does not match the
-    /// successor block's parameter arity.
-    fn check_edge_arity(&self, from: crate::inst::BlockId, to: crate::inst::BlockId, args: usize) {
-        let params = self.get_block(to).params.len();
+    /// Panic if the block-arguments on an edge do not match the successor
+    /// block's parameter list — in count (RUE-227) or, position by position,
+    /// in type (RUE-347).
+    fn check_edge_args(
+        &self,
+        from: crate::inst::BlockId,
+        to: crate::inst::BlockId,
+        args: &[CfgValue],
+    ) {
+        let params = &self.get_block(to).params;
         assert!(
-            params == args,
+            params.len() == args.len(),
             "internal compiler error: CFG verification failed in function `{}`: edge \
              {} -> {} passes {} block-argument(s) but the target expects {} block \
              parameter(s). This is a compiler bug (RUE-227).",
             self.fn_name(),
             from,
             to,
-            args,
-            params,
+            args.len(),
+            params.len(),
         );
+        for (i, (&arg, &(_, param_ty))) in args.iter().zip(params.iter()).enumerate() {
+            let arg_ty = self.get_inst(arg).ty;
+            assert!(
+                arg_ty == param_ty,
+                "internal compiler error: CFG verification failed in function `{}`: edge \
+                 {} -> {} passes block-argument {} ({}) with type {:?} but the target \
+                 parameter has type {:?} — an ill-typed edge, usually a divergence-handling \
+                 bug in lowering. This is a compiler bug (RUE-347).",
+                self.fn_name(),
+                from,
+                to,
+                i,
+                arg,
+                arg_ty,
+                param_ty,
+            );
+        }
     }
 
     /// Compute which blocks are reachable from the entry block by following
@@ -401,6 +440,80 @@ mod tests {
                 target,
                 args_start: 0,
                 args_len: 0,
+            },
+        );
+        cfg.verify();
+    }
+
+    /// Build `entry --goto(one arg of `arg_ty`)--> target(param: i32)`.
+    fn cfg_with_typed_edge(arg_ty: Type) -> Cfg {
+        let mut cfg = unit_cfg();
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let target = cfg.new_block();
+        cfg.add_block_param(target, Type::I32);
+        cfg.set_terminator(target, Terminator::Return { value: None });
+        let arg = cfg.add_inst_to_block(
+            entry,
+            CfgInst {
+                data: CfgInstData::Const(0),
+                ty: arg_ty,
+                span: Span::new(0, 1),
+            },
+        );
+        let (args_start, args_len) = cfg.push_extra(vec![arg]);
+        cfg.set_terminator(
+            entry,
+            Terminator::Goto {
+                target,
+                args_start,
+                args_len,
+            },
+        );
+        cfg
+    }
+
+    #[test]
+    fn verify_accepts_well_typed_edge() {
+        cfg_with_typed_edge(Type::I32).verify(); // must not panic
+    }
+
+    #[test]
+    #[should_panic(expected = "ill-typed edge")]
+    fn verify_catches_edge_type_mismatch() {
+        // The RUE-347 shape: a unit value passed into an i32 block parameter.
+        cfg_with_typed_edge(Type::UNIT).verify();
+    }
+
+    #[test]
+    #[should_panic(expected = "ill-typed edge")]
+    fn verify_catches_edge_type_mismatch_in_unreachable_block() {
+        // Ill-typed edges parked in unreachable blocks are exactly where
+        // divergence-handling bugs hide (RUE-347) — they must still be caught.
+        let mut cfg = unit_cfg();
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        cfg.set_terminator(entry, Terminator::Return { value: None });
+        // Unreachable-but-terminated pair with a unit→i32 edge.
+        let orphan_from = cfg.new_block();
+        let orphan_to = cfg.new_block();
+        cfg.add_block_param(orphan_to, Type::I32);
+        cfg.set_terminator(orphan_to, Terminator::Return { value: None });
+        let arg = cfg.add_inst_to_block(
+            orphan_from,
+            CfgInst {
+                data: CfgInstData::Const(0),
+                ty: Type::UNIT,
+                span: Span::new(0, 1),
+            },
+        );
+        let (args_start, args_len) = cfg.push_extra(vec![arg]);
+        cfg.set_terminator(
+            orphan_from,
+            Terminator::Goto {
+                target: orphan_to,
+                args_start,
+                args_len,
             },
         );
         cfg.verify();
