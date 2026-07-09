@@ -2871,9 +2871,17 @@ impl<'a> Sema<'a> {
                 }
 
                 let abi_slot = param_info.abi_slot;
+                let param_ty = param_info.ty;
 
                 // Analyze the value
                 let value_result = self.analyze_inst(air, value, ctx)?;
+
+                // RUE-387: reassigning an `inout` parameter whose type carries
+                // a linear value would silently drop the caller's live value.
+                // An `inout` binding can never be proven moved-out, so this is
+                // always ill-formed (E0494).
+                let discharged = self.place_linear_discharged(param_ty, name, &[], span, ctx);
+                self.check_linear_overwrite(param_ty, discharged, true, span)?;
 
                 // Assignment to a parameter resets its move state
                 ctx.moved_vars.remove(&name);
@@ -2925,6 +2933,13 @@ impl<'a> Sema<'a> {
         } else {
             self.analyze_inst(air, value, ctx)?
         };
+
+        // RUE-387: overwriting a local that still holds a live linear value
+        // would silently drop it. Legal only when the whole variable was
+        // proven moved-out on every path (reinit-after-move idiom) — evaluated
+        // on the post-RHS move state so `x = f(x)` counts as a discharge.
+        let discharged = self.place_linear_discharged(local_ty, name, &[], span, ctx);
+        self.check_linear_overwrite(local_ty, discharged, false, span)?;
 
         // Assignment to a mutable variable resets its move state.
         ctx.moved_vars.remove(&name);

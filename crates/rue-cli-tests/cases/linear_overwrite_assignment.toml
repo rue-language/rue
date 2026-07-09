@@ -1,0 +1,113 @@
+# Overwrite-assignment must not silently destroy a live linear value (RUE-387).
+#
+# Steve's ruling (2026-07-09): assignment to an initialized place holding a
+# linear value is a COMPILE ERROR (E0493, or E0494 through `inout`) unless the
+# old value has provably been moved/consumed first. Before the fix all four
+# shapes below compiled and ran, silently dropping the old linear value via the
+# #968 overwrite-drop machinery — a theorem-5 linearity-soundness hole. The
+# positive cases pin that the reinit-after-move idiom (spec 3.8:55/56) stays
+# legal and runs.
+
+[section]
+id = "cli.linear_overwrite_assignment"
+name = "Linear overwrite-assignment rejection"
+description = "Overwriting a live linear value is rejected (E0493/E0494); reinit-after-move stays legal (RUE-387)."
+
+[[case]]
+name = "whole_var_overwrite_rejected"
+description = "Repro 1: `x = L{..}` over a live linear local is E0493."
+files = [{ path = "main.rue", source = """
+linear struct L { v: i32 }
+fn main() -> i32 {
+    let mut x = L { v: 1 };
+    x = L { v: 2 };
+    @drop(x);
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["[E0493]", "overwrite a live linear value"]
+
+[[case]]
+name = "const_element_overwrite_rejected"
+description = "Repro 2: `a[0] = L{..}` over a live linear element is E0493."
+files = [{ path = "main.rue", source = """
+linear struct L { v: i32 }
+fn main() -> i32 {
+    let mut a = [L { v: 1 }, L { v: 2 }];
+    a[0] = L { v: 3 };
+    @drop(a[0]);
+    @drop(a[1]);
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["[E0493]", "overwrite a live linear value"]
+
+[[case]]
+name = "runtime_element_overwrite_rejected"
+description = "Repro 3: a runtime-index element write can never prove moved-out, so it is always E0493."
+files = [{ path = "main.rue", source = """
+linear struct L { v: i32 }
+fn idx() -> i32 { 0 }
+fn main() -> i32 {
+    let mut a = [L { v: 1 }, L { v: 2 }];
+    a[idx()] = L { v: 3 };
+    @drop(a[0]);
+    @drop(a[1]);
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["[E0493]", "overwrite a live linear value"]
+
+[[case]]
+name = "through_inout_overwrite_rejected"
+description = "Repro 4: reassigning an `inout` linear parameter is E0494 (clobbers the caller's live value)."
+files = [{ path = "main.rue", source = """
+linear struct L { v: i32 }
+fn f(inout x: L) { x = L { v: 9 }; }
+fn main() -> i32 {
+    let mut x = L { v: 1 };
+    f(inout x);
+    @drop(x);
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["[E0494]", "inout"]
+
+[[case]]
+name = "reinit_after_move_runs"
+description = "Positive: reinitializing a moved-out linear local is legal and runs. The destructor fires once per constructed value (1, then the reinitialized 2)."
+files = [{ path = "main.rue", source = """
+linear struct L { v: i32 }
+drop fn L(self) { @dbg(self.v); }
+fn take(x: L) -> i32 { @drop(x); 0 }
+fn main() -> i32 {
+    let mut x = L { v: 1 };
+    let a = take(x);
+    x = L { v: 2 };
+    @drop(x);
+    a
+}
+""" }]
+stdout = "1\n2\n"
+exit_code = 0
+
+[[case]]
+name = "reinit_via_rhs_consume_runs"
+description = "Positive: `x = remake(x)` is legal because the RHS consumes the old value first (RHS-first drop order). Old 1 dropped inside remake, new 9 dropped at scope exit."
+files = [{ path = "main.rue", source = """
+linear struct L { v: i32 }
+drop fn L(self) { @dbg(self.v); }
+fn remake(x: L) -> L { @drop(x); L { v: 9 } }
+fn main() -> i32 {
+    let mut x = L { v: 1 };
+    x = remake(x);
+    @drop(x);
+    0
+}
+""" }]
+stdout = "1\n9\n"
+exit_code = 0

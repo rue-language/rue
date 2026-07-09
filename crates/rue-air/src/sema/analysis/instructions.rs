@@ -527,6 +527,20 @@ impl<'a> Sema<'a> {
             // Analyze the value
             let value_result = self.analyze_inst(air, value, ctx)?;
 
+            // RUE-387: writing a live linear value's field would silently drop
+            // the old field value. Legal only when that exact field path was
+            // proven moved-out on every path (`consume(o.f); o.f = ...`); a
+            // dynamic index anywhere in the chain can never prove it.
+            let discharged = !trace.has_untrackable_index()
+                && self.place_linear_discharged(
+                    field_type,
+                    trace.root_var,
+                    &trace.field_path(),
+                    span,
+                    ctx,
+                );
+            self.check_linear_overwrite(field_type, discharged, false, span)?;
+
             // The write reinitializes its destination: the assigned path
             // (and any moved sub-paths under it) is no longer moved, so
             // `o.f = ...` after `consume(o.f)` makes `o.f` usable again.
@@ -705,6 +719,21 @@ impl<'a> Sema<'a> {
 
             // Analyze the value
             let value_result = self.analyze_inst(air, value, ctx)?;
+
+            // RUE-387: writing a live linear value into an array element would
+            // silently drop the old element. Legal only when that exact
+            // constant-index element was proven moved-out on every path
+            // (`arr[0] = f(arr[0])`); a runtime index can never prove which
+            // element is live, so it is always rejected (repro 3).
+            let discharged = !trace.has_untrackable_index()
+                && self.place_linear_discharged(
+                    elem_type,
+                    trace.root_var,
+                    &trace.field_path(),
+                    span,
+                    ctx,
+                );
+            self.check_linear_overwrite(elem_type, discharged, false, span)?;
 
             // The write reinitializes its destination element: the assigned
             // path is no longer moved, so `arr[0] = arr[0]` un-marks the

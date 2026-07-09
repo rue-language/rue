@@ -477,6 +477,26 @@ fn main() -> i32 {
 }
 ```
 
+{{ rule(id="3.8:77", cat="legality-rule") }}
+
+Assigning to a place whose type carries a linear value (3.8:57) is a compile-time error when the place currently holds a live value. A linear value **MUST** be consumed explicitly (3.8:32); an assignment that overwrote it would drop it implicitly (3.9:18), which linearity forbids. The assignment is legal only when the destination place has provably been moved out on every path reaching it — the reinitialization idiom (3.8:55): a moved-out place holds nothing to destroy. For an array whose element type carries a linear value, whole-array reassignment is legal only when every element has been consumed (as a whole or element-wise, 3.8:71); assignment to an individual element is legal only when that exact constant-index element was moved out. An element reached through a non-constant (runtime) index can never be proven moved out and its assignment is always rejected. This restriction applies regardless of the run-time move state: the diagnostic is determined by the destination's type together with the statically tracked move paths, never by a run-time drop flag.
+
+{{ rule(id="3.8:78", cat="example") }}
+
+```rue
+linear struct L { v: i32 }
+
+fn remake(x: L) -> L { @drop(x); L { v: 9 } }
+
+fn main() -> i32 {
+    let mut x = L { v: 1 };
+    x = L { v: 2 };   // ERROR: would overwrite a live linear value
+    x = remake(x);    // OK: the right-hand side consumed x first
+    @drop(x);
+    0
+}
+```
+
 ## Array Element Moves
 
 {{ rule(id="3.8:68", cat="normative") }}
