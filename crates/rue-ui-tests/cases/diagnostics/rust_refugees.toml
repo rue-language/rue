@@ -54,10 +54,10 @@ exit_code = 42
 [[case]]
 name = "impl_block_hint"
 description = """
-RUE-19 item 4: `impl` is Rust muscle memory. Rue has no `impl` blocks, so it
-lexes as a plain identifier and dies at item position with an opaque
-"expected item, found identifier". The error must point the user at where
-methods actually go (inside the struct body).
+RUE-19 item 4: `impl` is Rust muscle memory. Rue has no `impl` blocks. `impl` is
+a reserved keyword (spec 2.4:2, RUE-331), so it reaches the parser as a dedicated
+token and dies at item position with an opaque "expected item, found 'impl'". The
+error must point the user at where methods actually go (inside the struct body).
 """
 source = """
 struct Block { x: i32 }
@@ -70,12 +70,18 @@ compile_fail = true
 error_contains = ["Rue has no `impl` blocks", "inside the struct body"]
 
 [[case]]
-name = "impl_still_valid_as_identifier"
-description = "`impl` is NOT reserved; only an `impl` at item position gets the hint."
+name = "impl_reserved_as_identifier"
+description = """
+`impl` is a reserved keyword (spec 2.4:2, RUE-331): it can no longer be used as a
+binding name. Even away from item position it is rejected, and the diagnostic
+still offers the `impl`-block hint. (Reservation was chosen over unreserving so
+that `impl` stays available for future trait support.)
+"""
 source = """
 fn main() -> i32 {
     let impl = 42;
     impl
 }
 """
-exit_code = 42
+compile_fail = true
+error_contains = ["Rue has no `impl` blocks"]

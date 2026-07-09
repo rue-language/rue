@@ -155,6 +155,25 @@ spec = ["2.4:1", "2.4:2"]
 source = "fn main() -> i32 { let ptr = 1; 0 }"
 compile_fail = true
 
+# `impl` is a reserved keyword (Rue has no impl blocks; it's held for future
+# trait support). Rejected as a binding name and as a parameter name. (RUE-331)
+[[case]]
+name = "keyword_impl_reserved"
+error_contains = "[E0100]"
+spec = ["2.4:1", "2.4:2"]
+source = "fn main() -> i32 { let impl = 1; 0 }"
+compile_fail = true
+
+[[case]]
+name = "keyword_impl_as_parameter"
+error_contains = "[E0100]"
+spec = ["2.4:1", "2.4:2"]
+source = """
+fn foo(impl: i32) -> i32 { 0 }
+fn main() -> i32 { foo(42) }
+"""
+compile_fail = true
+
 # =============================================================================
 # Type Names Are Reserved
 # =============================================================================
@@ -282,3 +301,43 @@ fn main() -> i32 {
 }
 """
 compile_fail = true
+
+# `type` (the compile-time type of types) is a reserved type name: it cannot be
+# a binding name or a parameter name. (RUE-331)
+[[case]]
+name = "type_type_as_variable"
+error_contains = "[E0100]"
+spec = ["2.4:3"]
+source = """
+fn main() -> i32 {
+    let type = 42;
+    0
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "type_type_as_parameter"
+error_contains = "[E0100]"
+spec = ["2.4:3"]
+source = """
+fn foo(type: i32) -> i32 { 0 }
+fn main() -> i32 { foo(42) }
+"""
+compile_fail = true
+
+# But `type` remains usable IN TYPE POSITION as the type-of-types: a comptime
+# type parameter `comptime T: type` with a `-> type` return keeps working
+# exactly as before reservation. (RUE-331)
+[[case]]
+name = "type_keyword_in_type_position"
+spec = ["2.4:3"]
+source = """
+fn identity(comptime T: type, x: T) -> T {
+    return x;
+}
+fn main() -> i32 {
+    return identity(i32, 42);
+}
+"""
+exit_code = 42
