@@ -1,8 +1,6 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
-**Note**: This project uses [Linear](https://linear.app) (team: **Rue**) for issue tracking. Use the Linear MCP tools instead of markdown TODOs. See the Issue Tracking section below for workflow details.
+Issue tracking lives in [Linear](https://linear.app) (team: **Rue**, issues `RUE-NN`) — see [Issue Tracking](#issue-tracking-linear). Version control is [Jujutsu](https://jj-vcs.github.io) (`jj`), not git — see [Version Control](#version-control).
 
 ## Quickstart
 
@@ -11,7 +9,7 @@ The 9 commands that cover ~90% of work here (all runnable from anywhere in the r
 ```bash
 scripts/rue build                    # build the compiler and print its path
 scripts/rue exec prog.rue            # compile prog.rue to a temp file AND run it (quick check)
-RUE="$(scripts/rue-bin)"; "$RUE" a.rue b.rue -o out   # drive the real CLI (modules, multi-file)
+RUE="$(scripts/rue-bin)"; "$RUE" main.rue -o out      # drive the real CLI (@imports resolved from disk)
 scripts/rue test [pattern]           # full suite (= ./test.sh): unit + spec + UI + CLI + traceability
 scripts/rue quick                    # unit tests only (~2-5s, fast inner loop)
 scripts/rue spec 4.2                 # run spec tests matching a pattern
@@ -20,10 +18,7 @@ scripts/rue fmt                      # format (= ./fmt.sh) before committing
 scripts/rue gc                       # reclaim disk (= buck2 clean --stale 1w)
 ```
 
-Key rules (details in the sections below):
-- **Version control is `jj`, not git**, and this is a **fork** — never commit on `trunk`; work on a change and `jj git push -c @-` to PR a feature branch upstream. See [Version Control](#version-control).
-- **Issue tracking is Linear** (team Rue, `RUE-NN`). See [Issue Tracking](#issue-tracking-with-linear).
-- To get the compiler binary, use `scripts/rue-bin` (prints an absolute path; the old `buck2 ... --show-output | awk` one-liner returns a *relative* path that breaks when cwd changes).
+To get the compiler binary, use `scripts/rue-bin` (prints an absolute path; the old `buck2 ... --show-output | awk` one-liner returns a *relative* path that breaks when cwd changes).
 
 ## Project Overview
 
@@ -37,7 +32,7 @@ most work; the long-form invocations they wrap:
 ```bash
 ./buck2 build //crates/rue:rue          # build the compiler
 ./buck2 test //...                      # all unit + suite tests (sh_test targets)
-./buck2 run //crates/rue:rue -- a.rue b.rue -o prog   # real CLI (-o required for multi-file)
+./buck2 run //crates/rue:rue -- main.rue -o prog       # real CLI
 ./buck2 run //crates/rue:rue -- --emit <stage> src.rue # tokens|ast|rir|air|cfg|mir|asm (repeatable)
 ```
 
@@ -73,59 +68,67 @@ graph LR
 | `rue-rir` | Untyped IR (post-parse, pre-typing) |
 | `rue-cfg` | Control flow graph construction and optimization |
 | `rue-air` | Typed IR (after semantic analysis) |
-| `rue-codegen` | x86-64 machine code generation |
-| `rue-linker` | ELF object file creation and linking |
+| `rue-codegen` | x86-64 and aarch64 machine code generation |
+| `rue-linker` | ELF/Mach-O object file creation and linking |
 | `rue-error` | Error types and diagnostics |
 | `rue-span` | Source location tracking |
 | `rue-target` | Target platform configuration |
 | `rue-spec` | Specification test runner |
 | `rue-ui-tests` | UI/diagnostics tests (warnings, error messages) |
+| `rue-cli-tests` | CLI integration tests (real binary, real files) |
 | `rue-fuzz` | Fuzz testing infrastructure |
 | `rue-runtime` | Runtime support |
-| `rue-builtins` | Built-in type definitions (String, future Vec, etc.) |
+| `rue-builtins` | Built-in type definitions (String) |
 
-### Multi-File Compilation
+### Modules and Multi-File Compilation
 
-Rue supports compiling multiple source files into a single executable:
+Rue compiles a program from its **root module's import graph**: pass the root
+file and imports are discovered transitively from disk.
 
 ```bash
-# Explicitly listed files share a flat global namespace (transitional, spec 10.5:2)
-rue main.rue utils.rue lib.rue -o program
+rue main.rue -o program        # @imports resolved and loaded automatically
 ```
 
 **Key semantics:**
-- All top-level names resolve across files without imports (flat namespace),
-  but privacy is uniform (spec 10.3:7): an item — function, struct, enum, or
-  constant — is usable outside its defining directory only if `pub`, whether
-  its file is imported or just listed (E0460 otherwise; through a module
-  object it's E0706)
-- Duplicate definitions (same name in multiple files) cause a compile error
-- `main()` must exist in exactly one file
-- Files are parsed in parallel, then merged for semantic analysis
+- `const util = @import("util.rue");` binds a module object; access members as
+  `util.helper()`. Directory modules use an internal facade file (`app/_app.rue`
+  is the module file for `app/`).
+- `@import("std")` loads the standard library bundle (`std.math`,
+  `std.option.Option`, `std.arraybuf.ArrayBuf`). There is no prelude (ADR-0042).
+- Privacy is uniform (spec 10.3:7): an item — function, struct, enum, or
+  constant — is usable outside its defining directory only if `pub` (E0460
+  otherwise; through a module object it's E0706).
+- `--source-manifest <path>` restricts which files imports may read — for build
+  systems (Buck) that need the compiler's input set to be explicit.
+- `main()` must exist in exactly one file.
+- Files are parsed in parallel, then merged for semantic analysis.
 
-**Current limitations (transitional, see spec 10.5:2):**
-- Top-level names are not yet module-scoped — all symbols share one global
-  scope, so names collide program-wide and `pub` items remain callable
-  unqualified across files
-- No `mod` or `use` syntax (`@import` + `pub const` re-exports instead)
+**Legacy flat mode is being removed (ADR-0046):** extra positional source files
+(`rue a.rue b.rue -o prog`) are still accepted as legacy inputs, but unqualified
+cross-file name resolution is gone — referencing another file's items without
+`@import` is an undefined-name error (E0202). Top-level names still collide
+program-wide (transitional; RUE-426 tracks module-scoping them). Don't write new
+tests or examples that rely on flat file lists.
 
 ### Key Design Decisions
 
 - **Architecture-specific MIR**: Each target gets its own machine IR (currently X86Mir), following Zig's approach
 - **Index-based references**: Instructions stored in vectors, referenced by u32 indices (cache-friendly, no lifetimes)
 - **Direct code emission**: No LLVM dependency; machine code emitted directly
-- **Minimal ELF**: Static executables with direct syscalls (Linux x86-64 only)
+- **Minimal linking**: Static executables with direct syscalls
 - **Built-in types as synthetic structs**: Types like `String` are defined in `rue-builtins` and injected as synthetic structs, not as hardcoded `Type` enum variants (see [ADR-0020](docs/designs/0020-builtin-types-as-structs.md))
 
 ### Built-in Types Architecture
 
-Built-in types (`String`, future `Vec<T>`) are "synthetic structs" injected
-before user code, so they flow through the same paths as user structs
-(see [ADR-0020](docs/designs/0020-builtin-types-as-structs.md)). To add one:
-define a `BuiltinTypeDef` in `rue-builtins/src/lib.rs`, add it to
-`BUILTIN_TYPES`, implement runtime functions in `rue-runtime`. The module docs
-in `rue-builtins` walk through a full hypothetical `Vec` example. Injection
-point: `inject_builtin_types()` in `rue-air/src/sema.rs`.
+Built-in types (currently `String`) are "synthetic structs" injected before user
+code, so they flow through the same paths as user structs (see
+[ADR-0020](docs/designs/0020-builtin-types-as-structs.md)). Collection types
+like `ArrayBuf` are NOT builtins — they are ordinary Rue source in `std/`,
+imported via `@import("std")` (see ADR-0043). To add a new builtin: define a
+`BuiltinTypeDef` in `rue-builtins/src/lib.rs`, add it to `BUILTIN_TYPES`,
+implement runtime functions in `rue-runtime`. The module docs in `rue-builtins`
+walk through a full worked example. Injection point: `inject_builtin_types()`
+in `rue-air/src/sema.rs`.
 
 ## Testing
 
@@ -139,39 +142,17 @@ The test suite has three layers optimized for different stages of development:
 | Full suite | `./test.sh` | ~30-60s | Before committing |
 | Targeted spec | `./buck2 run //crates/rue-spec:rue-spec -- "pattern"` | Varies | Testing specific features |
 
-**Recommended workflow:**
-
-```bash
-# During development - fast feedback loop
-./quick-test.sh                # Unit tests only
-
-# Before committing - full verification
-./test.sh                      # Unit + spec + UI + traceability
-
-# Debugging specific areas
-./buck2 run //crates/rue-spec:rue-spec -- "arithmetic"  # Specific spec tests
-./buck2 test //crates/rue-codegen:rue-codegen-test      # Specific crate
-```
-
-### Choosing the Right Test Type
-
-| If you're... | Use... | Why |
-|--------------|--------|-----|
-| Iterating on a fix | `./quick-test.sh` | Fast feedback, catches most issues |
-| Adding a language feature | Spec tests | Required for traceability |
-| Improving diagnostics | UI tests | Not spec-mandated behavior |
-| About to commit | `./test.sh` | Ensures nothing is broken |
-
 **Rule of thumb:**
 - **Unit tests** catch logic errors quickly during development
 - **Spec tests** verify language semantics and maintain spec traceability
 - **UI tests** verify compiler quality-of-life features (warnings, error messages)
+- **CLI tests** catch driver/ABI/multi-file bugs the spec harness can't see
+- About to commit? Run `./test.sh`.
 
 ### Unit Tests
 Add to relevant crate's source file with `#[cfg(test)]` modules. Ensure crate has `rust_test` target in its `BUCK` file.
 
 The `rue-compiler` crate includes integration unit tests that test the full pipeline without execution. Use `compile_to_air()` and `compile_to_cfg()` helpers to test compilation without spawning processes.
-
 
 ### UI Tests
 
@@ -189,11 +170,7 @@ reference: `crates/rue-ui-tests/README.md`.
 CLI integration tests (`crates/rue-cli-tests/cases/`) exercise the compiler **the way a user does**: the real `rue` binary invoked on real files in a temp directory with relative paths, env vars, and stdin piped to the compiled program. They catch driver-only bugs the spec harness can't see (module resolution from disk, ABI miscompilations, ICEs, CLI argument handling).
 
 ```bash
-# Run all CLI integration tests
-./buck2 run //crates/rue-cli-tests:rue-cli-tests
-
-# Filter by pattern
-./buck2 run //crates/rue-cli-tests:rue-cli-tests -- "abi"
+./buck2 run //crates/rue-cli-tests:rue-cli-tests -- "abi"   # filter by pattern
 ```
 
 Key conventions (see the doc comment in `crates/rue-cli-tests/src/main.rs` for the full case format):
@@ -201,9 +178,8 @@ Key conventions (see the doc comment in `crates/rue-cli-tests/src/main.rs` for t
 - Each case lists `files` written to disk; the default invocation is `rue <first file> -o prog` with the temp dir as cwd
 - Any compiler panic is reported as an **INTERNAL COMPILER ERROR** — a distinct failure class
 - `known_bug = "RUE-NN"` marks an expected failure (xfail) referencing a Linear issue. The case still runs; if it unexpectedly PASSES, the suite fails and tells you to remove the marker — converting it into a regression test. **When fixing a bug, find and un-mark its cases.**
-- `known_bug_on = ["x86-64-linux"]` scopes the xfail to specific platforms (for ABI bugs that manifest differently per target); on other platforms the case runs as a normal test. Platform names match `get_host_target()`: `x86-64-linux`, `aarch64-linux`, `aarch64-macos`
+- `known_bug_on = ["x86-64-linux"]` scopes the xfail to specific platforms; platform names match `get_host_target()`: `x86-64-linux`, `aarch64-linux`, `aarch64-macos`
 - Prefer adding a CLI case (not just a spec test) for any bug that involves the driver, the ABI, multiple files, or runtime I/O
-
 
 ### Specification Tests
 
@@ -237,53 +213,25 @@ When adding or changing language features, follow this checklist.
 
 **IMPORTANT**: New language features MUST be gated behind preview flags until complete. See [ADR-0005](docs/designs/0005-preview-features.md) for the full design.
 
-#### When to Use Preview Features
-
-Use preview gating when:
-- Adding new syntax (keywords, operators, constructs)
-- Adding new type system features
-- Any feature that spans multiple implementation phases
+Use preview gating when adding new syntax (keywords, operators, constructs), new type system features, or any feature spanning multiple implementation phases.
 
 #### How to Gate a Feature
 
-1. **Add to PreviewFeature enum** in `rue-error/src/lib.rs`:
-   ```rust
-   pub enum PreviewFeature {
-       YourNewFeature,  // Add your feature here
-   }
-   ```
-   Also update `name()`, `adr()`, `all()`, and `FromStr` impl.
+1. **Add to PreviewFeature enum** in `rue-error/src/lib.rs`; also update `name()`, `adr()`, `all()`, and the `FromStr` impl.
 
 2. **Add the gate check in Sema** (`rue-air/src/sema.rs`):
    ```rust
-   // At the point where the feature is used:
    self.require_preview(PreviewFeature::YourNewFeature, "your feature description", span)?;
    ```
-
    **This is the critical step that actually gates the feature!** Without this call, users can use the feature without `--preview`.
 
-3. **Add spec tests with `preview` field**:
-   ```toml
-   [[case]]
-   name = "your_feature_basic"
-   spec = ["X.Y:Z"]
-   preview = "your_new_feature"  # Matches PreviewFeature::name()
-   source = """..."""
-   exit_code = 42
-   ```
+3. **Add spec tests with `preview` field** (`preview = "your_new_feature"`, matching `PreviewFeature::name()`).
 
-4. **Test that the gate works**:
-   - Without `--preview your_new_feature`: Should get "requires preview feature" error
-   - With `--preview your_new_feature`: Should compile/run
+4. **Test that the gate works**: without `--preview your_new_feature` you get a "requires preview feature" error; with it, the feature compiles/runs.
 
 #### Stabilizing a Feature
 
-When all tests pass and the feature is complete:
-
-1. Remove `preview = "..."` from spec tests
-2. Remove the `require_preview()` call from Sema
-3. Remove the variant from `PreviewFeature` enum
-4. Update the ADR status to "Implemented"
+When all tests pass and the feature is complete: remove `preview = "..."` from spec tests, remove the `require_preview()` call, remove the enum variant, and update the ADR status to "Implemented".
 
 ### Implementation Steps
 
@@ -303,15 +251,9 @@ When all tests pass and the feature is complete:
 
 6. **Update `rue-codegen`** for code generation
 
-7. **Add spec tests** in `crates/rue-spec/cases/`
-   - Include `spec = ["X.Y:Z"]` references to link to spec paragraphs
-   - Cover all normative paragraphs (traceability check enforces 100% coverage)
-   - **If this is a preview feature**: Include `preview = "feature_name"` field
+7. **Add spec tests** in `crates/rue-spec/cases/` with `spec = ["X.Y:Z"]` references covering all normative paragraphs (traceability enforces 100%); include `preview = "..."` for preview features
 
-8. **Add UI tests** in `crates/rue-ui-tests/cases/` if the feature includes:
-   - New warnings or lints
-   - Changes to error message formatting
-   - New compiler flags or options
+8. **Add UI tests** in `crates/rue-ui-tests/cases/` for new warnings/lints, error message formatting changes, or new compiler flags
 
 9. **Run `./test.sh`** to verify all tests pass and traceability is maintained
 
@@ -319,7 +261,7 @@ When all tests pass and the feature is complete:
 
 **IMPORTANT**: The `rue-codegen` crate contains multiple architecture backends:
 - `x86_64/` - Linux x86-64
-- `aarch64/` - macOS ARM64
+- `aarch64/` - macOS/Linux ARM64
 
 When making changes to codegen, **always check if the same change is needed in all backends**. Common areas that require parallel changes:
 
@@ -346,7 +288,7 @@ Tip: `grep -n <SiblingVariant> crates/rue-codegen/src/<arch>/*.rs` lists every s
 
 ## Version Control
 
-**IMPORTANT**: This project uses **Jujutsu (jj)**, NOT git. Never use git commands in this repository.
+**IMPORTANT**: This project uses **Jujutsu (jj)**, NOT git. Never use git commands to mutate this repository.
 
 ### Common jj Commands
 
@@ -366,40 +308,19 @@ Tip: `grep -n <SiblingVariant> crates/rue-codegen/src/<arch>/*.rs` lists every s
 - **Use `jj describe`** to update the current commit message
 - **Use `jj new`** to start a new change on top of current one
 
-### Fork Workflow (IMPORTANT)
+### Contributing changes
 
-This is a **fork** setup. There are two git remotes:
+Base work on the latest `trunk`, make your change, push it as a branch, and open
+a PR against `rue-language/rue` with base `trunk`. Never commit directly on
+`trunk` — that causes hash-rewrite divergence when upstream rebase/squash-merges.
 
-- `upstream` = `rue-language/rue` — the canonical repo, the source of truth. You **cannot** push here; you open PRs into it.
-- `origin` = `steveklabnik/rue` — your fork. You push feature branches here, then PR them upstream.
-
-**Rules:**
-
-1. **Always base work on `trunk()` (= `trunk@upstream`); do NOT push or sync `origin/trunk`.** You never need to mirror `origin/trunk` to upstream — cross-fork PRs diff against `upstream/trunk`, and jj's immutability anchor is `trunk@upstream`. So `origin/trunk` may sit stale (behind upstream); that's harmless. `trunk@origin` is untracked (see required config) precisely so you aren't tempted to push it. Never commit on `trunk` / PR `trunk` — that causes hash-rewrite divergence when upstream rebase/squash-merges.
-2. **Work on a feature change**, then push it as a branch and PR it:
-   ```bash
-   jj new 'trunk()'                # start the change on upstream's canonical trunk (a revset, not a bookmark)
-   # ... make edits ...
-   jj git push -c @                # pushes as steveklabnik/push-<changeid> (see git_push_bookmark template)
-   gh pr create --repo rue-language/rue --base trunk --head steveklabnik:<branch> ...
-   gh pr merge <n> --repo rue-language/rue --auto   # queue it immediately
-   ```
-3. **`trunk()` is a revset alias = `trunk@upstream`** — always means upstream's latest, regardless of local bookmark state. Always use `trunk()`, never the bare `trunk` bookmark, in `jj new`/rebase/log commands.
-4. **After a PR merges**, the only step is: `jj git fetch` (your local `trunk` fast-forwards to upstream), then `jj new 'trunk()'` to start the next change. Do **not** push `trunk` to origin — there's nothing to sync. If upstream rebase-merged (rewriting hashes), the old fork-side copies show as "divergent" — cosmetic; `jj abandon` the orphaned old-hash chain to tidy up.
-
-**Required repo config** (machine-local; set on a fresh clone — jj does not read committed config):
-
-```bash
-jj config set --repo 'revset-aliases."trunk()"' 'trunk@upstream'   # base/immutability = canonical repo
-jj config set --repo git.fetch '["origin", "upstream"]'            # always see both remotes
-jj bookmark untrack 'trunk' --remote=origin                        # don't track/sync origin/trunk; base on upstream only
-```
-
-Without the first two, `jj git fetch` only pulls `origin` (you won't see upstream merges), and `trunk()`/immutability anchor to your fork instead of upstream. The `untrack` keeps the local `trunk` bookmark tracking *only* `upstream`, so it fast-forwards to upstream on fetch and you never feel obligated to push it back to origin.
+If you work from a **fork** (separate `origin`/`upstream` remotes), see
+[docs/process/fork-workflow.md](docs/process/fork-workflow.md) for the remote
+configuration, revset aliases, and push/PR flow.
 
 ### Commit Messages
 
-When committing, use `jj commit -m "message"` or for multi-line messages:
+Use `jj commit -m "message"`, or for multi-line messages:
 ```bash
 jj commit -m "Short summary
 
@@ -409,6 +330,8 @@ Longer description here.
 
 Co-Authored-By: Claude <noreply@anthropic.com>"
 ```
+
+Reference issue IDs (RUE-NN) in commit messages.
 
 ## Code Style
 
@@ -424,59 +347,50 @@ zero cost when no subscriber is active. `--log-level=debug`,
 `--log-format=json`, and `RUST_LOG` module filters are supported.
 Full guidelines and examples: `docs/process/logging.md`.
 
-## Issue Tracking with Linear
+## Issue Tracking (Linear)
 
-**IMPORTANT**: This project uses **Linear** for ALL issue tracking, in the **Rue** team. Do NOT use markdown TODOs, task lists, or other tracking methods.
+ALL issue tracking lives in **Linear**, team **Rue** (`RUE-NN`). Use the Linear
+MCP tools (`list_issues`, `get_issue`, `save_issue`, `save_comment`, …). Do not
+create markdown TODO lists or parallel tracking systems.
 
-### Access
+### States
 
-In Claude Code, use the Linear MCP tools (`list_issues`, `get_issue`, `save_issue`, `save_comment`, `list_my_issues`, etc.). Issues are identified as `RUE-NN`.
+The dividing line is **whether starting the work needs a human design decision**:
 
-### Quick Start
+- **`Todo`** = actionable **and** needs no design decision to start: bugs,
+  well-specified chores, infrastructure, CI, refactors. The only state
+  autonomous work pulls from. Skip issues blocked by open issues.
+- **`Backlog`** = needs a human design decision or discussion first: features
+  (any new language capability), ADR-gated work, design docs — off-limits to
+  autonomous work *even when technically actionable*. It is the maintainers'
+  shared design-discussion venue: read it, contribute analysis in comments when
+  asked, but never action or decide a Backlog item on your own.
+- Design direction (from any maintainer) often lives in issue **comments**, not
+  the description — read them before acting on or re-stating any issue.
 
-- **Find ready work**: list issues in the Rue team with state `Todo`, ordered by priority; skip issues blocked by open issues
-- **State semantics** — the dividing line is **whether starting the work needs a human design decision**, not merely whether it's actionable (refined 2026-07-02 from the original 2026-06-11 "actionable vs. do-not-action" ruling):
-  - **`Todo`** = actionable **and** needs no design decision to start: bugs, well-specified chores, infrastructure, CI, refactors. This is the only state autonomous work pulls from.
-  - **`Backlog`** = needs a human design decision or discussion first: **features** (any new language capability), ADR-gated work, design docs — off-limits to autonomous work *even when technically "actionable."* Backlog is the **shared design-discussion venue** for the maintainers (Steve, Dorian): read it, and contribute analysis in comments when asked, but never action or decide a Backlog item on your own.
-  - New syntax, design rulings, and ADR ratifications are **filed** to Backlog, never decided autonomously.
-  - Watch for Linear comments from any maintainer (not just Steve) on Backlog issues — that's where design gets hashed out.
-- **Create an issue**: `save_issue` with `team: "Rue"`, a clear title, and a Markdown description
-- **Claim**: `save_issue` with `state: "In Progress"` and `assignee: "me"`
-- **Complete**: `save_issue` with `state: "Done"`
+### Workflow
 
-### Conventions
+1. Claim: `save_issue` with `state: "In Progress"`, `assignee: "me"`, then
+   `jj describe -m "WIP: RUE-42 - short description"`
+2. Implement, test, document
+3. Discovered work → new issue with `relatedTo` (or `blockedBy` for a true
+   dependency) pointing at the issue you were working on. Multi-phase features
+   get a parent epic + sub-issues via `parentId`, with the ADR linked.
+4. Complete via the PR (below) — no manual state change needed.
 
-- **Multi-phase features**: create a parent issue (the "epic") and sub-issues per phase via `parentId`; link the ADR in the description
-- **Discovered work**: when you find new work mid-task, create a new issue with `relatedTo` (or `blockedBy` if it's a true dependency) pointing at the issue you were working on
-- **Priorities (Linear semantics)**: `1` Urgent (security, broken builds), `2` High (major features, important bugs), `3` Medium (default), `4` Low (polish, backlog ideas)
-- **Labels**: use `bug`, `feature`, `task`, `chore` to mirror issue types
-
-### Workflow for AI Agents
-
-1. **Check ready work**: list `Todo` issues in the Rue team (`Backlog` is off-limits — see state semantics above)
-2. **Claim your task**: set state to `In Progress`
-3. **Describe the working commit**: `jj describe -m "WIP: RUE-42 - short description"`
-   - This makes it easy to see what's being worked on in each workspace
-   - Will be overwritten with the final commit message when complete
-4. **Work on it**: Implement, test, document
-5. **Discover new work?** Create a linked issue (`relatedTo` the current one)
-6. **Complete**: put `Fixes RUE-42` in the **PR body** — the issue moves to `Done` automatically when the PR merges (see below). No manual state change is needed.
+**Priorities**: `1` Urgent (security, broken builds), `2` High, `3` Medium
+(default), `4` Low. **Labels**: `bug`, `feature`, `task`, `chore`.
 
 ### Closing issues: GitHub ↔ Linear sync
 
-The Linear ↔ GitHub integration is connected to both `steveklabnik/rue` (the fork) and `rue-language/rue` (upstream). A merged PR **auto-links and auto-closes** the issues it references, so you don't need to set issues to `Done` by hand.
+A merged PR auto-links and auto-closes the issues its **body** references:
 
-- Put a closing keyword in the **PR body** (not just the commit message): `Fixes RUE-NN` (also accepts `Closes`/`Resolves`). The PR body is what the integration parses.
-- **One issue per line** for a PR that fixes several issues — `Fixes RUE-28` / `Fixes RUE-60` / `Fixes RUE-98`, each on its own line. A bare comma list (`Fixes RUE-28, RUE-60`) only closes the first.
-- The branch name (`steveklabnik/push-<changeid>`) does **not** carry the issue ID, so rely on the PR-body keywords, not branch-name linking. This also handles multi-issue PRs, which a branch name can't.
-- On merge, the integration links the PR as an attachment on each issue **and** transitions it to `Done`. Marking `Done` manually is an optional backstop (e.g. for a PR that merged before the integration existed, which it won't retroactively process).
-- **Stranded `In Progress` hazard**: the integration moves an issue to `In Progress` when any PR/branch references it, but only closing keywords transition it out — a "Part of RUE-NN" PR strands the issue in `In Progress` forever. After each integration round, sweep `In Progress`: anything without an active worker goes back to `Todo` (work remains) or `Done` (it doesn't). The integration can also flip a manually-closed issue back to `In Progress` when an older PR attaches — re-close it.
-
-### Important Rules
-
-- ✅ Use Linear for ALL task tracking
-- ✅ Link discovered work to the issue it came from
-- ✅ Reference issue IDs (RUE-NN) in commit messages
-- ❌ Do NOT create markdown TODO lists
-- ❌ Do NOT use other issue trackers
-- ❌ Do NOT duplicate tracking systems
+- Put `Fixes RUE-NN` (or `Closes`/`Resolves`) in the PR body — **one issue per
+  line**; a comma list only closes the first. Branch names don't carry issue
+  IDs, so body keywords are what counts.
+- A non-closing reference ("Part of RUE-NN") moves the issue to `In Progress`
+  but never out — the **stranded-In-Progress hazard**. After each integration
+  round, sweep `In Progress`: anything without an active worker goes back to
+  `Todo` (work remains) or `Done` (it doesn't). The sync can also flip a
+  manually-closed issue back when an older PR attaches — re-close it.
+- Marking `Done` manually is an optional backstop for PRs the sync missed.
