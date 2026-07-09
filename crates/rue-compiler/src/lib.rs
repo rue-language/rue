@@ -1815,6 +1815,31 @@ mod tests {
         assert!(msg.contains("--emit asm"), "suggests --emit asm: {msg}");
     }
 
+    /// RUE-347: a break-less `loop {}` in value position has type `!` and
+    /// must NOT wire a unit value into the enclosing join's typed block
+    /// parameter. The CFG verifier type-checks every edge — including edges
+    /// from unreachable blocks, where this bug parked — so compiling at all
+    /// (verify() runs inside optimize()) proves the invariant.
+    #[test]
+    fn test_breakless_loop_value_position_join_well_typed() {
+        compile_to_cfg(
+            "fn cond() -> bool { false }\n\
+             fn diverge() -> ! { loop {} }\n\
+             struct P { a: i64, b: i64 }\n\
+             fn main() -> i32 {\n\
+                 let x: i32 = if cond() { 42 } else { loop {} };\n\
+                 let y: i32 = if cond() { 1 } else { diverge() };\n\
+                 let s: P = match x {\n\
+                     42 => P { a: 1, b: 2 },\n\
+                     _ => loop {},\n\
+                 };\n\
+                 @dbg(s.a);\n\
+                 x + y\n\
+             }",
+        )
+        .expect("never-typed arms (break-less loop, `-> !` call) must diverge, not thread a value into a typed join (RUE-347)");
+    }
+
     #[test]
     fn test_compile_simple() {
         let output = compile("fn main() -> i32 { 42 }").unwrap();
