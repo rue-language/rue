@@ -130,7 +130,7 @@ Drops are inserted at the following points:
 - At the end of a block scope, for all live bindings declared in that scope
 - Before a `return` statement, for all live bindings in all enclosing scopes
 - Before a `break` statement, for all live bindings declared inside the loop
-- At an assignment, for the destination's previous value: when an assignment overwrites a place (a variable, struct field, array element, or `inout` parameter) whose current value is live (not moved out), the overwritten value is dropped after the right-hand side has been fully evaluated and before the new value is stored
+- At an assignment, for the destination's previous value: when an assignment overwrites a place (a variable, struct field, array element, or `inout` parameter) whose current value is live (not moved out), the overwritten value is dropped after the right-hand side has been fully evaluated and before the new value is stored. This implicit drop applies only to places whose type does **not** carry a linear value (3.8:57); overwriting a live *linear* place is instead a compile-time error (3.8:77), because a linear value may never be dropped implicitly.
 - At the end of an expression statement whose result is discarded (including a `let _ = ...` statement), for the discarded result value
 
 {{ rule(id="3.9:19", cat="dynamic-semantics") }}

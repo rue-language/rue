@@ -326,15 +326,25 @@ ProjRead rule instead:
 
 ```
   Γ ; Σ ; Λ ⊢ e ⇒ T ⊣ Σ1       Γ ⊢ p : T       (mutability & loan side-conditions)
+  Σ1(p) = MovedOut  ∨  ¬carries_linear(T)                  -- 3.8:77: no implicit linear drop-on-overwrite
   p's prior value, if Owned and droppable, is dropped BEFORE the store (dynamic, §6)
   ─────────────────────────────────────────────────────────────────────────────── (Assign)
   Γ ; Σ ; Λ ⊢ (assign p = e) ⇒ unit ⊣ Σ1[ p ↦ Owned ]      -- reinitialization (3.8:55)
 ```
 
 Assigning to a `MovedOut` place makes it `Owned` again (`3.8:55/56`). Assigning to
-an already-`Owned` place drops the old value first (`3.8` overwrite-drop). Writing
-*into* an array while any element is moved out is rejected by a side condition
-(`3.8:72`).
+an already-`Owned` place whose type does **not** carry a linear value drops the old
+value first (`3.8` overwrite-drop). Overwriting an already-`Owned` place whose type
+*does* carry a linear value is **ill-formed** (`3.8:77`): the second premise, checked
+on the post-RHS state `Σ1`, admits the assignment only when `p` is `MovedOut` (the
+reinitialization idiom, where there is nothing to drop) or `T` carries no linear
+value. This closes the theorem-5 hole (RUE-387): without it, the overwrite-drop
+would implicitly consume a linear value that the program never explicitly consumed.
+The `Σ1` (rather than `Σ`) reading of the premise makes `p = e` legal when `e` itself
+consumes `p` (`x = f(x)`), matching the RHS-first drop order. Writing *into* an array
+while any element is moved out is rejected by a side condition (`3.8:72`); a runtime
+index can never establish `Σ1(p) = MovedOut`, so a linear element assignment through
+one is always rejected.
 
 ### 5.3 Sequencing, discard, and the linear leak check
 
@@ -1067,7 +1077,12 @@ The result is `⟨⟩` and the position becomes `Owned` (`place_write`, `lib.rs:
 
 (The compiler elaborates the overwrite-drop as an explicit `Drop` emitted before
 the store, so the oracle's `place_write` needs only to overwrite — the drop
-instruction ran first; consistent with `3.8` overwrite-drop.)
+instruction ran first; consistent with `3.8` overwrite-drop.) By the (Assign)
+premise (§5.2, `3.8:77`), whenever the dropped value `c ≠ ⊘` here has a type that
+carries a linear value the program was rejected statically — so this rule only ever
+drops non-linear (`Affine`/`Copy`) contents on overwrite, and a linear position it
+reaches is necessarily `⊘` (nothing to drop). No linear value is implicitly dropped
+at an assignment.
 
 ### 6.9 Calls, parameters, and return
 
@@ -1264,8 +1279,11 @@ rather than hopes. Stated now; proved in `03-metatheory.md`.
 
 - **Linear values are consumed exactly once.** No value whose type carries a
   linear value reaches end of scope `Owned` (§5.6 rejects it) or is discarded
-  (§5.3 rejects it) or is consumed on only some paths (§5.5 join rejects it);
-  and no value is used twice (`Use-Move` consumes it). Hence exactly once. This
+  (§5.3 rejects it) or is consumed on only some paths (§5.5 join rejects it) or is
+  **overwritten by an assignment while still live** (§5.2's (Assign) premise
+  rejects it, `3.8:77` — the RUE-387 hole: without this premise the overwrite-drop
+  of §6.8 would consume the old linear value implicitly); and no value is used
+  twice (`Use-Move` consumes it). Hence exactly once. This
   now covers **enums**: `class(E)` is the payload join (§3), so a `Linear`-payload
   enum is itself `Linear` and `carries_linear(E)` holds (§5.3); letting it reach
   end of scope unconsumed is rejected exactly as for a linear struct (`6.3:19`),
@@ -1319,7 +1337,7 @@ witness of the dynamic semantics (RUE-50), cited inline in each §6 rule group.
 | §5.8 leaf/operator/aggregate/call statics | 4.1:2/5/7, 4.2:1, 4.3:1/2, 3.6:5/6/15/16, 3.5:1/2, 4.10:3/4/5/7 |
 | §5.6 enum drop (active payload) | 6.3:20 |
 | §4.3 expression/return value | 4.5:3 (→ value, not just type), 6.1:4/5, 4.9:1/7 |
-| §5.2 assignment / reinit | 3.8:55/56, 3.8:72 |
+| §5.2 assignment / reinit | 3.8:55/56, 3.8:72, 3.8:77 |
 | §5.3 discard leak check / explicit `@drop` | 3.8:64/65, 3.9:31–33 |
 | §5.4 borrows / exclusivity | 6.1:14–35, 6.1:20, 6.1:30 |
 | §5.5 branch join | 3.8:50/51, 3.8:73 |

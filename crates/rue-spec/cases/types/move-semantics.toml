@@ -1912,3 +1912,165 @@ fn main() -> i32 {
 """
 exit_code = 0
 expected_stdout = "1\n100\n2\n"
+
+# =============================================================================
+# Linear overwrite-assignment rejection (RUE-387, spec 3.8:77)
+#
+# Overwriting a place that still holds a live linear value would implicitly
+# drop it (spec 3.9:18 overwrite-drop), which linearity forbids — a theorem-5
+# soundness hole. The overwrite is a compile error (E0493, or E0494 through an
+# `inout` parameter) unless the destination was provably moved out first.
+# =============================================================================
+
+[[case]]
+name = "linear_overwrite_whole_var_rejected"
+spec = ["3.8:77"]
+description = "Assigning a new linear value to a live linear local is rejected (would silently drop the old value)"
+source = """
+linear struct L { v: i32 }
+
+fn main() -> i32 {
+    let mut x = L { v: 1 };
+    x = L { v: 2 };
+    @drop(x);
+    0
+}
+"""
+compile_fail = true
+error_contains = ["[E0493]", "overwrite a live linear value"]
+
+[[case]]
+name = "linear_overwrite_const_element_rejected"
+spec = ["3.8:77"]
+description = "Assigning a new linear value to a live constant-index array element is rejected"
+source = """
+linear struct L { v: i32 }
+
+fn main() -> i32 {
+    let mut a = [L { v: 1 }, L { v: 2 }];
+    a[0] = L { v: 3 };
+    @drop(a[0]);
+    @drop(a[1]);
+    0
+}
+"""
+compile_fail = true
+error_contains = ["[E0493]", "overwrite a live linear value"]
+
+[[case]]
+name = "linear_overwrite_runtime_element_rejected"
+spec = ["3.8:77"]
+description = "Assigning a linear value through a runtime index can never prove the element moved out, so it is always rejected"
+source = """
+linear struct L { v: i32 }
+
+fn idx() -> i32 { 0 }
+
+fn main() -> i32 {
+    let mut a = [L { v: 1 }, L { v: 2 }];
+    a[idx()] = L { v: 3 };
+    @drop(a[0]);
+    @drop(a[1]);
+    0
+}
+"""
+compile_fail = true
+error_contains = ["[E0493]", "overwrite a live linear value"]
+
+[[case]]
+name = "linear_overwrite_through_inout_rejected"
+spec = ["3.8:77"]
+description = "Reassigning an `inout` linear parameter would drop the caller's live value; always rejected (E0494)"
+source = """
+linear struct L { v: i32 }
+
+fn f(inout x: L) { x = L { v: 9 }; }
+
+fn main() -> i32 {
+    let mut x = L { v: 1 };
+    f(inout x);
+    @drop(x);
+    0
+}
+"""
+compile_fail = true
+error_contains = ["[E0494]", "inout"]
+
+[[case]]
+name = "linear_reinit_after_move_legal"
+spec = ["3.8:77", "3.8:55"]
+description = "Reinitializing a linear local that was moved out on every path is legal: the moved-out place holds nothing to destroy"
+source = """
+linear struct L { v: i32 }
+
+fn take(x: L) -> i32 { @drop(x); 3 }
+
+fn main() -> i32 {
+    let mut x = L { v: 1 };
+    let a = take(x);
+    x = L { v: 2 };
+    @drop(x);
+    a
+}
+"""
+exit_code = 3
+
+[[case]]
+name = "linear_reinit_via_rhs_consume_legal"
+spec = ["3.8:77"]
+description = "`x = f(x)` is legal when the right-hand side consumes the old linear value before the store (RHS-first)"
+source = """
+linear struct L { v: i32 }
+
+fn remake(x: L) -> L { @drop(x); L { v: 9 } }
+
+fn main() -> i32 {
+    let mut x = L { v: 1 };
+    x = remake(x);
+    @drop(x);
+    0
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "linear_array_whole_reinit_after_full_consume_legal"
+spec = ["3.8:77"]
+description = "Whole-array reassignment is legal once every element of a linear array has been consumed element-wise"
+source = """
+linear struct L { v: i32 }
+
+fn take(x: L) { @drop(x); }
+
+fn main() -> i32 {
+    let mut a = [L { v: 1 }, L { v: 2 }];
+    take(a[0]);
+    take(a[1]);
+    a = [L { v: 3 }, L { v: 4 }];
+    @drop(a[0]);
+    @drop(a[1]);
+    0
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "linear_array_whole_reinit_partial_consume_rejected"
+spec = ["3.8:77"]
+description = "Whole-array reassignment is rejected while any element remains live: it would silently drop the live element(s)"
+source = """
+linear struct L { v: i32 }
+
+fn take(x: L) { @drop(x); }
+
+fn main() -> i32 {
+    let mut a = [L { v: 1 }, L { v: 2 }];
+    take(a[0]);
+    a = [L { v: 3 }, L { v: 4 }];
+    @drop(a[0]);
+    @drop(a[1]);
+    0
+}
+"""
+compile_fail = true
+error_contains = ["[E0493]", "overwrite a live linear value"]

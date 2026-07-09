@@ -241,6 +241,22 @@ impl ErrorCode {
     /// heap, so an over-long literal cannot be stored — the fit is checked at
     /// compile time.
     pub const STR_FIXED_CAPACITY_EXCEEDED: Self = Self(492);
+    /// Assignment to an initialized place that holds a live linear value
+    /// (RUE-387). Overwriting the place would implicitly drop (silently
+    /// consume) the old linear value, which linearity forbids — a theorem-5
+    /// soundness hole (spec 3.9:18 overwrite-drop is carved out for linear
+    /// types). The value must be moved/consumed explicitly first; the sole
+    /// exception is reinitializing a place that was provably moved out on
+    /// every path (the spec 3.8:55/56 reinit idiom), which holds nothing to
+    /// destroy.
+    pub const LINEAR_VALUE_OVERWRITTEN: Self = Self(493);
+    /// Assignment to an `inout` parameter (or a place rooted at one) whose
+    /// type carries a linear value (RUE-387). The parameter names the
+    /// caller's storage, which holds a live linear value; reassigning it
+    /// would implicitly drop that value in the caller. An `inout` place can
+    /// never be proven moved-out (moving out of a by-ref binding is itself
+    /// rejected), so a linear `inout` assignment is always ill-formed.
+    pub const LINEAR_VALUE_OVERWRITTEN_THROUGH_INOUT: Self = Self(494);
 
     // ========================================================================
     // Control flow errors (E0500-E0599)
@@ -1071,6 +1087,16 @@ pub enum ErrorKind {
     /// body result) carries a linear value, which would be implicitly dropped
     #[error("discarded value of type '{type_name}' carries a linear value and must be consumed")]
     LinearValueDiscarded { type_name: String },
+    /// Assignment to a place holding a live linear value (RUE-387): the
+    /// overwrite would implicitly drop the old linear value.
+    #[error("assignment would overwrite a live linear value of type '{type_name}'")]
+    LinearValueOverwritten { type_name: String },
+    /// Assignment to an `inout` parameter whose type carries a linear value
+    /// (RUE-387): reassigning it would implicitly drop the caller's value.
+    #[error(
+        "assignment to `inout` parameter would overwrite the caller's live linear value of type '{type_name}'"
+    )]
+    LinearValueOverwrittenThroughInout { type_name: String },
     /// Linear struct cannot be marked @copy
     #[error("linear struct '{0}' cannot be marked @copy")]
     LinearStructCopy(String),
@@ -1459,6 +1485,10 @@ impl ErrorKind {
                 ErrorCode::LINEAR_VALUE_NOT_CONSUMED_ON_ALL_PATHS
             }
             ErrorKind::LinearValueDiscarded { .. } => ErrorCode::LINEAR_VALUE_DISCARDED,
+            ErrorKind::LinearValueOverwritten { .. } => ErrorCode::LINEAR_VALUE_OVERWRITTEN,
+            ErrorKind::LinearValueOverwrittenThroughInout { .. } => {
+                ErrorCode::LINEAR_VALUE_OVERWRITTEN_THROUGH_INOUT
+            }
             ErrorKind::LinearStructCopy(_) => ErrorCode::LINEAR_STRUCT_COPY,
             ErrorKind::LinearFieldDroppedByDestructure(_) => {
                 ErrorCode::LINEAR_FIELD_DROPPED_BY_DESTRUCTURE

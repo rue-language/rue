@@ -207,6 +207,92 @@ impl<'a> Sema<'a> {
         )
     }
 
+    /// RUE-387: reject an assignment `p = e` that would overwrite a place
+    /// still holding a live linear value.
+    ///
+    /// Steve's ruling (2026-07-09): assignment to an initialized place holding
+    /// a linear value is a compile error unless the old value has provably been
+    /// moved/consumed first — there is no implicit consume-on-overwrite. The
+    /// overwrite-drop machinery (#968, spec 3.9:18) would otherwise silently
+    /// drop the old linear value, a theorem-5 soundness hole (docs/formal
+    /// §5.2 D-Assign).
+    ///
+    /// The check is TYPE-based (`type_requires_consumption`), not state-based:
+    /// it fires whenever the destination's type carries a must-consume
+    /// obligation. The sole carve-out is the reinit-after-move idiom (spec
+    /// 3.8:55/56): a place proven moved-out on every path holds nothing to
+    /// destroy. `discharged` is that proof, computed by the caller via
+    /// [`Self::place_linear_discharged`]; a runtime-index element can never
+    /// prove it and passes `false`.
+    pub(crate) fn check_linear_overwrite(
+        &self,
+        dest_ty: Type,
+        discharged: bool,
+        through_inout: bool,
+        span: Span,
+    ) -> CompileResult<()> {
+        if !self.type_requires_consumption(dest_ty) || discharged {
+            return Ok(());
+        }
+        let type_name = dest_ty.safe_name_with_pool(Some(&self.type_pool));
+        let err = if through_inout {
+            CompileError::new(
+                ErrorKind::LinearValueOverwrittenThroughInout { type_name },
+                span,
+            )
+            .with_help(
+                "an `inout` binding names the caller's storage; move its linear \
+                 value out before the callee reassigns, or pass ownership instead",
+            )
+        } else {
+            CompileError::new(ErrorKind::LinearValueOverwritten { type_name }, span).with_help(
+                "consume the old value first (move it, or `@drop` it); a linear \
+                 value is never dropped implicitly by an assignment",
+            )
+        };
+        Err(self.attach_infectious_linear_note(err, dest_ty))
+    }
+
+    /// Whether the destination place of an assignment provably holds no live
+    /// linear value on the current path (RUE-387), so overwriting it destroys
+    /// nothing (the spec 3.8:55/56 reinit-after-move idiom).
+    ///
+    /// True when the exact place was moved out on every path, or — for a whole
+    /// linear array — every element was consumed element-wise on every path
+    /// (spec 3.8:71). The caller evaluates this on the POST-RHS move state so
+    /// that an RHS which itself consumes the old value (`x = f(x)`) counts as a
+    /// discharge, matching the RHS-first overwrite-drop order (#968). Only the
+    /// whole-variable array shape is tracked per element, so `assigned_path`
+    /// must be empty for the element-wise case to apply.
+    pub(crate) fn place_linear_discharged(
+        &self,
+        dest_ty: Type,
+        root_var: Spur,
+        assigned_path: &[Spur],
+        span: Span,
+        ctx: &AnalysisContext,
+    ) -> bool {
+        let Some(state) = ctx.moved_vars.get(&root_var) else {
+            return false;
+        };
+        // The exact destination place was moved out on every path.
+        if assigned_path.is_empty() {
+            if state.full_move_on_all_paths {
+                return true;
+            }
+        } else if state.partial_moves_on_all_paths.contains(assigned_path) {
+            return true;
+        }
+        // A whole linear array consumed element-wise on every path holds no
+        // live element to drop. Reuse the must-consume element check; `Err`
+        // (partial consumption) and `NotElementwise` are both "not discharged".
+        assigned_path.is_empty()
+            && matches!(
+                self.check_array_elementwise_consumption(dest_ty, Some(state), root_var, span),
+                Ok(ElementwiseConsumption::Complete)
+            )
+    }
+
     /// Reject a discarded expression value that carries a linear value
     /// (RUE-176): an expression statement (`make_linear();`) or a loop body
     /// result is dropped without being consumed, which linearity forbids.
