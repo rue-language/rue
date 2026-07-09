@@ -2322,11 +2322,11 @@ mod tests {
                 "main.rue",
                 r#"const types = @import("types.rue");
                 fn main() -> i32 {
-                    let c = types.Color::Red;
+                    let c = types.Color.Red;
                     match c {
-                        types.Color::Red => 1,
-                        types.Color::Green => 2,
-                        types.Color::Blue => 3,
+                        types.Color.Red => 1,
+                        types.Color.Green => 2,
+                        types.Color.Blue => 3,
                     }
                 }"#,
                 FileId::new(1),
@@ -2745,10 +2745,10 @@ mod tests {
                     let std = @import("std.rue");
                     let OptI = std.option.Option(i64);
                     let n: i64 = 42;
-                    let value = OptI::Some(n);
+                    let value = OptI.Some(n);
                     match value {
-                        OptI::Some(n) => 1,
-                        OptI::None => 0,
+                        OptI.Some(n) => 1,
+                        OptI.None => 0,
                     }
                 }"#,
                 FileId::new(1),
@@ -3528,7 +3528,7 @@ mod integration_tests {
             let src = r#"
                 enum Color { Red, Green, Blue }
                 fn main() -> i32 {
-                    let _c = Color::Red;
+                    let _c = Color.Red;
                     0
                 }
             "#;
@@ -3540,11 +3540,11 @@ mod integration_tests {
             let src = r#"
                 enum Color { Red, Green, Blue }
                 fn main() -> i32 {
-                    let c = Color::Green;
+                    let c = Color.Green;
                     match c {
-                        Color::Red => 1,
-                        Color::Green => 2,
-                        Color::Blue => 3,
+                        Color.Red => 1,
+                        Color.Green => 2,
+                        Color.Blue => 3,
                     }
                 }
             "#;
@@ -3559,12 +3559,12 @@ mod integration_tests {
                 enum Color { Red, Green, Blue }
                 fn eq(a: Color, b: Color) -> bool {
                     match a {
-                        Color::Red => match b { Color::Red => true, _ => false },
-                        Color::Green => match b { Color::Green => true, _ => false },
-                        Color::Blue => match b { Color::Blue => true, _ => false },
+                        Color.Red => match b { Color.Red => true, _ => false },
+                        Color.Green => match b { Color.Green => true, _ => false },
+                        Color.Blue => match b { Color.Blue => true, _ => false },
                     }
                 }
-                fn main() -> i32 { if eq(Color::Red, Color::Red) { 1 } else { 0 } }
+                fn main() -> i32 { if eq(Color.Red, Color.Red) { 1 } else { 0 } }
             "#;
             assert!(compile_to_cfg(src).is_ok());
         }
@@ -3574,7 +3574,7 @@ mod integration_tests {
             let src = r#"
                 enum Color { Red, Green, Blue }
                 fn main() -> i32 {
-                    let _c = Color::Yellow;
+                    let _c = Color.Yellow;
                     0
                 }
             "#;

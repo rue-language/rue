@@ -13,7 +13,7 @@ description = "Used to print 'expected <enum>, found <enum>'."
 source = """
 enum Color { Red, Blue }
 enum Shape { Circle, Square }
-fn f() -> Color { Shape::Circle }
+fn f() -> Color { Shape.Circle }
 fn main() -> i32 { 0 }
 """
 exit_code = 1

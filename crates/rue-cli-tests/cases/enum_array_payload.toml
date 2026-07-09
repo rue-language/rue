@@ -18,15 +18,15 @@ description = "Enum tuple variants may carry array payloads; array literals unif
 
 [[case]]
 name = "int_array_payload_constructs_and_round_trips"
-description = "RUE-260: `Wrapper::Has([1, 2])` compiles and the payload round-trips through a match: 10 + 20 = 30."
+description = "RUE-260: `Wrapper.Has([1, 2])` compiles and the payload round-trips through a match: 10 + 20 = 30."
 args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 enum Wrapper { Has([i32; 2]), None }
 fn main() -> i32 {
-    let w = Wrapper::Has([10, 20]);
+    let w = Wrapper.Has([10, 20]);
     match w {
-        Wrapper::Has(a) => a[0] + a[1],
-        Wrapper::None => 0,
+        Wrapper.Has(a) => a[0] + a[1],
+        Wrapper.None => 0,
     }
 }
 """ }]
@@ -40,10 +40,10 @@ files = [{ path = "main.rue", source = """
 struct Guard { v: i32 }
 enum Wrapper { Has([Guard; 2]), None }
 fn main() -> i32 {
-    let w = Wrapper::Has([Guard{v:1}, Guard{v:2}]);
+    let w = Wrapper.Has([Guard{v:1}, Guard{v:2}]);
     match w {
-        Wrapper::Has(a) => a[0].v + a[1].v,
-        Wrapper::None => 0,
+        Wrapper.Has(a) => a[0].v + a[1].v,
+        Wrapper.None => 0,
     }
 }
 """ }]
@@ -56,7 +56,7 @@ args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 enum Wrapper { Has([i32; 2]), None }
 fn main() -> i32 {
-    let w = Wrapper::Has([true, false]);
+    let w = Wrapper.Has([true, false]);
     0
 }
 """ }]
@@ -70,7 +70,7 @@ args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 enum Wrapper { Has([i32; 2]), None }
 fn main() -> i32 {
-    let w = Wrapper::Has([1, 2, 3]);
+    let w = Wrapper.Has([1, 2, 3]);
     0
 }
 """ }]

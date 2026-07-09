@@ -548,10 +548,10 @@ spec = ["2.0:2"]
 source = """
 enum Color { Red, Green, Blue }
 fn main() -> i32 {
-    match Color::Red {
-        Color::Red => 1,
-        Color::Green => 2,
-        Color::Blue => 3,
+    match Color.Red {
+        Color.Red => 1,
+        Color.Green => 2,
+        Color.Blue => 3,
     }
 }
 """

@@ -152,7 +152,7 @@ const OptI = std.option.Option(i64);
 
 fn read_num() -> OptI {
     let n: i64 = 42;
-    OptI::Some(n)
+    OptI.Some(n)
 }
 
 fn main() -> i32 {

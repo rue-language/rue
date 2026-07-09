@@ -2,10 +2,10 @@
 # directory boundary (RUE-330). Calling an associated function of a private
 # struct from a source file in a different directory is E0460 — the same rule
 # that already governs naming that struct in a struct literal or type
-# annotation. This holds for both the unqualified (`Secret::make()`) and the
-# module-qualified (`lib.Secret::make()`) forms, since both resolve the
+# annotation. This holds for both the unqualified (`Secret.make()`) and the
+# module-qualified (`lib.Secret.make()`) forms, since both resolve the
 # receiver type through the transitional flat namespace. A receiver reached
-# through a comptime binding (`let P = lib.Point; P::origin()`) is exempt, and
+# through a comptime binding (`let P = lib.Point; P.origin()`) is exempt, and
 # intra-directory access is unchanged.
 
 [section]
@@ -21,7 +21,7 @@ files = [
 const lib = @import("sub/lib");
 
 fn main() -> i32 {
-    let s = Secret::make();
+    let s = Secret.make();
     s.n
 }
 """ },
@@ -44,7 +44,7 @@ files = [
 const lib = @import("sub/lib");
 
 fn main() -> i32 {
-    let s = lib.Secret::make();
+    let s = lib.Secret.make();
     s.n
 }
 """ },
@@ -66,7 +66,7 @@ files = [
 const lib = @import("sub/lib");
 
 fn main() -> i32 {
-    let p = Point::origin();
+    let p = Point.origin();
     p.x + p.y
 }
 """ },
@@ -87,7 +87,7 @@ name = "same_dir_private_assoc_fn_allowed"
 files = [
     { path = "main.rue", source = """
 fn main() -> i32 {
-    let s = Secret::make();
+    let s = Secret.make();
     s.n
 }
 """ },
@@ -111,7 +111,7 @@ const lib = @import("sub/lib");
 
 fn main() -> i32 {
     let P = lib.Point;
-    let p = P::origin();
+    let p = P.origin();
     p.x + p.y
 }
 """ },

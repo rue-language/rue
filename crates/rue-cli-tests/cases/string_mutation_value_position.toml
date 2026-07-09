@@ -25,7 +25,7 @@ description = "RUE-224 repro: `take(s.clear())` used to ICE at cfg_lower ('block
 files = [{ path = "main.rue", source = """
 fn take(s: String) -> i32 { 0 }
 fn main() -> i32 {
-    let mut s = String::new();
+    let mut s = String.new();
     take(s.clear())
 }
 """ }]
@@ -37,7 +37,7 @@ name = "statement_position_mutation_still_runs"
 description = "Statement-position String mutation (`push_str`/`clear`) compiles and runs (control)."
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
-    let mut s = String::new();
+    let mut s = String.new();
     s.push_str("hi");
     s.clear();
     s.push_str("done");

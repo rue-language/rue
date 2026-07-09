@@ -151,9 +151,9 @@ A type, enum variant, or associated function of a module **MAY** be named
 through a module binding in an *expression* or *pattern* position by writing
 the binding, a `.`, and the item's path: a struct type in a struct-literal
 expression (`m.Point { .. }`), an enum variant in a variant expression or a
-match pattern (`m.Color::Red`), and an associated function in a call
-(`m.Point::origin()`). Each of these forms is accepted wherever the
-corresponding *bare* path — `Point { .. }`, `Color::Red`, `Point::origin()` —
+match pattern (`m.Color.Red`), and an associated function in a call
+(`m.Point.origin()`). Each of these forms is accepted wherever the
+corresponding *bare* path — `Point { .. }`, `Color.Red`, `Point.origin()` —
 is accepted, and has the same meaning.
 
 {{ rule(id="10.4:16", cat="normative") }}
@@ -192,11 +192,11 @@ An associated function's visibility follows the visibility of its enclosing type
 (10.3:7): calling an associated function of a private struct from a source file
 in another directory is a compile-time error (E0460), exactly as naming that
 struct in a struct literal or type annotation would be. This holds whether the
-call is written unqualified (`Point::origin()`) or module-qualified
-(`lib.Point::origin()`) — both resolve the receiver type through the flat
+call is written unqualified (`Point.origin()`) or module-qualified
+(`lib.Point.origin()`) — both resolve the receiver type through the flat
 namespace (10.5:2), so both report E0460 (RUE-330). A call whose receiver type
 arrives through a comptime binding rather than by naming the struct
-(`let P = lib.Point; P::origin()`) is exempt, matching every other reference
+(`let P = lib.Point; P.origin()`) is exempt, matching every other reference
 that reaches a type through a binding.
 
 {{ rule(id="10.4:20", cat="example") }}
@@ -215,15 +215,15 @@ enum Hidden { A, B, }               // private outside sub/
 const lib = @import("sub/lib");
 fn main() -> i32 {
     let p = lib.Point { x: 40, y: 2 };     // qualified struct literal
-    let q = lib.Point::origin();           // qualified associated fn
-    let c = lib.Color::Green;              // qualified variant expression
+    let q = lib.Point.origin();           // qualified associated fn
+    let c = lib.Color.Green;              // qualified variant expression
     let typed: lib.Point = p;           // qualified type annotation
-    // let h = lib.Hidden::A;            // error E0706: `Hidden` is private outside sub/
+    // let h = lib.Hidden.A;            // error E0706: `Hidden` is private outside sub/
     let base = typed.x + typed.y + q.x + q.y; // 40 + 2 + 30 + 12 = 84
     match c {
-        lib.Color::Red => 0,             // qualified variant pattern
-        lib.Color::Green => base,        // 84
-        lib.Color::Blue => 0,
+        lib.Color.Red => 0,             // qualified variant pattern
+        lib.Color.Green => base,        // 84
+        lib.Color.Blue => 0,
     }
 }
 ```

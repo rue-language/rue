@@ -64,7 +64,7 @@ struct S {
     v: i32,
     fn mk(a: i32, a: i32) -> i32 { a }
 }
-fn main() -> i32 { S::mk(1, 2) }
+fn main() -> i32 { S.mk(1, 2) }
 """
 compile_fail = true
 error_contains = ["E0491", "duplicate parameter name 'a'"]

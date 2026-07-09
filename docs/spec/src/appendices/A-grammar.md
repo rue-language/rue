@@ -105,16 +105,17 @@ additive       = multiplicative { ( "+" | "-" ) multiplicative } ;
 multiplicative = unary { ( "*" | "/" | "%" ) unary } ;
 unary          = ( "-" | "!" | "~" ) unary | postfix ;
 
-(* Postfix suffixes: field access, method calls, indexing, and
-   module-qualified struct literals / enum paths / associated calls. *)
+(* Postfix suffixes: field access, method calls, indexing, and qualified
+   struct literals. `.` is the sole member-access spelling (RUE-488): an enum
+   variant `Enum.Variant`, an associated call `Type.function(args)`, and their
+   module-qualified forms are all chains of `.` field/method suffixes here,
+   disambiguated during semantic analysis by whether the base names a type. *)
 postfix        = primary { suffix } ;
-suffix         = "." IDENT                                     (* field access *)
-               | "." IDENT "(" [ call_args ] ")"               (* method call *)
+suffix         = "." IDENT                                     (* field access / Enum.Variant / assoc-fn path *)
+               | "." IDENT "(" [ call_args ] ")"               (* method call / Type.function(args) *)
                | "[" expression "]"                            (* indexing *)
                | "?"                                           (* try / Option propagation *)
-               | "." IDENT "{" [ field_inits ] "}"             (* qualified struct literal *)
-               | "." IDENT "::" IDENT                          (* qualified enum variant *)
-               | "." IDENT "::" IDENT "(" [ call_args ] ")" ;  (* qualified assoc fn call *)
+               | "." IDENT "{" [ field_inits ] "}" ;           (* qualified struct literal *)
 
 (* Call arguments: any argument may carry an `inout`/`borrow` mode. The
    argument itself is parsed as an arbitrary expression; the requirement that
@@ -141,9 +142,7 @@ primary        = INTEGER | STRING | BOOL | "()"
    body, or a path. *)
 ident_expr     = IDENT "(" [ call_args ] ")"           (* function call *)
                | IDENT "{" [ field_inits ] "}"         (* struct literal *)
-               | IDENT "::" IDENT "(" [ call_args ] ")" (* associated fn call *)
-               | IDENT "::" IDENT                      (* enum variant *)
-               | IDENT ;
+               | IDENT ;                               (* Enum.Variant / Type.function(args) parse via postfix `.` suffixes *)
 self_struct_literal = "Self" "{" [ field_inits ] "}" ;
 primitive_type_literal = "i8" | "i16" | "i32" | "i64"
                        | "u8" | "u16" | "u32" | "u64" | "bool" ;
@@ -162,8 +161,9 @@ match_arm      = pattern "=>" expression ;
 pattern        = "_"
                | [ "-" ] INTEGER
                | BOOL
-               | IDENT "::" IDENT                      (* Enum::Variant *)
-               | IDENT { "." IDENT } "::" IDENT ;      (* module.Enum::Variant *)
+               | IDENT "." IDENT [ "(" pattern_bindings ")" ]         (* Enum.Variant *)
+               | IDENT "." IDENT { "." IDENT } [ "(" pattern_bindings ")" ] ; (* module.Enum.Variant *)
+pattern_bindings = IDENT { "," IDENT } [ "," ] ;
 while_expr     = "while" expression "{" block "}" ;
 loop_expr      = "loop" "{" block "}" ;
 for_expr       = "for" ( IDENT | "_" ) "in" expression "{" block "}" ;

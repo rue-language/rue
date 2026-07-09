@@ -328,8 +328,8 @@ fn Tag(comptime T: type) -> type {
 
 fn main() -> i32 {
     let G = Tag(i32);
-    let a = G::make(1);
-    let b = G::make(2);
+    let a = G.make(1);
+    let b = G.make(2);
     @dbg(100);
     0
 }

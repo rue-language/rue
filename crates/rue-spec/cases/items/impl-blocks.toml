@@ -94,7 +94,7 @@ struct Point {
 }
 
 fn main() -> i32 {
-    let p = Point::origin();
+    let p = Point.origin();
     p.x
 }
 """
@@ -114,7 +114,7 @@ struct Point {
 }
 
 fn main() -> i32 {
-    let p = Point::new(42, 10);
+    let p = Point.new(42, 10);
     p.x
 }
 """
@@ -194,7 +194,7 @@ struct Counter {
 }
 
 fn main() -> i32 {
-    let c = Counter::new(42);
+    let c = Counter.new(42);
     c.get()
 }
 """
@@ -290,7 +290,7 @@ struct Point {
 }
 
 fn main() -> i32 {
-    Point::get_x()
+    Point.get_x()
 }
 """
 compile_fail = true
@@ -334,7 +334,7 @@ struct P {
 }
 
 fn main() -> i32 {
-    let p = P::make();
+    let p = P.make();
     p.get()
 }
 """
@@ -354,7 +354,7 @@ struct P {
 }
 
 fn main() -> i32 {
-    let a = P::make(30);
+    let a = P.make(30);
     let b = P { x: 12 };
     a.combine(b).get()
 }
@@ -529,7 +529,7 @@ struct P {
 }
 
 fn main() -> i32 {
-    P::make(5).get()
+    P.make(5).get()
 }
 """
 

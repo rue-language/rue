@@ -238,7 +238,7 @@ fn main() -> i32 {
 {{ rule(id="4.13:91", cat="normative") }}
 
 The `@offset_of` intrinsic returns the byte offset of a field within a struct
-type, mirroring Rust's `core::mem::offset_of!`.
+type, mirroring Rust's `core::mem.offset_of!`.
 
 {{ rule(id="4.13:92", cat="normative") }}
 
@@ -384,8 +384,8 @@ fn main() -> i32 {
     let Opt = @import("std/option.rue").Option(StrBuf);
     @dbg("What is your name?");
     match @read_line() {
-        Opt::Some(name) => @dbg(name),
-        Opt::None => @dbg("(no input)"),
+        Opt.Some(name) => @dbg(name),
+        Opt.None => @dbg("(no input)"),
     }
     0
 }
@@ -401,8 +401,8 @@ fn main() -> i32 {
     loop {
         let line: Opt = @read_line();
         match line {
-            Opt::None => break,
-            Opt::Some(text) => @dbg(text),
+            Opt.None => break,
+            Opt.Some(text) => @dbg(text),
         }
     }
     0
@@ -460,8 +460,8 @@ The result is `None` (a recoverable parse failure, not a panic) if:
 fn main() -> i32 {
     let Opt = @import("std/option.rue").Option(i32);
     match @parse_i32("42") {
-        Opt::Some(n) => n,   // returns 42
-        Opt::None => 0,
+        Opt.Some(n) => n,   // returns 42
+        Opt.None => 0,
     }
 }
 ```
@@ -472,8 +472,8 @@ fn main() -> i32 {
 fn main() -> i32 {
     let Opt = @import("std/option.rue").Option(i32);
     match @parse_i32("-17") {
-        Opt::Some(n) => n,   // returns -17
-        Opt::None => 0,
+        Opt.Some(n) => n,   // returns -17
+        Opt.None => 0,
     }
 }
 ```
@@ -488,8 +488,8 @@ fn main() -> i32 {
     let parsed: Opt = @parse_i32(s);
     @dbg(s);  // s is still valid
     match parsed {
-        Opt::Some(n) => n,
-        Opt::None => 0,
+        Opt.Some(n) => n,
+        Opt.None => 0,
     }
 }
 ```
@@ -501,8 +501,8 @@ fn main() -> i32 {
 fn main() -> i32 {
     let Opt = @import("std/option.rue").Option(i32);
     match @parse_i32("12abc") {
-        Opt::Some(n) => n,
-        Opt::None => -1,   // taken: "12abc" is not an integer
+        Opt.Some(n) => n,
+        Opt.None => -1,   // taken: "12abc" is not an integer
     }
 }
 ```
@@ -514,8 +514,8 @@ fn main() -> i32 {
 fn main() -> i32 {
     let Opt = @import("std/option.rue").Option(u32);
     match @parse_u32("-17") {
-        Opt::Some(n) => @intCast(n),
-        Opt::None => 0,   // taken: "-17" is negative
+        Opt.Some(n) => @intCast(n),
+        Opt.None => 0,   // taken: "-17" is negative
     }
 }
 ```
@@ -567,10 +567,10 @@ fn main() -> i32 {
     loop {
         let input: OptStr = @read_line();
         match input {
-            OptStr::None => break,          // end of input
-            OptStr::Some(text) => {
+            OptStr.None => break,          // end of input
+            OptStr.Some(text) => {
                 match @parse_u32(text) {
-                    OptU32::Some(guess) => {
+                    OptU32.Some(guess) => {
                         guesses = guesses + 1;
                         if guess < secret {
                             @dbg("Too low!");
@@ -581,7 +581,7 @@ fn main() -> i32 {
                             break;
                         }
                     },
-                    OptU32::None => @dbg("not a number, try again"),
+                    OptU32.None => @dbg("not a number, try again"),
                 }
             },
         }
@@ -632,8 +632,8 @@ The return type of `@target_arch` is `Arch`.
 {{ rule(id="4.13:69", cat="normative") }}
 
 The `Arch` enum is a built-in enum with the following variants:
-- `Arch::X86_64` - x86-64 architecture
-- `Arch::Aarch64` - ARM64/AArch64 architecture
+- `Arch.X86_64` - x86-64 architecture
+- `Arch.Aarch64` - ARM64/AArch64 architecture
 
 {{ rule(id="4.13:70", cat="normative") }}
 
@@ -644,8 +644,8 @@ The value returned by `@target_arch` is determined at compile time based on the 
 ```rue
 fn main() -> i32 {
     match @target_arch() {
-        Arch::X86_64 => 1,
-        Arch::Aarch64 => 2,
+        Arch.X86_64 => 1,
+        Arch.Aarch64 => 2,
     }
 }
 ```
@@ -667,8 +667,8 @@ The return type of `@target_os` is `Os`.
 {{ rule(id="4.13:75", cat="normative") }}
 
 The `Os` enum is a built-in enum with the following variants:
-- `Os::Linux` - Linux operating system
-- `Os::Macos` - macOS operating system
+- `Os.Linux` - Linux operating system
+- `Os.Macos` - macOS operating system
 
 {{ rule(id="4.13:76", cat="normative") }}
 
@@ -679,8 +679,8 @@ The value returned by `@target_os` is determined at compile time based on the co
 ```rue
 fn main() -> i32 {
     match @target_os() {
-        Os::Linux => 1,
-        Os::Macos => 2,
+        Os.Linux => 1,
+        Os.Macos => 2,
     }
 }
 ```
@@ -692,16 +692,16 @@ Combining `@target_arch` and `@target_os` for platform-specific code:
 ```rue
 fn main() -> i32 {
     match @target_arch() {
-        Arch::X86_64 => {
+        Arch.X86_64 => {
             match @target_os() {
-                Os::Linux => 99,
-                Os::Macos => 88,
+                Os.Linux => 99,
+                Os.Macos => 88,
             }
         },
-        Arch::Aarch64 => {
+        Arch.Aarch64 => {
             match @target_os() {
-                Os::Linux => 77,
-                Os::Macos => 66,
+                Os.Linux => 77,
+                Os.Macos => 66,
             }
         },
     }

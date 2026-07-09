@@ -87,7 +87,7 @@ description = "RUE-269: `Rect(w, w)` binds `w` twice — rejected with E0484 ins
 args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 enum Shape { Rect(i32, i32) }
-fn main() -> i32 { match Shape::Rect(3, 4) { Shape::Rect(w, w) => w } }
+fn main() -> i32 { match Shape.Rect(3, 4) { Shape.Rect(w, w) => w } }
 """ }]
 compile_fail = true
 error_contains = ["E0484", "bound more than once"]
@@ -99,7 +99,7 @@ args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 enum Shape { Rect(i32, i32) }
 fn main() -> i32 {
-    @dbg(match Shape::Rect(3, 4) { Shape::Rect(w, h) => w + h });
+    @dbg(match Shape.Rect(3, 4) { Shape.Rect(w, h) => w + h });
     0
 }
 """ }]
@@ -111,7 +111,7 @@ description = "RUE-269: a reused name anywhere in a longer payload (`Tri(a, b, a
 args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 enum Tri { T(i32, i32, i32) }
-fn main() -> i32 { match Tri::T(1, 2, 3) { Tri::T(a, b, a) => a + b } }
+fn main() -> i32 { match Tri.T(1, 2, 3) { Tri.T(a, b, a) => a + b } }
 """ }]
 compile_fail = true
 error_contains = ["E0484"]

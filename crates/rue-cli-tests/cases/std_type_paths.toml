@@ -13,14 +13,14 @@ const std = @import("std");
 
 fn read_num() -> std.option.Option(i64) {
     let O = std.option.Option(i64);
-    O::None
+    O.None
 }
 
 fn main() -> i32 {
     let O = std.option.Option(i64);
     match read_num() {
-        O::None => 0,
-        O::Some(n) => @intCast(n),
+        O.None => 0,
+        O.Some(n) => @intCast(n),
     }
 }
 """ }]
@@ -36,10 +36,10 @@ const std = @import("std");
 fn main() -> i32 {
     let O = std.option.Option(i64);
     let n: i64 = 42;
-    let x: std.option.Option(i64) = O::Some(n);
+    let x: std.option.Option(i64) = O.Some(n);
     match x {
-        O::None => 0,
-        O::Some(n) => @intCast(n),
+        O.None => 0,
+        O.Some(n) => @intCast(n),
     }
 }
 """ }]

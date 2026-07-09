@@ -338,7 +338,32 @@ impl<'a> Sema<'a> {
 
         // For nested field access (e.g., a.b.c), recursively use projection mode
         if let InstData::FieldGet { base, field } = &inst.data {
-            let base_result = self.analyze_inst_for_projection(air, *base, ctx)?;
+            let (base, field, field_span) = (*base, *field, inst.span);
+
+            // `Enum.Variant` (RUE-488): a field access on a bare enum type name
+            // is an enum-variant value, even in a projection/read position such
+            // as a comparison operand (`Color.Red == Color.Red`). Mirror the
+            // reroute in `analyze_field_get`, including the module-qualified
+            // form `module.Enum.Variant`.
+            if let InstData::VarRef { name } = self.rir.get(base).data
+                && !self.is_runtime_value_binding(name, ctx)
+                && let Some(result) =
+                    self.try_analyze_dotted_enum_variant(air, name, field, field_span, ctx)?
+            {
+                return Ok(result);
+            }
+            if let InstData::FieldGet {
+                base: module_ref,
+                field: type_name,
+            } = self.rir.get(base).data
+                && let Some(result) = self.try_analyze_module_dotted_enum_variant(
+                    air, module_ref, type_name, field, field_span, ctx,
+                )?
+            {
+                return Ok(result);
+            }
+
+            let base_result = self.analyze_inst_for_projection(air, base, ctx)?;
             let base_type = base_result.ty;
 
             let struct_id = match base_type.kind() {
@@ -348,13 +373,13 @@ impl<'a> Sema<'a> {
                         ErrorKind::FieldAccessOnNonStruct {
                             found: base_type.safe_name_with_pool(Some(&self.type_pool)),
                         },
-                        inst.span,
+                        field_span,
                     ));
                 }
             };
 
             let struct_def = self.type_pool.struct_def(struct_id);
-            let field_name_str = self.interner.resolve(&*field).to_string();
+            let field_name_str = self.interner.resolve(&field).to_string();
 
             let (field_index, struct_field) =
                 struct_def.find_field(&field_name_str).ok_or_compile_error(
@@ -362,7 +387,7 @@ impl<'a> Sema<'a> {
                         struct_name: struct_def.name.clone(),
                         field_name: field_name_str.clone(),
                     },
-                    inst.span,
+                    field_span,
                 )?;
 
             let field_type = struct_field.ty;
@@ -374,7 +399,7 @@ impl<'a> Sema<'a> {
                     field_index: field_index as u32,
                 },
                 ty: field_type,
-                span: inst.span,
+                span: field_span,
             });
             return Ok(AnalysisResult::new(air_ref, field_type));
         }

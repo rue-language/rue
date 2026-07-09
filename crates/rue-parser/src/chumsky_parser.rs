@@ -4,15 +4,15 @@
 //! with Pratt parsing for expression precedence.
 
 use crate::ast::{
-    AnonStructField, ArgMode, ArrayLength, ArrayLitExpr, AssignStatement, AssignTarget,
-    AssocFnCallExpr, Ast, BinaryExpr, BinaryOp, BlockExpr, BoolLit, BreakExpr, CallArg, CallExpr,
-    CheckedBlockExpr, ComptimeBlockExpr, ConstDecl, ContinueExpr, Directive, DirectiveArg,
-    Directives, DropFn, EnumDecl, EnumVariant, Expr, FieldDecl, FieldExpr, FieldInit, ForExpr,
-    Function, Ident, IfExpr, IndexExpr, IntLit, IntrinsicArg, IntrinsicCallExpr, Item, LetPattern,
-    LetStatement, LoopExpr, MatchArm, MatchExpr, Method, MethodCallExpr, NegIntLit, Param,
-    ParamMode, ParenExpr, PathExpr, PathPattern, Pattern, ReturnExpr, SelfExpr, SelfParam,
-    Statement, StringLit, StructDecl, StructLitExpr, TryExpr, TypeExpr, TypeLitExpr, UnaryExpr,
-    UnaryOp, UnitLit, Visibility, WhileExpr,
+    AnonStructField, ArgMode, ArrayLength, ArrayLitExpr, AssignStatement, AssignTarget, Ast,
+    BinaryExpr, BinaryOp, BlockExpr, BoolLit, BreakExpr, CallArg, CallExpr, CheckedBlockExpr,
+    ComptimeBlockExpr, ConstDecl, ContinueExpr, Directive, DirectiveArg, Directives, DropFn,
+    EnumDecl, EnumVariant, Expr, FieldDecl, FieldExpr, FieldInit, ForExpr, Function, Ident, IfExpr,
+    IndexExpr, IntLit, IntrinsicArg, IntrinsicCallExpr, Item, LetPattern, LetStatement, LoopExpr,
+    MatchArm, MatchExpr, Method, MethodCallExpr, NegIntLit, Param, ParamMode, ParenExpr,
+    PathPattern, Pattern, ReturnExpr, SelfExpr, SelfParam, Statement, StringLit, StructDecl,
+    StructLitExpr, TryExpr, TypeExpr, TypeLitExpr, UnaryExpr, UnaryOp, UnitLit, Visibility,
+    WhileExpr,
 };
 use chumsky::input::{Input as ChumskyInput, MapExtra, Stream, ValueInput};
 use chumsky::pratt::{infix, left, prefix};
@@ -954,26 +954,8 @@ where
         .or_not()
         .map(|opt| opt.unwrap_or_default());
 
-    // Simple path pattern: Enum::Variant (no module prefix), optionally with
-    // payload bindings `Enum::Variant(a, b)`.
-    let simple_colon_path_pat = ident_parser()
-        .then_ignore(just(TokenKind::ColonColon))
-        .then(ident_parser())
-        .then(pattern_bindings.clone())
-        // Negative lookahead to ensure we're not at the start of a qualified path
-        // (i.e., ensure there's no `.` before this pattern that would make it
-        // part of a module.Enum::Variant pattern)
-        .map_with(|((type_name, variant), bindings), e| {
-            Pattern::Path(PathPattern {
-                base: None,
-                type_name,
-                variant,
-                bindings,
-                span: span_from_extra(e),
-            })
-        });
-
-    // Dotted alias for a simple enum path pattern: Enum.Variant (RUE-196).
+    // Simple enum path pattern: Enum.Variant (RUE-488). `.` is the sole
+    // member-access spelling; `::` was removed.
     let simple_dot_path_pat = ident_parser()
         .then_ignore(just(TokenKind::Dot))
         .then(ident_parser())
@@ -988,55 +970,8 @@ where
             })
         });
 
-    // Qualified path pattern: module.Enum::Variant or module.sub.Enum::Variant
-    // Parses: ident ("." ident)+ "::" ident
-    // where the part before "::" is module.Type and after is Variant
-    let qualified_colon_path_pat = ident_parser()
-        .then(
-            just(TokenKind::Dot)
-                .ignore_then(ident_parser())
-                .repeated()
-                .at_least(1)
-                .collect::<Vec<_>>(),
-        )
-        .then_ignore(just(TokenKind::ColonColon))
-        .then(ident_parser())
-        .then(pattern_bindings.clone())
-        .map_with(|(((first, mut rest), variant), bindings), e| {
-            // first is the first module identifier
-            // rest contains all subsequent identifiers up to and including type_name
-            // The last element of rest is the type_name
-            let type_name = rest.pop().expect("at_least(1) guarantees non-empty");
-
-            // Build the base expression: first.rest[0].rest[1]...
-            let base_expr = if rest.is_empty() {
-                // Just `module.Type::Variant` - base is single ident
-                Expr::Ident(first.clone())
-            } else {
-                // `a.b.c.Type::Variant` - build field access chain
-                let mut base = Expr::Ident(first.clone());
-                for field in rest {
-                    let span = base.span().extend_to(field.span.end);
-                    base = Expr::Field(FieldExpr {
-                        base: Box::new(base),
-                        field,
-                        span,
-                    });
-                }
-                base
-            };
-
-            Pattern::Path(PathPattern {
-                base: Some(Box::new(base_expr)),
-                type_name,
-                variant,
-                bindings,
-                span: span_from_extra(e),
-            })
-        });
-
-    // Dotted alias for qualified enum path patterns:
-    // module.Enum.Variant or module.sub.Enum.Variant (RUE-196). The final two
+    // Qualified enum path pattern:
+    // module.Enum.Variant or module.sub.Enum.Variant (RUE-488). The final two
     // identifiers are the enum type and variant; any earlier identifiers form
     // the module/member base expression.
     let qualified_dot_path_pat = ident_parser()
@@ -1082,13 +1017,12 @@ where
         int_pat,
         bool_true,
         bool_false,
-        // Keep the existing `::` precedence, then accept the simple dotted
-        // alias. The qualified dotted parser is last so `Type.Variant` does
-        // not report a spurious "expected '.'" from the longer form.
-        qualified_colon_path_pat,
-        simple_colon_path_pat,
-        simple_dot_path_pat,
+        // The qualified form (`module.Enum.Variant`, ≥2 dots) must be tried
+        // before the simple one (`Enum.Variant`, exactly 1 dot); otherwise the
+        // simple parser would greedily match the first two identifiers of a
+        // qualified pattern and leave the rest unconsumed.
         qualified_dot_path_pat,
+        simple_dot_path_pat,
     ))
 }
 
@@ -1472,13 +1406,16 @@ where
     ))
 }
 
-/// What can follow an identifier: call args, struct fields, path (::variant), path call (::fn()), or nothing
+/// What can follow an identifier: call args, struct fields, or nothing.
+///
+/// Enum-variant paths (`Enum.Variant`) and associated-function calls
+/// (`Type.function()`) are spelled with `.` (RUE-488) and parse as ordinary
+/// field-access / method-call suffixes in `with_suffix_parser`; sema
+/// reinterprets them when the base names a type. So no path suffix appears here.
 #[derive(Clone)]
 enum IdentSuffix {
     Call(Vec<CallArg>),
     StructLit(Vec<FieldInit>),
-    Path(Ident),                   // ::Variant (for enum variants)
-    PathCall(Ident, Vec<CallArg>), // ::function() (for associated functions)
     None,
 }
 
@@ -1500,18 +1437,6 @@ where
                 field_inits_parser(expr.clone())
                     .delimited_by(just(TokenKind::LBrace), just(TokenKind::RBrace))
                     .map(IdentSuffix::StructLit),
-                // Associated function call: ::function(args)
-                just(TokenKind::ColonColon)
-                    .ignore_then(ident_parser())
-                    .then(
-                        call_args_parser(expr.clone())
-                            .delimited_by(just(TokenKind::LParen), just(TokenKind::RParen)),
-                    )
-                    .map(|(func, args)| IdentSuffix::PathCall(func, args)),
-                // Path: ::Variant (for enum variants)
-                just(TokenKind::ColonColon)
-                    .ignore_then(ident_parser())
-                    .map(IdentSuffix::Path),
             ))
             .or_not()
             .map(|opt| opt.unwrap_or(IdentSuffix::None)),
@@ -1526,19 +1451,6 @@ where
                 base: None, // No module prefix for simple `StructName { ... }`
                 name,
                 fields,
-                span: span_from_extra(e),
-            }),
-            IdentSuffix::PathCall(function, args) => Expr::AssocFnCall(AssocFnCallExpr {
-                base: None, // No module prefix for simple `Type::function()`
-                type_name: name,
-                function,
-                args,
-                span: span_from_extra(e),
-            }),
-            IdentSuffix::Path(variant) => Expr::Path(PathExpr {
-                base: None, // No module prefix for simple `Enum::Variant`
-                type_name: name,
-                variant,
                 span: span_from_extra(e),
             }),
             IdentSuffix::None => Expr::Ident(name),
@@ -1559,10 +1471,6 @@ enum Suffix {
     /// (Disambiguated from field access + block by the `{ }` / `{ ident :`
     /// lookahead in `with_suffix_parser`.)
     QualifiedStructLit(Ident, Vec<FieldInit>, u32),
-    /// Qualified path (enum variant): .EnumName::Variant
-    QualifiedPath(Ident, Ident, u32),
-    /// Qualified associated function call: .TypeName::function(args)
-    QualifiedAssocFnCall(Ident, Ident, Vec<CallArg>, u32),
     /// Try/`?` propagation: the `?` postfix operator, carrying the position
     /// just past the `?` token so the resulting span covers `operand?`.
     Try(u32),
@@ -1628,38 +1536,16 @@ where
         })
         .boxed();
 
-    // Qualified associated function call: .TypeName::function(args)
-    let qualified_assoc_fn_suffix = just(TokenKind::Dot)
-        .ignore_then(ident_parser())
-        .then_ignore(just(TokenKind::ColonColon))
-        .then(ident_parser())
-        .then(
-            call_args_parser(expr.clone())
-                .delimited_by(just(TokenKind::LParen), just(TokenKind::RParen)),
-        )
-        .map_with(|((type_name, function), args), e| {
-            Suffix::QualifiedAssocFnCall(type_name, function, args, offset_to_u32(e.span().end))
-        });
-
-    // Qualified path (enum variant): .EnumName::Variant
-    // We capture the end position from the variant ident before the negative lookahead
-    let qualified_path_suffix = just(TokenKind::Dot)
-        .ignore_then(ident_parser())
-        .then_ignore(just(TokenKind::ColonColon))
-        .then(ident_parser())
-        .map(|(type_name, variant)| {
-            let end = variant.span.end;
-            (type_name, variant, end)
-        })
-        .then_ignore(none_of([TokenKind::LParen]).rewind())
-        .map(|(type_name, variant, end)| Suffix::QualifiedPath(type_name, variant, end));
-
-    // Field access: .ident (but NOT followed by '(', '::', or struct literal pattern)
+    // Field access: .ident (but NOT followed by '(' or a struct-literal
+    // pattern). Enum-variant paths (`base.Enum.Variant`) and associated-function
+    // calls (`base.Type.func()`) are also spelled with `.` (RUE-488); they parse
+    // as field-access / method-call chains here and sema reinterprets them when
+    // the base names a type.
     // The qualified_struct_lit_suffix is tried first and uses lookahead, so field_suffix
     // only matches when we're certain it's field access, not a qualified struct literal.
     let field_suffix = just(TokenKind::Dot)
         .ignore_then(ident_parser())
-        .then_ignore(none_of([TokenKind::LParen, TokenKind::ColonColon]).rewind())
+        .then_ignore(none_of([TokenKind::LParen]).rewind())
         .map(Suffix::Field);
 
     let index_suffix = expr
@@ -1667,20 +1553,16 @@ where
         .map_with(|index, e| Suffix::Index(index, offset_to_u32(e.span().end)));
 
     // Order matters: more specific patterns must come before less specific ones
-    // - qualified_assoc_fn_suffix before qualified_path_suffix (both have ::)
     // - method_call_suffix before field_suffix (both start with .ident)
     // - qualified_struct_lit_suffix before field_suffix (uses lookahead for { ident: } pattern)
-    // - qualified_path_suffix before field_suffix (both start with .ident)
     //
     // NOTE: .boxed() is required here to shorten the monomorphized type name.
     // Without it, macOS's ld64 linker fails with "symbol name too long" because
-    // the 6-way choice creates extremely long generic type names.
+    // the choice creates extremely long generic type names.
     primary.foldl(
         choice((
             method_call_suffix,
-            qualified_assoc_fn_suffix,
             qualified_struct_lit_suffix,
-            qualified_path_suffix,
             field_suffix,
             index_suffix,
             question_suffix_parser(),
@@ -1731,27 +1613,6 @@ where
                     base: Some(Box::new(base)),
                     name,
                     fields,
-                    span,
-                })
-            }
-            Suffix::QualifiedPath(type_name, variant, end) => {
-                // module.EnumName::Variant → PathExpr with base
-                let span = base.span().extend_to(end);
-                Expr::Path(PathExpr {
-                    base: Some(Box::new(base)),
-                    type_name,
-                    variant,
-                    span,
-                })
-            }
-            Suffix::QualifiedAssocFnCall(type_name, function, args, end) => {
-                // module.TypeName::function(args) → AssocFnCallExpr with base
-                let span = base.span().extend_to(end);
-                Expr::AssocFnCall(AssocFnCallExpr {
-                    base: Some(Box::new(base)),
-                    type_name,
-                    function,
-                    args,
                     span,
                 })
             }
@@ -3154,6 +3015,14 @@ fn convert_error(err: Rich<'_, TokenKind>, file_id: FileId, impl_spur: Spur) -> 
                 found.as_ref().map(|m| &**m),
                 Some(TokenKind::Ident(s)) if *s == impl_spur
             );
+            // `::` was removed as a path/member-access operator (RUE-488): `.`
+            // is the sole spelling for enum variants (`Enum.Variant`),
+            // associated-function calls (`Type.function()`), and module-member
+            // access. The token still lexes, so a stray `::` reaches the parser
+            // and dies here; point the user at `.` rather than leaving an
+            // opaque "unexpected '::'".
+            let found_is_coloncolon =
+                matches!(found.as_ref(), Some(t) if matches!(**t, TokenKind::ColonColon));
             let mut err = CompileError::new(
                 ErrorKind::UnexpectedToken {
                     expected: expected_str,
@@ -3168,6 +3037,8 @@ fn convert_error(err: Rich<'_, TokenKind>, file_id: FileId, impl_spur: Spur) -> 
                     "Rue has no `impl` blocks; define methods inside the struct body, \
                      e.g. `struct S { x: i32, fn m(self) -> i32 { self.x } }`",
                 );
+            } else if found_is_coloncolon {
+                err = err.with_help("`::` is not a Rue operator; use `.` for member access, e.g. `Enum.Variant` or `Type.function()`");
             }
             err
         }
@@ -4265,16 +4136,37 @@ mod tests {
 
     #[test]
     fn test_associated_function_call() {
-        // Type::function(args) syntax
-        let result = parse_expr("Point::new(1, 2)").unwrap();
+        // Associated functions are called with `.` (RUE-488): `Type.function(args)`
+        // parses as a method call whose receiver is the type name; sema
+        // reinterprets it as an associated-function call.
+        let result = parse_expr("Point.new(1, 2)").unwrap();
         match &result.expr {
-            Expr::AssocFnCall(call) => {
-                assert_eq!(result.get(call.type_name.name), "Point");
-                assert_eq!(result.get(call.function.name), "new");
+            Expr::MethodCall(call) => {
+                match call.receiver.as_ref() {
+                    Expr::Ident(ident) => assert_eq!(result.get(ident.name), "Point"),
+                    other => panic!("expected Ident receiver, got {other:?}"),
+                }
+                assert_eq!(result.get(call.method.name), "new");
                 assert_eq!(call.args.len(), 2);
             }
-            _ => panic!("expected AssocFnCall, got {:?}", result.expr),
+            _ => panic!("expected MethodCall, got {:?}", result.expr),
         }
+    }
+
+    #[test]
+    fn test_path_separator_removed() {
+        // `::` is no longer a path/member-access operator (RUE-488); it is a
+        // hard parse error whose help points at `.`.
+        let err = parse("enum E { A } fn main() -> i32 { let x = E::A; 0 }").unwrap_err();
+        assert!(
+            err.iter().any(|e| {
+                e.diagnostic()
+                    .helps
+                    .iter()
+                    .any(|h| h.0.contains("use `.` for member access"))
+            }),
+            "expected a `::`-removed help pointing at `.`, got {err:?}"
+        );
     }
 
     // ==================== Borrow Parameter Parsing Tests ====================
@@ -4537,14 +4429,15 @@ mod tests {
 
     #[test]
     fn test_borrow_arg_in_associated_function() {
-        // Borrow argument in associated function call
-        let result = parse_expr("Foo::bar(borrow x)").unwrap();
+        // Borrow argument in an associated-function call, spelled with `.`
+        // (RUE-488): `Foo.bar(borrow x)` parses as a method call.
+        let result = parse_expr("Foo.bar(borrow x)").unwrap();
         match &result.expr {
-            Expr::AssocFnCall(call) => {
+            Expr::MethodCall(call) => {
                 assert_eq!(call.args.len(), 1);
                 assert_eq!(call.args[0].mode, ArgMode::Borrow);
             }
-            _ => panic!("expected AssocFnCall"),
+            _ => panic!("expected MethodCall"),
         }
     }
 

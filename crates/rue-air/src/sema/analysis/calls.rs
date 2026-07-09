@@ -21,17 +21,41 @@ impl<'a> Sema<'a> {
         let receiver_var = self.extract_root_variable(receiver);
         let method_name_str = self.interner.resolve(&method).to_string();
 
-        // RUE-196: `Type.function(args)` is an additive dotted alias for the
-        // existing `Type::function(args)` form. Preserve ordinary value-method
-        // dispatch when a runtime local/parameter shadows the type name; only
-        // reinterpret an unbound identifier receiver as a type namespace.
+        // `Type.function(args)` is an associated-function call / enum
+        // tuple-variant construction (RUE-196, RUE-488): `.` is the sole
+        // member-access spelling. Preserve ordinary value-method dispatch when a
+        // runtime local/parameter shadows the type name; reinterpret an unbound
+        // identifier receiver as a type namespace when it names a struct/enum or
+        // a comptime type-variable bound to one (`let O = Option(i32);
+        // O.Some(1)`). The struct/enum lookups mirror what `analyze_assoc_fn_call`
+        // itself resolves — the global by-name tables, so a cross-directory
+        // imported type is recognized and its privacy enforced there (E0460),
+        // rather than decaying to an "undefined variable" method call.
         if let InstData::VarRef { name } = self.rir.get(receiver).data
             && !self.is_runtime_value_binding(name, ctx)
-            && self
-                .resolve_type(name, span)
-                .is_ok_and(|ty| matches!(ty.kind(), TypeKind::Struct(_) | TypeKind::Enum(_)))
+            && (ctx.comptime_type_vars.contains_key(&name)
+                || self.structs.contains_key(&name)
+                || self.resolve_enum_type_name(name, ctx).is_some())
         {
             return self.analyze_assoc_fn_call(air, name, method, args_start, args_len, span, ctx);
+        }
+
+        // Module-qualified associated-function call / tuple-variant construction:
+        // `module.Type.function(args)` (RUE-488). The receiver is `module.Type`
+        // (a field access) whose module member is a struct or enum type. In the
+        // transitional flat namespace the type name resolves globally — the same
+        // resolution the removed `module.Type::function(args)` form used — so
+        // dispatch on the type name once the receiver is confirmed to be a
+        // module-qualified type reference.
+        if let InstData::FieldGet {
+            base: module_ref,
+            field: type_name,
+        } = self.rir.get(receiver).data
+            && let Some(result) = self.try_analyze_module_qualified_type_call(
+                air, module_ref, type_name, method, args_start, args_len, span, ctx,
+            )?
+        {
+            return Ok(result);
         }
 
         // Slice methods (ADR-0043, RUE-322): `s.len()` reads the fat pointer's

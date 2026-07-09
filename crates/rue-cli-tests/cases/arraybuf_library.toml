@@ -31,20 +31,20 @@ fn main() -> i32 {
     let V = arraybuf.ArrayBuf(i32);
     let O = arraybuf.Option(i32);
 
-    let mut v = V::new();
+    let mut v = V.new();
     v.push(10);
     v.push(20);
     v.push(30);
     @dbg(v.len());          // 3
 
-    @dbg(match v.get(1) { O::Some(x) => x, O::None => -1 });   // 20
+    @dbg(match v.get(1) { O.Some(x) => x, O.None => -1 });   // 20
     v.set(0, 99);
-    @dbg(match v.get(0) { O::Some(x) => x, O::None => -1 });   // 99
+    @dbg(match v.get(0) { O.Some(x) => x, O.None => -1 });   // 99
 
-    @dbg(match v.pop() { O::Some(x) => x, O::None => -1 });    // 30 (removed)
+    @dbg(match v.pop() { O.Some(x) => x, O.None => -1 });    // 30 (removed)
     @dbg(v.len());          // 2
 
-    @dbg(match v.get(99) { O::Some(x) => x, O::None => -1 });  // -1 (out of bounds)
+    @dbg(match v.get(99) { O.Some(x) => x, O.None => -1 });  // -1 (out of bounds)
 
     let mut i: u64 = 0;
     let mut sum: i32 = 0;
@@ -103,9 +103,9 @@ pub fn ArrayBuf(comptime T: type) -> type {
         fn get(borrow self, i: u64) -> Option(T) {
             let O = Option(T);
             if i < self.len {
-                O::Some(checked { @ptr_read(@ptr_offset(self.buf, i)) })
+                O.Some(checked { @ptr_read(@ptr_offset(self.buf, i)) })
             } else {
-                O::None
+                O.None
             }
         }
         fn get_or(borrow self, i: u64, default: T) -> T {
@@ -126,10 +126,10 @@ pub fn ArrayBuf(comptime T: type) -> type {
         fn pop(inout self) -> Option(T) {
             let O = Option(T);
             if self.len == 0 {
-                O::None
+                O.None
             } else {
                 self.len = self.len - 1;
-                O::Some(checked { @ptr_read(@ptr_offset(self.buf, self.len)) })
+                O.Some(checked { @ptr_read(@ptr_offset(self.buf, self.len)) })
             }
         }
         fn clear(inout self) { self.len = 0; }
@@ -162,7 +162,7 @@ fn main() -> i32 {
     let m = @import(\"arraybuf.rue\");
     let V = m.ArrayBuf(Point);
 
-    let mut v = V::new();
+    let mut v = V.new();
     v.push(Point { x: 1, y: 2 });
     v.push(Point { x: 3, y: 4 });
     v.push(Point { x: 5, y: 6 });
@@ -264,7 +264,7 @@ fn main() -> i32 {
     let m = @import(\"arraybuf.rue\");
     let V = m.ArrayBuf(i32);
 
-    let mut v = V::new();
+    let mut v = V.new();
     v.push(10);
     v.push(20);
     v.push(30);
@@ -355,14 +355,14 @@ const arraybuf = @import("arraybuf.rue");
 fn main() -> i32 {
     let V = arraybuf.ArrayBuf(i32);
     let O = option.Option(i32);   // the caller's binding, via option.rue
-    let mut v = V::new();
+    let mut v = V.new();
     v.push(10);
     v.push(20);
     // The Option returned by ArrayBuf.get is option.Option(i32) — the SAME
     // nominal type the caller names here, so these match arms type-check.
-    let a = match v.get(1) { O::Some(x) => x, O::None => -1 };
+    let a = match v.get(1) { O.Some(x) => x, O.None => -1 };
     @dbg(a);   // 20
-    let b = match v.get(9) { O::Some(x) => x, O::None => -1 };
+    let b = match v.get(9) { O.Some(x) => x, O.None => -1 };
     @dbg(b);   // -1
     v.free();
     a
@@ -408,9 +408,9 @@ pub fn ArrayBuf(comptime T: type) -> type {
         fn get(borrow self, i: u64) -> option.Option(T) {
             let O = option.Option(T);
             if i < self.len {
-                O::Some(checked { @ptr_read(@ptr_offset(self.buf, i)) })
+                O.Some(checked { @ptr_read(@ptr_offset(self.buf, i)) })
             } else {
-                O::None
+                O.None
             }
         }
         fn free(inout self) {

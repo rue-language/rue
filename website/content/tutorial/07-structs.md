@@ -20,8 +20,8 @@ fn main() -> i32 {
     let origin = Point { x: 0, y: 0 };
     let target = Point { x: 3, y: 4 };
 
-    @dbg(origin.x);  // prints: 0
-    @dbg(target.y);  // prints: 4
+    println(@to_string(origin.x));  // prints: 0
+    println(@to_string(target.y));  // prints: 4
 
     0
 }
@@ -48,7 +48,7 @@ fn main() -> i32 {
     let target = Point { x: 3, y: 4 };
 
     let dist_sq = distance_squared(origin, target);
-    @dbg(dist_sq);  // prints: 25 (distance is 5)
+    println(@to_string(dist_sq));  // prints: 25 (distance is 5)
 
     dist_sq
 }
@@ -85,8 +85,8 @@ fn main() -> i32 {
         height: 50,
     };
 
-    @dbg(origin_x(borrow rect));  // prints: 10
-    @dbg(area(rect));             // prints: 5000
+    println(@to_string(origin_x(borrow rect)));  // prints: 10
+    println(@to_string(area(rect)));             // prints: 5000
 
     0
 }
@@ -106,7 +106,7 @@ fn main() -> i32 {
     c.value = c.value + 1;
     c.value = c.value + 1;
 
-    @dbg(c.value);  // prints: 2
+    println(@to_string(c.value));  // prints: 2
     c.value
 }
 ```
@@ -124,7 +124,7 @@ struct Point {
 }
 
 fn use_point(p: Point) {
-    @dbg(p.x);
+    println(@to_string(p.x));
 }
 
 fn main() -> i32 {
@@ -148,8 +148,8 @@ fn main() -> i32 {
     let p1 = Point { x: 1, y: 2 };
     let p2 = p1;      // p1 moves into p2
 
-    @dbg(p2.x);       // prints: 1
-    // @dbg(p1.x);    // ERROR: p1 was moved
+    println(@to_string(p2.x));       // prints: 1
+    // println(@to_string(p1.x));    // ERROR: p1 was moved
 
     0
 }
@@ -171,8 +171,8 @@ fn main() -> i32 {
 
     p2.x = 100;
 
-    @dbg(p1.x);  // prints: 1 (unchanged)
-    @dbg(p2.x);  // prints: 100
+    println(@to_string(p1.x));  // prints: 1 (unchanged)
+    println(@to_string(p2.x));  // prints: 100
 
     0
 }

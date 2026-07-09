@@ -15,18 +15,18 @@ fn Option(comptime T: type) -> type {
 }
 fn parse_positive(n: i64) -> Option(i64) {
     let O = Option(i64);
-    if n > 0 { O::Some(n) } else { O::None }
+    if n > 0 { O.Some(n) } else { O.None }
 }
 fn triple(n: i64) -> Option(i64) {
     let O = Option(i64);
     let v = parse_positive(n)?;
-    O::Some(v * 3)
+    O.Some(v * 3)
 }
 fn report(n: i64) {
     let O = Option(i64);
     match triple(n) {
-        O::Some(m) => println("triple: " + @to_string(m)),
-        O::None => println("triple: none"),
+        O.Some(m) => println("triple: " + @to_string(m)),
+        O.None => println("triple: none"),
     }
 }
 fn main() -> i32 {
@@ -56,18 +56,18 @@ fn Option(comptime T: type) -> type {
 }
 fn lookup(found: bool) -> Option(String) {
     let O = Option(String);
-    if found { O::Some("world") } else { O::None }
+    if found { O.Some("world") } else { O.None }
 }
 fn greet(found: bool) -> Option(String) {
     let O = Option(String);
     let name = lookup(found)?;
-    O::Some("hello " + name)
+    O.Some("hello " + name)
 }
 fn show(found: bool) {
     let O = Option(String);
     match greet(found) {
-        O::Some(s) => println(s),
-        O::None => println("(nothing)"),
+        O.Some(s) => println(s),
+        O.None => println("(nothing)"),
     }
 }
 fn main() -> i32 {
@@ -94,7 +94,7 @@ fn Option(comptime T: type) -> type {
 }
 fn some_val() -> Option(i64) {
     let O = Option(i64);
-    O::Some(1)
+    O.Some(1)
 }
 fn main() -> i32 {
     let v = some_val()?;
@@ -118,7 +118,7 @@ fn f() -> Option(i64) {
     let x = 5;
     let y = x?;
     let O = Option(i64);
-    O::Some(y)
+    O.Some(y)
 }
 fn main() -> i32 { 0 }
 """ },

@@ -24,7 +24,7 @@ struct P {
 }
 
 fn main() -> i32 {
-    let p = P::make();
+    let p = P.make();
     @dbg(p.get());
     0
 }
@@ -43,7 +43,7 @@ struct P {
 }
 
 fn main() -> i32 {
-    let a = P::make(30);
+    let a = P.make(30);
     let b = P { x: 12 };
     @dbg(a.combine(b).get());
     0

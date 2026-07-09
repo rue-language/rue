@@ -19,13 +19,13 @@
 //
 //     let V = std.arraybuf.ArrayBuf(i32);
 //     let O = std.option.Option(i32);
-//     let mut v = V::new();
+//     let mut v = V.new();
 //     v.push(10);
 //     v.push(20);
 //     let n = v.len();                                 // 2
-//     let x = match v.get(0) { O::Some(e) => e, O::None => -1 };   // 10
+//     let x = match v.get(0) { O.Some(e) => e, O.None => -1 };   // 10
 //     v.set(0, 99);
-//     let last = match v.pop() { O::Some(e) => e, O::None => -1 }; // 20
+//     let last = match v.pop() { O.Some(e) => e, O.None => -1 }; // 20
 //     // the heap buffer is freed AUTOMATICALLY when `v` goes out of scope
 //     // (the `drop fn` below); call `v.free()` only for explicit early release.
 //
@@ -103,9 +103,9 @@ pub fn ArrayBuf(comptime T: type) -> type {
         fn get(borrow self, i: u64) -> Option(T) {
             let O = Option(T);
             if i < self.len {
-                O::Some(checked { @ptr_read(@ptr_offset(self.buf, i)) })
+                O.Some(checked { @ptr_read(@ptr_offset(self.buf, i)) })
             } else {
-                O::None
+                O.None
             }
         }
 
@@ -150,10 +150,10 @@ pub fn ArrayBuf(comptime T: type) -> type {
         fn pop(inout self) -> Option(T) {
             let O = Option(T);
             if self.len == 0 {
-                O::None
+                O.None
             } else {
                 self.len = self.len - 1;
-                O::Some(checked { @ptr_read(@ptr_offset(self.buf, self.len)) })
+                O.Some(checked { @ptr_read(@ptr_offset(self.buf, self.len)) })
             }
         }
 

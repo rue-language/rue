@@ -99,12 +99,12 @@ pub const MAX: i32 = 16;
 fn main() -> i32 {
     // secret()                  // error E0460: private to sub/lib.rue
     // let h = Hidden { n: 1 };  // error E0460: private to sub/lib.rue
-    // let m = Mode::Fast;       // error E0460: private to sub/lib.rue
+    // let m = Mode.Fast;       // error E0460: private to sub/lib.rue
     // let l = LIMIT;            // error E0460: private to sub/lib.rue
     let s = Shared { n: MAX };   // OK: `Shared` and `MAX` are pub
-    match Level::High {          // OK: `Level` is pub
-        Level::Low => 0,
-        Level::High => open() + s.n,
+    match Level.High {          // OK: `Level` is pub
+        Level.Low => 0,
+        Level.High => open() + s.n,
     }
 }
 ```

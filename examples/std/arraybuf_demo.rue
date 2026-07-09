@@ -15,22 +15,22 @@ fn main() -> i32 {
     let V = std.arraybuf.ArrayBuf(i32);
     let O = std.arraybuf.Option(i32);
 
-    let mut v = V::new();
+    let mut v = V.new();
     v.push(10);
     v.push(20);
     v.push(30);
     @dbg(v.len());          // 3
 
     // `get` returns Option(i32): Some in bounds, None otherwise.
-    @dbg(match v.get(1) { O::Some(x) => x, O::None => -1 });   // 20
+    @dbg(match v.get(1) { O.Some(x) => x, O.None => -1 });   // 20
     v.set(0, 99);
-    @dbg(match v.get(0) { O::Some(x) => x, O::None => -1 });   // 99
+    @dbg(match v.get(0) { O.Some(x) => x, O.None => -1 });   // 99
 
     // `pop` returns Option(i32): Some(last) or None when empty.
-    @dbg(match v.pop() { O::Some(x) => x, O::None => -1 });    // 30 (removed)
+    @dbg(match v.pop() { O.Some(x) => x, O.None => -1 });    // 30 (removed)
     @dbg(v.len());          // 2
 
-    @dbg(match v.get(99) { O::Some(x) => x, O::None => -1 });  // -1 (out of bounds)
+    @dbg(match v.get(99) { O.Some(x) => x, O.None => -1 });  // -1 (out of bounds)
 
     // Sum the remaining elements with a manual while loop (no for/index sugar).
     // `get_or` is the ergonomic default-based read used inside the loop.

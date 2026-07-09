@@ -109,7 +109,7 @@ description = "Lossy decode over a String holding a raw invalid byte (0xFF): the
 args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
-    let mut s = String::new();
+    let mut s = String.new();
     s.push(97);
     s.push(255);
     s.push(98);

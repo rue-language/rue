@@ -114,7 +114,7 @@ A function in a struct block that does not take `self` as its first parameter is
 
 {{ rule(id="6.4:13", cat="normative") }}
 
-Associated functions are called using path notation: `Type::function(args)`.
+Associated functions are called using dot notation: `Type.function(args)`.
 
 {{ rule(id="6.4:14", cat="example") }}
 
@@ -129,7 +129,7 @@ struct Point {
 }
 
 fn main() -> i32 {
-    let p = Point::origin();
+    let p = Point.origin();
     p.x  // Returns 0
 }
 ```
@@ -160,7 +160,7 @@ struct Point {
 }
 
 fn main() -> i32 {
-    let p = Point::origin().translate(Point { x: 42, y: 0 });
+    let p = Point.origin().translate(Point { x: 42, y: 0 });
     p.x  // Returns 42
 }
 ```
@@ -236,7 +236,7 @@ Calling an associated function with method call syntax (receiver.function()) is 
 
 {{ rule(id="6.4:23", cat="legality-rule") }}
 
-Calling a method with associated function syntax (Type::method()) is a compile-time error.
+Calling a method with associated function syntax (Type.method()) is a compile-time error.
 
 ## Receiver Modes
 

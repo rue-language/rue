@@ -18,13 +18,13 @@ files = [{ path = "main.rue", source = """
 enum Shape { Circle(i32), Rect(i32, i32), Empty }
 fn area(s: Shape) -> i32 {
     match s {
-        Shape::Circle(r) => r,
-        Shape::Rect(w, h) => w + h,
-        Shape::Empty => 0,
+        Shape.Circle(r) => r,
+        Shape.Rect(w, h) => w + h,
+        Shape.Empty => 0,
     }
 }
 fn main() -> i32 {
-    area(Shape::Circle(5)) + area(Shape::Rect(3, 4)) + area(Shape::Empty)
+    area(Shape.Circle(5)) + area(Shape.Rect(3, 4)) + area(Shape.Empty)
 }
 """ }]
 exit_code = 12
@@ -40,10 +40,10 @@ struct Res { id: i32 }
 drop fn Res(self) { @dbg(self.id); }
 enum Holder { Full(Res), Nothing }
 fn main() -> i32 {
-    let h = Holder::Full(Res { id: 7 });
+    let h = Holder.Full(Res { id: 7 });
     match h {
-        Holder::Full(r) => r.id,
-        Holder::Nothing => 0,
+        Holder.Full(r) => r.id,
+        Holder.Nothing => 0,
     }
 }
 """ }]
@@ -63,7 +63,7 @@ struct D { v: i32 }
 drop fn D(self) { @dbg(self.v); }
 enum E { Has(D), None }
 fn main() -> i32 {
-    let e = E::Has(D { v: 9 });
+    let e = E.Has(D { v: 9 });
     @dbg(-1);
     0
 }
@@ -84,7 +84,7 @@ drop fn D(self) { @dbg(self.v); }
 enum E { Has(D), None }
 struct Box { e: E }
 fn main() -> i32 {
-    let b = Box { e: E::Has(D { v: 11 }) };
+    let b = Box { e: E.Has(D { v: 11 }) };
     @dbg(-1);
     0
 }
@@ -104,7 +104,7 @@ struct D { v: i32 }
 drop fn D(self) { @dbg(self.v); }
 enum E { Has(D), None }
 fn main() -> i32 {
-    let a = [E::Has(D { v: 21 }), E::Has(D { v: 22 })];
+    let a = [E.Has(D { v: 21 }), E.Has(D { v: 22 })];
     @dbg(-1);
     0
 }
@@ -122,7 +122,7 @@ struct D { v: i32 }
 drop fn D(self) { @dbg(self.v); }
 enum E { Has(D), None }
 fn main() -> i32 {
-    let e = E::None;
+    let e = E.None;
     @dbg(-1);
     0
 }
@@ -141,10 +141,10 @@ struct D { v: i32 }
 drop fn D(self) { @dbg(self.v); }
 enum E { Has(D), None }
 fn main() -> i32 {
-    let e = E::Has(D { v: 7 });
+    let e = E.Has(D { v: 7 });
     match e {
-        E::Has(d) => d.v,
-        E::None => 0,
+        E.Has(d) => d.v,
+        E.None => 0,
     }
 }
 """ }]
@@ -162,7 +162,7 @@ files = [{ path = "main.rue", source = """
 linear struct L { v: i32 }
 enum E { Has(L), None }
 fn main() -> i32 {
-    let e = E::Has(L { v: 1 });
+    let e = E.Has(L { v: 1 });
     0
 }
 """ }]
@@ -180,10 +180,10 @@ linear struct L { v: i32 }
 enum E { Has(L), None }
 fn sink(l: L) -> i32 { l.v }
 fn main() -> i32 {
-    let e = E::Has(L { v: 5 });
+    let e = E.Has(L { v: 5 });
     match e {
-        E::Has(l) => sink(l),
-        E::None => 0,
+        E.Has(l) => sink(l),
+        E.None => 0,
     }
 }
 """ }]
@@ -197,9 +197,9 @@ description = "An enum whose only payloads are Copy stays Copy — usable twice 
 args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 enum C { A(i32), B }
-fn val(c: C) -> i32 { match c { C::A(x) => x, C::B => 0 } }
+fn val(c: C) -> i32 { match c { C.A(x) => x, C.B => 0 } }
 fn main() -> i32 {
-    let c = C::A(3);
+    let c = C.A(3);
     val(c) + val(c)
 }
 """ }]
@@ -215,11 +215,11 @@ description = "A function returning a payload enum by value carries the payload 
 args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 enum Opt { Some(i32), None }
-fn make() -> Opt { Opt::Some(42) }
+fn make() -> Opt { Opt.Some(42) }
 fn main() -> i32 {
     match make() {
-        Opt::Some(v) => v,
-        Opt::None => 0,
+        Opt.Some(v) => v,
+        Opt.None => 0,
     }
 }
 """ }]
@@ -235,9 +235,9 @@ files = [{ path = "main.rue", source = """
 enum Shape { Circle(i32), Square(i32) }
 fn passthru(s: Shape) -> Shape { s }
 fn main() -> i32 {
-    match passthru(Shape::Circle(9)) {
-        Shape::Circle(r) => r,
-        Shape::Square(x) => x,
+    match passthru(Shape.Circle(9)) {
+        Shape.Circle(r) => r,
+        Shape.Square(x) => x,
     }
 }
 """ }]
@@ -255,10 +255,10 @@ files = [{ path = "main.rue", source = """
 enum Opt { Some(i32), None }
 struct Wrapper { o: Opt }
 fn main() -> i32 {
-    let w = Wrapper { o: Opt::Some(42) };
+    let w = Wrapper { o: Opt.Some(42) };
     match w.o {
-        Opt::Some(v) => v,
-        Opt::None => 0,
+        Opt.Some(v) => v,
+        Opt.None => 0,
     }
 }
 """ }]
@@ -273,10 +273,10 @@ args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 enum Opt { Some(i32), None }
 fn main() -> i32 {
-    let a = [Opt::Some(10), Opt::Some(32)];
+    let a = [Opt.Some(10), Opt.Some(32)];
     match a[0] {
-        Opt::Some(x) => match a[1] { Opt::Some(y) => x + y, Opt::None => 0 },
-        Opt::None => 0,
+        Opt.Some(x) => match a[1] { Opt.Some(y) => x + y, Opt.None => 0 },
+        Opt.None => 0,
     }
 }
 """ }]
@@ -294,7 +294,7 @@ struct D { v: i32 }
 drop fn D(self) { @dbg(self.v); }
 enum E { Has(D), None }
 fn main() -> i32 {
-    let e = E::Has(D { v: 7 });
+    let e = E.Has(D { v: 7 });
     match e { _ => 0 }
 }
 """ }]
@@ -312,7 +312,7 @@ struct D { v: i32 }
 drop fn D(self) { @dbg(self.v); }
 enum E { Has(D), None }
 fn main() -> i32 {
-    let e = E::None;
+    let e = E.None;
     match e { _ => 0 }
 }
 """ }]
@@ -322,16 +322,16 @@ exit_code = 0
 # still drops the payload of a value the wildcard catches, exactly once.
 [[case]]
 name = "wildcard_catchall_drops_caught_payload"
-description = "A `_` catch-all that catches a droppable variant drops its payload once: E::Has caught by `_`, prints 7."
+description = "A `_` catch-all that catches a droppable variant drops its payload once: E.Has caught by `_`, prints 7."
 args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 struct D { v: i32 }
 drop fn D(self) { @dbg(self.v); }
 enum E { Has(D), None }
 fn main() -> i32 {
-    let e = E::Has(D { v: 7 });
+    let e = E.Has(D { v: 7 });
     match e {
-        E::None => 1,
+        E.None => 1,
         _ => 0,
     }
 }
@@ -355,10 +355,10 @@ files = [{ path = "main.rue", source = """
 fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
     let O = Option(i32);
-    let x: O = O::Some(5);
-    let y: O = O::None;
-    let a = match x { O::Some(n) => n, O::None => 0 };
-    let b = match y { O::Some(n) => n, O::None => 0 };
+    let x: O = O.Some(5);
+    let y: O = O.None;
+    let a = match x { O.Some(n) => n, O.None => 0 };
+    let b = match y { O.Some(n) => n, O.None => 0 };
     a + b
 }
 """ }]
@@ -373,8 +373,8 @@ files = [{ path = "main.rue", source = """
 fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
     let O = Option(bool);
-    let x: O = O::Some(true);
-    match x { O::Some(b) => if b { 7 } else { 8 }, O::None => 0 }
+    let x: O = O.Some(true);
+    match x { O.Some(b) => if b { 7 } else { 8 }, O.None => 0 }
 }
 """ }]
 exit_code = 7
@@ -388,10 +388,10 @@ files = [{ path = "main.rue", source = """
 fn Result(comptime T: type, comptime E: type) -> type { enum { Ok(T), Err(E) } }
 fn main() -> i32 {
     let R = Result(i32, bool);
-    let ok: R = R::Ok(100);
-    let er: R = R::Err(true);
-    let a = match ok { R::Ok(v) => v, R::Err(e) => if e { 1 } else { 2 } };
-    let b = match er { R::Ok(v) => v, R::Err(e) => if e { 42 } else { 43 } };
+    let ok: R = R.Ok(100);
+    let er: R = R.Err(true);
+    let a = match ok { R.Ok(v) => v, R.Err(e) => if e { 1 } else { 2 } };
+    let b = match er { R.Ok(v) => v, R.Err(e) => if e { 42 } else { 43 } };
     a + b
 }
 """ }]
@@ -408,7 +408,7 @@ fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
     let Oi = Option(i32);
     let Ob = Option(bool);
-    let x: Oi = Ob::Some(true);
+    let x: Oi = Ob.Some(true);
     0
 }
 """ }]
@@ -427,10 +427,10 @@ drop fn Noisy(self) { @dbg(self.code); }
 fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
     let O = Option(Noisy);
-    let x: O = O::Some(Noisy { code: 33 });
+    let x: O = O.Some(Noisy { code: 33 });
     match x {
-        O::Some(v) => v.code,
-        O::None => 0,
+        O.Some(v) => v.code,
+        O.None => 0,
     }
 }
 """ }]
@@ -449,7 +449,7 @@ linear struct Token { v: i32 }
 fn Result(comptime T: type, comptime E: type) -> type { enum { Ok(T), Err(E) } }
 fn main() -> i32 {
     let R = Result(i32, Token);
-    let x: R = R::Ok(5);
+    let x: R = R.Ok(5);
     0
 }
 """ }]

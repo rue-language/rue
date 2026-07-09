@@ -22,12 +22,12 @@ description = "fn divide(...) -> Result(i32, i32) compiles, is called, and its r
 files = [{ path = "main.rue", source = """
 fn Result(comptime T: type, comptime E: type) -> type { enum { Ok(T), Err(E) } }
 fn divide(a: i32, b: i32) -> Result(i32, i32) {
-    if b == 0 { let R = Result(i32, i32); R::Err(1) }
-    else { let R = Result(i32, i32); R::Ok(a / b) }
+    if b == 0 { let R = Result(i32, i32); R.Err(1) }
+    else { let R = Result(i32, i32); R.Ok(a / b) }
 }
 fn main() -> i32 {
     let R = Result(i32, i32);
-    match divide(84, 2) { R::Ok(v) => v, R::Err(e) => 0 - e }
+    match divide(84, 2) { R.Ok(v) => v, R.Err(e) => 0 - e }
 }
 """ }]
 args = ["main.rue", "-o", "prog"]
@@ -42,11 +42,11 @@ files = [{ path = "main.rue", source = """
 fn Result(comptime T: type, comptime E: type) -> type { enum { Ok(T), Err(E) } }
 fn unwrap_or(r: Result(i32, i32), d: i32) -> i32 {
     let R = Result(i32, i32);
-    match r { R::Ok(v) => v, R::Err(e) => d }
+    match r { R.Ok(v) => v, R.Err(e) => d }
 }
 fn divide(a: i32, b: i32) -> Result(i32, i32) {
     let R = Result(i32, i32);
-    if b == 0 { R::Err(1) } else { R::Ok(a / b) }
+    if b == 0 { R.Err(1) } else { R.Ok(a / b) }
 }
 fn main() -> i32 { unwrap_or(divide(84, 2), 0) }
 """ }]
@@ -64,14 +64,14 @@ fn Result(comptime T: type, comptime E: type) -> type { enum { Ok(T), Err(E) } }
 fn make() -> Result(Option(i32), i32) {
     let O = Option(i32);
     let R = Result(Option(i32), i32);
-    R::Ok(O::Some(42))
+    R.Ok(O.Some(42))
 }
 fn main() -> i32 {
     let O = Option(i32);
     let R = Result(Option(i32), i32);
     match make() {
-        R::Ok(o) => match o { O::Some(v) => v, O::None => 0 },
-        R::Err(e) => 0 - e
+        R.Ok(o) => match o { O.Some(v) => v, O.None => 0 },
+        R.Err(e) => 0 - e
     }
 }
 """ }]
@@ -87,12 +87,12 @@ files = [{ path = "main.rue", source = """
 fn Result(comptime T: type, comptime E: type) -> type { enum { Ok(T), Err(E) } }
 fn divide(a: i32, b: i32) -> Result(i32, i32) {
     let R = Result(i32, i32);
-    if b == 0 { R::Err(1) } else { R::Ok(a / b) }
+    if b == 0 { R.Err(1) } else { R.Ok(a / b) }
 }
 fn main() -> i32 {
     let x: Result(i32, i32) = divide(84, 2);
     let R = Result(i32, i32);
-    match x { R::Ok(v) => v, R::Err(e) => 0 - e }
+    match x { R.Ok(v) => v, R.Err(e) => 0 - e }
 }
 """ }]
 args = ["main.rue", "-o", "prog"]
@@ -143,11 +143,11 @@ files = [{ path = "main.rue", source = """
 fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn wrap(comptime T: type, v: T) -> Option(T) {
     let O = Option(T);
-    O::Some(v)
+    O.Some(v)
 }
 fn main() -> i32 {
     let O = Option(i32);
-    match wrap(i32, 42) { O::Some(x) => x, O::None => 0 }
+    match wrap(i32, 42) { O.Some(x) => x, O.None => 0 }
 }
 """ }]
 args = ["main.rue", "-o", "prog"]
@@ -160,13 +160,13 @@ files = [{ path = "main.rue", source = """
 fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn wrap(comptime T: type, v: T) -> Option(T) {
     let O = Option(T);
-    O::Some(v)
+    O.Some(v)
 }
 fn main() -> i32 {
     let Oi = Option(i32);
-    let a = match wrap(i32, 40) { Oi::Some(x) => x, Oi::None => 0 };
+    let a = match wrap(i32, 40) { Oi.Some(x) => x, Oi.None => 0 };
     let Ob = Option(bool);
-    let b = match wrap(bool, true) { Ob::Some(x) => 2, Ob::None => 0 };
+    let b = match wrap(bool, true) { Ob.Some(x) => 2, Ob.None => 0 };
     a + b
 }
 """ }]
@@ -180,12 +180,12 @@ files = [{ path = "main.rue", source = """
 fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn first(comptime T: type, xs: [T; 2]) -> Option(T) {
     let O = Option(T);
-    O::Some(xs[0])
+    O.Some(xs[0])
 }
 fn main() -> i32 {
     let arr = [7, 9];
     let O = Option(i32);
-    match first(i32, arr) { O::Some(x) => x, O::None => 0 }
+    match first(i32, arr) { O.Some(x) => x, O.None => 0 }
 }
 """ }]
 args = ["main.rue", "-o", "prog"]
@@ -200,14 +200,14 @@ fn Result(comptime T: type, comptime E: type) -> type { enum { Ok(T), Err(E) } }
 fn wrap_ok(comptime T: type, v: T) -> Result(Option(T), i32) {
     let O = Option(T);
     let R = Result(Option(T), i32);
-    R::Ok(O::Some(v))
+    R.Ok(O.Some(v))
 }
 fn main() -> i32 {
     let O = Option(i32);
     let R = Result(Option(i32), i32);
     match wrap_ok(i32, 42) {
-        R::Ok(o) => match o { O::Some(v) => v, O::None => 0 },
-        R::Err(e) => 0 - e,
+        R.Ok(o) => match o { O.Some(v) => v, O.None => 0 },
+        R.Err(e) => 0 - e,
     }
 }
 """ }]
@@ -221,12 +221,12 @@ files = [{ path = "main.rue", source = """
 fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn wrap(comptime T: type, v: T) -> Option(T) {
     let O = Option(T);
-    let x: Option(T) = O::Some(v);
+    let x: Option(T) = O.Some(v);
     x
 }
 fn main() -> i32 {
     let O = Option(i32);
-    match wrap(i32, 42) { O::Some(x) => x, O::None => 0 }
+    match wrap(i32, 42) { O.Some(x) => x, O.None => 0 }
 }
 """ }]
 args = ["main.rue", "-o", "prog"]

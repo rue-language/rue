@@ -59,7 +59,7 @@ stdout = "\nend"
 name = "print_borrows_string_reusable_after_call"
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
-    let mut s = String::new();
+    let mut s = String.new();
     s.push_str("built ");
     s.push_str("string");
     print(s);

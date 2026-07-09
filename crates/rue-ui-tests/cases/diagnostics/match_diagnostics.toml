@@ -19,34 +19,34 @@ quoted as the primary span (a multi-line span starting at the fn body renders
 source = """
 enum Color { Red, Blue }
 fn main() -> i32 {
-    let c = Color::Red;
+    let c = Color.Red;
     match c {
-        Color::Red => 1,
-        Color::Blue => true,
+        Color.Red => 1,
+        Color.Blue => true,
     }
 }
 """
 exit_code = 1
 compile_fail = true
-error_contains = ["expected integer type, found bool", "6:24", "Color::Blue => true"]
+error_contains = ["expected integer type, found bool", "6:23", "Color.Blue => true"]
 
 [[case]]
 name = "arm_result_conflict_concrete_arms_points_at_arm"
 source = """
 enum Color { Red, Blue }
 fn main() -> i32 {
-    let c = Color::Red;
+    let c = Color.Red;
     let n: i32 = 5;
     let r = match c {
-        Color::Red => n,
-        Color::Blue => true,
+        Color.Red => n,
+        Color.Blue => true,
     };
     0
 }
 """
 exit_code = 1
 compile_fail = true
-error_contains = ["expected i32, found bool", "7:24"]
+error_contains = ["expected i32, found bool", "7:23"]
 
 [[case]]
 name = "non_exhaustive_enum_lists_missing_variants"
@@ -54,9 +54,9 @@ description = "E0600 must name the uncovered variants, which are known at the er
 source = """
 enum Color { Red, Blue, Green }
 fn main() -> i32 {
-    let c = Color::Red;
+    let c = Color.Red;
     match c {
-        Color::Red => 1,
+        Color.Red => 1,
     }
 }
 """
@@ -98,10 +98,10 @@ name = "exhaustive_enum_match_still_compiles"
 source = """
 enum Color { Red, Blue }
 fn main() -> i32 {
-    let c = Color::Blue;
+    let c = Color.Blue;
     match c {
-        Color::Red => 1,
-        Color::Blue => 42,
+        Color.Red => 1,
+        Color.Blue => 42,
     }
 }
 """

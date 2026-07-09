@@ -24,7 +24,7 @@ name = "builtin_method_name_allowed"
 files = [{ path = "main.rue", source = """
 fn String__len() -> i32 { 7 }
 fn main() -> i32 {
-    let mut s = String::new();
+    let mut s = String.new();
     s.push_str("hello");
     let builtin: i32 = @intCast(s.len());
     builtin * 10 + String__len()

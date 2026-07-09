@@ -23,11 +23,25 @@ fn main() -> i32 {
     let sum = add(3, 4);
     println("sum = " + @to_string(sum));
 
-    @dbg(is_positive(sum));   // prints: true
-    @dbg(is_positive(-5));    // prints: false
+    if is_positive(sum) {
+        println("sum is positive");
+    }
+    if is_positive(-5) {
+        println("-5 is positive");
+    } else {
+        println("-5 is not positive");
+    }
 
     sum
 }
+```
+
+This prints:
+
+```
+sum = 7
+sum is positive
+-5 is not positive
 ```
 
 ## Function Body Values

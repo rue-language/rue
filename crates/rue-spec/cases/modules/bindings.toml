@@ -317,13 +317,13 @@ const lib = @import("sub/lib");
 
 fn main() -> i32 {
     let p = lib.Point { x: 40, y: 2 };
-    let q = lib.Point::origin();
-    let c = lib.Color::Green;
+    let q = lib.Point.origin();
+    let c = lib.Color.Green;
     let base = p.x + p.y + q.x + q.y;
     match c {
-        lib.Color::Red => 0,
-        lib.Color::Green => base,
-        lib.Color::Blue => 0,
+        lib.Color.Red => 0,
+        lib.Color.Green => base,
+        lib.Color.Blue => 0,
     }
 }
 """
@@ -387,22 +387,22 @@ fn main() -> i32 {
     let left = a.pick_a();
     let right = b.pick_b();
     let x = match left {
-        a.Color::Red => 10,
-        a.Color::Green => 0,
+        a.Color.Red => 10,
+        a.Color.Green => 0,
     };
     let y = match right {
-        b.Color::Red => 0,
-        b.Color::Green => 32,
+        b.Color.Red => 0,
+        b.Color.Green => 32,
     };
     x + y
 }
 """
 aux_files = { "a.rue" = """
 pub enum Color { Red, Green, }
-pub fn pick_a() -> Color { Color::Red }
+pub fn pick_a() -> Color { Color.Red }
 """, "b.rue" = """
 pub enum Color { Red, Green, }
-pub fn pick_b() -> Color { Color::Green }
+pub fn pick_b() -> Color { Color.Green }
 """ }
 exit_code = 42
 
@@ -433,13 +433,13 @@ source = """
 const lib = @import("sub/lib");
 
 fn main() -> i32 {
-    let h = lib.Hidden::A;
+    let h = lib.Hidden.A;
     0
 }
 """
 aux_files = { "sub/lib.rue" = """
 enum Hidden { A, B, }
-pub fn touch() -> i32 { let h = Hidden::A; match h { Hidden::A => 1, Hidden::B => 2, } }
+pub fn touch() -> i32 { let h = Hidden.A; match h { Hidden.A => 1, Hidden.B => 2, } }
 """ }
 compile_fail = true
 error_contains = ["E0706", "is private"]
@@ -458,7 +458,7 @@ source = """
 const lib = @import("sub/lib");
 
 fn main() -> i32 {
-    let s = Secret::make();
+    let s = Secret.make();
     s.n
 }
 """
@@ -479,7 +479,7 @@ source = """
 const lib = @import("sub/lib");
 
 fn main() -> i32 {
-    let s = lib.Secret::make();
+    let s = lib.Secret.make();
     s.n
 }
 """
@@ -500,7 +500,7 @@ source = """
 const lib = @import("sub/lib");
 
 fn main() -> i32 {
-    let p = Point::origin();
+    let p = Point.origin();
     p.x + p.y
 }
 """
@@ -521,7 +521,7 @@ source = """
 const lib = @import("lib");
 
 fn main() -> i32 {
-    let s = lib.Secret::make();
+    let s = lib.Secret.make();
     s.n
 }
 """
@@ -536,13 +536,13 @@ exit_code = 42
 [[case]]
 name = "cross_dir_comptime_bound_assoc_fn_allowed"
 spec = ["10.4:19"]
-description = "A receiver type reached through a comptime binding (not by naming the struct) is exempt: `let P = lib.Point; P::origin()` is allowed"
+description = "A receiver type reached through a comptime binding (not by naming the struct) is exempt: `let P = lib.Point; P.origin()` is allowed"
 source = """
 const lib = @import("sub/lib");
 
 fn main() -> i32 {
     let P = lib.Point;
-    let p = P::origin();
+    let p = P.origin();
     p.x + p.y
 }
 """

@@ -904,7 +904,7 @@ fn Box(comptime T: type) -> type {
 
         fn wrap(self) -> Option(T) {
             let O = Option(T);
-            O::Some(self.v)
+            O.Some(self.v)
         }
     }
 }
@@ -913,8 +913,8 @@ fn main() -> i32 {
     let O = Option(i32);
     let b: B = B { v: 42 };
     match b.wrap() {
-        O::Some(x) => x,
-        O::None => 0,
+        O.Some(x) => x,
+        O.None => 0,
     }
 }
 """
@@ -937,7 +937,7 @@ fn Point() -> type {
 }
 fn main() -> i32 {
     let P = Point();
-    let p = P::origin();
+    let p = P.origin();
     p.x + p.y
 }
 """
@@ -960,7 +960,7 @@ fn Point() -> type {
 }
 fn main() -> i32 {
     let P = Point();
-    let p = P::new(20, 22);
+    let p = P.new(20, 22);
     p.x + p.y
 }
 """
@@ -1006,7 +1006,7 @@ fn StaticUtils() -> type {
 }
 fn main() -> i32 {
     let U = StaticUtils();
-    U::constant()
+    U.constant()
 }
 """
 exit_code = 42
@@ -1815,8 +1815,8 @@ fn Option(comptime T: type) -> type {
 }
 fn main() -> i32 {
     let O = Option(i32);
-    let x: O = O::Some(42);
-    match x { O::Some(n) => n, O::None => 0 }
+    let x: O = O.Some(42);
+    match x { O.Some(n) => n, O.None => 0 }
 }
 """
 exit_code = 42
@@ -1831,8 +1831,8 @@ fn Option(comptime T: type) -> type {
 }
 fn main() -> i32 {
     let O = Option(i32);
-    let x: O = O::None;
-    match x { O::Some(n) => n, O::None => 42 }
+    let x: O = O.None;
+    match x { O.Some(n) => n, O.None => 42 }
 }
 """
 exit_code = 42
@@ -1847,10 +1847,10 @@ fn Result(comptime T: type, comptime E: type) -> type {
 }
 fn main() -> i32 {
     let R = Result(i32, bool);
-    let ok: R = R::Ok(40);
-    let er: R = R::Err(true);
-    let a = match ok { R::Ok(v) => v, R::Err(e) => if e { 1 } else { 2 } };
-    let b = match er { R::Ok(v) => v, R::Err(e) => if e { 2 } else { 3 } };
+    let ok: R = R.Ok(40);
+    let er: R = R.Err(true);
+    let a = match ok { R.Ok(v) => v, R.Err(e) => if e { 1 } else { 2 } };
+    let b = match er { R.Ok(v) => v, R.Err(e) => if e { 2 } else { 3 } };
     a + b
 }
 """
@@ -1867,7 +1867,7 @@ fn Option(comptime T: type) -> type {
 fn main() -> i32 {
     let Oi = Option(i32);
     let Ob = Option(bool);
-    let x: Oi = Ob::Some(true);
+    let x: Oi = Ob.Some(true);
     0
 }
 """
@@ -1885,9 +1885,9 @@ fn Option(comptime T: type) -> type {
 fn main() -> i32 {
     let A = Option(i32);
     let B = Option(i32);
-    let x: A = A::Some(42);
+    let x: A = A.Some(42);
     let y: B = x;
-    match y { B::Some(n) => n, B::None => 0 }
+    match y { B.Some(n) => n, B.None => 0 }
 }
 """
 exit_code = 42
@@ -1900,11 +1900,11 @@ source = """
 fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn wrap(comptime T: type, v: T) -> Option(T) {
     let O = Option(T);
-    O::Some(v)
+    O.Some(v)
 }
 fn main() -> i32 {
     let O = Option(i32);
-    match wrap(i32, 42) { O::Some(x) => x, O::None => 0 }
+    match wrap(i32, 42) { O.Some(x) => x, O.None => 0 }
 }
 """
 exit_code = 42
@@ -1917,13 +1917,13 @@ source = """
 fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn wrap(comptime T: type, v: T) -> Option(T) {
     let O = Option(T);
-    O::Some(v)
+    O.Some(v)
 }
 fn main() -> i32 {
     let Oi = Option(i32);
-    let a = match wrap(i32, 40) { Oi::Some(x) => x, Oi::None => 0 };
+    let a = match wrap(i32, 40) { Oi.Some(x) => x, Oi.None => 0 };
     let Ob = Option(bool);
-    let b = match wrap(bool, true) { Ob::Some(x) => 2, Ob::None => 0 };
+    let b = match wrap(bool, true) { Ob.Some(x) => 2, Ob.None => 0 };
     a + b
 }
 """
@@ -1945,8 +1945,8 @@ source = """
 fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
     let O = Option(i32);
-    let x: O = O::Some(42);
-    match x { O::Some(n) => n, O::None => 0 }
+    let x: O = O.Some(42);
+    match x { O.Some(n) => n, O.None => 0 }
 }
 """
 exit_code = 42
@@ -2022,14 +2022,14 @@ fn Wrap(comptime T: type) -> type {
         inner: Option(T),
         fn get_or(self, d: T) -> T {
             let O = Option(T);
-            match self.inner { O::Some(v) => v, O::None => d }
+            match self.inner { O.Some(v) => v, O.None => d }
         }
     }
 }
 fn main() -> i32 {
     let W = Wrap(i32);
     let O = Option(i32);
-    let w: W = W { inner: O::Some(42) };
+    let w: W = W { inner: O.Some(42) };
     w.get_or(0)
 }
 """

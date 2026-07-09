@@ -80,7 +80,7 @@ error_contains = "comptime evaluation failed"
 # }
 # fn main() -> i32 {
 #     let C = Counter();
-#     C::get()
+#     C.get()
 # }
 # """
 # compile_fail = true

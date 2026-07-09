@@ -204,7 +204,7 @@ spec = ["4.13:6", "4.13:7"]
 description = "@dbg borrows a String; the value stays usable after the call (RUE-21)"
 source = """
 fn main() -> i32 {
-    let mut s = String::new();
+    let mut s = String.new();
     s.push_str("hello");
     @dbg(s);
     let n: u64 = s.len();
@@ -228,7 +228,7 @@ drop fn Holder(self) {
     @dbg(self.s);
 }
 fn main() -> i32 {
-    let mut tmp = String::new();
+    let mut tmp = String.new();
     tmp.push_str("world");
     let h = Holder { s: tmp };
     @dbg(h.s);
@@ -772,7 +772,7 @@ name = "intcast_unsigned_to_signed_overflow"
 spec = ["4.13:28"]
 source = """
 fn main() -> i32 {
-    let x: u32 = 2147483648;  // i32::MAX + 1
+    let x: u32 = 2147483648;  // i32.MAX + 1
     let y: i32 = @intCast(x);
     y
 }
@@ -799,8 +799,8 @@ fn main() -> i32 {
     let Opt = Option(String);
     let line: Opt = @read_line();
     match line {
-        Opt::Some(s) => @dbg(s),
-        Opt::None => {},
+        Opt.Some(s) => @dbg(s),
+        Opt.None => {},
     }
     0
 }
@@ -819,8 +819,8 @@ fn main() -> i32 {
     let Opt = Option(String);
     let line: Opt = @read_line();
     match line {
-        Opt::Some(s) => @dbg(s),
-        Opt::None => {},
+        Opt.Some(s) => @dbg(s),
+        Opt.None => {},
     }
     0
 }
@@ -863,8 +863,8 @@ fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
     let Opt = Option(String);
     match @read_line() {
-        Opt::Some(line) => @dbg(line),
-        Opt::None => {},
+        Opt.Some(line) => @dbg(line),
+        Opt.None => {},
     }
     0
 }
@@ -881,8 +881,8 @@ fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
     let Opt = Option(String);
     match @read_line() {
-        Opt::Some(line) => @dbg(line),
-        Opt::None => {},
+        Opt.Some(line) => @dbg(line),
+        Opt.None => {},
     }
     0
 }
@@ -899,12 +899,12 @@ fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
     let Opt = Option(String);
     match @read_line() {
-        Opt::Some(line) => @dbg(line),
-        Opt::None => {},
+        Opt.Some(line) => @dbg(line),
+        Opt.None => {},
     }
     match @read_line() {
-        Opt::Some(line) => @dbg(line),
-        Opt::None => {},
+        Opt.Some(line) => @dbg(line),
+        Opt.None => {},
     }
     0
 }
@@ -924,8 +924,8 @@ fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
     let Opt = Option(String);
     match @read_line() {
-        Opt::Some(line) => @dbg(line),
-        Opt::None => {},
+        Opt.Some(line) => @dbg(line),
+        Opt.None => {},
     }
     0
 }
@@ -943,8 +943,8 @@ fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
     let Opt = Option(String);
     match @read_line() {
-        Opt::Some(line) => @dbg(line),
-        Opt::None => {},
+        Opt.Some(line) => @dbg(line),
+        Opt.None => {},
     }
     0
 }
@@ -964,8 +964,8 @@ fn main() -> i32 {
     let line: Opt = @read_line();
     // EOF with no data is None, not a trap: this returns 0, exit success.
     match line {
-        Opt::Some(_s) => 1,
-        Opt::None => 0,
+        Opt.Some(_s) => 1,
+        Opt.None => 0,
     }
 }
 """
@@ -988,8 +988,8 @@ fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
     let Opt = Option(i32);
     match @parse_i32("42") {
-        Opt::Some(n) => n,
-        Opt::None => 0,
+        Opt.Some(n) => n,
+        Opt.None => 0,
     }
 }
 """
@@ -1003,8 +1003,8 @@ fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
     let Opt = Option(i32);
     match @parse_i32("-17") {
-        Opt::Some(n) => n,
-        Opt::None => 0,
+        Opt.Some(n) => n,
+        Opt.None => 0,
     }
 }
 """
@@ -1018,8 +1018,8 @@ fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
     let Opt = Option(i32);
     match @parse_i32("0") {
-        Opt::Some(n) => n,
-        Opt::None => 1,
+        Opt.Some(n) => n,
+        Opt.None => 1,
     }
 }
 """
@@ -1033,8 +1033,8 @@ fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
     let Opt = Option(i32);
     match @parse_i32("007") {
-        Opt::Some(n) => n,
-        Opt::None => 0,
+        Opt.Some(n) => n,
+        Opt.None => 0,
     }
 }
 """
@@ -1051,8 +1051,8 @@ fn main() -> i32 {
     let n: Opt = @parse_i32(s);
     @dbg(s);
     match n {
-        Opt::Some(v) => v,
-        Opt::None => 0,
+        Opt.Some(v) => v,
+        Opt.None => 0,
     }
 }
 """
@@ -1066,8 +1066,8 @@ fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
     let Opt = Option(i64);
     match @parse_i64("123") {
-        Opt::Some(n) => @intCast(n),
-        Opt::None => 0,
+        Opt.Some(n) => @intCast(n),
+        Opt.None => 0,
     }
 }
 """
@@ -1081,8 +1081,8 @@ fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
     let Opt = Option(i64);
     match @parse_i64("-5") {
-        Opt::Some(n) => @intCast(n),
-        Opt::None => 0,
+        Opt.Some(n) => @intCast(n),
+        Opt.None => 0,
     }
 }
 """
@@ -1096,8 +1096,8 @@ fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
     let Opt = Option(u32);
     match @parse_u32("42") {
-        Opt::Some(n) => @intCast(n),
-        Opt::None => 0,
+        Opt.Some(n) => @intCast(n),
+        Opt.None => 0,
     }
 }
 """
@@ -1111,8 +1111,8 @@ fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
     let Opt = Option(u64);
     match @parse_u64("99") {
-        Opt::Some(n) => @intCast(n),
-        Opt::None => 0,
+        Opt.Some(n) => @intCast(n),
+        Opt.None => 0,
     }
 }
 """
@@ -1160,8 +1160,8 @@ fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
     let Opt = Option(i32);
     match @parse_i32("") {
-        Opt::Some(n) => n,
-        Opt::None => 42,
+        Opt.Some(n) => n,
+        Opt.None => 42,
     }
 }
 """
@@ -1175,8 +1175,8 @@ fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
     let Opt = Option(i32);
     match @parse_i32("12abc") {
-        Opt::Some(n) => n,
-        Opt::None => 42,
+        Opt.Some(n) => n,
+        Opt.None => 42,
     }
 }
 """
@@ -1190,8 +1190,8 @@ fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
     let Opt = Option(i32);
     match @parse_i32("2147483648") {
-        Opt::Some(n) => n,
-        Opt::None => 42,
+        Opt.Some(n) => n,
+        Opt.None => 42,
     }
 }
 """
@@ -1205,8 +1205,8 @@ fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
     let Opt = Option(u32);
     match @parse_u32("4294967296") {
-        Opt::Some(n) => @intCast(n),
-        Opt::None => 42,
+        Opt.Some(n) => @intCast(n),
+        Opt.None => 42,
     }
 }
 """
@@ -1220,8 +1220,8 @@ fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
     let Opt = Option(u32);
     match @parse_u32("-1") {
-        Opt::Some(n) => @intCast(n),
-        Opt::None => 42,
+        Opt.Some(n) => @intCast(n),
+        Opt.None => 42,
     }
 }
 """
@@ -1235,8 +1235,8 @@ fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
     let Opt = Option(i32);
     match @parse_i32("127") {
-        Opt::Some(n) => n,
-        Opt::None => 0,
+        Opt.Some(n) => n,
+        Opt.None => 0,
     }
 }
 """
@@ -1248,11 +1248,11 @@ spec = ["4.13:43", "4.13:44"]
 source = """
 fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
-    // Test parsing of i32::MAX (doesn't overflow)
+    // Test parsing of i32.MAX (doesn't overflow)
     let Opt = Option(i32);
     match @parse_i32("2147483647") {
-        Opt::Some(n) => if n == 2147483647 { 255 } else { 1 },
-        Opt::None => 1,
+        Opt.Some(n) => if n == 2147483647 { 255 } else { 1 },
+        Opt.None => 1,
     }
 }
 """
@@ -1264,11 +1264,11 @@ spec = ["4.13:43", "4.13:44", "4.13:47"]
 source = """
 fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
-    // Test parsing of i32::MIN (doesn't overflow)
+    // Test parsing of i32.MIN (doesn't overflow)
     let Opt = Option(i32);
     match @parse_i32("-2147483648") {
-        Opt::Some(n) => if n == -2147483648 { 254 } else { 1 },
-        Opt::None => 1,
+        Opt.Some(n) => if n == -2147483648 { 254 } else { 1 },
+        Opt.None => 1,
     }
 }
 """
@@ -1450,8 +1450,8 @@ fn main() -> i32 {
     // @target_arch() returns an Arch enum value
     let arch = @target_arch();
     match arch {
-        Arch::X86_64 => 1,
-        Arch::Aarch64 => 2,
+        Arch.X86_64 => 1,
+        Arch.Aarch64 => 2,
     }
 }
 """
@@ -1466,8 +1466,8 @@ fn main() -> i32 {
     // @target_arch() returns an Arch enum value
     let arch = @target_arch();
     match arch {
-        Arch::X86_64 => 1,
-        Arch::Aarch64 => 2,
+        Arch.X86_64 => 1,
+        Arch.Aarch64 => 2,
     }
 }
 """
@@ -1505,8 +1505,8 @@ source = """
 // The branch is selected at compile time based on target arch
 fn main() -> i32 {
     match @target_arch() {
-        Arch::X86_64 => 42,
-        Arch::Aarch64 => 43,
+        Arch.X86_64 => 42,
+        Arch.Aarch64 => 43,
     }
 }
 """
@@ -1520,8 +1520,8 @@ source = """
 // The branch is selected at compile time based on target arch
 fn main() -> i32 {
     match @target_arch() {
-        Arch::X86_64 => 42,
-        Arch::Aarch64 => 43,
+        Arch.X86_64 => 42,
+        Arch.Aarch64 => 43,
     }
 }
 """
@@ -1534,8 +1534,8 @@ only_on = ["x86-64-linux", "x86-64-macos"]
 source = """
 fn main() -> i32 {
     match @target_arch() {
-        Arch::X86_64 => 100,
-        Arch::Aarch64 => 200,
+        Arch.X86_64 => 100,
+        Arch.Aarch64 => 200,
     }
 }
 """
@@ -1548,8 +1548,8 @@ only_on = ["aarch64-linux", "aarch64-macos"]
 source = """
 fn main() -> i32 {
     match @target_arch() {
-        Arch::X86_64 => 100,
-        Arch::Aarch64 => 200,
+        Arch.X86_64 => 100,
+        Arch.Aarch64 => 200,
     }
 }
 """
@@ -1568,8 +1568,8 @@ fn main() -> i32 {
     // @target_os() returns an Os enum value
     let os = @target_os();
     match os {
-        Os::Linux => 1,
-        Os::Macos => 2,
+        Os.Linux => 1,
+        Os.Macos => 2,
     }
 }
 """
@@ -1584,8 +1584,8 @@ fn main() -> i32 {
     // @target_os() returns an Os enum value
     let os = @target_os();
     match os {
-        Os::Linux => 1,
-        Os::Macos => 2,
+        Os.Linux => 1,
+        Os.Macos => 2,
     }
 }
 """
@@ -1622,8 +1622,8 @@ only_on = ["x86-64-linux", "aarch64-linux"]
 source = """
 fn main() -> i32 {
     match @target_os() {
-        Os::Linux => 10,
-        Os::Macos => 20,
+        Os.Linux => 10,
+        Os.Macos => 20,
     }
 }
 """
@@ -1636,8 +1636,8 @@ only_on = ["x86-64-macos", "aarch64-macos"]
 source = """
 fn main() -> i32 {
     match @target_os() {
-        Os::Linux => 10,
-        Os::Macos => 20,
+        Os.Linux => 10,
+        Os.Macos => 20,
     }
 }
 """
@@ -1655,16 +1655,16 @@ source = """
 fn main() -> i32 {
     // Combined arch + os detection using nested match
     match @target_arch() {
-        Arch::X86_64 => {
+        Arch.X86_64 => {
             match @target_os() {
-                Os::Linux => 99,
-                Os::Macos => 88,
+                Os.Linux => 99,
+                Os.Macos => 88,
             }
         },
-        Arch::Aarch64 => {
+        Arch.Aarch64 => {
             match @target_os() {
-                Os::Linux => 77,
-                Os::Macos => 66,
+                Os.Linux => 77,
+                Os.Macos => 66,
             }
         },
     }
@@ -1680,16 +1680,16 @@ source = """
 fn main() -> i32 {
     // Combined arch + os detection using nested match
     match @target_arch() {
-        Arch::X86_64 => {
+        Arch.X86_64 => {
             match @target_os() {
-                Os::Linux => 99,
-                Os::Macos => 88,
+                Os.Linux => 99,
+                Os.Macos => 88,
             }
         },
-        Arch::Aarch64 => {
+        Arch.Aarch64 => {
             match @target_os() {
-                Os::Linux => 77,
-                Os::Macos => 66,
+                Os.Linux => 77,
+                Os.Macos => 66,
             }
         },
     }
@@ -1705,16 +1705,16 @@ source = """
 fn main() -> i32 {
     // Combined arch + os detection using nested match
     match @target_arch() {
-        Arch::X86_64 => {
+        Arch.X86_64 => {
             match @target_os() {
-                Os::Linux => 99,
-                Os::Macos => 88,
+                Os.Linux => 99,
+                Os.Macos => 88,
             }
         },
-        Arch::Aarch64 => {
+        Arch.Aarch64 => {
             match @target_os() {
-                Os::Linux => 77,
-                Os::Macos => 66,
+                Os.Linux => 77,
+                Os.Macos => 66,
             }
         },
     }
@@ -1730,16 +1730,16 @@ source = """
 fn main() -> i32 {
     // Combined arch + os detection using nested match
     match @target_arch() {
-        Arch::X86_64 => {
+        Arch.X86_64 => {
             match @target_os() {
-                Os::Linux => 99,
-                Os::Macos => 88,
+                Os.Linux => 99,
+                Os.Macos => 88,
             }
         },
-        Arch::Aarch64 => {
+        Arch.Aarch64 => {
             match @target_os() {
-                Os::Linux => 77,
-                Os::Macos => 66,
+                Os.Linux => 77,
+                Os.Macos => 66,
             }
         },
     }
@@ -1755,8 +1755,8 @@ source = """
 fn main() -> i32 {
     // Test that Arch enum has X86_64 and Aarch64 variants
     match @target_arch() {
-        Arch::X86_64 => 1,
-        Arch::Aarch64 => 2,
+        Arch.X86_64 => 1,
+        Arch.Aarch64 => 2,
     }
 }
 """
@@ -1770,8 +1770,8 @@ source = """
 fn main() -> i32 {
     // Test that Arch enum has X86_64 and Aarch64 variants
     match @target_arch() {
-        Arch::X86_64 => 1,
-        Arch::Aarch64 => 2,
+        Arch.X86_64 => 1,
+        Arch.Aarch64 => 2,
     }
 }
 """
@@ -1785,8 +1785,8 @@ source = """
 fn main() -> i32 {
     // Test that Os enum has Linux and Macos variants
     match @target_os() {
-        Os::Linux => 1,
-        Os::Macos => 2,
+        Os.Linux => 1,
+        Os.Macos => 2,
     }
 }
 """
@@ -1800,8 +1800,8 @@ source = """
 fn main() -> i32 {
     // Test that Os enum has Linux and Macos variants
     match @target_os() {
-        Os::Linux => 1,
-        Os::Macos => 2,
+        Os.Linux => 1,
+        Os.Macos => 2,
     }
 }
 """
@@ -1816,8 +1816,8 @@ fn main() -> i32 {
     // The value is determined at compile time
     let os = @target_os();
     match os {
-        Os::Linux => 10,
-        Os::Macos => 20,
+        Os.Linux => 10,
+        Os.Macos => 20,
     }
 }
 """
@@ -1832,8 +1832,8 @@ fn main() -> i32 {
     // The value is determined at compile time
     let os = @target_os();
     match os {
-        Os::Linux => 10,
-        Os::Macos => 20,
+        Os.Linux => 10,
+        Os.Macos => 20,
     }
 }
 """

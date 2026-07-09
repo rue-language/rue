@@ -44,16 +44,16 @@ enum Direction {
 
 fn steps(d: Direction) -> i32 {
     match d {
-        Direction::North => 1,
-        Direction::South => 2,
-        Direction::East => 3,
-        Direction::West => 4,
+        Direction.North => 1,
+        Direction.South => 2,
+        Direction.East => 3,
+        Direction.West => 4,
     }
 }
 
 fn main() -> i32 {
-    @dbg(steps(Direction::East));
-    @dbg(steps(Direction::North));
+    @dbg(steps(Direction.East));
+    @dbg(steps(Direction.North));
     0
 }
 """ }]
@@ -94,7 +94,7 @@ stdout = """
 name = "string_builder_push_str"
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
-    let mut s = String::new();
+    let mut s = String.new();
     s.push_str("Hello");
     s.push_str(", ");
     s.push_str("Rue!");
@@ -113,7 +113,7 @@ Hello, Rue!
 name = "dbg_string_then_use"
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
-    let mut s = String::new();
+    let mut s = String.new();
     s.push_str("Hello");
     @dbg(s);
     @dbg(s.len());
@@ -132,14 +132,14 @@ files = [
 fn main() -> i32 {
     let OptStr = @import("opt.rue").Option(String);
     match @read_line() {
-        OptStr::Some(answer) => {
+        OptStr.Some(answer) => {
             if answer == "yes" {
                 @dbg("affirmative");
             } else {
                 @dbg("negative");
             }
         },
-        OptStr::None => {},
+        OptStr.None => {},
     }
     0
 }

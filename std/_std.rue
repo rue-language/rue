@@ -15,16 +15,16 @@ pub const arraybuf = @import("arraybuf.rue");
 
 fn _exit_syscall_number() -> u64 {
     match @target_arch() {
-        Arch::X86_64 => {
+        Arch.X86_64 => {
             match @target_os() {
-                Os::Linux => 60,
-                Os::Macos => 1,
+                Os.Linux => 60,
+                Os.Macos => 1,
             }
         },
-        Arch::Aarch64 => {
+        Arch.Aarch64 => {
             match @target_os() {
-                Os::Linux => 93,
-                Os::Macos => 1,
+                Os.Linux => 93,
+                Os.Macos => 1,
             }
         },
     }

@@ -54,11 +54,11 @@ description = "Basic pub enum declaration"
 source = """
 pub enum Color { Red, Green, Blue }
 fn main() -> i32 {
-    let c = Color::Red;
+    let c = Color.Red;
     match c {
-        Color::Red => 42,
-        Color::Green => 0,
-        Color::Blue => 0,
+        Color.Red => 42,
+        Color.Green => 0,
+        Color.Blue => 0,
     }
 }
 """
@@ -85,11 +85,11 @@ enum PrivStatus { Active, Inactive }
 fn main() -> i32 {
     let p1 = PubPoint { x: public_fn() };
     let p2 = PrivPoint { y: private_fn() };
-    let s1 = PubStatus::On;
-    let s2 = PrivStatus::Active;
+    let s1 = PubStatus.On;
+    let s2 = PrivStatus.Active;
     match s1 {
-        PubStatus::On => p1.x + p2.y + 12,
-        PubStatus::Off => 0,
+        PubStatus.On => p1.x + p2.y + 12,
+        PubStatus.Off => 0,
     }
 }
 """

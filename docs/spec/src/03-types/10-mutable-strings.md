@@ -51,18 +51,18 @@ fn main() -> i32 {
 
 {{ rule(id="3.10:7", cat="normative") }}
 
-`StrBuf::new()` returns an empty string with no allocation.
+`StrBuf.new()` returns an empty string with no allocation.
 
 {{ rule(id="3.10:8", cat="normative") }}
 
-`StrBuf::with_capacity(cap: u64)` returns an empty string with pre-allocated capacity for `cap` bytes.
+`StrBuf.with_capacity(cap: u64)` returns an empty string with pre-allocated capacity for `cap` bytes.
 
 {{ rule(id="3.10:9", cat="example") }}
 
 ```rue
 fn main() -> i32 {
-    let empty = StrBuf::new();
-    let prealloc = StrBuf::with_capacity(1024);
+    let empty = StrBuf.new();
+    let prealloc = StrBuf.with_capacity(1024);
     0
 }
 ```
@@ -124,7 +124,7 @@ Mutation methods use `inout self` to modify the string in place. The variable mu
 
 ```rue
 fn main() -> i32 {
-    let mut s = StrBuf::new();
+    let mut s = StrBuf.new();
     s.push_str("hello");
     s.push_str(" world");
     s.push(33);  // '!' character

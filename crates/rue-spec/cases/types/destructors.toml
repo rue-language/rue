@@ -199,11 +199,11 @@ source = """
 enum Color { Red, Green, Blue }
 
 fn main() -> i32 {
-    let c = Color::Green;
+    let c = Color.Green;
     match c {
-        Color::Red => 1,
-        Color::Green => 2,
-        Color::Blue => 3,
+        Color.Red => 1,
+        Color.Green => 2,
+        Color.Blue => 3,
     }
 }
 """
@@ -374,7 +374,7 @@ spec = ["3.9:11", "3.10:29"]
 description = "A type has a destructor if dropping requires cleanup (String drops heap buffer)"
 source = """
 fn main() -> i32 {
-    let mut s = String::new();
+    let mut s = String.new();
     s.push_str("hello");
     // s has heap allocation
     0
@@ -420,7 +420,7 @@ struct Container {
 }
 
 fn main() -> i32 {
-    let mut s = String::new();
+    let mut s = String.new();
     s.push_str("test");
     let c = Container { name: s, value: 42 };
     c.value
@@ -463,9 +463,9 @@ struct TwoStrings {
 }
 
 fn main() -> i32 {
-    let mut a = String::new();
+    let mut a = String.new();
     a.push_str("first");
-    let mut b = String::new();
+    let mut b = String.new();
     b.push_str("second");
     let ts = TwoStrings { first: a, second: b };
     0
@@ -677,7 +677,7 @@ spec = ["3.9:21", "3.10:29"]
 description = "Non-trivially droppable types generate destructor calls"
 source = """
 fn main() -> i32 {
-    let mut s = String::new();
+    let mut s = String.new();
     s.push_str("hello");
     0
 }
@@ -1191,7 +1191,7 @@ fn Box(comptime T: type) -> type {
 
 fn main() -> i32 {
     let B = Box(i32);
-    let b = B::make(7);
+    let b = B.make(7);
     @dbg(100);
     0
 }
@@ -1214,9 +1214,9 @@ fn Tag(comptime T: type) -> type {
 
 fn main() -> i32 {
     let G = Tag(i32);
-    let a = G::make(1);
-    let b = G::make(2);
-    let c = G::make(3);
+    let a = G.make(1);
+    let b = G.make(2);
+    let c = G.make(3);
     @dbg(100);
     0
 }
@@ -1244,7 +1244,7 @@ fn eat(g: Tag(i32)) -> i32 {
 
 fn main() -> i32 {
     let G = Tag(i32);
-    let a = G::make(5);
+    let a = G.make(5);
     @dbg(eat(a));   // a moved into eat: dropped there (prints 5), then eat returns 5
     @dbg(100);
     0

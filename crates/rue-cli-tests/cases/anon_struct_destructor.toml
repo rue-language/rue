@@ -30,7 +30,7 @@ fn Box(comptime T: type) -> type {
 
 fn main() -> i32 {
     let B = Box(i32);
-    let b = B::make(7);
+    let b = B.make(7);
     @dbg(100);
     0
 }
@@ -54,9 +54,9 @@ fn Tag(comptime T: type) -> type {
 
 fn main() -> i32 {
     let G = Tag(i32);
-    let a = G::make(1);
-    let b = G::make(2);
-    let c = G::make(3);
+    let a = G.make(1);
+    let b = G.make(2);
+    let c = G.make(3);
     @dbg(100);
     0
 }
@@ -86,7 +86,7 @@ fn eat(g: Tag(i32)) -> i32 {
 
 fn main() -> i32 {
     let G = Tag(i32);
-    let a = G::make(5);
+    let a = G.make(5);
     @dbg(eat(a));   // a moved into eat: dropped there (5), then eat returns 5
     @dbg(100);
     0
@@ -134,7 +134,7 @@ fn Buf(comptime T: type) -> type {
 
 fn main() -> i32 {
     let B = Buf(i32);
-    let b = B::with(4, 42);
+    let b = B.with(4, 42);
     @dbg(b.head());   // 42 (live)
     0                 // buffer freed here by the destructor: prints 999
 }
@@ -161,8 +161,8 @@ fn Cell(comptime T: type) -> type {
 fn main() -> i32 {
     let Ci = Cell(i32);
     let Cu = Cell(u32);
-    let a = Ci::of(11);
-    let b = Cu::of(22);
+    let a = Ci.of(11);
+    let b = Cu.of(22);
     @dbg(100);
     0
 }

@@ -20,13 +20,13 @@ fn main() -> i32 {
     let OptInt = @import("opt.rue").Option(i32);
     let line: OptStr = @read_line();
     match line {
-        OptStr::Some(text) => {
+        OptStr.Some(text) => {
             match @parse_i32(text) {
-                OptInt::Some(n) => { @dbg(n); },
-                OptInt::None => {},
+                OptInt.Some(n) => { @dbg(n); },
+                OptInt.None => {},
             }
         },
-        OptStr::None => {},
+        OptStr.None => {},
     }
     0
 }
@@ -49,10 +49,10 @@ fn main() -> i32 {
     loop {
         let line: OptStr = @read_line();
         match line {
-            OptStr::None => break,
-            OptStr::Some(text) => {
+            OptStr.None => break,
+            OptStr.Some(text) => {
                 match @parse_i32(text) {
-                    OptInt::Some(guess) => {
+                    OptInt.Some(guess) => {
                         if guess < secret {
                             @dbg("Too low!");
                         } else if guess > secret {
@@ -62,7 +62,7 @@ fn main() -> i32 {
                             break;
                         }
                     },
-                    OptInt::None => {},
+                    OptInt.None => {},
                 }
             },
         }
@@ -94,13 +94,13 @@ fn main() -> i32 {
     let OptInt = @import("opt.rue").Option(i32);
     let line: OptStr = @read_line();
     match line {
-        OptStr::Some(text) => {
+        OptStr.Some(text) => {
             match @parse_i32(text) {
-                OptInt::Some(n) => n,
-                OptInt::None => 7,
+                OptInt.Some(n) => n,
+                OptInt.None => 7,
             }
         },
-        OptStr::None => 0,
+        OptStr.None => 0,
     }
 }
 """ },
@@ -119,8 +119,8 @@ fn main() -> i32 {
     let OptStr = @import("opt.rue").Option(String);
     let line: OptStr = @read_line();
     match line {
-        OptStr::Some(_text) => 1,
-        OptStr::None => 0,
+        OptStr.Some(_text) => 1,
+        OptStr.None => 0,
     }
 }
 """ },

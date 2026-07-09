@@ -139,7 +139,7 @@ runtime_error_contains = ["integer cast overflow"]
 [[case]]
 name = "u64_above_i64_max_traps"
 files = [{ path = "main.rue", source = """
-fn g() -> u64 { let a: u64 = 9223372036854775807; a + 1 }   // 2^63 > i64::MAX
+fn g() -> u64 { let a: u64 = 9223372036854775807; a + 1 }   // 2^63 > i64.MAX
 fn main() -> i32 {
     let x: u64 = g();
     let y: i64 = @intCast(x);       // out of i64 range -> must trap
@@ -154,7 +154,7 @@ runtime_error_contains = ["integer cast overflow"]
 [[case]]
 name = "i64_in_range_to_i32_ok"
 files = [{ path = "main.rue", source = """
-fn g() -> i64 { 0 - 2147483647 - 1 }    // i32::MIN, exactly in range
+fn g() -> i64 { 0 - 2147483647 - 1 }    // i32.MIN, exactly in range
 fn main() -> i32 {
     let x: i64 = g();
     let y: i32 = @intCast(x);           // boundary value -> must NOT trap

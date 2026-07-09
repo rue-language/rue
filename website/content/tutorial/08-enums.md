@@ -18,12 +18,12 @@ enum Color {
 }
 
 fn main() -> i32 {
-    let c = Color::Green;
+    let c = Color.Green;
     0
 }
 ```
 
-Variants are accessed with the `::` syntax: `EnumName::VariantName`.
+Variants are accessed with a `.`: `EnumName.VariantName`.
 
 ## Matching on Enums
 
@@ -38,16 +38,16 @@ enum Color {
 
 fn color_value(c: Color) -> i32 {
     match c {
-        Color::Red => 1,
-        Color::Green => 2,
-        Color::Blue => 3,
+        Color.Red => 1,
+        Color.Green => 2,
+        Color.Blue => 3,
     }
 }
 
 fn main() -> i32 {
-    @dbg(color_value(Color::Red));    // prints: 1
-    @dbg(color_value(Color::Green));  // prints: 2
-    @dbg(color_value(Color::Blue));   // prints: 3
+    println(@to_string(color_value(Color.Red)));    // prints: 1
+    println(@to_string(color_value(Color.Green)));  // prints: 2
+    println(@to_string(color_value(Color.Blue)));   // prints: 3
     0
 }
 ```
@@ -66,15 +66,15 @@ enum Direction {
 
 fn to_degrees(d: Direction) -> i32 {
     match d {
-        Direction::North => 0,
-        Direction::East => 90,
-        Direction::South => 180,
-        Direction::West => 270,
+        Direction.North => 0,
+        Direction.East => 90,
+        Direction.South => 180,
+        Direction.West => 270,
     }
 }
 
 fn main() -> i32 {
-    to_degrees(Direction::North)
+    to_degrees(Direction.North)
 }
 ```
 
@@ -83,8 +83,8 @@ If you forget a variant, the compiler will tell you:
 ```rue skip
 fn to_degrees(d: Direction) -> i32 {
     match d {
-        Direction::North => 0,
-        Direction::East => 90,
+        Direction.North => 0,
+        Direction.East => 90,
         // Error: non-exhaustive match, missing South and West
     }
 }
@@ -108,7 +108,7 @@ struct Task {
 
 fn is_done(task: Task) -> bool {
     match task.status {
-        Status::Completed => true,
+        Status.Completed => true,
         _ => false,
     }
 }
@@ -116,10 +116,14 @@ fn is_done(task: Task) -> bool {
 fn main() -> i32 {
     let task = Task {
         id: 1,
-        status: Status::Active,
+        status: Status.Active,
     };
 
-    @dbg(is_done(task));  // prints: 0 (false)
+    if is_done(task) {
+        println("task is done");
+    } else {
+        println("task is not done");  // this branch runs: status is Active
+    }
     0
 }
 ```
@@ -135,21 +139,21 @@ enum TrafficLight {
 
 fn next_light(current: TrafficLight) -> TrafficLight {
     match current {
-        TrafficLight::Red => TrafficLight::Green,
-        TrafficLight::Green => TrafficLight::Yellow,
-        TrafficLight::Yellow => TrafficLight::Red,
+        TrafficLight.Red => TrafficLight.Green,
+        TrafficLight.Green => TrafficLight.Yellow,
+        TrafficLight.Yellow => TrafficLight.Red,
     }
 }
 
 fn light_duration(light: TrafficLight) -> i32 {
     match light {
-        TrafficLight::Red => 30,
-        TrafficLight::Yellow => 5,
-        TrafficLight::Green => 25,
+        TrafficLight.Red => 30,
+        TrafficLight.Yellow => 5,
+        TrafficLight.Green => 25,
     }
 }
 
 fn main() -> i32 {
-    light_duration(next_light(TrafficLight::Red))
+    light_duration(next_light(TrafficLight.Red))
 }
 ```
