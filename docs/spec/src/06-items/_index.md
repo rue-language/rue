@@ -57,7 +57,7 @@ struct StrBuf { data: i32 }  // compile error
 
 {{ rule(id="6.0:5", cat="legality-rule") }}
 
-User-defined functions **MUST NOT** use names reserved for runtime and code-generation helpers. The reserved function names are exactly: any name beginning with `__rue_`, and the program entry point `_start`. Every compiler- and runtime-emitted symbol — including built-in type methods and associated functions (`__rue_String_len`, `__rue_String_new`) — lives under the `__rue_` prefix, so the reserved set does not grow as built-in types are added. Defining a function with a reserved name produces a compile-time error.
+User-defined functions **MUST NOT** use names reserved for runtime and code-generation helpers. The reserved function names are exactly: any name beginning with `__rue_`; the program entry points `_start` and `_main`; and the compiler-builtin memory routines `memcpy`, `memmove`, `memset`, `memcmp`, and `bcmp` (the runtime exports these under their fixed platform names, so a user definition would collide at link time). Every other compiler- and runtime-emitted symbol — including built-in type methods and associated functions (`__rue_String_len`, `__rue_String_new`) — lives under the `__rue_` prefix, so the reserved set does not grow as built-in types are added. Defining a function with a reserved name produces a compile-time error.
 
 {{ rule(id="6.0:6", cat="example") }}
 

@@ -610,32 +610,48 @@ pub fn is_reserved_type_name(name: &str) -> bool {
     name == STRING_ALIAS_NAME || BUILTIN_TYPES.iter().any(|t| t.name == name)
 }
 
+/// Runtime symbols exported UNMANGLED outside the `__rue_` prefix, because
+/// their exact names are load-bearing (RUE-354):
+///
+/// - `memcpy`/`memmove`/`memset`/`memcmp`/`bcmp` (`rue-runtime/src/memory.rs`):
+///   rustc/LLVM lowers copies and comparisons to calls with exactly these
+///   compiler-builtin names, so they cannot be moved under `__rue_`.
+/// - `_start` / `_main` (`rue-runtime/src/entry.rs`): the program entry points
+///   the linker resolves on Linux and macOS respectively.
+///
+/// Keep this list in sync with the `#[unsafe(no_mangle)]` items in those two
+/// files — a missed name surfaces as a confusing duplicate-symbol link error
+/// (E1000) instead of the intended E0435 declaration-time diagnostic.
+const RUNTIME_EXPORTED_NAMES: &[&str] = &[
+    "memcpy", "memmove", "memset", "memcmp", "bcmp", "_start", "_main",
+];
+
 /// Check if a name is reserved for a runtime/codegen helper function, and thus
 /// may not be used as a user-defined function name.
 ///
 /// A user function with one of these names would collide with a symbol emitted
-/// by the runtime or codegen. Every such symbol lives under the reserved
+/// by the runtime or codegen. Almost every such symbol lives under the reserved
 /// `__rue_` prefix — built-in type methods and associated functions
 /// (`__rue_String_len`, `__rue_String_new`), allocation/exit/drop glue
 /// (`__rue_alloc`, `__rue_exit`, `__rue_drop_String`), and operator helpers
-/// (`__rue_str_eq`) — with the sole exception of the linker-emitted program
-/// entry point `_start`. Reserving exactly `__rue_*` and `_start` (rather than
-/// growing the set for every new builtin) means `<BuiltinType>__<method>`
-/// spellings like `String__len` are ordinary, legal user identifiers
-/// (RUE-125). Depending on link order a real collision either fails to link or
-/// silently binds calls to the wrong definition, so these names are rejected at
-/// declaration time with a clear diagnostic.
+/// (`__rue_str_eq`) — but the runtime also exports a handful of unmangled
+/// names whose spellings are fixed by the platform or by rustc/LLVM lowering:
+/// see [`RUNTIME_EXPORTED_NAMES`]. Reserving exactly `__rue_*` plus that short
+/// fixed list (rather than growing the set for every new builtin) means
+/// `<BuiltinType>__<method>` spellings like `String__len` are ordinary, legal
+/// user identifiers (RUE-125). Depending on link order a real collision either
+/// fails to link or silently binds calls to the wrong definition, so these
+/// names are rejected at declaration time with a clear diagnostic.
 pub fn is_reserved_function_name(name: &str) -> bool {
     // Runtime internal helpers, built-in methods, drop glue, operators — every
-    // compiler/runtime symbol is emitted under this prefix.
+    // compiler/runtime symbol not in RUNTIME_EXPORTED_NAMES is emitted under
+    // this prefix.
     if name.starts_with("__rue_") {
         return true;
     }
-    // The program entry point emitted by the linker.
-    if name == "_start" {
-        return true;
-    }
-    false
+    // Entry points and compiler-builtin memory routines the runtime exports
+    // under their fixed platform names (RUE-354).
+    RUNTIME_EXPORTED_NAMES.contains(&name)
 }
 
 // ============================================================================
@@ -782,6 +798,19 @@ mod tests {
         assert!(!is_reserved_function_name("Vec__push"));
         assert!(!is_reserved_function_name("_start_engine"));
         assert!(!is_reserved_function_name("rue_helper")); // no leading __
+
+        // Unmangled runtime exports outside the __rue_ prefix (RUE-354):
+        // compiler-builtin memory routines and the macOS entry point.
+        for name in ["memcpy", "memmove", "memset", "memcmp", "bcmp", "_main"] {
+            assert!(
+                is_reserved_function_name(name),
+                "runtime-exported symbol must be reserved: {}",
+                name
+            );
+        }
+        assert!(!is_reserved_function_name("memcpy2"));
+        assert!(!is_reserved_function_name("my_memcpy"));
+        assert!(!is_reserved_function_name("_main_loop"));
     }
 
     #[test]

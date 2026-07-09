@@ -130,6 +130,28 @@ compile_fail = true
 error_contains = "cannot define function `_start`: name is reserved for a runtime helper"
 
 [[case]]
+name = "fn_reserved_memcpy"
+spec = ["6.0:5"]
+description = "User-defined function cannot use a compiler-builtin memory-routine name the runtime exports unmangled (RUE-354)"
+source = """
+fn memcpy(x: i32) -> i32 { x }
+fn main() -> i32 { memcpy(3) }
+"""
+compile_fail = true
+error_contains = "cannot define function `memcpy`: name is reserved for a runtime helper"
+
+[[case]]
+name = "fn_reserved_macos_entry_point"
+spec = ["6.0:5"]
+description = "User-defined function cannot use the macOS entry-point name _main (RUE-354)"
+source = """
+fn _main() -> i32 { 1 }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = "cannot define function `_main`: name is reserved for a runtime helper"
+
+[[case]]
 name = "fn_lookalike_name_allowed"
 spec = ["6.0:5"]
 description = "A name resembling but not matching a reserved name is allowed"
