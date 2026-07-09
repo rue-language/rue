@@ -110,12 +110,14 @@ fn main() -> i32 {
 args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
 exit_code = 8
 
-# `inout str` rebinds the caller's first-class `{ptr, len}` value. This used to
-# ICE in both backends when the callee assigned to the parameter: sema emitted a
-# ParamStore, but function ABI lowering had treated `inout str` like a by-value
-# slice view (RUE-385).
+# Two-types model (ADR-0043, RUE-386): a first-class / static `str` value is NOT
+# a legal `inout str` operand — an exclusive view requires *local* buffer
+# provenance. (This supersedes the earlier RUE-385 behaviour, where `inout str`
+# rebound the caller's static `{ptr, len}`; under the ruling that static-operand
+# case is rejected outright, closing the write-to-`.rodata` and Copy-two-roots
+# holes.) The callee/assignment never runs; sema rejects the call.
 [[case]]
-name = "str_inout_rebinds_caller_fat_pointer"
+name = "str_inout_static_operand_rejected"
 files = [{ path = "main.rue", source = """
 fn set_hi(inout s: str) {
     s = "hi";
@@ -127,7 +129,24 @@ fn main() -> i32 {
 }
 """ }]
 args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
-exit_code = 2
+compile_fail = true
+error_contains = ["E0496"]
+
+# `inout str` DOES accept a local buffer operand (`StrBuf`/`Str(N)`): the
+# exclusive view reads the buffer's bytes through the `str` interface.
+[[case]]
+name = "str_inout_accepts_local_buffer"
+files = [{ path = "main.rue", source = """
+fn take(inout s: str) -> u64 {
+    s.len()
+}
+fn main() -> i32 {
+    let mut b: Str(8) = "hello";
+    @intCast(take(inout b))
+}
+""" }]
+args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+exit_code = 5
 
 # Without the preview flag, `str` is gated with a clear diagnostic (not an ICE).
 [[case]]
@@ -155,3 +174,87 @@ fn main() -> i32 {
 """ }]
 args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
 exit_code = 5
+
+# ============================================================================
+# RUE-386 two-types model: reject buffer/view -> first-class `str` escapes.
+# Both of these were VERIFIED SEGFAULTS (exit 139) on the pre-fix compiler: a
+# heap `StrBuf` coerced to a first-class `str` that escaped its scope, leaving a
+# dangling `{ptr, len}`. They are now compile errors (E0495), and each legal
+# alternative (`borrow str`) is exercised alongside.
+# ============================================================================
+
+# The original RUE-386 repro #1: a `StrBuf` passed to a bare `str` parameter,
+# stored in a struct field, and escaping its scope. SEGFAULT -> E0495.
+[[case]]
+name = "strbuf_to_first_class_str_param_field_escape_rejected"
+files = [{ path = "main.rue", source = """
+struct Keep { s: str }
+fn cap(s: str) -> Keep { Keep { s: s } }
+fn main() -> i32 {
+    let k = {
+        let b = "xx" + "yy";
+        cap(b)
+    };
+    @dbg(k.s.len());
+    @dbg(k.s[0]);
+    0
+}
+""" }]
+args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0495", "did you mean `borrow str`?"]
+
+# The original RUE-386 repro #2: the return-position variant. SEGFAULT -> E0495.
+[[case]]
+name = "strbuf_to_first_class_str_return_escape_rejected"
+files = [{ path = "main.rue", source = """
+fn take(s: str) -> str { s }
+fn main() -> i32 {
+    let r = {
+        let b = "xx" + "yy";
+        take(b)
+    };
+    @dbg(r.len());
+    @dbg(r[0]);
+    0
+}
+""" }]
+args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0495"]
+
+# A borrowed `str` view escaping via a returned struct field was ALSO a verified
+# segfault (the `borrow`-keyword variant of repro #1): E0497.
+[[case]]
+name = "borrow_str_view_field_escape_rejected"
+files = [{ path = "main.rue", source = """
+struct Keep { s: str }
+fn cap(borrow s: str) -> Keep { Keep { s: s } }
+fn main() -> i32 {
+    let k = {
+        let b = "xx" + "yy";
+        cap(borrow b)
+    };
+    @dbg(k.s.len());
+    0
+}
+""" }]
+args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0497"]
+
+# The legal alternative to the repros: read the buffer through a `borrow str`
+# view within the call. A `Str(N)` buffer (static-backed like `str`) is read
+# correctly through the view — `.len()` and the first byte.
+[[case]]
+name = "buffer_read_through_borrow_str_view_ok"
+files = [{ path = "main.rue", source = """
+fn len_of(borrow s: str) -> u64 { s.len() }
+fn first(borrow s: str) -> u8 { s[0] }
+fn main() -> i32 {
+    let buf: Str(8) = "hello";
+    if len_of(borrow buf) == 5 && first(borrow buf) == 104 { 7 } else { 0 }
+}
+""" }]
+args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+exit_code = 7

@@ -481,6 +481,21 @@ impl<'a> Sema<'a> {
 
         // Add implicit return only if body doesn't already diverge (e.g., explicit return)
         if body_result.ty != Type::NEVER {
+            // Two-types model (ADR-0043, RUE-386): a `str`-returning function's
+            // implicit-return (tail) value must be a first-class `str`. A buffer
+            // (`StrBuf`/`Str(N)`) or a borrowed `str` view escaping here dangles
+            // once its backing storage is dropped. (Explicit `return x;` is
+            // checked in `analyze_return`.)
+            if self.is_str_struct(return_type) {
+                let tail = self.rir_block_tail_expr(body);
+                self.reject_non_first_class_str(
+                    tail,
+                    body_result.ty,
+                    FirstClassStrSite::Return,
+                    self.rir.get(tail).span,
+                    &ctx,
+                )?;
+            }
             air.add_inst(AirInst {
                 data: AirInstData::Ret(Some(body_result.air_ref)),
                 ty: return_type,

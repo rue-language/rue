@@ -257,6 +257,29 @@ impl ErrorCode {
     /// never be proven moved-out (moving out of a by-ref binding is itself
     /// rejected), so a linear `inout` assignment is always ill-formed.
     pub const LINEAR_VALUE_OVERWRITTEN_THROUGH_INOUT: Self = Self(494);
+    /// A string *buffer* — `StrBuf` (growable) or `Str(N)` (fixed) — was used
+    /// where a *first-class* `str` value is required: a bare `str` parameter,
+    /// a `str` binding, a `str` return, or a `str` struct field (ADR-0043
+    /// two-types model, RUE-386). A first-class `str` is static-backed and may
+    /// escape; a buffer's bytes live in caller-owned local/heap storage, so
+    /// letting it become a first-class `str` produces a dangling view once the
+    /// buffer is dropped (the verified RUE-386 segfault). A buffer coerces only
+    /// to a second-class `borrow str` / `inout str` view.
+    pub const BUFFER_NOT_FIRST_CLASS_STR: Self = Self(495);
+    /// A first-class / static-backed `str` value was supplied as the operand
+    /// of an `inout str` parameter (ADR-0043 two-types model, RUE-386). An
+    /// exclusive `str` view requires *local* provenance — a `StrBuf`/`Str(N)`
+    /// buffer the caller owns — because a static `str` lives in read-only
+    /// `.rodata` (exclusive mutation would fault) and, being `Copy`, can have
+    /// two roots over one static buffer that per-root exclusivity cannot see.
+    pub const INOUT_STR_REQUIRES_LOCAL_BUFFER: Self = Self(496);
+    /// A borrowed `str` *view* — the binding of a `borrow str` / `inout str`
+    /// parameter — was used where a first-class `str` value is required
+    /// (returned, stored in a struct field, bound to a `str` local, or passed
+    /// to a bare `str` parameter) (ADR-0043 two-types model, RUE-386). A view
+    /// is second-class: it may only be read (`.len()`, byte indexing) or
+    /// re-borrowed, never escape the call as a first-class value.
+    pub const STR_VIEW_NOT_FIRST_CLASS: Self = Self(497);
 
     // ========================================================================
     // Control flow errors (E0500-E0599)
@@ -1215,6 +1238,21 @@ pub enum ErrorKind {
         "string literal of {byte_len} bytes does not fit in `Str({capacity})` (capacity {capacity} bytes)"
     )]
     StrFixedCapacityExceeded { capacity: u64, byte_len: u64 },
+    /// A string buffer (`StrBuf`/`Str(N)`) flowed into a first-class `str`
+    /// slot (ADR-0043 two-types model, RUE-386). `site` names the position
+    /// ("as a parameter argument", "in a binding", "as a return value", "in a
+    /// struct field").
+    #[error("a string buffer (`{found}`) cannot be used as a first-class `str` {site}")]
+    BufferNotFirstClassStr { found: String, site: String },
+    /// A first-class / static `str` value was passed as an `inout str` operand
+    /// (ADR-0043 two-types model, RUE-386).
+    #[error("a first-class `str` value cannot be passed as `inout str`")]
+    InoutStrRequiresLocalBuffer,
+    /// A borrowed `str` view (a `borrow`/`inout str` parameter) escaped into a
+    /// first-class `str` slot (ADR-0043 two-types model, RUE-386). `site`
+    /// names the position, as in [`Self::BufferNotFirstClassStr`].
+    #[error("a borrowed `str` view cannot be used as a first-class `str` {site}")]
+    StrViewNotFirstClass { site: String },
     /// Inout argument is not an lvalue (variable, field, or array element)
     #[error("inout argument must be an lvalue (variable, field, or array element)")]
     InoutNonLvalue,
@@ -1517,6 +1555,9 @@ impl ErrorKind {
             ErrorKind::RawRequiresPlace => ErrorCode::RAW_REQUIRES_PLACE,
             ErrorKind::FieldPtrRequiresField => ErrorCode::FIELD_PTR_REQUIRES_FIELD,
             ErrorKind::StrFixedCapacityExceeded { .. } => ErrorCode::STR_FIXED_CAPACITY_EXCEEDED,
+            ErrorKind::BufferNotFirstClassStr { .. } => ErrorCode::BUFFER_NOT_FIRST_CLASS_STR,
+            ErrorKind::InoutStrRequiresLocalBuffer => ErrorCode::INOUT_STR_REQUIRES_LOCAL_BUFFER,
+            ErrorKind::StrViewNotFirstClass { .. } => ErrorCode::STR_VIEW_NOT_FIRST_CLASS,
             ErrorKind::InoutNonLvalue => ErrorCode::INOUT_NON_LVALUE,
             ErrorKind::InoutExclusiveAccess { .. } => ErrorCode::INOUT_EXCLUSIVE_ACCESS,
             ErrorKind::BorrowNonLvalue => ErrorCode::BORROW_NON_LVALUE,
@@ -2432,6 +2473,33 @@ mod tests {
         assert_eq!(ErrorCode::SLICE_RETURN_NOT_ALLOWED.0, 487);
         assert_eq!(ErrorCode::SLICE_IN_AGGREGATE_FIELD.0, 488);
         assert_eq!(ErrorCode::SLICE_ESCAPES_SCOPE.0, 489);
+    }
+
+    #[test]
+    fn test_two_types_string_model_codes() {
+        // ADR-0043 two-types model (RUE-386): first-class `str` vs. views.
+        assert_eq!(
+            ErrorKind::BufferNotFirstClassStr {
+                found: "StrBuf".to_string(),
+                site: "as a parameter argument".to_string(),
+            }
+            .code(),
+            ErrorCode::BUFFER_NOT_FIRST_CLASS_STR
+        );
+        assert_eq!(
+            ErrorKind::InoutStrRequiresLocalBuffer.code(),
+            ErrorCode::INOUT_STR_REQUIRES_LOCAL_BUFFER
+        );
+        assert_eq!(
+            ErrorKind::StrViewNotFirstClass {
+                site: "as a return value".to_string(),
+            }
+            .code(),
+            ErrorCode::STR_VIEW_NOT_FIRST_CLASS
+        );
+        assert_eq!(ErrorCode::BUFFER_NOT_FIRST_CLASS_STR.0, 495);
+        assert_eq!(ErrorCode::INOUT_STR_REQUIRES_LOCAL_BUFFER.0, 496);
+        assert_eq!(ErrorCode::STR_VIEW_NOT_FIRST_CLASS.0, 497);
     }
 
     #[test]

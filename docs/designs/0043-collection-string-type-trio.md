@@ -109,11 +109,42 @@ system beyond this refinement plus literal syntax.
   languages, not an inconsistency.
 - **`"hello" : str`, a static-backed first-class value.** It is storable, `Copy`,
   and reassignable (`let s = "hello"; s = "hi";` compiles) — the ergonomic
-  default. The cost is that `str` has two provenances: **static** (literals →
-  first-class) and **local** (a `borrow` of a `StrBuf`/`Str(N)` → second-class,
-  argument-only). The compiler tracks this as a single bit, not a lifetime
-  system — the one place Rue's no-lifetime purity gets a smudge, taken
-  deliberately for `&str`-grade ergonomics.
+  default.
+
+  > **Amended 2026-07-09 (RUE-386): the two-types model, not a provenance bit.**
+  > This ADR originally said `str` "has two provenances — static (literals →
+  > first-class) and local (a `borrow` of a `StrBuf`/`Str(N)` → second-class) —
+  > tracked as a single bit." That bit was never sound: it requires a dataflow
+  > that follows the distinction through branches, calls, struct fields, arrays,
+  > and enum payloads — exactly the shadow lifetime analysis the no-lifetimes
+  > spine refuses — and without it a `StrBuf` coerced to a first-class `str` that
+  > escaped its scope (a **verified segfault**, RUE-386). Steve's ruling
+  > (2026-07-09) replaces the bit with a **two-types model** decided
+  > structurally at the coercion, needing zero flow analysis:
+  >
+  > - **`str`** is the *first-class* value: static-backed, `Copy`, storable,
+  >   returnable. It originates only from a string literal or another first-class
+  >   `str`.
+  > - **`borrow str` / `inout str`** are *second-class views* (the ordinary
+  >   slice/access-model machinery of ADR-0037), valid only in argument position.
+  > - **The only coercions:** literal/`str` → `borrow str`; and
+  >   `Str(N)`/`StrBuf` → `borrow str` **or** `inout str`. There is **no**
+  >   coercion from a view to a first-class `str`, and **no** buffer → first-class
+  >   `str` (E0495 for a buffer, E0497 for a view; §3.7:59).
+  > - **`inout str` requires local provenance:** its operand must be a
+  >   caller-owned `StrBuf`/`Str(N)` buffer; a static `str` is never a legal
+  >   exclusive-view operand (E0496) — closing the write-to-`.rodata` path and the
+  >   `Copy`-two-roots aliasing hole (`let s2 = s1` over one static buffer, which
+  >   per-root exclusivity cannot see). "A single bit, not a lifetime system"
+  >   becomes literally "which of two types," and every laundering channel
+  >   (return, struct field, binding, argument) closes at type-check.
+  >
+  > The recognized cost is two `str`-family spellings in signatures (`fn f(s:
+  > str)` vs `fn f(borrow s: str)`): `borrow str` is almost always what a
+  > parameter wants, and a Rust prior reaches for bare `str`. This is mitigated by
+  > a targeted diagnostic on a buffer/non-literal at a bare `str` parameter —
+  > *"parameter type `str` accepts only string literals; did you mean `borrow
+  > str`?"*
 - **Array literals land on the *fixed* rung** (`[1,2,3] : [T; N]`) while string
   literals land on the *slice* rung (`"hello" : str`). This asymmetry is
   principled: **string-literal data is always compile-time-static** (→ a natural
@@ -188,13 +219,16 @@ not an owned copy. This revises ADR-0035, which specified `s[a..b] -> String`
 ## Consequences
 
 - **New surface to build:** the slice type (`borrow [T]` / `inout [T]`), range
-  slicing syntax (`x[a..b]`), and the static-vs-local provenance bit on `str`.
-  This is foundational and should be built as *one* piece so arrays, strings, and
-  buffers share it rather than each inventing a view.
+  slicing syntax (`x[a..b]`), and the first-class-`str`-vs-view split (§3, as
+  amended by RUE-386). This is foundational and should be built as *one* piece so
+  arrays, strings, and buffers share it rather than each inventing a view.
 - **`str`/`String`-grade ergonomics without the tax:** no lifetimes, no `Cow`, no
   "take `&str` return `String`" puzzles, because views cannot escape.
-- **The one smudge:** `str` carries a static/local provenance distinction — a
-  single-bit, two-point echo of a lifetime. Accepted for literal ergonomics.
+- **No smudge, after all:** §3 originally kept a static/local provenance *bit* on
+  `str` — a single-point echo of a lifetime. RUE-386 replaced it with the
+  two-types model (`str` vs `borrow str`/`inout str`), decided structurally at
+  the coercion with no flow analysis, so the no-lifetimes purity holds exactly.
+  The cost moves from a hidden bit to a visible second spelling in signatures.
 - **Renames land as breaking changes** (`Vec` → `ArrayBuf`, `String` → `StrBuf`)
   while the surface is still small — cheapest to do now.
 - **Sequencing:** the slice/trio design is the irreversible part and is the same

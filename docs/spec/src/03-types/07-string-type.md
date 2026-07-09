@@ -391,7 +391,10 @@ value is a two-word view `{ptr, len}`: a pointer to the bytes and a byte length.
 Where a `str` is expected, a string literal has type `str` and is *static-backed*
 and *first-class*: its bytes reside in read-only data that cannot dangle, so the
 `str` value is `@copy`, storable in a binding or a struct field, reassignable,
-returnable from a function, and passable as an argument.
+returnable from a function, and passable as an argument. A first-class `str`
+value originates only from a string literal or from another first-class `str`;
+in particular a string *buffer* (`StrBuf` or `Str(N)`, §3.7:49) and a borrowed
+`str` *view* (§3.7:59) are never themselves first-class `str` values.
 
 {{ rule(id="3.7:45", cat="normative") }}
 
@@ -426,6 +429,38 @@ fn main() -> i32 {
     0
 }
 ```
+
+### First-class `str` versus borrowed views
+
+{{ rule(id="3.7:58", cat="normative") }}
+
+Rue distinguishes two string capabilities structurally, with no provenance
+tracking (ADR-0043): a *first-class* `str` (§3.7:44) — a static-backed value that
+may be copied, stored, returned, and rebound — and a second-class *view* spelled
+`borrow str` (shared) or `inout str` (exclusive). A view is a fat pointer over a
+buffer's bytes that is valid only in argument position; it may be read (`.len()`,
+byte indexing) or re-borrowed, but it cannot escape the call by being returned,
+stored in a struct field, or bound past its argument scope.
+
+{{ rule(id="3.7:59", cat="legality-rule") }}
+
+A string *buffer* — `StrBuf` or `Str(N)` — or a borrowed `str` view used where a
+*first-class* `str` value is required (a bare `str` parameter argument, a `str`
+binding, a `str` return value, or a `str` struct field) is a compile-time error:
+a buffer's bytes live in caller-owned local or heap storage and a view aliases a
+borrow's scope, so either escaping as a first-class `str` would dangle once the
+storage is released. Passing a buffer is reported as E0495 (a bare `str`
+parameter suggests `borrow str`); laundering a view is reported as E0497.
+
+{{ rule(id="3.7:60", cat="normative") }}
+
+A `StrBuf` or `Str(N)` value coerces only to a `borrow str` or `inout str` view,
+never to a first-class `str`. An `inout str` view — an *exclusive* view — further
+requires *local* provenance: its operand must be a `StrBuf`/`Str(N)` buffer the
+caller owns. A first-class or static-backed `str` value is not a legal `inout
+str` operand (E0496), because its bytes are immutable read-only data and, being
+`@copy`, one static buffer could be reached through two roots that per-root
+exclusivity cannot see.
 
 ## The `Str(N)` Type
 
@@ -475,25 +510,28 @@ array, `String`, or `str` index does.
 
 {{ rule(id="3.7:55", cat="normative") }}
 
-A `Str(N)` value is usable where a `str` (§3.7:43) is expected: it coerces to a
-`str` view over its bytes, so a `Str(N)` may be passed to a `str` parameter and
-read through the `str` interface (`.len()`, byte indexing). This makes `str` the
-universal read interface over both the fixed (`Str(N)`) and static-literal
-string rungs.
+A `Str(N)` value is readable through a borrowed `str` view (§3.7:60): it coerces
+to a `borrow str` (or `inout str`) over its bytes, so `borrow s` may be passed to
+a `borrow str` parameter and read through the `str` interface (`.len()`, byte
+indexing). This makes `borrow str` the universal read interface over the fixed
+(`Str(N)`), growable (`StrBuf`), and static-literal string rungs. A `Str(N)` does
+*not* coerce to a first-class `str` (§3.7:59): a bare `str` parameter would let
+the buffer's bytes escape, so `borrow str` is used instead.
 
 {{ rule(id="3.7:56") }}
 
 ```rue
-fn len_of(s: str) -> u64 {
-    s.len()               // read a Str(N) through the str view
+fn len_of(borrow s: str) -> u64 {
+    s.len()               // read a Str(N) through the borrowed str view
 }
 
 fn main() -> i32 {
     let s: Str(8) = "hello";   // fits in 8 bytes
     @dbg(s.len());             // 5
     @dbg(s[0]);                // 104 ('h')
-    @dbg(len_of(s));           // 5   (coerced to str)
+    @dbg(len_of(borrow s));    // 5   (borrowed as `borrow str`)
     // let bad: Str(3) = "hello";  // ERROR (E0492): 5 bytes exceed capacity 3
+    // let x: str = s;             // ERROR (E0495): a buffer is not a first-class str
     0
 }
 ```

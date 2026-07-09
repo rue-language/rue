@@ -5,6 +5,33 @@
 
 use super::*;
 
+/// The position into which a value is being placed when the ADR-0043 two-types
+/// string model (RUE-386) requires a *first-class* `str`: a bare `str`
+/// parameter, a `str` binding, a `str` return, or a `str` struct field. Only a
+/// string literal or another first-class `str` may land in one of these; a
+/// string *buffer* (`StrBuf`/`Str(N)`) or a borrowed `str` *view* is rejected
+/// because it would escape its backing storage. The variant tailors the
+/// diagnostic (only the parameter case gets the `borrow str` did-you-mean).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FirstClassStrSite {
+    Param,
+    Binding,
+    Return,
+    Field,
+}
+
+impl FirstClassStrSite {
+    /// Human-readable position phrase for the diagnostic message.
+    fn describe(self) -> &'static str {
+        match self {
+            FirstClassStrSite::Param => "as a parameter argument",
+            FirstClassStrSite::Binding => "in a binding",
+            FirstClassStrSite::Return => "as a return value",
+            FirstClassStrSite::Field => "in a struct field",
+        }
+    }
+}
+
 impl<'a> Sema<'a> {
     /// Check if directives contain @allow for a specific warning name.
     pub(crate) fn has_allow_directive(
@@ -672,6 +699,120 @@ impl<'a> Sema<'a> {
         Ok(air_args)
     }
 
+    /// Is `operand` a *direct* reference to a `borrow str` / `inout str`
+    /// parameter — i.e. a borrowed `str` *view* value (ADR-0043 two-types
+    /// model, RUE-386)?
+    ///
+    /// Only a whole-value `VarRef` to such a parameter is a view value:
+    /// reading *through* the view (`s.len()`, `s[i]`) never yields a `str`, and
+    /// a `let`-rebind of the view is itself blocked at its binding site, so
+    /// there is never a second first-class root to chase. This keeps the check
+    /// structural (one instruction shape), never a dataflow — exactly what the
+    /// no-lifetimes spine requires.
+    pub(crate) fn is_str_view_operand(&self, operand: InstRef, ctx: &AnalysisContext) -> bool {
+        if let InstData::VarRef { name } = self.rir.get(operand).data {
+            return ctx.params.iter().any(|p| {
+                p.name == name
+                    && matches!(p.mode, RirParamMode::Borrow | RirParamMode::Inout)
+                    && self.is_str_struct(p.ty)
+            });
+        }
+        false
+    }
+
+    /// Enforce the ADR-0043 two-types string model at a *first-class* `str`
+    /// destination (RUE-386): reject a string *buffer* (`StrBuf`/`Str(N)`, the
+    /// growable/fixed rungs) or a borrowed `str` *view* being stored as a
+    /// first-class `str`. `found` is the operand's analyzed type; `operand` is
+    /// its source instruction (used to recognise a view). Callers invoke this
+    /// only when the destination type is the bare `str` (not `Str(N)`).
+    ///
+    /// A buffer's bytes live in caller-owned local/heap storage and a view
+    /// aliases a borrow's scope; either escaping as a first-class `str` (which
+    /// is `Copy`, storable, and returnable) dangles once the storage is freed —
+    /// the verified RUE-386 segfault. Buffers coerce only to `borrow str` /
+    /// `inout str`; views may only be read or re-borrowed.
+    pub(crate) fn reject_non_first_class_str(
+        &self,
+        operand: InstRef,
+        found: Type,
+        site: FirstClassStrSite,
+        span: Span,
+        ctx: &AnalysisContext,
+    ) -> CompileResult<()> {
+        if self.is_builtin_string(found) || self.is_str_fixed_struct(found) {
+            let found_name = found.safe_name_with_pool(Some(&self.type_pool));
+            let mut err = CompileError::new(
+                ErrorKind::BufferNotFirstClassStr {
+                    found: found_name,
+                    site: site.describe().to_string(),
+                },
+                span,
+            );
+            err = if site == FirstClassStrSite::Param {
+                err.with_help(
+                    "parameter type `str` accepts only string literals; did you mean `borrow str`?",
+                )
+            } else {
+                err.with_help(
+                    "a string buffer can be viewed with `borrow str` / `inout str`, \
+                     but not stored as a first-class `str`",
+                )
+            };
+            return Err(err);
+        }
+        if self.is_str_view_operand(operand, ctx) {
+            return Err(CompileError::new(
+                ErrorKind::StrViewNotFirstClass {
+                    site: site.describe().to_string(),
+                },
+                span,
+            )
+            .with_help(
+                "a `borrow str` / `inout str` view is second-class and cannot escape the call; \
+                 it can only be read (`.len()`, byte indexing) or re-borrowed",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Enforce inout-`str`-requires-local-provenance (ADR-0043 two-types model,
+    /// RUE-386): the operand of an `inout str` parameter must be a *local*
+    /// string buffer (`StrBuf`/`Str(N)`), never a first-class / static-backed
+    /// `str`. A static `str` lives in read-only `.rodata`, so an exclusive view
+    /// would enable a write-to-`.rodata` fault once byte mutation lands; and
+    /// since `str` is `Copy`, two roots can alias one static buffer in a way
+    /// per-root exclusivity cannot see. `found` is the operand's analyzed type.
+    pub(crate) fn reject_static_str_inout(&self, found: Type, span: Span) -> CompileResult<()> {
+        if self.is_str_struct(found) {
+            return Err(
+                CompileError::new(ErrorKind::InoutStrRequiresLocalBuffer, span).with_help(
+                    "`inout str` requires a local `StrBuf` or `Str(N)`; \
+                     a first-class `str` cannot be exclusively viewed",
+                ),
+            );
+        }
+        Ok(())
+    }
+
+    /// The tail (value) expression of a RIR block, descending through nested
+    /// blocks. Used to locate the *implicit-return* operand of a `str`-typed
+    /// function body so the two-types model (RUE-386) can reject a buffer or a
+    /// borrowed view escaping via the tail value. A non-block body is its own
+    /// tail; an empty block returns itself (its value is unit, harmless here).
+    pub(crate) fn rir_block_tail_expr(&self, inst: InstRef) -> InstRef {
+        let mut current = inst;
+        loop {
+            match self.rir.get(current).data {
+                InstData::Block { extra_start, len } if len > 0 => {
+                    let refs = self.rir.get_extra(extra_start, len);
+                    current = InstRef::from_raw(refs[len as usize - 1]);
+                }
+                _ => return current,
+            }
+        }
+    }
+
     /// Analyze call arguments, materializing a fat-pointer slice value for any
     /// argument whose parameter is a slice type (ADR-0043, RUE-322).
     ///
@@ -685,6 +826,7 @@ impl<'a> Sema<'a> {
         air: &mut Air,
         args: &[RirCallArg],
         param_types: &[Type],
+        param_modes: &[RirParamMode],
         ctx: &mut AnalysisContext,
     ) -> CompileResult<Vec<AirCallArg>> {
         let mut air_args = Vec::with_capacity(args.len());
@@ -709,6 +851,20 @@ impl<'a> Sema<'a> {
                 let arg_result = self.analyze_inst(air, arg.value, ctx);
                 ctx.expected_type = prev_expected;
                 let arg_result = arg_result?;
+                // Two-types model (ADR-0043, RUE-386): a bare `str` parameter
+                // (Normal mode) requires a first-class `str`; a buffer or a
+                // borrowed view passed here would escape and dangle. A
+                // `borrow str` parameter (Borrow mode) is the sanctioned view
+                // and accepts a buffer, so it is exempt.
+                if param_modes.get(i) == Some(&RirParamMode::Normal) && self.is_str_struct(str_ty) {
+                    self.reject_non_first_class_str(
+                        arg.value,
+                        arg_result.ty,
+                        FirstClassStrSite::Param,
+                        self.rir.get(arg.value).span,
+                        ctx,
+                    )?;
+                }
                 air_args.push(AirCallArg {
                     value: arg_result.air_ref,
                     mode: AirArgMode::Normal,
@@ -753,6 +909,13 @@ impl<'a> Sema<'a> {
             let arg_result = self.analyze_inst(air, arg.value, ctx);
             ctx.byref_arg_root = prev_byref_root;
             let arg_result = arg_result?;
+            // Two-types model (ADR-0043, RUE-386): an `inout str` parameter is
+            // an *exclusive* view and requires local provenance — a first-class
+            // / static `str` value is never a legal exclusive operand (closes
+            // the write-to-`.rodata` and Copy-two-roots aliasing holes).
+            if is_inout_str_param {
+                self.reject_static_str_inout(arg_result.ty, self.rir.get(arg.value).span)?;
+            }
             air_args.push(AirCallArg {
                 value: arg_result.air_ref,
                 mode: Self::convert_arg_mode(arg.mode),

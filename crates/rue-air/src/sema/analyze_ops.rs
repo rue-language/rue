@@ -32,7 +32,7 @@ use rue_rir::{InstData, InstRef, RirArgMode, RirParamMode, RirPattern};
 use crate::sema::context::ConstValue;
 use rue_span::Span;
 
-use super::analysis::move_out_of_inout_error;
+use super::analysis::{FirstClassStrSite, move_out_of_inout_error};
 use super::context::{AnalysisContext, AnalysisResult, LocalVar, VariableMoveState};
 use super::{FunctionInfo, Sema};
 use crate::inst::{
@@ -2116,6 +2116,21 @@ impl<'a> Sema<'a> {
             };
             let inner_ty = inner_result.ty;
 
+            // Two-types model (ADR-0043, RUE-386): an explicit `return <expr>;`
+            // in a `str`-returning function must return a first-class `str`,
+            // not a buffer or a borrowed view (which would dangle after its
+            // storage is dropped). Checked before the generic type-mismatch so
+            // the targeted E0495/E0497 wins over E0206.
+            if self.is_str_struct(ctx.return_type) {
+                self.reject_non_first_class_str(
+                    inner,
+                    inner_ty,
+                    FirstClassStrSite::Return,
+                    span,
+                    ctx,
+                )?;
+            }
+
             // Type check: returned value must match function's return type.
             if !ctx.return_type.is_error()
                 && !inner_ty.is_error()
@@ -2360,6 +2375,17 @@ impl<'a> Sema<'a> {
         ctx.expected_type = prev_expected;
         let init_result = init_outcome?;
         let var_type = init_result.ty;
+
+        // Two-types model (ADR-0043, RUE-386): a `str`-annotated binding, or one
+        // whose initializer is itself a first-class `str` slot, must not bind a
+        // buffer (`StrBuf`/`Str(N)`) or a borrowed `str` view — either would let
+        // the value escape past its backing storage as a first-class `str`. The
+        // check covers both an explicit `let s: str = <buffer>` (annotation is
+        // `str`; the annotation is otherwise unenforced here since `var_type`
+        // comes from the initializer) and `let s = <view>` (no annotation).
+        if annotation_type.is_some_and(|a| self.is_str_struct(a)) || self.is_str_struct(var_type) {
+            self.reject_non_first_class_str(init, var_type, FirstClassStrSite::Binding, span, ctx)?;
+        }
 
         // If name is None, this is a wildcard pattern `_` that discards the value.
         // `let _ = <expr>;` (and `let _: T = <expr>;`) is a discard site (spec
@@ -2940,6 +2966,19 @@ impl<'a> Sema<'a> {
         // on the post-RHS move state so `x = f(x)` counts as a discharge.
         let discharged = self.place_linear_discharged(local_ty, name, &[], span, ctx);
         self.check_linear_overwrite(local_ty, discharged, false, span)?;
+        // Two-types model (ADR-0043, RUE-386): reassigning a first-class `str`
+        // local must store a first-class `str`, not a buffer or a borrowed view
+        // (`s = <buffer>` used to silently truncate a 3-word `StrBuf` into the
+        // 2-word `str` slot, leaving a dangling pointer).
+        if self.is_str_struct(local_ty) {
+            self.reject_non_first_class_str(
+                value,
+                value_result.ty,
+                FirstClassStrSite::Binding,
+                span,
+                ctx,
+            )?;
+        }
 
         // Assignment to a mutable variable resets its move state.
         ctx.moved_vars.remove(&name);
@@ -3199,6 +3238,22 @@ impl<'a> Sema<'a> {
                 // Not an integer literal - analyze normally
                 self.analyze_inst(air, *field_value, ctx)?
             };
+
+            // Two-types model (ADR-0043, RUE-386): storing into a first-class
+            // `str` field must not smuggle a borrowed `str` view (a
+            // `borrow`/`inout str` parameter) into the aggregate — the view
+            // would outlive its borrow and dangle. A buffer field value is
+            // caught by the type-mismatch below (a `StrBuf`/`Str(N)` is not
+            // `str`); only the same-typed view needs this dedicated check.
+            if self.is_str_struct(expected_field_type) {
+                self.reject_non_first_class_str(
+                    *field_value,
+                    field_result.ty,
+                    FirstClassStrSite::Field,
+                    span,
+                    ctx,
+                )?;
+            }
 
             // Type check the field value against the expected type
             if field_result.ty != expected_field_type {
@@ -5563,6 +5618,7 @@ impl<'a> Sema<'a> {
         let param_types = param_types.to_vec();
         let param_comptime = param_comptime.to_vec();
         let param_names = param_names.to_vec();
+        let param_modes = param_modes.to_vec();
         let return_type_sym = fn_info.return_type_sym;
         let base_return_type = fn_info.return_type;
         let fn_body = fn_info.body;
@@ -5656,7 +5712,8 @@ impl<'a> Sema<'a> {
 
         // Analyze all arguments. Slice parameters (ADR-0043, RUE-322) coerce a
         // `borrow arr` argument into a by-value fat pointer here.
-        let air_args = self.analyze_call_args_coerced(air, &args, &param_types, ctx)?;
+        let air_args =
+            self.analyze_call_args_coerced(air, &args, &param_types, &param_modes, ctx)?;
 
         // Handle generic function calls differently
         if is_generic {

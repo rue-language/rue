@@ -1592,6 +1592,7 @@ mod functions;
 mod instructions;
 mod intrinsics;
 mod ownership;
+pub(crate) use ownership::FirstClassStrSite;
 mod pointers;
 mod type_inference;
 
