@@ -2292,3 +2292,109 @@ fn secret() -> i32 {
 ]
 compile_fail = true
 error_contains = ["E0706", "function `secret` is private"]
+
+# ---------------------------------------------------------------------------
+# Root-only module graph success smoke tests (RUE-433 / RUE-424).
+#
+# Broader successful-program coverage for root-module compilation: every case
+# compiles ONLY main.rue and relies on transitive @import discovery from disk.
+# All shapes were verified against the real CLI before being encoded here.
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "root_module_graph_shared_helper_diamond"
+description = "Two sibling directory modules import the same helper file via ../ relative paths (diamond); root-only compile discovers all of it (RUE-433)."
+files = [
+    { path = "main.rue", source = """
+const a = @import("a/entry.rue");
+const b = @import("b/entry.rue");
+
+fn main() -> i32 { a.a_value() + b.b_value() }
+""" },
+    { path = "shared.rue", source = """
+pub fn shared_value() -> i32 { 7 }
+""" },
+    { path = "a/entry.rue", source = """
+const shared = @import("../shared.rue");
+
+pub fn a_value() -> i32 { shared.shared_value() + 1 }
+""" },
+    { path = "b/entry.rue", source = """
+const shared = @import("../shared.rue");
+
+pub fn b_value() -> i32 { shared.shared_value() + 2 }
+""" },
+]
+exit_code = 17
+
+[[case]]
+name = "root_module_graph_three_level_facade_privacy"
+description = "Three-level nested directory facades, each level keeping a private helper and exposing a pub api; root can also reach the re-exported inner module (RUE-433)."
+files = [
+    { path = "main.rue", source = """
+const outer = @import("outer");
+
+fn main() -> i32 { outer.outer_api() + outer.mid.mid_api() }
+""" },
+    { path = "outer/_outer.rue", source = """
+pub const mid = @import("mid");
+
+fn outer_private() -> i32 { 100 }
+
+pub fn outer_api() -> i32 { outer_private() + mid.mid_api() }
+""" },
+    { path = "outer/mid/_mid.rue", source = """
+const leaf = @import("leaf.rue");
+
+fn mid_private() -> i32 { 10 }
+
+pub fn mid_api() -> i32 { mid_private() + leaf.leaf_value() }
+""" },
+    { path = "outer/mid/leaf.rue", source = """
+pub fn leaf_value() -> i32 { 1 }
+""" },
+]
+exit_code = 122
+
+[[case]]
+name = "root_module_graph_private_helper_invisible_to_sibling"
+description = "A non-pub helper in one directory module is not callable from a sibling directory module through a module object (spec 10.3:7; RUE-433)."
+files = [
+    { path = "main.rue", source = """
+const s2 = @import("s2/entry.rue");
+
+fn main() -> i32 { s2.steal() }
+""" },
+    { path = "s1/entry.rue", source = """
+fn secret() -> i32 { 9 }
+
+pub fn ok() -> i32 { secret() }
+""" },
+    { path = "s2/entry.rue", source = """
+const s1 = @import("../s1/entry.rue");
+
+pub fn steal() -> i32 { s1.secret() }
+""" },
+]
+compile_fail = true
+error_contains = ["E0706", "secret", "private"]
+
+[[case]]
+name = "root_module_graph_value_const_reexport"
+description = "A directory facade re-exports a submodule whose pub value consts and fns are readable from the root through the facade chain (RUE-433, RUE-160 machinery)."
+files = [
+    { path = "main.rue", source = """
+const cfg = @import("cfg");
+
+fn main() -> i32 { cfg.limits.MAX + cfg.limits.double_max() + 2 }
+""" },
+    { path = "cfg/_cfg.rue", source = """
+pub const limits = @import("limits.rue");
+""" },
+    { path = "cfg/limits.rue", source = """
+pub const MAX: i32 = 40;
+
+pub fn double_max() -> i32 { MAX + MAX }
+""" },
+]
+exit_code = 122
