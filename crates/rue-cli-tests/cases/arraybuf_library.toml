@@ -426,3 +426,175 @@ pub fn ArrayBuf(comptime T: type) -> type {
 ]
 stdout = "20\n-1\n"
 exit_code = 20
+
+# RUE-388 well-formedness gate: an owning growable container (`ArrayBuf(T)`)
+# owns a heap buffer and frees it wholesale in its `drop fn` — it does NOT run
+# per-element drop glue, nor track element linearity. Before the gate, an
+# element type carrying a destructor was accepted and its `drop fn` was silently
+# skipped when the buffer dropped (a leaked destructor effect); a `linear`
+# element would likewise leak. The `@require_droppable(T)` gate in the ArrayBuf
+# constructor rejects both classes at INSTANTIATION time. These cases use an
+# inline ArrayBuf carrying that gate (mirroring std/arraybuf.rue) so the reject
+# is exercised end-to-end through the real binary.
+[[case]]
+name = "arraybuf_rejects_destructor_element"
+description = "ArrayBuf(T) with a destructor-bearing element type is rejected at instantiation (E0498), not silently leaked (RUE-388)."
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0498", "Inner", "drop fn"]
+files = [
+  { path = "main.rue", source = """
+const arraybuf = @import("arraybuf.rue");
+
+struct Inner { v: i32 }
+drop fn Inner(self) { @panic("dropped element"); }
+
+fn main() -> i32 {
+    let V = arraybuf.ArrayBuf(Inner);
+    let mut v = V.new();
+    v.push(Inner { v: 7 });
+    0
+}
+""" },
+  { path = "arraybuf.rue", source = """
+pub fn ArrayBuf(comptime T: type) -> type {
+    @require_droppable(T);
+    struct {
+        buf: ptr mut T,
+        len: u64,
+        cap: u64,
+
+        fn new() -> Self {
+            let zero: u64 = 0;
+            Self { buf: checked { @int_to_ptr(zero) }, len: 0, cap: 0 }
+        }
+        fn reserve(inout self) {
+            if self.len == self.cap {
+                let new_cap: u64 = if self.cap == 0 { 4 } else { self.cap * 2 };
+                checked {
+                    let grown = @realloc(self.buf, self.cap, new_cap);
+                    self.buf = grown;
+                };
+                self.cap = new_cap;
+            }
+        }
+        fn push(inout self, x: T) {
+            self.reserve();
+            checked {
+                let slot = @ptr_offset(self.buf, self.len);
+                @ptr_write(slot, x);
+            };
+            self.len = self.len + 1;
+        }
+    }
+}
+""" },
+]
+
+[[case]]
+name = "arraybuf_rejects_linear_element"
+description = "ArrayBuf(T) with a `linear` element type is rejected at instantiation (E0499), so the linear element cannot be leaked (RUE-388)."
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0499", "Token", "linear"]
+files = [
+  { path = "main.rue", source = """
+const arraybuf = @import("arraybuf.rue");
+
+linear struct Token { v: i32 }
+
+fn main() -> i32 {
+    let V = arraybuf.ArrayBuf(Token);
+    let mut v = V.new();
+    0
+}
+""" },
+  { path = "arraybuf.rue", source = """
+pub fn ArrayBuf(comptime T: type) -> type {
+    @require_droppable(T);
+    struct {
+        buf: ptr mut T,
+        len: u64,
+        cap: u64,
+
+        fn new() -> Self {
+            let zero: u64 = 0;
+            Self { buf: checked { @int_to_ptr(zero) }, len: 0, cap: 0 }
+        }
+    }
+}
+""" },
+]
+
+# Positive control for the RUE-388 gate: a trivially-droppable `Copy` struct
+# element type passes the `@require_droppable(T)` gate and round-trips through
+# push/pop. This pins that the gate rejects ONLY non-droppable/linear elements
+# and does not regress ordinary aggregate element support (ADR-0040 / RUE-311).
+[[case]]
+name = "arraybuf_gate_allows_copy_struct_element"
+description = "ArrayBuf(T) with a trivially-droppable Copy struct element passes the @require_droppable gate and works (RUE-388)."
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "main.rue", source = """
+const arraybuf = @import("arraybuf.rue");
+
+struct Point { x: i32, y: i32 }
+
+fn main() -> i32 {
+    let V = arraybuf.ArrayBuf(Point);
+    let O = arraybuf.Option(Point);
+    let mut v = V.new();
+    v.push(Point { x: 3, y: 4 });
+    v.push(Point { x: 10, y: 20 });
+    match v.pop() { O.Some(p) => p.x + p.y, O.None => -1 }   // 30
+}
+""" },
+  { path = "arraybuf.rue", source = """
+pub fn Option(comptime T: type) -> type {
+    enum { Some(T), None }
+}
+
+pub fn ArrayBuf(comptime T: type) -> type {
+    @require_droppable(T);
+    struct {
+        buf: ptr mut T,
+        len: u64,
+        cap: u64,
+
+        fn new() -> Self {
+            let zero: u64 = 0;
+            Self { buf: checked { @int_to_ptr(zero) }, len: 0, cap: 0 }
+        }
+        fn reserve(inout self) {
+            if self.len == self.cap {
+                let new_cap: u64 = if self.cap == 0 { 4 } else { self.cap * 2 };
+                checked {
+                    let grown = @realloc(self.buf, self.cap, new_cap);
+                    self.buf = grown;
+                };
+                self.cap = new_cap;
+            }
+        }
+        fn push(inout self, x: T) {
+            self.reserve();
+            checked {
+                let slot = @ptr_offset(self.buf, self.len);
+                @ptr_write(slot, x);
+            };
+            self.len = self.len + 1;
+        }
+        fn pop(inout self) -> Option(T) {
+            let O = Option(T);
+            if self.len == 0 {
+                O.None
+            } else {
+                self.len = self.len - 1;
+                O.Some(checked { @ptr_read(@ptr_offset(self.buf, self.len)) })
+            }
+        }
+    }
+}
+""" },
+]
+stdout = ""
+exit_code = 30
