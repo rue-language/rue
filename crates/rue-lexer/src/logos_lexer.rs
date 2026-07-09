@@ -278,6 +278,8 @@ pub enum LogosTokenKind {
     Struct,
     #[token("enum")]
     Enum,
+    #[token("impl")]
+    Impl,
     #[token("drop")]
     Drop,
     #[token("linear")]
@@ -318,6 +320,12 @@ pub enum LogosTokenKind {
     U64,
     #[token("bool")]
     Bool,
+    // `type` — the compile-time type of types (spec 2.4:3). A reserved keyword,
+    // not an identifier: it appears only in type position (`comptime T: type`,
+    // `-> type`), where the parser maps it back to the interned "type" name so
+    // sema's `Type::from_primitive_name("type")` resolution is unchanged.
+    #[token("type")]
+    Type,
 
     // Patterns
     #[token("_")]
@@ -469,6 +477,7 @@ impl From<LogosTokenKind> for TokenKind {
             LogosTokenKind::False => TokenKind::False,
             LogosTokenKind::Struct => TokenKind::Struct,
             LogosTokenKind::Enum => TokenKind::Enum,
+            LogosTokenKind::Impl => TokenKind::Impl,
             LogosTokenKind::Drop => TokenKind::Drop,
             LogosTokenKind::Linear => TokenKind::Linear,
             LogosTokenKind::SelfValue => TokenKind::SelfValue,
@@ -488,6 +497,7 @@ impl From<LogosTokenKind> for TokenKind {
             LogosTokenKind::U32 => TokenKind::U32,
             LogosTokenKind::U64 => TokenKind::U64,
             LogosTokenKind::Bool => TokenKind::Bool,
+            LogosTokenKind::Type => TokenKind::Type,
             LogosTokenKind::Underscore => TokenKind::Underscore,
             LogosTokenKind::Int(n) => TokenKind::Int(n),
             LogosTokenKind::String(s) => TokenKind::String(s),
@@ -1294,6 +1304,25 @@ mod tests {
         assert_eq!(get_ident_str(&tokens[1].kind, &interner), Some("i64ptr"));
         assert_eq!(get_ident_str(&tokens[2].kind, &interner), Some("boolish"));
         assert_eq!(get_ident_str(&tokens[3].kind, &interner), Some("u8_data"));
+    }
+
+    #[test]
+    fn test_logos_impl_and_type_are_keywords() {
+        // `impl` and `type` are reserved keywords (spec 2.4:2, 2.4:3), not
+        // identifiers (RUE-331). Each lexes to its dedicated keyword token.
+        let lexer = LogosLexer::new("impl type");
+        let (tokens, _) = lexer.tokenize().unwrap();
+        assert!(matches!(tokens[0].kind, TokenKind::Impl));
+        assert!(matches!(tokens[1].kind, TokenKind::Type));
+        assert!(matches!(tokens[2].kind, TokenKind::Eof));
+
+        // Identifiers that merely START with a keyword stay identifiers.
+        let lexer = LogosLexer::new("impls typex typeof implement");
+        let (tokens, interner) = lexer.tokenize().unwrap();
+        assert_eq!(get_ident_str(&tokens[0].kind, &interner), Some("impls"));
+        assert_eq!(get_ident_str(&tokens[1].kind, &interner), Some("typex"));
+        assert_eq!(get_ident_str(&tokens[2].kind, &interner), Some("typeof"));
+        assert_eq!(get_ident_str(&tokens[3].kind, &interner), Some("implement"));
     }
 
     #[test]

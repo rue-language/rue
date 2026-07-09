@@ -39,6 +39,7 @@ pub enum TokenKind {
     False,
     Struct,
     Enum,
+    Impl, // impl (reserved; no impl blocks in Rue — methods live in struct bodies)
     Drop,
     Linear,    // linear struct modifier
     SelfValue, // self (value, not type)
@@ -60,6 +61,7 @@ pub enum TokenKind {
     U32,
     U64,
     Bool,
+    Type, // type (the compile-time type of types, spec 2.4:3)
 
     // Patterns
     Underscore, // _ (wildcard pattern)
@@ -143,6 +145,7 @@ impl TokenKind {
             TokenKind::False => "'false'",
             TokenKind::Struct => "'struct'",
             TokenKind::Enum => "'enum'",
+            TokenKind::Impl => "'impl'",
             TokenKind::Drop => "'drop'",
             TokenKind::Linear => "'linear'",
             TokenKind::SelfValue => "'self'",
@@ -162,6 +165,7 @@ impl TokenKind {
             TokenKind::U32 => "type 'u32'",
             TokenKind::U64 => "type 'u64'",
             TokenKind::Bool => "type 'bool'",
+            TokenKind::Type => "type 'type'",
             TokenKind::Underscore => "'_'",
             TokenKind::Int(_) => "integer",
             TokenKind::String(_) => "string",
@@ -247,6 +251,7 @@ impl std::fmt::Display for TokenKind {
             TokenKind::False => write!(f, "FALSE"),
             TokenKind::Struct => write!(f, "STRUCT"),
             TokenKind::Enum => write!(f, "ENUM"),
+            TokenKind::Impl => write!(f, "IMPL"),
             TokenKind::Drop => write!(f, "DROP"),
             TokenKind::Linear => write!(f, "LINEAR"),
             TokenKind::SelfValue => write!(f, "SELF"),
@@ -266,6 +271,7 @@ impl std::fmt::Display for TokenKind {
             TokenKind::U32 => write!(f, "TYPE(u32)"),
             TokenKind::U64 => write!(f, "TYPE(u64)"),
             TokenKind::Bool => write!(f, "TYPE(bool)"),
+            TokenKind::Type => write!(f, "TYPE(type)"),
             TokenKind::Underscore => write!(f, "UNDERSCORE"),
             TokenKind::Int(v) => write!(f, "INT({})", v),
             TokenKind::String(s) => write!(f, "STRING(sym:{})", s.into_usize()),

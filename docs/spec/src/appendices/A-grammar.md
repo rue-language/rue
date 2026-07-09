@@ -76,7 +76,7 @@ place_expr     = ( IDENT | "self" ) { "." IDENT | "[" expression "]" } ;
 type           = "i8" | "i16" | "i32" | "i64"
                | "u8" | "u16" | "u32" | "u64"
                | "usize" | "isize"
-               | "bool" | "()" | "!"
+               | "bool" | "type" | "()" | "!"
                | "[" type ";" array_length "]"
                | "ptr" "const" type
                | "ptr" "mut" type

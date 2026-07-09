@@ -1,0 +1,60 @@
+# `impl` and `type` are reserved keywords (spec 2.4:2 / 2.4:3), not identifiers
+# (RUE-331). Driver-visible checks: the real binary must reject them as binding
+# names, while `type` in type position (the type-of-types) keeps compiling and
+# running a generic program end to end.
+
+[section]
+id = "cli.reserved_keywords"
+name = "Reserved keywords impl and type"
+description = "impl/type cannot be identifiers; type still works as the compile-time type of types."
+
+[[case]]
+name = "let_impl_rejected"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let impl = 2;
+    impl
+}
+""" }]
+compile_fail = true
+error_contains = ["impl"]
+
+[[case]]
+name = "let_type_rejected"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let type = 1;
+    type
+}
+""" }]
+compile_fail = true
+error_contains = ["type"]
+
+[[case]]
+name = "impl_hint_points_at_struct_bodies"
+files = [{ path = "main.rue", source = """
+impl Foo {
+    fn bar(self) -> i32 { 0 }
+}
+fn main() -> i32 { 0 }
+""" }]
+compile_fail = true
+error_contains = ["Rue has no `impl` blocks"]
+
+[[case]]
+name = "type_keyword_generic_runs"
+files = [{ path = "main.rue", source = """
+fn identity(comptime T: type, x: T) -> T {
+    return x;
+}
+fn max(comptime T: type, a: T, b: T) -> T {
+    if a > b { a } else { b }
+}
+fn main() -> i32 {
+    let a = identity(i32, 40);
+    let b = max(i32, 2, 1);
+    @dbg(a + b);
+    0
+}
+""" }]
+stdout = "42\n"
