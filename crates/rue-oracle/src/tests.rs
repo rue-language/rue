@@ -11,6 +11,11 @@ fn run(src: &str) -> Outcome {
     run_source(src).unwrap_or_else(|u| panic!("unsupported: {}", u.0))
 }
 
+fn run_with_budget(src: &str, budget: u64) -> Result<Outcome, Unsupported> {
+    let state = compile_to_cfg(src).unwrap_or_else(|e| panic!("compile error: {e:#?}"));
+    run_state_with_budget(state, budget)
+}
+
 fn run_string_trio(src: &str) -> Outcome {
     let mut preview_features = PreviewFeatures::new();
     preview_features.insert(rue_compiler::PreviewFeature::StringTrio);
@@ -52,6 +57,60 @@ fn if_expression_value() {
         exit("fn main() -> i32 { let n = 5; if n > 3 { 100 } else { 0 } }"),
         100
     );
+}
+
+#[test]
+fn dominated_ssa_value_survives_nested_control_flow() {
+    // The first short-circuit expression produces a block parameter and `!`
+    // derives a value from it. That derived value dominates the second
+    // short-circuit expression and must remain available across its blocks.
+    let src = "fn main() -> i32 {
+        let f = false;
+        let t = true;
+        if (!(f && f)) != (!(t || t)) { 0 } else { 1 }
+    }";
+
+    assert_eq!(exit(src), 0);
+}
+
+#[test]
+fn pre_branch_load_remains_an_evaluation_snapshot() {
+    // Rue evaluates the left operand before the right-hand `if`. Its load of
+    // `x` is an SSA value: entering the branch must not discard and recompute
+    // it after the branch mutates the local.
+    let src = "fn main() -> i32 {
+        let mut x = 1;
+        let take = true;
+        let result: i32 = x + (if take {
+            x = 2;
+            10
+        } else {
+            20
+        });
+        result
+    }";
+
+    assert_eq!(exit(src), 11);
+}
+
+#[test]
+fn loop_reentry_recomputes_the_current_blocks() {
+    // A persistent cache must still invalidate a block's own values when that
+    // block is re-entered. Keep the test budget small so a stale loop condition
+    // fails promptly instead of consuming the production 50M-step budget.
+    let src = "fn main() -> i32 {
+        let mut i = 0;
+        let mut sum = 0;
+        while i < 3 {
+            sum = sum + i;
+            i = i + 1;
+        }
+        sum
+    }";
+
+    let out =
+        run_with_budget(src, 1_000).unwrap_or_else(|u| panic!("bounded loop unsupported: {}", u.0));
+    assert_eq!(out.exit_code, 3);
 }
 
 #[test]
