@@ -858,6 +858,99 @@ impl<'a> Sema<'a> {
         }
     }
 
+    /// Resolve a module-qualified type-constructor call (`m.Mk(T)`,
+    /// `std.option.Option(T)`) appearing in a *comptime type position* during
+    /// body reduction, under the current comptime substitutions (RUE-511).
+    ///
+    /// This is the comptime-evaluation analogue of
+    /// [`resolve_qualified_type_function_call`]: same module-prefix walk,
+    /// membership check, and visibility rule, but arguments resolve through the
+    /// enclosing `type_subst`/`value_subst` (so `T` inside the constructor binds
+    /// to the concrete element type) and every failure yields `None` rather than
+    /// a diagnostic — the caller reports the comptime failure (E1200).
+    ///
+    /// The membership check (`fn_info.file_id == module_file_id`) is essential:
+    /// functions live in a flat global table keyed by name, so a same-named
+    /// constructor in a *different* file must not satisfy `m.Mk` (that would
+    /// reintroduce the RUE-564 cross-module-membership hole inside comptime
+    /// evaluation). A default span carries no file context for the prefix walk,
+    /// so it is treated as non-evaluable.
+    ///
+    /// [`resolve_qualified_type_function_call`]:
+    /// Sema::resolve_qualified_type_function_call
+    fn resolve_qualified_type_call_for_comptime(
+        &mut self,
+        call_path: &str,
+        arg_strs: &[String],
+        type_subst: &HashMap<Spur, Type>,
+        value_subst: &HashMap<Spur, ConstValue>,
+        span: Span,
+    ) -> Option<Type> {
+        if span == Span::default() {
+            return None;
+        }
+        let segments: Vec<&str> = call_path.split('.').collect();
+        if segments.len() < 2 || segments.iter().any(|s| s.is_empty()) {
+            return None;
+        }
+        let (_module_id, module_file_id, _module_file_path) = self
+            .resolve_type_module_prefix(&segments[..segments.len() - 1], span)
+            .ok()?;
+        let module_file_id = module_file_id?;
+        let member = segments[segments.len() - 1];
+        let member_sym = self.interner.get_or_intern(member);
+        self.ensure_free_function_signature(member_sym, Some(module_file_id))
+            .ok()?;
+        let function_key = self
+            .resolve_function_name_local(member_sym, module_file_id)
+            .unwrap_or(member_sym);
+        // Membership (RUE-564 hole guard) + `-> type` + visibility.
+        let fn_info = self
+            .functions
+            .get(&function_key)
+            .copied()
+            .filter(|info| info.file_id == module_file_id)?;
+        if fn_info.return_type != Type::COMPTIME_TYPE {
+            return None;
+        }
+        self.check_unqualified_visibility(
+            "function",
+            member,
+            fn_info.file_id,
+            fn_info.is_pub,
+            span,
+        )
+        .ok()?;
+
+        let params = fn_info.params;
+        let param_names = self.param_arena.names(params).to_vec();
+        let param_comptime = self.param_arena.comptime(params).to_vec();
+        if arg_strs.len() != param_names.len()
+            || !(param_names.is_empty() || param_comptime.iter().all(|&c| c))
+        {
+            return None;
+        }
+        let mut callee_types: HashMap<Spur, Type> = HashMap::new();
+        for (i, arg) in arg_strs.iter().enumerate() {
+            let arg_sym = self.interner.get_or_intern(arg);
+            let arg_ty = self.resolve_type_for_comptime_with_subst_and_values_at_span(
+                arg_sym,
+                type_subst,
+                value_subst,
+                span,
+            )?;
+            callee_types.insert(param_names[i], arg_ty);
+        }
+        let empty_values: HashMap<Spur, ConstValue> = HashMap::new();
+        match self
+            .reduce_type_ctor_body(function_key, &callee_types, &empty_values)
+            .ok()?
+        {
+            Some(ConstValue::Type(t)) => Some(t),
+            _ => None,
+        }
+    }
+
     fn resolve_type_module_prefix(
         &mut self,
         segments: &[&str],
@@ -1236,6 +1329,24 @@ impl<'a> Sema<'a> {
             let ptr_type_id = self.type_pool.intern_ptr_mut_from_type(pointee_ty);
             Some(Type::new_ptr_mut(ptr_type_id))
         } else if let Some((call_name, arg_strs)) = parse_type_call_syntax(type_name) {
+            // A *module-qualified* type-function application (`m.Mk(T)`,
+            // `std.option.Option(T)`) appearing in a comptime type position
+            // during body reduction — a field type, an enum-variant payload, or
+            // a method's parameter/return type inside a `-> type` constructor
+            // whose method references a constructor imported from another module
+            // (RUE-511). The unqualified path below can't resolve `m.Mk` as a
+            // function name, so dispatch to the qualified resolver, which walks
+            // the module prefix (keyed by `span.file_id`, the defining file),
+            // enforces membership + visibility, and reduces the callee body.
+            if call_name.contains('.') {
+                return self.resolve_qualified_type_call_for_comptime(
+                    &call_name,
+                    &arg_strs,
+                    type_subst,
+                    value_subst,
+                    span,
+                );
+            }
             // A type-function application whose arguments may name enclosing
             // comptime type parameters (`Option(T)` with `T` in `type_subst`).
             // Resolve each argument under the current substitution, then reduce

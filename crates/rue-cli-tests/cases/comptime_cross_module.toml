@@ -1,0 +1,218 @@
+# Cross-module comptime type-function references (RUE-511) and composite type
+# values as type-constructor arguments (RUE-565), driven end-to-end through the
+# real binary with @imports resolved from disk.
+#
+# RUE-511: a source-level generic type function (`Wrap(T)`) whose method bodies /
+# field types / return types reference a comptime type function imported from
+# ANOTHER module (`b.Mk(T)`) used to fail with
+#   E1200: cannot store type value in variable 'W' at runtime
+# because the comptime evaluator only recognized SAME-file constructor calls.
+# The fix resolves module-qualified comptime type calls in field position,
+# method-signature position, and value position (`let O = b.Mk(T)`), with a
+# membership + visibility check so a same-named constructor in a different file
+# cannot satisfy the call (the RUE-564 hole). These cases pin every position AND
+# the runtime result of matching the cross-module enum.
+#
+# RUE-565: composite type VALUES (`[i32; 2]`, nested arrays) are legal
+# type-constructor arguments; they used to be rejected with E1201.
+
+[section]
+id = "cli.comptime_cross_module"
+name = "Cross-module comptime type functions"
+description = "Module-qualified comptime type-function references (RUE-511) and composite type arguments (RUE-565)."
+
+# --- RUE-511: field-type position ---
+[[case]]
+name = "cross_module_ctor_field_type"
+description = "A generic type function's struct field type references an imported constructor `b.Mk(T)` (RUE-511)."
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "b.rue", source = """
+pub fn Mk(comptime T: type) -> type {
+    enum { Some(T), None }
+}
+""" },
+  { path = "a.rue", source = """
+const b = @import("b.rue");
+
+pub fn Wrap(comptime T: type) -> type {
+    struct {
+        inner: b.Mk(T),
+        fn make(v: T) -> Self {
+            let O = b.Mk(T);
+            Self { inner: O.Some(v) }
+        }
+    }
+}
+""" },
+  { path = "main.rue", source = """
+const a = @import("a.rue");
+const b = @import("b.rue");
+
+fn main() -> i32 {
+    let W = a.Wrap(i32);
+    let O = b.Mk(i32);
+    let w = W.make(42);
+    match w.inner {
+        O.Some(x) => x,
+        O.None => -1,
+    }
+}
+""" },
+]
+exit_code = 42
+
+# --- RUE-511: method return-type + value (let) position ---
+[[case]]
+name = "cross_module_ctor_return_and_let"
+description = "A method returns `b.Mk(T)` and binds `let O = b.Mk(T)` in its body, both cross-module (RUE-511)."
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "b.rue", source = """
+pub fn Mk(comptime T: type) -> type {
+    enum { Some(T), None }
+}
+""" },
+  { path = "a.rue", source = """
+const b = @import("b.rue");
+
+pub fn Wrap(comptime T: type) -> type {
+    struct {
+        v: T,
+        fn get(borrow self) -> b.Mk(T) {
+            let O = b.Mk(T);
+            O.Some(self.v)
+        }
+    }
+}
+""" },
+  { path = "main.rue", source = """
+const a = @import("a.rue");
+const b = @import("b.rue");
+
+fn main() -> i32 {
+    let W = a.Wrap(i32);
+    let O = b.Mk(i32);
+    let w = W { v: 30 };
+    match w.get() {
+        O.Some(x) => x,
+        O.None => -1,
+    }
+}
+""" },
+]
+exit_code = 30
+
+# --- RUE-511: value position inside the -> type constructor body (delegating) ---
+[[case]]
+name = "cross_module_ctor_body_let_binding"
+description = "A `-> type` constructor binds `let X = b.Mk(T)` in its body and returns X, cross-module (RUE-511)."
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "b.rue", source = """
+pub fn Mk(comptime T: type) -> type {
+    enum { Some(T), None }
+}
+""" },
+  { path = "a.rue", source = """
+const b = @import("b.rue");
+
+pub fn Alias(comptime T: type) -> type {
+    let X = b.Mk(T);
+    X
+}
+""" },
+  { path = "main.rue", source = """
+const a = @import("a.rue");
+const b = @import("b.rue");
+
+fn main() -> i32 {
+    let A = a.Alias(i32);
+    let O = b.Mk(i32);
+    let x = A.Some(7);
+    match x {
+        O.Some(v) => v,
+        O.None => -1,
+    }
+}
+""" },
+]
+exit_code = 7
+
+# --- RUE-511: privacy — a non-pub imported constructor is NOT usable across
+# directories (the visibility guard must reject it, not silently leak). ---
+[[case]]
+name = "cross_module_ctor_private_rejected"
+description = "A non-pub constructor imported from another DIRECTORY is rejected in a cross-module comptime reference (RUE-511)."
+compile_fail = true
+args = ["main.rue", "-o", "prog"]
+# The visibility guard makes the private constructor non-evaluable, so the
+# instantiation cannot reduce to a type — reported as the reduction's E1200
+# rather than silently leaking the private type across directories.
+error_contains = ["E1200"]
+files = [
+  { path = "sub/b.rue", source = """
+fn Mk(comptime T: type) -> type {
+    enum { Some(T), None }
+}
+""" },
+  { path = "a.rue", source = """
+const b = @import("sub/b.rue");
+
+pub fn Wrap(comptime T: type) -> type {
+    struct { inner: b.Mk(T) }
+}
+""" },
+  { path = "main.rue", source = """
+const a = @import("a.rue");
+
+fn main() -> i32 {
+    let W = a.Wrap(i32);
+    0
+}
+""" },
+]
+
+# --- RUE-565: composite (array) type value as a type-constructor argument ---
+[[case]]
+name = "array_type_arg_local_ctor"
+description = "`[i32; 2]` is accepted as a comptime type argument to a local `-> type` constructor (RUE-565)."
+files = [{ path = "main.rue", source = """
+fn Box(comptime T: type) -> type {
+    struct { value: T }
+}
+
+fn main() -> i32 {
+    let B = Box([i32; 2]);
+    let arr: [i32; 2] = [21, 21];
+    let b = B { value: arr };
+    b.value[0] + b.value[1]
+}
+""" }]
+exit_code = 42
+
+# --- RUE-565: array type value through the std bundle + nested arrays ---
+[[case]]
+name = "array_type_arg_std_and_nested"
+description = "`[i32; 2]` and nested `[[i32; 3]; 2]` are accepted as type arguments to std.option.Option / std.arraybuf.ArrayBuf (RUE-565)."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn Box(comptime T: type) -> type {
+    struct { value: T }
+}
+
+fn main() -> i32 {
+    let A = std.option.Option([i32; 2]);
+    let V = std.arraybuf.ArrayBuf([i32; 2]);
+    let N = Box([[i32; 3]; 2]);
+    let arr: [i32; 2] = [1, 2];
+    let x = A.Some(arr);
+    match x {
+        A.Some(a) => a[0] + a[1],
+        A.None => -1,
+    }
+}
+""" }]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+exit_code = 3

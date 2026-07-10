@@ -51,13 +51,13 @@ use std::sync::LazyLock;
 
 use lasso::{Key, Spur};
 use rue_error::{CompileError, CompileResult, ErrorKind};
-use rue_rir::{InstData, InstRef, RirPattern};
-use rue_span::Span;
+use rue_rir::{InstData, InstRef, RepeatCount, RirPattern};
+use rue_span::{FileId, Span};
 
 use super::Sema;
 use super::context::{AnalysisContext, ConstValue, LocalVar};
 use crate::specialize::MAX_SPECIALIZATION_ROUNDS;
-use crate::types::{StructField, Type, TypeKind};
+use crate::types::{ArrayLen, StructField, Type, TypeKind};
 
 /// Empty type substitution map for evaluation contexts without one.
 static EMPTY_TYPE_SUBST: LazyLock<HashMap<Spur, Type>> = LazyLock::new(HashMap::new);
@@ -91,6 +91,16 @@ pub(crate) struct ComptimeEnv<'a> {
     /// operand (`1 + m.CONST`) by looking its value up here (RUE-267). Keyed by
     /// the `FieldGet` instruction. Empty outside const-initializer evaluation.
     const_module_members: &'a HashMap<InstRef, ConstValue>,
+    /// The file whose code is currently being reduced (RUE-511). A
+    /// module-qualified comptime call written in a `-> type` constructor body
+    /// (`let O = b.Mk(T)`) names an import (`b`) of *this* file's import graph,
+    /// not of the file that triggered the instantiation — so resolving the
+    /// receiver as a module binding must key `module_bindings` by this file, not
+    /// the instantiation site. Set from `ctx.current_file_id` when analyzing a
+    /// body, and to the callee's `FunctionInfo.file_id` when reducing a
+    /// type-constructor body. `None` where no file context is available (the
+    /// receiver is then non-evaluable and the call is a runtime call).
+    defining_file: Option<FileId>,
 }
 
 impl<'a> ComptimeEnv<'a> {
@@ -103,6 +113,7 @@ impl<'a> ComptimeEnv<'a> {
             runtime_locals: None,
             locals: HashMap::new(),
             const_module_members: &EMPTY_MODULE_MEMBERS,
+            defining_file: None,
         }
     }
 
@@ -119,6 +130,7 @@ impl<'a> ComptimeEnv<'a> {
             runtime_locals: None,
             locals: HashMap::new(),
             const_module_members: &EMPTY_MODULE_MEMBERS,
+            defining_file: None,
         }
     }
 
@@ -132,6 +144,7 @@ impl<'a> ComptimeEnv<'a> {
             runtime_locals: Some(&ctx.locals),
             locals: HashMap::new(),
             const_module_members: &EMPTY_MODULE_MEMBERS,
+            defining_file: Some(ctx.current_file_id),
         }
     }
 
@@ -154,6 +167,7 @@ impl<'a> ComptimeEnv<'a> {
             runtime_locals: None,
             locals: HashMap::new(),
             const_module_members,
+            defining_file: None,
         }
     }
 }
@@ -256,6 +270,9 @@ impl Sema<'_> {
         value_subst: &HashMap<Spur, ConstValue>,
     ) -> Option<ConstValue> {
         let mut env = ComptimeEnv::with_subst(type_subst, value_subst);
+        // A module-qualified comptime call in the evaluated expression resolves
+        // its receiver against the expression's own file's imports (RUE-511).
+        env.defining_file = Some(self.rir.get(inst_ref).span.file_id);
         self.eval_const_expr(inst_ref, &mut env).ok().flatten()
     }
 
@@ -278,6 +295,10 @@ impl Sema<'_> {
         value_subst: &HashMap<Spur, ConstValue>,
     ) -> CompileResult<Option<ConstValue>> {
         let mut env = ComptimeEnv::with_subst(type_subst, value_subst);
+        // The body is code from the constructor's file, so a module-qualified
+        // comptime call inside it (`let O = b.Mk(T)`) resolves its receiver
+        // against that file's imports (RUE-511).
+        env.defining_file = Some(self.rir.get(inst_ref).span.file_id);
         self.eval_const_expr(inst_ref, &mut env)
     }
 
@@ -998,13 +1019,61 @@ impl Sema<'_> {
 
             // TypeConst: a type used as a value (e.g., `i32` in `identity(i32, 42)`)
             InstData::TypeConst { type_name } => {
+                let type_name = *type_name;
                 // Type parameters in scope substitute first.
-                if let Some(&ty) = env.type_subst.get(type_name) {
+                if let Some(&ty) = env.type_subst.get(&type_name) {
                     return Ok(Some(ConstValue::Type(ty)));
                 }
+                // A named type (primitive / struct / enum) resolves directly.
+                if let Some(ty) = self.resolve_named_type_value(&type_name) {
+                    return Ok(Some(ConstValue::Type(ty)));
+                }
+                // A *composite* or *unit* type value — `[i32; 2]`, `()`,
+                // `ptr const T` — is an equally-valid type argument (Appendix A
+                // treats them as unambiguous type spellings; RUE-565). Its
+                // TypeConst carries the composite spelling as the interned
+                // `type_name`, so decode it through the full comptime type
+                // resolver under the current substitutions (an inner element /
+                // pointee naming an enclosing `comptime T` still resolves). An
+                // unresolvable spelling stays non-evaluable (`None`).
                 Ok(self
-                    .resolve_named_type_value(type_name)
+                    .resolve_type_for_comptime_with_subst_and_values_at_span(
+                        type_name,
+                        env.type_subst,
+                        env.value_subst,
+                        span,
+                    )
                     .map(ConstValue::Type))
+            }
+
+            // An array-repeat expression `[T; N]` used as a comptime *type* value
+            // (RUE-565). The surface form `[i32; 2]` in expression position parses
+            // as an array-repeat literal whose element is a type value; when that
+            // element reduces to a `ConstValue::Type`, the whole expression is the
+            // array TYPE `[T; N]` — a legal type-constructor argument
+            // (`Option([i32; 2])`). A repeat over a *runtime* element is a genuine
+            // array value literal and is not comptime-foldable here (`None`).
+            InstData::ArrayRepeat { value, count } => {
+                let (value, count) = (*value, count.clone());
+                let Some(ConstValue::Type(elem_ty)) = self.eval_const_expr(value, env)? else {
+                    return Ok(None);
+                };
+                let len = match count {
+                    RepeatCount::Literal(n) => n,
+                    RepeatCount::Named(sym) => {
+                        let name = self.interner.resolve(&sym).to_string();
+                        match self.resolve_array_length(
+                            &ArrayLen::Named(name),
+                            span,
+                            Some(env.value_subst),
+                        ) {
+                            Ok(n) => n,
+                            Err(_) => return Ok(None),
+                        }
+                    }
+                };
+                let array_type_id = self.get_or_create_array_type(elem_ty, len);
+                Ok(Some(ConstValue::Type(Type::new_array(array_type_id))))
             }
 
             // VarRef: comptime let-bindings, comptime parameters, file-level
@@ -1113,9 +1182,114 @@ impl Sema<'_> {
                 Ok(Some(ConstValue::Unit))
             }
 
+            // Module-qualified comptime type-constructor call in value position,
+            // e.g. `let O = b.Mk(T)` inside a `-> type` constructor body that is
+            // being reduced (RUE-511). The receiver must be an unshadowed
+            // `VarRef` naming a module binding of the *defining* file; membership
+            // and visibility are validated before the call is reduced through the
+            // same path unqualified calls take. Any other receiver (a runtime
+            // value's method, a shadowed name) is a genuine runtime call and
+            // stays non-evaluable.
+            InstData::MethodCall {
+                receiver,
+                method,
+                args_start,
+                args_len,
+            } => {
+                let (receiver, method, args_start, args_len) =
+                    (*receiver, *method, *args_start, *args_len);
+                self.eval_module_qualified_comptime_call(
+                    receiver, method, args_start, args_len, span, env,
+                )
+            }
+
             // Everything else requires runtime evaluation
             _ => Ok(None),
         }
+    }
+
+    /// Reduce a module-qualified comptime type-constructor call written in
+    /// *value position* inside a reducing `-> type` constructor body — the
+    /// cross-module analogue of the `Call` arm's `eval_comptime_type_call`
+    /// (RUE-511). Returns `Ok(None)` (a runtime call, non-evaluable) unless the
+    /// receiver is an unshadowed `VarRef` that names a module binding of the
+    /// environment's `defining_file`, and the named member is a `-> type`
+    /// constructor that actually belongs to that module's file.
+    ///
+    /// The membership check (`fn_info.file_id == module_file_id`) closes the
+    /// RUE-564 cross-module hole: functions live in a flat global table keyed by
+    /// name, so a same-named constructor in a different file must not satisfy
+    /// `b.Mk`. Visibility is enforced the same way the qualified type-annotation
+    /// path enforces it (E0460/E0706 surface as the reduction's E1200 here since
+    /// the comptime engine cannot itself emit a diagnostic mid-reduction).
+    fn eval_module_qualified_comptime_call(
+        &mut self,
+        receiver: InstRef,
+        method: Spur,
+        args_start: u32,
+        args_len: u32,
+        span: Span,
+        env: &mut ComptimeEnv,
+    ) -> CompileResult<Option<ConstValue>> {
+        // Receiver must be a bare name.
+        let InstData::VarRef { name: recv_name } = self.rir.get(receiver).data else {
+            return Ok(None);
+        };
+        // A `let`-binding, runtime local, or comptime parameter of the same name
+        // shadows the module import (spec 4.14:6) — then this is not a module
+        // call and is non-evaluable.
+        if env.locals.contains_key(&recv_name) {
+            return Ok(None);
+        }
+        if let Some(locals) = env.runtime_locals {
+            if locals.contains_key(&recv_name) {
+                return Ok(None);
+            }
+        }
+        if env.type_subst.contains_key(&recv_name) || env.value_subst.contains_key(&recv_name) {
+            return Ok(None);
+        }
+        // The receiver names an import of the file whose body is being reduced.
+        let Some(file_id) = env.defining_file else {
+            return Ok(None);
+        };
+        let Some(binding) = self.module_bindings.get(&(file_id, recv_name)).cloned() else {
+            return Ok(None);
+        };
+        let Some(module_id) = binding.ty.as_module() else {
+            return Ok(None);
+        };
+        let module_def = self.module_registry.get_def(module_id);
+        let Some(module_file_id) = self.canonical_file_id(&module_def.file_path) else {
+            return Ok(None);
+        };
+        // Ensure the member's signature is collected, then require membership:
+        // the resolved function must actually be declared in the module's file.
+        self.ensure_free_function_signature(method, Some(module_file_id))?;
+        let function_key = self
+            .resolve_function_name_local(method, module_file_id)
+            .unwrap_or(method);
+        let Some(fn_info) = self
+            .functions
+            .get(&function_key)
+            .copied()
+            .filter(|info| info.file_id == module_file_id)
+        else {
+            return Ok(None);
+        };
+        // Visibility: a non-`pub` member accessed through a module object is not
+        // usable from another directory (spec 10.3:7).
+        let member_name = self.interner.resolve(&method).to_string();
+        self.check_unqualified_visibility(
+            "function",
+            &member_name,
+            fn_info.file_id,
+            fn_info.is_pub,
+            span,
+        )?;
+        // Reduce through the shared path; arguments are evaluated in the current
+        // environment so `T` (an enclosing comptime parameter) still resolves.
+        self.eval_comptime_type_call(function_key, args_start, args_len, env)
     }
 
     /// The `@require_droppable(T)` well-formedness gate for owning growable
@@ -1312,7 +1486,13 @@ impl Sema<'_> {
         };
         let fn_body = fn_info.body;
         let fn_span = fn_info.span;
+        let fn_file = fn_info.file_id;
         let mut callee_env = ComptimeEnv::with_subst(callee_types, callee_values);
+        // The callee body is code from the callee's file: a module-qualified
+        // comptime call inside it (`let O = b.Mk(T)`) names an import of *that*
+        // file, so the receiver must resolve against the callee's module
+        // bindings, not the instantiation site's (RUE-511).
+        callee_env.defining_file = Some(fn_file);
         self.comptime_type_call_depth += 1;
         if self.comptime_type_call_depth > MAX_SPECIALIZATION_ROUNDS {
             self.comptime_type_call_depth -= 1;
