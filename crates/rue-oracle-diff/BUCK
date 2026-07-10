@@ -23,6 +23,12 @@ rue_binary(
         "//third-party:serde",
         "//third-party:toml",
     ],
+    test_deps = [
+        # The generator promises valid, well-typed Rue. Compile a fixed corpus
+        # through the shared front end so language-dialect drift fails in unit
+        # tests instead of becoming a clean Unsupported skip in fuzz mode.
+        "//crates/rue-compiler:rue-compiler",
+    ],
 )
 
 # Run the differential harness under `buck2 test //...` (and hence CI): the
