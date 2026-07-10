@@ -1391,8 +1391,21 @@ fn discover_and_load_imports(
                         resolved_import = true;
                         continue;
                     }
-                    let Ok(module_content) = fs::read_to_string(&candidate) else {
-                        continue;
+                    // The candidate EXISTS at this point (canonicalize +
+                    // is_file above), so a read failure is present-but-
+                    // unreadable (I/O error, invalid UTF-8) — a hard error,
+                    // not absence. Treating it as absence misreported an
+                    // existing import as E0704 "cannot find module", and
+                    // silently erased one arm of a file-vs-directory
+                    // ambiguity so the other candidate was picked without the
+                    // required E0708 (RUE-529).
+                    let module_content = match fs::read_to_string(&candidate) {
+                        Ok(content) => content,
+                        Err(e) => {
+                            eprintln!("Error reading {}: {}", candidate.display(), e);
+                            eprintln!("note: resolved from import '{import_str}'");
+                            return Err(());
+                        }
                     };
                     loaded.insert(canonical.clone());
                     dependency_graph.record_source(canonical, "import");
@@ -2340,6 +2353,50 @@ mod tests {
         let opts = unwrap_options(parse_args_from(&["--emit", "ast", "x.rue", "-o", "x.rue"]));
         assert_eq!(opts.emit_stages, vec![EmitStage::Ast]);
         assert!(is_error(&parse_args_from(&["x.rue", "-o", "x.rue"])));
+    }
+
+    #[test]
+    fn unreadable_import_candidate_is_an_error_not_absence() {
+        // RUE-529: an import candidate that EXISTS but cannot be read
+        // (invalid UTF-8 here) must be a hard error, not treated as absent —
+        // absence misreported the import as E0704 "cannot find module" and
+        // silently erased one arm of a file-vs-directory ambiguity. (Unit
+        // test rather than a CLI case: TOML case sources cannot express
+        // invalid-UTF-8 file content.)
+        let dir =
+            std::env::temp_dir().join(format!("rue-unreadable-import-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let main_path = dir.join("main.rue");
+        fs::write(
+            &main_path,
+            "const h = @import(\"helper.rue\");\nfn main() -> i32 { 0 }\n",
+        )
+        .unwrap();
+        fs::write(dir.join("helper.rue"), [0xFFu8]).unwrap();
+
+        let mut sources = vec![(
+            main_path.to_string_lossy().into_owned(),
+            fs::read_to_string(&main_path).unwrap(),
+        )];
+        let mut graph = DependencyGraph::default();
+        let result = discover_and_load_imports(&mut sources, None, &mut graph);
+        assert!(
+            result.is_err(),
+            "unreadable existing candidate must error, not resolve or vanish"
+        );
+
+        // Control: once the candidate is valid text, discovery loads it.
+        fs::write(dir.join("helper.rue"), "pub fn h() -> i32 {{ 1 }}\n").unwrap();
+        let mut sources = vec![(
+            main_path.to_string_lossy().into_owned(),
+            fs::read_to_string(&main_path).unwrap(),
+        )];
+        let mut graph = DependencyGraph::default();
+        let result = discover_and_load_imports(&mut sources, None, &mut graph);
+        assert!(result.is_ok());
+        assert_eq!(sources.len(), 2, "helper must be discovered and loaded");
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[cfg(unix)]
