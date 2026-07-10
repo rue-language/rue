@@ -1,0 +1,48 @@
+[section]
+id = "diagnostics.type_too_large"
+name = "Oversized type layouts (E0906)"
+description = "Types exceeding the maximum object size (Appendix C.4:3, RUE-561) are rejected with E0906 instead of ICEing (debug multiply overflow) or silently truncating the slot count to zero."
+
+[[case]]
+name = "size_of_2gib_array_rejected"
+source = """
+fn main() -> i32 { @size_of([i32; 536870912]) }
+"""
+compile_fail = true
+error_contains = ["[E0906]", "[i32; 536870912]", "2147483647"]
+
+[[case]]
+name = "size_of_32gib_array_rejected_not_zero"
+source = """
+fn main() -> i32 { @size_of([i32; 4294967296]) }
+"""
+compile_fail = true
+error_contains = ["[E0906]", "[i32; 4294967296]"]
+
+[[case]]
+name = "align_of_oversized_array_rejected"
+source = """
+fn main() -> i32 { @align_of([i32; 4294967296]) }
+"""
+compile_fail = true
+error_contains = ["[E0906]"]
+
+[[case]]
+name = "oversized_local_rejected"
+source = """
+fn main() -> i32 {
+    let a = [0; 536870912];
+    a[0]
+}
+"""
+compile_fail = true
+error_contains = ["[E0906]"]
+
+[[case]]
+name = "large_but_legal_array_size_of_ok"
+source = """
+fn main() -> i32 {
+    if @size_of([i32; 1000]) == 8000 { 0 } else { 1 }
+}
+"""
+exit_code = 0
