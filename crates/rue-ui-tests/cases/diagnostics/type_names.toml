@@ -16,7 +16,6 @@ enum Shape { Circle, Square }
 fn f() -> Color { Shape.Circle }
 fn main() -> i32 { 0 }
 """
-exit_code = 1
 compile_fail = true
 error_contains = ["expected Color, found Shape"]
 
@@ -28,7 +27,6 @@ struct Point { x: i32, y: i32 }
 fn f() -> i32 { Point { x: 1, y: 2 } }
 fn main() -> i32 { 0 }
 """
-exit_code = 1
 compile_fail = true
 error_contains = ["expected i32, found Point"]
 
@@ -48,7 +46,6 @@ fn main() -> i32 {
     0
 }
 """
-exit_code = 1
 compile_fail = true
 error_contains = ["expected A, found B"]
 
@@ -64,7 +61,6 @@ fn main() -> i32 {
     }
 }
 """
-exit_code = 1
 compile_fail = true
 error_contains = ["cannot match on type 'P'"]
 
@@ -75,6 +71,5 @@ source = """
 fn f() -> [i32; 3] { 5 }
 fn main() -> i32 { 0 }
 """
-exit_code = 1
 compile_fail = true
 error_contains = ["[i32; 3]"]

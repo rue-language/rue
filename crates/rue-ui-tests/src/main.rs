@@ -6,6 +6,7 @@
 use libtest2_mimic::{Harness, RunContext, RunError, Trial};
 use rue_test_runner::{
     Case, find_dir, find_rue_binary, load_test_files, run_test_case, should_skip_for_platform,
+    validate_nonempty_case_corpus,
 };
 use std::path::Path;
 
@@ -41,6 +42,14 @@ fn main() {
 
     // Load all test files
     let test_files = load_test_files(&cases_dir);
+    let total_cases: usize = test_files
+        .iter()
+        .map(|(_, test_file)| test_file.case.len())
+        .sum();
+    if let Err(error) = validate_nonempty_case_corpus(&cases_dir, total_cases, "UI") {
+        eprintln!("error: {error}");
+        std::process::exit(1);
+    }
 
     // Convert to trials
     let tests: Vec<Trial> = test_files
@@ -60,11 +69,6 @@ fn main() {
             })
         })
         .collect();
-
-    if tests.is_empty() {
-        eprintln!("Warning: No UI test cases found in {}", cases_dir.display());
-        eprintln!("Make sure test files exist and have the correct format.");
-    }
 
     Harness::with_env().discover(tests).main();
 }

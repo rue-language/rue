@@ -482,6 +482,116 @@ const PARAM_OVERRIDE_KEYS: &[&str] = &[
     "spec_extra",
 ];
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InvalidParamOverrideError {
+    param_index: usize,
+    key: String,
+    expected: &'static str,
+    actual: String,
+}
+
+impl std::fmt::Display for InvalidParamOverrideError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "parameter set #{} override '{}' must be {}, got {}",
+            self.param_index, self.key, self.expected, self.actual
+        )
+    }
+}
+
+fn is_string_array(value: &toml::Value) -> bool {
+    matches!(value, toml::Value::Array(values) if values.iter().all(toml::Value::is_str))
+}
+
+fn invalid_param_override_expectation(key: &str, value: &toml::Value) -> Option<&'static str> {
+    let valid = match key {
+        "exit_code" | "runtime_exit_code" => value
+            .as_integer()
+            .is_some_and(|value| i32::try_from(value).is_ok()),
+        "compile_fail" | "compile_only" | "skip" | "no_warnings" | "preview_should_pass" => {
+            value.is_bool()
+        }
+        "opt_level" => value
+            .as_integer()
+            .is_some_and(|value| (0..=3).contains(&value)),
+        "target"
+        | "preview"
+        | "expected_error"
+        | "expected_tokens"
+        | "expected_ast"
+        | "expected_rir"
+        | "expected_air"
+        | "expected_cfg"
+        | "expected_mir"
+        | "expected_lowering"
+        | "expected_liveness"
+        | "expected_regalloc"
+        | "expected_asm"
+        | "expected_stackframe" => value.is_str(),
+        "timeout_ms" => value
+            .as_integer()
+            .is_some_and(|value| u64::try_from(value).is_ok()),
+        "error_contains" | "warning_contains" => value.is_str() || is_string_array(value),
+        "expected_warning_count" => value
+            .as_integer()
+            .is_some_and(|value| usize::try_from(value).is_ok()),
+        "spec_extra" => is_string_array(value),
+        _ => unreachable!("every reserved parameter override key must have a value schema"),
+    };
+
+    if valid {
+        return None;
+    }
+
+    Some(match key {
+        "exit_code" | "runtime_exit_code" => "an integer in the i32 range",
+        "compile_fail" | "compile_only" | "skip" | "no_warnings" | "preview_should_pass" => {
+            "a boolean"
+        }
+        "opt_level" => "an integer from 0 through 3",
+        "target"
+        | "preview"
+        | "expected_error"
+        | "expected_tokens"
+        | "expected_ast"
+        | "expected_rir"
+        | "expected_air"
+        | "expected_cfg"
+        | "expected_mir"
+        | "expected_lowering"
+        | "expected_liveness"
+        | "expected_regalloc"
+        | "expected_asm"
+        | "expected_stackframe" => "a string",
+        "timeout_ms" | "expected_warning_count" => "a non-negative integer",
+        "error_contains" | "warning_contains" => "a string or an array of strings",
+        "spec_extra" => "an array of strings",
+        _ => unreachable!("all parameter override keys are handled above"),
+    })
+}
+
+fn invalid_param_overrides(case: &Case) -> Vec<InvalidParamOverrideError> {
+    let mut errors = Vec::new();
+    for (param_index, param_set) in case.params.iter().enumerate() {
+        for (key, value) in &param_set.values {
+            if !PARAM_OVERRIDE_KEYS.contains(&key.as_str()) {
+                continue;
+            }
+            if let Some(expected) = invalid_param_override_expectation(key, value) {
+                errors.push(InvalidParamOverrideError {
+                    param_index: param_index + 1,
+                    key: key.clone(),
+                    expected,
+                    actual: format!("{value:?}"),
+                });
+            }
+        }
+    }
+    errors.sort_by(|a, b| (a.param_index, &a.key).cmp(&(b.param_index, &b.key)));
+    errors
+}
+
 fn contains_placeholder(template: &str, key: &str) -> bool {
     template.contains(&format!("{{{key}}}"))
 }
@@ -647,6 +757,23 @@ fn validate_param_keys(case: &Case) {
     );
 }
 
+fn validate_param_overrides(case: &Case) {
+    let errors = invalid_param_overrides(case);
+    if errors.is_empty() {
+        return;
+    }
+
+    let details = errors
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("; ");
+    panic!(
+        "test '{}' has invalid parameter override value(s): {}",
+        case.name, details
+    );
+}
+
 /// Expand a single case with params into multiple concrete cases.
 /// If the case has no params, returns the case unchanged (in a vec).
 pub fn expand_case(case: Case) -> Vec<Case> {
@@ -655,6 +782,7 @@ pub fn expand_case(case: Case) -> Vec<Case> {
     }
 
     validate_param_keys(&case);
+    validate_param_overrides(&case);
 
     case.params
         .iter()
@@ -712,59 +840,59 @@ pub fn expand_case(case: Case) -> Vec<Case> {
 
             // Apply field overrides from params
             if let Some(value) = params.get("exit_code") {
-                if let Some(i) = value.as_integer() {
-                    expanded.exit_code = Some(i as i32);
-                }
+                expanded.exit_code = Some(
+                    i32::try_from(value.as_integer().expect("validated integer override"))
+                        .expect("validated i32 override"),
+                );
             }
             if let Some(value) = params.get("compile_fail") {
-                if let Some(b) = value.as_bool() {
-                    expanded.compile_fail = b;
-                }
+                expanded.compile_fail = value.as_bool().expect("validated boolean override");
             }
             if let Some(value) = params.get("compile_only") {
-                if let Some(b) = value.as_bool() {
-                    expanded.compile_only = b;
-                }
+                expanded.compile_only = value.as_bool().expect("validated boolean override");
             }
             if let Some(value) = params.get("skip") {
-                if let Some(b) = value.as_bool() {
-                    expanded.skip = b;
-                }
+                expanded.skip = value.as_bool().expect("validated boolean override");
             }
             if let Some(value) = params.get("runtime_exit_code") {
-                if let Some(i) = value.as_integer() {
-                    expanded.runtime_exit_code = Some(i as i32);
-                }
+                expanded.runtime_exit_code = Some(
+                    i32::try_from(value.as_integer().expect("validated integer override"))
+                        .expect("validated i32 override"),
+                );
             }
             if let Some(value) = params.get("no_warnings") {
-                if let Some(b) = value.as_bool() {
-                    expanded.no_warnings = b;
-                }
+                expanded.no_warnings = value.as_bool().expect("validated boolean override");
             }
             if let Some(value) = params.get("opt_level") {
-                if let Some(i) = value.as_integer() {
-                    expanded.opt_level = Some(i as u8);
-                }
+                expanded.opt_level = Some(
+                    u8::try_from(value.as_integer().expect("validated integer override"))
+                        .expect("validated u8 override"),
+                );
             }
             if let Some(value) = params.get("target") {
-                if let Some(s) = value.as_str() {
-                    expanded.target = Some(s.to_string());
-                }
+                expanded.target = Some(
+                    value
+                        .as_str()
+                        .expect("validated string override")
+                        .to_string(),
+                );
             }
             if let Some(value) = params.get("preview") {
-                if let Some(s) = value.as_str() {
-                    expanded.preview = Some(s.to_string());
-                }
+                expanded.preview = Some(
+                    value
+                        .as_str()
+                        .expect("validated string override")
+                        .to_string(),
+                );
             }
             if let Some(value) = params.get("preview_should_pass") {
-                if let Some(b) = value.as_bool() {
-                    expanded.preview_should_pass = b;
-                }
+                expanded.preview_should_pass = value.as_bool().expect("validated boolean override");
             }
             if let Some(value) = params.get("timeout_ms") {
-                if let Some(i) = value.as_integer() {
-                    expanded.timeout_ms = Some(i as u64);
-                }
+                expanded.timeout_ms = Some(
+                    u64::try_from(value.as_integer().expect("validated integer override"))
+                        .expect("validated u64 override"),
+                );
             }
             // A per-param `error_contains` / `expected_error` lets a
             // parameterized case give each variant its own diagnostic assertion
@@ -781,12 +909,12 @@ pub fn expand_case(case: Case) -> Vec<Case> {
                     toml::Value::Array(arr) => {
                         expanded.error_contains = ErrorContains(
                             arr.iter()
-                                .filter_map(|v| v.as_str())
+                                .map(|v| v.as_str().expect("validated string array override"))
                                 .map(|s| substitute_placeholders(s, params))
                                 .collect(),
                         );
                     }
-                    _ => {}
+                    _ => unreachable!("validated error_contains override"),
                 }
             }
             if let Some(value) = params.get("expected_error") {
@@ -857,28 +985,26 @@ pub fn expand_case(case: Case) -> Vec<Case> {
                     toml::Value::Array(arr) => {
                         expanded.warning_contains = Some(
                             arr.iter()
-                                .filter_map(|v| v.as_str())
+                                .map(|v| v.as_str().expect("validated string array override"))
                                 .map(|s| substitute_placeholders(s, params))
                                 .collect(),
                         );
                     }
-                    _ => {}
+                    _ => unreachable!("validated warning_contains override"),
                 }
             }
             if let Some(value) = params.get("expected_warning_count") {
-                if let Some(i) = value.as_integer() {
-                    expanded.expected_warning_count = Some(i as usize);
-                }
+                expanded.expected_warning_count = Some(
+                    usize::try_from(value.as_integer().expect("validated integer override"))
+                        .expect("validated usize override"),
+                );
             }
 
             // Merge spec_extra into spec
             if let Some(value) = params.get("spec_extra") {
-                if let Some(arr) = value.as_array() {
-                    for item in arr {
-                        if let Some(s) = item.as_str() {
-                            expanded.spec.push(substitute_placeholders(s, params));
-                        }
-                    }
+                for item in value.as_array().expect("validated array override") {
+                    let item = item.as_str().expect("validated string array override");
+                    expanded.spec.push(substitute_placeholders(item, params));
                 }
             }
 
@@ -1108,6 +1234,69 @@ pub fn validate_compile_fail_assertions(test_file: &TestFile) -> Vec<BareCompile
     errors
 }
 
+/// An error indicating a `compile_fail` case declares an `exit_code`.
+///
+/// `exit_code` describes the compiled program's runtime status. A
+/// `compile_fail` case never produces or runs that program, so the assertion
+/// would be silently ignored.
+#[derive(Debug, Clone)]
+pub struct CompileFailExitCodeError {
+    /// The name of the offending test case.
+    pub test_name: String,
+    /// The section ID the test belongs to.
+    pub section_id: String,
+}
+
+impl std::fmt::Display for CompileFailExitCodeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            concat!(
+                "test '{}::{}' is `compile_fail` but also declares `exit_code` — ",
+                "no program runs for a compile failure, so that assertion would be ignored. ",
+                "Remove `exit_code`."
+            ),
+            self.section_id, self.test_name
+        )
+    }
+}
+
+impl std::error::Error for CompileFailExitCodeError {}
+
+/// Validate that no `compile_fail` case declares a runtime `exit_code`.
+pub fn validate_compile_fail_exit_codes(test_file: &TestFile) -> Vec<CompileFailExitCodeError> {
+    test_file
+        .case
+        .iter()
+        .filter(|case| case.compile_fail && case.exit_code.is_some())
+        .map(|case| CompileFailExitCodeError {
+            test_name: case.name.clone(),
+            section_id: test_file.section.id.clone(),
+        })
+        .collect()
+}
+
+/// Validate that an explicitly configured case corpus contains at least one
+/// case before command-line filtering is applied.
+///
+/// This deliberately checks the loaded corpus, not the number of selected
+/// trials: a user filter that matches zero cases may remain successful, while a
+/// missing or empty configured corpus must fail.
+pub fn validate_nonempty_case_corpus(
+    cases_dir: &Path,
+    case_count: usize,
+    corpus_name: &str,
+) -> Result<(), String> {
+    if case_count > 0 {
+        return Ok(());
+    }
+
+    Err(format!(
+        "no {corpus_name} test cases found in {}",
+        cases_dir.display()
+    ))
+}
+
 /// Recursively collect all files with the given extension from a directory.
 pub fn collect_files_by_ext(dir: &Path, ext: &str, files: &mut Vec<PathBuf>) {
     if let Ok(entries) = fs::read_dir(dir) {
@@ -1145,6 +1334,7 @@ pub fn load_test_files(cases_dir: &Path) -> Vec<(String, TestFile)> {
     let mut platform_errors: Vec<UnknownPlatformError> = Vec::new();
     let mut stray_error_assertions: Vec<StrayErrorAssertionError> = Vec::new();
     let mut bare_compile_fail: Vec<BareCompileFailError> = Vec::new();
+    let mut compile_fail_exit_codes: Vec<CompileFailExitCodeError> = Vec::new();
 
     if !cases_dir.exists() {
         eprintln!(
@@ -1185,6 +1375,10 @@ pub fn load_test_files(cases_dir: &Path) -> Vec<(String, TestFile)> {
 
                 // Reject `compile_fail` cases that carry no error assertion at all
                 bare_compile_fail.extend(validate_compile_fail_assertions(&spec));
+
+                // Reject runtime exit-code assertions on cases that never
+                // produce or execute a program.
+                compile_fail_exit_codes.extend(validate_compile_fail_exit_codes(&spec));
 
                 // Build a relative path from cases_dir to create the identifier
                 // e.g., "expressions/match" for "cases/expressions/match.toml"
@@ -1282,6 +1476,25 @@ Error: {} test file(s) failed to load:",
              `error_contains` nor `expected_error`, so they pass on any rejection. \
              See errors above for details.",
             bare_compile_fail.len()
+        );
+    }
+
+    // Report runtime exit-code assertions that compile-fail cases cannot check.
+    if !compile_fail_exit_codes.is_empty() {
+        eprintln!(
+            "\nError: Found {} `compile_fail` case(s) with an ignored `exit_code`:",
+            compile_fail_exit_codes.len()
+        );
+        for error in &compile_fail_exit_codes {
+            eprintln!("  - {}", error);
+        }
+        panic!(
+            concat!(
+                "Test loading failed: {} `compile_fail` case(s) declare `exit_code`, ",
+                "which is only checked after successful compilation. ",
+                "See errors above for details."
+            ),
+            compile_fail_exit_codes.len()
         );
     }
 
@@ -2083,6 +2296,25 @@ pub fn find_rue_binary() -> PathBuf {
 mod tests {
     use super::*;
 
+    fn case_with_param_override(override_entry: &str) -> Case {
+        let toml = format!(
+            r#"
+[section]
+id = "t.section"
+name = "T"
+
+[[case]]
+name = "case_{{variant}}"
+source = "fn main() -> i32 {{ 0 }}"
+params = [
+  {{ variant = "probe", {override_entry} }},
+]
+"#
+        );
+        let mut test_file: TestFile = toml::from_str(&toml).expect("valid TOML");
+        test_file.case.pop().expect("one case")
+    }
+
     #[test]
     fn test_substitute_placeholders_basic() {
         let mut params = HashMap::new();
@@ -2393,6 +2625,70 @@ params = [
         let unknown = unknown_param_keys(&tf.case[0]);
 
         assert_eq!(unknown, vec!["exit_cod"]);
+    }
+
+    #[test]
+    fn test_param_overrides_reject_wrong_types_and_ranges() {
+        let invalid = [
+            ("no_warnings = \"true\"", "no_warnings", "a boolean"),
+            (
+                "exit_code = 2147483648",
+                "exit_code",
+                "an integer in the i32 range",
+            ),
+            (
+                "runtime_exit_code = -2147483649",
+                "runtime_exit_code",
+                "an integer in the i32 range",
+            ),
+            ("opt_level = 4", "opt_level", "an integer from 0 through 3"),
+            ("timeout_ms = -1", "timeout_ms", "a non-negative integer"),
+            (
+                "warning_contains = [\"warning\", 1]",
+                "warning_contains",
+                "a string or an array of strings",
+            ),
+            (
+                "expected_warning_count = -1",
+                "expected_warning_count",
+                "a non-negative integer",
+            ),
+            (
+                "spec_extra = \"1.2:3\"",
+                "spec_extra",
+                "an array of strings",
+            ),
+            ("expected_mir = 1", "expected_mir", "a string"),
+        ];
+
+        for (override_entry, key, expected) in invalid {
+            let case = case_with_param_override(override_entry);
+            let errors = invalid_param_overrides(&case);
+            assert_eq!(errors.len(), 1, "{override_entry}");
+            assert_eq!(errors[0].param_index, 1);
+            assert_eq!(errors[0].key, key);
+            assert_eq!(errors[0].expected, expected);
+        }
+    }
+
+    #[test]
+    fn test_param_overrides_accept_valid_boundaries() {
+        let case = case_with_param_override(
+            "exit_code = -2147483648, runtime_exit_code = 2147483647, \
+             compile_fail = true, compile_only = false, skip = false, no_warnings = true, \
+             preview_should_pass = false, opt_level = 3, target = \"x86-64-linux\", \
+             preview = \"modules\", timeout_ms = 0, error_contains = [\"one\", \"two\"], \
+             expected_error = \"error\", warning_contains = \"warning\", \
+             expected_warning_count = 0, spec_extra = [\"1.2:3\"]",
+        );
+
+        assert!(invalid_param_overrides(&case).is_empty());
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid parameter override value")]
+    fn test_expand_case_rejects_invalid_param_override() {
+        expand_case(case_with_param_override("no_warnings = \"true\""));
     }
 
     #[test]
@@ -3044,6 +3340,39 @@ params = [
         let case = make_test_case("plain", None);
         let tf = make_test_file("sec", vec![case]);
         assert!(validate_error_assertions(&tf).is_empty());
+    }
+
+    #[test]
+    fn test_validate_compile_fail_exit_codes_rejects_ignored_assertion() {
+        let mut case = make_test_case("compile_error", None);
+        case.compile_fail = true;
+        case.exit_code = Some(1);
+        case.error_contains = ErrorContains(vec!["[E0206]".to_string()]);
+        let test_file = make_test_file("diagnostics", vec![case]);
+
+        let errors = validate_compile_fail_exit_codes(&test_file);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].section_id, "diagnostics");
+        assert_eq!(errors[0].test_name, "compile_error");
+        assert!(errors[0].to_string().contains("Remove `exit_code`"));
+    }
+
+    #[test]
+    fn test_validate_compile_fail_exit_codes_allows_runtime_case() {
+        let case = make_test_case("runtime", None);
+        let test_file = make_test_file("runtime", vec![case]);
+
+        assert!(validate_compile_fail_exit_codes(&test_file).is_empty());
+    }
+
+    #[test]
+    fn test_validate_nonempty_case_corpus_checks_loaded_case_count() {
+        let cases_dir = Path::new("/tmp/cases");
+        assert!(validate_nonempty_case_corpus(cases_dir, 1, "spec").is_ok());
+
+        let error = validate_nonempty_case_corpus(cases_dir, 0, "spec")
+            .expect_err("an empty configured corpus must fail");
+        assert_eq!(error, "no spec test cases found in /tmp/cases");
     }
 
     // Tests for run_with_timeout draining large output without deadlock

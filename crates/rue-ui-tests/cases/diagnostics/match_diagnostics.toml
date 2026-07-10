@@ -26,7 +26,6 @@ fn main() -> i32 {
     }
 }
 """
-exit_code = 1
 compile_fail = true
 error_contains = ["expected integer type, found bool", "6:23", "Color.Blue => true"]
 
@@ -44,7 +43,6 @@ fn main() -> i32 {
     0
 }
 """
-exit_code = 1
 compile_fail = true
 error_contains = ["expected i32, found bool", "7:23"]
 
@@ -60,7 +58,6 @@ fn main() -> i32 {
     }
 }
 """
-exit_code = 1
 compile_fail = true
 error_contains = ["match is not exhaustive", "missing variants: Blue, Green"]
 
@@ -74,7 +71,6 @@ fn main() -> i32 {
     }
 }
 """
-exit_code = 1
 compile_fail = true
 error_contains = ["match is not exhaustive", "pattern `false` is not covered"]
 
@@ -89,7 +85,6 @@ fn main() -> i32 {
     }
 }
 """
-exit_code = 1
 compile_fail = true
 error_contains = ["match is not exhaustive", "wildcard arm"]
 

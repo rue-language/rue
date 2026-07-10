@@ -87,7 +87,8 @@ use std::time::Duration;
 
 use libtest2_mimic::{Harness, RunContext, RunError, Trial};
 use rue_test_runner::{
-    DEFAULT_TIMEOUT_MS, find_dir, find_rue_binary, ice_message, run_with_timeout,
+    DEFAULT_TIMEOUT_MS, KNOWN_TARGETS, find_dir, find_rue_binary, ice_message, run_with_timeout,
+    validate_nonempty_case_corpus,
 };
 use serde::Deserialize;
 
@@ -781,6 +782,18 @@ fn compile_fail_missing_assertion(case: &Case) -> bool {
     case.compile_fail && case.error_contains.is_empty() && case.compile_stderr_contains.is_empty()
 }
 
+fn compile_fail_has_exit_code(case: &Case) -> bool {
+    case.compile_fail && case.exit_code.is_some()
+}
+
+fn unknown_only_on_targets(case: &Case) -> Vec<&str> {
+    case.only_on
+        .iter()
+        .map(String::as_str)
+        .filter(|platform| !KNOWN_TARGETS.contains(platform))
+        .collect()
+}
+
 fn load_cases(cases_dir: &Path) -> Vec<(String, TestFile)> {
     let mut toml_files = Vec::new();
     rue_test_runner::collect_toml_files(cases_dir, &mut toml_files);
@@ -804,6 +817,28 @@ fn load_cases(cases_dir: &Path) -> Vec<(String, TestFile)> {
                 // load time so the doc comment's promise is enforced, not merely
                 // documented (RUE-132).
                 for case in &tf.cases {
+                    let unknown_platforms = unknown_only_on_targets(case);
+                    if !unknown_platforms.is_empty() {
+                        eprintln!(
+                            "error: {}: case '{}' has unknown only_on platform(s): {} (known: {})",
+                            path.display(),
+                            case.name,
+                            unknown_platforms.join(", "),
+                            KNOWN_TARGETS.join(", ")
+                        );
+                        std::process::exit(1);
+                    }
+                    if compile_fail_has_exit_code(case) {
+                        eprintln!(
+                            concat!(
+                                "error: {}: compile_fail case '{}' also declares `exit_code`, ",
+                                "but no program runs for a compile failure. Remove `exit_code`."
+                            ),
+                            path.display(),
+                            case.name
+                        );
+                        std::process::exit(1);
+                    }
                     if differential_opt_missing_pin(case) {
                         eprintln!(
                             "error: {}: differential_opt case '{}' must declare both an explicit \
@@ -1028,6 +1063,10 @@ fn main() {
     let files = load_cases(&cases_dir);
 
     let total: usize = files.iter().map(|(_, f)| f.cases.len()).sum();
+    if let Err(error) = validate_nonempty_case_corpus(&cases_dir, total, "CLI") {
+        eprintln!("error: {error}");
+        std::process::exit(1);
+    }
     let mut tests: Vec<Trial> = Vec::with_capacity(total);
 
     for (_, file) in files {
@@ -1041,13 +1080,6 @@ fn main() {
                 run_case_wrapper(&case, &rue_binary, &real_std, &repo_root, ctx)
             }));
         }
-    }
-
-    if tests.is_empty() {
-        eprintln!(
-            "warning: no CLI test cases found in {}",
-            cases_dir.display()
-        );
     }
 
     // RUE-48: compile+run every examples/**/*.rue through the real driver, so a
@@ -1127,5 +1159,42 @@ mod tests {
             ..Default::default()
         };
         assert!(!compile_fail_missing_assertion(&case));
+    }
+
+    #[test]
+    fn unknown_only_on_target_is_rejected() {
+        let case = Case {
+            name: "platform_typo".to_string(),
+            only_on: vec!["x86_64-linux".to_string()],
+            ..Default::default()
+        };
+
+        assert_eq!(unknown_only_on_targets(&case), vec!["x86_64-linux"]);
+    }
+
+    #[test]
+    fn known_only_on_targets_are_accepted() {
+        let case = Case {
+            name: "known_platforms".to_string(),
+            only_on: KNOWN_TARGETS
+                .iter()
+                .map(|target| (*target).to_string())
+                .collect(),
+            ..Default::default()
+        };
+
+        assert!(unknown_only_on_targets(&case).is_empty());
+    }
+
+    #[test]
+    fn compile_fail_case_rejects_runtime_exit_code() {
+        let case = Case {
+            name: "ignored_exit".to_string(),
+            compile_fail: true,
+            exit_code: Some(1),
+            ..Default::default()
+        };
+
+        assert!(compile_fail_has_exit_code(&case));
     }
 }

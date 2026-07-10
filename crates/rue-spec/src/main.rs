@@ -37,6 +37,7 @@
 use libtest2_mimic::{Harness, RunContext, RunError, Trial};
 use rue_test_runner::{
     Case, find_dir, find_rue_binary, load_test_files, run_test_case, should_skip_for_platform,
+    validate_nonempty_case_corpus,
 };
 use std::path::Path;
 
@@ -156,6 +157,10 @@ fn main() {
     // Build test trials, separating stable and preview tests
     // Pre-allocate based on total case count across all specs
     let total_cases: usize = specs.iter().map(|(_, s)| s.case.len()).sum();
+    if let Err(error) = validate_nonempty_case_corpus(&cases_dir, total_cases, "spec") {
+        eprintln!("error: {error}");
+        std::process::exit(1);
+    }
     let mut tests: Vec<Trial> = Vec::with_capacity(total_cases);
 
     for (_, spec) in specs {
@@ -185,11 +190,6 @@ fn main() {
 
             tests.push(trial);
         }
-    }
-
-    if tests.is_empty() {
-        eprintln!("Warning: No test cases found in {}", cases_dir.display());
-        eprintln!("Make sure spec files exist and have the correct format.");
     }
 
     // Run all tests
