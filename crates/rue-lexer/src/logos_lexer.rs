@@ -60,6 +60,13 @@ fn process_string_from_quote(lex: &mut logos::Lexer<'_, LogosTokenKind>) -> Resu
     let mut consumed = 0;
     let mut result = String::new();
     let mut found_close = false;
+    // The first invalid escape, if any. On an invalid escape we do NOT bail
+    // immediately: we keep scanning to the real closing quote so the token
+    // spans the whole literal and the lexer resumes AFTER the close. Bailing
+    // mid-string left logos resuming inside the remaining content, which then
+    // read the original closing quote as a fresh opening quote and reported a
+    // spurious `unterminated string literal` (RUE-535).
+    let mut pending_error: Option<LexError> = None;
 
     while let Some(c) = chars.next() {
         if c == '"' {
@@ -106,31 +113,35 @@ fn process_string_from_quote(lex: &mut logos::Lexer<'_, LogosTokenKind>) -> Resu
                     // bare-newline path below) so the span points at the string
                     // start.
                     lex.bump(consumed);
-                    return Err(LexError::UnterminatedString);
+                    return Err(pending_error.unwrap_or(LexError::UnterminatedString));
                 }
                 Some(other) => {
-                    // Invalid escape - consume the char so the token covers it,
-                    // and record exactly where it is for the diagnostic span.
+                    // Invalid escape: consume the char so the token covers it
+                    // and record the FIRST one for the diagnostic span, but keep
+                    // scanning for the real closing quote so the lexer resyncs
+                    // past it (RUE-535).
                     consumed += other.len_utf8();
-                    lex.bump(consumed);
-                    return Err(LexError::InvalidStringEscape {
-                        offset: backslash_offset,
-                        escape: other,
-                    });
+                    if pending_error.is_none() {
+                        pending_error = Some(LexError::InvalidStringEscape {
+                            offset: backslash_offset,
+                            escape: other,
+                        });
+                    }
                 }
                 None => {
                     // Backslash at end of input
                     lex.bump(consumed);
-                    return Err(LexError::UnterminatedString);
+                    return Err(pending_error.unwrap_or(LexError::UnterminatedString));
                 }
             }
         } else if c == '\n' || c == '\r' {
             // Line terminator in string - string is unterminated at this line.
             // A bare CR counts too: spec 2.3:1 classes it as a newline, and the
             // backslash-before-EOL path above already treats it as one.
-            // Don't consume the terminator so error span points to string start
+            // Don't consume the terminator so error span points to string start.
+            // A pending invalid escape (if any) is the more specific diagnosis.
             lex.bump(consumed);
-            return Err(LexError::UnterminatedString);
+            return Err(pending_error.unwrap_or(LexError::UnterminatedString));
         } else {
             consumed += c.len_utf8();
             result.push(c);
@@ -140,11 +151,18 @@ fn process_string_from_quote(lex: &mut logos::Lexer<'_, LogosTokenKind>) -> Resu
     if !found_close {
         // Reached end of input without closing quote
         lex.bump(consumed);
-        return Err(LexError::UnterminatedString);
+        return Err(pending_error.unwrap_or(LexError::UnterminatedString));
     }
 
     // Advance past the string content and closing quote
     lex.bump(consumed);
+
+    // The literal was well-formed and terminated except for an invalid escape:
+    // report it now that the lexer is resynced past the closing quote, so no
+    // spurious follow-on error is produced for the rest of the line (RUE-535).
+    if let Some(err) = pending_error {
+        return Err(err);
+    }
 
     // Intern the string
     let spur = lex.extras.get_or_intern(&result);
@@ -1452,6 +1470,67 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(matches!(err.kind, ErrorKind::InvalidStringEscape('q')));
+    }
+
+    #[test]
+    fn test_logos_invalid_escape_resyncs_past_closing_quote() {
+        // RUE-535: an invalid escape in a TERMINATED string must not leave the
+        // lexer mid-content, where it would read the real closing quote as a
+        // fresh opening quote and report a spurious `unterminated string`.
+        // Exactly ONE error (the invalid escape) is expected, and the tokens
+        // after the string stay synchronized.
+        let source = r#"let s = "abc\qtail"; let n = 42;"#;
+        let (errors, _interner) = LogosLexer::new(source)
+            .tokenize_preserving_interner()
+            .expect_err("the invalid escape must report");
+        assert_eq!(
+            errors.len(),
+            1,
+            "expected only the invalid-escape error, got {:?}",
+            errors.iter().map(|e| &e.kind).collect::<Vec<_>>()
+        );
+        assert!(matches!(
+            errors.iter().next().unwrap().kind,
+            ErrorKind::InvalidStringEscape('q')
+        ));
+    }
+
+    #[test]
+    fn test_logos_invalid_escape_then_more_valid_strings_stay_synced() {
+        // The `;` and the SECOND string literal after the bad one must lex
+        // normally — proof the closing-quote resync holds across the rest of
+        // the line (RUE-535).
+        let source = r#""x\qy"; "ok""#;
+        let (errors, _interner) = LogosLexer::new(source)
+            .tokenize_preserving_interner()
+            .expect_err("the invalid escape must report");
+        assert_eq!(
+            errors.len(),
+            1,
+            "{:?}",
+            errors.iter().map(|e| &e.kind).collect::<Vec<_>>()
+        );
+        assert!(matches!(
+            errors.iter().next().unwrap().kind,
+            ErrorKind::InvalidStringEscape('q')
+        ));
+    }
+
+    #[test]
+    fn test_logos_unterminated_after_invalid_escape_still_reported() {
+        // No closing quote before end of line: the string is genuinely
+        // unterminated. Reporting the invalid escape (the first, more specific
+        // problem) is fine; what must NOT happen is a phantom second string.
+        let source = "\"abc\\qtail\n";
+        let (errors, _interner) = LogosLexer::new(source)
+            .tokenize_preserving_interner()
+            .expect_err("must report");
+        assert_eq!(
+            errors.len(),
+            1,
+            "{:?}",
+            errors.iter().map(|e| &e.kind).collect::<Vec<_>>()
+        );
     }
 
     #[test]
