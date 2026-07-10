@@ -222,7 +222,18 @@ fn analyze_all_function_bodies_sequential(sema: &mut Sema<'_>) -> MultiErrorResu
         } = &inst.data
         {
             let type_name_str = sema.interner.resolve(&*type_name).to_string();
-            let struct_id = match sema.structs.get(type_name) {
+            // Resolve the struct FILE-AWARE first: same-named types in
+            // different files are distinct after RUE-454, and the global
+            // by-name map drops ambiguous names entirely — so a name-only
+            // lookup ICEd for flat positional files ("not found in struct
+            // map") and, worse, analyzed a module file's methods against the
+            // OTHER file's same-named struct (RUE-558). The declaration's own
+            // span carries its file.
+            let struct_id = match sema
+                .structs_by_file_name
+                .get(&(inst.span.file_id, *type_name))
+                .or_else(|| sema.structs.get(type_name))
+            {
                 Some(id) => *id,
                 None => {
                     errors.push(CompileError::new(
@@ -287,7 +298,13 @@ fn analyze_all_function_bodies_sequential(sema: &mut Sema<'_>) -> MultiErrorResu
     for (_, inst) in sema.rir.iter() {
         if let InstData::DropFnDecl { type_name, body } = &inst.data {
             let type_name_str = sema.interner.resolve(&*type_name).to_string();
-            let struct_id = match sema.structs.get(type_name) {
+            // File-aware first, like method analysis above (RUE-558): the
+            // global by-name map drops names duplicated across files.
+            let struct_id = match sema
+                .structs_by_file_name
+                .get(&(inst.span.file_id, *type_name))
+                .or_else(|| sema.structs.get(type_name))
+            {
                 Some(id) => *id,
                 None => {
                     errors.push(CompileError::new(
@@ -1026,7 +1043,12 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
     for (_, inst) in sema.rir.iter() {
         if let InstData::DropFnDecl { type_name, body } = &inst.data {
             let type_name_str = sema.interner.resolve(&*type_name).to_string();
-            let struct_id = match sema.structs.get(type_name) {
+            // File-aware first (RUE-558), matching the sites above.
+            let struct_id = match sema
+                .structs_by_file_name
+                .get(&(inst.span.file_id, *type_name))
+                .or_else(|| sema.structs.get(type_name))
+            {
                 Some(id) => *id,
                 None => continue,
             };

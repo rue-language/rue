@@ -2561,3 +2561,19 @@ fn main() -> i32 {
 }
 """ }]
 exit_code = 42
+
+[[case]]
+# RUE-558: same-named structs in two flat positional files must not ICE.
+# Types are file-scoped (RUE-454); the global by-name struct map drops
+# duplicated names, and method/destructor analysis looked up name-only,
+# producing E9000 "struct 'P' not found in struct map".
+name = "flat_positional_same_named_structs_no_ice"
+files = [
+  { path = "a.rue", source = """
+struct P { x: i32 }
+fn main() -> i32 { 0 }
+""" },
+  { path = "b.rue", source = "struct P { y: i32 }\n" },
+]
+args = ["a.rue", "b.rue", "-o", "prog"]
+exit_code = 0
