@@ -10,6 +10,9 @@
 #     so running workers' branches are protected automatically.
 #   * we only abandon unbookmarked orphan heads — never @, never a bookmarked
 #     (i.e. live-worker or open-PR) change.
+#   * remote branch deletion is FAIL CLOSED (RUE-567): it removes only branches
+#     proven merged/closed by a successful query, never branches merely absent
+#     from an open-PR list, and does nothing at all if the query fails.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 REPO=rue-language/rue
@@ -33,14 +36,37 @@ for br in $(gh pr list --repo "$REPO" --author "$ME" --state merged --json headR
 done
 echo "jj-tidy: deleted $b merged/closed push bookmarks"
 
-# 3. Delete stale origin branches for merged/closed PRs (keeps open ones).
-open="$(gh pr list --repo "$REPO" --author "$ME" --state open --json headRefName --jq '.[].headRefName' 2>/dev/null | tr '\n' ' ')"
-stale=""
-for br in $(git branch -r --format='%(refname:short)' 2>/dev/null | sed -n 's|^origin/||p' | grep -E '(^|/)push-'); do
-  case " $open " in *" $br "*) continue ;; esac
-  stale="$stale $br"
-done
-[ -n "$stale" ] && git push origin --delete $stale >/dev/null 2>&1 || true
+# 3. Delete stale origin push-* branches — FAIL CLOSED (RUE-567).
+#
+# The old logic deleted every origin push-* branch ABSENT from our own open-PR
+# list. Absence is not proof of staleness: a failed `gh` query (empty open
+# list) would delete ALL of them, another maintainer's still-open branch would
+# be deleted, and an unpublished in-progress branch with no PR would be deleted.
+#
+# Instead require POSITIVE evidence: only remove a branch that matches the head
+# ref of one of OUR merged-or-closed PRs, and only when BOTH queries succeed. If
+# we cannot get that evidence, delete nothing. The `if` gates on the queries'
+# real exit status (stderr is muted, but that does not mask failure).
+if merged_closed="$(
+      gh pr list --repo "$REPO" --author "$ME" --state merged --json headRefName --limit 500 --jq '.[].headRefName' 2>/dev/null &&
+      gh pr list --repo "$REPO" --author "$ME" --state closed --json headRefName --limit 500 --jq '.[].headRefName' 2>/dev/null
+    )"; then
+  del=""
+  for br in $(git branch -r --format='%(refname:short)' 2>/dev/null | sed -n 's|^origin/||p' | grep -E '(^|/)push-'); do
+    # Newline-delimited exact match, so `push-ab` never matches `push-abc`.
+    case $'\n'"$merged_closed"$'\n' in
+      *$'\n'"$br"$'\n'*) del="$del $br" ;;
+    esac
+  done
+  if [ -n "$del" ]; then
+    git push origin --delete $del >/dev/null 2>&1 || true
+    echo "jj-tidy: deleted$del stale origin push branches"
+  else
+    echo "jj-tidy: no stale origin push branches to delete"
+  fi
+else
+  echo "jj-tidy: could not query merged/closed PR state — skipping remote branch cleanup (fail-closed)"
+fi
 
 # 4. Abandon orphaned mutable heads with no bookmark (never @, never a live/open change).
 jj abandon -r 'heads(mutable()) ~ @ ~ bookmarks() ~ remote_bookmarks()' >/dev/null 2>&1 || true
