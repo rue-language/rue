@@ -123,6 +123,23 @@ sh_test(
     },
 )
 
+# A fixed generated differential corpus in every full test run. The generator
+# unit contract pins that seeds 0..63 retain every required fragile source
+# shape; this target then compiles and runs those programs through both the
+# reference oracle and native codegen. It lives at the root so full/no-argument
+# `test.sh` and CI include it while `quick-test.sh` remains unit-only.
+sh_test(
+    name = "oracle-diff-generated-smoke",
+    test = "scripts/oracle-diff-generated-smoke.sh",
+    env = {
+        "RUE_BINARY": "$(exe_target //crates/rue:rue)",
+        "RUE_ORACLE_DIFF_BINARY": "$(exe_target //crates/rue-oracle-diff:rue-oracle-diff)",
+    },
+    # Preserve enough outer margin for the harness to print all structured
+    # findings even if every compiler and native phase consumes its 2s budget.
+    test_rule_timeout_ms = 600000,
+)
+
 sh_test(
     name = "tutorial-snippet-tests",
     test = "scripts/check-tutorial-snippets.py",
