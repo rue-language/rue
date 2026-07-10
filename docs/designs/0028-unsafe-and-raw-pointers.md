@@ -147,12 +147,6 @@ checked {
 
     // Convert pointer to integer
     let addr: u64 = @ptr_to_int(p);
-
-    // Null pointer
-    let null: ptr const i32 = @null_ptr();
-
-    // Check for null
-    let is_null: bool = @is_null(p);
 }
 ```
 
@@ -165,9 +159,6 @@ checked {
 | `@ptr_offset(p, n)` | `(ptr T, i64) -> ptr T` | Offset by n elements (not bytes) |
 | `@ptr_to_int(p)` | `(ptr T) -> u64` | Convert pointer to integer |
 | `@int_to_ptr(n)` | `(u64) -> ptr mut T` | Convert integer to pointer |
-| `@null_ptr()` | `() -> ptr const T` | Create null pointer |
-| `@is_null(p)` | `(ptr T) -> bool` | Check if pointer is null |
-| `@ptr_copy(dst, src, n)` | `(ptr mut T, ptr const T, u64) -> ()` | Copy n elements |
 
 ### Raw Pointer Intrinsics
 

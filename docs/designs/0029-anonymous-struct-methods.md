@@ -95,9 +95,10 @@ fn Vec(comptime T: type) -> type {
 }
 
 fn main() -> i32 {
-    let v = Vec(i32)::new();
+    let V = Vec(i32);
+    let v = V.new();
     let v2 = v.push(42);
-    v2.len() as i32
+    @intCast(v2.len())
 }
 ```
 
@@ -154,13 +155,15 @@ fn B() -> type {
 }
 
 fn C() -> type {
-    struct { x: i32, fn get(self) -> i64 { self.x as i64 } }  // DIFFERENT type (i64 vs i32)
+    struct { x: i32, fn get(self) -> i64 { @intCast(self.x) } }  // DIFFERENT type (i64 vs i32)
 }
 ```
 
 ### Associated Functions
 
-Functions without `self` are associated functions, called with `Type::function()` syntax:
+Functions without `self` are associated functions, called with `Type.function()`
+syntax on a type bound to a variable (`.` is the sole member-access spelling;
+`::` is not accepted):
 
 ```rue
 fn Point(comptime T: type) -> type {
@@ -175,7 +178,8 @@ fn Point(comptime T: type) -> type {
 }
 
 fn main() -> i32 {
-    let p = Point(i32)::origin();
+    let P = Point(i32);
+    let p = P.origin();
     p.x
 }
 ```
@@ -227,13 +231,13 @@ Epic: rue-nj40 (historical bd ID, pre-Linear; the `.N` suffixes below are its su
 - [x] Change method lookup key from `(Spur, Spur)` to `(StructId, Spur)`
 - [x] Register methods when creating anonymous struct types
 - [x] Resolve `Self` to the anonymous struct's `StructId` (in signatures only)
-- [x] Handle `Type::function()` call syntax for comptime type variables (historical bd ID rue-ybbz, pre-Linear)
+- [x] Handle `Type.function()` call syntax for comptime type variables (historical bd ID rue-ybbz, pre-Linear)
 - [ ] Update structural equality to include method signatures
 - [ ] Handle comptime parameter capture in method bodies
 - [x] Analyze method bodies with `self` in scope
 - [x] Resolve `Self` in method body expressions (historical bd ID rue-h6zn, pre-Linear)
 
-**Status**: Most items complete. Method registration, `self` in method bodies, associated function calls on comptime type variables (`P::constant()`), and `Self` type resolution all work. Remaining: structural equality with methods, comptime parameter capture.
+**Status**: Most items complete. Method registration, `self` in method bodies, associated function calls on comptime type variables (`P.constant()`), and `Self` type resolution all work. Remaining: structural equality with methods, comptime parameter capture.
 
 **Deliverable**: `v.push(42)` compiles when `v` is an anonymous struct type with a `push` method.
 

@@ -13,6 +13,15 @@ superseded-by:
 
 # ADR-0014: Mutable Strings
 
+> **Surface syntax below is dated.** The *capability* (a heap-owning, affine,
+> growable string) ships, but two spellings changed after this ADR was written:
+> the type is now **`StrBuf`**, not `String` (renamed by
+> [ADR-0043](0043-collection-string-type-trio.md) — it is the growable rung of
+> the collection trio, not a blessed builtin), and associated functions are
+> called with `.` on a bound name (`StrBuf.new()`), never `::`. Mutable bindings
+> are `let mut x`, not `var x` (Rue has no `var` keyword). Read the `String::` /
+> `var` examples below as historical; substitute `StrBuf.` / `let mut`.
+
 ## Status
 
 Implemented

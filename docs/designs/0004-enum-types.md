@@ -54,11 +54,11 @@ enum Color {
 }
 
 fn main() -> i32 {
-    let c = Color::Green;
+    let c = Color.Green;
     match c {
-        Color::Red => 1,
-        Color::Green => 2,
-        Color::Blue => 3,
+        Color.Red => 1,
+        Color.Green => 2,
+        Color.Blue => 3,
     }
 }
 ```
@@ -128,7 +128,7 @@ The discriminant type is chosen to be the smallest unsigned integer that can rep
 Variants are constructed using path syntax `EnumName::VariantName`:
 
 ```rue
-let color = Color::Red;
+let color = Color.Red;
 ```
 
 #### Pattern Matching
@@ -137,9 +137,9 @@ Enum variants are matched using the same path syntax:
 
 ```rue
 match color {
-    Color::Red => 0,
-    Color::Green => 1,
-    Color::Blue => 2,
+    Color.Red => 0,
+    Color.Green => 1,
+    Color.Blue => 2,
 }
 ```
 
