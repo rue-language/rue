@@ -1,0 +1,26 @@
+[section]
+id = "cli.bare_cr_newlines"
+name = "Bare CR newline handling"
+description = """
+RUE-534: the spec (2.3:1) treats a bare carriage return as a newline. A //
+comment must end at a CR (not swallow the code after it), and diagnostics must
+locate/render CR-separated lines correctly. The \\r below is a TOML escape,
+so the on-disk source contains a real CR byte.
+"""
+
+# A CR-terminated line comment must end at the CR; the code after it compiles
+# and runs (was E0200 "no main function found" when the comment ate the code).
+[[case]]
+name = "cr_comment_does_not_swallow_code"
+files = [{ path = "main.rue", source = "// comment\rfn main() -> i32 { 7 }\r" }]
+args = ["main.rue", "-o", "prog"]
+exit_code = 7
+
+# A lexical error on a CR-only second line is reported at line 2, and the
+# rendered source does not collapse the CR-separated lines onto one.
+[[case]]
+name = "cr_error_reported_on_correct_line"
+files = [{ path = "main.rue", source = "fn main() -> i32 {\r$\r0\r}\r" }]
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0001", "main.rue:2:1"]
