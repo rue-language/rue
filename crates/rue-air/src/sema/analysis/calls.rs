@@ -417,8 +417,42 @@ impl<'a> Sema<'a> {
         let fn_name_str = self.interner.resolve(&function_name).to_string();
         let module_def = self.module_registry.get_def(module_id);
         let module_file_id = self.canonical_file_id(&module_def.file_path);
-        let function_key = module_file_id
+        let mut function_key = module_file_id
             .and_then(|file_id| self.resolve_function_name_local(function_name, file_id));
+
+        // Fallback: a re-exported function member — `pub const f = @import("x").f;`
+        // in the facade binds `f` to a function value (ADR-0026, RUE-592). It is
+        // not a free function *defined* in the facade, so resolve the call to the
+        // underlying function the const points at. The re-export const's own
+        // visibility gates access from here; its presence is the membership grant,
+        // so the "defined in this file" and underlying-visibility checks are
+        // bypassed below.
+        let mut via_reexport = false;
+        if function_key.is_none()
+            && let Some(mfile) = module_file_id
+        {
+            let reexport = self
+                .constants_by_file_name
+                .get(&(mfile, function_name))
+                .and_then(|info| match info.value {
+                    ConstValue::Function(fkey) => Some((fkey, info.is_pub)),
+                    _ => None,
+                });
+            if let Some((fkey, is_pub)) = reexport {
+                if !self.is_accessible(span.file_id, mfile, is_pub) {
+                    return Err(CompileError::new(
+                        ErrorKind::PrivateMemberAccess {
+                            item_kind: "const".to_string(),
+                            name: fn_name_str.clone(),
+                        },
+                        span,
+                    ));
+                }
+                function_key = Some(fkey);
+                via_reexport = true;
+            }
+        }
+
         let fn_info = self
             .functions
             .get(&function_key.unwrap_or(function_name))
@@ -438,7 +472,9 @@ impl<'a> Sema<'a> {
         let param_types = self.param_arena.types(fn_info.params).to_vec();
         let param_modes = self.param_arena.modes(fn_info.params).to_vec();
         let args = self.rir.get_call_args(args_start, args_len);
-        let accessible = self.is_accessible(span.file_id, fn_info.file_id, fn_info.is_pub);
+        // A re-export was already visibility-checked against its facade const.
+        let accessible =
+            via_reexport || self.is_accessible(span.file_id, fn_info.file_id, fn_info.is_pub);
         check_module_member_call(
             self.rir,
             &module_def.import_path,
@@ -449,6 +485,7 @@ impl<'a> Sema<'a> {
             &param_modes,
             &args,
             accessible,
+            via_reexport,
             span,
         )?;
 
