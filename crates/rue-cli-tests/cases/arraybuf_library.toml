@@ -598,3 +598,35 @@ pub fn ArrayBuf(comptime T: type) -> type {
 ]
 stdout = ""
 exit_code = 30
+
+[[case]]
+# RUE-566: a zero-sized Copy element type is valid for ArrayBuf. The buffer is
+# never allocated (element size 0), so @ptr_write/@ptr_read must be zero-byte
+# no-ops (they dereferenced the null buffer: first a codegen abort, then a
+# runtime segfault) and a zero-slot Option payload extraction must not touch
+# the 1-slot discriminant-only enum's nonexistent payload slots (codegen
+# panic). Exercises push/pop/len/clear + Option(Z) match; score pins each leg.
+name = "arraybuf_zero_sized_element"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+struct Z {}
+
+fn main() -> i32 {
+    let V = std.arraybuf.ArrayBuf(Z);
+    let mut v = V.new();
+    v.push(Z {});
+    v.push(Z {});
+    v.push(Z {});
+    let O = std.option.Option(Z);
+    let popped = v.pop();
+    let mut score = 0;
+    match popped { O.Some(z) => { score = score + 1; }, O.None => {} }
+    if v.len() == 2 { score = score + 10; }
+    if v.is_empty() { score = score + 100; }
+    v.clear();
+    if v.is_empty() { score = score + 1000; }
+    score
+}
+""" }]
+exit_code = 243
