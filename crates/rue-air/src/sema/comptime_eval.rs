@@ -104,6 +104,29 @@ pub(crate) struct ComptimeEnv<'a> {
 }
 
 impl<'a> ComptimeEnv<'a> {
+    /// The substitution maps augmented with this environment's comptime
+    /// `let` locals (RUE-575): a type-valued local (`let Inner = Mk(T);`)
+    /// participates in type resolution exactly like a `comptime T: type`
+    /// parameter, and an integer/bool-valued local like a comptime value
+    /// parameter, wherever the anonymous-type arms resolve field, payload,
+    /// and method-signature types. Locals are inserted last, so an alias
+    /// shadows a same-named enclosing parameter (lexical scoping).
+    fn substs_with_locals(&self) -> (HashMap<Spur, Type>, HashMap<Spur, ConstValue>) {
+        let mut type_subst = self.type_subst.clone();
+        let mut value_subst = self.value_subst.clone();
+        for (name, val) in &self.locals {
+            match val {
+                ConstValue::Type(t) => {
+                    type_subst.insert(*name, *t);
+                }
+                other => {
+                    value_subst.insert(*name, *other);
+                }
+            }
+        }
+        (type_subst, value_subst)
+    }
+
     /// An environment with no substitutions and no type information.
     pub(crate) fn new() -> Self {
         Self {
@@ -850,6 +873,11 @@ impl Sema<'_> {
             } => {
                 let field_decls = self.rir.get_field_decls(*fields_start, *fields_len);
 
+                // Comptime `let` locals in scope participate in field-type
+                // resolution (`let Inner = Mk(T); struct { x: Inner }`,
+                // RUE-575), alongside the enclosing parameters.
+                let (local_type_subst, local_value_subst) = env.substs_with_locals();
+
                 let mut struct_fields = Vec::with_capacity(field_decls.len());
                 for (name_sym, type_sym) in field_decls {
                     let name_str = self.interner.resolve(&name_sym).to_string();
@@ -860,8 +888,8 @@ impl Sema<'_> {
                     let Some(field_ty) = self
                         .resolve_type_for_comptime_with_subst_and_values_at_span(
                             type_sym,
-                            env.type_subst,
-                            env.value_subst,
+                            &local_type_subst,
+                            &local_value_subst,
                             span,
                         )
                     else {
@@ -876,8 +904,11 @@ impl Sema<'_> {
                 // Extract method signatures for structural equality comparison
                 let method_sigs = self.extract_anon_method_sigs(*methods_start, *methods_len);
 
-                let (struct_ty, _is_new) =
-                    self.find_or_create_anon_struct(&struct_fields, &method_sigs, env.value_subst);
+                let (struct_ty, _is_new) = self.find_or_create_anon_struct(
+                    &struct_fields,
+                    &method_sigs,
+                    &local_value_subst,
+                );
 
                 // Register methods if present and not yet registered for this
                 // struct (it may have been created earlier without methods).
@@ -932,8 +963,8 @@ impl Sema<'_> {
                                     *methods_start,
                                     *methods_len,
                                     span,
-                                    env.type_subst,
-                                    env.value_subst,
+                                    &local_type_subst,
+                                    &local_value_subst,
                                 )
                                 .is_none()
                         {
@@ -949,9 +980,9 @@ impl Sema<'_> {
                         // above (RUE-313). Method bodies are analyzed later, in
                         // a separate pass that has no other way to recover the
                         // constructor's type parameters.
-                        if needs_registration && !env.type_subst.is_empty() {
+                        if needs_registration && !local_type_subst.is_empty() {
                             self.anon_struct_type_subst
-                                .insert(struct_id, env.type_subst.clone());
+                                .insert(struct_id, local_type_subst.clone());
                         }
                     }
                 }
@@ -979,6 +1010,10 @@ impl Sema<'_> {
                 // Decode the self-describing payload region into per-variant
                 // type-symbol lists (parallel to `variant_syms`), then resolve
                 // each payload type through the substitutions.
+                // Comptime `let` locals participate in payload-type
+                // resolution, matching the struct arm (RUE-575).
+                let (enum_type_subst, enum_value_subst) = env.substs_with_locals();
+
                 let mut variant_names: Vec<String> = Vec::with_capacity(variant_syms.len());
                 let mut variant_payloads: Vec<Vec<Type>> = Vec::with_capacity(variant_syms.len());
                 let mut pi = 0usize;
@@ -1001,8 +1036,8 @@ impl Sema<'_> {
                         let Some(ty) = self
                             .resolve_type_for_comptime_with_subst_and_values_at_span(
                                 ty_sym,
-                                env.type_subst,
-                                env.value_subst,
+                                &enum_type_subst,
+                                &enum_value_subst,
                                 span,
                             )
                         else {
