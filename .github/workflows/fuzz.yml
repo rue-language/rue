@@ -40,6 +40,32 @@ jobs:
       - name: Create seed corpus
         run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --init-corpus crates/rue-fuzz/corpus
 
+      # Guard against RUE-515 recurring: `emitter_aarch64` was registered in the
+      # fuzzer but never invoked here, so aarch64 codegen got no nightly
+      # byte-mutation budget. Fail fast if any target the fuzzer advertises via
+      # --list has no `--max-time` step in this file. A target intentionally kept
+      # off the nightly budget must be listed in NIGHTLY_EXEMPT with a reason.
+      - name: Verify every registered fuzz target is scheduled
+        run: |
+          NIGHTLY_EXEMPT=""   # none currently exempt
+          list_out="$(./buck2 run //crates/rue-fuzz:rue-fuzz -- --list 2>&1 || true)"
+          mapfile -t targets < <(printf '%s\n' "$list_out" \
+            | awk '/^Available fuzz targets:/{f=1;next} f && /^  [a-z][a-z0-9_]*$/{print $1}')
+          if [ "${#targets[@]}" -eq 0 ]; then
+            echo "::error::could not enumerate fuzz targets from --list"; exit 1
+          fi
+          missing=()
+          for t in "${targets[@]}"; do
+            case " $NIGHTLY_EXEMPT " in *" $t "*) continue ;; esac
+            grep -qE -- "--max-time=[0-9]+ ${t} " .github/workflows/fuzz.yml || missing+=("$t")
+          done
+          if [ "${#missing[@]}" -ne 0 ]; then
+            echo "::error::registered fuzz target(s) not scheduled in fuzz.yml: ${missing[*]}"
+            echo "Add a '--max-time' fuzz step (plus the aggregation and notify entries), or add the target to NIGHTLY_EXEMPT."
+            exit 1
+          fi
+          echo "All ${#targets[@]} registered fuzz targets are scheduled: ${targets[*]}"
+
       # Each fuzz step is continue-on-error so one crashing target no longer
       # skips every later target (a single sema crash used to reduce the whole
       # night to lexer+parser coverage). The aggregation step at the end turns
@@ -73,6 +99,12 @@ jobs:
         continue-on-error: true
         timeout-minutes: 10
         run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 emitter crates/rue-fuzz/corpus
+
+      - name: Fuzz aarch64 emitter (5 minutes)
+        id: fuzz-emitter-aarch64
+        continue-on-error: true
+        timeout-minutes: 10
+        run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 emitter_aarch64 crates/rue-fuzz/corpus
 
       - name: Fuzz x86-64 emitter sequences (5 minutes)
         id: fuzz-emitter-sequence
@@ -110,6 +142,7 @@ jobs:
           steps.fuzz-sema.outcome == 'failure' ||
           steps.fuzz-compiler.outcome == 'failure' ||
           steps.fuzz-emitter.outcome == 'failure' ||
+          steps.fuzz-emitter-aarch64.outcome == 'failure' ||
           steps.fuzz-emitter-sequence.outcome == 'failure' ||
           steps.fuzz-differential.outcome == 'failure'
         run: |
@@ -127,6 +160,7 @@ jobs:
               ['sema', '${{ steps.fuzz-sema.outcome }}'],
               ['compiler', '${{ steps.fuzz-compiler.outcome }}'],
               ['emitter', '${{ steps.fuzz-emitter.outcome }}'],
+              ['emitter_aarch64', '${{ steps.fuzz-emitter-aarch64.outcome }}'],
               ['emitter_sequence', '${{ steps.fuzz-emitter-sequence.outcome }}'],
               ['differential', '${{ steps.fuzz-differential.outcome }}'],
             ].filter(([, o]) => o === 'failure').map(([n]) => n);
