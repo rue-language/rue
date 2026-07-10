@@ -42,9 +42,11 @@
 //!
 //! ## What is *not* modeled (reported [`Unsupported`], never guessed)
 //!
-//! A program hitting any of these is **skipped** by the differential harness, so
-//! "compiles + runs under the oracle" is NOT the same as "differentially
-//! checked" — the gaps below are genuinely unvalidated:
+//! Corpus/spec programs hitting any of these are **skipped** by the differential
+//! harness, so "compiles + runs under the oracle" is NOT the same as
+//! "differentially checked" — the gaps below are genuinely unvalidated. The
+//! generated-program mode has a stronger contract and fails closed if its
+//! supposedly supported generator reaches one of these gaps.
 //!
 //! - **All CFG intrinsics except `@dbg`.** The `Intrinsic` arm models only
 //!   `@dbg`; every other intrinsic that survives to the CFG bails: the
@@ -62,9 +64,11 @@ use lasso::ThreadedRodeo;
 use rue_air::{Type, TypeKind};
 use rue_cfg::{Cfg, CfgArgMode, CfgInstData, CfgValue, Place, PlaceBase, Projection, Terminator};
 use rue_compiler::{
-    CompileState, PreviewFeatures, compile_to_cfg, compile_to_cfg_with_preview_features,
+    CompileErrors, CompileState, PreviewFeatures, compile_to_cfg,
+    compile_to_cfg_with_preview_features,
 };
 use std::collections::HashMap;
+use std::fmt;
 
 /// Observable result of running a program under the oracle.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,20 +83,62 @@ pub struct Outcome {
 }
 
 /// A construct the interpreter does not yet model (see the coverage note). This
-/// is *not* a program error — it means the oracle cannot judge this program yet,
-/// so a differential harness should skip it rather than report a disagreement.
+/// is *not* a program error — it means the oracle cannot judge this program yet.
+/// Callers decide whether that is an expected coverage skip or a violation of a
+/// stronger contract, such as a generator that promises oracle-supported input.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Unsupported(pub String);
 
+impl fmt::Display for Unsupported {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Unsupported {}
+
+/// Failure to compile or interpret a source program under the oracle.
+///
+/// These variants deliberately distinguish a front-end rejection from a
+/// well-typed program that reaches a construct outside the interpreter's
+/// coverage. Callers must choose an explicit policy for each case instead of
+/// inferring it from an error-message prefix.
+#[derive(Debug, Clone)]
+pub enum RunSourceError {
+    /// Rue's front end rejected the source before interpretation could begin.
+    Compile(CompileErrors),
+    /// The source compiled, but the interpreter cannot model part of it.
+    Unsupported(Unsupported),
+}
+
+impl fmt::Display for RunSourceError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RunSourceError::Compile(errors) => write!(f, "source failed to compile: {errors}"),
+            RunSourceError::Unsupported(unsupported) => {
+                write!(f, "unsupported by the oracle: {unsupported}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for RunSourceError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            RunSourceError::Compile(errors) => Some(errors),
+            RunSourceError::Unsupported(unsupported) => Some(unsupported),
+        }
+    }
+}
+
 /// Compile `source` to CFG and run it under the reference semantics.
 ///
-/// `Err(Unsupported)` means the program uses a construct outside the current
-/// slice. A compile error is surfaced as `Err(Unsupported("compile: .."))` so
-/// callers can distinguish it from a real interpreter result; a well-typed
-/// program in the supported subset always yields `Ok`.
-pub fn run_source(source: &str) -> Result<Outcome, Unsupported> {
-    let state = compile_to_cfg(source).map_err(|e| Unsupported(format!("compile: {e:?}")))?;
-    run_state(state)
+/// [`RunSourceError::Compile`] means the front end rejected the source;
+/// [`RunSourceError::Unsupported`] means compilation succeeded but execution
+/// reached a construct outside the interpreter's current coverage.
+pub fn run_source(source: &str) -> Result<Outcome, RunSourceError> {
+    let state = compile_to_cfg(source).map_err(RunSourceError::Compile)?;
+    run_state(state).map_err(RunSourceError::Unsupported)
 }
 
 /// Compile `source` with explicit preview features, then run it under the
@@ -104,10 +150,10 @@ pub fn run_source(source: &str) -> Result<Outcome, Unsupported> {
 pub fn run_source_with_preview_features(
     source: &str,
     preview_features: &PreviewFeatures,
-) -> Result<Outcome, Unsupported> {
+) -> Result<Outcome, RunSourceError> {
     let state = compile_to_cfg_with_preview_features(source, preview_features)
-        .map_err(|e| Unsupported(format!("compile: {e:?}")))?;
-    run_state(state)
+        .map_err(RunSourceError::Compile)?;
+    run_state(state).map_err(RunSourceError::Unsupported)
 }
 
 fn run_state(state: CompileState) -> Result<Outcome, Unsupported> {

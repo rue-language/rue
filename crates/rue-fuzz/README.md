@@ -112,9 +112,11 @@ random **valid, well-typed** programs (in the subset the `rue-oracle` reference
 interpreter models) and runs each through *both* the oracle and the real
 compiler + native binary, comparing exit code and `@dbg` stdout. A disagreement
 is an automatically-discovered **miscompile** with a deterministic, seed-based
-repro (not a crash — a *wrong answer*). Its repros land in this crate's
-`crashes/` directory as `oracle-diff-seed-<seed>.rue` and are uploaded by the
-same CI artifact step.
+repro (not a crash — a *wrong answer*). Because the generator promises valid
+programs inside the oracle's modeled subset, compiler rejection and
+`Unsupported` are also fail-closed generator-contract findings with the same
+seed/source repro format. Repros land in this crate's `crashes/` directory as
+`oracle-diff-seed-<seed>.rue` and are uploaded by the same CI artifact step.
 
 ```bash
 RUE_BINARY="$(scripts/rue-bin)" ./buck2 run //crates/rue-oracle-diff:rue-oracle-diff -- \

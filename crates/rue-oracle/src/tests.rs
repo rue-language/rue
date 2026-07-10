@@ -8,7 +8,7 @@
 use super::*;
 
 fn run(src: &str) -> Outcome {
-    run_source(src).unwrap_or_else(|u| panic!("unsupported: {}", u.0))
+    run_source(src).unwrap_or_else(|error| panic!("oracle failed: {error}"))
 }
 
 fn run_with_budget(src: &str, budget: u64) -> Result<Outcome, Unsupported> {
@@ -20,7 +20,17 @@ fn run_string_trio(src: &str) -> Outcome {
     let mut preview_features = PreviewFeatures::new();
     preview_features.insert(rue_compiler::PreviewFeature::StringTrio);
     run_source_with_preview_features(src, &preview_features)
-        .unwrap_or_else(|u| panic!("unsupported: {}", u.0))
+        .unwrap_or_else(|error| panic!("oracle failed: {error}"))
+}
+
+fn expect_unsupported(src: &str) -> Unsupported {
+    match run_source(src) {
+        Err(RunSourceError::Unsupported(unsupported)) => unsupported,
+        Err(RunSourceError::Compile(errors)) => {
+            panic!("expected oracle-unsupported source, but it failed to compile: {errors:#?}")
+        }
+        Ok(outcome) => panic!("expected oracle-unsupported source, got {outcome:?}"),
+    }
 }
 
 fn exit(src: &str) -> i32 {
@@ -153,8 +163,37 @@ fn preview_features_reach_oracle_frontend() {
         0
     }"#;
 
-    assert!(run_source(src).is_err(), "str should stay gated by default");
+    assert!(
+        matches!(run_source(src), Err(RunSourceError::Compile(_))),
+        "str should stay gated by default with a compile error"
+    );
     assert_eq!(run_string_trio(src).exit_code, 0);
+}
+
+#[test]
+fn compile_errors_are_distinct_from_unsupported_programs() {
+    let error = run_source("fn main() -> i32 { missing }")
+        .expect_err("an undefined name must fail compilation");
+
+    match error {
+        RunSourceError::Compile(errors) => {
+            assert!(!errors.is_empty(), "compile failure must carry diagnostics");
+        }
+        RunSourceError::Unsupported(unsupported) => {
+            panic!("compile failure was misclassified as unsupported: {unsupported}");
+        }
+    }
+}
+
+#[test]
+fn valid_unmodeled_program_is_unsupported_not_a_compile_error() {
+    let src = "fn main() -> i32 {
+        let value: u32 = @random_u32();
+        if value == 0 { 0 } else { 1 }
+    }";
+
+    let unsupported = expect_unsupported(src);
+    assert_eq!(unsupported.0, "intrinsic @random_u32");
 }
 
 #[test]
@@ -224,7 +263,7 @@ fn unbounded_recursion_is_unsupported() {
     // (MAX_DEPTH) must turn it into a clean `Unsupported` skip instead (RUE-340).
     let src = "fn r(n: i32) -> i32 { r(n) }
     fn main() -> i32 { r(0) }";
-    let err = run_source(src).expect_err("unbounded recursion must not produce an Outcome");
+    let err = expect_unsupported(src);
     assert!(
         err.0.contains("depth budget"),
         "expected a depth-budget skip, got: {}",
@@ -238,7 +277,7 @@ fn deep_bounded_recursion_is_unsupported() {
     // cleanly (hitting the depth bound) rather than overflow the stack.
     let src = "fn r(n: i32) -> i32 { if n <= 0 { 0 } else { r(n - 1) } }
     fn main() -> i32 { r(100000) }";
-    let err = run_source(src).expect_err("deep recursion must not produce an Outcome");
+    let err = expect_unsupported(src);
     assert!(
         err.0.contains("depth budget"),
         "expected a depth-budget skip, got: {}",
@@ -270,7 +309,7 @@ fn runaway_loop_is_unsupported() {
     // reported `Unsupported`, never hang. Each iteration flips `b` (a `Not`
     // instruction), so the budget is decremented every turn of the loop.
     let src = "fn main() -> i32 { let mut b = true; loop { b = !b; } }";
-    let err = run_source(src).expect_err("a runaway loop must not produce an Outcome");
+    let err = expect_unsupported(src);
     assert!(
         err.0.contains("step budget"),
         "expected a step-budget skip, got: {}",

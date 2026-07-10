@@ -115,8 +115,9 @@ jobs:
       # Differential fuzzing: generate valid programs and cross-check the
       # rue-oracle reference interpreter against the compiled native binary
       # (RUE-247). Any exit-code / stdout disagreement is an automatically-found
-      # miscompile; the step exits non-zero and a self-contained repro (named by
-      # its seed) lands in crates/rue-fuzz/crashes/ for the upload step below.
+      # miscompile. A compiler rejection or oracle Unsupported result is a
+      # generator-contract failure. Either class exits non-zero and writes a
+      # self-contained seed/source repro to crates/rue-fuzz/crashes/.
       - name: Differential fuzz (oracle vs compiled, 500 seeds)
         id: fuzz-differential
         continue-on-error: true
