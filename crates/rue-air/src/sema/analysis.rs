@@ -685,6 +685,7 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
     let mut pending_methods: Vec<(StructId, Spur)> = Vec::new();
     let mut analyzed_methods: HashSet<(StructId, Spur)> = HashSet::new();
     let drop_marker_sym = sema.interner.get_or_intern("__drop");
+    let mut named_destructors_analyzed = false;
 
     // Collect results
     let mut functions_with_strings: Vec<(AnalyzedFunction, Vec<String>)> = Vec::new();
@@ -707,8 +708,9 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
         }
     }
 
-    // Process work queue until empty
-    while !pending_functions.is_empty() || !pending_methods.is_empty() {
+    // Process the transitive reference frontier until neither source-level
+    // calls nor implicit destructor roots discover more work.
+    loop {
         // Process pending functions
         while let Some(fn_name) = pending_functions.pop() {
             if analyzed_functions.contains(&fn_name) {
@@ -1041,38 +1043,64 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
             anon_dtors.sort_by_key(|&(sid, name)| (sid.0, sema.interner.resolve(&name)));
             pending_methods.extend(anon_dtors);
         }
-    }
 
-    // Also analyze destructors for any structs whose types we've used
-    // (This is necessary because drop is implicitly called)
-    for (_, inst) in sema.rir.iter() {
-        if let InstData::DropFnDecl { type_name, body } = &inst.data {
-            // File-aware first (RUE-558), matching the sites above.
-            let struct_id = match sema
-                .structs_by_file_name
-                .get(&(inst.span.file_id, *type_name))
-                .or_else(|| sema.structs.get(type_name))
-            {
-                Some(id) => *id,
-                None => continue,
-            };
-            let struct_type = Type::new_struct(struct_id);
-            let full_name = sema.destructor_symbol(struct_id);
-
-            match sema.analyze_destructor_function(
-                &infer_ctx,
-                &full_name,
-                *body,
-                inst.span,
-                struct_type,
-            ) {
-                Ok((analyzed, warnings, local_strings, _, _)) => {
-                    functions_with_strings.push((analyzed, local_strings));
-                    all_warnings.extend(warnings);
-                }
-                Err(e) => errors.push(e),
-            }
+        if !pending_functions.is_empty() || !pending_methods.is_empty() {
+            continue;
         }
+
+        // Named destructors are implicit roots: drop glue can call them without
+        // a source-level reference. Analyze each once, then feed any calls made
+        // by their bodies back through the same deterministic work queues.
+        if !named_destructors_analyzed {
+            named_destructors_analyzed = true;
+            for (_, inst) in sema.rir.iter() {
+                if let InstData::DropFnDecl { type_name, body } = &inst.data {
+                    // File-aware first (RUE-558), matching the sites above.
+                    let struct_id = match sema
+                        .structs_by_file_name
+                        .get(&(inst.span.file_id, *type_name))
+                        .or_else(|| sema.structs.get(type_name))
+                    {
+                        Some(id) => *id,
+                        None => continue,
+                    };
+                    let struct_type = Type::new_struct(struct_id);
+                    let full_name = sema.destructor_symbol(struct_id);
+
+                    match sema.analyze_destructor_function(
+                        &infer_ctx,
+                        &full_name,
+                        *body,
+                        inst.span,
+                        struct_type,
+                    ) {
+                        Ok((
+                            analyzed,
+                            warnings,
+                            local_strings,
+                            referenced_fns,
+                            referenced_meths,
+                        )) => {
+                            functions_with_strings.push((analyzed, local_strings));
+                            all_warnings.extend(warnings);
+                            enqueue_references_sorted(
+                                sema.interner,
+                                referenced_fns,
+                                referenced_meths,
+                                &analyzed_functions,
+                                &analyzed_methods,
+                                &mut pending_functions,
+                                &mut pending_methods,
+                            );
+                        }
+                        Err(e) => errors.push(e),
+                    }
+                }
+            }
+            continue;
+        }
+
+        break;
     }
 
     finalize_function_body_analysis(
