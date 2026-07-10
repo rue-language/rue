@@ -899,6 +899,24 @@ fn main() -> i32 {
 """
 exit_code = 19
 
+# RUE-553: a generic return type `[i32; N]` is sized by the comptime *argument*,
+# which need not be a bare literal — any comptime-evaluable expression (4.14:27),
+# e.g. `1 + 2`, resolves N at the call site so the return type specializes to
+# `[i32; 3]`, exactly like `make(3)`.
+[[case]]
+name = "array_return_length_from_comptime_arithmetic_arg"
+spec = ["7.1:34", "4.14:27"]
+source = """
+fn make(comptime N: i32) -> [i32; N] {
+    [7; N]
+}
+fn main() -> i32 {
+    let a: [i32; 3] = make(1 + 2);
+    a[0] + a[1] + a[2]
+}
+"""
+exit_code = 21
+
 [[case]]
 name = "array_length_runtime_variable_error"
 spec = ["7.1:33"]
