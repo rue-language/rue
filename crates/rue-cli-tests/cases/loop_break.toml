@@ -71,6 +71,7 @@ fn never_returns() -> ! {
 }
 
 fn main() -> i32 {
+    if false { never_returns(); }
     let mut x = 0;
     loop {
         x = x + 2;

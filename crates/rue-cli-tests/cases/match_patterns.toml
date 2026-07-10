@@ -159,6 +159,7 @@ fn absurd(n: Never) -> i32 {
 }
 
 fn main() -> i32 {
+    if false { absurd(loop {}); }
     7
 }
 """ }]

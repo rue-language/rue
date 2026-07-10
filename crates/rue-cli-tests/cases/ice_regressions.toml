@@ -99,7 +99,7 @@ fn consume(s: String) -> i32 {
     let held = s;
     0
 }
-fn main() -> i32 { 0 }
+fn main() -> i32 { consume(String.new()) }
 """ }]
 exit_code = 0
 
