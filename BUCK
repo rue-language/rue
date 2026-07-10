@@ -162,3 +162,23 @@ sh_test(
         "RUE_BENCHMARK_TEST_ROOT": "$(location :benchmark-tool-inputs)",
     },
 )
+
+# The destructive maintenance scripts under test (jj-tidy, worktree-gc). Their
+# fail-closed contract is pinned by scripts/test-cleanup-scripts.sh (RUE-567),
+# which runs copies of them against fake gh/git/df on PATH — no real repo,
+# remote, or disk touched.
+filegroup(
+    name = "cleanup-script-inputs",
+    srcs = [
+        "scripts/jj-tidy",
+        "scripts/worktree-gc",
+    ],
+)
+
+sh_test(
+    name = "cleanup-script-tests",
+    test = "scripts/test-cleanup-scripts.sh",
+    env = {
+        "RUE_CLEANUP_SCRIPTS_ROOT": "$(location :cleanup-script-inputs)",
+    },
+)

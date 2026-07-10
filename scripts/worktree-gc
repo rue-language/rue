@@ -4,7 +4,10 @@
 # Replaces the old blanket `rm -rf .claude/worktrees`, which raced running
 # workers (they reported "worktree deleted mid-run"). This only acts when disk
 # is actually low, and only removes worktrees git no longer lists as live — so
-# in-flight workers are never touched.
+# in-flight workers are never touched. Removal is FAIL CLOSED (RUE-567): if the
+# `git worktree list` inventory command fails (e.g. a jj workspace with no local
+# .git, where it exits 128), nothing is removed — a failed query is never read
+# as "zero active worktrees".
 #
 # Usage: scripts/worktree-gc [THRESHOLD_PERCENT]   (default 85)
 set -uo pipefail
@@ -25,16 +28,27 @@ git worktree prune 2>/dev/null || true
 # 2. Remove ORPHANED worktree dirs — present on disk but no longer in git's live
 #    list (i.e. a finished worker's leftover, holding a stale buck-out). Anything
 #    git still lists is live and left alone. This is where the disk actually is.
+#
+#    FAIL CLOSED (RUE-567): a FAILED `git worktree list` is not the same as an
+#    empty one. In a linked jj workspace with no local `.git`, `git worktree
+#    list` exits 128; if that failure were read as "zero active worktrees",
+#    every live worker's dir would be classified orphaned and rm -rf'd. So gate
+#    on the command's real exit status — proceed only when it SUCCEEDS, and skip
+#    removal entirely otherwise.
 if [ -d .claude/worktrees ]; then
-  active="$(git worktree list --porcelain 2>/dev/null | awk '/^worktree /{print $2}')"
-  for d in .claude/worktrees/*/; do
-    [ -d "$d" ] || continue
-    d="${d%/}"
-    abs="$(cd "$d" 2>/dev/null && pwd)" || continue
-    if ! printf '%s\n' "$active" | grep -qxF "$abs"; then
-      rm -rf "${d:?}" && echo "  removed orphaned worktree ${d##*/}"
-    fi
-  done
+  if wt_porcelain="$(git worktree list --porcelain 2>/dev/null)"; then
+    active="$(printf '%s\n' "$wt_porcelain" | awk '/^worktree /{print $2}')"
+    for d in .claude/worktrees/*/; do
+      [ -d "$d" ] || continue
+      d="${d%/}"
+      abs="$(cd "$d" 2>/dev/null && pwd)" || continue
+      if ! printf '%s\n' "$active" | grep -qxF "$abs"; then
+        rm -rf "${d:?}" && echo "  removed orphaned worktree ${d##*/}"
+      fi
+    done
+  else
+    echo "worktree-gc: 'git worktree list' failed — skipping worktree removal (fail-closed)"
+  fi
 fi
 
 # 3. Stale main-repo buck artifacts (safe; rebuilds on demand).
