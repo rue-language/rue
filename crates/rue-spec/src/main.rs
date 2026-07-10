@@ -36,8 +36,8 @@
 
 use libtest2_mimic::{Harness, RunContext, RunError, Trial};
 use rue_test_runner::{
-    Case, find_dir, find_rue_binary, load_test_files, run_test_case, should_skip_for_platform,
-    validate_nonempty_case_corpus,
+    Case, ExpectedFailureOutcome, TestResult, classify_expected_failure, find_dir, find_rue_binary,
+    load_test_files, run_test_case, should_skip_for_platform, validate_nonempty_case_corpus,
 };
 use std::path::Path;
 
@@ -101,7 +101,27 @@ fn run_case_wrapper(
     run_test_case(case, rue_binary).map_err(|e| RunError::fail(e.to_string()))
 }
 
-/// Wrapper for preview tests - reports failures but marks them as ignored to avoid failing the build.
+#[derive(Debug, PartialEq, Eq)]
+enum PreviewDisposition {
+    Ignore(String),
+    Fail(String),
+}
+
+fn preview_disposition(result: TestResult) -> PreviewDisposition {
+    match classify_expected_failure(result) {
+        ExpectedFailureOutcome::ExpectedFailure(error) => {
+            PreviewDisposition::Ignore(format!("preview test failed (allowed): {}", error))
+        }
+        ExpectedFailureOutcome::FatalFailure(error) => PreviewDisposition::Fail(error.to_string()),
+        ExpectedFailureOutcome::UnexpectedPass => PreviewDisposition::Fail(
+            "preview test PASSED without preview_should_pass = true. Add that marker so this \
+             assertion becomes required coverage."
+                .to_string(),
+        ),
+    }
+}
+
+/// Wrapper giving preview cases xfail semantics without hiding fatal failures.
 fn run_preview_case_wrapper(
     case: &Case,
     rue_binary: &Path,
@@ -114,12 +134,9 @@ fn run_preview_case_wrapper(
     if let Some(reason) = should_skip_for_platform(&case.only_on) {
         return ctx.ignore_for(reason);
     }
-    match run_test_case(case, rue_binary) {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            // Report the failure but mark as ignored so it doesn't fail the suite
-            ctx.ignore_for(format!("preview test failed (allowed): {}", e))
-        }
+    match preview_disposition(run_test_case(case, rue_binary)) {
+        PreviewDisposition::Ignore(reason) => ctx.ignore_for(reason),
+        PreviewDisposition::Fail(reason) => Err(RunError::fail(reason)),
     }
 }
 
@@ -174,10 +191,11 @@ fn main() {
             let rue_binary = rue_binary.clone();
 
             // Preview tests that should pass use the normal wrapper (fail on error).
-            // Preview tests without preview_should_pass use the lenient wrapper (allow failure).
+            // Other preview tests use xfail semantics: an ordinary failure is
+            // ignored, while a fatal failure or unexpected pass fails.
             // Non-preview tests always use the normal wrapper.
             let trial = if is_preview && !preview_should_pass {
-                // Preview tests that are allowed to fail
+                // Preview tests expected to fail until their marker is updated.
                 Trial::test(test_name, move |ctx| {
                     run_preview_case_wrapper(&case, &rue_binary, skip, ctx)
                 })
@@ -194,10 +212,66 @@ fn main() {
 
     // Run all tests
     //
-    // Preview tests without `preview_should_pass` are allowed to fail -
-    // failures are marked as "ignored" so they don't break the build.
+    // Preview tests without `preview_should_pass` are expected to fail -
+    // ordinary failures are ignored, but fatal failures and XPASS fail.
     //
     // Preview tests with `preview_should_pass = true` fail normally,
     // providing real test output for implemented portions of preview features.
     Harness::with_env().discover(tests).main();
+}
+
+#[cfg(test)]
+mod runner_tests {
+    use super::*;
+    use rue_test_runner::TestFailure;
+
+    #[test]
+    fn preview_disposition_rejects_xpass_and_fatal_failure() {
+        let xpass = preview_disposition(Ok(()));
+        assert!(matches!(
+            xpass,
+            PreviewDisposition::Fail(message) if message.contains("preview_should_pass")
+        ));
+
+        let ordinary = preview_disposition(Err(TestFailure::assertion("not implemented")));
+        assert!(matches!(ordinary, PreviewDisposition::Ignore(_)));
+
+        let fatal = preview_disposition(Err(TestFailure::fatal("compiler timed out")));
+        assert_eq!(
+            fatal,
+            PreviewDisposition::Fail("compiler timed out".to_string())
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn preview_disposition_rejects_fake_compiler_panic() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().expect("temporary fake compiler directory");
+        let binary = directory.path().join("rue");
+        std::fs::write(
+            &binary,
+            "#!/bin/sh\nprintf 'panicked at fake preview compiler' >&2\nexit 101\n",
+        )
+        .expect("write fake compiler");
+        let mut permissions = std::fs::metadata(&binary)
+            .expect("fake compiler metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&binary, permissions).expect("make fake compiler executable");
+
+        let case = Case {
+            name: "preview_panic".to_string(),
+            source: "fn main() -> i32 { 0 }".to_string(),
+            preview: Some("test_infra".to_string()),
+            ..Default::default()
+        };
+        let disposition = preview_disposition(run_test_case(&case, &binary));
+
+        assert!(matches!(
+            disposition,
+            PreviewDisposition::Fail(message) if message.contains("INTERNAL COMPILER ERROR")
+        ));
+    }
 }

@@ -84,6 +84,7 @@ exit_code = 8
 name = "str_fixed_over_capacity_is_error"
 spec = ["3.7:51"]
 preview = "string_trio"
+preview_should_pass = true
 source = """
 fn main() -> i32 {
     let s: Str(3) = "hello";

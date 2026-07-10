@@ -65,7 +65,7 @@ air (return_type: i32) {
 # expected_mir, expected_lowering, expected_liveness, expected_regalloc,
 # expected_asm, and expected_stackframe.
 
-# Preview feature test (allowed to fail)
+# Preview feature test (expected to fail)
 [[case]]
 name = "some_preview_feature"
 spec = ["X.Y:Z"]
@@ -86,11 +86,11 @@ exit_code = 0
 #### Preview Feature Tests
 
 Tests for preview features use two fields:
-- `preview = "feature_name"` - Marks the test as requiring a preview feature. The test runs with `--preview feature_name` and is allowed to fail (shows as "ignored" in output).
+- `preview = "feature_name"` - Marks the test as requiring a preview feature. An ordinary assertion failure is expected and shows as "ignored". Fatal subprocess failures still fail the suite, and a passing assertion is an XPASS failure until its metadata is updated.
 - `preview_should_pass = true` - When combined with `preview`, makes the test required to pass. Use this for portions of preview features that are already implemented.
 
 **Workflow for preview features:**
-1. Initially, add tests with just `preview = "feature_name"` (allowed to fail)
+1. Initially, add failing tests with just `preview = "feature_name"` (xfail)
 2. As you implement parts of the feature, add `preview_should_pass = true` to tests that should now pass
 3. When stabilizing the feature, remove both `preview` and `preview_should_pass` fields
 

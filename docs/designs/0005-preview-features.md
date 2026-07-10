@@ -153,8 +153,9 @@ exit_code = 42
 
 The test runner:
 1. **Always runs preview tests** (compiling with the appropriate `--preview` flag)
-2. **Allows preview tests to fail** without failing the overall suite
-3. **Reports progress** on each preview feature
+2. **Treats ordinary assertion failures as expected** until marked `preview_should_pass`
+3. **Fails on fatal subprocess errors and unexpected passes** so infrastructure failures and stale xfail metadata cannot hide
+4. **Reports progress** on each preview feature
 
 ### Stabilization
 

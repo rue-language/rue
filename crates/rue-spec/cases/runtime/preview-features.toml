@@ -27,6 +27,7 @@ error_contains = "requires preview feature"
 name = "test_preview_gate_with_feature"
 spec = ["8.4:1"]
 preview = "test_infra"
+preview_should_pass = true
 source = """
 fn main() -> i32 {
     @test_preview_gate();
