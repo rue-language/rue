@@ -380,7 +380,9 @@ fn type_name(ty: Type, type_pool: &TypeInternPool) -> String {
         TypeKind::ComptimeType => "comptime_type".to_string(),
         TypeKind::Enum(enum_id) => format!("enum{}", enum_id.0),
         // Struct types include builtin types like String
-        TypeKind::Struct(struct_id) => type_pool.struct_def(struct_id).name.clone(),
+        // File-qualified when the struct name spans files (RUE-571); must
+        // match rue_compiler::drop_glue::type_name.
+        TypeKind::Struct(struct_id) => type_pool.struct_symbol_name(struct_id),
         TypeKind::Array(array_id) => {
             let (element_type, length) = type_pool.array_def(array_id);
             let elem_name = type_name(element_type, type_pool);

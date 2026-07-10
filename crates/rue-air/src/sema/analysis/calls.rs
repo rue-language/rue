@@ -353,8 +353,10 @@ impl<'a> Sema<'a> {
         }
         air_args.extend(args_result?);
 
-        // Generate a method call name: Type.method
-        let call_name = format!("{}.{}", struct_name_str, method_name_str);
+        // Generate the method call symbol: `Type.method`, file-qualified when
+        // the type name spans files (RUE-571) — must match the definition
+        // side, which builds its name through the same helper.
+        let call_name = self.method_symbol(struct_id, &method_name_str, true);
         let call_name_sym = self.interner.get_or_intern(&call_name);
 
         // Encode call args into extra array
@@ -591,12 +593,12 @@ impl<'a> Sema<'a> {
         // Analyze arguments
         let air_args = self.analyze_call_args(air, &args, ctx)?;
 
-        // Generate a function call name: Type::function
-        // Use the internal struct name (e.g., "__anon_struct_0") for anonymous structs,
-        // not the user-visible type variable name (e.g., "P")
-        let struct_def = self.type_pool.struct_def(struct_id);
-        let internal_type_name = &struct_def.name;
-        let call_name = format!("{}::{}", internal_type_name, function_name_str);
+        // Generate the associated-function call symbol: `Type::function`.
+        // Uses the internal struct name (e.g. "__anon_struct_0") for anonymous
+        // structs — not the user-visible type variable name — and the
+        // file-qualified name when the type name spans files (RUE-571),
+        // matching the definition side.
+        let call_name = self.method_symbol(struct_id, &function_name_str, false);
         let call_name_sym = self.interner.get_or_intern(&call_name);
 
         // Encode call args into extra array

@@ -42,6 +42,12 @@ use crate::types::{ModuleId, StructField, StructId, Type, TypeKind};
 /// Uses the lazy driver for import graphs and the eager driver for single-file
 /// compilations.
 pub(crate) fn analyze_all_function_bodies(mut sema: Sema<'_>) -> MultiErrorResult<SemaOutput> {
+    // Declarations are complete: re-point destructor symbols of struct
+    // names that span multiple files at their file-qualified form (RUE-571).
+    // Must precede any body analysis — destructor definitions build their
+    // symbol from the same helper.
+    sema.requalify_colliding_destructor_symbols();
+
     // Use lazy analysis when imports are present (multi-file compilation)
     // This ensures only reachable code is analyzed, per ADR-0026
     let result = if sema.has_imports() {
@@ -265,11 +271,8 @@ fn analyze_all_function_bodies_sequential(sema: &mut Sema<'_>) -> MultiErrorResu
                     let method_name_str = sema.interner.resolve(&*method_name).to_string();
                     let params = sema.rir.get_params(*params_start, *params_len);
 
-                    let full_name = if *has_self {
-                        format!("{}.{}", type_name_str, method_name_str)
-                    } else {
-                        format!("{}::{}", type_name_str, method_name_str)
-                    };
+                    // File-qualified when the type name spans files (RUE-571).
+                    let full_name = sema.method_symbol(struct_id, &method_name_str, *has_self);
 
                     match sema.analyze_method_function(
                         &infer_ctx,
@@ -318,7 +321,7 @@ fn analyze_all_function_bodies_sequential(sema: &mut Sema<'_>) -> MultiErrorResu
                 }
             };
             let struct_type = Type::new_struct(struct_id);
-            let full_name = format!("{}.__drop", type_name_str);
+            let full_name = sema.destructor_symbol(struct_id);
 
             match sema.analyze_destructor_function(
                 &infer_ctx,
@@ -370,15 +373,9 @@ fn analyze_all_function_bodies_sequential(sema: &mut Sema<'_>) -> MultiErrorResu
         for (struct_id, method_name, method_info) in pending_anon_methods {
             analyzed_anon_methods.insert((struct_id, method_name));
 
-            let struct_def = sema.type_pool.struct_def(struct_id);
-            let type_name_str = struct_def.name.clone();
             let method_name_str = sema.interner.resolve(&method_name).to_string();
 
-            let full_name = if method_info.has_self {
-                format!("{}.{}", type_name_str, method_name_str)
-            } else {
-                format!("{}::{}", type_name_str, method_name_str)
-            };
+            let full_name = sema.method_symbol(struct_id, &method_name_str, method_info.has_self);
 
             // Build param_info from MethodInfo's ParamRange
             let param_names = sema.param_arena.names(method_info.params);
@@ -816,11 +813,8 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
 
             // For anonymous structs, use the MethodInfo directly since there's no named StructDecl
             if type_name_str.starts_with("__anon_struct_") {
-                let full_name = if method_info.has_self {
-                    format!("{}.{}", type_name_str, method_name_str)
-                } else {
-                    format!("{}::{}", type_name_str, method_name_str)
-                };
+                let full_name =
+                    sema.method_symbol(struct_id, &method_name_str, method_info.has_self);
 
                 // Build param_info from MethodInfo's ParamRange
                 let param_names = sema.param_arena.names(method_info.params);
@@ -947,6 +941,20 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
                         continue;
                     }
 
+                    // Several files may declare a struct with this name
+                    // (RUE-558); only the declaration that resolves to THIS
+                    // struct_id owns the method bodies being analyzed —
+                    // matching by name alone would analyze the other file\'s
+                    // same-named method under this struct\'s symbol (RUE-571).
+                    let declared_id = sema
+                        .structs_by_file_name
+                        .get(&(inst.span.file_id, *struct_name))
+                        .or_else(|| sema.structs.get(struct_name))
+                        .copied();
+                    if declared_id != Some(struct_id) {
+                        continue;
+                    }
+
                     let methods = sema.rir.get_inst_refs(*methods_start, *methods_len);
                     for method_ref in methods {
                         let method_inst = sema.rir.get(method_ref);
@@ -966,11 +974,8 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
                             }
 
                             let params = sema.rir.get_params(*params_start, *params_len);
-                            let full_name = if *has_self {
-                                format!("{}.{}", type_name_str, method_name_str)
-                            } else {
-                                format!("{}::{}", type_name_str, method_name_str)
-                            };
+                            let full_name =
+                                sema.method_symbol(struct_id, &method_name_str, *has_self);
 
                             match sema.analyze_method_function(
                                 &infer_ctx,
@@ -1042,7 +1047,6 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
     // (This is necessary because drop is implicitly called)
     for (_, inst) in sema.rir.iter() {
         if let InstData::DropFnDecl { type_name, body } = &inst.data {
-            let type_name_str = sema.interner.resolve(&*type_name).to_string();
             // File-aware first (RUE-558), matching the sites above.
             let struct_id = match sema
                 .structs_by_file_name
@@ -1053,7 +1057,7 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
                 None => continue,
             };
             let struct_type = Type::new_struct(struct_id);
-            let full_name = format!("{}.__drop", type_name_str);
+            let full_name = sema.destructor_symbol(struct_id);
 
             match sema.analyze_destructor_function(
                 &infer_ctx,
@@ -1107,6 +1111,8 @@ fn reject_self_move_in_destructor(air: &Air, full_name: &str) -> CompileResult<(
         } = inst.data
         {
             let type_name = full_name.strip_suffix(".__drop").unwrap_or(full_name);
+            // Strip the RUE-571 file qualifier (`P$2` -> `P`) for display.
+            let type_name = type_name.split('$').next().unwrap_or(type_name);
             return Err(CompileError::new(
                 ErrorKind::MoveSelfOutOfDestructor {
                     type_name: type_name.to_string(),

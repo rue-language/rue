@@ -208,10 +208,12 @@ pub fn synthesize_drop_glue(type_pool: &TypeInternPool) -> Vec<AnalyzedFunction>
 /// Create a drop glue function for a single struct.
 fn create_struct_drop_glue_function(
     struct_def: &StructDef,
-    _struct_id: rue_air::StructId,
+    struct_id: rue_air::StructId,
     type_pool: &TypeInternPool,
 ) -> AnalyzedFunction {
-    let fn_name = format!("__rue_drop_{}", struct_def.name);
+    // File-qualified when the struct name spans files (RUE-571) — must match
+    // the call side in both codegen backends' cfg_lower.
+    let fn_name = format!("__rue_drop_{}", type_pool.struct_symbol_name(struct_id));
     let span = Span::new(0, 0); // Synthetic span
 
     // Create AIR for the drop glue function
@@ -612,7 +614,8 @@ fn create_enum_drop_glue_function(enum_id: EnumId, type_pool: &TypeInternPool) -
 /// Types share a namespace, so the enum's own name cannot collide with a
 /// struct's `__rue_drop_<name>` glue.
 pub fn enum_drop_glue_name(enum_id: EnumId, type_pool: &TypeInternPool) -> String {
-    format!("__rue_drop_{}", type_pool.enum_def(enum_id).name)
+    // File-qualified when the enum name spans files (RUE-571).
+    format!("__rue_drop_{}", type_pool.enum_symbol_name(enum_id))
 }
 
 /// Generate the drop glue function name for an array type.
@@ -642,8 +645,10 @@ fn type_name(ty: Type, type_pool: &TypeInternPool) -> String {
         // ComptimeType only exists at compile time
         TypeKind::ComptimeType => "comptime_type".to_string(),
         TypeKind::Enum(enum_id) => format!("enum{}", enum_id.0),
-        // Struct types include builtin types like String
-        TypeKind::Struct(struct_id) => type_pool.struct_def(struct_id).name.clone(),
+        // Struct types include builtin types like String. File-qualified
+        // when the struct name spans files (RUE-571), so arrays of two
+        // same-named element types get distinct glue.
+        TypeKind::Struct(struct_id) => type_pool.struct_symbol_name(struct_id),
         TypeKind::Array(array_id) => {
             let (element_type, length) = type_pool.array_def(array_id);
             let elem_name = type_name(element_type, type_pool);
