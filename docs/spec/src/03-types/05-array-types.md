@@ -12,7 +12,7 @@ An array type, written `[T; N]`, represents a fixed-size sequence of `N` element
 
 {{ rule(id="3.5:2", cat="normative") }}
 
-The length `N` **MUST** be a non-negative integer literal known at compile time.
+The length `N` **MUST** be a non-negative integer value known at compile time: an integer literal, a reference to an integer constant or `comptime` parameter, or a call to a function whose value is compile-time evaluable (the accepted forms and their legality rules are given in 7.1:18–7.1:21; the grammar is Appendix A's `array_length`).
 
 {{ rule(id="3.5:3", cat="normative") }}
 

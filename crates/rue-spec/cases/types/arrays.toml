@@ -157,3 +157,24 @@ fn main() -> i32 {
 }
 """
 exit_code = 42
+
+[[case]]
+# RUE-563: 3.5:2 now names all the compile-time-known length forms, aligned
+# with 7.1:18-21 — a constant identifier and a comptime call are lengths too,
+# not just literals. This case ties the 3.5:2 wording to those forms so
+# traceability cannot re-certify the old literal-only text.
+name = "array_length_const_and_comptime_call"
+spec = ["3.5:2"]
+description = "Array length may be an integer constant or a fully-comptime call, not only a literal (aligned with 7.1:18-21)"
+source = """
+const N: usize = 3;
+
+fn len(comptime k: i32) -> i32 { k + 1 }
+
+fn main() -> i32 {
+    let a: [i32; N] = [1, 2, 3];
+    let b: [i32; len(2)] = [7, 7, 7];
+    a[2] + b[2]
+}
+"""
+exit_code = 10

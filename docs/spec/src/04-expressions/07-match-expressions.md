@@ -79,7 +79,7 @@ fn main() -> i32 {
 
 {{ rule(id="4.7:12", cat="normative") }}
 
-All match arms **MUST** have the same type. The type of the match expression is the common type of its arms.
+All match arms **MUST** have the same type. The type of the match expression is the common type of its arms. Exception: in a `match` whose scrutinee is compile-time known, only the selected arm's body is analyzed (rule 4.14:19) — the unselected arms' bodies are not type-checked, so they are exempt from this rule; the match expression's type is the selected arm's type.
 
 {{ rule(id="4.7:13", cat="normative") }}
 

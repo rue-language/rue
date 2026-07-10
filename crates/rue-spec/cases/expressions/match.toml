@@ -1067,3 +1067,24 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = "use of moved value 'e'"
+
+[[case]]
+# RUE-563: 4.7:12's same-type rule now carries its 4.14:19 exception in the
+# text — a comptime-known scrutinee analyzes only the selected arm, so a
+# differently-typed dead arm is legal (RUE-268 shipped this).
+name = "comptime_match_dead_arm_different_type_ok"
+spec = ["4.7:12", "4.14:19"]
+description = "Unselected arms of a comptime match are exempt from the same-type rule; the match's type is the selected arm's type"
+source = """
+fn pick(comptime n: i32) -> i32 {
+    match n {
+        0 => true,
+        _ => 42,
+    }
+}
+
+fn main() -> i32 {
+    pick(1)
+}
+"""
+exit_code = 42
