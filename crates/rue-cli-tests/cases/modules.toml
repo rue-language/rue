@@ -2577,3 +2577,149 @@ fn main() -> i32 { 0 }
 ]
 args = ["a.rue", "b.rue", "-o", "prog"]
 exit_code = 0
+
+[[case]]
+# RUE-571: same-named structs in two modules each defining a same-named
+# method used to fail at link with "duplicate symbol: P.get" — method
+# symbols were built from the bare type name. Colliding names now get
+# file-qualified symbols; each call dispatches to its own file's body.
+name = "same_named_struct_methods_across_modules_link_and_dispatch"
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "a.rue", source = """
+pub struct P {
+    x: i32,
+
+    fn get(self) -> i32 { self.x + 1 }
+}
+
+pub fn make(v: i32) -> P { P { x: v } }
+""" },
+  { path = "b.rue", source = """
+pub struct P {
+    x: i32,
+
+    fn get(self) -> i32 { self.x + 2 }
+}
+
+pub fn make(v: i32) -> P { P { x: v } }
+""" },
+  { path = "main.rue", source = """
+const a = @import("a.rue");
+const b = @import("b.rue");
+
+fn main() -> i32 {
+    let pa = a.make(10);
+    let pb = b.make(20);
+    pa.get() + pb.get()  // 11 + 22
+}
+""" },
+]
+exit_code = 33
+
+[[case]]
+# RUE-571, destructor + drop-glue face: same-named structs with `drop fn`
+# in two modules collided on both the user destructor symbol (`R.__drop`)
+# and the synthesized drop glue (`__rue_drop_R`). Each value must run ITS
+# file's destructor; drop order is reverse declaration order, so b's runs
+# first. Exact stdout pins which destructor body ran, not just the count.
+name = "same_named_struct_destructors_across_modules_run_own_body"
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "a.rue", source = """
+pub struct R {
+    id: i32,
+
+    fn tag(self) -> i32 { self.id + 100 }
+}
+
+drop fn R(self) {
+    @dbg(1);
+}
+
+pub fn make(v: i32) -> R { R { id: v } }
+""" },
+  { path = "b.rue", source = """
+pub struct R {
+    id: i32,
+
+    fn tag(self) -> i32 { self.id + 200 }
+}
+
+drop fn R(self) {
+    @dbg(2);
+}
+
+pub fn make(v: i32) -> R { R { id: v } }
+""" },
+  { path = "main.rue", source = """
+const a = @import("a.rue");
+const b = @import("b.rue");
+
+fn main() -> i32 {
+    let ra = a.make(1);
+    let rb = b.make(2);
+    rb.tag() - ra.tag()  // 202 - 101
+}
+""" },
+]
+exit_code = 101
+stdout = "2\n1\n"
+
+[[case]]
+# RUE-571, enum drop-glue face: same-named payload enums in two modules
+# collided on `__rue_drop_E`. The payload's destructor output pins that
+# each enum value ran its own file's glue chain (reverse declaration order:
+# b's payload prints 12, then a's prints 1).
+name = "same_named_payload_enums_across_modules_drop_own_payload"
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "ea.rue", source = """
+pub struct Payload {
+    v: i32,
+}
+
+drop fn Payload(self) {
+    @dbg(self.v);
+}
+
+pub enum E {
+    Keep(Payload),
+    Empty,
+}
+
+pub fn make(v: i32) -> E {
+    E.Keep(Payload { v: v })
+}
+""" },
+  { path = "eb.rue", source = """
+pub struct Payload {
+    v: i32,
+}
+
+drop fn Payload(self) {
+    @dbg(self.v + 10);
+}
+
+pub enum E {
+    Keep(Payload),
+    Empty,
+}
+
+pub fn make(v: i32) -> E {
+    E.Keep(Payload { v: v })
+}
+""" },
+  { path = "main.rue", source = """
+const a = @import("ea.rue");
+const b = @import("eb.rue");
+
+fn main() -> i32 {
+    let _ea = a.make(1);
+    let _eb = b.make(2);
+    0
+}
+""" },
+]
+exit_code = 0
+stdout = "12\n1\n"

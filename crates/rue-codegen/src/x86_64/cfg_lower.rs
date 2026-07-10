@@ -3322,7 +3322,13 @@ impl<'a> CfgLower<'a> {
                         }
                         off += fc;
                     }
-                    let drop_fn_name = format!("__rue_drop_{}", struct_def.name);
+                    // File-qualified when the struct name spans files
+                    // (RUE-571) — must match the glue definition in
+                    // rue_compiler::drop_glue.
+                    let drop_fn_name = format!(
+                        "__rue_drop_{}",
+                        self.ctx.type_pool.struct_symbol_name(struct_id)
+                    );
                     self.emit_call_with_slot_args(&glue_vregs, &drop_fn_name);
                     return;
                 }
@@ -3362,8 +3368,11 @@ impl<'a> CfgLower<'a> {
                     let field_vregs = self
                         .get_or_compute_field_vregs(*dropped_value)
                         .expect("payload enum value should have field vregs");
-                    let enum_def = self.ctx.type_pool.enum_def(enum_id);
-                    let drop_fn_name = format!("__rue_drop_{}", enum_def.name);
+                    // File-qualified when the enum name spans files (RUE-571).
+                    let drop_fn_name = format!(
+                        "__rue_drop_{}",
+                        self.ctx.type_pool.enum_symbol_name(enum_id)
+                    );
                     self.emit_call_with_slot_args(&field_vregs, &drop_fn_name);
                     return;
                 }

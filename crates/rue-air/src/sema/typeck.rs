@@ -26,7 +26,8 @@ use super::info::ConstInfo;
 use crate::inference::InferType;
 use crate::sema::ConstValue;
 use crate::types::{
-    ArrayLen, ArrayTypeId, Type, TypeKind, parse_array_type_syntax, parse_type_call_syntax,
+    ArrayLen, ArrayTypeId, StructId, Type, TypeKind, parse_array_type_syntax,
+    parse_type_call_syntax,
 };
 
 impl<'a> Sema<'a> {
@@ -312,6 +313,68 @@ impl<'a> Sema<'a> {
             .insert((file_id, type_sym), struct_id);
         let _ = span;
         Ok(Type::new_struct(struct_id))
+    }
+
+    /// Requalify destructor symbols for struct names that span files
+    /// (RUE-571). Registration (`register_destructor`) runs per-file before
+    /// ambiguity is knowable, so it records the bare `Type.__drop`; once
+    /// declarations are complete this re-points colliding entries at their
+    /// file-qualified form, so every consumer of `StructDef::destructor`
+    /// (drop glue in CFG build and both codegen backends) agrees with the
+    /// definition side, which builds its name via [`Self::destructor_symbol`].
+    pub(crate) fn requalify_colliding_destructor_symbols(&mut self) {
+        let ids: Vec<StructId> = self
+            .structs_by_file_name
+            .values()
+            .copied()
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+        for struct_id in ids {
+            if self.type_pool.struct_def(struct_id).destructor.is_none() {
+                continue;
+            }
+            let qualified = self.destructor_symbol(struct_id);
+            let def = self.type_pool.struct_def(struct_id);
+            if def.destructor.as_deref() != Some(qualified.as_str()) {
+                let mut def = def.clone();
+                def.destructor = Some(qualified);
+                self.type_pool.update_struct_def(struct_id, def);
+            }
+        }
+    }
+
+    /// The type-name component of function symbols for `struct_id` (RUE-571):
+    /// delegates to [`TypeInternPool::struct_symbol_name`], the single
+    /// definition shared with the drop-glue generator and both codegen
+    /// backends.
+    pub(crate) fn symbol_type_name(&self, struct_id: StructId) -> String {
+        self.type_pool.struct_symbol_name(struct_id)
+    }
+
+    /// Symbol for a method (`Type.method`) or associated function
+    /// (`Type::method`) of `struct_id`, file-qualified when the type name is
+    /// ambiguous (RUE-571). Definition sites (function-body analysis) and
+    /// call sites (method / assoc-fn call analysis) must both build the name
+    /// through this helper so they meet in AIR/codegen.
+    pub(crate) fn method_symbol(
+        &self,
+        struct_id: StructId,
+        method: &str,
+        has_self: bool,
+    ) -> String {
+        let type_name = self.symbol_type_name(struct_id);
+        if has_self {
+            format!("{}.{}", type_name, method)
+        } else {
+            format!("{}::{}", type_name, method)
+        }
+    }
+
+    /// Symbol for the destructor of `struct_id` (`Type.__drop`),
+    /// file-qualified when the type name is ambiguous (RUE-571).
+    pub(crate) fn destructor_symbol(&self, struct_id: StructId) -> String {
+        format!("{}.__drop", self.symbol_type_name(struct_id))
     }
 
     /// Is `ty` the synthetic `str` struct (ADR-0043 Phase 3, RUE-324)? Detected

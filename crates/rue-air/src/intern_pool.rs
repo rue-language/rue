@@ -742,6 +742,72 @@ impl TypeInternPool {
         }
     }
 
+    /// The symbol-name component for functions derived from a struct —
+    /// methods (`P.get`), associated functions (`P::make`), destructors
+    /// (`P.__drop`), and drop glue (`__rue_drop_P`) — RUE-571.
+    ///
+    /// Same-named structs across files are legal (RUE-558), but these symbols
+    /// are program-wide identities: when this struct's source name is
+    /// registered by more than one file, the name is qualified with the
+    /// defining file (`P$2`). `$` cannot appear in a source identifier, so a
+    /// qualified name can never collide with a real type; unambiguous names
+    /// (the common case) are returned bare, keeping symbols and `--emit`
+    /// output unchanged. Builtins are never qualified (their symbols pair
+    /// with runtime-provided definitions).
+    ///
+    /// Every layer that names a function after a type — sema (definition and
+    /// call sites), the drop-glue generator in `rue-compiler`, and both
+    /// codegen backends — must derive the name through this ONE helper so
+    /// definitions and calls meet at link time.
+    pub fn struct_symbol_name(&self, struct_id: StructId) -> String {
+        let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
+        let pool_index = struct_id.0 as usize;
+        let data = match &inner.types[pool_index] {
+            TypeData::Struct(data) => data,
+            other => panic!(
+                "Expected struct at pool index {}, got {:?}",
+                pool_index, other
+            ),
+        };
+        if !data.def.is_builtin {
+            let defining_files = inner
+                .struct_by_file_name
+                .keys()
+                .filter(|(_, n)| *n == data.name)
+                .take(2)
+                .count();
+            if defining_files > 1 {
+                return format!("{}${}", data.def.name, data.def.file_id.0);
+            }
+        }
+        data.def.name.clone()
+    }
+
+    /// The symbol-name component for an enum's drop glue (`__rue_drop_E`),
+    /// file-qualified when the enum name is registered by more than one file.
+    /// See [`Self::struct_symbol_name`] (RUE-571) — same rule, same reason.
+    pub fn enum_symbol_name(&self, enum_id: EnumId) -> String {
+        let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
+        let pool_index = enum_id.0 as usize;
+        let data = match &inner.types[pool_index] {
+            TypeData::Enum(data) => data,
+            other => panic!(
+                "Expected enum at pool index {}, got {:?}",
+                pool_index, other
+            ),
+        };
+        let defining_files = inner
+            .enum_by_file_name
+            .keys()
+            .filter(|(_, n)| *n == data.name)
+            .take(2)
+            .count();
+        if defining_files > 1 {
+            return format!("{}${}", data.def.name, data.def.file_id.0);
+        }
+        data.def.name.clone()
+    }
+
     /// Update a struct definition in the pool.
     ///
     /// This is used during semantic analysis when struct fields are resolved
@@ -1852,6 +1918,43 @@ mod tests {
         // Can retrieve the struct definition
         let retrieved = pool.struct_def(struct_id);
         assert_eq!(retrieved.name, name_str);
+    }
+
+    /// RUE-571: a struct name registered by two files yields file-qualified
+    /// symbol names; a unique name stays bare; builtins are never qualified.
+    #[test]
+    fn test_struct_symbol_name_qualifies_only_colliding_names() {
+        let pool = TypeInternPool::new();
+        let interner = ThreadedRodeo::default();
+        let mk = |name: &str, file: u32, is_builtin: bool| StructDef {
+            name: name.to_string(),
+            fields: vec![],
+            is_copy: false,
+            is_linear: false,
+            destructor: None,
+            is_builtin,
+            is_pub: true,
+            file_id: rue_span::FileId::new(file),
+        };
+
+        let p_sym = interner.get_or_intern("P");
+        let (p1, _) = pool.register_struct(p_sym, mk("P", 1, false));
+        let (p2, _) = pool.register_struct(p_sym, mk("P", 2, false));
+        let q_sym = interner.get_or_intern("Q");
+        let (q, _) = pool.register_struct(q_sym, mk("Q", 1, false));
+        let b_sym = interner.get_or_intern("StrBufTest");
+        let (b1, _) = pool.register_struct(b_sym, mk("StrBufTest", 0, true));
+        let (b2, _) = pool.register_struct(b_sym, mk("StrBufTest", 3, false));
+
+        // Colliding user structs are qualified with their defining file.
+        assert_eq!(pool.struct_symbol_name(p1), "P$1");
+        assert_eq!(pool.struct_symbol_name(p2), "P$2");
+        // A unique name stays bare.
+        assert_eq!(pool.struct_symbol_name(q), "Q");
+        // A builtin is never qualified, even when its name collides; the
+        // colliding user struct still is, so the pair stays distinct.
+        assert_eq!(pool.struct_symbol_name(b1), "StrBufTest");
+        assert_eq!(pool.struct_symbol_name(b2), "StrBufTest$3");
     }
 
     #[test]
