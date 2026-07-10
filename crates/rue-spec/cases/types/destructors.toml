@@ -538,7 +538,7 @@ cfg main (return_type: i32) {
 name = "cfg_break_drops"
 description = "CFG shows exactly one StorageDead before break, not duplicate"
 source = """
-fn foo() -> i32 {
+fn main() -> i32 {
     while true {
         let x = 1;
         break;
@@ -547,7 +547,7 @@ fn foo() -> i32 {
 }
 """
 expected_cfg = """
-cfg foo (return_type: i32) {
+cfg main (return_type: i32) {
   bb0:
     goto bb1
 
@@ -577,7 +577,7 @@ cfg foo (return_type: i32) {
 name = "cfg_continue_drops"
 description = "CFG shows exactly one StorageDead before continue, not duplicate"
 source = """
-fn foo() -> i32 {
+fn main() -> i32 {
     let mut i = 0;
     while i < 3 {
         let x = 1;
@@ -588,7 +588,7 @@ fn foo() -> i32 {
 }
 """
 expected_cfg = """
-cfg foo (return_type: i32) {
+cfg main (return_type: i32) {
   bb0:
     v0 : () = storage_live $0
     v1 : i32 = const 0
@@ -628,7 +628,7 @@ cfg foo (return_type: i32) {
 name = "cfg_early_return_drops"
 description = "CFG shows StorageDead before early return"
 source = """
-fn foo(cond: bool) -> i32 {
+fn main(cond: bool) -> i32 {
     let a = 1;
     if cond {
         return 42;
@@ -637,7 +637,7 @@ fn foo(cond: bool) -> i32 {
 }
 """
 expected_cfg = """
-cfg foo (return_type: i32) {
+cfg main (return_type: i32) {
   bb0:
     v0 : () = storage_live $0
     v1 : i32 = const 1

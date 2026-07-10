@@ -46,7 +46,7 @@ error_contains = ["expected i32, found [{integer}; 3]"]
 name = "scalar_for_array_return_mismatch_direction"
 source = """
 fn f() -> [i32; 3] { true }
-fn main() -> i32 { 0 }
+fn main() -> i32 { f(); 0 }
 """
 compile_fail = true
 error_contains = ["expected [i32; 3], found bool"]

@@ -284,6 +284,7 @@ fn diverge() -> ! {
 }
 
 fn main() -> i32 {
+    if false { diverge(); }
     42
 }
 """

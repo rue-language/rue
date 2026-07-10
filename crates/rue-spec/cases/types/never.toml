@@ -85,11 +85,11 @@ exit_code = 20
 [[case]]
 name = "never_empty_match_coerces_with_int_literal"
 spec = ["3.4:3", "3.4:4"]
-description = "A never-typed empty match (`match n {}` over an uninhabited enum) coerces to the integer type demanded by an arithmetic context: `1 + match n {}` must type-check, not be rejected as a literal out of range for '!' (RUE-270). `absurd` is uncallable — Never is uninhabited — so main is trivial."
+description = "A never-typed empty match (`match n {}` over an uninhabited enum) coerces to the integer type demanded by an arithmetic context: `1 + match n {}` must type-check, not be rejected as a literal out of range for '!' (RUE-270). A dead runtime branch references `absurd` so its uncallable body is still analyzed."
 source = """
 enum Never {}
 fn absurd(n: Never) -> i32 { 1 + match n {} }
-fn main() -> i32 { 0 }
+fn main() -> i32 { if false { absurd(loop {}); } 0 }
 """
 exit_code = 0
 
@@ -100,7 +100,7 @@ description = "A never-typed empty match coerces to an annotated let type (RUE-2
 source = """
 enum Never {}
 fn absurd(n: Never) -> i32 { let x: i32 = match n {}; x }
-fn main() -> i32 { 0 }
+fn main() -> i32 { if false { absurd(loop {}); } 0 }
 """
 exit_code = 0
 

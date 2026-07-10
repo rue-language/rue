@@ -75,7 +75,11 @@ description = "Returning a `borrow str` parameter as a first-class `str` is E049
 preview = "string_trio"
 source = """
 fn bad(borrow s: str) -> str { s }
-fn main() -> i32 { 0 }
+fn main() -> i32 {
+    let b = "x" + "y";
+    let _s = bad(borrow b);
+    0
+}
 """
 compile_fail = true
 error_contains = [

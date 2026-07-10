@@ -14,7 +14,7 @@ source = """
 enum Color { Red, Blue }
 enum Shape { Circle, Square }
 fn f() -> Color { Shape.Circle }
-fn main() -> i32 { 0 }
+fn main() -> i32 { f(); 0 }
 """
 compile_fail = true
 error_contains = ["expected Color, found Shape"]
@@ -25,7 +25,7 @@ description = "Used to print 'expected i32, found <struct>'."
 source = """
 struct Point { x: i32, y: i32 }
 fn f() -> i32 { Point { x: 1, y: 2 } }
-fn main() -> i32 { 0 }
+fn main() -> i32 { f(); 0 }
 """
 compile_fail = true
 error_contains = ["expected i32, found Point"]
@@ -69,7 +69,7 @@ name = "array_literal_for_scalar_names_array_shape"
 description = "Used to print the '<array>' placeholder."
 source = """
 fn f() -> [i32; 3] { 5 }
-fn main() -> i32 { 0 }
+fn main() -> i32 { f(); 0 }
 """
 compile_fail = true
 error_contains = ["[i32; 3]"]
