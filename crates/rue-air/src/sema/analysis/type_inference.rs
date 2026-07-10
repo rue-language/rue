@@ -83,6 +83,7 @@ impl<'a> Sema<'a> {
         .with_enums_by_file_name(&infer_ctx.enum_types_by_file_name)
         .with_module_binding_types(&infer_ctx.module_binding_types)
         .with_module_file_ids(&infer_ctx.module_file_ids)
+        .with_functions_by_file_name(&infer_ctx.functions_by_file_name)
         .with_comptime_local_types(&comptime_local_types)
         .with_comptime_values(value_subst)
         .with_extra_method_sigs(&extra_method_sigs);

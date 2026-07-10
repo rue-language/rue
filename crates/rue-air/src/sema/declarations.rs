@@ -297,6 +297,7 @@ impl<'a> Sema<'a> {
             const_function_aliases,
             module_binding_types,
             module_file_ids,
+            functions_by_file_name: self.functions_by_file_name.clone(),
         }
     }
     /// Check if a directive list contains the @copy directive
