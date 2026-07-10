@@ -197,6 +197,15 @@ const EXAMPLE_EXPECTATIONS: &[ExampleExpectation] = &[
         stdout: "",
         stdin: None,
     },
+    // Conway's Game of Life (RUE-586 dogfood): a glider's population is 5 and
+    // holds across all eight generations we print, so this pins both the
+    // per-generation output and the final population (exit code).
+    ExampleExpectation {
+        path: "life.rue",
+        exit_code: 5,
+        stdout: "5\n5\n5\n5\n5\n5\n5\n5\n",
+        stdin: None,
+    },
     ExampleExpectation {
         path: "match.rue",
         exit_code: 5,

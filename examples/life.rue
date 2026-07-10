@@ -1,0 +1,92 @@
+// Conway's Game of Life on a bounded grid — third dogfood program (RUE-586).
+//
+// A glider has a stable population of 5 and translates by (1, 1) every four
+// generations. We print the live-cell count each generation, which stays 5 for
+// a glider on an open interior — a deterministic, checkable invariant.
+
+const W: i32 = 12;
+const H: i32 = 12;
+
+// Read a cell, treating out-of-bounds as dead so edge cells count correctly.
+fn alive_at(g: [[i32; W]; H], y: i32, x: i32) -> i32 {
+    if y < 0 { return 0; }
+    if x < 0 { return 0; }
+    if y >= H { return 0; }
+    if x >= W { return 0; }
+    g[y][x]
+}
+
+// Count the eight neighbors of (y, x).
+fn count_neighbors(g: [[i32; W]; H], y: i32, x: i32) -> i32 {
+    let mut total = 0;
+    let mut dy = -1;
+    while dy <= 1 {
+        let mut dx = -1;
+        while dx <= 1 {
+            if dy != 0 || dx != 0 {
+                total = total + alive_at(g, y + dy, x + dx);
+            }
+            dx = dx + 1;
+        }
+        dy = dy + 1;
+    }
+    total
+}
+
+// Compute the next generation as a fresh grid.
+fn step(g: [[i32; W]; H]) -> [[i32; W]; H] {
+    let mut next = [[0; W]; H];
+    let mut y = 0;
+    while y < H {
+        let mut x = 0;
+        while x < W {
+            let n = count_neighbors(g, y, x);
+            let live = g[y][x];
+            // Alive stays alive on 2 or 3 neighbors; dead is born on exactly 3.
+            if live == 1 {
+                if n == 2 || n == 3 { next[y][x] = 1; }
+            } else {
+                if n == 3 { next[y][x] = 1; }
+            }
+            x = x + 1;
+        }
+        y = y + 1;
+    }
+    next
+}
+
+fn population(g: [[i32; W]; H]) -> i32 {
+    let mut total = 0;
+    let mut y = 0;
+    while y < H {
+        let mut x = 0;
+        while x < W {
+            total = total + g[y][x];
+            x = x + 1;
+        }
+        y = y + 1;
+    }
+    total
+}
+
+fn main() -> i32 {
+    // A glider near the top-left, room to travel down-right.
+    //   . X .
+    //   . . X
+    //   X X X
+    let mut g = [[0; W]; H];
+    g[1][2] = 1;
+    g[2][3] = 1;
+    g[3][1] = 1;
+    g[3][2] = 1;
+    g[3][3] = 1;
+
+    let mut gen = 0;
+    while gen < 8 {
+        @dbg(population(g));
+        g = step(g);
+        gen = gen + 1;
+    }
+
+    population(g)
+}
