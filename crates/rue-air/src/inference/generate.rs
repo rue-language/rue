@@ -1178,12 +1178,6 @@ impl<'a> ConstraintGenerator<'a> {
                         self.generate(*arg_ref, ctx);
                     }
                     InferType::Concrete(Type::UNIT)
-                } else if intrinsic_name == "is_null" {
-                    // @is_null: takes a pointer, returns bool
-                    for arg_ref in args.iter() {
-                        self.generate(*arg_ref, ctx);
-                    }
-                    InferType::Concrete(Type::BOOL)
                 } else if intrinsic_name == "ptr_read" {
                     // @ptr_read: takes ptr const T or ptr mut T, returns T
                     // The return type depends on the pointee type of the argument.
@@ -1271,19 +1265,13 @@ impl<'a> ConstraintGenerator<'a> {
                         }
                     }
                     InferType::Concrete(Type::UNIT)
-                } else if intrinsic_name == "int_to_ptr" || intrinsic_name == "null_ptr" {
-                    // @int_to_ptr / @null_ptr: returns a pointer type inferred from context
+                } else if intrinsic_name == "int_to_ptr" {
+                    // @int_to_ptr: returns a pointer type inferred from context
                     for arg_ref in args.iter() {
                         self.generate(*arg_ref, ctx);
                     }
                     let result_var = self.fresh_var();
                     InferType::Var(result_var)
-                } else if intrinsic_name == "ptr_copy" {
-                    // @ptr_copy: (dst: ptr mut T, src: ptr const T, count: u64) -> ()
-                    for arg_ref in args.iter() {
-                        self.generate(*arg_ref, ctx);
-                    }
-                    InferType::Concrete(Type::UNIT)
                 } else if intrinsic_name == "target_arch" {
                     // @target_arch: returns Arch enum
                     if let Some(arch_spur) = self.interner.get("Arch") {

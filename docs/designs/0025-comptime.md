@@ -100,7 +100,8 @@ Attempting to store these in a runtime variable is a compile error:
 
 ```rue
 fn main() -> i32 {
-    let t: type = i32;  // ERROR: type 'type' cannot exist at runtime
+    let t: type = i32;  // binding is accepted; a `type` value cannot exist at
+                        // runtime, so it errors only when USED at runtime
     0
 }
 ```
@@ -286,7 +287,11 @@ fn Pair(comptime T: type, comptime U: type) -> type {
 }
 
 fn main() -> i32 {
-    let p: Pair(i32, bool) = Pair(i32, bool) { first: 42, second: true };
+    // A comptime type constructor must be bound to a name before it can be used
+    // in a type position or a struct literal (`Pair(i32, bool) { ... }` directly
+    // does not parse).
+    let P = Pair(i32, bool);
+    let p: P = P { first: 42, second: true };
     p.first
 }
 ```
@@ -474,7 +479,8 @@ fn Array(comptime T: type, comptime N: i32) -> type {
 }
 
 fn main() -> i32 {
-    let arr: Array(i32, 10) = Array(i32, 10) {
+    let A = Array(i32, 10);
+    let arr: A = A {
         data: [0; 10],
         len: 10,
     };

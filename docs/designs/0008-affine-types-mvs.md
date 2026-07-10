@@ -23,6 +23,11 @@ needs no `@handle`; if explicit duplication of an Affine type is wanted later it
 is just such a function, requiring no directive. References to `Handle` below are
 retained as historical design context.
 
+Two surface spellings in the examples below are also dated: mutable bindings are
+`let mut x`, not `var x` (Rue has no `var` keyword), and the `inout` mode marker
+precedes the parameter name — `fn f(inout x: i32)`, not `fn f(x: inout i32)`.
+The semantics are as described; read the syntax accordingly.
+
 ## Summary
 
 Introduce an affine type system with mutable value semantics (MVS) to provide memory safety without garbage collection and without a borrow checker. Types are affine by default (can be dropped, cannot be implicitly copied), with opt-in `linear` types that must be consumed, opt-in `Copy` for implicit bitwise copying, and opt-in `Handle` for explicit logical duplication. Mutation is handled via `inout` parameters with projection semantics for collections.

@@ -15,11 +15,29 @@ superseded-by:
 
 ## Status
 
-Implemented
+Implemented — **but the syntax below is stale.** The *capability* (struct
+methods, associated functions, `self` receivers, `obj.method(args)` call syntax)
+ships and works. The **mechanism changed**: Rue has **no `impl` blocks**. Methods
+are declared **inside the struct body** (Zig-style, aligned with ADR-0029's
+anonymous-struct methods), and associated functions are called `Type.method()`
+(`.`, never `::`). The compiler rejects `impl` outright: "Rue has no 'impl'
+blocks; define methods inside the struct body." Read the `impl`-block examples
+below as historical intent; the shipped form is:
+
+```rue
+struct Point {
+    x: i32,
+    y: i32,
+    fn dist2(self) -> i32 { self.x * self.x + self.y * self.y }
+    fn origin() -> Point { Point { x: 0, y: 0 } }
+}
+```
 
 ## Summary
 
-Add the ability to define methods on structs using `impl` blocks, allowing method call syntax (`obj.method(args)`) as an ergonomic alternative to free functions.
+Add the ability to define methods on structs, allowing method call syntax
+(`obj.method(args)`) as an ergonomic alternative to free functions. (Originally
+proposed as `impl` blocks; shipped as in-struct-body methods — see Status.)
 
 ## Context
 

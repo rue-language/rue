@@ -1,14 +1,14 @@
 ---
 id: 0002
 title: Single-Pass Bidirectional Type Checking
-status: implemented
+status: superseded
 tags: [compiler]
 feature-flag: bidirectional-types
 created: 2025-01-01
 accepted: 2025-01-01
 implemented: 2025-01-01
 spec-sections: []
-superseded-by:
+superseded-by: 0007
 ---
 
 <!-- Note: This ADR predates the preview feature system (ADR-0005). The feature-flag

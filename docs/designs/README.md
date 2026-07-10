@@ -164,7 +164,7 @@ The table is generated from ADR frontmatter. Run
 | --- | --- | --- | --- |
 | [0000](0000-template.md) | ADR Title | Proposal | — |
 | [0001](0001-never-type.md) | The Never Type | Implemented | types |
-| [0002](0002-single-pass-bidirectional-types.md) | Single-Pass Bidirectional Type Checking | Implemented | compiler |
+| [0002](0002-single-pass-bidirectional-types.md) | Single-Pass Bidirectional Type Checking | Superseded | compiler |
 | [0003](0003-constant-evaluation.md) | Constant Expression Evaluation | Implemented | compiler |
 | [0004](0004-enum-types.md) | Enum Types | Implemented | types, syntax |
 | [0005](0005-preview-features.md) | Preview Features | Implemented | process |

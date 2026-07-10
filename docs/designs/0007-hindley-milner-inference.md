@@ -8,6 +8,7 @@ created: 2025-12-24
 accepted: 2025-12-24
 implemented: 2025-12-24
 spec-sections: []
+supersedes: 0002
 superseded-by:
 ---
 
