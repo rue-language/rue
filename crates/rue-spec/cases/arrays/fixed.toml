@@ -177,6 +177,35 @@ fn main() -> i32 {
 """
 compile_fail = true
 
+[[case]]
+name = "constant_u64_index_above_i64_max_out_of_bounds"
+error_contains = ["[E0902]", "18446744073709551615"]
+spec = ["7.1:9"]
+description = "A constant u64 index above i64::MAX is still a compile-time bounds error naming the exact index (RUE-532: i64 narrowing made it look non-constant and defer to a runtime trap)"
+source = """
+const MAX: u64 = 18446744073709551615;
+
+fn main() -> i32 {
+    let a: [i32; 1] = [42];
+    a[MAX]
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "constant_u64_index_in_bounds_ok"
+spec = ["7.1:9"]
+description = "A constant u64 index within bounds still compiles and reads the element (control for RUE-532)"
+source = """
+const I: u64 = 2;
+
+fn main() -> i32 {
+    let a: [i32; 3] = [1, 2, 42];
+    a[I]
+}
+"""
+exit_code = 42
+
 # =============================================================================
 # Runtime Bounds Checking
 # =============================================================================

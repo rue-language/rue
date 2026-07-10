@@ -310,11 +310,16 @@ impl Sema<'_> {
         &mut self,
         inst_ref: InstRef,
         ctx: &AnalysisContext,
-    ) -> CompileResult<Option<i64>> {
+    ) -> CompileResult<Option<i128>> {
         let mut env = ComptimeEnv::for_analysis(ctx);
+        // Full i128 backing value, NOT the i64 narrowing: `as_integer()`
+        // returns None for a u64 constant above i64::MAX, which made an
+        // exactly-known out-of-bounds index (`a[18446744073709551615]`)
+        // indistinguishable from a runtime index and skip the compile-time
+        // bounds check (RUE-532).
         Ok(self
             .eval_const_expr(inst_ref, &mut env)?
-            .and_then(|v| v.as_integer()))
+            .and_then(|v| v.as_int_value()))
     }
 
     /// Check if an RIR instruction is a direct reference to a `comptime`

@@ -1421,8 +1421,11 @@ pub enum ErrorKind {
     IndexOnNonArray { found: String },
     #[error("{}", format_array_length_mismatch(*.expected, *.found))]
     ArrayLengthMismatch { expected: u64, found: u64 },
+    // `index` is i128 so a constant u64 index above i64::MAX is still
+    // reported exactly (RUE-532) — the old i64 narrowing made such an index
+    // look non-constant and skip the compile-time bounds check entirely.
     #[error("index out of bounds: the length is {length} but the index is {index}")]
-    IndexOutOfBounds { index: i64, length: u64 },
+    IndexOutOfBounds { index: i128, length: u64 },
     #[error("type annotation required for empty array")]
     TypeAnnotationRequired,
     /// Cannot move non-Copy element out of array index position.
