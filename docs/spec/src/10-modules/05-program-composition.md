@@ -66,10 +66,15 @@ fn main() -> i32 {
 {{ rule(id="10.5:4", cat="normative") }}
 
 The semantic compilation unit is the root module and its transitive import
-graph. An implementation **MAY** analyze imported modules on demand
-(ADR-0045): items of an imported module that the program never references
-are not guaranteed to be semantically analyzed, so a program **MUST NOT**
-rely on a compile-time error inside an unreferenced imported item being
-reported. Errors in code the program reaches — including declaration-level
-errors of any loaded file (parse errors, duplicate definitions, invalid
-signatures) — are always reported.
+graph. Ordinary function and method bodies are analyzed on demand from
+`main`. A compile-time error inside an unreferenced ordinary body is not
+reported, whether that body is in the root file or an imported module.
+
+This body-level frontier does not yet make the entire front end lazy. Loaded
+files are parsed and their declarations are gathered eagerly, so syntax,
+duplicate-definition, and signature errors are reported before body
+reachability is known. Named destructors are also currently implicit analysis
+roots because drop glue is synthesized from the full type pool. ADR-0045
+defines the broader on-demand model; ADR-0047 allows future build-system source
+manifests that constrain which files may be imported without turning every
+declared input into a semantic root.

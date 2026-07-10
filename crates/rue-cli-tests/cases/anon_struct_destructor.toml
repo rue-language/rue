@@ -39,6 +39,31 @@ args = ["main.rue", "-o", "prog"]
 stdout = "100\n7\n"
 exit_code = 0
 
+# RUE-578: this direct literal has no method call to pull the anonymous type's
+# destructor into the old eager body's one-time method sweep. The universal
+# demand-driven driver must discover the destructor registered while analyzing
+# main and emit it before linking.
+[[case]]
+name = "direct_literal_destructor_runs_without_imports"
+description = "A destructor registered while analyzing a single-file main is emitted before linking."
+files = [{ path = "main.rue", source = """
+fn Box(comptime T: type) -> type {
+    struct {
+        value: T,
+        drop fn(self) { @dbg(self.value); }
+    }
+}
+
+fn main() -> i32 {
+    let B = Box(i32);
+    let _value = B { value: 7 };
+    0
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+stdout = "7\n"
+exit_code = 0
+
 # Reverse declaration order (LIFO) across three values, like named structs.
 [[case]]
 name = "destructor_drop_order_lifo"

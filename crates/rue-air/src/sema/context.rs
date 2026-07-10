@@ -400,7 +400,7 @@ pub(crate) struct AnalysisContext<'a> {
     /// this map stores the captured values so method bodies can resolve them.
     pub comptime_value_vars: HashMap<Spur, ConstValue>,
     /// Functions referenced during analysis of this function.
-    /// Used for lazy semantic analysis (Phase 3 of module system) to track
+    /// Used for demand-driven semantic analysis (ADR-0045) to track
     /// which functions need to be analyzed. Each entry is a function name symbol.
     pub referenced_functions: HashSet<Spur>,
     /// Methods referenced during analysis of this function.
