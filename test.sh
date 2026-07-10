@@ -14,8 +14,35 @@ set -euo pipefail
 #
 # With a pattern argument, the spec/UI/CLI suites are instead run directly
 # with the filter (unit tests still run in full, as before).
+#
+# READING THE RESULT (RUE-579). This script's EXIT CODE is authoritative:
+# `buck2 test` returns non-zero when any target fails and `set -e` propagates
+# it, so plain `./test.sh` (as CI runs it) and `./test.sh && ...` are correct.
+# BUT a shell PIPE discards the exit code — `./test.sh 2>&1 | tail` reports the
+# pipe's status (usually 0), not the suite's, so the `Tests finished: ... Fail
+# N` tally can scroll past while `$?` reads 0. To guard against that, the last
+# line this script prints is an unambiguous, greppable sentinel:
+#
+#     === TEST SUITE: PASSED ===
+#     === TEST SUITE: FAILED (exit N) ===
+#
+# When you pipe or capture this script's output, grep for that line instead of
+# trusting `$?`. (The tally text alone is not a verdict: a partial run can print
+# a green-looking count and still have failed a later gate.)
 
 cd "$(dirname "$0")"
+
+# Always print the result sentinel, even on an early `set -e` exit, so a piped
+# or captured run is self-describing (RUE-579).
+print_test_suite_result() {
+    local rc=$?
+    if [ "$rc" -eq 0 ]; then
+        echo "=== TEST SUITE: PASSED ==="
+    else
+        echo "=== TEST SUITE: FAILED (exit $rc) ==="
+    fi
+}
+trap print_test_suite_result EXIT
 
 REPOSITORY_QUALITY_GATES=(
     //:benchmark-tool-tests
