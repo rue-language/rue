@@ -9,7 +9,7 @@
 // mutation, and the raw-pointer intrinsics all at once — exactly the "stdlib on
 // unchecked code" framing of RUE-1.
 //
-// `get`/`pop` return `Option(T)` from the std bundle:
+// `get`/`pop` return the official `option.Option(T)` from the std bundle:
 //
 //     const std = @import("std");
 //     let V = std.arraybuf.ArrayBuf(i32);
@@ -54,11 +54,14 @@
 //     Elements are transferred by copy.
 //
 // The enclosing element type `T` is usable throughout the method bodies below —
-// e.g. to name `Option(T)` and bind `let O = Option(T)` (RUE-313).
-
-pub fn Option(comptime T: type) -> type {
-    enum { Some(T), None }
-}
+// e.g. to name `option.Option(T)` and bind `let O = option.Option(T)` (RUE-313).
+//
+// `get`/`pop` return the OFFICIAL `option.Option(T)` from the std bundle (a
+// single source of truth, not a duplicate copy). Cross-module comptime
+// type-function references inside a generic type function's methods were the
+// blocker (RUE-511); now that they resolve, ArrayBuf imports option.rue directly
+// (RUE-509).
+const option = @import("option.rue");
 
 pub fn ArrayBuf(comptime T: type) -> type {
     // Well-formedness gate (RUE-388): ArrayBuf owns a heap buffer of `T` and
@@ -112,12 +115,12 @@ pub fn ArrayBuf(comptime T: type) -> type {
         fn capacity(borrow self) -> u64 { self.cap }
         fn is_empty(borrow self) -> bool { self.len == 0 }
 
-        // Element `i` by copy, wrapped in `Option(T)`: `Some(x)` when in
+        // Element `i` by copy, wrapped in `option.Option(T)`: `Some(x)` when in
         // bounds, `None` otherwise (ADR-0041). The enclosing element type `T`
-        // is in scope here, so the method can pass it to `Option(T)`
+        // is in scope here, so the method can pass it to `option.Option(T)`
         // (RUE-313).
-        fn get(borrow self, i: u64) -> Option(T) {
-            let O = Option(T);
+        fn get(borrow self, i: u64) -> option.Option(T) {
+            let O = option.Option(T);
             if i < self.len {
                 O.Some(checked { @ptr_read(@ptr_offset(self.buf, i)) })
             } else {
@@ -163,8 +166,8 @@ pub fn ArrayBuf(comptime T: type) -> type {
 
         // Remove and return the last element as `Some(x)`, or `None` when the
         // buffer is empty (ADR-0041).
-        fn pop(inout self) -> Option(T) {
-            let O = Option(T);
+        fn pop(inout self) -> option.Option(T) {
+            let O = option.Option(T);
             if self.len == 0 {
                 O.None
             } else {

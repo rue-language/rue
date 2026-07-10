@@ -322,30 +322,24 @@ pub fn ArrayBuf(comptime T: type) -> type {
 stdout = "3\n10\n30\n60\n"
 exit_code = 60
 
-# RUE-509 regression PIN (known_bug): ArrayBuf should import the OFFICIAL Option
-# from option.rue instead of defining its own duplicate, so that an Option value
-# returned by `ArrayBuf.get` matches against `option.Option(T)` variants named in
-# the caller (single source of truth; nominal identity across importers).
+# RUE-509 regression: ArrayBuf imports the OFFICIAL Option from option.rue
+# instead of defining its own duplicate, so that an Option value returned by
+# `ArrayBuf.get` matches against `option.Option(T)` variants named in the caller
+# (single source of truth; nominal identity across importers).
 #
-# This is currently BLOCKED by a comptime limitation, NOT a missing test:
-# a source-level generic type function (`ArrayBuf(T)`) whose method references a
-# comptime type function imported from ANOTHER module (`option.Option(T)`) cannot
-# be instantiated — `let V = arraybuf.ArrayBuf(i32)` fails with
+# This used to be BLOCKED by a comptime limitation (RUE-511): a source-level
+# generic type function (`ArrayBuf(T)`) whose method references a comptime type
+# function imported from ANOTHER module (`option.Option(T)`) could not be
+# instantiated — `let V = arraybuf.ArrayBuf(i32)` failed with
 #   E1200: comptime evaluation failed: cannot store type value in variable 'V'
 #          at runtime; type values only exist at compile time
-# The same pattern with a SAME-FILE `Option(T)` compiles and runs (see the
-# `arraybuf_i32_dogfood` case above), which is exactly why std/arraybuf.rue still
-# carries its own `Option` copy. Aliasing (`const OptionT = option.Option;`) hits
-# the same E1200; re-exporting (`pub const Option = option.Option;`) collides with
-# option.rue's `Option` under the transitional flat namespace (E0436).
-#
-# When the comptime cross-module type-function path is fixed, this case PASSES and
-# the suite fails loudly asking for the marker to be removed — at which point
-# std/arraybuf.rue can drop the duplicate and import option.rue (finishing RUE-509).
+# RUE-511 fixed cross-module comptime type-function references in field/return/
+# value positions, so `ArrayBuf.get() -> option.Option(T)` with a method-body
+# `let O = option.Option(T)` now instantiates. This case (and std/arraybuf.rue's
+# real import of option.rue) pins that fix end-to-end.
 [[case]]
 name = "arraybuf_imports_official_option"
 description = "ArrayBuf.get returns the official option.Option(T); caller matches it against option.Option(i32) (RUE-509)."
-known_bug = "RUE-509"
 args = ["main.rue", "-o", "prog"]
 files = [
   { path = "main.rue", source = """
