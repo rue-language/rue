@@ -1,0 +1,69 @@
+# The second real Rue program (RUE-428; RUE-226 dogfooding milestone):
+# examples/second/calculator.rue.
+#
+# These cases compile the checked-in example directly via `source_path` so the
+# regression suite stays pinned to the parser users actually see.
+
+[section]
+id = "cli.second_program"
+name = "Second dogfood program (calculator)"
+description = "tokenize and parse one-line integer arithmetic with precedence, parentheses, and byte-positioned errors"
+
+# Exercises both left-associative operator levels and every ASCII whitespace
+# byte that can occur inside a line. LF is the @read_line boundary.
+[[case]]
+name = "calculator_left_associative_with_ascii_whitespace"
+source_path = "examples/second/calculator.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+stdin = "\t20 - 8 - 3 + 48 / 6 / 2 \u000B\f\r\n"
+stdout = "result: 13\n"
+exit_code = 0
+differential_opt = true
+
+[[case]]
+name = "calculator_rejects_unexpected_byte"
+source_path = "examples/second/calculator.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+stdin = "12 + cat\n"
+stdout = "token error at byte 6: unexpected byte 99\n"
+exit_code = 2
+
+[[case]]
+name = "calculator_reports_missing_primary"
+source_path = "examples/second/calculator.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+stdin = "12 +\n"
+stdout = "parse error at byte 5: expected a number or '('\n"
+exit_code = 2
+
+[[case]]
+name = "calculator_reports_missing_right_parenthesis"
+source_path = "examples/second/calculator.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+stdin = "2 * (3 + 4\n"
+stdout = "parse error at byte 11: expected ')'\n"
+exit_code = 2
+
+[[case]]
+name = "calculator_reports_division_by_zero"
+source_path = "examples/second/calculator.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+stdin = "8 / (3 - 3)\n"
+stdout = "parse error at byte 3: division by zero\n"
+exit_code = 2
+
+[[case]]
+name = "calculator_rejects_oversized_integer_literal"
+source_path = "examples/second/calculator.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+stdin = "9223372036854775808\n"
+stdout = "token error at byte 1: integer literal is too large\n"
+exit_code = 2
+
+[[case]]
+name = "calculator_rejects_trailing_token"
+source_path = "examples/second/calculator.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+stdin = "12 34\n"
+stdout = "parse error at byte 4: unexpected token\n"
+exit_code = 2
