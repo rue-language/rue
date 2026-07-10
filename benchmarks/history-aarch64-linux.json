@@ -3,317 +3,6 @@
   "runs": [
     {
       "version": 2,
-      "timestamp": "2026-07-04T02:02:18Z",
-      "commit": "13f338c",
-      "build_mode": "release",
-      "host": {
-        "os": "linux",
-        "arch": "aarch64"
-      },
-      "iterations": 5,
-      "benchmarks": [
-        {
-          "name": "many_functions",
-          "iterations": 5,
-          "mean_ms": 118.872,
-          "std_ms": 1.05237,
-          "passes": {
-            "parse_file": {
-              "mean_ms": 19.57
-            },
-            "merge_symbols": {
-              "mean_ms": 0.867
-            },
-            "parse": {
-              "mean_ms": 20.459
-            },
-            "astgen": {
-              "mean_ms": 0.456
-            },
-            "sema": {
-              "mean_ms": 4.641
-            },
-            "cfg_construction": {
-              "mean_ms": 1.202
-            },
-            "codegen": {
-              "mean_ms": 11.422
-            },
-            "linker": {
-              "mean_ms": 10.269
-            },
-            "compile": {
-              "mean_ms": 49.986
-            }
-          },
-          "source_metrics": {
-            "bytes": 70112,
-            "lines": 2120,
-            "tokens": 25820
-          },
-          "peak_memory_bytes": 36334796,
-          "binary_size_bytes": 135168
-        },
-        {
-          "name": "deep_nesting",
-          "iterations": 5,
-          "mean_ms": 214.584,
-          "std_ms": 1.78647,
-          "passes": {
-            "parse_file": {
-              "mean_ms": 52.918
-            },
-            "merge_symbols": {
-              "mean_ms": 1.287
-            },
-            "parse": {
-              "mean_ms": 54.227
-            },
-            "astgen": {
-              "mean_ms": 0.648
-            },
-            "sema": {
-              "mean_ms": 7.156
-            },
-            "cfg_construction": {
-              "mean_ms": 1.439
-            },
-            "codegen": {
-              "mean_ms": 8.654
-            },
-            "linker": {
-              "mean_ms": 6.968
-            },
-            "compile": {
-              "mean_ms": 81.288
-            }
-          },
-          "source_metrics": {
-            "bytes": 882648,
-            "lines": 12198,
-            "tokens": 41208
-          },
-          "peak_memory_bytes": 36005478,
-          "binary_size_bytes": 163840
-        },
-        {
-          "name": "large_structs",
-          "iterations": 5,
-          "mean_ms": 152.969,
-          "std_ms": 2.583319,
-          "passes": {
-            "parse_file": {
-              "mean_ms": 26.772
-            },
-            "merge_symbols": {
-              "mean_ms": 1.505
-            },
-            "parse": {
-              "mean_ms": 28.3
-            },
-            "astgen": {
-              "mean_ms": 0.672
-            },
-            "sema": {
-              "mean_ms": 11.41
-            },
-            "cfg_construction": {
-              "mean_ms": 1.164
-            },
-            "codegen": {
-              "mean_ms": 10.181
-            },
-            "linker": {
-              "mean_ms": 9.49
-            },
-            "compile": {
-              "mean_ms": 63.476
-            }
-          },
-          "source_metrics": {
-            "bytes": 122938,
-            "lines": 2187,
-            "tokens": 55458
-          },
-          "peak_memory_bytes": 39591116,
-          "binary_size_bytes": 147456
-        },
-        {
-          "name": "arithmetic_heavy",
-          "iterations": 5,
-          "mean_ms": 232.581,
-          "std_ms": 2.704679,
-          "passes": {
-            "parse_file": {
-              "mean_ms": 36.816
-            },
-            "merge_symbols": {
-              "mean_ms": 2.847
-            },
-            "parse": {
-              "mean_ms": 39.687
-            },
-            "astgen": {
-              "mean_ms": 1.639
-            },
-            "sema": {
-              "mean_ms": 14.256
-            },
-            "cfg_construction": {
-              "mean_ms": 1.833
-            },
-            "codegen": {
-              "mean_ms": 27.003
-            },
-            "linker": {
-              "mean_ms": 10.448
-            },
-            "compile": {
-              "mean_ms": 98.053
-            }
-          },
-          "source_metrics": {
-            "bytes": 178615,
-            "lines": 5312,
-            "tokens": 65568
-          },
-          "peak_memory_bytes": 51880755,
-          "binary_size_bytes": 548864
-        },
-        {
-          "name": "control_flow",
-          "iterations": 5,
-          "mean_ms": 274.927,
-          "std_ms": 2.107636,
-          "passes": {
-            "parse_file": {
-              "mean_ms": 66.047
-            },
-            "merge_symbols": {
-              "mean_ms": 1.646
-            },
-            "parse": {
-              "mean_ms": 67.719
-            },
-            "astgen": {
-              "mean_ms": 0.974
-            },
-            "sema": {
-              "mean_ms": 8.138
-            },
-            "cfg_construction": {
-              "mean_ms": 1.887
-            },
-            "codegen": {
-              "mean_ms": 15.752
-            },
-            "linker": {
-              "mean_ms": 7.946
-            },
-            "compile": {
-              "mean_ms": 104.818
-            }
-          },
-          "source_metrics": {
-            "bytes": 201693,
-            "lines": 10678,
-            "tokens": 47108
-          },
-          "peak_memory_bytes": 39541145,
-          "binary_size_bytes": 266240
-        },
-        {
-          "name": "array_heavy",
-          "iterations": 5,
-          "mean_ms": 249.839,
-          "std_ms": 1.883435,
-          "passes": {
-            "parse_file": {
-              "mean_ms": 47.239
-            },
-            "merge_symbols": {
-              "mean_ms": 1.912
-            },
-            "parse": {
-              "mean_ms": 49.175
-            },
-            "astgen": {
-              "mean_ms": 1.61
-            },
-            "sema": {
-              "mean_ms": 12.768
-            },
-            "cfg_construction": {
-              "mean_ms": 1.637
-            },
-            "codegen": {
-              "mean_ms": 24.733
-            },
-            "linker": {
-              "mean_ms": 9.142
-            },
-            "compile": {
-              "mean_ms": 101.623
-            }
-          },
-          "source_metrics": {
-            "bytes": 172571,
-            "lines": 6185,
-            "tokens": 63862
-          },
-          "peak_memory_bytes": 44832358,
-          "binary_size_bytes": 499712
-        },
-        {
-          "name": "register_pressure",
-          "iterations": 5,
-          "mean_ms": 165.606,
-          "std_ms": 1.448823,
-          "passes": {
-            "parse_file": {
-              "mean_ms": 32.295
-            },
-            "merge_symbols": {
-              "mean_ms": 1.494
-            },
-            "parse": {
-              "mean_ms": 33.811
-            },
-            "astgen": {
-              "mean_ms": 0.714
-            },
-            "sema": {
-              "mean_ms": 9.9
-            },
-            "cfg_construction": {
-              "mean_ms": 1.469
-            },
-            "codegen": {
-              "mean_ms": 11.203
-            },
-            "linker": {
-              "mean_ms": 7.86
-            },
-            "compile": {
-              "mean_ms": 66.861
-            }
-          },
-          "source_metrics": {
-            "bytes": 145803,
-            "lines": 6109,
-            "tokens": 46333
-          },
-          "peak_memory_bytes": 37369446,
-          "binary_size_bytes": 221184
-        }
-      ],
-      "benchmark_reason": "push",
-      "commit_range": [
-        "13f338c"
-      ]
-    },
-    {
-      "version": 2,
       "timestamp": "2026-07-04T02:20:20Z",
       "commit": "98366e6",
       "build_mode": "release",
@@ -31099,6 +30788,317 @@
       "benchmark_reason": "push",
       "commit_range": [
         "a55a872"
+      ]
+    },
+    {
+      "version": 2,
+      "timestamp": "2026-07-10T02:51:33Z",
+      "commit": "28f915f",
+      "build_mode": "release",
+      "host": {
+        "os": "linux",
+        "arch": "aarch64"
+      },
+      "iterations": 5,
+      "benchmarks": [
+        {
+          "name": "many_functions",
+          "iterations": 5,
+          "mean_ms": 134.301,
+          "std_ms": 0.641709,
+          "passes": {
+            "parse_file": {
+              "mean_ms": 19.471
+            },
+            "merge_symbols": {
+              "mean_ms": 1.12
+            },
+            "parse": {
+              "mean_ms": 21.266
+            },
+            "astgen": {
+              "mean_ms": 0.374
+            },
+            "sema": {
+              "mean_ms": 12.153
+            },
+            "cfg_construction": {
+              "mean_ms": 1.135
+            },
+            "codegen": {
+              "mean_ms": 11.408
+            },
+            "linker": {
+              "mean_ms": 10.078
+            },
+            "compile": {
+              "mean_ms": 57.296
+            }
+          },
+          "source_metrics": {
+            "bytes": 70112,
+            "lines": 2120,
+            "tokens": 25820
+          },
+          "peak_memory_bytes": 31454003,
+          "binary_size_bytes": 135168
+        },
+        {
+          "name": "deep_nesting",
+          "iterations": 5,
+          "mean_ms": 219.184,
+          "std_ms": 1.289943,
+          "passes": {
+            "parse_file": {
+              "mean_ms": 51.959
+            },
+            "merge_symbols": {
+              "mean_ms": 1.42
+            },
+            "parse": {
+              "mean_ms": 54.313
+            },
+            "astgen": {
+              "mean_ms": 0.713
+            },
+            "sema": {
+              "mean_ms": 10.684
+            },
+            "cfg_construction": {
+              "mean_ms": 1.428
+            },
+            "codegen": {
+              "mean_ms": 8.164
+            },
+            "linker": {
+              "mean_ms": 7.121
+            },
+            "compile": {
+              "mean_ms": 83.38
+            }
+          },
+          "source_metrics": {
+            "bytes": 882648,
+            "lines": 12198,
+            "tokens": 41208
+          },
+          "peak_memory_bytes": 35468083,
+          "binary_size_bytes": 163840
+        },
+        {
+          "name": "large_structs",
+          "iterations": 5,
+          "mean_ms": 184.091,
+          "std_ms": 1.00619,
+          "passes": {
+            "parse_file": {
+              "mean_ms": 26.33
+            },
+            "merge_symbols": {
+              "mean_ms": 1.834
+            },
+            "parse": {
+              "mean_ms": 29.121
+            },
+            "astgen": {
+              "mean_ms": 0.661
+            },
+            "sema": {
+              "mean_ms": 25.832
+            },
+            "cfg_construction": {
+              "mean_ms": 1.246
+            },
+            "codegen": {
+              "mean_ms": 11.251
+            },
+            "linker": {
+              "mean_ms": 9.095
+            },
+            "compile": {
+              "mean_ms": 78.722
+            }
+          },
+          "source_metrics": {
+            "bytes": 122938,
+            "lines": 2187,
+            "tokens": 55458
+          },
+          "peak_memory_bytes": 39476428,
+          "binary_size_bytes": 147456
+        },
+        {
+          "name": "arithmetic_heavy",
+          "iterations": 5,
+          "mean_ms": 255.723,
+          "std_ms": 2.7081,
+          "passes": {
+            "parse_file": {
+              "mean_ms": 35.467
+            },
+            "merge_symbols": {
+              "mean_ms": 2.687
+            },
+            "parse": {
+              "mean_ms": 40.227
+            },
+            "astgen": {
+              "mean_ms": 1.725
+            },
+            "sema": {
+              "mean_ms": 28.185
+            },
+            "cfg_construction": {
+              "mean_ms": 1.66
+            },
+            "codegen": {
+              "mean_ms": 25.922
+            },
+            "linker": {
+              "mean_ms": 10.311
+            },
+            "compile": {
+              "mean_ms": 109.538
+            }
+          },
+          "source_metrics": {
+            "bytes": 178615,
+            "lines": 5312,
+            "tokens": 65568
+          },
+          "peak_memory_bytes": 51570278,
+          "binary_size_bytes": 548864
+        },
+        {
+          "name": "control_flow",
+          "iterations": 5,
+          "mean_ms": 292.303,
+          "std_ms": 3.019514,
+          "passes": {
+            "parse_file": {
+              "mean_ms": 64.767
+            },
+            "merge_symbols": {
+              "mean_ms": 1.684
+            },
+            "parse": {
+              "mean_ms": 67.488
+            },
+            "astgen": {
+              "mean_ms": 0.966
+            },
+            "sema": {
+              "mean_ms": 18.701
+            },
+            "cfg_construction": {
+              "mean_ms": 1.535
+            },
+            "codegen": {
+              "mean_ms": 15.621
+            },
+            "linker": {
+              "mean_ms": 7.957
+            },
+            "compile": {
+              "mean_ms": 113.584
+            }
+          },
+          "source_metrics": {
+            "bytes": 201693,
+            "lines": 10678,
+            "tokens": 47108
+          },
+          "peak_memory_bytes": 38468812,
+          "binary_size_bytes": 266240
+        },
+        {
+          "name": "array_heavy",
+          "iterations": 5,
+          "mean_ms": 264.606,
+          "std_ms": 1.328922,
+          "passes": {
+            "parse_file": {
+              "mean_ms": 45.582
+            },
+            "merge_symbols": {
+              "mean_ms": 1.871
+            },
+            "parse": {
+              "mean_ms": 48.82
+            },
+            "astgen": {
+              "mean_ms": 1.637
+            },
+            "sema": {
+              "mean_ms": 21.819
+            },
+            "cfg_construction": {
+              "mean_ms": 1.602
+            },
+            "codegen": {
+              "mean_ms": 24.94
+            },
+            "linker": {
+              "mean_ms": 9.065
+            },
+            "compile": {
+              "mean_ms": 109.271
+            }
+          },
+          "source_metrics": {
+            "bytes": 172571,
+            "lines": 6185,
+            "tokens": 63862
+          },
+          "peak_memory_bytes": 44895436,
+          "binary_size_bytes": 499712
+        },
+        {
+          "name": "register_pressure",
+          "iterations": 5,
+          "mean_ms": 177.224,
+          "std_ms": 1.118022,
+          "passes": {
+            "parse_file": {
+              "mean_ms": 31.328
+            },
+            "merge_symbols": {
+              "mean_ms": 1.67
+            },
+            "parse": {
+              "mean_ms": 34.269
+            },
+            "astgen": {
+              "mean_ms": 0.734
+            },
+            "sema": {
+              "mean_ms": 16.422
+            },
+            "cfg_construction": {
+              "mean_ms": 1.411
+            },
+            "codegen": {
+              "mean_ms": 11.012
+            },
+            "linker": {
+              "mean_ms": 7.88
+            },
+            "compile": {
+              "mean_ms": 72.5
+            }
+          },
+          "source_metrics": {
+            "bytes": 145803,
+            "lines": 6109,
+            "tokens": 46333
+          },
+          "peak_memory_bytes": 37593088,
+          "binary_size_bytes": 221184
+        }
+      ],
+      "benchmark_reason": "push",
+      "commit_range": [
+        "28f915f"
       ]
     }
   ]
