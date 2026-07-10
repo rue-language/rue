@@ -12,7 +12,7 @@ the repository wrappers:
 
 ```bash
 scripts/rue build
-scripts/rue exec examples/fibonacci.rue
+scripts/rue exec examples/welcome.rue   # prints 1, 2, 3, 42 and exits 0
 scripts/rue quick
 scripts/rue test
 ```

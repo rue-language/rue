@@ -30,14 +30,17 @@ The first build may take a minute. Subsequent builds are fast.
 
 ## Running an Example
 
-Try one of the checked-in examples:
+Try the checked-in setup smoke test:
 
 ```bash
-scripts/rue exec examples/hello.rue
+scripts/rue exec examples/welcome.rue
 ```
 
-`scripts/rue exec` builds the compiler if needed, compiles the Rue source to a
-temporary executable, and runs it.
+You should see `1`, `2`, `3`, and `42` printed, and the command exits 0 — so
+you know your toolchain works even inside a script or CI step. `scripts/rue exec`
+builds the compiler if needed, compiles the Rue source to a temporary
+executable, and runs it, propagating the program's exit code. (In the next
+chapter you'll see how a program's `main` return value *becomes* that exit code.)
 
 ## Compiling Manually
 
@@ -46,8 +49,8 @@ run the compiler directly:
 
 ```bash
 RUE="$(scripts/rue-bin)"
-"$RUE" examples/hello.rue -o hello
-./hello
+"$RUE" examples/welcome.rue -o welcome
+./welcome
 ```
 
 Rue currently supports native code generation for `x86-64-linux`,
