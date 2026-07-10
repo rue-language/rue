@@ -2,48 +2,65 @@
 """
 Validate a bench.sh results file before it enters the benchmark history.
 
-Run in CI after bench.sh so a platform whose benchmarks all failed turns
-into a failed job (a distinct, visible failure) instead of silently
-appending an empty run to the history. Prints a summary of what was
-collected.
+Run in CI after bench.sh so a platform with a missing, duplicate, or unknown
+benchmark result turns into a failed job instead of publishing an incomplete
+corpus. Prints a summary of what was collected.
 
 Usage:
     ./validate-benchmark.py <results.json>
 """
 
+import argparse
 import json
+from pathlib import Path
 import sys
+
+from benchmark_validation import (
+    DEFAULT_MANIFEST,
+    load_manifest_names,
+    validate_results,
+)
 
 
 def main() -> int:
-    if len(sys.argv) != 2:
-        print(f"Usage: {sys.argv[0]} <results.json>", file=sys.stderr)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("results", type=Path, help="results.json from bench.sh")
+    parser.add_argument(
+        "--manifest",
+        type=Path,
+        default=DEFAULT_MANIFEST,
+        help="benchmark manifest (default: benchmarks/manifest.toml)",
+    )
+    args = parser.parse_args()
+
+    try:
+        with args.results.open() as f:
+            data = json.load(f)
+        expected_names = load_manifest_names(args.manifest)
+    except (OSError, ValueError) as error:
+        print(f"::error::Cannot validate benchmark results: {error}")
         return 1
 
-    with open(sys.argv[1]) as f:
-        data = json.load(f)
-
-    benchmarks = data.get("benchmarks", [])
-    print(f"Commit: {data.get('commit', 'unknown')}")
+    benchmarks = data.get("benchmarks", []) if isinstance(data, dict) else []
+    commit = data.get("commit", "unknown") if isinstance(data, dict) else "unknown"
+    print(f"Commit: {commit}")
     print(f"Benchmarks collected: {len(benchmarks)}")
 
-    if not benchmarks:
-        print("::error::No benchmark results collected! All benchmarks failed.")
-        return 1
-
-    ok = True
     for bench in benchmarks:
+        if not isinstance(bench, dict):
+            continue
         name = bench.get("name", "unknown")
         mean = bench.get("mean_ms")
-        if mean is None:
-            print(f"::error::Benchmark '{name}' is missing mean_ms")
-            ok = False
-        else:
+        if isinstance(mean, (int, float)) and not isinstance(mean, bool):
             print(f"  - {name}: {mean:.2f}ms")
 
-    if ok:
+    errors = validate_results(data, expected_names)
+    for error in errors:
+        print(f"::error::{error}")
+
+    if not errors:
         print("Validation passed!")
-    return 0 if ok else 1
+    return 1 if errors else 0
 
 
 if __name__ == "__main__":

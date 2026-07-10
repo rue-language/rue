@@ -6,7 +6,7 @@ This script reads benchmark history from JSON and generates SVG charts:
 1. timeline.svg - Time-series chart showing total compilation time over commits
 2. breakdown.svg - Stacked bar chart showing time per compiler pass
 3. memory.svg - Memory usage over time
-4. binary_size.svg - Binary size over time
+4. binary_size.svg - Total binary size over time
 
 Usage:
     # Generate charts for a single platform
@@ -46,17 +46,42 @@ COMPARISON_HEIGHT = 400
 
 # Colors for passes (consistent with website theme)
 PASS_COLORS = {
+    "parse_file": "#5c6b34",            # olive
+    "merge_symbols": "#71813f",         # moss
+    "parallel_astgen": "#5c6b34",       # historical olive
+    "merge_rirs": "#71813f",            # historical moss
+    "validate_and_generate_rir": "#8f984d",  # dry grass
     "lexer": "#5c6b34",     # olive
     "parser": "#7d8f4a",    # moss
     "astgen": "#a3a25b",    # dry grass
     "sema": "#c9970e",      # rue yellow
     "cfg": "#8a6d2f",       # ochre
+    "cfg_construction": "#8a6d2f",  # ochre
     "codegen": "#a14e24",   # sienna
     "linker": "#6b4788",    # plum
 }
 
-# Order of passes in the stack
-PASS_ORDER = ["lexer", "parser", "astgen", "sema", "cfg", "codegen", "linker"]
+# Nested aggregate spans would double-count their leaf timings in a breakdown.
+AGGREGATE_PASSES = {"parse", "compile"}
+
+# Current leaf order followed by historical names still present in old data.
+# A chart only renders names present in the selected run, then appends unknown
+# future leaves alphabetically so new instrumentation cannot disappear.
+PASS_ORDER = [
+    "parse_file",
+    "merge_symbols",
+    "parallel_astgen",
+    "merge_rirs",
+    "validate_and_generate_rir",
+    "astgen",
+    "sema",
+    "cfg_construction",
+    "codegen",
+    "linker",
+    "lexer",
+    "parser",
+    "cfg",
+]
 
 # Platform display names and colors
 PLATFORM_INFO = {
@@ -82,46 +107,52 @@ def load_history(path: Path) -> dict:
 
 
 def get_pass_times(run: dict) -> dict[str, float]:
-    """Extract pass timing from a benchmark run."""
-    # Look for pass timing data in the benchmarks
+    """Sum each compiler pass across every benchmark in a run."""
+    totals: dict[str, float] = {}
     for bench in run.get("benchmarks", []):
-        if "passes" in bench:
-            # New format with per-pass timing
-            passes = bench["passes"]
-            return {
-                name: passes.get(name, {}).get("mean_ms", 0)
-                for name in PASS_ORDER
-            }
-    return {}
+        for name, timing in bench.get("passes", {}).items():
+            if name in AGGREGATE_PASSES:
+                continue
+            mean = timing.get("mean_ms", 0) if isinstance(timing, dict) else 0
+            totals[name] = totals.get(name, 0) + mean
+    return order_pass_times(totals)
+
+
+def order_pass_times(passes: dict[str, float]) -> dict[str, float]:
+    """Return pass timings in a stable known-first order."""
+    names = [name for name in PASS_ORDER if name in passes]
+    names.extend(sorted(set(passes) - set(PASS_ORDER)))
+    return {name: passes[name] for name in names}
+
+
+def benchmark_time(bench: dict) -> float:
+    """Read one benchmark's mean time across current and legacy schemas."""
+    if "mean_ms" in bench:
+        return bench["mean_ms"]
+    total = bench.get("total_ms", 0)
+    return total.get("mean", 0) if isinstance(total, dict) else total
 
 
 def get_total_time(run: dict) -> float:
-    """Get total compilation time from a run."""
-    for bench in run.get("benchmarks", []):
-        if "mean_ms" in bench:
-            return bench["mean_ms"]
-        if "total_ms" in bench:
-            total = bench["total_ms"]
-            if isinstance(total, dict):
-                return total.get("mean", 0)
-            return total
-    return 0
+    """Sum compilation time across every benchmark in a run."""
+    return sum(benchmark_time(bench) for bench in run.get("benchmarks", []))
 
 
 def get_peak_memory(run: dict) -> float:
-    """Get peak memory usage (in MB) from a run."""
-    for bench in run.get("benchmarks", []):
-        if "peak_memory_bytes" in bench:
-            return bench["peak_memory_bytes"] / (1024 * 1024)  # Convert to MB
-    return 0
+    """Get the highest per-compile peak memory usage (in MB) in a run."""
+    peak_bytes = max(
+        (bench.get("peak_memory_bytes", 0) for bench in run.get("benchmarks", [])),
+        default=0,
+    )
+    return peak_bytes / (1024 * 1024)
 
 
 def get_binary_size(run: dict) -> float:
-    """Get binary size (in KB) from a run."""
-    for bench in run.get("benchmarks", []):
-        if "binary_size_bytes" in bench:
-            return bench["binary_size_bytes"] / 1024  # Convert to KB
-    return 0
+    """Get the combined size (in KB) of all benchmark output binaries."""
+    total_bytes = sum(
+        bench.get("binary_size_bytes", 0) for bench in run.get("benchmarks", [])
+    )
+    return total_bytes / 1024
 
 
 def format_bytes(size_bytes: float) -> str:
@@ -306,13 +337,7 @@ def get_benchmark_time(run: dict, benchmark_name: str) -> float:
     """Get timing for a specific benchmark from a run."""
     for bench in run.get("benchmarks", []):
         if bench.get("name") == benchmark_name:
-            if "mean_ms" in bench:
-                return bench["mean_ms"]
-            if "total_ms" in bench:
-                total = bench["total_ms"]
-                if isinstance(total, dict):
-                    return total.get("mean", 0)
-                return total
+            return benchmark_time(bench)
     return 0
 
 
@@ -447,11 +472,12 @@ def get_pass_times_for_benchmark(run: dict, benchmark_name: str) -> dict[str, fl
     """Extract pass timing for a specific benchmark from a run."""
     for bench in run.get("benchmarks", []):
         if bench.get("name") == benchmark_name and "passes" in bench:
-            passes = bench["passes"]
-            return {
-                name: passes.get(name, {}).get("mean_ms", 0)
-                for name in PASS_ORDER
+            passes = {
+                name: timing.get("mean_ms", 0)
+                for name, timing in bench["passes"].items()
+                if isinstance(timing, dict) and name not in AGGREGATE_PASSES
             }
+            return order_pass_times(passes)
     return {}
 
 
@@ -525,7 +551,7 @@ def generate_breakdown_chart(runs: list[dict], benchmark_name: Optional[str] = N
     bar_y = margin["top"] + (chart_height - bar_height) / 2
     x_offset = margin["left"]
 
-    for pass_name in PASS_ORDER:
+    for pass_name in pass_times:
         time = pass_times.get(pass_name, 0)
         width = (time / total) * chart_width if time > 0 else 0
         color = PASS_COLORS.get(pass_name, "#888888")
@@ -545,7 +571,7 @@ def generate_breakdown_chart(runs: list[dict], benchmark_name: Optional[str] = N
     legend_x = BREAKDOWN_WIDTH - margin["right"] + 20
     legend_y = margin["top"] + 20
 
-    for i, pass_name in enumerate(PASS_ORDER):
+    for i, pass_name in enumerate(pass_times):
         y = legend_y + i * 22
         color = PASS_COLORS.get(pass_name, "#888888")
         time = pass_times.get(pass_name, 0)
@@ -707,7 +733,7 @@ def generate_binary_size_chart(runs: list[dict], platform: Optional[str] = None)
         return margin["top"] + chart_height - (v / max_size) * chart_height
 
     # Title with optional platform
-    title = "Binary Size Over Recent Commits"
+    title = "Total Binary Size Over Recent Commits"
     if platform:
         platform_name = PLATFORM_INFO.get(platform, {}).get("name", platform)
         title = f"{title} ({platform_name})"
