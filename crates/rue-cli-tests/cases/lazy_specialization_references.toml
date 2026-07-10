@@ -1,0 +1,115 @@
+# References discovered while creating a comptime specialization must rejoin
+# the demand-driven body-analysis frontier (RUE-580). Each case uses a real
+# import so it exercises the production lazy path before that path is universal.
+
+[section]
+id = "cli.lazy_specialization_references"
+name = "Specialization reference discovery"
+description = "Functions, methods, and destructors reached only from specialized bodies are emitted exactly once."
+
+[[case]]
+name = "specialization_enqueues_function_and_method"
+description = "A specialized body directly references both an ordinary helper and a named method; both must be emitted."
+files = [
+    { path = "main.rue", source = """
+const lib = @import("lib.rue");
+fn main() -> i32 { lib.run(21) }
+""" },
+    { path = "lib.rue", source = """
+fn helper(x: i32) -> i32 { @dbg(x); x }
+
+struct Wrap {
+    value: i32,
+    fn get(self) -> i32 { @dbg(self.value); self.value }
+}
+
+pub fn run(comptime n: i32) -> i32 {
+    let w = Wrap { value: n };
+    helper(n) + w.get()
+}
+""" },
+]
+stdout = "21\n21\n"
+exit_code = 42
+
+[[case]]
+name = "late_body_reuses_existing_specialization"
+description = "A late-enqueued ordinary body requests id(i32) after that specialization already exists; it must reuse the symbol, not emit a duplicate."
+files = [
+    { path = "main.rue", source = """
+const lib = @import("lib.rue");
+fn main() -> i32 { lib.run() }
+""" },
+    { path = "lib.rue", source = """
+fn id(comptime T: type, x: T) -> T { x }
+
+fn late() -> i32 {
+    let x = id(i32, 40);
+    @dbg(x);
+    x
+}
+
+fn outer(comptime n: i32) -> i32 { late() + n }
+
+pub fn run() -> i32 {
+    id(i32, 0) + outer(2)
+}
+""" },
+]
+stdout = "40\n"
+exit_code = 42
+
+[[case]]
+name = "specialization_registers_anonymous_destructor"
+description = "A type created only while specializing run registers an anonymous destructor; the scheduler must discover and emit it before linking."
+files = [
+    { path = "main.rue", source = """
+const lib = @import("lib.rue");
+fn main() -> i32 { lib.run(i32, 7) }
+""" },
+    { path = "lib.rue", source = """
+fn Box(comptime T: type) -> type {
+    struct {
+        value: T,
+        drop fn(self) { @dbg(self.value); }
+    }
+}
+
+pub fn run(comptime T: type, x: T) -> i32 {
+    let B = Box(T);
+    let _value = B { value: x };
+    @dbg(100);
+    0
+}
+""" },
+]
+stdout = "100\n7\n"
+exit_code = 0
+
+[[case]]
+name = "alternating_specialization_method_recursion_is_bounded"
+description = "Specialization and a newly registered anonymous method cannot evade the specialization-depth guard by alternating outer scheduler waves."
+files = [
+    { path = "main.rue", source = """
+const lib = @import("lib.rue");
+fn main() -> i32 { lib.start() }
+""" },
+    { path = "lib.rue", source = """
+fn Wrapper(comptime N: i32) -> type {
+    struct {
+        value: i32,
+        fn go(self) -> i32 { runaway(N + 1) }
+    }
+}
+
+fn runaway(comptime n: i32) -> i32 {
+    let W = Wrapper(n);
+    let w = W { value: n };
+    w.go()
+}
+
+pub fn start() -> i32 { runaway(0) }
+""" },
+]
+compile_fail = true
+error_contains = ["E1200", "exceeded the maximum nesting depth"]
