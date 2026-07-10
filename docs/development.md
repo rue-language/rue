@@ -153,9 +153,27 @@ scripts/rue fmt
 scripts/rue test
 ```
 
-CI additionally runs Clippy, workflow linting, debug tests on Linux x86-64,
-Linux AArch64, and macOS, plus a release-mode Linux suite. Fuzz, sanitizer,
-website, and benchmark workflows run separately.
+CI additionally runs Clippy, workflow linting, rust-project.json validation,
+debug tests on Linux x86-64, Linux AArch64, and macOS, plus a release-mode Linux
+suite. Fuzz, sanitizer, website, and benchmark workflows run separately.
+
+## Editor / IDE support
+
+Rue builds with Buck2, not Cargo, so rust-analyzer is driven by a checked-in
+`rust-project.json` rather than `Cargo.toml`. Point your editor's rust-analyzer
+at the repository root and it will use that file directly.
+
+Regenerate it from the Buck target graph whenever crates or dependencies change:
+
+```bash
+./gen-rust-project.sh                      # rewrites rust-project.json
+python3 scripts/validate-rust-project.py   # checks it (also a CI gate)
+```
+
+The generator models every first-party crate plus the third-party crates they
+depend on (following Buck alias/proc-macro indirection). The validator — run in
+CI — fails if the checked-in file references a missing `root_module` or omits a
+live first-party crate, so the model cannot silently drift out of date.
 
 ## Language and design changes
 
