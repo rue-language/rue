@@ -21,8 +21,10 @@
 //!
 //! # Architecture
 //!
-//! The specialization pass runs after semantic analysis but before CFG building.
-//! It transforms the AIR in-place and adds new specialized functions to the output.
+//! Specialization participates in semantic analysis's reachability fixed point:
+//! it transforms generic calls in-place, appends specialized bodies, and returns
+//! any ordinary calls those bodies discover to the source-body worklist. String
+//! tables and the type pool are finalized only after that joint fixed point.
 
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -34,8 +36,8 @@ use rue_rir::RirParamMode;
 use rue_span::Span;
 
 use crate::inst::{Air, AirInstData};
-use crate::sema::{AnalyzedFunction, ConstValue, FunctionInfo, InferenceContext, Sema, SemaOutput};
-use crate::types::Type;
+use crate::sema::{AnalyzedFunction, ConstValue, FunctionInfo, InferenceContext, Sema};
+use crate::types::{StructId, Type};
 
 /// A key for a specialized function:
 /// (base_function_name, type_arguments, value_arguments).
@@ -148,141 +150,153 @@ struct SpecializationInfo {
     call_site_span: Span,
 }
 
+/// Source-level references discovered while analyzing specialized bodies.
+#[derive(Default)]
+pub(crate) struct DiscoveredReferences {
+    pub(crate) functions: HashSet<Spur>,
+    pub(crate) methods: HashSet<(StructId, Spur)>,
+}
+
+/// Persistent specialization state shared with the demand-driven sema worklist.
+///
+/// Source bodies discovered after an earlier specialization wave may request
+/// either new or already-created specializations. Retaining both the request
+/// map and scan frontier makes those later waves incremental and deduplicated.
+#[derive(Default)]
+pub(crate) struct Specializer {
+    specializations: HashMap<SpecializationKey, SpecializationInfo>,
+    next_unscanned: usize,
+    seen_unreachable_spans: HashSet<Span>,
+    /// Expansion waves consumed across the entire joint sema fixed point.
+    rounds: usize,
+}
+
+struct SpecializedBody {
+    function: AnalyzedFunction,
+    warnings: Vec<CompileWarning>,
+    local_strings: Vec<String>,
+    referenced_functions: HashSet<Spur>,
+    referenced_methods: HashSet<(StructId, Spur)>,
+}
+
 /// Maximum number of specialization rounds before giving up.
 ///
 /// Each round creates the bodies for the specializations discovered in the
-/// previous round, so this bounds the nesting depth of generic-to-generic
-/// calls — including comptime-value recursion (`fact(comptime n)` calling
-/// `fact(n - 1)` adds one round per distinct value, RUE-166). Unbounded
-/// growth is possible when a generic function instantiates itself with an
-/// ever-growing type (e.g. `f(Pair(T), ...)` inside `f`) or a
-/// comptime-recursive function never reaches a comptime-known base case,
-/// so this cap turns a would-be-infinite loop into a clean E1200.
+/// previous round. The budget persists when specialization temporarily yields
+/// to sema's ordinary function/method worklists: otherwise a chain that
+/// alternates between a specialization and a newly registered method can reset
+/// the counter forever (RUE-580).
+///
+/// This is deliberately a conservative, program-wide expansion budget rather
+/// than exact causal-depth tracking. Independent branches can share the budget,
+/// but that tradeoff keeps every form of generic/comptime expansion bounded —
+/// including comptime-value recursion (`fact(comptime n)` calling
+/// `fact(n - 1)`, RUE-166) and ever-growing type instantiation such as
+/// `f(Pair(T), ...)` inside `f` — without threading provenance through every
+/// sema work queue.
 pub(crate) const MAX_SPECIALIZATION_ROUNDS: usize = 64;
 
-/// Perform the specialization pass on the sema output.
-///
-/// This collects all `CallGeneric` instructions, creates specialized functions,
-/// and rewrites calls to point to the specialized versions.
-///
-/// Specialized function bodies can themselves contain `CallGeneric` instructions
-/// (a generic function forwarding its type parameter to another generic call),
-/// so the pass iterates to a fixpoint: each round scans the functions created in
-/// the previous round for new specialization requests (RUE-102).
-pub fn specialize(
-    output: &mut SemaOutput,
-    sema: &mut Sema<'_>,
-    infer_ctx: &InferenceContext,
-    interner: &ThreadedRodeo,
-) -> CompileResult<()> {
-    let mut global_string_table: Option<HashMap<String, u32>> = None;
-    // All specializations ever requested, used to deduplicate across rounds.
-    let mut specializations: HashMap<SpecializationKey, SpecializationInfo> = HashMap::new();
-    // Index of the first function not yet scanned for CallGeneric instructions.
-    let mut next_unscanned = 0;
-    let mut rounds = 0;
-    // Spans of unreachable-pattern warnings already surfaced from specialized
-    // bodies (RUE-555). A generic function's pattern set is a static property
-    // of its single source location, so every specialization of it would emit
-    // the *same* warning at the *same* span; deduplicating by span collapses
-    // those to one, matching the single warning an ordinary function produces.
-    let mut seen_unreachable_spans: HashSet<Span> = HashSet::new();
-
-    loop {
-        // Phase 1: Collect specialization requests from not-yet-scanned functions
-        let mut pending: Vec<SpecializationKey> = Vec::new();
-        for func in &output.functions[next_unscanned..] {
-            collect_specializations(&func.air, interner, &mut specializations, &mut pending);
-        }
-
-        // Phase 2: Rewrite CallGeneric to Call in the newly scanned functions
-        // (previously scanned functions have no CallGeneric left)
-        for func in &mut output.functions[next_unscanned..] {
-            rewrite_call_generic(&mut func.air, &specializations);
-        }
-        next_unscanned = output.functions.len();
-
-        if pending.is_empty() {
-            // Unreachable-pattern warnings appended above land after the
-            // main-pass warnings sorted in `finalize_function_body_analysis`;
-            // restore span order so diagnostics read top-to-bottom (RUE-555).
-            output.warnings.sort_by_key(|w| w.span().map(|s| s.start));
-            return Ok(());
-        }
-
-        rounds += 1;
-        if rounds > MAX_SPECIALIZATION_ROUNDS {
-            let key = &pending[0];
-            return Err(CompileError::new(
-                ErrorKind::ComptimeEvaluationFailed {
-                    reason: format!(
-                        "specialization of '{}' exceeded the maximum nesting depth ({}); \
-                         is a comptime-recursive function missing a compile-time-known \
-                         base case, or a generic function recursively instantiating \
-                         itself with new types?",
-                        interner.resolve(&key.base_name),
-                        MAX_SPECIALIZATION_ROUNDS
-                    ),
-                },
-                specializations[key].call_site_span,
-            ));
-        }
-
-        let global_string_table = global_string_table.get_or_insert_with(|| {
-            output
-                .strings
-                .iter()
-                .cloned()
-                .enumerate()
-                .map(|(id, string)| (string, id as u32))
-                .collect()
-        });
-
-        // Phase 3: Create specialized function bodies by re-analyzing with type
-        // substitution. These new functions are scanned in the next round.
-        for key in &pending {
-            let info = &specializations[key];
-            let base_info = match sema.functions.get(&key.base_name) {
-                Some(info) => info.clone(),
-                None => {
-                    let func_name = interner.resolve(&key.base_name);
-                    return Err(CompileError::new(
-                        ErrorKind::UndefinedFunction(func_name.to_string()),
-                        info.call_site_span,
-                    ));
-                }
-            };
-            let (mut specialized_func, warnings, local_strings) = create_specialized_function(
-                sema,
-                infer_ctx,
-                key,
-                info.mangled_name,
-                &base_info,
-                interner,
-            )?;
-            remap_specialized_strings(
-                &mut specialized_func,
-                local_strings,
-                &mut output.strings,
-                global_string_table,
-            );
-            // Surface unreachable-pattern warnings from the specialized body
-            // (spec 4.7:20, RUE-555). A comptime-pruned match returns its
-            // selected arm before the normal warning loop, so these are emitted
-            // by `warn_unreachable_pruned_arms`; a non-pruned match in a
-            // specialized body warns via the normal loop. Both are structural
-            // (independent of the comptime value), so we keep only one per
-            // span across all specializations. Other specialized-body warnings
-            // stay suppressed, preserving existing behavior.
-            for w in warnings {
-                if matches!(w.kind, WarningKind::UnreachablePattern(_))
-                    && let Some(span) = w.span()
-                    && seen_unreachable_spans.insert(span)
-                {
-                    output.warnings.push(w);
-                }
+impl Specializer {
+    /// Analyze and rewrite every specialization reachable from newly appended
+    /// bodies, returning ordinary references that must re-enter sema's worklist.
+    ///
+    /// Generic-to-generic calls reach an internal fixed point here. The
+    /// `Specializer` itself persists across outer sema waves so an ordinary
+    /// helper analyzed later can request a specialization without duplicating
+    /// one created by an earlier wave.
+    pub(crate) fn run_to_fixpoint(
+        &mut self,
+        functions_with_strings: &mut Vec<(AnalyzedFunction, Vec<String>)>,
+        all_warnings: &mut Vec<CompileWarning>,
+        sema: &mut Sema<'_>,
+        infer_ctx: &InferenceContext,
+        interner: &ThreadedRodeo,
+    ) -> CompileResult<DiscoveredReferences> {
+        let mut discovered = DiscoveredReferences::default();
+        loop {
+            // Only scan bodies appended since the previous internal or outer
+            // wave. `scan_end` excludes specializations created below; they are
+            // picked up on the next internal round.
+            let scan_end = functions_with_strings.len();
+            let mut pending: Vec<SpecializationKey> = Vec::new();
+            for (function, _) in &functions_with_strings[self.next_unscanned..scan_end] {
+                collect_specializations(
+                    &function.air,
+                    interner,
+                    &mut self.specializations,
+                    &mut pending,
+                );
             }
-            output.functions.push(specialized_func);
+
+            // Previously scanned bodies have no CallGeneric instructions left.
+            for (function, _) in &mut functions_with_strings[self.next_unscanned..scan_end] {
+                rewrite_call_generic(&mut function.air, &self.specializations);
+            }
+            self.next_unscanned = scan_end;
+
+            if pending.is_empty() {
+                return Ok(discovered);
+            }
+
+            self.rounds += 1;
+            if self.rounds > MAX_SPECIALIZATION_ROUNDS {
+                let key = &pending[0];
+                return Err(CompileError::new(
+                    ErrorKind::ComptimeEvaluationFailed {
+                        reason: format!(
+                            "specialization of '{}' exceeded the maximum nesting depth ({}); \
+                             is a comptime-recursive function missing a compile-time-known \
+                             base case, or a generic function recursively instantiating \
+                             itself with new types?",
+                            interner.resolve(&key.base_name),
+                            MAX_SPECIALIZATION_ROUNDS
+                        ),
+                    },
+                    self.specializations[key].call_site_span,
+                ));
+            }
+
+            // Create specialized function bodies by re-analyzing with type
+            // substitution. Newly created bodies are scanned next round.
+            for key in &pending {
+                let info = &self.specializations[key];
+                let base_info = match sema.functions.get(&key.base_name) {
+                    Some(info) => info.clone(),
+                    None => {
+                        let func_name = interner.resolve(&key.base_name);
+                        return Err(CompileError::new(
+                            ErrorKind::UndefinedFunction(func_name.to_string()),
+                            info.call_site_span,
+                        ));
+                    }
+                };
+                let specialized = create_specialized_function(
+                    sema,
+                    infer_ctx,
+                    key,
+                    info.mangled_name,
+                    &base_info,
+                    interner,
+                )?;
+
+                discovered
+                    .functions
+                    .extend(specialized.referenced_functions);
+                discovered.methods.extend(specialized.referenced_methods);
+
+                // Surface unreachable-pattern warnings from the specialized
+                // body (spec 4.7:20, RUE-555), once per source span. Other
+                // specialized-body warnings stay suppressed as before.
+                for warning in specialized.warnings {
+                    if matches!(warning.kind, WarningKind::UnreachablePattern(_))
+                        && let Some(span) = warning.span()
+                        && self.seen_unreachable_spans.insert(span)
+                    {
+                        all_warnings.push(warning);
+                    }
+                }
+                functions_with_strings.push((specialized.function, specialized.local_strings));
+            }
         }
     }
 }
@@ -470,7 +484,7 @@ fn create_specialized_function(
     specialized_name: Spur,
     base_info: &FunctionInfo,
     interner: &ThreadedRodeo,
-) -> CompileResult<(AnalyzedFunction, Vec<CompileWarning>, Vec<String>)> {
+) -> CompileResult<SpecializedBody> {
     let specialized_name_str = interner.resolve(&specialized_name).to_string();
 
     // Pair each comptime parameter with its argument: type parameters
@@ -555,8 +569,8 @@ fn create_specialized_function(
         param_modes,
         warnings,
         local_strings,
-        _ref_fns,
-        _ref_meths,
+        referenced_functions,
+        referenced_methods,
     ) = sema.analyze_specialized_function(
         infer_ctx,
         return_type,
@@ -566,8 +580,8 @@ fn create_specialized_function(
         &value_subst,
     )?;
 
-    Ok((
-        AnalyzedFunction {
+    Ok(SpecializedBody {
+        function: AnalyzedFunction {
             name: specialized_name_str,
             air,
             num_locals,
@@ -577,36 +591,9 @@ fn create_specialized_function(
         },
         warnings,
         local_strings,
-    ))
-}
-
-/// Merge a specialized body's function-local strings into the program table
-/// and rewrite its AIR indices to the resulting global ids.
-fn remap_specialized_strings(
-    function: &mut AnalyzedFunction,
-    local_strings: Vec<String>,
-    global_strings: &mut Vec<String>,
-    global_string_table: &mut HashMap<String, u32>,
-) {
-    if local_strings.is_empty() {
-        return;
-    }
-
-    let local_to_global: Vec<u32> = local_strings
-        .into_iter()
-        .map(|string| {
-            *global_string_table
-                .entry(string.clone())
-                .or_insert_with(|| {
-                    let id = global_strings.len() as u32;
-                    global_strings.push(string);
-                    id
-                })
-        })
-        .collect();
-    function
-        .air
-        .remap_string_ids(|local_id| local_to_global[local_id as usize]);
+        referenced_functions,
+        referenced_methods,
+    })
 }
 
 /// Resolve a parameter's concrete type by substituting type parameters into

@@ -485,9 +485,20 @@ fn analyze_all_function_bodies_sequential(sema: &mut Sema<'_>) -> MultiErrorResu
         }
     }
 
-    finalize_function_body_analysis(
+    let mut specializer = crate::specialize::Specializer::default();
+    match specializer.run_to_fixpoint(
+        &mut functions_with_strings,
+        &mut all_warnings,
         sema,
         &infer_ctx,
+        sema.interner,
+    ) {
+        Ok(discovered) => referenced_functions.extend(discovered.functions),
+        Err(error) => errors.push(error),
+    }
+
+    finalize_function_body_analysis(
+        sema,
         functions_with_strings,
         all_warnings,
         &referenced_functions,
@@ -497,11 +508,10 @@ fn analyze_all_function_bodies_sequential(sema: &mut Sema<'_>) -> MultiErrorResu
 
 fn finalize_function_body_analysis(
     sema: &mut Sema<'_>,
-    infer_ctx: &InferenceContext,
     functions_with_strings: Vec<(AnalyzedFunction, Vec<String>)>,
     mut all_warnings: Vec<CompileWarning>,
     unused_function_roots: &HashSet<Spur>,
-    mut errors: CompileErrors,
+    errors: CompileErrors,
 ) -> MultiErrorResult<SemaOutput> {
     // Merge strings from all functions into a global table with deduplication.
     let mut global_string_table: HashMap<String, u32> = HashMap::new();
@@ -533,29 +543,14 @@ fn finalize_function_body_analysis(
     add_unused_function_warnings(sema, &referenced_for_unused_warnings, &mut all_warnings);
     all_warnings.sort_by_key(|w| w.span().map(|s| s.start));
 
-    let mut output = SemaOutput {
+    let output = SemaOutput {
         functions,
         strings: global_strings,
         warnings: all_warnings,
-        // Provisional: refreshed after specialization below. Specialized
-        // bodies can intern *new* composite types (e.g. `[i32; N]` from a
-        // `let y: [T; 2]` once `T := i32`) into `sema.type_pool`, so the pool
-        // handed to CFG/codegen must be cloned *after* the specialize pass.
+        // Specialization can intern new composite types, so snapshot only
+        // after its fixed point has completed.
         type_pool: sema.type_pool.clone(),
     };
-
-    // Run specialization pass to rewrite CallGeneric instructions to Call
-    // and create specialized function bodies
-    if let Err(e) = crate::specialize::specialize(&mut output, sema, infer_ctx, sema.interner) {
-        errors.push(e);
-    }
-
-    // Specialization interns new composite types into `sema.type_pool` (see the
-    // provisional-clone note above); re-snapshot so every array/pointer type a
-    // specialized body references exists in the pool CFG and codegen consult.
-    // Without this, a specialization-only `[i32; N]` decayed to an out-of-bounds
-    // ArrayTypeId and ICE'd in drop analysis (RUE-282).
-    output.type_pool = sema.type_pool.clone();
 
     errors.into_result_with(output)
 }
@@ -656,6 +651,35 @@ fn enqueue_references_sorted(
     pending_methods.extend(meths);
 }
 
+/// Enqueue anonymous destructors registered by comptime evaluation.
+///
+/// Drop glue, rather than user-written AIR, is their caller, so these implicit
+/// roots need an explicit deterministic scan whenever the ordinary reference
+/// frontier drains.
+fn enqueue_anonymous_destructors(
+    sema: &Sema<'_>,
+    drop_marker_sym: Spur,
+    analyzed_methods: &HashSet<(StructId, Spur)>,
+    pending_methods: &mut Vec<(StructId, Spur)>,
+) {
+    let mut destructors: Vec<(StructId, Spur)> = sema
+        .methods
+        .keys()
+        .copied()
+        .filter(|&method_key @ (struct_id, method_name)| {
+            method_name == drop_marker_sym
+                && !analyzed_methods.contains(&method_key)
+                && sema
+                    .type_pool
+                    .struct_def(struct_id)
+                    .name
+                    .starts_with("__anon_struct_")
+        })
+        .collect();
+    destructors.sort_by_key(|&(sid, name)| (sid.0, sema.interner.resolve(&name)));
+    pending_methods.extend(destructors);
+}
+
 /// Lazy analysis path (Phase 3 of module system, ADR-0026).
 ///
 /// This implements "lazy semantic analysis" where only functions reachable from
@@ -686,6 +710,7 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
     let mut analyzed_methods: HashSet<(StructId, Spur)> = HashSet::new();
     let drop_marker_sym = sema.interner.get_or_intern("__drop");
     let mut named_destructors_analyzed = false;
+    let mut specializer = crate::specialize::Specializer::default();
 
     // Collect results
     let mut functions_with_strings: Vec<(AnalyzedFunction, Vec<String>)> = Vec::new();
@@ -1024,24 +1049,12 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
         // so lazy analysis emits `__anon_struct_N.__drop` before the backend
         // links drop glue.
         if pending_functions.is_empty() && pending_methods.is_empty() {
-            // sema.methods is a HashMap: sort the enqueued keys so the
-            // destructor analysis order is deterministic too (RUE-513).
-            let mut anon_dtors: Vec<(StructId, Spur)> = sema
-                .methods
-                .keys()
-                .copied()
-                .filter(|&method_key @ (struct_id, method_name)| {
-                    method_name == drop_marker_sym
-                        && !analyzed_methods.contains(&method_key)
-                        && sema
-                            .type_pool
-                            .struct_def(struct_id)
-                            .name
-                            .starts_with("__anon_struct_")
-                })
-                .collect();
-            anon_dtors.sort_by_key(|&(sid, name)| (sid.0, sema.interner.resolve(&name)));
-            pending_methods.extend(anon_dtors);
+            enqueue_anonymous_destructors(
+                sema,
+                drop_marker_sym,
+                &analyzed_methods,
+                &mut pending_methods,
+            );
         }
 
         if !pending_functions.is_empty() || !pending_methods.is_empty() {
@@ -1100,12 +1113,54 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
             continue;
         }
 
+        // Specialized generic bodies are part of the same reachability fixed
+        // point as source-level bodies. Feed every ordinary function or method
+        // they call back through the deterministic analysis queues, then scan
+        // any later source bodies for further specialization requests.
+        match specializer.run_to_fixpoint(
+            &mut functions_with_strings,
+            &mut all_warnings,
+            sema,
+            &infer_ctx,
+            sema.interner,
+        ) {
+            Ok(discovered) => enqueue_references_sorted(
+                sema.interner,
+                discovered.functions,
+                discovered.methods,
+                &analyzed_functions,
+                &analyzed_methods,
+                &mut pending_functions,
+                &mut pending_methods,
+            ),
+            Err(error) => {
+                errors.push(error);
+                break;
+            }
+        }
+
+        // Comptime evaluation inside a specialization may register a new
+        // anonymous destructor without an explicit call in its AIR. Keep it as
+        // an implicit root, just like anonymous destructors registered by an
+        // ordinary source body above.
+        if pending_functions.is_empty() && pending_methods.is_empty() {
+            enqueue_anonymous_destructors(
+                sema,
+                drop_marker_sym,
+                &analyzed_methods,
+                &mut pending_methods,
+            );
+        }
+
+        if !pending_functions.is_empty() || !pending_methods.is_empty() {
+            continue;
+        }
+
         break;
     }
 
     finalize_function_body_analysis(
         sema,
-        &infer_ctx,
         functions_with_strings,
         all_warnings,
         &analyzed_functions,
