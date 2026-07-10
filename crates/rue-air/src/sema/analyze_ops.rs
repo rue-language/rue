@@ -2059,7 +2059,7 @@ impl<'a> Sema<'a> {
 
             // Allocate a local slot and register the binding.
             let slot = ctx.next_slot;
-            let num_slots = self.abi_slot_count(field_ty);
+            let num_slots = self.require_layout_slots(field_ty, pattern_span)?;
             ctx.next_slot += num_slots;
             ctx.insert_local(
                 *binding_name,
@@ -2437,7 +2437,7 @@ impl<'a> Sema<'a> {
 
         // Allocate slots
         let slot = ctx.next_slot;
-        let num_slots = self.abi_slot_count(var_type);
+        let num_slots = self.require_layout_slots(var_type, span)?;
         ctx.next_slot += num_slots;
 
         // A `for`-loop element binder over a NON-Copy collection aliases an
@@ -3754,7 +3754,7 @@ impl<'a> Sema<'a> {
 
         // Allocate a temporary slot for the computed struct value
         let temp_slot = ctx.next_slot;
-        let num_slots = self.abi_slot_count(base_type);
+        let num_slots = self.require_layout_slots(base_type, span)?;
         ctx.next_slot += num_slots;
 
         // Emit StorageLive for the temporary
@@ -4852,7 +4852,7 @@ impl<'a> Sema<'a> {
 
         // Allocate a temporary slot for the computed array value
         let temp_slot = ctx.next_slot;
-        let num_slots = self.abi_slot_count(base_type);
+        let num_slots = self.require_layout_slots(base_type, span)?;
         ctx.next_slot += num_slots;
 
         // Emit StorageLive for the temporary
@@ -6226,16 +6226,19 @@ impl<'a> Sema<'a> {
             return Ok(AnalysisResult::new(air_ref, Type::UNIT));
         }
 
-        // Calculate the value based on which intrinsic
+        // Calculate the value based on which intrinsic. Checked layout query
+        // (E0906 on oversized types, RUE-561): the old unchecked u32 math
+        // ICEd on a 2 GiB array in debug builds and truncated a 32 GiB one to
+        // size 0 / alignment 1.
         let value: u64 = match intrinsic_name.as_str() {
             "size_of" => {
                 // Calculate size in bytes (slot count * 8)
-                let slot_count = self.abi_slot_count(ty);
-                (slot_count * 8) as u64
+                let slot_count = self.require_layout_slots(ty, span)?;
+                u64::from(slot_count) * 8
             }
             "align_of" => {
                 // Zero-sized types have 1-byte alignment, others have 8-byte
-                let slot_count = self.abi_slot_count(ty);
+                let slot_count = self.require_layout_slots(ty, span)?;
                 if slot_count == 0 { 1u64 } else { 8u64 }
             }
             _ => {

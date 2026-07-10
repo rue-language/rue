@@ -345,6 +345,7 @@ impl ErrorCode {
     pub const TYPE_ANNOTATION_REQUIRED: Self = Self(903);
     pub const MOVE_OUT_OF_INDEX: Self = Self(904);
     pub const ARRAY_REPEAT_NON_COPY: Self = Self(905);
+    pub const TYPE_TOO_LARGE: Self = Self(906);
 
     // ========================================================================
     // Linker/target errors (E1000-E1099)
@@ -1441,6 +1442,12 @@ pub enum ErrorKind {
     /// RUE-235).
     #[error("array-repeat literal requires a Copy element type, but '{element_type}' is not Copy")]
     ArrayRepeatNonCopy { element_type: String },
+    /// A type's layout exceeds the implementation's maximum object size
+    /// (Appendix C practical limit; RUE-561 — unchecked u32 slot arithmetic
+    /// previously ICEd on 2 GiB arrays and silently truncated 32 GiB ones to
+    /// zero-sized).
+    #[error("type '{type_name}' exceeds the maximum supported object size ({max_bytes} bytes)")]
+    TypeTooLarge { type_name: String, max_bytes: u64 },
     /// Assignment into an array (element write, or a write through an element)
     /// while one or more of its elements are moved out (RUE-186). Reinstating
     /// per-element ownership through writes is not supported; the whole array
@@ -1653,6 +1660,7 @@ impl ErrorKind {
             ErrorKind::TypeAnnotationRequired => ErrorCode::TYPE_ANNOTATION_REQUIRED,
             ErrorKind::MoveOutOfIndex { .. } => ErrorCode::MOVE_OUT_OF_INDEX,
             ErrorKind::ArrayRepeatNonCopy { .. } => ErrorCode::ARRAY_REPEAT_NON_COPY,
+            ErrorKind::TypeTooLarge { .. } => ErrorCode::TYPE_TOO_LARGE,
             ErrorKind::AssignToPartiallyMovedArray { .. } => {
                 ErrorCode::ASSIGN_TO_PARTIALLY_MOVED_ARRAY
             }

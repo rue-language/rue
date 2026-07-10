@@ -15,6 +15,13 @@ use rue_span::{FileId, Span};
 
 use super::Sema;
 use super::context::AnalysisContext;
+
+/// Maximum size of a single object in bytes: `i32::MAX`, matching the
+/// codegen frame-offset (disp32) addressing range (Appendix C practical
+/// limit, RUE-561). Types larger than this are rejected with E0906.
+pub(crate) const MAX_TYPE_SIZE_BYTES: u64 = i32::MAX as u64;
+/// [`MAX_TYPE_SIZE_BYTES`] expressed in 8-byte ABI slots.
+pub(crate) const MAX_TYPE_SLOTS: u64 = MAX_TYPE_SIZE_BYTES / 8;
 use super::info::ConstInfo;
 use crate::inference::InferType;
 use crate::sema::ConstValue;
@@ -1728,10 +1735,73 @@ impl<'a> Sema<'a> {
         }
     }
 
+    /// Reject a type whose layout exceeds the implementation's maximum object
+    /// size (Appendix C practical limit, RUE-561), returning the slot count on
+    /// success. Call this wherever a value of `ty` is MATERIALIZED — a local
+    /// or temporary slot allocation, a by-value parameter, `@size_of` /
+    /// `@align_of` — so the saturating fallback in [`Self::abi_slot_count`]
+    /// is never observable.
+    pub(crate) fn require_layout_slots(&self, ty: Type, span: Span) -> CompileResult<u32> {
+        match self.checked_abi_slot_count(ty) {
+            Some(slots) => Ok(slots as u32),
+            None => Err(CompileError::new(
+                ErrorKind::TypeTooLarge {
+                    type_name: ty.safe_name_with_pool(Some(&self.type_pool)),
+                    max_bytes: MAX_TYPE_SIZE_BYTES,
+                },
+                span,
+            )),
+        }
+    }
+
+    /// Checked companion to [`Self::abi_slot_count`]: `None` when the type's
+    /// layout overflows or exceeds [`MAX_TYPE_SLOTS`] (RUE-561). Computed in
+    /// u64 with checked arithmetic, so a `[i32; 4294967296]` no longer
+    /// truncates to zero slots and a `[i32; 536870912]` no longer overflows
+    /// the debug-build multiply.
+    pub(crate) fn checked_abi_slot_count(&self, ty: Type) -> Option<u64> {
+        let slots = match ty.kind() {
+            TypeKind::Array(array_type_id) => {
+                let (element_type, length) = self.type_pool.array_def(array_type_id);
+                let element_slots = self.checked_abi_slot_count(element_type)?;
+                element_slots.checked_mul(length)?
+            }
+            TypeKind::Struct(struct_id) => {
+                let struct_def = self.type_pool.struct_def(struct_id);
+                let mut total = 0u64;
+                for f in &struct_def.fields {
+                    total = total.checked_add(self.checked_abi_slot_count(f.ty)?)?;
+                }
+                total
+            }
+            TypeKind::Enum(enum_id) => {
+                let enum_def = self.type_pool.enum_def(enum_id);
+                let mut max_payload = 0u64;
+                for i in 0..enum_def.variant_count() {
+                    let mut variant_slots = 0u64;
+                    for &vty in enum_def.variant_payload(i) {
+                        variant_slots =
+                            variant_slots.checked_add(self.checked_abi_slot_count(vty)?)?;
+                    }
+                    max_payload = max_payload.max(variant_slots);
+                }
+                1 + max_payload
+            }
+            // Every other kind is 0 or 1 slots; delegate.
+            _ => u64::from(self.abi_slot_count(ty)),
+        };
+        (slots <= MAX_TYPE_SLOTS).then_some(slots)
+    }
+
     /// Get the number of ABI slots required for a type.
     /// Scalar types (i8, i16, i32, i64, u8, u16, u32, u64, bool) use 1 slot,
     /// structs use 1 slot per field, arrays use 1 slot per element.
     /// Zero-sized types (unit, never, empty structs, zero-length arrays) use 0 slots.
+    ///
+    /// Layout arithmetic SATURATES (no overflow panic, no silent u32
+    /// truncation — RUE-561); an oversized type is rejected with E0906 at
+    /// every materialization site via [`Self::require_layout_slots`], so the
+    /// saturated value is never used for real allocation.
     pub(crate) fn abi_slot_count(&self, ty: Type) -> u32 {
         match ty.kind() {
             TypeKind::I8
@@ -1759,11 +1829,10 @@ impl<'a> Sema<'a> {
                     let variant_slots: u32 = enum_def
                         .variant_payload(i)
                         .iter()
-                        .map(|&ty| self.abi_slot_count(ty))
-                        .sum();
+                        .fold(0u32, |acc, &ty| acc.saturating_add(self.abi_slot_count(ty)));
                     max_payload = max_payload.max(variant_slots);
                 }
-                1 + max_payload
+                1u32.saturating_add(max_payload)
             }
             // Struct uses sum of all field slots (includes builtin String with 3 fields)
             TypeKind::Struct(struct_id) => {
@@ -1773,14 +1842,13 @@ impl<'a> Sema<'a> {
                 struct_def
                     .fields
                     .iter()
-                    .map(|f| self.abi_slot_count(f.ty))
-                    .sum()
+                    .fold(0u32, |acc, f| acc.saturating_add(self.abi_slot_count(f.ty)))
             }
             TypeKind::Array(array_type_id) => {
                 // Zero-length arrays naturally get 0 slots (0 * element_slots)
                 let (element_type, length) = self.type_pool.array_def(array_type_id);
-                let element_slots = self.abi_slot_count(element_type);
-                element_slots * length as u32
+                let element_slots = u64::from(self.abi_slot_count(element_type));
+                u32::try_from(element_slots.saturating_mul(length)).unwrap_or(u32::MAX)
             }
             // Module types don't take ABI slots (they're compile-time only)
             TypeKind::Module(_) => 0,

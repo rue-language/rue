@@ -354,7 +354,9 @@ impl<'a> Sema<'a> {
                 // By-ref parameters are always 1 slot (pointer)
                 1
             } else {
-                self.abi_slot_count(*ptype)
+                // A by-value parameter materializes the whole object in the
+                // frame: reject an oversized type (E0906, RUE-561).
+                self.require_layout_slots(*ptype, self.rir.get(body).span)?
             };
             for _ in 0..slot_count {
                 param_modes.push(is_by_ref);
