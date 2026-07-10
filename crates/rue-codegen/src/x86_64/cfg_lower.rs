@@ -2514,7 +2514,16 @@ impl<'a> CfgLower<'a> {
                     // every field but the first (RUE-242).
                     let result_ty = self.ctx.cfg.get_inst(value).ty;
                     let slot_count = self.ctx.type_slot_count(result_ty);
-                    if slot_count > 1 {
+                    if slot_count == 0 {
+                        // Zero-sized pointee (`ptr const Z` where `Z {}` has no
+                        // fields): the read is a no-op carrying no bits — do
+                        // NOT dereference. ArrayBuf never allocates for a
+                        // zero-sized element type, so its buffer stays null
+                        // and a 1-slot load here segfaulted (RUE-566). The
+                        // value maps to a fresh (never-read) vreg, like unit.
+                        let result_vreg = self.mir.alloc_vreg();
+                        self.value_map.insert(value, result_vreg);
+                    } else if slot_count > 1 {
                         let slot_vregs =
                             crate::agg_slots::load_slots_through_ptr(self, ptr_vreg, slot_count);
                         let first = slot_vregs[0];
@@ -2543,7 +2552,13 @@ impl<'a> CfgLower<'a> {
                     // every field but the first (RUE-242).
                     let value_ty = self.ctx.cfg.get_inst(value_val).ty;
                     let slot_count = self.ctx.type_slot_count(value_ty);
-                    if slot_count > 1 {
+                    if slot_count == 0 {
+                        // Zero-sized value: a zero-byte store — emit nothing
+                        // and do NOT dereference the pointer (which is null
+                        // for a never-allocated zero-sized-element ArrayBuf,
+                        // RUE-566). Logical effects (`len` bookkeeping) live
+                        // in the caller.
+                    } else if slot_count > 1 {
                         let slot_vregs = self
                             .get_or_compute_field_vregs(value_val)
                             .unwrap_or_else(|| vec![self.get_vreg(value_val)]);
@@ -3149,24 +3164,34 @@ impl<'a> CfgLower<'a> {
                     variant_index,
                     field_index,
                 ) as usize;
-                let base_slots = self
-                    .get_or_compute_field_vregs(base)
-                    .expect("enum payload base must have slot vregs");
-                let vreg = self.mir.alloc_vreg();
-                self.value_map.insert(value, vreg);
-                if field_slots > 1 {
-                    // Multi-slot payload (nested aggregate): expose all slots.
-                    let slots: Vec<VReg> = base_slots[offset..offset + field_slots].to_vec();
-                    self.struct_slot_vregs.insert(value, slots.clone());
-                    self.mir.push(X86Inst::MovRR {
-                        dst: Operand::Virtual(vreg),
-                        src: Operand::Virtual(slots[0]),
-                    });
+                // A zero-sized payload field (`Option(Z)` where `Z {}` has no
+                // fields) carries no bits and its enclosing enum may be a
+                // 1-slot discriminant-only value with NO tracked aggregate
+                // slots — reading a payload slot here panicked (RUE-566).
+                // Map to a fresh never-read vreg, like unit.
+                if field_slots == 0 {
+                    let vreg = self.mir.alloc_vreg();
+                    self.value_map.insert(value, vreg);
                 } else {
-                    self.mir.push(X86Inst::MovRR {
-                        dst: Operand::Virtual(vreg),
-                        src: Operand::Virtual(base_slots[offset]),
-                    });
+                    let base_slots = self
+                        .get_or_compute_field_vregs(base)
+                        .expect("enum payload base must have slot vregs");
+                    let vreg = self.mir.alloc_vreg();
+                    self.value_map.insert(value, vreg);
+                    if field_slots > 1 {
+                        // Multi-slot payload (nested aggregate): expose all slots.
+                        let slots: Vec<VReg> = base_slots[offset..offset + field_slots].to_vec();
+                        self.struct_slot_vregs.insert(value, slots.clone());
+                        self.mir.push(X86Inst::MovRR {
+                            dst: Operand::Virtual(vreg),
+                            src: Operand::Virtual(slots[0]),
+                        });
+                    } else {
+                        self.mir.push(X86Inst::MovRR {
+                            dst: Operand::Virtual(vreg),
+                            src: Operand::Virtual(base_slots[offset]),
+                        });
+                    }
                 }
             }
 
