@@ -1,0 +1,34 @@
+// Geometry shapes — grid-track dogfood (RUE-586), stressing tagged unions:
+// enum payloads (single and multi-field), match with tuple bindings, and an
+// array of enum values (a layout stress). Integer areas (pi ~ 3).
+enum Shape {
+    Circle(i32),        // radius
+    Rect(i32, i32),     // width, height
+    Square(i32),        // side
+}
+
+fn area(s: Shape) -> i32 {
+    match s {
+        Shape.Circle(r) => 3 * r * r,
+        Shape.Rect(w, h) => w * h,
+        Shape.Square(side) => side * side,
+    }
+}
+
+fn main() -> i32 {
+    let shapes = [
+        Shape.Circle(2),      // 12
+        Shape.Rect(3, 4),     // 12
+        Shape.Square(5),      // 25
+        Shape.Circle(1)       // 3
+    ];
+    let mut total = 0;
+    let mut i = 0;
+    while i < 4 {
+        let a = area(shapes[i]);
+        @dbg(a);
+        total = total + a;
+        i = i + 1;
+    }
+    total
+}
