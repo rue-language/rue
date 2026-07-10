@@ -236,6 +236,17 @@ impl<'a> CfgLower<'a> {
         ptr_vreg
     }
 
+    /// Materialize every by-reference parameter pointer before CFG control
+    /// flow begins, so the function-wide cache only contains definitions that
+    /// dominate every block which may reuse them.
+    fn preload_inout_param_ptrs(&mut self) {
+        for param_slot in 0..self.ctx.num_params {
+            if self.ctx.cfg.is_param_inout(param_slot) {
+                self.ensure_inout_param_ptr(param_slot);
+            }
+        }
+    }
+
     /// Emit a bounds check for array indexing.
     ///
     /// Generates code to check that `index_vreg < length` and calls `__rue_bounds_check`
@@ -554,6 +565,8 @@ impl<'a> CfgLower<'a> {
 
     /// Lower CFG to X86Mir.
     pub fn lower(mut self) -> CompileResult<X86Mir> {
+        self.preload_inout_param_ptrs();
+
         // Pre-allocate vregs for block parameters
         for block in self.ctx.cfg.blocks() {
             for (param_idx, (param_val, ty)) in block.params.iter().enumerate() {
@@ -592,6 +605,8 @@ impl<'a> CfgLower<'a> {
             target_arch: "x86_64".to_string(),
             blocks: Vec::new(),
         };
+
+        self.preload_inout_param_ptrs();
 
         // Pre-allocate vregs for block parameters (same as lower())
         for block in self.ctx.cfg.blocks() {
@@ -905,20 +920,8 @@ impl<'a> CfgLower<'a> {
                 if is_inout {
                     // For inout params, the slot contains a POINTER to the caller's memory.
                     // Load the pointer, then dereference to get the value.
-                    let ptr_vreg = self.mir.alloc_vreg();
+                    let ptr_vreg = self.ensure_inout_param_ptr(*index);
                     let val_vreg = self.mir.alloc_vreg();
-
-                    // Load the pointer from the param slot
-                    let slot = self.ctx.num_locals + *index;
-                    let offset = self.ctx.local_offset(slot);
-                    self.mir.push(X86Inst::MovRM {
-                        dst: Operand::Virtual(ptr_vreg),
-                        base: Reg::Rbp,
-                        offset,
-                    });
-
-                    // Store the pointer vreg for later use by Store
-                    self.inout_param_ptrs.insert(*index, ptr_vreg);
 
                     // Dereference the pointer to get the actual value
                     self.mir.push(X86Inst::MovRMIndexed {
