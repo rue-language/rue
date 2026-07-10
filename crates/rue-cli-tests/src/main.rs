@@ -185,6 +185,15 @@ const EXAMPLE_EXPECTATIONS: &[ExampleExpectation] = &[
         stdout: "6\n1\n36\n",
         stdin: None,
     },
+    // Generic fixed-capacity Stack(T, CAP) (RUE-586 dogfood): a user-defined
+    // comptime generic instantiated at two types (i32 and bool) in one program —
+    // specialization stress. Pops 7, true; sizes 1, 2; flag true -> 7+1+2 = 10.
+    ExampleExpectation {
+        path: "generic_stack.rue",
+        exit_code: 10,
+        stdout: "7\ntrue\n1\n2\n",
+        stdin: None,
+    },
     ExampleExpectation {
         path: "generics.rue",
         exit_code: 72,
@@ -252,6 +261,15 @@ const EXAMPLE_EXPECTATIONS: &[ExampleExpectation] = &[
         exit_code: 0,
         stdout: "result: 11\n",
         stdin: Some("2 + 3 * (4 - 1)\n"),
+    },
+    // Tagged-union geometry (RUE-586 dogfood): enum payloads (single + multi-
+    // field), match with tuple bindings, and an array of enum values. Areas
+    // 12, 12, 25, 3 sum to 52.
+    ExampleExpectation {
+        path: "shapes.rue",
+        exit_code: 52,
+        stdout: "12\n12\n25\n3\n",
+        stdin: None,
     },
     ExampleExpectation {
         path: "sqrt.rue",

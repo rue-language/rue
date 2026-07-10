@@ -1,0 +1,29 @@
+fn Stack(comptime T: type, comptime CAP: i32) -> type {
+    struct {
+        items: [T; CAP],
+        top: i32,
+        fn push(inout self, x: T) { self.items[self.top] = x; self.top = self.top + 1; }
+        fn pop(inout self) -> T { self.top = self.top - 1; self.items[self.top] }
+        fn size(borrow self) -> i32 { self.top }
+    }
+}
+
+fn main() -> i32 {
+    // Two instantiations of the same generic (specialization stress).
+    let SI = Stack(i32, 8);
+    let SB = Stack(bool, 4);
+    let mut si = SI { items: [0; 8], top: 0 };
+    let mut sb = SB { items: [false; 4], top: 0 };
+    si.push(100);
+    si.push(7);
+    sb.push(true);
+    sb.push(false);
+    sb.push(true);
+    let x = si.pop();               // 7
+    let flag = sb.pop();            // true
+    @dbg(x);
+    @dbg(flag);
+    @dbg(si.size());               // 1
+    @dbg(sb.size());               // 2
+    if flag { x + si.size() + sb.size() } else { -1 }   // 7 + 1 + 2 = 10
+}
