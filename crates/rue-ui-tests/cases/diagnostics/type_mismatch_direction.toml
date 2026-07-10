@@ -8,7 +8,6 @@ name = "return_type_mismatch_direction"
 source = """
 fn main() -> i32 { true }
 """
-exit_code = 1
 compile_fail = true
 error_contains = ["expected i32, found bool"]
 
@@ -20,7 +19,6 @@ fn main() -> i32 {
     0
 }
 """
-exit_code = 1
 compile_fail = true
 error_contains = ["expected i32, found bool"]
 
@@ -30,7 +28,6 @@ source = """
 fn f(n: i32) -> i32 { n }
 fn main() -> i32 { f(true) }
 """
-exit_code = 1
 compile_fail = true
 error_contains = ["expected i32, found bool"]
 
@@ -42,7 +39,6 @@ name = "array_return_mismatch_direction"
 source = """
 fn main() -> i32 { [1, 2, 3] }
 """
-exit_code = 1
 compile_fail = true
 error_contains = ["expected i32, found [{integer}; 3]"]
 
@@ -52,6 +48,5 @@ source = """
 fn f() -> [i32; 3] { true }
 fn main() -> i32 { 0 }
 """
-exit_code = 1
 compile_fail = true
 error_contains = ["expected [i32; 3], found bool"]
