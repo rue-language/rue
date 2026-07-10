@@ -193,6 +193,26 @@ impl Validator<'_> {
             | Expr::SelfExpr(_)
             | Expr::Error(_) => {}
             Expr::Binary(b) => {
+                // Chained comparison check (spec 4.3:12, RUE-528). Comparison
+                // operators are left-associative and share one precedence
+                // level, so `a < b == c` parses as `(a < b) == c` with the
+                // inner comparison DIRECTLY as the left operand. This is the
+                // only paren-aware place to check: RIR erases parentheses, so
+                // the old sema check also rejected the explicitly
+                // parenthesized `(a < b) == c` — an ordinary boolean
+                // equality, not a chain. An explicit `Expr::Paren` between
+                // the two comparisons breaks the chain (anything ill-typed
+                // inside is then diagnosed normally by sema).
+                if is_comparison_op(b.op)
+                    && matches!(&*b.left, Expr::Binary(inner) if is_comparison_op(inner.op))
+                {
+                    self.errors.push(
+                        CompileError::new(ErrorKind::ChainedComparison, b.span).with_help(
+                            "use `&&` to combine comparisons (`a < b && b < c`), or \
+                             parenthesize a boolean operand: `(a < b) == c`",
+                        ),
+                    );
+                }
                 self.check_expr(&b.left);
                 self.check_expr(&b.right);
             }
@@ -332,4 +352,14 @@ impl Validator<'_> {
             TypeExpr::StrFixed { .. } => {}
         }
     }
+}
+
+/// Whether `op` is one of the six comparison operators, which share a single
+/// non-chainable precedence level (spec 4.3:12).
+fn is_comparison_op(op: crate::ast::BinaryOp) -> bool {
+    use crate::ast::BinaryOp;
+    matches!(
+        op,
+        BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Gt | BinaryOp::Le | BinaryOp::Ge
+    )
 }
