@@ -66,12 +66,4 @@ impl<'a> Sema<'a> {
             .find(|(_, p)| normalize_module_path(p) == norm)
             .map(|(id, _)| *id)
     }
-
-    /// Legacy import-presence selector retained only so the universal
-    /// demand-driven cutover and its eager-driver deletion remain separate
-    /// review units. The body-analysis entry point no longer calls it.
-    #[allow(dead_code)] // Removed with the legacy eager-driver selector.
-    pub(crate) fn has_imports(&self) -> bool {
-        !self.module_registry.is_empty()
-    }
 }
