@@ -1033,6 +1033,33 @@ fn main() -> i32 {
 exit_code = 12
 
 [[case]]
+name = "array_repeat_zero_count_evaluates_value_side_effect"
+spec = ["7.1:39"]
+description = "The repeat value expression is evaluated exactly once even when the count is 0 (RUE-531: it was dropped entirely)"
+source = """
+fn produce() -> i32 { @dbg(42); 7 }
+fn main() -> i32 {
+    let a: [i32; 0] = [produce(); 0];
+    0
+}
+"""
+expected_stdout = """42
+"""
+exit_code = 0
+
+[[case]]
+name = "array_repeat_zero_count_evaluates_value_control_flow"
+spec = ["7.1:39"]
+description = "A diverging repeat value expression diverges even when the count is 0 (RUE-531)"
+source = """
+fn main() -> i32 {
+    let a: [i32; 0] = [return 42; 0];
+    0
+}
+"""
+exit_code = 42
+
+[[case]]
 name = "array_repeat_non_copy_element_error"
 spec = ["7.1:38"]
 source = """

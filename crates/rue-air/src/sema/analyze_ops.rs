@@ -4564,6 +4564,28 @@ impl<'a> Sema<'a> {
             ty: array_type,
             span,
         });
+
+        // The value expression is evaluated exactly once even when the length
+        // is 0 (spec 7.1:39). With no element referencing it the evaluation
+        // would be orphaned — CFG lowering is demand-driven and only follows
+        // the ArrayInit's element refs — so `[produce(); 0]` never called
+        // produce and `[return 42; 0]` fell through (RUE-531). Anchor the
+        // evaluation as a Block statement ahead of the empty array value;
+        // Block lowering also handles a diverging value (`return`/`break`)
+        // correctly, marking the array construction unreachable.
+        if length == 0 {
+            let stmts_start = air.add_extra(&[value_result.air_ref.as_u32()]);
+            let block_ref = air.add_inst(AirInst {
+                data: AirInstData::Block {
+                    stmts_start,
+                    stmts_len: 1,
+                    value: air_ref,
+                },
+                ty: array_type,
+                span,
+            });
+            return Ok(AnalysisResult::new(block_ref, array_type));
+        }
         Ok(AnalysisResult::new(air_ref, array_type))
     }
 
