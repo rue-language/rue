@@ -2009,6 +2009,20 @@ fn main() -> i32 {
 exit_code = 42
 
 [[case]]
+name = "type_constructor_accepts_unit_type_argument"
+spec = ["4.14:22"]
+description = "The unit type () is a valid comptime type argument; the parameter's declared `type` kind disambiguates it from the unit value (RUE-565)"
+source = """
+fn Box(comptime T: type) -> type { struct { value: T } }
+fn main() -> i32 {
+    let C = Box(());
+    let c: C = C { value: () };
+    if c.value == () { 42 } else { 0 }
+}
+"""
+exit_code = 42
+
+[[case]]
 name = "type_constructor_in_annotation_position"
 spec = ["4.14:23"]
 description = "F(i32) used directly as a let type annotation (RUE-289, RUE-241)"

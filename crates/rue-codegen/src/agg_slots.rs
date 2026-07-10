@@ -133,7 +133,17 @@ pub fn get_or_compute_field_vregs<B: SlotBackend>(b: &mut B, value: CfgValue) ->
             ..
         } => {
             let fields = b.ctx().cfg.get_extra(fields_start, fields_len).to_vec();
-            Some(fields.iter().map(|f| b.get_vreg(*f)).collect())
+            // Zero-sized fields (unit, [T; 0]) occupy no slots (RUE-577):
+            // including their dummy vregs would shift every later field.
+            let mut vregs = Vec::with_capacity(fields.len());
+            for f in &fields {
+                let field_ty = b.ctx().cfg.get_inst(*f).ty;
+                if b.ctx().type_slot_count(field_ty) == 0 {
+                    continue;
+                }
+                vregs.push(b.get_vreg(*f));
+            }
+            Some(vregs)
         }
         CfgInstData::Load { slot } => {
             let slot_count = b.ctx().type_slot_count(ty);
@@ -290,6 +300,13 @@ pub fn lower_struct_init<B: SlotBackend>(
     let mut slot_vregs = Vec::new();
     for field in &fields {
         let field_ty = b.ctx().cfg.get_inst(*field).ty;
+        // A zero-sized field (unit, [T; 0], empty struct) occupies no slots
+        // (RUE-577): pushing the dummy vreg CFG carries for it would shift
+        // every later field one slot over — `Mixed { a: (), b: 42 }` stored
+        // 42 into the wrong slot.
+        if b.ctx().type_slot_count(field_ty) == 0 {
+            continue;
+        }
         match field_ty.kind() {
             TypeKind::Struct(_) | TypeKind::Enum(_) => {
                 // Struct/payload-enum field: contribute every slot. A
@@ -365,6 +382,13 @@ pub fn lower_enum_variant<B: SlotBackend>(
     let payload = b.ctx().cfg.get_extra(payload_start, payload_len).to_vec();
     for field in &payload {
         let field_ty = b.ctx().cfg.get_inst(*field).ty;
+        // Zero-sized payload fields occupy no slots (RUE-577): pushing their
+        // dummy vreg would overfill the payload area before padding —
+        // `Some(())` cached one slot too many and stores clobbered the
+        // neighboring frame slot.
+        if b.ctx().type_slot_count(field_ty) == 0 {
+            continue;
+        }
         match field_ty.kind() {
             TypeKind::Struct(_) | TypeKind::Enum(_) => {
                 if let Some(nested) = get_or_compute_field_vregs(b, *field) {
