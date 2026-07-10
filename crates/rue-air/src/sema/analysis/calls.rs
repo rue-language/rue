@@ -121,18 +121,29 @@ impl<'a> Sema<'a> {
         // `self`, or through an inout/borrow parameter), mirroring the by-ref
         // *argument* path (spec 6.4:25/6.4:29). For a builtin String mutation
         // method the receiver is always by-ref, so its root is the by-ref root
-        // (RUE-256). For a user-struct method, resolution needs the receiver
-        // type — peeked WITHOUT emitting AIR or recording a move, since a
-        // move-based analysis would hard-reject the read of any non-local
-        // place (E0437/E0429/E0904) before the by-ref intent is known — and the
-        // root is by-ref only when the method takes `self` by reference
-        // (RUE-254). Module receivers keep their existing post-analysis handling.
+        // (RUE-256). Registry-declared builtin ByRef queries need the same
+        // pre-analysis classification (RUE-584). For a user-struct method,
+        // resolution needs the receiver type — peeked WITHOUT emitting AIR or
+        // recording a move, since a move-based analysis would hard-reject the
+        // read of any non-local place (E0437/E0429/E0904) before the by-ref
+        // intent is known — and the root is by-ref only when the method takes
+        // `self` by reference (RUE-254). Module receivers keep their existing
+        // post-analysis handling.
         let receiver_byref_root = if is_builtin_mutation_method {
             receiver_var
         } else {
             receiver_var.and_then(|root| {
                 let ty = self.peek_place_type(receiver, ctx)?;
                 let struct_id = ty.as_struct()?;
+
+                let builtin_borrow_receiver = self
+                    .get_builtin_type_def(struct_id)
+                    .and_then(|def| def.find_method(&method_name_str))
+                    .is_some_and(|info| info.receiver_mode == rue_builtins::ReceiverMode::ByRef);
+                if builtin_borrow_receiver {
+                    return Some(root);
+                }
+
                 let info = self.methods.get(&(struct_id, method))?;
                 matches!(info.self_mode, RirParamMode::Inout | RirParamMode::Borrow).then_some(root)
             })

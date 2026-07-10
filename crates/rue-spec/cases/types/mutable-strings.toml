@@ -192,6 +192,32 @@ fn main() -> i32 {
 """
 exit_code = 0
 
+[[case]]
+name = "string_query_borrows_borrow_and_inout_rooted_places"
+spec = ["3.10:10", "3.10:13", "6.4:25", "6.4:29"]
+description = "A ByRef StrBuf query autoref-borrows borrow/inout-rooted places without consuming them (RUE-584)"
+source = """
+struct Parser { input: StrBuf }
+
+fn borrowed_length(borrow input: StrBuf) -> u64 {
+    input.len()
+}
+
+fn parser_length(inout parser: Parser) -> u64 {
+    parser.input.len()
+}
+
+fn main() -> i32 {
+    let input = "abc";
+    let first = borrowed_length(borrow input);
+    let mut parser = Parser { input: input };
+    let second = parser_length(inout parser);
+    let third = parser_length(inout parser);
+    @intCast(first + second + third)
+}
+"""
+exit_code = 9
+
 # =============================================================================
 # Mutation Methods (3.10:15 - 3.10:20)
 # =============================================================================
