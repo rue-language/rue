@@ -133,15 +133,19 @@ impl Sema<'_> {
             _ => None,
         };
 
-        // Try to find the enum in the referenced module. Fall back to the
-        // compatibility table for legacy/simple paths where the module
-        // expression is not a direct module binding.
-        let enum_id = module_file_id
-            .and_then(|file_id| self.enums_by_file_name.get(&(file_id, type_name)).copied())
-            .or_else(|| self.enums.get(&type_name).copied())
-            .ok_or_else(|| {
-                CompileError::new(ErrorKind::UnknownEnumType(type_name_str.to_string()), span)
-            })?;
+        // Find the enum in the referenced module. When the module's file is
+        // known, the member must be defined THERE (RUE-572): falling back to
+        // the global compatibility table let a same-named enum from an
+        // unrelated file satisfy the lookup (and its visibility check). The
+        // compatibility table serves only legacy/simple paths where the
+        // module expression is not a direct module binding.
+        let enum_id = match module_file_id {
+            Some(file_id) => self.enums_by_file_name.get(&(file_id, type_name)).copied(),
+            None => self.enums.get(&type_name).copied(),
+        }
+        .ok_or_else(|| {
+            CompileError::new(ErrorKind::UnknownEnumType(type_name_str.to_string()), span)
+        })?;
 
         // Check visibility
         let enum_def = self.type_pool.enum_def(enum_id);

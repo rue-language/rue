@@ -1903,39 +1903,18 @@ error_contains = ["E0707", "module `math` has no member `nosuch`"]
 
 # ---------------------------------------------------------------------------
 # RUE-239: top-level duplicate-name detection spans ALL item kinds
-# (fn/struct/enum/const share one name space, spec 10.3:1 + 10.5:1) and is
-# order-independent — legality no longer flips on definition order or CLI
-# file order. Reuses E0436 for cross-kind collisions; same-kind keeps its
-# existing code (E0405 types, E0418 constants).
+# (fn/struct/enum/const share one name space within a module, spec 10.3:1 +
+# 10.5:1) and is order-independent. The check is PER-FILE (RUE-572, spec
+# 10.5:2): same-named items in different loaded files are module-scoped and
+# legal, in any CLI order. Reuses E0436 for cross-kind collisions; same-kind
+# keeps its existing code (E0405 types, E0418 constants).
 # ---------------------------------------------------------------------------
 
-# const + fn, const listed first: previously compiled (accept-invalid); now
-# E0436 regardless of order.
+# const + fn with one name in DIFFERENT files: module-scoped, legal (RUE-572).
+# b.rue's unqualified call resolves to its own fn, whatever the CLI order.
 [[case]]
 name = "dup_const_fn_const_first"
-description = "RUE-239: const then fn with the same name is E0436 even when the const file is first."
-files = [
-    { path = "a.rue", source = """
-const shared: i32 = 5;
-""" },
-    { path = "b.rue", source = """
-pub fn shared() -> i32 {
-    100
-}
-
-fn main() -> i32 {
-    shared()
-}
-""" },
-]
-args = ["a.rue", "b.rue", "-o", "prog"]
-compile_fail = true
-error_contains = ["E0436", "shared"]
-
-# Same program, files in the other CLI order — still E0436 (was E0418 before).
-[[case]]
-name = "dup_const_fn_fn_first"
-description = "RUE-239: order-independent — swapping the CLI file order still yields E0436."
+description = "RUE-572: a const and a fn sharing a name in different files are module-scoped and coexist (const file listed first)."
 files = [
     { path = "a.rue", source = """
 const shared: i32 = 5;
@@ -1951,8 +1930,28 @@ fn main() -> i32 {
 """ },
 ]
 args = ["b.rue", "a.rue", "-o", "prog"]
-compile_fail = true
-error_contains = ["E0436", "shared"]
+exit_code = 100
+
+# Same program, files in the other CLI order — same result (order-independent).
+[[case]]
+name = "dup_const_fn_fn_first"
+description = "RUE-572: order-independent — swapping the CLI file order still compiles and resolves module-locally."
+files = [
+    { path = "a.rue", source = """
+const shared: i32 = 5;
+""" },
+    { path = "b.rue", source = """
+pub fn shared() -> i32 {
+    100
+}
+
+fn main() -> i32 {
+    shared()
+}
+""" },
+]
+args = ["b.rue", "a.rue", "-o", "prog"]
+exit_code = 100
 
 # fn + struct in ONE file: previously compiled (both coexisted); now E0436.
 [[case]]
@@ -1977,10 +1976,11 @@ fn main() -> i32 {
 compile_fail = true
 error_contains = ["E0436", "Thing"]
 
-# fn + struct across two files: same collision, cross-file.
+# fn + struct with one name in DIFFERENT files: module-scoped, legal
+# (RUE-572); the call resolves to main.rue's own fn.
 [[case]]
 name = "dup_fn_struct_cross_file"
-description = "RUE-239: a function and a struct with the same name collide (E0436) across files."
+description = "RUE-572: a function and a struct with the same name in different files are module-scoped and coexist."
 files = [
     { path = "main.rue", source = """
 fn Thing() -> i32 {
@@ -1998,8 +1998,7 @@ pub struct Thing {
 """ },
 ]
 args = ["main.rue", "other.rue", "-o", "prog"]
-compile_fail = true
-error_contains = ["E0436", "Thing"]
+exit_code = 5
 
 # enum + const: cross-namespace collision (type vs const) is E0436.
 [[case]]
@@ -2854,3 +2853,81 @@ fn main() -> i32 {
 """ },
 ]
 exit_code = 25
+
+[[case]]
+# RUE-572: cross-kind name collisions are per-FILE. A `const SHARED` in one
+# module and a `fn SHARED` in another are module-local items and must
+# coexist; the old global-table check falsely rejected them with E0436.
+name = "const_and_fn_same_name_in_different_modules_coexist"
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "ca.rue", source = "pub const SHARED: i32 = 5;\n" },
+  { path = "cb.rue", source = "pub fn SHARED() -> i32 { 37 }\n" },
+  { path = "main.rue", source = """
+const a = @import("ca.rue");
+const b = @import("cb.rue");
+
+fn main() -> i32 {
+    a.SHARED + b.SHARED()
+}
+""" },
+]
+exit_code = 42
+
+[[case]]
+# RUE-572 control: the same collision WITHIN one file is still an error.
+name = "const_and_fn_same_name_same_file_still_collide"
+files = [{ path = "main.rue", source = """
+const X: i32 = 1;
+fn X() -> i32 { 2 }
+fn main() -> i32 { 0 }
+""" }]
+compile_fail = true
+error_contains = ["E0436"]
+
+[[case]]
+# RUE-572: `m.CONST` in a const initializer carries the width of the member
+# in m's OWN file. A same-named, narrower constant in another module (u8
+# WIDTH in wa.rue) must not hijack the width check: b.WIDTH is i64 and its
+# arithmetic checks (and evaluates) at i64.
+name = "module_const_width_resolves_in_own_module"
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "wa.rue", source = "pub const WIDTH: u8 = 200;\n" },
+  { path = "wb.rue", source = "pub const WIDTH: i64 = 5000000000;\n" },
+  { path = "main.rue", source = """
+const a = @import("wa.rue");
+const b = @import("wb.rue");
+
+const FROM_B: i64 = b.WIDTH + 1;
+
+fn main() -> i32 {
+    if FROM_B == 5000000001 { 42 } else { 0 }
+}
+""" },
+]
+exit_code = 42
+
+[[case]]
+# RUE-572: naming an enum through a module that does NOT define it is an
+# error even when a same-named enum exists in another loaded module — no
+# global-table borrow.
+name = "enum_access_through_wrong_module_rejected"
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "ea.rue", source = """
+pub enum Color { Red, Blue }
+""" },
+  { path = "eb.rue", source = "pub fn other() -> i32 { 1 }\n" },
+  { path = "main.rue", source = """
+const a = @import("ea.rue");
+const b = @import("eb.rue");
+
+fn main() -> i32 {
+    let c = b.Color.Red;
+    0
+}
+""" },
+]
+compile_fail = true
+error_contains = ["no member `Color`"]
