@@ -314,10 +314,9 @@ impl<'a> Sema<'a> {
     /// Phase 0: Order-independent name-collision check across the function and
     /// type (struct/enum) name spaces (spec 10.3:1, 10.5:1, RUE-239).
     ///
-    /// Functions, structs, enums, and constants are all top-level items sharing
-    /// **one** name space, so any two of them with the same name collide —
-    /// regardless of their kinds, their order within a file, or the
-    /// command-line order of the files they come from. This pass over the
+    /// Functions, structs, enums, and constants are module-local top-level
+    /// items, except that `main` remains the program-global executable entry
+    /// point until root-module identity reaches Sema. This pass over the
     /// merged RIR is the order-independent source of truth for collisions among
     /// **functions, structs, and enums**; the previously order-dependent gap
     /// was a function colliding with a struct/enum, which was never checked.
@@ -364,12 +363,14 @@ impl<'a> Sema<'a> {
         }
 
         // Free functions duplicate-conflict only within their defining file
-        // (RUE-441). Types duplicate-conflict only within their defining file
-        // (RUE-454). Function/type cross-kind collisions are per-file too
-        // (RUE-572, spec 10.5:1/10.5:2): top-level names are module-scoped,
-        // so a fn in one file and a struct in another may share a name.
+        // (RUE-441), except for the program-global `main` entry point (RUE-582).
+        // Types and function/type cross-kind collisions are per-file too
+        // (RUE-454, RUE-572, spec 10.5:1/10.5:2): top-level names are
+        // module-scoped, so non-entry items in separate files may share a name.
+        let mut seen_function_names: HashMap<Spur, Span> = HashMap::new();
         let mut seen_functions_by_file: HashMap<(FileId, Spur), Span> = HashMap::new();
         let mut seen_types_by_file: HashMap<(FileId, Spur), Span> = HashMap::new();
+        let main_sym = self.interner.get("main");
         for (inst_ref, inst) in self.rir.iter() {
             match &inst.data {
                 InstData::StructDecl { name, .. } | InstData::EnumDecl { name, .. } => {
@@ -412,6 +413,18 @@ impl<'a> Sema<'a> {
                         )
                         .with_label("first defined here".to_string(), first_span));
                     }
+                    if Some(*name) == main_sym
+                        && let Some(first_span) = seen_function_names.get(name).copied()
+                    {
+                        return Err(CompileError::new(
+                            ErrorKind::DuplicateFunctionDefinition {
+                                function_name: "main".to_string(),
+                            },
+                            inst.span,
+                        )
+                        .with_label("first defined here".to_string(), first_span));
+                    }
+                    seen_function_names.entry(*name).or_insert(inst.span);
                     if let Some(first_span) =
                         seen_functions_by_file.insert((inst.span.file_id, *name), inst.span)
                     {
