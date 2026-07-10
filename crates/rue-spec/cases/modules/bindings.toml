@@ -409,7 +409,7 @@ exit_code = 42
 [[case]]
 name = "qualified_private_struct_literal_rejected"
 spec = ["10.4:18"]
-description = "A private struct named in a module-qualified struct literal from another directory is E0460 (resolves through the flat namespace)"
+description = "A private struct named in a module-qualified struct literal from another directory is E0706, uniform with every module-member privacy violation (RUE-525)"
 source = """
 const lib = @import("sub/lib");
 
@@ -423,7 +423,7 @@ struct Secret { n: i32, }
 pub fn touch() -> i32 { let s = Secret { n: 1 }; s.n }
 """ }
 compile_fail = true
-error_contains = ["E0460", "is private"]
+error_contains = ["E0706", "is private"]
 
 [[case]]
 name = "qualified_private_enum_variant_rejected"
@@ -445,15 +445,15 @@ compile_fail = true
 error_contains = ["E0706", "is private"]
 
 # =============================================================================
-# Associated-function privacy follows the enclosing type (10.4:19, RUE-330).
-# Calling an associated function of a private struct across a directory
-# boundary is E0460 — the same rule as naming that struct in a literal or
-# annotation — whether the call is unqualified or module-qualified.
+# Associated-function privacy follows the enclosing type (10.4:19, RUE-330,
+# RUE-525). Module-qualified access to a private type's associated function
+# is E0706; the unqualified spelling never resolves another file's type at
+# all (10.3:8), so it fails name resolution before privacy is considered.
 
 [[case]]
 name = "cross_dir_unqualified_private_assoc_fn_rejected"
-spec = ["10.4:19"]
-description = "An unqualified associated-function call on a private struct from another directory is E0460 (RUE-330)"
+spec = ["10.4:19", "10.3:8"]
+description = "An unqualified associated-function call on another file's struct does not resolve at all (RUE-525): name-resolution error, never a flat-namespace hit"
 source = """
 const lib = @import("sub/lib");
 
@@ -469,12 +469,12 @@ struct Secret {
 }
 """ }
 compile_fail = true
-error_contains = ["E0460", "struct `Secret` is private"]
+error_contains = ["E0201", "undefined variable 'Secret'"]
 
 [[case]]
 name = "cross_dir_qualified_private_assoc_fn_rejected"
-spec = ["10.4:19"]
-description = "A module-qualified associated-function call on a private struct from another directory is E0460 (resolves the type through the flat namespace, RUE-330)"
+spec = ["10.4:19", "10.4:18"]
+description = "A module-qualified associated-function call on a private struct from another directory is E0706, uniform with every module-member privacy violation (RUE-525)"
 source = """
 const lib = @import("sub/lib");
 
@@ -490,17 +490,17 @@ struct Secret {
 }
 """ }
 compile_fail = true
-error_contains = ["E0460", "struct `Secret` is private"]
+error_contains = ["E0706", "struct `Secret` is private"]
 
 [[case]]
 name = "cross_dir_pub_assoc_fn_allowed"
-spec = ["10.4:19"]
-description = "An associated-function call on a pub struct across directories is allowed"
+spec = ["10.4:19", "10.4:17"]
+description = "A module-qualified associated-function call on a pub struct across directories is allowed; the qualifier resolves the type in the named module"
 source = """
 const lib = @import("sub/lib");
 
 fn main() -> i32 {
-    let p = Point.origin();
+    let p = lib.Point.origin();
     p.x + p.y
 }
 """

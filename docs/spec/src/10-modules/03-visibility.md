@@ -59,28 +59,27 @@ fn main() -> i32 {
 
 {{ rule(id="10.3:7", cat="legality-rule") }}
 
-Visibility is uniform across every multi-file compilation: an item is
-visible outside its defining directory if and only if it is `pub`,
-whether its defining file was loaded via `@import` or, while the legacy
-flat multi-file mode still exists, only listed explicitly in the
-compilation. It is a compile-time error to reference a private item by
-its unqualified name from a source file in a different directory than the
-item's defining file (error E0460). This covers every form of
-unqualified reference: calling a private function, naming a private
-struct (in a type annotation, a signature, or a struct literal), naming
-a private enum (in a type annotation, a signature, a variant
-construction, or a match pattern), and reading a private constant —
-including from another constant's initializer.
+Visibility is uniform across every multi-file compilation and every item
+kind: an item is usable outside its defining directory if and only if it
+is `pub`, whether its defining file was loaded via `@import` or listed
+explicitly in the compilation. Access to a private item through a module
+binding from another directory is error E0706 (10.4:18) — this is the
+diagnostic for privacy violations, since cross-module references are
+spelled through module bindings. Where an implementation still accepts an
+unqualified reference that names a cross-directory item directly (legacy
+forms scheduled for removal with flat mode, ADR-0046), referencing a
+private item that way is error E0460.
 
 {{ rule(id="10.3:8", cat="normative") }}
 
-The legacy flat namespace (10.5:2) affects only *name resolution*: an
-unqualified reference may currently resolve to an item in any explicitly
-loaded source file without an import, but the visibility rules of this
-section apply regardless of how the item's file was loaded. A `pub` item
-in another directory is therefore usable unqualified without any import
-only through this transitional mode; new code should use `@import`, and
-RUE-434 tracks removing the unqualified cross-file fallback.
+Unqualified references resolve module-locally: a top-level name refers to
+an item of the referencing file (or a compiler builtin). A name defined
+only in other loaded files — imported or explicitly listed, `pub` or not,
+any directory — does not resolve unqualified; the reference is a
+name-resolution error (E0201 for variables/constants and enum type names
+in expressions, E0202 for functions, E0204 for types), never a silent
+resolution into another file. Cross-module access is spelled through a
+module binding (10.4:1).
 
 {{ rule(id="10.3:9", cat="example") }}
 
@@ -90,21 +89,17 @@ fn secret() -> i32 { 99 }       // private to sub/
 pub fn open() -> i32 { 7 }
 struct Hidden { n: i32, }       // private to sub/
 pub struct Shared { n: i32, }
-enum Mode { Fast, Slow, }       // private to sub/
-pub enum Level { Low, High, }
-const LIMIT: i32 = 8;           // private to sub/
 pub const MAX: i32 = 16;
 
-// main.rue — a different directory, relying on legacy flat mode (10.5:2)
+// main.rue — a different directory
+const lib = @import("sub/lib");
+
 fn main() -> i32 {
-    // secret()                  // error E0460: private to sub/lib.rue
-    // let h = Hidden { n: 1 };  // error E0460: private to sub/lib.rue
-    // let m = Mode.Fast;       // error E0460: private to sub/lib.rue
-    // let l = LIMIT;            // error E0460: private to sub/lib.rue
-    let s = Shared { n: MAX };   // OK: `Shared` and `MAX` are pub
-    match Level.High {          // OK: `Level` is pub
-        Level.Low => 0,
-        Level.High => open() + s.n,
-    }
+    // secret()                    // error E0202: does not resolve here (10.3:8)
+    // Shared { n: 1 };            // error E0204: pub, but still module-scoped
+    // lib.secret()                // error E0706: private to sub/ (10.4:18)
+    // lib.Hidden { n: 1 };        // error E0706: private to sub/
+    let s = lib.Shared { n: lib.MAX };  // OK: pub members through the binding
+    lib.open() + s.n                    // 7 + 16 = 23
 }
 ```

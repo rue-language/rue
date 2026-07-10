@@ -34,13 +34,12 @@ fn main() -> i32 {
 
 {{ rule(id="10.4:8", cat="normative") }}
 
-A top-level `const` module binding is scoped to the file that declares it.
-Two files **MAY** bind the same name — whether to the same module or to
-different modules — without conflict; references in each file resolve to
-that file's own binding. This is an exception to the shared flat namespace
-of rule 10.5:1, because every file writes its own imports. Declaring two
-module bindings with the same name in one file remains a compile-time error
-(E0418).
+A top-level `const` module binding is scoped to the file that declares it,
+like every other top-level name (10.5:2). Two files **MAY** bind the same
+name — whether to the same module or to different modules — without
+conflict; references in each file resolve to that file's own binding.
+Declaring two module bindings with the same name in one file remains a
+compile-time error (E0418).
 
 {{ rule(id="10.4:9", cat="example") }}
 
@@ -164,40 +163,36 @@ annotation, a field type, or a parameter or return type. In those positions,
 `m.Type(T)` applies a module-qualified type constructor. This is the preferred
 form for referring to standard-library types such as `std.option.Option(i64)`.
 
-{{ rule(id="10.4:17") }}
+{{ rule(id="10.4:17", cat="normative") }}
 
-Resolution of the tail path in the forms of 10.4:15 currently proceeds through
-the transitional flat namespace (10.5:2): the type, variant, or associated
-function is looked up by name across the whole compilation, and the leading
-module qualifier does **not** restrict the lookup to members of the named
-module. A program must not rely on the qualifier naming the module that defines
-the item; unlike functions and value constants (10.4:3, 10.4:12), which resolve
-as genuine module members, the qualifier is not yet load-bearing for these item
-kinds. This is a transitional artifact that will change when top-level names
-become module-scoped (10.5:2).
+The module qualifier is load-bearing for every item kind. In the forms of
+10.4:15 the type, variant, or associated function resolves as a member of
+the named module's file — exactly as functions and value constants do
+(10.4:3, 10.4:12). If the named module's file does not define the item,
+the reference is an unknown-member error even when another loaded file
+defines an item of that name; same-named types in distinct modules are
+distinct nominal types (10.5:2).
 
 {{ rule(id="10.4:18", cat="legality-rule") }}
 
-Privacy of module-qualified type and enum-variant access is uniform (10.3:7).
-Naming a private struct in a module-qualified struct literal from a source file
-in another directory is a compile-time error (E0460, the same error as the
-unqualified form, because the type resolves through the flat namespace).
-Naming a private enum's variant through a module from another directory is a
-compile-time error (E0706, because a variant path routes through
-module-member resolution).
+Privacy of module-qualified access is uniform across item kinds (10.3:7)
+and reports one diagnostic: accessing a private member through a module
+binding from a source file in another directory is a compile-time error
+E0706 — for a struct named in a qualified struct literal or type
+annotation, for an enum's variant, for an associated function's enclosing
+type, and for functions and constants alike.
 
 {{ rule(id="10.4:19", cat="legality-rule") }}
 
-An associated function's visibility follows the visibility of its enclosing type
-(10.3:7): calling an associated function of a private struct from a source file
-in another directory is a compile-time error (E0460), exactly as naming that
-struct in a struct literal or type annotation would be. This holds whether the
-call is written unqualified (`Point.origin()`) or module-qualified
-(`lib.Point.origin()`) — both resolve the receiver type through the flat
-namespace (10.5:2), so both report E0460 (RUE-330). A call whose receiver type
-arrives through a comptime binding rather than by naming the struct
-(`let P = lib.Point; P.origin()`) is exempt, matching every other reference
-that reaches a type through a binding.
+An associated function's visibility follows the visibility of its enclosing
+type (10.3:7). A module-qualified call on a private type from another
+directory (`lib.Secret.make()`) is a compile-time error E0706 (10.4:18).
+An unqualified call (`Secret.make()`) never reaches the visibility check
+from another file: the bare type name does not resolve outside its
+defining module (10.3:8), so the reference is a name-resolution error.
+Binding the type value first does not launder privacy: the binding
+(`let P = lib.Secret;`) is itself a module-member access and reports
+E0706 at the binding site.
 
 {{ rule(id="10.4:20", cat="example") }}
 

@@ -2,11 +2,11 @@
 id = "modules.composition"
 spec_chapter = "10.5"
 name = "Program Composition"
-description = "Cross-file name collisions among modules loaded through the root import graph (spec chapter 10.5)."
+description = "Module-scoped top-level names and extent of analysis (spec chapter 10.5)."
 
 [[case]]
 name = "same_named_functions_across_imported_files_ok"
-spec = ["10.5:1"]
+spec = ["10.5:2"]
 description = "Two loaded files may define the same top-level function name when each is accessed through its own module"
 source = """
 fn main() -> i32 {
@@ -20,7 +20,7 @@ exit_code = 1
 
 [[case]]
 name = "same_named_consts_across_imported_files_ok"
-spec = ["10.5:1"]
+spec = ["10.5:2"]
 description = "Top-level value constants may share a source name across imported files when accessed through their modules"
 source = """
 fn main() -> i32 {
@@ -37,3 +37,57 @@ pub const LIMIT: i32 = 2;
 pub fn go2() -> i32 { LIMIT }
 """ }
 exit_code = 1
+
+[[case]]
+name = "same_file_duplicate_function_error"
+spec = ["10.5:1"]
+description = "Two top-level items with one name in ONE file are a duplicate-definition error; the check is per-file"
+source = """
+fn shared() -> i32 { 1 }
+fn shared() -> i32 { 2 }
+fn main() -> i32 { shared() }
+"""
+compile_fail = true
+error_contains = "E0436"
+
+[[case]]
+name = "same_file_cross_kind_collision_error"
+spec = ["10.5:1"]
+description = "A const and a fn sharing one name in ONE file collide across kinds (E0436)"
+source = """
+const X: i32 = 1;
+fn X() -> i32 { 2 }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = "E0436"
+
+[[case]]
+name = "same_named_functions_qualified_calls_sum"
+spec = ["10.5:3"]
+description = "The 10.5:3 example: same-named functions in two modules, each call resolving in its own module"
+source = """
+fn main() -> i32 {
+    let a = @import("a");
+    let b = @import("b");
+    a.shared() + b.shared()
+}
+"""
+aux_files = { "a.rue" = "pub fn shared() -> i32 { 1 }", "b.rue" = "pub fn shared() -> i32 { 2 }" }
+exit_code = 3
+
+[[case]]
+name = "reachable_broken_imported_item_always_errors"
+spec = ["10.5:4"]
+description = "The guaranteed half of demand-driven analysis: an error in imported code the program reaches is always reported (the lazy half — unreferenced items possibly unanalyzed — is exercised by the real driver in CLI tests)"
+source = """
+fn main() -> i32 {
+    let m = @import("m");
+    m.broken()
+}
+"""
+aux_files = { "m.rue" = """
+pub fn broken() -> i32 { true }
+""" }
+compile_fail = true
+error_contains = "E0206"

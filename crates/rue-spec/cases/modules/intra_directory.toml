@@ -225,14 +225,14 @@ exit_code = 42
 # =============================================================================
 # Unqualified Cross-Directory Access (RUE-37, RUE-180)
 # =============================================================================
-# Privacy is uniform (10.3:7): a private function in a file in another
-# directory is rejected when called unqualified (E0460), whether that file
-# was imported. The flat namespace (10.5:2) only resolves names — pub items
-# remain callable without qualification (10.3:8).
+# Unqualified references resolve module-locally (10.3:8): a function of an
+# imported file — private OR pub, same directory or another — does not
+# resolve unqualified. Cross-module access is spelled through the module
+# binding; privacy through the binding is E0706 (10.3:7, 10.4:18).
 
 [[case]]
 name = "cross_dir_unqualified_private_fn_error"
-spec = ["10.3:7"]
+spec = ["10.3:8"]
 description = "Unqualified call to a private function of an imported module in another directory is rejected"
 source = """
 const utils = @import("subdir/utils");
@@ -251,7 +251,7 @@ error_contains = "undefined function 'internal_fn'"
 
 [[case]]
 name = "cross_dir_unqualified_pub_fn_rejected"
-spec = ["10.3:7", "10.3:8"]
+spec = ["10.3:8"]
 description = "Unqualified call to a pub function of an imported module is rejected; use module-qualified access"
 source = """
 const utils = @import("subdir/utils");
@@ -270,7 +270,7 @@ error_contains = "undefined function 'public_fn'"
 
 [[case]]
 name = "same_dir_unqualified_private_fn_rejected"
-spec = ["10.3:2", "10.3:7"]
+spec = ["10.3:2", "10.3:8"]
 description = "Unqualified call to a private function of an imported file in the SAME directory is rejected; use module-qualified access"
 source = """
 const utils = @import("utils");

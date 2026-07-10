@@ -1986,8 +1986,7 @@ impl<'a> ConstraintGenerator<'a> {
                         |l| matches!(l.ty, InferType::Concrete(t) if t == Type::COMPTIME_TYPE),
                     )
                     && (self
-                        .structs
-                        .get(&name)
+                        .struct_type_for(&name, span.file_id)
                         .and_then(|t| t.as_struct())
                         .is_some()
                         || self.enum_type_for(&name, span.file_id).is_some())
@@ -2420,6 +2419,22 @@ impl<'a> ConstraintGenerator<'a> {
     /// table. Mirrors sema's `resolve_enum_type_name`; without the
     /// comptime-alias lookup, generic-enum construction/matching inferred
     /// `<error>` and poisoned the surrounding constraints (RUE-6 phase 2).
+    /// Struct type for an unqualified name, module-local first (RUE-525).
+    /// The trailing global lookup covers builtins and stays as inference-side
+    /// permissiveness only — sema's module-local resolution is authoritative
+    /// and rejects cross-file unqualified references (E0204).
+    fn struct_type_for(&self, type_name: &Spur, file_id: FileId) -> Option<Type> {
+        self.comptime_local_types
+            .and_then(|aliases| aliases.get(type_name).copied())
+            .filter(|ty| ty.as_struct().is_some())
+            .or_else(|| {
+                self.structs_by_file_name
+                    .and_then(|structs| structs.get(&(file_id, *type_name)))
+                    .copied()
+            })
+            .or_else(|| self.structs.get(type_name).copied())
+    }
+
     fn enum_type_for(&self, type_name: &Spur, file_id: FileId) -> Option<Type> {
         self.comptime_local_types
             .and_then(|aliases| aliases.get(type_name).copied())
