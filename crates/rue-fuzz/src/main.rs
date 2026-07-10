@@ -218,8 +218,39 @@ pub fn run_fuzzer<T: FuzzTarget + ?Sized>(
     })
 }
 
+/// Parse the value of a numeric `--flag=<n>` option (RUE-568). Returns an error
+/// MESSAGE (not a coerced default) when the value is malformed, so the caller
+/// can reject it with a usage diagnostic. Silently coercing a typo to
+/// zero/default turned a mistyped budget into a green zero-work campaign, a
+/// `--print-interval=0` into a divide-by-zero abort, and a bad `--seed` into an
+/// unrelated fresh seed that broke replay. When `require_positive` is set, zero
+/// is also rejected (budgets and the print interval must make progress / never
+/// divide by zero); overflow past `u64::MAX` is a parse error like any other
+/// non-integer.
+fn parse_numeric_option(flag: &str, value: &str, require_positive: bool) -> Result<u64, String> {
+    match value.parse::<u64>() {
+        Ok(n) if !require_positive || n > 0 => Ok(n),
+        Ok(_) => Err(format!("{flag} must be a positive integer (got '{value}')")),
+        Err(_) => Err(format!("{flag} expects an integer (got '{value}')")),
+    }
+}
+
+/// [`parse_numeric_option`] wrapper for the argument loop: on a malformed value
+/// it prints the error and usage, then exits 1 (RUE-568).
+fn numeric_or_exit(prog: &str, flag: &str, value: &str, require_positive: bool) -> u64 {
+    match parse_numeric_option(flag, value, require_positive) {
+        Ok(n) => n,
+        Err(msg) => {
+            eprintln!("Error: {msg}");
+            print_usage(prog);
+            std::process::exit(1);
+        }
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    let prog = args[0].clone();
 
     if args.len() < 2 {
         print_usage(&args[0]);
@@ -249,21 +280,24 @@ fn main() {
             }
         } else if arg == "--mutate" {
             config.mutate = true;
-        } else if arg.starts_with("--max-time=") {
-            let secs: u64 = arg["--max-time=".len()..].parse().unwrap_or(0);
+        } else if let Some(val) = arg.strip_prefix("--max-time=") {
+            let secs = numeric_or_exit(&prog, "--max-time", val, true);
             config.max_time = Some(Duration::from_secs(secs));
-        } else if arg.starts_with("--max-runs=") {
-            let runs: u64 = arg["--max-runs=".len()..].parse().unwrap_or(0);
-            config.max_runs = Some(runs);
+        } else if let Some(val) = arg.strip_prefix("--max-runs=") {
+            config.max_runs = Some(numeric_or_exit(&prog, "--max-runs", val, true));
         } else if arg.starts_with("--crash-dir=") {
             config.crash_dir = Some(PathBuf::from(&arg["--crash-dir=".len()..]));
-        } else if arg.starts_with("--print-interval=") {
-            config.print_interval = arg["--print-interval=".len()..].parse().unwrap_or(1000);
-        } else if arg.starts_with("--per-input-timeout=") {
-            let secs: u64 = arg["--per-input-timeout=".len()..].parse().unwrap_or(5);
-            config.per_input_timeout = Duration::from_secs(secs.max(1));
-        } else if arg.starts_with("--seed=") {
-            config.seed = arg["--seed=".len()..].parse().ok();
+        } else if let Some(val) = arg.strip_prefix("--print-interval=") {
+            // Must be positive: the reporting loop does `runs % print_interval`.
+            config.print_interval = numeric_or_exit(&prog, "--print-interval", val, true);
+        } else if let Some(val) = arg.strip_prefix("--per-input-timeout=") {
+            let secs = numeric_or_exit(&prog, "--per-input-timeout", val, true);
+            config.per_input_timeout = Duration::from_secs(secs);
+        } else if let Some(val) = arg.strip_prefix("--seed=") {
+            // A malformed seed must be an error, never a silently-chosen fresh
+            // seed (which would break the requested replay). Zero is a valid
+            // seed, so this does not require positive.
+            config.seed = Some(numeric_or_exit(&prog, "--seed", val, false));
         } else if !arg.starts_with('-') {
             if target_name.is_none() {
                 target_name = Some(arg.clone());
@@ -407,4 +441,50 @@ fn find_spec_cases_dir() -> PathBuf {
     }
 
     PathBuf::from("crates/rue-spec/cases")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_numeric_option;
+
+    #[test]
+    fn valid_positive_values_parse() {
+        assert_eq!(parse_numeric_option("--max-runs", "42", true), Ok(42));
+        assert_eq!(parse_numeric_option("--max-time", "1", true), Ok(1));
+    }
+
+    #[test]
+    fn zero_is_a_valid_seed_but_not_a_valid_budget() {
+        // Seeds allow zero (require_positive = false); budgets/intervals do not.
+        assert_eq!(parse_numeric_option("--seed", "0", false), Ok(0));
+        assert!(parse_numeric_option("--print-interval", "0", true).is_err());
+        assert!(parse_numeric_option("--max-runs", "0", true).is_err());
+    }
+
+    #[test]
+    fn wrong_type_is_rejected_not_coerced() {
+        // The original bug: `typo` became 0/default instead of an error.
+        for flag in ["--max-time", "--max-runs", "--print-interval", "--seed"] {
+            let require_positive = flag != "--seed";
+            let err = parse_numeric_option(flag, "typo", require_positive)
+                .expect_err("malformed value must error");
+            assert!(err.contains(flag), "{err}");
+            assert!(err.contains("typo"), "{err}");
+        }
+    }
+
+    #[test]
+    fn negative_and_overflow_are_rejected() {
+        // `-1` is not a u64; a value past u64::MAX overflows the parse.
+        assert!(parse_numeric_option("--max-runs", "-1", true).is_err());
+        assert!(parse_numeric_option("--max-time", "99999999999999999999999", true).is_err());
+    }
+
+    #[test]
+    fn positive_flag_message_distinguishes_zero_from_non_integer() {
+        let zero = parse_numeric_option("--max-runs", "0", true).unwrap_err();
+        assert!(zero.contains("positive"), "{zero}");
+        let bad = parse_numeric_option("--max-runs", "x", true).unwrap_err();
+        assert!(bad.contains("integer"), "{bad}");
+    }
 }
