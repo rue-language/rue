@@ -52,6 +52,14 @@ filegroup(
 )
 
 filegroup(
+    name = "tutorial-snippet-tool-inputs",
+    srcs = [
+        "scripts/check-tutorial-snippets.py",
+        "test.sh",
+    ],
+)
+
+filegroup(
     name = "spec-docs",
     srcs = glob(["docs/spec/src/**"]),
 )
@@ -124,6 +132,16 @@ sh_test(
     ],
     env = {
         "RUE_BINARY": "$(exe_target //crates/rue:rue)",
+        "RUE_STD_PATH": "$(location :std)/std",
+    },
+)
+
+sh_test(
+    name = "tutorial-snippet-tool-tests",
+    test = "scripts/test-tutorial-snippets.py",
+    env = {
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "RUE_TUTORIAL_TEST_ROOT": "$(location :tutorial-snippet-tool-inputs)",
     },
 )
 

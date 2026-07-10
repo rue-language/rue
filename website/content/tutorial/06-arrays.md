@@ -79,7 +79,7 @@ fn main() -> i32 {
 
 Rue checks array bounds. A constant out-of-bounds index is rejected at compile time:
 
-```rue compile-fail
+```rue compile-fail E0902
 fn main() -> i32 {
     let arr = [1, 2, 3];
     println(@to_string(arr[10]));  // Error: index out of bounds

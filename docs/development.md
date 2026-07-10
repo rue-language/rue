@@ -117,9 +117,10 @@ Tutorial Rue fences are checked when their info string opts in:
   ```
   ```` compiles successfully.
 - ````markdown
-  ```rue compile-fail
+  ```rue compile-fail E0203
   ```
-  ```` must fail compilation, for intentionally invalid examples.
+  ```` must fail compilation with the named diagnostic code, for intentionally
+  invalid examples.
 - ````markdown
   ```rue skip
   ```

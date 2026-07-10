@@ -17,6 +17,14 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
+REPOSITORY_QUALITY_GATES=(
+    //:benchmark-tool-tests
+    //:tutorial-snippet-tool-tests
+    //:tutorial-snippet-tests
+    //:spec-traceability
+    //:adr-registry-validation
+)
+
 if [[ $# -eq 0 ]]; then
     echo "Running unit tests and spec/UI/CLI suites..."
     ./buck2 test //...
@@ -48,5 +56,5 @@ else
     ./buck2 run //crates/rue-cli-tests:rue-cli-tests -- --quiet "$@"
 
     echo "Running repository quality gates..."
-    ./buck2 test //:spec-traceability //:adr-registry-validation
+    ./buck2 test "${REPOSITORY_QUALITY_GATES[@]}"
 fi
