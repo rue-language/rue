@@ -504,6 +504,29 @@ fn main() -> i32 {
 """
 exit_code = 42
 
+[[case]]
+name = "inout_forward_in_one_branch_then_write_in_sibling"
+spec = ["6.1:18", "6.1:35"]
+description = "Forwarding an inout parameter in one branch does not poison a sibling branch's direct write (RUE-585)"
+source = """
+fn noop(inout x: i32) {}
+
+fn choose(inout x: i32) {
+    if x == 0 {
+        noop(inout x);
+    } else {
+        x = 7;
+    }
+}
+
+fn main() -> i32 {
+    let mut x = 1;
+    choose(inout x);
+    if x == 7 { 0 } else { 42 }
+}
+"""
+exit_code = 0
+
 # =============================================================================
 # Inout parameter errors
 # =============================================================================
