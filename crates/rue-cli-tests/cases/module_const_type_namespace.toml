@@ -1,0 +1,130 @@
+# A comptime type-constructor result bound to a module-level `const` must work
+# as a TYPE NAMESPACE — for associated-function calls (`C.zero()`) and struct
+# literals (`P { .. }`) — exactly like a local `let`-bound one and like a
+# module-`const`-bound ENUM (`R.Ok(..)`, which already worked). Before RUE-595
+# the struct side consulted only `comptime_type_vars` (local `let`) and the
+# named-struct tables, never `constants_by_file_name`, so a module-`const`
+# struct alias fell through: `C.zero()` was E0413 ("no method named 'zero' on
+# type 'type'") and `P { .. }` was E0204 ("unknown type 'P'"), even though the
+# TYPE-ANNOTATION form (`fn f() -> P`) resolved. `const AB = ArrayBuf(i32)` at
+# module scope — the natural way to alias a generic collection — was the real
+# casualty; the std docs only ever used `let`, so the suite never caught it.
+
+[section]
+id = "cli.module_const_type_namespace"
+name = "Module-const comptime type as a namespace"
+description = "`const C = Ctor(T)` resolves for assoc-fn calls and struct literals, matching local `let` and enum consts (RUE-595)."
+
+# --- Facet A: associated-function call through a module-level const ---
+
+[[case]]
+name = "module_const_assoc_fn"
+description = "`const C = Counter(i32); C.zero()` resolves the assoc fn (was E0413 before RUE-595)."
+files = [{ path = "main.rue", source = """
+fn Counter(comptime T: type) -> type {
+    struct {
+        n: T,
+        fn zero() -> Self { Self { n: 0 } }
+        fn bump(self) -> Self { Self { n: self.n + 1 } }
+    }
+}
+const C = Counter(i32);
+
+fn main() -> i32 {
+    let c = C.zero().bump().bump();
+    @dbg(c.n);   // 2
+    0
+}
+""" }]
+stdout = "2\n"
+
+# --- Facet B: struct literal through a module-level const ---
+
+[[case]]
+name = "module_const_struct_literal"
+description = "`const P = Point(i32); P { .. }` resolves the literal head (was E0204 before RUE-595)."
+files = [{ path = "main.rue", source = """
+fn Point(comptime T: type) -> type { struct { x: T, y: T } }
+const P = Point(i32);
+
+fn main() -> i32 {
+    let p: P = P { x: 3, y: 4 };
+    p.x + p.y   // 7
+}
+""" }]
+exit_code = 7
+
+# --- Both facets + the const type used in annotation position, one program ---
+
+[[case]]
+name = "module_const_annotation_and_construction"
+description = "The same module-const type drives a return annotation, a parameter type, an assoc fn, and a literal."
+files = [{ path = "main.rue", source = """
+fn Vec2(comptime T: type) -> type {
+    struct {
+        x: T,
+        y: T,
+        fn origin() -> Self { Self { x: 0, y: 0 } }
+        fn sum(borrow self) -> T { self.x + self.y }
+    }
+}
+const V = Vec2(i32);
+
+fn make() -> V { V { x: 20, y: 22 } }
+fn total(borrow v: V) -> i32 { v.sum() }
+
+fn main() -> i32 {
+    let o = V.origin();
+    @dbg(o.sum());       // 0
+    let m = make();
+    @dbg(total(borrow m));  // 42
+    0
+}
+""" }]
+stdout = "0\n42\n"
+
+# --- Cross-file: the realistic alias — const bound to an imported ctor ---
+
+[[case]]
+name = "module_const_alias_of_imported_ctor"
+description = "`const C = lib.Counter(i32)` aliasing an imported type constructor resolves for assoc-fn + literal."
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "lib.rue", source = """
+pub fn Counter(comptime T: type) -> type {
+    struct {
+        n: T,
+        fn start(v: T) -> Self { Self { n: v } }
+        fn get(borrow self) -> T { self.n }
+    }
+}
+""" },
+  { path = "main.rue", source = """
+const lib = @import("lib.rue");
+const C = lib.Counter(i32);
+
+fn main() -> i32 {
+    let a = C.start(40);       // assoc fn through the const alias
+    let b: C = C { n: 2 };     // literal through the const alias
+    @dbg(a.get() + b.get());   // 42
+    0
+}
+""" }]
+stdout = "42\n"
+
+# --- Guard: enum consts (which always worked) still resolve, so the struct
+#     fix keeps struct and enum namespaces uniform ---
+
+[[case]]
+name = "module_const_enum_still_resolves"
+description = "A module-const enum alias constructs and matches — unchanged by the struct-side fix (RUE-595 guard)."
+files = [{ path = "main.rue", source = """
+fn Result(comptime T: type, comptime E: type) -> type { enum { Ok(T), Err(E) } }
+const R = Result(i32, i32);
+
+fn main() -> i32 {
+    let r = R.Ok(42);
+    match r { R.Ok(v) => v, R.Err(e) => e }
+}
+""" }]
+exit_code = 42

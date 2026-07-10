@@ -35,12 +35,9 @@ impl<'a> Sema<'a> {
         // (`m.Type.assoc()`) is the supported form (ADR-0046).
         if let InstData::VarRef { name } = self.rir.get(receiver).data
             && !self.is_runtime_value_binding(name, ctx)
-            && (ctx.comptime_type_vars.contains_key(&name)
-                || self
-                    .structs_by_file_name
-                    .contains_key(&(ctx.current_file_id, name))
-                || self.resolve_builtin_struct_name(name).is_some()
-                || self.resolve_enum_type_name(name, ctx).is_some())
+            && (self.resolve_struct_type_name(name, ctx).is_some()
+                || self.resolve_enum_type_name(name, ctx).is_some()
+                || ctx.comptime_type_vars.contains_key(&name))
         {
             return self.analyze_assoc_fn_call(air, name, method, args_start, args_len, span, ctx);
         }
@@ -569,6 +566,28 @@ impl<'a> Sema<'a> {
         } else if let Some(&ty) = ctx.comptime_type_vars.get(&type_name) {
             privacy_exempt = true;
             // Extract struct ID from the comptime type
+            match ty.kind() {
+                TypeKind::Struct(id) => id,
+                _ => {
+                    return Err(CompileError::new(
+                        ErrorKind::TypeMismatch {
+                            expected: "struct type".to_string(),
+                            found: ty.safe_name_with_pool(Some(&self.type_pool)),
+                        },
+                        span,
+                    ));
+                }
+            }
+        } else if let Some(info) = self
+            .constants_by_file_name
+            .get(&(ctx.current_file_id, type_name))
+            && let ConstValue::Type(ty) = info.value
+        {
+            // Module-level `const C = Counter(i32); C.zero()` (RUE-595): the
+            // specialization arrived through a `const` binding, mirroring the
+            // comptime-type-variable branch above and the const arm of
+            // `resolve_enum_type_name` — so it is likewise privacy-exempt.
+            privacy_exempt = true;
             match ty.kind() {
                 TypeKind::Struct(id) => id,
                 _ => {

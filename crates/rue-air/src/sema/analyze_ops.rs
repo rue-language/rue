@@ -3390,6 +3390,27 @@ impl<'a> Sema<'a> {
                     ));
                 }
             }
+        } else if let Some(info) = self.constants_by_file_name.get(&(span.file_id, type_name))
+            && let ConstValue::Type(ty) = info.value
+        {
+            // Module-level `const P = Point(i32); P { .. }` (RUE-595): the
+            // specialization arrived through a `const` binding, mirroring the
+            // comptime-type-variable branch above — privacy-exempt for the same
+            // reason (the type value came from a binding, not by naming the
+            // struct). Without this arm the literal head was `UnknownType`
+            // (E0204) even though the annotation form (`fn f() -> P`) resolved.
+            match ty.kind() {
+                TypeKind::Struct(id) => id,
+                _ => {
+                    return Err(CompileError::new(
+                        ErrorKind::TypeMismatch {
+                            expected: "struct type".to_string(),
+                            found: ty.safe_name_with_pool(Some(&self.type_pool)),
+                        },
+                        span,
+                    ));
+                }
+            }
         } else {
             let struct_id = self
                 .structs_by_file_name
@@ -6341,6 +6362,40 @@ impl<'a> Sema<'a> {
             .get(&(ctx.current_file_id, type_name))
             .copied()
             .or_else(|| self.resolve_builtin_enum_name(type_name))
+            .map(|id| (id, false))
+    }
+
+    /// Resolve a `Type.assoc()` / `Type { .. }` struct type name that may be a
+    /// comptime type-variable binding (`let P = Point(i32)`) or a module-level
+    /// `const` binding (`const P = Point(i32)`), falling back to the named-struct
+    /// table and builtins. Returns `(struct_id, via_binding)`, or `None` if the
+    /// name is not a struct. `via_binding` is true when the struct arrived
+    /// through a `let`/`const` binding (an anonymous struct from a comptime type
+    /// function), so privacy does not apply — the exact mirror of
+    /// `resolve_enum_type_name` for the struct side (RUE-595). Without the
+    /// `constants_by_file_name` arm a module-`const`-bound struct type resolved
+    /// as a type namespace nowhere, so `const C = Counter(i32); C.zero()` failed
+    /// (E0413) and `const P = Point(i32); P { .. }` failed (E0204) while the
+    /// enum-bound and local-`let`-bound forms worked.
+    pub(crate) fn resolve_struct_type_name(
+        &self,
+        type_name: Spur,
+        ctx: &AnalysisContext,
+    ) -> Option<(crate::types::StructId, bool)> {
+        if let Some(&ty) = ctx.comptime_type_vars.get(&type_name) {
+            return ty.as_struct().map(|id| (id, true));
+        }
+        if let Some(info) = self
+            .constants_by_file_name
+            .get(&(ctx.current_file_id, type_name))
+            && let ConstValue::Type(ty) = info.value
+        {
+            return ty.as_struct().map(|id| (id, true));
+        }
+        self.structs_by_file_name
+            .get(&(ctx.current_file_id, type_name))
+            .copied()
+            .or_else(|| self.resolve_builtin_struct_name(type_name))
             .map(|id| (id, false))
     }
 
