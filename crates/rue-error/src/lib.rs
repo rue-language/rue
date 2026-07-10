@@ -328,6 +328,7 @@ impl ErrorCode {
     pub const PRIVATE_MEMBER_ACCESS: Self = Self(706);
     pub const UNKNOWN_MODULE_MEMBER: Self = Self(707);
     pub const AMBIGUOUS_MODULE: Self = Self(708);
+    pub const CANNOT_INFER_CAST_TARGET: Self = Self(709);
 
     // ========================================================================
     // Literal/operator errors (E0800-E0899)
@@ -1383,6 +1384,12 @@ pub enum ErrorKind {
     },
     #[error("intrinsic '@{name}' expects {expected}, found {found}", name = .0.name, expected = .0.expected, found = .0.found)]
     IntrinsicTypeMismatch(Box<IntrinsicTypeMismatchError>),
+    #[error(
+        "cannot infer the target type of '@{0}'; add a type annotation \
+         (e.g. `let n: i32 = @{0}(...)`) or use it where a specific integer \
+         type is expected"
+    )]
+    CannotInferCastTarget(String),
 
     // Module errors
     #[error("@import requires a string literal argument")]
@@ -1640,6 +1647,7 @@ impl ErrorKind {
             ErrorKind::UnknownIntrinsic(_) => ErrorCode::UNKNOWN_INTRINSIC,
             ErrorKind::IntrinsicWrongArgCount { .. } => ErrorCode::INTRINSIC_WRONG_ARG_COUNT,
             ErrorKind::IntrinsicTypeMismatch(_) => ErrorCode::INTRINSIC_TYPE_MISMATCH,
+            ErrorKind::CannotInferCastTarget(_) => ErrorCode::CANNOT_INFER_CAST_TARGET,
             ErrorKind::ImportRequiresStringLiteral => ErrorCode::IMPORT_REQUIRES_STRING_LITERAL,
             ErrorKind::ModuleNotFound { .. } => ErrorCode::MODULE_NOT_FOUND,
             ErrorKind::AmbiguousModule { .. } => ErrorCode::AMBIGUOUS_MODULE,

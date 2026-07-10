@@ -648,8 +648,15 @@ impl<'a> Sema<'a> {
         let target_ty = match ctx.resolved_types.get(&inst_ref).copied() {
             Some(ty) if ty.is_integer() => ty,
             Some(Type::ERROR) => {
-                // Error already reported during type inference
-                return Err(CompileError::new(ErrorKind::TypeAnnotationRequired, span));
+                // The target type variable decayed to `<error>` with no
+                // constraint to fix it (e.g. the result flows only into a
+                // type-polymorphic sink like `@dbg`). Report the actual problem
+                // — the cast target can't be inferred — not the array-specific
+                // "empty array" message this used to borrow (RUE-588).
+                return Err(CompileError::new(
+                    ErrorKind::CannotInferCastTarget(intrinsic_name.to_string()),
+                    span,
+                ));
             }
             Some(ty) => {
                 return Err(CompileError::new(
@@ -662,8 +669,11 @@ impl<'a> Sema<'a> {
                 ));
             }
             None => {
-                // Type inference couldn't determine the target type
-                return Err(CompileError::new(ErrorKind::TypeAnnotationRequired, span));
+                // Type inference couldn't determine the target type (RUE-588).
+                return Err(CompileError::new(
+                    ErrorKind::CannotInferCastTarget(intrinsic_name.to_string()),
+                    span,
+                ));
             }
         };
 
