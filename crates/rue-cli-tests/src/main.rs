@@ -212,6 +212,15 @@ const EXAMPLE_EXPECTATIONS: &[ExampleExpectation] = &[
         stdout: "5\n",
         stdin: None,
     },
+    // Integer matrix library (RUE-586 dogfood): exercises a @copy struct with a
+    // const-sized 2D array field + methods (the RUE-587 pattern). a * identity
+    // == a, so trace(a*id) == 1+5+9 == 15; identity trace == 3.
+    ExampleExpectation {
+        path: "matrix.rue",
+        exit_code: 15,
+        stdout: "15\n3\n",
+        stdin: None,
+    },
     ExampleExpectation {
         path: "power.rue",
         exit_code: 9,
@@ -246,6 +255,16 @@ const EXAMPLE_EXPECTATIONS: &[ExampleExpectation] = &[
         path: "std/arraybuf_demo.rue",
         exit_code: 119,
         stdout: "3\n20\n99\n30\n2\n-1\n119\n",
+        stdin: None,
+    },
+    // Binary min-heap over ArrayBuf (RUE-586 dogfood): heapsort pops a scramble
+    // in ascending order 1..9. Under examples/std/ (like arraybuf_demo) because
+    // it @imports("std"); the sanitizer's top-level examples/*.rue glob does not
+    // provide a std path.
+    ExampleExpectation {
+        path: "std/heap.rue",
+        exit_code: 9,
+        stdout: "1\n2\n3\n4\n5\n6\n7\n8\n9\n",
         stdin: None,
     },
     ExampleExpectation {
