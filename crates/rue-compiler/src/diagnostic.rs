@@ -176,6 +176,114 @@ impl<'a> RenderSource<'a> {
     }
 }
 
+/// Return the slice of `source` that becomes rendered line `line_no` (1-based).
+///
+/// Splits on LF, CR, and CRLF — each one line terminator (spec 2.3:1 / RUE-534)
+/// — mirroring how [`RenderSource`] builds the buffer whose lines annotate-
+/// snippets counts, so a rendered origin line maps back to the right original
+/// line even in CR/CRLF files. Returns `None` if `line_no` is out of range.
+fn nth_rendered_line(source: &str, line_no: usize) -> Option<&str> {
+    let bytes = source.as_bytes();
+    let mut start = 0;
+    let mut current = 1;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\n' | b'\r' => {
+                if current == line_no {
+                    return Some(&source[start..i]);
+                }
+                // CRLF is a single terminator: consume the trailing LF too.
+                if bytes[i] == b'\r' && bytes.get(i + 1) == Some(&b'\n') {
+                    i += 1;
+                }
+                i += 1;
+                start = i;
+                current += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    (current == line_no).then(|| &source[start..])
+}
+
+/// Map a tab-expanded display column back to the original-source character
+/// column on rendered line `line_no` (both 1-based).
+///
+/// [`RenderSource`] expands each `\t` to four spaces so the human caret aligns
+/// (RUE-362); as a side effect annotate-snippets derives the `--> path:line:col`
+/// origin coordinate from that widened buffer, pushing the reported column past
+/// the token (RUE-556). Only tabs change width (control chars map one glyph to
+/// one column), so walking the original line and charging four columns per tab
+/// recovers the coordinate JSON diagnostics and editors expect.
+fn original_col_for_expanded(source: &str, line_no: usize, expanded_col: usize) -> usize {
+    let Some(line) = nth_rendered_line(source, line_no) else {
+        return expanded_col;
+    };
+    let mut rendered_col = 1usize;
+    let mut orig_col = 1usize;
+    for ch in line.chars() {
+        if rendered_col >= expanded_col {
+            break;
+        }
+        rendered_col += if ch == '\t' { 4 } else { 1 };
+        orig_col += 1;
+    }
+    // If the caret sat exactly on a char start, `orig_col` names it. If it fell
+    // past the line's end (e.g. an EOF span), `orig_col` is the char after the
+    // last, which is the correct one-past-end column.
+    orig_col
+}
+
+/// Rewrite each `--> path:line:col` origin coordinate in `rendered` so its
+/// column is the ORIGINAL-source column rather than the tab-expanded one
+/// annotate-snippets derives (RUE-556). The caret/excerpt geometry — which
+/// legitimately uses the expanded buffer — is untouched.
+///
+/// `files` supplies the original source for each rendered path. Because only a
+/// tab widens the column, this is a no-op (and cheap early-out) for tab-free
+/// input. The path/line/col text is plain even under color, so the rewrite is
+/// a byte-exact `replacen` that preserves any surrounding ANSI styling.
+fn correct_origin_columns(rendered: String, files: &[(&str, &str)]) -> String {
+    if !files.iter().any(|(_, src)| src.contains('\t')) {
+        return rendered;
+    }
+    let mut out = String::with_capacity(rendered.len());
+    for line in rendered.split_inclusive('\n') {
+        out.push_str(&fix_origin_line(line, files).unwrap_or_else(|| line.to_string()));
+    }
+    out
+}
+
+/// Correct a single rendered line if it is a `--> path:line:col` origin whose
+/// column was inflated by tab expansion; otherwise return `None`.
+fn fix_origin_line(line: &str, files: &[(&str, &str)]) -> Option<String> {
+    for (path, source) in files {
+        let needle = format!("{path}:");
+        let Some(pos) = line.find(&needle) else {
+            continue;
+        };
+        // After "<path>:" the origin line is exactly "<line>:<col>" plus any
+        // line terminators. A stray path mention elsewhere fails to parse here
+        // (trailing text makes the column non-numeric), so it is left alone.
+        let after = line[pos + needle.len()..].trim_end_matches(['\n', '\r']);
+        let Some((line_str, col_str)) = after.split_once(':') else {
+            continue;
+        };
+        let (Ok(line_no), Ok(col)) = (line_str.parse::<usize>(), col_str.parse::<usize>()) else {
+            continue;
+        };
+        let new_col = original_col_for_expanded(source, line_no, col);
+        if new_col == col {
+            return None;
+        }
+        let old = format!("{path}:{line_no}:{col}");
+        let new = format!("{path}:{line_no}:{new_col}");
+        return Some(line.replacen(&old, &new, 1));
+    }
+    None
+}
+
 /// Source code information for diagnostic rendering.
 ///
 /// Contains the source text and file path needed for rendering annotated
@@ -456,7 +564,11 @@ impl<'a> DiagnosticFormatter<'a> {
             report = report.footer(Level::Help.title(help.as_ref()));
         }
 
-        format!("{}", self.renderer.render(report))
+        let rendered = format!("{}", self.renderer.render(report));
+        correct_origin_columns(
+            rendered,
+            &[(self.source_info.path, self.source_info.source)],
+        )
     }
 }
 
@@ -801,7 +913,12 @@ impl<'a> MultiFileFormatter<'a> {
             report = report.footer(Level::Help.title(help.as_ref()));
         }
 
-        format!("{}", self.renderer.render(report))
+        let rendered = format!("{}", self.renderer.render(report));
+        let files: Vec<(&str, &str)> = render_sources
+            .iter()
+            .map(|(_, source_info, _)| (source_info.path, source_info.source))
+            .collect();
+        correct_origin_columns(rendered, &files)
     }
 }
 
@@ -1396,6 +1513,83 @@ mod tests {
             "caret should stay under `nope` after expanding the leading tab:\n{}",
             output
         );
+    }
+
+    #[test]
+    fn test_tab_origin_column_matches_original_source_not_expanded() {
+        // RUE-556: the `--> path:line:col` origin must name the ORIGINAL-source
+        // column (the tab is one character), matching JSON diagnostics and what
+        // editors expect — even though the caret uses the tab-expanded excerpt.
+        let source = "fn main() -> i32 {\n\treturn nope;\n}";
+        let source_info = SourceInfo::new(source, "test.rue");
+        let formatter = DiagnosticFormatter::with_color_choice(&source_info, ColorChoice::Never);
+
+        let start = source.find("nope").unwrap() as u32;
+        let error = CompileError::new(
+            ErrorKind::UndefinedVariable("nope".to_string()),
+            Span::new(start, start + 4),
+        );
+        let output = formatter.format_error(&error);
+
+        // `\t` + "return " = 7 chars before `nope` -> column 9 in the original.
+        assert_eq!(
+            crate::Span::new(start, start + 4).line_number(source),
+            2,
+            "sanity: span is on line 2"
+        );
+        assert!(
+            output.contains("--> test.rue:2:9"),
+            "origin should report the original-source column 9, not the \
+             tab-expanded 12:\n{}",
+            output
+        );
+        assert!(
+            !output.contains("--> test.rue:2:12"),
+            "origin must not report the tab-expanded column:\n{}",
+            output
+        );
+        // Caret alignment is still driven by the expanded excerpt.
+        assert!(
+            output.contains("  |            ^^^^"),
+            "caret must remain under `nope`:\n{}",
+            output
+        );
+    }
+
+    #[test]
+    fn test_space_indent_origin_column_is_unchanged() {
+        // The correction must be a no-op when there are no tabs: spaces are real
+        // characters, so the origin column already equals the original column.
+        let source = "fn main() -> i32 {\n    return nope;\n}";
+        let source_info = SourceInfo::new(source, "test.rue");
+        let formatter = DiagnosticFormatter::with_color_choice(&source_info, ColorChoice::Never);
+
+        let start = source.find("nope").unwrap() as u32;
+        let error = CompileError::new(
+            ErrorKind::UndefinedVariable("nope".to_string()),
+            Span::new(start, start + 4),
+        );
+        let output = formatter.format_error(&error);
+
+        // Four spaces + "return " = 11 chars before `nope` -> column 12.
+        assert!(
+            output.contains("--> test.rue:2:12"),
+            "space-indented origin column should be untouched:\n{}",
+            output
+        );
+    }
+
+    #[test]
+    fn test_original_col_for_expanded_maps_tab_columns() {
+        // Unit-level check of the inverse mapping: `\treturn nope;`, the token
+        // `nope` sits at expanded column 12 but original column 9.
+        let source = "fn main() {\n\treturn nope;\n}";
+        assert_eq!(original_col_for_expanded(source, 2, 12), 9);
+        // Two leading tabs: expanded column 16 -> original column 10.
+        let two = "fn main() {\n\t\treturn nope;\n}";
+        assert_eq!(original_col_for_expanded(two, 2, 16), 10);
+        // A column before the first tab is unchanged.
+        assert_eq!(original_col_for_expanded(source, 1, 4), 4);
     }
 
     #[test]
