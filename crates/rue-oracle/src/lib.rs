@@ -67,6 +67,7 @@ use rue_compiler::{
     CompileErrors, CompileState, PreviewFeatures, compile_to_cfg,
     compile_to_cfg_with_preview_features,
 };
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt;
 
@@ -81,6 +82,15 @@ pub struct Outcome {
     /// `None` on normal completion. The reason mirrors the runtime's category.
     pub panic: Option<String>,
 }
+
+/// Maximum number of raw bytes accepted from a program's `@dbg` output.
+///
+/// Both the interpreter and the native differential runner use this shared
+/// limit so neither side can exhaust harness memory through retained stdout or
+/// reject output that the other side accepts. Output at or below the limit
+/// remains exact; crossing it is surfaced explicitly and never accepted by
+/// comparing a truncated prefix.
+pub const MAX_STDOUT_BYTES: usize = 256 * 1024;
 
 /// A construct the interpreter does not yet model (see the coverage note). This
 /// is *not* a program error — it means the oracle cannot judge this program yet.
@@ -161,6 +171,14 @@ fn run_state(state: CompileState) -> Result<Outcome, Unsupported> {
 }
 
 fn run_state_with_budget(state: CompileState, budget: u64) -> Result<Outcome, Unsupported> {
+    run_state_with_limits(state, budget, MAX_STDOUT_BYTES)
+}
+
+fn run_state_with_limits(
+    state: CompileState,
+    budget: u64,
+    stdout_cap: usize,
+) -> Result<Outcome, Unsupported> {
     // Interpret on a dedicated large-stack worker thread. The tree-walking
     // interpreter recurses per expression *and* per call, so deep-but-valid
     // programs need far more stack than a default thread provides. Running on
@@ -175,6 +193,8 @@ fn run_state_with_budget(state: CompileState, budget: u64) -> Result<Outcome, Un
                 Interp {
                     state: &state,
                     stdout: String::new(),
+                    stdout_bytes: 0,
+                    stdout_cap,
                     budget,
                     depth: 0,
                 }
@@ -300,6 +320,10 @@ impl From<Unsupported> for Flow {
 struct Interp<'a> {
     state: &'a CompileState,
     stdout: String,
+    /// Raw emitted byte count. `stdout.len()` can be larger because invalid
+    /// UTF-8 bytes render as the three-byte replacement character.
+    stdout_bytes: usize,
+    stdout_cap: usize,
     /// Remaining total step budget (see [`STEP_BUDGET`]). Shared across every
     /// activation and decremented per instruction, so it bounds total work
     /// including recursion, not just per-frame loops.
@@ -355,6 +379,41 @@ impl<'a> Interp<'a> {
         } else {
             false
         }
+    }
+
+    fn write_dbg(&mut self, val: &Value, ty: Type) -> Step<()> {
+        let remaining = self.stdout_cap.saturating_sub(self.stdout_bytes);
+
+        // Formatting a String normally clones its complete contents. Reject an
+        // oversized value before formatting so the output limit also bounds
+        // that temporary allocation.
+        if let Value::Str { bytes, .. } = val
+            && bytes.len() >= remaining
+        {
+            return Err(Flow::Unsupported(Unsupported(format!(
+                "stdout byte limit exceeded ({}-byte limit)",
+                self.stdout_cap
+            ))));
+        }
+
+        let formatted = format_dbg(val, ty)?;
+        let emitted_len = match val {
+            Value::Str { bytes, .. } => bytes.len(),
+            _ => formatted.len(),
+        };
+        // Reserve one byte for the newline emitted by this `@dbg` call. Using
+        // the comparison form avoids overflowing while computing `len + 1`.
+        if emitted_len >= remaining {
+            return Err(Flow::Unsupported(Unsupported(format!(
+                "stdout byte limit exceeded ({}-byte limit)",
+                self.stdout_cap
+            ))));
+        }
+
+        self.stdout.push_str(&formatted);
+        self.stdout.push('\n');
+        self.stdout_bytes += emitted_len + 1;
+        Ok(())
     }
 
     fn run(mut self) -> Result<Outcome, Unsupported> {
@@ -1071,8 +1130,7 @@ impl<'a> Interp<'a> {
                     .ok_or_else(|| Flow::Unsupported(Unsupported("@dbg arity".into())))?;
                 let arg_ty = cfg.get_inst(arg).ty;
                 let val = self.eval(cfg, frame, arg)?;
-                self.stdout.push_str(&format_dbg(&val, arg_ty)?);
-                self.stdout.push('\n');
+                self.write_dbg(&val, arg_ty)?;
                 Value::Unit
             }
 
@@ -1549,19 +1607,19 @@ fn from_bits(bits_val: u128, bits: u32, signed: bool) -> i128 {
 
 /// Format a value exactly as the `@dbg` runtime intrinsic prints it (decimal for
 /// integers respecting signedness, `true`/`false` for bool), sans the newline.
-fn format_dbg(val: &Value, ty: Type) -> Result<String, Flow> {
+fn format_dbg(val: &Value, ty: Type) -> Result<Cow<'_, str>, Flow> {
     // `@dbg` of a String prints its content (matches __rue_dbg_str).
     if let Value::Str { bytes, .. } = val {
-        return Ok(String::from_utf8_lossy(bytes).into_owned());
+        return Ok(String::from_utf8_lossy(bytes));
     }
     Ok(match ty.kind() {
-        TypeKind::Bool => val.as_bool().to_string(),
-        k if kind_signed(k) => val.as_int().to_string(),
+        TypeKind::Bool => Cow::Owned(val.as_bool().to_string()),
+        k if kind_signed(k) => Cow::Owned(val.as_int().to_string()),
         TypeKind::U8 | TypeKind::U16 | TypeKind::U32 | TypeKind::U64 => {
             let (lo, hi) = int_bounds(ty).unwrap();
             let n = val.as_int();
             let _ = (lo, hi);
-            (n as u128).to_string()
+            Cow::Owned((n as u128).to_string())
         }
         other => {
             return Err(Flow::Unsupported(Unsupported(format!(
