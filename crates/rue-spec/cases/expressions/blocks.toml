@@ -96,3 +96,20 @@ fn main() -> i32 {
 }
 """
 exit_code = 6
+
+[[case]]
+name = "block_local_binding_not_visible_after_block"
+spec = ["4.5:4"]
+description = "A block-local binding — even one redeclared several times in the block — is gone after the block ends (RUE-522: forward scope unwinding leaked the first inner binding)"
+source = """
+fn main() -> i32 {
+    {
+        let d = 5;
+        let d = 6;
+        d;
+    }
+    d
+}
+"""
+compile_fail = true
+error_contains = ["[E0201]", "undefined variable"]

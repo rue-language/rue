@@ -694,3 +694,28 @@ fn main() -> i32 {
 """ }]
 compile_fail = true
 error_contains = ["E0456", "cannot move field `leaf` out of a value of type 'Mid'"]
+
+[[case]]
+# RUE-522: block shadowing must not corrupt name-keyed move state. This is the
+# legal-shadowing control with pinned drop output: the inner shadow drops once
+# at its block's end, the outer binding once at function exit — a scope-state
+# regression that double-drops (or leaks) either binding changes this stdout.
+name = "block_shadow_drops_each_binding_exactly_once"
+files = [{ path = "main.rue", source = """
+struct D { value: i32 }
+drop fn D(self) { @dbg(self.value); }
+
+fn main() -> i32 {
+    let d = D { value: 1 };
+    {
+        let d = D { value: 2 };
+        d.value;
+    }
+    d.value;
+    0
+}
+""" }]
+stdout = """2
+1
+"""
+exit_code = 0

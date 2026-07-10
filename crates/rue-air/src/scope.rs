@@ -68,9 +68,15 @@ pub trait ScopedContext {
     /// When a scope is popped:
     /// - Variables that were introduced in this scope are removed
     /// - Variables that were shadowed are restored to their previous values
+    ///
+    /// Entries unwind in REVERSE declaration order: a name (re)declared
+    /// several times in one scope (`{ let d = 5; let d = 6; }`) has one entry
+    /// per declaration, and only reverse iteration lands on the state from
+    /// BEFORE the scope — forward iteration ended on the first inner binding,
+    /// leaking it past its block (RUE-522).
     fn pop_scope(&mut self) {
         if let Some(scope_entries) = self.scope_stack_mut().pop() {
-            for (symbol, old_value) in scope_entries {
+            for (symbol, old_value) in scope_entries.into_iter().rev() {
                 match old_value {
                     Some(old_var) => {
                         // Restore the shadowed variable

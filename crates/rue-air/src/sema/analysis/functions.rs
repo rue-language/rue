@@ -405,6 +405,7 @@ impl<'a> Sema<'a> {
             used_locals: HashSet::new(),
             return_type,
             scope_stack: Vec::new(),
+            moved_scope_stack: Vec::new(),
             resolved_types: &resolved_types,
             moved_vars: HashMap::new(),
             warnings: Vec::new(),

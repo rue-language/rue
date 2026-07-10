@@ -647,7 +647,7 @@ impl<'a> Sema<'a> {
 
     /// Reject recording a MOVE of `root` while an enclosing call's argument
     /// list holds an `inout`/`borrow` loan of the same root (law of
-    /// exclusivity, spec 6.1:31, RUE-523).
+    /// exclusivity, spec 6.1:36, RUE-523).
     ///
     /// The loan spans the entire call, so a by-value use of the loaned
     /// variable in the same argument list — in either order, directly

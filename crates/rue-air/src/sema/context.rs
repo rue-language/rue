@@ -359,6 +359,15 @@ pub(crate) struct AnalysisContext<'a> {
     /// Each entry is a list of (symbol, old_value) pairs for variables added/shadowed in that scope.
     /// When a scope is popped, we restore old values (for shadowed vars) or remove new vars.
     pub scope_stack: Vec<Vec<(Spur, Option<LocalVar>)>>,
+    /// Per-scope saved MOVE states, parallel to `scope_stack`: each frame
+    /// holds one (symbol, shadowed binding's move state) entry per
+    /// `insert_local` in that scope. `moved_vars` is keyed by NAME, so a
+    /// shadowing declaration must save the outer binding's state here and
+    /// `pop_scope` must restore it — otherwise a moved outer binding is
+    /// resurrected by a same-named inner `let`/match binding (double
+    /// destruction) or a move of the inner shadow outlives its block and
+    /// poisons the outer binding with a false E0205 (RUE-522).
+    pub moved_scope_stack: Vec<Vec<(Spur, Option<VariableMoveState>)>>,
     /// Resolved types from HM inference.
     /// Maps RIR instruction refs to their resolved concrete types.
     /// This is populated by running constraint generation and unification
@@ -468,17 +477,60 @@ impl ScopedContext for AnalysisContext<'_> {
 
     /// Insert a local variable, tracking it in the current scope for later cleanup.
     ///
-    /// This override also clears any moved state for the variable, which handles
-    /// shadowing: `let x = moved_val; let x = new_val;`
-    /// The new `x` is a fresh binding and shouldn't carry the old moved state.
+    /// This override also handles the variable's MOVE state. A (re)declaration
+    /// is a fresh binding, so it starts with no moves — but the shadowed
+    /// binding's move state is SAVED in the current scope's move frame and
+    /// restored by `pop_scope`, because `moved_vars` is keyed by name, not
+    /// binding identity (RUE-522). Clearing it outright resurrected an
+    /// already-moved outer binding once the shadow's block ended (double
+    /// destruction); conversely, without the restore, a move of the inner
+    /// shadow outlived its block and poisoned the live outer binding (false
+    /// E0205). Applies to every scoped binding form that reaches
+    /// `insert_local`: nested `let`, `match` payload bindings, loop binders.
     fn insert_local(&mut self, symbol: Spur, var: LocalVar) {
         let old_value = self.locals.insert(symbol, var);
         // Track in the current scope (if any) for cleanup on pop
         if let Some(current_scope) = self.scope_stack.last_mut() {
             current_scope.push((symbol, old_value));
         }
-        // When a variable is (re)declared, clear any moved state for it.
-        self.moved_vars.remove(&symbol);
+        let old_moves = self.moved_vars.remove(&symbol);
+        if let Some(move_frame) = self.moved_scope_stack.last_mut() {
+            move_frame.push((symbol, old_moves));
+        }
+    }
+
+    fn push_scope(&mut self) {
+        self.scope_stack.push(Vec::with_capacity(2));
+        self.moved_scope_stack.push(Vec::new());
+    }
+
+    fn pop_scope(&mut self) {
+        // Mirrors the trait default for locals (reverse order — see the trait
+        // doc), plus the RUE-522 move-state restore from the parallel frame.
+        if let Some(scope_entries) = self.scope_stack.pop() {
+            for (symbol, old_value) in scope_entries.into_iter().rev() {
+                match old_value {
+                    Some(old_var) => {
+                        self.locals.insert(symbol, old_var);
+                    }
+                    None => {
+                        self.locals.remove(&symbol);
+                    }
+                }
+            }
+        }
+        if let Some(move_frame) = self.moved_scope_stack.pop() {
+            for (symbol, old_moves) in move_frame.into_iter().rev() {
+                match old_moves {
+                    Some(state) => {
+                        self.moved_vars.insert(symbol, state);
+                    }
+                    None => {
+                        self.moved_vars.remove(&symbol);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -509,6 +561,7 @@ impl<'a> AnalysisContext<'a> {
             used_locals: self.used_locals.clone(),
             return_type: self.return_type,
             scope_stack: self.scope_stack.clone(),
+            moved_scope_stack: self.moved_scope_stack.clone(),
             resolved_types: self.resolved_types,
             moved_vars: self.moved_vars.clone(),
             warnings: Vec::new(),
