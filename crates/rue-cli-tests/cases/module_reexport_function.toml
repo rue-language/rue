@@ -1,0 +1,63 @@
+[section]
+id = "cli.module_reexport_function"
+name = "Re-exported function member through a facade (ADR-0026, RUE-592)"
+description = """
+ADR-0026's directory-facade re-export idiom — `pub const f = @import("x").f;`
+accessed as `facade.f()` — was broken for FUNCTION members (E0707: no member),
+though whole-module and value-const re-exports worked. The module-member call
+resolver now falls back to a facade's function-valued constants and resolves the
+call to the underlying function. Privacy is preserved: a non-`pub` re-export is
+rejected across directories.
+"""
+
+[[case]]
+name = "reexported_function_member_is_callable"
+description = "`pub const value = @import(...).value;` is callable as `f.value()`."
+files = [
+    { path = "main.rue", source = """
+const f = @import("facade.rue");
+fn main() -> i32 { f.value() }
+""" },
+    { path = "facade.rue", source = """
+pub const value = @import("helper.rue").value;
+""" },
+    { path = "helper.rue", source = """
+pub fn value() -> i32 { 42 }
+""" },
+]
+exit_code = 42
+
+[[case]]
+name = "reexported_function_passes_arguments"
+description = "A re-exported function called through the facade forwards its arguments."
+files = [
+    { path = "main.rue", source = """
+const m = @import("facade.rue");
+fn main() -> i32 { m.add(30, 12) }
+""" },
+    { path = "facade.rue", source = """
+pub const add = @import("math.rue").add;
+""" },
+    { path = "math.rue", source = """
+pub fn add(a: i32, b: i32) -> i32 { a + b }
+""" },
+]
+exit_code = 42
+
+[[case]]
+name = "non_pub_reexport_is_private_across_dirs"
+description = "A non-`pub` re-export const is rejected (E0706) from another directory."
+compile_fail = true
+error_contains = ["E0706", "private"]
+files = [
+    { path = "main.rue", source = """
+const lib = @import("lib");
+fn main() -> i32 { lib.secret() }
+""" },
+    { path = "lib/_lib.rue", source = """
+const secret = @import("impl.rue").secret;
+""" },
+    { path = "lib/impl.rue", source = """
+pub fn secret() -> i32 { 99 }
+""" },
+]

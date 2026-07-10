@@ -1108,12 +1108,14 @@ fn check_module_member_call(
     param_modes: &[RirParamMode],
     args: &[RirCallArg],
     accessible: bool,
+    via_reexport: bool,
     span: Span,
 ) -> CompileResult<()> {
-    // Check membership: the function must be defined in the module's file.
-    // (Canonical FileId equality, mirroring the struct/enum/const member-access
-    // checks in analyze_module_type_member_access.)
-    if module_file_id != Some(member_file_id) {
+    // Check membership: the function must be defined in the module's file
+    // (canonical FileId equality) — UNLESS the call resolved through a
+    // re-export const in the facade, whose presence is the membership grant
+    // (`pub const f = @import("x").f;`, ADR-0026, RUE-592).
+    if !via_reexport && module_file_id != Some(member_file_id) {
         return Err(CompileError::new(
             ErrorKind::UnknownModuleMember {
                 module_name: module_name.to_string(),
