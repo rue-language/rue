@@ -20,6 +20,10 @@ scripts/rue test
 The wrappers bootstrap Buck2 and a hermetic Rust toolchain. macOS also requires
 Xcode Command Line Tools for linking Rue executables.
 
+For IDE support, rust-analyzer reads the checked-in `rust-project.json` (Rue has
+no Cargo workspace). Regenerate it with `./gen-rust-project.sh` when crates or
+dependencies change — see [docs/development.md](docs/development.md#editor--ide-support).
+
 ## Before submitting a change
 
 ```bash
