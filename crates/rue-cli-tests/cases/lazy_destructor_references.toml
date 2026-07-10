@@ -1,0 +1,40 @@
+# Named destructors are implicit roots of demand-driven analysis because drop
+# glue can call them without a source-level call expression. Their own callees
+# must join the same transitive analysis frontier (RUE-581).
+
+[section]
+id = "cli.lazy_destructor_references"
+name = "Destructor reference discovery"
+description = "Calls made by named destructors pull their targets into demand-driven analysis."
+
+[[case]]
+name = "destructor_enqueues_helper_and_method"
+files = [
+    { path = "main.rue", source = """
+const lib = @import("lib.rue");
+
+fn main() -> i32 {
+    let _value = lib.make();
+    0
+}
+""" },
+    { path = "lib.rue", source = """
+pub struct D { value: i32 }
+
+struct Reporter {
+    value: i32,
+    fn emit(self) { @dbg(self.value); }
+}
+
+fn report(value: i32) { @dbg(value); }
+
+drop fn D(self) {
+    report(self.value);
+    Reporter { value: self.value + 1 }.emit();
+}
+
+pub fn make() -> D { D { value: 42 } }
+""" },
+]
+stdout = "42\n43\n"
+exit_code = 0
