@@ -43,6 +43,8 @@ enum Compiled {
     Ran {
         exit: i32,
         stdout: String,
+        /// More stdout existed beyond [`STDOUT_CAP`]; `stdout` is only a prefix.
+        stdout_truncated: bool,
         stderr: String,
     },
     /// The binary was killed by a signal (e.g. SIGSEGV) — a hard miscompile.
@@ -389,8 +391,18 @@ fn classify(oracle: &rue_oracle::Outcome, compiled: &Compiled) -> Verdict {
         Compiled::Ran {
             exit,
             stdout,
+            stdout_truncated,
             stderr,
         } => {
+            // A retained prefix can equal the oracle's complete output while
+            // hiding additional compiled output. Fail before comparing that
+            // prefix so truncation can never manufacture agreement.
+            if *stdout_truncated {
+                return Verdict::Disagree(format!(
+                    "compiled stdout exceeded the {STDOUT_CAP}-byte capture limit; \
+                     retained prefix cannot prove agreement"
+                ));
+            }
             let exit_ok = oracle.exit_code == *exit;
             let stdout_ok = &oracle.stdout == stdout;
             if !exit_ok || !stdout_ok {
@@ -484,9 +496,14 @@ fn compile_and_run(
     run_with_timeout(cmd, timeout)
 }
 
+/// Maximum stdout bytes retained from a generated binary. Output past this
+/// bound is still drained, and the explicit truncation bit makes the run a
+/// disagreement rather than comparing an incomplete prefix as if it were exact.
+const STDOUT_CAP: usize = 256 * 1024;
+
 /// Maximum stderr bytes retained from a run. Trap messages are short; the cap
 /// only bounds how much we *keep* — the pipe is still drained to EOF (see
-/// [`read_capped`]) so a chatty program can never deadlock the wait loop.
+/// [`read_capped`]) so a chatty process can never deadlock the wait loop.
 const STDERR_CAP: usize = 8192;
 
 /// Result of one child process whose stdout/stderr were drained while it ran.
@@ -494,6 +511,7 @@ enum ProcessOutcome {
     Exited {
         status: ExitStatus,
         stdout: String,
+        stdout_truncated: bool,
         stderr: String,
     },
     TimedOut,
@@ -520,22 +538,16 @@ fn run_process_with_timeout(
 }
 
 fn wait_for_process(mut child: Child, timeout: Duration) -> std::io::Result<ProcessOutcome> {
-    // When piped, stdout is captured in full (the oracle compares complete
-    // output, so it cannot be truncated); compiler stdout is configured as
-    // null. Stderr is drained to EOF but only `STDERR_CAP` bytes are retained.
-    // Both readers run on their own thread so neither pipe can fill and block
-    // the child.
+    // When piped, stdout and stderr are drained to EOF while retaining fixed
+    // prefixes; compiler stdout is configured as null. Both readers run on
+    // their own thread so neither pipe can fill and block the child.
     let stdout_pipe = child.stdout.take();
     let stderr_pipe = child.stderr.take();
     let stdout_reader = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        if let Some(mut out) = stdout_pipe {
-            out.read_to_end(&mut buf).ok();
-        }
-        buf
+        stdout_pipe.map_or_else(CappedRead::default, |out| read_capped(out, STDOUT_CAP))
     });
     let stderr_reader = std::thread::spawn(move || {
-        stderr_pipe.map_or_else(Vec::new, |err| read_capped(err, STDERR_CAP))
+        stderr_pipe.map_or_else(CappedRead::default, |err| read_capped(err, STDERR_CAP))
     });
 
     let start = Instant::now();
@@ -557,17 +569,18 @@ fn wait_for_process(mut child: Child, timeout: Duration) -> std::io::Result<Proc
     // Whether the child exited, timed out, or hit a wait error, it has been
     // reaped before these joins. Its write ends are closed, so both readers hit
     // EOF and finish promptly.
-    let stdout_bytes = stdout_reader.join().unwrap_or_default();
-    let stderr_bytes = stderr_reader.join().unwrap_or_default();
+    let stdout_capture = stdout_reader.join().unwrap_or_default();
+    let stderr_capture = stderr_reader.join().unwrap_or_default();
     // Lossy decode so garbage bytes from a miscompile surface as a stdout
     // mismatch rather than silently becoming empty (as `read_to_string` would).
-    let stdout = String::from_utf8_lossy(&stdout_bytes).into_owned();
-    let stderr = String::from_utf8_lossy(&stderr_bytes).into_owned();
+    let stdout = String::from_utf8_lossy(&stdout_capture.bytes).into_owned();
+    let stderr = String::from_utf8_lossy(&stderr_capture.bytes).into_owned();
 
     match status? {
         Some(status) => Ok(ProcessOutcome::Exited {
             status,
             stdout,
+            stdout_truncated: stdout_capture.truncated,
             stderr,
         }),
         None => Ok(ProcessOutcome::TimedOut),
@@ -592,11 +605,13 @@ fn run_with_timeout(mut cmd: Command, timeout: Duration) -> std::io::Result<Comp
         ProcessOutcome::Exited {
             status,
             stdout,
+            stdout_truncated,
             stderr,
         } => match status.code() {
             Some(code) => Compiled::Ran {
                 exit: code,
                 stdout,
+                stdout_truncated,
                 stderr,
             },
             None => Compiled::Crash(status.signal().unwrap_or(0)),
@@ -608,17 +623,27 @@ fn run_with_timeout(mut cmd: Command, timeout: Duration) -> std::io::Result<Comp
 /// (rather than stopping after `cap`, as `Read::take` would) is what prevents a
 /// drain-deadlock: a program that writes more than `cap` to this pipe must still
 /// have every byte consumed or it blocks on a full pipe forever (RUE-338). The
-/// cap bounds only the memory we keep, not how much we drain.
-fn read_capped<R: Read>(mut r: R, cap: usize) -> Vec<u8> {
-    let mut kept = Vec::new();
+/// cap bounds only the memory we keep, not how much we drain; `truncated` records
+/// whether any bytes were discarded after the retained prefix.
+#[derive(Default)]
+struct CappedRead {
+    bytes: Vec<u8>,
+    truncated: bool,
+}
+
+fn read_capped<R: Read>(mut r: R, cap: usize) -> CappedRead {
+    let mut capture = CappedRead::default();
     let mut chunk = [0u8; 8192];
     loop {
         match r.read(&mut chunk) {
             Ok(0) => break,
             Ok(n) => {
-                if kept.len() < cap {
-                    let take = (cap - kept.len()).min(n);
-                    kept.extend_from_slice(&chunk[..take]);
+                if capture.bytes.len() < cap {
+                    let take = (cap - capture.bytes.len()).min(n);
+                    capture.bytes.extend_from_slice(&chunk[..take]);
+                    capture.truncated |= take < n;
+                } else {
+                    capture.truncated = true;
                 }
                 // Bytes beyond `cap` are read and discarded — draining, not
                 // storing — so the pipe never fills.
@@ -626,7 +651,7 @@ fn read_capped<R: Read>(mut r: R, cap: usize) -> Vec<u8> {
             Err(_) => break,
         }
     }
-    kept
+    capture
 }
 
 struct Disagreement {
@@ -659,7 +684,19 @@ impl Disagreement {
 
 fn describe(c: &Compiled) -> String {
     match c {
-        Compiled::Ran { exit, stdout, .. } => format!("ran exit={exit} stdout={stdout:?}"),
+        Compiled::Ran {
+            exit,
+            stdout,
+            stdout_truncated,
+            ..
+        } => {
+            let label = if *stdout_truncated {
+                "stdout-prefix"
+            } else {
+                "stdout"
+            };
+            format!("ran exit={exit} {label}={stdout:?} stdout-truncated={stdout_truncated}")
+        }
         Compiled::CompileFail(e) => format!("compile-fail: {}", first_line(e)),
         Compiled::CompileTimeout => "compile-timeout".to_string(),
         Compiled::Crash(sig) => format!("crash signal={sig}"),
@@ -812,6 +849,7 @@ mod tests {
         Compiled::Ran {
             exit,
             stdout: stdout.to_string(),
+            stdout_truncated: false,
             stderr: String::new(),
         }
     }
@@ -821,6 +859,7 @@ mod tests {
         Compiled::Ran {
             exit: 101,
             stdout: String::new(),
+            stdout_truncated: false,
             stderr: stderr.to_string(),
         }
     }
@@ -1074,27 +1113,87 @@ mod tests {
     }
 
     #[test]
-    fn large_stdout_does_not_deadlock() {
+    fn stdout_below_cap_is_drained_and_compared_exactly() {
         // RUE-338: a program that writes far more than the OS pipe capacity
         // (~64KB) must be drained concurrently while it runs. Before the fix the
         // pipe filled, the writer blocked on `write()`, `try_wait` never saw an
         // exit, and the 10s timeout fabricated a `Compiled::Timeout` (→ a false
-        // Disagree). Emit ~200KB and assert we capture every byte as `Ran`.
+        // Disagree). Emit ~200KB (below STDOUT_CAP), capture every byte, and
+        // prove the complete output still participates in exact agreement.
         let n = 200_000usize;
         let mut cmd = Command::new("sh");
         cmd.arg("-c").arg(format!("yes y | head -c {n}"));
         let result = run_with_timeout(cmd, Duration::from_secs(30)).expect("spawn");
-        match result {
-            Compiled::Ran { exit, stdout, .. } => {
-                assert_eq!(exit, 0, "pipeline should exit cleanly");
+        match &result {
+            Compiled::Ran {
+                exit,
+                stdout,
+                stdout_truncated,
+                ..
+            } => {
+                assert_eq!(*exit, 0, "pipeline should exit cleanly");
+                assert!(!*stdout_truncated, "below-cap stdout must stay exact");
                 assert_eq!(
                     stdout.len(),
                     n,
                     "full stdout must be captured, not truncated"
                 );
+                assert!(matches!(classify(&oc(0, stdout), &result), Verdict::Agree));
             }
-            other => panic!("expected Ran with full stdout, got {}", describe(&other)),
+            other => panic!("expected Ran with full stdout, got {}", describe(other)),
         }
+    }
+
+    #[test]
+    fn stdout_above_cap_is_drained_capped_and_cannot_agree_on_its_prefix() {
+        let n = STDOUT_CAP + 100_000;
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg(format!("yes y | head -c {n}"));
+        let result = run_with_timeout(cmd, Duration::from_secs(30)).expect("spawn");
+
+        match &result {
+            Compiled::Ran {
+                exit,
+                stdout,
+                stdout_truncated,
+                ..
+            } => {
+                assert_eq!(*exit, 0);
+                assert_eq!(stdout.len(), STDOUT_CAP, "retained stdout must be capped");
+                assert!(*stdout_truncated, "overflow must remain explicit");
+
+                // Even an oracle outcome equal to the retained prefix cannot
+                // agree: additional compiled output was observed and drained.
+                let verdict = classify(&oc(0, stdout), &result);
+                assert!(
+                    matches!(verdict, Verdict::Disagree(reason) if reason.contains("capture limit")),
+                    "stdout overflow must disagree before prefix comparison"
+                );
+            }
+            other => panic!("expected capped Ran output, got {}", describe(other)),
+        }
+    }
+
+    #[test]
+    fn infinite_stdout_is_drained_with_bounded_retention_until_timeout() {
+        // Run the writer directly so killing the timed child closes the only
+        // pipe write end. This is the adversarial always-on-smoke case: a
+        // miscompiled binary can print forever, but retained memory stays at
+        // STDOUT_CAP and kill/reap/join still returns promptly.
+        let mut cmd = Command::new("yes");
+        cmd.arg("y");
+        let start = Instant::now();
+        let result = run_with_timeout(cmd, Duration::from_millis(200)).expect("spawn");
+
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "an infinite writer must remain bounded by the process timeout"
+        );
+        assert!(
+            matches!(result, Compiled::Timeout),
+            "infinite stdout must time out without deadlock or unbounded retention: {}",
+            describe(&result)
+        );
     }
 
     #[test]
@@ -1125,11 +1224,13 @@ mod tests {
         // we consume all of them (Cursor reaches EOF) but retain exactly `cap`.
         let data = vec![b'z'; 100_000];
         let kept = read_capped(std::io::Cursor::new(data), STDERR_CAP);
-        assert_eq!(kept.len(), STDERR_CAP);
-        assert!(kept.iter().all(|&b| b == b'z'));
+        assert_eq!(kept.bytes.len(), STDERR_CAP);
+        assert!(kept.bytes.iter().all(|&b| b == b'z'));
+        assert!(kept.truncated);
         // Fewer bytes than the cap: keep them all.
         let kept = read_capped(std::io::Cursor::new(vec![b'q'; 10]), STDERR_CAP);
-        assert_eq!(kept.len(), 10);
+        assert_eq!(kept.bytes.len(), 10);
+        assert!(!kept.truncated);
     }
 
     #[test]
