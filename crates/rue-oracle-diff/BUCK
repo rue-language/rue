@@ -21,6 +21,9 @@ rue_binary(
         "//crates/rue-test-runner:rue-test-runner",
         "//crates/rue-error:rue-error",
         "//third-party:serde",
+        # Generated native runs use a unique RAII work directory so every
+        # normal exit path removes sources and binaries (RUE-589).
+        "//third-party:tempfile",
         "//third-party:toml",
     ],
     test_deps = [

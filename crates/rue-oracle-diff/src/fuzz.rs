@@ -15,6 +15,8 @@
 //!
 //! Determinism: programs are a pure function of their `u64` seed, so the fuzzer
 //! is fully reproducible (`fuzz --start S --seeds 1` re-runs exactly seed `S`).
+//! `--timeout` is a wall-clock budget applied independently to each compiler
+//! invocation and each generated binary, so either phase can fail boundedly.
 //!
 //! The compiler binary is located via `RUE_BINARY`, which `scripts/rue`,
 //! `test.sh`, and Buck test targets set from `scripts/rue-bin`.
@@ -24,7 +26,7 @@ use rue_oracle::{RunSourceError, run_source};
 use std::io::Read;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode, Stdio};
+use std::process::{Child, Command, ExitCode, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
 /// Outcome of compiling and running a generated program natively.
@@ -32,6 +34,8 @@ enum Compiled {
     /// The compiler rejected a program the oracle's frontend accepted — an ICE
     /// or backend gap (carries the compiler's stderr, truncated).
     CompileFail(String),
+    /// The compiler did not terminate within the per-phase timeout.
+    CompileTimeout,
     /// The binary ran to completion: process exit code + captured stdout +
     /// captured stderr. `stderr` carries the runtime's trap message (e.g.
     /// `"error: integer overflow\n"`) so that when both engines exit 101 we can
@@ -103,6 +107,7 @@ impl GeneratorContractFinding {
 struct Config {
     start: u64,
     seeds: u64,
+    /// Wall-clock budget applied independently to compilation and execution.
     timeout: Duration,
     crash_dir: PathBuf,
     verbose: bool,
@@ -182,6 +187,10 @@ pub fn run(args: &[String]) -> ExitCode {
                 "usage: rue-oracle-diff fuzz [--start N] [--seeds N] [--timeout SECS] \
                  [--crash-dir DIR] [--verbose]"
             );
+            eprintln!(
+                "       --timeout is applied separately to each compiler invocation and \
+                 generated binary"
+            );
             return ExitCode::FAILURE;
         }
     };
@@ -194,11 +203,16 @@ pub fn run(args: &[String]) -> ExitCode {
         }
     };
 
-    let workdir = std::env::temp_dir().join(format!("rue-oracle-fuzz-{}", std::process::id()));
-    if let Err(e) = std::fs::create_dir_all(&workdir) {
-        eprintln!("cannot create work dir {}: {e}", workdir.display());
-        return ExitCode::FAILURE;
-    }
+    // A unique RAII directory prevents concurrent/PID-reused runs from sharing
+    // stale binaries and removes all generated sources/binaries on every
+    // ordinary return path (success, finding, or infrastructure failure).
+    let workdir = match create_workdir() {
+        Ok(dir) => dir,
+        Err(e) => {
+            eprintln!("cannot create temporary work dir: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
 
     let seed_end = cfg
         .start
@@ -206,10 +220,11 @@ pub fn run(args: &[String]) -> ExitCode {
         .expect("parse_args validates the seed range");
 
     println!(
-        "=== rue-oracle-diff fuzz: seeds {}..{} (compiler: {}) ===",
+        "=== rue-oracle-diff fuzz: seeds {}..{} (compiler: {}, timeout: {}s per phase) ===",
         cfg.start,
         seed_end,
-        rue.display()
+        rue.display(),
+        cfg.timeout.as_secs()
     );
 
     let mut agree = 0u32;
@@ -241,7 +256,7 @@ pub fn run(args: &[String]) -> ExitCode {
             Ok(o) => o,
         };
 
-        let compiled = match compile_and_run(&rue, &workdir, &source, cfg.timeout) {
+        let compiled = match compile_and_run(&rue, workdir.path(), &source, cfg.timeout) {
             Ok(c) => c,
             Err(e) => {
                 // An infrastructure failure (couldn't invoke the tools) is fatal
@@ -261,6 +276,7 @@ pub fn run(args: &[String]) -> ExitCode {
             Verdict::Disagree(reason) => {
                 let d = Disagreement {
                     seed,
+                    timeout_secs: cfg.timeout.as_secs(),
                     source: source.clone(),
                     oracle_exit: oracle.exit_code,
                     oracle_stdout: oracle.stdout.clone(),
@@ -299,6 +315,12 @@ pub fn run(args: &[String]) -> ExitCode {
         );
         ExitCode::FAILURE
     }
+}
+
+fn create_workdir() -> std::io::Result<tempfile::TempDir> {
+    tempfile::Builder::new()
+        .prefix("rue-oracle-fuzz-")
+        .tempdir()
 }
 
 fn generated_batch_passes(contract_failures: usize, disagreements: usize) -> bool {
@@ -410,6 +432,10 @@ fn classify(oracle: &rue_oracle::Outcome, compiled: &Compiled) -> Verdict {
             "compiler rejected a program the oracle accepted (possible ICE/backend gap): {}",
             first_line(stderr)
         )),
+        Compiled::CompileTimeout => Verdict::Disagree(
+            "compiler did not terminate within the per-phase timeout (oracle ran cleanly)"
+                .to_string(),
+        ),
         Compiled::Crash(sig) => Verdict::Disagree(format!(
             "compiled binary killed by signal {sig} (oracle ran cleanly)"
         )),
@@ -432,18 +458,21 @@ fn compile_and_run(
     // iteration's executable.
     let _ = std::fs::remove_file(&bin_path);
 
-    let compile = Command::new(rue)
+    let mut compile_cmd = Command::new(rue);
+    compile_cmd
         .arg("prog.rue")
         .arg("-o")
         .arg("prog")
         .current_dir(dir)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .output()?;
-    if !compile.status.success() {
-        let stderr = String::from_utf8_lossy(&compile.stderr).into_owned();
-        return Ok(Compiled::CompileFail(stderr));
+        .stderr(Stdio::piped());
+    match run_process_with_timeout(compile_cmd, timeout)? {
+        ProcessOutcome::TimedOut => return Ok(Compiled::CompileTimeout),
+        ProcessOutcome::Exited { status, stderr, .. } if !status.success() => {
+            return Ok(Compiled::CompileFail(stderr));
+        }
+        ProcessOutcome::Exited { .. } => {}
     }
 
     // Run the produced binary directly with a manual timeout so we can read the
@@ -460,28 +489,42 @@ fn compile_and_run(
 /// [`read_capped`]) so a chatty program can never deadlock the wait loop.
 const STDERR_CAP: usize = 8192;
 
-/// Spawn `cmd` with piped stdout/stderr, drain both pipes **concurrently** via
-/// reader threads, and wait with a manual timeout.
+/// Result of one child process whose stdout/stderr were drained while it ran.
+enum ProcessOutcome {
+    Exited {
+        status: ExitStatus,
+        stdout: String,
+        stderr: String,
+    },
+    TimedOut,
+}
+
+/// Spawn a configured command, drain any piped stdout/stderr **concurrently**
+/// via reader threads, and wait with a manual timeout.
 ///
 /// Draining concurrently is essential (RUE-338): if the pipes were only read
 /// after the child exits, a program that writes more than the OS pipe capacity
 /// (~64KB on Linux) would block on `write()` forever, `try_wait` would never
-/// report an exit, and the timeout would manufacture a false `Compiled::Timeout`
-/// (→ a fabricated `Verdict::Disagree`). The reader threads start immediately
-/// after `spawn` so the child always has a consumer. On timeout we kill first,
-/// then join the readers — killing closes the child's write ends, the pipes hit
-/// EOF, and the readers finish, so no thread leaks.
-fn run_with_timeout(mut cmd: Command, timeout: Duration) -> std::io::Result<Compiled> {
-    let mut child = cmd
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
+/// report an exit. This applies to the Rue compiler as well as to generated
+/// binaries: compiler diagnostics can also exceed a pipe's capacity.
+///
+/// The reader threads start immediately after `spawn` so the child always has
+/// a consumer. On timeout or a wait error, kill/reap happens before joining the
+/// readers; the closed write ends give them EOF, so no child or thread leaks.
+fn run_process_with_timeout(
+    mut cmd: Command,
+    timeout: Duration,
+) -> std::io::Result<ProcessOutcome> {
+    let child = cmd.spawn()?;
+    wait_for_process(child, timeout)
+}
 
-    // stdout is captured in full (the oracle compares complete output, so it
-    // cannot be truncated); stderr is drained to EOF but only `STDERR_CAP` bytes
-    // are retained. Both readers run on their own thread so neither pipe can
-    // fill and block the child.
+fn wait_for_process(mut child: Child, timeout: Duration) -> std::io::Result<ProcessOutcome> {
+    // When piped, stdout is captured in full (the oracle compares complete
+    // output, so it cannot be truncated); compiler stdout is configured as
+    // null. Stderr is drained to EOF but only `STDERR_CAP` bytes are retained.
+    // Both readers run on their own thread so neither pipe can fill and block
+    // the child.
     let stdout_pipe = child.stdout.take();
     let stderr_pipe = child.stderr.take();
     let stdout_reader = std::thread::spawn(move || {
@@ -491,44 +534,73 @@ fn run_with_timeout(mut cmd: Command, timeout: Duration) -> std::io::Result<Comp
         }
         buf
     });
-    let stderr_reader =
-        std::thread::spawn(move || stderr_pipe.map(|err| read_capped(err, STDERR_CAP)));
+    let stderr_reader = std::thread::spawn(move || {
+        stderr_pipe.map_or_else(Vec::new, |err| read_capped(err, STDERR_CAP))
+    });
 
     let start = Instant::now();
-    let status = loop {
-        match child.try_wait()? {
-            Some(status) => break status,
-            None => {
-                if start.elapsed() > timeout {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    // Join so the reader threads don't leak; the killed child's
-                    // closed fds give them EOF, so these return promptly.
-                    let _ = stdout_reader.join();
-                    let _ = stderr_reader.join();
-                    return Ok(Compiled::Timeout);
-                }
-                std::thread::sleep(Duration::from_millis(10));
+    let status: std::io::Result<Option<ExitStatus>> = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Ok(Some(status)),
+            Ok(None) if start.elapsed() >= timeout => {
+                terminate_and_reap(&mut child);
+                break Ok(None);
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(10)),
+            Err(error) => {
+                terminate_and_reap(&mut child);
+                break Err(error);
             }
         }
     };
 
-    // The child has exited; its write ends are closed, so the readers hit EOF
-    // and finish. Join to collect the fully-drained output.
+    // Whether the child exited, timed out, or hit a wait error, it has been
+    // reaped before these joins. Its write ends are closed, so both readers hit
+    // EOF and finish promptly.
     let stdout_bytes = stdout_reader.join().unwrap_or_default();
-    let stderr_bytes = stderr_reader.join().unwrap_or_default().unwrap_or_default();
+    let stderr_bytes = stderr_reader.join().unwrap_or_default();
     // Lossy decode so garbage bytes from a miscompile surface as a stdout
     // mismatch rather than silently becoming empty (as `read_to_string` would).
     let stdout = String::from_utf8_lossy(&stdout_bytes).into_owned();
     let stderr = String::from_utf8_lossy(&stderr_bytes).into_owned();
 
-    Ok(match status.code() {
-        Some(code) => Compiled::Ran {
-            exit: code,
+    match status? {
+        Some(status) => Ok(ProcessOutcome::Exited {
+            status,
             stdout,
             stderr,
+        }),
+        None => Ok(ProcessOutcome::TimedOut),
+    }
+}
+
+fn terminate_and_reap(child: &mut Child) {
+    // `kill` can race with a natural exit; `wait` still reaps either way. The
+    // harness executes direct compiler/program children, not shell process
+    // trees, so terminating this one process closes every captured write end.
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// Run one generated native binary using the shared bounded subprocess path.
+fn run_with_timeout(mut cmd: Command, timeout: Duration) -> std::io::Result<Compiled> {
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    Ok(match run_process_with_timeout(cmd, timeout)? {
+        ProcessOutcome::TimedOut => Compiled::Timeout,
+        ProcessOutcome::Exited {
+            status,
+            stdout,
+            stderr,
+        } => match status.code() {
+            Some(code) => Compiled::Ran {
+                exit: code,
+                stdout,
+                stderr,
+            },
+            None => Compiled::Crash(status.signal().unwrap_or(0)),
         },
-        None => Compiled::Crash(status.signal().unwrap_or(0)),
     })
 }
 
@@ -559,6 +631,8 @@ fn read_capped<R: Read>(mut r: R, cap: usize) -> Vec<u8> {
 
 struct Disagreement {
     seed: u64,
+    /// Per-phase compiler/native execution budget needed to replay timeouts.
+    timeout_secs: u64,
     source: String,
     oracle_exit: i32,
     oracle_stdout: String,
@@ -570,8 +644,9 @@ struct Disagreement {
 impl Disagreement {
     fn render(&self) -> String {
         format!(
-            "\n\u{2717} DISAGREEMENT (seed {seed})\n  {reason}\n  oracle:   exit={exit} panic={panic:?} stdout={stdout:?}\n  compiled: {compiled}\n  --- source (regenerate with `fuzz --start {seed} --seeds 1`) ---\n{source}",
+            "\n\u{2717} DISAGREEMENT (seed {seed})\n  {reason}\n  oracle:   exit={exit} panic={panic:?} stdout={stdout:?}\n  compiled: {compiled}\n  --- source (regenerate with `fuzz --start {seed} --seeds 1 --timeout {timeout_secs}`) ---\n{source}",
             seed = self.seed,
+            timeout_secs = self.timeout_secs,
             reason = self.reason,
             exit = self.oracle_exit,
             panic = self.oracle_panic,
@@ -586,6 +661,7 @@ fn describe(c: &Compiled) -> String {
     match c {
         Compiled::Ran { exit, stdout, .. } => format!("ran exit={exit} stdout={stdout:?}"),
         Compiled::CompileFail(e) => format!("compile-fail: {}", first_line(e)),
+        Compiled::CompileTimeout => "compile-timeout".to_string(),
         Compiled::Crash(sig) => format!("crash signal={sig}"),
         Compiled::Timeout => "timeout".to_string(),
     }
@@ -638,7 +714,10 @@ fn disagreement_repro_contents(d: &Disagreement) -> String {
     push_repro_comment(
         &mut contents,
         "regenerate",
-        &format!("rue-oracle-diff fuzz --start {} --seeds 1", d.seed),
+        &format!(
+            "rue-oracle-diff fuzz --start {} --seeds 1 --timeout {}",
+            d.seed, d.timeout_secs
+        ),
     );
     contents.push('\n');
     contents.push_str(&d.source);
@@ -694,6 +773,22 @@ fn save_generator_contract_repro(
 mod tests {
     use super::*;
     use rue_oracle::Outcome;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn make_executable(path: &Path) {
+        let mut permissions = std::fs::metadata(path)
+            .expect("executable metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(path, permissions).expect("make file executable");
+    }
+
+    fn fake_compiler(dir: &Path, script: &str) -> PathBuf {
+        let path = dir.join("fake-rue");
+        std::fs::write(&path, script).expect("write fake compiler");
+        make_executable(&path);
+        path
+    }
 
     fn oc(exit: i32, stdout: &str) -> Outcome {
         Outcome {
@@ -809,13 +904,14 @@ mod tests {
     }
 
     #[test]
-    fn compile_fail_and_crash_and_timeout_are_disagreements() {
+    fn compile_fail_crash_and_both_timeouts_are_disagreements() {
         // Oracle produced a clean outcome, so any non-Ran compiled result is a
         // divergence worth reporting.
         assert!(is_disagree(classify(
             &oc(0, ""),
             &Compiled::CompileFail("boom".into())
         )));
+        assert!(is_disagree(classify(&oc(0, ""), &Compiled::CompileTimeout)));
         assert!(is_disagree(classify(&oc(0, ""), &Compiled::Crash(11))));
         assert!(is_disagree(classify(&oc(0, ""), &Compiled::Timeout)));
     }
@@ -873,6 +969,7 @@ mod tests {
     fn disagreement_repro_also_escapes_multiline_metadata() {
         let disagreement = Disagreement {
             seed: 23,
+            timeout_secs: 3,
             source: "fn main() -> i32 { 23 }\n".to_string(),
             oracle_exit: 23,
             oracle_stdout: String::new(),
@@ -881,11 +978,99 @@ mod tests {
             reason: "wrong exit\nconst injected = 1;".to_string(),
         };
 
+        assert!(disagreement.render().contains("--timeout 3"));
         let contents = disagreement_repro_contents(&disagreement);
         assert!(contents.contains("// reason: wrong exit\\nconst injected = 1;\n"));
         assert!(contents.contains("// compiled: compile-fail: first\\rsecond\n"));
+        assert!(
+            contents
+                .contains("// regenerate: rue-oracle-diff fuzz --start 23 --seeds 1 --timeout 3\n")
+        );
         assert!(!contents.contains("\nconst injected"));
         assert!(contents.ends_with("\n\nfn main() -> i32 { 23 }\n"));
+    }
+
+    #[test]
+    fn compiler_timeout_is_bounded_distinct_and_never_runs_a_stale_binary() {
+        let workdir = create_workdir().expect("temporary workdir");
+        // If compile_and_run forgot to remove the previous iteration's output,
+        // a timed-out compiler could accidentally run this stale executable.
+        let stale_binary = workdir.path().join("prog");
+        std::fs::write(&stale_binary, "#!/bin/sh\nexit 0\n").expect("write stale binary");
+        make_executable(&stale_binary);
+        let compiler = fake_compiler(workdir.path(), "#!/bin/sh\nexec sleep 30\n");
+
+        let start = Instant::now();
+        let result = compile_and_run(
+            &compiler,
+            workdir.path(),
+            "fn main() -> i32 { 0 }",
+            Duration::from_millis(200),
+        )
+        .expect("spawn fake compiler");
+
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "compiler kill/reap/join must return promptly"
+        );
+        assert!(
+            matches!(result, Compiled::CompileTimeout),
+            "compiler hangs must be distinct from runtime hangs: {}",
+            describe(&result)
+        );
+        assert_eq!(describe(&result), "compile-timeout");
+        assert!(
+            !stale_binary.exists(),
+            "a timed-out compile must not leave the old binary runnable"
+        );
+    }
+
+    #[test]
+    fn compiler_stderr_is_drained_while_retention_stays_bounded() {
+        let workdir = create_workdir().expect("temporary workdir");
+        let compiler = fake_compiler(
+            workdir.path(),
+            "#!/bin/sh\nyes e | head -c 200000 1>&2\nexit 9\n",
+        );
+
+        let result = compile_and_run(
+            &compiler,
+            workdir.path(),
+            "fn main() -> i32 { 0 }",
+            Duration::from_secs(30),
+        )
+        .expect("run fake compiler");
+
+        match result {
+            Compiled::CompileFail(stderr) => {
+                assert!(!stderr.is_empty(), "some compiler stderr is retained");
+                assert_eq!(
+                    stderr.len(),
+                    STDERR_CAP,
+                    "large diagnostics must be fully drained while retention stops at the cap"
+                );
+            }
+            other => panic!(
+                "large compiler diagnostics must be a compile failure, not a timeout: {}",
+                describe(&other)
+            ),
+        }
+    }
+
+    #[test]
+    fn temporary_workdir_is_removed_on_drop() {
+        let path = {
+            let workdir = create_workdir().expect("temporary workdir");
+            let path = workdir.path().to_path_buf();
+            std::fs::write(path.join("marker"), "cleanup probe").expect("write marker");
+            assert!(path.exists());
+            path
+        };
+
+        assert!(
+            !path.exists(),
+            "dropping the harness workdir must remove generated artifacts"
+        );
     }
 
     #[test]
@@ -973,9 +1158,16 @@ mod tests {
 
     #[test]
     fn args_parse_flags() {
-        let cfg = parse_args(&["--start=5".into(), "--seeds".into(), "12".into()]).expect("parse");
+        let cfg = parse_args(&[
+            "--start=5".into(),
+            "--seeds".into(),
+            "12".into(),
+            "--timeout=3".into(),
+        ])
+        .expect("parse");
         assert_eq!(cfg.start, 5);
         assert_eq!(cfg.seeds, 12);
+        assert_eq!(cfg.timeout, Duration::from_secs(3));
     }
 
     #[test]
