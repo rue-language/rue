@@ -2179,9 +2179,9 @@ fn main() -> i32 {
 exit_code = 42
 
 [[case]]
-name = "type_constructor_call_not_a_struct_literal_path"
+name = "type_constructor_struct_literal_head_requires_preview"
 spec = ["4.14:23"]
-description = "A type-constructor call is not a struct-literal path: F(args) { ... } does not parse; bind an alias first (RUE-289)"
+description = "An inline type-constructor struct-literal head F(args) { ... } is gated behind the inline_type_ctor_paths preview feature; without it, E1100 (RUE-596)"
 source = """
 fn Pair(comptime T: type) -> type { struct { first: T, second: T } }
 fn main() -> i32 {
@@ -2190,7 +2190,77 @@ fn main() -> i32 {
 }
 """
 compile_fail = true
-error_contains = "found '{'"
+error_contains = ["E1100", "inline_type_ctor_paths"]
+
+[[case]]
+name = "inline_type_ctor_struct_literal_head"
+spec = ["4.14:23"]
+preview = "inline_type_ctor_paths"
+preview_should_pass = true
+description = "Under the preview, a type-constructor call heads a struct literal: Pair(i32) { ... } (RUE-596)"
+source = """
+fn Pair(comptime T: type) -> type { struct { first: T, second: T } }
+fn main() -> i32 {
+    let p = Pair(i32) { first: 40, second: 2 };
+    p.first + p.second
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "inline_type_ctor_enum_variant_head"
+spec = ["4.14:23"]
+preview = "inline_type_ctor_paths"
+preview_should_pass = true
+description = "Under the preview, a type-constructor call heads an enum-variant construction: Result(i32, i32).Ok(v) (RUE-596)"
+source = """
+fn Result(comptime T: type, comptime E: type) -> type { enum { Ok(T), Err(E) } }
+fn main() -> i32 {
+    let r = Result(i32, i32).Ok(42);
+    let R = Result(i32, i32);
+    match r { R.Ok(v) => v, R.Err(e) => e }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "inline_type_ctor_assoc_fn_head"
+spec = ["4.14:23"]
+preview = "inline_type_ctor_paths"
+preview_should_pass = true
+description = "Under the preview, a type-constructor call heads an associated-function call: Counter(i32).zero() (RUE-596)"
+source = """
+fn Counter(comptime T: type) -> type {
+    struct {
+        n: T,
+        fn start(v: T) -> Self { Self { n: v } }
+        fn get(borrow self) -> T { self.n }
+    }
+}
+fn main() -> i32 {
+    let c = Counter(i32).start(42);
+    c.get()
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "inline_type_ctor_pattern_head"
+spec = ["4.14:23"]
+preview = "inline_type_ctor_paths"
+preview_should_pass = true
+description = "Under the preview, a type-constructor call heads a match pattern: match r { Result(i32, i32).Ok(v) => .. } (RUE-596)"
+source = """
+fn Result(comptime T: type, comptime E: type) -> type { enum { Ok(T), Err(E) } }
+fn main() -> i32 {
+    let r = Result(i32, i32).Ok(40);
+    match r {
+        Result(i32, i32).Ok(v) => v + 2,
+        Result(i32, i32).Err(e) => e,
+    }
+}
+"""
+exit_code = 42
 
 [[case]]
 name = "type_param_scopes_into_method_body"

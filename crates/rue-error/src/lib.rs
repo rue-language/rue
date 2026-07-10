@@ -499,6 +499,14 @@ pub enum PreviewFeature {
     /// representation; string literals live in `.rodata` and produce a 2-word
     /// `str` value where a `str` is expected.
     StringTrio,
+    /// Inline type-constructor call heads (RUE-596, relaxing spec 4.14:23): a
+    /// type-constructor call with explicit comptime args used directly as a
+    /// struct-literal head (`Pair(i32) { .. }`), an associated-function / enum-
+    /// variant head (`Result(i32, i32).Ok(v)`), or a pattern head
+    /// (`match r { Result(i32, i32).Ok(v) => .. }`). Reduces to today's
+    /// bind-first form (`let P = F(args); P.NAME`). Elided args (`Option(_)`)
+    /// remain out of scope (RUE-401).
+    InlineTypeCtorPath,
 }
 
 /// Error returned when parsing a preview feature name fails.
@@ -521,6 +529,7 @@ impl PreviewFeature {
             PreviewFeature::TestInfra => "test_infra",
             PreviewFeature::Slices => "slices",
             PreviewFeature::StringTrio => "string_trio",
+            PreviewFeature::InlineTypeCtorPath => "inline_type_ctor_paths",
         }
     }
 
@@ -531,6 +540,7 @@ impl PreviewFeature {
             PreviewFeature::TestInfra => "ADR-0005",
             PreviewFeature::Slices => "ADR-0043",
             PreviewFeature::StringTrio => "ADR-0043",
+            PreviewFeature::InlineTypeCtorPath => "ADR-0025",
         }
     }
 
@@ -540,6 +550,7 @@ impl PreviewFeature {
             PreviewFeature::TestInfra,
             PreviewFeature::Slices,
             PreviewFeature::StringTrio,
+            PreviewFeature::InlineTypeCtorPath,
         ]
     }
 
@@ -565,6 +576,7 @@ impl std::str::FromStr for PreviewFeature {
             "test_infra" => Ok(PreviewFeature::TestInfra),
             "slices" => Ok(PreviewFeature::Slices),
             "string_trio" => Ok(PreviewFeature::StringTrio),
+            "inline_type_ctor_paths" => Ok(PreviewFeature::InlineTypeCtorPath),
             _ => Err(ParsePreviewFeatureError(s.to_string())),
         }
     }
@@ -2506,7 +2518,10 @@ mod tests {
     #[test]
     fn test_preview_feature_all_names() {
         let names = PreviewFeature::all_names();
-        assert_eq!(names, "test_infra, slices, string_trio");
+        assert_eq!(
+            names,
+            "test_infra, slices, string_trio, inline_type_ctor_paths"
+        );
     }
 
     #[test]

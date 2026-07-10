@@ -813,6 +813,13 @@ pub struct PathPattern {
     pub base: Option<Box<Expr>>,
     /// The type name (e.g., `Color`)
     pub type_name: Ident,
+    /// Inline type-constructor arguments when the pattern head is a
+    /// type-constructor call, e.g. `Result(i32, i32).Ok(v)` (RUE-596, preview
+    /// `inline_type_ctor_paths`, relaxing spec 4.14:23). When `Some`, `type_name`
+    /// is the constructor function and these are its comptime arguments; the
+    /// pattern's enum type is the reduction of `type_name(ctor_args)`. `None`
+    /// for an ordinary `Enum.Variant` pattern.
+    pub ctor_args: Option<Vec<CallArg>>,
     /// The variant name (e.g., `Red`)
     pub variant: Ident,
     /// Payload binding names (empty = no payload pattern).
@@ -905,6 +912,12 @@ pub struct StructLitExpr {
     pub base: Option<Box<Expr>>,
     /// Struct type name
     pub name: Ident,
+    /// Inline type-constructor arguments when the head is a type-constructor
+    /// call, e.g. `Pair(i32) { ... }` (RUE-596, preview `inline_type_ctor_paths`,
+    /// relaxing spec 4.14:23). When `Some`, `name` is the constructor function
+    /// and these are its comptime arguments; the literal's struct type is the
+    /// reduction of `name(ctor_args)`. `None` for an ordinary `Name { ... }`.
+    pub ctor_args: Option<Vec<CallArg>>,
     /// Field initializers
     pub fields: Vec<FieldInit>,
     pub span: Span,

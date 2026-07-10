@@ -1576,9 +1576,17 @@ impl<'a> ConstraintGenerator<'a> {
                         variant,
                         bindings,
                         span: pat_span,
+                        ..
                     } = pattern
                     {
                         if !bindings.is_empty() {
+                            // NOTE: an inline type-constructor pattern head
+                            // (`Result(i32,i32).Ok(v)`, RUE-596) cannot be
+                            // reduced by the inference engine (it has no comptime
+                            // interpreter), so `enum_type_for` is `None` for it
+                            // and the payload bindings are not pre-typed here.
+                            // Sema's `materialize_match_bindings` resolves them
+                            // authoritatively via `try_evaluate_const`.
                             let enum_ty = module
                                 .and_then(|module_ref| {
                                     self.enum_type_for_module(module_ref, type_name)

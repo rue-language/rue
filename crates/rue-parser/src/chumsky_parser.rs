@@ -943,7 +943,9 @@ where
 }
 
 /// Parser for patterns in match arms
-fn pattern_parser<'src, I>() -> impl Parser<'src, I, Pattern, ParserExtras<'src>> + Clone
+fn pattern_parser<'src, I>(
+    expr: impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone + 'src,
+) -> impl Parser<'src, I, Pattern, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
@@ -995,6 +997,34 @@ where
         .or_not()
         .map(|opt| opt.unwrap_or_default());
 
+    // Inline type-constructor pattern head: `F(args).Variant(bindings)`
+    // (RUE-596, preview `inline_type_ctor_paths`, relaxing spec 4.14:23). The
+    // head `F(args)` is a type-constructor call whose comptime reduction is the
+    // enum; `.Variant` selects the variant. Unambiguous: a bare `ident(` never
+    // begins any other pattern (there is no bare `Variant(binds)` form — every
+    // variant pattern carries at least one dot), so the parens-before-dot shape
+    // is distinct from the `ident . ident` paths below. The head arguments are
+    // full expressions (comptime type/value arguments), so this needs the
+    // expression parser threaded in.
+    let ctor_head_pat = ident_parser()
+        .then(
+            call_args_parser(expr.clone())
+                .delimited_by(just(TokenKind::LParen), just(TokenKind::RParen)),
+        )
+        .then_ignore(just(TokenKind::Dot))
+        .then(ident_parser())
+        .then(pattern_bindings.clone())
+        .map_with(|(((type_name, ctor_args), variant), bindings), e| {
+            Pattern::Path(PathPattern {
+                base: None,
+                type_name,
+                ctor_args: Some(ctor_args),
+                variant,
+                bindings,
+                span: span_from_extra(e),
+            })
+        });
+
     // Simple enum path pattern: Enum.Variant (RUE-488). `.` is the sole
     // member-access spelling; `::` was removed.
     let simple_dot_path_pat = ident_parser()
@@ -1005,6 +1035,7 @@ where
             Pattern::Path(PathPattern {
                 base: None,
                 type_name,
+                ctor_args: None,
                 variant,
                 bindings,
                 span: span_from_extra(e),
@@ -1046,6 +1077,7 @@ where
             Pattern::Path(PathPattern {
                 base: Some(Box::new(base_expr)),
                 type_name,
+                ctor_args: None,
                 variant,
                 bindings,
                 span: span_from_extra(e),
@@ -1058,6 +1090,11 @@ where
         int_pat,
         bool_true,
         bool_false,
+        // The inline type-constructor head (`F(args).Variant`) is tried first:
+        // it is the only pattern that begins `ident (`, so it cannot conflict
+        // with the dot-paths, but ordering it ahead keeps the parens-before-dot
+        // shape unambiguous.
+        ctor_head_pat,
         // The qualified form (`module.Enum.Variant`, ≥2 dots) must be tried
         // before the simple one (`Enum.Variant`, exactly 1 dot); otherwise the
         // simple parser would greedily match the first two identifiers of a
@@ -1069,12 +1106,12 @@ where
 
 /// Parser for a single match arm: pattern => expr
 fn match_arm_parser<'src, I>(
-    expr: impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone,
+    expr: impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone + 'src,
 ) -> impl Parser<'src, I, MatchArm, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    pattern_parser()
+    pattern_parser(expr.clone())
         .then_ignore(just(TokenKind::FatArrow))
         .then(expr)
         .map_with(|(pattern, body), e| MatchArm {
@@ -1146,9 +1183,20 @@ fn reclaim_empty_struct_lit_head(lit: StructLitExpr) -> Option<Expr> {
         return None;
     }
 
-    Some(match lit.base {
-        None => Expr::Ident(lit.name),
-        Some(base) => {
+    Some(match (lit.base, lit.ctor_args) {
+        // `F(args) {}` used as a restricted-position head (`if`/`while`/`for`)
+        // reclaims to the constructor call `F(args)`; the empty braces are the
+        // block body, exactly as `if F(args) {}` parsed before the inline
+        // type-constructor struct-literal head existed (RUE-596). Only the
+        // unqualified form is reclaimable here.
+        (None, Some(args)) => Expr::Call(CallExpr {
+            name: lit.name,
+            args,
+            span: lit.span,
+        }),
+        (Some(_), Some(_)) => return None,
+        (None, None) => Expr::Ident(lit.name),
+        (Some(base), None) => {
             let span = base.span().extend_to(lit.name.span.end);
             Expr::Field(FieldExpr {
                 base,
@@ -1409,13 +1457,23 @@ where
             };
             match (scrutinee, arms) {
                 // `match v {}`: reclaim the struct literal's braces as the
-                // match's empty arm list; the scrutinee is the bare identifier.
-                (Expr::StructLit(lit), None) if lit.base.is_none() && lit.fields.is_empty() => {
-                    Ok(Expr::Match(MatchExpr {
-                        scrutinee: Box::new(Expr::Ident(lit.name)),
-                        arms: Vec::new(),
-                        span,
-                    }))
+                // match's empty arm list; the scrutinee is the reclaimed head (a
+                // bare identifier, or a constructor call `F(args)` for an inline
+                // type-constructor head, RUE-596). A qualified head (`mod.Type`)
+                // is not reclaimable and falls to the error arm below.
+                (Expr::StructLit(lit), None) if lit.fields.is_empty() => {
+                    match reclaim_empty_struct_lit_head(lit) {
+                        Some(scrutinee) => Ok(Expr::Match(MatchExpr {
+                            scrutinee: Box::new(scrutinee),
+                            arms: Vec::new(),
+                            span,
+                        })),
+                        None => Err(Rich::custom(
+                            e.span(),
+                            "struct literals are not allowed as a bare match scrutinee; \
+                             wrap the scrutinee in parentheses",
+                        )),
+                    }
                 }
                 (Expr::StructLit(_), _) => Err(Rich::custom(
                     e.span(),
@@ -1455,7 +1513,9 @@ where
 /// reinterprets them when the base names a type. So no path suffix appears here.
 #[derive(Clone)]
 enum IdentSuffix {
-    Call(Vec<CallArg>),
+    /// `F(args)`, optionally with a trailing `{ fields }` inline
+    /// type-constructor struct-literal head `F(args) { fields }` (RUE-596).
+    Call(Vec<CallArg>, Option<Vec<FieldInit>>),
     StructLit(Vec<FieldInit>),
     None,
 }
@@ -1470,10 +1530,21 @@ where
     ident_parser()
         .then(
             choice((
-                // Function call: (args)
+                // Function call `(args)`, optionally followed by an inline
+                // type-constructor struct-literal body `{ fields }`
+                // (`F(args) { ... }`, RUE-596). The trailing body is `.or_not()`
+                // so a plain call `F(args)` is unaffected, and a following block
+                // that is not valid field inits (`{ stmt }`) is left for the
+                // enclosing block/`if`/`while` body — the same `{ ident: }`-vs-
+                // `{ expr }` rule the bare-ident struct-literal head relies on.
                 call_args_parser(expr.clone())
                     .delimited_by(just(TokenKind::LParen), just(TokenKind::RParen))
-                    .map(IdentSuffix::Call),
+                    .then(
+                        field_inits_parser(expr.clone())
+                            .delimited_by(just(TokenKind::LBrace), just(TokenKind::RBrace))
+                            .or_not(),
+                    )
+                    .map(|(args, body)| IdentSuffix::Call(args, body)),
                 // Struct literal: { field: value, ... }
                 field_inits_parser(expr.clone())
                     .delimited_by(just(TokenKind::LBrace), just(TokenKind::RBrace))
@@ -1483,14 +1554,23 @@ where
             .map(|opt| opt.unwrap_or(IdentSuffix::None)),
         )
         .map_with(|(name, suffix), e| match suffix {
-            IdentSuffix::Call(args) => Expr::Call(CallExpr {
+            IdentSuffix::Call(args, None) => Expr::Call(CallExpr {
                 name,
                 args,
+                span: span_from_extra(e),
+            }),
+            // `F(args) { fields }` — inline type-constructor struct-literal head.
+            IdentSuffix::Call(args, Some(fields)) => Expr::StructLit(StructLitExpr {
+                base: None,
+                name,
+                ctor_args: Some(args),
+                fields,
                 span: span_from_extra(e),
             }),
             IdentSuffix::StructLit(fields) => Expr::StructLit(StructLitExpr {
                 base: None, // No module prefix for simple `StructName { ... }`
                 name,
+                ctor_args: None,
                 fields,
                 span: span_from_extra(e),
             }),
@@ -1653,6 +1733,7 @@ where
                 Expr::StructLit(StructLitExpr {
                     base: Some(Box::new(base)),
                     name,
+                    ctor_args: None,
                     fields,
                     span,
                 })
@@ -1978,6 +2059,7 @@ where
                     name: e.state().syms.self_type,
                     span,
                 },
+                ctor_args: None,
                 fields,
                 span,
             })

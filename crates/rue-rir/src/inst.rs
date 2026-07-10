@@ -155,6 +155,12 @@ pub enum RirPattern {
     Path {
         /// Optional module reference for qualified paths (e.g., the `module` in `module.Color::Red`)
         module: Option<InstRef>,
+        /// Optional inline type-constructor call head — the instruction that
+        /// reduces to the enum type at comptime for `F(args).Variant(..)`
+        /// (RUE-596, preview `inline_type_ctor_paths`). When `Some`, the enum is
+        /// the reduction of this head and `type_name` is only the constructor
+        /// function's name; `None` for an ordinary `Enum.Variant` pattern.
+        ctor_head: Option<InstRef>,
         /// The enum type name
         type_name: Spur,
         /// The variant name
@@ -464,6 +470,7 @@ impl Rir {
                 }
                 RirPattern::Path {
                     module,
+                    ctor_head,
                     type_name,
                     variant,
                     bindings,
@@ -475,6 +482,9 @@ impl Rir {
                     self.extra.push(span.file_id.index());
                     // Store module as u32::MAX for None, otherwise the InstRef
                     self.extra.push(module.map_or(u32::MAX, |r| r.as_u32()));
+                    // Store ctor_head (inline type-constructor pattern head,
+                    // RUE-596) the same way — u32::MAX for None.
+                    self.extra.push(ctor_head.map_or(u32::MAX, |r| r.as_u32()));
                     self.extra.push(type_name.into_usize() as u32);
                     self.extra.push(variant.into_usize() as u32);
                     // Variable-length payload bindings (RUE-221): a count
@@ -547,19 +557,28 @@ impl Rir {
                     } else {
                         Some(InstRef::from_raw(module_raw))
                     };
-                    let type_name = Spur::try_from_usize(self.extra[pos + 5] as usize).unwrap();
-                    let variant = Spur::try_from_usize(self.extra[pos + 6] as usize).unwrap();
+                    // Decode ctor_head (inline type-constructor pattern head,
+                    // RUE-596): u32::MAX means None.
+                    let ctor_head_raw = self.extra[pos + 5];
+                    let ctor_head = if ctor_head_raw == u32::MAX {
+                        None
+                    } else {
+                        Some(InstRef::from_raw(ctor_head_raw))
+                    };
+                    let type_name = Spur::try_from_usize(self.extra[pos + 6] as usize).unwrap();
+                    let variant = Spur::try_from_usize(self.extra[pos + 7] as usize).unwrap();
                     // Variable-length payload bindings (RUE-221).
-                    let n_bindings = self.extra[pos + 7] as usize;
+                    let n_bindings = self.extra[pos + 8] as usize;
                     let mut bindings = Vec::with_capacity(n_bindings);
                     for i in 0..n_bindings {
                         bindings
-                            .push(Spur::try_from_usize(self.extra[pos + 8 + i] as usize).unwrap());
+                            .push(Spur::try_from_usize(self.extra[pos + 9 + i] as usize).unwrap());
                     }
-                    let body = InstRef::from_raw(self.extra[pos + 8 + n_bindings]);
+                    let body = InstRef::from_raw(self.extra[pos + 9 + n_bindings]);
                     arms.push((
                         RirPattern::Path {
                             module,
+                            ctor_head,
                             type_name,
                             variant,
                             bindings,
@@ -567,7 +586,7 @@ impl Rir {
                         },
                         body,
                     ));
-                    pos += 9 + n_bindings;
+                    pos += 10 + n_bindings;
                 }
                 _ => panic!("Unknown pattern kind: {}", kind),
             }
@@ -1007,11 +1026,13 @@ impl Rir {
             },
             InstData::StructInit {
                 module,
+                ctor_head,
                 type_name,
                 fields_start,
                 fields_len,
             } => InstData::StructInit {
                 module: module.map(renumber),
+                ctor_head: ctor_head.map(renumber),
                 type_name: *type_name,
                 fields_start: *fields_start + extra_offset,
                 fields_len: *fields_len,
@@ -1268,19 +1289,25 @@ impl Rir {
                             k if k == PatternKind::Int as u32 => PATTERN_INT_SIZE as usize,
                             k if k == PatternKind::Bool as u32 => PATTERN_BOOL_SIZE as usize,
                             // Path is variable-length (RUE-221): the payload
-                            // binding count sits at offset 7, so the record is
-                            // 9 + n_bindings words (kind, span×3, module,
-                            // type_name, variant, n, bindings…, body).
-                            k if k == PatternKind::Path as u32 => 9 + extra[pos + 7] as usize,
+                            // binding count sits at offset 8, so the record is
+                            // 10 + n_bindings words (kind, span×3, module,
+                            // ctor_head, type_name, variant, n, bindings…, body).
+                            k if k == PatternKind::Path as u32 => 10 + extra[pos + 8] as usize,
                             _ => panic!("Unknown pattern kind during merge: {}", kind),
                         };
-                        // Path patterns also embed a module InstRef at offset 4
-                        // (after kind + the 3-word span; u32::MAX encodes
-                        // None); it must be renumbered like every other
-                        // InstRef or it would point into the wrong file's
-                        // instruction space after merging.
-                        if kind == PatternKind::Path as u32 && extra[pos + 4] != u32::MAX {
-                            extra[pos + 4] += inst_offset;
+                        // Path patterns embed two InstRefs that must be
+                        // renumbered like every other InstRef, or they would
+                        // point into the wrong file's instruction space after
+                        // merging: the module reference at offset 4 and the
+                        // inline type-constructor pattern head at offset 5
+                        // (RUE-596); u32::MAX encodes None for each.
+                        if kind == PatternKind::Path as u32 {
+                            if extra[pos + 4] != u32::MAX {
+                                extra[pos + 4] += inst_offset;
+                            }
+                            if extra[pos + 5] != u32::MAX {
+                                extra[pos + 5] += inst_offset;
+                            }
                         }
                         // The body InstRef is always the last element of each pattern
                         extra[pos + pattern_size - 1] += inst_offset;
@@ -1657,6 +1684,12 @@ pub enum InstData {
         /// Optional module reference (for qualified struct literals like `module.Point { ... }`)
         /// If Some, the struct is looked up in the module's exports.
         module: Option<InstRef>,
+        /// Optional inline type-constructor call head — the instruction that
+        /// reduces to the struct type at comptime for `F(args) { ... }` (RUE-596,
+        /// preview `inline_type_ctor_paths`). When `Some`, the struct type is
+        /// the reduction of this head and `type_name` is only the constructor
+        /// function's name (kept for diagnostics); `None` for `Name { ... }`.
+        ctor_head: Option<InstRef>,
         /// Struct type name
         type_name: Spur,
         /// Index into extra data where fields start
@@ -2223,11 +2256,15 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                 }
                 InstData::StructInit {
                     module,
+                    ctor_head,
                     type_name,
                     fields_start,
                     fields_len,
                 } => {
-                    let module_str = module.map(|m| format!("{}.", m)).unwrap_or_default();
+                    let module_str = match ctor_head {
+                        Some(head) => format!("<{}>.", head),
+                        None => module.map(|m| format!("{}.", m)).unwrap_or_default(),
+                    };
                     let type_str = self.interner.resolve(&*type_name);
                     let fields = self.rir.get_field_inits(*fields_start, *fields_len);
                     let fields_str: Vec<String> = fields
@@ -2592,6 +2629,7 @@ mod tests {
 
         let pattern = RirPattern::Path {
             module: None,
+            ctor_head: None,
             type_name,
             variant,
             bindings: Vec::new(),
@@ -3484,6 +3522,7 @@ mod tests {
         rir.add_inst(Inst {
             data: InstData::StructInit {
                 module: None,
+                ctor_head: None,
                 type_name,
                 fields_start,
                 fields_len,
@@ -4036,6 +4075,7 @@ mod tests {
             (
                 RirPattern::Path {
                     module: None,
+                    ctor_head: None,
                     type_name: color,
                     variant: red,
                     bindings: Vec::new(),
@@ -4046,6 +4086,7 @@ mod tests {
             (
                 RirPattern::Path {
                     module: None,
+                    ctor_head: None,
                     type_name: color,
                     variant: green,
                     bindings: Vec::new(),
@@ -4351,6 +4392,7 @@ mod tests {
             (
                 RirPattern::Path {
                     module: Some(module),
+                    ctor_head: None,
                     type_name,
                     variant,
                     bindings: Vec::new(),
@@ -4425,6 +4467,7 @@ mod tests {
         let (arms_start, arms_len) = rir2.add_match_arms(&[(
             RirPattern::Path {
                 module: None,
+                ctor_head: None,
                 type_name,
                 variant,
                 bindings: Vec::new(),
