@@ -67,24 +67,53 @@ jobs:
       - name: Run programs under valgrind memcheck
         run: scripts/run-sanitizer.sh
 
-  # AddressSanitizer over rue-runtime's arena allocator (RUE-211). Standalone
-  # cargo crate (crates/rue-runtime-asan) driven by nightly rustc — no buck2 —
-  # because -Zsanitizer=address needs nightly, an explicit --target, and the
-  # compiler-rt asan runtime linked in. detect_leaks=0: arenas are intentionally
-  # never freed (bump allocator), which LeakSanitizer would otherwise flag.
+  # AddressSanitizer over rue-runtime's arena allocator (RUE-211, RUE-560).
+  # Standalone cargo crate (crates/rue-runtime-asan) driven by nightly rustc —
+  # no buck2 — because -Zsanitizer=address needs nightly, an explicit --target,
+  # and the compiler-rt asan runtime linked in. detect_leaks=0: arenas are
+  # intentionally never freed (bump allocator), which LeakSanitizer would
+  # otherwise flag.
+  #
+  # The nightly is PINNED (RUE-560): an un-pinned `nightly` floats and a bad
+  # daily build can silently break the harness or its sanitizer wiring. Bump
+  # NIGHTLY deliberately, verifying the harness (and its negative controls)
+  # still pass on the new toolchain.
   asan:
     runs-on: ubuntu-latest
+    env:
+      NIGHTLY: nightly-2026-04-13
     steps:
       - uses: actions/checkout@v6
 
-      - name: Install nightly Rust
-        run: rustup toolchain install nightly --profile minimal
+      # clippy + rust-src round out the minimal profile: clippy for the lint
+      # gate below, rust-src is needed by some nightly asan setups.
+      - name: Install pinned nightly Rust
+        run: >
+          rustup toolchain install "$NIGHTLY" --profile minimal
+          --component clippy rust-src
 
+      # This standalone crate has no buck2 target, so it sits outside the
+      # repository-wide `./clippy.sh` query. Gate it here so it does not rot
+      # (RUE-560). Same instrumentation flags as the run, so lints see the
+      # sanitizer cfg the harness compiles under.
+      - name: Clippy the ASan harness
+        env:
+          RUSTFLAGS: "-Zsanitizer=address"
+        run: >
+          cargo "+$NIGHTLY" clippy
+          --manifest-path crates/rue-runtime-asan/Cargo.toml
+          --target x86_64-unknown-linux-gnu
+          -- -D warnings
+
+      # Runs the in-bounds allocator exercises AND spawns the negative-control
+      # children, each of which MUST abort under ASan (RUE-560). If the redzone
+      # instrumentation ever regresses, a control exits clean and the harness
+      # fails the job — the coverage is load-bearing, not decorative.
       - name: Exercise the arena allocator under AddressSanitizer
         env:
           RUSTFLAGS: "-Zsanitizer=address"
           ASAN_OPTIONS: "detect_leaks=0"
         run: >
-          cargo +nightly run
+          cargo "+$NIGHTLY" run
           --manifest-path crates/rue-runtime-asan/Cargo.toml
           --target x86_64-unknown-linux-gnu
