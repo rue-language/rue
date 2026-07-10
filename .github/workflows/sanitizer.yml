@@ -90,7 +90,7 @@ jobs:
       - name: Install pinned nightly Rust
         run: >
           rustup toolchain install "$NIGHTLY" --profile minimal
-          --component clippy rust-src
+          --component clippy,rust-src
 
       # This standalone crate has no buck2 target, so it sits outside the
       # repository-wide `./clippy.sh` query. Gate it here so it does not rot
