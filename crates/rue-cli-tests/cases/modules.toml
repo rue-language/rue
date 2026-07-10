@@ -2483,3 +2483,81 @@ pub fn two() -> i32 { false }
 ]
 compile_fail = true
 error_contains = ["a/one.rue:1:23", "b/two.rue:1:23", "aborting due to 2 previous errors"]
+
+# ---------------------------------------------------------------------------
+# Qualified associated calls must respect module membership (RUE-564)
+#
+# Found against an older revision where `module.Type.assoc_fn()` discarded
+# its module base and resolved `Type` through the global by-name tables, so
+# ANY loaded module path could prefix a root-file type or a builtin
+# (`std.math.P.make()`, `std.math.StrBuf.new()` both compiled). Fixed by the
+# module-membership validation in the qualified-type-call path; these cases
+# pin the adversarial shapes.
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "qualified_assoc_fn_wrong_module_rejected"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+description = "A root-file struct's assoc fn is not reachable through an unrelated module prefix"
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+struct P {
+    x: i32,
+    fn make() -> Self { Self { x: 42 } }
+}
+
+fn main() -> i32 {
+    let p = std.math.P.make();
+    p.x
+}
+""" }]
+compile_fail = true
+error_contains = ["E0707", "has no member `P`"]
+
+[[case]]
+name = "qualified_enum_variant_wrong_module_rejected"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+description = "A root-file enum's payload variant is not constructible through an unrelated module prefix"
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+enum E { A, B(i32) }
+
+fn main() -> i32 {
+    let e = std.option.E.B(42);
+    match e { E.B(v) => v, E.A => 0 }
+}
+""" }]
+compile_fail = true
+error_contains = ["E0707", "has no member `E`"]
+
+[[case]]
+name = "qualified_builtin_wrong_module_rejected"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+description = "The global builtin StrBuf is not reachable through an arbitrary module prefix"
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let s = std.math.StrBuf.new();
+    if s.len() == 0 { 0 } else { 1 }
+}
+""" }]
+compile_fail = true
+error_contains = ["E0707", "has no member `StrBuf`"]
+
+[[case]]
+name = "qualified_assoc_fn_right_module_ok"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+description = "Control: a qualified type the module genuinely exports keeps working"
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let O = std.option.Option(i32);
+    let o = O.Some(42);
+    match o { O.Some(v) => v, O.None => 0 }
+}
+""" }]
+exit_code = 42
