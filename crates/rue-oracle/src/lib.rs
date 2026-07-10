@@ -111,6 +111,10 @@ pub fn run_source_with_preview_features(
 }
 
 fn run_state(state: CompileState) -> Result<Outcome, Unsupported> {
+    run_state_with_budget(state, STEP_BUDGET)
+}
+
+fn run_state_with_budget(state: CompileState, budget: u64) -> Result<Outcome, Unsupported> {
     // Interpret on a dedicated large-stack worker thread. The tree-walking
     // interpreter recurses per expression *and* per call, so deep-but-valid
     // programs need far more stack than a default thread provides. Running on
@@ -125,7 +129,7 @@ fn run_state(state: CompileState) -> Result<Outcome, Unsupported> {
                 Interp {
                     state: &state,
                     stdout: String::new(),
-                    budget: STEP_BUDGET,
+                    budget,
                     depth: 0,
                 }
                 .run()
@@ -259,10 +263,11 @@ struct Interp<'a> {
     depth: u32,
 }
 
-/// Per-call activation record. `cache` is scoped to a *single block execution*
-/// (cleared on entry to each block): the CFG is block-parameter SSA, so all
-/// cross-block dataflow flows through block parameters, and a persistent cache
-/// would return stale values on loop back-edges.
+/// Per-call activation record. `cache` preserves values produced along the
+/// executed CFG path: Rue SSA values may be used in dominated blocks without
+/// being repeated as block arguments. On block entry, that block's own values
+/// are invalidated so loop re-entry recomputes the current iteration while
+/// values from executed dominators retain their original evaluation snapshot.
 struct Frame {
     /// Parameters laid out by ABI **slot**, not by logical argument: an
     /// aggregate argument spans one slot per flattened scalar leaf (a `[i32; 3]`
@@ -384,7 +389,18 @@ impl<'a> Interp<'a> {
 
         loop {
             let block = cfg.get_block(current);
-            frame.cache.clear();
+            // Re-entering a block (a loop back-edge) must recompute that
+            // block's instructions and receive fresh block arguments. Keep
+            // every other cached value: CFG SSA permits dominated blocks to
+            // use values produced by executed dominators without threading
+            // them through every intervening block, and recomputing a Load
+            // after a mutation would change its evaluation-time value.
+            for &(param, _) in &block.params {
+                frame.cache.remove(&param.as_u32());
+            }
+            for &inst in &block.insts {
+                frame.cache.remove(&inst.as_u32());
+            }
             for (i, (pv, _)) in block.params.iter().enumerate() {
                 let val = incoming
                     .get(i)
