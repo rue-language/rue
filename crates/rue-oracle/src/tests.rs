@@ -16,6 +16,11 @@ fn run_with_budget(src: &str, budget: u64) -> Result<Outcome, Unsupported> {
     run_state_with_budget(state, budget)
 }
 
+fn run_with_stdout_cap(src: &str, stdout_cap: usize) -> Result<Outcome, Unsupported> {
+    let state = compile_to_cfg(src).unwrap_or_else(|e| panic!("compile error: {e:#?}"));
+    run_state_with_limits(state, STEP_BUDGET, stdout_cap)
+}
+
 fn run_string_trio(src: &str) -> Outcome {
     let mut preview_features = PreviewFeatures::new();
     preview_features.insert(rue_compiler::PreviewFeature::StringTrio);
@@ -154,6 +159,44 @@ fn dbg_output() {
     let out = run("fn main() -> i32 { @dbg(7); @dbg(true); 0 }");
     assert_eq!(out.stdout, "7\ntrue\n");
     assert_eq!(out.exit_code, 0);
+}
+
+#[test]
+fn stdout_at_cap_remains_exact() {
+    let out = run_with_stdout_cap("fn main() -> i32 { @dbg(7); @dbg(true); 0 }", 7)
+        .unwrap_or_else(|unsupported| panic!("exactly capped output failed: {unsupported}"));
+    assert_eq!(out.stdout, "7\ntrue\n");
+}
+
+#[test]
+fn repeated_dbg_over_stdout_cap_is_unsupported() {
+    let unsupported = run_with_stdout_cap("fn main() -> i32 { @dbg(7); @dbg(8); 0 }", 3)
+        .expect_err("the second complete output line must exceed the cap");
+    assert_eq!(unsupported.0, "stdout byte limit exceeded (3-byte limit)");
+}
+
+#[test]
+fn oversized_string_dbg_is_unsupported() {
+    let unsupported = run_with_stdout_cap("fn main() -> i32 { let s = \"hello\"; @dbg(s); 0 }", 5)
+        .expect_err("the String plus its newline must exceed the cap");
+    assert_eq!(unsupported.0, "stdout byte limit exceeded (5-byte limit)");
+}
+
+#[test]
+fn stdout_cap_counts_raw_bytes_before_lossy_rendering() {
+    let src = "fn main() -> i32 {
+        let mut s = String.new();
+        s.push(195);
+        @dbg(s);
+        0
+    }";
+    let out = run_with_stdout_cap(src, 2)
+        .unwrap_or_else(|unsupported| panic!("two raw output bytes failed: {unsupported}"));
+    assert_eq!(out.stdout, "\u{fffd}\n");
+
+    let unsupported = run_with_stdout_cap(src, 1)
+        .expect_err("one content byte plus newline must exceed a one-byte cap");
+    assert_eq!(unsupported.0, "stdout byte limit exceeded (1-byte limit)");
 }
 
 #[test]

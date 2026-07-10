@@ -22,7 +22,7 @@
 //! `test.sh`, and Buck test targets set from `scripts/rue-bin`.
 
 use crate::generator;
-use rue_oracle::{RunSourceError, run_source};
+use rue_oracle::{MAX_STDOUT_BYTES, RunSourceError, run_source};
 use std::io::Read;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
@@ -43,7 +43,7 @@ enum Compiled {
     Ran {
         exit: i32,
         stdout: String,
-        /// More stdout existed beyond [`STDOUT_CAP`]; `stdout` is only a prefix.
+        /// More stdout existed beyond [`MAX_STDOUT_BYTES`]; `stdout` is only a prefix.
         stdout_truncated: bool,
         stderr: String,
     },
@@ -399,7 +399,7 @@ fn classify(oracle: &rue_oracle::Outcome, compiled: &Compiled) -> Verdict {
             // prefix so truncation can never manufacture agreement.
             if *stdout_truncated {
                 return Verdict::Disagree(format!(
-                    "compiled stdout exceeded the {STDOUT_CAP}-byte capture limit; \
+                    "compiled stdout exceeded the {MAX_STDOUT_BYTES}-byte capture limit; \
                      retained prefix cannot prove agreement"
                 ));
             }
@@ -496,11 +496,6 @@ fn compile_and_run(
     run_with_timeout(cmd, timeout)
 }
 
-/// Maximum stdout bytes retained from a generated binary. Output past this
-/// bound is still drained, and the explicit truncation bit makes the run a
-/// disagreement rather than comparing an incomplete prefix as if it were exact.
-const STDOUT_CAP: usize = 256 * 1024;
-
 /// Maximum stderr bytes retained from a run. Trap messages are short; the cap
 /// only bounds how much we *keep* — the pipe is still drained to EOF (see
 /// [`read_capped`]) so a chatty process can never deadlock the wait loop.
@@ -544,7 +539,9 @@ fn wait_for_process(mut child: Child, timeout: Duration) -> std::io::Result<Proc
     let stdout_pipe = child.stdout.take();
     let stderr_pipe = child.stderr.take();
     let stdout_reader = std::thread::spawn(move || {
-        stdout_pipe.map_or_else(CappedRead::default, |out| read_capped(out, STDOUT_CAP))
+        stdout_pipe.map_or_else(CappedRead::default, |out| {
+            read_capped(out, MAX_STDOUT_BYTES)
+        })
     });
     let stderr_reader = std::thread::spawn(move || {
         stderr_pipe.map_or_else(CappedRead::default, |err| read_capped(err, STDERR_CAP))
@@ -1118,7 +1115,7 @@ mod tests {
         // (~64KB) must be drained concurrently while it runs. Before the fix the
         // pipe filled, the writer blocked on `write()`, `try_wait` never saw an
         // exit, and the 10s timeout fabricated a `Compiled::Timeout` (→ a false
-        // Disagree). Emit ~200KB (below STDOUT_CAP), capture every byte, and
+        // Disagree). Emit ~200KB (below MAX_STDOUT_BYTES), capture every byte, and
         // prove the complete output still participates in exact agreement.
         let n = 200_000usize;
         let mut cmd = Command::new("sh");
@@ -1146,7 +1143,7 @@ mod tests {
 
     #[test]
     fn stdout_above_cap_is_drained_capped_and_cannot_agree_on_its_prefix() {
-        let n = STDOUT_CAP + 100_000;
+        let n = MAX_STDOUT_BYTES + 100_000;
         let mut cmd = Command::new("sh");
         cmd.arg("-c").arg(format!("yes y | head -c {n}"));
         let result = run_with_timeout(cmd, Duration::from_secs(30)).expect("spawn");
@@ -1159,7 +1156,11 @@ mod tests {
                 ..
             } => {
                 assert_eq!(*exit, 0);
-                assert_eq!(stdout.len(), STDOUT_CAP, "retained stdout must be capped");
+                assert_eq!(
+                    stdout.len(),
+                    MAX_STDOUT_BYTES,
+                    "retained stdout must be capped"
+                );
                 assert!(*stdout_truncated, "overflow must remain explicit");
 
                 // Even an oracle outcome equal to the retained prefix cannot
@@ -1179,7 +1180,7 @@ mod tests {
         // Run the writer directly so killing the timed child closes the only
         // pipe write end. This is the adversarial always-on-smoke case: a
         // miscompiled binary can print forever, but retained memory stays at
-        // STDOUT_CAP and kill/reap/join still returns promptly.
+        // MAX_STDOUT_BYTES and kill/reap/join still returns promptly.
         let mut cmd = Command::new("yes");
         cmd.arg("y");
         let start = Instant::now();
@@ -1230,6 +1231,10 @@ mod tests {
         // Fewer bytes than the cap: keep them all.
         let kept = read_capped(std::io::Cursor::new(vec![b'q'; 10]), STDERR_CAP);
         assert_eq!(kept.bytes.len(), 10);
+        assert!(!kept.truncated);
+        // Exactly the cap is still complete, not truncated.
+        let kept = read_capped(std::io::Cursor::new(vec![b'x'; STDERR_CAP]), STDERR_CAP);
+        assert_eq!(kept.bytes.len(), STDERR_CAP);
         assert!(!kept.truncated);
     }
 
