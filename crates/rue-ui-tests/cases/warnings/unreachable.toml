@@ -197,6 +197,94 @@ exit_code = 10
 warning_contains = ["unreachable pattern"]
 expected_warning_count = 2
 
+# =============================================================================
+# Unreachable patterns in comptime-specialized matches (RUE-555)
+#
+# A `match` on a comptime value parameter is pruned to its selected arm during
+# specialization, but unreachable-pattern warnings (spec 4.7:20) are a property
+# of the pattern set and must still fire — the same warning a structurally
+# identical ordinary match produces.
+# =============================================================================
+
+[[case]]
+name = "comptime_specialized_match_unreachable_pattern"
+source = """
+fn specialized(comptime n: i32) -> i32 {
+    match n {
+        _ => 42,
+        1 => 0,
+    }
+}
+fn main() -> i32 {
+    specialized(1)
+}
+"""
+exit_code = 42
+warning_contains = ["unreachable pattern", "'1'"]
+expected_warning_count = 1
+
+[[case]]
+name = "comptime_and_ordinary_match_both_warn"
+source = """
+fn specialized(comptime n: i32) -> i32 {
+    match n {
+        _ => 42,
+        1 => 0,
+    }
+}
+fn ordinary(n: i32) -> i32 {
+    match n {
+        _ => 42,
+        1 => 0,
+    }
+}
+fn main() -> i32 {
+    specialized(1) + ordinary(0) - 42
+}
+"""
+exit_code = 42
+warning_contains = ["unreachable pattern"]
+expected_warning_count = 2
+
+# Two specializations of the same generic fn share one source location, so the
+# structural warning is reported once, not once per specialization.
+[[case]]
+name = "comptime_specialized_match_warning_deduplicated"
+source = """
+fn specialized(comptime n: i32) -> i32 {
+    match n {
+        _ => 42,
+        1 => 0,
+    }
+}
+fn main() -> i32 {
+    specialized(1) + specialized(2) - 84
+}
+"""
+exit_code = 0
+warning_contains = ["unreachable pattern", "'1'"]
+expected_warning_count = 1
+
+# A duplicate integer literal (before any wildcard) in a specialized body is
+# unreachable too, exercising the non-wildcard warning path.
+[[case]]
+name = "comptime_specialized_match_duplicate_literal"
+source = """
+fn specialized(comptime n: i32) -> i32 {
+    match n {
+        1 => 10,
+        1 => 20,
+        _ => 30,
+    }
+}
+fn main() -> i32 {
+    specialized(1) - 10
+}
+"""
+exit_code = 0
+warning_contains = ["unreachable pattern", "'1'"]
+expected_warning_count = 1
+
 [[case]]
 name = "duplicate_wildcard"
 source = """

@@ -1648,6 +1648,42 @@ fn main() -> i32 {
 """
 exit_code = 42
 
+# RUE-554: only the *taken* branch of a comptime-known `if` is analyzed, so the
+# statically-dead branch may have an unrelated type. Here `choose(1)` takes the
+# `42` branch; the dead `else { false }` (a bool, incompatible with the `i32`
+# return) must not be type-checked. Inference must prune the branch too, not
+# just sema — a shape-independent condition (`n == 1`) is comptime-evaluable
+# under 4.14:27.
+[[case]]
+name = "comptime_if_dead_branch_different_type_ok"
+spec = ["4.14:17", "4.14:27"]
+description = "The untaken branch of a comptime if is exempt from the branch same-type rule; only the taken branch is analyzed"
+source = """
+fn choose(comptime n: i32) -> i32 {
+    if n == 1 { 42 } else { false }
+}
+fn main() -> i32 {
+    choose(1)
+}
+"""
+exit_code = 42
+
+# The reverse selection: `pick(0)` takes the `else` branch, so the dead
+# `then` branch (a bool) is exempt while the taken `99` branch is analyzed.
+[[case]]
+name = "comptime_if_dead_then_branch_different_type_ok"
+spec = ["4.14:17", "4.14:27"]
+description = "The untaken then-branch of a comptime if may have an unrelated type"
+source = """
+fn pick(comptime n: i32) -> i32 {
+    if n == 1 { false } else { 99 }
+}
+fn main() -> i32 {
+    pick(0) - 99
+}
+"""
+exit_code = 0
+
 [[case]]
 name = "comptime_recursion_depth_limit"
 spec = ["4.14:18"]
@@ -1795,6 +1831,27 @@ fn sign(comptime n: i32) -> i32 {
 }
 fn main() -> i32 {
     sign(7)
+}
+"""
+exit_code = 42
+
+# RUE-554: a compound scrutinee (`n + 0`), not just a bare `match n`, is
+# comptime-evaluable under 4.14:27, so its arm is selected at compile time and
+# the statically-dead arm's unrelated type is exempt. Inference must prune the
+# arm too, not only sema.
+[[case]]
+name = "comptime_match_compound_scrutinee_dead_arm_ok"
+spec = ["4.14:19", "4.14:27"]
+description = "A comptime match with a compound (arithmetic) scrutinee prunes to the selected arm; the dead arm may have a different type"
+source = """
+fn choose(comptime n: i32) -> i32 {
+    match n + 0 {
+        1 => 42,
+        _ => false,
+    }
+}
+fn main() -> i32 {
+    choose(1)
 }
 """
 exit_code = 42

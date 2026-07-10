@@ -1128,6 +1128,146 @@ impl<'a> Sema<'a> {
         }
     }
 
+    /// Emit unreachable-pattern warnings (spec 4.7:20) for a `match` that the
+    /// comptime-selection path is about to prune to its single selected arm.
+    /// Pruning returns that arm's body without running the normal per-arm loop
+    /// in [`Self::analyze_match`], which is where these warnings are otherwise
+    /// produced; without this a comptime-specialized match silently accepts
+    /// unreachable arms that a structurally identical ordinary match rejects
+    /// (RUE-555). Only the wildcard / integer / boolean pattern shapes a
+    /// prunable match can contain are inspected — an enum pattern makes the
+    /// match non-prunable, so it takes the normal path — and no arm *body* is
+    /// analyzed, honoring 4.14:19. `scrutinee_type` is the HM-resolved type,
+    /// used only to canonicalize integer patterns for duplicate detection;
+    /// every pattern was already range-checked by the caller, so the
+    /// `check_pattern_int` below never errors here.
+    ///
+    /// The warning shapes and messages mirror the normal per-arm loop exactly,
+    /// so a pruned match and an ordinary match report identical diagnostics.
+    fn warn_unreachable_pruned_arms(
+        &self,
+        arms: &[(RirPattern, InstRef)],
+        scrutinee_type: Type,
+        ctx: &mut AnalysisContext,
+    ) {
+        let mut wildcard_span: Option<Span> = None;
+        let mut bool_true_span: Option<Span> = None;
+        let mut bool_false_span: Option<Span> = None;
+        let mut seen_ints: HashMap<i64, Span> = HashMap::new();
+        for (pattern, _) in arms {
+            let pattern_span = pattern.span();
+
+            // Any arm after a wildcard is unreachable.
+            if let Some(first_wildcard_span) = wildcard_span {
+                let pat_str = match pattern {
+                    RirPattern::Wildcard(_) => "_".to_string(),
+                    RirPattern::Int {
+                        value, negative, ..
+                    } => {
+                        if *negative {
+                            format!("-{}", value)
+                        } else {
+                            value.to_string()
+                        }
+                    }
+                    RirPattern::Bool(b, _) => b.to_string(),
+                    RirPattern::Path {
+                        type_name, variant, ..
+                    } => format!(
+                        "{}.{}",
+                        self.interner.resolve(&*type_name),
+                        self.interner.resolve(&*variant)
+                    ),
+                };
+                ctx.warnings.push(
+                    CompileWarning::new(WarningKind::UnreachablePattern(pat_str), pattern_span)
+                        .with_label("previous wildcard pattern here", first_wildcard_span)
+                        .with_note(
+                            "this pattern will never be matched because the wildcard pattern above matches everything",
+                        ),
+                );
+                continue;
+            }
+
+            match pattern {
+                RirPattern::Wildcard(_) => {
+                    // A `_` after both booleans are already covered is
+                    // unreachable. An integer scrutinee is never fully covered
+                    // by literals, and enum patterns can't reach this path.
+                    if scrutinee_type == Type::BOOL
+                        && bool_true_span.is_some()
+                        && bool_false_span.is_some()
+                    {
+                        ctx.warnings.push(
+                            CompileWarning::new(
+                                WarningKind::UnreachablePattern("_".to_string()),
+                                pattern_span,
+                            )
+                            .with_note(
+                                "this pattern will never be matched because the arms above already cover every possible value",
+                            ),
+                        );
+                    }
+                    wildcard_span = Some(pattern_span);
+                }
+                RirPattern::Int {
+                    value, negative, ..
+                } => {
+                    // Every pattern already passed the caller's range check, so
+                    // this only recomputes the canonical value for dedup.
+                    let Ok(n) =
+                        self.check_pattern_int(*value, *negative, scrutinee_type, pattern_span)
+                    else {
+                        continue;
+                    };
+                    if let Some(first_span) = seen_ints.get(&n) {
+                        let pat_str = if *negative {
+                            format!("-{}", value)
+                        } else {
+                            value.to_string()
+                        };
+                        ctx.warnings.push(
+                            CompileWarning::new(
+                                WarningKind::UnreachablePattern(pat_str),
+                                pattern_span,
+                            )
+                            .with_label("first occurrence of this pattern", *first_span)
+                            .with_note(
+                                "this pattern will never be matched because an earlier arm already matches the same value",
+                            ),
+                        );
+                    } else {
+                        seen_ints.insert(n, pattern_span);
+                    }
+                }
+                RirPattern::Bool(b, _) => {
+                    let first_span_opt = if *b {
+                        &mut bool_true_span
+                    } else {
+                        &mut bool_false_span
+                    };
+                    if let Some(first_span) = *first_span_opt {
+                        ctx.warnings.push(
+                            CompileWarning::new(
+                                WarningKind::UnreachablePattern(b.to_string()),
+                                pattern_span,
+                            )
+                            .with_label("first occurrence of this pattern", first_span)
+                            .with_note(
+                                "this pattern will never be matched because an earlier arm already matches the same value",
+                            ),
+                        );
+                    } else {
+                        *first_span_opt = Some(pattern_span);
+                    }
+                }
+                // Enum patterns can't appear in a prunable match (they set
+                // `prunable = false` in the caller), so there's nothing to do.
+                RirPattern::Path { .. } => {}
+            }
+        }
+    }
+
     /// Analyze a match expression.
     fn analyze_match(
         &mut self,
@@ -1241,6 +1381,15 @@ impl<'a> Sema<'a> {
                             }
                         }
                     }
+                    // Unreachable-pattern diagnostics (spec 4.7:20) are a
+                    // property of the pattern *set*, not of which arm the
+                    // comptime value selects, so they must still fire even
+                    // though we prune to a single body below (RUE-555). The
+                    // normal per-arm loop that would otherwise emit them is
+                    // skipped by the early return, so run them here. Only
+                    // pattern shapes are inspected — no arm body is analyzed,
+                    // honoring 4.14:19.
+                    self.warn_unreachable_pruned_arms(&arms, scrutinee_type, ctx);
                     if let Some(body) = selected {
                         ctx.push_scope();
                         let result = self.analyze_inst(air, body, ctx)?;

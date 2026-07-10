@@ -1377,6 +1377,38 @@ impl<'a> ConstraintGenerator<'a> {
                     cond_info.span,
                 ));
 
+                // Comptime-known condition (spec 4.14:17): inside a
+                // specialization whose comptime value params make the condition
+                // compile-time evaluable, only the taken branch is analyzed —
+                // the untaken branch may be legal only for other
+                // specializations, exactly as sema's `analyze_branch` prunes it
+                // (RUE-554). This mirrors the `Match` arm's comptime selection;
+                // the `comptime_values.is_some()` gate (the analog of sema's
+                // non-empty `comptime_value_vars`) keeps ordinary `if`s fully
+                // constrained even when the condition is a literal, and the
+                // cond above is still constrained to `bool` on every path.
+                if self.comptime_values.is_some()
+                    && let Some(ConstValue::Bool(taken)) = self.eval_comptime_value(*cond)
+                {
+                    let selected = if taken {
+                        Some(*then_block)
+                    } else {
+                        *else_block
+                    };
+                    let result_ty = match selected {
+                        Some(block) => {
+                            ctx.push_scope();
+                            let info = self.generate(block, ctx);
+                            ctx.pop_scope();
+                            info.ty
+                        }
+                        // `if false { .. }` with no else: nothing runs, unit.
+                        None => InferType::Concrete(Type::UNIT),
+                    };
+                    self.record_type(inst_ref, result_ty.clone());
+                    return ExprInfo::new(result_ty, span);
+                }
+
                 let then_info = self.generate(*then_block, ctx);
 
                 if let Some(else_ref) = else_block {
@@ -2485,20 +2517,142 @@ impl<'a> ConstraintGenerator<'a> {
 
     /// Extract a comptime *value* argument as an integer constant, for
     /// resolving an array length parameterized by a comptime value param
-    /// (`fn f(comptime N: i32) -> [i32; N]`, RUE-252). Handles an integer
-    /// literal, its negation, and a reference to a file-level `const`; other
-    /// forms (checked fully in sema) yield `None`.
+    /// (`fn f(comptime N: i32) -> [i32; N]`, RUE-252/RUE-553). Evaluates any
+    /// compile-time-known integer expression — a literal, a `const`/comptime
+    /// value reference, and arithmetic over them (`make(1 + 2)`) — via
+    /// [`Self::eval_comptime_value`]; non-integer or non-comptime forms
+    /// (checked fully in sema) yield `None`.
     fn extract_int_argument(&self, arg: InstRef) -> Option<i128> {
-        match &self.rir.get(arg).data {
-            InstData::IntConst(v) => Some(*v as i128),
-            InstData::Neg { operand } => {
-                if let InstData::IntConst(v) = &self.rir.get(*operand).data {
-                    Some(-(*v as i128))
-                } else {
-                    None
-                }
-            }
-            InstData::VarRef { name } => self.const_values.and_then(|m| m.get(name).copied()),
+        match self.eval_comptime_value(arg)? {
+            ConstValue::Integer(n) => Some(n),
+            _ => None,
+        }
+    }
+
+    /// Evaluate a compile-time-known integer/boolean expression against the
+    /// comptime value parameters (`comptime_values`) and file-level integer
+    /// constants (`const_values`) currently in scope, returning its
+    /// [`ConstValue`]. Handles literals, `const`/comptime references, unary
+    /// `-`/`!`, integer arithmetic (`+ - * / %`), the comparison operators,
+    /// and boolean `&& ||`.
+    ///
+    /// Returns `None` for any form not statically decidable here — a runtime
+    /// value, a call, an operation that could trap (division or modulo by
+    /// zero) or overflow `i128`, or a kind mismatch (comparing an integer to a
+    /// bool). This mirrors the *values* sema's comptime evaluator produces for
+    /// the same expressions so inference and sema agree on which branch/arm is
+    /// live (RUE-553/RUE-554); when in doubt it returns `None`, keeping it a
+    /// strict subset of what sema evaluates, so the caller safely falls back
+    /// to its runtime path.
+    fn eval_comptime_value(&self, inst: InstRef) -> Option<ConstValue> {
+        use ConstValue::{Bool, Integer};
+        match &self.rir.get(inst).data {
+            InstData::IntConst(v) => Some(Integer(*v as i128)),
+            InstData::BoolConst(b) => Some(Bool(*b)),
+            InstData::VarRef { name } => self
+                .comptime_values
+                .and_then(|m| m.get(name).copied())
+                .or_else(|| {
+                    self.const_values
+                        .and_then(|m| m.get(name).copied())
+                        .map(Integer)
+                }),
+            InstData::Neg { operand } => match self.eval_comptime_value(*operand)? {
+                Integer(n) => Some(Integer(n.checked_neg()?)),
+                _ => None,
+            },
+            InstData::Not { operand } => match self.eval_comptime_value(*operand)? {
+                Bool(b) => Some(Bool(!b)),
+                _ => None,
+            },
+            InstData::Add { lhs, rhs } => self.eval_int_binop(*lhs, *rhs, i128::checked_add),
+            InstData::Sub { lhs, rhs } => self.eval_int_binop(*lhs, *rhs, i128::checked_sub),
+            InstData::Mul { lhs, rhs } => self.eval_int_binop(*lhs, *rhs, i128::checked_mul),
+            // `checked_div`/`checked_rem` return `None` on divide-by-zero, so a
+            // trapping operation falls back to the runtime path rather than
+            // diverging from sema (which reports the error).
+            InstData::Div { lhs, rhs } => self.eval_int_binop(*lhs, *rhs, i128::checked_div),
+            InstData::Mod { lhs, rhs } => self.eval_int_binop(*lhs, *rhs, i128::checked_rem),
+            InstData::Eq { lhs, rhs } => self.eval_eq(*lhs, *rhs, true),
+            InstData::Ne { lhs, rhs } => self.eval_eq(*lhs, *rhs, false),
+            InstData::Lt { lhs, rhs } => self.eval_int_cmp(*lhs, *rhs, |a, b| a < b),
+            InstData::Gt { lhs, rhs } => self.eval_int_cmp(*lhs, *rhs, |a, b| a > b),
+            InstData::Le { lhs, rhs } => self.eval_int_cmp(*lhs, *rhs, |a, b| a <= b),
+            InstData::Ge { lhs, rhs } => self.eval_int_cmp(*lhs, *rhs, |a, b| a >= b),
+            InstData::And { lhs, rhs } => self.eval_bool_binop(*lhs, *rhs, |a, b| a && b),
+            InstData::Or { lhs, rhs } => self.eval_bool_binop(*lhs, *rhs, |a, b| a || b),
+            _ => None,
+        }
+    }
+
+    /// Evaluate both operands as comptime integers and combine them with a
+    /// checked arithmetic op; `None` if either operand isn't a comptime
+    /// integer or the op traps/overflows. See [`Self::eval_comptime_value`].
+    fn eval_int_binop(
+        &self,
+        lhs: InstRef,
+        rhs: InstRef,
+        f: fn(i128, i128) -> Option<i128>,
+    ) -> Option<ConstValue> {
+        let a = self.eval_comptime_int(lhs)?;
+        let b = self.eval_comptime_int(rhs)?;
+        f(a, b).map(ConstValue::Integer)
+    }
+
+    /// Evaluate both operands as comptime integers and compare them, yielding a
+    /// boolean. See [`Self::eval_comptime_value`].
+    fn eval_int_cmp(
+        &self,
+        lhs: InstRef,
+        rhs: InstRef,
+        f: fn(i128, i128) -> bool,
+    ) -> Option<ConstValue> {
+        let a = self.eval_comptime_int(lhs)?;
+        let b = self.eval_comptime_int(rhs)?;
+        Some(ConstValue::Bool(f(a, b)))
+    }
+
+    /// Evaluate both operands as comptime booleans and combine them. `None` if
+    /// either operand isn't a comptime bool. See [`Self::eval_comptime_value`].
+    fn eval_bool_binop(
+        &self,
+        lhs: InstRef,
+        rhs: InstRef,
+        f: fn(bool, bool) -> bool,
+    ) -> Option<ConstValue> {
+        let a = self.eval_comptime_bool(lhs)?;
+        let b = self.eval_comptime_bool(rhs)?;
+        Some(ConstValue::Bool(f(a, b)))
+    }
+
+    /// `==`/`!=` over two comptime values of the *same* kind (both integers or
+    /// both booleans). A kind mismatch — comparing an integer to a bool — is
+    /// ill-typed and left to sema, so this returns `None` rather than a
+    /// defined-but-misleading answer. See [`Self::eval_comptime_value`].
+    fn eval_eq(&self, lhs: InstRef, rhs: InstRef, want_equal: bool) -> Option<ConstValue> {
+        use ConstValue::{Bool, Integer};
+        let a = self.eval_comptime_value(lhs)?;
+        let b = self.eval_comptime_value(rhs)?;
+        let equal = match (a, b) {
+            (Integer(x), Integer(y)) => x == y,
+            (Bool(x), Bool(y)) => x == y,
+            _ => return None,
+        };
+        Some(Bool(equal == want_equal))
+    }
+
+    /// Evaluate `inst` as a comptime integer, or `None` if it isn't one.
+    fn eval_comptime_int(&self, inst: InstRef) -> Option<i128> {
+        match self.eval_comptime_value(inst)? {
+            ConstValue::Integer(n) => Some(n),
+            _ => None,
+        }
+    }
+
+    /// Evaluate `inst` as a comptime boolean, or `None` if it isn't one.
+    fn eval_comptime_bool(&self, inst: InstRef) -> Option<bool> {
+        match self.eval_comptime_value(inst)? {
+            ConstValue::Bool(b) => Some(b),
             _ => None,
         }
     }
@@ -2512,11 +2666,13 @@ impl<'a> ConstraintGenerator<'a> {
     /// program whose statically-unselected arm has a different type (RUE-268).
     ///
     /// Returns `None` — meaning "constrain all arms as a runtime match" — for
-    /// any shape not understood (a non-comptime or compound scrutinee, an enum
-    /// pattern, a non-exhaustive set). The comptime cases handled here are a
-    /// strict subset of those sema prunes with the same value and patterns, so
-    /// whenever this prunes, sema also prunes to the *same* arm — the only arm
-    /// whose body inference generated a type for.
+    /// any shape not understood (a scrutinee that isn't comptime-evaluable, an
+    /// enum pattern, a non-exhaustive set). A compound comptime scrutinee
+    /// (`match n + 0`) is handled the same as a bare `match n`, since both go
+    /// through [`Self::eval_comptime_value`] (RUE-554). The comptime cases
+    /// handled here are a strict subset of those sema prunes with the same
+    /// value and patterns, so whenever this prunes, sema also prunes to the
+    /// *same* arm — the only arm whose body inference generated a type for.
     fn comptime_selected_arm(
         &self,
         scrutinee: InstRef,
@@ -2524,13 +2680,15 @@ impl<'a> ConstraintGenerator<'a> {
     ) -> Option<InstRef> {
         use rue_rir::RirPattern;
 
-        // Only a bare reference to a comptime value parameter is evaluated
-        // here; richer scrutinees are left to sema's own selection.
-        // `ConstValue` is `Copy`, so take an owned copy for the match below.
-        let value: ConstValue = match &self.rir.get(scrutinee).data {
-            InstData::VarRef { name } => *self.comptime_values?.get(name)?,
-            _ => return None,
-        };
+        // Only prune inside a specialization that has comptime value params in
+        // scope (mirrors sema's `!ctx.comptime_value_vars.is_empty()` gate in
+        // `analyze_match`); ordinary functions treat every match as runtime.
+        self.comptime_values?;
+        // Evaluate the scrutinee with the shared comptime evaluator, so a
+        // compound scrutinee (`match n + 0 { .. }`) prunes exactly like the
+        // bare `match n` form — matching sema's `try_evaluate_const_in_fn`
+        // rather than a syntax-specific extraction (RUE-554).
+        let value: ConstValue = self.eval_comptime_value(scrutinee)?;
 
         let mut selected: Option<InstRef> = None;
         let mut has_wildcard = false;

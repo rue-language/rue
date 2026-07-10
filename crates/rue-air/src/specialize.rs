@@ -25,10 +25,11 @@
 //! It transforms the AIR in-place and adds new specialized functions to the output.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::collections::hash_map::Entry;
 
 use lasso::{Key, Spur, ThreadedRodeo};
-use rue_error::{CompileError, CompileResult, ErrorKind};
+use rue_error::{CompileError, CompileResult, CompileWarning, ErrorKind, WarningKind};
 use rue_rir::RirParamMode;
 use rue_span::Span;
 
@@ -179,6 +180,12 @@ pub fn specialize(
     // Index of the first function not yet scanned for CallGeneric instructions.
     let mut next_unscanned = 0;
     let mut rounds = 0;
+    // Spans of unreachable-pattern warnings already surfaced from specialized
+    // bodies (RUE-555). A generic function's pattern set is a static property
+    // of its single source location, so every specialization of it would emit
+    // the *same* warning at the *same* span; deduplicating by span collapses
+    // those to one, matching the single warning an ordinary function produces.
+    let mut seen_unreachable_spans: HashSet<Span> = HashSet::new();
 
     loop {
         // Phase 1: Collect specialization requests from not-yet-scanned functions
@@ -195,6 +202,10 @@ pub fn specialize(
         next_unscanned = output.functions.len();
 
         if pending.is_empty() {
+            // Unreachable-pattern warnings appended above land after the
+            // main-pass warnings sorted in `finalize_function_body_analysis`;
+            // restore span order so diagnostics read top-to-bottom (RUE-555).
+            output.warnings.sort_by_key(|w| w.span().map(|s| s.start));
             return Ok(());
         }
 
@@ -230,7 +241,7 @@ pub fn specialize(
                     ));
                 }
             };
-            let specialized_func = create_specialized_function(
+            let (specialized_func, warnings) = create_specialized_function(
                 sema,
                 infer_ctx,
                 key,
@@ -238,6 +249,22 @@ pub fn specialize(
                 &base_info,
                 interner,
             )?;
+            // Surface unreachable-pattern warnings from the specialized body
+            // (spec 4.7:20, RUE-555). A comptime-pruned match returns its
+            // selected arm before the normal warning loop, so these are emitted
+            // by `warn_unreachable_pruned_arms`; a non-pruned match in a
+            // specialized body warns via the normal loop. Both are structural
+            // (independent of the comptime value), so we keep only one per
+            // span across all specializations. Other specialized-body warnings
+            // stay suppressed, preserving existing behavior.
+            for w in warnings {
+                if matches!(w.kind, WarningKind::UnreachablePattern(_))
+                    && let Some(span) = w.span()
+                    && seen_unreachable_spans.insert(span)
+                {
+                    output.warnings.push(w);
+                }
+            }
             output.functions.push(specialized_func);
         }
     }
@@ -426,7 +453,7 @@ fn create_specialized_function(
     specialized_name: Spur,
     base_info: &FunctionInfo,
     interner: &ThreadedRodeo,
-) -> CompileResult<AnalyzedFunction> {
+) -> CompileResult<(AnalyzedFunction, Vec<CompileWarning>)> {
     let specialized_name_str = interner.resolve(&specialized_name).to_string();
 
     // Pair each comptime parameter with its argument: type parameters
@@ -509,7 +536,7 @@ fn create_specialized_function(
         num_locals,
         num_param_slots,
         param_modes,
-        _warnings,
+        warnings,
         _local_strings,
         _ref_fns,
         _ref_meths,
@@ -522,14 +549,17 @@ fn create_specialized_function(
         &value_subst,
     )?;
 
-    Ok(AnalyzedFunction {
-        name: specialized_name_str,
-        air,
-        num_locals,
-        num_param_slots,
-        param_modes,
-        allow_unreachable_code: base_info.allow_unreachable_code,
-    })
+    Ok((
+        AnalyzedFunction {
+            name: specialized_name_str,
+            air,
+            num_locals,
+            num_param_slots,
+            param_modes,
+            allow_unreachable_code: base_info.allow_unreachable_code,
+        },
+        warnings,
+    ))
 }
 
 /// Resolve a parameter's concrete type by substituting type parameters into
