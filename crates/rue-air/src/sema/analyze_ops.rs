@@ -1943,6 +1943,25 @@ impl<'a> Sema<'a> {
         }
     }
 
+    /// Recognize a `Result`-shaped enum (`Ok(T)` / `Err(E)`) by variant name and
+    /// payload arity, mirroring [`Self::option_enum_shape`] (ADR-0038). Returns
+    /// `(ok_idx, err_idx, ok_payload_ty, err_payload_ty)`.
+    fn result_enum_shape(&self, enum_id: crate::types::EnumId) -> Option<(u32, u32, Type, Type)> {
+        let def = self.type_pool.enum_def(enum_id);
+        if def.variant_count() != 2 {
+            return None;
+        }
+        let ok_idx = def.find_variant("Ok")?;
+        let err_idx = def.find_variant("Err")?;
+        let ok_payload = def.variant_payload(ok_idx);
+        let err_payload = def.variant_payload(err_idx);
+        if ok_payload.len() == 1 && err_payload.len() == 1 {
+            Some((ok_idx as u32, err_idx as u32, ok_payload[0], err_payload[0]))
+        } else {
+            None
+        }
+    }
+
     /// Analyze the `?` operator (RUE-6, ADR-0038).
     ///
     /// `operand?` requires `operand` to be an `Option(T)` and the enclosing
@@ -1958,43 +1977,17 @@ impl<'a> Sema<'a> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        // The enclosing function must return an `Option`; `?` propagates its
-        // `None`. Resolve that shape first so a clear error fires even when the
-        // operand is fine (E0503).
         let return_type = ctx.return_type;
-        let ret_shape = return_type.as_enum().and_then(|rid| {
-            self.option_enum_shape(rid)
-                .map(|(_, none_idx, _)| (rid, none_idx))
-        });
-        let (ret_enum_id, ret_none_idx) = match ret_shape {
-            Some(s) => s,
-            None => {
-                // Still analyze the operand so unrelated errors inside it are
-                // reported, but the `?` itself is the diagnostic.
-                if return_type.is_error() {
-                    let r = self.analyze_inst(air, operand, ctx)?;
-                    return Ok(AnalysisResult::new(r.air_ref, Type::ERROR));
-                }
-                return Err(CompileError::new(
-                    ErrorKind::QuestionOutsideOptionFn {
-                        return_type: return_type.safe_name_with_pool(Some(&self.type_pool)),
-                    },
-                    span,
-                ));
-            }
-        };
 
-        // Analyze the operand.
+        // Analyze the operand first, then dispatch on ITS shape (Option vs
+        // Result); the enclosing return type must match (ADR-0038).
         //
-        // `?` works on any typed `Option` value (a function result, constructor,
-        // variable, etc.), whose type is already known. A BARE fallible-intrinsic
-        // operand — `@read_line()?` / `@parse_i64(s)?` — is special: the intrinsic
-        // needs its exact `Option` return type (e.g. `Option(String)`), and the
-        // `?` site cannot supply it as an `expected_type` — the enclosing fn's
-        // `Option(U)` has the wrong payload (RUE-318). So we clear `expected_type`
-        // and set `try_operand`, telling a fallible intrinsic to instantiate its
-        // OWN fixed `Option(payload)` (it knows its payload). A non-intrinsic
-        // operand ignores both flags — its type is resolved independently.
+        // A BARE fallible-intrinsic operand — `@read_line()?` / `@parse_i64(s)?`
+        // — is special: the intrinsic needs its exact `Option` return type and
+        // the `?` site cannot supply it as an `expected_type` (RUE-318), so we
+        // clear `expected_type` and set `try_operand` so the intrinsic
+        // instantiates its OWN fixed payload. A non-intrinsic operand ignores
+        // both flags — its type is resolved independently.
         let prev_expected = ctx.expected_type.take();
         let prev_try_operand = ctx.try_operand;
         ctx.try_operand = true;
@@ -2004,16 +1997,12 @@ impl<'a> Sema<'a> {
         let operand_result = operand_outcome?;
         let operand_ty = operand_result.ty;
 
-        if operand_ty.is_error() {
+        if operand_ty.is_error() || return_type.is_error() {
             return Ok(AnalysisResult::new(operand_result.air_ref, Type::ERROR));
         }
 
-        // The operand must be an `Option`-shaped enum (E0504).
-        let (some_idx, none_idx, payload_ty) = match operand_ty
-            .as_enum()
-            .and_then(|oid| self.option_enum_shape(oid).map(|s| (oid, s)))
-        {
-            Some((_oid, shape)) => shape,
+        let operand_enum_id = match operand_ty.as_enum() {
+            Some(id) => id,
             None => {
                 return Err(CompileError::new(
                     ErrorKind::QuestionOnNonOption {
@@ -2023,53 +2012,185 @@ impl<'a> Sema<'a> {
                 ));
             }
         };
-        let operand_enum_id = operand_ty
-            .as_enum()
-            .expect("operand is an Option-shaped enum");
 
-        // Some(v) arm: read the payload out of the scrutinee; that value is the
-        // arm's (and the whole `?`-expression's) result. Mirrors the payload
-        // read that a `Some(v) => v` match arm performs (RUE-221).
-        let some_body = air.add_inst(AirInst {
+        // Option operand: `?` evaluates to `T` on `Some(v)` and early-returns
+        // the enclosing function's `None`.
+        if let Some((some_idx, none_idx, payload_ty)) = self.option_enum_shape(operand_enum_id) {
+            let ret_shape = return_type
+                .as_enum()
+                .and_then(|rid| self.option_enum_shape(rid).map(|(_, n, _)| (rid, n)));
+            let (ret_enum_id, ret_none_idx) = match ret_shape {
+                Some(s) => s,
+                None => {
+                    return Err(CompileError::new(
+                        ErrorKind::QuestionOutsideOptionFn {
+                            return_type: return_type.safe_name_with_pool(Some(&self.type_pool)),
+                        },
+                        span,
+                    ));
+                }
+            };
+            return Ok(self.build_try_desugar(
+                air,
+                operand_result.air_ref,
+                operand_enum_id,
+                some_idx,
+                none_idx,
+                payload_ty,
+                return_type,
+                ret_enum_id,
+                ret_none_idx,
+                None,
+                span,
+            ));
+        }
+
+        // Result operand: `?` evaluates to `T` on `Ok(v)` and early-returns
+        // `Err(e)`. The error type must match exactly (ADR-0038, no conversion).
+        if let Some((ok_idx, err_idx, ok_ty, err_ty)) = self.result_enum_shape(operand_enum_id) {
+            let ret_shape = return_type.as_enum().and_then(|rid| {
+                self.result_enum_shape(rid)
+                    .map(|(_, e, _, et)| (rid, e, et))
+            });
+            let (ret_enum_id, ret_err_idx, ret_err_ty) = match ret_shape {
+                Some(s) => s,
+                None => {
+                    return Err(CompileError::new(
+                        ErrorKind::QuestionOutsideResultFn {
+                            return_type: return_type.safe_name_with_pool(Some(&self.type_pool)),
+                        },
+                        span,
+                    ));
+                }
+            };
+            if err_ty != ret_err_ty {
+                return Err(CompileError::new(
+                    ErrorKind::QuestionErrTypeMismatch {
+                        operand_err: err_ty.safe_name_with_pool(Some(&self.type_pool)),
+                        fn_err: ret_err_ty.safe_name_with_pool(Some(&self.type_pool)),
+                    },
+                    span,
+                ));
+            }
+            return Ok(self.build_try_desugar(
+                air,
+                operand_result.air_ref,
+                operand_enum_id,
+                ok_idx,
+                err_idx,
+                ok_ty,
+                return_type,
+                ret_enum_id,
+                ret_err_idx,
+                Some(err_ty),
+                span,
+            ));
+        }
+
+        // The operand is a two-variant enum but neither Option- nor
+        // Result-shaped.
+        Err(CompileError::new(
+            ErrorKind::QuestionOnNonOption {
+                found: operand_ty.safe_name_with_pool(Some(&self.type_pool)),
+            },
+            span,
+        ))
+    }
+
+    /// Build the `match`-desugaring shared by the `?` operator's Option and
+    /// Result forms: a two-arm discriminant match whose success arm reads the
+    /// payload out and whose failure arm early-`return`s.
+    ///
+    /// `fail_err_ty` distinguishes the two: `None` is the Option case (the
+    /// failure arm drops the scrutinee and returns the nullary `None`);
+    /// `Some(err_ty)` is the Result case (the failure arm moves the error
+    /// payload out and returns `Err(e)`).
+    #[allow(clippy::too_many_arguments)]
+    fn build_try_desugar(
+        &mut self,
+        air: &mut Air,
+        scrutinee: AirRef,
+        operand_enum_id: crate::types::EnumId,
+        success_idx: u32,
+        fail_idx: u32,
+        success_payload_ty: Type,
+        return_type: Type,
+        ret_enum_id: crate::types::EnumId,
+        ret_fail_idx: u32,
+        fail_err_ty: Option<Type>,
+        span: Span,
+    ) -> AnalysisResult {
+        // Success arm (`Some(v)` / `Ok(v)`): read the payload out; it is the
+        // whole `?`-expression's value (RUE-221).
+        let success_body = air.add_inst(AirInst {
             data: AirInstData::EnumPayloadGet {
-                base: operand_result.air_ref,
+                base: scrutinee,
                 enum_id: operand_enum_id,
-                variant_index: some_idx,
+                variant_index: success_idx,
                 field_index: 0,
             },
-            ty: payload_ty,
+            ty: success_payload_ty,
             span,
         });
 
-        // None arm: drop the scrutinee (a non-binding arm consumes it; the
-        // active `None` variant carries nothing, so the drop glue is a no-op),
-        // then `return` the enclosing function's `None`.
-        let drop_scrutinee = air.add_inst(AirInst {
-            data: AirInstData::Drop {
-                value: operand_result.air_ref,
-            },
-            ty: Type::UNIT,
-            span,
-        });
-        let none_ctor = air.add_inst(AirInst {
-            data: AirInstData::EnumVariant {
-                enum_id: ret_enum_id,
-                variant_index: ret_none_idx,
-                payload_start: 0,
-                payload_len: 0,
-            },
-            ty: return_type,
-            span,
-        });
+        // Failure arm: build the early `return`.
+        let (fail_stmt, fail_ret_value) = match fail_err_ty {
+            None => {
+                // Option `None`: drop the scrutinee (nullary variant, no-op glue)
+                // and return the enclosing `None`.
+                let drop_scrutinee = air.add_inst(AirInst {
+                    data: AirInstData::Drop { value: scrutinee },
+                    ty: Type::UNIT,
+                    span,
+                });
+                let none_ctor = air.add_inst(AirInst {
+                    data: AirInstData::EnumVariant {
+                        enum_id: ret_enum_id,
+                        variant_index: ret_fail_idx,
+                        payload_start: 0,
+                        payload_len: 0,
+                    },
+                    ty: return_type,
+                    span,
+                });
+                (drop_scrutinee, none_ctor)
+            }
+            Some(err_ty) => {
+                // Result `Err(e)`: move the error payload out of the scrutinee
+                // and return `Err(e)` of the enclosing function's Result type.
+                let err_val = air.add_inst(AirInst {
+                    data: AirInstData::EnumPayloadGet {
+                        base: scrutinee,
+                        enum_id: operand_enum_id,
+                        variant_index: fail_idx,
+                        field_index: 0,
+                    },
+                    ty: err_ty,
+                    span,
+                });
+                let payload = air.add_extra(&[err_val.as_u32()]);
+                let err_ctor = air.add_inst(AirInst {
+                    data: AirInstData::EnumVariant {
+                        enum_id: ret_enum_id,
+                        variant_index: ret_fail_idx,
+                        payload_start: payload,
+                        payload_len: 1,
+                    },
+                    ty: return_type,
+                    span,
+                });
+                (err_val, err_ctor)
+            }
+        };
         let ret = air.add_inst(AirInst {
-            data: AirInstData::Ret(Some(none_ctor)),
+            data: AirInstData::Ret(Some(fail_ret_value)),
             ty: Type::NEVER,
             span,
         });
-        let none_stmts = air.add_extra(&[drop_scrutinee.as_u32()]);
-        let none_body = air.add_inst(AirInst {
+        let fail_stmts = air.add_extra(&[fail_stmt.as_u32()]);
+        let fail_body = air.add_inst(AirInst {
             data: AirInstData::Block {
-                stmts_start: none_stmts,
+                stmts_start: fail_stmts,
                 stmts_len: 1,
                 value: ret,
             },
@@ -2078,21 +2199,21 @@ impl<'a> Sema<'a> {
         });
 
         // Encode the two arms and emit the dispatching match. Its value type is
-        // the `Some` payload (the `None` arm diverges).
+        // the success payload (the failure arm diverges).
         let air_arms = [
             (
                 AirPattern::EnumVariant {
                     enum_id: operand_enum_id,
-                    variant_index: some_idx,
+                    variant_index: success_idx,
                 },
-                some_body,
+                success_body,
             ),
             (
                 AirPattern::EnumVariant {
                     enum_id: operand_enum_id,
-                    variant_index: none_idx,
+                    variant_index: fail_idx,
                 },
-                none_body,
+                fail_body,
             ),
         ];
         let mut extra_data = Vec::new();
@@ -2102,14 +2223,14 @@ impl<'a> Sema<'a> {
         let arms_start = air.add_extra(&extra_data);
         let air_ref = air.add_inst(AirInst {
             data: AirInstData::Match {
-                scrutinee: operand_result.air_ref,
+                scrutinee,
                 arms_start,
                 arms_len: air_arms.len() as u32,
             },
-            ty: payload_ty,
+            ty: success_payload_ty,
             span,
         });
-        Ok(AnalysisResult::new(air_ref, payload_ty))
+        AnalysisResult::new(air_ref, success_payload_ty)
     }
 
     /// Materialize the payload bindings of a tuple-variant match pattern

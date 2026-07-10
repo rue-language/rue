@@ -1,0 +1,21 @@
+// Result(T, E) — a fallible value, written in Rue as a comptime-generic enum
+// (ADR-0038). `Ok(T)` carries a success value, `Err(E)` an error value.
+//
+//     const std = @import("std");
+//     let R = std.result.Result(i32, i32);
+//     let x: R = R.Ok(42);
+//     match x {
+//         R.Ok(v) => v,
+//         R.Err(e) => 0 - e,
+//     }
+//
+// The `?` operator propagates it: in a function returning `Result(U, E)`,
+// `expr?` evaluates to the `Ok` payload and early-returns `Err(e)` when `expr`
+// is `Err(e)` (the error type `E` must match — no conversion until traits
+// exist).
+pub fn Result(comptime T: type, comptime E: type) -> type {
+    enum {
+        Ok(T),
+        Err(E),
+    }
+}

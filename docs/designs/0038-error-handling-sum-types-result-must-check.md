@@ -28,6 +28,16 @@ enums take their multiplicity from the join of their variants' payloads
 (spec 6.3:19/6.3:20), and the pre-payload blanket ownership rules were narrowed
 to discriminant-only enums (RUE-294).
 
+**Implementation status (updated 2026-07-10, RUE-591):** the sum-type + `?`
+machinery is implemented, and `std.Option`, `std.Result` (the `Ok(T)`/`Err(E)`
+library enum), and `?` propagation for **both** now ship. **Not yet implemented:**
+the must-check-via-linearity property below (point 4) — a `Result` is not yet a
+`linear` type, so an unhandled `Result` is silently dropped rather than rejected
+at compile time. `?` currently propagates the **exact** error type (no
+`From`/`Try` conversion, as intended until traits exist). The remaining
+linear/must-check enforcement is tracked by **RUE-591**; this ADR is not fully
+realized until it lands.
+
 ## Summary
 
 Rue gets error handling with no new ownership machinery — it composes parts that

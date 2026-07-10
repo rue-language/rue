@@ -305,6 +305,8 @@ impl ErrorCode {
     /// `Option` (RUE-6, ADR-0038): `?` early-returns `None`, so the enclosing
     /// function must return an `Option`.
     pub const QUESTION_OUTSIDE_OPTION_FN: Self = Self(503);
+    pub const QUESTION_OUTSIDE_RESULT_FN: Self = Self(505);
+    pub const QUESTION_ERR_TYPE_MISMATCH: Self = Self(506);
     /// The `?` operator was applied to a value that is not an `Option`
     /// (RUE-6, ADR-0038).
     pub const QUESTION_ON_NON_OPTION: Self = Self(504);
@@ -1361,9 +1363,21 @@ pub enum ErrorKind {
         "the `?` operator can only be used in a function that returns an `Option` (found return type `{return_type}`)"
     )]
     QuestionOutsideOptionFn { return_type: String },
-    /// The `?` operator applied to a value that is not an `Option`.
-    #[error("the `?` operator can only be applied to an `Option` (found `{found}`)")]
+    /// The `?` operator applied to a value that is neither an `Option` nor a `Result`.
+    #[error("the `?` operator can only be applied to an `Option` or `Result` (found `{found}`)")]
     QuestionOnNonOption { found: String },
+    /// `?` on a `Result` in a function that does not return a `Result` (ADR-0038).
+    #[error(
+        "the `?` operator on a `Result` requires the enclosing function to return a `Result` (found return type `{return_type}`)"
+    )]
+    QuestionOutsideResultFn { return_type: String },
+    /// `?` on a `Result` whose error type differs from the function's error type.
+    /// Rue has no error conversion (no `From`/`Try`) until traits exist, so the
+    /// error types must match exactly (ADR-0038).
+    #[error(
+        "the `?` operator requires matching error types: the operand is `Err({operand_err})` but the function returns `Err({fn_err})` (no error conversion until traits exist)"
+    )]
+    QuestionErrTypeMismatch { operand_err: String, fn_err: String },
 
     // Match errors
     #[error("match is not exhaustive")]
@@ -1637,6 +1651,8 @@ impl ErrorKind {
             ErrorKind::BreakWithValue => ErrorCode::BREAK_WITH_VALUE,
             ErrorKind::QuestionOutsideOptionFn { .. } => ErrorCode::QUESTION_OUTSIDE_OPTION_FN,
             ErrorKind::QuestionOnNonOption { .. } => ErrorCode::QUESTION_ON_NON_OPTION,
+            ErrorKind::QuestionOutsideResultFn { .. } => ErrorCode::QUESTION_OUTSIDE_RESULT_FN,
+            ErrorKind::QuestionErrTypeMismatch { .. } => ErrorCode::QUESTION_ERR_TYPE_MISMATCH,
 
             // Match errors (E0600-E0699)
             ErrorKind::NonExhaustiveMatch => ErrorCode::NON_EXHAUSTIVE_MATCH,
