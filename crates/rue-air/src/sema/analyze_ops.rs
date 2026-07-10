@@ -5828,6 +5828,16 @@ impl<'a> Sema<'a> {
                     Some(ConstValue::Type(t)) if param_types[i] == Type::COMPTIME_TYPE => {
                         type_subst.insert(param_names[i], t);
                     }
+                    // A unit argument to a `comptime T: type` parameter is the
+                    // unit TYPE (RUE-565): `()` is ambiguous between the unit
+                    // value and the unit type, and the parameter's declared
+                    // `type` kind is exactly the context that disambiguates
+                    // (spec Appendix A treats `()` as an unambiguous type
+                    // argument). Only this position converts; a unit value
+                    // elsewhere stays a value.
+                    Some(ConstValue::Unit) if param_types[i] == Type::COMPTIME_TYPE => {
+                        type_subst.insert(param_names[i], Type::UNIT);
+                    }
                     Some(const_val) if param_types[i] != Type::COMPTIME_TYPE => {
                         value_subst.insert(param_names[i], const_val);
                     }
@@ -5918,6 +5928,13 @@ impl<'a> Sema<'a> {
                             type_args.push(*ty);
                             // Record the substitution: param_name -> concrete_type
                             type_subst.insert(param_names[i], *ty);
+                        } else if matches!(inst.data, AirInstData::UnitConst) {
+                            // `()` in a `comptime T: type` position is the unit
+                            // TYPE (RUE-565); the declared parameter kind
+                            // disambiguates it from the unit value. Mirrors the
+                            // ConstValue::Unit arm in the reduction path above.
+                            type_args.push(Type::UNIT);
+                            type_subst.insert(param_names[i], Type::UNIT);
                         } else {
                             // Not a type - this is an error for type parameters
                             return Err(CompileError::new(

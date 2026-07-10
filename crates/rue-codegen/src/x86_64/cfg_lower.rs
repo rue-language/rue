@@ -3410,6 +3410,13 @@ impl<'a> CfgLower<'a> {
                 // materializes lazily-sourced values; if it can't model the source,
                 // fall back to the old single-slot behavior. (RUE-118, RUE-23)
                 let val_type = self.ctx.cfg.get_inst(*val).ty;
+                // A zero-sized value has no bytes to store (RUE-577): writing
+                // the dummy vreg CFG carries for unit would clobber a
+                // neighboring slot, and a ZST destination's origin shift
+                // underflows. Nothing to do.
+                if self.ctx.type_slot_count(val_type) == 0 {
+                    return;
+                }
                 let vals = if self.ctx.is_multislot_aggregate(val_type) {
                     self.get_or_compute_field_vregs(*val)
                         .unwrap_or_else(|| vec![self.get_vreg(*val)])
@@ -4184,7 +4191,19 @@ impl<'a> CfgLower<'a> {
     /// A place consists of a base (local slot or param slot) and zero or more
     /// projections (field accesses and array indices). This function computes
     /// the final memory address and loads from it.
-    fn lower_place_read(&mut self, dst: VReg, place: &Place, _ty: Type) {
+    fn lower_place_read(&mut self, dst: VReg, place: &Place, ty: Type) {
+        // A zero-sized read has no bytes to load (RUE-577): define dst as the
+        // canonical 0 — matching UnitConst's lowering, so unit equality
+        // compares 0 == 0 — and skip address formation entirely (a ZST root's
+        // `root_count - 1` origin shift would underflow, and an 8-byte MovRM
+        // would read a neighbor's slot or out of frame).
+        if self.ctx.type_slot_count(ty) == 0 {
+            self.mir.push(X86Inst::MovRI64 {
+                dst: Operand::Virtual(dst),
+                imm: 0,
+            });
+            return;
+        }
         let projections = self.ctx.cfg.get_place_projections(place);
 
         // Simple case: no projections, just load from the base slot

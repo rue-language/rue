@@ -1,0 +1,109 @@
+# Unit (zero-sized) struct fields and enum payloads (RUE-577, RUE-565).
+#
+# A zero-sized field occupies no slots (spec: zero-sized types), but codegen's
+# aggregate flattening pushed one dummy vreg per FIELD — an interior unit
+# field shifted every later field's slot at construction (silent miscompile),
+# a unit enum payload overfilled the payload area (frame clobber), and
+# reading a ZST place underflowed the origin shift (ICE). The `()` type is
+# also a valid `comptime T: type` argument (RUE-565), which makes unit fields
+# reachable through every generic container.
+
+[section]
+id = "cli.unit_fields"
+name = "Unit struct fields and payloads"
+description = "Zero-sized fields lay out, read, write, and compare correctly (RUE-577); () is a valid comptime type argument (RUE-565)."
+
+[[case]]
+name = "interior_unit_fields_do_not_shift_layout"
+description = "An i32 between two unit fields keeps its value through construction, ZST writes, and reads (RUE-577 facet 1)."
+files = [{ path = "main.rue", source = """
+struct Mixed { a: (), b: i32, c: () }
+fn main() -> i32 {
+    let mut m = Mixed { a: (), b: 42, c: () };
+    m.a = ();                      // ZST field write: must not clobber b
+    let x = m.a;                   // ZST field read
+    if m.a == m.c && x == () { m.b } else { 0 }
+}
+""" }]
+exit_code = 42
+
+[[case]]
+name = "interior_unit_fields_optimized"
+description = "The same layout survives the optimizer (constprop/DCE see consistent slot lists)."
+files = [{ path = "main.rue", source = """
+struct Mixed { a: (), b: i32, c: () }
+fn main() -> i32 {
+    let mut m = Mixed { a: (), b: 42, c: () };
+    m.a = ();
+    if m.a == m.c { m.b } else { 0 }
+}
+""" }]
+args = ["main.rue", "-O2", "-o", "prog"]
+exit_code = 42
+
+[[case]]
+name = "unit_only_struct_field_read_and_compare"
+description = "Reading and comparing a field of an all-ZST struct (RUE-577 facet 2: this ICE'd with a subtract-overflow panic)."
+files = [{ path = "main.rue", source = """
+struct U { value: () }
+fn main() -> i32 {
+    let c = U { value: () };
+    if c.value == () { 42 } else { 0 }
+}
+""" }]
+exit_code = 42
+
+[[case]]
+name = "unit_as_comptime_type_argument"
+description = "() is a valid comptime type argument; the constructed type's unit field reads back (RUE-565)."
+files = [{ path = "main.rue", source = """
+fn Box(comptime T: type) -> type { struct { value: T } }
+fn main() -> i32 {
+    let C = Box(());
+    let c: C = C { value: () };
+    if c.value == () { 42 } else { 0 }
+}
+""" }]
+exit_code = 42
+
+[[case]]
+name = "std_option_and_arraybuf_accept_unit"
+description = "std generic containers instantiate at (): Option(()) matches; ArrayBuf(()) pushes and pops (RUE-565, the issue's std repro)."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let O = std.option.Option(());
+    let some = O.Some(());
+    let a = match some {
+        O.Some(u) => 21,
+        O.None => 0,
+    };
+    let B = std.arraybuf.ArrayBuf(());
+    let mut buf = B.new();
+    buf.push(());
+    let b = @intCast(buf.len()) * 21;
+    a + b
+}
+""" }]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+exit_code = 42
+
+[[case]]
+name = "unit_enum_payload_does_not_clobber_frame"
+description = "A unit payload occupies no payload slots; neighboring locals stay intact across construction and match (RUE-577, enum face)."
+files = [{ path = "main.rue", source = """
+enum E { Tag(()), Empty }
+
+fn main() -> i32 {
+    let guard1 = 40;
+    let v = E.Tag(());
+    let guard2 = 2;
+    let m = match v {
+        E.Tag(u) => 0,
+        E.Empty => 100,
+    };
+    guard1 + guard2 + m
+}
+""" }]
+exit_code = 42
