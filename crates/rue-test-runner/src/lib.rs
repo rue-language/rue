@@ -127,7 +127,7 @@ impl<'de> Deserialize<'de> for ErrorContains {
 /// skipped when a golden assertion was present; see RUE-132.)
 /// `compile_fail` cannot be combined with golden-IR assertions, since a
 /// program that fails to compile has no IR to dump.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Case {
     pub name: String,
@@ -322,8 +322,77 @@ pub struct TestFile {
     pub case: Vec<Case>,
 }
 
-/// Result of running a test.
-pub type TestResult = Result<(), String>;
+/// A test failure with a class that expected-failure wrappers cannot erase.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TestFailure {
+    message: String,
+    fatal: bool,
+}
+
+impl TestFailure {
+    /// A normal expectation mismatch that an explicit xfail may absorb.
+    pub fn assertion(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            fatal: false,
+        }
+    }
+
+    /// An infrastructure failure, timeout, signal, panic, or compiler ICE.
+    pub fn fatal(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            fatal: true,
+        }
+    }
+
+    /// Whether this failure must fail even an expected-failure test.
+    pub fn is_fatal(&self) -> bool {
+        self.fatal
+    }
+
+    /// Add context without losing the failure class.
+    pub fn with_context(mut self, context: impl std::fmt::Display) -> Self {
+        self.message = format!("{context}: {}", self.message);
+        self
+    }
+}
+
+impl std::fmt::Display for TestFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for TestFailure {}
+
+impl std::ops::Deref for TestFailure {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        &self.message
+    }
+}
+
+/// Result of running a test or one of its subprocesses.
+pub type TestResult<T = ()> = Result<T, TestFailure>;
+
+/// The three possible outcomes of running a case marked as expected to fail.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExpectedFailureOutcome {
+    UnexpectedPass,
+    ExpectedFailure(TestFailure),
+    FatalFailure(TestFailure),
+}
+
+/// Classify an expected-failure result without allowing fatal errors to hide.
+pub fn classify_expected_failure(result: TestResult) -> ExpectedFailureOutcome {
+    match result {
+        Ok(()) => ExpectedFailureOutcome::UnexpectedPass,
+        Err(error) if error.is_fatal() => ExpectedFailureOutcome::FatalFailure(error),
+        Err(error) => ExpectedFailureOutcome::ExpectedFailure(error),
+    }
+}
 
 /// Get the current host target triple in Rue's format.
 ///
@@ -1568,10 +1637,10 @@ pub fn check_golden(actual: &str, expected: &str, label: &str) -> TestResult {
     let expected_normalized = normalize_golden(expected);
 
     if actual_normalized != expected_normalized {
-        return Err(format!(
+        return Err(TestFailure::assertion(format!(
             "{} mismatch:\n--- expected ---\n{}\n--- actual ---\n{}\n",
             label, expected_normalized, actual_normalized
-        ));
+        )));
     }
     Ok(())
 }
@@ -1615,14 +1684,18 @@ fn run_golden_ir_test(
     let mut cmd = build_command(rue_binary);
     cmd.arg("--emit").arg(stage).arg(source_path);
     let output = run_with_timeout(cmd, timeout, None)
-        .map_err(|e| format!("Failed to run rue --emit {}: {}", stage, e))?;
+        .map_err(|error| error.with_context(format!("Failed to run rue --emit {stage}")))?;
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if let Some(error) = ice_message(&output.status, &stderr) {
+        return Err(error.with_context(format!("rue --emit {stage}")));
+    }
 
     if !output.status.success() {
-        return Err(format!(
+        return Err(TestFailure::assertion(format!(
             "rue --emit {} failed:\n{}",
-            stage,
-            String::from_utf8_lossy(&output.stderr)
-        ));
+            stage, stderr
+        )));
     }
 
     let actual = String::from_utf8_lossy(&output.stdout);
@@ -1699,6 +1772,18 @@ fn collect_drained_bytes(rx: mpsc::Receiver<DrainMessage>, timeout: Duration) ->
 /// in a test program is reported and skipped past, never hanging the suite.
 pub const TIMEOUT_PREFIX: &str = "TIMEOUT:";
 
+/// Build a compiler command without ambient settings that can change a case.
+///
+/// Harness-specific, explicit environment entries may be applied after this
+/// function returns. Removing these variables first keeps the default case
+/// environment deterministic while preserving intentional overrides.
+pub fn compiler_command(binary: &Path) -> Command {
+    let mut command = Command::new(binary);
+    command.env_remove("RUE_STD_PATH");
+    command.env_remove("RUST_LOG");
+    command
+}
+
 /// Put the spawned child in its own process group so a timeout can kill the
 /// whole group, not just the direct child. A compiled test program spawning
 /// nothing is the common case, but killing the group is the safe default: any
@@ -1758,14 +1843,14 @@ fn kill_process_group(child: &mut std::process::Child) {
 ///
 /// # Returns
 /// * `Ok(Output)` - The process output (stdout, stderr, exit status)
-/// * `Err(String)` - Error message if the process timed out or failed to start.
+/// * `Err(TestFailure)` - Fatal failure if the process timed out or could not run.
 ///   A timeout error is prefixed with [`TIMEOUT_PREFIX`] so callers can report
 ///   it as a distinct failure class.
 pub fn run_with_timeout(
     mut cmd: Command,
     timeout: Duration,
     stdin_input: Option<&str>,
-) -> Result<Output, String> {
+) -> TestResult<Output> {
     configure_process_group(&mut cmd);
     let mut child = cmd
         .stdin(if stdin_input.is_some() {
@@ -1776,7 +1861,7 @@ pub fn run_with_timeout(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("Failed to spawn process: {}", e))?;
+        .map_err(|e| TestFailure::fatal(format!("Failed to spawn process: {}", e)))?;
 
     // Drain stdout and stderr on their own threads, started right after spawn so
     // neither pipe can fill and wedge the child (see the RUE-338 note above).
@@ -1823,17 +1908,20 @@ pub fn run_with_timeout(
                     let _stdout = collect_drained_bytes(stdout_rx, PIPE_DRAIN_FINISH_TIMEOUT);
                     let _stderr = collect_drained_bytes(stderr_rx, PIPE_DRAIN_FINISH_TIMEOUT);
                     drop(stdin_writer);
-                    return Err(format!(
+                    return Err(TestFailure::fatal(format!(
                         "{} test execution timed out after {} ms (process group killed)",
                         TIMEOUT_PREFIX,
                         timeout.as_millis()
-                    ));
+                    )));
                 }
                 // Sleep briefly before polling again
                 std::thread::sleep(Duration::from_millis(10));
             }
             Err(e) => {
-                return Err(format!("Failed to wait for process: {}", e));
+                return Err(TestFailure::fatal(format!(
+                    "Failed to wait for process: {}",
+                    e
+                )));
             }
         }
     }
@@ -1851,62 +1939,67 @@ pub fn run_with_timeout(
 /// This is the SINGLE shared implementation — rue-cli-tests imports it
 /// rather than keeping its own copy, so a new panic marker or abort
 /// signature added here covers every harness at once.
-pub fn ice_message(status: &std::process::ExitStatus, stderr: &str) -> Option<String> {
+pub fn ice_message(status: &std::process::ExitStatus, stderr: &str) -> Option<TestFailure> {
     if stderr.contains("panicked at") || stderr.contains("internal compiler error") {
-        return Some(format!(
+        return Some(TestFailure::fatal(format!(
             "INTERNAL COMPILER ERROR: compiler panicked\n--- compiler stderr ---\n{}",
             stderr
-        ));
+        )));
     }
     if status.code().is_none() {
-        return Some(format!(
+        return Some(TestFailure::fatal(format!(
             "INTERNAL COMPILER ERROR: compiler killed by signal ({:?})\n--- compiler stderr ---\n{}",
             status, stderr
-        ));
+        )));
     }
     None
+}
+
+fn test_case_compiler_command(case: &Case, binary: &Path) -> Command {
+    let mut command = compiler_command(binary);
+    if let Some(ref target) = case.target {
+        command.arg("--target").arg(target);
+    }
+    if let Some(ref feature) = case.preview {
+        command.arg("--preview").arg(feature);
+    }
+    if let Some(level) = case.opt_level {
+        command.arg(format!("-O{}", level));
+    }
+    command
 }
 
 /// Run a single test case.
 pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
     // Create a temporary directory for this test
-    let temp_dir = tempfile::tempdir().map_err(|e| format!("Failed to create temp dir: {}", e))?;
+    let temp_dir = tempfile::tempdir()
+        .map_err(|e| TestFailure::fatal(format!("Failed to create temp dir: {}", e)))?;
     let source_path = temp_dir.path().join("test.rue");
     let output_path = temp_dir.path().join("test");
 
     // Write source to file
     let mut source_file = fs::File::create(&source_path)
-        .map_err(|e| format!("Failed to create source file: {}", e))?;
+        .map_err(|e| TestFailure::fatal(format!("Failed to create source file: {}", e)))?;
     source_file
         .write_all(case.source.as_bytes())
-        .map_err(|e| format!("Failed to write source: {}", e))?;
+        .map_err(|e| TestFailure::fatal(format!("Failed to write source: {}", e)))?;
 
     // Write auxiliary files for multi-file tests (module imports)
     for (filename, content) in &case.aux_files {
         // Create subdirectories if needed (e.g., "foo/bar.rue")
         let aux_path = temp_dir.path().join(filename);
         if let Some(parent) = aux_path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| format!("Failed to create dir for {}: {}", filename, e))?;
+            fs::create_dir_all(parent).map_err(|e| {
+                TestFailure::fatal(format!("Failed to create dir for {}: {}", filename, e))
+            })?;
         }
-        fs::write(&aux_path, content)
-            .map_err(|e| format!("Failed to write aux file {}: {}", filename, e))?;
+        fs::write(&aux_path, content).map_err(|e| {
+            TestFailure::fatal(format!("Failed to write aux file {}: {}", filename, e))
+        })?;
     }
 
     // Build base command with target, preview, and optimization flags if needed
-    let build_command = |binary: &Path| -> Command {
-        let mut cmd = Command::new(binary);
-        if let Some(ref target) = case.target {
-            cmd.arg("--target").arg(target);
-        }
-        if let Some(ref feature) = case.preview {
-            cmd.arg("--preview").arg(feature);
-        }
-        if let Some(level) = case.opt_level {
-            cmd.arg(format!("-O{}", level));
-        }
-        cmd
-    };
+    let build_command = |binary: &Path| test_case_compiler_command(case, binary);
 
     // Timeout applied to every compiler invocation in this case (golden-IR
     // emits and the compile step), so a compiler hang fails the case instead of
@@ -1919,9 +2012,10 @@ pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
         // combination can never be satisfied — reject it loudly rather than
         // letting one half of the case go unchecked.
         if case.compile_fail {
-            return Err("golden IR assertions cannot be combined with compile_fail \
-                 (use expected_error / error_contains for diagnostics instead)"
-                .to_string());
+            return Err(TestFailure::assertion(
+                "golden IR assertions cannot be combined with compile_fail \
+                 (use expected_error / error_contains for diagnostics instead)",
+            ));
         }
 
         // Run dump commands and check golden output
@@ -1981,9 +2075,10 @@ pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
         }
 
         if case.has_target_specific_golden_ir_assertions() && case.target.is_none() {
-            return Err("target-specific golden IR tests require a 'target' field \
-                 (e.g., target = \"x86-64-linux\")"
-                .to_string());
+            return Err(TestFailure::assertion(
+                "target-specific golden IR tests require a 'target' field \
+                 (e.g., target = \"x86-64-linux\")",
+            ));
         }
 
         if let Some(ref expected) = case.expected_mir {
@@ -2071,7 +2166,7 @@ pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
     // compiled program, so a compiler hang fails the case instead of wedging
     // the whole suite.
     let compile_output = run_with_timeout(compile_cmd, compile_timeout, None)
-        .map_err(|e| format!("Failed to run rue compiler: {}", e))?;
+        .map_err(|error| error.with_context("Failed to run rue compiler"))?;
 
     let compile_succeeded = compile_output.status.success();
     let stderr = String::from_utf8_lossy(&compile_output.stderr);
@@ -2080,16 +2175,16 @@ pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
     // panic would otherwise be indistinguishable from the expected diagnostic
     // failure. Report it as a distinct ICE failure class instead.
     if let Some(ice) = ice_message(&compile_output.status, &stderr) {
-        return Err(format!("{}\n  source: {}", ice, case.source));
+        return Err(ice.with_context(format!("source: {}", case.source)));
     }
 
     if case.compile_fail {
         // Expected to fail compilation
         if compile_succeeded {
-            return Err(format!(
+            return Err(TestFailure::assertion(format!(
                 "Expected compilation to fail, but it succeeded\n  source: {}",
                 case.source
-            ));
+            )));
         }
 
         // Check exact error message (golden test)
@@ -2097,20 +2192,20 @@ pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
             let actual_normalized = normalize_error_output(&stderr, &source_path);
             let expected_normalized = normalize_golden(expected);
             if actual_normalized != expected_normalized {
-                return Err(format!(
+                return Err(TestFailure::assertion(format!(
                     "Error mismatch:\n--- expected ---\n{}\n--- actual ---\n{}\n",
                     expected_normalized, actual_normalized
-                ));
+                )));
             }
         }
 
         // Check error message contains all expected substrings
         for expected_error in case.error_contains.iter() {
             if !stderr.contains(expected_error) {
-                return Err(format!(
+                return Err(TestFailure::assertion(format!(
                     "Error message mismatch:\n  expected to contain: {}\n  actual stderr: {}\n  source: {}",
                     expected_error, stderr, case.source
-                ));
+                )));
             }
         }
 
@@ -2119,11 +2214,11 @@ pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
 
     // Expected to succeed
     if !compile_succeeded {
-        return Err(format!(
+        return Err(TestFailure::assertion(format!(
             "Compilation failed:\nstdout: {}\nstderr: {}",
             String::from_utf8_lossy(&compile_output.stdout),
             stderr
-        ));
+        )));
     }
 
     // Check warning-related assertions
@@ -2132,10 +2227,10 @@ pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
     // Check if no warnings expected
     if case.no_warnings {
         if compile_stderr.contains("warning:") {
-            return Err(format!(
+            return Err(TestFailure::assertion(format!(
                 "Expected no warnings but got:\n{}\n  source: {}",
                 compile_stderr, case.source
-            ));
+            )));
         }
     }
 
@@ -2143,10 +2238,10 @@ pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
     if let Some(expected_count) = case.expected_warning_count {
         let actual_count = compile_stderr.matches("warning:").count();
         if actual_count != expected_count {
-            return Err(format!(
+            return Err(TestFailure::assertion(format!(
                 "Warning count mismatch:\n  expected: {}\n  actual: {}\n  stderr: {}\n  source: {}",
                 expected_count, actual_count, compile_stderr, case.source
-            ));
+            )));
         }
     }
 
@@ -2154,10 +2249,10 @@ pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
     if let Some(ref expected_warnings) = case.warning_contains {
         for expected in expected_warnings {
             if !compile_stderr.contains(expected) {
-                return Err(format!(
+                return Err(TestFailure::assertion(format!(
                     "Warning message mismatch:\n  expected to contain: {}\n  actual stderr: {}\n  source: {}",
                     expected, compile_stderr, case.source
-                ));
+                )));
             }
         }
     }
@@ -2171,7 +2266,15 @@ pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
     let timeout = Duration::from_millis(case.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS));
     let run_output = run_with_timeout(Command::new(&output_path), timeout, case.stdin.as_deref())?;
 
-    let actual_exit_code = run_output.status.code().unwrap_or(-1);
+    if run_output.status.code().is_none() {
+        return Err(TestFailure::fatal(format!(
+            "TEST PROGRAM CRASH: process killed by signal ({:?})\n--- program stderr ---\n{}",
+            run_output.status,
+            String::from_utf8_lossy(&run_output.stderr)
+        )));
+    }
+
+    let actual_exit_code = run_output.status.code().expect("signal handled above");
     let stderr = String::from_utf8_lossy(&run_output.stderr);
 
     // Handle runtime error tests
@@ -2180,18 +2283,18 @@ pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
 
         // Check exit code
         if actual_exit_code != expected_exit {
-            return Err(format!(
+            return Err(TestFailure::assertion(format!(
                 "Runtime error exit code mismatch:\n  expected: {}\n  actual: {}\n  source: {}",
                 expected_exit, actual_exit_code, case.source
-            ));
+            )));
         }
 
         // Check that stderr contains the expected error message
         if !stderr.contains(expected_error.as_str()) {
-            return Err(format!(
+            return Err(TestFailure::assertion(format!(
                 "Runtime error message mismatch:\n  expected to contain: {}\n  actual stderr: {}\n  source: {}",
                 expected_error, stderr, case.source
-            ));
+            )));
         }
 
         return Ok(());
@@ -2211,34 +2314,35 @@ pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
         let expected_cmp = strip_block_boundary_newlines(expected);
         let actual_cmp = strip_block_boundary_newlines(&stdout);
         if actual_cmp != expected_cmp {
-            return Err(format!(
+            return Err(TestFailure::assertion(format!(
                 "Stdout mismatch:\n--- expected ---\n{:?}\n--- actual ---\n{:?}\n  source: {}",
                 expected_cmp, actual_cmp, case.source
-            ));
+            )));
         }
     }
 
     // Check stderr contains expected substring (for non-error cases)
     if let Some(ref expected) = case.stderr_contains {
         if !stderr.contains(expected.as_str()) {
-            return Err(format!(
+            return Err(TestFailure::assertion(format!(
                 "Stderr mismatch:\n  expected to contain: {}\n  actual stderr: {}\n  source: {}",
                 expected, stderr, case.source
-            ));
+            )));
         }
     }
 
     // Normal exit code test
     let expected_exit_code = case.exit_code.ok_or_else(|| {
-        "Test case should have exit_code when compile_fail is false and runtime_error is not set"
-            .to_string()
+        TestFailure::assertion(
+            "Test case should have exit_code when compile_fail is false and runtime_error is not set",
+        )
     })?;
 
     if actual_exit_code != expected_exit_code {
-        return Err(format!(
+        return Err(TestFailure::assertion(format!(
             "Exit code mismatch:\n  expected: {}\n  actual: {}\n  source: {}",
             expected_exit_code, actual_exit_code, case.source
-        ));
+        )));
     }
 
     Ok(())
@@ -2295,6 +2399,21 @@ pub fn find_rue_binary() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    fn fake_compiler(script: &str) -> (tempfile::TempDir, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().expect("temporary fake compiler directory");
+        let binary = directory.path().join("rue");
+        fs::write(&binary, script).expect("write fake compiler");
+        let mut permissions = fs::metadata(&binary)
+            .expect("fake compiler metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&binary, permissions).expect("make fake compiler executable");
+        (directory, binary)
+    }
 
     fn case_with_param_override(override_entry: &str) -> Case {
         let toml = format!(
@@ -3006,6 +3125,148 @@ params = [
         assert!(check_golden(actual, expected, "Test").is_ok());
     }
 
+    #[test]
+    fn test_expected_failure_classification_preserves_fatal_errors_and_xpass() {
+        assert_eq!(
+            classify_expected_failure(Ok(())),
+            ExpectedFailureOutcome::UnexpectedPass
+        );
+
+        let assertion = TestFailure::assertion("wrong output");
+        assert_eq!(
+            classify_expected_failure(Err(assertion.clone())),
+            ExpectedFailureOutcome::ExpectedFailure(assertion)
+        );
+
+        let fatal = TestFailure::fatal("compiler timed out").with_context("at -O2");
+        assert!(fatal.is_fatal());
+        assert_eq!(
+            classify_expected_failure(Err(fatal.clone())),
+            ExpectedFailureOutcome::FatalFailure(fatal)
+        );
+    }
+
+    #[test]
+    fn test_case_compiler_command_removes_ambient_configuration() {
+        let case = Case {
+            target: Some("x86-64-linux".to_string()),
+            preview: Some("test_infra".to_string()),
+            opt_level: Some(2),
+            ..Default::default()
+        };
+        let command = test_case_compiler_command(&case, Path::new("rue"));
+        let environments: HashMap<_, _> = command.get_envs().collect();
+
+        assert_eq!(
+            environments.get(std::ffi::OsStr::new("RUE_STD_PATH")),
+            Some(&None)
+        );
+        assert_eq!(
+            environments.get(std::ffi::OsStr::new("RUST_LOG")),
+            Some(&None)
+        );
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            ["--target", "x86-64-linux", "--preview", "test_infra", "-O2"]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_fake_compiler_panic_is_fatal() {
+        let (_directory, binary) =
+            fake_compiler("#!/bin/sh\nprintf 'panicked at fake compiler' >&2\nexit 101\n");
+        let case = Case {
+            name: "compiler_panic".to_string(),
+            source: "fn main() -> i32 { 0 }".to_string(),
+            ..Default::default()
+        };
+
+        let error = run_test_case(&case, &binary).expect_err("compiler panic must fail");
+        assert!(error.is_fatal());
+        assert!(error.contains("INTERNAL COMPILER ERROR"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_fake_compiler_signal_is_fatal() {
+        let (_directory, binary) = fake_compiler("#!/bin/sh\nkill -ABRT $$\n");
+        let case = Case {
+            name: "compiler_signal".to_string(),
+            source: "fn main() -> i32 { 0 }".to_string(),
+            ..Default::default()
+        };
+
+        let error = run_test_case(&case, &binary).expect_err("compiler signal must fail");
+        assert!(error.is_fatal());
+        assert!(error.contains("compiler killed by signal"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_fake_golden_compiler_panic_is_fatal() {
+        let (_directory, binary) =
+            fake_compiler("#!/bin/sh\nprintf 'panicked at fake emit' >&2\nexit 101\n");
+        let case = Case {
+            name: "golden_compiler_panic".to_string(),
+            source: "fn main() -> i32 { 0 }".to_string(),
+            expected_tokens: Some("token".to_string()),
+            ..Default::default()
+        };
+
+        let error = run_test_case(&case, &binary).expect_err("emit panic must fail");
+        assert!(error.is_fatal());
+        assert!(error.contains("rue --emit tokens"));
+        assert!(error.contains("INTERNAL COMPILER ERROR"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_fake_compiler_timeout_is_fatal() {
+        let (_directory, binary) = fake_compiler("#!/bin/sh\nsleep 5\n");
+        let case = Case {
+            name: "compiler_timeout".to_string(),
+            source: "fn main() -> i32 { 0 }".to_string(),
+            timeout_ms: Some(20),
+            ..Default::default()
+        };
+
+        let error = run_test_case(&case, &binary).expect_err("compiler timeout must fail");
+        assert!(error.is_fatal());
+        assert!(error.contains(TIMEOUT_PREFIX));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_generated_program_signal_is_fatal() {
+        let (_directory, binary) = fake_compiler(
+            r#"#!/bin/sh
+while [ "$#" -gt 0 ]; do
+    if [ "$1" = "-o" ]; then
+        output="$2"
+        break
+    fi
+    shift
+done
+cat > "$output" <<'EOF'
+#!/bin/sh
+kill -ABRT $$
+EOF
+chmod +x "$output"
+"#,
+        );
+        let case = Case {
+            name: "program_signal".to_string(),
+            source: "fn main() -> i32 { 0 }".to_string(),
+            exit_code: Some(0),
+            ..Default::default()
+        };
+
+        let error = run_test_case(&case, &binary).expect_err("program signal must fail");
+        assert!(error.is_fatal());
+        assert!(error.contains("TEST PROGRAM CRASH"));
+    }
+
     // Tests for run_with_timeout
     #[test]
     fn test_run_with_timeout_completes_normally() {
@@ -3037,6 +3298,7 @@ params = [
 
         assert!(result.is_err());
         let err = result.unwrap_err();
+        assert!(err.is_fatal());
         assert!(
             err.contains("timed out"),
             "Error should mention timeout: {}",

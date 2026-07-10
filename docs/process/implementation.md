@@ -98,7 +98,9 @@ if using_preview_syntax {
 }
 ```
 
-Preview tests run but are allowed to fail until the feature is complete.
+Preview tests use xfail semantics until the feature is complete: ordinary
+assertion failures are ignored, while fatal subprocess failures and unexpected
+passes fail the suite. Add `preview_should_pass = true` as each assertion works.
 
 ## Step 4: Verify
 

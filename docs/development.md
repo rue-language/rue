@@ -104,7 +104,8 @@ See [architecture.md](architecture.md) for the compiler pipeline.
   multiple files, linking, runtime I/O, or internal-compiler-error regressions.
 
 Known compiler defects use `known_bug = "RUE-NN"` in CLI cases. The harness
-treats an unexpected pass as a failure so obsolete markers cannot linger.
+treats an unexpected pass or fatal subprocess failure as a failure so obsolete
+markers and infrastructure failures cannot linger.
 Preview-language cases must enable their feature explicitly and do not count as
 stable normative coverage.
 

@@ -50,9 +50,9 @@
 //! - `runtime_error_contains`: assert on the program's stderr
 //! - `exit_code`: expected program exit code (default 0)
 //! - `timeout_ms`: wall-clock limit for running the program (default 10s)
-//! - `known_bug = "RUE-NN"`: expected failure (xfail). The case runs; if it
-//!   fails, it is reported as ignored with the bug reference. If it PASSES,
-//!   the suite fails loudly so the marker gets removed when the bug is fixed.
+//! - `known_bug = "RUE-NN"`: expected failure (xfail). An ordinary assertion
+//!   failure is ignored with the bug reference. A fatal subprocess failure or
+//!   unexpected pass fails loudly.
 //! - `only_on = ["x86-64-linux", ...]`: run the case only on these hosts
 //!   (ignored elsewhere). For behavior that depends on the host platform,
 //!   e.g. whether `--target X` is a cross-compile or a native compile.
@@ -66,8 +66,7 @@
 //!
 //! Any compiler invocation that dies by signal or whose stderr contains a
 //! Rust panic is reported as an INTERNAL COMPILER ERROR — a distinct, loud
-//! failure class, regardless of what the case expected (it still counts as
-//! "failure" for `known_bug` purposes).
+//! failure class that a `known_bug` marker cannot turn into an expected pass.
 //!
 //! # Timeouts
 //!
@@ -87,8 +86,9 @@ use std::time::Duration;
 
 use libtest2_mimic::{Harness, RunContext, RunError, Trial};
 use rue_test_runner::{
-    DEFAULT_TIMEOUT_MS, KNOWN_TARGETS, find_dir, find_rue_binary, ice_message, run_with_timeout,
-    validate_nonempty_case_corpus,
+    DEFAULT_TIMEOUT_MS, ExpectedFailureOutcome, KNOWN_TARGETS, TestFailure, TestResult,
+    classify_expected_failure, compiler_command, find_dir, find_rue_binary, ice_message,
+    run_with_timeout, validate_nonempty_case_corpus,
 };
 use serde::Deserialize;
 
@@ -373,8 +373,6 @@ struct Case {
     differential_opt: bool,
 }
 
-type TestResult = Result<(), String>;
-
 /// What running one case produced: the compiled program's exit code and
 /// stdout. For cases that don't run a program (`compile_fail`/`compile_only`),
 /// `ran` is false and the other fields are empty. Used by the opt-level
@@ -389,6 +387,29 @@ struct RunOutcome {
 /// Expand `${REAL_STD}` in env values to the absolute path of the repo's std/.
 fn expand_env_value(value: &str, real_std: &Path) -> String {
     value.replace("${REAL_STD}", &real_std.to_string_lossy())
+}
+
+fn apply_case_environment(
+    command: &mut Command,
+    environment: &HashMap<String, String>,
+    real_std: &Path,
+) {
+    for (key, value) in environment {
+        command.env(key, expand_env_value(value, real_std));
+    }
+}
+
+fn case_compiler_command(
+    binary: &Path,
+    args: &[String],
+    directory: &Path,
+    environment: &HashMap<String, String>,
+    real_std: &Path,
+) -> Command {
+    let mut command = compiler_command(binary);
+    command.args(args).current_dir(directory);
+    apply_case_environment(&mut command, environment, real_std);
+    command
 }
 
 fn find_repo_root(cases_dir: &Path, real_std: &Path) -> PathBuf {
@@ -446,8 +467,9 @@ fn run_case(
     real_std: &Path,
     repo_root: &Path,
     opt_level: Option<&str>,
-) -> Result<RunOutcome, String> {
-    let temp_dir = tempfile::tempdir().map_err(|e| format!("failed to create temp dir: {}", e))?;
+) -> TestResult<RunOutcome> {
+    let temp_dir = tempfile::tempdir()
+        .map_err(|e| TestFailure::fatal(format!("failed to create temp dir: {}", e)))?;
     let dir = temp_dir.path();
     let source_path = case
         .source_path
@@ -458,11 +480,12 @@ fn run_case(
     for file in &case.files {
         let path = dir.join(&file.path);
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("failed to create dir for {}: {}", file.path, e))?;
+            std::fs::create_dir_all(parent).map_err(|e| {
+                TestFailure::fatal(format!("failed to create dir for {}: {}", file.path, e))
+            })?;
         }
         std::fs::write(&path, &file.source)
-            .map_err(|e| format!("failed to write {}: {}", file.path, e))?;
+            .map_err(|e| TestFailure::fatal(format!("failed to write {}: {}", file.path, e)))?;
     }
 
     let output_name = case.output.clone().unwrap_or_else(|| "prog".to_string());
@@ -474,7 +497,12 @@ fn run_case(
         None => {
             let first = match &source_path {
                 Some(path) => path.display().to_string(),
-                None => case.files.first().ok_or("case has no files")?.path.clone(),
+                None => case
+                    .files
+                    .first()
+                    .ok_or_else(|| TestFailure::assertion("case has no files"))?
+                    .path
+                    .clone(),
             };
             vec![first, "-o".to_string(), output_name.clone()]
         }
@@ -487,11 +515,7 @@ fn run_case(
         args.push(level.to_string());
     }
 
-    let mut cmd = Command::new(rue_binary);
-    cmd.args(&args).current_dir(dir);
-    for (key, value) in &case.env {
-        cmd.env(key, expand_env_value(value, real_std));
-    }
+    let cmd = case_compiler_command(rue_binary, &args, dir, &case.env, real_std);
     // The COMPILE step runs under the same per-case timeout as execution: a
     // compile-time hang (comptime/parser loop) must fail this one case as a
     // TIMEOUT, not wedge the suite. Mirrors the spec runner's compile step.
@@ -510,37 +534,37 @@ fn run_case(
     // Debug-spew / leaked-diagnostics guard runs regardless of compile outcome.
     for expected in &case.compile_stderr_contains {
         if !compile_stderr.contains(expected) {
-            return Err(format!(
+            return Err(TestFailure::assertion(format!(
                 "compiler stderr missing expected substring: {}\n--- actual stderr ---\n{}",
                 expected, compile_stderr
-            ));
+            )));
         }
     }
 
     for forbidden in &case.compile_stderr_not_contains {
         if compile_stderr.contains(forbidden) {
-            return Err(format!(
+            return Err(TestFailure::assertion(format!(
                 "compiler stderr contained forbidden substring: {}\n--- actual stderr ---\n{}",
                 forbidden, compile_stderr
-            ));
+            )));
         }
     }
 
     for expected in &case.compile_stdout_contains {
         if !compile_stdout.contains(expected) {
-            return Err(format!(
+            return Err(TestFailure::assertion(format!(
                 "compiler stdout mismatch:\n  expected to contain: {}\n--- actual stdout ---\n{}",
                 expected, compile_stdout
-            ));
+            )));
         }
     }
 
     for forbidden in &case.compile_stdout_not_contains {
         if compile_stdout.contains(forbidden) {
-            return Err(format!(
+            return Err(TestFailure::assertion(format!(
                 "compiler stdout contained forbidden substring: {}\n--- actual stdout ---\n{}",
                 forbidden, compile_stdout
-            ));
+            )));
         }
     }
 
@@ -548,26 +572,28 @@ fn run_case(
 
     if case.compile_fail {
         if compile_succeeded {
-            return Err("expected compilation to fail, but it succeeded".to_string());
+            return Err(TestFailure::assertion(
+                "expected compilation to fail, but it succeeded",
+            ));
         }
         for expected in &case.error_contains {
             if !compile_stderr.contains(expected) {
-                return Err(format!(
+                return Err(TestFailure::assertion(format!(
                     "compiler error mismatch:\n  expected stderr to contain: {}\n--- actual stderr ---\n{}",
                     expected, compile_stderr
-                ));
+                )));
             }
         }
         return Ok(RunOutcome::default());
     }
 
     if !compile_succeeded {
-        return Err(format!(
+        return Err(TestFailure::assertion(format!(
             "compilation failed (exit: {:?}):\n--- compiler stdout ---\n{}\n--- compiler stderr ---\n{}",
             compile_output.status.code(),
             compile_stdout,
             compile_stderr
-        ));
+        )));
     }
 
     if case.compile_only {
@@ -577,10 +603,10 @@ fn run_case(
     // Run the produced binary from the temp dir.
     let program = dir.join(&output_name);
     if !program.exists() {
-        return Err(format!(
+        return Err(TestFailure::assertion(format!(
             "compiler reported success but did not produce '{}'",
             output_name
-        ));
+        )));
     }
 
     // Run the produced binary under a per-case wall-clock timeout. An infinite
@@ -595,39 +621,46 @@ fn run_case(
     let run_stdout = String::from_utf8_lossy(&run_output.stdout).to_string();
     let run_stderr = String::from_utf8_lossy(&run_output.stderr).to_string();
 
+    if run_output.status.code().is_none() {
+        return Err(TestFailure::fatal(format!(
+            "TEST PROGRAM CRASH: process killed by signal ({:?})\n--- program stderr ---\n{}",
+            run_output.status, run_stderr
+        )));
+    }
+
     let expected_exit = case.exit_code.unwrap_or(0);
     let actual_exit = run_output.status.code();
     if actual_exit != Some(expected_exit) {
-        return Err(format!(
+        return Err(TestFailure::assertion(format!(
             "program exit code mismatch:\n  expected: {}\n  actual: {:?}\n--- program stdout ---\n{}\n--- program stderr ---\n{}",
             expected_exit, actual_exit, run_stdout, run_stderr
-        ));
+        )));
     }
 
     if let Some(expected) = &case.stdout {
         if &run_stdout != expected {
-            return Err(format!(
+            return Err(TestFailure::assertion(format!(
                 "program stdout mismatch:\n--- expected ---\n{}\n--- actual ---\n{}",
                 expected, run_stdout
-            ));
+            )));
         }
     }
 
     for expected in &case.stdout_contains {
         if !run_stdout.contains(expected) {
-            return Err(format!(
+            return Err(TestFailure::assertion(format!(
                 "program stdout mismatch:\n  expected to contain: {}\n--- actual stdout ---\n{}",
                 expected, run_stdout
-            ));
+            )));
         }
     }
 
     for expected in &case.runtime_error_contains {
         if !run_stderr.contains(expected) {
-            return Err(format!(
+            return Err(TestFailure::assertion(format!(
                 "program stderr mismatch:\n  expected to contain: {}\n--- actual stderr ---\n{}",
                 expected, run_stderr
-            ));
+            )));
         }
     }
 
@@ -660,29 +693,27 @@ fn run_case_differential(
     // Guard against misuse: the runner drives the opt level, so these would be
     // ambiguous or meaningless.
     if case.compile_fail || case.compile_only {
-        return Err(
-            "differential_opt case must be a compile-and-run case (not compile_fail/compile_only)"
-                .to_string(),
-        );
+        return Err(TestFailure::assertion(
+            "differential_opt case must be a compile-and-run case (not compile_fail/compile_only)",
+        ));
     }
     if let Some(args) = &case.args {
         if args.iter().any(|a| a.starts_with("-O")) {
-            return Err(
-                "differential_opt case must not set its own -O flag in args (the runner drives it)"
-                    .to_string(),
-            );
+            return Err(TestFailure::assertion(
+                "differential_opt case must not set its own -O flag in args (the runner drives it)",
+            ));
         }
     }
 
     let mut baseline: Option<(&str, RunOutcome)> = None;
     for level in OPT_LEVELS {
         let outcome = run_case(case, rue_binary, real_std, repo_root, Some(level))
-            .map_err(|e| format!("at {}: {}", level, e))?;
+            .map_err(|error| error.with_context(format!("at {level}")))?;
         match &baseline {
             None => baseline = Some((level, outcome)),
             Some((base_level, base)) => {
                 if &outcome != base {
-                    return Err(format!(
+                    return Err(TestFailure::assertion(format!(
                         "opt-level divergence: {} produced (exit={:?}, stdout={:?}) but {} produced (exit={:?}, stdout={:?})",
                         base_level,
                         base.exit_code,
@@ -690,12 +721,36 @@ fn run_case_differential(
                         level,
                         outcome.exit_code,
                         outcome.stdout
-                    ));
+                    )));
                 }
             }
         }
     }
     Ok(())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum KnownBugDisposition {
+    Ignore(String),
+    Fail(String),
+}
+
+fn known_bug_disposition(bug: &str, result: TestResult) -> KnownBugDisposition {
+    match classify_expected_failure(result) {
+        ExpectedFailureOutcome::ExpectedFailure(error) => {
+            let first_line = error.lines().next().unwrap_or("");
+            KnownBugDisposition::Ignore(format!(
+                "known bug {} (expected failure): {}",
+                bug, first_line
+            ))
+        }
+        ExpectedFailureOutcome::FatalFailure(error) => KnownBugDisposition::Fail(error.to_string()),
+        ExpectedFailureOutcome::UnexpectedPass => KnownBugDisposition::Fail(format!(
+            "test PASSED but is marked known_bug = \"{}\". If the bug is fixed, \
+             remove the known_bug marker so this becomes a regression test.",
+            bug
+        )),
+    }
 }
 
 /// Wrapper handling skip and known_bug (xfail) semantics.
@@ -746,21 +801,11 @@ fn run_case_wrapper(
     match (known_bug, result) {
         // Normal case.
         (None, Ok(())) => Ok(()),
-        (None, Err(e)) => Err(RunError::fail(e)),
-        // Expected failure: report as ignored with the bug reference.
-        (Some(bug), Err(e)) => {
-            let first_line = e.lines().next().unwrap_or("");
-            ctx.ignore_for(format!(
-                "known bug {} (expected failure): {}",
-                bug, first_line
-            ))
-        }
-        // Unexpected pass: the bug may be fixed — demand marker removal.
-        (Some(bug), Ok(())) => Err(RunError::fail(format!(
-            "test PASSED but is marked known_bug = \"{}\". If the bug is fixed, \
-             remove the known_bug marker so this becomes a regression test.",
-            bug
-        ))),
+        (None, Err(error)) => Err(RunError::fail(error.to_string())),
+        (Some(bug), result) => match known_bug_disposition(bug, result) {
+            KnownBugDisposition::Ignore(reason) => ctx.ignore_for(reason),
+            KnownBugDisposition::Fail(reason) => Err(RunError::fail(reason)),
+        },
     }
 }
 
@@ -891,10 +936,11 @@ fn run_example(
     rue_binary: &Path,
     real_std: &Path,
 ) -> TestResult {
-    let temp_dir = tempfile::tempdir().map_err(|e| format!("failed to create temp dir: {}", e))?;
+    let temp_dir = tempfile::tempdir()
+        .map_err(|e| TestFailure::fatal(format!("failed to create temp dir: {}", e)))?;
     let dir = temp_dir.path();
 
-    let mut cmd = Command::new(rue_binary);
+    let mut cmd = compiler_command(rue_binary);
     cmd.arg(path).args(["-o", "prog"]).current_dir(dir);
     cmd.env("RUE_STD_PATH", real_std);
     // Compile under the default timeout too (see run_case): an example that
@@ -907,17 +953,19 @@ fn run_example(
         return Err(ice);
     }
     if !compile_output.status.success() {
-        return Err(format!(
+        return Err(TestFailure::assertion(format!(
             "example failed to compile (exit: {:?}):\n--- compiler stdout ---\n{}\n--- compiler stderr ---\n{}",
             compile_output.status.code(),
             compile_stdout,
             compile_stderr
-        ));
+        )));
     }
 
     let program = dir.join("prog");
     if !program.exists() {
-        return Err("compiler reported success but produced no 'prog' binary".to_string());
+        return Err(TestFailure::assertion(
+            "compiler reported success but produced no 'prog' binary",
+        ));
     }
 
     let mut run_cmd = Command::new(&program);
@@ -935,25 +983,25 @@ fn run_example(
     let actual_exit = match run_output.status.code() {
         Some(code) => code,
         None => {
-            return Err(format!(
+            return Err(TestFailure::fatal(format!(
                 "example crashed (killed by signal, status {:?})\n--- program stdout ---\n{}\n--- program stderr ---\n{}",
                 run_output.status, run_stdout, run_stderr
-            ));
+            )));
         }
     };
 
     if let Some(exp) = expectation {
         if actual_exit != exp.exit_code {
-            return Err(format!(
+            return Err(TestFailure::assertion(format!(
                 "example exit code mismatch:\n  expected: {}\n  actual: {}\n--- program stdout ---\n{}\n--- program stderr ---\n{}",
                 exp.exit_code, actual_exit, run_stdout, run_stderr
-            ));
+            )));
         }
         if run_stdout != exp.stdout {
-            return Err(format!(
+            return Err(TestFailure::assertion(format!(
                 "example stdout mismatch:\n--- expected ---\n{}\n--- actual ---\n{}",
                 exp.stdout, run_stdout
-            ));
+            )));
         }
     }
 
@@ -1094,6 +1142,21 @@ fn main() {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    fn fake_compiler(script: &str) -> (tempfile::TempDir, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().expect("temporary fake compiler directory");
+        let binary = directory.path().join("rue");
+        std::fs::write(&binary, script).expect("write fake compiler");
+        let mut permissions = std::fs::metadata(&binary)
+            .expect("fake compiler metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&binary, permissions).expect("make fake compiler executable");
+        (directory, binary)
+    }
+
     #[test]
     fn differential_opt_requires_stdout_and_exit_code() {
         // Missing both -> rejected.
@@ -1196,5 +1259,77 @@ mod tests {
         };
 
         assert!(compile_fail_has_exit_code(&case));
+    }
+
+    #[test]
+    fn case_compiler_command_applies_explicit_environment_after_sanitizing() {
+        let real_std = Path::new("/repo/std");
+        let environment = HashMap::from([
+            ("RUE_STD_PATH".to_string(), "${REAL_STD}".to_string()),
+            ("RUST_LOG".to_string(), "trace".to_string()),
+        ]);
+        let command = case_compiler_command(
+            Path::new("rue"),
+            &["main.rue".to_string()],
+            Path::new("/case"),
+            &environment,
+            real_std,
+        );
+        let environments: HashMap<_, _> = command.get_envs().collect();
+
+        assert_eq!(
+            environments.get(std::ffi::OsStr::new("RUE_STD_PATH")),
+            Some(&Some(std::ffi::OsStr::new("/repo/std")))
+        );
+        assert_eq!(
+            environments.get(std::ffi::OsStr::new("RUST_LOG")),
+            Some(&Some(std::ffi::OsStr::new("trace")))
+        );
+        assert_eq!(command.get_args().collect::<Vec<_>>(), ["main.rue"]);
+        assert_eq!(command.get_current_dir(), Some(Path::new("/case")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn known_bug_cannot_absorb_fake_compiler_panic() {
+        let (_directory, binary) =
+            fake_compiler("#!/bin/sh\nprintf 'panicked at fake CLI compiler' >&2\nexit 101\n");
+        let case = Case {
+            name: "known_bug_panic".to_string(),
+            files: vec![SourceFile {
+                path: "main.rue".to_string(),
+                source: "fn main() -> i32 { 0 }".to_string(),
+            }],
+            known_bug: Some("RUE-PROBE".to_string()),
+            differential_opt: true,
+            stdout: Some(String::new()),
+            exit_code: Some(0),
+            ..Default::default()
+        };
+
+        let result = run_case_differential(&case, &binary, Path::new("std"), Path::new("."));
+        let error = result.expect_err("compiler panic must fail an xfail");
+        assert!(error.is_fatal());
+        assert!(error.contains("at -O0"));
+        assert!(matches!(
+            known_bug_disposition("RUE-PROBE", Err(error)),
+            KnownBugDisposition::Fail(message) if message.contains("INTERNAL COMPILER ERROR")
+        ));
+    }
+
+    #[test]
+    fn known_bug_disposition_ignores_only_ordinary_failures_and_rejects_xpass() {
+        assert!(matches!(
+            known_bug_disposition(
+                "RUE-PROBE",
+                Err(TestFailure::assertion("wrong output\nmore detail"))
+            ),
+            KnownBugDisposition::Ignore(message)
+                if message == "known bug RUE-PROBE (expected failure): wrong output"
+        ));
+        assert!(matches!(
+            known_bug_disposition("RUE-PROBE", Ok(())),
+            KnownBugDisposition::Fail(message) if message.contains("test PASSED")
+        ));
     }
 }
