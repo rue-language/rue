@@ -20,15 +20,33 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
-# Build and capture the relative output path. Build output goes to stderr so
-# stdout stays clean for command substitution.
-rel_path="$(./buck2 build //crates/rue:rue --show-output "$@" 2>/dev/null \
-    | awk '/crates\/rue:rue / {print $2}' | tail -1)"
+# Build the compiler. Capture Buck's stdout (which carries the --show-output
+# line) and its stderr (build chatter/diagnostics) SEPARATELY, guarding the exit
+# status explicitly. A bare `rel="$(./buck2 ... 2>/dev/null | awk ...)"` under
+# `set -euo pipefail` exits AT THE ASSIGNMENT when the build fails — before any
+# fallback below can run — and, because stderr was sent to /dev/null, with zero
+# diagnostics (RUE-550). Capturing status via `|| build_status=$?` keeps `set -e`
+# from firing so we can surface Buck's real error.
+build_err="$(mktemp)"
+trap 'rm -f "$build_err"' EXIT
+build_status=0
+build_out="$(./buck2 build //crates/rue:rue --show-output "$@" 2>"$build_err")" \
+    || build_status=$?
+
+if [[ $build_status -ne 0 ]]; then
+    echo "rue-bin: 'buck2 build //crates/rue:rue' failed (exit $build_status):" >&2
+    cat "$build_err" >&2
+    exit "$build_status"
+fi
+
+# stdout stays clean for command substitution; the --show-output line names the
+# binary at a repo-root-relative path.
+rel_path="$(printf '%s\n' "$build_out" | awk '/crates\/rue:rue / {print $2}' | tail -1)"
 
 if [[ -z "${rel_path:-}" ]]; then
-    echo "rue-bin: failed to determine binary path from buck2 --show-output" >&2
-    echo "rue-bin: re-running build with output for diagnosis..." >&2
-    ./buck2 build //crates/rue:rue --show-output "$@" >&2
+    echo "rue-bin: build succeeded but --show-output did not name the binary." >&2
+    echo "rue-bin: captured build output follows:" >&2
+    cat "$build_err" >&2
     exit 1
 fi
 

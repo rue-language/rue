@@ -34,9 +34,21 @@ for t in "${TARGETS[@]}"; do
 done
 
 echo "Running clippy on ${#CLIPPY_TARGETS[@]} targets..."
-# A real compile error (not a lint) makes this buck2 build fail non-zero, which
-# `set -e` propagates -- that is correct, the tree is broken.
-SHOW_OUTPUT="$(./buck2 build "${CLIPPY_TARGETS[@]}" --show-output 2>/dev/null)"
+# A real compile error (not a lint) makes this buck2 build fail non-zero -- that
+# is correct, the tree is broken -- but the old `2>/dev/null` swallowed the
+# compiler's diagnostics, so the gate failed with no explanation (RUE-550).
+# Capture stderr and surface it on failure while keeping the success path quiet.
+clippy_err="$(mktemp)"
+trap 'rm -f "$clippy_err"' EXIT
+clippy_status=0
+SHOW_OUTPUT="$(./buck2 build "${CLIPPY_TARGETS[@]}" --show-output 2>"$clippy_err")" \
+    || clippy_status=$?
+if [ "$clippy_status" -ne 0 ]; then
+    echo "clippy.sh: 'buck2 build' failed (exit $clippy_status) -- a real compile" >&2
+    echo "error, not a lint. The tree is broken; diagnostics follow:" >&2
+    cat "$clippy_err" >&2
+    exit "$clippy_status"
+fi
 
 FAILED=0
 # Each --show-output line is: "<target>[clippy.txt] <repo-root-relative-path>".
