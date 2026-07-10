@@ -184,18 +184,20 @@ sh_test(
 )
 
 # The developer wrapper scripts. scripts/test-wrapper-scripts.sh (RUE-537,
-# RUE-549, RUE-550) runs copies of them against a fake ./buck2 and a fake
-# compiler — no real build — to pin that resolver failures are surfaced (not
-# swallowed), that run/exec resolve relative paths from the caller's cwd, and
-# that filtered CLI examples stay repository-anchored across per-case cwd
-# changes. The filegroup materializes these at package-relative paths
-# (scripts/rue, fmt.sh), matching the layout expected under RUE_WRAPPER_ROOT.
+# RUE-549, RUE-550, RUE-590) runs copies of them against fake tools — no real
+# build — to pin that resolver failures are surfaced (not swallowed), that
+# run/exec resolve relative paths from the caller's cwd, that filtered CLI
+# examples stay repository-anchored across per-case cwd changes, and that the
+# sanitizer gives examples the bundled standard library. The filegroup
+# materializes these at package-relative paths, matching the layout expected
+# under RUE_WRAPPER_ROOT.
 filegroup(
     name = "wrapper-script-inputs",
     srcs = [
         "fmt.sh",
         "scripts/rue",
         "scripts/rue-bin",
+        "scripts/run-sanitizer.sh",
         "test.sh",
     ],
 )
