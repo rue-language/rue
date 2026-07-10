@@ -306,6 +306,26 @@ pub(crate) struct ParamInfo {
     pub is_comptime: bool,
 }
 
+/// How a call argument (or method receiver) loans its root variable for the
+/// duration of the call — the two by-ref modes tracked in
+/// [`AnalysisContext::call_loaned_roots`]. Carried in the loan frame so the
+/// E0208 diagnostic can name the conflicting keyword (RUE-523).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CallLoanKind {
+    Inout,
+    Borrow,
+}
+
+impl CallLoanKind {
+    /// The source keyword, for diagnostics.
+    pub(crate) fn keyword(self) -> &'static str {
+        match self {
+            CallLoanKind::Inout => "inout",
+            CallLoanKind::Borrow => "borrow",
+        }
+    }
+}
+
 /// Context for analyzing instructions within a function.
 ///
 /// Bundles together the mutable state that needs to be threaded through
@@ -385,6 +405,17 @@ pub(crate) struct AnalysisContext<'a> {
     /// reject forwarding a by-ref parameter to another function's by-ref
     /// parameter (RUE-143).
     pub byref_arg_root: Option<Spur>,
+    /// Stack of loan frames, one per call whose argument list is currently
+    /// being analyzed (outermost first): the ROOT variables that call passes
+    /// `inout`/`borrow`, plus a by-ref method receiver's root. A loan spans
+    /// the entire call, so recording a MOVE of any root on this stack while
+    /// evaluating another argument of the same call (directly, or nested —
+    /// `f(inout x, g(x))`) would leave the loan aliasing moved-from storage:
+    /// a double free in safe code. Move-record sites consult this via
+    /// `Sema::reject_move_of_call_loaned_root` (E0208, spec 6.1, RUE-523).
+    /// Completed nested LOANS (`f(inout x, g(borrow x))`) do not conflict:
+    /// the inner loan ends before the outer call begins.
+    pub call_loaned_roots: Vec<Vec<(Spur, CallLoanKind)>>,
     /// True while re-running a loop's condition/body to validate the loop's
     /// back edge (see [`AnalysisContext::fork_for_loop_recheck`]). The recheck
     /// pass starts from a move state that already includes every move the loop
@@ -495,6 +526,10 @@ impl<'a> AnalysisContext<'a> {
             // while this is set; the fork starts between whole-expression
             // analyses.
             byref_arg_root: None,
+            // The recheck re-analyzes the loop body's moves, and an argument
+            // value may contain a loop (`f(inout x, { while … })`), so the
+            // enclosing calls' loan frames must stay visible.
+            call_loaned_roots: self.call_loaned_roots.clone(),
             in_loop_move_recheck: true,
             iter_borrows: self.iter_borrows.clone(),
             expected_type: None,

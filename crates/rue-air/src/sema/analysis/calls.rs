@@ -328,12 +328,30 @@ impl<'a> Sema<'a> {
             self.check_exclusive_access(&args, span)?;
         }
 
-        // Analyze arguments - receiver first, then remaining args
+        // Analyze arguments - receiver first, then remaining args.
+        //
+        // A by-ref receiver's loan spans the whole call: while the remaining
+        // arguments are analyzed, a by-value move of the receiver's root
+        // (`s.absorb(s)`) must conflict exactly like `f(inout s, s)` does
+        // (RUE-523), so the receiver contributes a loan frame of its own.
         let mut air_args = vec![AirCallArg {
             value: receiver_result.air_ref,
             mode: receiver_mode,
         }];
-        air_args.extend(self.analyze_call_args(air, &args, ctx)?);
+        let receiver_frame = match (receiver_mode, receiver_var) {
+            (AirArgMode::Inout, Some(root)) => Some(vec![(root, CallLoanKind::Inout)]),
+            (AirArgMode::Borrow, Some(root)) => Some(vec![(root, CallLoanKind::Borrow)]),
+            _ => None,
+        };
+        let receiver_frame_pushed = receiver_frame.is_some();
+        if let Some(frame) = receiver_frame {
+            ctx.call_loaned_roots.push(frame);
+        }
+        let args_result = self.analyze_call_args(air, &args, ctx);
+        if receiver_frame_pushed {
+            ctx.call_loaned_roots.pop();
+        }
+        air_args.extend(args_result?);
 
         // Generate a method call name: Type.method
         let call_name = format!("{}.{}", struct_name_str, method_name_str);

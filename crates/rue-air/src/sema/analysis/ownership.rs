@@ -421,6 +421,7 @@ impl<'a> Sema<'a> {
                 ));
             }
         }
+        self.reject_move_of_call_loaned_root(trace.root_var, span, ctx)?;
         ctx.moved_vars
             .entry(trace.root_var)
             .or_default()
@@ -644,6 +645,46 @@ impl<'a> Sema<'a> {
         check_exclusive_access_in(self.rir, self.interner, args, call_span)
     }
 
+    /// Reject recording a MOVE of `root` while an enclosing call's argument
+    /// list holds an `inout`/`borrow` loan of the same root (law of
+    /// exclusivity, spec 6.1:31, RUE-523).
+    ///
+    /// The loan spans the entire call, so a by-value use of the loaned
+    /// variable in the same argument list — in either order, directly
+    /// (`f(inout x, x)`) or nested (`f(inout x, g(x))`) — would hand the
+    /// callee an `inout`/`borrow` view of moved-from storage: its destructor
+    /// runs in the callee (via the moved-into owner) AND through the loaned
+    /// alias — a double free in safe code. Called at every move-record site;
+    /// a no-op outside call-argument analysis (the frame stack is empty).
+    /// Root-granular, like the other exclusivity rules: even disjoint
+    /// projections of one root conflict.
+    pub(crate) fn reject_move_of_call_loaned_root(
+        &self,
+        root: Spur,
+        span: Span,
+        ctx: &AnalysisContext,
+    ) -> CompileResult<()> {
+        for frame in ctx.call_loaned_roots.iter().rev() {
+            if let Some((_, kind)) = frame.iter().find(|(r, _)| *r == root) {
+                let variable = self.interner.resolve(&root).to_string();
+                let kw = kind.keyword();
+                return Err(CompileError::new(
+                    ErrorKind::MoveWhileCallLoaned {
+                        variable: variable.clone(),
+                        loan_mode: kw.to_string(),
+                    },
+                    span,
+                )
+                .with_help(format!(
+                    "the `{kw}` access to `{variable}` spans the whole call, so its value \
+                     cannot also be moved into it; copy or clone the value into a new \
+                     binding before the call"
+                )));
+            }
+        }
+        Ok(())
+    }
+
     /// Analyze a list of call arguments, enforcing by-ref argument rules.
     ///
     /// Inout/borrow arguments are borrows, not moves: `ctx.byref_arg_root` is
@@ -657,6 +698,44 @@ impl<'a> Sema<'a> {
     /// An `inout` argument rooted at a `borrow` parameter is rejected here:
     /// it would hand the callee a mutable view of read-only memory.
     pub(crate) fn analyze_call_args(
+        &mut self,
+        air: &mut Air,
+        args: &[RirCallArg],
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<Vec<AirCallArg>> {
+        // Collect this call's loan frame up front — every by-ref argument's
+        // root — so a by-value move of a loaned root is caught in EITHER
+        // argument order (`f(inout x, x)` and `f(x, inout x)` alike, RUE-523).
+        // The frame stays pushed while every argument (and anything nested in
+        // one) is analyzed; move-record sites consult it via
+        // `reject_move_of_call_loaned_root`.
+        let frame: Vec<(Spur, CallLoanKind)> = args
+            .iter()
+            .filter_map(|arg| {
+                let kind = if arg.is_inout() {
+                    CallLoanKind::Inout
+                } else if arg.is_borrow() {
+                    CallLoanKind::Borrow
+                } else {
+                    return None;
+                };
+                root_variable_of(self.rir, arg.value).map(|root| (root, kind))
+            })
+            .collect();
+        let pushed = !frame.is_empty();
+        if pushed {
+            ctx.call_loaned_roots.push(frame);
+        }
+        let result = self.analyze_call_args_inner(air, args, ctx);
+        if pushed {
+            ctx.call_loaned_roots.pop();
+        }
+        result
+    }
+
+    /// The argument loop behind [`Sema::analyze_call_args`], factored out so
+    /// the loan frame is popped on every exit path (including `?` errors).
+    fn analyze_call_args_inner(
         &mut self,
         air: &mut Air,
         args: &[RirCallArg],
@@ -822,6 +901,43 @@ impl<'a> Sema<'a> {
     /// see [`crate::sema::Sema`] parameter setup). Non-slice parameters use the
     /// ordinary [`Self::analyze_call_args`] argument path unchanged.
     pub(crate) fn analyze_call_args_coerced(
+        &mut self,
+        air: &mut Air,
+        args: &[RirCallArg],
+        param_types: &[Type],
+        param_modes: &[RirParamMode],
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<Vec<AirCallArg>> {
+        // Same loan-frame discipline as `analyze_call_args` (RUE-523): a
+        // by-value move of a root this call passes `inout`/`borrow` conflicts
+        // in either argument order.
+        let frame: Vec<(Spur, CallLoanKind)> = args
+            .iter()
+            .filter_map(|arg| {
+                let kind = if arg.is_inout() {
+                    CallLoanKind::Inout
+                } else if arg.is_borrow() {
+                    CallLoanKind::Borrow
+                } else {
+                    return None;
+                };
+                root_variable_of(self.rir, arg.value).map(|root| (root, kind))
+            })
+            .collect();
+        let pushed = !frame.is_empty();
+        if pushed {
+            ctx.call_loaned_roots.push(frame);
+        }
+        let result = self.analyze_call_args_coerced_inner(air, args, param_types, param_modes, ctx);
+        if pushed {
+            ctx.call_loaned_roots.pop();
+        }
+        result
+    }
+
+    /// The argument loop behind [`Sema::analyze_call_args_coerced`], factored
+    /// out so the loan frame is popped on every exit path.
+    fn analyze_call_args_coerced_inner(
         &mut self,
         air: &mut Air,
         args: &[RirCallArg],

@@ -416,6 +416,7 @@ impl<'a> Sema<'a> {
             referenced_functions: HashSet::new(),
             referenced_methods: HashSet::new(),
             byref_arg_root: None,
+            call_loaned_roots: Vec::new(),
             in_loop_move_recheck: false,
             iter_borrows: Vec::new(),
             expected_type: None,
