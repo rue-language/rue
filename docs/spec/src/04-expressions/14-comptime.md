@@ -472,12 +472,21 @@ fn main() -> i32 {
 }
 ```
 
-A type-constructor call is a type, not a path expression: the forms
+By default a type-constructor call is a type, not a path expression: the forms
 `F(args) { … }` (a struct literal) and `F(args).NAME` (an associated item or
 enum variant) are not accepted, because a call expression is not a permitted
 struct-literal or pattern path. Bind the resulting type to a name first — with
 `let P = F(args);` — and use that name as the path in expression and pattern
 position (`P { … }`, `P.NAME`).
+
+Under the `inline_type_ctor_paths` preview feature these inline forms are
+accepted with explicit (compile-time-known) arguments: a type-constructor call
+may head a struct literal (`Pair(i32) { first: 1, second: 2 }`), an
+associated-function or enum-variant call (`Result(i32, i32).Ok(v)`,
+`Vec(i32).new()`), and a match pattern (`match r { Result(i32, i32).Ok(v) => … }`).
+Each is evaluated exactly as if the call had been bound to a name first (as
+above); it is pure surface sugar and adds no new typing rule. Eliding the
+arguments (`Option(_).Some(5)`) is not part of this feature.
 
 {{ rule(id="4.14:24", cat="normative") }}
 

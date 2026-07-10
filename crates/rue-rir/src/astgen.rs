@@ -706,6 +706,22 @@ impl<'a> AstGen<'a> {
                     .as_ref()
                     .map(|base_expr| self.gen_expr(base_expr));
 
+                // Inline type-constructor struct-literal head `F(args) { ... }`
+                // (RUE-596): generate the constructor call `F(args)` as its own
+                // instruction; sema reduces it to the struct type at comptime.
+                let ctor_head = struct_lit.ctor_args.as_ref().map(|args| {
+                    let arg_refs: Vec<_> = args.iter().map(|a| self.convert_call_arg(a)).collect();
+                    let (args_start, args_len) = self.rir.add_call_args(&arg_refs);
+                    self.rir.add_inst(Inst {
+                        data: InstData::Call {
+                            name: struct_lit.name.name,
+                            args_start,
+                            args_len,
+                        },
+                        span: struct_lit.span,
+                    })
+                });
+
                 let fields: Vec<_> = struct_lit
                     .fields
                     .iter()
@@ -719,6 +735,7 @@ impl<'a> AstGen<'a> {
                 self.rir.add_inst(Inst {
                     data: InstData::StructInit {
                         module,
+                        ctor_head,
                         type_name: struct_lit.name.name, // Already a Spur
                         fields_start,
                         fields_len,
@@ -1105,10 +1122,26 @@ impl<'a> AstGen<'a> {
             Pattern::Path(path) => {
                 // If there's a base expression (module reference), generate it first
                 let module = path.base.as_ref().map(|base| self.gen_expr(base));
+                // Inline type-constructor pattern head `F(args).Variant(..)`
+                // (RUE-596): generate the constructor call `F(args)` as its own
+                // instruction; sema reduces it to the enum type at comptime.
+                let ctor_head = path.ctor_args.as_ref().map(|args| {
+                    let arg_refs: Vec<_> = args.iter().map(|a| self.convert_call_arg(a)).collect();
+                    let (args_start, args_len) = self.rir.add_call_args(&arg_refs);
+                    self.rir.add_inst(Inst {
+                        data: InstData::Call {
+                            name: path.type_name.name,
+                            args_start,
+                            args_len,
+                        },
+                        span: path.span,
+                    })
+                });
                 // Payload binding names for a tuple-variant pattern (RUE-221).
                 let bindings: Vec<Spur> = path.bindings.iter().map(|b| b.name).collect();
                 RirPattern::Path {
                     module,
+                    ctor_head,
                     type_name: path.type_name.name, // Already a Spur
                     variant: path.variant.name,     // Already a Spur
                     bindings,

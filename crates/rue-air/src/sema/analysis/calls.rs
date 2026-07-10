@@ -173,6 +173,71 @@ impl<'a> Sema<'a> {
             );
         }
 
+        // Inline type-constructor call head (RUE-596, preview
+        // `inline_type_ctor_paths`, relaxing spec 4.14:23): `F(args).NAME(..)`
+        // where `F(args)` reduced to a concrete type at comptime. Resolve
+        // `.NAME` as an enum-variant construction or associated-function call on
+        // the reduced type — exactly as if it had been bound with
+        // `let P = F(args); P.NAME(..)`. The receiver's stray `TypeConst` is a
+        // comptime-only no-op (CFG build drops it). Only a struct/enum reduced
+        // type takes this path; any other kind (e.g. `const X = i32; X.foo()`)
+        // falls through to the ordinary `MethodCallOnNonStruct` diagnostic, and
+        // the bound-name form (`let P = F(args); P.NAME`) never reaches here.
+        // Elided args (`Option(_)`) stay out of scope (RUE-401).
+        if receiver_type == Type::COMPTIME_TYPE
+            && let AirInstData::TypeConst(reduced_ty) = air.get(receiver_result.air_ref).data
+        {
+            match reduced_ty.kind() {
+                TypeKind::Enum(enum_id) => {
+                    self.require_preview(
+                        PreviewFeature::InlineTypeCtorPath,
+                        "an inline type-constructor call as a path head",
+                        span,
+                    )?;
+                    let variant_name = self.interner.resolve(&method).to_string();
+                    let def = self.type_pool.enum_def(enum_id);
+                    if let Some(vidx) = def.find_variant(&variant_name) {
+                        return self.analyze_enum_variant_construction(
+                            air,
+                            enum_id,
+                            vidx as u32,
+                            method,
+                            true,
+                            args_start,
+                            args_len,
+                            span,
+                            ctx,
+                        );
+                    }
+                    return Err(CompileError::new(
+                        ErrorKind::UndefinedAssocFn {
+                            type_name: reduced_ty.safe_name_with_pool(Some(&self.type_pool)),
+                            function_name: variant_name,
+                        },
+                        span,
+                    ));
+                }
+                TypeKind::Struct(struct_id) => {
+                    self.require_preview(
+                        PreviewFeature::InlineTypeCtorPath,
+                        "an inline type-constructor call as a path head",
+                        span,
+                    )?;
+                    return self.analyze_assoc_fn_call_impl(
+                        air,
+                        method,
+                        method,
+                        args_start,
+                        args_len,
+                        span,
+                        ctx,
+                        Some(struct_id),
+                    );
+                }
+                _ => {}
+            }
+        }
+
         // Check that receiver is a struct type
         let struct_id = match receiver_type.kind() {
             TypeKind::Struct(id) => id,

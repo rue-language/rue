@@ -25,7 +25,7 @@ use std::collections::HashMap;
 use lasso::Spur;
 use rue_error::{
     CompileError, CompileResult, CompileWarning, ErrorKind, MissingFieldsError, OptionExt,
-    WarningKind,
+    PreviewFeature, WarningKind,
 };
 use rue_rir::{InstData, InstRef, RirArgMode, RirParamMode, RirPattern};
 
@@ -1631,14 +1631,16 @@ impl<'a> Sema<'a> {
                 }
                 RirPattern::Path {
                     module,
+                    ctor_head,
                     type_name,
                     variant,
                     ..
                 } => {
-                    // Look up the enum type — through a module or unqualified /
-                    // comptime-bound — via the shared pattern-enum chokepoint.
+                    // Look up the enum type — through a module, unqualified /
+                    // comptime-bound, or an inline type-constructor head — via
+                    // the shared pattern-enum chokepoint.
                     let (enum_id, privacy_handled) = self
-                        .resolve_pattern_enum(*module, *type_name, ctx, pattern_span)?
+                        .resolve_pattern_enum(*module, *ctor_head, *type_name, ctx, pattern_span)?
                         .ok_or_compile_error(
                             ErrorKind::UnknownEnumType(
                                 self.interner.resolve(&*type_name).to_string(),
@@ -1793,13 +1795,14 @@ impl<'a> Sema<'a> {
                 RirPattern::Bool(b, _) => AirPattern::Bool(*b),
                 RirPattern::Path {
                     module,
+                    ctor_head,
                     type_name,
                     variant,
                     ..
                 } => {
                     let type_name_str = self.interner.resolve(&*type_name).to_string();
                     let enum_id = self
-                        .resolve_pattern_enum(*module, *type_name, ctx, pattern_span)?
+                        .resolve_pattern_enum(*module, *ctor_head, *type_name, ctx, pattern_span)?
                         .map(|(id, _)| id)
                         .ok_or_else(|| {
                             CompileError::new(
@@ -2236,6 +2239,7 @@ impl<'a> Sema<'a> {
     ) -> CompileResult<Vec<u32>> {
         let RirPattern::Path {
             module,
+            ctor_head,
             type_name,
             variant,
             bindings,
@@ -2250,7 +2254,7 @@ impl<'a> Sema<'a> {
         let pattern_span = *span;
 
         let enum_id = self
-            .resolve_pattern_enum(*module, *type_name, ctx, pattern_span)?
+            .resolve_pattern_enum(*module, *ctor_head, *type_name, ctx, pattern_span)?
             .map(|(id, _)| id)
             .ok_or_compile_error(
                 ErrorKind::UnknownEnumType(self.interner.resolve(&*type_name).to_string()),
@@ -3278,13 +3282,14 @@ impl<'a> Sema<'a> {
 
             InstData::StructInit {
                 module,
+                ctor_head,
                 type_name,
                 fields_start,
                 fields_len,
-                ..
             } => self.analyze_struct_init(
                 air,
                 *module,
+                *ctor_head,
                 *type_name,
                 *fields_start,
                 *fields_len,
@@ -3311,10 +3316,12 @@ impl<'a> Sema<'a> {
     }
 
     /// Analyze a struct initialization.
+    #[allow(clippy::too_many_arguments)]
     fn analyze_struct_init(
         &mut self,
         air: &mut Air,
         module: Option<InstRef>,
+        ctor_head: Option<InstRef>,
         type_name: Spur,
         fields_start: u32,
         fields_len: u32,
@@ -3325,7 +3332,39 @@ impl<'a> Sema<'a> {
         // Look up the struct type
         // First check if it's a comptime type variable (e.g., `let Point = make_point(); Point { ... }`)
         let type_name_str = self.interner.resolve(&type_name);
-        let struct_id = if let Some(module_ref) = module {
+        let struct_id = if let Some(head_ref) = ctor_head {
+            // Inline type-constructor struct-literal head `F(args) { ... }`
+            // (RUE-596, preview `inline_type_ctor_paths`, relaxing spec 4.14:23):
+            // the head call reduces to a concrete type at comptime; construct as
+            // if the type had been bound to a name first (`let P = F(args); P { .. }`).
+            self.require_preview(
+                PreviewFeature::InlineTypeCtorPath,
+                "an inline type-constructor call as a struct-literal head",
+                span,
+            )?;
+            let head_result = self.analyze_inst(air, head_ref, ctx)?;
+            let AirInstData::TypeConst(reduced_ty) = air.get(head_result.air_ref).data else {
+                return Err(CompileError::new(
+                    ErrorKind::TypeMismatch {
+                        expected: "a type".to_string(),
+                        found: head_result.ty.safe_name_with_pool(Some(&self.type_pool)),
+                    },
+                    span,
+                ));
+            };
+            match reduced_ty.kind() {
+                TypeKind::Struct(id) => id,
+                _ => {
+                    return Err(CompileError::new(
+                        ErrorKind::TypeMismatch {
+                            expected: "struct type".to_string(),
+                            found: reduced_ty.safe_name_with_pool(Some(&self.type_pool)),
+                        },
+                        span,
+                    ));
+                }
+            }
+        } else if let Some(module_ref) = module {
             let module_result = self.analyze_inst(air, module_ref, ctx)?;
             let Some(module_id) = module_result.ty.as_module() else {
                 return Err(CompileError::new(
@@ -6401,12 +6440,29 @@ impl<'a> Sema<'a> {
     /// (`Result(i32, i32).Ok(v)`, RUE-596) a localized follow-up: it need only
     /// teach this one method to comptime-evaluate a constructor-call head.
     pub(crate) fn resolve_pattern_enum(
-        &self,
+        &mut self,
         module: Option<InstRef>,
+        ctor_head: Option<InstRef>,
         type_name: Spur,
         ctx: &AnalysisContext,
         span: Span,
     ) -> CompileResult<Option<(crate::types::EnumId, bool)>> {
+        // Inline type-constructor pattern head `F(args).Variant(..)` (RUE-596,
+        // preview `inline_type_ctor_paths`): comptime-evaluate the constructor
+        // call to a concrete type (no AIR emitted) and take its enum. The head
+        // arrived through a call, not by naming the enum, so it is privacy-exempt
+        // — reported as `privacy_handled = true`, exactly like a comptime binding.
+        if let Some(head_ref) = ctor_head {
+            self.require_preview(
+                PreviewFeature::InlineTypeCtorPath,
+                "an inline type-constructor call as a pattern head",
+                span,
+            )?;
+            return Ok(match self.try_evaluate_const(head_ref) {
+                Some(ConstValue::Type(ty)) => ty.as_enum().map(|id| (id, true)),
+                _ => None,
+            });
+        }
         if let Some(module_ref) = module {
             let enum_id = self.resolve_enum_through_module(module_ref, type_name, span)?;
             Ok(Some((enum_id, true)))
