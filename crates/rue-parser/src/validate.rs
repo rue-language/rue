@@ -350,6 +350,9 @@ impl Validator<'_> {
             // Fixed-capacity string `Str(N)`: a scalar literal capacity, no
             // nested type expressions to validate (ADR-0043 Phase 5, RUE-326).
             TypeExpr::StrFixed { .. } => {}
+            // Integer type-call argument (RUE-552): a scalar literal, nothing
+            // nested to validate.
+            TypeExpr::IntArg { .. } => {}
         }
     }
 }

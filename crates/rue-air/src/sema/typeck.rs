@@ -896,17 +896,11 @@ impl<'a> Sema<'a> {
             ));
         }
 
-        let mut callee_types: HashMap<Spur, Type> = HashMap::new();
-        for (i, arg) in arg_strs.iter().enumerate() {
-            let arg_sym = self.interner.get_or_intern(arg);
-            let arg_ty = match ctx {
-                Some(ctx) => self.resolve_type_with_ctx(arg_sym, span, ctx)?,
-                None => self.resolve_type(arg_sym, span)?,
-            };
-            callee_types.insert(param_names[i], arg_ty);
-        }
-        let empty_values: HashMap<Spur, ConstValue> = HashMap::new();
-        match self.reduce_type_ctor_body(function_key, &callee_types, &empty_values)? {
+        // Kind-aware binding: type args resolve as types, value args as
+        // comptime constants (RUE-552).
+        let (callee_types, callee_values) =
+            self.bind_type_ctor_args(call_path, params, arg_strs, span, ctx)?;
+        match self.reduce_type_ctor_body(function_key, &callee_types, &callee_values)? {
             Some(ConstValue::Type(t)) => Ok(t),
             _ => Err(CompileError::new(
                 ErrorKind::ComptimeEvaluationFailed {
@@ -941,6 +935,41 @@ impl<'a> Sema<'a> {
     ///
     /// [`resolve_qualified_type_function_call`]:
     /// Sema::resolve_qualified_type_function_call
+    /// Comptime-path analogue of [`Self::resolve_type_ctor_value_arg`]
+    /// (RUE-552): resolve one comptime VALUE argument of a type-constructor
+    /// application under the current `value_subst` — an integer/bool literal,
+    /// an enclosing comptime value parameter (`Buffer(M)` inside another
+    /// constructor body), or a file-level constant. `None` (no diagnostics on
+    /// this path) makes the enclosing type non-evaluable; the caller reports
+    /// the comptime failure.
+    fn resolve_comptime_type_ctor_value_arg(
+        &mut self,
+        arg: &str,
+        value_subst: &HashMap<Spur, ConstValue>,
+        span: Span,
+    ) -> Option<ConstValue> {
+        let text = arg.trim();
+        if let Ok(n) = text.parse::<i128>() {
+            return Some(ConstValue::Integer(n));
+        }
+        if text == "true" {
+            return Some(ConstValue::Bool(true));
+        }
+        if text == "false" {
+            return Some(ConstValue::Bool(false));
+        }
+        let sym = self.interner.get_or_intern(text);
+        if let Some(v) = value_subst.get(&sym) {
+            return Some(*v);
+        }
+        if span != Span::default()
+            && let Some(info) = self.resolve_const_info_in_file(sym, span.file_id)
+        {
+            return Some(info.value);
+        }
+        self.constants.get(&sym).map(|info| info.value)
+    }
+
     fn resolve_qualified_type_call_for_comptime(
         &mut self,
         call_path: &str,
@@ -993,20 +1022,29 @@ impl<'a> Sema<'a> {
         {
             return None;
         }
+        // Kind-aware binding (RUE-552): type parameters take type arguments;
+        // comptime VALUE parameters take value arguments resolved under the
+        // enclosing value substitution.
+        let param_types = self.param_arena.types(params).to_vec();
         let mut callee_types: HashMap<Spur, Type> = HashMap::new();
+        let mut callee_values: HashMap<Spur, ConstValue> = HashMap::new();
         for (i, arg) in arg_strs.iter().enumerate() {
-            let arg_sym = self.interner.get_or_intern(arg);
-            let arg_ty = self.resolve_type_for_comptime_with_subst_and_values_at_span(
-                arg_sym,
-                type_subst,
-                value_subst,
-                span,
-            )?;
-            callee_types.insert(param_names[i], arg_ty);
+            if param_types[i] == Type::COMPTIME_TYPE {
+                let arg_sym = self.interner.get_or_intern(arg);
+                let arg_ty = self.resolve_type_for_comptime_with_subst_and_values_at_span(
+                    arg_sym,
+                    type_subst,
+                    value_subst,
+                    span,
+                )?;
+                callee_types.insert(param_names[i], arg_ty);
+            } else {
+                let val = self.resolve_comptime_type_ctor_value_arg(arg, value_subst, span)?;
+                callee_values.insert(param_names[i], val);
+            }
         }
-        let empty_values: HashMap<Spur, ConstValue> = HashMap::new();
         match self
-            .reduce_type_ctor_body(function_key, &callee_types, &empty_values)
+            .reduce_type_ctor_body(function_key, &callee_types, &callee_values)
             .ok()?
         {
             Some(ConstValue::Type(t)) => Some(t),
@@ -1179,6 +1217,100 @@ impl<'a> Sema<'a> {
     /// context-free, exactly as before.
     ///
     /// [`resolve_type_with_ctx`]: Sema::resolve_type_with_ctx
+    /// Bind a type-constructor application's canonical argument strings to
+    /// the callee's comptime parameters (RUE-552). A `comptime T: type`
+    /// parameter takes a TYPE argument, resolved as a type; a comptime VALUE
+    /// parameter (`comptime N: i32`) takes an integer/bool literal, an
+    /// in-scope comptime value parameter, or a file-level constant — so
+    /// `Buffer(2)`, `Buffer(K)`, and `Matrix(i32, 3)` all apply directly in
+    /// type position (spec 4.14:22-23).
+    fn bind_type_ctor_args(
+        &mut self,
+        call_display: &str,
+        params: crate::param_arena::ParamRange,
+        arg_strs: &[String],
+        span: Span,
+        ctx: Option<&AnalysisContext>,
+    ) -> CompileResult<(HashMap<Spur, Type>, HashMap<Spur, ConstValue>)> {
+        let param_names = self.param_arena.names(params).to_vec();
+        let param_types = self.param_arena.types(params).to_vec();
+        let mut callee_types: HashMap<Spur, Type> = HashMap::new();
+        let mut callee_values: HashMap<Spur, ConstValue> = HashMap::new();
+        for (i, arg) in arg_strs.iter().enumerate() {
+            if param_types[i] == Type::COMPTIME_TYPE {
+                // A value where a type is expected gets a targeted message
+                // instead of decaying to "unknown type '2'".
+                if arg.trim().parse::<i128>().is_ok() {
+                    return Err(CompileError::new(
+                        ErrorKind::ComptimeEvaluationFailed {
+                            reason: format!(
+                                "argument '{}' of type constructor '{}' must be a type (this parameter is `comptime {}: type`)",
+                                arg,
+                                call_display,
+                                self.interner.resolve(&param_names[i])
+                            ),
+                        },
+                        span,
+                    ));
+                }
+                let arg_sym = self.interner.get_or_intern(arg);
+                let arg_ty = match ctx {
+                    Some(ctx) => self.resolve_type_with_ctx(arg_sym, span, ctx)?,
+                    None => self.resolve_type(arg_sym, span)?,
+                };
+                callee_types.insert(param_names[i], arg_ty);
+            } else {
+                let val = self.resolve_type_ctor_value_arg(call_display, arg, span, ctx)?;
+                callee_values.insert(param_names[i], val);
+            }
+        }
+        Ok((callee_types, callee_values))
+    }
+
+    /// Resolve one comptime VALUE argument of a type-constructor application
+    /// in type position (RUE-552) from its canonical string: an integer
+    /// literal (`2`, `-3`), a bool literal, an in-scope comptime value
+    /// parameter (`Buffer(M)` inside another constructor body), or a
+    /// file-level constant name. The comptime evaluator range-checks the
+    /// value against the parameter's declared width during reduction, the
+    /// same as a value-position application.
+    fn resolve_type_ctor_value_arg(
+        &mut self,
+        call_display: &str,
+        arg: &str,
+        span: Span,
+        ctx: Option<&AnalysisContext>,
+    ) -> CompileResult<ConstValue> {
+        let text = arg.trim();
+        if let Ok(n) = text.parse::<i128>() {
+            return Ok(ConstValue::Integer(n));
+        }
+        if text == "true" {
+            return Ok(ConstValue::Bool(true));
+        }
+        if text == "false" {
+            return Ok(ConstValue::Bool(false));
+        }
+        let sym = self.interner.get_or_intern(text);
+        if let Some(ctx) = ctx
+            && let Some(v) = ctx.comptime_value_vars.get(&sym)
+        {
+            return Ok(*v);
+        }
+        if let Some(info) = self.resolve_const_info_in_file(sym, span.file_id) {
+            return Ok(info.value);
+        }
+        Err(CompileError::new(
+            ErrorKind::ComptimeEvaluationFailed {
+                reason: format!(
+                    "argument '{}' of type constructor '{}' must be a compile-time known value (an integer or bool literal, a comptime parameter, or a constant)",
+                    text, call_display
+                ),
+            },
+            span,
+        ))
+    }
+
     fn resolve_type_function_call(
         &mut self,
         call_name: &str,
@@ -1246,22 +1378,15 @@ impl<'a> Sema<'a> {
             ));
         }
 
-        // Resolve each argument as a type and bind it to the corresponding
-        // comptime type parameter.
-        let mut callee_types: HashMap<Spur, Type> = HashMap::new();
-        for (i, arg) in arg_strs.iter().enumerate() {
-            let arg_sym = self.interner.get_or_intern(arg);
-            let arg_ty = match ctx {
-                Some(ctx) => self.resolve_type_with_ctx(arg_sym, span, ctx)?,
-                None => self.resolve_type(arg_sym, span)?,
-            };
-            callee_types.insert(param_names[i], arg_ty);
-        }
+        // Bind each argument to its parameter by the parameter's declared
+        // kind: type arguments resolve as types, value arguments as comptime
+        // constants (RUE-552).
+        let (callee_types, callee_values) =
+            self.bind_type_ctor_args(call_name, params, arg_strs, span, ctx)?;
 
         // Reduce the constructor body under the substitution. Shares the exact
         // reduction path (and E1200 recursion guard) with value-position calls.
-        let empty_values: HashMap<Spur, ConstValue> = HashMap::new();
-        match self.reduce_type_ctor_body(name_key, &callee_types, &empty_values)? {
+        match self.reduce_type_ctor_body(name_key, &callee_types, &callee_values)? {
             Some(ConstValue::Type(t)) => Ok(t),
             _ => Err(CompileError::new(
                 ErrorKind::ComptimeEvaluationFailed {
@@ -1441,20 +1566,27 @@ impl<'a> Sema<'a> {
             {
                 return None;
             }
+            // Kind-aware binding (RUE-552): see the qualified resolver above.
+            let param_types = self.param_arena.types(params).to_vec();
             let mut callee_types: HashMap<Spur, Type> = HashMap::new();
+            let mut callee_values: HashMap<Spur, ConstValue> = HashMap::new();
             for (i, arg) in arg_strs.iter().enumerate() {
-                let arg_sym = self.interner.get_or_intern(arg);
-                let arg_ty = self.resolve_type_for_comptime_with_subst_and_values_at_span(
-                    arg_sym,
-                    type_subst,
-                    value_subst,
-                    span,
-                )?;
-                callee_types.insert(param_names[i], arg_ty);
+                if param_types[i] == Type::COMPTIME_TYPE {
+                    let arg_sym = self.interner.get_or_intern(arg);
+                    let arg_ty = self.resolve_type_for_comptime_with_subst_and_values_at_span(
+                        arg_sym,
+                        type_subst,
+                        value_subst,
+                        span,
+                    )?;
+                    callee_types.insert(param_names[i], arg_ty);
+                } else {
+                    let val = self.resolve_comptime_type_ctor_value_arg(arg, value_subst, span)?;
+                    callee_values.insert(param_names[i], val);
+                }
             }
-            let empty_values: HashMap<Spur, ConstValue> = HashMap::new();
             match self
-                .reduce_type_ctor_body(function_key, &callee_types, &empty_values)
+                .reduce_type_ctor_body(function_key, &callee_types, &callee_values)
                 .ok()?
             {
                 Some(ConstValue::Type(t)) => Some(t),
