@@ -882,6 +882,25 @@ impl<'a> CfgBuilder<'a> {
                     };
                     arg_vals.push(val);
                 }
+                // @raw/@raw_mut/@field_ptr take the ADDRESS of their place
+                // operand (arg 0): codegen requires that operand to still be a
+                // `Load`/`PlaceRead` when it lowers the intrinsic. Pin the
+                // operand's base slot so optimization passes (constprop) never
+                // rewrite its loads into constants — a `Const` operand would be
+                // dereferenced as an address (RUE-521 O1+ segfault).
+                if matches!(self.interner.resolve(name), "raw" | "raw_mut" | "field_ptr")
+                    && let Some(&place_val) = arg_vals.first()
+                {
+                    match &self.cfg.get_inst(place_val).data {
+                        CfgInstData::Load { slot } => self.cfg.mark_address_taken(*slot),
+                        CfgInstData::PlaceRead { place } => {
+                            if let PlaceBase::Local(slot) = place.base {
+                                self.cfg.mark_address_taken(slot);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
                 // Store args in extra array
                 let (args_start, args_len) = self.cfg.push_extra(arg_vals);
                 let value = self.emit(

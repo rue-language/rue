@@ -588,6 +588,16 @@ pub struct Cfg {
     fn_name: String,
     /// Whether each parameter slot is inout (passed by reference)
     param_modes: Vec<bool>,
+    /// Local slots whose ADDRESS escapes through an address-taking intrinsic
+    /// (`@raw` / `@raw_mut` / `@field_ptr`), recorded at construction by
+    /// CfgBuilder (which has the interner to recognize the names — opt passes
+    /// don't). Codegen lowers those intrinsics by taking the operand place's
+    /// address, so its `Load`/`PlaceRead` must survive optimization: constprop
+    /// consults this to disqualify the slot, otherwise the Load becomes a
+    /// `Const` and the constant is dereferenced as an address — the verified
+    /// RUE-521 O1+ segfault. By-ref call arguments are the analogous
+    /// per-instruction escape, handled directly in constprop's scan.
+    address_taken_slots: std::collections::HashSet<u32>,
 }
 
 impl Cfg {
@@ -612,7 +622,23 @@ impl Cfg {
             num_params,
             fn_name,
             param_modes,
+            address_taken_slots: std::collections::HashSet::new(),
         }
+    }
+
+    /// Record that `slot`'s address escapes through an address-taking
+    /// intrinsic (`@raw` / `@raw_mut` / `@field_ptr`), pinning its loads as
+    /// places for the optimizer (RUE-521).
+    #[inline]
+    pub fn mark_address_taken(&mut self, slot: u32) {
+        self.address_taken_slots.insert(slot);
+    }
+
+    /// Whether `slot`'s address escapes through an address-taking intrinsic
+    /// (see [`Cfg::mark_address_taken`]).
+    #[inline]
+    pub fn is_address_taken(&self, slot: u32) -> bool {
+        self.address_taken_slots.contains(&slot)
     }
 
     /// Get the return type.
