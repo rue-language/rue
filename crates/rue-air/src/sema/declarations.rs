@@ -1679,6 +1679,34 @@ impl<'a> Sema<'a> {
     /// Pre-scan the RIR for every `const` declaration, building the
     /// [`ConstCollector`] worklist. Two declarations of the same name in the
     /// same file are always a duplicate (E0418), whatever their kinds.
+    /// Best-effort collect the single value constant `name` (referenced from
+    /// `file_id`) on demand, returning its value if it resolves.
+    ///
+    /// Struct field and enum payload array lengths are resolved during
+    /// declaration gathering, *before* the main const-collection pass in
+    /// `resolve_remaining_declarations`. So `struct S { xs: [i32; N] }` used to
+    /// reject `N` (E0481) even though the same `const` resolves fine in `let`
+    /// and signature positions, which run after collection (RUE-587). This
+    /// collects just the named const (and its dependencies) into
+    /// `constants_by_file_name` so the field length can resolve it.
+    ///
+    /// A fresh collector is fine: `collect_const_by_key` writes results into
+    /// `constants_by_file_name`, and the main pass skips consts already present
+    /// there. Any collection error (e.g. the const's initializer names a
+    /// comptime function not declared until the later pass) is swallowed — the
+    /// caller then falls back to E0481, and the same const is collected and its
+    /// error reported deterministically by the main pass.
+    pub(crate) fn try_collect_const_on_demand(
+        &mut self,
+        name: Spur,
+        file_id: FileId,
+    ) -> Option<ConstValue> {
+        let mut collector = self.prescan_const_declarations().ok()?;
+        let _ = self.ensure_const_collected(name, file_id, &mut collector);
+        self.resolve_const_info_in_file(name, file_id)
+            .map(|info| info.value)
+    }
+
     fn prescan_const_declarations(&mut self) -> CompileResult<ConstCollector> {
         let mut st = ConstCollector {
             pending: HashMap::new(),

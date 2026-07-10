@@ -1674,6 +1674,12 @@ impl<'a> Sema<'a> {
                     // 2. A file-level constant, evaluated during declaration
                     //    gathering.
                     info.value
+                } else if let Some(v) = self.try_collect_const_on_demand(sym, span.file_id) {
+                    // 3. A file-level constant not yet collected because this
+                    //    array length sits in a struct field / enum payload,
+                    //    resolved before the main const pass (RUE-587). Collect
+                    //    it on demand.
+                    v
                 } else {
                     return Err(CompileError::new(
                         ErrorKind::InvalidArrayLength {
