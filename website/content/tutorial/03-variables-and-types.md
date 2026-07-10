@@ -93,7 +93,7 @@ fn main() -> i32 {
 
 Trying to assign to an immutable variable is a compile error:
 
-```rue compile-fail
+```rue compile-fail E0203
 fn main() -> i32 {
     let x = 42;
     x = 43;  // Error: cannot assign to immutable variable

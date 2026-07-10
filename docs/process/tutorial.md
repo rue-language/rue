@@ -52,7 +52,7 @@ Snippet verification is tracked by RUE-399. Once that infrastructure is present,
 tutorial code fences use explicit metadata for automated checks:
 
 - ` ```rue check` must compile successfully.
-- ` ```rue compile-fail` must fail compilation.
+- ` ```rue compile-fail Edddd` must fail compilation with the named diagnostic.
 - ` ```rue skip` is an intentional prose-only or context-dependent fragment.
 - Plain ` ```rue` remains prose-only until a chapter refresh opts it in.
 
@@ -64,8 +64,9 @@ scripts/check-tutorial-snippets.py
 ```
 
 New or rewritten chapter-level complete programs should be marked `check`.
-Intentionally-invalid snippets should be marked `compile-fail` when they are
-self-contained, or `skip` when they depend on context from adjacent prose.
+Intentionally-invalid snippets should be marked `compile-fail Edddd` when they
+are self-contained, using the diagnostic code the prose intends to demonstrate,
+or `skip` when they depend on context from adjacent prose.
 
 ## Dogfood and preview stance
 
