@@ -4664,7 +4664,7 @@ impl<'a> Sema<'a> {
             // integer type (`arr[X + 1]`, X: i8 = 127) is a compile-time error
             // rather than a folded-then-bounds-checked value (RUE-234).
             if let Some(const_idx) = self.try_get_const_index_checked(index, ctx)? {
-                if const_idx < 0 || const_idx as u64 >= array_len {
+                if const_idx < 0 || const_idx >= array_len as i128 {
                     return Err(CompileError::new(
                         ErrorKind::IndexOutOfBounds {
                             index: const_idx,
@@ -4828,7 +4828,7 @@ impl<'a> Sema<'a> {
         // operand types, so an overflowing index expression is a compile-time
         // error rather than a folded runtime panic — RUE-234).
         if let Some(const_idx) = self.try_get_const_index_checked(index, ctx)? {
-            if const_idx < 0 || const_idx as u64 >= array_len {
+            if const_idx < 0 || const_idx >= array_len as i128 {
                 return Err(CompileError::new(
                     ErrorKind::IndexOutOfBounds {
                         index: const_idx,

@@ -684,7 +684,7 @@ impl<'a> Sema<'a> {
             // index's resolved operand types so an overflowing index expression
             // is a compile-time error, not a folded runtime panic (RUE-234).
             if let Some(const_index) = self.try_get_const_index_checked(index, ctx)? {
-                if const_index < 0 || const_index as u64 >= array_len {
+                if const_index < 0 || const_index >= array_len as i128 {
                     return Err(CompileError::new(
                         ErrorKind::IndexOutOfBounds {
                             index: const_index,
