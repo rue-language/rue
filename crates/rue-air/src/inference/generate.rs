@@ -1982,6 +1982,14 @@ impl<'a> ConstraintGenerator<'a> {
                                 // parameter type (same as a direct Call).
                                 for (arg, param_ty) in args.iter().zip(func.param_types.iter()) {
                                     let arg_info = self.generate(arg.value, ctx);
+                                    // Slice and `borrow str` parameters coerce
+                                    // from a `borrow` argument; skip strict
+                                    // equality and let sema materialize the
+                                    // fat-pointer view (ADR-0043, RUE-322,
+                                    // RUE-559) — same as the direct-Call path.
+                                    if self.is_slice_struct_type(param_ty.clone()) {
+                                        continue;
+                                    }
                                     self.add_constraint(Constraint::equal(
                                         arg_info.ty,
                                         param_ty.clone(),

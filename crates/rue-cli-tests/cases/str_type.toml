@@ -258,3 +258,83 @@ fn main() -> i32 {
 """ }]
 args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
 exit_code = 7
+
+# RUE-559 facet 1: the SAME reads with a heap `StrBuf` source. Before the
+# call-site view materialization, the 3-word `{ptr, len, cap}` header was
+# passed raw through the 2-slot by-value ABI: `.len()` returned the CAPACITY
+# (16) and byte indexing dereferenced the length (segfault, exit 139). The
+# buffer is borrowed, not moved, so it stays usable (and is dropped exactly
+# once) in the caller.
+[[case]]
+name = "strbuf_read_through_borrow_str_view_values"
+files = [{ path = "main.rue", source = """
+fn len_of(borrow s: str) -> u64 { s.len() }
+fn first(borrow s: str) -> u8 { s[0] }
+fn main() -> i32 {
+    let b = "xx" + "yy";                 // heap StrBuf: len 4, cap != 4
+    let len_ok = len_of(borrow b) == 4;  // the length, NOT the capacity
+    let byte_ok = first(borrow b) == 120;    // 'x', no segfault
+    let reuse_ok = len_of(borrow b) == 4;    // borrow again: not moved
+    let own_ok = b.len() == 4;               // caller still owns b
+    if len_ok && byte_ok && reuse_ok && own_ok { 9 } else { 0 }
+}
+""" }]
+args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+exit_code = 9
+
+# RUE-559 facet 2: an unannotated literal binding is a `StrBuf` too (see
+# str_preview_does_not_change_string_default) — its borrowed view used to
+# read length 0. Also pins the loan/move interaction (RUE-523): a single
+# `borrow` argument must NOT be misread as a move of its own loan (E0208).
+[[case]]
+name = "strbuf_literal_binding_borrow_str_len"
+files = [{ path = "main.rue", source = """
+fn rd(borrow s: str) -> u64 { s.len() }
+fn main() -> i32 {
+    let s = "hello";             // StrBuf (no `str` annotation)
+    @intCast(rd(borrow s))
+}
+""" }]
+args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+exit_code = 5
+
+# RUE-559: module-qualified calls take a separate argument-analysis path
+# (analyze_module_member_call) that skipped the slice/str coercions entirely —
+# a `StrBuf` passed to a module function's `borrow s: str` parameter failed
+# E0206. Exercises the coercion through `m.f(borrow b)`.
+[[case]]
+name = "module_fn_borrow_str_view_of_strbuf"
+files = [
+    { path = "util.rue", source = """
+pub fn rd(borrow s: str) -> u64 {
+    s.len()
+}
+""" },
+    { path = "main.rue", source = """
+const util = @import("util.rue");
+
+fn main() -> i32 {
+    let b = "xx" + "yy";
+    @intCast(util.rd(borrow b))
+}
+""" },
+]
+args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+exit_code = 4
+
+# RUE-559: a `StrBuf` struct FIELD as the borrowed view source — the coercion
+# traces the place projection, not just whole variables.
+[[case]]
+name = "strbuf_field_borrow_str_view"
+files = [{ path = "main.rue", source = """
+struct Holder { buf: StrBuf }
+
+fn rd(borrow s: str) -> u64 { s.len() }
+
+fn main() -> i32 {
+    let h = Holder { buf: "xyz" + "w" };
+    @intCast(rd(borrow h.buf))
+}
+""" }]
+args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
+exit_code = 4

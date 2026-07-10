@@ -963,6 +963,24 @@ impl<'a> Sema<'a> {
                 arg.is_inout() && param_types.get(i).is_some_and(|pt| self.is_str_struct(*pt));
             if is_str_param && !is_inout_str_param {
                 let str_ty = param_types[i];
+                // A `borrow` argument to a `borrow s: str` parameter views an
+                // existing string place — a `StrBuf`, `Str(N)`, `str`, or a
+                // re-borrowed view (ADR-0043 two-types model). The source is
+                // borrowed (never moved) and a `StrBuf` source's 3-word header
+                // is narrowed to the 2-word `{ptr, len}` view here (RUE-559).
+                // The argument is always a place: `check_exclusive_access`
+                // rejected non-lvalue `borrow` arguments (E0427) before
+                // argument analysis began.
+                if arg.is_borrow() && self.is_str_struct(str_ty) {
+                    let value = self.coerce_borrow_str_place_to_view(air, arg, str_ty, ctx)?;
+                    air_args.push(AirCallArg {
+                        value,
+                        // The 2-word view is passed BY VALUE (multi-slot
+                        // aggregate), exactly like a slice fat pointer.
+                        mode: AirArgMode::Normal,
+                    });
+                    continue;
+                }
                 let prev_expected = ctx.expected_type.replace(str_ty);
                 let arg_result = self.analyze_inst(air, arg.value, ctx);
                 ctx.expected_type = prev_expected;
@@ -1168,5 +1186,91 @@ impl<'a> Sema<'a> {
             span,
         });
         Ok(slice_val)
+    }
+
+    /// Build a by-value `str` view `{ptr, len}` from a `borrow` argument whose
+    /// parameter is `borrow s: str` (ADR-0043 two-types model, RUE-559).
+    ///
+    /// The source place is *borrowed*: `ctx.byref_arg_root` is set while it is
+    /// traced, so no move is recorded and the buffer stays owned by (and is
+    /// dropped in) the caller — which also keeps the RUE-523 loan-frame check
+    /// from misreading the view construction as a move of its own loan.
+    ///
+    /// - A `str` / `Str(N)` source (including a re-borrowed `borrow str`
+    ///   parameter, spec 3.7:58) already has the 2-word view shape and is read
+    ///   by value.
+    /// - A `StrBuf` source is a 3-word `{ptr, len, cap}` buffer header; the
+    ///   view copies exactly the `{ptr, len}` prefix. Passing the raw 3-word
+    ///   value through the 2-slot by-value parameter ABI was the RUE-559
+    ///   miscompile: the callee read `cap` as the length and dereferenced the
+    ///   length as the data pointer (segfault on indexing).
+    fn coerce_borrow_str_place_to_view(
+        &mut self,
+        air: &mut Air,
+        arg: &RirCallArg,
+        str_ty: Type,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AirRef> {
+        use crate::inst::{AirInstData, AirProjection};
+
+        let span = self.rir.get(arg.value).span;
+        let root = require_byref_place_arg(self.rir, arg)?;
+        let prev_byref_root = ctx.byref_arg_root.replace(root);
+        let trace = self.try_trace_place(arg.value, air, ctx);
+        ctx.byref_arg_root = prev_byref_root;
+        let trace = trace?.ok_or_else(|| CompileError::new(ErrorKind::BorrowNonLvalue, span))?;
+
+        let src_ty = trace.result_type();
+
+        // `str` / `Str(N)` sources share the 2-word `{ptr, len}` shape: read
+        // the fat pointer by value (it is `@copy`) and pass it through.
+        if self.is_str_like(src_ty) {
+            let projs: Vec<AirProjection> = trace.projections.iter().map(|p| p.proj).collect();
+            let place_ref = air.make_place(trace.base, projs);
+            return Ok(air.add_inst(AirInst {
+                data: AirInstData::PlaceRead { place: place_ref },
+                ty: str_ty,
+                span,
+            }));
+        }
+
+        // `StrBuf` source: the view is the `{ptr, len}` prefix of the 3-word
+        // buffer header, read field-by-field from the borrowed place.
+        if self.is_builtin_string(src_ty) {
+            let buf_struct_id = src_ty.as_struct().expect("StrBuf is a synthetic struct");
+            let str_struct_id = str_ty.as_struct().expect("str is a synthetic struct");
+            let mut field_words = Vec::with_capacity(2);
+            for field_index in 0..2u32 {
+                let mut projs: Vec<AirProjection> =
+                    trace.projections.iter().map(|p| p.proj).collect();
+                projs.push(AirProjection::Field {
+                    struct_id: buf_struct_id,
+                    field_index,
+                });
+                let place_ref = air.make_place(trace.base, projs);
+                let field_ty =
+                    self.type_pool.struct_def(buf_struct_id).fields[field_index as usize].ty;
+                let word = air.add_inst(AirInst {
+                    data: AirInstData::PlaceRead { place: place_ref },
+                    ty: field_ty,
+                    span,
+                });
+                field_words.push(word.as_u32());
+            }
+            let fields = air.add_extra(&field_words);
+            let source_order = air.add_extra(&[0u32, 1u32]);
+            return Ok(air.add_inst(AirInst {
+                data: AirInstData::StructInit {
+                    struct_id: str_struct_id,
+                    fields_start: fields,
+                    fields_len: 2,
+                    source_order_start: source_order,
+                },
+                ty: str_ty,
+                span,
+            }));
+        }
+
+        Err(self.type_mismatch_error(str_ty, src_ty, span))
     }
 }
