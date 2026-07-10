@@ -7,7 +7,7 @@ It handles:
 - Appending new results to existing history
 - Creating the history file if it doesn't exist
 - Limiting history to the most recent 100 entries
-- Validating JSON structure
+- Validating JSON structure and exact benchmark-manifest membership
 - Supporting both version 1 and version 2 result schemas
 
 Usage:
@@ -59,6 +59,12 @@ import json
 import sys
 from pathlib import Path
 
+from benchmark_validation import (
+    DEFAULT_MANIFEST,
+    load_manifest_names,
+    validate_results,
+)
+
 # Maximum number of runs to keep in history
 MAX_HISTORY_SIZE = 100
 
@@ -86,33 +92,22 @@ def save_json(path: Path, data: dict) -> None:
         f.write("\n")
 
 
-def validate_result(result: dict) -> bool:
-    """Validate that a result has the required fields and non-empty data."""
+def validate_result(result: object, expected_names: list[str]) -> bool:
+    """Validate required history fields and exact manifest membership."""
+    if not isinstance(result, dict):
+        print("Error: benchmark result must be a JSON object", file=sys.stderr)
+        return False
+
     required_fields = ["timestamp", "benchmarks"]
     for field in required_fields:
         if field not in result:
             print(f"Error: Result missing required field: {field}", file=sys.stderr)
             return False
 
-    if not isinstance(result["benchmarks"], list):
-        print("Error: benchmarks field must be an array", file=sys.stderr)
-        return False
-
-    if len(result["benchmarks"]) == 0:
-        print("Error: benchmarks array is empty - no data to record", file=sys.stderr)
-        print("This usually means all benchmark iterations failed.", file=sys.stderr)
-        return False
-
-    # Validate each benchmark has required fields
-    for i, bench in enumerate(result["benchmarks"]):
-        if "name" not in bench:
-            print(f"Error: benchmark[{i}] missing 'name' field", file=sys.stderr)
-            return False
-        if "mean_ms" not in bench:
-            print(f"Error: benchmark[{i}] ({bench.get('name', '?')}) missing 'mean_ms' field", file=sys.stderr)
-            return False
-
-    return True
+    errors = validate_results(result, expected_names)
+    for error in errors:
+        print(f"Error: {error}", file=sys.stderr)
+    return not errors
 
 
 def append_result(history: dict, result: dict) -> dict:
@@ -134,6 +129,12 @@ def main():
     parser.add_argument("results", type=Path, help="results.json from bench.sh")
     parser.add_argument("history", type=Path, help="history file to append to")
     parser.add_argument(
+        "--manifest",
+        type=Path,
+        default=DEFAULT_MANIFEST,
+        help="benchmark manifest (default: benchmarks/manifest.toml)",
+    )
+    parser.add_argument(
         "--reason",
         choices=["push", "manual", "scheduled"],
         help="what triggered this run; upgrades the result to the v2 schema",
@@ -151,18 +152,25 @@ def main():
     with open(results_path, "r") as f:
         result = json.load(f)
 
-    # Upgrade to the version 2 schema (commit range tracking)
+    try:
+        expected_names = load_manifest_names(args.manifest)
+    except (OSError, ValueError) as error:
+        print(f"Error: Cannot load benchmark manifest: {error}", file=sys.stderr)
+        sys.exit(1)
+
+    # Validate the result at the final history-publication boundary.
+    if not validate_result(result, expected_names):
+        print("Error: Invalid result format", file=sys.stderr)
+        sys.exit(1)
+
+    # Upgrade to the version 2 schema (commit range tracking) only after the
+    # input has been established as an object with a complete corpus.
     if args.reason is not None:
         result["version"] = 2
         result["benchmark_reason"] = args.reason
         if not result.get("commit_range"):
             commit = result.get("commit")
             result["commit_range"] = [commit] if commit else []
-
-    # Validate the result
-    if not validate_result(result):
-        print("Error: Invalid result format", file=sys.stderr)
-        sys.exit(1)
 
     # Load existing history
     history = load_json(history_path)

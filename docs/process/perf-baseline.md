@@ -146,12 +146,12 @@ measurement (plain `{ … }` blocks nested N deep, DEFAULT build, this host):
 | 20 | > 30 s (killed) |
 
 Each added level roughly **doubles** parse time — i.e. **O(2^depth)**. That
-means `deep_nesting.rue` (nests ~40 levels) cannot be parsed, and `bench.sh`
-has almost certainly been silently skipping it (a failed benchmark iteration is
-logged and dropped, and `validate-benchmark.py` only fails when *all*
-benchmarks fail). This is a real parser bug, filed separately; it is out of
-scope for this measurement-only change. Once fixed, add `deep_nesting` back to
-`default_corpus()` in `scripts/perf-baseline.py`.
+means `deep_nesting.rue` (nests ~40 levels) cannot be parsed. `bench.sh` logs
+and drops failed benchmark iterations, but result validation now rejects any
+run that does not contain the manifest's exact benchmark set, so this failure
+cannot silently enter benchmark history. This is a real parser bug, filed
+separately; it is out of scope for this measurement-only change. Once fixed,
+add `deep_nesting` back to `default_corpus()` in `scripts/perf-baseline.py`.
 
 ## Build profile (release vs. DEFAULT)
 

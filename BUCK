@@ -61,6 +61,17 @@ filegroup(
     srcs = glob(["docs/designs/**"]),
 )
 
+filegroup(
+    name = "benchmark-tool-inputs",
+    srcs = [
+        "benchmarks/manifest.toml",
+        "scripts/append-benchmark.py",
+        "scripts/benchmark_validation.py",
+        "scripts/generate-charts.py",
+        "scripts/validate-benchmark.py",
+    ],
+)
+
 sh_test(
     name = "spec-tests",
     test = "//crates/rue-spec:rue-spec",
@@ -123,4 +134,13 @@ sh_test(
         "--adr-dir",
         "$(location :adr-designs)/docs/designs",
     ],
+)
+
+sh_test(
+    name = "benchmark-tool-tests",
+    test = "scripts/test-benchmark-tools.py",
+    env = {
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "RUE_BENCHMARK_TEST_ROOT": "$(location :benchmark-tool-inputs)",
+    },
 )
