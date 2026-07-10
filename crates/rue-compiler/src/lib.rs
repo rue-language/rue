@@ -2925,7 +2925,7 @@ mod integration_tests {
 
         #[test]
         fn implicit_unit_return() {
-            assert!(compile_to_air("fn foo() -> () { } fn main() -> i32 { 0 }").is_ok());
+            assert!(compile_to_air("fn foo() -> () { } fn main() -> i32 { foo(); 0 }").is_ok());
         }
     }
 

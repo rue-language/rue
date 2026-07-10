@@ -40,7 +40,7 @@ error_contains = ["E0206"]
 name = "while_return_condition_compiles"
 files = [{ path = "main.rue", source = """
 fn sink() { loop { while return {} } }
-fn main() -> i32 { 0 }
+fn main() -> i32 { sink(); 0 }
 """ }]
 compile_only = true
 

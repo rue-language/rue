@@ -122,12 +122,12 @@ error_contains = ["E0484"]
 
 [[case]]
 name = "literal_plus_empty_match_compiles"
-description = "RUE-270: `1 + match n {}` — the empty match has type `!`, which coerces to the literal's type (spec 3.4:3-4). Compiles (the fn is uncallable — Never is uninhabited)."
+description = "RUE-270: `1 + match n {}` — the empty match has type `!`, which coerces to the literal's type (spec 3.4:3-4)."
 compile_only = true
 files = [{ path = "main.rue", source = """
 enum Never {}
 fn absurd(n: Never) -> i32 { 1 + match n {} }
-fn main() -> i32 { 0 }
+fn main() -> i32 { if false { absurd(loop {}); } 0 }
 """ }]
 
 [[case]]
@@ -137,7 +137,7 @@ compile_only = true
 files = [{ path = "main.rue", source = """
 enum Never {}
 fn absurd(n: Never) -> i32 { let x: i32 = match n {}; x }
-fn main() -> i32 { 0 }
+fn main() -> i32 { if false { absurd(loop {}); } 0 }
 """ }]
 
 [[case]]
@@ -165,6 +165,6 @@ compile_fail = true
 files = [{ path = "main.rue", source = """
 enum Never {}
 fn absurd(n: Never) -> i32 { let y: u8 = 300; let _ = match n {}; 0 }
-fn main() -> i32 { 0 }
+fn main() -> i32 { absurd(loop {}) }
 """ }]
 error_contains = ["E0800"]
