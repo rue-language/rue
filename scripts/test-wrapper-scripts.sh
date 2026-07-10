@@ -14,6 +14,10 @@
 #     relative <source.rue> / `-o` paths to the compiler, so they resolved from
 #     the wrong directory even though the script advertises "run from anywhere".
 #
+#   * RUE-537: filtered CLI wrappers handed the harness a relative examples
+#     directory. The harness later runs each compiler case from a temporary
+#     directory, where that repository-relative path no longer resolves.
+#
 # Each test runs a COPY of the real script in a throwaway sandbox with a fake
 # `./buck2` (and, for scripts/rue, a fake scripts/rue-bin + fake compiler), so
 # no real build runs. The fakes log their cwd/argv; we assert on exit status,
@@ -112,7 +116,7 @@ EOF
 # sandbox path.
 make_rue_sandbox() {
   local sb; sb="$(mktemp -d)"
-  mkdir -p "$sb/scripts" "$sb/work" "$sb/std"
+  mkdir -p "$sb/scripts" "$sb/work" "$sb/std" "$sb/examples" "$sb/probe"
   cp "$SRC_ROOT/scripts/rue" "$sb/scripts/rue"; chmod +x "$sb/scripts/rue"
   cat >"$sb/scripts/rue-bin" <<'EOF'
 #!/usr/bin/env bash
@@ -130,6 +134,7 @@ chmod +x "$out" 2>/dev/null || true
 EOF
   chmod +x "$sb/compiler"
   echo 'fn main() -> i32 { 0 }' >"$sb/work/hello.rue"
+  echo 'fn main() -> i32 { 0 }' >"$sb/examples/hello.rue"
   printf '%s\n' "$sb"
 }
 
@@ -161,6 +166,87 @@ test_rue_run_resolves_relative_output() {
   rm -rf "$sb"
 }
 
+# ===========================================================================
+# RUE-537 — filtered CLI wrappers anchor examples before the harness chdir
+# ===========================================================================
+
+# Install a fake Buck that behaves like the CLI harness at the relevant cwd
+# boundary: once it receives RUE_EXAMPLES_DIR, it changes to a per-case
+# directory and tries to read a repository example through that path.
+install_cli_path_probe_buck() {
+  local sb="$1"
+  cat >"$sb/buck2" <<'EOF'
+#!/usr/bin/env bash
+if [ -n "${RUE_EXAMPLES_DIR:-}" ]; then
+  printf 'examples=%s\n' "$RUE_EXAMPLES_DIR" >>"$CLI_LOG"
+  printf 'args=%s\n' "$*" >>"$CLI_LOG"
+  cd "$FAKE_PROBE_DIR"
+  [ -f "$RUE_EXAMPLES_DIR/hello.rue" ] || exit 91
+  exit "${FAKE_CLI_EXIT:-0}"
+fi
+exit 0
+EOF
+  chmod +x "$sb/buck2"
+}
+
+# `scripts/rue cli` must pass an absolute examples path that remains readable
+# after the harness changes cwd, forward the filter, and preserve failures.
+test_rue_cli_examples_survive_case_chdir() {
+  local sb; sb="$(make_rue_sandbox)"
+  install_cli_path_probe_buck "$sb"
+
+  local rc=0
+  ( cd "$sb/work" && FAKE_COMPILER="$sb/compiler" CLI_LOG="$sb/cli.log" \
+      FAKE_PROBE_DIR="$sb/probe" \
+      "$sb/scripts/rue" cli 'cli.examples::hello' ) >/dev/null 2>&1 || rc=$?
+  check "scripts/rue cli: filtered run survives the harness cwd change" \
+    "$([ "$rc" -eq 0 ] && echo 0 || echo 1)"
+  check "scripts/rue cli: examples path is anchored at the repository" \
+    "$(grep -Fxq "examples=$sb/examples" "$sb/cli.log" 2>/dev/null && echo 0 || echo 1)"
+  check "scripts/rue cli: filter is forwarded" \
+    "$(grep -Fq 'cli.examples::hello' "$sb/cli.log" 2>/dev/null && echo 0 || echo 1)"
+
+  rc=0
+  ( cd "$sb/work" && FAKE_COMPILER="$sb/compiler" CLI_LOG="$sb/cli.log" \
+      FAKE_PROBE_DIR="$sb/probe" FAKE_CLI_EXIT=17 \
+      "$sb/scripts/rue" cli 'cli.examples::hello' ) >/dev/null 2>&1 || rc=$?
+  check "scripts/rue cli: harness failure is propagated" \
+    "$([ "$rc" -eq 17 ] && echo 0 || echo 1)"
+  rm -rf "$sb"
+}
+
+# Filtered `test.sh` reaches the same CLI path after its unit/spec/UI steps. Its
+# absolute path must survive the cwd change, and its sentinel must agree with
+# the propagated harness status.
+test_testsh_cli_examples_survive_case_chdir() {
+  local sb; sb="$(make_rue_sandbox)"
+  install_cli_path_probe_buck "$sb"
+  cp "$SRC_ROOT/test.sh" "$sb/test.sh"; chmod +x "$sb/test.sh"
+
+  local rc=0 out
+  out="$(cd "$sb/work" && FAKE_COMPILER="$sb/compiler" CLI_LOG="$sb/cli.log" \
+      FAKE_PROBE_DIR="$sb/probe" \
+      "$sb/test.sh" 'cli.examples::hello' 2>&1)" || rc=$?
+  check "test.sh: filtered run survives the harness cwd change" \
+    "$([ "$rc" -eq 0 ] && echo 0 || echo 1)"
+  check "test.sh: examples path is anchored at the repository" \
+    "$(grep -Fxq "examples=$sb/examples" "$sb/cli.log" 2>/dev/null && echo 0 || echo 1)"
+  check "test.sh: CLI filter is forwarded" \
+    "$(grep -Fq 'cli.examples::hello' "$sb/cli.log" 2>/dev/null && echo 0 || echo 1)"
+  check "test.sh: successful filtered run prints the passed sentinel" \
+    "$(printf '%s\n' "$out" | grep -Fxq '=== TEST SUITE: PASSED ===' && echo 0 || echo 1)"
+
+  rc=0
+  out="$(cd "$sb/work" && FAKE_COMPILER="$sb/compiler" CLI_LOG="$sb/cli.log" \
+      FAKE_PROBE_DIR="$sb/probe" FAKE_CLI_EXIT=17 \
+      "$sb/test.sh" 'cli.examples::hello' 2>&1)" || rc=$?
+  check "test.sh: CLI harness failure is propagated" \
+    "$([ "$rc" -eq 17 ] && echo 0 || echo 1)"
+  check "test.sh: CLI harness failure prints the failed sentinel" \
+    "$(printf '%s\n' "$out" | grep -Fxq '=== TEST SUITE: FAILED (exit 17) ===' && echo 0 || echo 1)"
+  rm -rf "$sb"
+}
+
 # --- run everything ---------------------------------------------------------
 
 test_ruebin_build_failure_is_loud
@@ -168,6 +254,8 @@ test_ruebin_success_prints_clean_path
 test_fmt_build_failure_is_loud
 test_rue_exec_resolves_from_caller_cwd
 test_rue_run_resolves_relative_output
+test_rue_cli_examples_survive_case_chdir
+test_testsh_cli_examples_survive_case_chdir
 
 echo "--------------------------------------------------"
 if [ "$FAILURES" -eq 0 ]; then

@@ -31,6 +31,7 @@ set -euo pipefail
 # a green-looking count and still have failed a later gate.)
 
 cd "$(dirname "$0")"
+repo_root="$PWD"
 
 # Always print the result sentinel, even on an early `set -e` exit, so a piped
 # or captured run is self-describing (RUE-579).
@@ -78,7 +79,7 @@ else
     echo "Running CLI integration tests..."
     RUE_BINARY="$RUE_BINARY" \
     RUE_CLI_CASES="crates/rue-cli-tests/cases" \
-    RUE_EXAMPLES_DIR="examples" \
+    RUE_EXAMPLES_DIR="$repo_root/examples" \
     RUE_STD_DIR="std" \
     ./buck2 run //crates/rue-cli-tests:rue-cli-tests -- --quiet "$@"
 
