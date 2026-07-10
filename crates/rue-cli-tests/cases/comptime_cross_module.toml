@@ -243,3 +243,32 @@ fn main() -> i32 {
 """ },
 ]
 exit_code = 40
+
+[[case]]
+# RUE-575: a comptime let-bound alias of a CROSS-MODULE type constructor is
+# usable as a field type inside a -> type body.
+name = "cross_module_let_alias_in_field_type_position"
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "b.rue", source = """
+pub fn Mk(comptime T: type) -> type {
+    struct { value: T }
+}
+""" },
+  { path = "main.rue", source = """
+const b = @import("b.rue");
+
+fn Wrap(comptime T: type) -> type {
+    let Inner = b.Mk(T);
+    struct { x: Inner }
+}
+
+fn main() -> i32 {
+    let W = Wrap(i32);
+    let I = b.Mk(i32);
+    let w: W = W { x: I { value: 42 } };
+    w.x.value
+}
+""" },
+]
+exit_code = 42

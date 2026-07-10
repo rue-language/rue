@@ -2072,6 +2072,66 @@ fn main() -> i32 {
 exit_code = 42
 
 [[case]]
+name = "let_bound_type_alias_in_field_type_position"
+spec = ["4.14:22"]
+description = "A comptime let-bound type alias is usable as a struct field type inside a -> type body (RUE-575)"
+source = """
+fn Mk(comptime T: type) -> type { struct { value: T } }
+fn Wrap(comptime T: type) -> type {
+    let Inner = Mk(T);
+    struct { x: Inner }
+}
+fn main() -> i32 {
+    let W = Wrap(i32);
+    let I = Mk(i32);
+    let w: W = W { x: I { value: 42 } };
+    w.x.value
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "let_bound_type_alias_in_enum_payload_position"
+spec = ["4.14:22"]
+description = "A comptime let-bound type alias is usable as an enum payload type inside a -> type body (RUE-575)"
+source = """
+fn Payload(comptime T: type) -> type { struct { v: T } }
+fn Choice(comptime T: type) -> type {
+    let P = Payload(T);
+    enum { Got(P), Nothing }
+}
+fn main() -> i32 {
+    let C = Choice(i32);
+    let P = Payload(i32);
+    let c: C = C.Got(P { v: 42 });
+    match c {
+        C.Got(p) => p.v,
+        C.Nothing => 0,
+    }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "let_bound_type_alias_shadows_type_parameter"
+spec = ["4.14:22"]
+description = "A let-bound alias shadows a same-named enclosing comptime type parameter in field-type position (lexical scoping, RUE-575)"
+source = """
+fn Mk(comptime T: type) -> type { struct { value: T } }
+fn Wrap(comptime T: type) -> type {
+    let T = Mk(bool);
+    struct { x: T }
+}
+fn main() -> i32 {
+    let W = Wrap(i32);
+    let B = Mk(bool);
+    let w: W = W { x: B { value: true } };
+    if w.x.value { 42 } else { 0 }
+}
+"""
+exit_code = 42
+
+[[case]]
 name = "type_constructor_in_annotation_position"
 spec = ["4.14:23"]
 description = "F(i32) used directly as a let type annotation (RUE-289, RUE-241)"
