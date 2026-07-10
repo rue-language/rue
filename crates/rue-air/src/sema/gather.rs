@@ -22,7 +22,7 @@ use super::{KnownSymbols, Sema};
 ///
 /// This contains the state built during declaration gathering that is needed
 /// for function body analysis. After gathering, this can be converted back
-/// into a `Sema` for the eager or lazy analysis drivers.
+/// into a `Sema` for demand-driven function-body analysis.
 ///
 /// # Architecture
 ///

@@ -6,9 +6,9 @@
 //! - RIR to AIR instruction lowering (analyze_inst)
 //! - Helper functions for expression analysis
 //!
-//! Two drivers share these analysis functions: the eager path (single-file
-//! compilation analyzes every function) and the lazy path (multi-file
-//! compilation analyzes only reachable functions, per ADR-0026).
+//! The demand-driven driver analyzes ordinary function and method bodies only
+//! when they are reachable from `main`, per ADR-0045. Program shape does not
+//! change which bodies are checked.
 
 use std::collections::{HashMap, HashSet};
 
@@ -39,8 +39,7 @@ use crate::types::{ModuleId, StructField, StructId, Type, TypeKind};
 /// Main entry point for analyzing all function bodies.
 ///
 /// Called from Sema::analyze_all after declarations are collected.
-/// Uses the lazy driver for import graphs and the eager driver for single-file
-/// compilations.
+/// Uses the demand-driven driver for every program shape.
 pub(crate) fn analyze_all_function_bodies(mut sema: Sema<'_>) -> MultiErrorResult<SemaOutput> {
     // Declarations are complete: re-point destructor symbols of struct
     // names that span multiple files at their file-qualified form (RUE-571).
@@ -48,14 +47,9 @@ pub(crate) fn analyze_all_function_bodies(mut sema: Sema<'_>) -> MultiErrorResul
     // symbol from the same helper.
     sema.requalify_colliding_destructor_symbols();
 
-    // Use lazy analysis when imports are present (multi-file compilation)
-    // This ensures only reachable code is analyzed, per ADR-0026
-    let result = if sema.has_imports() {
-        analyze_function_bodies_lazy(&mut sema)
-    } else {
-        // Use eager analysis for single-file compilation (backwards compatibility)
-        analyze_all_function_bodies_sequential(&mut sema)
-    };
+    // ADR-0045 defines reachability from `main` as the function-body analysis
+    // frontier for every executable.
+    let result = analyze_function_bodies_lazy(&mut sema);
 
     // Sema→CFG boundary invariant (RUE-153): a value may only carry the
     // `<error>` type as part of error recovery, i.e. when at least one
@@ -112,6 +106,7 @@ fn find_undiagnosed_error_type(output: &SemaOutput) -> Option<CompileError> {
 }
 
 /// Sequential analysis path (current implementation).
+#[allow(dead_code)] // Removed in the follow-up that deletes the legacy driver.
 fn analyze_all_function_bodies_sequential(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOutput> {
     // Build inference context once
     let infer_ctx = sema.build_inference_context();
@@ -680,18 +675,19 @@ fn enqueue_anonymous_destructors(
     pending_methods.extend(destructors);
 }
 
-/// Lazy analysis path (Phase 3 of module system, ADR-0026).
+/// Demand-driven body-analysis path (ADR-0045).
 ///
-/// This implements "lazy semantic analysis" where only functions reachable from
-/// the entry point (main) are analyzed. Unreferenced code is not analyzed,
-/// not codegen'd, and errors in unreferenced code are not reported.
+/// Ordinary function and method bodies are analyzed only when reachable from
+/// the entry point (`main`). Declaration gathering remains eager, and named
+/// destructors are currently implicit roots because drop glue is synthesized
+/// from the full type pool.
 ///
 /// This is the same trade-off Zig makes for faster builds and smaller binaries.
 fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOutput> {
     // Build inference context once
     let infer_ctx = sema.build_inference_context();
 
-    // Find main() function - this is the entry point for lazy analysis
+    // Find main() - the reference root for executable body analysis.
     let main_sym = match sema.interner.get("main") {
         Some(sym) if sema.functions.contains_key(&sym) => sym,
         _ => {

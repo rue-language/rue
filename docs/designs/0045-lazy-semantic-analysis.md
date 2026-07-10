@@ -105,13 +105,15 @@ Analysis is a **reachability walk** over declarations, seeded from a set of
 
 ### 2. Eager → on-demand across the pipeline
 
-The compiler pipeline (Lexer → Parser → AstGen → Sema → CfgBuilder → Lower →
-RegAlloc → Emit → Link) is today driven eagerly: each pass processes *every*
-item before the next pass runs. Lazy analysis reorganizes the front half of the
-pipeline to be **demand-driven per declaration**, converging on the model
-comptime monomorphization already uses:
+The original compiler pipeline (Lexer → Parser → AstGen → Sema → CfgBuilder →
+Lower → RegAlloc → Emit → Link) was driven eagerly: each pass processed *every*
+item before the next pass ran. The first rollout now makes ordinary function
+and method bodies demand-driven from `main`; loaded files are still lexed,
+parsed, and gathered eagerly. The broader design reorganizes the front half of
+the pipeline **per declaration**, converging on the model comptime
+monomorphization already uses:
 
-| Stage | Today (eager) | Under lazy analysis |
+| Stage | Before rollout (eager) | Under lazy analysis |
 |-------|---------------|---------------------|
 | Lexer | whole file | whole file (unchanged — lexing is cheap, and a file is the unit of parse) |
 | Parser → AST | whole file | whole file, but a **module is not parsed until referenced** (§3) |

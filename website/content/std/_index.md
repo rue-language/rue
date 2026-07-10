@@ -67,7 +67,7 @@ As Rue matures, the standard library will grow to include:
 The Rue standard library follows several design principles:
 
 1. **Explicit imports** - No implicit prelude; all dependencies are visible
-2. **Lazy analysis** - Only imported code is analyzed, enabling fast compilation
+2. **Lazy analysis** - Function bodies are analyzed on demand from `main`, enabling fast compilation
 3. **File = module** - Each `.rue` file is a module; the filesystem is the source of truth
 4. **Simple visibility** - Just `pub` (public) or nothing (private)
 

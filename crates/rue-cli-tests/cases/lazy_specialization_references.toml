@@ -1,6 +1,6 @@
 # References discovered while creating a comptime specialization must rejoin
 # the demand-driven body-analysis frontier (RUE-580). Each case uses a real
-# import so it exercises the production lazy path before that path is universal.
+# import so module-qualified calls participate in the same coverage.
 
 [section]
 id = "cli.lazy_specialization_references"

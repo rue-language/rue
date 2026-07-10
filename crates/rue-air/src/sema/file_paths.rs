@@ -67,11 +67,10 @@ impl<'a> Sema<'a> {
             .map(|(id, _)| *id)
     }
 
-    /// Check if the compilation involves imports (multi-file compilation).
-    ///
-    /// When imports are present, lazy analysis is used to only analyze
-    /// functions reachable from main(). For single-file compilation,
-    /// eager analysis is used for backwards compatibility.
+    /// Legacy import-presence selector retained only so the universal
+    /// demand-driven cutover and its eager-driver deletion remain separate
+    /// review units. The body-analysis entry point no longer calls it.
+    #[allow(dead_code)] // Removed with the legacy eager-driver selector.
     pub(crate) fn has_imports(&self) -> bool {
         !self.module_registry.is_empty()
     }

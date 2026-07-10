@@ -391,7 +391,7 @@ exit_code = 7
 
 [[case]]
 name = "move_out_of_inout_rejected_in_imported_module"
-description = "The lazy (import-driven) analysis path enforces the same rule as the single-file path."
+description = "The imported-module call shape enforces the same rule as a local call."
 files = [
     { path = "main.rue", source = """
 const lib = @import("lib.rue");
@@ -412,9 +412,9 @@ error_contains = ["E0437", "cannot move out of inout parameter"]
 # ---------------------------------------------------------------------------
 # Exclusive-access checks are uniform across call shapes and pipelines
 # (RUE-141). Module member calls (`m.f(...)`) used to skip the exclusive-
-# access check entirely, and the lazy (import-driven) pipeline's check had
-# drifted to cover less than the single-file one (no borrow/inout conflict
-# detection, no lvalue check). Both now share one implementation.
+# access check entirely, and its check had drifted to cover less than the local
+# call shape (no borrow/inout conflict detection, no lvalue check). Both now
+# share one implementation.
 # ---------------------------------------------------------------------------
 
 [[case]]
@@ -462,7 +462,7 @@ error_contains = ["E0430", "cannot borrow 'x' while it is mutably borrowed"]
 
 [[case]]
 name = "regular_call_borrow_inout_conflict_rejected_with_import"
-description = "With an import present (lazy pipeline), a regular call mixing borrow and inout of the same variable is still rejected."
+description = "A regular call mixing borrow and inout is rejected even when the program also has an import."
 files = [
     { path = "main.rue", source = """
 fn observe(borrow a: i32, inout b: i32) -> i32 {
