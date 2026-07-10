@@ -1635,43 +1635,32 @@ impl<'a> Sema<'a> {
                     variant,
                     ..
                 } => {
-                    // Look up the enum type, potentially through a module
-                    let enum_id = if let Some(module_ref) = module {
-                        // Qualified access: module.EnumName::Variant
-                        self.resolve_enum_through_module(*module_ref, *type_name, pattern_span)?
-                    } else {
-                        // Unqualified access: EnumName::Variant, or the generic
-                        // form `O::Some(..)` where `O` is a comptime type
-                        // variable bound to `Option(i32)` (RUE-6 phase 2).
-                        let (enum_id, via_comptime) = self
-                            .resolve_enum_type_name(*type_name, ctx)
-                            .ok_or_compile_error(
-                                ErrorKind::UnknownEnumType(
-                                    self.interner.resolve(&*type_name).to_string(),
-                                ),
-                                pattern_span,
-                            )?;
-                        // Privacy (E0460, RUE-185): a match pattern names the
-                        // enum unqualified, so a private enum from another
-                        // directory cannot be matched on — privacy is uniform
-                        // across item kinds (spec 10.3:1, 10.3:7). The
-                        // module-qualified branch above does its own check
-                        // (E0706). The pattern-to-AIR conversion later in
-                        // this loop re-resolves the same name but runs only
-                        // after this check has passed. A comptime-bound enum is
-                        // exempt (the type arrived through a binding).
-                        if !via_comptime {
-                            let def = self.type_pool.enum_def(enum_id);
-                            self.check_unqualified_visibility(
-                                "enum",
-                                self.interner.resolve(&*type_name),
-                                def.file_id,
-                                def.is_pub,
-                                pattern_span,
-                            )?;
-                        }
-                        enum_id
-                    };
+                    // Look up the enum type — through a module or unqualified /
+                    // comptime-bound — via the shared pattern-enum chokepoint.
+                    let (enum_id, privacy_handled) = self
+                        .resolve_pattern_enum(*module, *type_name, ctx, pattern_span)?
+                        .ok_or_compile_error(
+                            ErrorKind::UnknownEnumType(
+                                self.interner.resolve(&*type_name).to_string(),
+                            ),
+                            pattern_span,
+                        )?;
+                    // Privacy (E0460, RUE-185): a match pattern names the enum
+                    // unqualified, so a private enum from another directory
+                    // cannot be matched on — privacy is uniform across item
+                    // kinds (spec 10.3:1, 10.3:7). Skipped when the name arrived
+                    // through a module (E0706 already enforced) or a comptime
+                    // binding (exempt); both are reported as `privacy_handled`.
+                    if !privacy_handled {
+                        let def = self.type_pool.enum_def(enum_id);
+                        self.check_unqualified_visibility(
+                            "enum",
+                            self.interner.resolve(&*type_name),
+                            def.file_id,
+                            def.is_pub,
+                            pattern_span,
+                        )?;
+                    }
                     let enum_def = self.type_pool.enum_def(enum_id);
 
                     // Check that scrutinee type matches the pattern's enum type
@@ -1809,21 +1798,18 @@ impl<'a> Sema<'a> {
                     ..
                 } => {
                     let type_name_str = self.interner.resolve(&*type_name).to_string();
-                    let enum_id = if let Some(module_ref) = module {
-                        self.resolve_enum_through_module(*module_ref, *type_name, pattern_span)?
-                    } else {
-                        self.resolve_enum_type_name(*type_name, ctx)
-                            .map(|(id, _)| id)
-                            .ok_or_else(|| {
-                                CompileError::new(
-                                    ErrorKind::InternalError(format!(
-                                        "enum type '{}' not found during pattern conversion",
-                                        type_name_str
-                                    )),
-                                    pattern_span,
-                                )
-                            })?
-                    };
+                    let enum_id = self
+                        .resolve_pattern_enum(*module, *type_name, ctx, pattern_span)?
+                        .map(|(id, _)| id)
+                        .ok_or_else(|| {
+                            CompileError::new(
+                                ErrorKind::InternalError(format!(
+                                    "enum type '{}' not found during pattern conversion",
+                                    type_name_str
+                                )),
+                                pattern_span,
+                            )
+                        })?;
                     let enum_def = self.type_pool.enum_def(enum_id);
                     let variant_name = self.interner.resolve(&*variant);
                     let variant_index = enum_def.find_variant(variant_name).ok_or_else(|| {
@@ -2263,16 +2249,13 @@ impl<'a> Sema<'a> {
         }
         let pattern_span = *span;
 
-        let enum_id = if let Some(module_ref) = module {
-            self.resolve_enum_through_module(*module_ref, *type_name, pattern_span)?
-        } else {
-            self.resolve_enum_type_name(*type_name, ctx)
-                .map(|(id, _)| id)
-                .ok_or_compile_error(
-                    ErrorKind::UnknownEnumType(self.interner.resolve(&*type_name).to_string()),
-                    pattern_span,
-                )?
-        };
+        let enum_id = self
+            .resolve_pattern_enum(*module, *type_name, ctx, pattern_span)?
+            .map(|(id, _)| id)
+            .ok_or_compile_error(
+                ErrorKind::UnknownEnumType(self.interner.resolve(&*type_name).to_string()),
+                pattern_span,
+            )?;
         let def = self.type_pool.enum_def(enum_id);
         let variant_name = self.interner.resolve(&*variant).to_string();
         let variant_index = def.find_variant(&variant_name).ok_or_compile_error(
@@ -6397,6 +6380,39 @@ impl<'a> Sema<'a> {
             .copied()
             .or_else(|| self.resolve_builtin_struct_name(type_name))
             .map(|id| (id, false))
+    }
+
+    /// Resolve the enum a `RirPattern::Path` names — through a module
+    /// (`m.Enum.Variant`, whose visibility is checked as E0706 by
+    /// `resolve_enum_through_module`) or unqualified / comptime-bound
+    /// (`Enum.Variant`, or `O.Variant` where `O` is a bound comptime type,
+    /// RUE-6). Returns `(enum_id, privacy_handled)`: `privacy_handled` is true
+    /// when visibility has already been enforced (module path) or does not apply
+    /// (a comptime-bound type arrived through a binding, not by naming the
+    /// enum), so a caller runs the unqualified E0460 check only when it is
+    /// false. `None` means the unqualified name is not an enum — the caller
+    /// supplies the not-found diagnostic it wants (a user error at the legality
+    /// check, an internal error during lowering).
+    ///
+    /// This is the single chokepoint the pattern-enum consumers funnel through
+    /// (legality check, pattern→AIR lowering, payload-binding materialization),
+    /// replacing three copy-pasted `if module { … } else { … }` blocks. Folding
+    /// them here also makes the inline type-constructor pattern head
+    /// (`Result(i32, i32).Ok(v)`, RUE-596) a localized follow-up: it need only
+    /// teach this one method to comptime-evaluate a constructor-call head.
+    pub(crate) fn resolve_pattern_enum(
+        &self,
+        module: Option<InstRef>,
+        type_name: Spur,
+        ctx: &AnalysisContext,
+        span: Span,
+    ) -> CompileResult<Option<(crate::types::EnumId, bool)>> {
+        if let Some(module_ref) = module {
+            let enum_id = self.resolve_enum_through_module(module_ref, type_name, span)?;
+            Ok(Some((enum_id, true)))
+        } else {
+            Ok(self.resolve_enum_type_name(type_name, ctx))
+        }
     }
 
     /// Analyze an associated function call.
