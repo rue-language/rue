@@ -19,10 +19,10 @@
 // is what the dogfooding milestone was reaching for: the first real program can
 // read a stream cleanly, with the postfix `?` doing the early-exit plumbing.
 //
-// The one rough edge that remains (RUE-287): no prelude yet, so `Option` is not
-// in scope automatically. Import `std` explicitly, name the optional type as
-// `std.option.Option(i64)` in the helper signature, and use a local `OptInt`
-// alias for matching on `Some` and `None` in the loop below.
+// Rue intentionally has no implicit prelude (RUE-287). Following the public
+// standard-library model (RUE-315, ADR-0042), this program imports `std`
+// explicitly, names the helper's optional type as `std.option.Option(i64)`, and
+// uses a local `OptInt` alias to match on `Some` and `None` in the loop below.
 //
 // Exercises the dogfooding set end to end: @read_line, @parse_i64, the `?`
 // operator, std.option.Option, StrBuf concatenation + @to_string, println, a
