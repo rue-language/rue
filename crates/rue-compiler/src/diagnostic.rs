@@ -2151,7 +2151,7 @@ mod tests {
         // counts, since the only wide-in-bytes char here is the 1-column ESC
         // glyph) — byte offsets would differ by the glyph's extra bytes.
         let after_gutter =
-            |l: &str| -> String { l.splitn(2, "| ").nth(1).unwrap_or(l).to_string() };
+            |l: &str| -> String { l.split_once("| ").map_or(l, |(_, rest)| rest).to_string() };
         let src_body = after_gutter(src_line);
         let caret_body = after_gutter(caret_line);
         let nope_col = src_body[..src_body.find("nope").unwrap()].chars().count();
