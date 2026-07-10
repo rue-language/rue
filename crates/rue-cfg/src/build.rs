@@ -3456,10 +3456,10 @@ mod tests {
     fn test_owned_param_dropped_at_exit() {
         // The callee owns its pass-by-value parameters and drops them at
         // function exit (unless moved out).
-        let cfg = build_cfg_for(
+        let cfg = build_cfg_named(
             "fn f(s: String) -> i32 { 0 }\n\
-             fn main() -> i32 { 0 }",
-            0,
+             fn main() -> i32 { f(String.with_capacity(8)) }",
+            "f",
         );
         assert_eq!(count_drops(&cfg), 1, "owned String param must be dropped");
     }
@@ -3468,10 +3468,10 @@ mod tests {
     fn test_moved_param_not_dropped_at_exit() {
         // A param moved into a local is dropped via the local, not again as
         // a param at exit.
-        let cfg = build_cfg_for(
+        let cfg = build_cfg_named(
             "fn f(s: String) -> i32 { let t = s; 0 }\n\
-             fn main() -> i32 { 0 }",
-            0,
+             fn main() -> i32 { f(String.with_capacity(8)) }",
+            "f",
         );
         assert_eq!(count_drops(&cfg), 1, "moved param must drop only via t");
     }
@@ -3524,8 +3524,8 @@ mod tests {
                  }\n\
                  0\n\
              }";
-        let consume_cfg = build_cfg_for(source, 0);
-        let main_cfg = build_cfg_for(source, 1);
+        let consume_cfg = build_cfg_named(source, "consume");
+        let main_cfg = build_cfg_named(source, "main");
         assert_eq!(
             count_drops(&consume_cfg),
             1,
