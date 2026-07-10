@@ -6,11 +6,13 @@
 // The standard library provides common utilities organized into submodules:
 // - std.math: Mathematical functions
 // - std.option.Option: Optional values
+// - std.result.Result: Fallible values (Ok/Err), propagated with `?`
 // - std.arraybuf.ArrayBuf: Growable heap-backed collections
 
 // Re-export library modules.
 pub const math = @import("math.rue");
 pub const option = @import("option.rue");
+pub const result = @import("result.rue");
 pub const arraybuf = @import("arraybuf.rue");
 
 fn _exit_syscall_number() -> u64 {

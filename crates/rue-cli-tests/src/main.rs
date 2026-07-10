@@ -167,6 +167,14 @@ const EXAMPLE_EXPECTATIONS: &[ExampleExpectation] = &[
         stdout: "triple: 12\ntriple: none\n",
         stdin: None,
     },
+    // `?` propagation for Result (RUE-591, ADR-0038): Ok unwraps, Err
+    // short-circuits. add_one_over(10,2)=Ok(6); add_one_over(10,0)=Err(1).
+    ExampleExpectation {
+        path: "first/result_try.rue",
+        exit_code: 0,
+        stdout: "ok: 6\nerr: 1\n",
+        stdin: None,
+    },
     ExampleExpectation {
         path: "first/stats.rue",
         exit_code: 3,

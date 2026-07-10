@@ -1,0 +1,38 @@
+// The `?` operator: Result propagation (RUE-6, RUE-591, ADR-0038).
+//
+//   $ rue examples/first/result_try.rue -o try && ./try
+//   ok: 6
+//   err: 1
+//
+// `expr?` on a Result evaluates to the `Ok` payload and early-returns `Err(e)`
+// from the enclosing function (which must itself return a Result with the same
+// error type) when `expr` is `Err(e)`. Compare `add_one_over`, which unwraps
+// with a single `?`, against the `match` it desugars to.
+const std = @import("std");
+
+// checked_div: Ok(a / b), or Err(1) on divide-by-zero.
+fn checked_div(a: i32, b: i32) -> std.result.Result(i32, i32) {
+    let R = std.result.Result(i32, i32);
+    if b == 0 { R.Err(1) } else { R.Ok(a / b) }
+}
+
+// add_one_over: (a / b) + 1, propagating the division error with `?`.
+fn add_one_over(a: i32, b: i32) -> std.result.Result(i32, i32) {
+    let R = std.result.Result(i32, i32);
+    let q = checked_div(a, b)?;
+    R.Ok(q + 1)
+}
+
+fn report(a: i32, b: i32) {
+    let R = std.result.Result(i32, i32);
+    match add_one_over(a, b) {
+        R.Ok(v) => println("ok: " + @to_string(v)),
+        R.Err(e) => println("err: " + @to_string(e)),
+    }
+}
+
+fn main() -> i32 {
+    report(10, 2);        // checked_div = Ok(5) -> add_one_over = Ok(6)
+    report(10, 0);        // checked_div = Err(1) -> `?` short-circuits to Err(1)
+    0
+}
