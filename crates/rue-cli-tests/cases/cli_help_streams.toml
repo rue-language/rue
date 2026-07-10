@@ -1,0 +1,37 @@
+[section]
+id = "cli.help_streams"
+name = "Help and usage stream routing"
+description = """
+RUE-518: an explicit --help request is a SUCCESS, so its help text goes to
+stdout (like --version), not stderr. Usage attached to an argument error stays
+on stderr. Asserting the streams separately guards `rue --help | less`,
+stdout-capturing tooling, and scripts that treat non-empty stderr as a problem.
+"""
+
+# Explicit --help: help text on stdout, nothing on stderr, exit 0.
+[[case]]
+name = "help_flag_writes_to_stdout"
+files = [{ path = "main.rue", source = "fn main() -> i32 { 0 }\n" }]
+args = ["--help"]
+compile_only = true
+compile_stdout_contains = ["Usage: rue [options]", "--help", "--version"]
+compile_stderr_not_contains = ["Usage: rue"]
+
+# Same for the -h alias.
+[[case]]
+name = "help_short_flag_writes_to_stdout"
+files = [{ path = "main.rue", source = "fn main() -> i32 { 0 }\n" }]
+args = ["-h"]
+compile_only = true
+compile_stdout_contains = ["Usage: rue [options]"]
+compile_stderr_not_contains = ["Usage: rue"]
+
+# An unknown option is an ERROR: the message and usage go to stderr, and no
+# usage leaks to stdout.
+[[case]]
+name = "unknown_option_usage_on_stderr"
+files = [{ path = "main.rue", source = "fn main() -> i32 { 0 }\n" }]
+args = ["--nonsense-flag", "main.rue"]
+compile_fail = true
+error_contains = ["Unknown option", "Usage: rue [options]"]
+compile_stdout_not_contains = ["Usage: rue"]
