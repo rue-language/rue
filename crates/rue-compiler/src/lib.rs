@@ -413,9 +413,9 @@ pub(crate) struct DuplicateSymbolCheck {
 /// Free functions and nominal types are scoped to their defining file/module
 /// for same-kind AND cross-kind duplicate detection (RUE-572, spec 10.5:1):
 /// top-level names are module-scoped, so a fn in one file and a type in
-/// another may share a name. Every duplicate
-/// produces one error pointing at the redefinition, with a label at the first
-/// definition.
+/// another may share a name. The executable entry point `main` is the temporary
+/// program-global exception (RUE-582). Every duplicate produces one error
+/// pointing at the redefinition, with a label at the first definition.
 ///
 /// This is the single source of truth for duplicate-symbol detection, shared
 /// by [`merge_symbols`] and `CompilationUnit::parse`.
@@ -426,6 +426,7 @@ pub(crate) fn detect_duplicate_symbols<'a>(
     use std::collections::HashMap;
 
     let mut functions: HashMap<(String, String), SymbolDef> = HashMap::new();
+    let mut program_main: Option<SymbolDef> = None;
     let mut function_names: HashMap<(String, String), SymbolDef> = HashMap::new();
     let mut type_names: HashMap<(String, String), SymbolDef> = HashMap::new();
     let mut structs: HashMap<(String, String), SymbolDef> = HashMap::new();
@@ -449,13 +450,27 @@ pub(crate) fn detect_duplicate_symbols<'a>(
                         .with_label(format!("first defined in {}", first.file_path), first.span);
                         errors.push(err);
                     } else {
-                        functions.insert(
-                            key.clone(),
-                            SymbolDef {
-                                span: func.span,
-                                file_path: file_path.to_string(),
-                            },
-                        );
+                        let definition = SymbolDef {
+                            span: func.span,
+                            file_path: file_path.to_string(),
+                        };
+                        if name == "main"
+                            && let Some(first) = &program_main
+                        {
+                            let err = CompileError::new(
+                                ErrorKind::DuplicateFunctionDefinition {
+                                    function_name: name.clone(),
+                                },
+                                func.span,
+                            )
+                            .with_label("first defined here", first.span);
+                            errors.push(err);
+                        } else {
+                            if name == "main" {
+                                program_main = Some(definition.clone());
+                            }
+                            functions.insert(key.clone(), definition);
+                        }
                     }
                     if let Some(first) = type_names.get(&key) {
                         // (cross-kind, same file)
@@ -2020,6 +2035,26 @@ mod tests {
             result.is_ok(),
             "module-local functions in different files may share a source name"
         );
+    }
+
+    #[test]
+    fn test_merge_symbols_duplicate_main_across_files_rejected() {
+        let sources = vec![
+            SourceFile::new("a.rue", "fn main() -> i32 { 1 }", FileId::new(1)),
+            SourceFile::new("b.rue", "fn main() -> i32 { 2 }", FileId::new(2)),
+        ];
+        let parsed = parse_all_files(&sources).unwrap();
+        let errors = merge_symbols(parsed).expect_err("main is program-global");
+
+        assert_eq!(errors.len(), 1, "should report one duplicate entry point");
+        let error = errors.first().unwrap();
+        assert!(matches!(
+            &error.kind,
+            ErrorKind::DuplicateFunctionDefinition { function_name } if function_name == "main"
+        ));
+        assert_eq!(error.diagnostic().labels.len(), 1);
+        assert_eq!(error.diagnostic().labels[0].message, "first defined here");
+        assert_eq!(error.diagnostic().labels[0].span.file_id, FileId::new(1));
     }
 
     #[test]

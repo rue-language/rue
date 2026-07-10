@@ -1,0 +1,24 @@
+# An executable import graph has one entry point. `main` is temporarily the one
+# free-function name that remains program-global while ordinary function names
+# become module-local (RUE-582; ADR-0047 tracks the root-module end state).
+
+[section]
+id = "cli.duplicate_main"
+name = "Duplicate entry points"
+description = "Loaded modules cannot define a second main function."
+
+[[case]]
+name = "import_graph_rejects_second_main"
+files = [
+    { path = "main.rue", source = """
+const helper = @import("helper.rue");
+
+fn main() -> i32 { helper.answer() }
+""" },
+    { path = "helper.rue", source = """
+pub fn main() -> i32 { 0 }
+pub fn answer() -> i32 { 42 }
+""" },
+]
+compile_fail = true
+error_contains = ["E0436", "duplicate function definition", "main", "first defined here"]
