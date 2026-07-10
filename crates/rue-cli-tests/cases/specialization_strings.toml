@@ -1,0 +1,31 @@
+# String literals are interned per analyzed function and remapped into the
+# program-global table before code generation. Generic bodies are analyzed only
+# during specialization, so their local table must be merged at that point too
+# (RUE-583).
+
+[section]
+id = "cli.specialization_strings"
+name = "String literals in specialized functions"
+description = "Specialized bodies preserve and remap their local string literals."
+
+[[case]]
+name = "nested_specialized_strings_have_distinct_global_ids"
+files = [{ path = "main.rue", source = """
+fn show(comptime T: type, value: T) -> T {
+    @dbg("inner one");
+    @dbg("inner two");
+    value
+}
+
+fn outer(comptime T: type, value: T) -> T {
+    @dbg("outer");
+    show(T, value)
+}
+
+fn main() -> i32 {
+    @dbg("main");
+    outer(i32, 42)
+}
+""" }]
+stdout = "main\nouter\ninner one\ninner two\n"
+exit_code = 42
