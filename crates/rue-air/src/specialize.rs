@@ -175,6 +175,7 @@ pub fn specialize(
     infer_ctx: &InferenceContext,
     interner: &ThreadedRodeo,
 ) -> CompileResult<()> {
+    let mut global_string_table: Option<HashMap<String, u32>> = None;
     // All specializations ever requested, used to deduplicate across rounds.
     let mut specializations: HashMap<SpecializationKey, SpecializationInfo> = HashMap::new();
     // Index of the first function not yet scanned for CallGeneric instructions.
@@ -227,6 +228,16 @@ pub fn specialize(
             ));
         }
 
+        let global_string_table = global_string_table.get_or_insert_with(|| {
+            output
+                .strings
+                .iter()
+                .cloned()
+                .enumerate()
+                .map(|(id, string)| (string, id as u32))
+                .collect()
+        });
+
         // Phase 3: Create specialized function bodies by re-analyzing with type
         // substitution. These new functions are scanned in the next round.
         for key in &pending {
@@ -241,7 +252,7 @@ pub fn specialize(
                     ));
                 }
             };
-            let (specialized_func, warnings) = create_specialized_function(
+            let (mut specialized_func, warnings, local_strings) = create_specialized_function(
                 sema,
                 infer_ctx,
                 key,
@@ -249,6 +260,12 @@ pub fn specialize(
                 &base_info,
                 interner,
             )?;
+            remap_specialized_strings(
+                &mut specialized_func,
+                local_strings,
+                &mut output.strings,
+                global_string_table,
+            );
             // Surface unreachable-pattern warnings from the specialized body
             // (spec 4.7:20, RUE-555). A comptime-pruned match returns its
             // selected arm before the normal warning loop, so these are emitted
@@ -453,7 +470,7 @@ fn create_specialized_function(
     specialized_name: Spur,
     base_info: &FunctionInfo,
     interner: &ThreadedRodeo,
-) -> CompileResult<(AnalyzedFunction, Vec<CompileWarning>)> {
+) -> CompileResult<(AnalyzedFunction, Vec<CompileWarning>, Vec<String>)> {
     let specialized_name_str = interner.resolve(&specialized_name).to_string();
 
     // Pair each comptime parameter with its argument: type parameters
@@ -537,7 +554,7 @@ fn create_specialized_function(
         num_param_slots,
         param_modes,
         warnings,
-        _local_strings,
+        local_strings,
         _ref_fns,
         _ref_meths,
     ) = sema.analyze_specialized_function(
@@ -559,7 +576,37 @@ fn create_specialized_function(
             allow_unreachable_code: base_info.allow_unreachable_code,
         },
         warnings,
+        local_strings,
     ))
+}
+
+/// Merge a specialized body's function-local strings into the program table
+/// and rewrite its AIR indices to the resulting global ids.
+fn remap_specialized_strings(
+    function: &mut AnalyzedFunction,
+    local_strings: Vec<String>,
+    global_strings: &mut Vec<String>,
+    global_string_table: &mut HashMap<String, u32>,
+) {
+    if local_strings.is_empty() {
+        return;
+    }
+
+    let local_to_global: Vec<u32> = local_strings
+        .into_iter()
+        .map(|string| {
+            *global_string_table
+                .entry(string.clone())
+                .or_insert_with(|| {
+                    let id = global_strings.len() as u32;
+                    global_strings.push(string);
+                    id
+                })
+        })
+        .collect();
+    function
+        .air
+        .remap_string_ids(|local_id| local_to_global[local_id as usize]);
 }
 
 /// Resolve a parameter's concrete type by substituting type parameters into
