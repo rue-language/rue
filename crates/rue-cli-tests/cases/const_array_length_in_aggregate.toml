@@ -1,0 +1,64 @@
+[section]
+id = "cli.const_array_length_in_aggregate"
+name = "const as array length in struct fields and enum payloads"
+description = """
+Regression coverage for RUE-587: a top-level `const` used as an array length in
+a struct field or enum payload type was rejected (E0481) even though the same
+const resolves fine in `let`, parameter, and local positions. Struct fields and
+enum payloads are resolved before the main const-collection pass, so the array
+length now collects the named const on demand. A genuinely undefined length name
+must still be rejected.
+"""
+
+[[case]]
+name = "const_struct_field_1d"
+files = [{ path = "main.rue", source = """
+const N: i32 = 3;
+struct S { xs: [i32; N] }
+fn main() -> i32 {
+    let mut s = S { xs: [0; N] };
+    s.xs[0] = 4;
+    s.xs[2] = 5;
+    s.xs[0] + s.xs[2]
+}
+""" }]
+exit_code = 9
+
+[[case]]
+name = "const_struct_field_2d_with_methods"
+files = [{ path = "main.rue", source = """
+const N: i32 = 3;
+struct Grid {
+    cells: [[i32; N]; N],
+    fn get(borrow self, y: i32, x: i32) -> i32 { self.cells[y][x] }
+    fn set(inout self, y: i32, x: i32, v: i32) { self.cells[y][x] = v; }
+}
+fn main() -> i32 {
+    let mut g = Grid { cells: [[0; N]; N] };
+    g.set(2, 2, 7);
+    g.set(0, 1, 3);
+    g.get(2, 2) + g.get(0, 1)
+}
+""" }]
+exit_code = 10
+
+[[case]]
+name = "const_enum_payload"
+files = [{ path = "main.rue", source = """
+const N: i32 = 2;
+enum E { Pair([i32; N]) }
+fn main() -> i32 {
+    let e = E.Pair([3, 4]);
+    match e { E.Pair(a) => a[0] + a[1] }
+}
+""" }]
+exit_code = 7
+
+[[case]]
+name = "undefined_length_name_still_rejected"
+files = [{ path = "main.rue", source = """
+struct S { xs: [i32; NOPE] }
+fn main() -> i32 { 0 }
+""" }]
+compile_fail = true
+error_contains = ["E0481", "not a compile-time constant"]
