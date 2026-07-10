@@ -395,6 +395,14 @@ pub enum TypeExpr {
         length: u64,
         span: Span,
     },
+    /// An integer literal in type-call ARGUMENT position: `Buffer(2)`,
+    /// `Matrix(2, 3)`, `lib.Buffer(2)` (RUE-552). A type constructor may
+    /// declare comptime VALUE parameters (`comptime N: i32`), so its
+    /// application in type position takes value arguments alongside type
+    /// arguments. Only produced inside `TypeCall`/`QualifiedTypeCall`
+    /// argument lists; astgen canonicalizes it into the call's type string
+    /// (the same decimal spelling `TypeExpr::StrFixed` produces for `Str(8)`).
+    IntArg { value: i128, span: Span },
 }
 
 /// The length of an array type `[T; N]`.
@@ -467,6 +475,7 @@ impl TypeExpr {
             TypeExpr::TypeCall { span, .. } => *span,
             TypeExpr::QualifiedTypeCall { span, .. } => *span,
             TypeExpr::StrFixed { span, .. } => *span,
+            TypeExpr::IntArg { span, .. } => *span,
         }
     }
 }
@@ -559,6 +568,7 @@ impl fmt::Display for TypeExpr {
             TypeExpr::StrFixed { name, length, .. } => {
                 write!(f, "sym:{}({})", name.name.into_usize(), length)
             }
+            TypeExpr::IntArg { value, .. } => write!(f, "{}", value),
         }
     }
 }

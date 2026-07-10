@@ -84,7 +84,8 @@ type           = "i8" | "i16" | "i32" | "i64"
                | "Self"
                | type_call
                | IDENT ;
-type_call      = IDENT "(" [ type { "," type } [ "," ] ] ")" ;  (* type-function application, e.g. Pair(i32), Result(Option(i32), i32) *)
+type_call      = IDENT "(" [ type_call_arg { "," type_call_arg } [ "," ] ] ")" ;  (* type-function application, e.g. Pair(i32), Result(Option(i32), i32), Buffer(2) *)
+type_call_arg  = type | [ "-" ] INTEGER ;  (* a type argument for a `comptime T: type` parameter, or an integer value argument for a comptime value parameter such as `comptime N: i32` *)
 array_length   = INTEGER | IDENT | length_call ;
 length_call    = IDENT "(" [ array_length { "," array_length } [ "," ] ] ")" ;  (* comptime-evaluable call, e.g. fact(4) *)
 anon_struct_type = "struct" "{" [ anon_struct_fields ] { method } "}" ;
@@ -218,11 +219,15 @@ Notes:
   restriction. A non-place argument such as `inout a + 1` parses but is
   rejected with an lvalue error (E0425).
 - **Type-function application in type position** (`type_call`): a name or
-  module-qualified path applied to type arguments, e.g. `Pair(i32)`,
-  `Result(Option(i32), i32)`, or `std.option.Option(i64)`, denotes the type
-  produced by a comptime `-> type` constructor (RUE-241). Nested applications
-  compose. Its result cannot yet head a struct literal
-  (`Pair(i32) { … }` does not parse); bind it via a `let` of that type instead.
+  module-qualified path applied to arguments, e.g. `Pair(i32)`,
+  `Result(Option(i32), i32)`, `std.option.Option(i64)`, or `Buffer(2)`,
+  denotes the type produced by a comptime `-> type` constructor (RUE-241).
+  Each argument is bound by the corresponding parameter's declared kind: a
+  `comptime T: type` parameter takes a type argument, and a comptime value
+  parameter (`comptime N: i32`) takes an integer literal, a comptime
+  parameter name, or a constant name (RUE-552). Nested applications compose.
+  Its result cannot yet head a struct literal (`Pair(i32) { … }` does not
+  parse); bind it via a `let` of that type instead.
 - **Anonymous struct types** carry inline methods only when a `struct { … }`
   appears as a *value* (e.g. the body of a comptime `-> type` function); in
   pure type position (a type annotation) a `struct { … }` parses fields only.

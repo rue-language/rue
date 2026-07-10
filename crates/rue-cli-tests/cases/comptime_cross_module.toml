@@ -216,3 +216,30 @@ fn main() -> i32 {
 """ }]
 env = { RUE_STD_PATH = "${REAL_STD}" }
 exit_code = 3
+
+[[case]]
+# RUE-552: a MODULE-QUALIFIED value-parameterized constructor applies in
+# type position (`lib.Buffer(2)` as a parameter type). This used to fail at
+# PARSE time (E0100 at the integer token).
+name = "qualified_value_parameterized_ctor_in_type_position"
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "lib.rue", source = """
+pub fn Buffer(comptime N: i32) -> type {
+    struct { data: [i32; N] }
+}
+""" },
+  { path = "main.rue", source = """
+const lib = @import("lib.rue");
+
+fn first(b: lib.Buffer(2)) -> i32 {
+    b.data[0]
+}
+
+fn main() -> i32 {
+    let B = lib.Buffer(2);
+    first(B { data: [40, 2] })
+}
+""" },
+]
+exit_code = 40

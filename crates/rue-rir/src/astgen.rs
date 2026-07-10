@@ -208,6 +208,12 @@ impl<'a> AstGen<'a> {
                 s.push(')');
                 self.interner.get_or_intern(&s)
             }
+            TypeExpr::IntArg { value, .. } => {
+                // Integer type-call argument (RUE-552): canonicalize to its
+                // decimal spelling inside the enclosing call's type string,
+                // the same form `Str(8)`'s dedicated node produces.
+                self.interner.get_or_intern(value.to_string())
+            }
             TypeExpr::StrFixed { name, length, .. } => {
                 // Fixed-capacity string `Str(N)` with a literal capacity
                 // (ADR-0043 Phase 5, RUE-326). Canonicalize to `Name(N)` — the
@@ -1055,6 +1061,11 @@ impl<'a> AstGen<'a> {
                                 // (ADR-0043 Phase 5, RUE-326). Intern its canonical
                                 // `Str(N)` string for completeness; sema resolves it.
                                 self.intern_type(&type_lit.type_expr)
+                            }
+                            TypeExpr::IntArg { .. } => {
+                                // Only produced inside type-call argument lists
+                                // (RUE-552); a bare integer is never a TypeLit.
+                                unreachable!("IntArg outside a type-call argument list")
                             }
                         };
                         self.rir.add_inst(Inst {

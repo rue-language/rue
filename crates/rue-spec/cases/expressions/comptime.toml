@@ -2023,6 +2023,55 @@ fn main() -> i32 {
 exit_code = 42
 
 [[case]]
+name = "value_parameterized_type_constructor_in_type_position"
+spec = ["4.14:23"]
+description = "A type constructor with a comptime VALUE parameter applies directly in param/return type position: Buffer(2) (RUE-552)"
+source = """
+fn Buffer(comptime N: i32) -> type { struct { data: [i32; N] } }
+fn first(b: Buffer(2)) -> i32 {
+    b.data[0]
+}
+fn main() -> i32 {
+    let B = Buffer(2);
+    first(B { data: [42, 0] })
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "mixed_type_and_value_args_in_type_position"
+spec = ["4.14:23"]
+description = "Mixed comptime type + value parameters with a const-name value argument: Matrix(i32, K) (RUE-552)"
+source = """
+const K: i32 = 3;
+fn Matrix(comptime T: type, comptime N: i32) -> type { struct { row: [T; N] } }
+fn sum(m: Matrix(i32, K)) -> i32 {
+    m.row[0] + m.row[1] + m.row[2]
+}
+fn main() -> i32 {
+    let M = Matrix(i32, K);
+    sum(M { row: [40, 1, 1] })
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "value_parameterized_ctor_forwards_enclosing_comptime_value"
+spec = ["4.14:23"]
+description = "A field type applies a value-parameterized constructor to the enclosing comptime value parameter: Buffer(M) inside Wrap(M) (RUE-552)"
+source = """
+fn Buffer(comptime N: i32) -> type { struct { data: [i32; N] } }
+fn Wrap(comptime M: i32) -> type { struct { inner: Buffer(M) } }
+fn main() -> i32 {
+    let I = Buffer(2);
+    let W = Wrap(2);
+    let w: W = W { inner: I { data: [21, 21] } };
+    w.inner.data[0] + w.inner.data[1]
+}
+"""
+exit_code = 42
+
+[[case]]
 name = "type_constructor_in_annotation_position"
 spec = ["4.14:23"]
 description = "F(i32) used directly as a let type annotation (RUE-289, RUE-241)"

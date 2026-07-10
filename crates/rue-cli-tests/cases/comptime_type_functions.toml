@@ -234,3 +234,56 @@ fn main() -> i32 {
 """ }]
 compile_fail = true
 error_contains = ["E1200"]
+
+[[case]]
+# RUE-552: a type constructor with a comptime VALUE parameter used to fail
+# E0204 "unknown type '2'" in type position (the type-call grammar accepted
+# only type arguments, and the resolver bound every argument as a type).
+name = "value_parameterized_ctor_in_type_position"
+files = [{ path = "main.rue", source = """
+fn Buffer(comptime N: i32) -> type {
+    struct { data: [i32; N] }
+}
+
+fn first(b: Buffer(2)) -> i32 {
+    b.data[0]
+}
+
+fn main() -> i32 {
+    let B = Buffer(2);
+    first(B { data: [42, 0] })
+}
+""" }]
+exit_code = 42
+
+[[case]]
+# RUE-552: a type argument where a comptime VALUE parameter is declared gets
+# a targeted E1200, not a decayed unknown-type error.
+name = "value_param_rejects_type_argument"
+files = [{ path = "main.rue", source = """
+fn Buffer(comptime N: i32) -> type {
+    struct { data: [i32; N] }
+}
+
+fn bad(b: Buffer(i32)) -> i32 { 0 }
+
+fn main() -> i32 { 0 }
+""" }]
+compile_fail = true
+error_contains = ["E1200", "must be a compile-time known value"]
+
+[[case]]
+# RUE-552: an integer argument where a comptime TYPE parameter is declared
+# gets a targeted E1200 naming the parameter, not "unknown type '2'".
+name = "type_param_rejects_value_argument"
+files = [{ path = "main.rue", source = """
+fn Box(comptime T: type) -> type {
+    struct { value: T }
+}
+
+fn bad(b: Box(2)) -> i32 { 0 }
+
+fn main() -> i32 { 0 }
+""" }]
+compile_fail = true
+error_contains = ["E1200", "must be a type"]

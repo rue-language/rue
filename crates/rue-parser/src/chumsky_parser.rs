@@ -394,9 +394,29 @@ where
         // (`Result(Option(i32), i32)`). Must precede `named_type` in the
         // choice so `Name(...)` is not mis-parsed as a bare `Name` leaving the
         // argument list dangling.
+        // A type-call ARGUMENT is a type, or an integer literal bound to a
+        // comptime VALUE parameter (`Buffer(2)`, `Matrix(2, -1)`; RUE-552).
+        // The literal is canonicalized into the call's type string by astgen,
+        // exactly like `Str(8)`'s dedicated rule below.
+        let type_call_arg = choice((
+            just(TokenKind::Minus)
+                .or_not()
+                .then(select! { TokenKind::Int(n) => n })
+                .map_with(|(neg, n), e| TypeExpr::IntArg {
+                    value: if neg.is_some() {
+                        -(n as i128)
+                    } else {
+                        n as i128
+                    },
+                    span: span_from_extra(e),
+                }),
+            ty.clone(),
+        ));
+
         let type_call = ident_parser()
             .then(
-                ty.clone()
+                type_call_arg
+                    .clone()
                     .separated_by(just(TokenKind::Comma))
                     .allow_trailing()
                     .collect::<Vec<_>>()
@@ -417,7 +437,7 @@ where
             .at_least(2)
             .collect::<Vec<_>>()
             .then(
-                ty.clone()
+                type_call_arg
                     .separated_by(just(TokenKind::Comma))
                     .allow_trailing()
                     .collect::<Vec<_>>()
