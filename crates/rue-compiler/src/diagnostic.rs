@@ -129,7 +129,16 @@ impl<'a> RenderSource<'a> {
 
             match ch {
                 '\t' => rendered.push_str("    "),
-                '\r' => {}
+                '\r' => {
+                    // In a CRLF the CR is dropped and the following LF renders
+                    // the break (as before). A BARE CR is itself a newline
+                    // (spec 2.3:1), so render it as a line break instead of
+                    // dropping it — dropping collapsed CR-separated lines into
+                    // one, mislocating the diagnostic (RUE-534).
+                    if !source[next_idx..].starts_with('\n') {
+                        rendered.push('\n');
+                    }
+                }
                 '\n' => rendered.push('\n'),
                 // Any other control char is a terminal-injection hazard: render
                 // a visible one-column glyph instead (RUE-548). The byte_map

@@ -134,12 +134,34 @@ impl Span {
             self.start,
             source.len()
         );
-        source[..(self.start as usize).min(source.len())]
-            .bytes()
-            .filter(|&b| b == b'\n')
-            .count()
-            + 1
+        count_newlines(&source[..(self.start as usize).min(source.len())]) + 1
     }
+}
+
+/// Count line terminators in `s`, per the spec's newline classification
+/// (2.3:1): LF (`\n`), CR (`\r`), and CRLF (`\r\n`) are each ONE newline. A
+/// bare CR — which older code ignored — begins a new line (RUE-534).
+#[inline]
+fn count_newlines(s: &str) -> usize {
+    let bytes = s.as_bytes();
+    let mut count = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\n' => count += 1,
+            b'\r' => {
+                count += 1;
+                // CRLF is a single terminator: skip the LF so it is not
+                // counted again.
+                if bytes.get(i + 1) == Some(&b'\n') {
+                    i += 1;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    count
 }
 
 /// Convert a byte offset to 1-based line and character-column numbers.
@@ -153,16 +175,32 @@ pub fn offset_to_line_col(source: &str, offset: u32) -> (u32, u32) {
     let offset = offset as usize;
     let mut line = 1;
     let mut col = 1;
+    // Track whether the previous char was a CR so a following LF (CRLF) is not
+    // counted as a second line break (RUE-534).
+    let mut prev_cr = false;
     for (i, ch) in source.char_indices() {
         if i >= offset {
             break;
         }
-        if ch == '\n' {
-            line += 1;
-            col = 1;
-        } else {
-            col += 1;
+        match ch {
+            '\r' => {
+                // CR (and CR of a CRLF) begins a new line, per spec 2.3:1.
+                line += 1;
+                col = 1;
+                prev_cr = true;
+                continue;
+            }
+            '\n' if prev_cr => {
+                // The LF of a CRLF: the CR already advanced the line.
+                col = 1;
+            }
+            '\n' => {
+                line += 1;
+                col = 1;
+            }
+            _ => col += 1,
         }
+        prev_cr = false;
     }
     (line, col)
 }
@@ -296,5 +334,26 @@ mod tests {
         assert_eq!(offset_to_line_col(source, 3), (1, 3)); // after `x`
         assert_eq!(offset_to_line_col(source, 4), (2, 1)); // after newline
         assert_eq!(offset_to_line_col(source, 8), (2, 2)); // after `🙂`
+    }
+
+    #[test]
+    fn test_line_calc_treats_bare_cr_as_newline() {
+        // Spec 2.3:1: CR, LF, and CRLF are each one newline (RUE-534).
+        // Bare CR (`a\rb`): the `b` is on line 2.
+        let cr = "a\rb";
+        assert_eq!(offset_to_line_col(cr, 2), (2, 1));
+        assert_eq!(Span::new(2, 3).line_number(cr), 2);
+        // CRLF (`a\r\nb`): still ONE newline, `b` on line 2, not line 3.
+        let crlf = "a\r\nb";
+        assert_eq!(offset_to_line_col(crlf, 3), (2, 1));
+        assert_eq!(Span::new(3, 4).line_number(crlf), 2);
+        // LF unchanged.
+        let lf = "a\nb";
+        assert_eq!(offset_to_line_col(lf, 2), (2, 1));
+        assert_eq!(Span::new(2, 3).line_number(lf), 2);
+        // Mixed: two CR-only lines then the target on line 3.
+        let mixed = "l1\rl2\rx";
+        assert_eq!(offset_to_line_col(mixed, 6), (3, 1));
+        assert_eq!(Span::new(6, 7).line_number(mixed), 3);
     }
 }

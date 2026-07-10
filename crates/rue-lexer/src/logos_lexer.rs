@@ -255,7 +255,11 @@ fn parse_based_literal(lex: &mut logos::Lexer<'_, LogosTokenKind>) -> Result<u64
 // (Pattern_White_Space), but Zig does not, and Rue follows Zig's strict,
 // explicit set here (RUE-333). A stray FF byte therefore lexes to an error.
 #[logos(skip r"[ \t\n\r]+")]
-#[logos(skip r"//[^\n]*")]
+// A line comment ends at end-of-line. The spec classes CR, LF, and CRLF all
+// as newlines (2.3:1), so the comment body must exclude BOTH `\n` and `\r` —
+// otherwise `// c<CR>code` on a CR-only file swallows the code as comment text
+// (RUE-534).
+#[logos(skip r"//[^\n\r]*")]
 pub enum LogosTokenKind {
     // Keywords - logos prefers longer/specific matches over shorter/generic ones
     #[token("fn")]
@@ -1023,6 +1027,24 @@ mod tests {
         assert!(matches!(tokens[0].kind, TokenKind::Fn));
         assert_eq!(get_ident_str(&tokens[1].kind, &interner), Some("main"));
         assert!(matches!(tokens[2].kind, TokenKind::Eof));
+    }
+
+    #[test]
+    fn test_logos_line_comment_ends_at_bare_cr() {
+        // RUE-534: a `//` comment ends at end-of-line, and a bare CR is a
+        // newline (spec 2.3:1). The comment must NOT swallow the code after a
+        // CR-only line ending, so `main` is a real token, not comment text.
+        let lexer = LogosLexer::new("fn // comment\rmain");
+        let (tokens, interner) = lexer.tokenize().unwrap();
+        assert!(matches!(tokens[0].kind, TokenKind::Fn));
+        assert_eq!(get_ident_str(&tokens[1].kind, &interner), Some("main"));
+        assert!(matches!(tokens[2].kind, TokenKind::Eof));
+
+        // CRLF still terminates the comment too (regression guard).
+        let lexer = LogosLexer::new("fn // c\r\nmain");
+        let (tokens, interner) = lexer.tokenize().unwrap();
+        assert!(matches!(tokens[0].kind, TokenKind::Fn));
+        assert_eq!(get_ident_str(&tokens[1].kind, &interner), Some("main"));
     }
 
     #[test]
