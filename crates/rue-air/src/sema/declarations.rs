@@ -365,11 +365,10 @@ impl<'a> Sema<'a> {
 
         // Free functions duplicate-conflict only within their defining file
         // (RUE-441). Types duplicate-conflict only within their defining file
-        // (RUE-454). Function/type cross-kind collisions remain global until
-        // the remaining flat-namespace compatibility rules are removed.
-        let mut seen_function_names: HashMap<Spur, Span> = HashMap::new();
+        // (RUE-454). Function/type cross-kind collisions are per-file too
+        // (RUE-572, spec 10.5:1/10.5:2): top-level names are module-scoped,
+        // so a fn in one file and a struct in another may share a name.
         let mut seen_functions_by_file: HashMap<(FileId, Spur), Span> = HashMap::new();
-        let mut seen_types: HashMap<Spur, Span> = HashMap::new();
         let mut seen_types_by_file: HashMap<(FileId, Spur), Span> = HashMap::new();
         for (inst_ref, inst) in self.rir.iter() {
             match &inst.data {
@@ -385,7 +384,7 @@ impl<'a> Sema<'a> {
                         )
                         .with_label("first defined here".to_string(), first_span));
                     }
-                    if let Some(first_span) = seen_function_names.get(name).copied() {
+                    if let Some(first_span) = seen_functions_by_file.get(&key).copied() {
                         let name_str = self.interner.resolve(name).to_string();
                         return Err(CompileError::new(
                             ErrorKind::DuplicateFunctionDefinition {
@@ -396,13 +395,14 @@ impl<'a> Sema<'a> {
                         .with_label("first defined here".to_string(), first_span));
                     }
                     seen_types_by_file.insert(key, inst.span);
-                    seen_types.entry(*name).or_insert(inst.span);
                 }
                 InstData::FnDecl { name, has_self, .. } => {
                     if *has_self || method_refs.contains(&inst_ref) {
                         continue;
                     }
-                    if let Some(first_span) = seen_types.get(name).copied() {
+                    if let Some(first_span) =
+                        seen_types_by_file.get(&(inst.span.file_id, *name)).copied()
+                    {
                         let name_str = self.interner.resolve(name).to_string();
                         return Err(CompileError::new(
                             ErrorKind::DuplicateFunctionDefinition {
@@ -412,7 +412,6 @@ impl<'a> Sema<'a> {
                         )
                         .with_label("first defined here".to_string(), first_span));
                     }
-                    seen_function_names.entry(*name).or_insert(inst.span);
                     if let Some(first_span) =
                         seen_functions_by_file.insert((inst.span.file_id, *name), inst.span)
                     {
@@ -444,10 +443,15 @@ impl<'a> Sema<'a> {
     /// value-constant-vs-function collision no longer depends on which was
     /// collected first (previously E0418 only when the function came first).
     pub(crate) fn check_const_cross_kind_collisions(&self) -> CompileResult<()> {
-        for ((_, name), info) in self.constants_by_file_name.iter() {
-            if self.functions.contains_key(name)
-                || self.structs.contains_key(name)
-                || self.enums.contains_key(name)
+        for ((file_id, name), info) in self.constants_by_file_name.iter() {
+            // Per-FILE cross-kind check (RUE-572): items are module-local
+            // (RUE-490/491 removed unqualified cross-file resolution), so a
+            // `const shared` only collides with a `fn`/`struct`/`enum shared`
+            // in the SAME file. The old global-table check falsely rejected a
+            // constant in one module against a function in an unrelated one.
+            if self.functions_by_file_name.contains_key(&(*file_id, *name))
+                || self.structs_by_file_name.contains_key(&(*file_id, *name))
+                || self.enums_by_file_name.contains_key(&(*file_id, *name))
             {
                 let name_str = self.interner.resolve(name).to_string();
                 return Err(CompileError::new(
@@ -1995,14 +1999,33 @@ impl<'a> Sema<'a> {
 
             // A module-member access (`m.CONST`) carries the member constant's
             // declared type, so arithmetic against it is checked at that width
-            // (RUE-267). The member name is globally unique in the flat
-            // namespace, so the global constants table resolves it, matching
-            // the plain-`VarRef` arm above.
-            InstData::FieldGet { field, .. } => self
-                .constants
-                .get(field)
-                .map(|info| info.ty)
-                .filter(|t| t.is_integer()),
+            // (RUE-267). Resolve the member in the RECEIVER MODULE's file
+            // (RUE-572): same-named constants across modules may differ in
+            // width, and the flat table would check against whichever
+            // declaration it kept. The global table remains a fallback for
+            // legacy flat-mode inputs only.
+            InstData::FieldGet { base, field } => {
+                let (base, field) = (*base, *field);
+                let via_module = if let InstData::VarRef { name } = &self.rir.get(base).data {
+                    self.module_bindings
+                        .get(&(file_id, *name))
+                        .and_then(|info| info.ty.as_module())
+                        .and_then(|module_id| {
+                            let path = self.module_registry.get_def(module_id).file_path.clone();
+                            self.canonical_file_id(&path)
+                        })
+                        .and_then(|module_file| {
+                            self.constants_by_file_name
+                                .get(&(module_file, field))
+                                .map(|info| info.ty)
+                        })
+                } else {
+                    None
+                };
+                via_module
+                    .or_else(|| self.constants.get(&field).map(|info| info.ty))
+                    .filter(|t| t.is_integer())
+            }
 
             // Unary ops preserve the operand's (integer) type. A bare integer
             // literal operand is left untyped, though: typing `-5` as `u8`
