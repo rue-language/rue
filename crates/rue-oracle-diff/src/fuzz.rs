@@ -7,10 +7,11 @@
 //! 2. the real compiler + the produced native binary.
 //!
 //! Then compare the observable behavior — process exit code and `@dbg` stdout.
-//! A disagreement is an **automatically-discovered miscompile** with a concrete,
-//! deterministic repro: the seed regenerates the exact program. This is the
-//! RUE-50 payoff wired to RUE-205's harness — "Fable runs a hunt and files bugs"
-//! becomes "CI files the bugs."
+//! A disagreement is an **automatically-discovered miscompile**. A generated
+//! compile failure or oracle `Unsupported` result is a generator-contract
+//! failure. Both are findings with concrete, deterministic repros: the seed
+//! regenerates the exact program. This is the RUE-50 payoff wired to RUE-205's
+//! harness — "Fable runs a hunt and files bugs" becomes "CI files the bugs."
 //!
 //! Determinism: programs are a pure function of their `u64` seed, so the fuzzer
 //! is fully reproducible (`fuzz --start S --seeds 1` re-runs exactly seed `S`).
@@ -19,7 +20,7 @@
 //! `test.sh`, and Buck test targets set from `scripts/rue-bin`.
 
 use crate::generator;
-use rue_oracle::run_source;
+use rue_oracle::{RunSourceError, run_source};
 use std::io::Read;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
@@ -44,6 +45,59 @@ enum Compiled {
     Crash(i32),
     /// The binary did not terminate within the per-program timeout.
     Timeout,
+}
+
+/// A generated program violated the generator's contract before native
+/// compilation could be compared with the oracle. Generated programs promise
+/// both to compile and to stay inside the oracle's modeled subset, so neither
+/// failure is an ordinary differential-harness skip.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum GeneratorContractFailure {
+    /// The shared Rue frontend rejected generated source.
+    Compile(String),
+    /// The source compiled, but evaluation reached an unmodeled construct.
+    Unsupported(String),
+}
+
+impl GeneratorContractFailure {
+    fn from_run_source(error: RunSourceError) -> Self {
+        match error {
+            RunSourceError::Compile(errors) => Self::Compile(format!("{errors:#?}")),
+            RunSourceError::Unsupported(unsupported) => Self::Unsupported(unsupported.0),
+        }
+    }
+
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::Compile(_) => "compile",
+            Self::Unsupported(_) => "unsupported",
+        }
+    }
+
+    fn detail(&self) -> &str {
+        match self {
+            Self::Compile(detail) | Self::Unsupported(detail) => detail,
+        }
+    }
+}
+
+struct GeneratorContractFinding {
+    seed: u64,
+    source: String,
+    failure: GeneratorContractFailure,
+}
+
+impl GeneratorContractFinding {
+    fn render(&self) -> String {
+        format!(
+            "\n\u{2717} GENERATOR CONTRACT FAILURE (seed {seed})\n  {kind}: {detail}\n  \
+             --- source (regenerate with `fuzz --start {seed} --seeds 1`) ---\n{source}",
+            seed = self.seed,
+            kind = self.failure.kind(),
+            detail = self.failure.detail(),
+            source = self.source,
+        )
+    }
 }
 
 struct Config {
@@ -95,6 +149,14 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
             other => return Err(format!("unknown argument: {other}")),
         }
     }
+
+    if cfg.seeds == 0 {
+        return Err("--seeds must be greater than zero".to_string());
+    }
+    cfg.start
+        .checked_add(cfg.seeds)
+        .ok_or_else(|| "--start + --seeds exceeds the u64 seed range".to_string())?;
+
     Ok(cfg)
 }
 
@@ -138,28 +200,42 @@ pub fn run(args: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
+    let seed_end = cfg
+        .start
+        .checked_add(cfg.seeds)
+        .expect("parse_args validates the seed range");
+
     println!(
         "=== rue-oracle-diff fuzz: seeds {}..{} (compiler: {}) ===",
         cfg.start,
-        cfg.start + cfg.seeds,
+        seed_end,
         rue.display()
     );
 
     let mut agree = 0u32;
-    let mut skip_unsupported = 0u32;
+    let mut generator_contract_failures: Vec<GeneratorContractFinding> = Vec::new();
     let mut disagreements: Vec<Disagreement> = Vec::new();
 
-    for seed in cfg.start..cfg.start + cfg.seeds {
+    for seed in cfg.start..seed_end {
         let source = generator::generate(seed);
 
         let oracle = match run_source(&source) {
-            // Outside the modeled subset (or a front-end compile error): a clean
-            // skip, exactly as intended — never a false disagreement.
-            Err(unsupported) => {
-                skip_unsupported += 1;
-                if cfg.verbose {
-                    println!("  seed {seed}: skip ({})", unsupported.0);
+            Err(error) => {
+                // Unlike corpus mode, generated mode has a strong input
+                // contract: every program must compile and remain within the
+                // oracle's supported subset. Record either typed failure as a
+                // finding, save its exact deterministic source, and continue so
+                // one bad seed cannot hide the rest of the batch.
+                let finding = GeneratorContractFinding {
+                    seed,
+                    source: source.clone(),
+                    failure: GeneratorContractFailure::from_run_source(error),
+                };
+                eprintln!("{}", finding.render());
+                if let Err(error) = save_generator_contract_repro(&cfg.crash_dir, &finding) {
+                    report_repro_write_error(&cfg.crash_dir, seed, &error);
                 }
+                generator_contract_failures.push(finding);
                 continue;
             }
             Ok(o) => o,
@@ -193,30 +269,40 @@ pub fn run(args: &[String]) -> ExitCode {
                     reason,
                 };
                 eprintln!("{}", d.render());
-                let _ = save_repro(&cfg.crash_dir, &d);
+                if let Err(error) = save_repro(&cfg.crash_dir, &d) {
+                    report_repro_write_error(&cfg.crash_dir, seed, &error);
+                }
                 disagreements.push(d);
             }
         }
     }
 
-    let total = agree + skip_unsupported + disagreements.len() as u32;
+    let total = agree + generator_contract_failures.len() as u32 + disagreements.len() as u32;
     println!("\n=== summary over {total} generated programs ===");
     println!("  agree:            {agree}");
-    println!("  skip (unmodeled): {skip_unsupported}");
+    println!(
+        "  GENERATOR CONTRACT FAILURES: {}",
+        generator_contract_failures.len()
+    );
     println!("  DISAGREEMENTS:    {}", disagreements.len());
 
-    if disagreements.is_empty() {
+    if generated_batch_passes(generator_contract_failures.len(), disagreements.len()) {
         println!("\noracle and compiler agree on every generated program.");
         ExitCode::SUCCESS
     } else {
         println!(
-            "\n{} disagreement(s) — each is an automatically-found miscompile. \
-             Repros saved to {}.",
+            "\n{} generator contract failure(s), {} disagreement(s). \
+             Repros targeted at {}; any write failures are reported above.",
+            generator_contract_failures.len(),
             disagreements.len(),
             cfg.crash_dir.display()
         );
         ExitCode::FAILURE
     }
+}
+
+fn generated_batch_passes(contract_failures: usize, disagreements: usize) -> bool {
+    contract_failures == 0 && disagreements == 0
 }
 
 /// The comparison verdict.
@@ -514,25 +600,94 @@ fn first_line(s: &str) -> String {
         .collect()
 }
 
+fn repro_path(dir: &Path, seed: u64) -> PathBuf {
+    dir.join(format!("oracle-diff-seed-{seed}.rue"))
+}
+
+/// Escape dynamic diagnostic text onto one physical `//` line. Diagnostics may
+/// contain newlines, carriage returns, or other controls; writing them verbatim
+/// could end the comment and turn metadata into active Rue source, making a
+/// saved repro non-reproducible (or even syntactically invalid).
+fn comment_safe(text: &str) -> String {
+    text.chars().flat_map(char::escape_debug).collect()
+}
+
+fn push_repro_comment(contents: &mut String, label: &str, value: &str) {
+    contents.push_str("// ");
+    contents.push_str(label);
+    contents.push_str(": ");
+    contents.push_str(&comment_safe(value));
+    contents.push('\n');
+}
+
+fn disagreement_repro_contents(d: &Disagreement) -> String {
+    let mut contents = format!(
+        "// rue-oracle-diff differential miscompile (seed {})\n",
+        d.seed
+    );
+    push_repro_comment(&mut contents, "reason", &d.reason);
+    push_repro_comment(
+        &mut contents,
+        "oracle",
+        &format!(
+            "exit={} panic={:?} stdout={:?}",
+            d.oracle_exit, d.oracle_panic, d.oracle_stdout
+        ),
+    );
+    push_repro_comment(&mut contents, "compiled", &d.compiled);
+    push_repro_comment(
+        &mut contents,
+        "regenerate",
+        &format!("rue-oracle-diff fuzz --start {} --seeds 1", d.seed),
+    );
+    contents.push('\n');
+    contents.push_str(&d.source);
+    contents
+}
+
+fn generator_contract_repro_contents(finding: &GeneratorContractFinding) -> String {
+    let mut contents = format!(
+        "// rue-oracle-diff generator contract failure (seed {})\n",
+        finding.seed
+    );
+    push_repro_comment(&mut contents, "failure kind", finding.failure.kind());
+    push_repro_comment(&mut contents, "detail", finding.failure.detail());
+    push_repro_comment(
+        &mut contents,
+        "regenerate",
+        &format!("rue-oracle-diff fuzz --start {} --seeds 1", finding.seed),
+    );
+    contents.push('\n');
+    contents.push_str(&finding.source);
+    contents
+}
+
+fn write_repro(dir: &Path, seed: u64, contents: &str) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    std::fs::write(repro_path(dir, seed), contents)
+}
+
+fn report_repro_write_error(dir: &Path, seed: u64, error: &std::io::Error) {
+    eprintln!(
+        "seed {seed}: failed to save repro at {}: {error}",
+        repro_path(dir, seed).display()
+    );
+}
+
 /// Persist a repro so a CI failure uploads a concrete, self-contained program.
 fn save_repro(dir: &Path, d: &Disagreement) -> std::io::Result<()> {
-    std::fs::create_dir_all(dir)?;
-    let path = dir.join(format!("oracle-diff-seed-{}.rue", d.seed));
-    let contents = format!(
-        "// rue-oracle-diff differential miscompile (seed {seed})\n\
-         // reason: {reason}\n\
-         // oracle:   exit={exit} panic={panic:?} stdout={stdout:?}\n\
-         // compiled: {compiled}\n\
-         // regenerate: rue-oracle-diff fuzz --start {seed} --seeds 1\n\n{source}",
-        seed = d.seed,
-        reason = d.reason,
-        exit = d.oracle_exit,
-        panic = d.oracle_panic,
-        stdout = d.oracle_stdout,
-        compiled = d.compiled,
-        source = d.source,
-    );
-    std::fs::write(path, contents)
+    write_repro(dir, d.seed, &disagreement_repro_contents(d))
+}
+
+fn save_generator_contract_repro(
+    dir: &Path,
+    finding: &GeneratorContractFinding,
+) -> std::io::Result<()> {
+    write_repro(
+        dir,
+        finding.seed,
+        &generator_contract_repro_contents(finding),
+    )
 }
 
 #[cfg(test)]
@@ -666,6 +821,74 @@ mod tests {
     }
 
     #[test]
+    fn generated_oracle_errors_remain_typed_contract_failures() {
+        // A frontend rejection is a generator compile-contract failure, not an
+        // oracle Unsupported skip and not a native `Compiled::CompileFail`.
+        let compile_error = run_source("fn main(").expect_err("invalid Rue must not compile");
+        let compile_failure = GeneratorContractFailure::from_run_source(compile_error);
+        assert!(matches!(
+            compile_failure,
+            GeneratorContractFailure::Compile(detail) if !detail.is_empty()
+        ));
+
+        // A compiled-but-unmodeled program is the other distinct contract
+        // failure class. Keep the variant typed so summaries/repros cannot
+        // collapse it back into the old generic skip path.
+        let unsupported = RunSourceError::Unsupported(rue_oracle::Unsupported(
+            "intrinsic @random_u32".to_string(),
+        ));
+        assert_eq!(
+            GeneratorContractFailure::from_run_source(unsupported),
+            GeneratorContractFailure::Unsupported("intrinsic @random_u32".to_string())
+        );
+    }
+
+    #[test]
+    fn generator_contract_repro_is_deterministic_and_comment_safe() {
+        let finding = GeneratorContractFinding {
+            seed: 17,
+            source: "fn main() -> i32 { 17 }\n".to_string(),
+            failure: GeneratorContractFailure::Compile(
+                "first diagnostic\nfn injected() -> i32 { 0 }\rsecond".to_string(),
+            ),
+        };
+
+        let contents = generator_contract_repro_contents(&finding);
+        assert_eq!(contents, generator_contract_repro_contents(&finding));
+        assert!(
+            contents
+                .contains("// detail: first diagnostic\\nfn injected() -> i32 { 0 }\\rsecond\n")
+        );
+        assert!(
+            !contents.contains("\nfn injected"),
+            "diagnostic text must never escape its metadata comment"
+        );
+        assert!(
+            contents.ends_with("\n\nfn main() -> i32 { 17 }\n"),
+            "the exact generated source follows the comment-only metadata"
+        );
+    }
+
+    #[test]
+    fn disagreement_repro_also_escapes_multiline_metadata() {
+        let disagreement = Disagreement {
+            seed: 23,
+            source: "fn main() -> i32 { 23 }\n".to_string(),
+            oracle_exit: 23,
+            oracle_stdout: String::new(),
+            oracle_panic: None,
+            compiled: "compile-fail: first\rsecond".to_string(),
+            reason: "wrong exit\nconst injected = 1;".to_string(),
+        };
+
+        let contents = disagreement_repro_contents(&disagreement);
+        assert!(contents.contains("// reason: wrong exit\\nconst injected = 1;\n"));
+        assert!(contents.contains("// compiled: compile-fail: first\\rsecond\n"));
+        assert!(!contents.contains("\nconst injected"));
+        assert!(contents.ends_with("\n\nfn main() -> i32 { 23 }\n"));
+    }
+
+    #[test]
     fn large_stdout_does_not_deadlock() {
         // RUE-338: a program that writes far more than the OS pipe capacity
         // (~64KB) must be drained concurrently while it runs. Before the fix the
@@ -753,5 +976,26 @@ mod tests {
         let cfg = parse_args(&["--start=5".into(), "--seeds".into(), "12".into()]).expect("parse");
         assert_eq!(cfg.start, 5);
         assert_eq!(cfg.seeds, 12);
+    }
+
+    #[test]
+    fn args_reject_vacuous_or_wrapped_seed_ranges() {
+        let zero = parse_args(&["--seeds=0".into()])
+            .err()
+            .expect("zero seeds must fail closed");
+        assert!(zero.contains("greater than zero"));
+
+        let wrapped = parse_args(&[format!("--start={}", u64::MAX), "--seeds=1".into()])
+            .err()
+            .expect("a seed range must not wrap around u64::MAX");
+        assert!(wrapped.contains("exceeds the u64 seed range"));
+    }
+
+    #[test]
+    fn generated_batch_fails_for_either_finding_class() {
+        assert!(generated_batch_passes(0, 0));
+        assert!(!generated_batch_passes(1, 0));
+        assert!(!generated_batch_passes(0, 1));
+        assert!(!generated_batch_passes(1, 1));
     }
 }

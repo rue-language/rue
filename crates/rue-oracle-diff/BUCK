@@ -6,9 +6,9 @@ load("//crates:defs.bzl", "rue_binary")
 #    code / stdout (a mismatch localizes to codegen; wired as the sh_test below).
 #  * `fuzz`: the differential *fuzzer* (RUE-247) — generates random valid
 #    programs and cross-checks the oracle against the real compiler + native
-#    binary, reporting any exit/stdout disagreement as a miscompile with a
-#    seed-based repro. Driven by `.github/workflows/fuzz.yml` nightly; needs the
-#    `rue` binary via RUE_BINARY.
+#    binary, reporting exit/stdout disagreements as miscompiles and generated
+#    compile/Unsupported results as contract failures, all with seed-based
+#    repros. Driven by `.github/workflows/fuzz.yml` nightly; needs `RUE_BINARY`.
 # The harness driver itself has no #[test] functions — it IS the harness — but
 # the `generator` module carries unit tests (determinism + always-emits-main),
 # so the rust_test target (`:rue-oracle-diff-test`) is kept enabled.
@@ -26,7 +26,8 @@ rue_binary(
     test_deps = [
         # The generator promises valid, well-typed Rue. Compile a fixed corpus
         # through the shared front end so language-dialect drift fails in unit
-        # tests instead of becoming a clean Unsupported skip in fuzz mode.
+        # tests; fuzz mode also treats compile and Unsupported results as
+        # generator-contract failures.
         "//crates/rue-compiler:rue-compiler",
     ],
 )
@@ -37,9 +38,10 @@ rue_binary(
 # that diverges from the semantics fails CI here (RUE-205). Mirrors the
 # examples smoke test wiring (RUE-48): filegroup input + env var + sh_test.
 # Multi-file / unsupported custom-arg / compile-fail cases are skipped by the
-# harness (Unsupported or non-runnable shape), not counted as disagreements, so
-# they cannot cause spurious failures. Preview-gated cases are run when their
-# declared preview flags can be mapped onto the single-source oracle.
+# harness when their shape is intentionally non-runnable. For runnable cases,
+# oracle compile failures fail the harness while unsupported semantics remain a
+# coverage skip. Preview-gated cases run when their declared preview flags can
+# be mapped onto the single-source oracle.
 sh_test(
     name = "oracle-diff-test",
     test = ":rue-oracle-diff",

@@ -8,8 +8,9 @@
 //! required type, every literal is emitted inside a typed context (a `let`
 //! annotation, a struct-field position, or a same-typed sibling), and aggregate
 //! values are never used after a by-value move. A generated program therefore
-//! compiles cleanly (a compile failure is itself a finding, not noise) and stays
-//! inside the oracle's coverage, so `Unsupported` is a clean skip.
+//! compiles cleanly and stays inside the oracle's coverage. A compile failure or
+//! `Unsupported` result is therefore a generator-contract finding, not noise or
+//! a coverage skip.
 //!
 //! The generator biases toward the historically-fragile shapes that every
 //! 2026-07 miscompile lived in: aggregates crossing the call ABI (struct
@@ -846,7 +847,8 @@ mod tests {
     /// The generator is part of the compiler's correctness boundary: it
     /// promises valid, well-typed Rue programs. Compile a deterministic corpus
     /// through the shared front end so grammar, name-resolution, or typing
-    /// drift is a failing test rather than an `Unsupported` fuzz skip.
+    /// drift is a failing test; generated fuzz mode also fails closed if the
+    /// oracle reports `Unsupported`.
     #[test]
     fn generated_programs_compile() {
         let mut saw_string_associated_call = false;
