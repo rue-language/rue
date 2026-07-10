@@ -231,6 +231,12 @@ const EXAMPLE_EXPECTATIONS: &[ExampleExpectation] = &[
         stdin: None,
     },
     ExampleExpectation {
+        path: "second/calculator.rue",
+        exit_code: 0,
+        stdout: "result: 11\n",
+        stdin: Some("2 + 3 * (4 - 1)\n"),
+    },
+    ExampleExpectation {
         path: "sqrt.rue",
         exit_code: 12,
         stdout: "0\n1\n2\n2\n3\n3\n4\n10\n31\n",
