@@ -86,7 +86,7 @@ case "$cmd" in
     cli)
         RUE_BINARY="$(scripts/rue-bin)" \
         RUE_CLI_CASES="crates/rue-cli-tests/cases" \
-        RUE_EXAMPLES_DIR="examples" \
+        RUE_EXAMPLES_DIR="$repo_root/examples" \
         RUE_STD_DIR="std" \
         ./buck2 run //crates/rue-cli-tests:rue-cli-tests -- "$@"
         ;;
