@@ -88,9 +88,10 @@ full semantics):
 
 {{ rule(id="4.13:5b", cat="informative") }}
 
-The compiler frontend additionally reserves the names `@cast`, `@panic`, and
-`@assert`. Their surface syntax is not yet fully stabilized, so they are omitted
-from the normative inventory above, but they are no longer no-ops (RUE-319):
+The compiler frontend additionally reserves the names `@cast`, `@panic`,
+`@assert`, and `@test_preview_gate`. Their surface syntax is not yet fully
+stabilized, so they are omitted from the normative inventory above, but they
+are no longer no-ops (RUE-319):
 
 - `@panic(msg?)` aborts the process. It writes `panic: <msg>` (or just `panic`
   when called with no argument) to standard error and exits with status 101 —
@@ -103,6 +104,9 @@ from the normative inventory above, but they are no longer no-ops (RUE-319):
 - `@cast` is rejected at compile time with a diagnostic directing the programmer
   to `@intCast`; it never had a working inference rule and is fully redundant
   with `@intCast`. Use `@intCast` for integer conversions.
+- `@test_preview_gate()` is a zero-argument no-op that exists only to test the
+  preview-feature gating machinery itself (`--preview test_infra`); it is test
+  infrastructure, not a language feature.
 
 ## `@dbg`
 

@@ -124,8 +124,10 @@ of aggregate type may be revisited in a future revision.
 {{ rule(id="6.5:7", cat="normative") }}
 
 A constant initializer may reference constants declared later in the same
-file or in another file of the program; declaration and file order do not
-affect the result. Initializers are evaluated in dependency order.
+file, and constants of other modules through a module binding (`m.LIMIT`);
+declaration and file order do not affect the result. Initializers are
+evaluated in dependency order. An unqualified reference to a constant
+defined only in another file does not resolve (10.3:8).
 
 {{ rule(id="6.5:8", cat="legality-rule") }}
 

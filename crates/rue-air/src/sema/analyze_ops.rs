@@ -3241,14 +3241,19 @@ impl<'a> Sema<'a> {
                         .copied()
                 })
                 .ok_or_compile_error(ErrorKind::UnknownType(type_name_str.to_string()), span)?;
+            // Module-qualified visibility is E0706 (RUE-525), uniform with
+            // enum members and associated-function calls through a module;
+            // E0460 is the diagnostic for unqualified naming forms.
             let def = self.type_pool.struct_def(struct_id);
-            self.check_unqualified_visibility(
-                "struct",
-                type_name_str,
-                def.file_id,
-                def.is_pub,
-                span,
-            )?;
+            if !self.is_accessible(span.file_id, def.file_id, def.is_pub) {
+                return Err(CompileError::new(
+                    ErrorKind::PrivateMemberAccess {
+                        item_kind: "struct".to_string(),
+                        name: type_name_str.to_string(),
+                    },
+                    span,
+                ));
+            }
             struct_id
         } else if let Some(&ty) = ctx.comptime_type_vars.get(&type_name) {
             // Extract struct ID from the comptime type
@@ -4378,16 +4383,37 @@ impl<'a> Sema<'a> {
                 .map(Some);
         }
 
-        // Struct member: `module.Struct.function(args)` is an associated-function
-        // call. In the transitional flat namespace struct names resolve globally
-        // — the same resolution the removed `::` form used — so dispatch on the
-        // name.
-        if self
+        // Struct member: `module.Struct.function(args)` is an associated-
+        // function call. Resolve the struct in the RECEIVER MODULE's file and
+        // pass it through (RUE-525): dispatching on the bare name would
+        // re-resolve in the caller's file (module-local rules) and miss.
+        // Module-qualified visibility is E0706, mirroring the enum branch.
+        if let Some(struct_id) = self
             .structs_by_file_name
-            .contains_key(&(file_id, type_name))
+            .get(&(file_id, type_name))
+            .copied()
         {
+            let struct_def = self.type_pool.struct_def(struct_id);
+            if !self.is_accessible(span.file_id, struct_def.file_id, struct_def.is_pub) {
+                return Err(CompileError::new(
+                    ErrorKind::PrivateMemberAccess {
+                        item_kind: "struct".to_string(),
+                        name: self.interner.resolve(&type_name).to_string(),
+                    },
+                    span,
+                ));
+            }
             return self
-                .analyze_assoc_fn_call(air, type_name, method, args_start, args_len, span, ctx)
+                .analyze_assoc_fn_call_impl(
+                    air,
+                    type_name,
+                    method,
+                    args_start,
+                    args_len,
+                    span,
+                    ctx,
+                    Some(struct_id),
+                )
                 .map(Some);
         }
 
@@ -6235,7 +6261,9 @@ impl<'a> Sema<'a> {
         }
 
         // Delegate to the main implementation in analysis.rs
-        self.analyze_assoc_fn_call_impl(air, type_name, function, args_start, args_len, span, ctx)
+        self.analyze_assoc_fn_call_impl(
+            air, type_name, function, args_start, args_len, span, ctx, None,
+        )
     }
 
     /// Analyze construction of an enum tuple variant with a payload

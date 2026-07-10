@@ -1,19 +1,19 @@
 # Associated-function calls respect the enclosing type's privacy across a
-# directory boundary (RUE-330). Calling an associated function of a private
-# struct from a source file in a different directory is E0460 — the same rule
-# that already governs naming that struct in a struct literal or type
-# annotation. This holds for both the unqualified (`Secret.make()`) and the
-# module-qualified (`lib.Secret.make()`) forms, since both resolve the
-# receiver type through the transitional flat namespace. A receiver reached
-# through a comptime binding (`let P = lib.Point; P.origin()`) is exempt, and
-# intra-directory access is unchanged.
+# directory boundary (RUE-330, RUE-525). Module-qualified access to a private
+# type's associated function (`lib.Secret.make()`) is E0706, uniform with
+# every module-member privacy violation. The unqualified spelling
+# (`Secret.make()`) never resolves another file's type at all (spec 10.3:8):
+# it fails name resolution before privacy is considered. A receiver reached
+# through a comptime binding of a PUB type (`let P = lib.Point; P.origin()`)
+# works; binding a private type errors E0706 at the binding itself.
+# Intra-directory access is unchanged.
 
 [section]
 id = "cli.assoc_fn_privacy"
 name = "Associated-function privacy across directories"
 description = "Cross-directory associated-function calls on a private struct are rejected (RUE-330)."
 
-# Unqualified call on a private struct from another directory: rejected.
+# Unqualified reference to another file's struct: does not resolve (RUE-525).
 [[case]]
 name = "cross_dir_unqualified_private_assoc_fn_rejected"
 files = [
@@ -33,10 +33,10 @@ struct Secret {
 """ },
 ]
 compile_fail = true
-error_contains = ["E0460", "struct `Secret` is private"]
+error_contains = ["E0201", "undefined variable 'Secret'"]
 
-# Module-qualified call on a private struct from another directory: also
-# rejected (the type resolves through the flat namespace, so it is E0460 too).
+# Module-qualified call on a private struct from another directory: E0706,
+# like every module-member privacy violation.
 [[case]]
 name = "cross_dir_qualified_private_assoc_fn_rejected"
 files = [
@@ -56,7 +56,7 @@ struct Secret {
 """ },
 ]
 compile_fail = true
-error_contains = ["E0460", "struct `Secret` is private"]
+error_contains = ["E0706", "struct `Secret` is private"]
 
 # Pub struct: the associated-function call across directories is allowed.
 [[case]]
@@ -66,7 +66,7 @@ files = [
 const lib = @import("sub/lib");
 
 fn main() -> i32 {
-    let p = Point.origin();
+    let p = lib.Point.origin();
     p.x + p.y
 }
 """ },
@@ -86,8 +86,10 @@ exit_code = 42
 name = "same_dir_private_assoc_fn_allowed"
 files = [
     { path = "main.rue", source = """
+const lib = @import("lib.rue");
+
 fn main() -> i32 {
-    let s = Secret.make();
+    let s = lib.Secret.make();
     s.n
 }
 """ },
@@ -98,7 +100,7 @@ struct Secret {
 }
 """ },
 ]
-args = ["main.rue", "lib.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 exit_code = 42
 
 # Receiver type reached through a comptime binding, not by naming the struct:

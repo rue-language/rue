@@ -28,13 +28,18 @@ impl<'a> Sema<'a> {
         // identifier receiver as a type namespace when it names a struct/enum or
         // a comptime type-variable bound to one (`let O = Option(i32);
         // O.Some(1)`). The struct/enum lookups mirror what `analyze_assoc_fn_call`
-        // itself resolves — the global by-name tables, so a cross-directory
-        // imported type is recognized and its privacy enforced there (E0460),
-        // rather than decaying to an "undefined variable" method call.
+        // itself resolves — MODULE-LOCAL names plus builtins (RUE-525): an
+        // unqualified `Type.assoc()` naming another file's type is
+        // name-not-found, exactly like a struct literal, type annotation, or
+        // plain function reference; the module-qualified spelling
+        // (`m.Type.assoc()`) is the supported form (ADR-0046).
         if let InstData::VarRef { name } = self.rir.get(receiver).data
             && !self.is_runtime_value_binding(name, ctx)
             && (ctx.comptime_type_vars.contains_key(&name)
-                || self.structs.contains_key(&name)
+                || self
+                    .structs_by_file_name
+                    .contains_key(&(ctx.current_file_id, name))
+                || self.resolve_builtin_struct_name(name).is_some()
                 || self.resolve_enum_type_name(name, ctx).is_some())
         {
             return self.analyze_assoc_fn_call(air, name, method, args_start, args_len, span, ctx);
@@ -477,6 +482,12 @@ impl<'a> Sema<'a> {
     }
 
     /// Implementation for AssocFnCall.
+    ///
+    /// `resolved` carries a struct already resolved (and visibility-checked,
+    /// E0706) by the module-qualified path (`m.Type.assoc()`, RUE-525): the
+    /// type lives in the RECEIVER MODULE's file, so re-resolving the bare
+    /// name in the caller's file would miss it.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn analyze_assoc_fn_call_impl(
         &mut self,
         air: &mut Air,
@@ -486,6 +497,7 @@ impl<'a> Sema<'a> {
         args_len: u32,
         span: Span,
         ctx: &mut AnalysisContext,
+        resolved: Option<StructId>,
     ) -> CompileResult<AnalysisResult> {
         let args = self.rir.get_call_args(args_start, args_len);
         let type_name_str = self.interner.resolve(&type_name).to_string();
@@ -501,7 +513,12 @@ impl<'a> Sema<'a> {
         // and must obey the same uniform-privacy rule (spec 10.3:7) as a struct
         // literal or type annotation would.
         let mut privacy_exempt = false;
-        let struct_id = if let Some(&ty) = ctx.comptime_type_vars.get(&type_name) {
+        let struct_id = if let Some(struct_id) = resolved {
+            // Module-qualified path: visibility (E0706) was already checked
+            // against the receiver module by the caller.
+            privacy_exempt = true;
+            struct_id
+        } else if let Some(&ty) = ctx.comptime_type_vars.get(&type_name) {
             privacy_exempt = true;
             // Extract struct ID from the comptime type
             match ty.kind() {
@@ -517,9 +534,13 @@ impl<'a> Sema<'a> {
                 }
             }
         } else {
-            *self
-                .structs
-                .get(&type_name)
+            // Module-local first, then builtins (RUE-525) — never the global
+            // by-name table: an unqualified reference to another file's type
+            // is name-not-found, matching every other unqualified form.
+            self.structs_by_file_name
+                .get(&(ctx.current_file_id, type_name))
+                .copied()
+                .or_else(|| self.resolve_builtin_struct_name(type_name))
                 .ok_or_compile_error(ErrorKind::UnknownType(type_name_str.clone()), span)?
         };
 
