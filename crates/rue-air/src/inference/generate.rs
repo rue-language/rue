@@ -540,22 +540,6 @@ impl<'a> ConstraintGenerator<'a> {
         var
     }
 
-    /// Check whether an instruction is a comparison operator.
-    ///
-    /// Mirrors `Sema::is_comparison`; used to recognize chained comparisons
-    /// (`a < b < c`) during constraint generation.
-    fn is_comparison(&self, inst_ref: InstRef) -> bool {
-        matches!(
-            self.rir.get(inst_ref).data,
-            InstData::Lt { .. }
-                | InstData::Gt { .. }
-                | InstData::Le { .. }
-                | InstData::Ge { .. }
-                | InstData::Eq { .. }
-                | InstData::Ne { .. }
-        )
-    }
-
     /// Add a constraint.
     pub fn add_constraint(&mut self, constraint: Constraint) {
         self.constraints.push(constraint);
@@ -680,15 +664,11 @@ impl<'a> ConstraintGenerator<'a> {
             | InstData::Ge { lhs, rhs } => {
                 let lhs_info = self.generate(*lhs, ctx);
                 let rhs_info = self.generate(*rhs, ctx);
-                // A chained comparison (`a < b < c`, left-associative, so the
-                // LHS is itself a comparison) is always rejected by sema with a
-                // dedicated error. Skip the operand-equality constraint in that
-                // case so inference doesn't mask it with a generic type
-                // mismatch (e.g. bool vs integer literal).
-                if !self.is_comparison(*lhs) {
-                    // Operands must have the same type
-                    self.add_constraint(Constraint::equal(lhs_info.ty, rhs_info.ty, span));
-                }
+                // Operands must have the same type. (Chained comparisons are
+                // rejected at parse time — validate.rs, RUE-528 — so a
+                // comparison LHS reaching here is a legitimately
+                // parenthesized boolean operand and gets normal typing.)
+                self.add_constraint(Constraint::equal(lhs_info.ty, rhs_info.ty, span));
                 InferType::Concrete(Type::BOOL)
             }
 

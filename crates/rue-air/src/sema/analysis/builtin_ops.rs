@@ -255,13 +255,11 @@ impl<'a> Sema<'a> {
     where
         F: FnOnce(AirRef, AirRef) -> AirInstData,
     {
-        // Check for chained comparisons (e.g., `a < b < c`)
-        // Since the parser is left-associative, `a < b < c` parses as `(a < b) < c`,
-        // so we only need to check if the LHS is a comparison.
-        if self.is_comparison(lhs) {
-            return Err(CompileError::new(ErrorKind::ChainedComparison, span)
-                .with_help("use `&&` to combine comparisons: `a < b && b < c`"));
-        }
+        // Chained comparisons (`a < b < c`) are rejected at PARSE time
+        // (`rue-parser/src/validate.rs`), where parentheses are still
+        // visible. RIR erases parens, so an RIR-level check here could not
+        // tell `1 < 2 == true` (a chain) from `(1 < 2) == true` (an ordinary
+        // boolean equality) and wrongly rejected the latter (RUE-528).
 
         // Comparisons read values without consuming them (like projections).
         // This matches Rust's PartialEq trait which takes references.
@@ -329,22 +327,6 @@ impl<'a> Sema<'a> {
         } else {
             false
         }
-    }
-
-    /// Check if an RIR instruction is a comparison operation.
-    ///
-    /// This is used to detect chained comparisons (e.g., `a < b < c`) which are
-    /// not allowed in Rue.
-    pub(super) fn is_comparison(&self, inst_ref: InstRef) -> bool {
-        matches!(
-            self.rir.get(inst_ref).data,
-            InstData::Lt { .. }
-                | InstData::Gt { .. }
-                | InstData::Le { .. }
-                | InstData::Ge { .. }
-                | InstData::Eq { .. }
-                | InstData::Ne { .. }
-        )
     }
 
     /// Analyze a builtin type associated function call.

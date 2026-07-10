@@ -182,7 +182,7 @@ When one operand has a known type, the other is inferred to have the same type.
 
 {{ rule(id="4.3:12", cat="legality-rule") }}
 
-Comparison operators cannot be chained. Expressions like `a < b < c` or `a == b == c` are compile-time errors.
+Comparison operators cannot be chained. Expressions like `a < b < c` or `a == b == c` are compile-time errors. The restriction is syntactic: it applies when a comparison expression is directly an operand of another comparison. Explicit parentheses break a chain — `(a < b) == c` is an ordinary equality whose left operand is a parenthesized boolean expression, and is legal whenever its operand types are (a parenthesized boolean operand of an ordered comparison such as `(a < b) < c` is instead rejected by the ordinary operand typing rules).
 
 {{ rule(id="4.3:13", cat="example") }}
 

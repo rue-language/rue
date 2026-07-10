@@ -157,7 +157,39 @@ params = [
   { variant = "lt", expr = "1 < 2 < 3" },
   { variant = "eq", expr = "1 == 1 == true" },
   { variant = "mixed", expr = "1 < 2 == true" },
-  { variant = "parenthesized", expr = "(1 < 2) < 3" },
+]
+
+[[case]]
+# RUE-528: explicit parentheses BREAK a chain (the restriction is syntactic).
+# `(1 < 2) < 3` is not a chain — it is an ordered comparison with a bool left
+# operand, rejected by ordinary operand typing, not E0802.
+name = "parenthesized_comparison_operand_is_not_a_chain_typing_still_applies"
+spec = ["4.3:12"]
+source = """
+fn main() -> i32 {
+    if (1 < 2) < 3 { 1 } else { 0 }
+}
+"""
+compile_fail = true
+error_contains = "[E0206]"
+
+[[case]]
+# RUE-528: a parenthesized comparison is a legal boolean operand of equality,
+# in either position. The old RIR-level chain check (parens erased) rejected
+# the left-operand form while accepting the right-operand form.
+name = "parenthesized_comparison_equality_{variant}"
+spec = ["4.3:12"]
+source = """
+fn main() -> i32 {
+    if {expr} { 7 } else { 9 }
+}
+"""
+exit_code = 7
+params = [
+  { variant = "left", expr = "(1 < 2) == true" },
+  { variant = "right", expr = "true == (1 < 2)" },
+  { variant = "both", expr = "(1 < 2) == (3 > 2)" },
+  { variant = "ne", expr = "(1 < 2) != false" },
 ]
 
 [[case]]
