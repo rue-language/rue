@@ -276,50 +276,63 @@ fn print_version() {
     println!("rue {}", VERSION);
 }
 
+/// Render the usage/help text. Kept as a builder so the caller picks the
+/// stream: an explicit `--help` request writes to stdout (normal CLI
+/// convention, like `--version`), while usage attached to an argument error
+/// writes to stderr (RUE-518).
+fn usage_text() -> String {
+    format!(
+        "\
+Usage: rue [options] <source.rue> [output]
+       rue [options] <root.rue> -o <output>
+
+Options:
+  -o, --output <path>  Set output path
+  --source-manifest <path>
+                       Restrict source imports to a line-oriented manifest
+  --target <target>    Set compilation target (default: host)
+                       Valid targets: {targets}
+  --linker <linker>    Set linker to use (default: internal)
+                       Use 'internal' for built-in linker, or a command
+                       like 'clang', 'gcc', or 'ld' for system linker
+  -O<level>            Set optimization level (default: -O0)
+                       Levels: {opt_levels}
+  -j, --jobs <N>       Set number of parallel jobs (default: 0 = auto; max: {MAX_EXPLICIT_JOBS})
+                       Use -j1 for single-threaded compilation
+  --emit <stage>       Emit intermediate representation and exit
+                       Can be specified multiple times for multiple outputs
+                       Stages: {emit_stages}
+  --preview <feature>  Enable a preview feature (can be repeated)
+                       Features: {preview_features}
+  --log-level <level>  Set logging level (default: off)
+                       Levels: {log_levels}
+                       Can also use RUST_LOG environment variable
+  --log-format <fmt>   Set logging format (default: text)
+                       Formats: {log_formats}
+  --error-format <fmt> Set diagnostic format (default: text)
+                       Formats: {error_formats}
+  --time-passes        Show timing for each compilation pass
+  --benchmark-json     Output timing as JSON (for benchmarking)
+  --version            Show version information
+  --help               Show this help message",
+        targets = Target::all_names(),
+        opt_levels = OptLevel::all_names(),
+        emit_stages = EmitStage::all_names(),
+        preview_features = PreviewFeature::all_names(),
+        log_levels = LogLevel::all_names(),
+        log_formats = LogFormat::all_names(),
+        error_formats = ErrorFormat::all_names(),
+    )
+}
+
+/// Write usage to stderr, for the argument-error paths.
 fn print_usage() {
-    eprintln!("Usage: rue [options] <source.rue> [output]");
-    eprintln!("       rue [options] <root.rue> -o <output>");
-    eprintln!();
-    eprintln!("Options:");
-    eprintln!("  -o, --output <path>  Set output path");
-    eprintln!("  --source-manifest <path>");
-    eprintln!("                       Restrict source imports to a line-oriented manifest");
-    eprintln!("  --target <target>    Set compilation target (default: host)");
-    eprintln!(
-        "                       Valid targets: {}",
-        Target::all_names()
-    );
-    eprintln!("  --linker <linker>    Set linker to use (default: internal)");
-    eprintln!("                       Use 'internal' for built-in linker, or a command");
-    eprintln!("                       like 'clang', 'gcc', or 'ld' for system linker");
-    eprintln!("  -O<level>            Set optimization level (default: -O0)");
-    eprintln!("                       Levels: {}", OptLevel::all_names());
-    eprintln!(
-        "  -j, --jobs <N>       Set number of parallel jobs (default: 0 = auto; max: {MAX_EXPLICIT_JOBS})"
-    );
-    eprintln!("                       Use -j1 for single-threaded compilation");
-    eprintln!("  --emit <stage>       Emit intermediate representation and exit");
-    eprintln!("                       Can be specified multiple times for multiple outputs");
-    eprintln!("                       Stages: {}", EmitStage::all_names());
-    eprintln!("  --preview <feature>  Enable a preview feature (can be repeated)");
-    eprintln!(
-        "                       Features: {}",
-        PreviewFeature::all_names()
-    );
-    eprintln!("  --log-level <level>  Set logging level (default: off)");
-    eprintln!("                       Levels: {}", LogLevel::all_names());
-    eprintln!("                       Can also use RUST_LOG environment variable");
-    eprintln!("  --log-format <fmt>   Set logging format (default: text)");
-    eprintln!("                       Formats: {}", LogFormat::all_names());
-    eprintln!("  --error-format <fmt> Set diagnostic format (default: text)");
-    eprintln!(
-        "                       Formats: {}",
-        ErrorFormat::all_names()
-    );
-    eprintln!("  --time-passes        Show timing for each compilation pass");
-    eprintln!("  --benchmark-json     Output timing as JSON (for benchmarking)");
-    eprintln!("  --version            Show version information");
-    eprintln!("  --help               Show this help message");
+    eprintln!("{}", usage_text());
+}
+
+/// Write help to stdout, for an explicit successful `--help` request (RUE-518).
+fn print_help() {
+    println!("{}", usage_text());
 }
 
 /// Result of parsing command-line arguments.
@@ -592,7 +605,8 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
                 benchmark_json = true;
             }
             "--help" | "-h" => {
-                print_usage();
+                // Explicit help request: success, so write to stdout (RUE-518).
+                print_help();
                 return ParseResult::Exit;
             }
             "--version" | "-V" => {
