@@ -3145,8 +3145,11 @@ fn dedupe_parse_errors(errors: &mut Vec<CompileError>) {
 /// reset at expression separators (`;`, `,`, `=>`, `=`, `:`, `->`) so that a
 /// long *sequence* of shallow expressions (many statements, many call
 /// arguments, many match arms) is not mistaken for deep nesting. The bound can
-/// over-count (e.g. array/index nesting is counted twice), which only makes the
-/// guard slightly more conservative — never less sound.
+/// still over-count some shapes, which only makes the guard slightly more
+/// conservative — never less sound. A postfix index `[` and an array
+/// type/literal `[` are distinguished by the preceding token so that nested
+/// array types (`[[..T..]]`) count once per level, honoring the 256-level
+/// minimum instead of rejecting at 128 (RUE-533).
 fn check_nesting_depth(
     tokens: &[(TokenKind, SimpleSpan)],
     file_id: FileId,
@@ -3164,6 +3167,12 @@ fn check_nesting_depth(
             (levels.len() - 1) + total_ops
         };
     }
+
+    // The previous significant token, so a `[` can be classified as either a
+    // postfix index (`expr[i]`) or an array wrap/open (`[T; N]`, `[a, b]`).
+    // Only a `[` that follows a value-producing token is a postfix index
+    // (RUE-533).
+    let mut prev: Option<&TokenKind> = None;
     macro_rules! reject_if_too_deep {
         ($span:expr) => {
             if depth!() > MAX_NESTING_DEPTH {
@@ -3185,11 +3194,34 @@ fn check_nesting_depth(
                 levels.push(0);
                 reject_if_too_deep!(span);
             }
-            // `[` is both a postfix index / array wrap on the current level and
-            // a new nested level for the expression inside it.
+            // `[` opens a new nested level for the expression/type inside it.
+            // It ALSO wraps the current level in one AST node ONLY when it is a
+            // postfix index (`expr[i]` → an Index node); an array type or
+            // literal (`[T; N]`, `[a, b]`) in value/type position adds just the
+            // one nested level. Counting the wrap unconditionally double-counts
+            // array nesting and halved the effective limit for `[[..T..]]`,
+            // rejecting at 128 levels despite the 256 minimum (RUE-533). A `[`
+            // is a postfix index exactly when it follows a value-producing
+            // token.
             TokenKind::LBracket => {
-                *levels.last_mut().unwrap() += 1;
-                total_ops += 1;
+                let is_postfix_index = matches!(
+                    prev,
+                    Some(
+                        TokenKind::Ident(_)
+                            | TokenKind::Int(_)
+                            | TokenKind::String(_)
+                            | TokenKind::True
+                            | TokenKind::False
+                            | TokenKind::SelfValue
+                            | TokenKind::RParen
+                            | TokenKind::RBracket
+                            | TokenKind::RBrace
+                    )
+                );
+                if is_postfix_index {
+                    *levels.last_mut().unwrap() += 1;
+                    total_ops += 1;
+                }
                 levels.push(0);
                 reject_if_too_deep!(span);
             }
@@ -3243,6 +3275,7 @@ fn check_nesting_depth(
             }
             _ => {}
         }
+        prev = Some(kind);
     }
     None
 }
@@ -5266,6 +5299,76 @@ mod tests {
             ")".repeat(n)
         );
         assert!(first_error_code(&src).is_none());
+    }
+
+    #[test]
+    fn test_nested_array_type_matches_paren_limit() {
+        // RUE-533: nested array types used to be counted TWICE per level, so
+        // the nesting guard rejected them at ~128 levels while parens reached
+        // ~256 — a non-uniform limit the spec (Appendix C) forbids. The bound
+        // must apply uniformly, so an array type and a parenthesised
+        // expression in the same enclosing context accept/reject at the same
+        // depth.
+        let array_type = |n: usize| {
+            format!(
+                "fn f(x: {}i32{}) {{}}\nfn main() -> i32 {{ 0 }}\n",
+                "[".repeat(n),
+                "; 1]".repeat(n)
+            )
+        };
+        let param_paren = |n: usize| {
+            // A paren-grouped default-ish expression in the same param position
+            // shape: use a body expression instead, matched depth.
+            format!(
+                "fn main() -> i32 {{ {}0{} }}\n",
+                "(".repeat(n),
+                ")".repeat(n)
+            )
+        };
+
+        // A depth that previously tripped the halved array limit (128) now
+        // parses cleanly, proving the double-count is gone.
+        assert!(
+            first_error_code(&array_type(200)).is_none(),
+            "200-level array type must parse (was rejected at 128 pre-fix)"
+        );
+
+        // Array types and parens share the same accept/reject boundary now.
+        // Find the paren boundary, then assert the array type agrees at it.
+        let mut boundary = 0;
+        for n in 250..=257 {
+            if first_error_code(&param_paren(n)).is_none() {
+                boundary = n;
+            } else {
+                break;
+            }
+        }
+        assert!(
+            (255..=256).contains(&boundary),
+            "unexpected paren boundary {boundary}"
+        );
+        assert!(
+            first_error_code(&array_type(boundary)).is_none(),
+            "array type must parse at the same depth parens do ({boundary})"
+        );
+        assert_eq!(
+            first_error_code(&array_type(boundary + 1)).map(|c| c.0),
+            Some(482),
+            "one past the boundary must be a clean E0482 for array types too"
+        );
+    }
+
+    #[test]
+    fn test_deep_array_type_rejected_cleanly_not_overflow() {
+        // Far past the limit stays a clean E0482 (parse guard), never a stack
+        // overflow through parse / astgen / drop (RUE-533 / RUE-42).
+        let n = MAX_NESTING_DEPTH + 200;
+        let src = format!(
+            "fn f(x: {}i32{}) {{}}\nfn main() -> i32 {{ 0 }}\n",
+            "[".repeat(n),
+            "; 1]".repeat(n)
+        );
+        assert_eq!(first_error_code(&src).map(|c| c.0), Some(482));
     }
 
     /// Collect the rendered `[code] message` lines for a source that must fail
