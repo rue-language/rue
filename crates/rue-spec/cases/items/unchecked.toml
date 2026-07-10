@@ -120,7 +120,7 @@ source = """
 // Test that ptr const T can be used as a return type
 // Pass the pointer through to verify the return type is recognized
 fn identity_ptr(p: ptr const i32) -> ptr const i32 { p }
-fn main() -> i32 { 0 }
+fn main() -> i32 { if false { identity_ptr(loop {}); } 0 }
 """
 exit_code = 0
 

@@ -286,6 +286,8 @@ fn bad(borrow s: str) -> str {
     s
 }
 fn main() -> i32 {
+    let b = "x" + "y";
+    let _s = bad(borrow b);
     0
 }
 """
@@ -304,6 +306,8 @@ fn bad(borrow s: str) -> Keep {
     Keep { s: s }
 }
 fn main() -> i32 {
+    let b = "x" + "y";
+    let _keep = bad(borrow b);
     0
 }
 """

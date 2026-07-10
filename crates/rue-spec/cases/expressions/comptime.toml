@@ -588,6 +588,7 @@ fn empty() -> type {
     struct { }
 }
 fn main() -> i32 {
+    let E = empty();
     0
 }
 """
@@ -1492,7 +1493,7 @@ spec = ["4.14:16"]
 description = "A comptime type parameter may be a pointer pointee in param and return position"
 source = """
 fn id_ptr(comptime T: type, p: ptr const T) -> ptr const T { p }
-fn main() -> i32 { 0 }
+fn main() -> i32 { if false { id_ptr(i32, loop {}); } 0 }
 """
 exit_code = 0
 
