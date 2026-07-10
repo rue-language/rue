@@ -18,6 +18,10 @@
 #     directory. The harness later runs each compiler case from a temporary
 #     directory, where that repository-relative path no longer resolves.
 #
+#   * RUE-590: the Valgrind driver compiled repository examples without the
+#     bundled standard-library path, so a top-level example using @import("std")
+#     failed before Valgrind ever ran.
+#
 # Each test runs a COPY of the real script in a throwaway sandbox with a fake
 # `./buck2` (and, for scripts/rue, a fake scripts/rue-bin + fake compiler), so
 # no real build runs. The fakes log their cwd/argv; we assert on exit status,
@@ -247,6 +251,93 @@ test_testsh_cli_examples_survive_case_chdir() {
   rm -rf "$sb"
 }
 
+# ===========================================================================
+# RUE-590 — the sanitizer gives repository examples the bundled std library
+# ===========================================================================
+
+# Run a copy of the real sanitizer against a fake compiler and fake Valgrind.
+# The fake compiler refuses every source unless RUE_STD_PATH names the expected
+# std/ directory, then fabricates the output binary. This exercises
+# every compiler invocation without needing a real compiler or Valgrind.
+test_sanitizer_defaults_std_path() {
+  local sb; sb="$(mktemp -d)"
+  mkdir -p "$sb/scripts" "$sb/examples" "$sb/std" "$sb/fakebin" "$sb/tmp"
+  cp "$SRC_ROOT/scripts/run-sanitizer.sh" "$sb/scripts/run-sanitizer.sh"
+  chmod +x "$sb/scripts/run-sanitizer.sh"
+  printf 'const std = @import("std");\nfn main() -> i32 { 0 }\n' >"$sb/examples/std_probe.rue"
+  echo '// fake bundled standard library' >"$sb/std/_std.rue"
+
+  cat >"$sb/compiler" <<'EOF'
+#!/usr/bin/env bash
+if [ "${RUE_STD_PATH:-}" != "$EXPECTED_STD" ]; then
+  printf 'wrong RUE_STD_PATH: %s\n' "${RUE_STD_PATH:-<unset>}" >&2
+  exit 88
+fi
+printf 'src=%s std=%s\n' "$1" "$RUE_STD_PATH" >>"$COMPILE_LOG"
+out=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-o" ]; then
+    out="$2"
+    shift 2
+  else
+    shift
+  fi
+done
+[ -n "$out" ] || exit 89
+printf '#!/bin/sh\nexit 0\n' >"$out"
+chmod +x "$out"
+EOF
+  chmod +x "$sb/compiler"
+
+  cat >"$sb/fakebin/valgrind" <<'EOF'
+#!/usr/bin/env bash
+log=""
+for arg in "$@"; do
+  case "$arg" in
+    --log-file=*) log="${arg#--log-file=}" ;;
+  esac
+done
+[ -n "$log" ] || exit 90
+printf 'ERROR SUMMARY: 0 errors\n' >"$log"
+EOF
+  chmod +x "$sb/fakebin/valgrind"
+
+  # run-sanitizer is a Linux/Valgrind driver, but this wrapper contract test
+  # also runs on macOS, where GNU timeout is not installed by default.
+  cat >"$sb/fakebin/timeout" <<'EOF'
+#!/usr/bin/env bash
+shift
+exec "$@"
+EOF
+  chmod +x "$sb/fakebin/timeout"
+
+  local rc=0
+  env -u RUE_STD_PATH \
+    PATH="$sb/fakebin:$PATH" \
+    RUE_BINARY="$sb/compiler" \
+    EXPECTED_STD="$sb/std" \
+    COMPILE_LOG="$sb/compile.log" \
+    TMPDIR="$sb/tmp" \
+    "$sb/scripts/run-sanitizer.sh" >/dev/null 2>&1 || rc=$?
+
+  check "run-sanitizer: std-importing examples receive repository std path" \
+    "$([ "$rc" -eq 0 ] && grep -Fxq "src=$sb/examples/std_probe.rue std=$sb/std" "$sb/compile.log" 2>/dev/null && echo 0 || echo 1)"
+
+  mkdir -p "$sb/alternate-std"
+  echo '// explicit alternate standard library' >"$sb/alternate-std/_std.rue"
+  rc=0
+  PATH="$sb/fakebin:$PATH" \
+    RUE_BINARY="$sb/compiler" \
+    RUE_STD_PATH="$sb/alternate-std" \
+    EXPECTED_STD="$sb/alternate-std" \
+    COMPILE_LOG="$sb/override-compile.log" \
+    TMPDIR="$sb/tmp" \
+    "$sb/scripts/run-sanitizer.sh" >/dev/null 2>&1 || rc=$?
+  check "run-sanitizer: explicit std path override is preserved" \
+    "$([ "$rc" -eq 0 ] && grep -Fxq "src=$sb/examples/std_probe.rue std=$sb/alternate-std" "$sb/override-compile.log" 2>/dev/null && echo 0 || echo 1)"
+  rm -rf "$sb"
+}
+
 # --- run everything ---------------------------------------------------------
 
 test_ruebin_build_failure_is_loud
@@ -256,6 +347,7 @@ test_rue_exec_resolves_from_caller_cwd
 test_rue_run_resolves_relative_output
 test_rue_cli_examples_survive_case_chdir
 test_testsh_cli_examples_survive_case_chdir
+test_sanitizer_defaults_std_path
 
 echo "--------------------------------------------------"
 if [ "$FAILURES" -eq 0 ]; then

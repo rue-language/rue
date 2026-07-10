@@ -50,6 +50,11 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
+# Examples may import the bundled standard library. Match the developer
+# wrappers' default while preserving an explicit caller override; without this
+# the sanitizer fails during compilation and never reaches Valgrind (RUE-590).
+export RUE_STD_PATH="${RUE_STD_PATH:-$repo_root/std}"
+
 if ! command -v valgrind >/dev/null 2>&1; then
     echo "run-sanitizer: valgrind not found on PATH." >&2
     echo "run-sanitizer: install it (Debian/Ubuntu: apt-get install valgrind)." >&2
