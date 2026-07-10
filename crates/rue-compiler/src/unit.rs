@@ -1,8 +1,13 @@
 //! Unified compilation unit that owns all compilation artifacts.
 //!
-//! The [`CompilationUnit`] provides a single source of truth for all compilation state,
-//! from source files through to machine code. It enforces phase ordering through the
-//! type system - you can't access AIR without first running semantic analysis.
+//! The [`CompilationUnit`] provides a single source of truth for all compilation
+//! state, from source files through to machine code. Phase artifacts are held in
+//! `Option` fields and phase ordering is enforced *at runtime*: each phase method
+//! panics if a prerequisite phase has not run yet. The order is
+//! [`parse()`](CompilationUnit::parse) → [`lower()`](CompilationUnit::lower) →
+//! [`analyze()`](CompilationUnit::analyze) →
+//! [`compile()`](CompilationUnit::compile);
+//! [`run_all()`](CompilationUnit::run_all) runs them in sequence for you.
 //!
 //! # Example
 //!
@@ -15,11 +20,14 @@
 //!     SourceFile::new("main.rue", "fn main() -> i32 { 42 }", FileId::new(1)),
 //! ];
 //!
-//! // Create compilation unit and run phases
-//! let mut unit = CompilationUnit::new(sources, CompileOptions::default())?;
+//! // Run the phases IN ORDER — skipping one (e.g. analyze() before lower())
+//! // panics. `new` is infallible; the phase methods return results.
+//! let mut unit = CompilationUnit::new(sources, CompileOptions::default());
 //! unit.parse()?;
+//! unit.lower()?;
 //! unit.analyze()?;
 //! let output = unit.compile()?;
+//! // Or, equivalently: let output = unit.run_all()?;
 //! ```
 
 use std::collections::HashMap;

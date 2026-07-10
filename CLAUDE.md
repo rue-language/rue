@@ -101,7 +101,8 @@ rue main.rue -o program        # @imports resolved and loaded automatically
 - `--source-manifest <path>` restricts which files imports may read — for build
   systems (Buck) that need the compiler's input set to be explicit.
 - `main()` must exist in exactly one file.
-- Files are parsed in parallel, then merged for semantic analysis.
+- Files are parsed sequentially with a shared interner (so interned symbols
+  agree across files), then merged for semantic analysis.
 
 **Legacy flat mode is being removed (ADR-0046):** extra positional source files
 (`rue a.rue b.rue -o prog`) are still accepted as legacy inputs, but unqualified
@@ -116,7 +117,7 @@ tests or examples that rely on flat file lists.
 - **Index-based references**: Instructions stored in vectors, referenced by u32 indices (cache-friendly, no lifetimes)
 - **Direct code emission**: No LLVM dependency; machine code emitted directly
 - **Minimal linking**: Static executables with direct syscalls
-- **Built-in types as synthetic structs**: Types like `String` are defined in `rue-builtins` and injected as synthetic structs, not as hardcoded `Type` enum variants (see [ADR-0020](docs/designs/0020-builtin-types-as-structs.md))
+- **Built-in types as synthetic structs**: Types like `String` are defined in `rue-builtins` and injected as synthetic structs, not as hardcoded special-cased built-in types (see [ADR-0020](docs/designs/0020-builtin-types-as-structs.md))
 
 ### Built-in Types Architecture
 
@@ -128,7 +129,7 @@ imported via `@import("std")` (see ADR-0043). To add a new builtin: define a
 `BuiltinTypeDef` in `rue-builtins/src/lib.rs`, add it to `BUILTIN_TYPES`,
 implement runtime functions in `rue-runtime`. The module docs in `rue-builtins`
 walk through a full worked example. Injection point: `inject_builtin_types()`
-in `rue-air/src/sema.rs`.
+in `rue-air/src/sema/builtins.rs`.
 
 ## Testing
 
@@ -219,7 +220,7 @@ Use preview gating when adding new syntax (keywords, operators, constructs), new
 
 1. **Add to PreviewFeature enum** in `rue-error/src/lib.rs`; also update `name()`, `adr()`, `all()`, and the `FromStr` impl.
 
-2. **Add the gate check in Sema** (`rue-air/src/sema.rs`):
+2. **Add the gate check in Sema** (`rue-air/src/sema/analysis.rs`):
    ```rust
    self.require_preview(PreviewFeature::YourNewFeature, "your feature description", span)?;
    ```
