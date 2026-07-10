@@ -1,0 +1,52 @@
+[section]
+id = "cli.diagnostic_tab_origin"
+name = "Tab-indented diagnostic origin column"
+description = """
+Regression coverage for RUE-556: a hard tab before the primary span used to
+inflate the reported `path:line:col` origin column in human text (the caret is
+aligned against a 4-space-expanded excerpt), while --error-format json reported
+the original-source column. The two disagreed — column 12 vs 9 — so editors and
+scripts parsing the conventional text origin jumped three characters past the
+token. Both formats must now name the SAME original-source column, and the
+human caret must still sit under the token.
+"""
+
+# The leading `\t` on line 2 is a real tab (TOML multi-line basic strings decode
+# escapes). "return " is 7 characters, so `nope` is at original column 9.
+
+[[case]]
+name = "tab_indent_text_origin_is_original_column"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+\treturn nope;
+}
+""" }]
+compile_fail = true
+error_contains = [
+  # Origin coordinate uses the original-source column, matching JSON below.
+  "main.rue:2:9",
+  # Excerpt still expands the tab, and the caret stays under `nope`.
+  "2 |     return nope;",
+  "|            ^^^^",
+]
+compile_stderr_not_contains = [
+  # The old tab-expanded origin column must not reappear.
+  "main.rue:2:12",
+]
+
+[[case]]
+name = "tab_indent_json_origin_is_original_column"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+\treturn nope;
+}
+""" }]
+args = ["--error-format", "json", "main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = [
+  '"line":2',
+  '"column":9',
+]
+compile_stderr_not_contains = [
+  '"column":12',
+]
