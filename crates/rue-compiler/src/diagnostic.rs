@@ -42,6 +42,61 @@ use crate::{CompileError, CompileErrors, CompileWarning, Diagnostic, ErrorCode, 
 /// Normalize only the snippet text and remap original byte offsets into that
 /// normalized text. This leaves the parser, semantic spans, and JSON diagnostics
 /// on original-source coordinates while making human output stable.
+/// A safe, single-column visible glyph for a control character, so terminal
+/// diagnostics render it as a picture instead of executing it (RUE-548).
+///
+/// C0 controls map to their Unicode Control Pictures (U+2400 `␀` … U+241F
+/// `␟`), DEL to U+2421 `␡`, and C1 controls (U+0080…U+009F) to U+FFFD `�`.
+/// Every result has display width 1, so replacing a control char one-for-one
+/// preserves caret/column geometry. Tab, newline, and carriage return are
+/// layout-significant and handled by the caller before this is reached.
+fn control_glyph(ch: char) -> char {
+    match ch as u32 {
+        0x7f => '\u{2421}',                                   // ␡ DEL
+        n if n < 0x20 => char::from_u32(0x2400 + n).unwrap(), // ␀ … ␟
+        _ => '\u{fffd}',                                      // C1 → �
+    }
+}
+
+/// Is this a control character the human renderer must neutralize? Tab and
+/// newline are layout-significant and allowed to pass; everything else
+/// `char::is_control` flags (C0 minus tab/newline, DEL, C1) is a
+/// terminal-injection hazard (RUE-548).
+fn is_unsafe_control_char(c: char) -> bool {
+    c.is_control() && c != '\t' && c != '\n'
+}
+
+/// Whether any character in `s` needs neutralizing (see [`is_unsafe_control_char`]).
+fn has_unsafe_control(s: &str) -> bool {
+    s.chars().any(is_unsafe_control_char)
+}
+
+/// Neutralize control characters in a human-facing MESSAGE string (a title,
+/// label, note, or help), which may interpolate user-controlled data such as
+/// module import specifiers or file paths (RUE-548). Source-excerpt text is
+/// handled by [`RenderSource`] instead, which also remaps span offsets. Tab
+/// and newline are preserved for layout; carriage return is dropped, matching
+/// the source renderer. Returns the input unchanged when it is already safe.
+///
+/// This runs only on the TEXT render path; the JSON diagnostic formatter is a
+/// separate type that relies on serde's own control-character escaping, so the
+/// underlying error data is never pre-escaped here.
+fn sanitize_message(s: &str) -> Cow<'_, str> {
+    if !has_unsafe_control(s) {
+        return Cow::Borrowed(s);
+    }
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '\t' | '\n' => out.push(ch),
+            '\r' => {}
+            c if c.is_control() => out.push(control_glyph(c)),
+            _ => out.push(ch),
+        }
+    }
+    Cow::Owned(out)
+}
+
 struct RenderSource<'a> {
     source: Cow<'a, str>,
     byte_map: Option<Vec<usize>>,
@@ -49,7 +104,13 @@ struct RenderSource<'a> {
 
 impl<'a> RenderSource<'a> {
     fn new(source: &'a str) -> Self {
-        if !source.as_bytes().iter().any(|b| matches!(b, b'\t' | b'\r')) {
+        // Fast path: no tab (caret geometry) or control char — carriage return
+        // and every other terminal-injection hazard (RUE-548) are covered by
+        // `is_unsafe_control_char`.
+        if !source
+            .chars()
+            .any(|c| c == '\t' || is_unsafe_control_char(c))
+        {
             return Self {
                 source: Cow::Borrowed(source),
                 byte_map: None,
@@ -69,6 +130,12 @@ impl<'a> RenderSource<'a> {
             match ch {
                 '\t' => rendered.push_str("    "),
                 '\r' => {}
+                '\n' => rendered.push('\n'),
+                // Any other control char is a terminal-injection hazard: render
+                // a visible one-column glyph instead (RUE-548). The byte_map
+                // records where this original byte lands, so the multi-byte
+                // glyph keeps annotation spans aligned to the right column.
+                c if c.is_control() => rendered.push(control_glyph(c)),
                 _ => rendered.push(ch),
             }
             byte_map[next_idx] = rendered.len();
@@ -303,15 +370,38 @@ impl<'a> DiagnosticFormatter<'a> {
         // For diagnostics without a primary span, promote the first attached
         // label to the rendered snippet. Labels carry their own spans, so
         // dropping them here would silently hide source context.
+        // Neutralize control bytes in every user-facing string before it
+        // reaches the terminal (RUE-548). Titles, labels, notes, and helps can
+        // interpolate module specifiers / paths; the source excerpt is handled
+        // by RenderSource. Collect owned copies up front so the snippet
+        // builder (which borrows &str) has something to point at.
+        let message = sanitize_message(message);
+        let sanitized_labels: Vec<Cow<str>> = diagnostic
+            .labels
+            .iter()
+            .map(|l| sanitize_message(&l.message))
+            .collect();
+        let sanitized_notes: Vec<Cow<str>> = diagnostic
+            .notes
+            .iter()
+            .map(|n| sanitize_message(&n.0))
+            .collect();
+        let sanitized_helps: Vec<Cow<str>> = diagnostic
+            .helps
+            .iter()
+            .map(|h| sanitize_message(&h.0))
+            .collect();
+
         let promoted_label = span.is_none().then(|| diagnostic.labels.first()).flatten();
+        let promoted_label_idx = promoted_label.is_some().then_some(0usize);
         let Some(span) = span.or_else(|| promoted_label.map(|label| label.span)) else {
-            let mut report = level.title(message);
+            let mut report = level.title(message.as_ref());
             // Add notes and helps as footers
-            for note in &diagnostic.notes {
-                report = report.footer(Level::Note.title(note.0.as_str()));
+            for note in &sanitized_notes {
+                report = report.footer(Level::Note.title(note.as_ref()));
             }
-            for help in &diagnostic.helps {
-                report = report.footer(Level::Help.title(help.0.as_str()));
+            for help in &sanitized_helps {
+                report = report.footer(Level::Help.title(help.as_ref()));
             }
             return format!("{}", self.renderer.render(report));
         };
@@ -322,8 +412,8 @@ impl<'a> DiagnosticFormatter<'a> {
 
         // Build snippet with primary annotation
         let primary_annotation = level.span(start..end);
-        let primary_annotation = if let Some(label) = promoted_label {
-            primary_annotation.label(&label.message)
+        let primary_annotation = if let Some(idx) = promoted_label_idx {
+            primary_annotation.label(sanitized_labels[idx].as_ref())
         } else {
             primary_annotation
         };
@@ -333,27 +423,28 @@ impl<'a> DiagnosticFormatter<'a> {
             .annotation(primary_annotation);
 
         // Add secondary labels as Info annotations
-        for label in diagnostic
+        for (idx, label) in diagnostic
             .labels
             .iter()
+            .enumerate()
             .skip(usize::from(promoted_label.is_some()))
         {
             let (label_start, label_end) = render_source.map_span(label.span, source_len);
             snippet = snippet.annotation(
                 Level::Info
                     .span(label_start..label_end)
-                    .label(&label.message),
+                    .label(sanitized_labels[idx].as_ref()),
             );
         }
 
-        let mut report = level.title(message).snippet(snippet);
+        let mut report = level.title(message.as_ref()).snippet(snippet);
 
         // Add notes and helps as footers
-        for note in &diagnostic.notes {
-            report = report.footer(Level::Note.title(note.0.as_str()));
+        for note in &sanitized_notes {
+            report = report.footer(Level::Note.title(note.as_ref()));
         }
-        for help in &diagnostic.helps {
-            report = report.footer(Level::Help.title(help.0.as_str()));
+        for help in &sanitized_helps {
+            report = report.footer(Level::Help.title(help.as_ref()));
         }
 
         format!("{}", self.renderer.render(report))
@@ -584,17 +675,38 @@ impl<'a> MultiFileFormatter<'a> {
         span: Option<Span>,
         diagnostic: &Diagnostic,
     ) -> String {
+        // Neutralize control bytes in every user-facing string before it
+        // reaches the terminal (RUE-548); see the single-file twin. Owned
+        // copies collected up front so the &str-borrowing snippet builder and
+        // `file_spans` have stable referents.
+        let message = sanitize_message(message);
+        let sanitized_labels: Vec<Cow<str>> = diagnostic
+            .labels
+            .iter()
+            .map(|l| sanitize_message(&l.message))
+            .collect();
+        let sanitized_notes: Vec<Cow<str>> = diagnostic
+            .notes
+            .iter()
+            .map(|n| sanitize_message(&n.0))
+            .collect();
+        let sanitized_helps: Vec<Cow<str>> = diagnostic
+            .helps
+            .iter()
+            .map(|h| sanitize_message(&h.0))
+            .collect();
+
         // For diagnostics without a primary span, promote the first attached
         // label to the rendered snippet. Labels carry their own file IDs and
         // spans, so dropping them here would silently hide source context.
         let promoted_label = span.is_none().then(|| diagnostic.labels.first()).flatten();
         let Some(primary_span) = span.or_else(|| promoted_label.map(|label| label.span)) else {
-            let mut report = level.title(message);
-            for note in &diagnostic.notes {
-                report = report.footer(Level::Note.title(note.0.as_str()));
+            let mut report = level.title(message.as_ref());
+            for note in &sanitized_notes {
+                report = report.footer(Level::Note.title(note.as_ref()));
             }
-            for help in &diagnostic.helps {
-                report = report.footer(Level::Help.title(help.0.as_str()));
+            for help in &sanitized_helps {
+                report = report.footer(Level::Help.title(help.as_ref()));
             }
             return format!("{}", self.renderer.render(report));
         };
@@ -602,28 +714,29 @@ impl<'a> MultiFileFormatter<'a> {
         // Collect all file IDs we need to show
         let mut file_spans: HashMap<FileId, Vec<(Span, Option<&str>, Level)>> = HashMap::new();
 
-        // Add primary span
+        // Add primary span (promoted label is index 0 when present).
         file_spans.entry(primary_span.file_id).or_default().push((
             primary_span,
-            promoted_label.map(|label| label.message.as_str()),
+            promoted_label.map(|_| sanitized_labels[0].as_ref()),
             level,
         ));
 
         // Add secondary labels
-        for label in diagnostic
+        for (idx, label) in diagnostic
             .labels
             .iter()
+            .enumerate()
             .skip(usize::from(promoted_label.is_some()))
         {
             file_spans.entry(label.span.file_id).or_default().push((
                 label.span,
-                Some(label.message.as_str()),
+                Some(sanitized_labels[idx].as_ref()),
                 Level::Info,
             ));
         }
 
         // Build report with snippets for each file
-        let mut report = level.title(message);
+        let mut report = level.title(message.as_ref());
 
         // Process files in a deterministic order (by FileId)
         let mut file_ids: Vec<_> = file_spans.keys().copied().collect();
@@ -672,11 +785,11 @@ impl<'a> MultiFileFormatter<'a> {
         }
 
         // Add notes and helps as footers
-        for note in &diagnostic.notes {
-            report = report.footer(Level::Note.title(note.0.as_str()));
+        for note in &sanitized_notes {
+            report = report.footer(Level::Note.title(note.as_ref()));
         }
-        for help in &diagnostic.helps {
-            report = report.footer(Level::Help.title(help.0.as_str()));
+        for help in &sanitized_helps {
+            report = report.footer(Level::Help.title(help.as_ref()));
         }
 
         format!("{}", self.renderer.render(report))
@@ -1936,6 +2049,113 @@ mod tests {
         let output = formatter.format_error(&error);
         assert!(output.contains("[E0206]"));
         assert!(output.contains("type mismatch"));
+    }
+
+    // ========================================================================
+    // Control-byte sanitization for terminal safety (RUE-548)
+    // ========================================================================
+
+    /// Count C0 control bytes (0x00–0x1F) other than tab/newline, plus DEL —
+    /// the bytes a terminal would interpret as commands. Color is disabled in
+    /// these tests so the renderer's own ANSI escapes never appear.
+    fn unsafe_control_bytes(s: &str) -> usize {
+        s.bytes()
+            .filter(|&b| (b < 0x20 && b != b'\t' && b != b'\n') || b == 0x7f)
+            .count()
+    }
+
+    #[test]
+    fn test_control_glyph_maps_to_pictures() {
+        assert_eq!(control_glyph('\u{1b}'), '␛'); // ESC  -> U+241B
+        assert_eq!(control_glyph('\u{0}'), '␀'); //  NUL  -> U+2400
+        assert_eq!(control_glyph('\u{7}'), '␇'); //  BEL  -> U+2407
+        assert_eq!(control_glyph('\u{7f}'), '␡'); // DEL  -> U+2421
+        assert_eq!(control_glyph('\u{85}'), '\u{fffd}'); // C1 -> replacement
+    }
+
+    #[test]
+    fn test_sanitize_message_neutralizes_controls() {
+        let s = "cannot find module '\u{1b}[2J\u{1b}[Hevil'";
+        let out = sanitize_message(s);
+        assert_eq!(unsafe_control_bytes(&out), 0, "escape survived: {out:?}");
+        assert!(out.contains('␛'), "expected ESC picture: {out:?}");
+        // NUL is neutralized too.
+        assert_eq!(unsafe_control_bytes(&sanitize_message("a\u{0}b")), 0);
+        // A safe string is returned borrowed, unchanged.
+        assert!(matches!(
+            sanitize_message("plain 'text'"),
+            Cow::Borrowed("plain 'text'")
+        ));
+    }
+
+    #[test]
+    fn test_source_excerpt_strips_control_bytes() {
+        // ESC bytes hidden in a trailing comment, exactly the reported repro.
+        let source = "fn main() -> i32 {\n    nope // \u{1b}[2J\u{1b}[H injected\n}";
+        let sources = vec![(FileId::new(1), SourceInfo::new(source, "test.rue"))];
+        let formatter = MultiFileFormatter::with_color_choice(sources, ColorChoice::Never);
+        // `nope` at byte offset 23..27.
+        let error = CompileError::new(
+            ErrorKind::UndefinedVariable("nope".to_string()),
+            Span::with_file(FileId::new(1), 23, 27),
+        );
+        let output = formatter.format_error(&error);
+        assert_eq!(
+            unsafe_control_bytes(&output),
+            0,
+            "raw control bytes reached the terminal: {output:?}"
+        );
+        assert!(
+            output.contains('␛'),
+            "ESC not rendered as a picture: {output:?}"
+        );
+    }
+
+    #[test]
+    fn test_source_excerpt_caret_alignment_preserved() {
+        // A control byte inside a string literal PRECEDES the erroring token on
+        // the same line. The 1-byte ESC renders as a 1-column glyph, so the
+        // caret must still underline `nope`, not drift. (spec: escaped source
+        // still points to the correct span.)
+        let source = "fn main() -> i32 {\n    let s = \"\u{1b}ab\"; nope\n}";
+        let sources = vec![(FileId::new(1), SourceInfo::new(source, "test.rue"))];
+        let formatter = MultiFileFormatter::with_color_choice(sources, ColorChoice::Never);
+        // `nope` at byte offset 38..42 (after the ESC-bearing string literal).
+        let error = CompileError::new(
+            ErrorKind::UndefinedVariable("nope".to_string()),
+            Span::with_file(FileId::new(1), 38, 42),
+        );
+        let output = formatter.format_error(&error);
+        assert_eq!(unsafe_control_bytes(&output), 0);
+        // The caret line underlines exactly the 4 columns of `nope`, and its
+        // leading indent matches `nope`'s column on the rendered source line
+        // (the ESC glyph occupies one column, like the original byte).
+        let lines: Vec<&str> = output.lines().collect();
+        // Match the source EXCERPT line by content unique to it (`let s`), not
+        // the error title, which also contains `nope`.
+        let src_line = lines
+            .iter()
+            .find(|l| l.contains("let s"))
+            .expect("source line");
+        let caret_line = lines.iter().find(|l| l.contains('^')).expect("caret line");
+        // Strip the `N | ` / `  | ` gutter, then compare DISPLAY columns (char
+        // counts, since the only wide-in-bytes char here is the 1-column ESC
+        // glyph) — byte offsets would differ by the glyph's extra bytes.
+        let after_gutter =
+            |l: &str| -> String { l.splitn(2, "| ").nth(1).unwrap_or(l).to_string() };
+        let src_body = after_gutter(src_line);
+        let caret_body = after_gutter(caret_line);
+        let nope_col = src_body[..src_body.find("nope").unwrap()].chars().count();
+        let caret_col = caret_body[..caret_body.find('^').unwrap()].chars().count();
+        assert_eq!(
+            caret_col, nope_col,
+            "caret drifted: src {src_line:?} caret {caret_line:?}"
+        );
+        assert_eq!(
+            caret_line.matches('^').count(),
+            4,
+            "caret width != len(nope): {caret_line:?}"
+        );
     }
 
     // ========================================================================
