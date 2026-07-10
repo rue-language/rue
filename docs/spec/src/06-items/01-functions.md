@@ -197,6 +197,28 @@ fn main() -> i32 {
 }
 ```
 
+{{ rule(id="6.1:36", cat="legality-rule") }}
+
+A single call **MUST NOT** both loan a variable — pass it `inout` or `borrow`, including as a by-reference method receiver — and move that variable's value by passing it, or any part of it, to a by-value parameter of a non-`Copy` type. The loan spans the entire call, so the move would leave the loaned place referring to moved-from storage (its destructor would run both through the moved-into owner and through the loaned alias). The rule applies in either argument order, and to a move that occurs anywhere within the call's argument expressions, including inside a nested call that consumes the variable. As with rules 6.1:20 and 6.1:30, it applies to the argument's root variable: moving one field while loaning another field of the same variable is likewise rejected. A by-value argument of a `Copy` type is a read that completes before the call begins and does not conflict; likewise a loan nested inside another argument (such as `f(inout x, g(borrow x))`) ends before the outer call begins and does not conflict.
+
+{{ rule(id="6.1:37", cat="example") }}
+
+```rue
+struct R { id: i32 }
+drop fn R(self) { @dbg(self.id); }
+
+fn f(inout a: R, b: R) -> i32 {
+    a = R { id: 99 };
+    b.id
+}
+
+fn main() -> i32 {
+    let mut x = R { id: 5 };
+    let r = f(inout x, x);  // error: cannot move 'x' into a call that also passes it 'inout'
+    r
+}
+```
+
 ## Parameter Immutability
 
 {{ rule(id="6.1:32", cat="legality-rule") }}

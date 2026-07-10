@@ -796,6 +796,183 @@ compile_fail = true
 error_contains = "borrow"
 
 [[case]]
+name = "move_while_inout_loaned"
+spec = ["6.1:36"]
+description = "Passing a variable by value while also passing it inout in the same call is rejected (RUE-523 double free)"
+source = """
+struct R { id: i32 }
+drop fn R(self) { @dbg(self.id); }
+fn f(inout a: R, b: R) -> i32 {
+    a = R { id: 99 };
+    b.id
+}
+fn main() -> i32 {
+    let mut x = R { id: 5 };
+    let r = f(inout x, x);
+    r
+}
+"""
+compile_fail = true
+error_contains = "into a call that also passes it"
+
+[[case]]
+name = "move_while_inout_loaned_reversed_order"
+spec = ["6.1:36"]
+description = "The by-value-first order is rejected by the same rule — argument order does not matter"
+source = """
+struct R { id: i32 }
+drop fn R(self) { @dbg(self.id); }
+fn f(a: R, inout b: R) -> i32 {
+    b = R { id: 99 };
+    a.id
+}
+fn main() -> i32 {
+    let mut x = R { id: 5 };
+    let r = f(x, inout x);
+    r
+}
+"""
+compile_fail = true
+error_contains = "into a call that also passes it"
+
+[[case]]
+name = "move_while_borrow_loaned"
+spec = ["6.1:36"]
+description = "Passing a variable by value while also passing it borrow in the same call is rejected"
+source = """
+struct R { id: i32 }
+drop fn R(self) { @dbg(self.id); }
+fn f(borrow a: R, b: R) -> i32 {
+    a.id + b.id
+}
+fn main() -> i32 {
+    let mut x = R { id: 5 };
+    let r = f(borrow x, x);
+    r
+}
+"""
+compile_fail = true
+error_contains = "into a call that also passes it"
+
+[[case]]
+name = "move_while_loaned_string_heap"
+spec = ["6.1:36"]
+description = "The heap shape: moving a String into a call that passes it inout would double-free the buffer"
+source = """
+fn f(inout a: String, b: String) -> u64 {
+    a.push(120);
+    b.len()
+}
+fn main() -> i32 {
+    let mut s = String.new();
+    s.push(104);
+    let r = f(inout s, s);
+    if r == 1 { 0 } else { 1 }
+}
+"""
+compile_fail = true
+error_contains = "into a call that also passes it"
+
+[[case]]
+name = "move_while_loaned_nested_call"
+spec = ["6.1:36"]
+description = "A move that happens inside a nested call in another argument conflicts with the outer call's loan"
+source = """
+struct R { id: i32 }
+drop fn R(self) { @dbg(self.id); }
+fn g(r: R) -> i32 { r.id }
+fn f(inout a: R, b: i32) -> i32 {
+    a = R { id: 99 };
+    b
+}
+fn main() -> i32 {
+    let mut x = R { id: 5 };
+    let r = f(inout x, g(x));
+    r
+}
+"""
+compile_fail = true
+error_contains = "into a call that also passes it"
+
+[[case]]
+name = "move_field_while_root_loaned"
+spec = ["6.1:36"]
+description = "Moving one field by value while loaning the whole variable shares a root and is rejected"
+source = """
+struct Inner { s: String }
+struct Outer { inner: Inner, n: i32 }
+fn f(inout a: Outer, b: Inner) -> i32 {
+    a.n = 1;
+    if b.s.len() == 1 { 7 } else { 8 }
+}
+fn main() -> i32 {
+    let mut st = String.new();
+    st.push(120);
+    let mut o = Outer { inner: Inner { s: st }, n: 0 };
+    f(inout o, o.inner)
+}
+"""
+compile_fail = true
+error_contains = "into a call that also passes it"
+
+[[case]]
+name = "move_receiver_root_into_method_arg"
+spec = ["6.1:36"]
+description = "A by-reference method receiver is a loan: moving the receiver variable into an argument of the same call is rejected"
+source = """
+struct R {
+    id: i32,
+    fn absorb(inout self, other: R) {
+        self.id = self.id + other.id;
+    }
+}
+drop fn R(self) { @dbg(self.id); }
+fn main() -> i32 {
+    let mut x = R { id: 5 };
+    x.absorb(x);
+    0
+}
+"""
+compile_fail = true
+error_contains = "into a call that also passes it"
+
+[[case]]
+name = "copy_by_value_with_inout_same_var_ok"
+spec = ["6.1:36"]
+description = "A by-value argument of a Copy type is a completed read, not a move, so it may accompany an inout loan of the same variable"
+source = """
+fn f(inout a: i32, b: i32) -> i32 {
+    a = a + b;
+    b
+}
+fn main() -> i32 {
+    let mut n = 20;
+    let r = f(inout n, n);
+    n + r
+}
+"""
+exit_code = 60
+
+[[case]]
+name = "nested_completed_borrow_with_inout_ok"
+spec = ["6.1:36"]
+description = "A loan nested inside another argument completes before the outer call begins, so it does not conflict with the outer inout"
+source = """
+struct R { id: i32 }
+fn g(borrow r: R) -> i32 { r.id }
+fn f(inout a: R, b: i32) -> i32 {
+    a = R { id: 99 };
+    b
+}
+fn main() -> i32 {
+    let mut x = R { id: 5 };
+    let r = f(inout x, g(borrow x));
+    r + x.id - 104
+}
+"""
+exit_code = 0
+
+[[case]]
 name = "borrow_multiple_same_var_ok"
 spec = ["6.1:28"]
 description = "Multiple borrows of the same variable is allowed"

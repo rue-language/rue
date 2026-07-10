@@ -522,35 +522,56 @@ impl<'a> Sema<'a> {
         // Add receiver as first argument
         air_args.push((receiver.result.air_ref, AirArgMode::Normal));
 
-        // Analyze and add other arguments
-        for (i, arg) in args.iter().enumerate() {
-            let arg_result = self.analyze_inst(air, arg.value, ctx)?;
-
-            // Get expected type from param
-            let expected_ty = match method.params[i].ty {
-                BuiltinParamType::U64 => Type::U64,
-                BuiltinParamType::U8 => Type::U8,
-                BuiltinParamType::Bool => Type::BOOL,
-                BuiltinParamType::SelfType => Type::new_struct(method_ctx.struct_id),
-            };
-
-            // Type check
-            if arg_result.ty != expected_ty
-                && !arg_result.ty.is_error()
-                && !(self.is_builtin_string(arg_result.ty)
-                    && matches!(method.params[i].ty, BuiltinParamType::SelfType))
-            {
-                return Err(CompileError::new(
-                    ErrorKind::TypeMismatch {
-                        expected: expected_ty.safe_name_with_pool(Some(&self.type_pool)),
-                        found: arg_result.ty.safe_name_with_pool(Some(&self.type_pool)),
-                    },
-                    method_ctx.span,
-                ));
-            }
-
-            air_args.push((arg_result.air_ref, AirArgMode::Normal));
+        // A by-ref receiver's loan spans the whole call, so a by-value move of
+        // the receiver's root in an argument (`s.contains(s)` — the needle is
+        // a String, moved) must conflict exactly like `f(borrow s, s)` does
+        // (RUE-523). Push the receiver's loan frame while the arguments are
+        // analyzed; move-record sites consult it.
+        let receiver_loan = match (method.receiver_mode, receiver.var) {
+            (ReceiverMode::ByMutRef, Some(root)) => Some(vec![(root, CallLoanKind::Inout)]),
+            (ReceiverMode::ByRef, Some(root)) => Some(vec![(root, CallLoanKind::Borrow)]),
+            _ => None,
+        };
+        let receiver_loan_pushed = receiver_loan.is_some();
+        if let Some(frame) = receiver_loan {
+            ctx.call_loaned_roots.push(frame);
         }
+        let args_result = (|| -> CompileResult<()> {
+            // Analyze and add other arguments
+            for (i, arg) in args.iter().enumerate() {
+                let arg_result = self.analyze_inst(air, arg.value, ctx)?;
+
+                // Get expected type from param
+                let expected_ty = match method.params[i].ty {
+                    BuiltinParamType::U64 => Type::U64,
+                    BuiltinParamType::U8 => Type::U8,
+                    BuiltinParamType::Bool => Type::BOOL,
+                    BuiltinParamType::SelfType => Type::new_struct(method_ctx.struct_id),
+                };
+
+                // Type check
+                if arg_result.ty != expected_ty
+                    && !arg_result.ty.is_error()
+                    && !(self.is_builtin_string(arg_result.ty)
+                        && matches!(method.params[i].ty, BuiltinParamType::SelfType))
+                {
+                    return Err(CompileError::new(
+                        ErrorKind::TypeMismatch {
+                            expected: expected_ty.safe_name_with_pool(Some(&self.type_pool)),
+                            found: arg_result.ty.safe_name_with_pool(Some(&self.type_pool)),
+                        },
+                        method_ctx.span,
+                    ));
+                }
+
+                air_args.push((arg_result.air_ref, AirArgMode::Normal));
+            }
+            Ok(())
+        })();
+        if receiver_loan_pushed {
+            ctx.call_loaned_roots.pop();
+        }
+        args_result?;
 
         // Determine return type
         // Use builtin_air_type for SelfType to get correct AIR output type

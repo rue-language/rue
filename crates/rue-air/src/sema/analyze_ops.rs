@@ -2556,6 +2556,7 @@ impl<'a> Sema<'a> {
                         // (comptime params are substituted at compile time)
                         RirParamMode::Normal | RirParamMode::Comptime => {
                             if !is_byref_arg_use {
+                                self.reject_move_of_call_loaned_root(name, span, ctx)?;
                                 ctx.moved_vars
                                     .entry(name)
                                     .or_default()
@@ -2658,6 +2659,7 @@ impl<'a> Sema<'a> {
                 ));
             }
             if moves_out {
+                self.reject_move_of_call_loaned_root(name, span, ctx)?;
                 ctx.moved_vars
                     .entry(name)
                     .or_default()
@@ -3592,6 +3594,7 @@ impl<'a> Sema<'a> {
                 // For linear types, field access consumes the entire struct
                 self.reject_linear_destructure_dropping_linear_field(&trace, span)?;
                 self.reject_move_out_of_byref_param(trace.root_var, ctx, span)?;
+                self.reject_move_of_call_loaned_root(trace.root_var, span, ctx)?;
                 ctx.moved_vars
                     .entry(trace.root_var)
                     .or_default()
@@ -3636,6 +3639,7 @@ impl<'a> Sema<'a> {
                 }
 
                 // Mark this field path as moved
+                self.reject_move_of_call_loaned_root(trace.root_var, span, ctx)?;
                 ctx.moved_vars
                     .entry(trace.root_var)
                     .or_default()

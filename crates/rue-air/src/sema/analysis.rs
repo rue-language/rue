@@ -23,8 +23,8 @@ use rue_span::{FileId, Span};
 use rue_target::{Arch, Os};
 
 use super::context::{
-    AnalysisContext, AnalysisResult, BuiltinMethodContext, ConstValue, ParamInfo, ReceiverInfo,
-    StringReceiverStorage,
+    AnalysisContext, AnalysisResult, BuiltinMethodContext, CallLoanKind, ConstValue, ParamInfo,
+    ReceiverInfo, StringReceiverStorage,
 };
 use super::{AnalyzedFunction, InferenceContext, MethodInfo, Sema, SemaOutput};
 use crate::inference::{

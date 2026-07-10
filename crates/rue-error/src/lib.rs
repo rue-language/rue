@@ -110,6 +110,7 @@ impl ErrorCode {
     pub const USE_AFTER_MOVE: Self = Self(205);
     pub const TYPE_MISMATCH: Self = Self(206);
     pub const WRONG_ARGUMENT_COUNT: Self = Self(207);
+    pub const MOVE_WHILE_CALL_LOANED: Self = Self(208);
 
     // ========================================================================
     // Struct/enum errors (E0400-E0499)
@@ -1300,6 +1301,12 @@ pub enum ErrorKind {
     /// Same variable passed to both borrow and inout parameters (law of exclusivity)
     #[error("cannot borrow '{variable}' while it is mutably borrowed (inout)")]
     BorrowInoutConflict { variable: String },
+    /// A moving (by-value) use of a variable inside an argument list that also
+    /// passes the same variable `inout`/`borrow`: the loan spans the whole
+    /// call, so the move would leave it aliasing moved-from storage — a double
+    /// free in safe code (law of exclusivity, RUE-523).
+    #[error("cannot move '{variable}' into a call that also passes it '{loan_mode}'")]
+    MoveWhileCallLoaned { variable: String, loan_mode: String },
     /// Argument to inout parameter is missing `inout` keyword at call site
     #[error("argument to inout parameter must use 'inout' keyword")]
     InoutKeywordMissing,
@@ -1597,6 +1604,7 @@ impl ErrorKind {
             ErrorKind::MutateBorrowedValue { .. } => ErrorCode::MUTATE_BORROWED_VALUE,
             ErrorKind::MoveOutOfBorrow { .. } => ErrorCode::MOVE_OUT_OF_BORROW,
             ErrorKind::BorrowInoutConflict { .. } => ErrorCode::BORROW_INOUT_CONFLICT,
+            ErrorKind::MoveWhileCallLoaned { .. } => ErrorCode::MOVE_WHILE_CALL_LOANED,
             ErrorKind::InoutKeywordMissing => ErrorCode::INOUT_KEYWORD_MISSING,
             ErrorKind::BorrowKeywordMissing => ErrorCode::BORROW_KEYWORD_MISSING,
             ErrorKind::MoveOutOfInout { .. } => ErrorCode::MOVE_OUT_OF_INOUT,
