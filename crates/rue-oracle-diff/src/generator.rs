@@ -490,18 +490,18 @@ impl Program {
     fn enum_ctor_src(&mut self) -> String {
         if self.enum_payload {
             match self.rng.below(3) {
-                0 => "E0::V0".to_string(),
+                0 => "E0.V0".to_string(),
                 1 => {
                     let v = self.int_literal(Ty::I32);
-                    format!("E0::V1({v})")
+                    format!("E0.V1({v})")
                 }
                 _ => {
                     let v = self.bool_literal();
-                    format!("E0::V2({v})")
+                    format!("E0.V2({v})")
                 }
             }
         } else {
-            format!("E0::V{}", self.rng.below(3))
+            format!("E0.V{}", self.rng.below(3))
         }
     }
 
@@ -661,11 +661,11 @@ impl Program {
         let vn = self.fresh("v");
         if self.enum_payload {
             body.push(format!(
-                "    let {vn}: i32 = match {ename} {{ E0::V0 => {a}, E0::V1(x) => (x + {b}), E0::V2(flag) => if flag {{ {c} }} else {{ {a} }} }};"
+                "    let {vn}: i32 = match {ename} {{ E0.V0 => {a}, E0.V1(x) => (x + {b}), E0.V2(flag) => if flag {{ {c} }} else {{ {a} }} }};"
             ));
         } else {
             body.push(format!(
-                "    let {vn}: i32 = match {ename} {{ E0::V0 => {a}, E0::V1 => {b}, E0::V2 => {c} }};"
+                "    let {vn}: i32 = match {ename} {{ E0.V0 => {a}, E0.V1 => {b}, E0.V2 => {c} }};"
             ));
         }
         scope.push(vn, Ty::I32);
@@ -758,7 +758,7 @@ impl Program {
 
     fn snippet_string(&mut self, body: &mut Vec<String>, scope: &mut Scope) {
         let sname = self.fresh("s");
-        body.push(format!("    let mut {sname} = String::new();"));
+        body.push(format!("    let mut {sname} = String.new();"));
         let chunks = 1 + self.rng.below(3);
         for _ in 0..chunks {
             let word = *self.rng.pick(&["foo", "bar", "baz", "hi", "x"]);
@@ -820,6 +820,9 @@ impl Program {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rue_compiler::compile_to_cfg;
+
+    const COMPILE_CONTRACT_SEEDS: u64 = 500;
 
     #[test]
     fn deterministic_from_seed() {
@@ -840,6 +843,30 @@ mod tests {
         }
     }
 
+    /// The generator is part of the compiler's correctness boundary: it
+    /// promises valid, well-typed Rue programs. Compile a deterministic corpus
+    /// through the shared front end so grammar, name-resolution, or typing
+    /// drift is a failing test rather than an `Unsupported` fuzz skip.
+    #[test]
+    fn generated_programs_compile() {
+        let mut saw_string_associated_call = false;
+
+        for seed in 0..COMPILE_CONTRACT_SEEDS {
+            let source = generate(seed);
+            saw_string_associated_call |= source.contains("String.new()");
+            if let Err(errors) = compile_to_cfg(&source) {
+                panic!(
+                    "generated seed {seed} did not compile: {errors:#?}\n\n--- source ---\n{source}"
+                );
+            }
+        }
+
+        assert!(
+            saw_string_associated_call,
+            "compile-contract corpus did not exercise associated calls"
+        );
+    }
+
     #[test]
     fn generates_payload_enum_cases() {
         let mut saw_payload_enum = false;
@@ -849,8 +876,8 @@ mod tests {
         for seed in 0..200u64 {
             let src = generate(seed);
             saw_payload_enum |= src.contains("enum E0 { V0, V1(i32), V2(bool) }");
-            saw_payload_ctor |= src.contains("E0::V1(") || src.contains("E0::V2(");
-            saw_payload_match |= src.contains("E0::V1(x)") && src.contains("E0::V2(flag)");
+            saw_payload_ctor |= src.contains("E0.V1(") || src.contains("E0.V2(");
+            saw_payload_match |= src.contains("E0.V1(x)") && src.contains("E0.V2(flag)");
         }
 
         assert!(saw_payload_enum);
