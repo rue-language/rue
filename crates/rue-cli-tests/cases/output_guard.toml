@@ -54,3 +54,20 @@ files = [{ path = "prog", source = "fn main() -> i32 { 7 }\n" }]
 args = ["./prog", "-o", "prog"]
 compile_fail = true
 error_contains = ["also an input source file"]
+
+[[case]]
+# RUE-527: the output must not clobber a source discovered via @import either.
+# The parse-time guard only sees positional paths; without the re-check after
+# import discovery, `rue main.rue -o helper.rue` exited 0 and replaced
+# helper.rue with the compiled ELF.
+name = "output_equal_to_imported_source_refused"
+files = [
+  { path = "main.rue", source = """
+const h = @import("helper.rue");
+fn main() -> i32 { h.value() }
+""" },
+  { path = "helper.rue", source = "pub fn value() -> i32 { 23 }\n" },
+]
+args = ["main.rue", "-o", "helper.rue"]
+compile_fail = true
+error_contains = ["also an input source file"]

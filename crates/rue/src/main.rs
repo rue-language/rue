@@ -364,6 +364,56 @@ fn clobber_key(path: &str) -> PathBuf {
     }
 }
 
+/// Would writing the output destroy the source file at `source`?
+///
+/// Two complementary checks (RUE-527):
+/// - resolved-path equality via [`clobber_key`], which collapses spellings
+///   and symlinks — and works when the output does not exist yet;
+/// - device+inode equality, which catches HARD links: `ln main.rue program`
+///   gives two distinct canonical names for one shared inode, so writing
+///   `program` destroys `main.rue`. Only checkable when the output exists;
+///   `output_meta` is its metadata (`None` when it doesn't exist).
+fn output_would_clobber(
+    output_key: &Path,
+    output_meta: Option<&fs::Metadata>,
+    source: &str,
+) -> bool {
+    if clobber_key(source) == *output_key {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if let (Some(out_meta), Ok(src_meta)) = (output_meta, fs::metadata(source)) {
+            return out_meta.dev() == src_meta.dev() && out_meta.ino() == src_meta.ino();
+        }
+    }
+    false
+}
+
+/// Refuse an output path that names (or hard-links) any source of the
+/// compilation. `sources` is whatever set is known at the call site: the
+/// positional paths at argument-parse time, and the full import-discovered
+/// set later — imports are appended after parsing, so the guard must run
+/// again once they are known (RUE-527).
+fn check_output_clobbers_source<'a>(
+    output_path: &str,
+    sources: impl IntoIterator<Item = &'a str>,
+) -> Result<(), ()> {
+    let output_key = clobber_key(output_path);
+    let output_meta = fs::metadata(output_path).ok();
+    for source in sources {
+        if output_would_clobber(&output_key, output_meta.as_ref(), source) {
+            eprintln!(
+                "Error: output path '{output_path}' is also an input source file; \
+                 refusing to overwrite it"
+            );
+            return Err(());
+        }
+    }
+    Ok(())
+}
+
 fn parse_jobs_value(jobs_str: &str) -> Option<usize> {
     let jobs = match jobs_str.parse::<usize>() {
         Ok(jobs) => jobs,
@@ -640,13 +690,12 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
         // a.rue`, `rue ./prog -o prog`, or an extensionless source `rue prog
         // -o prog`. The earlier guard keyed off a `.rue` suffix, so
         // extensionless sources slipped through and the compiled output
-        // silently overwrote the source (RUE-351).
-        let output_key = clobber_key(&final_output_path);
-        if source_paths.iter().any(|s| clobber_key(s) == output_key) {
-            eprintln!(
-                "Error: output path '{}' is also an input source file; refusing to overwrite it",
-                final_output_path
-            );
+        // silently overwrote the source (RUE-351). Hard links are caught by
+        // inode, and the guard re-runs after @import discovery for sources
+        // that are not known yet at parse time (RUE-527).
+        if check_output_clobbers_source(&final_output_path, source_paths.iter().map(|s| s.as_str()))
+            .is_err()
+        {
             return ParseResult::Error;
         }
     }
@@ -1495,6 +1544,21 @@ fn main() {
     }
     let sources = sources;
 
+    // Re-run the output-clobber guard now that @import discovery has appended
+    // the full source set: the parse-time guard only saw positional paths, so
+    // `rue main.rue -o helper.rue` (helper loaded via @import) silently
+    // replaced helper.rue with the executable (RUE-527). --emit never writes
+    // the output path, so it is exempt, matching the parse-time guard.
+    if options.emit_stages.is_empty()
+        && check_output_clobbers_source(
+            &options.output_path,
+            sources.iter().map(|(path, _)| path.as_str()),
+        )
+        .is_err()
+    {
+        std::process::exit(1);
+    }
+
     // Build SourceFile structs for multi-file compilation
     let source_files: Vec<SourceFile<'_>> = sources
         .iter()
@@ -2276,6 +2340,44 @@ mod tests {
         let opts = unwrap_options(parse_args_from(&["--emit", "ast", "x.rue", "-o", "x.rue"]));
         assert_eq!(opts.emit_stages, vec![EmitStage::Ast]);
         assert!(is_error(&parse_args_from(&["x.rue", "-o", "x.rue"])));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn clobber_guard_catches_hard_link_alias() {
+        // RUE-527: a hard link gives the output a DIFFERENT canonical path
+        // from the source while sharing its inode — `ln main.rue program;
+        // rue main.rue -o program` destroyed main.rue. The guard must compare
+        // device+inode, not just resolved paths.
+        let dir =
+            std::env::temp_dir().join(format!("rue-clobber-hardlink-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("main.rue");
+        let link = dir.join("program");
+        let _ = fs::remove_file(&link);
+        fs::write(&source, "fn main() -> i32 { 0 }\n").unwrap();
+        fs::hard_link(&source, &link).unwrap();
+
+        let source_str = source.to_str().unwrap();
+        let link_str = link.to_str().unwrap();
+        let output_key = clobber_key(link_str);
+        let output_meta = fs::metadata(link_str).ok();
+        assert!(output_would_clobber(
+            &output_key,
+            output_meta.as_ref(),
+            source_str
+        ));
+
+        // A distinct file in the same directory is NOT a clobber.
+        let other = dir.join("other.rue");
+        fs::write(&other, "fn main() -> i32 { 1 }\n").unwrap();
+        assert!(!output_would_clobber(
+            &output_key,
+            output_meta.as_ref(),
+            other.to_str().unwrap()
+        ));
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
