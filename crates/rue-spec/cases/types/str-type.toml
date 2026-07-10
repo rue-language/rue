@@ -246,6 +246,34 @@ fn main() -> i32 {
 """
 exit_code = 5
 
+# 3.7:58 — the same view semantics with a heap `StrBuf` source: the call-site
+# coercion narrows the 3-word `{ptr, len, cap}` buffer header to the 2-word
+# `{ptr, len}` view, so `.len()` reads the length (not the capacity) and byte
+# indexing reads the data (RUE-559: the raw header used to be passed through,
+# so `.len()` returned the capacity and indexing dereferenced the length).
+# The buffer is borrowed, not moved: it remains usable after the call.
+[[case]]
+name = "borrow_str_view_of_strbuf_reads_values"
+spec = ["3.7:58"]
+preview = "string_trio"
+preview_should_pass = true
+source = """
+fn view_len(borrow s: str) -> u64 {
+    s.len()
+}
+fn first_byte(borrow s: str) -> u8 {
+    s[0]
+}
+fn main() -> i32 {
+    let b = "xx" + "yy";                        // heap-backed StrBuf, len 4
+    let len_ok = view_len(borrow b) == 4;       // len, not cap
+    let byte_ok = first_byte(borrow b) == 120;  // 'x'
+    let still_usable = b.len() == 4;            // borrowed, not moved
+    if len_ok && byte_ok && still_usable { 42 } else { 0 }
+}
+"""
+exit_code = 42
+
 # 3.7:59 — a borrowed `str` view laundered into a first-class `str` (returned)
 # is rejected (E0497): the view is second-class and cannot escape the call.
 [[case]]

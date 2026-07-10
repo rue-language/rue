@@ -457,8 +457,13 @@ impl<'a> Sema<'a> {
         // copy of this function skipped this check entirely.)
         self.check_exclusive_access(&args, span)?;
 
-        // Analyze arguments (the per-pipeline recursion seam)
-        let air_args = self.analyze_call_args(air, &args, ctx)?;
+        // Analyze arguments (the per-pipeline recursion seam). Module-qualified
+        // calls use the coercing path so slice and `borrow str` parameters
+        // materialize their by-value fat-pointer views exactly like direct
+        // calls do (RUE-559) — std functions taking `borrow s: str` are called
+        // this way.
+        let air_args =
+            self.analyze_call_args_coerced(air, &args, &param_types, &param_modes, ctx)?;
 
         Ok(emit_module_member_call(
             air,
