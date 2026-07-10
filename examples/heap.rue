@@ -1,0 +1,86 @@
+// Binary min-heap over ArrayBuf — grid-track dogfood (RUE-586).
+//
+// Stresses a different cluster than the fixed-array programs: a struct that
+// owns a heap-backed ArrayBuf (RAII frees it at scope exit), `inout self`
+// methods that call other `inout self` methods (nested mutable self-borrows),
+// Option returns from pop, and `break`. Push a scramble and pop everything:
+// heapsort yields ascending order — a deterministic, checkable invariant.
+const std = @import("std");
+
+struct MinHeap {
+    data: std.arraybuf.ArrayBuf(i32),
+
+    fn len(borrow self) -> u64 { self.data.len() }
+
+    fn swap(inout self, a: u64, b: u64) {
+        let va = self.data.get_or(a, 0);
+        let vb = self.data.get_or(b, 0);
+        self.data.set(a, vb);
+        self.data.set(b, va);
+    }
+
+    fn push(inout self, x: i32) {
+        self.data.push(x);
+        let mut i = self.data.len() - 1;
+        while i > 0 {
+            let parent = (i - 1) / 2;
+            if self.data.get_or(i, 0) < self.data.get_or(parent, 0) {
+                self.swap(i, parent);
+                i = parent;
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn pop_min(inout self) -> std.option.Option(i32) {
+        let O = std.option.Option(i32);
+        let n = self.data.len();
+        if n == 0 {
+            return O.None;
+        }
+        let root = self.data.get_or(0, 0);
+        let last = self.data.get_or(n - 1, 0);
+        let _ = self.data.pop();
+        let m = self.data.len();
+        if m == 0 {
+            return O.Some(root);
+        }
+        // Move the old last element to the root and sift it down.
+        self.data.set(0, last);
+        let mut i: u64 = 0;
+        while true {
+            let l = 2 * i + 1;
+            let r = 2 * i + 2;
+            let mut smallest = i;
+            if l < m {
+                if self.data.get_or(l, 0) < self.data.get_or(smallest, 0) { smallest = l; }
+            }
+            if r < m {
+                if self.data.get_or(r, 0) < self.data.get_or(smallest, 0) { smallest = r; }
+            }
+            if smallest == i { break; }
+            self.swap(i, smallest);
+            i = smallest;
+        }
+        O.Some(root)
+    }
+}
+
+fn main() -> i32 {
+    let O = std.option.Option(i32);
+    let V = std.arraybuf.ArrayBuf(i32);
+    let mut h = MinHeap { data: V.new() };
+
+    h.push(5); h.push(3); h.push(8); h.push(1); h.push(9);
+    h.push(2); h.push(7); h.push(4); h.push(6);
+
+    // Pop everything — ascending 1..9.
+    let mut last = 0;
+    while h.len() > 0 {
+        let v = match h.pop_min() { O.Some(e) => e, O.None => -1 };
+        @dbg(v);
+        last = v;
+    }
+    last
+}

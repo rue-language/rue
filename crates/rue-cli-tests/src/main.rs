@@ -191,6 +191,14 @@ const EXAMPLE_EXPECTATIONS: &[ExampleExpectation] = &[
         stdout: "42\n20\n10\n100\n8\n17\n",
         stdin: None,
     },
+    // Binary min-heap over ArrayBuf (RUE-586 dogfood): heapsort pops a scramble
+    // in ascending order 1..9.
+    ExampleExpectation {
+        path: "heap.rue",
+        exit_code: 9,
+        stdout: "1\n2\n3\n4\n5\n6\n7\n8\n9\n",
+        stdin: None,
+    },
     ExampleExpectation {
         path: "hello.rue",
         exit_code: 42,
@@ -210,6 +218,15 @@ const EXAMPLE_EXPECTATIONS: &[ExampleExpectation] = &[
         path: "match.rue",
         exit_code: 5,
         stdout: "5\n",
+        stdin: None,
+    },
+    // Integer matrix library (RUE-586 dogfood): exercises a @copy struct with a
+    // const-sized 2D array field + methods (the RUE-587 pattern). a * identity
+    // == a, so trace(a*id) == 1+5+9 == 15; identity trace == 3.
+    ExampleExpectation {
+        path: "matrix.rue",
+        exit_code: 15,
+        stdout: "15\n3\n",
         stdin: None,
     },
     ExampleExpectation {
