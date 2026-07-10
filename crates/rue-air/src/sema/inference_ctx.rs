@@ -64,4 +64,9 @@ pub struct InferenceContext {
     pub module_binding_types: HashMap<(FileId, Spur), Type>,
     /// Module registry file identity for inference-time member type lookup.
     pub module_file_ids: HashMap<crate::types::ModuleId, FileId>,
+    /// Source-level function lookup: (defining file, source name) -> internal
+    /// function key. Same-named functions across files get module-qualified
+    /// internal keys, so a module-member call must resolve through this map
+    /// before consulting `func_sigs` — the bare source name misses (RUE-576).
+    pub functions_by_file_name: HashMap<(FileId, Spur), Spur>,
 }

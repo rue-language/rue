@@ -2723,3 +2723,134 @@ fn main() -> i32 {
 ]
 exit_code = 0
 stdout = "12\n1\n"
+
+[[case]]
+# RUE-576: an array literal of module-qualified call results decayed to
+# <error> during inference when the callee's SOURCE NAME is defined by more
+# than one file — such functions carry module-qualified internal keys, so
+# the module-member call arm's bare-name signature lookup missed and the
+# misfired fallback was E0903 "type annotation required for empty array"
+# (on a non-empty literal). Module calls now resolve (file, name) first.
+# The destructor output additionally pins per-file ARRAY drop glue
+# (RUE-571): each array's elements run their own file's destructor.
+name = "array_literal_of_module_calls_with_duplicate_fn_names"
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "da.rue", source = """
+pub struct R {
+    id: i32,
+}
+
+drop fn R(self) {
+    @dbg(1);
+}
+
+pub fn make(v: i32) -> R { R { id: v } }
+""" },
+  { path = "db.rue", source = """
+pub struct R {
+    id: i32,
+}
+
+drop fn R(self) {
+    @dbg(2);
+}
+
+pub fn make(v: i32) -> R { R { id: v } }
+""" },
+  { path = "main.rue", source = """
+const a = @import("da.rue");
+const b = @import("db.rue");
+
+fn main() -> i32 {
+    let _ra: [a.R; 2] = [a.make(1), a.make(2)];
+    let _rb: [b.R; 2] = [b.make(3), b.make(4)];
+    0
+}
+""" },
+]
+exit_code = 0
+stdout = "2\n2\n1\n1\n"
+
+[[case]]
+# RUE-570: a module's own code must resolve its same-named struct to ITS
+# definition. Struct literal, method body field access, and dispatch all
+# stay within the defining file; m1's P is x-shaped, m2's is y-shaped.
+# (Root cause was shared with RUE-571's symbol/lazy-pairing fix; this pins
+# the user-visible resolution behavior.)
+name = "same_named_struct_literals_resolve_own_module"
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "m1.rue", source = """
+pub struct P {
+    x: i32,
+
+    fn get(self) -> i32 { self.x }
+}
+
+pub fn mk() -> i32 {
+    let p = P { x: 5 };
+    p.get()
+}
+""" },
+  { path = "m2.rue", source = """
+pub struct P {
+    y: i32,
+
+    fn get(self) -> i32 { self.y * 2 }
+}
+
+pub fn mk() -> i32 {
+    let p: P = P { y: 10 };   // annotated form pins the annotation path too
+    p.get()
+}
+""" },
+  { path = "main.rue", source = """
+const m1 = @import("m1.rue");
+const m2 = @import("m2.rue");
+
+fn main() -> i32 {
+    m1.mk() + m2.mk()  // 5 + 20
+}
+""" },
+]
+exit_code = 25
+
+[[case]]
+# RUE-570, enum face: same-named enums with different variant sets construct
+# and match within their own modules.
+name = "same_named_enums_resolve_own_module"
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "e1.rue", source = """
+pub enum Col { Red(i32), Blue }
+
+pub fn mk() -> i32 {
+    let c = Col.Red(5);
+    match c {
+        Col.Red(v) => v,
+        Col.Blue => 0,
+    }
+}
+""" },
+  { path = "e2.rue", source = """
+pub enum Col { Green(i32), Red(i32) }
+
+pub fn mk() -> i32 {
+    let c = Col.Green(10);
+    match c {
+        Col.Green(v) => v * 2,
+        Col.Red(v) => v,
+    }
+}
+""" },
+  { path = "main.rue", source = """
+const e1 = @import("e1.rue");
+const e2 = @import("e2.rue");
+
+fn main() -> i32 {
+    e1.mk() + e2.mk()  // 5 + 20
+}
+""" },
+]
+exit_code = 25

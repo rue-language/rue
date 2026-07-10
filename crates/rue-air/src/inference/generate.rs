@@ -198,6 +198,13 @@ pub struct ConstraintGenerator<'a> {
     /// `None` only in unit tests; production passes the map via
     /// [`Self::with_module_binding_types`].
     module_binding_types: Option<&'a HashMap<(FileId, Spur), Type>>,
+    /// Source-level function lookup: (defining file, source name) -> internal
+    /// function key. Same-named functions across files get module-qualified
+    /// internal keys in `functions`, so module-member calls resolve through
+    /// this map first — the bare source name misses for them (RUE-576).
+    /// `None` only in unit tests; production passes the map via
+    /// [`Self::with_functions_by_file_name`].
+    functions_by_file_name: Option<&'a HashMap<(FileId, Spur), Spur>>,
     /// Module registry file identity for inference-time `module.Type` and
     /// `module.Enum` lookup.
     /// `None` only in unit tests; production passes the map via
@@ -290,6 +297,7 @@ impl<'a> ConstraintGenerator<'a> {
             const_types: None,
             const_type_aliases: None,
             module_binding_types: None,
+            functions_by_file_name: None,
             module_file_ids: None,
             comptime_local_types: None,
             extra_method_sigs: None,
@@ -352,6 +360,16 @@ impl<'a> ConstraintGenerator<'a> {
         structs_by_file_name: &'a HashMap<(FileId, Spur), Type>,
     ) -> Self {
         self.structs_by_file_name = Some(structs_by_file_name);
+        self
+    }
+
+    /// Provide the (defining file, source name) -> internal function key map
+    /// for module-member call resolution (RUE-576).
+    pub fn with_functions_by_file_name(
+        mut self,
+        functions_by_file_name: &'a HashMap<(FileId, Spur), Spur>,
+    ) -> Self {
+        self.functions_by_file_name = Some(functions_by_file_name);
         self
     }
 
@@ -2001,14 +2019,31 @@ impl<'a> ConstraintGenerator<'a> {
                 // treats FieldGet the same way).
                 let result_type = match &receiver_info.ty {
                     // Module receiver: `m.go(...)` is a module member call.
-                    // Mirror sema's `check_module_member_call`: the lookup is
-                    // global by name, never verifying the function belongs to
-                    // the receiver module's file (known looseness, RUE-140 —
-                    // when that is ratified, narrow this lookup too). Yielding
-                    // the callee's return type anchors uses like `m.go() + 1`
-                    // that previously decayed to `<error>` (RUE-142).
+                    // Resolve the member in the receiver module's file first
+                    // (RUE-576): same-named functions across files carry
+                    // module-qualified internal keys in `functions`, so the
+                    // bare source name misses for exactly those and the call
+                    // decayed to `<error>` — which surfaced as a bogus E0903
+                    // when the result seeded an array literal's element type.
+                    // The bare-name fallback keeps unique names (and unit
+                    // tests without the map) working. Yielding the callee's
+                    // return type anchors uses like `m.go() + 1` that
+                    // previously decayed to `<error>` (RUE-142).
                     InferType::Concrete(ty) if ty.is_module() => {
-                        if let Some(func) = self.functions.get(method) {
+                        let function_key = ty
+                            .as_module()
+                            .and_then(|module_id| {
+                                self.module_file_ids
+                                    .and_then(|ids| ids.get(&module_id))
+                                    .copied()
+                            })
+                            .and_then(|file_id| {
+                                self.functions_by_file_name
+                                    .and_then(|m| m.get(&(file_id, *method)))
+                                    .copied()
+                            })
+                            .unwrap_or(*method);
+                        if let Some(func) = self.functions.get(&function_key) {
                             if !func.is_generic && args.len() == func.param_types.len() {
                                 // Constrain each argument against its declared
                                 // parameter type (same as a direct Call).
