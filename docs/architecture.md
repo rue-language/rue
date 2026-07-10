@@ -29,8 +29,8 @@ can be repeated to request several views.
 - **`rue-lexer`** tokenizes source and records byte spans and interned names.
 - **`rue-parser`** constructs a syntax tree without resolving names or types.
 - **`rue-rir`** lowers syntax into a dense, index-addressed, untyped IR. Each
-  source file initially has its own RIR; the compiler merges program inputs
-  before semantic analysis.
+  source file is parsed to its own AST; the compiler merges those ASTs and then
+  generates a single RIR from the merged AST before semantic analysis.
 - **`rue-air`** performs declaration collection, name resolution, inference,
   type checking, ownership/exclusivity analysis, comptime evaluation, and
   production of typed AIR.
@@ -79,7 +79,7 @@ run the resulting executable.
 
 `rue-compiler` orchestrates compilation and exposes intermediate states used by
 the CLI and tests. The `rue` crate implements source discovery, module loading,
-parallel file processing, target and optimization selection, emit modes,
+file processing, target and optimization selection, emit modes,
 linking, timing, and diagnostic rendering.
 
 `rue-error` defines stable error categories, suggestions, warnings, preview

@@ -1,6 +1,11 @@
 //! Type system for Rue.
 //!
-//! Currently very minimal - just i32. Will be extended as the language grows.
+//! A [`Type`] is a compact `u32` newtype: an index into a `TypeInternPool`
+//! (ADR-0024), so type equality and lookup are cheap and free of
+//! self-referential lifetimes. The system covers the integer and boolean
+//! primitives, user structs and enums, references and raw pointers, and generic
+//! instantiations — well beyond the original i32-only prototype this comment
+//! once described.
 
 /// A unique identifier for a struct definition.
 ///

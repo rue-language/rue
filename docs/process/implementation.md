@@ -109,10 +109,11 @@ Run the full test suite:
 ./test.sh
 ```
 
-This runs:
-- Unit tests (`./buck2 test //...`)
-- Spec tests (`./buck2 run //crates/rue-spec:rue-spec`)
-- Traceability check
+This runs (via `buck2 test //...` plus the repository quality gates):
+- Unit tests for all crates
+- Spec tests and the spec-traceability gate
+- UI tests (diagnostics) and CLI integration tests
+- Tutorial snippet checks and ADR registry validation
 
 **For stable work**: All tests must pass.
 
@@ -154,12 +155,14 @@ When all phases are complete:
 2. Parser: Add parsing in `rue-parser`
 3. RIR: Add IR node in `rue-rir`
 4. AIR: Add typed node in `rue-air`
-5. Sema: Add type checking in `rue-air/src/sema.rs`
+5. Sema: Add type checking in the `rue-air/src/sema/` module
 6. Codegen: Add code generation in both backends
 
 ### Adding a New Type
 
-1. Add to `Type` enum in `rue-air/src/types.rs`
+1. Add its representation in `rue-air/src/types.rs` (`Type` is a `u32` interned
+   into `TypeInternPool`, not an enum); built-in types are synthetic structs
+   defined in `rue-builtins` (ADR-0020), not hardcoded variants
 2. Update type checking in sema
 3. Update code generation for the type's operations
 4. Add spec chapter and tests
