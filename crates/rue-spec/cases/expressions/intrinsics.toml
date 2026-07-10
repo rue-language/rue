@@ -615,7 +615,7 @@ fn main() -> i32 {
 }
 """
 compile_fail = true
-error_contains = "type annotation required"
+error_contains = "cannot infer the target type of '@intCast'"
 
 [[case]]
 name = "intcast_non_integer_argument"
