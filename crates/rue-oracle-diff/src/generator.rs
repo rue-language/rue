@@ -158,6 +158,98 @@ struct HelperSig {
     ret_ty: Ty,
 }
 
+macro_rules! define_generated_shapes {
+    ($($shape:ident),+ $(,)?) => {
+        /// A source shape whose presence is part of the generated smoke corpus's
+        /// coverage contract.
+        ///
+        /// Shapes are recorded only when their syntax is actually emitted. In
+        /// particular, a randomly selected snippet that cannot run because its
+        /// helper or top-level item was not generated does not count toward
+        /// coverage.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        #[repr(u8)]
+        pub enum GeneratedShape {
+            $($shape),+
+        }
+
+        impl GeneratedShape {
+            #[cfg(test)]
+            pub const ALL: [Self; Self::COUNT] = [$(Self::$shape),+];
+            const COUNT: usize = [$(define_generated_shapes!(@unit $shape)),+].len();
+        }
+    };
+    (@unit $shape:ident) => { () };
+}
+
+// Keep the enum, exhaustive iteration list, and backing-array width generated
+// from one declaration so a new required shape cannot silently escape the
+// smoke-window contract.
+define_generated_shapes!(
+    ScalarExpressionLet,
+    IntCast,
+    StructCallAndReturn,
+    NestedProjection,
+    ArrayIndex,
+    IntegerMatch,
+    PlainEnumMatch,
+    PayloadEnumMatch,
+    InoutCall,
+    RecursionCall,
+    Loop,
+    String,
+    StructEquality,
+    ArrayEquality,
+    EnumEquality,
+    BoolEquality,
+    ScalarHelperCall,
+    BoolAnd,
+    BoolOr,
+    BoolNot,
+    ExtraDbg,
+);
+
+/// Occurrence counts for the generated source shapes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShapeCounts {
+    counts: [u32; GeneratedShape::COUNT],
+}
+
+impl Default for ShapeCounts {
+    fn default() -> Self {
+        Self {
+            counts: [0; GeneratedShape::COUNT],
+        }
+    }
+}
+
+impl ShapeCounts {
+    /// Number of times `shape` was emitted into the generated program.
+    #[cfg(test)]
+    pub fn get(&self, shape: GeneratedShape) -> u32 {
+        self.counts[shape as usize]
+    }
+
+    /// Iterate over every known shape and its occurrence count.
+    #[cfg(test)]
+    pub fn iter(&self) -> impl Iterator<Item = (GeneratedShape, u32)> + '_ {
+        GeneratedShape::ALL
+            .into_iter()
+            .map(|shape| (shape, self.get(shape)))
+    }
+
+    fn record(&mut self, shape: GeneratedShape) {
+        self.counts[shape as usize] += 1;
+    }
+}
+
+/// Generated Rue source together with the shapes actually emitted into it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GeneratedProgram {
+    pub source: String,
+    pub shapes: ShapeCounts,
+}
+
 pub struct Program {
     rng: Rng,
     counter: usize,
@@ -172,10 +264,16 @@ pub struct Program {
     /// Whether `E0` carries Copy payloads on `V1`/`V2`.
     enum_payload: bool,
     top_level: Vec<String>,
+    shapes: ShapeCounts,
 }
 
 /// Generate a complete, well-typed Rue program from `seed`.
 pub fn generate(seed: u64) -> String {
+    generate_with_shapes(seed).source
+}
+
+/// Generate source and report the coverage shapes actually emitted for it.
+pub fn generate_with_shapes(seed: u64) -> GeneratedProgram {
     let mut p = Program {
         rng: Rng::new(seed),
         counter: 0,
@@ -186,8 +284,13 @@ pub fn generate(seed: u64) -> String {
         enums: 0,
         enum_payload: false,
         top_level: Vec::new(),
+        shapes: ShapeCounts::default(),
     };
-    p.build()
+    let source = p.build();
+    GeneratedProgram {
+        source,
+        shapes: p.shapes,
+    }
 }
 
 impl Program {
@@ -285,10 +388,16 @@ impl Program {
                 let op = *self.rng.pick(&["&&", "||"]);
                 let l = self.expr(Ty::Bool, scope, depth - 1);
                 let r = self.expr(Ty::Bool, scope, depth - 1);
+                self.shapes.record(if op == "&&" {
+                    GeneratedShape::BoolAnd
+                } else {
+                    GeneratedShape::BoolOr
+                });
                 format!("({l} {op} {r})")
             }
             3 => {
                 let inner = self.bool_expr(scope, depth - 1);
+                self.shapes.record(GeneratedShape::BoolNot);
                 format!("(!{inner})")
             }
             _ => self.leaf(Ty::Bool, scope),
@@ -347,6 +456,7 @@ impl Program {
                 if let Some((name, pty)) = matches.first().cloned() {
                     let a = self.expr(pty, scope, depth - 1);
                     let b = self.expr(pty, scope, depth - 1);
+                    self.shapes.record(GeneratedShape::ScalarHelperCall);
                     format!("{name}({a}, {b})")
                 } else {
                     self.leaf(ty, scope)
@@ -539,6 +649,7 @@ impl Program {
         let e = self.expr(ty, scope, 3);
         body.push(format!("    let {name}: {t} = {e};", t = ty.name()));
         scope.push(name, ty);
+        self.shapes.record(GeneratedShape::ScalarExpressionLet);
     }
 
     /// `let vN: T = @intCast(<src var>);` — exercises the range-checked cast.
@@ -562,16 +673,18 @@ impl Program {
             s = src.name
         ));
         scope.push(name, dst);
+        self.shapes.record(GeneratedShape::IntCast);
     }
 
-    fn snippet_dbg(&mut self, body: &mut Vec<String>, scope: &Scope) {
+    fn snippet_dbg(&mut self, body: &mut Vec<String>, scope: &Scope) -> bool {
         // @dbg only supports int/bool (and String, handled separately).
         if scope.vars.is_empty() {
-            return;
+            return false;
         }
         let names: Vec<String> = scope.vars.iter().map(|v| v.name.clone()).collect();
         let name = self.rng.pick(&names).clone();
         body.push(format!("    @dbg({name});"));
+        true
     }
 
     fn snippet_struct(&mut self, body: &mut Vec<String>, scope: &mut Scope) {
@@ -582,12 +695,14 @@ impl Program {
         let name = self.structs[i].name.clone();
         let pname = self.fresh("p");
         // Bind a value: either freshly constructed or returned by `make` (ABI).
-        if self.rng.chance(1, 2) {
+        let called_make = if self.rng.chance(1, 2) {
             let ctor = self.struct_ctor_src(i);
             body.push(format!("    let {pname}: {name} = {ctor};"));
+            false
         } else {
             body.push(format!("    let {pname} = make{name}();"));
-        }
+            true
+        };
         // Read scalar fields into typed vars (scalar copies; struct still owned).
         let fields: Vec<(String, Ty)> = self.structs[i].scalar_fields.clone();
         for (fname, fty) in &fields {
@@ -605,6 +720,7 @@ impl Program {
             let vn = self.fresh("v");
             body.push(format!("    let {vn}: i32 = {pname}.{fname}.f0;"));
             scope.push(vn, Ty::I32);
+            self.shapes.record(GeneratedShape::NestedProjection);
         }
         // borrow (does not move) — always safe on the bound value.
         let vb = self.fresh("v");
@@ -616,6 +732,9 @@ impl Program {
         let ctor = self.struct_ctor_src(i);
         body.push(format!("    let {vp}: i32 = pass{name}({ctor});"));
         scope.push(vp, Ty::I32);
+        if called_make {
+            self.shapes.record(GeneratedShape::StructCallAndReturn);
+        }
     }
 
     fn snippet_array(&mut self, body: &mut Vec<String>, scope: &mut Scope) {
@@ -636,6 +755,7 @@ impl Program {
         let vn = self.fresh("v");
         body.push(format!("    let {vn}: i32 = {aname}[{iname}];"));
         scope.push(vn, Ty::I32);
+        self.shapes.record(GeneratedShape::ArrayIndex);
     }
 
     fn snippet_match_int(&mut self, body: &mut Vec<String>, scope: &mut Scope) {
@@ -647,6 +767,7 @@ impl Program {
             "    let {vn}: i32 = match ({scr} & 1) {{ 0 => {a}, _ => {b} }};"
         ));
         scope.push(vn, Ty::I32);
+        self.shapes.record(GeneratedShape::IntegerMatch);
     }
 
     fn snippet_match_enum(&mut self, body: &mut Vec<String>, scope: &mut Scope) {
@@ -664,10 +785,12 @@ impl Program {
             body.push(format!(
                 "    let {vn}: i32 = match {ename} {{ E0.V0 => {a}, E0.V1(x) => (x + {b}), E0.V2(flag) => if flag {{ {c} }} else {{ {a} }} }};"
             ));
+            self.shapes.record(GeneratedShape::PayloadEnumMatch);
         } else {
             body.push(format!(
                 "    let {vn}: i32 = match {ename} {{ E0.V0 => {a}, E0.V1 => {b}, E0.V2 => {c} }};"
             ));
+            self.shapes.record(GeneratedShape::PlainEnumMatch);
         }
         scope.push(vn, Ty::I32);
     }
@@ -687,6 +810,7 @@ impl Program {
                 let cmp = *self.rng.pick(&["==", "!="]);
                 body.push(format!("    let {vn}: bool = ({left} {cmp} {right});"));
                 scope.push(vn, Ty::Bool);
+                self.shapes.record(GeneratedShape::StructEquality);
             }
             1 => {
                 let left = self.fresh("a");
@@ -699,6 +823,7 @@ impl Program {
                 let cmp = *self.rng.pick(&["==", "!="]);
                 body.push(format!("    let {vn}: bool = ({left} {cmp} {right});"));
                 scope.push(vn, Ty::Bool);
+                self.shapes.record(GeneratedShape::ArrayEquality);
             }
             2 if self.enums != 0 => {
                 let left = self.fresh("e");
@@ -711,6 +836,7 @@ impl Program {
                 let cmp = *self.rng.pick(&["==", "!="]);
                 body.push(format!("    let {vn}: bool = ({left} {cmp} {right});"));
                 scope.push(vn, Ty::Bool);
+                self.shapes.record(GeneratedShape::EnumEquality);
             }
             _ => {
                 let l = self.expr(Ty::Bool, scope, 2);
@@ -719,6 +845,7 @@ impl Program {
                 let cmp = *self.rng.pick(&["==", "!="]);
                 body.push(format!("    let {vn}: bool = ({l} {cmp} {r});"));
                 scope.push(vn, Ty::Bool);
+                self.shapes.record(GeneratedShape::BoolEquality);
             }
         }
     }
@@ -732,6 +859,7 @@ impl Program {
         body.push(format!("    let mut {mname}: i32 = {lit};"));
         body.push(format!("    bump0(inout {mname});"));
         scope.push(mname, Ty::I32);
+        self.shapes.record(GeneratedShape::InoutCall);
     }
 
     fn snippet_recursion(&mut self, body: &mut Vec<String>, scope: &mut Scope) {
@@ -742,6 +870,7 @@ impl Program {
         let vn = self.fresh("v");
         body.push(format!("    let {vn}: i32 = rec0({n}, 0);"));
         scope.push(vn, Ty::I32);
+        self.shapes.record(GeneratedShape::RecursionCall);
     }
 
     fn snippet_loop(&mut self, body: &mut Vec<String>, scope: &mut Scope) {
@@ -755,6 +884,7 @@ impl Program {
             "    loop {{ if {ctr} >= {bound} {{ break; }} {acc} = {acc} + {ctr}; {ctr} = {ctr} + 1; }}"
         ));
         scope.push(acc, Ty::I32);
+        self.shapes.record(GeneratedShape::Loop);
     }
 
     fn snippet_string(&mut self, body: &mut Vec<String>, scope: &mut Scope) {
@@ -770,6 +900,7 @@ impl Program {
         scope.push(ln, Ty::U64);
         // @dbg last (String may be consumed by dbg in codegen; keep it terminal).
         body.push(format!("    @dbg({sname});"));
+        self.shapes.record(GeneratedShape::String);
     }
 
     fn build(&mut self) -> String {
@@ -797,7 +928,11 @@ impl Program {
                 8 => self.snippet_loop(&mut body, &mut scope),
                 9 => self.snippet_string(&mut body, &mut scope),
                 10 => self.snippet_equality(&mut body, &mut scope),
-                _ => self.snippet_dbg(&mut body, &scope),
+                _ => {
+                    if self.snippet_dbg(&mut body, &scope) {
+                        self.shapes.record(GeneratedShape::ExtraDbg);
+                    }
+                }
             }
         }
 
@@ -828,11 +963,13 @@ mod tests {
     #[test]
     fn deterministic_from_seed() {
         for seed in 0..50u64 {
+            let generated = generate_with_shapes(seed);
             assert_eq!(
-                generate(seed),
-                generate(seed),
+                generated,
+                generate_with_shapes(seed),
                 "seed {seed} not deterministic"
             );
+            assert_eq!(generate(seed), generated.source);
         }
     }
 
@@ -842,6 +979,27 @@ mod tests {
             let src = generate(seed);
             assert!(src.contains("fn main() -> i32 {"), "seed {seed}: {src}");
         }
+    }
+
+    #[test]
+    fn smoke_window_covers_every_required_shape() {
+        let mut totals = ShapeCounts::default();
+
+        for seed in 0..64u64 {
+            let generated = generate_with_shapes(seed);
+            for (shape, count) in generated.shapes.iter() {
+                totals.counts[shape as usize] += count;
+            }
+        }
+
+        let missing: Vec<GeneratedShape> = totals
+            .iter()
+            .filter_map(|(shape, count)| (count == 0).then_some(shape))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "generated smoke seeds 0..64 did not emit required shapes: {missing:?}"
+        );
     }
 
     /// The generator is part of the compiler's correctness boundary: it
