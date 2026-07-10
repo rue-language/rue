@@ -239,6 +239,17 @@ const EXAMPLE_EXPECTATIONS: &[ExampleExpectation] = &[
         stdout: "25\n50\n30\ntrue\n",
         stdin: None,
     },
+    // The onboarding smoke test. README, CONTRIBUTING, and the tutorial's
+    // installation page point new users at `scripts/rue exec examples/welcome.rue`
+    // to verify their setup, so it MUST print recognizable output and exit 0 —
+    // otherwise `set -e`, `&&` chains, and CI steps read a successful run as a
+    // failure (RUE-517). Guarded further by test_welcome_example_is_zero_exit.
+    ExampleExpectation {
+        path: "welcome.rue",
+        exit_code: 0,
+        stdout: "1\n2\n3\n42\n",
+        stdin: None,
+    },
 ];
 
 #[derive(Debug, Deserialize)]
@@ -1155,6 +1166,29 @@ mod tests {
         permissions.set_mode(0o755);
         std::fs::set_permissions(&binary, permissions).expect("make fake compiler executable");
         (directory, binary)
+    }
+
+    #[test]
+    fn test_welcome_example_is_zero_exit() {
+        // RUE-517: the onboarding docs (README, CONTRIBUTING, and the tutorial's
+        // installation page) use `scripts/rue exec examples/welcome.rue` as the
+        // "did my setup work?" health check. Because `exec` propagates the
+        // program's exit code, welcome MUST exit 0 and print recognizable output
+        // — otherwise a successful setup looks like a failure under `set -e`,
+        // `&&` chains, or CI. Pin the invariant so the canonical onboarding
+        // example can't silently regress to a nonzero exit.
+        let welcome = EXAMPLE_EXPECTATIONS
+            .iter()
+            .find(|e| e.path == "welcome.rue")
+            .expect("welcome.rue must be a pinned example expectation");
+        assert_eq!(
+            welcome.exit_code, 0,
+            "the onboarding example must exit 0 (RUE-517)"
+        );
+        assert!(
+            !welcome.stdout.is_empty(),
+            "the onboarding example must print recognizable output (RUE-517)"
+        );
     }
 
     #[test]

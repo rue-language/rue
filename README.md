@@ -45,9 +45,14 @@ bootstrapped hermetically by the repository.
 
 ```bash
 scripts/rue build
-scripts/rue exec examples/fibonacci.rue
+scripts/rue exec examples/welcome.rue   # prints 1, 2, 3, 42 and exits 0
 scripts/rue test
 ```
+
+`examples/welcome.rue` is the setup health check: it prints recognizable output
+and exits 0, so a successful run is not mistaken for a failure under `set -e` or
+CI. (Programs like `examples/fibonacci.rue` return a value from `main`, which
+becomes the process exit code — informative, but a nonzero status.)
 
 Use `scripts/rue-bin` when you need the compiler path, or run the real CLI
 through the wrapper:
@@ -55,8 +60,8 @@ through the wrapper:
 ```bash
 RUE="$(scripts/rue-bin)"
 "$RUE" --help
-"$RUE" examples/fibonacci.rue -o fibonacci
-./fibonacci
+"$RUE" examples/welcome.rue -o welcome
+./welcome
 ```
 
 Supported targets are `x86-64-linux`, `aarch64-linux`, and `aarch64-macos`.

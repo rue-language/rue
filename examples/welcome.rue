@@ -1,0 +1,19 @@
+// welcome.rue — the canonical "did my setup work?" smoke test.
+//
+// Rue has no string printing yet (@dbg prints integers and booleans), so this
+// greets you with a small, recognizable sequence — 1, 2, 3, then 42 — and,
+// crucially, returns 0. Because `scripts/rue exec` propagates the program's
+// exit code, a health-check program must exit 0 so `set -e`, `&&` chains, CI
+// steps, and automated agents see success rather than a phantom failure
+// (RUE-517).
+//
+// Contrast hello.rue, which deliberately RETURNS 42 to show how `main`'s value
+// becomes the process exit code — great for teaching, poor as a setup probe.
+
+fn main() -> i32 {
+    @dbg(1);
+    @dbg(2);
+    @dbg(3);
+    @dbg(42);
+    0
+}
