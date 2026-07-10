@@ -1,0 +1,179 @@
+#!/usr/bin/env bash
+# test-wrapper-scripts.sh — regressions for the developer wrapper scripts.
+#
+# Two failure modes found during the autonomous bug hunt:
+#
+#   * RUE-550: Buck stderr was discarded inside `set -euo pipefail` assignments
+#     (`X="$(./buck2 ... 2>/dev/null | awk ...)"`). A build/toolchain failure
+#     therefore exited the resolver scripts (rue-bin, fmt.sh) AT THE ASSIGNMENT,
+#     before any diagnostic fallback could run — zero bytes on stdout AND
+#     stderr. Every higher-level wrapper obtains the compiler through
+#     `$(scripts/rue-bin)`, so the failure was invisible everywhere.
+#
+#   * RUE-549: `scripts/rue run|exec` cd'd to the repo root before forwarding
+#     relative <source.rue> / `-o` paths to the compiler, so they resolved from
+#     the wrong directory even though the script advertises "run from anywhere".
+#
+# Each test runs a COPY of the real script in a throwaway sandbox with a fake
+# `./buck2` (and, for scripts/rue, a fake scripts/rue-bin + fake compiler), so
+# no real build runs. The fakes log their cwd/argv; we assert on exit status,
+# surfaced stderr, and the directory the compiler was invoked from.
+set -uo pipefail
+
+# Root holding the real scripts. Under buck2 sh_test this is the materialized
+# `:wrapper-script-inputs` filegroup (RUE_WRAPPER_ROOT); run directly from a
+# checkout it defaults to the repo root (this script lives in scripts/).
+if [ -n "${RUE_WRAPPER_ROOT:-}" ]; then
+  SRC_ROOT="$RUE_WRAPPER_ROOT"
+else
+  SRC_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+fi
+FAILURES=0
+TESTS=0
+
+fail() { printf 'FAIL: %s\n' "$1" >&2; FAILURES=$((FAILURES + 1)); }
+pass() { printf 'ok: %s\n' "$1"; }
+# check <description> <0-if-ok|1-if-failed>
+check() { TESTS=$((TESTS + 1)); if [ "$2" -eq 0 ]; then pass "$1"; else fail "$1"; fi; }
+
+# ===========================================================================
+# RUE-550 — resolver scripts must surface Buck failures, not swallow them
+# ===========================================================================
+
+# A failing `./buck2` must make rue-bin exit non-zero AND print Buck's stderr.
+test_ruebin_build_failure_is_loud() {
+  local sb; sb="$(mktemp -d)"
+  mkdir -p "$sb/scripts"
+  cp "$SRC_ROOT/scripts/rue-bin" "$sb/scripts/rue-bin"; chmod +x "$sb/scripts/rue-bin"
+  cat >"$sb/buck2" <<'EOF'
+#!/usr/bin/env bash
+echo "BUCK-DIAGNOSTIC: unknown target platform" >&2
+exit 3
+EOF
+  chmod +x "$sb/buck2"
+
+  local rc out
+  out="$( "$sb/scripts/rue-bin" 2>&1 )"; rc=$?
+  check "rue-bin: buck failure exits non-zero" "$([ "$rc" -ne 0 ] && echo 0 || echo 1)"
+  check "rue-bin: buck stderr is surfaced" \
+    "$(printf '%s' "$out" | grep -q 'BUCK-DIAGNOSTIC' && echo 0 || echo 1)"
+  rm -rf "$sb"
+}
+
+# A successful build still prints ONLY the absolute binary path on stdout.
+test_ruebin_success_prints_clean_path() {
+  local sb; sb="$(mktemp -d)"
+  mkdir -p "$sb/scripts" "$sb/fakebin"
+  cp "$SRC_ROOT/scripts/rue-bin" "$sb/scripts/rue-bin"; chmod +x "$sb/scripts/rue-bin"
+  printf '#!/bin/sh\ntrue\n' >"$sb/fakebin/compiler"; chmod +x "$sb/fakebin/compiler"
+  # --show-output line: "<target> <repo-root-relative-path>"; plus build chatter
+  # on stderr that must NOT leak into the captured stdout on success.
+  cat >"$sb/buck2" <<'EOF'
+#!/usr/bin/env bash
+echo "build chatter that must stay on stderr" >&2
+echo "root//crates/rue:rue fakebin/compiler"
+EOF
+  chmod +x "$sb/buck2"
+
+  local rc out
+  out="$( "$sb/scripts/rue-bin" 2>/dev/null )"; rc=$?
+  check "rue-bin: success exits zero" "$([ "$rc" -eq 0 ] && echo 0 || echo 1)"
+  check "rue-bin: prints the absolute binary path only" \
+    "$([ "$out" = "$sb/fakebin/compiler" ] && echo 0 || echo 1)"
+  rm -rf "$sb"
+}
+
+# fmt.sh resolves rustfmt the same way; a failing `./buck2` must be loud too.
+test_fmt_build_failure_is_loud() {
+  local sb; sb="$(mktemp -d)"
+  cp "$SRC_ROOT/fmt.sh" "$sb/fmt.sh"; chmod +x "$sb/fmt.sh"
+  cat >"$sb/buck2" <<'EOF'
+#!/usr/bin/env bash
+echo "BUCK-DIAGNOSTIC: rustfmt toolchain unavailable" >&2
+exit 3
+EOF
+  chmod +x "$sb/buck2"
+
+  local rc out
+  out="$( bash "$sb/fmt.sh" 2>&1 )"; rc=$?
+  check "fmt.sh: buck failure exits non-zero" "$([ "$rc" -ne 0 ] && echo 0 || echo 1)"
+  check "fmt.sh: buck stderr is surfaced" \
+    "$(printf '%s' "$out" | grep -q 'BUCK-DIAGNOSTIC' && echo 0 || echo 1)"
+  rm -rf "$sb"
+}
+
+# ===========================================================================
+# RUE-549 — scripts/rue run|exec resolve relative paths from the caller's cwd
+# ===========================================================================
+
+# Build a scripts/rue sandbox: a copy of the real script, a fake scripts/rue-bin
+# that prints $FAKE_COMPILER, and a fake compiler that logs the cwd it ran in
+# and fabricates its output binary (last argv) so `exec` can run it. Echoes the
+# sandbox path.
+make_rue_sandbox() {
+  local sb; sb="$(mktemp -d)"
+  mkdir -p "$sb/scripts" "$sb/work" "$sb/std"
+  cp "$SRC_ROOT/scripts/rue" "$sb/scripts/rue"; chmod +x "$sb/scripts/rue"
+  cat >"$sb/scripts/rue-bin" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$FAKE_COMPILER"
+EOF
+  chmod +x "$sb/scripts/rue-bin"
+  cat >"$sb/compiler" <<'EOF'
+#!/usr/bin/env bash
+printf 'cwd=%s\n' "$PWD" >>"$COMPILE_LOG"
+printf 'args=%s\n' "$*" >>"$COMPILE_LOG"
+# Fabricate the output binary (the last argument) so a following exec can run it.
+out="${!#}"
+printf '#!/bin/sh\nexit 0\n' >"$out" 2>/dev/null || true
+chmod +x "$out" 2>/dev/null || true
+EOF
+  chmod +x "$sb/compiler"
+  echo 'fn main() -> i32 { 0 }' >"$sb/work/hello.rue"
+  printf '%s\n' "$sb"
+}
+
+# `exec hello.rue` from a nested dir must invoke the compiler FROM that nested
+# dir, so the relative source resolves there.
+test_rue_exec_resolves_from_caller_cwd() {
+  local sb; sb="$(make_rue_sandbox)"
+  ( cd "$sb/work" && FAKE_COMPILER="$sb/compiler" COMPILE_LOG="$sb/compile.log" \
+      "$sb/scripts/rue" exec hello.rue ) >/dev/null 2>&1
+  local cwd_line
+  cwd_line="$(grep '^cwd=' "$sb/compile.log" 2>/dev/null | head -1)"
+  check "scripts/rue exec: compiler runs in the caller's cwd" \
+    "$([ "$cwd_line" = "cwd=$sb/work" ] && echo 0 || echo 1)"
+  rm -rf "$sb"
+}
+
+# `run hello.rue -o out` from a nested dir must write the relative `-o` target
+# into that nested dir (the caller's cwd), not the repo root.
+test_rue_run_resolves_relative_output() {
+  local sb; sb="$(make_rue_sandbox)"
+  ( cd "$sb/work" && FAKE_COMPILER="$sb/compiler" COMPILE_LOG="$sb/compile.log" \
+      "$sb/scripts/rue" run hello.rue -o out ) >/dev/null 2>&1
+  local cwd_line
+  cwd_line="$(grep '^cwd=' "$sb/compile.log" 2>/dev/null | head -1)"
+  check "scripts/rue run: compiler runs in the caller's cwd" \
+    "$([ "$cwd_line" = "cwd=$sb/work" ] && echo 0 || echo 1)"
+  check "scripts/rue run: relative -o is written in the caller's cwd" \
+    "$([ -f "$sb/work/out" ] && echo 0 || echo 1)"
+  rm -rf "$sb"
+}
+
+# --- run everything ---------------------------------------------------------
+
+test_ruebin_build_failure_is_loud
+test_ruebin_success_prints_clean_path
+test_fmt_build_failure_is_loud
+test_rue_exec_resolves_from_caller_cwd
+test_rue_run_resolves_relative_output
+
+echo "--------------------------------------------------"
+if [ "$FAILURES" -eq 0 ]; then
+  echo "wrapper-script tests: all $TESTS checks passed"
+  exit 0
+else
+  echo "wrapper-script tests: $FAILURES of $TESTS checks FAILED"
+  exit 1
+fi

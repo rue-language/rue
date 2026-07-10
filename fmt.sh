@@ -19,11 +19,24 @@ MODE="${1:-format}"
 # `xargs ./buck2 run toolchains//rust:rustfmt` form paid a buck2 CLI
 # round-trip per xargs chunk; one `--show-output` resolve avoids that.
 # --show-output prints a repo-root-relative path, so make it absolute.
-RUSTFMT="$(./buck2 build toolchains//rust:rustfmt --show-output 2>/dev/null \
-    | awk '/rust:rustfmt /{print $2}' | tail -1)"
+# Capture Buck's stdout and stderr separately and guard the status: a bare
+# `RUSTFMT="$(./buck2 ... 2>/dev/null | awk ...)"` under `set -euo pipefail`
+# exits at the assignment on build failure, making the "re-running for
+# diagnosis" fallback unreachable and losing all diagnostics (RUE-550).
+fmt_err="$(mktemp)"
+trap 'rm -f "$fmt_err"' EXIT
+fmt_status=0
+rustfmt_show="$(./buck2 build toolchains//rust:rustfmt --show-output 2>"$fmt_err")" \
+    || fmt_status=$?
+if [ "$fmt_status" -ne 0 ]; then
+    echo "fmt.sh: 'buck2 build toolchains//rust:rustfmt' failed (exit $fmt_status):" >&2
+    cat "$fmt_err" >&2
+    exit "$fmt_status"
+fi
+RUSTFMT="$(printf '%s\n' "$rustfmt_show" | awk '/rust:rustfmt /{print $2}' | tail -1)"
 if [ -z "$RUSTFMT" ]; then
-    echo "fmt.sh: failed to resolve rustfmt via buck2 --show-output; re-running for diagnosis..." >&2
-    ./buck2 build toolchains//rust:rustfmt --show-output >&2
+    echo "fmt.sh: build succeeded but --show-output did not name rustfmt:" >&2
+    cat "$fmt_err" >&2
     exit 1
 fi
 RUSTFMT="$(pwd)/$RUSTFMT"

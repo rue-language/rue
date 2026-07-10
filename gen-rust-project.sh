@@ -12,7 +12,19 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 echo "Querying Buck2 for Rust targets..."
-./buck2 targets //crates/... --json 2>/dev/null > /tmp/buck_targets.json
+# Guard the query status and preserve its stderr on failure: the old
+# `2>/dev/null` left a Buck error silent, then Python failed downstream on an
+# empty/partial JSON file with an unrelated traceback (RUE-550).
+gen_err="$(mktemp)"
+trap 'rm -f "$gen_err"' EXIT
+gen_status=0
+./buck2 targets //crates/... --json 2>"$gen_err" > /tmp/buck_targets.json \
+    || gen_status=$?
+if [ "$gen_status" -ne 0 ]; then
+    echo "gen-rust-project.sh: 'buck2 targets //crates/...' failed (exit $gen_status):" >&2
+    cat "$gen_err" >&2
+    exit "$gen_status"
+fi
 
 echo "Generating rust-project.json..."
 python3 << 'EOF'

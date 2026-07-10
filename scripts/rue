@@ -18,6 +18,12 @@
 #
 set -euo pipefail
 
+# Remember the caller's working directory BEFORE we cd to the repo root, so that
+# subcommands forwarding relative source/output paths to the compiler (run,
+# exec) can resolve them against where the user actually stands — matching a
+# direct compiler invocation (RUE-549). Buck targets are still built from the
+# root; only the final compiler/program invocation runs from the caller's cwd.
+caller_pwd="$PWD"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
@@ -34,8 +40,10 @@ case "$cmd" in
         ;;
     run)
         # Compile via the real driver (so module resolution, -o, etc. behave
-        # exactly as a user would see).
+        # exactly as a user would see). Build from the root, then invoke from the
+        # caller's cwd so relative source and `-o` paths resolve there (RUE-549).
         bin="$(scripts/rue-bin)"
+        cd "$caller_pwd"
         RUE_STD_PATH="${RUE_STD_PATH:-$repo_root/std}" "$bin" "$@"
         ;;
     exec)
@@ -52,6 +60,11 @@ case "$cmd" in
         # skips a trailing `rm`, leaking the temp file (RUE-212). The trap
         # fires regardless of exit code, so cleanup always happens.
         trap 'rm -f "$out"' EXIT
+        # Invoke from the caller's cwd so a relative <source.rue> resolves there,
+        # exactly as a direct compiler call would (RUE-549). `out` is an absolute
+        # mktemp path and RUE_STD_PATH defaults to an absolute path, so both stay
+        # valid after the cd.
+        cd "$caller_pwd"
         RUE_STD_PATH="${RUE_STD_PATH:-$repo_root/std}" "$bin" "$src" "$out"
         # Run the program, capturing its exit code without letting `set -e`
         # abort first (`|| rc=$?`), then propagate it as our own exit code.
