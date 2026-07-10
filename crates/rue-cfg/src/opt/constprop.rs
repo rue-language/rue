@@ -53,6 +53,18 @@ enum ConstPayload {
 pub fn run(cfg: &mut Cfg) -> bool {
     let mut slots = vec![SlotState::NoWrite; cfg.num_locals() as usize];
 
+    // Slots whose address escapes through an address-taking intrinsic
+    // (`@raw`/`@raw_mut`/`@field_ptr`, recorded by CfgBuilder) must keep
+    // their Loads as places: codegen lowers those intrinsics by taking the
+    // operand's address, so rewriting the Load into a Const would make the
+    // constant be dereferenced as an address (RUE-521 O1+ segfault). Same
+    // reasoning as the by-ref call-argument disqualification below.
+    for (slot, state) in slots.iter_mut().enumerate() {
+        if cfg.is_address_taken(slot as u32) {
+            *state = SlotState::Disqualified;
+        }
+    }
+
     // Zero-sized locals (`[T; 0]`, `()`, empty structs) occupy 0 slots, so a
     // zero-sized local at the end of the frame is assigned a slot index equal
     // to `num_locals` — out of range for `slots`. Its Alloc/Load move no
@@ -230,6 +242,41 @@ mod tests {
         );
         let load = push(&mut cfg, CfgInstData::Load { slot: 0 }, Type::I32);
         cfg.set_terminator(cfg.entry, Terminator::Return { value: Some(load) });
+
+        assert!(!run(&mut cfg));
+        assert!(matches!(
+            cfg.get_inst(load).data,
+            CfgInstData::Load { slot: 0 }
+        ));
+    }
+
+    #[test]
+    fn test_address_taken_slot_not_propagated() {
+        // let x = 42; @raw(x) — CfgBuilder marks x's slot address-taken, so
+        // its Load must survive as a place even though the slot has exactly
+        // one constant write. Rewriting it to Const(42) makes codegen
+        // dereference 42 as an address (RUE-521 O1+ segfault).
+        let mut cfg = make_cfg(1);
+        let c = push(&mut cfg, CfgInstData::Const(42), Type::I32);
+        push(
+            &mut cfg,
+            CfgInstData::Alloc { slot: 0, init: c },
+            Type::UNIT,
+        );
+        let load = push(&mut cfg, CfgInstData::Load { slot: 0 }, Type::I32);
+        let (args_start, args_len) = cfg.push_extra(vec![load]);
+        let raw_sym = Spur::try_from_usize(0).unwrap();
+        let ptr = push(
+            &mut cfg,
+            CfgInstData::Intrinsic {
+                name: raw_sym,
+                args_start,
+                args_len,
+            },
+            Type::I32,
+        );
+        cfg.mark_address_taken(0);
+        cfg.set_terminator(cfg.entry, Terminator::Return { value: Some(ptr) });
 
         assert!(!run(&mut cfg));
         assert!(matches!(

@@ -173,3 +173,36 @@ stdout = """0
 0
 """
 exit_code = 0
+
+# Address-taking intrinsics keep their place operands (RUE-521): constprop
+# rewrote the `Load` feeding `@raw` into its constant value, so codegen
+# dereferenced the integer 42 as an address — a segfault at -O1+ while -O0 was
+# correct. Covers all three address-taking intrinsics (@raw, @raw_mut,
+# @field_ptr) with pointer round-trips pinned at every level.
+[[case]]
+name = "raw_pointer_place_operands_across_opt_levels"
+differential_opt = true
+files = [{ path = "main.rue", source = """
+struct P { a: i32, b: i32 }
+
+fn main() -> i32 {
+    let x: i32 = 42;
+    let mut y: i32 = 7;
+    let s = P { a: 30, b: 12 };
+    checked {
+        let p: ptr const i32 = @raw(x);
+        let v: i32 = @ptr_read(p);
+        @dbg(v);
+        let q: ptr mut i32 = @raw_mut(y);
+        @ptr_write(q, 35);
+        let f: ptr const i32 = @field_ptr(s.a);
+        let w: i32 = @ptr_read(f);
+        @dbg(w);
+    };
+    y
+}
+""" }]
+stdout = """42
+30
+"""
+exit_code = 35
