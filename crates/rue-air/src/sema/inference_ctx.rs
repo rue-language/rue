@@ -43,21 +43,27 @@ pub struct InferenceContext {
     /// types are fully resolved during declaration gathering, before any
     /// function body is inferred, so they can be consulted like params here.
     /// Without this map a const reference inferred to `<error>` and poisoned
-    /// every expression it touched (RUE-142).
-    pub const_types: HashMap<Spur, Type>,
+    /// every expression it touched (RUE-142). Keyed by (declaring file, name):
+    /// same-named constants in sibling modules are distinct declarations, and
+    /// the old bare-name keying let one file's constant silently type another
+    /// file's code (RUE-638).
+    pub const_types: HashMap<(FileId, Spur), Type>,
     /// File-level type aliases: name -> concrete type denoted by a
     /// type-valued constant (`const OptI = std.option.Option(i64)`). These are
     /// consulted in type positions; expression positions see the binding's
-    /// own type as `type` through `const_types`.
-    pub const_type_aliases: HashMap<Spur, Type>,
+    /// own type as `type` through `const_types`. Keyed by (declaring file,
+    /// name) — see `const_types` (RUE-638).
+    pub const_type_aliases: HashMap<(FileId, Spur), Type>,
     /// File-level integer constant values (name -> value). Constants are fully
     /// evaluated during declaration gathering, so an array length naming one
     /// (`[i32; K]`) can be resolved to a concrete length during constraint
     /// generation (RUE-16). Only integer-valued constants appear here.
-    pub const_values: HashMap<Spur, i128>,
-    /// Function-valued constants: alias name -> callee function name. These
-    /// are callable aliases only, not first-class runtime values.
-    pub const_function_aliases: HashMap<Spur, Spur>,
+    /// Keyed by (declaring file, name) — see `const_types` (RUE-638).
+    pub const_values: HashMap<(FileId, Spur), i128>,
+    /// Function-valued constants: (declaring file, alias name) -> callee
+    /// function name. These are callable aliases only, not first-class
+    /// runtime values. By-file keyed — see `const_types` (RUE-638).
+    pub const_function_aliases: HashMap<(FileId, Spur), Spur>,
     /// Module-binding types (`const utils = @import(...)`): (declaring file,
     /// name) -> module type. Module bindings are per-file scoped (RUE-113),
     /// so they're keyed by file rather than living in `const_types`.

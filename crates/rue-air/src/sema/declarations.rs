@@ -224,15 +224,20 @@ impl<'a> Sema<'a> {
         // Constant types (resolved during declaration gathering) so a const
         // reference in a function body infers to its declared type instead of
         // `<error>` (RUE-142).
-        let const_types: HashMap<Spur, Type> = self
-            .constants
+        // All four const maps are keyed by (declaring file, name), built from
+        // the by-file table: same-named constants in sibling modules are
+        // distinct declarations, and building these from the transitional
+        // flat `constants` map let the last-gathered file's constant silently
+        // type every other file's code (RUE-638).
+        let const_types: HashMap<(FileId, Spur), Type> = self
+            .constants_by_file_name
             .iter()
-            .map(|(name, info)| {
+            .map(|(key, info)| {
                 let ty = match info.value {
                     ConstValue::Type(_) => Type::COMPTIME_TYPE,
                     _ => info.ty,
                 };
-                (*name, ty)
+                (*key, ty)
             })
             .collect();
 
@@ -240,29 +245,29 @@ impl<'a> Sema<'a> {
         // name to the concrete type value it denotes. Constraint generation
         // consults this in type positions; expression positions still use
         // `const_types` above and see the binding itself as `type`.
-        let const_type_aliases: HashMap<Spur, Type> = self
-            .constants
+        let const_type_aliases: HashMap<(FileId, Spur), Type> = self
+            .constants_by_file_name
             .iter()
-            .filter_map(|(name, info)| match info.value {
-                ConstValue::Type(ty) => Some((*name, ty)),
+            .filter_map(|(key, info)| match info.value {
+                ConstValue::Type(ty) => Some((*key, ty)),
                 _ => None,
             })
             .collect();
 
         // Integer constant values, so an array length naming a `const`
         // (`[i32; K]`) resolves to a concrete length during inference (RUE-16).
-        let const_values: HashMap<Spur, i128> = self
-            .constants
+        let const_values: HashMap<(FileId, Spur), i128> = self
+            .constants_by_file_name
             .iter()
-            .filter_map(|(name, info)| info.value.as_int_value().map(|v| (*name, v)))
+            .filter_map(|(key, info)| info.value.as_int_value().map(|v| (*key, v)))
             .collect();
 
         // Function-valued constants are callable aliases only. Constraint
         // generation uses this map to type `alias(...)` like the real callee.
-        let const_function_aliases: HashMap<Spur, Spur> = self
-            .constants
+        let const_function_aliases: HashMap<(FileId, Spur), Spur> = self
+            .constants_by_file_name
             .iter()
-            .filter_map(|(name, info)| info.value.as_function().map(|callee| (*name, callee)))
+            .filter_map(|(key, info)| info.value.as_function().map(|callee| (*key, callee)))
             .collect();
 
         // Module-binding types (`const utils = @import(...)`), keyed by the
