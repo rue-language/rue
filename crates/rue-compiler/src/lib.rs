@@ -992,6 +992,34 @@ pub fn compile_frontend_from_ast_with_file_paths_and_target(
     target: Target,
     file_paths: std::collections::HashMap<FileId, String>,
 ) -> MultiErrorResult<CompileState> {
+    let symbol_paths = file_paths.clone();
+    compile_frontend_from_ast_with_file_paths_and_symbol_paths_and_target(
+        ast,
+        interner,
+        opt_level,
+        preview_features,
+        target,
+        file_paths,
+        symbol_paths,
+    )
+}
+
+/// Like [`compile_frontend_from_ast_with_file_paths_and_target`], but keeps
+/// physical paths used for module resolution separate from stable paths used
+/// in generated symbol names.
+///
+/// The Rue CLI uses this entry point for relocated builds. Most embedders can
+/// continue using [`compile_frontend_from_ast_with_file_paths_and_target`],
+/// which treats the supplied physical paths as symbol paths as well.
+pub fn compile_frontend_from_ast_with_file_paths_and_symbol_paths_and_target(
+    ast: Ast,
+    interner: ThreadedRodeo,
+    opt_level: OptLevel,
+    preview_features: &PreviewFeatures,
+    target: Target,
+    file_paths: std::collections::HashMap<FileId, String>,
+    symbol_paths: std::collections::HashMap<FileId, String>,
+) -> MultiErrorResult<CompileState> {
     // AST to RIR (untyped IR)
     let (rir, interner) = {
         let _span = info_span!("astgen").entered();
@@ -1006,6 +1034,7 @@ pub fn compile_frontend_from_ast_with_file_paths_and_target(
         let _span = info_span!("sema").entered();
         let mut sema = Sema::new_for_target(&rir, &interner, preview_features.clone(), target);
         sema.set_file_paths(file_paths);
+        sema.set_symbol_paths(symbol_paths);
         let output = sema.analyze_all()?;
         info!(
             function_count = output.functions.len(),
@@ -1113,6 +1142,25 @@ pub fn compile_multi_file_with_options(
     sources: &[SourceFile<'_>],
     options: &CompileOptions,
 ) -> MultiErrorResult<CompileOutput> {
+    let symbol_paths = sources
+        .iter()
+        .map(|source| (source.file_id, source.path.to_string()))
+        .collect();
+    compile_multi_file_with_symbol_paths_and_options(sources, symbol_paths, options)
+}
+
+/// Compile multiple source files while keeping physical paths separate from
+/// relocation-stable identities used in generated symbols.
+///
+/// This is the driver-facing variant of [`compile_multi_file_with_options`].
+/// Physical [`SourceFile::path`] values continue to control diagnostics and
+/// module resolution; `symbol_paths` only qualify otherwise-colliding generated
+/// names.
+pub fn compile_multi_file_with_symbol_paths_and_options(
+    sources: &[SourceFile<'_>],
+    symbol_paths: std::collections::HashMap<FileId, String>,
+    options: &CompileOptions,
+) -> MultiErrorResult<CompileOutput> {
     // NOTE: the Rayon global thread pool is deliberately NOT configured here.
     // `build_global()` panics if called twice, and the `--emit` driver path
     // never reaches this function, so it was silently ignoring `-j`/`--jobs`
@@ -1130,6 +1178,7 @@ pub fn compile_multi_file_with_options(
 
     // Use CompilationUnit for the entire pipeline
     let mut unit = CompilationUnit::new(sources.to_vec(), options.clone());
+    unit.set_symbol_paths(symbol_paths);
     unit.run_all()
 }
 
@@ -2642,13 +2691,18 @@ mod tests {
     #[test]
     fn test_module_duplicate_function_symbols_use_stable_paths_not_file_ids() {
         fn duplicate_value_function_names(
+            physical_root: &str,
             main_id: FileId,
             left_id: FileId,
             right_id: FileId,
+            reverse_siblings: bool,
         ) -> Vec<String> {
-            let sources = vec![
+            let main_path = format!("{physical_root}/main.rue");
+            let left_path = format!("{physical_root}/left.rue");
+            let right_path = format!("{physical_root}/right.rue");
+            let mut sources = vec![
                 SourceFile::new(
-                    "main.rue",
+                    &main_path,
                     r#"fn main() -> i32 {
                         let left = @import("left.rue");
                         let right = @import("right.rue");
@@ -2656,10 +2710,18 @@ mod tests {
                     }"#,
                     main_id,
                 ),
-                SourceFile::new("left.rue", "fn value() -> i32 { 10 }", left_id),
-                SourceFile::new("right.rue", "fn value() -> i32 { 20 }", right_id),
+                SourceFile::new(&left_path, "fn value() -> i32 { 10 }", left_id),
+                SourceFile::new(&right_path, "fn value() -> i32 { 20 }", right_id),
             ];
+            if reverse_siblings {
+                sources.swap(1, 2);
+            }
             let mut unit = CompilationUnit::new(sources, CompileOptions::default());
+            unit.set_symbol_paths(std::collections::HashMap::from([
+                (main_id, "main.rue".to_string()),
+                (left_id, "left.rue".to_string()),
+                (right_id, "right.rue".to_string()),
+            ]));
             unit.run_frontend().expect("frontend should compile");
             let mut names: Vec<_> = unit
                 .functions()
@@ -2671,7 +2733,13 @@ mod tests {
             names
         }
 
-        let names = duplicate_value_function_names(FileId::new(1), FileId::new(2), FileId::new(3));
+        let names = duplicate_value_function_names(
+            "/tmp/rue-short-root",
+            FileId::new(1),
+            FileId::new(2),
+            FileId::new(3),
+            false,
+        );
         assert_eq!(
             names,
             vec![
@@ -2682,8 +2750,14 @@ mod tests {
 
         assert_eq!(
             names,
-            duplicate_value_function_names(FileId::new(100), FileId::new(42), FileId::new(7)),
-            "generated symbols should be stable for the same source paths even when FileIds differ"
+            duplicate_value_function_names(
+                "/tmp/a-deliberately-much-longer-relocated-rue-root",
+                FileId::new(100),
+                FileId::new(42),
+                FileId::new(7),
+                true,
+            ),
+            "generated symbols should ignore physical roots, FileIds, and source-vector order"
         );
     }
 

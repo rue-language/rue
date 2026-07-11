@@ -16,7 +16,7 @@ use rue_compiler::{
     CompileError, CompileErrors, CompileOptions, CompileWarning, ErrorKind, FileId, Lexer,
     LinkerMode, MultiFileFormatter, MultiFileJsonFormatter, OptLevel, ParsedProgram,
     PreviewFeature, PreviewFeatures, SourceFile, SourceInfo, Span, TokenKind,
-    compile_multi_file_with_options, configure_thread_pool, generate_emitted_asm,
+    compile_multi_file_with_symbol_paths_and_options, configure_thread_pool, generate_emitted_asm,
     generate_liveness_info, generate_lowering_info, generate_mir, generate_regalloc_info,
     generate_stack_frame_info, import_candidate_groups, merge_symbols, parse_all_files,
 };
@@ -1107,6 +1107,111 @@ fn normalize_lexical_path(path: &Path) -> PathBuf {
     normalized
 }
 
+/// Compute `target` relative to `base` without consulting the filesystem.
+///
+/// Both inputs are expected to be absolute and lexically normalized. Keeping
+/// this lexical is important: following symlinks would turn source identity
+/// back into a property of the machine's physical directory layout.
+fn lexical_relative_path(base: &Path, target: &Path) -> Option<PathBuf> {
+    let base_components: Vec<_> = base.components().collect();
+    let target_components: Vec<_> = target.components().collect();
+    let base_anchor: Vec<_> = base_components
+        .iter()
+        .take_while(|component| matches!(component, Component::Prefix(_) | Component::RootDir))
+        .collect();
+    let target_anchor: Vec<_> = target_components
+        .iter()
+        .take_while(|component| matches!(component, Component::Prefix(_) | Component::RootDir))
+        .collect();
+    if base_anchor != target_anchor {
+        return None;
+    }
+    let common = base_components
+        .iter()
+        .zip(&target_components)
+        .take_while(|(left, right)| left == right)
+        .count();
+
+    let mut relative = PathBuf::new();
+    for component in &base_components[common..] {
+        match component {
+            Component::Normal(_) => relative.push(".."),
+            Component::CurDir | Component::ParentDir => unreachable!("paths are normalized"),
+            Component::Prefix(_) | Component::RootDir => return None,
+        }
+    }
+    for component in &target_components[common..] {
+        match component {
+            Component::Normal(part) => relative.push(part),
+            Component::CurDir | Component::ParentDir => unreachable!("paths are normalized"),
+            Component::Prefix(_) | Component::RootDir => return None,
+        }
+    }
+    Some(relative)
+}
+
+const STD_SYMBOL_NAMESPACE: &str = "\0rue-std";
+
+/// Derive relocation-stable source identities for generated symbol names.
+///
+/// Project files are named relative to the semantic root module's directory,
+/// so relative and absolute command-line spellings agree and `../` imports
+/// remain stable when the whole source layout moves. The standard library has
+/// its own namespace because `$RUE_STD_PATH` may live outside (and at a
+/// different depth from) the relocated project root.
+fn derive_symbol_paths(sources: &[(String, String)]) -> Result<Vec<String>, String> {
+    let std_root = env::var_os("RUE_STD_PATH").map(PathBuf::from);
+    derive_symbol_paths_with_std_root(sources, std_root.as_deref())
+}
+
+fn derive_symbol_paths_with_std_root(
+    sources: &[(String, String)],
+    std_root: Option<&Path>,
+) -> Result<Vec<String>, String> {
+    let absolute_paths: Vec<_> = sources
+        .iter()
+        .map(|(path, _)| normalize_lexical_path(Path::new(path)))
+        .collect();
+    let root_dir = absolute_paths
+        .first()
+        .and_then(|path| path.parent())
+        .unwrap_or_else(|| Path::new("/"));
+    let std_root = std_root.map(normalize_lexical_path);
+
+    let symbol_paths: Vec<String> = absolute_paths
+        .iter()
+        .map(|path| {
+            let logical = std_root
+                .as_deref()
+                .and_then(|std_root| path.strip_prefix(std_root).ok())
+                // A NUL cannot occur in a filesystem path, so this namespace
+                // is provably disjoint from every project-relative identity.
+                .map(|relative| Path::new(STD_SYMBOL_NAMESPACE).join(relative))
+                .or_else(|| lexical_relative_path(root_dir, path))
+                .ok_or_else(|| {
+                    format!(
+                        "source '{}' cannot be assigned a stable identity relative to root '{}'; sources on another filesystem volume require a named dependency root",
+                        path.display(),
+                        root_dir.display()
+                    )
+                })?;
+            Ok(logical.to_string_lossy().into_owned())
+        })
+        .collect::<Result<_, String>>()?;
+
+    let mut seen = std::collections::HashSet::new();
+    for symbol_path in &symbol_paths {
+        if !seen.insert(symbol_path) {
+            return Err(format!(
+                "multiple source files resolve to the same stable identity {:?}",
+                symbol_path
+            ));
+        }
+    }
+
+    Ok(symbol_paths)
+}
+
 fn parse_source_manifest_entry(raw_line: &str) -> String {
     let mut entry = String::new();
     let mut escaped = false;
@@ -1586,13 +1691,27 @@ fn main() {
         std::process::exit(1);
     }
 
-    // Build SourceFile structs for multi-file compilation
+    // Build SourceFile structs for multi-file compilation. Physical paths stay
+    // available for imports and diagnostics; generated symbols use a separate,
+    // relocation-stable identity (RUE-618).
+    let symbol_paths = match derive_symbol_paths(&sources) {
+        Ok(paths) => paths,
+        Err(message) => {
+            eprintln!("Error: {message}");
+            std::process::exit(1);
+        }
+    };
     let source_files: Vec<SourceFile<'_>> = sources
         .iter()
         .enumerate()
         .map(|(i, (path, content))| {
             SourceFile::new(path.as_str(), content.as_str(), FileId::new((i + 1) as u32))
         })
+        .collect();
+    let symbol_path_map: std::collections::HashMap<FileId, String> = source_files
+        .iter()
+        .zip(symbol_paths)
+        .map(|(source, symbol_path)| (source.file_id, symbol_path))
         .collect();
 
     // Create multi-file diagnostic formatters for diagnostics that may span multiple files.
@@ -1684,7 +1803,9 @@ fn main() {
 
     // Handle emit modes with multi-file support
     if !options.emit_stages.is_empty() {
-        if let Err(()) = handle_emit_multi_file(&source_files, &options, &diagnostics) {
+        if let Err(()) =
+            handle_emit_multi_file(&source_files, &symbol_path_map, &options, &diagnostics)
+        {
             std::process::exit(1);
         }
         print_timing_output(
@@ -1704,7 +1825,11 @@ fn main() {
         opt_level: options.opt_level,
         preview_features: options.preview_features.clone(),
     };
-    match compile_multi_file_with_options(&source_files, &compile_options) {
+    match compile_multi_file_with_symbol_paths_and_options(
+        &source_files,
+        symbol_path_map,
+        &compile_options,
+    ) {
         Ok(output) => {
             // Print warnings using the diagnostic formatter
             diagnostics.print_warnings(&output.warnings);
@@ -1815,6 +1940,7 @@ fn main() {
 /// For later stages (rir, air, cfg, etc.), the merged program is used.
 fn handle_emit_multi_file(
     sources: &[SourceFile<'_>],
+    symbol_paths: &std::collections::HashMap<FileId, String>,
     options: &Options,
     diagnostics: &DiagnosticOutput<'_>,
 ) -> Result<(), ()> {
@@ -1906,13 +2032,14 @@ fn handle_emit_multi_file(
             .iter()
             .map(|s| (s.file_id, s.path.to_string()))
             .collect();
-        let state = match rue_compiler::compile_frontend_from_ast_with_file_paths_and_target(
+        let state = match rue_compiler::compile_frontend_from_ast_with_file_paths_and_symbol_paths_and_target(
             merged.ast,
             merged.interner,
             options.opt_level,
             &options.preview_features,
             options.target,
             file_paths,
+            symbol_paths.clone(),
         ) {
             Ok(state) => state,
             Err(errors) => {
@@ -2173,6 +2300,107 @@ mod tests {
             fs::write(&path, content).unwrap();
             path
         }
+    }
+
+    #[test]
+    fn symbol_paths_are_root_relative_across_relocated_source_trees() {
+        fn sources_at(root: &Path) -> Vec<(String, String)> {
+            vec![
+                (
+                    root.join("project/main.rue").display().to_string(),
+                    String::new(),
+                ),
+                (
+                    root.join("project/./left/nested/../entry.rue")
+                        .display()
+                        .to_string(),
+                    String::new(),
+                ),
+                (root.join("dep.rue").display().to_string(), String::new()),
+                (
+                    root.join("project/right/shared.rue").display().to_string(),
+                    String::new(),
+                ),
+            ]
+        }
+
+        let base = std::env::temp_dir().join("rue-symbol-path-tests");
+        let short = sources_at(&base.join("a"));
+        let relocated = sources_at(&base.join("a-deliberately-much-longer-relocated-source-root"));
+        let expected = vec![
+            "main.rue",
+            "left/entry.rue",
+            "../dep.rue",
+            "right/shared.rue",
+        ];
+
+        assert_eq!(
+            derive_symbol_paths_with_std_root(&short, None).unwrap(),
+            expected
+        );
+        assert_eq!(
+            derive_symbol_paths_with_std_root(&relocated, None).unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn symbol_paths_give_external_std_a_stable_namespace() {
+        fn sources_at(project: &Path, std_root: &Path) -> Vec<(String, String)> {
+            vec![
+                (
+                    project.join("main.rue").display().to_string(),
+                    String::new(),
+                ),
+                (
+                    std_root.join("_std.rue").display().to_string(),
+                    String::new(),
+                ),
+                (
+                    std_root.join("math/float.rue").display().to_string(),
+                    String::new(),
+                ),
+                (
+                    project
+                        .join("@rue-std/math/float.rue")
+                        .display()
+                        .to_string(),
+                    String::new(),
+                ),
+            ]
+        }
+
+        let base = std::env::temp_dir().join("rue-symbol-std-tests");
+        let std_a = base.join("toolchain-a/std");
+        let std_b = base.join("a-different-toolchain-location/std");
+        let first = sources_at(&base.join("build-a/project"), &std_a);
+        let second = sources_at(&base.join("different-depth/build-b/project"), &std_b);
+        let expected = vec![
+            "main.rue",
+            "\0rue-std/_std.rue",
+            "\0rue-std/math/float.rue",
+            "@rue-std/math/float.rue",
+        ];
+
+        assert_eq!(
+            derive_symbol_paths_with_std_root(&first, Some(&std_a)).unwrap(),
+            expected
+        );
+        assert_eq!(
+            derive_symbol_paths_with_std_root(&second, Some(&std_b)).unwrap(),
+            expected
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn symbol_paths_reject_unnamed_cross_volume_sources() {
+        let sources = vec![
+            (r"C:\project\main.rue".to_string(), String::new()),
+            (r"D:\dependency\helper.rue".to_string(), String::new()),
+        ];
+        let error = derive_symbol_paths_with_std_root(&sources, None).unwrap_err();
+        assert!(error.contains("another filesystem volume"));
     }
 
     impl Drop for TestDir {

@@ -19,6 +19,13 @@ impl<'a> Sema<'a> {
         self.file_paths = file_paths;
     }
 
+    /// Set stable source identities used when generated symbols need a module
+    /// component. These are deliberately separate from physical file paths so
+    /// relocating a source tree cannot change machine-level names.
+    pub fn set_symbol_paths(&mut self, symbol_paths: HashMap<FileId, String>) {
+        self.symbol_paths = symbol_paths;
+    }
+
     /// Get the source file path for a span.
     ///
     /// Looks up the file path using the span's file_id.
@@ -29,6 +36,14 @@ impl<'a> Sema<'a> {
     /// Get the file path for a given FileId.
     pub(crate) fn get_file_path(&self, file_id: FileId) -> Option<&str> {
         self.file_paths.get(&file_id).map(|s| s.as_str())
+    }
+
+    /// Get the relocation-stable symbol path for a given FileId.
+    pub(crate) fn get_symbol_path(&self, file_id: FileId) -> Option<&str> {
+        self.symbol_paths
+            .get(&file_id)
+            .or_else(|| self.file_paths.get(&file_id))
+            .map(|s| s.as_str())
     }
 
     /// Reverse lookup: find the FileId for a given source file path.

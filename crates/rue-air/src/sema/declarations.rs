@@ -59,7 +59,7 @@ impl<'a> Sema<'a> {
         }
         if count > 1 {
             let module_component = self
-                .get_file_path(file_id)
+                .get_symbol_path(file_id)
                 .map(normalize_module_path)
                 .unwrap_or_else(|| format!("file{}", file_id.index()));
             let module_component = mangle_symbol_component(&module_component);

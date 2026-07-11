@@ -100,6 +100,44 @@ assert_macos_signature() {
     fi
 }
 
+assert_relocated_symbol_names() {
+    local symbols_a="$root_a/tmp/air-symbols.txt"
+    local symbols_b="$root_b/tmp/air-symbols.txt"
+
+    # RUE-618: physical source paths must not enter the machine-level names
+    # carried from AIR through assembly and object relocations. Compare only
+    # generated names here: complete textual IR ordering is covered by RUE-620.
+    (
+        cd "$root_a/project"
+        "$RUE_BINARY" -j1 --emit air \
+            --source-manifest sources.manifest \
+            main.rue \
+            | sed -n 's/^function \(__rue_fn_[^(: ]*\).*/\1/p' \
+            | LC_ALL=C sort -u > "$symbols_a"
+    )
+    "$RUE_BINARY" -j32 --emit air \
+        --source-manifest "$root_b/project/sources.manifest" \
+        "$root_b/project/main.rue" \
+        | sed -n 's/^function \(__rue_fn_[^(: ]*\).*/\1/p' \
+        | LC_ALL=C sort -u > "$symbols_b"
+
+    assert_identical "relocated AIR symbol names" "$symbols_a" "$symbols_b"
+
+    local expected actual
+    expected="$(printf '%s\n' \
+        '__rue_fn_left_2fentry_2erue__compute' \
+        '__rue_fn_left_2fshared_2erue__make' \
+        '__rue_fn_right_2fentry_2erue__compute' \
+        '__rue_fn_right_2fshared_2erue__make')"
+    actual="$(< "$symbols_a")"
+    if [ "$actual" != "$expected" ]; then
+        printf 'FAIL: reproducibility fixture generated unexpected AIR symbols\n' >&2
+        printf '  expected:\n%s\n' "$expected" >&2
+        printf '  actual:\n%s\n' "$actual" >&2
+        return 1
+    fi
+}
+
 compile_pair() {
     local opt="$1"
     local output_a="$root_a/project/program-left-o$1"
@@ -143,5 +181,6 @@ compile_pair() {
     assert_macos_signature "$output_b"
 }
 
+assert_relocated_symbol_names
 compile_pair 0
 compile_pair 2
