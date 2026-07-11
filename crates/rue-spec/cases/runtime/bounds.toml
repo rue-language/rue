@@ -18,7 +18,7 @@ fn main() -> i32 {
     arr[i]
 }
 """
-exit_code = 101
+runtime_error = "index out of bounds"
 
 # =============================================================================
 # Exit Code 101 on Out-of-Bounds
@@ -34,7 +34,7 @@ fn main() -> i32 {
     arr[i]
 }
 """
-exit_code = 101
+runtime_error = "index out of bounds"
 
 # =============================================================================
 # Compile-Time Bounds Checking
@@ -154,7 +154,7 @@ fn main() -> i32 {
     arr[i]
 }
 """
-exit_code = 101
+runtime_error = "index out of bounds"
 
 # A negative signed index computed at runtime must trap: the bounds check is
 # an unsigned 64-bit comparison, so a negative value (all high bits set)
@@ -169,7 +169,7 @@ fn main() -> i32 {
     arr[i]
 }
 """
-exit_code = 101
+runtime_error = "index out of bounds"
 
 # An out-of-range signed index also traps at runtime.
 [[case]]
@@ -182,4 +182,4 @@ fn main() -> i32 {
     arr[i]
 }
 """
-exit_code = 101
+runtime_error = "index out of bounds"

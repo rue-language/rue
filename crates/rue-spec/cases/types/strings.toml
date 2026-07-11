@@ -743,7 +743,7 @@ fn main() -> i32 {
     0
 }
 """
-exit_code = 101
+runtime_error = "index out of bounds"
 
 [[case]]
 name = "string_substring_len"

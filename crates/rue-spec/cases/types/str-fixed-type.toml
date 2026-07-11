@@ -163,7 +163,7 @@ fn main() -> i32 {
     @intCast(b)
 }
 """
-exit_code = 101
+runtime_error = "index out of bounds"
 
 # 3.7:55 — a `Str(N)` coerces to a `borrow str` view and is read through it
 # (ADR-0043 two-types model, RUE-386). It does NOT coerce to a first-class `str`
