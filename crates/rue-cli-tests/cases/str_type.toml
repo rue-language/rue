@@ -121,7 +121,8 @@ exit_code = 8
 name = "str_inout_static_operand_rejected"
 files = [{ path = "main.rue", source = """
 fn set_hi(inout s: str) {
-    s = "hi";
+    // The callee never runs: this case isolates the invalid call operand.
+    let _length = s.len();
 }
 fn main() -> i32 {
     let mut s: str = "hello";

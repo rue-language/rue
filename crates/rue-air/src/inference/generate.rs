@@ -37,6 +37,10 @@ pub struct LocalVarInfo {
 pub struct ParamVarInfo {
     /// The type of this parameter, as InferType for uniform handling.
     pub ty: InferType,
+    /// Whether whole assignment may target this parameter. Only `inout`
+    /// parameters are mutable; constraining an assignment to a normal,
+    /// borrow, or comptime parameter would mask the primary mutability error.
+    pub is_inout: bool,
 }
 
 /// Information about a function during constraint generation.
@@ -1011,14 +1015,29 @@ impl<'a> ConstraintGenerator<'a> {
             // Assignment
             InstData::Assign { name, value } => {
                 let value_info = self.generate(*value, ctx);
-                if let Some(local) = ctx.locals.get(name) {
-                    let local_ty = local.ty.clone();
+                // A local shadows a same-named parameter. Otherwise, constrain
+                // assignment against the declared parameter type too: the
+                // old local-only lookup left every `inout` whole assignment
+                // unconstrained, so an integer literal defaulted to i32 and an
+                // arbitrary differently-shaped value could reach ParamStore
+                // (RUE-641).
+                let target_ty = ctx
+                    .locals
+                    .get(name)
+                    .map(|local| local.ty.clone())
+                    .or_else(|| {
+                        ctx.params
+                            .get(name)
+                            .filter(|param| param.is_inout)
+                            .map(|param| param.ty.clone())
+                    });
+                if let Some(target_ty) = target_ty {
                     // A `str` target (ADR-0043 Phase 3, RUE-324) accepts a string
                     // literal (HM type `String`) by coercion; skip strict
                     // equality and let sema materialize the `str` on the store.
-                    if !self.is_slice_struct_type(local_ty.clone()) {
+                    if !self.is_slice_struct_type(target_ty.clone()) {
                         // Constrain value to match variable type
-                        self.add_constraint(Constraint::equal(value_info.ty, local_ty, span));
+                        self.add_constraint(Constraint::equal(value_info.ty, target_ty, span));
                     }
                 }
                 // Assignment produces unit
