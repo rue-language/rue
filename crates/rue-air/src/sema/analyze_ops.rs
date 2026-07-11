@@ -4203,7 +4203,7 @@ impl<'a> Sema<'a> {
     ///
     /// This enables the pattern of importing types through modules and using them
     /// for struct initialization or enum variant access.
-    fn analyze_module_type_member_access(
+    pub(crate) fn analyze_module_type_member_access(
         &mut self,
         air: &mut Air,
         module_id: crate::types::ModuleId,
