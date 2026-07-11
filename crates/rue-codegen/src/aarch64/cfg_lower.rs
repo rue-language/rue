@@ -194,16 +194,6 @@ impl<'a> CfgLower<'a> {
         })
     }
 
-    /// Check if a slot corresponds to an inout parameter.
-    fn slot_to_inout_param_index(&self, slot: u32) -> Option<u32> {
-        if let Some(param_index) = self.ctx.slot_to_inout_param_index(slot) {
-            if self.ctx.cfg.is_param_inout(param_index) {
-                return Some(param_index);
-            }
-        }
-        None
-    }
-
     /// Ensure the inout parameter pointer vreg exists for the given param slot.
     fn ensure_inout_param_ptr(&mut self, param_slot: u32) -> VReg {
         if let Some(ptr_vreg) = self.inout_param_ptrs.get(&param_slot).copied() {
@@ -1345,214 +1335,22 @@ impl<'a> CfgLower<'a> {
             }
 
             CfgInstData::Alloc { slot, init } => {
-                let init_type = self.ctx.cfg.get_inst(*init).ty;
-                if init_type.is_array() {
-                    // Array: store all element slots. Try the accessor first —
-                    // it materializes lazily-sourced arrays (Load/Param/
-                    // PlaceRead, including array-typed struct fields `s.arr`
-                    // and indexed reads `m[i]`, RUE-188) and cache-hits eager
-                    // ones. Fall back to the recursive flattener for ArrayInit.
-                    let scalar_vregs = self
-                        .get_or_compute_field_vregs(*init)
-                        .unwrap_or_else(|| self.collect_array_scalar_vregs(*init));
-                    crate::agg_slots::store_slots(self, &scalar_vregs, *slot);
-                } else if self.ctx.is_multislot_aggregate(init_type)
-                    && !self.ctx.is_builtin_string(init_type)
-                {
-                    // Struct or payload enum (RUE-221): store all slots via the
-                    // single accessor. It materializes a struct read from a place
-                    // (`let q = a.p`) by loading its slot_count consecutive slots,
-                    // and cache-hits StructInit/EnumVariant/Load/Param/Call/
-                    // BlockParam — all of which carry fully-flattened slot lists.
-                    // Fall back to the flattener for any source the accessor
-                    // doesn't model. (RUE-118 / RUE-22)
-                    // (Builtin String is excluded above — it takes the fat-pointer branch.)
-                    let scalar_vregs = self
-                        .get_or_compute_field_vregs(*init)
-                        .unwrap_or_else(|| self.collect_struct_scalar_vregs(*init));
-                    crate::agg_slots::store_slots(self, &scalar_vregs, *slot);
-                } else if self.ctx.is_builtin_string(init_type) {
-                    // String: store ptr, len, and cap to consecutive slots
-                    let field_vregs = self
-                        .get_or_compute_field_vregs(*init)
-                        .expect("string should have fat pointer fields in Alloc");
-                    // Correctness guard (must run in release): storing the wrong
-                    // number of fat-pointer slots miscompiles the String, so this
-                    // is a plain `assert!` not `debug_assert!` (RUE-45).
-                    assert_eq!(
-                        field_vregs.len(),
-                        3,
-                        "string should have 3 fields (ptr, len, cap)"
-                    );
-                    crate::agg_slots::store_slots(self, &field_vregs, *slot);
-                } else {
-                    let init_vreg = self.get_vreg(*init);
-                    let offset = self.ctx.local_offset(*slot);
-                    self.mir.push(Aarch64Inst::Str {
-                        src: Operand::Virtual(init_vreg),
-                        base: Reg::Fp,
-                        offset,
-                    });
-                }
+                crate::storage_lower::lower_alloc(self, *slot, *init);
             }
 
             CfgInstData::Load { slot } => {
-                let load_type = self.ctx.cfg.get_inst(value).ty;
-
-                if self.ctx.is_builtin_string(load_type) {
-                    // String fat pointer (ptr, len, cap). Ascending layout
-                    // (ADR-0040 / RUE-311): logical slot 0 (ptr) is at the
-                    // region's low end (highest-numbered slot `slot + 2`),
-                    // slot k at `slot + 2 - k`.
-                    let slot_vregs = crate::agg_slots::load_slots_at_low(self, slot + 2, 3);
-                    let ptr_vreg = slot_vregs[0];
-                    // Register String fields (ptr, len, cap)
-                    self.struct_slot_vregs.insert(value, slot_vregs);
-                    self.value_map.insert(value, ptr_vreg);
-                } else if load_type.is_array() {
-                    // Array: load every logical slot (ascending, ADR-0040 /
-                    // RUE-311): slot 0 at the region's low end.
-                    let slot_count = self.ctx.type_slot_count(load_type);
-                    let slot_vregs = if slot_count > 0 {
-                        crate::agg_slots::load_slots_at_low(self, slot + slot_count - 1, slot_count)
-                    } else {
-                        Vec::new()
-                    };
-
-                    // Register array element vregs
-                    self.struct_slot_vregs.insert(value, slot_vregs.clone());
-
-                    // Use first element as the primary vreg
-                    if let Some(&first_vreg) = slot_vregs.first() {
-                        self.value_map.insert(value, first_vreg);
-                    } else {
-                        let vreg = self.mir.alloc_vreg();
-                        self.value_map.insert(value, vreg);
-                    }
-                } else if self.ctx.is_multislot_aggregate(load_type) {
-                    // Struct or payload enum (RUE-221): load all slots ascending
-                    // (ADR-0040 / RUE-311). For an enum, slot 0 is the
-                    // discriminant (what a `match` switches on).
-                    let slot_count = self.ctx.type_slot_count(load_type);
-                    let slot_vregs = if slot_count > 0 {
-                        crate::agg_slots::load_slots_at_low(self, slot + slot_count - 1, slot_count)
-                    } else {
-                        Vec::new()
-                    };
-
-                    // Register struct field vregs
-                    self.struct_slot_vregs.insert(value, slot_vregs.clone());
-
-                    // Use first field as the primary vreg
-                    if let Some(&first_vreg) = slot_vregs.first() {
-                        self.value_map.insert(value, first_vreg);
-                    } else {
-                        let vreg = self.mir.alloc_vreg();
-                        self.value_map.insert(value, vreg);
-                    }
-                } else {
-                    let vreg = self.mir.alloc_vreg();
-                    self.value_map.insert(value, vreg);
-
-                    let offset = self.ctx.local_offset(*slot);
-                    self.mir.push(Aarch64Inst::Ldr {
-                        dst: Operand::Virtual(vreg),
-                        base: Reg::Fp,
-                        offset,
-                    });
-                }
+                crate::storage_lower::lower_load(self, value, *slot);
             }
 
             CfgInstData::Store { slot, value: val } => {
-                let val_type = self.ctx.cfg.get_inst(*val).ty;
-                // Multi-slot aggregate (struct, builtin String fat pointer,
-                // array, or payload enum): store ALL slots, not just the first.
-                // Routed through the single is_multislot_aggregate predicate so
-                // enum payloads are covered by construction (RUE-248). The
-                // accessor materializes lazily-sourced values and cache-hits
-                // eager ones; if it can't model the source (e.g. a
-                // dynamically-indexed place-read) fall back to the old
-                // single-slot behavior rather than ICE. (RUE-118, RUE-80)
-                let aggregate_vregs = if self.ctx.is_multislot_aggregate(val_type) {
-                    self.get_or_compute_field_vregs(*val)
-                } else {
-                    None
-                };
-
-                if let Some(slot_vregs) = aggregate_vregs {
-                    // Check if this slot corresponds to an inout parameter
-                    if let Some(param_index) = self.slot_to_inout_param_index(*slot) {
-                        // Whole-aggregate store through the inout pointer. The
-                        // pointer denotes the value's low end, so logical slot i
-                        // lives at ptr + i*8 (ADR-0040 / RUE-311).
-                        let ptr_vreg = self.ensure_inout_param_ptr(param_index);
-                        crate::agg_slots::store_slots_through_ptr(self, &slot_vregs, ptr_vreg, 0);
-                    } else {
-                        crate::agg_slots::store_slots(self, &slot_vregs, *slot);
-                    }
-                } else {
-                    let val_vreg = self.get_vreg(*val);
-
-                    // Check if this slot corresponds to an inout parameter
-                    if let Some(param_index) = self.slot_to_inout_param_index(*slot) {
-                        // For inout params, store through the pointer
-                        // Use ensure_inout_param_ptr in case the param was never accessed via Param instruction
-                        let ptr_vreg = self.ensure_inout_param_ptr(param_index);
-                        self.mir.push(Aarch64Inst::StrIndexed {
-                            src: Operand::Virtual(val_vreg),
-                            base: ptr_vreg,
-                        });
-                    } else {
-                        // Normal local variable: store to stack slot
-                        let offset = self.ctx.local_offset(*slot);
-                        self.mir.push(Aarch64Inst::Str {
-                            src: Operand::Virtual(val_vreg),
-                            base: Reg::Fp,
-                            offset,
-                        });
-                    }
-                }
+                crate::storage_lower::lower_store(self, *slot, *val);
             }
 
             CfgInstData::ParamStore {
                 param_slot,
                 value: val,
             } => {
-                // ParamStore is used for inout params - store through the pointer.
-                //
-                // For inout params, param_slot is the first ABI slot for that param.
-                // For scalar params, param_slot = param_index.
-                // For struct params, param_slot is the first slot (same as param_index for first param).
-                if !self.ctx.cfg.is_param_inout(*param_slot) {
-                    panic!("ParamStore used on non-inout param slot {}", param_slot);
-                }
-
-                // Whole-value reassignment of a multi-slot aggregate (struct,
-                // builtin String, array, or payload enum) through inout must
-                // write ALL slots through the pointer, not just the first —
-                // same shape as the aggregate branch of Store above. The
-                // pointer denotes the value's low end, so logical slot i lives
-                // at ptr + i*8 (ADR-0040 / RUE-311). Unmodeled sources fall
-                // back to single-slot. Single is_multislot_aggregate predicate
-                // (RUE-248, RUE-145).
-                let val_type = self.ctx.cfg.get_inst(*val).ty;
-                let aggregate_vregs = if self.ctx.is_multislot_aggregate(val_type) {
-                    self.get_or_compute_field_vregs(*val)
-                } else {
-                    None
-                };
-
-                // Use ensure_inout_param_ptr in case the param was never accessed via Param instruction
-                let ptr_vreg = self.ensure_inout_param_ptr(*param_slot);
-                if let Some(slot_vregs) = aggregate_vregs {
-                    crate::agg_slots::store_slots_through_ptr(self, &slot_vregs, ptr_vreg, 0);
-                } else {
-                    let val_vreg = self.get_vreg(*val);
-                    self.mir.push(Aarch64Inst::StrIndexed {
-                        src: Operand::Virtual(val_vreg),
-                        base: ptr_vreg,
-                    });
-                }
+                crate::storage_lower::lower_param_store(self, *param_slot, *val);
             }
 
             CfgInstData::Call {
@@ -4333,6 +4131,19 @@ impl crate::place_lower::PlaceLowerBackend for CfgLower<'_> {
     }
 }
 
+impl crate::storage_lower::StorageLowerBackend for CfgLower<'_> {
+    fn collect_struct_scalars(&mut self, value: CfgValue) -> Vec<VReg> {
+        self.collect_struct_scalar_vregs(value)
+    }
+
+    fn emit_store_ptr_base(&mut self, src: VReg, ptr: VReg) {
+        self.mir.push(Aarch64Inst::StrIndexed {
+            src: Operand::Virtual(src),
+            base: ptr,
+        });
+    }
+}
+
 impl crate::aggregate_eq::AggregateEqBackend for CfgLower<'_> {
     fn ctx(&self) -> &crate::cfg_lower::CfgLowerContext<'_> {
         &self.ctx
@@ -4401,7 +4212,7 @@ mod tests {
     use rue_parser::Parser;
     use rue_rir::AstGen;
 
-    fn lower_to_mir(source: &str) -> Aarch64Mir {
+    fn lower_function_to_mir(source: &str, function_name: &str) -> Aarch64Mir {
         let lexer = Lexer::new(source);
         let (tokens, interner) = lexer.tokenize().unwrap();
         let parser = Parser::new(tokens, interner);
@@ -4413,7 +4224,11 @@ mod tests {
         let sema = Sema::new(&rir, &mut interner, PreviewFeatures::new());
         let output = sema.analyze_all().unwrap();
 
-        let func = &output.functions[0];
+        let func = output
+            .functions
+            .iter()
+            .find(|func| func.name == function_name)
+            .expect("requested test function should exist");
         let type_pool = &output.type_pool;
         let cfg_output = CfgBuilder::build(
             &func.air,
@@ -4437,6 +4252,10 @@ mod tests {
         .expect("test lowering should succeed")
     }
 
+    fn lower_to_mir(source: &str) -> Aarch64Mir {
+        lower_function_to_mir(source, "main")
+    }
+
     #[test]
     fn test_simple_return() {
         let mir = lower_to_mir("fn main() -> i32 { 42 }");
@@ -4453,5 +4272,25 @@ mod tests {
     fn test_if_else() {
         let mir = lower_to_mir("fn main() -> i32 { if true { 1 } else { 2 } }");
         assert!(!mir.instructions().is_empty());
+    }
+
+    #[test]
+    fn scalar_param_store_keeps_base_only_indexed_mir() {
+        let mir = lower_function_to_mir(
+            "fn set(inout x: i32) { x = 42; } \
+             fn main() -> i32 { let mut x = 0; set(inout x); x }",
+            "set",
+        );
+        assert!(
+            mir.instructions()
+                .iter()
+                .any(|inst| matches!(inst, Aarch64Inst::StrIndexed { .. }))
+        );
+        assert!(
+            !mir.instructions()
+                .iter()
+                .any(|inst| matches!(inst, Aarch64Inst::StrIndexedOffset { offset: 0, .. })),
+            "scalar ParamStore must not drift to the offset-form pseudo"
+        );
     }
 }
