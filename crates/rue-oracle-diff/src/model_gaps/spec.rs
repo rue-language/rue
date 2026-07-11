@@ -247,38 +247,14 @@ const ENTRIES: &[Entry] = &[
     ),
     Entry::new(
         "items.functions",
-        "borrow_with_regular_param",
-        semantic(SemanticGapKind::FlattenedParameterSlot),
-        &[],
-    ),
-    Entry::new(
-        "items.functions",
         "inout_array_forward",
         semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
         "items.functions",
-        "inout_array_with_index_variable",
-        semantic(SemanticGapKind::FlattenedParameterSlot),
-        &[],
-    ),
-    Entry::new(
-        "items.functions",
         "inout_forward_struct",
         semantic(SemanticGapKind::InoutParameterForwarding),
-        &[],
-    ),
-    Entry::new(
-        "items.impl-blocks",
-        "arg_reads_receiver_allowed",
-        semantic(SemanticGapKind::FlattenedParameterSlot),
-        &[],
-    ),
-    Entry::new(
-        "items.impl-blocks",
-        "inout_self_with_arg_and_field_writes",
-        semantic(SemanticGapKind::FlattenedParameterSlot),
         &[],
     ),
     Entry::new(

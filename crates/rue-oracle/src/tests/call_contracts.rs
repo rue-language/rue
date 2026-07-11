@@ -591,6 +591,125 @@ fn malformed_outer_calls_are_rejected_before_unmodeled_operands_run() {
 }
 
 #[test]
+fn user_call_layout_is_rejected_before_unmodeled_operands_run() {
+    let source = r#"struct Pair { left: u32, right: u32 }
+        fn normal(value: u32) -> u32 { value }
+        fn borrowed(borrow value: u32) -> u32 { value }
+        fn writable(inout value: u32) -> u32 { value }
+        fn pair(value: Pair) -> u32 { value.left + value.right }
+        fn main() -> i32 {
+            let entropy: u32 = @random_u32();
+            let mut value: u32 = 1;
+            let values = Pair { left: 2, right: 3 };
+            @intCast(
+                normal(value)
+                    + borrowed(borrow value)
+                    + writable(inout value)
+                    + pair(values)
+                    + entropy
+            )
+        }"#;
+
+    // Every source/target mode mismatch is one slot wide for this scalar, so
+    // a total-width-only guard cannot distinguish it. The Pair probe instead
+    // replaces a valid two-slot argument with the one-slot entropy value.
+    for (callee_name, replacement_mode) in [
+        ("normal", CfgArgMode::Borrow),
+        ("normal", CfgArgMode::Inout),
+        ("borrowed", CfgArgMode::Normal),
+        ("borrowed", CfgArgMode::Inout),
+        ("writable", CfgArgMode::Normal),
+        ("writable", CfgArgMode::Borrow),
+        ("pair", CfgArgMode::Normal),
+    ] {
+        let mut state = compile_to_cfg(source).expect("call-layout probe must compile");
+        let main_index = state
+            .functions
+            .iter()
+            .position(|function| function.cfg.fn_name() == "main")
+            .expect("main CFG");
+        let (random, call) = {
+            let cfg = &state.functions[main_index].cfg;
+            let mut random = None;
+            let mut call = None;
+            for value in cfg
+                .blocks()
+                .iter()
+                .flat_map(|block| block.insts.iter().copied())
+            {
+                match &cfg.get_inst(value).data {
+                    CfgInstData::Intrinsic { name, .. }
+                        if state.interner.resolve(name) == "random_u32" =>
+                    {
+                        random = Some(value);
+                    }
+                    CfgInstData::Call { name, .. }
+                        if state.interner.resolve(name) == callee_name =>
+                    {
+                        assert!(
+                            call.replace(value).is_none(),
+                            "expected exactly one call to {callee_name}"
+                        );
+                    }
+                    _ => {}
+                }
+            }
+            (
+                random.expect("random intrinsic"),
+                call.unwrap_or_else(|| panic!("missing call to {callee_name}")),
+            )
+        };
+
+        let cfg = &mut state.functions[main_index].cfg;
+        let (args_start, args_len) = match cfg.get_inst(call).data {
+            CfgInstData::Call {
+                args_start,
+                args_len,
+                ..
+            } => (args_start, args_len),
+            _ => unreachable!("selected a Call"),
+        };
+        let mut args = cfg.get_call_args(args_start, args_len).to_vec();
+        assert_eq!(args.len(), 1, "{callee_name} probe arity");
+        args[0].value = random;
+        args[0].mode = replacement_mode;
+        let (args_start, args_len) = cfg.push_call_args(args);
+        let CfgInstData::Call {
+            args_start: stored_start,
+            args_len: stored_len,
+            ..
+        } = &mut cfg.get_inst_mut(call).data
+        else {
+            unreachable!("selected a Call")
+        };
+        *stored_start = args_start;
+        *stored_len = args_len;
+
+        let cfg = &state.functions[main_index].cfg;
+        let mut interp = Interp {
+            state: &state,
+            stdout: String::new(),
+            stdout_bytes: 0,
+            stdout_cap: MAX_STDOUT_BYTES,
+            stderr_cap: MAX_STDERR_BYTES,
+            budget: STEP_BUDGET,
+            depth: 0,
+        };
+        let mut frame = Frame {
+            params: Vec::new(),
+            locals: vec![None; cfg.num_locals() as usize],
+            cache: HashMap::new(),
+        };
+        let unsupported = expect_flow_unsupported(interp.eval(cfg, &mut frame, call));
+        assert_eq!(
+            unsupported.kind(),
+            UnsupportedKind::ContractViolation(ContractViolationKind::CallParameterLayout),
+            "{callee_name} with {replacement_mode:?} must reject malformed static layout before @random_u32"
+        );
+    }
+}
+
+#[test]
 fn abort_intrinsic_static_contracts_precede_unmodeled_operands() {
     let source = r#"fn main() -> i32 {
         let entropy: u32 = @random_u32();

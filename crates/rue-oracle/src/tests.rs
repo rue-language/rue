@@ -1092,3 +1092,75 @@ fn zst_param_forwarded_through_two_calls() {
     fn main() -> i32 { let e = E {}; wrap(e, 41) }";
     assert_eq!(exit(src), 42);
 }
+
+#[test]
+fn enum_parameter_width_comes_from_its_static_type() {
+    let src = r#"enum Shape { Empty, One(i32), Pair(i32, i32) }
+        fn marker(shape: Shape, n: i32) -> i32 { n }
+        fn main() -> i32 {
+            marker(Shape.Empty, 10)
+                + marker(Shape.One(1), 20)
+                + marker(Shape.Pair(1, 2), 12)
+        }"#;
+    assert_eq!(exit(src), 42);
+}
+
+#[test]
+fn by_ref_aggregate_width_comes_from_its_physical_mode() {
+    let src = r#"struct Pair { left: i32, right: i32 }
+        fn borrowed_marker(borrow pair: Pair, n: i32) -> i32 {
+            n + pair.left - pair.left
+        }
+        fn inout_marker(inout pair: Pair, n: i32) -> i32 {
+            pair.right = pair.right;
+            n
+        }
+        fn main() -> i32 {
+            let mut pair = Pair { left: 1, right: 2 };
+            borrowed_marker(borrow pair, 20) + inout_marker(inout pair, 22)
+        }"#;
+    assert_eq!(exit(src), 42);
+}
+
+#[test]
+fn borrowed_aggregate_before_inout_uses_the_physical_writeback_slot() {
+    let src = r#"struct Pair { left: i32, right: i32 }
+        fn set_marker(borrow pair: Pair, inout marker: i32) {
+            marker = 40 + pair.right;
+        }
+        fn main() -> i32 {
+            let pair = Pair { left: 1, right: 2 };
+            let mut marker = 0;
+            set_marker(borrow pair, inout marker);
+            marker
+        }"#;
+    assert_eq!(exit(src), 42);
+}
+
+#[test]
+fn inout_zst_uses_a_physical_slot_without_copying_back() {
+    let src = r#"struct Empty {}
+        fn reset(inout value: Empty, n: i32) -> i32 {
+            value = Empty {};
+            n
+        }
+        fn main() -> i32 {
+            let mut value = Empty {};
+            let answer = 42;
+            let observed = reset(inout value, answer);
+            if answer == 42 { observed } else { 1 }
+        }"#;
+    assert_eq!(exit(src), 42);
+}
+
+#[test]
+fn payloadless_enum_before_inout_uses_the_static_writeback_slot() {
+    let src = r#"enum Maybe { Some(i32), None }
+        fn set_marker(value: Maybe, inout marker: i32) { marker = 42; }
+        fn main() -> i32 {
+            let mut marker = 0;
+            set_marker(Maybe.None, inout marker);
+            marker
+        }"#;
+    assert_eq!(exit(src), 42);
+}
