@@ -1,0 +1,17 @@
+// Deterministic LCG (Numerical Recipes constants) — reproducible "randomness"
+// so the maze, and therefore the test, is pinned.
+pub struct Lcg {
+    state: i64,
+
+    fn new(seed: i64) -> Self {
+        Self { state: seed }
+    }
+
+    // Next value in [0, bound). Uses the high bits for better spread.
+    fn next(inout self, bound: i64) -> i64 {
+        self.state = (self.state * 1664525 + 1013904223) % 4294967296;
+        let hi = self.state / 65536;
+        let r = hi % bound;
+        if r < 0 { r + bound } else { r }
+    }
+}

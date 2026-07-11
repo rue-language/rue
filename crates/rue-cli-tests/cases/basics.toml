@@ -117,3 +117,34 @@ files = [
 args = ["a.rue", "b.rue"]
 compile_fail = true
 error_contains = ["-o"]
+
+# `Self.assoc_fn(args)` resolves like `StructName.assoc_fn(args)` with Self
+# bound to the enclosing struct (RUE-639: the parser used to hard-expect `{`
+# after Self in expression position). The negative-literal argument guards
+# the constraint path (the RUE-633 miscompile family).
+[[case]]
+name = "self_assoc_fn_call"
+files = [
+    { path = "main.rue", source = """
+struct Counter {
+    n: i64,
+
+    fn with(n: i64) -> Self {
+        Self { n: n }
+    }
+
+    fn shifted(borrow self) -> Self {
+        Self.with(self.n + (0 - 1))
+    }
+
+    fn value(borrow self) -> i64 { self.n }
+}
+
+fn main() -> i32 {
+    let c = Counter.with(43);
+    let d = c.shifted();
+    @intCast(d.value())
+}
+""" },
+]
+exit_code = 42

@@ -2205,6 +2205,19 @@ where
             })
         });
 
+    // Bare `Self` as a type-name expression: `Self.assoc_fn(args)` resolves
+    // exactly like `StructName.assoc_fn(args)` through the ordinary postfix
+    // member-call machinery (sema binds `Self` to the enclosing struct in
+    // `comptime_type_vars`, RUE-123). Must come AFTER `self_type_expr` in the
+    // choice so `Self { ... }` still parses as a struct literal (RUE-639).
+    let self_type_name = just(TokenKind::SelfType).map_with(|_, e| {
+        let span = span_from_extra(e);
+        Expr::Ident(Ident {
+            name: e.state().syms.self_type,
+            span,
+        })
+    });
+
     // Primary expression (before field access and indexing)
     // Note: literal_parser() includes unit_lit which must come before paren_expr
     // so () is parsed as unit, not empty parens
@@ -2218,6 +2231,7 @@ where
         control_flow_parser(expr.clone(), block_like.clone()),
         self_expr,
         self_type_expr,
+        self_type_name,
         any_intrinsic_call,
         array_lit,
         anon_struct_type_expr,
