@@ -1,0 +1,49 @@
+# Free-function body binding regressions (RUE-661).
+#
+# Receiverless functions owned by an anonymous type are represented as FnDecls,
+# just like free functions. Demand-driven analysis must use the declaration
+# index's ownership classification rather than selecting the first same-named
+# FnDecl in raw RIR order.
+
+[section]
+id = "cli.free_function_binding"
+name = "Free-function body binding"
+description = "Reachable free functions bind to their exact indexed declarations."
+
+[[case]]
+name = "anonymous_associated_function_cannot_hijack_free_body"
+differential_opt = true
+files = [{ path = "main.rue", source = """
+fn HiddenType() -> type {
+    struct {
+        fn collide() -> i32 { 99 }
+    }
+}
+
+const Hidden = HiddenType();
+
+fn collide() -> i32 { 42 }
+
+fn main() -> i32 {
+    if Hidden.collide() == 99 { collide() } else { 1 }
+}
+""" }]
+stdout = ""
+exit_code = 42
+
+[[case]]
+name = "free_body_binding_is_source_order_independent"
+differential_opt = true
+files = [{ path = "main.rue", source = """
+fn collide() -> i32 { 42 }
+
+fn main() -> i32 { collide() }
+
+fn HiddenType() -> type {
+    struct {
+        fn collide() -> i32 { 99 }
+    }
+}
+""" }]
+stdout = ""
+exit_code = 42
