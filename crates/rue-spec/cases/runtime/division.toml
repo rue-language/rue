@@ -17,7 +17,7 @@ fn main() -> i32 {
     x / 0
 }
 """
-exit_code = 101
+runtime_error = "division by zero"
 
 [[case]]
 name = "mod_by_zero_exit_101"
@@ -28,7 +28,7 @@ fn main() -> i32 {
     x % 0
 }
 """
-exit_code = 101
+runtime_error = "division by zero"
 
 # =============================================================================
 # Both Division and Remainder Affected
@@ -42,7 +42,7 @@ fn main() -> i32 {
     10 / 0
 }
 """
-exit_code = 101
+runtime_error = "division by zero"
 
 [[case]]
 name = "remainder_by_zero"
@@ -52,7 +52,7 @@ fn main() -> i32 {
     10 % 0
 }
 """
-exit_code = 101
+runtime_error = "division by zero"
 
 [[case]]
 name = "computed_divisor_zero"
@@ -64,4 +64,4 @@ fn main() -> i32 {
     10 / (x - y)
 }
 """
-exit_code = 101
+runtime_error = "division by zero"
