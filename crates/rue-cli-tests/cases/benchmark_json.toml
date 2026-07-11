@@ -1,0 +1,28 @@
+[section]
+id = "cli.benchmark_json"
+name = "Benchmark JSON timing contract"
+description = """
+RUE-642 pins the honest inclusive-span schema and ensures a restrictive
+RUST_LOG filter affects log formatting without disabling timing collection.
+"""
+
+[[case]]
+name = "timing_survives_restrictive_log_filter"
+files = [{ path = "main.rue", source = "fn main() -> i32 { 42 }\n" }]
+args = ["--benchmark-json", "main.rue", "-o", "prog"]
+env = { RUST_LOG = "error" }
+exit_code = 42
+compile_stdout_contains = [
+  '"schema_version":2',
+  '"timing_model":"inclusive_spans"',
+  '"name":"compile"',
+  '"root_invocations":1',
+  '"name":"lexer"',
+  '"name":"parser"',
+  '"name":"semantic_astgen"',
+  '"source_metrics":',
+  '"files":1',
+  '"bytes":24',
+  '"lines":1',
+  '"tokens":',
+]
