@@ -17,6 +17,7 @@ impl<'a> Sema<'a> {
     /// enabling relative import resolution during @import.
     pub fn set_file_paths(&mut self, file_paths: HashMap<FileId, String>) {
         self.file_paths = file_paths;
+        self.refresh_type_symbol_paths();
     }
 
     /// Set stable source identities used when generated symbols need a module
@@ -24,6 +25,13 @@ impl<'a> Sema<'a> {
     /// relocating a source tree cannot change machine-level names.
     pub fn set_symbol_paths(&mut self, symbol_paths: HashMap<FileId, String>) {
         self.symbol_paths = symbol_paths;
+        self.refresh_type_symbol_paths();
+    }
+
+    fn refresh_type_symbol_paths(&self) {
+        let mut effective_paths = self.file_paths.clone();
+        effective_paths.extend(self.symbol_paths.clone());
+        self.type_pool.set_symbol_paths(effective_paths);
     }
 
     /// Get the source file path for a span.

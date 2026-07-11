@@ -2762,6 +2762,166 @@ mod tests {
     }
 
     #[test]
+    fn test_colliding_type_symbols_use_stable_paths_not_file_ids() {
+        fn colliding_type_names(
+            physical_root: &str,
+            left_id: FileId,
+            right_id: FileId,
+            reverse_siblings: bool,
+        ) -> std::collections::BTreeSet<String> {
+            let main_path = format!("{physical_root}/main.rue");
+            let left_path = format!("{physical_root}/left/shared.rue");
+            let right_path = format!("{physical_root}/right/shared.rue");
+            let mut sources = vec![
+                SourceFile::new(
+                    &main_path,
+                    r#"fn main() -> i32 {
+                        let left = @import("left/shared.rue");
+                        let right = @import("right/shared.rue");
+                        left.entry() + right.entry()
+                    }"#,
+                    FileId::new(1),
+                ),
+                SourceFile::new(
+                    &left_path,
+                    r#"pub struct Payload {
+                        value: i32,
+                        text: String,
+                        fn score(borrow self) -> i32 { self.value }
+                    }
+                    drop fn Payload(self) { @dbg(self.value); }
+                    pub enum Choice { Empty, Text(String) }
+                    pub fn entry() -> i32 {
+                        let payload = Payload { value: 10, text: "left" };
+                        payload.score()
+                    }"#,
+                    left_id,
+                ),
+                SourceFile::new(
+                    &right_path,
+                    r#"pub struct Payload {
+                        value: i32,
+                        text: String,
+                        fn score(borrow self) -> i32 { self.value }
+                    }
+                    drop fn Payload(self) { @dbg(self.value); }
+                    pub enum Choice { Empty, Text(String) }
+                    pub fn entry() -> i32 {
+                        let payload = Payload { value: 20, text: "right" };
+                        payload.score()
+                    }"#,
+                    right_id,
+                ),
+            ];
+            if reverse_siblings {
+                sources.swap(1, 2);
+            }
+
+            let mut unit = CompilationUnit::new(sources, CompileOptions::default());
+            unit.set_symbol_paths(std::collections::HashMap::from([
+                (FileId::new(1), "main.rue".to_string()),
+                (left_id, "left/shared.rue".to_string()),
+                (right_id, "right/shared.rue".to_string()),
+            ]));
+            unit.run_frontend().expect("frontend should compile");
+
+            let pool = unit.type_pool();
+            let mut names = std::collections::BTreeSet::new();
+            for id in pool.all_struct_ids() {
+                if pool.struct_def(id).name == "Payload" {
+                    names.insert(format!("struct:{}", pool.struct_symbol_name(id)));
+                }
+            }
+            for id in pool.all_enum_ids() {
+                if pool.enum_def(id).name == "Choice" {
+                    names.insert(format!("enum:{}", pool.enum_symbol_name(id)));
+                }
+            }
+            for function in unit.functions() {
+                let name = &function.analyzed.name;
+                if name.contains("Payload$") || name.contains("Choice$") {
+                    names.insert(format!("fn:{name}"));
+                }
+            }
+            names
+        }
+
+        let expected: std::collections::BTreeSet<_> = [
+            "struct:Payload$left_2fshared_2erue",
+            "struct:Payload$right_2fshared_2erue",
+            "enum:Choice$left_2fshared_2erue",
+            "enum:Choice$right_2fshared_2erue",
+            "fn:Payload$left_2fshared_2erue.score",
+            "fn:Payload$right_2fshared_2erue.score",
+            "fn:Payload$left_2fshared_2erue.__drop",
+            "fn:Payload$right_2fshared_2erue.__drop",
+            "fn:__rue_drop_Payload$left_2fshared_2erue",
+            "fn:__rue_drop_Payload$right_2fshared_2erue",
+            "fn:__rue_drop_Choice$left_2fshared_2erue",
+            "fn:__rue_drop_Choice$right_2fshared_2erue",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+        assert_eq!(
+            colliding_type_names("/tmp/rue-short-root", FileId::new(2), FileId::new(3), false,),
+            expected
+        );
+        assert_eq!(
+            colliding_type_names(
+                "/tmp/a-deliberately-much-longer-relocated-rue-root",
+                FileId::new(42),
+                FileId::new(7),
+                true,
+            ),
+            expected,
+            "type-derived symbols should ignore physical roots, FileIds, and source-vector order"
+        );
+    }
+
+    #[test]
+    fn test_cross_kind_type_collision_qualifies_drop_glue() {
+        let main_id = FileId::new(1);
+        let struct_id = FileId::new(2);
+        let enum_id = FileId::new(3);
+        let sources = vec![
+            SourceFile::new("main.rue", "fn main() -> i32 { 0 }", main_id),
+            SourceFile::new(
+                "left/clash.rue",
+                "pub struct Clash { text: String }",
+                struct_id,
+            ),
+            SourceFile::new(
+                "right/clash.rue",
+                "pub enum Clash { Text(String) }",
+                enum_id,
+            ),
+        ];
+
+        let mut unit = CompilationUnit::new(sources, CompileOptions::default());
+        unit.set_symbol_paths(std::collections::HashMap::from([
+            (main_id, "main.rue".to_string()),
+            (struct_id, "left/clash.rue".to_string()),
+            (enum_id, "right/clash.rue".to_string()),
+        ]));
+        unit.run_frontend().expect("frontend should compile");
+
+        let drop_glue_names: std::collections::BTreeSet<_> = unit
+            .functions()
+            .iter()
+            .map(|function| function.analyzed.name.as_str())
+            .filter(|name| name.starts_with("__rue_drop_Clash"))
+            .collect();
+        assert_eq!(
+            drop_glue_names,
+            std::collections::BTreeSet::from([
+                "__rue_drop_Clash$left_2fclash_2erue",
+                "__rue_drop_Clash$right_2fclash_2erue",
+            ])
+        );
+    }
+
+    #[test]
     fn test_imported_private_helper_called_by_public_api_is_not_unused() {
         let sources = vec![
             SourceFile::new(

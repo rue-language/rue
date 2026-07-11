@@ -41,6 +41,7 @@ use std::sync::{PoisonError, RwLock};
 use lasso::Spur;
 use rue_span::FileId;
 
+use crate::path_norm::{mangle_symbol_component, normalize_module_path};
 use crate::types::{
     ArrayTypeId, EnumDef, EnumId, PtrConstTypeId, PtrMutTypeId, StructDef, StructId, Type, TypeKind,
 };
@@ -287,6 +288,9 @@ struct TypeInternPoolInner {
 
     /// Nominal enum lookup: (defining file, source name) -> InternedType.
     enum_by_file_name: HashMap<(FileId, Spur), InternedType>,
+
+    /// Relocation-stable logical identity for each defining source file.
+    symbol_paths: HashMap<FileId, String>,
 }
 
 impl TypeInternPool {
@@ -302,8 +306,38 @@ impl TypeInternPool {
                 struct_by_file_name: HashMap::new(),
                 enum_by_name: HashMap::new(),
                 enum_by_file_name: HashMap::new(),
+                symbol_paths: HashMap::new(),
             }),
         }
+    }
+
+    /// Set relocation-stable source identities for type-derived symbols.
+    pub(crate) fn set_symbol_paths(&self, symbol_paths: HashMap<FileId, String>) {
+        self.inner
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .symbol_paths = symbol_paths;
+    }
+
+    fn file_symbol_component(inner: &TypeInternPoolInner, file_id: FileId) -> String {
+        inner
+            .symbol_paths
+            .get(&file_id)
+            .map(|path| mangle_symbol_component(&normalize_module_path(path)))
+            // Preserve the context-free pool's historical fallback. Compiler
+            // entry points install logical identities before analysis.
+            .unwrap_or_else(|| file_id.index().to_string())
+    }
+
+    fn nominal_name_collides(inner: &TypeInternPoolInner, name: Spur) -> bool {
+        inner
+            .struct_by_file_name
+            .keys()
+            .chain(inner.enum_by_file_name.keys())
+            .filter(|(_, existing_name)| *existing_name == name)
+            .take(2)
+            .count()
+            > 1
     }
 
     /// Return the flattened runtime ABI width of `ty` in eight-byte slots.
@@ -793,14 +827,14 @@ impl TypeInternPool {
     /// methods (`P.get`), associated functions (`P::make`), destructors
     /// (`P.__drop`), and drop glue (`__rue_drop_P`) — RUE-571.
     ///
-    /// Same-named structs across files are legal (RUE-558), but these symbols
-    /// are program-wide identities: when this struct's source name is
-    /// registered by more than one file, the name is qualified with the
-    /// defining file (`P$2`). `$` cannot appear in a source identifier, so a
-    /// qualified name can never collide with a real type; unambiguous names
-    /// (the common case) are returned bare, keeping symbols and `--emit`
-    /// output unchanged. Builtins are never qualified (their symbols pair
-    /// with runtime-provided definitions).
+    /// Same-named nominal types across files are legal (RUE-558), but these
+    /// symbols are program-wide identities: when this struct's source name is
+    /// registered by more than one struct or enum, the name is qualified with
+    /// the defining file (`P$left_2fmodel_2erue`). `$` cannot appear in a source
+    /// identifier, so a qualified name can never collide with a real type;
+    /// unambiguous names (the common case) are returned bare, keeping symbols
+    /// and `--emit` output unchanged. Builtins are never qualified (their
+    /// symbols pair with runtime-provided definitions).
     ///
     /// Every layer that names a function after a type — sema (definition and
     /// call sites), the drop-glue generator in `rue-compiler`, and both
@@ -816,22 +850,18 @@ impl TypeInternPool {
                 pool_index, other
             ),
         };
-        if !data.def.is_builtin {
-            let defining_files = inner
-                .struct_by_file_name
-                .keys()
-                .filter(|(_, n)| *n == data.name)
-                .take(2)
-                .count();
-            if defining_files > 1 {
-                return format!("{}${}", data.def.name, data.def.file_id.0);
-            }
+        if !data.def.is_builtin && Self::nominal_name_collides(&inner, data.name) {
+            return format!(
+                "{}${}",
+                data.def.name,
+                Self::file_symbol_component(&inner, data.def.file_id)
+            );
         }
         data.def.name.clone()
     }
 
     /// The symbol-name component for an enum's drop glue (`__rue_drop_E`),
-    /// file-qualified when the enum name is registered by more than one file.
+    /// file-qualified when another struct or enum has the same source name.
     /// See [`Self::struct_symbol_name`] (RUE-571) — same rule, same reason.
     pub fn enum_symbol_name(&self, enum_id: EnumId) -> String {
         let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
@@ -843,14 +873,12 @@ impl TypeInternPool {
                 pool_index, other
             ),
         };
-        let defining_files = inner
-            .enum_by_file_name
-            .keys()
-            .filter(|(_, n)| *n == data.name)
-            .take(2)
-            .count();
-        if defining_files > 1 {
-            return format!("{}${}", data.def.name, data.def.file_id.0);
+        if Self::nominal_name_collides(&inner, data.name) {
+            return format!(
+                "{}${}",
+                data.def.name,
+                Self::file_symbol_component(&inner, data.def.file_id)
+            );
         }
         data.def.name.clone()
     }
@@ -1278,6 +1306,7 @@ impl Clone for TypeInternPool {
                 struct_by_file_name: inner.struct_by_file_name.clone(),
                 enum_by_name: inner.enum_by_name.clone(),
                 enum_by_file_name: inner.enum_by_file_name.clone(),
+                symbol_paths: inner.symbol_paths.clone(),
             }),
         }
     }
@@ -2002,6 +2031,61 @@ mod tests {
         // colliding user struct still is, so the pair stays distinct.
         assert_eq!(pool.struct_symbol_name(b1), "StrBufTest");
         assert_eq!(pool.struct_symbol_name(b2), "StrBufTest$3");
+    }
+
+    #[test]
+    fn type_symbol_names_use_stable_paths_and_survive_pool_clone() {
+        let pool = TypeInternPool::new();
+        let interner = ThreadedRodeo::default();
+        let left_id = FileId::new(42);
+        let right_id = FileId::new(7);
+        pool.set_symbol_paths(HashMap::from([
+            (left_id, "left/shared.rue".to_string()),
+            (right_id, "right/shared.rue".to_string()),
+        ]));
+
+        let payload = interner.get_or_intern("Payload");
+        let struct_def = |file_id| StructDef {
+            name: "Payload".to_string(),
+            fields: vec![],
+            is_copy: false,
+            is_linear: false,
+            destructor: None,
+            is_builtin: false,
+            is_pub: true,
+            file_id,
+        };
+        let (left_struct, _) = pool.register_struct(payload, struct_def(left_id));
+        let (right_struct, _) = pool.register_struct(payload, struct_def(right_id));
+
+        let choice = interner.get_or_intern("Choice");
+        let enum_def = |file_id| EnumDef {
+            name: "Choice".to_string(),
+            variants: vec!["Value".to_string()],
+            variant_payloads: vec![vec![]],
+            is_pub: true,
+            file_id,
+        };
+        let (left_enum, _) = pool.register_enum(choice, enum_def(left_id));
+        let (right_enum, _) = pool.register_enum(choice, enum_def(right_id));
+
+        let cloned = pool.clone();
+        assert_eq!(
+            cloned.struct_symbol_name(left_struct),
+            "Payload$left_2fshared_2erue"
+        );
+        assert_eq!(
+            cloned.struct_symbol_name(right_struct),
+            "Payload$right_2fshared_2erue"
+        );
+        assert_eq!(
+            cloned.enum_symbol_name(left_enum),
+            "Choice$left_2fshared_2erue"
+        );
+        assert_eq!(
+            cloned.enum_symbol_name(right_enum),
+            "Choice$right_2fshared_2erue"
+        );
     }
 
     #[test]
