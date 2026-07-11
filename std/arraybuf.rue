@@ -38,15 +38,24 @@
 // SCOPE / KNOWN LIMITATIONS (tracked separately — this file deliberately does
 // not work around them):
 //
-//   * Trivially-droppable element types only. `get`/`pop` return an element
-//     *by copy* wrapped in `Option(T)` (`@ptr_read`, RUE-313). Move-out of a
-//     non-Copy element is not yet supported, and the destructor drops only the
-//     backing buffer, not per-element glue. An element type that is `linear` or
-//     carries a destructor is therefore REJECTED at instantiation by the
-//     `@require_droppable(T)` gate in the constructor below (E0498 / E0499,
-//     RUE-388) — otherwise its `drop fn` would silently leak / a linear value
-//     would never be consumed. Lifting this to true per-element ownership needs
-//     container/element multiplicity propagation (a future ADR).
+//   * Droppable element types. The container runs each live element's drop glue
+//     in ascending index order before freeing its buffer (Rust's `Vec<T>` drop
+//     discipline, RUE-646), so droppable-but-non-linear elements — nested
+//     `ArrayBuf`, `ArrayBuf(StrBuf)`, lists of `drop fn` structs — are legal.
+//     Only a `linear` element type is REJECTED at instantiation by the
+//     `@require_droppable(T)` gate in the constructor below (E0499, RUE-388) —
+//     a linear value must be consumed exactly once, and the container can only
+//     drop, not discharge, its elements. Lifting that to true linear-element
+//     ownership needs container/element multiplicity propagation (a future ADR).
+//
+//     READING A NON-COPY ELEMENT — use `pop`, not `get` (RUE-651). `pop`/`pop_or`
+//     MOVE the element out (they retire the slot, so there is exactly one owner)
+//     and are sound for any `T`. `get`/`get_or` return the element *by copy*
+//     (`@ptr_read`): for a `Copy` `T` that is fine, but for a NON-COPY `T` the
+//     copy ALIASES the element's owned buffer — both the copy and the still-live
+//     slot would run drop glue, a double-free (masked today only by the no-op
+//     bump allocator). Until borrow-returning reads exist (RUE-651), treat
+//     `get`/`get_or` as Copy-element-only.
 //   * Multi-slot aggregate element types (e.g. a two-field struct) work as long
 //     as they are trivially droppable: every aggregate is laid out
 //     ascending-in-address and `@ptr_read`/`@ptr_write` walk slots upward from
@@ -64,16 +73,17 @@
 const option = @import("option.rue");
 
 pub fn ArrayBuf(comptime T: type) -> type {
-    // Well-formedness gate (RUE-388): ArrayBuf owns a heap buffer of `T` and
-    // frees it wholesale in its `drop fn` at scope exit — it does NOT yet run
-    // per-element drop glue, nor track element linearity. Instantiating it with
-    // an element type that is `linear` or carries a destructor would silently
-    // leak that element (its `drop fn` would never run / a linear value would
-    // never be consumed). Until container/element multiplicity propagation is
-    // designed (a future ADR — out of scope), reject such element types at
-    // instantiation with a clear compile error (E0498 / E0499) rather than
-    // miscompiling. Trivially-droppable elements (primitives, pointers, `Copy`
-    // structs of them) pass.
+    // Well-formedness gate (RUE-388/RUE-646): ArrayBuf owns a heap buffer of `T`
+    // and, at scope exit, runs each live element's drop glue in ascending index
+    // order before freeing the buffer (Rust's `Vec<T>` drop discipline). It does
+    // NOT yet track element linearity, so instantiating it with a `linear`
+    // element type would leak that element (a linear value must be consumed
+    // exactly once, and the container can only drop, not discharge, its
+    // elements). Until container/element multiplicity propagation is designed (a
+    // future ADR — out of scope), reject only `linear` element types at
+    // instantiation with a clear compile error (E0499) rather than miscompiling.
+    // Droppable elements (primitives, pointers, `Copy` structs, destructor-
+    // bearing structs, nested containers) pass.
     @require_droppable(T);
     struct {
         buf: ptr mut T,
@@ -118,7 +128,9 @@ pub fn ArrayBuf(comptime T: type) -> type {
         // Element `i` by copy, wrapped in `option.Option(T)`: `Some(x)` when in
         // bounds, `None` otherwise (ADR-0041). The enclosing element type `T`
         // is in scope here, so the method can pass it to `option.Option(T)`
-        // (RUE-313).
+        // (RUE-313). COPY-ELEMENT-ONLY: for a non-Copy `T` the copy aliases the
+        // element's owned buffer (double-free — RUE-651); read owned elements
+        // with `pop`.
         fn get(borrow self, i: u64) -> option.Option(T) {
             let O = option.Option(T);
             if i < self.len {
@@ -130,7 +142,8 @@ pub fn ArrayBuf(comptime T: type) -> type {
 
         // Element `i` by copy, or `default` when `i` is out of bounds. An
         // ergonomic default-based read for callers that don't want to match on
-        // `Option`.
+        // `Option`. COPY-ELEMENT-ONLY: aliases an owned element's buffer for a
+        // non-Copy `T` (double-free — RUE-651); read owned elements with `pop`.
         fn get_or(borrow self, i: u64, default: T) -> T {
             if i < self.len {
                 checked { @ptr_read(@ptr_offset(self.buf, i)) }
@@ -189,8 +202,13 @@ pub fn ArrayBuf(comptime T: type) -> type {
         }
 
         // Overwrite element `i` with `x`. Out-of-bounds indices are ignored.
+        // The element previously at `i` is dropped first (RUE-646): reading it
+        // out and `@drop`ping it runs its destructor, so overwriting a
+        // droppable `T` does not leak the old value. For a `Copy` `T`, `@drop`
+        // has no glue and this is free.
         fn set(inout self, i: u64, x: T) {
             if i < self.len {
+                @drop(checked { @ptr_read(@ptr_offset(self.buf, i)) });
                 checked {
                     let slot = @ptr_offset(self.buf, i);
                     @ptr_write(slot, x);
@@ -198,9 +216,15 @@ pub fn ArrayBuf(comptime T: type) -> type {
             }
         }
 
-        // Drop all elements (keeps the allocated capacity). For Copy `T` this
-        // just resets the length.
+        // Drop all elements (keeps the allocated capacity). Each live element's
+        // drop glue runs before the length is reset (RUE-646); for a `Copy` `T`
+        // this is just resetting the length.
         fn clear(inout self) {
+            let mut i: u64 = 0;
+            while i < self.len {
+                @drop(checked { @ptr_read(@ptr_offset(self.buf, i)) });
+                i = i + 1;
+            }
             self.len = 0;
         }
 
@@ -211,6 +235,11 @@ pub fn ArrayBuf(comptime T: type) -> type {
         // scope exit. Call `free()` only to reclaim the buffer before then; it
         // resets `buf`/`cap` so the later scope-exit drop is a safe no-op.
         fn free(inout self) {
+            let mut i: u64 = 0;
+            while i < self.len {
+                @drop(checked { @ptr_read(@ptr_offset(self.buf, i)) });
+                i = i + 1;
+            }
             checked { @free(self.buf, self.cap); };
             let zero: u64 = 0;
             self.buf = checked { @int_to_ptr(zero) };
@@ -218,15 +247,22 @@ pub fn ArrayBuf(comptime T: type) -> type {
             self.cap = 0;
         }
 
-        // Destructor: free the backing buffer automatically when an `ArrayBuf`
-        // value goes out of scope (RUE-312). A `drop fn(self)` inside the
-        // anonymous struct is monomorphized with the type and registered as the
-        // concrete type's destructor, so the ordinary scope-exit drop glue runs
-        // it — the same machinery a named struct's top-level `drop fn` uses. For
-        // a Copy `T` there is no per-element glue, so freeing the buffer is all
-        // that is required. (After an explicit `free()`, `buf` is null and `cap`
-        // is 0, so `@free(null, 0)` here is a no-op.)
+        // Destructor: run each live element's drop glue, then free the backing
+        // buffer, when an `ArrayBuf` value goes out of scope (RUE-312, RUE-646).
+        // A `drop fn(self)` inside the anonymous struct is monomorphized with
+        // the type and registered as the concrete type's destructor, so the
+        // ordinary scope-exit drop glue runs it — the same machinery a named
+        // struct's top-level `drop fn` uses. Elements 0..len are read out and
+        // `@drop`ped in ascending index order (Rust's `Vec<T>` drop order); for
+        // a `Copy` `T` there is no per-element glue and this loop is free.
+        // (After an explicit `free()`, `len` is 0 so the loop is empty, `buf`
+        // is null, and `@free(null, 0)` is a no-op.)
         drop fn(self) {
+            let mut i: u64 = 0;
+            while i < self.len {
+                @drop(checked { @ptr_read(@ptr_offset(self.buf, i)) });
+                i = i + 1;
+            }
             checked { @free(self.buf, self.cap); };
         }
     }
