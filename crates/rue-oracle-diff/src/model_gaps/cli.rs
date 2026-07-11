@@ -158,12 +158,6 @@ const ENTRIES: &[Entry] = &[
         &[],
     ),
     Entry::new(
-        "cli.const_array_length_in_aggregate",
-        "const_struct_field_2d_with_methods",
-        semantic(SemanticGapKind::FlattenedParameterSlot),
-        &[],
-    ),
-    Entry::new(
         "cli.differential_opt",
         "raw_pointer_place_operands_across_opt_levels",
         intrinsic(UnsupportedIntrinsicKind::RawAddress),
@@ -215,18 +209,6 @@ const ENTRIES: &[Entry] = &[
         "cli.method_receiver_byref_places",
         "inout_self_through_inout_param",
         semantic(SemanticGapKind::InoutParameterForwarding),
-        &[],
-    ),
-    Entry::new(
-        "cli.method_receivers",
-        "arg_reads_receiver",
-        semantic(SemanticGapKind::FlattenedParameterSlot),
-        &[],
-    ),
-    Entry::new(
-        "cli.method_receivers",
-        "stack_push_top_count",
-        semantic(SemanticGapKind::FlattenedParameterSlot),
         &[],
     ),
     Entry::new(

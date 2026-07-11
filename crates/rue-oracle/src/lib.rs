@@ -257,6 +257,7 @@ pub enum ContractViolationKind {
     IntrinsicArity,
     IntrinsicSignature,
     StringConstantIndex,
+    CallParameterLayout,
     ParameterSlotOutOfBounds,
     UnboundBlockParameter,
     EnumPayloadProjection,
@@ -709,27 +710,14 @@ struct Interp<'a> {
 /// values from executed dominators retain their original evaluation snapshot.
 struct Frame {
     /// Parameters laid out by ABI **slot**, not by logical argument: an
-    /// aggregate argument spans one slot per flattened scalar leaf (a `[i32; 3]`
-    /// occupies three slots), so a later parameter's `Param{index}` is offset by
-    /// the widths of the aggregates before it. The whole aggregate value is kept
-    /// at its base slot; the slots it "occupies" after that are `None` (they are
-    /// only ever reached through the base via a projection, never directly).
+    /// by-value aggregate spans one slot per flattened scalar leaf (a
+    /// `[i32; 3]` occupies three slots), while a physical `borrow` / `inout`
+    /// occupies one pointer slot. The whole semantic value is kept at its base
+    /// slot; extra by-value slots are `None` (they are only reached through the
+    /// base via a projection, never directly).
     params: Vec<Option<Value>>,
     locals: Vec<Option<Value>>,
     cache: HashMap<u32, Value>,
-}
-
-/// Number of ABI parameter slots a value occupies: one per flattened scalar
-/// leaf. Matches the CFG's slot numbering for `Param{index}`, including
-/// zero-sized values: `abi_slot_count` (rue-air typeck) gives unit and empty
-/// structs ZERO slots, so a parameter after a ZST is NOT shifted up.
-fn slot_width(v: &Value) -> usize {
-    match v {
-        Value::Aggregate(elems) => elems.iter().map(slot_width).sum(),
-        Value::Str { slots, .. } => *slots,
-        Value::Unit => 0,
-        _ => 1,
-    }
 }
 
 impl<'a> Interp<'a> {
@@ -1462,10 +1450,97 @@ impl<'a> Interp<'a> {
             .find(|c| c.fn_name() == name)
     }
 
+    /// Number of physical parameter slots occupied by one CFG call argument.
+    ///
+    /// `CfgArgMode` is already the physical mode: sema rewrites by-value slice
+    /// views to `Normal`, while real `borrow` / `inout` arguments carry one
+    /// pointer regardless of the pointee's logical width.
+    fn call_arg_slot_width(&self, ty: Type, mode: CfgArgMode) -> usize {
+        match mode {
+            CfgArgMode::Normal => self.state.type_pool.abi_slot_count(ty) as usize,
+            CfgArgMode::Inout | CfgArgMode::Borrow => 1,
+        }
+    }
+
+    /// Validate the caller's complete physical argument layout against the
+    /// callee before any operand runs.
+    ///
+    /// Slot totals alone are insufficient: all three modes occupy one slot
+    /// for scalar arguments, but disagree about whether that slot contains a
+    /// value, a shared pointer, or a writable pointer. `Normal` deliberately
+    /// ignores the writable bit because sema lowers first-class `borrow` /
+    /// `inout` slice views to by-value fat pointers while retaining their
+    /// source-level writability metadata on the callee slots.
+    fn preflight_call_layout(
+        &self,
+        cfg: &Cfg,
+        name: &str,
+        args: impl IntoIterator<Item = (Type, CfgArgMode)>,
+    ) -> Step<()> {
+        let mut base = 0usize;
+        let num_params = cfg.num_params() as usize;
+
+        for (index, (ty, mode)) in args.into_iter().enumerate() {
+            let width = self.call_arg_slot_width(ty, mode);
+            let Some(end) = base.checked_add(width) else {
+                return Err(unsupported(
+                    UnsupportedKind::ContractViolation(ContractViolationKind::CallParameterLayout),
+                    format!("call to '{name}' argument {index} overflows the parameter layout"),
+                ));
+            };
+            if end > num_params {
+                return Err(unsupported(
+                    UnsupportedKind::ContractViolation(ContractViolationKind::CallParameterLayout),
+                    format!(
+                        "call to '{name}' argument {index} occupies parameter slots {base}..{end}, but the callee declares {num_params}"
+                    ),
+                ));
+            }
+
+            let mode_matches = match mode {
+                CfgArgMode::Normal => (base..end).all(|slot| {
+                    !cfg.is_param_inout(u32::try_from(slot).expect("slot is within u32 CFG bounds"))
+                }),
+                CfgArgMode::Borrow => {
+                    let slot = u32::try_from(base).expect("slot is within u32 CFG bounds");
+                    cfg.is_param_inout(slot) && !cfg.is_param_writable(slot)
+                }
+                CfgArgMode::Inout => {
+                    let slot = u32::try_from(base).expect("slot is within u32 CFG bounds");
+                    cfg.is_param_inout(slot) && cfg.is_param_writable(slot)
+                }
+            };
+            if !mode_matches {
+                return Err(unsupported(
+                    UnsupportedKind::ContractViolation(ContractViolationKind::CallParameterLayout),
+                    format!(
+                        "call to '{name}' argument {index} has physical mode {mode:?}, which contradicts callee parameter slot {base}"
+                    ),
+                ));
+            }
+
+            base = end;
+        }
+
+        if base != num_params {
+            return Err(unsupported(
+                UnsupportedKind::ContractViolation(ContractViolationKind::CallParameterLayout),
+                format!(
+                    "call to '{name}' occupies {base} parameter slots, but the callee declares {num_params}"
+                ),
+            ));
+        }
+        Ok(())
+    }
+
     /// Returns the call's value **and** its final parameter slots, so the caller
     /// can copy out `inout` parameters (Rue `inout` is copy-in / copy-out, which
     /// is observably identical to by-reference under the law of exclusivity).
-    fn call(&mut self, name: &str, args: &[Value]) -> Step<(Value, Vec<Option<Value>>)> {
+    fn call(
+        &mut self,
+        name: &str,
+        args: &[(Value, Type, CfgArgMode)],
+    ) -> Step<(Value, Vec<Option<Value>>)> {
         // Bound recursion *depth* (shared across activations) before descending,
         // so unbounded Rue recursion resolves to a typed resource failure
         // instead of overflowing the Rust stack and aborting the process
@@ -1482,29 +1557,41 @@ impl<'a> Interp<'a> {
         result
     }
 
-    fn call_inner(&mut self, name: &str, args: &[Value]) -> Step<(Value, Vec<Option<Value>>)> {
+    fn call_inner(
+        &mut self,
+        name: &str,
+        args: &[(Value, Type, CfgArgMode)],
+    ) -> Step<(Value, Vec<Option<Value>>)> {
         let cfg = self.find_cfg(name).ok_or_else(|| {
             unsupported(
                 UnsupportedKind::ContractViolation(ContractViolationKind::MissingFunctionBody),
                 format!("call to '{name}'"),
             )
         })?;
-        // Lay arguments out by slot: place each whole value at its base slot,
-        // then pad with `None` for the extra slots an aggregate occupies. A
-        // zero-sized argument occupies no slot at all (matching
-        // `abi_slot_count`), so it is never materialized in `params` and the
-        // following arguments are not shifted.
+        self.preflight_call_layout(cfg, name, args.iter().map(|(_, ty, mode)| (*ty, *mode)))?;
+        // Lay arguments out by physical slot: place each whole semantic value
+        // at its base slot, then pad with `None` for extra by-value aggregate
+        // slots. A zero-sized `Normal` argument occupies no slot; a physical
+        // borrow/inout still occupies its one pointer slot.
         let mut param_slots: Vec<Option<Value>> = Vec::with_capacity(args.len());
-        for a in args {
-            let w = slot_width(a);
+        for (value, ty, mode) in args {
+            // Parameter indices are a property of the static ABI contract,
+            // never the active runtime value shape. A by-value enum reserves
+            // its widest payload even when its current variant is a bare
+            // discriminant; a physical borrow/inout is one pointer slot even
+            // when its pointee is an aggregate. Slice views reach CFG as
+            // `Normal`, because sema already materialized their by-value fat
+            // pointer.
+            let w = self.call_arg_slot_width(*ty, *mode);
             if w == 0 {
                 continue;
             }
-            param_slots.push(Some(a.clone()));
+            param_slots.push(Some(value.clone()));
             for _ in 1..w {
                 param_slots.push(None);
             }
         }
+        debug_assert_eq!(param_slots.len(), cfg.num_params() as usize);
         let mut frame = Frame {
             params: param_slots,
             locals: vec![None; cfg.num_locals() as usize],
@@ -1919,7 +2006,7 @@ impl<'a> Interp<'a> {
                     return Ok(());
                 }
                 if let Some(dtor) = sd.destructor.clone() {
-                    self.call(&dtor, &[v.clone()])?;
+                    self.call(&dtor, &[(v.clone(), ty, CfgArgMode::Normal)])?;
                 }
                 // A builtin type's destructor is its entire drop glue; a
                 // user struct then drops its fields in declaration order.
@@ -1965,9 +2052,9 @@ impl<'a> Interp<'a> {
         Ok(())
     }
 
-    /// Whether `ty` occupies ZERO ABI parameter slots — the type-level twin of
-    /// [`slot_width`] and of the compiler's `abi_slot_count == 0` (rue-air
-    /// typeck): unit/never/comptime types, structs whose fields are all
+    /// Whether `ty` occupies ZERO by-value ABI parameter slots, matching the
+    /// compiler's `abi_slot_count == 0` (rue-air typeck):
+    /// unit/never/comptime types, structs whose fields are all
     /// zero-sized, and arrays that are empty or have zero-sized elements.
     /// Enums are never zero-sized (they always carry a discriminant slot).
     fn is_zero_sized(&self, ty: Type) -> bool {
@@ -2292,19 +2379,32 @@ impl<'a> Interp<'a> {
                 } else {
                     None
                 };
+                if !is_string_builtin && missing_call_kind.is_none() {
+                    let callee = self
+                        .find_cfg(&fname)
+                        .expect("a present user call has a CFG body");
+                    self.preflight_call_layout(
+                        callee,
+                        &fname,
+                        arg_types.iter().copied().zip(arg_modes.iter().copied()),
+                    )?;
+                }
                 // Copy-in every argument (by value); for `inout` args, remember
                 // the base parameter slot and the caller place to copy back into.
                 let mut argvals = Vec::with_capacity(call_args.len());
                 let mut writebacks: Vec<(usize, Place)> = Vec::new();
                 let mut base = 0usize;
-                for a in &call_args {
+                for (index, a) in call_args.iter().enumerate() {
                     let v = self.eval(cfg, frame, a.value)?;
-                    // A zero-sized argument occupies no parameter slot (see
-                    // `slot_width`): it neither advances `base` nor gets an
-                    // inout write-back (the callee's params hold no slot for
-                    // it to copy back from).
-                    let w = slot_width(&v);
-                    if matches!(a.mode, CfgArgMode::Inout) && w > 0 {
+                    // Derive both callee packing and copy-back bases from the
+                    // same static type + physical passing-mode contract.
+                    let w = self.call_arg_slot_width(arg_types[index], a.mode);
+                    // A physical inout ZST still advances the ABI base by its
+                    // pointer slot, but copying its unique value back has no
+                    // semantic effect and could overwrite a later local that
+                    // shares the ZST's zero-width boundary slot.
+                    if matches!(a.mode, CfgArgMode::Inout) && !self.is_zero_sized(arg_types[index])
+                    {
                         writebacks.push((base, self.lvalue_of(cfg, a.value)?));
                     }
                     argvals.push(v);
@@ -2322,7 +2422,13 @@ impl<'a> Interp<'a> {
                         format!("call to '{fname}'"),
                     ));
                 } else {
-                    let (result, final_params) = self.call(&fname, &argvals)?;
+                    let typed_args: Vec<(Value, Type, CfgArgMode)> = argvals
+                        .into_iter()
+                        .zip(arg_types)
+                        .zip(arg_modes)
+                        .map(|((value, ty), mode)| (value, ty, mode))
+                        .collect();
+                    let (result, final_params) = self.call(&fname, &typed_args)?;
                     // Copy-out: write each inout parameter's final value back into
                     // the caller place it came from.
                     for (slot, place) in writebacks {
