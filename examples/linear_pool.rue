@@ -1,0 +1,43 @@
+// Dogfood #5: linear resource discipline. A Token is linear — the compiler
+// enforces that every acquired token is explicitly returned or destroyed.
+linear struct Token {
+    id: i64,
+}
+
+struct Pool {
+    outstanding: i64,
+    next: i64,
+
+    fn new() -> Self {
+        Self { outstanding: 0, next: 100 }
+    }
+
+    fn acquire(inout self) -> Token {
+        let id = self.next;
+        self.next = self.next + 1;
+        self.outstanding = self.outstanding + 1;
+        Token { id: id }
+    }
+
+    fn release(inout self, t: Token) -> i64 {
+        self.outstanding = self.outstanding - 1;
+        t.id
+    }
+}
+
+fn main() -> i32 {
+    let mut pool = Pool.new();
+    let a = pool.acquire();
+    let b = pool.acquire();
+    let c = pool.acquire();
+
+    // Tokens travel through control flow but must all come home.
+    let id_sum = if a.id > 0 {
+        pool.release(a) + pool.release(b)
+    } else {
+        pool.release(b) + pool.release(a)
+    };
+    let last = pool.release(c);
+    @assert(pool.outstanding == 0, "all released");
+    @intCast(id_sum + last - 261)   // 100+101+102-261 = 42
+}

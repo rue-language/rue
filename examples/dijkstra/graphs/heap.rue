@@ -1,0 +1,76 @@
+const std = @import("std");
+const Ints = std.arraybuf.ArrayBuf(i64);
+
+// Binary min-heap of (priority, payload) pairs in parallel buffers.
+pub struct MinHeap {
+    prio: Ints,
+    load: Ints,
+
+    fn new() -> Self {
+        Self { prio: Ints.new(), load: Ints.new() }
+    }
+
+    fn len(borrow self) -> u64 { self.prio.len() }
+    fn is_empty(borrow self) -> bool { self.prio.len() == 0 }
+
+    fn swap(inout self, a: u64, b: u64) {
+        let pa = self.prio.get_or(a, 0);
+        let pb = self.prio.get_or(b, 0);
+        self.prio.set(a, pb);
+        self.prio.set(b, pa);
+        let la = self.load.get_or(a, 0);
+        let lb = self.load.get_or(b, 0);
+        self.load.set(a, lb);
+        self.load.set(b, la);
+    }
+
+    fn push(inout self, prio: i64, load: i64) {
+        self.prio.push(prio);
+        self.load.push(load);
+        let mut i = self.prio.len() - 1;
+        while i > 0 {
+            let parent = (i - 1) / 2;
+            if self.prio.get_or(parent, 0) <= self.prio.get_or(i, 0) { break; }
+            self.swap(parent, i);
+            i = parent;
+        }
+    }
+
+    // Pop the minimum; returns its payload. prio_out is written via the
+    // returned pair-encoding: (prio << 20) | payload would lose sign, so
+    // instead expose two getters and a drop-min.
+    fn min_prio(borrow self) -> i64 { self.prio.get_or(0, 0 - 1) }
+    fn min_load(borrow self) -> i64 { self.load.get_or(0, 0 - 1) }
+
+    fn pop(inout self) {
+        let n = self.prio.len();
+        if n <= 1 {
+            self.prio.pop_or(0);
+            self.load.pop_or(0);
+        } else {
+            self.swap(0, n - 1);
+            self.prio.pop_or(0);
+            self.load.pop_or(0);
+            let size = self.prio.len();
+            let mut i: u64 = 0;
+            loop {
+                let l = 2 * i + 1;
+                let r = 2 * i + 2;
+                let mut smallest = i;
+                if l < size {
+                    if self.prio.get_or(l, 0) < self.prio.get_or(smallest, 0) {
+                        smallest = l;
+                    }
+                }
+                if r < size {
+                    if self.prio.get_or(r, 0) < self.prio.get_or(smallest, 0) {
+                        smallest = r;
+                    }
+                }
+                if smallest == i { break; }
+                self.swap(i, smallest);
+                i = smallest;
+            }
+        }
+    }
+}

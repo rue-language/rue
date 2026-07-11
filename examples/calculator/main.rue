@@ -1,0 +1,18 @@
+// Ambitious dogfood #1: a Pratt-parsing calculator across four modules.
+// Stresses: payload enums stored in ArrayBuf, cross-module generic
+// instantiation identity, recursive inout methods, re-lent borrows,
+// field-init shorthand (--preview), trailing commas, @panic in match arms.
+const calc = @import("calc");
+
+fn main() -> i32 {
+    // (3 + 4) * 5 - 6 / 2  ==  32
+    let a = calc.eval_line(calc.tokens_demo_a());
+    // -(2 + 3) * -4  ==  20
+    let b = calc.eval_line(calc.tokens_demo_b());
+    // 2 * 3 + 4 * 5 - 10 == 16  (precedence)
+    let c = calc.eval_line(calc.tokens_demo_c());
+    @assert(a == 32, "demo a");
+    @assert(b == 20, "demo b");
+    @assert(c == 16, "demo c");
+    @intCast(a + b - c + 6)   // 32 + 20 - 16 + 6 = 42
+}

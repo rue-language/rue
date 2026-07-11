@@ -1,0 +1,30 @@
+// Ambitious dogfood #2: Dijkstra over an adjacency-list graph with a
+// hand-rolled binary min-heap, across three modules. Stresses index-heavy
+// ArrayBuf mutation, sift-up/sift-down loops, u64/i64 mixing, inout
+// self-methods calling inout self-methods, and module constants in
+// comparisons (the RUE-632 fix, exercised naturally).
+const graphs = @import("graphs");
+
+fn main() -> i32 {
+    let mut g = graphs.graph.Graph.new(6);
+    // A weighted digraph with a tempting-but-wrong greedy path.
+    g.edge(0, 1, 7);
+    g.edge(0, 2, 9);
+    g.edge(0, 5, 14);
+    g.edge(1, 2, 10);
+    g.edge(1, 3, 15);
+    g.edge(2, 3, 11);
+    g.edge(2, 5, 2);
+    g.edge(3, 4, 6);
+    g.edge(5, 4, 9);
+
+    let dist = graphs.dijkstra.shortest(borrow g, 0);
+    // Known answers for this classic graph (Wikipedia's example):
+    @assert(dist.get_or(4, 0 - 1) == 20, "dist to 4");
+    @assert(dist.get_or(3, 0 - 1) == 20, "dist to 3");
+    @assert(dist.get_or(5, 0 - 1) == 11, "dist to 5");
+    @assert(dist.get_or(1, 0 - 1) == 7, "dist to 1");
+    let unreachable = graphs.dijkstra.shortest(borrow g, 4);
+    @assert(unreachable.get_or(0, 0 - 1) == graphs.dijkstra.INF, "0 unreachable from 4");
+    @intCast(dist.get_or(4, 0) + dist.get_or(3, 0) + dist.get_or(5, 0) - dist.get_or(1, 0) - 2)
+}

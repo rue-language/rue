@@ -1,0 +1,58 @@
+pub const token = @import("token.rue");
+pub const ast = @import("ast.rue");
+pub const parser = @import("parser.rue");
+pub const eval = @import("eval.rue");
+
+// Front door: parse one token stream and evaluate it.
+pub fn eval_line(toks: token.TokenStream) -> i64 {
+    let mut p = parser.Parser.new(toks);
+    let root = p.parse_expr(0);
+    eval.eval(borrow p.arena, root)
+}
+
+pub fn tokens_demo_a() -> token.TokenStream {
+    // (3 + 4) * 5 - 6 / 2
+    let mut t = token.TokenStream.new();
+    t.op(token.LPAREN);
+    t.num(3);
+    t.op(token.PLUS);
+    t.num(4);
+    t.op(token.RPAREN);
+    t.op(token.STAR);
+    t.num(5);
+    t.op(token.MINUS);
+    t.num(6);
+    t.op(token.SLASH);
+    t.num(2);
+    t
+}
+
+pub fn tokens_demo_b() -> token.TokenStream {
+    // -(2 + 3) * -4
+    let mut t = token.TokenStream.new();
+    t.op(token.MINUS);
+    t.op(token.LPAREN);
+    t.num(2);
+    t.op(token.PLUS);
+    t.num(3);
+    t.op(token.RPAREN);
+    t.op(token.STAR);
+    t.op(token.MINUS);
+    t.num(4);
+    t
+}
+
+pub fn tokens_demo_c() -> token.TokenStream {
+    // 2 * 3 + 4 * 5 - 10
+    let mut t = token.TokenStream.new();
+    t.num(2);
+    t.op(token.STAR);
+    t.num(3);
+    t.op(token.PLUS);
+    t.num(4);
+    t.op(token.STAR);
+    t.num(5);
+    t.op(token.MINUS);
+    t.num(10);
+    t
+}

@@ -1,0 +1,69 @@
+const token = @import("token.rue");
+const ast = @import("ast.rue");
+
+pub struct Parser {
+    toks: token.TokenStream,
+    pos: u64,
+    arena: ast.Arena,
+
+    fn new(toks: token.TokenStream) -> Self {
+        let pos: u64 = 0;
+        let arena = ast.Arena.new();
+        Self { toks: toks, pos: pos, arena: arena }
+    }
+
+    fn next_tag(inout self) -> i64 {
+        let t = self.toks.tag_at(self.pos);
+        self.pos = self.pos + 1;
+        t
+    }
+
+    // Pratt: prefix ("nud") position.
+    fn parse_prefix(inout self) -> u64 {
+        let val = self.toks.val_at(self.pos);
+        let t = self.next_tag();
+        if t == token.NUM {
+            self.arena.num(val)
+        } else if t == token.MINUS {
+            let inner = self.parse_prefix();
+            self.arena.add(ast.NEG, @intCast(inner), 0)
+        } else if t == token.LPAREN {
+            let inner = self.parse_expr(0);
+            self.pos = self.pos + 1;   // consume ')'
+            inner
+        } else {
+            @panic("unexpected token in prefix position")
+        }
+    }
+
+    fn binding_power(borrow self, tag: i64) -> i64 {
+        if tag == token.PLUS { 10 }
+        else if tag == token.MINUS { 10 }
+        else if tag == token.STAR { 20 }
+        else if tag == token.SLASH { 20 }
+        else { 0 }
+    }
+
+    fn op_node(borrow self, tag: i64) -> i64 {
+        if tag == token.PLUS { ast.ADD }
+        else if tag == token.MINUS { ast.SUB }
+        else if tag == token.STAR { ast.MUL }
+        else { ast.DIV }
+    }
+
+    // Pratt loop: fold infix ops with binding power above min_bp onto lhs.
+    fn parse_expr(inout self, min_bp: i64) -> u64 {
+        let mut lhs = self.parse_prefix();
+        loop {
+            let tag = self.toks.tag_at(self.pos);
+            let bp = self.binding_power(tag);
+            if bp == 0 { break; }
+            if bp <= min_bp { break; }
+            self.pos = self.pos + 1;
+            let rhs = self.parse_expr(bp);
+            let node = self.op_node(tag);
+            lhs = self.arena.add(node, @intCast(lhs), @intCast(rhs));
+        }
+        lhs
+    }
+}
