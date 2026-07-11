@@ -448,6 +448,53 @@ fn capacity_and_intrinsic_signature_drift_are_contract_failures() {
 }
 
 #[test]
+fn panic_never_signature_is_an_oracle_contract_for_both_arities() {
+    let state = compile_to_cfg(
+        r#"fn panic_no_message() { @panic() }
+        fn panic_with_message() { @panic("boom") }
+        fn main() -> i32 {
+            panic_no_message();
+            panic_with_message();
+            0
+        }"#,
+    )
+    .expect("both panic arities must compile with the never contract");
+    let interp = Interp {
+        state: &state,
+        stdout: String::new(),
+        stdout_bytes: 0,
+        stdout_cap: MAX_STDOUT_BYTES,
+        stderr_cap: MAX_STDERR_BYTES,
+        budget: STEP_BUDGET,
+        depth: 0,
+    };
+    for function_name in ["panic_no_message", "panic_with_message"] {
+        let (cfg, _intrinsic, args, result_ty) =
+            find_intrinsic_in_function(&state, function_name, "panic");
+        // `@panic` diverges, so the compiler types it `!` (never) (RUE-512).
+        assert_eq!(result_ty, Type::NEVER, "{function_name} compiler metadata");
+        // The abort preflight (the oracle's panic contract since RUE-589)
+        // accepts exactly the never-typed shape...
+        assert!(
+            matches!(
+                interp.preflight_abort_intrinsic(cfg, "panic", &args, result_ty),
+                Ok(Some(AbortIntrinsic::Panic))
+            ),
+            "{function_name} never signature must pass preflight"
+        );
+        // ...and rejects stale unit-typed metadata as a contract violation.
+        match interp.preflight_abort_intrinsic(cfg, "panic", &args, Type::UNIT) {
+            Err(Flow::Unsupported(unsupported)) => assert_eq!(
+                unsupported.kind(),
+                UnsupportedKind::ContractViolation(ContractViolationKind::IntrinsicSignature),
+                "{function_name} must reject the stale unit-typed metadata"
+            ),
+            _ => panic!("{function_name}: stale unit-typed metadata must be a contract violation"),
+        }
+    }
+}
+
+#[test]
 fn malformed_outer_calls_are_rejected_before_unmodeled_operands_run() {
     let mut preview_features = PreviewFeatures::new();
     preview_features.insert(rue_compiler::PreviewFeature::StringTrio);

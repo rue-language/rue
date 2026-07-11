@@ -110,6 +110,79 @@ fn main() -> i32 {
 exit_code = 101
 stderr_contains = "panic: one is not two"
 
+# @panic is `!`-typed (RUE-512): it diverges, so it participates in never
+# coercion (3.4:2) and may appear wherever a value of any type is expected — a
+# typed `if`/`else` or `match` arm, a typed `let` initializer, or a bare
+# function tail. These cases pin both the type-checking (they compile) and the
+# runtime behavior on the taken/untaken paths.
+
+# @panic in the taken `else` arm of a typed `if`: coerces to i32, then aborts.
+[[case]]
+name = "panic_in_if_else_arm_taken_aborts"
+spec = ["3.4:2", "4.13:5b"]
+source = """
+fn main() -> i32 {
+    let x: i32 = if false { 1 } else { @panic("boom") };
+    x
+}
+"""
+exit_code = 101
+stderr_contains = "panic: boom"
+
+# The same expression when the panic arm is NOT taken: the value path yields 7.
+# This proves the never-coercion type-checks and leaves the value path intact.
+[[case]]
+name = "panic_in_if_else_arm_untaken_yields_value"
+spec = ["3.4:2", "4.13:5b"]
+source = """
+fn main() -> i32 {
+    let x: i32 = if true { 7 } else { @panic("unreached") };
+    x
+}
+"""
+exit_code = 7
+
+# @panic in a typed `match` arm: the non-panic arm still produces a value.
+[[case]]
+name = "panic_in_match_arm_yields_value"
+spec = ["3.4:2", "4.13:5b"]
+source = """
+fn classify(n: i32) -> i32 {
+    let r: i32 = match n {
+        0 => 100,
+        _ => @panic("nonzero"),
+    };
+    r
+}
+fn main() -> i32 { classify(0) }
+"""
+exit_code = 100
+
+# @panic as a typed `let` initializer: coerces to i32, then aborts.
+[[case]]
+name = "panic_in_let_initializer_aborts"
+spec = ["3.4:2", "4.13:5b"]
+source = """
+fn main() -> i32 {
+    let x: i32 = @panic("init");
+    x
+}
+"""
+exit_code = 101
+stderr_contains = "panic: init"
+
+# @panic as the bare tail of an i32-returning function: no explicit `return`
+# needed, because `!` coerces to the declared return type.
+[[case]]
+name = "panic_as_function_tail_aborts"
+spec = ["3.4:2", "4.13:5b"]
+source = """
+fn dead() -> i32 { @panic("tail") }
+fn main() -> i32 { dead() }
+"""
+exit_code = 101
+stderr_contains = "panic: tail"
+
 [[case]]
 name = "cast_rejected_use_intcast"
 spec = ["4.13:5b"]

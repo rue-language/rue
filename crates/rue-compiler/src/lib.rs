@@ -3780,19 +3780,77 @@ mod integration_tests {
         use super::*;
 
         #[test]
-        fn panic_forms_use_the_unit_contract_through_cfg() {
+        fn panic_diverges_through_cfg_and_lowers() {
+            // `@panic` is never-typed (RUE-512): the CFG carries a NEVER-typed
+            // intrinsic and the block ends in `Unreachable`, not a return, just
+            // like a `-> !` call. It still lowers for every backend.
             for (name, body) in [
                 ("trailing", "@panic()"),
                 ("trailing_message", "@panic(\"boom\")"),
                 ("semicolon", "@panic();"),
-                ("discarded", "let _ = @panic();"),
-                ("unit_binding", "let _: () = @panic();"),
+            ] {
+                let source = format!("fn probe() {{ {body} }} fn main() -> i32 {{ probe(); 0 }}");
+                let state = compile_to_cfg(&source)
+                    .expect("every panic form must reach a verified, terminated CFG");
+                let cfg = &state
+                    .functions
+                    .iter()
+                    .find(|function| function.cfg.fn_name() == "probe")
+                    .unwrap_or_else(|| panic!("missing CFG for {name}"))
+                    .cfg;
+                let intrinsic_types: Vec<_> = cfg
+                    .blocks()
+                    .iter()
+                    .flat_map(|block| block.insts.iter())
+                    .filter_map(|value| {
+                        let inst = cfg.get_inst(*value);
+                        matches!(inst.data, rue_cfg::CfgInstData::Intrinsic { .. })
+                            .then_some(inst.ty)
+                    })
+                    .collect();
+                assert_eq!(
+                    intrinsic_types,
+                    vec![Type::NEVER],
+                    "{name} must carry the never result into CFG"
+                );
+
+                // A diverging panic has no reachable return; the block that
+                // evaluates it ends in `Unreachable`.
+                assert!(
+                    cfg.blocks()
+                        .iter()
+                        .any(|block| matches!(block.terminator, rue_cfg::Terminator::Unreachable)),
+                    "{name} must diverge into an Unreachable terminator"
+                );
+                assert!(
+                    !cfg.blocks().iter().any(|block| matches!(
+                        block.terminator,
+                        rue_cfg::Terminator::Return { .. }
+                    )),
+                    "{name} must not synthesize a return past a diverging @panic"
+                );
+
+                for &target in Target::all() {
+                    generate_mir(cfg, &state.type_pool, &state.interner, target)
+                        .unwrap_or_else(|error| panic!("{name} must lower for {target}: {error}"));
+                }
+                compile(&source).unwrap_or_else(|error| {
+                    panic!("{name} must compile and link natively: {error}")
+                });
+            }
+        }
+
+        #[test]
+        fn assert_uses_the_unit_contract_through_cfg() {
+            // `@assert` is unit-typed: it returns on the success path, so the CFG
+            // reuses the `UnitConst`-style dummy value for the trailing return.
+            for (name, body) in [
                 ("assertion", "@assert(true)"),
                 ("assertion_with_message", "@assert(true, \"ok\")"),
             ] {
                 let source = format!("fn probe() {{ {body} }} fn main() -> i32 {{ probe(); 0 }}");
                 let state = compile_to_cfg(&source)
-                    .expect("every unit-valued panic form must reach a verified, terminated CFG");
+                    .expect("every unit-valued assert form must reach a verified, terminated CFG");
                 let cfg = &state
                     .functions
                     .iter()
@@ -3843,16 +3901,20 @@ mod integration_tests {
         }
 
         #[test]
-        fn panic_does_not_gain_never_coercion() {
+        fn panic_participates_in_never_coercion() {
+            // `@panic` is `!`, so it coerces into any expected type — a bare
+            // function tail, a typed `let` initializer, and a typed `if`/`else`
+            // arm all type-check and compile (RUE-512).
             for src in [
                 "fn main() -> i32 { @panic() }",
                 "fn main() -> i32 { let value: i32 = @panic(); value }",
                 "fn main() -> i32 { if true { 1 } else { @panic() } }",
             ] {
-                assert!(
-                    compile_to_cfg(src).is_err(),
-                    "unit-valued @panic must not coerce into a non-unit context: {src}"
-                );
+                compile_to_cfg(src).unwrap_or_else(|error| {
+                    panic!(
+                        "never-typed @panic must coerce into a non-unit context ({src}): {error}"
+                    )
+                });
             }
         }
 

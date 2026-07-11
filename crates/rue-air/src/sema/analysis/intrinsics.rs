@@ -534,17 +534,19 @@ impl<'a> Sema<'a> {
             // Panic with no message: still a real trap (RUE-319). Emitting an
             // Intrinsic with zero args (not a UnitConst) is what makes cfg_lower
             // lower it to the `__rue_panic_no_msg` abort call instead of a
-            // silent no-op.
+            // silent no-op. `@panic` has type `!` (never): it diverges and never
+            // returns, so it participates in never coercion just like a `-> !`
+            // call, `return`, or `break` (spec 3.4:2, 4.13:5b; RUE-512).
             let air_ref = air.add_inst(AirInst {
                 data: AirInstData::Intrinsic {
                     name: self.known.panic,
                     args_start: 0,
                     args_len: 0,
                 },
-                ty: Type::UNIT,
+                ty: Type::NEVER,
                 span,
             });
-            return Ok(AnalysisResult::new(air_ref, Type::UNIT));
+            return Ok(AnalysisResult::new(air_ref, Type::NEVER));
         }
 
         // Analyze the message argument
@@ -558,10 +560,10 @@ impl<'a> Sema<'a> {
                 args_start,
                 args_len: 1,
             },
-            ty: Type::UNIT,
+            ty: Type::NEVER,
             span,
         });
-        Ok(AnalysisResult::new(air_ref, Type::UNIT))
+        Ok(AnalysisResult::new(air_ref, Type::NEVER))
     }
 
     pub(super) fn analyze_assert_intrinsic(

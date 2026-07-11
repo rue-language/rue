@@ -93,15 +93,16 @@ The compiler frontend additionally reserves the names `@cast`, `@panic`,
 stabilized, so they are omitted from the normative inventory above, but they
 are no longer no-ops (RUE-319):
 
-- `@panic(msg?: StrBuf)` has type `()`, but aborts the process when evaluated.
-  The optional message must have the builtin `StrBuf` type (`String` is an
-  alias for the same type); `str`, `Str(N)`, and unrelated aggregates are not
-  accepted. It writes
-  `panic: <msg>` (or just `panic` when called with no argument) to standard error
-  and exits with status 101 — the same abort discipline as the `@intCast`
-  overflow, division-by-zero, and bounds-check traps. It is not a `!`-typed
-  control-transfer expression and therefore does not participate in never
-  coercion (3.4:2).
+- `@panic(msg?: StrBuf)` has type `!` (never): it aborts the process and never
+  returns. The optional message must have the builtin `StrBuf` type (`String`
+  is an alias for the same type); `str`, `Str(N)`, and unrelated aggregates are
+  not accepted. It writes `panic: <msg>` (or just `panic` when called with no
+  argument) to standard error and exits with status 101 — the same abort
+  discipline as the `@intCast` overflow, division-by-zero, and bounds-check
+  traps. As a diverging expression it participates in never coercion (3.4:2),
+  so it may appear wherever a value of any type is expected — a typed `let`
+  initializer, an `if`/`else` or `match` arm whose other arms produce a value,
+  or a bare function tail.
 - `@assert(cond: bool, msg?: StrBuf)` requires an exact boolean condition and
   the same optional builtin message type as `@panic`. When `cond` is `false` it
   aborts exactly like `@panic`: with a message it writes `panic: <msg>`,

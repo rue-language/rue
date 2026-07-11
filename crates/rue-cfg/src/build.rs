@@ -912,12 +912,26 @@ impl<'a> CfgBuilder<'a> {
                     ty,
                     span,
                 );
+                // A never-typed intrinsic (`@panic`) aborts and never returns.
+                // Keep the intrinsic in the block so cfg_lower still emits its
+                // abort call, then end the block and diverge exactly like a
+                // `-> !` call (RUE-347/RUE-512). Handing back a NEVER "result"
+                // would let an enclosing if/match join thread it into the other
+                // arm's block-parameter type — an ill-typed edge.
+                if ty == Type::NEVER {
+                    self.cfg
+                        .set_terminator(self.current_block, Terminator::Unreachable);
+                    return ExprResult {
+                        value: None,
+                        continuation: Continuation::Diverged,
+                    };
+                }
                 // Unit has no runtime representation, and side-effect-only
-                // intrinsics such as @panic, @assert, and @dbg deliberately do
-                // not define a backend vreg. Preserve the intrinsic itself in
-                // the block for its side effect, but use the same dummy unit
-                // value as UnitConst whenever the expression needs a value
-                // (notably as the tail of a unit-returning function).
+                // intrinsics such as @assert and @dbg deliberately do not define
+                // a backend vreg. Preserve the intrinsic itself in the block for
+                // its side effect, but use the same dummy unit value as
+                // UnitConst whenever the expression needs a value (notably as the
+                // tail of a unit-returning function).
                 let value = if ty == Type::UNIT {
                     self.emit(CfgInstData::Const(0), Type::UNIT, span)
                 } else {

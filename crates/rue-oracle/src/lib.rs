@@ -625,9 +625,10 @@ enum AbortIntrinsic {
     Assert,
 }
 
-// `@panic` aborts dynamically but remains an ordinary unit expression in Rue's
-// static contract.
-const PANIC_CFG_RESULT_TYPE: Type = Type::UNIT;
+// `@panic` diverges, so its static contract is `!` (never) end to end — HM,
+// AIR, and CFG all carry NEVER for it (RUE-512); the CFG builder terminates
+// the block with `Unreachable` after the abort.
+const PANIC_CFG_RESULT_TYPE: Type = Type::NEVER;
 
 impl From<Unsupported> for Flow {
     fn from(u: Unsupported) -> Self {

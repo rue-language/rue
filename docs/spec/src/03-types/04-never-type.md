@@ -17,6 +17,7 @@ Expressions of type `!` include:
 - `break` expressions
 - `continue` expressions
 - Infinite loops
+- `@panic(msg?)`, which aborts the process and never returns (4.13:5b)
 
 ## Type Coercion
 
