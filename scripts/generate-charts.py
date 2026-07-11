@@ -56,6 +56,7 @@ PASS_COLORS = {
     "validate_and_generate_rir": "#8f984d",  # dry grass
     "astgen": "#a3a25b",  # dry grass
     "semantic_astgen": "#b7ad63",  # straw
+    "rir_declaration_index": "#a98f55",  # muted gold
     "sema": "#c9970e",  # rue yellow
     "cfg": "#8a6d2f",  # ochre
     "cfg_construction": "#8a6d2f",  # ochre
@@ -80,6 +81,7 @@ PASS_ORDER = [
     "validate_and_generate_rir",
     "astgen",
     "semantic_astgen",
+    "rir_declaration_index",
     "sema",
     "cfg_construction",
     "codegen",

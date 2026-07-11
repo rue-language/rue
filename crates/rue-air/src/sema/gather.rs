@@ -98,6 +98,7 @@ impl<'a> GatherOutput<'a> {
         Sema {
             rir: self.rir,
             interner: self.interner,
+            declaration_index: super::declaration_index::RirDeclarationIndex::new(self.rir),
             functions: self.functions,
             functions_by_file_name: self.functions_by_file_name,
             function_source_names: self.function_source_names,

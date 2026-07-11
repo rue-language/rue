@@ -38,8 +38,9 @@ use tracing::{info, info_span};
 
 use crate::{
     Ast, AstGen, CompileErrors, CompileOptions, CompileOutput, CompileResult, CompileWarning,
-    DefinitionSnapshot, FunctionWithCfg, MultiErrorResult, Rir, Sema, SourceFile, SourceMetadata,
-    SourceSnapshot, SyntaxWork, TypeInternPool, build_functions_and_cfgs, compile_backend,
+    DefinitionSnapshot, FunctionWithCfg, MultiErrorResult, Rir, SourceFile, SourceMetadata,
+    SourceSnapshot, SyntaxWork, TypeInternPool, build_functions_and_cfgs, build_sema_for_target,
+    compile_backend,
 };
 use rue_span::FileId;
 
@@ -303,15 +304,16 @@ impl<'src> CompilationUnit<'src> {
             AstGen::new(&semantic_ast, interner).generate()
         };
 
+        let mut sema = build_sema_for_target(
+            &semantic_rir,
+            interner,
+            self.options.preview_features.clone(),
+            self.options.target,
+        );
+
         // Semantic analysis
         let sema_output = {
             let _span = info_span!("sema").entered();
-            let mut sema = Sema::new_for_target(
-                &semantic_rir,
-                interner,
-                self.options.preview_features.clone(),
-                self.options.target,
-            );
             sema.set_root_file_id(self.source_snapshot.metadata().root_file_id());
             sema.set_file_paths(self.source_snapshot.metadata().physical_path_map().clone());
             sema.set_symbol_paths(self.source_snapshot.metadata().logical_path_map().clone());

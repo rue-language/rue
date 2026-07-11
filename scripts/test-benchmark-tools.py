@@ -120,15 +120,26 @@ class PerfBaselineAggregationTests(unittest.TestCase):
             ["lexer", "parser", "codegen"],
         )
 
-    def test_current_leaf_order_includes_definition_snapshot(self):
+    def test_current_leaf_order_includes_semantic_lowering_and_frontend_indexes(self):
         result = perf_baseline.aggregate(
             [
                 self.sample(
                     10.0,
                     12.0,
-                    leaf_names=("codegen", "definition_snapshot", "parser", "lexer"),
+                    leaf_names=(
+                        "codegen",
+                        "rir_declaration_index",
+                        "sema",
+                        "semantic_astgen",
+                        "definition_snapshot",
+                        "parser",
+                        "lexer",
+                    ),
                     leaf_durations={
                         "codegen": 1.0,
+                        "rir_declaration_index": 1.0,
+                        "sema": 1.0,
+                        "semantic_astgen": 1.0,
                         "definition_snapshot": 1.0,
                         "parser": 1.0,
                         "lexer": 1.0,
@@ -138,7 +149,15 @@ class PerfBaselineAggregationTests(unittest.TestCase):
         )
         self.assertEqual(
             [name for name, _ms, _percent in result["rows"]],
-            ["lexer", "parser", "definition_snapshot", "codegen"],
+            [
+                "lexer",
+                "parser",
+                "definition_snapshot",
+                "semantic_astgen",
+                "rir_declaration_index",
+                "sema",
+                "codegen",
+            ],
         )
 
     def test_leaf_accounting_is_paired_before_taking_medians(self):
@@ -697,11 +716,13 @@ class ChartAggregationTests(unittest.TestCase):
         }
         self.assertEqual(charts.get_total_time(run), 4)
 
-    def test_current_phase_order_includes_definition_index_and_semantic_lowering(self):
+    def test_current_phase_order_includes_both_frontend_indexes_and_sema(self):
         ordered = charts.order_pass_times(
             {
                 "linker": 1,
+                "rir_declaration_index": 1,
                 "semantic_astgen": 1,
+                "sema": 1,
                 "definition_snapshot": 1,
                 "parser": 1,
                 "lexer": 1,
@@ -709,7 +730,15 @@ class ChartAggregationTests(unittest.TestCase):
         )
         self.assertEqual(
             list(ordered),
-            ["lexer", "parser", "definition_snapshot", "semantic_astgen", "linker"],
+            [
+                "lexer",
+                "parser",
+                "definition_snapshot",
+                "semantic_astgen",
+                "rir_declaration_index",
+                "sema",
+                "linker",
+            ],
         )
 
 

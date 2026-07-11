@@ -31,6 +31,7 @@ mod anon_structs;
 mod builtins;
 mod comptime_eval;
 mod context;
+mod declaration_index;
 mod declarations;
 mod file_paths;
 mod gather;
@@ -45,6 +46,7 @@ mod visibility;
 
 // Public re-exports
 pub use context::ConstValue;
+pub use declaration_index::RirDeclarationIndexWork;
 pub use gather::GatherOutput;
 pub use inference_ctx::InferenceContext;
 pub use info::{AnonMethodSig, ConstInfo, FunctionInfo, MethodInfo};
@@ -68,6 +70,8 @@ use crate::types::{EnumId, StructId, Type};
 pub struct Sema<'a> {
     pub(crate) rir: &'a Rir,
     pub(crate) interner: &'a ThreadedRodeo,
+    /// Request-local declaration candidates for this exact RIR arena.
+    declaration_index: declaration_index::RirDeclarationIndex,
     /// Function table: maps internal function name symbols to their info.
     ///
     /// The internal key is normally the source name, but functions with the
@@ -203,6 +207,7 @@ impl<'a> Sema<'a> {
         Self {
             rir,
             interner,
+            declaration_index: declaration_index::RirDeclarationIndex::new(rir),
             functions: HashMap::new(),
             functions_by_file_name: HashMap::new(),
             function_source_names: HashMap::new(),
@@ -235,6 +240,17 @@ impl<'a> Sema<'a> {
             fn_signatures_in_flight: HashSet::new(),
             ctor_type_displays: HashMap::new(),
         }
+    }
+
+    /// Exact structural work used to index this semantic request's raw RIR
+    /// declaration candidates.
+    ///
+    /// The counters contain no instruction handles and are safe to retain for
+    /// profiling. The indexed declarations themselves remain private and
+    /// meaningful only for this `Sema` and its exact RIR/interner epoch.
+    #[inline]
+    pub fn rir_declaration_index_work(&self) -> RirDeclarationIndexWork {
+        self.declaration_index.work()
     }
 
     /// Perform semantic analysis on the RIR.

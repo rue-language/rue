@@ -45,19 +45,14 @@ impl<'a> Sema<'a> {
         if source == "main" {
             return source_name;
         }
-        let mut count = 0;
-        for (_, inst) in self.rir.iter() {
-            let InstData::FnDecl { name, has_self, .. } = &inst.data else {
-                continue;
-            };
-            if !*has_self && *name == source_name {
-                count += 1;
-                if count > 1 {
-                    break;
-                }
-            }
-        }
-        if count > 1 {
+        // Preserve the historical symbol rule exactly in this preparatory
+        // slice: receiverless associated functions count too. Correct free
+        // function classification is indexed separately for body lookup.
+        if self
+            .declaration_index
+            .non_receiver_name_multiplicity(source_name)
+            > 1
+        {
             let module_component = self
                 .get_symbol_path(file_id)
                 .map(normalize_module_path)
@@ -346,29 +341,6 @@ impl<'a> Sema<'a> {
     /// the global one, so they are excluded here (matching the collection
     /// logic in `resolve_remaining_declarations`).
     pub(crate) fn check_top_level_name_collisions(&self) -> CompileResult<()> {
-        // Gather method / associated-function inst refs to exclude: they are
-        // namespaced under their enclosing type, not the global name space.
-        let mut method_refs: HashSet<InstRef> = HashSet::new();
-        for (_, inst) in self.rir.iter() {
-            match &inst.data {
-                InstData::AnonStructType {
-                    methods_start,
-                    methods_len,
-                    ..
-                }
-                | InstData::StructDecl {
-                    methods_start,
-                    methods_len,
-                    ..
-                } => {
-                    for r in self.rir.get_inst_refs(*methods_start, *methods_len) {
-                        method_refs.insert(r);
-                    }
-                }
-                _ => {}
-            }
-        }
-
         // Free functions duplicate-conflict only within their defining file
         // (RUE-441), except for the program-global `main` entry point (RUE-582).
         // Types and function/type cross-kind collisions are per-file too
@@ -405,7 +377,7 @@ impl<'a> Sema<'a> {
                     seen_types_by_file.insert(key, inst.span);
                 }
                 InstData::FnDecl { name, has_self, .. } => {
-                    if *has_self || method_refs.contains(&inst_ref) {
+                    if *has_self || self.declaration_index.is_type_scoped_method(inst_ref) {
                         continue;
                     }
                     if let Some(first_span) =
@@ -1011,44 +983,6 @@ impl<'a> Sema<'a> {
 
     /// Resolve @copy validation, destructors, functions, and methods.
     pub(crate) fn resolve_remaining_declarations(&mut self) -> CompileResult<()> {
-        // Collect all method InstRefs from anonymous struct types
-        // These need to be skipped during function declaration collection because:
-        // - They may use `Self` type which requires struct context
-        // - They are registered later during comptime evaluation with proper Self resolution
-        let mut anon_struct_method_refs = std::collections::HashSet::new();
-        // Also collect method InstRefs from named struct declarations. Inline
-        // methods (including associated functions with no `self`) are collected
-        // via `collect_struct_methods`, which binds `Self` to the enclosing
-        // type. They must be skipped in the generic FnDecl branch below, whose
-        // `collect_function_signature` has no struct context and would reject a
-        // `Self` return/parameter type as an unknown type (RUE-123).
-        let mut named_struct_method_refs = std::collections::HashSet::new();
-        for (_, inst) in self.rir.iter() {
-            match &inst.data {
-                InstData::AnonStructType {
-                    methods_start,
-                    methods_len,
-                    ..
-                } => {
-                    let method_refs = self.rir.get_inst_refs(*methods_start, *methods_len);
-                    for method_ref in method_refs {
-                        anon_struct_method_refs.insert(method_ref);
-                    }
-                }
-                InstData::StructDecl {
-                    methods_start,
-                    methods_len,
-                    ..
-                } => {
-                    let method_refs = self.rir.get_inst_refs(*methods_start, *methods_len);
-                    for method_ref in method_refs {
-                        named_struct_method_refs.insert(method_ref);
-                    }
-                }
-                _ => {}
-            }
-        }
-
         // Pre-scan const declarations: collection is dependency-ordered
         // (an initializer may reference a constant declared later, even in
         // another file), so all pending declarations must be known up front.
@@ -1109,7 +1043,7 @@ impl<'a> Sema<'a> {
 
                     // Skip ALL methods from anonymous structs (including associated functions)
                     // These are registered during comptime evaluation with proper Self type context
-                    if anon_struct_method_refs.contains(&inst_ref) {
+                    if self.declaration_index.is_anonymous_method(inst_ref) {
                         continue;
                     }
 
@@ -1117,7 +1051,7 @@ impl<'a> Sema<'a> {
                     // collected via `collect_struct_methods` with `Self` bound to
                     // the enclosing type (RUE-123). Collecting them here as free
                     // functions would reject a `Self` signature type.
-                    if named_struct_method_refs.contains(&inst_ref) {
+                    if self.declaration_index.is_named_method(inst_ref) {
                         continue;
                     }
                     self.collect_function_signature(
@@ -2670,36 +2604,6 @@ impl<'a> Sema<'a> {
         }
     }
 
-    /// Every `FnDecl` inst that is type-scoped — a method or associated
-    /// function declared inside a named struct or an anonymous struct type —
-    /// as opposed to a free function. These are namespaced under their
-    /// enclosing type (spec 10.5) and must not be found by free-function
-    /// lookups or collected as free functions (a `Self` signature type would
-    /// be rejected outside its struct context, RUE-123).
-    pub(crate) fn type_scoped_method_refs(&self) -> HashSet<InstRef> {
-        let mut refs = HashSet::new();
-        for (_, inst) in self.rir.iter() {
-            match &inst.data {
-                InstData::AnonStructType {
-                    methods_start,
-                    methods_len,
-                    ..
-                }
-                | InstData::StructDecl {
-                    methods_start,
-                    methods_len,
-                    ..
-                } => {
-                    for r in self.rir.get_inst_refs(*methods_start, *methods_len) {
-                        refs.insert(r);
-                    }
-                }
-                _ => {}
-            }
-        }
-        refs
-    }
-
     /// Find a free function declaration in RIR, optionally restricted to one
     /// source file. This is used during const collection, which is
     /// dependency-ordered and can run before the main function-signature pass
@@ -2709,25 +2613,14 @@ impl<'a> Sema<'a> {
         target: Spur,
         file_id: Option<FileId>,
     ) -> Option<(FileId, bool)> {
-        let method_refs = self.type_scoped_method_refs();
-        self.rir.iter().find_map(|(inst_ref, inst)| {
-            let InstData::FnDecl {
-                is_pub,
-                name,
-                has_self,
-                ..
-            } = &inst.data
-            else {
-                return None;
-            };
-            if *has_self || *name != target || method_refs.contains(&inst_ref) {
-                return None;
-            }
-            if file_id.is_some_and(|wanted| inst.span.file_id != wanted) {
-                return None;
-            }
-            Some((inst.span.file_id, *is_pub))
-        })
+        let inst_ref = self
+            .declaration_index
+            .first_free_function(target, file_id)?;
+        let inst = self.rir.get(inst_ref);
+        let InstData::FnDecl { is_pub, .. } = &inst.data else {
+            unreachable!("free-function index contains only FnDecl instructions");
+        };
+        Some((inst.span.file_id, *is_pub))
     }
 
     /// Ensure a free function's signature is available during const
@@ -2739,8 +2632,10 @@ impl<'a> Sema<'a> {
         target: Spur,
         file_id: Option<FileId>,
     ) -> CompileResult<Option<(FileId, bool)>> {
-        let method_refs = self.type_scoped_method_refs();
-        let Some((
+        let Some(inst_ref) = self.declaration_index.first_free_function(target, file_id) else {
+            return Ok(None);
+        };
+        let (
             span,
             is_pub,
             params_start,
@@ -2750,30 +2645,23 @@ impl<'a> Sema<'a> {
             is_unchecked,
             directives_start,
             directives_len,
-        )) = self.rir.iter().find_map(|(inst_ref, inst)| {
+        ) = {
+            let inst = self.rir.get(inst_ref);
             let InstData::FnDecl {
                 is_pub,
-                name,
                 params_start,
                 params_len,
                 return_type,
                 body,
-                has_self,
                 is_unchecked,
                 directives_start,
                 directives_len,
                 ..
             } = &inst.data
             else {
-                return None;
+                unreachable!("free-function index contains only FnDecl instructions");
             };
-            if *has_self || *name != target || method_refs.contains(&inst_ref) {
-                return None;
-            }
-            if file_id.is_some_and(|wanted| inst.span.file_id != wanted) {
-                return None;
-            }
-            Some((
+            (
                 inst.span,
                 *is_pub,
                 *params_start,
@@ -2783,10 +2671,7 @@ impl<'a> Sema<'a> {
                 *is_unchecked,
                 *directives_start,
                 *directives_len,
-            ))
-        })
-        else {
-            return Ok(None);
+            )
         };
 
         let internal_target = self.internal_function_name(target, span.file_id);

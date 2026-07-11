@@ -38,7 +38,7 @@ pub use param_arena::{ParamArena, ParamRange};
 pub use path_norm::normalize_module_path;
 pub use sema::{
     AnalyzedFunction, ConstValue, DirResolution, FunctionInfo, GatherOutput, MethodInfo,
-    ModulePath, ParamSlotModes, Sema, SemaOutput, import_candidate_groups,
+    ModulePath, ParamSlotModes, RirDeclarationIndexWork, Sema, SemaOutput, import_candidate_groups,
 };
 pub use types::{
     ArrayTypeId, EnumDef, EnumId, ModuleDef, ModuleId, PtrConstTypeId, PtrMutTypeId, StructDef,

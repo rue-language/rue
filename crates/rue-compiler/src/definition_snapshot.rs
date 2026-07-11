@@ -95,8 +95,9 @@ pub enum DefinitionKind {
 /// The name-resolution namespace containing a parsed definition candidate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum DefinitionNamespace {
-    /// Ordinary module items: functions, structures, enumerations, and
-    /// constants all compete for this namespace.
+    /// Presemantic module-item candidates: functions, structures,
+    /// enumerations, and constants share this key space until semantic
+    /// evaluation can distinguish value constants from module bindings.
     ModuleItem,
     /// Destructor declarations, keyed by the type name following `drop fn`.
     Destructor,

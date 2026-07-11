@@ -231,8 +231,8 @@ fn parse_runtime_archive(runtime_bytes: &[u8]) -> Result<Archive, String> {
 // Re-export commonly used types
 pub use lasso::{Spur, ThreadedRodeo};
 pub use rue_air::{
-    Air, AnalyzedFunction, DirResolution, ModulePath, Sema, SemaOutput, StructDef, Type,
-    TypeInternPool, import_candidate_groups,
+    Air, AnalyzedFunction, DirResolution, ModulePath, RirDeclarationIndexWork, Sema, SemaOutput,
+    StructDef, Type, TypeInternPool, import_candidate_groups,
 };
 pub use rue_cfg::{Cfg, CfgBuilder, CfgOutput, OptLevel};
 pub use rue_codegen::{
@@ -251,6 +251,31 @@ pub use rue_parser::{Ast, Expr, Function, Item, Parser};
 pub use rue_rir::{AstGen, Rir, RirPrinter};
 pub use rue_span::{FileId, Span};
 pub use rue_target::{Arch, Target};
+
+/// Construct one semantic request while measuring its snapshot-local RIR
+/// declaration index independently from semantic analysis.
+fn build_sema_for_target<'a>(
+    rir: &'a Rir,
+    interner: &'a ThreadedRodeo,
+    preview_features: PreviewFeatures,
+    target: Target,
+) -> Sema<'a> {
+    let _span = info_span!("rir_declaration_index", instruction_count = rir.len()).entered();
+    let sema = Sema::new_for_target(rir, interner, preview_features, target);
+    let work = sema.rir_declaration_index_work();
+    info!(
+        build_invocations = work.build_invocations,
+        rir_instructions_visited = work.rir_instructions_visited,
+        method_references_visited = work.method_references_visited,
+        free_functions_indexed = work.free_functions_indexed,
+        named_methods_indexed = work.named_methods_indexed,
+        anonymous_methods_indexed = work.anonymous_methods_indexed,
+        destructors_indexed = work.destructors_indexed,
+        const_candidates_indexed = work.const_candidates_indexed,
+        "RIR declaration index built"
+    );
+    sema
+}
 
 // ============================================================================
 // Multi-file Compilation Types
@@ -1131,11 +1156,12 @@ pub fn compile_frontend_from_ast_with_source_metadata_and_target(
         AstGen::new(&semantic_ast, &interner).generate()
     };
 
+    let mut sema =
+        build_sema_for_target(&semantic_rir, &interner, preview_features.clone(), target);
+
     // Semantic analysis (RIR to AIR) - this now collects multiple errors
     let sema_output = {
         let _span = info_span!("sema").entered();
-        let mut sema =
-            Sema::new_for_target(&semantic_rir, &interner, preview_features.clone(), target);
         sema.set_root_file_id(source_metadata.root_file_id());
         sema.set_file_paths(source_metadata.physical_path_map().clone());
         sema.set_symbol_paths(source_metadata.logical_path_map().clone());
