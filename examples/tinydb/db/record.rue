@@ -1,0 +1,16 @@
+// One row: (id, dept, salary). Dept is a small closed enum.
+pub enum Dept {
+    Eng,
+    Sales,
+    Ops,
+}
+
+pub struct Row {
+    id: i64,
+    dept: Dept,
+    salary: i64,
+
+    fn new(id: i64, dept: Dept, salary: i64) -> Self {
+        Self { id: id, dept: dept, salary: salary }
+    }
+}

@@ -1,0 +1,27 @@
+// Dogfood #6: tinydb — a four-module relational engine exercising the
+// full cross-module type surface unlocked today: qualified enums/structs
+// in ArrayBuf fields, cross-module payload enums as query predicates,
+// enum equality, and borrowed row scans.
+const db = @import("db");
+
+fn main() -> i32 {
+    let mut t = db.table.Table.new();
+    t.insert(db.record.Dept.Eng, 120);
+    t.insert(db.record.Dept.Eng, 95);
+    t.insert(db.record.Dept.Sales, 80);
+    t.insert(db.record.Dept.Sales, 110);
+    t.insert(db.record.Dept.Ops, 70);
+
+    let eng = db.query.sum_salaries(borrow t, db.query.Pred.ByDept(db.record.Dept.Eng));
+    @assert(eng == 215, "eng sum");
+    let high = db.query.sum_salaries(borrow t, db.query.Pred.SalaryAtLeast(100));
+    @assert(high == 230, "high sum");
+    let all = db.query.sum_salaries(borrow t, db.query.Pred.Any);
+    @assert(all == 475, "all sum");
+    let top = db.query.top_earner(borrow t, db.query.Pred.Any);
+    @assert(top == 1, "top is row 1 (120)");
+    let top_sales = db.query.top_earner(borrow t, db.query.Pred.ByDept(db.record.Dept.Sales));
+    @assert(top_sales == 4, "top sales is row 4 (110)");
+
+    @intCast(eng - high + top_sales * 14 + 1)   // 215-230+56+1 = 42
+}

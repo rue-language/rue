@@ -2456,15 +2456,39 @@ impl<'a> Sema<'a> {
             }
         }
 
-        // A struct/enum member would make this a type-valued constant, which
-        // is not supported (same as `const T = i32;`).
-        if self.structs.contains_key(&member) || self.enums.contains_key(&member) {
-            return Err(CompileError::new(
-                ErrorKind::ConstExprNotSupported {
-                    expr_kind: "a type value".to_string(),
-                },
-                span,
-            ));
+        // A struct/enum member is a TYPE value (`m.Row`): usable anywhere a
+        // type-valued constant is — most importantly as a type argument of a
+        // generic instantiation in a const initializer
+        // (`const Rows = std.arraybuf.ArrayBuf(records.Row);`, RUE-630).
+        // The old behavior rejected this as "a type value ... not supported",
+        // a claim stale since type-valued constants landed.
+        if let Some(mfile) = module_file_id {
+            if let Some(struct_id) = self.structs_by_file_name.get(&(mfile, member)).copied() {
+                let def = self.type_pool.struct_def(struct_id);
+                let is_pub = def.is_pub;
+                self.check_const_member_visibility(
+                    is_pub,
+                    &member_str,
+                    &module_file_path,
+                    accessing_file,
+                    span,
+                )?;
+                return Ok(ConstInit::Value(ConstValue::Type(Type::new_struct(
+                    struct_id,
+                ))));
+            }
+            if let Some(enum_id) = self.enums_by_file_name.get(&(mfile, member)).copied() {
+                let def = self.type_pool.enum_def(enum_id);
+                let is_pub = def.is_pub;
+                self.check_const_member_visibility(
+                    is_pub,
+                    &member_str,
+                    &module_file_path,
+                    accessing_file,
+                    span,
+                )?;
+                return Ok(ConstInit::Value(ConstValue::Type(Type::new_enum(enum_id))));
+            }
         }
 
         Err(CompileError::new(
