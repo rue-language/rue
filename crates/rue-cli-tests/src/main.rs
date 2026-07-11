@@ -134,6 +134,12 @@ const EXAMPLE_EXPECTATIONS: &[ExampleExpectation] = &[
     // The 2026-07-11 ambitious-dogfood programs: each is a self-checking
     // program that returns 42 exactly when every internal @assert passes.
     ExampleExpectation {
+        path: "sudoku/main.rue",
+        exit_code: 42,
+        stdout: "19\n",
+        stdin: None,
+    },
+    ExampleExpectation {
         path: "bignum/main.rue",
         exit_code: 42,
         stdout: "",
