@@ -938,10 +938,20 @@ mod tests {
             &ran_trap("error: integer overflow\n"),
         );
         assert!(is_disagree(v));
+        let v = classify(
+            &trap(TrapKind::UserPanic),
+            &ran_trap("panic: user message\n"),
+        );
+        assert!(matches!(v, Verdict::Agree));
+        let v = classify(
+            &trap(TrapKind::AssertionFailure),
+            &ran_trap("assertion failed\n"),
+        );
+        assert!(matches!(v, Verdict::Agree));
     }
 
     #[test]
-    fn unclassified_or_one_sided_trap_causes_fail_closed() {
+    fn wrong_or_one_sided_trap_causes_fail_closed() {
         let v = classify(
             &trap(TrapKind::ArithmeticOverflow),
             &ran_trap("panic: boom\n"),
