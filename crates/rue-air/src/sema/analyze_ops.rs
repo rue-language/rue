@@ -6054,8 +6054,9 @@ impl<'a> Sema<'a> {
             // limit, RUE-261) must surface as its real diagnostic (E1200)
             // rather than being swallowed into a downstream link error, so use
             // the propagating reduction entry point.
-            if let Some(ConstValue::Type(ty)) =
-                self.eval_type_constructor_body(fn_body, &type_subst, &value_subst)?
+            if let Some(ConstValue::Type(ty)) = self
+                .eval_type_constructor_body(fn_body, &type_subst, &value_subst)
+                .map_err(|e| Self::label_ctor_instantiation_site(e, span))?
             {
                 // Success! Return a TypeConst instruction instead of a runtime call
                 let air_ref = air.add_inst(AirInst {

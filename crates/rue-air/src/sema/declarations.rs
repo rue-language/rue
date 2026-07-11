@@ -2587,7 +2587,10 @@ impl<'a> Sema<'a> {
             }
         }
 
-        match self.reduce_type_ctor_body(function_key, &callee_types, &callee_values)? {
+        match self
+            .reduce_type_ctor_body(function_key, &callee_types, &callee_values)
+            .map_err(|e| Self::label_ctor_instantiation_site(e, span))?
+        {
             Some(ConstValue::Type(ty)) => Ok(ConstInit::Value(ConstValue::Type(ty))),
             _ => Err(CompileError::new(
                 ErrorKind::ComptimeEvaluationFailed {

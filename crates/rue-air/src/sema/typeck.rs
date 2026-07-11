@@ -33,6 +33,12 @@ use crate::types::{
 impl<'a> Sema<'a> {
     /// Get a human-readable name for a type.
     pub(crate) fn format_type_name(&self, ty: Type) -> String {
+        // A constructor-produced anonymous type prints its instantiation
+        // spelling (`ArrayBuf(i64)`), not its internal structural name
+        // (RUE-610; recorded by `reduce_type_ctor_body`).
+        if let Some(display) = self.ctor_type_displays.get(&ty) {
+            return display.clone();
+        }
         match ty.kind() {
             TypeKind::I8 => "i8".to_string(),
             TypeKind::I16 => "i16".to_string(),
@@ -63,6 +69,23 @@ impl<'a> Sema<'a> {
             }
             TypeKind::Module(_) => "<module>".to_string(),
             TypeKind::ComptimeType => "type".to_string(),
+        }
+    }
+
+    /// Point a container well-formedness rejection (E0498/E0499, RUE-388) at
+    /// the user's type-constructor application. The gate raises inside the
+    /// constructor's own body (`@require_droppable(T)` in std source), so
+    /// without this label the user's file never appears in the diagnostic
+    /// (RUE-610). Other reduction errors already carry their own spans.
+    pub(crate) fn label_ctor_instantiation_site(err: CompileError, span: Span) -> CompileError {
+        if matches!(
+            err.kind,
+            ErrorKind::ContainerElementHasDestructor { .. }
+                | ErrorKind::ContainerElementIsLinear { .. }
+        ) {
+            err.with_label("required by the type-constructor application here", span)
+        } else {
+            err
         }
     }
 
@@ -926,7 +949,10 @@ impl<'a> Sema<'a> {
         // comptime constants (RUE-552).
         let (callee_types, callee_values) =
             self.bind_type_ctor_args(call_path, params, arg_strs, span, ctx)?;
-        match self.reduce_type_ctor_body(function_key, &callee_types, &callee_values)? {
+        match self
+            .reduce_type_ctor_body(function_key, &callee_types, &callee_values)
+            .map_err(|e| Self::label_ctor_instantiation_site(e, span))?
+        {
             Some(ConstValue::Type(t)) => Ok(t),
             _ => Err(CompileError::new(
                 ErrorKind::ComptimeEvaluationFailed {
@@ -1439,7 +1465,10 @@ impl<'a> Sema<'a> {
 
         // Reduce the constructor body under the substitution. Shares the exact
         // reduction path (and E1200 recursion guard) with value-position calls.
-        match self.reduce_type_ctor_body(name_key, &callee_types, &callee_values)? {
+        match self
+            .reduce_type_ctor_body(name_key, &callee_types, &callee_values)
+            .map_err(|e| Self::label_ctor_instantiation_site(e, span))?
+        {
             Some(ConstValue::Type(t)) => Ok(t),
             _ => Err(CompileError::new(
                 ErrorKind::ComptimeEvaluationFailed {
