@@ -29,9 +29,11 @@ mod diagnostic;
 mod drop_glue;
 mod semantic_order;
 mod source_metadata;
+mod source_snapshot;
 mod unit;
 
 pub use source_metadata::SourceMetadata;
+pub use source_snapshot::{MAX_SOURCE_BYTES, SourceSnapshot};
 pub use unit::{CompilationUnit, SourceStats};
 
 use rayon::prelude::*;
@@ -248,7 +250,9 @@ pub use rue_target::{Arch, Target};
 
 /// A source file with its path and content.
 ///
-/// Used for multi-file compilation to associate source content with file paths.
+/// This is the borrowed compatibility view used by existing multi-file APIs.
+/// Long-lived compiler and tooling inputs should use [`SourceSnapshot`], which
+/// owns immutable text and keeps paths in validated [`SourceMetadata`].
 #[derive(Debug, Clone)]
 pub struct SourceFile<'a> {
     /// Path to the source file (used for error messages).
@@ -273,7 +277,9 @@ impl<'a> SourceFile<'a> {
 /// Result of parsing a single file.
 ///
 /// Per-file ASTs share the [`ParsedProgram::interner`] returned by
-/// [`parse_all_files`]; there is no per-file interner state.
+/// [`parse_all_files`]; there is no per-file interner state. The raw interned
+/// symbols in these ASTs are valid only with that returned interner from the
+/// same parse invocation.
 #[derive(Debug)]
 pub struct ParsedFile {
     /// Path to the source file.
@@ -333,25 +339,35 @@ pub fn parse_all_files(sources: &[SourceFile<'_>]) -> MultiErrorResult<ParsedPro
     parse_all_files_with_source_metadata(sources, &source_metadata)
 }
 
-/// Parse source files after validating them against immutable metadata.
+/// Parse borrowed source files after validating them against immutable metadata.
 ///
-/// This is the canonical multi-file parsing boundary. Invalid source IDs,
+/// This compatibility adapter materializes one owned [`SourceSnapshot`] and
+/// delegates to [`parse_all_files_with_source_snapshot`]. Invalid source IDs,
 /// paths, or descriptor membership are rejected before any source is lexed.
 pub fn parse_all_files_with_source_metadata(
     sources: &[SourceFile<'_>],
     source_metadata: &SourceMetadata,
 ) -> MultiErrorResult<ParsedProgram> {
-    source_metadata
-        .validate_sources(sources)
+    let snapshot = SourceSnapshot::from_sources(sources, source_metadata.clone())
         .map_err(CompileErrors::from)?;
+    parse_all_files_with_source_snapshot(&snapshot)
+}
 
+/// Parse an immutable owned source snapshot with one shared interner.
+///
+/// This is the canonical multi-file parsing boundary. Snapshot construction
+/// has already validated exact source/metadata membership, so no caller-owned
+/// source storage is borrowed while parsing.
+pub fn parse_all_files_with_source_snapshot(
+    snapshot: &SourceSnapshot,
+) -> MultiErrorResult<ParsedProgram> {
     // Parse all files sequentially with a shared interner
     // This ensures Spur values are consistent across files for cross-file symbol resolution
-    let mut parsed_files = Vec::with_capacity(sources.len());
+    let mut parsed_files = Vec::with_capacity(snapshot.len());
     let mut interner = ThreadedRodeo::new();
     let mut errors = CompileErrors::new();
 
-    for source in sources {
+    for source in snapshot.files() {
         // Create lexer with shared interner and file ID for proper error reporting
         let lexer = Lexer::with_interner_and_file_id(source.source, interner, source.file_id);
 
@@ -1327,22 +1343,19 @@ fn source_metadata_from_sources(
         .map_err(CompileErrors::from)
 }
 
-/// Compile sources using an explicit, immutable root and source descriptor.
+/// Compile borrowed sources using an explicit immutable source descriptor.
 ///
-/// This is the canonical batch compilation boundary. The descriptor must
+/// This compatibility adapter materializes one owned [`SourceSnapshot`] and
+/// delegates to [`compile_source_snapshot_with_options`]. The descriptor must
 /// describe exactly `sources`; validation happens before lexing.
 pub fn compile_multi_file_with_source_metadata_and_options(
     sources: &[SourceFile<'_>],
     source_metadata: &SourceMetadata,
     options: &CompileOptions,
 ) -> MultiErrorResult<CompileOutput> {
-    compile_multi_file_with_source_metadata_and_options_impl(
-        sources,
-        source_metadata,
-        options,
-        false,
-    )
-    .map(|(output, _stats)| output)
+    let snapshot = SourceSnapshot::from_sources(sources, source_metadata.clone())
+        .map_err(CompileErrors::from)?;
+    compile_source_snapshot_with_options(&snapshot, options)
 }
 
 /// Compile sources with explicit metadata and return live frontend metrics.
@@ -1351,23 +1364,39 @@ pub fn compile_multi_file_with_source_metadata_and_options_and_stats(
     source_metadata: &SourceMetadata,
     options: &CompileOptions,
 ) -> MultiErrorResult<(CompileOutput, SourceStats)> {
-    let (output, stats) = compile_multi_file_with_source_metadata_and_options_impl(
-        sources,
-        source_metadata,
-        options,
-        true,
-    )?;
+    let snapshot = SourceSnapshot::from_sources(sources, source_metadata.clone())
+        .map_err(CompileErrors::from)?;
+    compile_source_snapshot_with_options_and_stats(&snapshot, options)
+}
+
+/// Compile an immutable owned source snapshot.
+///
+/// This is the canonical batch compilation boundary. Cloning the snapshot for
+/// the compilation unit shares both its validated metadata and source text.
+pub fn compile_source_snapshot_with_options(
+    snapshot: &SourceSnapshot,
+    options: &CompileOptions,
+) -> MultiErrorResult<CompileOutput> {
+    compile_source_snapshot_with_options_impl(snapshot, options, false)
+        .map(|(output, _stats)| output)
+}
+
+/// Compile an immutable owned source snapshot and return live frontend metrics.
+pub fn compile_source_snapshot_with_options_and_stats(
+    snapshot: &SourceSnapshot,
+    options: &CompileOptions,
+) -> MultiErrorResult<(CompileOutput, SourceStats)> {
+    let (output, stats) = compile_source_snapshot_with_options_impl(snapshot, options, true)?;
     let mut stats = stats.expect("source stats requested");
-    stats.lines = sources
-        .iter()
+    stats.lines = snapshot
+        .files()
         .map(|source| source.source.lines().count())
         .sum();
     Ok((output, stats))
 }
 
-fn compile_multi_file_with_source_metadata_and_options_impl(
-    sources: &[SourceFile<'_>],
-    source_metadata: &SourceMetadata,
+fn compile_source_snapshot_with_options_impl(
+    snapshot: &SourceSnapshot,
     options: &CompileOptions,
     collect_stats: bool,
 ) -> MultiErrorResult<(CompileOutput, Option<SourceStats>)> {
@@ -1377,22 +1406,17 @@ fn compile_multi_file_with_source_metadata_and_options_impl(
     // (RUE-352). The jobs setting is now applied once in the driver's `main()`
     // via `configure_thread_pool` before dispatching to any path.
 
-    let total_source_bytes: usize = sources.iter().map(|s| s.source.len()).sum();
+    let total_source_bytes: usize = snapshot.files().map(|source| source.source.len()).sum();
     let _span = info_span!(
         "compile",
         target = %options.target,
-        file_count = sources.len(),
+        file_count = snapshot.len(),
         source_bytes = total_source_bytes
     )
     .entered();
 
     // Use CompilationUnit for the entire pipeline
-    let mut unit = CompilationUnit::with_source_metadata(
-        sources.to_vec(),
-        source_metadata.clone(),
-        options.clone(),
-    )
-    .map_err(CompileErrors::from)?;
+    let mut unit = CompilationUnit::from_source_snapshot(snapshot.clone(), options.clone());
     let output = unit.run_all()?;
     let stats = collect_stats.then(|| unit.collected_source_stats());
     Ok((output, stats))
@@ -2092,6 +2116,37 @@ mod tests {
     }
 
     #[test]
+    fn borrowed_and_snapshot_parse_routes_report_identical_errors() {
+        let root = FileId::new(4);
+        let helper = FileId::new(9);
+        let sources = [
+            SourceFile::new("helper.rue", "fn helper() -> i32 { # }", helper),
+            SourceFile::new("main.rue", "fn main() -> i32 { $ }", root),
+        ];
+        let metadata =
+            SourceMetadata::from_sources(&sources, root, std::collections::HashMap::new()).unwrap();
+        let snapshot = SourceSnapshot::from_sources(&sources, metadata.clone()).unwrap();
+
+        let borrowed = parse_all_files_with_source_metadata(&sources, &metadata).unwrap_err();
+        let owned = parse_all_files_with_source_snapshot(&snapshot).unwrap_err();
+        let fingerprint = |errors: &CompileErrors| {
+            errors
+                .iter()
+                .map(|error| {
+                    (
+                        error.kind.code(),
+                        error.span(),
+                        error.to_string(),
+                        format!("{:?}", error.diagnostic()),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(fingerprint(&borrowed), fingerprint(&owned));
+    }
+
+    #[test]
     fn raw_ast_boundary_rejects_undeclared_file_ids_before_lowering() {
         let declared = FileId::new(2);
         let metadata = SourceMetadata::new(
@@ -2201,6 +2256,61 @@ mod tests {
         assert_invalid_compiler_input(
             errors,
             "invalid compiler input: physical path for 3 is \"expected.rue\", but source file uses \"actual.rue\"",
+        );
+    }
+
+    #[test]
+    fn borrowed_and_snapshot_batch_routes_produce_identical_artifacts() {
+        let root = FileId::new(7);
+        let helper = FileId::new(2);
+        let sources = [
+            SourceFile::new(
+                "/checkout/main.rue",
+                "const helper = @import(\"helper.rue\"); fn main() -> i32 { let unused = 0; helper.answer() }",
+                root,
+            ),
+            SourceFile::new(
+                "/checkout/helper.rue",
+                "pub fn answer() -> i32 { 42 }",
+                helper,
+            ),
+        ];
+        let metadata = SourceMetadata::from_sources(
+            &sources,
+            root,
+            std::collections::HashMap::from([
+                (root, "main.rue".to_string()),
+                (helper, "helper.rue".to_string()),
+            ]),
+        )
+        .unwrap();
+        let snapshot = SourceSnapshot::from_sources(&sources, metadata.clone()).unwrap();
+
+        let (borrowed, borrowed_stats) =
+            compile_multi_file_with_source_metadata_and_options_and_stats(
+                &sources,
+                &metadata,
+                &CompileOptions::default(),
+            )
+            .unwrap();
+        let (owned, owned_stats) =
+            compile_source_snapshot_with_options_and_stats(&snapshot, &CompileOptions::default())
+                .unwrap();
+
+        assert_eq!(borrowed.elf, owned.elf);
+        assert_eq!(borrowed_stats, owned_stats);
+        assert!(!borrowed.warnings.is_empty());
+        assert_eq!(
+            borrowed
+                .warnings
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            owned
+                .warnings
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
         );
     }
 

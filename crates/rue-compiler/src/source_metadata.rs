@@ -199,8 +199,10 @@ impl SourceMetadata {
 
     /// The canonical logical semantic identity for `file_id`.
     ///
-    /// Logical paths are lexically normalized once during construction, so
-    /// this value is safe to use directly as an identity or query key.
+    /// Logical paths are lexically normalized once during construction. They
+    /// identify modules within this descriptor, but do not identify source
+    /// contents, snapshots, or interner epochs and are not standalone cache
+    /// keys.
     pub fn logical_path(&self, file_id: FileId) -> Option<&str> {
         self.logical_paths.get(&file_id).map(String::as_str)
     }
