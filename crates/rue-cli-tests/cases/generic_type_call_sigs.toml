@@ -273,3 +273,22 @@ fn f(x: i32) -> i32 {
 fn main() -> i32 { f(5) }
 """ }]
 exit_code = 10
+
+[[case]]
+name = "malformed_deferred_type_call_preserves_source_diagnostic"
+description = "Physicalizing a deferred generic signature preserves constructor arity errors instead of reporting an internal unresolved placeholder."
+files = [{ path = "main.rue", source = """
+fn Pair(comptime T: type, comptime U: type) -> type {
+    struct { left: T, right: U }
+}
+
+fn take(comptime T: type, value: Pair(T)) -> i32 {
+    1
+}
+
+fn main() -> i32 {
+    take(i32, @panic("stop"))
+}
+""" }]
+compile_fail = true
+error_contains = ["expects 2", "provided"]

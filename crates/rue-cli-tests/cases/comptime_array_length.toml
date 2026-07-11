@@ -85,6 +85,21 @@ compile_fail = true
 error_contains = ["not a compile-time constant"]
 
 [[case]]
+name = "negative_specialized_parameter_length_is_source_error"
+description = "A bad call-site substitution preserves E0481 instead of becoming an unresolved-signature internal error."
+files = [{ path = "main.rue", source = """
+fn first(comptime N: i32, values: [i32; N]) -> i32 {
+    values[0]
+}
+
+fn main() -> i32 {
+    first(-1, [1])
+}
+""" }]
+compile_fail = true
+error_contains = ["negative"]
+
+[[case]]
 name = "negative_const_length_rejected"
 files = [{ path = "main.rue", source = """
 const NEG: i32 = -3;

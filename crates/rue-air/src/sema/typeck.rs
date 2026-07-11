@@ -1516,6 +1516,297 @@ impl<'a> Sema<'a> {
         flags
     }
 
+    /// Resolve one parameter of a generic function under a concrete
+    /// specialization.
+    ///
+    /// Declaration gathering uses [`Type::COMPTIME_TYPE`] as a placeholder
+    /// for runtime parameter types that mention comptime type/value
+    /// parameters (`x: T`, `a: [T; N]`, and so on). Both the call site and the
+    /// specialized callee must replace that placeholder through this exact
+    /// path. Retaining it after the substitution is known would let them
+    /// independently classify the parameter and silently disagree.
+    pub(crate) fn resolve_substituted_param_type(
+        &mut self,
+        function: &FunctionInfo,
+        param_index: usize,
+        declared: Type,
+        type_subst: &HashMap<Spur, Type>,
+        value_subst: &HashMap<Spur, ConstValue>,
+    ) -> CompileResult<Type> {
+        if declared != Type::COMPTIME_TYPE {
+            return Ok(declared);
+        }
+
+        let rir_params = self
+            .rir
+            .get_params(function.rir_params_start, function.rir_params_len);
+        let param = rir_params.get(param_index).ok_or_else(|| {
+            CompileError::new(
+                ErrorKind::InternalError(format!(
+                    "generic parameter index {} is missing from its RIR declaration",
+                    param_index
+                )),
+                function.span,
+            )
+        })?;
+        let type_sym = param.ty;
+        let param_name = param.name;
+
+        // Speculative comptime callers intentionally collapse errors to
+        // `None`; a concrete specialized signature is authoritative. Validate
+        // it first so malformed source types keep their source diagnostics.
+        self.validate_substituted_signature_type(type_sym, type_subst, value_subst, function.span)?;
+
+        self.resolve_type_for_comptime_with_subst_and_values_at_span(
+            type_sym,
+            type_subst,
+            value_subst,
+            function.span,
+        )
+        .ok_or_else(|| {
+            CompileError::new(
+                ErrorKind::InternalError(format!(
+                    "generic parameter '{}' still has an unresolved runtime type after specialization",
+                    self.interner.resolve(&param_name)
+                )),
+                function.span,
+            )
+        })
+    }
+
+    /// Resolve the return half of the same specialized signature contract.
+    /// Caller and callee must agree on it just as strictly as on parameter
+    /// widths; silently retaining the placeholder (or substituting unit) would
+    /// merely move the disagreement to the returned value.
+    pub(crate) fn resolve_substituted_return_type(
+        &mut self,
+        function: &FunctionInfo,
+        type_subst: &HashMap<Spur, Type>,
+        value_subst: &HashMap<Spur, ConstValue>,
+    ) -> CompileResult<Type> {
+        if function.return_type != Type::COMPTIME_TYPE {
+            return Ok(function.return_type);
+        }
+        self.validate_substituted_signature_type(
+            function.return_type_sym,
+            type_subst,
+            value_subst,
+            function.span,
+        )?;
+        self.resolve_type_for_comptime_with_subst_and_values_at_span(
+            function.return_type_sym,
+            type_subst,
+            value_subst,
+            function.span,
+        )
+        .ok_or_else(|| {
+            CompileError::new(
+                ErrorKind::InternalError(
+                    "generic return type remained unresolved after specialization".to_string(),
+                ),
+                function.span,
+            )
+        })
+    }
+
+    fn validate_substituted_signature_type(
+        &mut self,
+        type_sym: Spur,
+        type_subst: &HashMap<Spur, Type>,
+        value_subst: &HashMap<Spur, ConstValue>,
+        span: Span,
+    ) -> CompileResult<()> {
+        if type_subst.contains_key(&type_sym) {
+            return Ok(());
+        }
+
+        let type_name = self.interner.resolve(&type_sym).to_string();
+        if let Some((element, len)) = parse_array_type_syntax(&type_name) {
+            let element_sym = self.interner.get_or_intern(&element);
+            self.validate_substituted_signature_type(element_sym, type_subst, value_subst, span)?;
+            self.resolve_array_length(&len, span, Some(value_subst))?;
+        } else if let Some(pointee) = type_name
+            .strip_prefix("ptr const ")
+            .or_else(|| type_name.strip_prefix("ptr mut "))
+        {
+            let pointee_sym = self.interner.get_or_intern(pointee);
+            self.validate_substituted_signature_type(pointee_sym, type_subst, value_subst, span)?;
+        } else if let Some((call_name, arg_strs)) = parse_type_call_syntax(&type_name) {
+            self.resolve_type_call_for_comptime_with_subst_diagnostic(
+                &call_name,
+                &arg_strs,
+                type_subst,
+                value_subst,
+                span,
+            )?;
+        } else {
+            // Resolve concrete leaves in the declaration's file, not through
+            // global compatibility maps. This keeps same-named module-local
+            // types isolated inside deferred arrays and pointers.
+            self.resolve_type(type_sym, span)?;
+        }
+        Ok(())
+    }
+
+    /// Resolve a type-constructor application while preserving diagnostics.
+    /// The general comptime resolver is intentionally Option-based because
+    /// many callers probe whether an expression is reducible. Once a generic
+    /// signature is concrete, malformed arity, kind, or constructor-body
+    /// failures are authoritative source errors.
+    fn resolve_type_call_for_comptime_with_subst_diagnostic(
+        &mut self,
+        call_name: &str,
+        arg_strs: &[String],
+        type_subst: &HashMap<Spur, Type>,
+        value_subst: &HashMap<Spur, ConstValue>,
+        span: Span,
+    ) -> CompileResult<Option<Type>> {
+        if call_name == "Str" {
+            return self
+                .resolve_str_fixed_type(call_name, arg_strs, span)
+                .map(Some);
+        }
+        if call_name.contains('.') {
+            return Ok(self.resolve_qualified_type_call_for_comptime(
+                call_name,
+                arg_strs,
+                type_subst,
+                value_subst,
+                span,
+            ));
+        }
+
+        let name_sym = self.interner.get_or_intern(call_name);
+        let function_key = if span == Span::default() {
+            Some(name_sym)
+        } else {
+            let mut key = self.resolve_function_name_local(name_sym, span.file_id);
+            if key.is_none() {
+                self.ensure_free_function_signature(name_sym, Some(span.file_id))?;
+                key = self.resolve_function_name_local(name_sym, span.file_id);
+            }
+            key
+        }
+        .ok_or_else(|| {
+            CompileError::new(
+                ErrorKind::UnknownType(format!("{}({})", call_name, arg_strs.join(", "))),
+                span,
+            )
+        })?;
+        let fn_info = self.functions.get(&function_key).copied().ok_or_else(|| {
+            CompileError::new(
+                ErrorKind::UnknownType(format!("{}({})", call_name, arg_strs.join(", "))),
+                span,
+            )
+        })?;
+        self.check_unqualified_visibility(
+            "function",
+            call_name,
+            fn_info.file_id,
+            fn_info.is_pub,
+            span,
+        )?;
+        if fn_info.return_type != Type::COMPTIME_TYPE {
+            return Err(CompileError::new(
+                ErrorKind::ComptimeEvaluationFailed {
+                    reason: format!(
+                        "'{}' is not a type: only a function returning `type` can be applied here",
+                        call_name
+                    ),
+                },
+                span,
+            ));
+        }
+
+        let params = fn_info.params;
+        let param_names = self.param_arena.names(params).to_vec();
+        let param_comptime = self.param_arena.comptime(params).to_vec();
+        if arg_strs.len() != param_names.len()
+            || !(param_names.is_empty() || param_comptime.iter().all(|&flag| flag))
+        {
+            return Err(CompileError::new(
+                ErrorKind::ComptimeEvaluationFailed {
+                    reason: format!(
+                        "type constructor '{}' expects {} comptime argument(s), but {} were provided",
+                        call_name,
+                        param_names.len(),
+                        arg_strs.len()
+                    ),
+                },
+                span,
+            ));
+        }
+
+        let param_comptime_type = self.comptime_type_param_flags(&fn_info);
+        let mut callee_types = HashMap::new();
+        let mut callee_values = HashMap::new();
+        for (i, arg) in arg_strs.iter().enumerate() {
+            if param_comptime_type[i] {
+                let arg_ty =
+                    if let Some((nested_name, nested_args)) = parse_type_call_syntax(arg) {
+                        self.resolve_type_call_for_comptime_with_subst_diagnostic(
+                            &nested_name,
+                            &nested_args,
+                            type_subst,
+                            value_subst,
+                            span,
+                        )?
+                    } else {
+                        let arg_sym = self.interner.get_or_intern(arg);
+                        self.resolve_type_for_comptime_with_subst_and_values_at_span(
+                            arg_sym,
+                            type_subst,
+                            value_subst,
+                            span,
+                        )
+                    }
+                    .ok_or_else(|| {
+                        CompileError::new(
+                            ErrorKind::ComptimeEvaluationFailed {
+                                reason: format!(
+                                    "argument '{}' for '{}' did not resolve to a type",
+                                    arg, call_name
+                                ),
+                            },
+                            span,
+                        )
+                    })?;
+                callee_types.insert(param_names[i], arg_ty);
+            } else {
+                let value = self
+                    .resolve_comptime_type_ctor_value_arg(arg, value_subst, span)
+                    .ok_or_else(|| {
+                        CompileError::new(
+                            ErrorKind::ComptimeEvaluationFailed {
+                                reason: format!(
+                                    "argument '{}' for '{}' is not a compile-time value",
+                                    arg, call_name
+                                ),
+                            },
+                            span,
+                        )
+                    })?;
+                callee_values.insert(param_names[i], value);
+            }
+        }
+
+        match self
+            .reduce_type_ctor_body(function_key, &callee_types, &callee_values)
+            .map_err(|error| Self::label_ctor_instantiation_site(error, span))?
+        {
+            Some(ConstValue::Type(ty)) => Ok(Some(ty)),
+            _ => Err(CompileError::new(
+                ErrorKind::ComptimeEvaluationFailed {
+                    reason: format!(
+                        "the type constructor '{}' did not reduce to a concrete type",
+                        call_name
+                    ),
+                },
+                span,
+            )),
+        }
+    }
+
     /// Resolve a type symbol to a Type, returning None if the type is unknown.
     ///
     /// This is used in comptime evaluation where we can't produce a compile error.
@@ -1581,6 +1872,14 @@ impl<'a> Sema<'a> {
             return Some(ty);
         }
 
+        let is_composite = parse_array_type_syntax(type_name).is_some()
+            || type_name.starts_with("ptr const ")
+            || type_name.starts_with("ptr mut ")
+            || parse_type_call_syntax(type_name).is_some();
+        if span != Span::default() && !is_composite {
+            return self.resolve_type(type_sym, span).ok();
+        }
+
         if let Some(&struct_id) = self.structs.get(&type_sym) {
             Some(Type::new_struct(struct_id))
         } else if let Some(&enum_id) = self.enums.get(&type_sym) {
@@ -1632,81 +1931,15 @@ impl<'a> Sema<'a> {
             let ptr_type_id = self.type_pool.intern_ptr_mut_from_type(pointee_ty);
             Some(Type::new_ptr_mut(ptr_type_id))
         } else if let Some((call_name, arg_strs)) = parse_type_call_syntax(type_name) {
-            // A *module-qualified* type-function application (`m.Mk(T)`,
-            // `std.option.Option(T)`) appearing in a comptime type position
-            // during body reduction — a field type, an enum-variant payload, or
-            // a method's parameter/return type inside a `-> type` constructor
-            // whose method references a constructor imported from another module
-            // (RUE-511). The unqualified path below can't resolve `m.Mk` as a
-            // function name, so dispatch to the qualified resolver, which walks
-            // the module prefix (keyed by `span.file_id`, the defining file),
-            // enforces membership + visibility, and reduces the callee body.
-            if call_name.contains('.') {
-                return self.resolve_qualified_type_call_for_comptime(
-                    &call_name,
-                    &arg_strs,
-                    type_subst,
-                    value_subst,
-                    span,
-                );
-            }
-            // A type-function application whose arguments may name enclosing
-            // comptime type parameters (`Option(T)` with `T` in `type_subst`).
-            // Resolve each argument under the current substitution, then reduce
-            // the constructor body to its monomorphized type — so a generic
-            // signature/return type applying an enclosing constructor to a type
-            // parameter (`fn wrap(comptime T: type, ...) -> Option(T)`)
-            // monomorphizes at each call site (RUE-272). Shares the reduction
-            // path (and E1200 recursion guard) with the signature-position
-            // resolver `resolve_type_function_call`. On the comptime path we
-            // can't emit a diagnostic, so any failure (unknown callee,
-            // non-`type` callee, arity mismatch, non-reducing body, recursion
-            // guard) just makes the type non-evaluable (`None`); the caller
-            // reports it.
-            let name_sym = self.interner.get_or_intern(&call_name);
-            let function_key = if span == Span::default() {
-                name_sym
-            } else {
-                self.resolve_function_name_local(name_sym, span.file_id)?
-            };
-            let fn_info = self.functions.get(&function_key).copied()?;
-            if fn_info.return_type != Type::COMPTIME_TYPE {
-                return None;
-            }
-            let params = fn_info.params;
-            let param_names = self.param_arena.names(params).to_vec();
-            let param_comptime = self.param_arena.comptime(params).to_vec();
-            if arg_strs.len() != param_names.len()
-                || !(param_names.is_empty() || param_comptime.iter().all(|&c| c))
-            {
-                return None;
-            }
-            // Kind-aware binding (RUE-552): see the qualified resolver above.
-            let param_comptime_type = self.comptime_type_param_flags(&fn_info);
-            let mut callee_types: HashMap<Spur, Type> = HashMap::new();
-            let mut callee_values: HashMap<Spur, ConstValue> = HashMap::new();
-            for (i, arg) in arg_strs.iter().enumerate() {
-                if param_comptime_type[i] {
-                    let arg_sym = self.interner.get_or_intern(arg);
-                    let arg_ty = self.resolve_type_for_comptime_with_subst_and_values_at_span(
-                        arg_sym,
-                        type_subst,
-                        value_subst,
-                        span,
-                    )?;
-                    callee_types.insert(param_names[i], arg_ty);
-                } else {
-                    let val = self.resolve_comptime_type_ctor_value_arg(arg, value_subst, span)?;
-                    callee_values.insert(param_names[i], val);
-                }
-            }
-            match self
-                .reduce_type_ctor_body(function_key, &callee_types, &callee_values)
-                .ok()?
-            {
-                Some(ConstValue::Type(t)) => Some(t),
-                _ => None,
-            }
+            self.resolve_type_call_for_comptime_with_subst_diagnostic(
+                &call_name,
+                &arg_strs,
+                type_subst,
+                value_subst,
+                span,
+            )
+            .ok()
+            .flatten()
         } else {
             None // Unknown type
         }
