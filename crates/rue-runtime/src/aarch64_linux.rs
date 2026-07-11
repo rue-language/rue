@@ -171,15 +171,25 @@ pub fn write_all(fd: u64, mut buf: &[u8]) -> Result<(), i64> {
 
 /// Write a message to stderr.
 ///
-/// This is a best-effort write operation. If writing fails, the error is silently
-/// ignored because we're typically about to exit anyway.
+/// Best-effort: the `Err` from [`write_all`] is dropped because there is no
+/// meaningful recovery and the runtime is typically about to exit.
+///
+/// The dropped-`Err` path does **not** cover a broken output pipe. We install
+/// no `SIGPIPE` handler, so a `write` to a pipe whose reader is gone raises
+/// `SIGPIPE` and the kernel terminates the process (exit 141 = 128 + SIGPIPE)
+/// before the syscall returns — `write_all` never sees the `EPIPE`. This is
+/// Rue's intended Unix default (spec §8.5, RUE-369). Swallowing the `Err` still
+/// matters for non-signalling errno failures, e.g. `EBADF` on a closed fd,
+/// where the process keeps running.
 pub fn write_stderr(msg: &[u8]) {
     let _ = write_all(STDERR, msg);
 }
 
 /// Write a message to stdout.
 ///
-/// This is a best-effort write operation similar to `write_stderr`.
+/// Best-effort, exactly like [`write_stderr`]: a broken output pipe kills the
+/// process via `SIGPIPE` (exit 141) before `write_all` returns, while a
+/// non-signalling errno such as `EBADF` from a closed fd is swallowed here.
 pub fn write_stdout(msg: &[u8]) {
     let _ = write_all(STDOUT, msg);
 }
