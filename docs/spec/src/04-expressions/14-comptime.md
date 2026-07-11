@@ -223,7 +223,10 @@ fn main() -> i32 {
 
 {{ rule(id="4.14:8", cat="normative") }}
 
-Two anonymous struct types are structurally equal if and only if they have the same field names in the same order with the same types.
+Two anonymous struct types that contain no method definitions are structurally
+equal if and only if they have the same field names in the same order with the
+same types. Structural equality for anonymous structs with methods is specified
+by rule 4.14:15.
 
 ```rue
 fn make_point1() -> type { struct { x: i32, y: i32 } }
@@ -349,8 +352,10 @@ It is a compile-time error to define two methods with the same name in an anonym
 {{ rule(id="4.14:15", cat="normative") }}
 
 Two anonymous struct types are structurally equal if and only if they have:
+
 1. The same field names in the same order with the same types, AND
-2. The same method names with the same parameter types and return types
+2. The same method names, receiver presence and passing mode, explicit
+   parameter types, passing modes and `comptime` modifiers, and return types
 
 Method bodies do not affect structural equality—only signatures matter.
 

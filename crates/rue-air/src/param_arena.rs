@@ -72,7 +72,9 @@
 //! Methods always store parameter names (needed for named argument checking).
 //! Functions only need names for generic functions (for type substitution).
 //! To handle this, both `alloc` and `alloc_method` store names, but functions
-//! can pass empty iterators if names aren't needed.
+//! can pass empty iterators if names aren't needed. Method allocation also
+//! requires the source modes and comptime flags: defaulting either would erase
+//! part of the callable signature and can desynchronize caller and callee ABI.
 
 use crate::types::Type;
 use lasso::Spur;
@@ -214,38 +216,20 @@ impl ParamArena {
         ParamRange::new(start, types_len as u32)
     }
 
-    /// Allocates storage for a method's parameters (without comptime flags).
+    /// Allocates storage for a method's explicit parameters.
     ///
-    /// Methods don't have comptime parameters, so this is a convenience method
-    /// that fills the comptime array with `false` values.
+    /// This deliberately requires the same complete signature data as
+    /// [`Self::alloc`]. A method parameter may be `borrow`, `inout`, or
+    /// `comptime`; synthesizing Normal/non-comptime defaults here would make the
+    /// call-site signature disagree with the method body's ABI (RUE-634).
     pub fn alloc_method(
         &mut self,
         names: impl IntoIterator<Item = Spur>,
         types: impl IntoIterator<Item = Type>,
+        modes: impl IntoIterator<Item = RirParamMode>,
+        comptime: impl IntoIterator<Item = bool>,
     ) -> ParamRange {
-        let start = self.types.len() as u32;
-
-        // Collect names and types
-        self.names.extend(names);
-        let names_len = self.names.len() - start as usize;
-
-        self.types.extend(types);
-        let types_len = self.types.len() - start as usize;
-
-        // Verify lengths match
-        assert_eq!(
-            names_len, types_len,
-            "ParamArena::alloc_method: names ({}) and types ({}) have different lengths",
-            names_len, types_len
-        );
-
-        // Methods use Normal mode and are not comptime by default
-        self.modes
-            .extend(std::iter::repeat(RirParamMode::Normal).take(types_len));
-        self.comptime
-            .extend(std::iter::repeat(false).take(types_len));
-
-        ParamRange::new(start, types_len as u32)
+        self.alloc(names, types, modes, comptime)
     }
 
     /// Returns the parameter names for a range.
@@ -413,17 +397,21 @@ mod tests {
         let x = make_spur(&mut rodeo, "x");
         let y = make_spur(&mut rodeo, "y");
 
-        let range = arena.alloc_method([x, y], [Type::I32, Type::BOOL]);
+        let range = arena.alloc_method(
+            [x, y],
+            [Type::I32, Type::BOOL],
+            [RirParamMode::Borrow, RirParamMode::Inout],
+            [false, true],
+        );
 
         assert_eq!(range.len(), 2);
         assert_eq!(arena.names(range), &[x, y]);
         assert_eq!(arena.types(range), &[Type::I32, Type::BOOL]);
-        // Methods default to Normal mode and non-comptime
         assert_eq!(
             arena.modes(range),
-            &[RirParamMode::Normal, RirParamMode::Normal]
+            &[RirParamMode::Borrow, RirParamMode::Inout]
         );
-        assert_eq!(arena.comptime(range), &[false, false]);
+        assert_eq!(arena.comptime(range), &[false, true]);
     }
 
     #[test]

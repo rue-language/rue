@@ -209,6 +209,7 @@ impl<'a> Sema<'a> {
                             .iter()
                             .map(|t| self.type_to_infer_type(*t))
                             .collect(),
+                        param_modes: self.param_arena.modes(info.params).to_vec(),
                         return_type: self.type_to_infer_type(info.return_type),
                     },
                 )
@@ -1516,6 +1517,8 @@ impl<'a> Sema<'a> {
 
                 let params = self.rir.get_params(*params_start, *params_len);
                 let param_names: Vec<Spur> = params.iter().map(|p| p.name).collect();
+                let param_modes: Vec<RirParamMode> = params.iter().map(|p| p.mode).collect();
+                let param_comptime: Vec<bool> = params.iter().map(|p| p.is_comptime).collect();
                 // `Self` in a method signature (parameter or return position)
                 // resolves to the enclosing struct's type, just like the
                 // receiver does. Named-struct inline methods reach this path;
@@ -1528,9 +1531,12 @@ impl<'a> Sema<'a> {
                     self.resolve_type_with_self(*return_type, struct_type, method_inst.span)?;
 
                 // Allocate method parameters in the arena
-                let param_range = self
-                    .param_arena
-                    .alloc_method(param_names.into_iter(), param_types.into_iter());
+                let param_range = self.param_arena.alloc_method(
+                    param_names,
+                    param_types,
+                    param_modes,
+                    param_comptime,
+                );
 
                 self.methods.insert(
                     key,
