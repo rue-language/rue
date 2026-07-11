@@ -541,10 +541,10 @@ impl<'a> Sema<'a> {
                     args_start: 0,
                     args_len: 0,
                 },
-                ty: Type::NEVER,
+                ty: Type::UNIT,
                 span,
             });
-            return Ok(AnalysisResult::new(air_ref, Type::NEVER));
+            return Ok(AnalysisResult::new(air_ref, Type::UNIT));
         }
 
         // Analyze the message argument
@@ -557,10 +557,10 @@ impl<'a> Sema<'a> {
                 args_start,
                 args_len: 1,
             },
-            ty: Type::NEVER,
+            ty: Type::UNIT,
             span,
         });
-        Ok(AnalysisResult::new(air_ref, Type::NEVER))
+        Ok(AnalysisResult::new(air_ref, Type::UNIT))
     }
 
     pub(super) fn analyze_assert_intrinsic(

@@ -448,6 +448,47 @@ fn capacity_and_intrinsic_signature_drift_are_contract_failures() {
 }
 
 #[test]
+fn panic_unit_signature_is_an_oracle_contract_for_both_arities() {
+    let state = compile_to_cfg(
+        r#"fn panic_no_message() { @panic() }
+        fn panic_with_message() { @panic("boom") }
+        fn main() -> i32 {
+            panic_no_message();
+            panic_with_message();
+            0
+        }"#,
+    )
+    .expect("both panic arities must compile with the unit contract");
+    let interp = Interp {
+        state: &state,
+        stdout: String::new(),
+        stdout_bytes: 0,
+        stdout_cap: MAX_STDOUT_BYTES,
+        stderr_cap: MAX_STDERR_BYTES,
+        budget: STEP_BUDGET,
+        depth: 0,
+    };
+    let expected =
+        UnsupportedKind::SemanticGap(SemanticGapKind::Intrinsic(UnsupportedIntrinsicKind::Panic));
+
+    for function_name in ["panic_no_message", "panic_with_message"] {
+        let (cfg, intrinsic, args, result_ty) =
+            find_intrinsic_in_function(&state, function_name, "panic");
+        assert_eq!(result_ty, Type::UNIT, "{function_name} compiler metadata");
+        assert_eq!(
+            interp.classify_unsupported_intrinsic(cfg, intrinsic, "panic", &args, result_ty,),
+            expected,
+            "{function_name} unit signature"
+        );
+        assert_eq!(
+            interp.classify_unsupported_intrinsic(cfg, intrinsic, "panic", &args, Type::NEVER,),
+            UnsupportedKind::ContractViolation(ContractViolationKind::IntrinsicSignature),
+            "{function_name} must reject the old never-typed metadata"
+        );
+    }
+}
+
+#[test]
 fn malformed_outer_calls_are_rejected_before_unmodeled_operands_run() {
     let mut preview_features = PreviewFeatures::new();
     preview_features.insert(rue_compiler::PreviewFeature::StringTrio);

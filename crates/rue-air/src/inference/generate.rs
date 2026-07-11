@@ -1157,6 +1157,17 @@ impl<'a> ConstraintGenerator<'a> {
                     // Return type is inferred from context - create a fresh type variable
                     let result_var = self.fresh_var();
                     InferType::Var(result_var)
+                } else if intrinsic_name == "panic" || intrinsic_name == "assert" {
+                    // Both abort intrinsics are ordinary unit expressions in the
+                    // surface type system. `@panic` never returns at runtime, but
+                    // it is deliberately not a never-typed control-transfer form
+                    // (spec 3.4:2; formal core §5.7). Keep these names explicit
+                    // instead of relying on the generic unit fallback so HM and
+                    // semantic analysis cannot drift apart again.
+                    for arg_ref in args.iter() {
+                        self.generate(*arg_ref, ctx);
+                    }
+                    InferType::Concrete(Type::UNIT)
                 } else if intrinsic_name == "read_line" {
                     // @read_line: returns `Option(String)` (RUE-6, ADR-0038).
                     // The concrete Option type comes from context (a `let`
@@ -3084,6 +3095,54 @@ mod tests {
 
         assert_eq!(info.ty, InferType::Concrete(Type::BOOL));
         assert_eq!(cgen.constraints().len(), 0);
+    }
+
+    #[test]
+    fn panic_and_assert_intrinsics_have_explicit_unit_results() {
+        for (name, has_arg) in [("panic", false), ("panic", true), ("assert", true)] {
+            let (mut rir, interner, type_pool) = make_test_rir_interner_and_type_pool();
+            let functions = HashMap::new();
+            let structs = HashMap::new();
+            let enums = HashMap::new();
+            let methods: HashMap<(StructId, Spur), MethodSig> = HashMap::new();
+
+            // Argument legality belongs to sema; this probe only pins HM's
+            // result contract and verifies that an operand is still visited.
+            let arg = has_arg.then(|| {
+                rir.add_inst(rue_rir::Inst {
+                    data: InstData::BoolConst(true),
+                    span: Span::new(1, 5),
+                })
+            });
+            let arg_refs: Vec<_> = arg.into_iter().collect();
+            let (args_start, args_len) = rir.add_inst_refs(&arg_refs);
+            let name = interner.get_or_intern(name);
+            let intrinsic = rir.add_inst(rue_rir::Inst {
+                data: InstData::Intrinsic {
+                    name,
+                    args_start,
+                    args_len,
+                },
+                span: Span::new(0, 6),
+            });
+
+            let mut cgen = ConstraintGenerator::new(
+                &rir, &interner, &functions, &structs, &enums, &methods, &type_pool,
+            );
+            let params = HashMap::new();
+            let mut ctx = ConstraintContext::new(&params, Type::UNIT);
+
+            let info = cgen.generate(intrinsic, &mut ctx);
+            assert_eq!(info.ty, InferType::Concrete(Type::UNIT));
+            if let Some(arg) = arg_refs.first() {
+                assert_eq!(
+                    cgen.expr_types().get(arg),
+                    Some(&InferType::Concrete(Type::BOOL)),
+                    "@{} must still visit its operand",
+                    interner.resolve(&name)
+                );
+            }
+        }
     }
 
     #[test]

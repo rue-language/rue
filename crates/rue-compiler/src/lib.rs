@@ -3780,6 +3780,83 @@ mod integration_tests {
         use super::*;
 
         #[test]
+        fn panic_forms_use_the_unit_contract_through_cfg() {
+            for (name, body) in [
+                ("trailing", "@panic()"),
+                ("trailing_message", "@panic(\"boom\")"),
+                ("semicolon", "@panic();"),
+                ("discarded", "let _ = @panic();"),
+                ("unit_binding", "let _: () = @panic();"),
+                ("assertion", "@assert(true)"),
+                ("assertion_with_message", "@assert(true, \"ok\")"),
+            ] {
+                let source = format!("fn probe() {{ {body} }} fn main() -> i32 {{ probe(); 0 }}");
+                let state = compile_to_cfg(&source)
+                    .expect("every unit-valued panic form must reach a verified, terminated CFG");
+                let cfg = &state
+                    .functions
+                    .iter()
+                    .find(|function| function.cfg.fn_name() == "probe")
+                    .unwrap_or_else(|| panic!("missing CFG for {name}"))
+                    .cfg;
+                let intrinsic_types: Vec<_> = cfg
+                    .blocks()
+                    .iter()
+                    .flat_map(|block| block.insts.iter())
+                    .filter_map(|value| {
+                        let inst = cfg.get_inst(*value);
+                        matches!(inst.data, rue_cfg::CfgInstData::Intrinsic { .. })
+                            .then_some(inst.ty)
+                    })
+                    .collect();
+                assert_eq!(
+                    intrinsic_types,
+                    vec![Type::UNIT],
+                    "{name} must carry the unit result into CFG"
+                );
+
+                let return_values: Vec<_> = cfg
+                    .blocks()
+                    .iter()
+                    .filter_map(|block| match block.terminator {
+                        rue_cfg::Terminator::Return { value } => Some(value),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(return_values.len(), 1, "{name} must have one return");
+                let return_value = return_values[0].expect("unit return must use a dummy value");
+                let return_inst = cfg.get_inst(return_value);
+                assert_eq!(return_inst.ty, Type::UNIT, "{name} return value type");
+                assert!(
+                    matches!(return_inst.data, rue_cfg::CfgInstData::Const(0)),
+                    "{name} must return the established dummy unit value, not a side-effect-only intrinsic"
+                );
+
+                for &target in Target::all() {
+                    generate_mir(cfg, &state.type_pool, &state.interner, target)
+                        .unwrap_or_else(|error| panic!("{name} must lower for {target}: {error}"));
+                }
+                compile(&source).unwrap_or_else(|error| {
+                    panic!("{name} must compile and link natively: {error}")
+                });
+            }
+        }
+
+        #[test]
+        fn panic_does_not_gain_never_coercion() {
+            for src in [
+                "fn main() -> i32 { @panic() }",
+                "fn main() -> i32 { let value: i32 = @panic(); value }",
+                "fn main() -> i32 { if true { 1 } else { @panic() } }",
+            ] {
+                assert!(
+                    compile_to_cfg(src).is_err(),
+                    "unit-valued @panic must not coerce into a non-unit context: {src}"
+                );
+            }
+        }
+
+        #[test]
         fn size_of_intrinsic() {
             // @size_of returns i32
             let src = "fn main() -> i32 { @size_of(i32) }";

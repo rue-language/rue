@@ -35,6 +35,43 @@ mod tests {
     }
 
     #[test]
+    fn panic_and_assert_intrinsics_have_unit_air_contracts() {
+        for (name, body) in [
+            ("panic_no_message", "@panic()"),
+            ("panic_with_message", "@panic(\"boom\")"),
+            ("assertion", "@assert(true)"),
+            ("assertion_with_message", "@assert(true, \"ok\")"),
+        ] {
+            let source = format!("fn probe() {{ {body} }} fn main() -> i32 {{ probe(); 0 }}");
+            let output = compile_to_air(&source).unwrap();
+            let function = output
+                .functions
+                .iter()
+                .find(|function| function.name == "probe")
+                .unwrap_or_else(|| panic!("missing analyzed function {name}"));
+            let intrinsic_types: Vec<_> = function
+                .air
+                .iter()
+                .filter_map(|(_, inst)| {
+                    matches!(inst.data, AirInstData::Intrinsic { .. }).then_some(inst.ty)
+                })
+                .collect();
+            assert_eq!(
+                intrinsic_types,
+                vec![Type::UNIT],
+                "{name} intrinsic result must agree with HM"
+            );
+            assert!(
+                function
+                    .air
+                    .iter()
+                    .any(|(_, inst)| matches!(inst.data, AirInstData::Ret(_))),
+                "a unit-valued trailing intrinsic still needs an implicit return"
+            );
+        }
+    }
+
+    #[test]
     fn test_analyze_addition() {
         let output = compile_to_air("fn main() -> i32 { 1 + 2 }").unwrap();
 

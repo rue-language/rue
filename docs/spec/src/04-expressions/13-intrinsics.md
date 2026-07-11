@@ -93,14 +93,17 @@ The compiler frontend additionally reserves the names `@cast`, `@panic`,
 stabilized, so they are omitted from the normative inventory above, but they
 are no longer no-ops (RUE-319):
 
-- `@panic(msg?)` aborts the process. It writes `panic: <msg>` (or just `panic`
-  when called with no argument) to standard error and exits with status 101 —
-  the same abort discipline as the `@intCast` overflow, division-by-zero, and
-  bounds-check traps.
+- `@panic(msg?)` has type `()`, but aborts the process when evaluated. It writes
+  `panic: <msg>` (or just `panic` when called with no argument) to standard error
+  and exits with status 101 — the same abort discipline as the `@intCast`
+  overflow, division-by-zero, and bounds-check traps. It is not a `!`-typed
+  control-transfer expression and therefore does not participate in never
+  coercion (3.4:2).
 - `@assert(cond, msg?)` evaluates the boolean `cond`. When `cond` is `false` it
   aborts exactly like `@panic`: with a message it writes `panic: <msg>`,
   otherwise it writes `assertion failed`, and in both cases exits with status
-  101. When `cond` is `true` it has no effect.
+  101. When `cond` is `true` it has no effect. The expression has type `()` on
+  both paths.
 - `@cast` is rejected at compile time with a diagnostic directing the programmer
   to `@intCast`; it never had a working inference rule and is fully redundant
   with `@intCast`. Use `@intCast` for integer conversions.

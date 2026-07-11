@@ -528,8 +528,8 @@ and an infinite `loop { e }` (one with no reachable `break`). (Surface
 `continue` elaborates to the loop's back-edge and is likewise never-typed; it is
 not a distinct core form. `@panic(...)` is **not** a never form — it elaborates
 to an ordinary call of type `unit`, matching `3.4:2`, which lists only these
-control-transfer forms, and the compiler, which types a `@panic` expression at
-`unit`.)
+control-transfer forms, and the compiler's HM, AIR, and CFG contracts, which all
+type a `@panic` expression at `unit`.)
 
 ```
   Γ;Σ;Λ ⊢ e ⇒ T_ret ⊣ _        T_ret = the enclosing function's declared return type
