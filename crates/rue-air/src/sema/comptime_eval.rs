@@ -50,7 +50,7 @@ use std::collections::HashMap;
 use std::sync::LazyLock;
 
 use lasso::{Key, Spur};
-use rue_error::{CompileError, CompileResult, ErrorKind};
+use rue_error::{CompileError, CompileResult, ErrorKind, PreviewFeature};
 use rue_rir::{InstData, InstRef, RepeatCount, RirPattern};
 use rue_span::{FileId, Span};
 
@@ -1668,5 +1668,82 @@ impl Sema<'_> {
             Some(ConstValue::Type(t)) => Some(t),
             _ => None,
         }
+    }
+
+    /// Pre-reduce inline type-constructor heads (`F(args).Variant(..)`,
+    /// `F(args) { .. }`; RUE-596, preview `inline_type_ctor_paths`) to their
+    /// concrete struct/enum types before HM inference runs (RUE-599).
+    ///
+    /// The constraint generator has no comptime interpreter, so an inline
+    /// head left the construction's arguments unconstrained — an integer
+    /// payload literal then defaulted to `i32` and could no longer satisfy a
+    /// wider declared payload type (`Result(i64, i32).Ok(41)` → E0206), even
+    /// though the bound-alias form (`let R = Result(i64, i32); R.Ok(41)`)
+    /// typed it correctly via `comptime_local_types`. This pass reduces each
+    /// candidate head opportunistically (like
+    /// [`precompute_comptime_type_locals`], non-evaluable heads are simply
+    /// skipped and sema diagnoses them later) and returns the reductions
+    /// keyed by the head's own `InstRef` for the generator to look up.
+    ///
+    /// The scan covers the whole RIR, not just the current body: heads
+    /// belonging to other functions evaluate under this function's
+    /// substitutions, but their keys are `InstRef`s this body's constraint
+    /// generation never visits, and reduction is idempotent (specializations
+    /// are cached, anonymous types dedup structurally), so stray entries are
+    /// inert. `comptime_local_types` carries the body's `let`-bound type
+    /// aliases so a head like `Result(T, i32)` with `let T = i64;` reduces.
+    ///
+    /// Gated on the preview feature so non-preview compiles pay nothing;
+    /// when `inline_type_ctor_paths` stabilizes (RUE-598), remove the gate
+    /// and cache the candidate scan if it shows up in `--time-passes`.
+    ///
+    /// [`precompute_comptime_type_locals`]: Sema::precompute_comptime_type_locals
+    pub(crate) fn precompute_inline_ctor_head_types(
+        &mut self,
+        type_subst: Option<&HashMap<Spur, Type>>,
+        value_subst: Option<&HashMap<Spur, ConstValue>>,
+        comptime_local_types: &HashMap<Spur, Type>,
+    ) -> HashMap<InstRef, Type> {
+        if !self
+            .preview_features
+            .contains(&PreviewFeature::InlineTypeCtorPath)
+        {
+            return HashMap::new();
+        }
+        // A head is the receiver of a `.NAME(..)` path whose receiver is
+        // itself a call (`F(args).Ok(x)`, or module-qualified
+        // `m.F(args).Ok(x)`, which RIR spells as a nested MethodCall), or a
+        // struct literal's explicit `ctor_head`. Runtime shapes like
+        // `foo(x).bar()` are collected too but fail the reduction cheaply
+        // (the comptime engine rejects callees with runtime parameters).
+        let candidates: Vec<InstRef> = self
+            .rir
+            .iter()
+            .filter_map(|(_, inst)| match inst.data {
+                InstData::MethodCall { receiver, .. } => matches!(
+                    self.rir.get(receiver).data,
+                    InstData::Call { .. } | InstData::MethodCall { .. }
+                )
+                .then_some(receiver),
+                InstData::StructInit {
+                    ctor_head: Some(head),
+                    ..
+                } => Some(head),
+                _ => None,
+            })
+            .collect();
+        let mut eval_types: HashMap<Spur, Type> = type_subst.cloned().unwrap_or_default();
+        eval_types.extend(comptime_local_types);
+        let eval_values: HashMap<Spur, ConstValue> = value_subst.cloned().unwrap_or_default();
+        let mut reduced = HashMap::new();
+        for head in candidates {
+            if let Some(ConstValue::Type(ty)) =
+                self.try_evaluate_const_with_subst(head, &eval_types, &eval_values)
+                && (ty.is_enum() || ty.as_struct().is_some())
+            {
+                reduced.insert(head, ty);
+            }
+        }
+        reduced
     }
 }

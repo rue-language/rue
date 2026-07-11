@@ -36,6 +36,16 @@ impl<'a> Sema<'a> {
         let comptime_local_types =
             self.precompute_comptime_type_locals(body, type_subst, value_subst);
 
+        // Pre-reduce inline type-constructor heads (`F(args).Variant(..)`,
+        // `F(args) { ... }`; RUE-596) to their concrete types, keyed by the
+        // head's `InstRef` — the nameless analogue of the alias map above.
+        // Without this, a construction argument on an inline head was never
+        // constrained and an integer payload literal defaulted to `i32`
+        // (RUE-599). Runs before the lazy-method collection below so methods
+        // registered while reducing a head are included in it.
+        let inline_ctor_head_types =
+            self.precompute_inline_ctor_head_types(type_subst, value_subst, &comptime_local_types);
+
         // Anonymous-struct methods are registered lazily (during comptime
         // evaluation, including the pre-pass above), after the shared
         // `InferenceContext` was built — so collect the signatures it doesn't
@@ -85,6 +95,7 @@ impl<'a> Sema<'a> {
         .with_module_file_ids(&infer_ctx.module_file_ids)
         .with_functions_by_file_name(&infer_ctx.functions_by_file_name)
         .with_comptime_local_types(&comptime_local_types)
+        .with_inline_ctor_head_types(&inline_ctor_head_types)
         .with_comptime_values(value_subst)
         .with_extra_method_sigs(&extra_method_sigs);
 

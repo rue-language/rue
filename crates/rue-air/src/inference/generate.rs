@@ -219,6 +219,16 @@ pub struct ConstraintGenerator<'a> {
     /// scope-aware). `None` only in unit tests; production passes the map via
     /// [`Self::with_comptime_local_types`].
     comptime_local_types: Option<&'a HashMap<Spur, Type>>,
+    /// Inline type-constructor heads (`F(args).Variant(..)`, `F(args) { .. }`;
+    /// RUE-596, preview `inline_type_ctor_paths`) pre-reduced by sema to their
+    /// concrete struct/enum types, keyed by the head's own `InstRef` — the
+    /// per-instruction analogue of `comptime_local_types` for heads that have
+    /// no `let`-bound name. Consulted so construction arguments get their
+    /// declared payload/parameter constraints; without it an integer payload
+    /// literal defaulted to `i32` and could not satisfy a wider declared type
+    /// (RUE-599). `None` only in unit tests; production passes the map via
+    /// [`Self::with_inline_ctor_head_types`].
+    inline_ctor_head_types: Option<&'a HashMap<InstRef, Type>>,
     /// Method signatures registered after the shared `InferenceContext` was
     /// built: anonymous-struct methods are registered lazily during comptime
     /// evaluation, so they're absent from `methods`. Consulted when a method
@@ -300,6 +310,7 @@ impl<'a> ConstraintGenerator<'a> {
             functions_by_file_name: None,
             module_file_ids: None,
             comptime_local_types: None,
+            inline_ctor_head_types: None,
             extra_method_sigs: None,
             const_values: None,
             const_function_aliases: None,
@@ -400,6 +411,17 @@ impl<'a> ConstraintGenerator<'a> {
         comptime_local_types: &'a HashMap<Spur, Type>,
     ) -> Self {
         self.comptime_local_types = Some(comptime_local_types);
+        self
+    }
+
+    /// Provide sema's pre-reduced inline type-constructor heads (head
+    /// `InstRef` -> concrete type). See the `inline_ctor_head_types` field
+    /// (RUE-599).
+    pub fn with_inline_ctor_head_types(
+        mut self,
+        inline_ctor_head_types: &'a HashMap<InstRef, Type>,
+    ) -> Self {
+        self.inline_ctor_head_types = Some(inline_ctor_head_types);
         self
     }
 
@@ -1655,18 +1677,27 @@ impl<'a> ConstraintGenerator<'a> {
             // Struct initialization
             InstData::StructInit {
                 module,
+                ctor_head,
                 type_name,
                 fields_start,
                 fields_len,
-                ..
             } => {
-                // Module-qualified literals (`m.Point { ... }`) resolve in
-                // the module's defining file, matching sema. Unqualified
-                // literals check type_subst first (for Self/type parameters),
-                // then comptime type aliases (`let P = F(); P { ... }`,
-                // RUE-170), then the current file's module-local type table,
-                // then the unique-name compatibility map.
-                let struct_ty = if let Some(module_ref) = module {
+                // Inline type-constructor literal heads (`F(args) { ... }`,
+                // RUE-596) resolve through sema's pre-reduced head map, the
+                // same way the call-head path does (RUE-599); a head sema
+                // could not reduce falls through to the error path below and
+                // sema diagnoses it. Module-qualified literals
+                // (`m.Point { ... }`) resolve in the module's defining file,
+                // matching sema. Unqualified literals check type_subst first
+                // (for Self/type parameters), then comptime type aliases
+                // (`let P = F(); P { ... }`, RUE-170), then the current
+                // file's module-local type table, then the unique-name
+                // compatibility map.
+                let struct_ty = if let Some(head) = ctor_head {
+                    self.inline_ctor_head_types
+                        .and_then(|heads| heads.get(head).copied())
+                        .filter(|ty| ty.as_struct().is_some())
+                } else if let Some(module_ref) = module {
                     let module_info = self.generate(*module_ref, ctx);
                     let module_id = match module_info.ty {
                         InferType::Concrete(ty) => ty.as_module(),
@@ -2091,11 +2122,34 @@ impl<'a> ConstraintGenerator<'a> {
                     // return type. Sema's comptime evaluation resolves the
                     // receiver and types the call during analysis; an ERROR
                     // here poisoned inference first (RUE-119 family).
+                    //
+                    // An inline type-constructor head (`Result(i64, i32)
+                    // .Ok(41)`, RUE-596) is the exception: sema pre-reduced it
+                    // in `inline_ctor_head_types`, so constrain the
+                    // construction's arguments against the variant payload /
+                    // assoc-fn signature exactly like the bound-alias form —
+                    // an unconstrained integer payload literal otherwise
+                    // defaulted to `i32` and could not satisfy a wider
+                    // declared payload type (RUE-599).
                     InferType::Concrete(ty) if *ty == Type::COMPTIME_TYPE => {
-                        for arg in args.iter() {
-                            self.generate(arg.value, ctx);
+                        if let Some(reduced) = self
+                            .inline_ctor_head_types
+                            .and_then(|heads| heads.get(receiver).copied())
+                            && let Some(result) = self.generate_call_on_reduced_type(
+                                reduced,
+                                *method,
+                                *args_start,
+                                *args_len,
+                                ctx,
+                            )
+                        {
+                            result
+                        } else {
+                            for arg in args.iter() {
+                                self.generate(arg.value, ctx);
+                            }
+                            InferType::Var(self.fresh_var())
                         }
-                        InferType::Var(self.fresh_var())
                     }
                     InferType::Concrete(ty) => {
                         if let Some(struct_id) = ty.as_struct() {
@@ -2355,22 +2409,67 @@ impl<'a> ConstraintGenerator<'a> {
         span: Span,
         ctx: &mut ConstraintContext,
     ) -> InferType {
-        let args = self.rir.get_call_args(args_start, args_len);
+        // Enum tuple-variant construction: `Shape.Circle(5)` (RUE-221).
+        // Checked first so it takes precedence over the struct-method path
+        // below.
+        if let Some(enum_ty) = self.enum_type_for(&type_name, span.file_id)
+            && let Some(result) =
+                self.generate_call_on_reduced_type(enum_ty, function, args_start, args_len, ctx)
+        {
+            return result;
+        }
 
-        // Enum tuple-variant construction: `Shape.Circle(5)`. If `type_name` is
-        // an enum and `function` names one of its variants, constrain each
-        // payload argument to the declared payload type and yield the enum type
-        // (RUE-221). Checked first so it takes precedence over the struct-method
-        // path below.
-        let enum_variant = self
-            .enum_type_for(&type_name, span.file_id)
-            .and_then(|ty| ty.as_enum().map(|id| (ty, id)))
-            .and_then(|(ty, id)| {
-                let def = self.type_pool.enum_def(id);
-                def.find_variant(self.interner.resolve(&function))
-                    .map(|vidx| (ty, def.variant_payload(vidx).to_vec()))
-            });
-        if let Some((enum_ty, payload)) = enum_variant {
+        // Struct associated function: constrain each argument to the declared
+        // parameter type and yield the return type.
+        if let Some(struct_ty) = self.structs.get(&type_name).copied()
+            && struct_ty.as_struct().is_some()
+        {
+            if let Some(result) =
+                self.generate_call_on_reduced_type(struct_ty, function, args_start, args_len, ctx)
+            {
+                return result;
+            }
+            // Method not found - sema reports the error; still process args.
+            let args = self.rir.get_call_args(args_start, args_len);
+            for arg in args.iter() {
+                self.generate(arg.value, ctx);
+            }
+            return InferType::Concrete(Type::ERROR);
+        }
+
+        // Type not found - sema reports the error; still process args.
+        let args = self.rir.get_call_args(args_start, args_len);
+        for arg in args.iter() {
+            self.generate(arg.value, ctx);
+        }
+        InferType::Concrete(Type::ERROR)
+    }
+
+    /// Constrain a `Type.function(args)` call against an already-concrete
+    /// type: enum tuple-variant construction (`Shape.Circle(5)`, RUE-221) or a
+    /// struct associated-function call. Imposing the declared payload/parameter
+    /// types on the arguments here — not just in sema — is what pins a literal
+    /// like the `8` in `String.with_capacity(8)` to the declared `u64` instead
+    /// of letting it default to `i32`. Shared by
+    /// [`Self::generate_type_qualified_call`] (name-resolved heads) and the
+    /// inline type-constructor head path (sema-reduced heads, RUE-599).
+    /// Returns `None` — with the arguments NOT yet visited — when `function`
+    /// is not a variant/associated function of `ty`; the caller processes the
+    /// arguments and lets sema diagnose.
+    fn generate_call_on_reduced_type(
+        &mut self,
+        ty: Type,
+        function: Spur,
+        args_start: u32,
+        args_len: u32,
+        ctx: &mut ConstraintContext,
+    ) -> Option<InferType> {
+        if let Some(enum_id) = ty.as_enum() {
+            let def = self.type_pool.enum_def(enum_id);
+            let payload = def
+                .find_variant(self.interner.resolve(&function))
+                .map(|vidx| def.variant_payload(vidx).to_vec())?;
+            let args = self.rir.get_call_args(args_start, args_len);
             for (i, arg) in args.iter().enumerate() {
                 let arg_info = self.generate(arg.value, ctx);
                 if let Some(&pty) = payload.get(i) {
@@ -2382,37 +2481,20 @@ impl<'a> ConstraintGenerator<'a> {
                     self.add_constraint(Constraint::equal(arg_info.ty, expected, arg_info.span));
                 }
             }
-            return InferType::Concrete(enum_ty);
+            return Some(InferType::Concrete(ty));
         }
-
-        // Struct associated function: constrain each argument to the declared
-        // parameter type and yield the return type.
-        let struct_id = self.structs.get(&type_name).and_then(|ty| ty.as_struct());
-        if let Some(struct_id) = struct_id {
-            let method_key = (struct_id, function);
-            if let Some(method_sig) = self.methods.get(&method_key) {
-                for (arg, param_type) in args.iter().zip(method_sig.param_types.iter()) {
-                    let arg_info = self.generate(arg.value, ctx);
-                    self.add_constraint(Constraint::equal(
-                        arg_info.ty,
-                        param_type.clone(),
-                        arg_info.span,
-                    ));
-                }
-                return method_sig.return_type.clone();
-            }
-            // Method not found - sema reports the error; still process args.
-            for arg in args.iter() {
-                self.generate(arg.value, ctx);
-            }
-            return InferType::Concrete(Type::ERROR);
+        let struct_id = ty.as_struct()?;
+        let method_sig = self.method_sig(&(struct_id, function))?;
+        let args = self.rir.get_call_args(args_start, args_len);
+        for (arg, param_type) in args.iter().zip(method_sig.param_types.iter()) {
+            let arg_info = self.generate(arg.value, ctx);
+            self.add_constraint(Constraint::equal(
+                arg_info.ty,
+                param_type.clone(),
+                arg_info.span,
+            ));
         }
-
-        // Type not found - sema reports the error; still process args.
-        for arg in args.iter() {
-            self.generate(arg.value, ctx);
-        }
-        InferType::Concrete(Type::ERROR)
+        Some(method_sig.return_type.clone())
     }
 
     /// Resolve an enum type name that may be a comptime type-variable binding
