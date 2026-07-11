@@ -427,22 +427,6 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
     let mut errors = CompileErrors::new();
     let mut all_warnings = Vec::new();
 
-    // Collect method refs from struct declarations (for later lookup)
-    let mut method_refs: HashSet<InstRef> = HashSet::new();
-    for (_, inst) in sema.rir.iter() {
-        if let InstData::StructDecl {
-            methods_start,
-            methods_len,
-            ..
-        } = &inst.data
-        {
-            let methods = sema.rir.get_inst_refs(*methods_start, *methods_len);
-            for method_ref in methods {
-                method_refs.insert(method_ref);
-            }
-        }
-    }
-
     // Process the transitive reference frontier until neither source-level
     // calls nor implicit destructor roots discover more work.
     loop {
@@ -466,66 +450,82 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
 
             let fn_name_str = sema.interner.resolve(&fn_name).to_string();
 
-            // Find the function declaration in RIR to get params
-            let mut found = false;
-            for (inst_ref, inst) in sema.rir.iter() {
+            // Bind the body through the exact free-function declaration that
+            // declaration gathering indexed. A receiverless associated
+            // function has the same FnDecl shape as a free function and must
+            // never win this lookup merely because it occurs first in RIR.
+            let source_name = sema.source_function_name(fn_name);
+            let declaration = sema
+                .declaration_index
+                .first_free_function(source_name, Some(fn_info.file_id));
+
+            let Some(declaration) = declaration else {
+                // This could be a builtin or otherwise non-existent function.
+                // Preserve the historical defensive behavior and skip it.
+                continue;
+            };
+            let inst = sema.rir.get(declaration);
+            let (name, params_start, params_len, return_type, body, has_self, span) =
                 if let InstData::FnDecl {
                     name,
                     params_start,
                     params_len,
                     return_type,
                     body,
+                    has_self,
                     ..
                 } = &inst.data
                 {
-                    let function_key = sema
-                        .resolve_function_name_local(*name, inst.span.file_id)
-                        .unwrap_or(*name);
-                    if function_key == fn_name && !method_refs.contains(&inst_ref) {
-                        found = true;
-                        let params = sema.rir.get_params(*params_start, *params_len);
+                    (
+                        *name,
+                        *params_start,
+                        *params_len,
+                        *return_type,
+                        *body,
+                        *has_self,
+                        inst.span,
+                    )
+                } else {
+                    unreachable!("free-function index contains only FnDecl instructions");
+                };
 
-                        match sema.analyze_single_function(
-                            &infer_ctx,
-                            &fn_name_str,
-                            *return_type,
-                            &params,
-                            *body,
-                            inst.span,
-                            fn_info.allow_unused_variable,
-                            fn_info.allow_unreachable_code,
-                        ) {
-                            Ok((
-                                analyzed,
-                                warnings,
-                                local_strings,
-                                referenced_fns,
-                                referenced_meths,
-                            )) => {
-                                functions_with_strings.push((analyzed, local_strings));
-                                all_warnings.extend(warnings);
+            debug_assert_eq!(name, source_name);
+            debug_assert!(!has_self);
+            debug_assert_eq!(params_start, fn_info.rir_params_start);
+            debug_assert_eq!(params_len, fn_info.rir_params_len);
+            debug_assert_eq!(return_type, fn_info.return_type_sym);
+            debug_assert_eq!(body, fn_info.body);
+            debug_assert_eq!(span, fn_info.span);
+            debug_assert_eq!(span.file_id, fn_info.file_id);
 
-                                // Add newly referenced functions to the work queue
-                                enqueue_references_sorted(
-                                    sema.interner,
-                                    referenced_fns,
-                                    referenced_meths,
-                                    &analyzed_functions,
-                                    &analyzed_methods,
-                                    &mut pending_functions,
-                                    &mut pending_methods,
-                                );
-                            }
-                            Err(e) => errors.push(e),
-                        }
-                        break;
-                    }
+            let params = sema.rir.get_params(params_start, params_len);
+
+            match sema.analyze_single_function(
+                &infer_ctx,
+                &fn_name_str,
+                return_type,
+                &params,
+                body,
+                span,
+                fn_info.allow_unused_variable,
+                fn_info.allow_unreachable_code,
+            ) {
+                Ok((analyzed, warnings, local_strings, referenced_fns, referenced_meths)) => {
+                    functions_with_strings.push((analyzed, local_strings));
+                    all_warnings.extend(warnings);
+
+                    // Add newly referenced functions to the work queue
+                    enqueue_references_sorted(
+                        sema.interner,
+                        referenced_fns,
+                        referenced_meths,
+                        &analyzed_functions,
+                        &analyzed_methods,
+                        &mut pending_functions,
+                        &mut pending_methods,
+                    );
                 }
-            }
-
-            if !found {
-                // This could be a builtin or otherwise non-existent function
-                // Just skip it
+                Err(e) => errors.push(e),
             }
         }
 
