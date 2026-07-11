@@ -86,6 +86,13 @@ struct TimingDataInner {
     /// robust to a stale timestamp and gives the ordering invariant a
     /// deterministic regression test.
     last_root_transition: Option<Instant>,
+
+    /// Direct parent-child span names captured by the real timing layer.
+    ///
+    /// This remains test-only so parentage regressions can be checked without
+    /// expanding the public benchmark JSON schema.
+    #[cfg(test)]
+    parent_edges: Vec<(String, String)>,
 }
 
 /// Measurements aggregated across every span with the same name.
@@ -174,6 +181,8 @@ impl TimingData {
                 active_roots: 0,
                 root_active_since: None,
                 last_root_transition: None,
+                #[cfg(test)]
+                parent_edges: Vec::new(),
             })),
         }
     }
@@ -210,6 +219,25 @@ impl TimingData {
             let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
             inner.root_duration += duration;
         }
+    }
+
+    /// Record one real direct parent-child relationship for regression tests.
+    #[cfg(test)]
+    fn record_parent_edge(&self, parent: &str, child: &str) {
+        let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        inner
+            .parent_edges
+            .push((parent.to_owned(), child.to_owned()));
+    }
+
+    /// Snapshot parent-child relationships captured by the real timing layer.
+    #[cfg(test)]
+    fn parent_edges(&self) -> Vec<(String, String)> {
+        self.inner
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .parent_edges
+            .clone()
     }
 
     /// Enter a root span and update both timing views as one serialized event.
@@ -589,6 +617,10 @@ where
         // Initialize timing state for this span
         if let Some(span) = ctx.span(id) {
             let parent_id = span.parent().map(|parent| parent.id().clone());
+            #[cfg(test)]
+            let parent_edge = span
+                .parent()
+                .map(|parent| (parent.name().to_owned(), span.name().to_owned()));
             let is_root = parent_id.is_none();
             let mut extensions = span.extensions_mut();
             extensions.insert(SpanTiming {
@@ -607,6 +639,11 @@ where
                         parent_timing.has_children = true;
                     }
                 }
+            }
+
+            #[cfg(test)]
+            if let Some((parent, child)) = parent_edge {
+                self.data.record_parent_edge(&parent, &child);
             }
         }
     }
@@ -668,7 +705,91 @@ where
 
 #[cfg(test)]
 mod tests {
+    use rue_compiler::{
+        CompilationUnit, CompileOptions, FileId, SourceFile, parse_all_files_with_source_snapshot,
+    };
+    use tracing_subscriber::layer::SubscriberExt as _;
+
     use super::*;
+
+    #[test]
+    fn real_snapshot_and_unit_spans_preserve_parse_boundaries() {
+        let sources = vec![SourceFile::new(
+            "main.rue",
+            "fn main() -> i32 { 42 }",
+            FileId::new(1),
+        )];
+        let seed = CompilationUnit::new(sources, CompileOptions::default()).unwrap();
+        let snapshot = seed.source_snapshot().clone();
+
+        let direct_data = TimingData::new();
+        let direct_subscriber =
+            tracing_subscriber::registry().with(TimingLayer::new(direct_data.clone()));
+        tracing::subscriber::with_default(direct_subscriber, || {
+            parse_all_files_with_source_snapshot(&snapshot).unwrap();
+        });
+
+        let direct_edges = direct_data.parent_edges();
+        assert!(
+            direct_edges.contains(&("parse".to_owned(), "parse_file".to_owned())),
+            "direct parse edges: {direct_edges:?}"
+        );
+        assert!(
+            direct_edges.contains(&("parse_file".to_owned(), "lexer".to_owned())),
+            "direct parse edges: {direct_edges:?}"
+        );
+        assert!(
+            direct_edges.contains(&("parse_file".to_owned(), "parser".to_owned())),
+            "direct parse edges: {direct_edges:?}"
+        );
+
+        let direct_timing =
+            direct_data.to_benchmark_timing_with_metrics("test", "test", None, None);
+        let direct_parse = direct_timing
+            .passes
+            .iter()
+            .find(|pass| pass.name == "parse")
+            .unwrap();
+        assert_eq!(direct_parse.invocations, 1);
+        assert_eq!(direct_parse.root_invocations, 1);
+
+        let unit_data = TimingData::new();
+        let unit_subscriber =
+            tracing_subscriber::registry().with(TimingLayer::new(unit_data.clone()));
+        tracing::subscriber::with_default(unit_subscriber, || {
+            let mut unit =
+                CompilationUnit::from_source_snapshot(snapshot, CompileOptions::default());
+            unit.parse().unwrap();
+        });
+
+        let unit_edges = unit_data.parent_edges();
+        for expected in [
+            ("parse", "parse_file"),
+            ("parse_file", "lexer"),
+            ("parse_file", "parser"),
+            ("parse", "merge_symbols"),
+        ] {
+            assert!(
+                unit_edges.contains(&(expected.0.to_owned(), expected.1.to_owned())),
+                "missing {expected:?} in compilation-unit edges: {unit_edges:?}"
+            );
+        }
+
+        let unit_timing = unit_data.to_benchmark_timing_with_metrics("test", "test", None, None);
+        let unit_parse = unit_timing
+            .passes
+            .iter()
+            .find(|pass| pass.name == "parse")
+            .unwrap();
+        let merge = unit_timing
+            .passes
+            .iter()
+            .find(|pass| pass.name == "merge_symbols")
+            .unwrap();
+        assert_eq!(unit_parse.invocations, 1);
+        assert_eq!(unit_parse.root_invocations, 1);
+        assert_eq!(merge.root_invocations, 0);
+    }
 
     #[test]
     fn test_timing_data_empty_report() {

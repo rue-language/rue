@@ -37,9 +37,9 @@ use lasso::ThreadedRodeo;
 use tracing::{info, info_span};
 
 use crate::{
-    Ast, AstGen, CompileErrors, CompileOptions, CompileOutput, CompileResult, CompileWarning,
-    FunctionWithCfg, Lexer, MultiErrorResult, Parser, Rir, Sema, SourceFile, SourceMetadata,
-    SourceSnapshot, TypeInternPool, build_functions_and_cfgs, compile_backend,
+    Ast, AstGen, CompileOptions, CompileOutput, CompileResult, CompileWarning, FunctionWithCfg,
+    MultiErrorResult, Rir, Sema, SourceFile, SourceMetadata, SourceSnapshot, SyntaxWork,
+    TypeInternPool, build_functions_and_cfgs, compile_backend,
 };
 use rue_span::FileId;
 
@@ -55,7 +55,8 @@ pub struct SourceStats {
     pub bytes: usize,
     /// Total source lines, using [`str::lines`] semantics.
     pub lines: usize,
-    /// Tokens produced by the lexer invocations consumed by the parser.
+    /// Tokens produced by successful lexer invocations, matching
+    /// [`SyntaxWork::tokens`] for the most recent parse attempt.
     pub tokens: usize,
 }
 
@@ -86,6 +87,8 @@ pub struct CompilationUnit<'src> {
     source_snapshot: SourceSnapshot,
     /// Work metrics collected from those sources and the live parse.
     source_stats: SourceStats,
+    /// Direct syntax work performed by the most recent parse attempt.
+    syntax_work: SyntaxWork,
     /// Retains the lifetime-shaped API of the borrowed compatibility constructors.
     _source_lifetime: PhantomData<&'src ()>,
 
@@ -183,6 +186,7 @@ impl<'src> CompilationUnit<'src> {
             options,
             source_snapshot,
             source_stats,
+            syntax_work: SyntaxWork::default(),
             _source_lifetime: PhantomData,
             merged_ast: None,
             interner: None,
@@ -201,8 +205,8 @@ impl<'src> CompilationUnit<'src> {
     /// Parse all source files.
     ///
     /// This runs lexing and parsing on each source file, producing ASTs.
-    /// The ASTs are then merged into a single program, detecting any
-    /// duplicate symbol definitions.
+    /// The ASTs are then merged into a single program, detecting any duplicate
+    /// symbol definitions.
     ///
     /// # Errors
     ///
@@ -210,104 +214,18 @@ impl<'src> CompilationUnit<'src> {
     /// - Any file fails to lex or parse
     /// - Duplicate function, struct, or enum definitions are found
     pub fn parse(&mut self) -> MultiErrorResult<()> {
+        // Keep symbol merging nested under the compilation unit's historical
+        // `parse` timing boundary. Direct snapshot parsing owns a narrower
+        // `parse` span around syntax work only.
         let _span = info_span!("parse", file_count = self.source_snapshot.len()).entered();
+        let parsed = crate::syntax::run_snapshot_unspanned(&self.source_snapshot);
+        self.syntax_work = parsed.work;
+        self.source_stats.tokens = parsed.work.tokens;
 
-        // Parse all files with a shared interner
-        let mut parsed_files = Vec::with_capacity(self.source_snapshot.len());
-        let mut interner = ThreadedRodeo::new();
-        let mut errors = CompileErrors::new();
-        self.source_stats.tokens = 0;
-
-        for source in self.source_snapshot.files() {
-            let _file_span = info_span!("parse_file", path = %source.path).entered();
-
-            // Create lexer with shared interner and file ID
-            let lexer = Lexer::with_interner_and_file_id(source.source, interner, source.file_id);
-
-            // Tokenize
-            let tokens = {
-                let _span = info_span!("lexer").entered();
-                match lexer.tokenize_preserving_interner() {
-                    Ok((tokens, returned_interner)) => {
-                        interner = returned_interner;
-                        tokens
-                    }
-                    Err((lex_errors, returned_interner)) => {
-                        interner = returned_interner;
-                        errors.extend(lex_errors);
-                        continue;
-                    }
-                }
-            };
-
-            self.source_stats.tokens += tokens.len();
-            info!(token_count = tokens.len(), "lexing complete");
-
-            // Parse
-            let ast = {
-                let _span = info_span!("parser").entered();
-                let parser = Parser::new(tokens, interner);
-                match parser.parse_preserving_interner() {
-                    Ok((ast, returned_interner)) => {
-                        interner = returned_interner;
-                        ast
-                    }
-                    Err((parse_errors, returned_interner)) => {
-                        interner = returned_interner;
-                        errors.extend(parse_errors);
-                        continue;
-                    }
-                }
-            };
-
-            info!(item_count = ast.items.len(), "parsing complete");
-
-            parsed_files.push((source.path.to_string(), ast));
-        }
-
-        if !errors.is_empty() {
-            return Err(errors);
-        }
-
-        // Merge symbols and check for duplicates
-        let merged_ast = self.merge_symbols(&parsed_files, &interner)?;
-
-        self.merged_ast = Some(merged_ast);
-        self.interner = Some(interner);
-
+        let merged = crate::merge_symbols(parsed.result?)?;
+        self.merged_ast = Some(merged.ast);
+        self.interner = Some(merged.interner);
         Ok(())
-    }
-
-    /// Merge symbols from all parsed files, checking for duplicates.
-    fn merge_symbols(
-        &self,
-        files: &[(String, Ast)],
-        interner: &ThreadedRodeo,
-    ) -> MultiErrorResult<Ast> {
-        let _span = info_span!("merge_symbols", file_count = files.len()).entered();
-
-        let check = crate::detect_duplicate_symbols(
-            files.iter().map(|(path, ast)| (path.as_str(), ast)),
-            interner,
-        );
-
-        if !check.errors.is_empty() {
-            return Err(CompileErrors::from(check.errors));
-        }
-
-        let all_items: Vec<_> = files
-            .iter()
-            .flat_map(|(_, ast)| ast.items.iter().cloned())
-            .collect();
-
-        info!(
-            function_count = check.function_count,
-            struct_count = check.struct_count,
-            enum_count = check.enum_count,
-            "symbol merging complete"
-        );
-
-        Ok(Ast { items: all_items })
     }
 
     // =========================================================================
@@ -565,6 +483,14 @@ impl<'src> CompilationUnit<'src> {
         &self.source_snapshot
     }
 
+    /// Direct syntax work performed by the most recent [`Self::parse`] attempt.
+    ///
+    /// The counters are stored before parse or merge errors are returned and
+    /// are replaced, rather than accumulated, by a later parse attempt.
+    pub fn syntax_work(&self) -> SyntaxWork {
+        self.syntax_work
+    }
+
     /// Get source metrics collected by the live frontend.
     pub fn source_stats(&self) -> SourceStats {
         SourceStats {
@@ -643,8 +569,10 @@ impl<'src> CompilationUnit<'src> {
 mod tests {
     use std::{fmt::Write as _, sync::Arc};
 
+    use lasso::Key as _;
+
     use super::*;
-    use crate::{FileId, RirPrinter};
+    use crate::{FileId, Lexer, RirPrinter};
 
     fn make_sources(source: &str) -> Vec<SourceFile<'_>> {
         vec![SourceFile::new("<test>", source, FileId::new(1))]
@@ -771,42 +699,131 @@ mod tests {
                 tokens: 0,
             }
         );
+        assert_eq!(unit.syntax_work(), SyntaxWork::default());
 
         unit.parse().unwrap();
         assert_eq!(unit.source_stats().tokens, expected_tokens);
+        let expected_work = SyntaxWork {
+            lexer_invocations: 2,
+            parser_invocations: 2,
+            lexed_bytes: first.len() + second.len(),
+            tokens: expected_tokens,
+        };
+        assert_eq!(unit.syntax_work(), expected_work);
 
         // Re-running a phase may be unusual, but metrics must describe one
         // parse rather than accumulating observer-induced work.
         unit.parse().unwrap();
         assert_eq!(unit.source_stats().tokens, expected_tokens);
+        assert_eq!(unit.syntax_work(), expected_work);
     }
 
     #[test]
-    fn test_duplicate_function_error() {
-        let sources = vec![SourceFile::new(
-            "a.rue",
-            "fn foo() -> i32 { 1 } fn foo() -> i32 { 2 }",
-            FileId::new(1),
-        )];
+    fn direct_parse_and_merge_matches_compilation_unit_artifacts() {
+        let sources = vec![
+            SourceFile::new("main.rue", "fn main() -> i32 { helper() }", FileId::new(7)),
+            SourceFile::new("helper.rue", "fn helper() -> i32 { 42 }", FileId::new(3)),
+        ];
         let mut unit = CompilationUnit::new(sources, CompileOptions::default()).unwrap();
 
-        let result = unit.parse();
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(err.to_string().contains("function"));
+        let direct = crate::merge_symbols(
+            crate::parse_all_files_with_source_snapshot(unit.source_snapshot()).unwrap(),
+        )
+        .unwrap();
+        unit.parse().unwrap();
+
+        assert_eq!(&direct.ast, unit.ast());
+        let interned_symbols = |interner: &ThreadedRodeo| {
+            let mut symbols = interner
+                .iter()
+                .map(|(key, value)| (key.into_usize(), value.to_owned()))
+                .collect::<Vec<_>>();
+            symbols.sort_by_key(|(key, _)| *key);
+            symbols
+        };
+        assert_eq!(
+            interned_symbols(&direct.interner),
+            interned_symbols(unit.interner())
+        );
+    }
+
+    #[test]
+    fn duplicate_merge_errors_preserve_and_replace_syntax_metrics() {
+        let source = "fn foo() -> i32 { 1 } fn foo() -> i32 { 2 }";
+        let expected_tokens = Lexer::new(source).tokenize().unwrap().0.len();
+        let sources = vec![SourceFile::new("a.rue", source, FileId::new(1))];
+        let mut unit = CompilationUnit::new(sources, CompileOptions::default()).unwrap();
+
+        let direct_errors = crate::merge_symbols(
+            crate::parse_all_files_with_source_snapshot(unit.source_snapshot()).unwrap(),
+        )
+        .expect_err("direct symbol merging should reject the duplicate");
+        let fingerprint = |errors: &crate::CompileErrors| {
+            errors
+                .iter()
+                .map(|error| {
+                    (
+                        error.kind.code(),
+                        error.span(),
+                        error.to_string(),
+                        format!("{:?}", error.diagnostic()),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let expected_work = SyntaxWork {
+            lexer_invocations: 1,
+            parser_invocations: 1,
+            lexed_bytes: source.len(),
+            tokens: expected_tokens,
+        };
+        let expected_stats = SourceStats {
+            files: 1,
+            bytes: source.len(),
+            lines: 1,
+            tokens: expected_tokens,
+        };
+
+        let first_errors = unit
+            .parse()
+            .expect_err("the compilation unit should reject the duplicate");
+        assert_eq!(fingerprint(&direct_errors), fingerprint(&first_errors));
+        assert_eq!(unit.syntax_work(), expected_work);
+        assert_eq!(unit.source_stats(), expected_stats);
+
+        let second_errors = unit
+            .parse()
+            .expect_err("a repeated parse should still reject the duplicate");
+        assert_eq!(fingerprint(&first_errors), fingerprint(&second_errors));
+        assert_eq!(unit.syntax_work(), expected_work);
+        assert_eq!(unit.source_stats(), expected_stats);
     }
 
     #[test]
     fn test_parse_collects_cross_file_lex_and_parse_errors() {
+        let lex_bad = "fn lex() -> i32 { $ }";
+        let parse_bad = "fn parse( { }";
+        let good = "fn good() -> i32 { 42 }";
+        let expected_tokens = Lexer::new(parse_bad).tokenize().unwrap().0.len()
+            + Lexer::new(good).tokenize().unwrap().0.len();
         let sources = vec![
-            SourceFile::new("lex.rue", "fn lex() -> i32 { $ }", FileId::new(1)),
-            SourceFile::new("parse.rue", "fn parse( { }", FileId::new(2)),
-            SourceFile::new("good.rue", "fn good() -> i32 { 42 }", FileId::new(3)),
+            SourceFile::new("lex.rue", lex_bad, FileId::new(1)),
+            SourceFile::new("parse.rue", parse_bad, FileId::new(2)),
+            SourceFile::new("good.rue", good, FileId::new(3)),
         ];
         let mut unit = CompilationUnit::new(sources, CompileOptions::default()).unwrap();
 
+        let direct_errors = crate::parse_all_files_with_source_snapshot(unit.source_snapshot())
+            .expect_err("direct parsing should report both broken files");
         let errors = unit.parse().expect_err("both broken files should report");
         assert_eq!(errors.len(), 2);
+        let fingerprint = |errors: &crate::CompileErrors| {
+            errors
+                .iter()
+                .map(|error| (error.kind.code(), error.span(), error.to_string()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(fingerprint(&direct_errors), fingerprint(&errors));
         let file_ids: Vec<_> = errors
             .iter()
             .map(|error| {
@@ -817,6 +834,15 @@ mod tests {
             })
             .collect();
         assert_eq!(file_ids, vec![FileId::new(1), FileId::new(2)]);
+        assert_eq!(
+            unit.syntax_work(),
+            SyntaxWork {
+                lexer_invocations: 3,
+                parser_invocations: 2,
+                lexed_bytes: lex_bad.len() + parse_bad.len() + good.len(),
+                tokens: expected_tokens,
+            }
+        );
     }
 
     #[test]
