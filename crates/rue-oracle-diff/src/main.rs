@@ -551,18 +551,21 @@ fn check_spec_case_with_known_gap(
                     == rue_test_runner::strip_block_boundary_newlines(s)
             });
             let trap_ok = trap_comparison == TrapComparison::Match;
-            let agrees = exit_ok && stdout_ok && trap_ok;
+            let modeled_observations_agree = exit_ok && stdout_ok && trap_ok;
+            let stderr_unmodeled = has_unmodeled_spec_stderr_expectation(case);
 
             if is_known_gap {
                 // xfail semantics (mirroring rue-cli-tests `known_bug`): the case
-                // is expected to diverge because of a tracked oracle bug. If it
-                // now AGREES, the gap is fixed — fail loudly so the entry is
-                // removed and the case becomes a live regression check again.
-                return if agrees {
+                // is expected to diverge because of a tracked wrong-but-Ok
+                // oracle result. If every observation the oracle models now
+                // agrees, fail loudly so the stale exemption is removed and
+                // any remaining coverage gap is classified normally.
+                return if modeled_observations_agree {
                     CaseOutcome::Disagreement(format!(
-                        "{ident} :: {} — KNOWN_ORACLE_GAPS entry now AGREES; the tracked \
-                         oracle gap is fixed, so delete its entry in \
-                         crates/rue-oracle-diff/src/main.rs",
+                        "{ident} :: {} — KNOWN_ORACLE_GAPS entry is stale: every observation \
+                         the oracle models now agrees; the tracked wrong-result gap is fixed, \
+                         so delete its entry in crates/rue-oracle-diff/src/main.rs and let any \
+                         remaining coverage gap be classified normally",
                         case.name
                     ))
                 } else {
@@ -581,7 +584,16 @@ fn check_spec_case_with_known_gap(
                 return CaseOutcome::Unmodeled;
             }
 
-            if agrees {
+            // `Outcome` has no stderr channel. Preserve a normal-path stderr
+            // assertion as explicit coverage until the oracle models that
+            // observation, but only after every observation it can judge has
+            // agreed. The real spec runner ignores generic `stderr_contains`
+            // on its separate `runtime_error` path.
+            if modeled_observations_agree && stderr_unmodeled {
+                return CaseOutcome::Unmodeled;
+            }
+
+            if modeled_observations_agree {
                 CaseOutcome::Agree
             } else {
                 let mut msg = format!("{ident} :: {}", case.name);
@@ -605,6 +617,10 @@ fn check_spec_case_with_known_gap(
             }
         }
     }
+}
+
+fn has_unmodeled_spec_stderr_expectation(case: &rue_test_runner::Case) -> bool {
+    case.runtime_error.is_none() && case.stderr_contains.is_some()
 }
 
 fn spec_preview_features(case: &rue_test_runner::Case) -> PreviewFeatures {
@@ -1441,7 +1457,7 @@ files = [{ path = "probe.rue", source = "fn main() -> i32 { 0 }" }]
         else {
             panic!("a stale known-gap entry did not fail");
         };
-        assert!(message.contains("KNOWN_ORACLE_GAPS entry now AGREES"));
+        assert!(message.contains("KNOWN_ORACLE_GAPS entry is stale"));
 
         case.source = "fn main() -> u32 { let value: u32 = @random_u32(); value }".to_string();
         assert_eq!(
@@ -1556,6 +1572,83 @@ files = [{ path = "probe.rue", source = "fn main() -> i32 { 0 }" }]
     }
 
     #[test]
+    fn spec_stderr_is_unmodeled_only_after_modeled_observations_agree() {
+        let mut case = rue_test_runner::Case {
+            name: "stderr coverage probe".to_string(),
+            source: "fn main() -> i32 { 0 }".to_string(),
+            exit_code: Some(0),
+            stderr_contains: Some("required notice".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(check_spec_case("test:1", &case), CaseOutcome::Unmodeled);
+
+        case.exit_code = Some(1);
+        assert!(matches!(
+            check_spec_case("test:1", &case),
+            CaseOutcome::Disagreement(_)
+        ));
+
+        case.exit_code = Some(0);
+        case.expected_stdout = Some("required output\n".to_string());
+        assert!(matches!(
+            check_spec_case("test:1", &case),
+            CaseOutcome::Disagreement(_)
+        ));
+
+        case.expected_stdout = None;
+        case.source = "fn main() -> i32 { missing_name }".to_string();
+        assert!(matches!(
+            check_spec_case("test:1", &case),
+            CaseOutcome::FrontendFailure(_)
+        ));
+    }
+
+    #[test]
+    fn trap_and_known_gap_contracts_precede_generic_stderr_coverage() {
+        let mut case = rue_test_runner::Case {
+            name: "stderr ordering probe".to_string(),
+            source: "fn main() -> i32 { let x: i32 = 2147483647; x + 1 }".to_string(),
+            exit_code: Some(101),
+            stderr_contains: Some("arbitrary runtime stderr".to_string()),
+            ..Default::default()
+        };
+        let CaseOutcome::Disagreement(message) = check_spec_case("test:1", &case) else {
+            panic!("generic stderr coverage hid an undeclared typed trap");
+        };
+        assert!(message.contains("trap contract"));
+
+        case.runtime_error = Some("division by zero".to_string());
+        let CaseOutcome::Disagreement(message) = check_spec_case("test:1", &case) else {
+            panic!("generic stderr coverage hid a typed trap mismatch");
+        };
+        assert!(message.contains("ArithmeticOverflow"));
+
+        case.runtime_error = Some("integer overflow".to_string());
+        assert_eq!(check_spec_case("test:1", &case), CaseOutcome::Agree);
+
+        case.source = "fn main() -> i32 { 0 }".to_string();
+        case.runtime_error = None;
+        case.exit_code = Some(1);
+        assert_eq!(
+            check_spec_case_with_known_gap("test:1", &case, true),
+            CaseOutcome::Ineligible(IneligibleReason::KnownOracleGap)
+        );
+
+        case.exit_code = Some(0);
+        let CaseOutcome::Disagreement(message) =
+            check_spec_case_with_known_gap("test:1", &case, true)
+        else {
+            panic!("generic stderr coverage hid a stale known-gap entry");
+        };
+        assert!(message.contains("KNOWN_ORACLE_GAPS entry is stale"));
+        assert_eq!(
+            check_spec_case_with_known_gap("test:1", &case, false),
+            CaseOutcome::Unmodeled,
+            "deleting a stale wrong-result exemption must expose stderr coverage"
+        );
+    }
+
+    #[test]
     fn undeclared_cli_trap_is_a_hard_contract_failure() {
         let mut case = corpus_case("fn main() -> i32 { let x: i32 = 2147483647; x + 1 }", false);
         case.exit_code = Some(101);
@@ -1595,7 +1688,7 @@ files = [{ path = "probe.rue", source = "fn main() -> i32 { 0 }" }]
             };
             assert!(message.contains("trap contract"));
             assert!(message.contains("ArithmeticOverflow"));
-            assert!(!message.contains("KNOWN_ORACLE_GAPS entry now AGREES"));
+            assert!(!message.contains("KNOWN_ORACLE_GAPS entry is stale"));
         }
     }
 
