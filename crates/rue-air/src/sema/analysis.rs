@@ -163,6 +163,7 @@ fn finalize_function_body_analysis(
         // Specialization can intern new composite types, so snapshot only
         // after its fixed point has completed.
         type_pool: sema.type_pool.clone(),
+        body_analysis_work: sema.body_analysis_work,
     };
 
     errors.into_result_with(output)
@@ -455,6 +456,7 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
             // function has the same FnDecl shape as a free function and must
             // never win this lookup merely because it occurs first in RIR.
             let source_name = sema.source_function_name(fn_name);
+            sema.body_analysis_work.free_function_record_lookups += 1;
             let declaration = sema
                 .declaration_index
                 .first_free_function(source_name, Some(fn_info.file_id));
@@ -545,11 +547,11 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
             // Get the struct definition to find its name for impl block lookup
             let struct_def = sema.type_pool.struct_def(struct_id);
             let type_name_str = struct_def.name.clone();
-            let type_name_sym = sema.interner.get_or_intern(&type_name_str);
             let method_name_str = sema.interner.resolve(&method_name).to_string();
 
             // For anonymous structs, use the MethodInfo directly since there's no named StructDecl
             if type_name_str.starts_with("__anon_struct_") {
+                sema.body_analysis_work.anonymous_method_record_lookups += 1;
                 let full_name =
                     sema.method_symbol(struct_id, &method_name_str, method_info.has_self);
 
@@ -665,91 +667,64 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
                 continue;
             }
 
-            // Find the method in struct declarations (for named structs)
-            for (_, inst) in sema.rir.iter() {
-                if let InstData::StructDecl {
-                    name: struct_name,
-                    methods_start,
-                    methods_len,
-                    ..
-                } = &inst.data
-                {
-                    if *struct_name != type_name_sym {
-                        continue;
-                    }
+            sema.body_analysis_work.named_method_record_lookups += 1;
+            let Some(&method_ref) = sema
+                .named_method_declarations
+                .get(&(struct_id, method_name))
+            else {
+                debug_assert!(
+                    false,
+                    "gathered named MethodInfo must have a private declaration record"
+                );
+                continue;
+            };
+            let method_inst = sema.rir.get(method_ref);
+            let InstData::FnDecl {
+                name: m_name,
+                params_start,
+                params_len,
+                return_type,
+                body,
+                has_self,
+                self_mode,
+                ..
+            } = &method_inst.data
+            else {
+                unreachable!("named method record pointed at a non-FnDecl");
+            };
+            debug_assert_eq!(*m_name, method_name);
+            debug_assert_eq!(*body, method_info.body);
+            debug_assert_eq!(method_inst.span, method_info.span);
+            debug_assert_eq!(*has_self, method_info.has_self);
+            debug_assert_eq!(*self_mode, method_info.self_mode);
 
-                    // Several files may declare a struct with this name
-                    // (RUE-558); only the declaration that resolves to THIS
-                    // struct_id owns the method bodies being analyzed —
-                    // matching by name alone would analyze the other file\'s
-                    // same-named method under this struct\'s symbol (RUE-571).
-                    let declared_id = sema
-                        .structs_by_file_name
-                        .get(&(inst.span.file_id, *struct_name))
-                        .or_else(|| sema.structs.get(struct_name))
-                        .copied();
-                    if declared_id != Some(struct_id) {
-                        continue;
-                    }
-
-                    let methods = sema.rir.get_inst_refs(*methods_start, *methods_len);
-                    for method_ref in methods {
-                        let method_inst = sema.rir.get(method_ref);
-                        if let InstData::FnDecl {
-                            name: m_name,
-                            params_start,
-                            params_len,
-                            return_type,
-                            body,
-                            has_self,
-                            self_mode,
-                            ..
-                        } = &method_inst.data
-                        {
-                            if *m_name != method_name {
-                                continue;
-                            }
-
-                            let params = sema.rir.get_params(*params_start, *params_len);
-                            let full_name =
-                                sema.method_symbol(struct_id, &method_name_str, *has_self);
-
-                            match sema.analyze_method_function(
-                                &infer_ctx,
-                                &full_name,
-                                *return_type,
-                                &params,
-                                *body,
-                                method_inst.span,
-                                method_info.struct_type,
-                                *has_self,
-                                *self_mode,
-                            ) {
-                                Ok((
-                                    analyzed,
-                                    warnings,
-                                    local_strings,
-                                    referenced_fns,
-                                    referenced_meths,
-                                )) => {
-                                    functions_with_strings.push((analyzed, local_strings));
-                                    all_warnings.extend(warnings);
-
-                                    enqueue_references_sorted(
-                                        sema.interner,
-                                        referenced_fns,
-                                        referenced_meths,
-                                        &analyzed_functions,
-                                        &analyzed_methods,
-                                        &mut pending_functions,
-                                        &mut pending_methods,
-                                    );
-                                }
-                                Err(e) => errors.push(e),
-                            }
-                        }
-                    }
+            let params = sema.rir.get_params(*params_start, *params_len);
+            let full_name = sema.method_symbol(struct_id, &method_name_str, *has_self);
+            match sema.analyze_method_function(
+                &infer_ctx,
+                &full_name,
+                *return_type,
+                &params,
+                *body,
+                method_inst.span,
+                method_info.struct_type,
+                *has_self,
+                *self_mode,
+            ) {
+                Ok((analyzed, warnings, local_strings, referenced_fns, referenced_meths)) => {
+                    functions_with_strings.push((analyzed, local_strings));
+                    all_warnings.extend(warnings);
+                    enqueue_references_sorted(
+                        sema.interner,
+                        referenced_fns,
+                        referenced_meths,
+                        &analyzed_functions,
+                        &analyzed_methods,
+                        &mut pending_functions,
+                        &mut pending_methods,
+                    );
                 }
+                Err(e) => errors.push(e),
             }
         }
 
@@ -778,6 +753,8 @@ fn analyze_function_bodies_lazy(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOut
             named_destructors_analyzed = true;
             for (_, inst) in sema.rir.iter() {
                 if let InstData::DropFnDecl { type_name, body } = &inst.data {
+                    sema.body_analysis_work
+                        .named_destructor_declarations_visited += 1;
                     // File-aware first (RUE-558), matching the sites above.
                     let struct_id = match sema
                         .structs_by_file_name
@@ -1402,6 +1379,7 @@ mod error_invariant_tests {
             strings: Vec::new(),
             warnings: Vec::new(),
             type_pool: TypeInternPool::new(),
+            body_analysis_work: crate::BodyAnalysisWork::default(),
         }
     }
 

@@ -1485,6 +1485,7 @@ impl<'a> Sema<'a> {
                         span: method_inst.span,
                     },
                 );
+                self.named_method_declarations.insert(key, method_ref);
             }
         }
         Ok(())

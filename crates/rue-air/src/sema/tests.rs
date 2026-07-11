@@ -41,6 +41,32 @@ mod tests {
         assert_eq!(air.len(), 2); // Const + Ret
     }
 
+    fn named_method_lookup_work(irrelevant: usize) -> crate::BodyAnalysisWork {
+        let mut source = String::from(
+            "struct Target { fn answer() -> i32 { 42 } }\n\
+             fn main() -> i32 { Target.answer() }\n",
+        );
+        for index in 0..irrelevant {
+            source.push_str(&format!(
+                "struct Irrelevant{index} {{ fn unused() -> i32 {{ {index} }} }}\n"
+            ));
+        }
+        compile_to_air(&source).unwrap().body_analysis_work
+    }
+
+    #[test]
+    fn reachable_named_method_lookup_is_invariant_to_irrelevant_declarations() {
+        let one = named_method_lookup_work(1);
+        let many = named_method_lookup_work(128);
+
+        assert_eq!(one.named_method_record_lookups, 1);
+        assert_eq!(many.named_method_record_lookups, 1);
+        assert_eq!(one.free_function_record_lookups, 1);
+        assert_eq!(many.free_function_record_lookups, 1);
+        assert_eq!(one.reachable_declaration_rir_visits, 0);
+        assert_eq!(many.reachable_declaration_rir_visits, 0);
+    }
+
     #[test]
     fn panic_is_never_and_assert_is_unit_in_air() {
         // `@panic` diverges: its AIR result type is `!` (never), matching HM
@@ -1647,6 +1673,30 @@ mod tests {
                 RirParamMode::Normal,
             ]
         );
+    }
+
+    #[test]
+    fn gather_adapter_rebuilds_exact_named_method_records() {
+        let sema = gather_declarations_for_testing(
+            "struct Probe { fn answer() -> i32 { 42 } }
+             fn main() -> i32 { Probe.answer() }",
+        );
+        let rebuilt = crate::sema::gather::rebuild_named_method_declarations(
+            sema.rir,
+            &sema.structs,
+            &sema.structs_by_file_name,
+        );
+
+        assert_eq!(rebuilt, sema.named_method_declarations);
+        let probe = sema.interner.get("Probe").unwrap();
+        let answer = sema.interner.get("answer").unwrap();
+        let struct_id = sema.structs[&probe];
+        let declaration = rebuilt[&(struct_id, answer)];
+        let rue_rir::InstData::FnDecl { name, body, .. } = sema.rir.get(declaration).data else {
+            panic!("rebuilt named method record must point at FnDecl");
+        };
+        assert_eq!(name, answer);
+        assert_eq!(body, sema.methods[&(struct_id, answer)].body);
     }
 
     #[test]

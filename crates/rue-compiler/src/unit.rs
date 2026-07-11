@@ -321,6 +321,16 @@ impl<'src> CompilationUnit<'src> {
             info!(
                 function_count = output.functions.len(),
                 struct_count = output.type_pool.stats().struct_count,
+                free_function_record_lookups =
+                    output.body_analysis_work.free_function_record_lookups,
+                named_method_record_lookups = output.body_analysis_work.named_method_record_lookups,
+                anonymous_method_record_lookups =
+                    output.body_analysis_work.anonymous_method_record_lookups,
+                named_destructor_declarations_visited = output
+                    .body_analysis_work
+                    .named_destructor_declarations_visited,
+                reachable_declaration_rir_visits =
+                    output.body_analysis_work.reachable_declaration_rir_visits,
                 "semantic analysis complete"
             );
             output

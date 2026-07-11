@@ -52,7 +52,7 @@ pub use inference_ctx::InferenceContext;
 pub use info::{AnonMethodSig, ConstInfo, FunctionInfo, MethodInfo};
 pub use known_symbols::KnownSymbols;
 pub use module_path::{DirResolution, ModulePath, import_candidate_groups};
-pub use output::{AnalyzedFunction, ParamSlotModes, SemaOutput};
+pub use output::{AnalyzedFunction, BodyAnalysisWork, ParamSlotModes, SemaOutput};
 
 use std::collections::{HashMap, HashSet};
 
@@ -92,6 +92,9 @@ pub struct Sema<'a> {
     pub(crate) enums_by_file_name: HashMap<(FileId, Spur), EnumId>,
     /// Method table: maps (struct_id, method_name) to method info
     pub(crate) methods: HashMap<(StructId, Spur), MethodInfo>,
+    /// Exact named-method FnDecl handles for this RIR snapshot only.
+    pub(crate) named_method_declarations: HashMap<(StructId, Spur), rue_rir::InstRef>,
+    pub(crate) body_analysis_work: BodyAnalysisWork,
     /// Compatibility value-constant table for globally unique bare names.
     /// Holds value constants only (e.g. `const MAX: i32 = 10`); module bindings
     /// live in [`Self::module_bindings`]. If a value-constant name appears in
@@ -216,6 +219,8 @@ impl<'a> Sema<'a> {
             enums: HashMap::new(),
             enums_by_file_name: HashMap::new(),
             methods: HashMap::new(),
+            named_method_declarations: HashMap::new(),
+            body_analysis_work: BodyAnalysisWork::default(),
             constants: HashMap::new(),
             constants_by_file_name: HashMap::new(),
             module_bindings: HashMap::new(),

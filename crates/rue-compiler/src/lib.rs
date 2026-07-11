@@ -231,8 +231,8 @@ fn parse_runtime_archive(runtime_bytes: &[u8]) -> Result<Archive, String> {
 // Re-export commonly used types
 pub use lasso::{Spur, ThreadedRodeo};
 pub use rue_air::{
-    Air, AnalyzedFunction, DirResolution, ModulePath, RirDeclarationIndexWork, Sema, SemaOutput,
-    StructDef, Type, TypeInternPool, import_candidate_groups,
+    Air, AnalyzedFunction, BodyAnalysisWork, DirResolution, ModulePath, RirDeclarationIndexWork,
+    Sema, SemaOutput, StructDef, Type, TypeInternPool, import_candidate_groups,
 };
 pub use rue_cfg::{Cfg, CfgBuilder, CfgOutput, OptLevel};
 pub use rue_codegen::{
@@ -807,6 +807,7 @@ fn build_functions_and_cfgs(
         strings,
         mut warnings,
         type_pool,
+        body_analysis_work: _,
     } = sema_output;
 
     // Synthesize drop glue functions.
@@ -1169,6 +1170,15 @@ pub fn compile_frontend_from_ast_with_source_metadata_and_target(
         info!(
             function_count = output.functions.len(),
             struct_count = output.type_pool.stats().struct_count,
+            free_function_record_lookups = output.body_analysis_work.free_function_record_lookups,
+            named_method_record_lookups = output.body_analysis_work.named_method_record_lookups,
+            anonymous_method_record_lookups =
+                output.body_analysis_work.anonymous_method_record_lookups,
+            named_destructor_declarations_visited = output
+                .body_analysis_work
+                .named_destructor_declarations_visited,
+            reachable_declaration_rir_visits =
+                output.body_analysis_work.reachable_declaration_rir_visits,
             "semantic analysis complete"
         );
         output
