@@ -16,9 +16,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Different-length roots catch accidental absolute-path capture.  Keep the
-# output basenames equal: filename-derived macOS signing identity is covered by
-# the dedicated RUE-619 test, while this test varies the containing path.
+# Different-length roots catch accidental absolute-path capture. Different
+# output basenames additionally catch filename-derived macOS signing identity:
+# the output path selects a destination, not different program semantics.
 root_a="$scratch/a"
 root_b="$scratch/a-deliberately-much-longer-reproducibility-root"
 mkdir -p "$root_a/project" "$root_b/project" "$root_a/tmp" "$root_b/tmp"
@@ -82,9 +82,28 @@ assert_fixture_runs() {
     fi
 }
 
+assert_macos_signature() {
+    local program="$1" metadata
+    if [ "$(uname -s)" != "Darwin" ]; then
+        return
+    fi
+
+    if ! codesign --verify --strict --verbose=4 "$program"; then
+        printf 'FAIL: reproducible Mach-O artifact has an invalid code signature: %s\n' \
+            "$program" >&2
+        return 1
+    fi
+    metadata="$(codesign --display --verbose=4 "$program" 2>&1)"
+    if ! grep -Fqx 'Identifier=org.rue-lang.program' <<< "$metadata"; then
+        printf 'FAIL: Mach-O signing identifier is not stable\n%s\n' "$metadata" >&2
+        return 1
+    fi
+}
+
 compile_pair() {
-    local opt="$1" name="program-o$1"
-    local output_a="$root_a/project/$name" output_b="$root_b/project/$name"
+    local opt="$1"
+    local output_a="$root_a/project/program-left-o$1"
+    local output_b="$root_b/project/program-right-with-long-name-o$1"
 
     # First build: relative root spelling, forward manifest, serial compiler,
     # old epoch, permissive umask, and one ambient timezone.
@@ -120,6 +139,8 @@ compile_pair() {
     # Keep the adversarial fixture honest: byte-identical but broken artifacts
     # must not make this test vacuously green.
     assert_fixture_runs "$output_a"
+    assert_macos_signature "$output_a"
+    assert_macos_signature "$output_b"
 }
 
 compile_pair 0

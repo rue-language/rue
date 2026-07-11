@@ -1744,8 +1744,21 @@ fn main() {
             {
                 // Only codesign if target is macOS (cross-compilation check)
                 if compile_options.target.is_macho() {
+                    // A command-line Mach-O has no Info.plist, so codesign's
+                    // default identifier comes from the output filename. Pin
+                    // both identity and timestamp policy: choosing a different
+                    // destination path must not change the program bytes
+                    // (RUE-619).
                     let result = Command::new("codesign")
-                        .args(["-f", "-s", "-", &options.output_path])
+                        .args([
+                            "-f",
+                            "-s",
+                            "-",
+                            "--identifier",
+                            "org.rue-lang.program",
+                            "--timestamp=none",
+                            &options.output_path,
+                        ])
                         .output();
                     match result {
                         Ok(output) => {
