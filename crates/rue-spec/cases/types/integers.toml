@@ -193,7 +193,7 @@ params = [
 [[case]]
 name = "{type}_overflow_addition"
 spec = ["3.1:6"]
-exit_code = 101
+runtime_error = "integer overflow"
 source = """
 fn main() -> {type} {
     let x: {type} = {max};
@@ -208,7 +208,7 @@ params = [
 [[case]]
 name = "{type}_overflow_subtraction"
 spec = ["3.1:6"]
-exit_code = 101
+runtime_error = "integer overflow"
 source = """
 fn main() -> {type} {
     let x: {type} = {min};
@@ -229,7 +229,7 @@ fn main() -> i8 {
     x * 16
 }
 """
-exit_code = 101
+runtime_error = "integer overflow"
 
 [[case]]
 name = "i32_overflow_multiplication"
@@ -240,7 +240,7 @@ fn main() -> i32 {
     x * 2
 }
 """
-exit_code = 101
+runtime_error = "integer overflow"
 
 [[case]]
 name = "i64_overflow_addition"
@@ -252,7 +252,7 @@ fn main() -> i64 {
     y + x
 }
 """
-exit_code = 101
+runtime_error = "integer overflow"
 
 [[case]]
 name = "i64_overflow_subtraction"
@@ -264,7 +264,7 @@ fn main() -> i64 {
     y + x
 }
 """
-exit_code = 101
+runtime_error = "integer overflow"
 
 [[case]]
 name = "i64_overflow_multiplication"
@@ -275,7 +275,7 @@ fn main() -> i64 {
     x * x
 }
 """
-exit_code = 101
+runtime_error = "integer overflow"
 
 # =============================================================================
 # Unsigned Integer Overflow (Runtime Panic - Exit 101)
@@ -284,7 +284,7 @@ exit_code = 101
 [[case]]
 name = "{type}_overflow_addition"
 spec = ["3.1:13"]
-exit_code = 101
+runtime_error = "integer overflow"
 source = """
 fn main() -> {type} {
     let x: {type} = {max};
@@ -307,12 +307,12 @@ fn main() -> u8 {
     x + y
 }
 """
-exit_code = 101
+runtime_error = "integer overflow"
 
 [[case]]
 name = "{type}_overflow_subtraction"
 spec = ["3.1:13"]
-exit_code = 101
+runtime_error = "integer overflow"
 source = """
 fn main() -> {type} {
     let x: {type} = 0;
@@ -329,7 +329,7 @@ params = [
 [[case]]
 name = "{type}_overflow_multiplication"
 spec = ["3.1:13"]
-exit_code = 101
+runtime_error = "integer overflow"
 source = """
 fn main() -> {type} {
     let x: {type} = {value};
@@ -351,7 +351,7 @@ fn main() -> u64 {
     y + x
 }
 """
-exit_code = 101
+runtime_error = "integer overflow"
 
 # =============================================================================
 # Valid Arithmetic (No Overflow)
