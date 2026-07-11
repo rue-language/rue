@@ -1,0 +1,130 @@
+# Field-init shorthand `P { x }` desugaring to `P { x: x }` (RUE-613, preview
+# `field_init_shorthand`). These cases exercise the driver end-to-end: the
+# shorthand desugars in the parser, the preview gate fires in sema, and the
+# constructed struct's fields are read back at runtime (exact stdout pins the
+# desugaring maps `x` to the in-scope binding). The qualified case crosses a
+# module boundary (`shapes.Point { x, y }`), which the spec harness can't see.
+
+[section]
+id = "cli.field_init_shorthand"
+name = "Field-init shorthand"
+description = "`P { x }` desugars to `P { x: x }` under --preview field_init_shorthand (RUE-613)."
+
+# Mixed shorthand + explicit fields, values read back at runtime.
+[[case]]
+name = "mixed_shorthand_and_explicit"
+description = "`P { x, y: 2 }` takes x from scope and y explicitly."
+files = [{ path = "main.rue", source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    let x = 40;
+    let p = Point { x, y: 2 };
+    @dbg(p.x);
+    @dbg(p.y);
+    0
+}
+""" }]
+args = ["main.rue", "--preview", "field_init_shorthand", "-o", "prog"]
+stdout = "40\n2\n"
+exit_code = 0
+
+# Shadowing: the innermost `x` binding supplies the shorthand's value.
+[[case]]
+name = "shadowing_uses_innermost_binding"
+description = "A `let` shadowing an outer `x` supplies the shorthand value."
+files = [{ path = "main.rue", source = """
+struct P { x: i32 }
+fn main() -> i32 {
+    let x = 1;
+    let x = 99;
+    let p = P { x };
+    @dbg(p.x);
+    0
+}
+""" }]
+args = ["main.rue", "--preview", "field_init_shorthand", "-o", "prog"]
+stdout = "99\n"
+exit_code = 0
+
+# `Self { a, b }` shorthand inside a method.
+[[case]]
+name = "self_shorthand_in_method"
+description = "Shorthand under a `Self { .. }` head inside a method."
+files = [{ path = "main.rue", source = """
+struct Pair {
+    a: i32,
+    b: i32,
+    fn make(a: i32, b: i32) -> Self { Self { a, b } }
+}
+fn main() -> i32 {
+    let p = Pair.make(11, 22);
+    @dbg(p.a);
+    @dbg(p.b);
+    0
+}
+""" }]
+args = ["main.rue", "--preview", "field_init_shorthand", "-o", "prog"]
+stdout = "11\n22\n"
+exit_code = 0
+
+# Qualified struct literal across a module boundary: `shapes.Point { x, y }`.
+[[case]]
+name = "qualified_module_shorthand"
+description = "Shorthand works on a module-qualified struct-literal head."
+files = [
+  { path = "shapes.rue", source = """
+pub struct Point { x: i32, y: i32 }
+""" },
+  { path = "main.rue", source = """
+const shapes = @import("shapes.rue");
+fn main() -> i32 {
+    let x = 30;
+    let y = 12;
+    let p = shapes.Point { x, y };
+    @dbg(p.x + p.y);
+    0
+}
+""" },
+]
+args = ["main.rue", "--preview", "field_init_shorthand", "-o", "prog"]
+stdout = "42\n"
+exit_code = 0
+
+# `if cond { y }` must remain a block-valued if, NOT a struct literal, even
+# without the preview flag: the shorthand introduces the sole overlap between
+# struct-literal and block syntax, and the parser must not regress it.
+[[case]]
+name = "if_block_body_not_struct_literal"
+description = "`if c { y }` stays a block-valued if; no preview flag needed."
+files = [{ path = "main.rue", source = """
+fn pick(c: bool) -> i32 {
+    let y = 7;
+    let z = 9;
+    if c { y } else { z }
+}
+fn main() -> i32 {
+    @dbg(pick(true));
+    @dbg(pick(false));
+    0
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+stdout = "7\n9\n"
+exit_code = 0
+
+# The gate: without --preview the shorthand is rejected (E1100).
+[[case]]
+name = "requires_preview_flag"
+description = "Without --preview field_init_shorthand the shorthand errors with E1100."
+files = [{ path = "main.rue", source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    let x = 1;
+    let y = 2;
+    let p = Point { x, y };
+    p.x + p.y
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E1100", "field_init_shorthand"]

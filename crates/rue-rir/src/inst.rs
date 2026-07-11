@@ -1030,12 +1030,14 @@ impl Rir {
                 type_name,
                 fields_start,
                 fields_len,
+                shorthand_span,
             } => InstData::StructInit {
                 module: module.map(renumber),
                 ctor_head: ctor_head.map(renumber),
                 type_name: *type_name,
                 fields_start: *fields_start + extra_offset,
                 fields_len: *fields_len,
+                shorthand_span: *shorthand_span,
             },
             InstData::FieldGet { base, field } => InstData::FieldGet {
                 base: renumber(*base),
@@ -1696,6 +1698,12 @@ pub enum InstData {
         fields_start: u32,
         /// Number of fields
         fields_len: u32,
+        /// Span of the first field-init-shorthand field, if any (`P { x }`
+        /// desugaring to `P { x: x }`, RUE-613, preview `field_init_shorthand`).
+        /// `Some` iff at least one field used the shorthand; Sema uses it to gate
+        /// the form behind its preview flag and to point the diagnostic. `None`
+        /// when every field was written explicitly (`P { x: x }`).
+        shorthand_span: Option<Span>,
     },
 
     /// Field access: reads a field from a struct
@@ -2260,6 +2268,7 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     type_name,
                     fields_start,
                     fields_len,
+                    shorthand_span: _,
                 } => {
                     let module_str = match ctor_head {
                         Some(head) => format!("<{}>.", head),
@@ -3526,6 +3535,7 @@ mod tests {
                 type_name,
                 fields_start,
                 fields_len,
+                shorthand_span: None,
             },
             span: Span::new(0, 25),
         });

@@ -1792,6 +1792,7 @@ impl<'a> ConstraintGenerator<'a> {
                 type_name,
                 fields_start,
                 fields_len,
+                shorthand_span: _,
             } => {
                 // Inline type-constructor literal heads (`F(args) { ... }`,
                 // RUE-596) resolve through sema's pre-reduced head map, the
