@@ -37,9 +37,9 @@ use lasso::ThreadedRodeo;
 use tracing::{info, info_span};
 
 use crate::{
-    Ast, AstGen, CompileOptions, CompileOutput, CompileResult, CompileWarning, FunctionWithCfg,
-    MultiErrorResult, Rir, Sema, SourceFile, SourceMetadata, SourceSnapshot, SyntaxWork,
-    TypeInternPool, build_functions_and_cfgs, compile_backend,
+    Ast, AstGen, CompileErrors, CompileOptions, CompileOutput, CompileResult, CompileWarning,
+    DefinitionSnapshot, FunctionWithCfg, MultiErrorResult, Rir, Sema, SourceFile, SourceMetadata,
+    SourceSnapshot, SyntaxWork, TypeInternPool, build_functions_and_cfgs, compile_backend,
 };
 use rue_span::FileId;
 
@@ -97,6 +97,9 @@ pub struct CompilationUnit<'src> {
     merged_ast: Option<Ast>,
     /// String interner shared across all files.
     interner: Option<ThreadedRodeo>,
+    /// Durable module/name keys and snapshot-local definition occurrences from
+    /// the latest syntactically successful parse attempt.
+    definition_snapshot: Option<DefinitionSnapshot>,
     // === Phase 2: RIR Generation ===
     /// Untyped intermediate representation (populated by `lower()`).
     rir: Option<Rir>,
@@ -190,6 +193,7 @@ impl<'src> CompilationUnit<'src> {
             _source_lifetime: PhantomData,
             merged_ast: None,
             interner: None,
+            definition_snapshot: None,
             rir: None,
             functions: None,
             type_pool: None,
@@ -214,6 +218,10 @@ impl<'src> CompilationUnit<'src> {
     /// - Any file fails to lex or parse
     /// - Duplicate function, struct, or enum definitions are found
     pub fn parse(&mut self) -> MultiErrorResult<()> {
+        // A failed syntax pass must not leave a snapshot that appears to
+        // describe the latest attempt.
+        self.definition_snapshot = None;
+
         // Keep symbol merging nested under the compilation unit's historical
         // `parse` timing boundary. Direct snapshot parsing owns a narrower
         // `parse` span around syntax work only.
@@ -222,7 +230,13 @@ impl<'src> CompilationUnit<'src> {
         self.syntax_work = parsed.work;
         self.source_stats.tokens = parsed.work.tokens;
 
-        let merged = crate::merge_symbols(parsed.result?)?;
+        let parsed = parsed.result?;
+        let definition_snapshot =
+            DefinitionSnapshot::from_parsed_program(&parsed, &self.source_snapshot)
+                .map_err(CompileErrors::from)?;
+        self.definition_snapshot = Some(definition_snapshot);
+
+        let merged = crate::merge_symbols(parsed)?;
         self.merged_ast = Some(merged.ast);
         self.interner = Some(merged.interner);
         Ok(())
@@ -481,6 +495,15 @@ impl<'src> CompilationUnit<'src> {
     /// Get the immutable source snapshot owned by this compilation unit.
     pub fn source_snapshot(&self) -> &SourceSnapshot {
         &self.source_snapshot
+    }
+
+    /// Get durable module/name keys and snapshot-local definition occurrences
+    /// from the latest syntactically successful [`Self::parse`] attempt.
+    ///
+    /// This remains available when duplicate-symbol merging rejects the parsed
+    /// program. It returns `None` before parsing and after a syntax error.
+    pub fn definition_snapshot(&self) -> Option<&DefinitionSnapshot> {
+        self.definition_snapshot.as_ref()
     }
 
     /// Direct syntax work performed by the most recent [`Self::parse`] attempt.
@@ -748,11 +771,12 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_merge_errors_preserve_and_replace_syntax_metrics() {
+    fn duplicate_merge_errors_preserve_diagnostics_and_replace_parse_artifacts() {
         let source = "fn foo() -> i32 { 1 } fn foo() -> i32 { 2 }";
         let expected_tokens = Lexer::new(source).tokenize().unwrap().0.len();
         let sources = vec![SourceFile::new("a.rue", source, FileId::new(1))];
         let mut unit = CompilationUnit::new(sources, CompileOptions::default()).unwrap();
+        assert!(unit.definition_snapshot().is_none());
 
         let direct_errors = crate::merge_symbols(
             crate::parse_all_files_with_source_snapshot(unit.source_snapshot()).unwrap(),
@@ -790,6 +814,22 @@ mod tests {
         assert_eq!(fingerprint(&direct_errors), fingerprint(&first_errors));
         assert_eq!(unit.syntax_work(), expected_work);
         assert_eq!(unit.source_stats(), expected_stats);
+        let first_snapshot = unit
+            .definition_snapshot()
+            .expect("syntax success should retain definitions despite merge failure");
+        assert_eq!(first_snapshot.definition_count(), 2);
+        let definition_ids = first_snapshot
+            .definitions()
+            .map(|definition| definition.id())
+            .collect::<Vec<_>>();
+        assert_eq!(definition_ids.len(), 2);
+        assert_ne!(definition_ids[0], definition_ids[1]);
+        let durable_projection = first_snapshot
+            .definitions()
+            .map(|definition| (definition.name_key().clone(), definition.kind()))
+            .collect::<Vec<_>>();
+        assert_eq!(durable_projection.len(), 2);
+        assert_eq!(durable_projection[0].0, durable_projection[1].0);
 
         let second_errors = unit
             .parse()
@@ -797,6 +837,15 @@ mod tests {
         assert_eq!(fingerprint(&first_errors), fingerprint(&second_errors));
         assert_eq!(unit.syntax_work(), expected_work);
         assert_eq!(unit.source_stats(), expected_stats);
+        let second_snapshot = unit
+            .definition_snapshot()
+            .expect("repeated syntax success should replace the definition snapshot");
+        assert_eq!(second_snapshot.definition_count(), 2);
+        let second_projection = second_snapshot
+            .definitions()
+            .map(|definition| (definition.name_key().clone(), definition.kind()))
+            .collect::<Vec<_>>();
+        assert_eq!(second_projection, durable_projection);
     }
 
     #[test]
@@ -824,6 +873,10 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         assert_eq!(fingerprint(&direct_errors), fingerprint(&errors));
+        assert!(
+            unit.definition_snapshot().is_none(),
+            "syntax errors must not fabricate a partial definition snapshot"
+        );
         let file_ids: Vec<_> = errors
             .iter()
             .map(|error| {

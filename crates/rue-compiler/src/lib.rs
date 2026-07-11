@@ -25,6 +25,7 @@
 //! This crate is instrumented with `tracing` spans for performance analysis.
 //! Use `--log-level info` or `--time-passes` to see timing information.
 
+mod definition_snapshot;
 mod diagnostic;
 mod drop_glue;
 mod semantic_order;
@@ -33,6 +34,10 @@ mod source_snapshot;
 mod syntax;
 mod unit;
 
+pub use definition_snapshot::{
+    DefinitionId, DefinitionKind, DefinitionNameKey, DefinitionNamespace, DefinitionRecord,
+    DefinitionSnapshot, ModuleDefinition, ModuleKey,
+};
 pub use source_metadata::SourceMetadata;
 pub use source_snapshot::{MAX_SOURCE_BYTES, SourceSnapshot};
 pub use syntax::SyntaxWork;
@@ -241,6 +246,7 @@ pub use rue_error::{
 };
 pub use rue_lexer::{Lexer, Token, TokenKind};
 pub use rue_linker::{Archive, CodeRelocation, Linker, ObjectBuilder, ObjectFile, RelocationType};
+pub use rue_parser::ast::Visibility;
 pub use rue_parser::{Ast, Expr, Function, Item, Parser};
 pub use rue_rir::{AstGen, Rir, RirPrinter};
 pub use rue_span::{FileId, Span};
