@@ -1319,16 +1319,21 @@ fn discover_and_load_imports(
             continue;
         };
 
-        for w in tokens.windows(4) {
-            let (
-                TokenKind::AtImport(_),
-                TokenKind::LParen,
-                TokenKind::String(s),
-                TokenKind::RParen,
-            ) = (&w[0].kind, &w[1].kind, &w[2].kind, &w[3].kind)
+        for w in tokens.windows(5) {
+            // Match `@import ( "<path>" )`, tolerating a trailing comma before
+            // the close paren (RUE-536): `@import("x",)` is a valid one-argument
+            // list and must still be discovered. The 5-token window lets us peek
+            // past the string at either `)` or `, )`.
+            let (TokenKind::AtImport(_), TokenKind::LParen, TokenKind::String(s)) =
+                (&w[0].kind, &w[1].kind, &w[2].kind)
             else {
                 continue;
             };
+            match (&w[3].kind, &w[4].kind) {
+                (TokenKind::RParen, _) => {}
+                (TokenKind::Comma, TokenKind::RParen) => {}
+                _ => continue,
+            }
             let import_str = interner.resolve(s);
 
             let importer_dir = Path::new(&importer_path)
