@@ -66,6 +66,7 @@ fn main() -> i32 {
 """ }]
 args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
 exit_code = 101
+runtime_error_contains = ["index out of bounds"]
 
 # A `str` parameter receives a string literal (first-class argument) and a
 # forwarded `str` variable, both by value.

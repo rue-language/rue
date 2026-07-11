@@ -78,6 +78,7 @@ fn main() -> i32 {
 """ }]
 args = ["main.rue", "--preview", "string_trio", "-o", "prog"]
 exit_code = 101
+runtime_error_contains = ["index out of bounds"]
 
 # A string literal exceeding the capacity N is a clean compile error (E0492),
 # never a silent truncation or a crash.

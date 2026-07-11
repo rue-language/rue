@@ -81,6 +81,7 @@ fn main() -> i32 {
 }
 """ }]
 exit_code = 101
+runtime_error_contains = ["index out of bounds"]
 
 [[case]]
 name = "out_of_range_signed_index_traps"
@@ -93,3 +94,4 @@ fn main() -> i32 {
 }
 """ }]
 exit_code = 101
+runtime_error_contains = ["index out of bounds"]
