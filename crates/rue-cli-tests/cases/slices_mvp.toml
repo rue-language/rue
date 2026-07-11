@@ -175,6 +175,64 @@ fn main() -> i32 {
 args = ["main.rue", "--preview", "slices", "-o", "prog"]
 exit_code = 60
 
+# User-defined methods and associated functions share the same view
+# materialization contract as free functions. Direct array arguments exercise
+# the method-signature inference seam as well as the AIR lowering seam.
+[[case]]
+name = "method_and_assoc_slice_view_coercions"
+files = [{ path = "main.rue", source = """
+struct Sum {
+    bias: i32,
+
+    fn method(borrow self, borrow s: [i32]) -> i32 {
+        self.bias + s[0] + s[1]
+    }
+
+    fn assoc(borrow s: [i32]) -> i32 {
+        s[0] + s[1]
+    }
+}
+
+fn main() -> i32 {
+    let values: [i32; 2] = [5, 7];
+    let sum = Sum { bias: 18 };
+    sum.method(borrow values) + Sum.assoc(borrow values)
+}
+""" }]
+args = ["main.rue", "--preview", "slices", "-o", "prog"]
+exit_code = 42
+
+# Forwarding an existing slice is a distinct physical case: the two-word view
+# must pass through by value (Normal AIR mode), not become a one-word Borrow
+# argument merely because the source still spells `borrow`.
+[[case]]
+name = "method_and_assoc_forward_slice_view"
+files = [{ path = "main.rue", source = """
+struct Sum {
+    bias: i32,
+
+    fn method(borrow self, borrow s: [i32]) -> i32 {
+        self.bias + s[0] + s[1]
+    }
+
+    fn assoc(borrow s: [i32]) -> i32 {
+        s[0] + s[1]
+    }
+}
+
+fn forward(borrow s: [i32]) -> i32 {
+    let sum = Sum { bias: 18 };
+    sum.method(borrow s) + Sum.assoc(borrow s)
+}
+
+fn main() -> i32 {
+    let values: [i32; 2] = [5, 7];
+    forward(borrow values)
+}
+""" }]
+args = ["main.rue", "--preview", "slices", "-o", "prog"]
+exit_code = 42
+
 # Passing an array whose element type does not match the slice element type is
 # a clean compile error (the coercion validates element compatibility, since
 # inference relaxes the whole-type equality for slice parameters).

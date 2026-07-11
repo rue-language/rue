@@ -258,6 +258,18 @@ const ENTRIES: &[Entry] = &[
         &[],
     ),
     Entry::new(
+        "items.impl-blocks",
+        "method_and_assoc_forward_borrow_str_view",
+        semantic(SemanticGapKind::TextProjectionRead),
+        &[],
+    ),
+    Entry::new(
+        "items.impl-blocks",
+        "method_and_assoc_string_view_coercions",
+        semantic(SemanticGapKind::TextProjectionRead),
+        &[],
+    ),
+    Entry::new(
         "items.unchecked",
         "ptr_ops_in_checked_ok",
         intrinsic(UnsupportedIntrinsicKind::RawMutableAddress),
@@ -531,6 +543,12 @@ const ENTRIES: &[Entry] = &[
         "types.str_type",
         "inout_str_accepts_local_buffer",
         semantic(SemanticGapKind::TextProjectionRead),
+        &[],
+    ),
+    Entry::new(
+        "types.str_type",
+        "inout_str_view_can_be_forwarded",
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(

@@ -476,6 +476,115 @@ fn main() -> i32 {
 exit_code = 3
 
 [[case]]
+name = "method_and_assoc_string_view_coercions"
+spec = ["3.7:58", "3.7:60", "4.10:4", "6.4:7", "6.4:12", "6.4:25"]
+description = "Method and associated-function parameters apply borrow/inout str view coercions to projected StrBuf places while receiver autoref stays implicit"
+preview = "string_trio"
+preview_should_pass = true
+source = """
+struct BufferBox { value: StrBuf }
+
+struct Probe {
+    bias: i32,
+
+    fn method(borrow self, borrow read: str, inout edit: str) -> i32 {
+        self.bias + @intCast(read.len()) + @intCast(edit.len())
+    }
+
+    fn assoc(borrow read: str, inout edit: str) -> i32 {
+        11 + @intCast(read.len()) + @intCast(edit.len())
+    }
+}
+
+fn main() -> i32 {
+    let left = BufferBox { value: "abcd" };
+    let mut right = BufferBox { value: "abcdef" };
+    let probe = Probe { bias: 11 };
+    probe.method(borrow left.value, inout right.value)
+        + Probe.assoc(borrow left.value, inout right.value)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "method_and_assoc_forward_borrow_str_view"
+spec = ["3.7:58", "6.1:23", "6.1:26", "6.4:7", "6.4:12", "6.4:25"]
+description = "An existing borrow str view is forwarded by value through method and associated-function parameters"
+preview = "string_trio"
+preview_should_pass = true
+source = """
+struct Probe {
+    bias: i32,
+
+    fn method(borrow self, borrow value: str) -> i32 {
+        self.bias + @intCast(value.len())
+    }
+
+    fn assoc(borrow value: str) -> i32 {
+        @intCast(value.len())
+    }
+}
+
+fn forward(borrow value: str) -> i32 {
+    let probe = Probe { bias: 32 };
+    probe.method(borrow value) + Probe.assoc(borrow value)
+}
+
+fn main() -> i32 {
+    let value = "hello";
+    forward(borrow value)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "method_and_assoc_reject_unrelated_string_arg_{surface}"
+spec = ["4.10:4", "6.4:7", "6.4:12"]
+description = "Method and associated-function view inference defers to sema without admitting unrelated source types"
+preview = "string_trio"
+preview_should_pass = true
+source = """
+struct Probe {
+    fn method(self, value: str) {}
+    fn assoc(value: str) {}
+}
+
+fn main() {
+    {body}
+}
+"""
+compile_fail = true
+error_contains = "E0206"
+params = [
+  { surface = "method", body = "let probe = Probe {}; probe.method(42);" },
+  { surface = "assoc", body = "Probe.assoc(42);" },
+]
+
+[[case]]
+name = "method_and_assoc_reject_mismatched_fixed_string_{surface}"
+spec = ["3.7:50", "4.10:4", "6.4:7", "6.4:12"]
+description = "Deferring contextual Str(N) inference does not erase exact capacity identity"
+preview = "string_trio"
+preview_should_pass = true
+source = """
+struct Probe {
+    fn method(self, value: Str(8)) {}
+    fn assoc(value: Str(8)) {}
+}
+
+fn main() {
+    let value: Str(9) = "value";
+    {body}
+}
+"""
+compile_fail = true
+error_contains = "E0206"
+params = [
+  { surface = "method", body = "let probe = Probe {}; probe.method(value);" },
+  { surface = "assoc", body = "Probe.assoc(value);" },
+]
+
+[[case]]
 name = "inout_self_requires_mut_receiver"
 spec = ["6.4:26"]
 compile_fail = true

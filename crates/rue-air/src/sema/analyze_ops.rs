@@ -2814,9 +2814,9 @@ impl<'a> Sema<'a> {
 
                 // Handle move semantics based on parameter mode.
                 // A use as a by-ref call argument is a borrow, not a move
-                // (`analyze_call_args` sets `byref_arg_root`), so it neither marks
-                // the parameter moved nor counts as moving out of it. This is what
-                // permits forwarding an inout parameter: `f(inout v)` inside
+                // (`analyze_call_args_coerced` sets `byref_arg_root`), so it neither
+                // marks the parameter moved nor counts as moving out of it. This is
+                // what permits forwarding an inout parameter: `f(inout v)` inside
                 // `fn g(inout v: T)`.
                 let is_byref_arg_use = ctx.byref_arg_root == Some(name);
                 let mut moves_out = false;
@@ -2849,8 +2849,8 @@ impl<'a> Sema<'a> {
                             // `f(borrow v)` inside `fn g(borrow v: T)` is a sound
                             // read-only re-borrow and is allowed (RUE-143).
                             // `f(inout v)` — a mutable view of read-only memory —
-                            // was already rejected in `analyze_call_args` (E0428),
-                            // so a by-ref use reaching here is borrow-mode.
+                            // was already rejected by call-argument analysis
+                            // (E0428), so a by-ref use reaching here is borrow-mode.
                             // Anything else moves out of the borrow: rejected.
                             if !is_byref_arg_use {
                                 let name_str = self.interner.resolve(&name);

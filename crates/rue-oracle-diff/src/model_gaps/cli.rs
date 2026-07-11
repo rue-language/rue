@@ -423,6 +423,18 @@ const ENTRIES: &[Entry] = &[
     ),
     Entry::new(
         "cli.slices",
+        "method_and_assoc_forward_slice_view",
+        intrinsic(UnsupportedIntrinsicKind::RawAddress),
+        &[],
+    ),
+    Entry::new(
+        "cli.slices",
+        "method_and_assoc_slice_view_coercions",
+        intrinsic(UnsupportedIntrinsicKind::RawAddress),
+        &[],
+    ),
+    Entry::new(
+        "cli.slices",
         "slice_param_constant_index",
         intrinsic(UnsupportedIntrinsicKind::RawAddress),
         &[],

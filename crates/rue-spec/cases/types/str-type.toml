@@ -332,6 +332,69 @@ fn main() -> i32 {
 """
 exit_code = 5
 
+# 6.1:35 — an inout parameter may be forwarded to another inout parameter.
+# An `inout str` parameter is already an exclusive view of caller-owned local
+# storage, not a first-class/static `str` that should trigger E0496.
+[[case]]
+name = "inout_str_view_can_be_forwarded"
+spec = ["3.7:58", "3.7:60", "6.1:35"]
+preview = "string_trio"
+preview_should_pass = true
+source = """
+fn inner(inout s: str) -> u64 {
+    s.len()
+}
+fn outer(inout s: str) -> u64 {
+    inner(inout s)
+}
+fn main() -> i32 {
+    let mut s: Str(8) = "hello";
+    @intCast(outer(inout s))
+}
+"""
+exit_code = 5
+
+# 3.7:60 — a local that shadows an `inout str` parameter is a new first-class
+# binding, not the existing exclusive view. It must not inherit the parameter's
+# local provenance and bypass E0496 for static-backed `str`.
+[[case]]
+name = "shadowed_local_str_is_not_an_inout_view"
+spec = ["3.7:60"]
+preview = "string_trio"
+preview_should_pass = true
+source = """
+fn inner(inout s: str) {}
+fn outer(inout s: str) {
+    let mut s: str = "static";
+    inner(inout s);
+}
+fn main() {
+    let mut buffer: Str(8) = "local";
+    outer(inout buffer);
+}
+"""
+compile_fail = true
+error_contains = "E0496"
+
+# 4.10:4 — contextual string handling is an enumerated compatibility rule,
+# not permission to pass an arbitrary same-width (or unrelated) value through
+# a string parameter's physical ABI. Borrow-str already rejects unrelated
+# places in its view materializer; these are the three formerly open paths.
+[[case]]
+name = "string_param_rejects_unrelated_type_{contract}"
+spec = ["4.10:4"]
+description = "A string or string-view parameter rejects an unrelated value before emitting an ABI-invalid call"
+preview = "string_trio"
+preview_should_pass = true
+source = "{source}"
+compile_fail = true
+error_contains = "E0206"
+params = [
+  { contract = "first_class_str", source = "fn take(s: str) {}\nfn main() { take(42); }" },
+  { contract = "fixed_string", source = "fn take(s: Str(8)) {}\nfn main() { take(42); }" },
+  { contract = "inout_str", source = "fn take(inout s: str) {}\nfn main() { let mut value = 42; take(inout value); }" },
+]
+
 # 3.7:58 — `inout str` is a second-class exclusive view. Its bytes may be
 # accessed through the view, but the view binding itself cannot be rebound as
 # a whole value. This also prevents a default 3-word StrBuf literal from being

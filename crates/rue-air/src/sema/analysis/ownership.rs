@@ -743,99 +743,6 @@ impl<'a> Sema<'a> {
         Ok(())
     }
 
-    /// Analyze a list of call arguments, enforcing by-ref argument rules.
-    ///
-    /// Inout/borrow arguments are borrows, not moves: `ctx.byref_arg_root` is
-    /// set to the argument's ROOT variable while the argument value is
-    /// analyzed, so the variable-reference and place analyses skip move
-    /// tracking for it (and permit forwarding an inout parameter to another
-    /// function's by-ref parameter). A by-ref argument must be a place — a
-    /// variable, or a field/index projection chain rooted at one (`borrow
-    /// o.f`, `inout a[i]`, RUE-143); codegen forms the place's address.
-    ///
-    /// An `inout` argument rooted at a `borrow` parameter is rejected here:
-    /// it would hand the callee a mutable view of read-only memory.
-    pub(crate) fn analyze_call_args(
-        &mut self,
-        air: &mut Air,
-        args: &[RirCallArg],
-        ctx: &mut AnalysisContext,
-    ) -> CompileResult<Vec<AirCallArg>> {
-        // Collect this call's loan frame up front — every by-ref argument's
-        // root — so a by-value move of a loaned root is caught in EITHER
-        // argument order (`f(inout x, x)` and `f(x, inout x)` alike, RUE-523).
-        // The frame stays pushed while every argument (and anything nested in
-        // one) is analyzed; move-record sites consult it via
-        // `reject_move_of_call_loaned_root`.
-        let frame: Vec<(Spur, CallLoanKind)> = args
-            .iter()
-            .filter_map(|arg| {
-                let kind = if arg.is_inout() {
-                    CallLoanKind::Inout
-                } else if arg.is_borrow() {
-                    CallLoanKind::Borrow
-                } else {
-                    return None;
-                };
-                root_variable_of(self.rir, arg.value).map(|root| (root, kind))
-            })
-            .collect();
-        let pushed = !frame.is_empty();
-        if pushed {
-            ctx.call_loaned_roots.push(frame);
-        }
-        let result = self.analyze_call_args_inner(air, args, ctx);
-        if pushed {
-            ctx.call_loaned_roots.pop();
-        }
-        result
-    }
-
-    /// The argument loop behind [`Sema::analyze_call_args`], factored out so
-    /// the loan frame is popped on every exit path (including `?` errors).
-    fn analyze_call_args_inner(
-        &mut self,
-        air: &mut Air,
-        args: &[RirCallArg],
-        ctx: &mut AnalysisContext,
-    ) -> CompileResult<Vec<AirCallArg>> {
-        let mut air_args = Vec::new();
-        for arg in args.iter() {
-            let byref_root = if arg.is_inout() || arg.is_borrow() {
-                let root = require_byref_place_arg(self.rir, arg)?;
-                if arg.is_inout()
-                    && ctx
-                        .params
-                        .iter()
-                        .any(|p| p.name == root && p.mode == RirParamMode::Borrow)
-                {
-                    return Err(CompileError::new(
-                        ErrorKind::MutateBorrowedValue {
-                            variable: self.interner.resolve(&root).to_string(),
-                        },
-                        self.rir.get(arg.value).span,
-                    ));
-                }
-                Some(root)
-            } else {
-                None
-            };
-
-            // Set while analyzing the argument so the use is treated as a
-            // borrow, not a move; restored afterwards.
-            let prev_byref_root = std::mem::replace(&mut ctx.byref_arg_root, byref_root);
-            let arg_result = self.analyze_inst(air, arg.value, ctx);
-            ctx.byref_arg_root = prev_byref_root;
-            let arg_result = arg_result?;
-
-            air_args.push(AirCallArg {
-                value: arg_result.air_ref,
-                mode: Self::convert_arg_mode(arg.mode),
-            });
-        }
-        Ok(air_args)
-    }
-
     /// Is `operand` a *direct* reference to a `borrow str` / `inout str`
     /// parameter — i.e. a borrowed `str` *view* value (ADR-0043 two-types
     /// model, RUE-386)?
@@ -846,15 +753,32 @@ impl<'a> Sema<'a> {
     /// there is never a second first-class root to chase. This keeps the check
     /// structural (one instruction shape), never a dataflow — exactly what the
     /// no-lifetimes spine requires.
-    pub(crate) fn is_str_view_operand(&self, operand: InstRef, ctx: &AnalysisContext) -> bool {
+    fn str_view_operand_mode(
+        &self,
+        operand: InstRef,
+        ctx: &AnalysisContext,
+    ) -> Option<RirParamMode> {
         if let InstData::VarRef { name } = self.rir.get(operand).data {
-            return ctx.params.iter().any(|p| {
-                p.name == name
-                    && matches!(p.mode, RirParamMode::Borrow | RirParamMode::Inout)
-                    && self.is_str_struct(p.ty)
-            });
+            // Locals shadow parameters. Without this guard a local reusing a
+            // view parameter's name would inherit its second-class provenance.
+            if ctx.locals.contains_key(&name) {
+                return None;
+            }
+            return ctx
+                .params
+                .iter()
+                .find(|p| {
+                    p.name == name
+                        && matches!(p.mode, RirParamMode::Borrow | RirParamMode::Inout)
+                        && self.is_str_struct(p.ty)
+                })
+                .map(|p| p.mode);
         }
-        false
+        None
+    }
+
+    pub(crate) fn is_str_view_operand(&self, operand: InstRef, ctx: &AnalysisContext) -> bool {
+        self.str_view_operand_mode(operand, ctx).is_some()
     }
 
     /// Enforce the ADR-0043 two-types string model at a *first-class* `str`
@@ -913,14 +837,28 @@ impl<'a> Sema<'a> {
         Ok(())
     }
 
-    /// Enforce inout-`str`-requires-local-provenance (ADR-0043 two-types model,
-    /// RUE-386): the operand of an `inout str` parameter must be a *local*
-    /// string buffer (`StrBuf`/`Str(N)`), never a first-class / static-backed
-    /// `str`. A static `str` lives in read-only `.rodata`, so an exclusive view
-    /// would enable a write-to-`.rodata` fault once byte mutation lands; and
-    /// since `str` is `Copy`, two roots can alias one static buffer in a way
-    /// per-root exclusivity cannot see. `found` is the operand's analyzed type.
-    pub(crate) fn reject_static_str_inout(&self, found: Type, span: Span) -> CompileResult<()> {
+    /// Validate the source of a bare `inout str` view (ADR-0043 two-types
+    /// model, RUE-386). A locally-backed `StrBuf`/`Str(N)` is accepted, as is
+    /// forwarding an existing `inout str` parameter (which preserves that
+    /// local provenance). A first-class/static `str` is E0496; an unrelated
+    /// type is the ordinary E0206 type mismatch.
+    pub(crate) fn validate_inout_str_operand(
+        &self,
+        operand: InstRef,
+        expected: Type,
+        found: Type,
+        span: Span,
+        ctx: &AnalysisContext,
+    ) -> CompileResult<()> {
+        if found.is_never() || found.is_error() {
+            return Ok(());
+        }
+        if self.is_builtin_string(found)
+            || self.is_str_fixed_struct(found)
+            || self.str_view_operand_mode(operand, ctx) == Some(RirParamMode::Inout)
+        {
+            return Ok(());
+        }
         if self.is_str_struct(found) {
             return Err(
                 CompileError::new(ErrorKind::InoutStrRequiresLocalBuffer, span).with_help(
@@ -929,7 +867,7 @@ impl<'a> Sema<'a> {
                 ),
             );
         }
-        Ok(())
+        Err(self.type_mismatch_error(expected, found, span))
     }
 
     /// The tail (value) expression of a RIR block, descending through nested
@@ -956,8 +894,8 @@ impl<'a> Sema<'a> {
     /// `borrow arr` (where `arr: [T; N]`) passed to a `borrow s: [T]` parameter
     /// is coerced to a by-value slice `{ptr: @raw(arr[0]), len: N}`, which flows
     /// through the existing by-value aggregate ABI (the parameter is by-value —
-    /// see [`crate::sema::Sema`] parameter setup). Non-slice parameters use the
-    /// ordinary [`Self::analyze_call_args`] argument path unchanged.
+    /// see [`crate::sema::Sema`] parameter setup). All other arguments retain
+    /// the ordinary by-value/by-reference analysis in this same chokepoint.
     pub(crate) fn analyze_call_args_coerced(
         &mut self,
         air: &mut Air,
@@ -966,9 +904,8 @@ impl<'a> Sema<'a> {
         param_modes: &[RirParamMode],
         ctx: &mut AnalysisContext,
     ) -> CompileResult<Vec<AirCallArg>> {
-        // Same loan-frame discipline as `analyze_call_args` (RUE-523): a
-        // by-value move of a root this call passes `inout`/`borrow` conflicts
-        // in either argument order.
+        // Loan-frame discipline (RUE-523): a by-value move of a root this call
+        // passes `inout`/`borrow` conflicts in either argument order.
         let frame: Vec<(Spur, CallLoanKind)> = args
             .iter()
             .filter_map(|arg| {
@@ -1016,11 +953,13 @@ impl<'a> Sema<'a> {
             // address. Unlike a slice view, `str` is first-class and
             // reassignable, so an assignment to the parameter rebinds the
             // caller's fat pointer via ParamStore.
-            let is_str_param = param_types.get(i).is_some_and(|pt| self.is_str_like(*pt));
+            let param_ty = param_types[i];
+            let param_mode = param_modes[i];
+            let is_str_param = self.is_str_like(param_ty);
             let is_inout_str_param =
-                arg.is_inout() && param_types.get(i).is_some_and(|pt| self.is_str_struct(*pt));
+                param_mode == RirParamMode::Inout && self.is_str_struct(param_ty);
             if is_str_param && !is_inout_str_param {
-                let str_ty = param_types[i];
+                let str_ty = param_ty;
                 // A `borrow` argument to a `borrow s: str` parameter views an
                 // existing string place — a `StrBuf`, `Str(N)`, `str`, or a
                 // re-borrowed view (ADR-0043 two-types model). The source is
@@ -1043,12 +982,26 @@ impl<'a> Sema<'a> {
                 let arg_result = self.analyze_inst(air, arg.value, ctx);
                 ctx.expected_type = prev_expected;
                 let arg_result = arg_result?;
+                // `Str(N)` is a nominal fixed-capacity value, not a bare
+                // string view. Contextual literals materialize directly as
+                // the expected capacity above; every other value must retain
+                // exact capacity identity (RUE-636). This check is semantic
+                // only: its Borrow/Inout ABI correction remains in RUE-636.
+                if self.is_str_fixed_struct(str_ty) && !arg_result.ty.can_coerce_to(&str_ty) {
+                    return Err(self.type_mismatch_error(
+                        str_ty,
+                        arg_result.ty,
+                        self.rir.get(arg.value).span,
+                    ));
+                }
                 // Two-types model (ADR-0043, RUE-386): a bare `str` parameter
                 // (Normal mode) requires a first-class `str`; a buffer or a
                 // borrowed view passed here would escape and dangle. A
                 // `borrow str` parameter (Borrow mode) is the sanctioned view
                 // and accepts a buffer, so it is exempt.
-                if param_modes.get(i) == Some(&RirParamMode::Normal) && self.is_str_struct(str_ty) {
+                if matches!(param_mode, RirParamMode::Normal | RirParamMode::Comptime)
+                    && self.is_str_struct(str_ty)
+                {
                     self.reject_non_first_class_str(
                         arg.value,
                         arg_result.ty,
@@ -1056,6 +1009,13 @@ impl<'a> Sema<'a> {
                         self.rir.get(arg.value).span,
                         ctx,
                     )?;
+                    if !arg_result.ty.can_coerce_to(&str_ty) {
+                        return Err(self.type_mismatch_error(
+                            str_ty,
+                            arg_result.ty,
+                            self.rir.get(arg.value).span,
+                        ));
+                    }
                 }
                 air_args.push(AirCallArg {
                     value: arg_result.air_ref,
@@ -1081,6 +1041,7 @@ impl<'a> Sema<'a> {
             let byref_root = if arg.is_inout() || arg.is_borrow() {
                 let root = require_byref_place_arg(self.rir, arg)?;
                 if arg.is_inout()
+                    && !ctx.locals.contains_key(&root)
                     && ctx
                         .params
                         .iter()
@@ -1106,7 +1067,13 @@ impl<'a> Sema<'a> {
             // / static `str` value is never a legal exclusive operand (closes
             // the write-to-`.rodata` and Copy-two-roots aliasing holes).
             if is_inout_str_param {
-                self.reject_static_str_inout(arg_result.ty, self.rir.get(arg.value).span)?;
+                self.validate_inout_str_operand(
+                    arg.value,
+                    param_ty,
+                    arg_result.ty,
+                    self.rir.get(arg.value).span,
+                    ctx,
+                )?;
             }
             air_args.push(AirCallArg {
                 value: arg_result.air_ref,

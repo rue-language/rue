@@ -142,9 +142,18 @@ The body of a function **MUST NOT** move out of a `borrow` parameter. A borrowed
 {{ rule(id="6.1:26", cat="dynamic-semantics") }}
 
 When a function is called with a `borrow` argument:
-1. The address of the argument place is passed to the callee. For a field access or array index argument, this is the address of that field or element (an out-of-bounds index causes a runtime panic before the call); for a place rooted at a by-ref parameter of the caller, it is computed from the pointer the caller received
-2. The callee reads from the argument through this address
-3. After the call returns, the original variable is unchanged and still valid; a borrowed place is not moved out of its owner
+1. Ordinarily, the address of the argument place is passed to the callee. For a
+   field access or array index argument, this is the address of that field or
+   element (an out-of-bounds index causes a runtime panic before the call); for
+   a place rooted at a by-ref parameter of the caller, it is computed from the
+   pointer the caller received. When the parameter type explicitly defines an
+   argument-position view coercion (4.10:4), the caller instead materializes
+   that view from the place and passes it using the representation specified by
+   the type; `borrow str` and slice views are two-word values passed by value.
+2. The callee reads the original storage through the received address or
+   materialized view.
+3. After the call returns, the original variable is unchanged and still valid;
+   a borrowed place is not moved out of its owner.
 
 {{ rule(id="6.1:27", cat="example") }}
 

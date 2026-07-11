@@ -342,8 +342,8 @@ impl<'a> Sema<'a> {
         }
 
         // Check argument count (method_info.params excludes self)
-        let method_param_types = self.param_arena.types(method_info.params);
-        let method_param_modes = self.param_arena.modes(method_info.params);
+        let method_param_types = self.param_arena.types(method_info.params).to_vec();
+        let method_param_modes = self.param_arena.modes(method_info.params).to_vec();
         if args.len() != method_param_types.len() {
             return Err(CompileError::new(
                 ErrorKind::WrongArgumentCount {
@@ -470,7 +470,13 @@ impl<'a> Sema<'a> {
         if let Some(frame) = receiver_frame {
             ctx.call_loaned_roots.push(frame);
         }
-        let args_result = self.analyze_call_args(air, &args, ctx);
+        let args_result = self.analyze_call_args_coerced(
+            air,
+            &args,
+            &method_param_types,
+            &method_param_modes,
+            ctx,
+        );
         if receiver_frame_pushed {
             ctx.call_loaned_roots.pop();
         }
@@ -779,8 +785,8 @@ impl<'a> Sema<'a> {
         }
 
         // Check argument count
-        let method_param_types = self.param_arena.types(method_info.params);
-        let method_param_modes = self.param_arena.modes(method_info.params);
+        let method_param_types = self.param_arena.types(method_info.params).to_vec();
+        let method_param_modes = self.param_arena.modes(method_info.params).to_vec();
         if args.len() != method_param_types.len() {
             return Err(CompileError::new(
                 ErrorKind::WrongArgumentCount {
@@ -799,8 +805,17 @@ impl<'a> Sema<'a> {
         // Clone data needed before mutable borrow
         let return_type = method_info.return_type;
 
-        // Analyze arguments
-        let air_args = self.analyze_call_args(air, &args, ctx)?;
+        // Analyze explicit arguments through the same representation-aware
+        // path as free and module-member calls. In particular, `borrow str`
+        // and `[T]` parameters are physical by-value views even though their
+        // source modes remain Borrow (RUE-634).
+        let air_args = self.analyze_call_args_coerced(
+            air,
+            &args,
+            &method_param_types,
+            &method_param_modes,
+            ctx,
+        )?;
 
         // Generate the associated-function call symbol: `Type::function`.
         // Uses the internal struct name (e.g. "__anon_struct_0") for anonymous
