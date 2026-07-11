@@ -7,6 +7,8 @@
 
 use super::*;
 
+mod place_contracts;
+
 fn run(src: &str) -> Outcome {
     run_source(src).unwrap_or_else(|error| panic!("oracle failed: {error}"))
 }
