@@ -34,7 +34,10 @@ use crate::inference::{
 use crate::inst::{
     Air, AirArgMode, AirCallArg, AirInst, AirInstData, AirPlaceBase, AirProjection, AirRef,
 };
-use crate::types::{ModuleId, StructField, StructId, Type, TypeKind};
+use crate::types::{
+    ModuleId, StructField, StructId, Type, TypeKind, parse_array_type_syntax,
+    parse_type_call_syntax,
+};
 
 /// Main entry point for analyzing all function bodies.
 ///
@@ -191,29 +194,125 @@ fn collect_static_function_references(sema: &Sema<'_>) -> HashSet<Spur> {
     let mut referenced = HashSet::new();
 
     for (_, inst) in sema.rir.iter() {
-        let InstData::Call { name, .. } = &inst.data else {
-            continue;
-        };
+        match &inst.data {
+            InstData::Call { name, .. } => {
+                let mut target = *name;
+                let mut resolved_alias = false;
+                if let Some(const_info) = sema.resolve_const_info_in_file(target, inst.span.file_id)
+                    && let Some(callee) = const_info.value.as_function()
+                {
+                    target = callee;
+                    resolved_alias = true;
+                }
 
-        let mut target = *name;
-        let mut resolved_alias = false;
-        if let Some(const_info) = sema.resolve_const_info_in_file(target, inst.span.file_id)
-            && let Some(callee) = const_info.value.as_function()
-        {
-            target = callee;
-            resolved_alias = true;
-        }
+                if resolved_alias && sema.functions.contains_key(&target) {
+                    referenced.insert(target);
+                } else if let Some(function_key) =
+                    sema.resolve_function_name_local(target, inst.span.file_id)
+                {
+                    referenced.insert(function_key);
+                }
+            }
 
-        if resolved_alias && sema.functions.contains_key(&target) {
-            referenced.insert(target);
-        } else if let Some(function_key) =
-            sema.resolve_function_name_local(target, inst.span.file_id)
-        {
-            referenced.insert(function_key);
+            // Type-position applications: a `-> type` constructor applied in
+            // type-annotation syntax (`fn take(p: Pair(i32))`, `struct S { v:
+            // Vec(i32) }`, `enum E { Full(Vec(i32)) }`, `let x: Wrap(i8)`) is
+            // a reference too, but it is a type *symbol*, not a `Call` inst —
+            // without scanning these, a constructor used only in type
+            // positions warned "unused function" (RUE-608).
+            InstData::FnDecl {
+                params_start,
+                params_len,
+                return_type,
+                ..
+            } => {
+                for param in sema.rir.get_params(*params_start, *params_len) {
+                    mark_type_syntax_refs(sema, param.ty, inst.span.file_id, &mut referenced);
+                }
+                mark_type_syntax_refs(sema, *return_type, inst.span.file_id, &mut referenced);
+            }
+            InstData::StructDecl {
+                fields_start,
+                fields_len,
+                ..
+            } => {
+                for (_, field_ty) in sema.rir.get_field_decls(*fields_start, *fields_len) {
+                    mark_type_syntax_refs(sema, field_ty, inst.span.file_id, &mut referenced);
+                }
+            }
+            InstData::EnumDecl {
+                payloads_start,
+                payloads_len,
+                ..
+            } => {
+                // Self-describing payload region: `[k, t0, .., t_{k-1}]` per
+                // variant (see `resolve_enum_payloads`).
+                let words = sema.rir.get_extra(*payloads_start, *payloads_len);
+                let mut i = 0usize;
+                while i < words.len() {
+                    let k = words[i] as usize;
+                    i += 1;
+                    for _ in 0..k {
+                        if let Some(ty_sym) = Spur::try_from_usize(words[i] as usize) {
+                            mark_type_syntax_refs(sema, ty_sym, inst.span.file_id, &mut referenced);
+                        }
+                        i += 1;
+                    }
+                }
+            }
+            InstData::Alloc { ty: Some(ty), .. } | InstData::ConstDecl { ty: Some(ty), .. } => {
+                mark_type_syntax_refs(sema, *ty, inst.span.file_id, &mut referenced);
+            }
+
+            _ => {}
         }
     }
 
     referenced
+}
+
+/// Mark `-> type` constructors applied inside a type symbol's syntax
+/// (`Pair(i32)`, `[Pair(i32); 3]`, `ptr const Pair(i32)`, nested
+/// applications) as statically referenced (RUE-608). Resolution is
+/// module-local, matching how the annotation itself resolves; unknown names
+/// are skipped (the real type resolution diagnoses them). A dotted head
+/// (`m.G(T)`) is a cross-module reference, which requires the constructor to
+/// be `pub` — already exempt from the unused warning — so only unqualified
+/// heads need marking.
+fn mark_type_syntax_refs(
+    sema: &Sema<'_>,
+    ty_sym: Spur,
+    file_id: FileId,
+    referenced: &mut HashSet<Spur>,
+) {
+    fn walk(sema: &Sema<'_>, name: &str, file_id: FileId, referenced: &mut HashSet<Spur>) {
+        if let Some((element, _len)) = parse_array_type_syntax(name) {
+            walk(sema, &element, file_id, referenced);
+            return;
+        }
+        if let Some(pointee) = name
+            .strip_prefix("ptr const ")
+            .or_else(|| name.strip_prefix("ptr mut "))
+        {
+            walk(sema, pointee, file_id, referenced);
+            return;
+        }
+        let Some((call_name, arg_strs)) = parse_type_call_syntax(name) else {
+            return;
+        };
+        // `Str(N)` is the built-in fixed string, not a user constructor.
+        if call_name != "Str"
+            && !call_name.contains('.')
+            && let Some(name_sym) = sema.interner.get(&call_name)
+            && let Some(function_key) = sema.resolve_function_name_local(name_sym, file_id)
+        {
+            referenced.insert(function_key);
+        }
+        for arg in &arg_strs {
+            walk(sema, arg, file_id, referenced);
+        }
+    }
+    walk(sema, sema.interner.resolve(&ty_sym), file_id, referenced);
 }
 
 /// Move newly referenced functions/methods onto the lazy-analysis work queues
