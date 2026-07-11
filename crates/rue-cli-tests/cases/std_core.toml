@@ -1,0 +1,97 @@
+# Standard library v1 — M1 core utilities (std.cmp / std.math / std.mem /
+# std.tuple / std.fmt), exercised through the real std bundle via RUE_STD_PATH.
+#
+# NOTE: cross-module calls to generic (`comptime T`) std helpers, and to any
+# cross-module fn with an out-of-i32-range integer literal, currently require a
+# typed local binding (RUE-693 — literal args aren't constrained to the callee's
+# parameter type across a module boundary). The passing cases below bind typed
+# values; the final `known_bug` case pins the literal form so it converts to a
+# regression test when RUE-693 lands.
+
+[section]
+id = "cli.std_core"
+name = "Standard library v1 — M1 core utilities"
+description = "std.cmp, std.math, std.mem, std.tuple, std.fmt exercised end-to-end through @import(\"std\")."
+
+[[case]]
+name = "std_core_m1_smoke"
+description = "cmp/math/mem/tuple/fmt all produce correct results (14 checks → exit 42)."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 42
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let mut score: i64 = 0;
+    let three: i64 = 3;
+    let seven: i64 = 7;
+    let two: i64 = 2;
+
+    // std.cmp
+    match std.cmp.cmp(i64, three, seven) {
+        std.cmp.Ordering.Less => { score = score + 1; },
+        std.cmp.Ordering.Equal => {},
+        std.cmp.Ordering.Greater => {},
+    }
+    if std.cmp.min(i64, three, seven) == 3 { score = score + 1; }
+    if std.cmp.max(i64, three, seven) == 7 { score = score + 1; }
+
+    // std.math: legacy i32 abs (single-arg) + generic extensions
+    if std.math.abs(-8) == 8 { score = score + 1; }
+    let a48: i64 = 48;
+    let a36: i64 = 36;
+    if std.math.gcd(i64, a48, a36) == 12 { score = score + 1; }
+    let e10: u64 = 10;
+    if std.math.pow(i64, two, e10) == 1024 { score = score + 1; }
+    let n99: i64 = 99;
+    if std.math.isqrt(i64, n99) == 9 { score = score + 1; }
+    let n97: i64 = 97;
+    if std.math.is_prime(i64, n97) { score = score + 1; }
+
+    // std.math (i64 checked_*)
+    let O = std.option.Option(i64);
+    let big: i64 = 9223372036854775807;
+    let one: i64 = 1;
+    match std.math.checked_add(big, one) { O.Some(v) => {}, O.None => { score = score + 1; } }
+    let six: i64 = 6;
+    match std.math.checked_mul(six, seven) { O.Some(v) => { if v == 42 { score = score + 1; } }, O.None => {} }
+
+    // std.mem
+    let mut x: i64 = 1;
+    let mut y: i64 = 2;
+    std.mem.swap(i64, inout x, inout y);
+    if x == 2 { if y == 1 { score = score + 1; } }
+
+    // std.tuple
+    let P = std.tuple.Pair(i64, i64);
+    let forty: i64 = 40;
+    let p = P.new(forty, two);
+    if p.first + p.second == 42 { score = score + 1; }
+
+    // std.fmt
+    let n255: u64 = 255;
+    if std.fmt.to_hex(n255).len() == 2 { score = score + 1; }
+    if std.fmt.bool_to_string(true).len() == 4 { score = score + 1; }
+
+    if score == 14 { 42 } else { @intCast(score) }
+}
+""" }]
+
+# RUE-693: a cross-module generic std call with a bare integer literal argument
+# fails to coerce the literal to the instantiated type param (E0206). When this
+# is fixed, the case will unexpectedly PASS and the suite will tell us to drop
+# the marker — turning it into a regression test that literal args work.
+[[case]]
+name = "std_core_generic_literal_args"
+description = "std.cmp.min(i64, 3, 7) with bare literal args should compile once RUE-693 is fixed."
+known_bug = "RUE-693"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 3
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+fn main() -> i32 {
+    @intCast(std.cmp.min(i64, 3, 7))
+}
+""" }]

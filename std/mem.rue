@@ -1,0 +1,27 @@
+// std.mem — low-level value-movement helpers.
+//
+// These operate through `inout` parameters (second-class mutable borrows), so
+// they mutate the caller's storage in place without copying.
+//
+//     const std = @import("std");
+//     let mut a = 1;
+//     let mut b = 2;
+//     std.mem.swap(i64, inout a, inout b);   // a == 2, b == 1
+
+// Exchange the values held in `a` and `b`.
+//
+// Works for any `T` (including move-only aggregates): the three moves leave
+// each binding holding exactly one value, so affine/linear obligations are
+// preserved.
+pub fn swap(comptime T: type, inout a: T, inout b: T) {
+    let tmp = a;
+    a = b;
+    b = tmp;
+}
+
+// Store `v` into `dst` and return the value that was there before.
+pub fn replace(comptime T: type, inout dst: T, v: T) -> T {
+    let old = dst;
+    dst = v;
+    old
+}

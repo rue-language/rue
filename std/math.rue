@@ -1,23 +1,36 @@
-// Standard library: math module
+// std.math — integer math utilities.
 //
-// Provides basic mathematical utilities.
+// The legacy `abs`/`min`/`max`/`clamp` remain `i32` for backward compatibility;
+// the GENERIC (comptime-`T`) min/max/clamp live in `std.cmp`. The extended
+// functions below are generic over a comptime integer type `T` (verified:
+// `+ - * / % < &` all work on a type parameter). `checked_*` are `i64`-concrete:
+// portable generic overflow checks need an integer-bounds intrinsic
+// (`@int_max(T)`/`@int_min(T)`) that does not exist yet (RUE-694).
+//
+// NOTE: calling a generic (`comptime T`) helper here from another module with a
+// bare integer literal currently fails to coerce the literal (RUE-693); bind a
+// typed local until that lands.
 
-/// Returns the absolute value of an integer.
+const option = @import("option.rue");
+
+// --- legacy i32 helpers (unchanged; generic forms live in std.cmp) ---
+
+// Absolute value (i32).
 pub fn abs(x: i32) -> i32 {
     if x < 0 { -x } else { x }
 }
 
-/// Returns the minimum of two values.
+// The lesser of two values (i32).
 pub fn min(a: i32, b: i32) -> i32 {
     if a < b { a } else { b }
 }
 
-/// Returns the maximum of two values.
+// The greater of two values (i32).
 pub fn max(a: i32, b: i32) -> i32 {
     if a > b { a } else { b }
 }
 
-/// Clamps a value to be within the given range [lo, hi].
+// Clamp `x` into the inclusive range `[lo, hi]` (i32).
 pub fn clamp(x: i32, lo: i32, hi: i32) -> i32 {
     if x < lo {
         lo
@@ -26,4 +39,184 @@ pub fn clamp(x: i32, lo: i32, hi: i32) -> i32 {
     } else {
         x
     }
+}
+
+// --- generic integer functions ---
+
+// -1, 0, or 1 by the sign of `x`. SIGNED `T` only.
+pub fn sign(comptime T: type, x: T) -> T {
+    if x < 0 {
+        -1
+    } else if x > 0 {
+        1
+    } else {
+        0
+    }
+}
+
+// Greatest common divisor (Euclid). The result is non-negative for signed `T`;
+// `gcd(0, 0) == 0`. Absolute value is inlined so the helper works for any `T`.
+pub fn gcd(comptime T: type, a: T, b: T) -> T {
+    let mut x = if a < 0 { -a } else { a };
+    let mut y = if b < 0 { -b } else { b };
+    while y != 0 {
+        let t = y;
+        y = x % y;
+        x = t;
+    }
+    x
+}
+
+// Least common multiple. `lcm(0, _) == 0`. SIGNED `T`.
+pub fn lcm(comptime T: type, a: T, b: T) -> T {
+    if a == 0 {
+        0
+    } else if b == 0 {
+        0
+    } else {
+        let m = a / gcd(T, a, b) * b;
+        if m < 0 { -m } else { m }
+    }
+}
+
+// Integer exponentiation by squaring: `base ** exp`. Traps on overflow.
+pub fn pow(comptime T: type, base: T, exp: u64) -> T {
+    let mut result: T = 1;
+    let mut b = base;
+    let mut e = exp;
+    while e > 0 {
+        if e % 2 == 1 {
+            result = result * b;
+        }
+        e = e / 2;
+        if e > 0 {
+            b = b * b;
+        }
+    }
+    result
+}
+
+// Integer square root: the largest `r` with `r*r <= n`. `n` must be >= 0.
+// The comparison is done as `mid <= n / mid` to avoid overflowing `mid*mid`.
+pub fn isqrt(comptime T: type, n: T) -> T {
+    if n < 2 {
+        return n;
+    }
+    let mut lo: T = 1;
+    let mut hi = n;
+    let mut ans: T = 1;
+    while lo <= hi {
+        let mid = lo + (hi - lo) / 2;
+        if mid <= n / mid {
+            ans = mid;
+            lo = mid + 1;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    ans
+}
+
+// Whether `n` is a positive power of two.
+pub fn is_pow_of_two(comptime T: type, n: T) -> bool {
+    n > 0 && (n & (n - 1)) == 0
+}
+
+// Trial-division primality test.
+pub fn is_prime(comptime T: type, n: T) -> bool {
+    if n < 2 {
+        return false;
+    }
+    let mut i: T = 2;
+    while i * i <= n {
+        if n % i == 0 {
+            return false;
+        }
+        i = i + 1;
+    }
+    true
+}
+
+// --- i64 checked arithmetic (None on overflow, no trap) ---
+
+// `i64::MAX` / `i64::MIN` written without overflowing the literal parser.
+fn i64_max() -> i64 {
+    9223372036854775807
+}
+fn i64_min() -> i64 {
+    -9223372036854775807 - 1
+}
+
+// `a + b`, or `None` if it would overflow `i64`.
+pub fn checked_add(a: i64, b: i64) -> option.Option(i64) {
+    let O = option.Option(i64);
+    if b > 0 {
+        if a > i64_max() - b {
+            return O.None;
+        }
+    } else {
+        if a < i64_min() - b {
+            return O.None;
+        }
+    }
+    O.Some(a + b)
+}
+
+// `a - b`, or `None` if it would overflow `i64`.
+pub fn checked_sub(a: i64, b: i64) -> option.Option(i64) {
+    let O = option.Option(i64);
+    if b < 0 {
+        if a > i64_max() + b {
+            return O.None;
+        }
+    } else {
+        if a < i64_min() + b {
+            return O.None;
+        }
+    }
+    O.Some(a - b)
+}
+
+// `a * b`, or `None` if it would overflow `i64`. Pre-checks via division so the
+// multiply itself never traps.
+pub fn checked_mul(a: i64, b: i64) -> option.Option(i64) {
+    let O = option.Option(i64);
+    if a == 0 || b == 0 {
+        return O.Some(0);
+    }
+    // The MIN/-1 corner traps under the division pre-check, so handle it first.
+    if a == -1 {
+        if b == i64_min() {
+            return O.None;
+        }
+        return O.Some(a * b);
+    }
+    if b == -1 {
+        if a == i64_min() {
+            return O.None;
+        }
+        return O.Some(a * b);
+    }
+    if a > 0 {
+        if b > 0 {
+            if a > i64_max() / b {
+                return O.None;
+            }
+        } else {
+            if b < i64_min() / a {
+                return O.None;
+            }
+        }
+    } else {
+        if b > 0 {
+            if a < i64_min() / b {
+                return O.None;
+            }
+        } else {
+            if a < i64_max() / b {
+                return O.None;
+            }
+        }
+    }
+    O.Some(a * b)
 }

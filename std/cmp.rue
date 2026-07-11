@@ -1,0 +1,54 @@
+// std.cmp — ordering and comparison utilities.
+//
+// Comparison and the min/max/clamp helpers are generic over any type whose
+// values support the built-in relational operators (`<`, `>`, `==`) — every
+// integer type today. `Ordering` is the three-way comparison result.
+//
+//     const std = @import("std");
+//     let o = std.cmp.cmp(i64, 3, 7);        // Ordering.Less
+//     let m = std.cmp.min(i64, 3, 7);        // 3
+//     let c = std.cmp.clamp(i64, 12, 0, 9);  // 9
+
+// The result of a three-way comparison.
+pub enum Ordering {
+    Less,
+    Equal,
+    Greater,
+}
+
+// Three-way compare: `Less` when `a < b`, `Greater` when `a > b`, else `Equal`.
+pub fn cmp(comptime T: type, a: T, b: T) -> Ordering {
+    if a < b {
+        Ordering.Less
+    } else if a > b {
+        Ordering.Greater
+    } else {
+        Ordering.Equal
+    }
+}
+
+// The lesser of two values (returns `a` on a tie).
+pub fn min(comptime T: type, a: T, b: T) -> T {
+    if a < b { a } else { b }
+}
+
+// The greater of two values (returns `a` on a tie).
+pub fn max(comptime T: type, a: T, b: T) -> T {
+    if a > b { a } else { b }
+}
+
+// Clamp `x` into the inclusive range `[lo, hi]`.
+pub fn clamp(comptime T: type, x: T, lo: T, hi: T) -> T {
+    if x < lo {
+        lo
+    } else if x > hi {
+        hi
+    } else {
+        x
+    }
+}
+
+// Whether two values are equal.
+pub fn eq(comptime T: type, a: T, b: T) -> bool {
+    a == b
+}

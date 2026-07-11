@@ -1,0 +1,34 @@
+// std.tuple — small fixed-arity product types.
+//
+// `Pair`/`Triple` are ordinary comptime-generic structs, so they can be stored
+// in an `ArrayBuf` (RUE-646) — the intended replacement for the parallel-array
+// idiom (e.g. a heap of `(priority, payload)` becomes `ArrayBuf(Pair(P, V))`).
+//
+//     const std = @import("std");
+//     let P = std.tuple.Pair(i64, i64);
+//     let p = P.new(40, 2);          // p.first == 40, p.second == 2
+
+// A 2-tuple.
+pub fn Pair(comptime A: type, comptime B: type) -> type {
+    struct {
+        first: A,
+        second: B,
+
+        fn new(a: A, b: B) -> Self {
+            Self { first: a, second: b }
+        }
+    }
+}
+
+// A 3-tuple.
+pub fn Triple(comptime A: type, comptime B: type, comptime C: type) -> type {
+    struct {
+        first: A,
+        second: B,
+        third: C,
+
+        fn new(a: A, b: B, c: C) -> Self {
+            Self { first: a, second: b, third: c }
+        }
+    }
+}
