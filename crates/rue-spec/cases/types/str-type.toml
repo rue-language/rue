@@ -332,6 +332,28 @@ fn main() -> i32 {
 """
 exit_code = 5
 
+# 3.7:58 — `inout str` is a second-class exclusive view. Its bytes may be
+# accessed through the view, but the view binding itself cannot be rebound as
+# a whole value. This also prevents a default 3-word StrBuf literal from being
+# dropped/stored through a 2-word Str(N) caller allocation (RUE-641).
+[[case]]
+name = "inout_str_view_whole_reassignment_rejected"
+spec = ["3.7:58"]
+preview = "string_trio"
+preview_should_pass = true
+source = """
+fn replace(inout s: str) {
+    s = "hi";
+}
+fn main() -> i32 {
+    let mut s: Str(8) = "hello";
+    replace(inout s);
+    @intCast(s.len())
+}
+"""
+compile_fail = true
+error_contains = "E0210"
+
 # 3.7:60 — a first-class / static `str` value is NOT a legal `inout str` operand
 # (E0496): an exclusive view requires local buffer provenance.
 [[case]]

@@ -3171,6 +3171,24 @@ impl<'a> Sema<'a> {
                 let abi_slot = param_info.abi_slot;
                 let param_ty = param_info.ty;
 
+                // `inout str` is a second-class exclusive view over a caller's
+                // concrete `StrBuf`/`Str(N)` storage (spec 3.7:58-60), not a
+                // first-class header that can be rebound. Treating a whole
+                // assignment as an ordinary ParamStore is representation-
+                // unsafe: the unconstrained literal defaults to 3-word
+                // StrBuf, even when the caller supplied a 2-word Str(N), and
+                // the generated drop/store reads and writes past the caller's
+                // value (RUE-641). Byte-level mutation through the exclusive
+                // view remains distinct from rebinding the view itself.
+                if self.is_str_struct(param_ty) {
+                    return Err(
+                        CompileError::new(ErrorKind::StrViewReassignment, span).with_help(
+                            "use an exact `inout Str(N)` or `inout StrBuf` parameter when \
+                             whole-value replacement is intended",
+                        ),
+                    );
+                }
+
                 // A direct fixed-string literal is contextually typed by its
                 // exact destination capacity (spec 3.7:50). Keep the context
                 // deliberately at the literal boundary: applying it to an

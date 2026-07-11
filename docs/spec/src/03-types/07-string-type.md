@@ -442,6 +442,13 @@ buffer's bytes that is valid only in argument position; it may be read (`.len()`
 byte indexing) or re-borrowed, but it cannot escape the call by being returned,
 stored in a struct field, or bound past its argument scope.
 
+The binding of an `inout str` view cannot be reassigned as a whole value
+(E0210). Whole assignment would rebind the view header rather than mutate the
+caller-owned bytes, and the caller's concrete `StrBuf` or `Str(N)` storage need
+not have the representation of the value being assigned. Exclusive byte-level
+mutation, when provided by the string interface, is distinct from rebinding the
+second-class view itself.
+
 {{ rule(id="3.7:59", cat="legality-rule") }}
 
 A string *buffer* — `StrBuf` or `Str(N)` — or a borrowed `str` view used where a
