@@ -6,7 +6,8 @@
 //! 1. the [`rue_oracle`] reference interpreter (`run_source`), and
 //! 2. the real compiler + the produced native binary.
 //!
-//! Then compare the observable behavior — process exit code and `@dbg` stdout.
+//! Then compare the observable behavior — process exit code, stdout, stderr,
+//! and typed trap cause.
 //! A disagreement is an **automatically-discovered miscompile**. A generated
 //! compile failure or oracle `Unsupported` result is a generator-contract
 //! failure. Both are findings with concrete, deterministic repros: the seed
@@ -23,7 +24,8 @@
 
 use crate::{generator, trap::native_runtime_trap_kind};
 use rue_oracle::{
-    MAX_STDOUT_BYTES, RunSourceError, TrapKind, Unsupported, UnsupportedKind, run_source,
+    MAX_STDERR_BYTES, MAX_STDOUT_BYTES, RunSourceError, TrapKind, Unsupported, UnsupportedKind,
+    run_source,
 };
 use std::io::Read;
 use std::os::unix::process::ExitStatusExt;
@@ -48,6 +50,8 @@ enum Compiled {
         /// More stdout existed beyond [`MAX_STDOUT_BYTES`]; `stdout` is only a prefix.
         stdout_truncated: bool,
         stderr: String,
+        /// More stderr existed beyond [`MAX_STDERR_BYTES`]; `stderr` is only a prefix.
+        stderr_truncated: bool,
     },
     /// The binary was killed by a signal (e.g. SIGSEGV) — a hard miscompile.
     Crash(i32),
@@ -298,6 +302,7 @@ pub fn run(args: &[String]) -> ExitCode {
                     source: source.clone(),
                     oracle_exit: oracle.exit_code,
                     oracle_stdout: oracle.stdout.clone(),
+                    oracle_stderr: oracle.stderr.clone(),
                     oracle_panic: oracle.panic.clone(),
                     compiled: describe(&compiled),
                     reason,
@@ -358,6 +363,7 @@ fn classify(oracle: &rue_oracle::Outcome, compiled: &Compiled) -> Verdict {
             stdout,
             stdout_truncated,
             stderr,
+            stderr_truncated,
         } => {
             // A retained prefix can equal the oracle's complete output while
             // hiding additional compiled output. Fail before comparing that
@@ -368,9 +374,16 @@ fn classify(oracle: &rue_oracle::Outcome, compiled: &Compiled) -> Verdict {
                      retained prefix cannot prove agreement"
                 ));
             }
+            if *stderr_truncated {
+                return Verdict::Disagree(format!(
+                    "compiled stderr exceeded the {MAX_STDERR_BYTES}-byte capture limit; \
+                     retained prefix cannot prove agreement"
+                ));
+            }
             let exit_ok = oracle.exit_code == *exit;
             let stdout_ok = &oracle.stdout == stdout;
-            if !exit_ok || !stdout_ok {
+            let stderr_ok = &oracle.stderr == stderr;
+            if !exit_ok || !stdout_ok || !stderr_ok {
                 let mut r = String::new();
                 if !exit_ok {
                     r += &format!("exit: oracle {} vs compiled {exit}; ", oracle.exit_code);
@@ -379,6 +392,12 @@ fn classify(oracle: &rue_oracle::Outcome, compiled: &Compiled) -> Verdict {
                     r += &format!(
                         "stdout: oracle {:?} vs compiled {:?}",
                         oracle.stdout, stdout
+                    );
+                }
+                if !stderr_ok {
+                    r += &format!(
+                        "stderr: oracle {:?} vs compiled {:?}",
+                        oracle.stderr, stderr
                     );
                 }
                 return Verdict::Disagree(r);
@@ -420,14 +439,6 @@ fn classify(oracle: &rue_oracle::Outcome, compiled: &Compiled) -> Verdict {
                     }
                     (None, None) => {}
                 }
-            } else if !stderr.is_empty() {
-                // Generated Rue has no modeled normal-stderr channel. Treat
-                // any such output as unexplained native behavior rather than
-                // allowing matching exit/stdout to manufacture agreement.
-                return Verdict::Disagree(format!(
-                    "compiled program wrote unexpected stderr {:?}",
-                    first_line(stderr)
-                ));
             }
             Verdict::Agree
         }
@@ -487,11 +498,6 @@ fn compile_and_run(
     run_with_timeout(cmd, timeout)
 }
 
-/// Maximum stderr bytes retained from a run. Trap messages are short; the cap
-/// only bounds how much we *keep* — the pipe is still drained to EOF (see
-/// [`read_capped`]) so a chatty process can never deadlock the wait loop.
-const STDERR_CAP: usize = 8192;
-
 /// Result of one child process whose stdout/stderr were drained while it ran.
 enum ProcessOutcome {
     Exited {
@@ -499,6 +505,7 @@ enum ProcessOutcome {
         stdout: String,
         stdout_truncated: bool,
         stderr: String,
+        stderr_truncated: bool,
     },
     TimedOut,
 }
@@ -535,7 +542,9 @@ fn wait_for_process(mut child: Child, timeout: Duration) -> std::io::Result<Proc
         })
     });
     let stderr_reader = std::thread::spawn(move || {
-        stderr_pipe.map_or_else(CappedRead::default, |err| read_capped(err, STDERR_CAP))
+        stderr_pipe.map_or_else(CappedRead::default, |err| {
+            read_capped(err, MAX_STDERR_BYTES)
+        })
     });
 
     let start = Instant::now();
@@ -570,6 +579,7 @@ fn wait_for_process(mut child: Child, timeout: Duration) -> std::io::Result<Proc
             stdout,
             stdout_truncated: stdout_capture.truncated,
             stderr,
+            stderr_truncated: stderr_capture.truncated,
         }),
         None => Ok(ProcessOutcome::TimedOut),
     }
@@ -595,12 +605,14 @@ fn run_with_timeout(mut cmd: Command, timeout: Duration) -> std::io::Result<Comp
             stdout,
             stdout_truncated,
             stderr,
+            stderr_truncated,
         } => match status.code() {
             Some(code) => Compiled::Ran {
                 exit: code,
                 stdout,
                 stdout_truncated,
                 stderr,
+                stderr_truncated,
             },
             None => Compiled::Crash(status.signal().unwrap_or(0)),
         },
@@ -649,6 +661,7 @@ struct Disagreement {
     source: String,
     oracle_exit: i32,
     oracle_stdout: String,
+    oracle_stderr: String,
     oracle_panic: Option<TrapKind>,
     compiled: String,
     reason: String,
@@ -657,13 +670,14 @@ struct Disagreement {
 impl Disagreement {
     fn render(&self) -> String {
         format!(
-            "\n\u{2717} DISAGREEMENT (seed {seed})\n  {reason}\n  oracle:   exit={exit} panic={panic:?} stdout={stdout:?}\n  compiled: {compiled}\n  --- source (regenerate with `fuzz --start {seed} --seeds 1 --timeout {timeout_secs}`) ---\n{source}",
+            "\n\u{2717} DISAGREEMENT (seed {seed})\n  {reason}\n  oracle:   exit={exit} panic={panic:?} stdout={stdout:?} stderr={stderr:?}\n  compiled: {compiled}\n  --- source (regenerate with `fuzz --start {seed} --seeds 1 --timeout {timeout_secs}`) ---\n{source}",
             seed = self.seed,
             timeout_secs = self.timeout_secs,
             reason = self.reason,
             exit = self.oracle_exit,
             panic = self.oracle_panic,
             stdout = self.oracle_stdout,
+            stderr = self.oracle_stderr,
             compiled = self.compiled,
             source = self.source,
         )
@@ -676,6 +690,8 @@ fn describe(c: &Compiled) -> String {
             exit,
             stdout,
             stdout_truncated,
+            stderr,
+            stderr_truncated,
             ..
         } => {
             let label = if *stdout_truncated {
@@ -683,7 +699,10 @@ fn describe(c: &Compiled) -> String {
             } else {
                 "stdout"
             };
-            format!("ran exit={exit} {label}={stdout:?} stdout-truncated={stdout_truncated}")
+            format!(
+                "ran exit={exit} {label}={stdout:?} stdout-truncated={stdout_truncated} \
+                 stderr={stderr:?} stderr-truncated={stderr_truncated}"
+            )
         }
         Compiled::CompileFail(e) => format!("compile-fail: {}", first_line(e)),
         Compiled::CompileTimeout => "compile-timeout".to_string(),
@@ -731,8 +750,8 @@ fn disagreement_repro_contents(d: &Disagreement) -> String {
         &mut contents,
         "oracle",
         &format!(
-            "exit={} panic={:?} stdout={:?}",
-            d.oracle_exit, d.oracle_panic, d.oracle_stdout
+            "exit={} panic={:?} stdout={:?} stderr={:?}",
+            d.oracle_exit, d.oracle_panic, d.oracle_stdout, d.oracle_stderr
         ),
     );
     push_repro_comment(&mut contents, "compiled", &d.compiled);
@@ -822,15 +841,27 @@ mod tests {
         Outcome {
             exit_code: exit,
             stdout: stdout.to_string(),
+            stderr: String::new(),
             panic: None,
         }
     }
 
     /// An oracle outcome that ended in a runtime trap (exit 101).
     fn trap(kind: TrapKind) -> Outcome {
+        let stderr = match kind {
+            TrapKind::ArithmeticOverflow => "error: integer overflow\n",
+            TrapKind::DivisionByZero => "error: division by zero\n",
+            TrapKind::IntegerCastOverflow => "error: integer cast overflow\n",
+            TrapKind::IndexOutOfBounds => "error: index out of bounds\n",
+            TrapKind::InvalidUtf8 => "error: invalid UTF-8\n",
+            TrapKind::UserPanic => "panic: user message\n",
+            TrapKind::AssertionFailure => "assertion failed\n",
+            TrapKind::Unreachable => "",
+        };
         Outcome {
             exit_code: 101,
             stdout: String::new(),
+            stderr: stderr.to_string(),
             panic: Some(kind),
         }
     }
@@ -842,6 +873,7 @@ mod tests {
             stdout: stdout.to_string(),
             stdout_truncated: false,
             stderr: String::new(),
+            stderr_truncated: false,
         }
     }
 
@@ -852,6 +884,7 @@ mod tests {
             stdout: String::new(),
             stdout_truncated: false,
             stderr: stderr.to_string(),
+            stderr_truncated: false,
         }
     }
 
@@ -872,6 +905,7 @@ mod tests {
             stdout: "7\n".to_string(),
             stdout_truncated: false,
             stderr: "unmodeled native diagnostic\n".to_string(),
+            stderr_truncated: false,
         };
         assert!(is_disagree(classify(&oc(42, "7\n"), &compiled)));
     }
@@ -894,6 +928,7 @@ mod tests {
             stdout: "unexpected\n".to_string(),
             stdout_truncated: false,
             stderr: "error: integer overflow\n".to_string(),
+            stderr_truncated: false,
         };
         assert!(is_disagree(classify(
             &trap(TrapKind::ArithmeticOverflow),
@@ -948,6 +983,39 @@ mod tests {
             &ran_trap("assertion failed\n"),
         );
         assert!(matches!(v, Verdict::Agree));
+    }
+
+    #[test]
+    fn same_trap_category_cannot_hide_a_stderr_message_mismatch() {
+        let v = classify(
+            &trap(TrapKind::UserPanic),
+            &ran_trap("panic: different message\n"),
+        );
+        assert!(matches!(
+            v,
+            Verdict::Disagree(reason) if reason.contains("stderr:")
+        ));
+    }
+
+    #[test]
+    fn truncated_stderr_prefix_cannot_manufacture_agreement() {
+        let oracle = Outcome {
+            exit_code: 0,
+            stdout: String::new(),
+            stderr: "retained prefix".to_string(),
+            panic: None,
+        };
+        let compiled = Compiled::Ran {
+            exit: 0,
+            stdout: String::new(),
+            stdout_truncated: false,
+            stderr: oracle.stderr.clone(),
+            stderr_truncated: true,
+        };
+        assert!(matches!(
+            classify(&oracle, &compiled),
+            Verdict::Disagree(reason) if reason.contains("stderr exceeded")
+        ));
     }
 
     #[test]
@@ -1079,6 +1147,7 @@ mod tests {
             source: "fn main() -> i32 { 23 }\n".to_string(),
             oracle_exit: 101,
             oracle_stdout: String::new(),
+            oracle_stderr: "error: integer cast overflow\n".to_string(),
             oracle_panic: Some(TrapKind::IntegerCastOverflow),
             compiled: "compile-fail: first\rsecond".to_string(),
             reason: "wrong exit\nconst injected = 1;".to_string(),
@@ -1155,7 +1224,7 @@ mod tests {
                 assert!(!stderr.is_empty(), "some compiler stderr is retained");
                 assert_eq!(
                     stderr.len(),
-                    STDERR_CAP,
+                    MAX_STDERR_BYTES,
                     "large diagnostics must be fully drained while retention stops at the cap"
                 );
             }
@@ -1273,18 +1342,24 @@ mod tests {
     #[test]
     fn large_stderr_does_not_deadlock() {
         // The stderr cap must not reintroduce the deadlock: even though we retain
-        // only STDERR_CAP bytes, the pipe is drained to EOF, so a program spewing
+        // only MAX_STDERR_BYTES bytes, the pipe is drained to EOF, so a program spewing
         // >64KB to stderr still terminates as `Ran` (RUE-338).
         let mut cmd = Command::new("sh");
         cmd.arg("-c").arg("yes e | head -c 200000 1>&2");
         let result = run_with_timeout(cmd, Duration::from_secs(30)).expect("spawn");
         match result {
-            Compiled::Ran { exit, stderr, .. } => {
+            Compiled::Ran {
+                exit,
+                stderr,
+                stderr_truncated,
+                ..
+            } => {
                 assert_eq!(exit, 0);
                 assert!(!stderr.is_empty(), "some stderr should be retained");
+                assert!(stderr_truncated, "discarded stderr must remain explicit");
                 assert!(
-                    stderr.len() <= STDERR_CAP,
-                    "stderr retained ({}) must not exceed the cap {STDERR_CAP}",
+                    stderr.len() <= MAX_STDERR_BYTES,
+                    "stderr retained ({}) must not exceed the cap {MAX_STDERR_BYTES}",
                     stderr.len()
                 );
             }
@@ -1297,17 +1372,20 @@ mod tests {
         // The drain-vs-keep contract in isolation: given more bytes than the cap,
         // we consume all of them (Cursor reaches EOF) but retain exactly `cap`.
         let data = vec![b'z'; 100_000];
-        let kept = read_capped(std::io::Cursor::new(data), STDERR_CAP);
-        assert_eq!(kept.bytes.len(), STDERR_CAP);
+        let kept = read_capped(std::io::Cursor::new(data), MAX_STDERR_BYTES);
+        assert_eq!(kept.bytes.len(), MAX_STDERR_BYTES);
         assert!(kept.bytes.iter().all(|&b| b == b'z'));
         assert!(kept.truncated);
         // Fewer bytes than the cap: keep them all.
-        let kept = read_capped(std::io::Cursor::new(vec![b'q'; 10]), STDERR_CAP);
+        let kept = read_capped(std::io::Cursor::new(vec![b'q'; 10]), MAX_STDERR_BYTES);
         assert_eq!(kept.bytes.len(), 10);
         assert!(!kept.truncated);
         // Exactly the cap is still complete, not truncated.
-        let kept = read_capped(std::io::Cursor::new(vec![b'x'; STDERR_CAP]), STDERR_CAP);
-        assert_eq!(kept.bytes.len(), STDERR_CAP);
+        let kept = read_capped(
+            std::io::Cursor::new(vec![b'x'; MAX_STDERR_BYTES]),
+            MAX_STDERR_BYTES,
+        );
+        assert_eq!(kept.bytes.len(), MAX_STDERR_BYTES);
         assert!(!kept.truncated);
     }
 

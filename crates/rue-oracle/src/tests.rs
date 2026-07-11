@@ -1,5 +1,5 @@
 //! Correctness corpus for the reference interpreter. Each case asserts the
-//! oracle's observable behavior (exit code, `@dbg` output, panic-or-not) matches
+//! oracle's observable behavior (exit code, stdout, stderr, trap cause) matches
 //! the value the language semantics require — which is also what the compiled
 //! binary must produce. Agreement here is the differential check in miniature;
 //! `tests/differential.rs`-style wiring against the real binary across the whole
@@ -20,8 +20,16 @@ fn run_with_budget(src: &str, budget: u64) -> Result<Outcome, Unsupported> {
 }
 
 fn run_with_stdout_cap(src: &str, stdout_cap: usize) -> Result<Outcome, Unsupported> {
+    run_with_output_caps(src, stdout_cap, MAX_STDERR_BYTES)
+}
+
+fn run_with_output_caps(
+    src: &str,
+    stdout_cap: usize,
+    stderr_cap: usize,
+) -> Result<Outcome, Unsupported> {
     let state = compile_to_cfg(src).unwrap_or_else(|e| panic!("compile error: {e:#?}"));
-    run_state_with_limits(state, STEP_BUDGET, stdout_cap)
+    run_state_with_output_limits(state, STEP_BUDGET, stdout_cap, stderr_cap)
 }
 
 fn run_string_trio(src: &str) -> Outcome {
@@ -161,7 +169,39 @@ fn early_return() {
 fn dbg_output() {
     let out = run("fn main() -> i32 { @dbg(7); @dbg(true); 0 }");
     assert_eq!(out.stdout, "7\ntrue\n");
+    assert_eq!(out.stderr, "");
     assert_eq!(out.exit_code, 0);
+}
+
+#[test]
+fn stdout_and_stderr_limits_are_independent_and_fail_closed() {
+    let source = "fn main() -> i32 {
+        @dbg(7);
+        let max: i32 = 2147483647;
+        max + 1
+    }";
+    let out = run_with_output_caps(source, 2, 24)
+        .unwrap_or_else(|unsupported| panic!("exactly capped streams failed: {unsupported}"));
+    assert_eq!(out.stdout, "7\n");
+    assert_eq!(out.stderr, "error: integer overflow\n");
+
+    let unsupported =
+        run_with_output_caps(source, 1, 24).expect_err("stdout overflow must fail before the trap");
+    assert_eq!(
+        unsupported.kind(),
+        UnsupportedKind::ResourceLimit(ResourceLimitKind::StdoutBytes)
+    );
+
+    let unsupported = run_with_output_caps(source, 2, 23)
+        .expect_err("the complete runtime diagnostic must exceed the stderr cap");
+    assert_eq!(
+        unsupported.kind(),
+        UnsupportedKind::ResourceLimit(ResourceLimitKind::StderrBytes)
+    );
+    assert_eq!(
+        unsupported.detail(),
+        "stderr byte limit exceeded (23-byte limit)"
+    );
 }
 
 #[test]
@@ -411,6 +451,7 @@ fn overflow_traps() {
         b
     }");
     assert_eq!(out.exit_code, 101);
+    assert_eq!(out.stderr, "error: integer overflow\n");
     assert_eq!(out.panic, Some(TrapKind::ArithmeticOverflow));
 }
 
@@ -418,10 +459,12 @@ fn overflow_traps() {
 fn divide_and_remainder_by_zero_share_a_trap_kind() {
     let out = run("fn main() -> i32 { let z = 0; 10 / z }");
     assert_eq!(out.exit_code, 101);
+    assert_eq!(out.stderr, "error: division by zero\n");
     assert_eq!(out.panic, Some(TrapKind::DivisionByZero));
 
     let out = run("fn main() -> i32 { let z = 0; 10 % z }");
     assert_eq!(out.exit_code, 101);
+    assert_eq!(out.stderr, "error: division by zero\n");
     assert_eq!(out.panic, Some(TrapKind::DivisionByZero));
 }
 
@@ -471,6 +514,7 @@ fn intcast_in_range_and_overflow() {
         y
     }");
     assert_eq!(out.exit_code, 101);
+    assert_eq!(out.stderr, "error: integer cast overflow\n");
     assert_eq!(out.panic, Some(TrapKind::IntegerCastOverflow));
 }
 

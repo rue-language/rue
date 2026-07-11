@@ -118,6 +118,7 @@ fn runtime_call_classification_requires_exact_metadata() {
         stdout: String::new(),
         stdout_bytes: 0,
         stdout_cap: MAX_STDOUT_BYTES,
+        stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
     };
@@ -299,6 +300,7 @@ fn capacity_and_intrinsic_signature_drift_are_contract_failures() {
         stdout: String::new(),
         stdout_bytes: 0,
         stdout_cap: MAX_STDOUT_BYTES,
+        stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
     };
@@ -409,6 +411,7 @@ fn capacity_and_intrinsic_signature_drift_are_contract_failures() {
         stdout: String::new(),
         stdout_bytes: 0,
         stdout_cap: MAX_STDOUT_BYTES,
+        stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
     };
@@ -526,6 +529,7 @@ fn malformed_outer_calls_are_rejected_before_unmodeled_operands_run() {
             stdout: String::new(),
             stdout_bytes: 0,
             stdout_cap: MAX_STDOUT_BYTES,
+            stderr_cap: MAX_STDERR_BYTES,
             budget: STEP_BUDGET,
             depth: 0,
         };
@@ -566,6 +570,7 @@ fn pointer_intrinsic_gaps_require_exact_signature_and_synthesized_provenance() {
         stdout: String::new(),
         stdout_bytes: 0,
         stdout_cap: MAX_STDOUT_BYTES,
+        stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
     };
@@ -675,6 +680,7 @@ fn pointer_intrinsic_gaps_require_exact_signature_and_synthesized_provenance() {
         stdout: String::new(),
         stdout_bytes: 0,
         stdout_cap: MAX_STDOUT_BYTES,
+        stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
     };
@@ -728,6 +734,7 @@ fn pointer_intrinsic_gaps_require_exact_signature_and_synthesized_provenance() {
         stdout: String::new(),
         stdout_bytes: 0,
         stdout_cap: MAX_STDOUT_BYTES,
+        stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
     };
@@ -794,6 +801,7 @@ fn pointer_intrinsic_gaps_require_exact_signature_and_synthesized_provenance() {
         stdout: String::new(),
         stdout_bytes: 0,
         stdout_cap: MAX_STDOUT_BYTES,
+        stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
     };
@@ -884,6 +892,7 @@ fn pointer_intrinsic_gaps_require_exact_signature_and_synthesized_provenance() {
         stdout: String::new(),
         stdout_bytes: 0,
         stdout_cap: MAX_STDOUT_BYTES,
+        stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
     };
@@ -937,6 +946,7 @@ fn pointer_intrinsic_gaps_require_exact_signature_and_synthesized_provenance() {
         stdout: String::new(),
         stdout_bytes: 0,
         stdout_cap: MAX_STDOUT_BYTES,
+        stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
     };
@@ -968,6 +978,7 @@ fn field_pointer_gaps_require_in_bounds_projection_metadata() {
             stdout: String::new(),
             stdout_bytes: 0,
             stdout_cap: MAX_STDOUT_BYTES,
+            stderr_cap: MAX_STDERR_BYTES,
             budget: STEP_BUDGET,
             depth: 0,
         };
@@ -1019,6 +1030,7 @@ fn field_pointer_gaps_require_in_bounds_projection_metadata() {
         stdout: String::new(),
         stdout_bytes: 0,
         stdout_cap: MAX_STDOUT_BYTES,
+        stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
     };
@@ -1052,6 +1064,7 @@ fn option_returning_intrinsics_require_the_exact_payload_type() {
         stdout: String::new(),
         stdout_bytes: 0,
         stdout_cap: MAX_STDOUT_BYTES,
+        stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
     };
