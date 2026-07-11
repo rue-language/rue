@@ -118,6 +118,7 @@ enum CaseOutcome {
 enum TrapComparison {
     Match,
     UnmodeledExpectation,
+    UndeclaredActual(TrapKind),
     Mismatch {
         expected: TrapKind,
         actual: Option<TrapKind>,
@@ -129,7 +130,9 @@ fn compare_trap_expectation(
     actual: Option<TrapKind>,
 ) -> TrapComparison {
     match expected {
-        trap::TrapExpectation::Undeclared => TrapComparison::Match,
+        trap::TrapExpectation::Undeclared => {
+            actual.map_or(TrapComparison::Match, TrapComparison::UndeclaredActual)
+        }
         trap::TrapExpectation::Unmodeled => TrapComparison::UnmodeledExpectation,
         trap::TrapExpectation::Modeled(expected) if actual == Some(expected) => {
             TrapComparison::Match
@@ -364,6 +367,17 @@ fn spec_mode(raw_args: Vec<String>) -> ExitCode {
 /// and count as unmodeled. [`RunSourceError::Compile`] for a case that
 /// survived these shape filters is a front-end failure and fails the harness.
 fn check_spec_case(ident: &str, case: &rue_test_runner::Case) -> CaseOutcome {
+    let is_known_gap = KNOWN_ORACLE_GAPS
+        .iter()
+        .any(|(i, n, _)| *i == ident && *n == case.name);
+    check_spec_case_with_known_gap(ident, case, is_known_gap)
+}
+
+fn check_spec_case_with_known_gap(
+    ident: &str,
+    case: &rue_test_runner::Case,
+    is_known_gap: bool,
+) -> CaseOutcome {
     let golden_only = case.has_golden_ir_assertions() && !case.has_execution_assertions();
     // A `target`-pinned case's expected exit is target-specific (e.g. it matches
     // on `@target_arch()`), and a case restricted by `only_on` to other hosts is
@@ -397,10 +411,6 @@ fn check_spec_case(ident: &str, case: &rue_test_runner::Case) -> CaseOutcome {
         return CaseOutcome::Ineligible;
     };
 
-    let is_known_gap = KNOWN_ORACLE_GAPS
-        .iter()
-        .any(|(i, n, _)| *i == ident && *n == case.name);
-
     let preview_features = spec_preview_features(case);
     let expected_trap = trap::trap_expectation(case.runtime_error.iter().map(String::as_str));
 
@@ -414,6 +424,13 @@ fn check_spec_case(ident: &str, case: &rue_test_runner::Case) -> CaseOutcome {
         }
         Ok(outcome) => {
             let trap_comparison = compare_trap_expectation(expected_trap, outcome.panic);
+            if let TrapComparison::UndeclaredActual(actual) = trap_comparison {
+                return CaseOutcome::Disagreement(format!(
+                    "{ident} :: {}\n      trap contract: oracle got {actual:?}, but the case \
+                     declares no runtime trap cause",
+                    case.name
+                ));
+            }
             let exit_ok = outcome.exit_code == expected_exit;
             // Compare stdout the way the spec runner itself does: byte-exact
             // modulo the single `"""` block-boundary newline. NOT
@@ -562,6 +579,14 @@ fn check_case(path: &Path, case: &Case) -> CaseOutcome {
         }
         Ok(outcome) => {
             let trap_comparison = compare_trap_expectation(expected_trap, outcome.panic);
+            if let TrapComparison::UndeclaredActual(actual) = trap_comparison {
+                return CaseOutcome::Disagreement(format!(
+                    "{} :: {}\n      trap contract: oracle got {actual:?}, but the case \
+                     declares no runtime trap cause",
+                    rel(path),
+                    case.name
+                ));
+            }
             let exit_ok = outcome.exit_code == expected_exit;
             let stdout_ok = case.stdout.as_ref().is_none_or(|s| &outcome.stdout == s);
             let missing_stdout = case
@@ -1156,6 +1181,89 @@ files = [{ path = "probe.rue", source = "fn main() -> i32 { 0 }" }]
         assert!(matches!(
             check_spec_case("test:1", &case),
             CaseOutcome::Disagreement(_)
+        ));
+    }
+
+    #[test]
+    fn undeclared_cli_trap_is_a_hard_contract_failure() {
+        let mut case = corpus_case("fn main() -> i32 { let x: i32 = 2147483647; x + 1 }", false);
+        case.exit_code = Some(101);
+
+        let outcome = check_case(Path::new("undeclared-trap.toml"), &case);
+        let CaseOutcome::Disagreement(message) = &outcome else {
+            panic!("undeclared typed trap did not produce a disagreement");
+        };
+        assert!(message.contains("trap contract"));
+        assert!(message.contains("ArithmeticOverflow"));
+
+        // A modeled agreement elsewhere in the corpus must not make a missing
+        // declaration aggregate-allowed like an ordinary coverage gap.
+        let mut report = Report::default();
+        report.record(CaseOutcome::Agree);
+        report.record(outcome);
+        assert_eq!(report.unmodeled, 0);
+        assert_eq!(report.disagreements.len(), 1);
+        assert_eq!(finish_report(&report, "test"), ExitCode::FAILURE);
+    }
+
+    #[test]
+    fn undeclared_spec_trap_is_hard_even_for_a_known_gap() {
+        let case = rue_test_runner::Case {
+            name: "undeclared spec trap".to_string(),
+            source: "fn main() -> i32 { let x: i32 = 2147483647; x + 1 }".to_string(),
+            exit_code: Some(101),
+            ..Default::default()
+        };
+
+        for outcome in [
+            check_spec_case("test:1", &case),
+            check_spec_case_with_known_gap("test:1", &case, true),
+        ] {
+            let CaseOutcome::Disagreement(message) = outcome else {
+                panic!("undeclared typed trap was hidden by spec classification");
+            };
+            assert!(message.contains("trap contract"));
+            assert!(message.contains("ArithmeticOverflow"));
+            assert!(!message.contains("KNOWN_ORACLE_GAPS entry now AGREES"));
+        }
+    }
+
+    #[test]
+    fn only_modeled_traps_require_a_runtime_cause_declaration() {
+        let mut normal_cli = corpus_case("fn main() -> i32 { 101 }", false);
+        normal_cli.exit_code = Some(101);
+        assert!(matches!(
+            check_case(Path::new("normal-101.toml"), &normal_cli),
+            CaseOutcome::Agree
+        ));
+
+        let normal_spec = rue_test_runner::Case {
+            name: "normal 101".to_string(),
+            source: "fn main() -> i32 { 101 }".to_string(),
+            exit_code: Some(101),
+            ..Default::default()
+        };
+        assert!(matches!(
+            check_spec_case("test:1", &normal_spec),
+            CaseOutcome::Agree
+        ));
+
+        let unsupported_source = "fn main() -> u32 { let value: u32 = @random_u32(); value }";
+        let unsupported_cli = corpus_case(unsupported_source, false);
+        assert!(matches!(
+            check_case(Path::new("unsupported.toml"), &unsupported_cli),
+            CaseOutcome::Unmodeled
+        ));
+
+        let unsupported_spec = rue_test_runner::Case {
+            name: "unsupported semantics".to_string(),
+            source: unsupported_source.to_string(),
+            exit_code: Some(0),
+            ..Default::default()
+        };
+        assert!(matches!(
+            check_spec_case("test:1", &unsupported_spec),
+            CaseOutcome::Unmodeled
         ));
     }
 
