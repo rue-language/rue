@@ -1184,6 +1184,7 @@ impl Sema<'_> {
             } => {
                 let (name, args_start, args_len) = (*name, *args_start, *args_len);
                 self.eval_comptime_type_call(name, args_start, args_len, env)
+                    .map_err(|e| Self::label_ctor_instantiation_site(e, span))
             }
 
             // Module-member access (`m.CONST`) as an operand of a larger const
@@ -1364,6 +1365,7 @@ impl Sema<'_> {
         // Reduce through the shared path; arguments are evaluated in the current
         // environment so `T` (an enclosing comptime parameter) still resolves.
         self.eval_comptime_type_call(function_key, args_start, args_len, env)
+            .map_err(|e| Self::label_ctor_instantiation_site(e, span))
     }
 
     /// The `@require_droppable(T)` well-formedness gate for owning growable
@@ -1604,7 +1606,64 @@ impl Sema<'_> {
         }
         let result = self.eval_const_expr(fn_body, &mut callee_env);
         self.comptime_type_call_depth -= 1;
+        // Record the human-readable instantiation spelling for a
+        // constructor-produced anonymous type, so diagnostics print
+        // `ArrayBuf(i64)` instead of `__anon_struct_4` (RUE-610).
+        if let Ok(Some(ConstValue::Type(t))) = &result {
+            self.record_ctor_type_display(name, *t, callee_types, callee_values);
+        }
         result
+    }
+
+    /// Record `Ctor(args...)` as the display name for an anonymous type just
+    /// produced by reducing `ctor`'s body (RUE-610; see
+    /// `Sema::ctor_type_displays`). Named types keep their declared names;
+    /// a partial substitution records nothing rather than a wrong spelling.
+    fn record_ctor_type_display(
+        &mut self,
+        ctor: Spur,
+        ty: Type,
+        callee_types: &HashMap<Spur, Type>,
+        callee_values: &HashMap<Spur, ConstValue>,
+    ) {
+        let is_anon = match ty.kind() {
+            TypeKind::Struct(id) => self
+                .type_pool
+                .struct_def(id)
+                .name
+                .starts_with("__anon_struct_"),
+            TypeKind::Enum(id) => self.type_pool.enum_def(id).name.starts_with("enum {"),
+            _ => false,
+        };
+        if !is_anon || self.ctor_type_displays.contains_key(&ty) {
+            return;
+        }
+        let Some(fn_info) = self.functions.get(&ctor) else {
+            return;
+        };
+        let param_names = self.param_arena.names(fn_info.params).to_vec();
+        let mut args: Vec<String> = Vec::with_capacity(param_names.len());
+        for param in &param_names {
+            if let Some(arg_ty) = callee_types.get(param) {
+                args.push(self.format_type_name(*arg_ty));
+            } else if let Some(value) = callee_values.get(param) {
+                match value {
+                    ConstValue::Integer(i) => args.push(i.to_string()),
+                    ConstValue::Bool(b) => args.push(b.to_string()),
+                    ConstValue::Type(t) => args.push(self.format_type_name(*t)),
+                    _ => return,
+                }
+            } else {
+                return;
+            }
+        }
+        let source_name = self.source_function_name(ctor);
+        let display = format!(
+            "{}({})",
+            self.interner.resolve(&source_name),
+            args.join(", ")
+        );
+        self.ctor_type_displays.insert(ty, display);
     }
 
     /// Pre-resolve `let`-bound compile-time type aliases in a function body,

@@ -1,0 +1,66 @@
+[section]
+id = "diagnostics.droppable-gate"
+name = "Container droppable-gate diagnostics (E0498/E0499)"
+description = """
+The @require_droppable rejection is raised inside the CONSTRUCTOR's body, so
+the diagnostic must still speak the user's language (RUE-610): the offending
+type prints as its instantiation spelling (`Holder(Res)`, not the internal
+`__anon_struct_N`), and a label points at the user's type-constructor
+application, not just the constructor's own source.
+"""
+
+[[case]]
+name = "e0498_names_ctor_spelling_and_user_site"
+description = "A ctor-produced anonymous element type prints as Ctor(args) and the rejection labels the user's application site (RUE-610)"
+source = """
+struct Res { v: i64 }
+drop fn Res(self) { let _ = self.v; }
+fn Holder(comptime T: type) -> type { struct { x: T } }
+fn Gated(comptime T: type) -> type {
+    @require_droppable(T);
+    struct { y: T }
+}
+const H = Holder(Res);
+const G = Gated(H);
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = [
+    "E0498",
+    "Holder(Res)",
+    "required by the type-constructor application here",
+]
+
+[[case]]
+name = "e0498_value_position_labels_user_site"
+description = "The application-site label also appears for a let-bound instantiation inside a function body (RUE-610)"
+source = """
+struct Res { v: i64 }
+drop fn Res(self) { let _ = self.v; }
+fn Gated(comptime T: type) -> type {
+    @require_droppable(T);
+    struct { y: T }
+}
+fn main() -> i32 {
+    let G = Gated(Res);
+    let _ = G;
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0498", "Res", "required by the type-constructor application here"]
+
+[[case]]
+name = "e0499_linear_names_and_labels"
+description = "The linear-element rejection (E0499) gets the same application-site label (RUE-610)"
+source = """
+linear struct Token { v: i32 }
+fn Gated(comptime T: type) -> type {
+    @require_droppable(T);
+    struct { y: T }
+}
+const G = Gated(Token);
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0499", "Token", "required by the type-constructor application here"]

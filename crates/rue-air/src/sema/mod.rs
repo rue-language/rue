@@ -163,6 +163,14 @@ pub struct Sema<'a> {
     /// (`fn A(x: B(i32))` / `fn B(x: A(i32))`) must not re-enter a
     /// mid-collection signature, or the reduction would recurse forever.
     pub(crate) fn_signatures_in_flight: HashSet<Spur>,
+    /// Human-readable instantiation spellings for type-constructor-produced
+    /// anonymous types (`ArrayBuf(i64)` for the anon struct otherwise named
+    /// `__anon_struct_4`), recorded when [`Self::reduce_type_ctor_body`]
+    /// reduces a constructor application. Consulted by
+    /// [`Self::format_type_name`] so diagnostics print the spelling the user
+    /// wrote (RUE-610). First writer wins: structurally-deduped types keep
+    /// the spelling of their first instantiation.
+    pub(crate) ctor_type_displays: HashMap<Type, String>,
 }
 
 impl<'a> Sema<'a> {
@@ -219,6 +227,7 @@ impl<'a> Sema<'a> {
             infectious_linear: HashMap::new(),
             comptime_type_call_depth: 0,
             fn_signatures_in_flight: HashSet::new(),
+            ctor_type_displays: HashMap::new(),
         }
     }
 
