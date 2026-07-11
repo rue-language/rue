@@ -69,6 +69,11 @@ pub struct FunctionSig {
     /// This is separate from param_modes because `comptime T: type` sets
     /// is_comptime=true but mode=Normal.
     pub param_comptime: Vec<bool>,
+    /// Which parameters are specifically declared `comptime ...: type`.
+    /// A deferred comptime value parameter such as `comptime value: T` also
+    /// has a `COMPTIME_TYPE` semantic placeholder, so that placeholder cannot
+    /// distinguish the two source-level kinds.
+    pub param_comptime_type: Vec<bool>,
     /// Parameter names, needed for type substitution in generic returns.
     pub param_names: Vec<lasso::Spur>,
     /// Each parameter's declared type, as the source-level type name symbol
@@ -1134,9 +1139,7 @@ impl<'a> ConstraintGenerator<'a> {
                             {
                                 continue;
                             }
-                            if func.param_types.get(i)
-                                == Some(&InferType::Concrete(Type::COMPTIME_TYPE))
-                            {
+                            if func.param_comptime_type.get(i) == Some(&true) {
                                 if let Some(concrete_ty) =
                                     self.extract_type_argument(arg.value, ctx)
                                 {
@@ -1155,9 +1158,7 @@ impl<'a> ConstraintGenerator<'a> {
                                 break;
                             }
                             let declared = &func.param_types[i];
-                            if func.param_comptime[i]
-                                && *declared == InferType::Concrete(Type::COMPTIME_TYPE)
-                            {
+                            if func.param_comptime_type.get(i) == Some(&true) {
                                 // Comptime TYPE parameter - the argument is a type value
                                 continue;
                             }
@@ -3782,6 +3783,7 @@ mod tests {
             is_generic: false,
             param_modes: vec![rue_rir::RirParamMode::Normal; num_params],
             param_comptime: vec![false; num_params],
+            param_comptime_type: vec![false; num_params],
             param_names: vec![],
             param_type_syms: vec![],
             return_type_sym: lasso::Spur::default(),

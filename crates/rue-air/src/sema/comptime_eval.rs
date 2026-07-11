@@ -1527,6 +1527,7 @@ impl Sema<'_> {
         let param_names = self.param_arena.names(params).to_vec();
         let param_modes = self.param_arena.modes(params).to_vec();
         let param_comptime = self.param_arena.comptime(params).to_vec();
+        let param_comptime_type = self.comptime_type_param_flags(&fn_info);
         let args = self.rir.get_call_args(args_start, args_len).to_vec();
         if args.len() != param_names.len() {
             return Ok(None);
@@ -1565,11 +1566,15 @@ impl Sema<'_> {
             let Some(v) = self.eval_const_expr(arg.value, env)? else {
                 return Ok(None);
             };
-            match v {
-                ConstValue::Type(t) => {
+            match (param_comptime_type[i], v) {
+                (true, ConstValue::Type(t)) => {
                     callee_types.insert(param_names[i], t);
                 }
-                value => {
+                (true, ConstValue::Unit) => {
+                    callee_types.insert(param_names[i], Type::UNIT);
+                }
+                (true, _) => return Ok(None),
+                (false, value) => {
                     callee_values.insert(param_names[i], value);
                 }
             }
