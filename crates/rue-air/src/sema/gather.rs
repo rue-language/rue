@@ -118,6 +118,7 @@ impl<'a> GatherOutput<'a> {
             type_pool: self.type_pool,
             module_registry: crate::module_registry::ModuleRegistry::new(),
             file_paths: HashMap::new(),
+            symbol_paths: HashMap::new(),
             param_arena: self.param_arena,
             anon_struct_method_sigs: HashMap::new(),
             anon_struct_captured_values: HashMap::new(),

@@ -75,6 +75,8 @@ pub struct CompilationUnit<'src> {
     interner: Option<ThreadedRodeo>,
     /// Maps FileId to source file path (for error messages).
     file_paths: HashMap<FileId, String>,
+    /// Maps FileId to a relocation-stable path for generated symbols.
+    symbol_paths: HashMap<FileId, String>,
 
     // === Phase 2: RIR Generation ===
     /// Untyped intermediate representation (populated by `lower()`).
@@ -107,6 +109,7 @@ impl<'src> CompilationUnit<'src> {
             .iter()
             .map(|s| (s.file_id, s.path.to_string()))
             .collect();
+        let symbol_paths = file_paths.clone();
 
         Self {
             options,
@@ -114,6 +117,7 @@ impl<'src> CompilationUnit<'src> {
             merged_ast: None,
             interner: None,
             file_paths,
+            symbol_paths,
             rir: None,
             functions: None,
             type_pool: None,
@@ -287,6 +291,7 @@ impl<'src> CompilationUnit<'src> {
                 self.options.target,
             );
             sema.set_file_paths(self.file_paths.clone());
+            sema.set_symbol_paths(self.symbol_paths.clone());
             let output = sema.analyze_all()?;
             info!(
                 function_count = output.functions.len(),
@@ -457,6 +462,14 @@ impl<'src> CompilationUnit<'src> {
     /// Get the file paths map.
     pub fn file_paths(&self) -> &HashMap<FileId, String> {
         &self.file_paths
+    }
+
+    /// Replace the paths used to qualify otherwise-colliding generated names.
+    ///
+    /// These identities do not affect diagnostics or module resolution. Any
+    /// missing entry falls back to the corresponding physical file path.
+    pub fn set_symbol_paths(&mut self, symbol_paths: HashMap<FileId, String>) {
+        self.symbol_paths = symbol_paths;
     }
 
     /// Take the interner out of the compilation unit.
