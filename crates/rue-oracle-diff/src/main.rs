@@ -45,7 +45,7 @@ mod generator;
 use rue_error::{PreviewFeature, PreviewFeatures};
 use rue_oracle::{RunSourceError, run_source_with_preview_features};
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::str::FromStr;
@@ -104,6 +104,8 @@ struct Report {
     frontend_failures: Vec<String>,
     /// oracle ran but disagreed with the expected behavior — a bug
     disagreements: Vec<String>,
+    /// corpus discovery/read/parse failures — the harness did not check all inputs
+    harness_failures: Vec<String>,
 }
 
 fn main() -> ExitCode {
@@ -169,36 +171,27 @@ fn corpus_mode(raw_args: Vec<String>) -> ExitCode {
     };
 
     let mut report = Report::default();
-    let mut toml_files = Vec::new();
-    for dir in &dirs {
-        collect_toml(dir, &mut toml_files);
-    }
-    if toml_files.is_empty() {
-        eprintln!(
-            "no .toml case files found under {:?} (run from the repo root)",
-            dirs
-        );
-        return ExitCode::FAILURE;
+    let (toml_files, discovery_failures) = discover_toml(&dirs);
+    report.harness_failures.extend(discovery_failures);
+    if toml_files.is_empty() && report.harness_failures.is_empty() {
+        report.harness_failures.push(format!(
+            "no .toml case files found under {dirs:?} (run from the repo root)"
+        ));
     }
 
     for path in &toml_files {
-        let text = match std::fs::read_to_string(path) {
-            Ok(t) => t,
-            Err(e) => {
-                eprintln!("skip {}: {e}", path.display());
+        let file = match load_cli_test_file(path) {
+            Ok(file) => file,
+            Err(failure) => {
+                report.harness_failures.push(failure);
                 continue;
             }
-        };
-        let file: TestFile = match toml::from_str(&text) {
-            Ok(f) => f,
-            // A case file the harness's subset schema can't parse is not a
-            // failure of the oracle — skip it (spec-only fields, etc.).
-            Err(_) => continue,
         };
         for case in &file.cases {
             check_case(path, case, &mut report);
         }
     }
+    report.harness_failures.sort();
 
     finish_report(&report, "rue-cli-tests")
 }
@@ -217,6 +210,10 @@ fn finish_report(report: &Report, corpus: &str) -> ExitCode {
     println!("  agree:            {}", report.agree);
     println!("  skip (unmodeled): {}", report.skip_unsupported);
     println!("  skip (non-runnable shape): {}", report.skip_nonrunnable);
+    println!("  HARNESS FAILURES: {}", report.harness_failures.len());
+    for failure in &report.harness_failures {
+        println!("\n  ✗ {failure}");
+    }
     println!("  FRONTEND FAILURES: {}", report.frontend_failures.len());
     for failure in &report.frontend_failures {
         println!("\n  ✗ {failure}");
@@ -234,13 +231,18 @@ fn finish_report(report: &Report, corpus: &str) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    if report.frontend_failures.is_empty() && report.disagreements.is_empty() {
+    if report.harness_failures.is_empty()
+        && report.frontend_failures.is_empty()
+        && report.disagreements.is_empty()
+    {
         println!("\noracle agrees with the compiler on every runnable case.");
         ExitCode::SUCCESS
     } else {
         println!(
-            "\n{} frontend failure(s), {} disagreement(s) — runnable corpus cases must \
-             compile before the oracle can check them.",
+            "\n{} harness failure(s), {} frontend failure(s), {} disagreement(s) — \
+             corpus inputs must load and runnable cases must compile before the oracle can \
+             check them.",
+            report.harness_failures.len(),
             report.frontend_failures.len(),
             report.disagreements.len()
         );
@@ -556,17 +558,130 @@ fn rel(path: &Path) -> String {
         .unwrap_or_else(|| path.display().to_string())
 }
 
-fn collect_toml(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let p = entry.path();
-        if p.is_dir() {
-            collect_toml(&p, out);
-        } else if p.extension().is_some_and(|e| e == "toml") {
-            out.push(p);
+fn load_cli_test_file(path: &Path) -> Result<TestFile, String> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|error| format!("could not read {}: {error}", path.display()))?;
+    toml::from_str(&text).map_err(|error| format!("could not parse {}: {error}", path.display()))
+}
+
+/// Discover TOML files under every requested root while retaining all failures.
+/// Paths and diagnostics are sorted so reports do not depend on directory order.
+fn discover_toml(dirs: &[PathBuf]) -> (Vec<PathBuf>, Vec<String>) {
+    let mut files = Vec::new();
+    let mut failures = Vec::new();
+    for dir in dirs {
+        let before = files.len();
+        match collect_toml(dir, &mut files) {
+            Ok(()) if files.len() == before => failures.push(format!(
+                "no .toml case files found under requested root {}",
+                dir.display()
+            )),
+            Ok(()) => {}
+            Err(mut errors) => failures.append(&mut errors),
         }
+    }
+    files.sort();
+    files.dedup();
+    failures.sort();
+    (files, failures)
+}
+
+/// Recursively collect TOML files, reporting rather than hiding filesystem errors.
+fn collect_toml(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), Vec<String>> {
+    let mut failures = Vec::new();
+    let mut visited_dirs = BTreeSet::new();
+    collect_toml_inner(dir, out, &mut failures, &mut visited_dirs);
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        failures.sort();
+        Err(failures)
+    }
+}
+
+fn collect_toml_inner(
+    dir: &Path,
+    out: &mut Vec<PathBuf>,
+    failures: &mut Vec<String>,
+    visited_dirs: &mut BTreeSet<PathBuf>,
+) {
+    let canonical_dir = match std::fs::canonicalize(dir) {
+        Ok(path) => path,
+        Err(error) => {
+            failures.push(format!(
+                "could not resolve cases directory {}: {error}",
+                dir.display()
+            ));
+            return;
+        }
+    };
+    if !visited_dirs.insert(canonical_dir) {
+        return;
+    }
+
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) => {
+            failures.push(format!(
+                "could not read cases directory {}: {error}",
+                dir.display()
+            ));
+            return;
+        }
+    };
+
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                failures.push(format!(
+                    "could not read a directory entry under {}: {error}",
+                    dir.display()
+                ));
+                continue;
+            }
+        };
+        let path = entry.path();
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(error) => {
+                failures.push(format!(
+                    "could not determine file type for {}: {error}",
+                    path.display()
+                ));
+                continue;
+            }
+        };
+
+        if file_type.is_dir() {
+            collect_toml_inner(&path, out, failures, visited_dirs);
+        } else if file_type.is_file() {
+            collect_toml_file(&path, out);
+        } else if file_type.is_symlink() {
+            // Buck inputs and user-provided case roots may contain symlinks.
+            // Follow them explicitly, but surface a broken link as discovery
+            // failure instead of silently treating it as an absent case.
+            match std::fs::metadata(&path) {
+                Ok(metadata) if metadata.is_dir() => {
+                    collect_toml_inner(&path, out, failures, visited_dirs);
+                }
+                Ok(metadata) if metadata.is_file() => collect_toml_file(&path, out),
+                Ok(_) => {}
+                Err(error) => failures.push(format!(
+                    "could not determine symlink target type for {}: {error}",
+                    path.display()
+                )),
+            }
+        }
+    }
+}
+
+fn collect_toml_file(path: &Path, out: &mut Vec<PathBuf>) {
+    if path
+        .extension()
+        .is_some_and(|extension| extension == "toml")
+    {
+        out.push(path.to_path_buf());
     }
 }
 
@@ -593,6 +708,97 @@ mod tests {
             known_bug: None,
             skip: false,
         }
+    }
+
+    fn write_compile_fail_case(path: &Path, name: &str) {
+        std::fs::write(
+            path,
+            format!(
+                r#"
+[[case]]
+name = "{name}"
+compile_fail = true
+files = [{{ path = "probe.rue", source = "not Rue" }}]
+"#
+            ),
+        )
+        .expect("write CLI case fixture");
+    }
+
+    #[test]
+    fn discovery_keeps_valid_roots_and_reports_missing_roots_in_sorted_order() {
+        let temp = tempfile::tempdir().expect("create temporary cases root");
+        let valid = temp.path().join("valid");
+        let nested = valid.join("nested");
+        std::fs::create_dir_all(&nested).expect("create nested cases root");
+        write_compile_fail_case(&valid.join("z.toml"), "z case");
+        write_compile_fail_case(&nested.join("a.toml"), "a case");
+        let z_missing = temp.path().join("z-missing");
+        let a_missing = temp.path().join("a-missing");
+
+        // Deliberately repeat and overlap roots: each TOML case must still be
+        // loaded once, while diagnostics remain sorted independently of input
+        // order.
+        let roots = vec![
+            valid.clone(),
+            nested,
+            valid.clone(),
+            z_missing.clone(),
+            a_missing.clone(),
+        ];
+        let (files, failures) = discover_toml(&roots);
+
+        assert_eq!(files.len(), 2);
+        assert!(files.windows(2).all(|pair| pair[0] < pair[1]));
+        assert_eq!(failures.len(), 2);
+        assert!(failures[0].contains(&a_missing.display().to_string()));
+        assert!(failures[1].contains(&z_missing.display().to_string()));
+
+        assert_eq!(
+            corpus_mode(
+                roots
+                    .iter()
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .collect()
+            ),
+            ExitCode::FAILURE,
+            "a valid root must not hide another requested root's discovery failure"
+        );
+    }
+
+    #[test]
+    fn malformed_cli_toml_is_a_fatal_harness_failure() {
+        let temp = tempfile::tempdir().expect("create temporary cases root");
+        write_compile_fail_case(&temp.path().join("valid.toml"), "valid case");
+        let malformed = temp.path().join("malformed.toml");
+        std::fs::write(&malformed, "[[case]\nname = 1").expect("write malformed CLI case fixture");
+
+        let failure = match load_cli_test_file(&malformed) {
+            Err(failure) => failure,
+            Ok(_) => panic!("malformed TOML unexpectedly loaded"),
+        };
+        assert!(failure.contains("could not parse"));
+        assert_eq!(
+            corpus_mode(vec![temp.path().to_string_lossy().into_owned()]),
+            ExitCode::FAILURE,
+            "a valid case must not hide a malformed collected case file"
+        );
+    }
+
+    #[test]
+    fn unreadable_or_empty_cli_inputs_fail_through_the_report() {
+        let temp = tempfile::tempdir().expect("create temporary cases root");
+        let missing_file = temp.path().join("vanished.toml");
+        let failure = match load_cli_test_file(&missing_file) {
+            Err(failure) => failure,
+            Ok(_) => panic!("missing case file unexpectedly loaded"),
+        };
+        assert!(failure.contains("could not read"));
+
+        assert_eq!(
+            corpus_mode(vec![temp.path().to_string_lossy().into_owned()]),
+            ExitCode::FAILURE
+        );
     }
 
     #[test]
