@@ -690,3 +690,26 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = "expected"
+
+# =============================================================================
+# Leading byte-order mark (2.0:8) — RUE-378
+# =============================================================================
+
+[[case]]
+name = "leading_bom_is_skipped"
+spec = ["2.0:8"]
+description = "A single leading UTF-8 BOM is ignored; the file compiles and runs"
+source = """
+﻿fn main() -> i32 { 42 }
+"""
+exit_code = 42
+
+[[case]]
+name = "mid_file_bom_rejected"
+spec = ["2.0:8"]
+description = "A U+FEFF anywhere but the leading position is a lexical error (E0001)"
+source = """
+fn main() -> i32 { ﻿42 }
+"""
+compile_fail = true
+error_contains = ["E0001"]
