@@ -18,8 +18,9 @@
 //! Scalars (all integer widths + `bool` + `unit`), the full arithmetic /
 //! comparison / bitwise / shift operator set with **trapping** overflow, locals,
 //! parameters, calls and recursion, block-parameter control flow (`if`/`match`/
-//! `loop` all lower to `Goto`/`Branch`/`Switch`), `@dbg`, `@intCast`, and the
-//! defined panics (overflow, divide/remainder-by-zero, int-cast overflow);
+//! `loop` all lower to `Goto`/`Branch`/`Switch`), `@dbg`, `@intCast`, `@panic`,
+//! `@assert`, and the defined panics (overflow, divide/remainder-by-zero,
+//! int-cast overflow);
 //! aggregates (structs/arrays) with nested place projections and bounds traps;
 //! `inout`/`borrow` parameters (copy-in / copy-out, observably identical to
 //! by-reference under the law of exclusivity); and drop/destructors, executed in
@@ -50,14 +51,13 @@
 //! Generated-program mode has the stronger promise that no `Unsupported` kind
 //! is valid and reports every one as a generator-contract failure.
 //!
-//! - **All CFG intrinsics except `@dbg`.** The `Intrinsic` arm models only
-//!   `@dbg`; every other intrinsic that is allowed to survive to the CFG is a
-//!   typed model gap: the
+//! - **All other CFG intrinsics.** The `Intrinsic` arm models `@dbg`, `@panic`,
+//!   and `@assert`; every other intrinsic that is allowed to survive to the CFG
+//!   is a typed model gap: the
 //!   non-deterministic `@read_line`, `@random_u32`/`@random_u64`, `@syscall`;
 //!   the heap intrinsics `@alloc`/`@free`/`@realloc`; the raw-pointer intrinsics
 //!   `@raw`/`@raw_mut`/`@field_ptr`/`@ptr_read`/`@ptr_write`/`@ptr_offset`/
-//!   `@ptr_to_int`/`@int_to_ptr` (heap-/layout-dependent, and `checked`-only);
-//!   and `@panic`/`@assert` (deterministic, but not yet modeled).
+//!   `@ptr_to_int`/`@int_to_ptr` (heap-/layout-dependent, and `checked`-only).
 //! - **`String::capacity`/`reserve`/`with_capacity` capacity behavior** — the
 //!   exact capacity value is implementation-defined, so `capacity` is reported
 //!   as a typed gap rather than guessed. Specified bounds and growth/preservation
@@ -164,8 +164,6 @@ pub enum UnsupportedClass {
 /// A user-facing intrinsic whose deterministic semantics are not modeled yet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum UnsupportedIntrinsicKind {
-    Panic,
-    Assert,
     ParseI32,
     ParseI64,
     ParseU32,
@@ -621,6 +619,16 @@ enum PlaceAccess {
     Write,
 }
 
+#[derive(Clone, Copy)]
+enum AbortIntrinsic {
+    Panic,
+    Assert,
+}
+
+// `@panic` aborts dynamically but remains an ordinary unit expression in Rue's
+// static contract.
+const PANIC_CFG_RESULT_TYPE: Type = Type::UNIT;
+
 impl From<Unsupported> for Flow {
     fn from(u: Unsupported) -> Self {
         Flow::Unsupported(u)
@@ -637,8 +645,6 @@ fn unsupported_intrinsic_kind(name: &str) -> UnsupportedKind {
     use UnsupportedIntrinsicKind as Intrinsic;
 
     match name {
-        "panic" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::Panic)),
-        "assert" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::Assert)),
         "parse_i32" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::ParseI32)),
         "parse_i64" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::ParseI64)),
         "parse_u32" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::ParseU32)),
@@ -1137,8 +1143,6 @@ impl<'a> Interp<'a> {
         }
 
         let arity_matches = match name {
-            "panic" => args.len() <= 1,
-            "assert" => (1..=2).contains(&args.len()),
             "read_line" | "random_u32" | "random_u64" => args.is_empty(),
             "ptr_write" | "ptr_offset" | "free" => args.len() == 2,
             "realloc" => args.len() == 3,
@@ -1153,12 +1157,6 @@ impl<'a> Interp<'a> {
         let is_owned_string = |index: usize| self.is_owned_string_type(ty(index));
         let mut validated_kind = kind;
         let signature_matches = match name {
-            "panic" => result_ty == Type::UNIT && (args.is_empty() || is_owned_string(0)),
-            "assert" => {
-                result_ty == Type::UNIT
-                    && ty(0) == Type::BOOL
-                    && (args.len() == 1 || is_owned_string(1))
-            }
             "parse_i32" => is_owned_string(0) && self.is_option_of(result_ty, Type::I32),
             "parse_i64" => is_owned_string(0) && self.is_option_of(result_ty, Type::I64),
             "parse_u32" => is_owned_string(0) && self.is_option_of(result_ty, Type::U32),
@@ -1243,6 +1241,141 @@ impl<'a> Interp<'a> {
             validated_kind
         } else {
             UnsupportedKind::ContractViolation(ContractViolationKind::IntrinsicSignature)
+        }
+    }
+
+    /// Validate every static part of `@panic` / `@assert` before evaluating an
+    /// operand. This keeps malformed outer CFG from being hidden by an
+    /// external-dependency or model-gap operand and mirrors the native
+    /// lowering's exact ABI assumptions.
+    fn preflight_abort_intrinsic(
+        &self,
+        cfg: &Cfg,
+        name: &str,
+        args: &[CfgValue],
+        result_ty: Type,
+    ) -> Step<Option<AbortIntrinsic>> {
+        let intrinsic = match name {
+            "panic" => AbortIntrinsic::Panic,
+            "assert" => AbortIntrinsic::Assert,
+            _ => return Ok(None),
+        };
+        let arity_matches = match intrinsic {
+            AbortIntrinsic::Panic => args.len() <= 1,
+            AbortIntrinsic::Assert => (1..=2).contains(&args.len()),
+        };
+        if !arity_matches {
+            return Err(unsupported(
+                UnsupportedKind::ContractViolation(ContractViolationKind::IntrinsicArity),
+                format!("intrinsic @{name} arity"),
+            ));
+        }
+
+        let ty = |index: usize| cfg.get_inst(args[index]).ty;
+        let signature_matches = match intrinsic {
+            AbortIntrinsic::Panic => {
+                result_ty == PANIC_CFG_RESULT_TYPE
+                    && (args.is_empty() || self.is_owned_string_type(ty(0)))
+            }
+            AbortIntrinsic::Assert => {
+                result_ty == Type::UNIT
+                    && ty(0) == Type::BOOL
+                    && (args.len() == 1 || self.is_owned_string_type(ty(1)))
+            }
+        };
+        if !signature_matches {
+            return Err(unsupported(
+                UnsupportedKind::ContractViolation(ContractViolationKind::IntrinsicSignature),
+                format!("intrinsic @{name} signature"),
+            ));
+        }
+        Ok(Some(intrinsic))
+    }
+
+    fn abort_with_stderr(&self, kind: TrapKind, parts: &[&[u8]]) -> Step<Value> {
+        let raw_stderr_bytes = parts
+            .iter()
+            .try_fold(0usize, |total, part| total.checked_add(part.len()));
+        let Some(raw_stderr_bytes) = raw_stderr_bytes else {
+            return Err(unsupported(
+                UnsupportedKind::ResourceLimit(ResourceLimitKind::StderrBytes),
+                format!(
+                    "stderr byte limit exceeded ({}-byte limit)",
+                    self.stderr_cap
+                ),
+            ));
+        };
+        if raw_stderr_bytes > self.stderr_cap {
+            return Err(unsupported(
+                UnsupportedKind::ResourceLimit(ResourceLimitKind::StderrBytes),
+                format!(
+                    "stderr byte limit exceeded ({}-byte limit)",
+                    self.stderr_cap
+                ),
+            ));
+        }
+
+        // Decode exactly as the native differential runner does. Capacity is
+        // bounded by the raw-byte cap; invalid UTF-8 can expand to replacement
+        // characters but by at most a small constant factor.
+        let mut stderr = String::with_capacity(raw_stderr_bytes);
+        for part in parts {
+            stderr.push_str(&String::from_utf8_lossy(part));
+        }
+        Err(Flow::Panic(Panic::with_stderr(
+            kind,
+            stderr,
+            raw_stderr_bytes,
+        )))
+    }
+
+    fn eval_abort_intrinsic(
+        &mut self,
+        cfg: &'a Cfg,
+        frame: &mut Frame,
+        intrinsic: AbortIntrinsic,
+        args: &[CfgValue],
+    ) -> Step<Value> {
+        // Native lowering materializes both `@assert` operands before testing
+        // the condition. Keep that eager, source-ordered behavior even on the
+        // true path.
+        let values = self.eval_all(cfg, frame, args)?;
+        match intrinsic {
+            AbortIntrinsic::Panic => match values.as_slice() {
+                [] => self.abort_with_stderr(TrapKind::UserPanic, &[b"panic\n"]),
+                [Value::Str { bytes, slots: 3 }] => self
+                    .abort_with_stderr(TrapKind::UserPanic, &[b"panic: ", bytes.as_slice(), b"\n"]),
+                [_] => Err(unsupported(
+                    UnsupportedKind::ContractViolation(ContractViolationKind::IntrinsicSignature),
+                    "intrinsic @panic runtime value shape",
+                )),
+                _ => unreachable!("@panic arity was preflighted"),
+            },
+            AbortIntrinsic::Assert => {
+                let (condition, message) = match values.as_slice() {
+                    [Value::Bool(condition)] => (*condition, None),
+                    [Value::Bool(condition), Value::Str { bytes, slots: 3 }] => {
+                        (*condition, Some(bytes.as_slice()))
+                    }
+                    _ => {
+                        return Err(unsupported(
+                            UnsupportedKind::ContractViolation(
+                                ContractViolationKind::IntrinsicSignature,
+                            ),
+                            "intrinsic @assert runtime value shape",
+                        ));
+                    }
+                };
+                if condition {
+                    Ok(Value::Unit)
+                } else if let Some(message) = message {
+                    // The message-carrying assertion uses the same runtime path
+                    // and trap category as `@panic(message)`.
+                    self.abort_with_stderr(TrapKind::UserPanic, &[b"panic: ", message, b"\n"])
+                } else {
+                    self.abort_with_stderr(TrapKind::AssertionFailure, &[b"assertion failed\n"])
+                }
+            }
         }
     }
 
@@ -2207,23 +2340,26 @@ impl<'a> Interp<'a> {
             } => {
                 let iname = self.interner().resolve(name).to_string();
                 let args = cfg.get_extra(*args_start, *args_len).to_vec();
-                if iname != "dbg" {
+                if let Some(intrinsic) = self.preflight_abort_intrinsic(cfg, &iname, &args, ty)? {
+                    self.eval_abort_intrinsic(cfg, frame, intrinsic, &args)?
+                } else if iname != "dbg" {
                     return Err(unsupported(
                         self.classify_unsupported_intrinsic(cfg, v, &iname, &args, ty),
                         format!("intrinsic @{iname}"),
                     ));
+                } else {
+                    let [arg] = args.as_slice() else {
+                        return Err(unsupported(
+                            UnsupportedKind::ContractViolation(ContractViolationKind::DebugArity),
+                            "@dbg arity",
+                        ));
+                    };
+                    let arg = *arg;
+                    let arg_ty = cfg.get_inst(arg).ty;
+                    let val = self.eval(cfg, frame, arg)?;
+                    self.write_dbg(&val, arg_ty)?;
+                    Value::Unit
                 }
-                let [arg] = args.as_slice() else {
-                    return Err(unsupported(
-                        UnsupportedKind::ContractViolation(ContractViolationKind::DebugArity),
-                        "@dbg arity",
-                    ));
-                };
-                let arg = *arg;
-                let arg_ty = cfg.get_inst(arg).ty;
-                let val = self.eval(cfg, frame, arg)?;
-                self.write_dbg(&val, arg_ty)?;
-                Value::Unit
             }
 
             CfgInstData::IntCast { value, from_ty: _ } => {

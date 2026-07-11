@@ -174,6 +174,62 @@ fn dbg_output() {
 }
 
 #[test]
+fn panic_and_assert_have_exact_observable_semantics() {
+    let out = run("fn main() -> i32 { @panic(); 0 }");
+    assert_eq!(out.exit_code, 101);
+    assert_eq!(out.stdout, "");
+    assert_eq!(out.stderr, "panic\n");
+    assert_eq!(out.panic, Some(TrapKind::UserPanic));
+
+    let out = run(r#"fn main() -> i32 { @panic("boom"); 0 }"#);
+    assert_eq!(out.exit_code, 101);
+    assert_eq!(out.stderr, "panic: boom\n");
+    assert_eq!(out.panic, Some(TrapKind::UserPanic));
+
+    let out = run(r#"fn main() -> i32 { @panic(""); 0 }"#);
+    assert_eq!(out.stderr, "panic: \n");
+    assert_eq!(out.panic, Some(TrapKind::UserPanic));
+
+    let out = run("fn main() -> i32 { @assert(true); 42 }");
+    assert_eq!(out.exit_code, 42);
+    assert_eq!(out.stderr, "");
+    assert_eq!(out.panic, None);
+
+    let out = run("fn main() -> i32 { @assert(false); 0 }");
+    assert_eq!(out.exit_code, 101);
+    assert_eq!(out.stderr, "assertion failed\n");
+    assert_eq!(out.panic, Some(TrapKind::AssertionFailure));
+
+    let out = run(r#"fn main() -> i32 { @assert(1 == 2, "not equal"); 0 }"#);
+    assert_eq!(out.exit_code, 101);
+    assert_eq!(out.stderr, "panic: not equal\n");
+    assert_eq!(out.panic, Some(TrapKind::UserPanic));
+}
+
+#[test]
+fn assert_eagerly_evaluates_condition_then_message_even_when_true() {
+    let out = run(r#"fn condition() -> bool { @dbg(1); true }
+        fn message() -> String { @dbg(2); "unused" }
+        fn main() -> i32 { @assert(condition(), message()); 42 }"#);
+    assert_eq!(out.exit_code, 42);
+    assert_eq!(out.stdout, "1\n2\n");
+    assert_eq!(out.stderr, "");
+    assert_eq!(out.panic, None);
+}
+
+#[test]
+fn panic_stderr_uses_raw_message_bytes_and_native_lossy_decoding() {
+    let out = run("fn main() -> i32 {
+            let mut message = String.new();
+            message.push(255);
+            @panic(message);
+            0
+        }");
+    assert_eq!(out.stderr, "panic: \u{fffd}\n");
+    assert_eq!(out.panic, Some(TrapKind::UserPanic));
+}
+
+#[test]
 fn stdout_and_stderr_limits_are_independent_and_fail_closed() {
     let source = "fn main() -> i32 {
         @dbg(7);
@@ -201,6 +257,21 @@ fn stdout_and_stderr_limits_are_independent_and_fail_closed() {
     assert_eq!(
         unsupported.detail(),
         "stderr byte limit exceeded (23-byte limit)"
+    );
+}
+
+#[test]
+fn dynamic_panic_stderr_obeys_the_shared_raw_byte_limit() {
+    let source = r#"fn main() -> i32 { @panic("x"); 0 }"#;
+    let out = run_with_output_caps(source, MAX_STDOUT_BYTES, 9)
+        .unwrap_or_else(|unsupported| panic!("exactly capped panic failed: {unsupported}"));
+    assert_eq!(out.stderr, "panic: x\n");
+
+    let unsupported = run_with_output_caps(source, MAX_STDOUT_BYTES, 8)
+        .expect_err("panic prefix, body, and newline must all count");
+    assert_eq!(
+        unsupported.kind(),
+        UnsupportedKind::ResourceLimit(ResourceLimitKind::StderrBytes)
     );
 }
 
@@ -312,8 +383,6 @@ fn every_known_unsupported_intrinsic_has_a_closed_kind() {
     use UnsupportedIntrinsicKind as Intrinsic;
 
     for (name, intrinsic) in [
-        ("panic", Intrinsic::Panic),
-        ("assert", Intrinsic::Assert),
         ("parse_i32", Intrinsic::ParseI32),
         ("parse_i64", Intrinsic::ParseI64),
         ("parse_u32", Intrinsic::ParseU32),
@@ -353,6 +422,8 @@ fn every_known_unsupported_intrinsic_has_a_closed_kind() {
 
     for name in [
         "dbg",
+        "panic",
+        "assert",
         "drop",
         "intCast",
         "cast",

@@ -91,6 +91,20 @@ pub(crate) fn cli_trap_expectation<'a>(
     classify_expectation(fragments, cli_expected_trap_kind)
 }
 
+/// A deliberately narrow trap declaration vocabulary for rue-spec's
+/// successful-run `stderr_contains` field. The spec runner does not treat this
+/// field as `runtime_error`, so keep it separate from both that vocabulary and
+/// the CLI registry. Only the two deterministic abort intrinsic spellings are
+/// declarations; arbitrary stderr text must not hide an unrelated typed trap.
+pub(crate) fn spec_stderr_trap_kind(fragment: &str) -> Option<TrapKind> {
+    match fragment {
+        "panic" => Some(TrapKind::UserPanic),
+        "assertion failed" => Some(TrapKind::AssertionFailure),
+        fragment if fragment.starts_with("panic: ") => Some(TrapKind::UserPanic),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -189,6 +203,21 @@ mod tests {
             trap_expectation(["assertion failed"]),
             TrapExpectation::Unmodeled
         );
+
+        for fragment in ["panic", "panic: boom"] {
+            assert_eq!(spec_stderr_trap_kind(fragment), Some(TrapKind::UserPanic));
+        }
+        assert_eq!(
+            spec_stderr_trap_kind("assertion failed"),
+            Some(TrapKind::AssertionFailure)
+        );
+        for fragment in ["integer overflow", "arbitrary stderr", "boom"] {
+            assert_eq!(
+                spec_stderr_trap_kind(fragment),
+                None,
+                "generic spec stderr must not declare a trap category"
+            );
+        }
     }
 
     #[test]
