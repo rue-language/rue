@@ -18,7 +18,7 @@ Programs that exceed these limits are not guaranteed to compile or execute corre
 
 {{ rule(id="C.2:1", cat="normative") }}
 
-Integer literals **MUST** be representable as unsigned 64-bit integers during lexing. This limits literal values to the range `0` to `18446744073709551615` (2^64 - 1).
+Integer literals **MUST** be representable as unsigned 64-bit integers when tokenized. This limits literal values to the range `0` to `18446744073709551615` (2^64 - 1).
 
 {{ rule(id="C.2:2", cat="normative") }}
 

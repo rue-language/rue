@@ -8,7 +8,7 @@ template = "spec/page.html"
 
 {{ rule(id="2.1:1", cat="normative") }}
 
-Tokens are the atomic units of syntax in a Rue program. The lexer processes source text and produces a sequence of tokens.
+Tokens are the atomic units of syntax in a Rue program. The text of a source file is decomposed into a sequence of tokens (2.0:1).
 
 ## Token Categories
 
