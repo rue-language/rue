@@ -6,6 +6,7 @@
 //! reused by other corpora without weakening it to strings or paths.
 
 pub(crate) mod cli;
+pub(crate) mod spec;
 
 use rue_oracle::ModelGapKind;
 use std::collections::{BTreeMap, BTreeSet};
