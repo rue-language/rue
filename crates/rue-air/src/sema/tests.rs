@@ -378,6 +378,28 @@ mod tests {
     }
 
     #[test]
+    fn inout_str_view_cannot_be_reassigned_as_a_whole_value() {
+        let source = r#"
+            fn replace(inout target: str, replacement: str) {
+                target = replacement;
+            }
+            fn main() -> i32 {
+                let mut value: Str(8) = "hello";
+                replace(inout value, "hi");
+                0
+            }
+        "#;
+        let mut preview = PreviewFeatures::new();
+        preview.insert(PreviewFeature::StringTrio);
+        let errors = compile_to_air_with_preview_features(source, preview).unwrap_err();
+        assert_eq!(errors.len(), 1);
+        assert!(matches!(
+            errors.iter().next().unwrap().kind,
+            ErrorKind::StrViewReassignment
+        ));
+    }
+
+    #[test]
     fn inout_param_assignment_is_constrained_and_store_typed_exactly() {
         // Parameter assignments participate in inference, so a literal takes
         // the declared integer width instead of defaulting to i32. Sema then

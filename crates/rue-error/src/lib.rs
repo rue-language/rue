@@ -111,6 +111,11 @@ impl ErrorCode {
     pub const TYPE_MISMATCH: Self = Self(206);
     pub const WRONG_ARGUMENT_COUNT: Self = Self(207);
     pub const MOVE_WHILE_CALL_LOANED: Self = Self(208);
+    // E0209 is reserved for RUE-634's unexpected call-argument mode error.
+    /// Whole-value assignment to a second-class `inout str` view. The view
+    /// grants exclusive access to the caller's bytes; it is not a first-class
+    /// string header that may be rebound (RUE-641).
+    pub const STR_VIEW_REASSIGNMENT: Self = Self(210);
 
     // ========================================================================
     // Struct/enum errors (E0400-E0499)
@@ -1287,6 +1292,12 @@ pub enum ErrorKind {
     /// (ADR-0043 two-types model, RUE-386).
     #[error("a first-class `str` value cannot be passed as `inout str`")]
     InoutStrRequiresLocalBuffer,
+    /// A whole value was assigned to an `inout str` parameter. The parameter
+    /// is a second-class view over caller-owned bytes, so rebinding its header
+    /// would overwrite storage whose concrete buffer representation is not
+    /// `str` (RUE-641).
+    #[error("an `inout str` view cannot be reassigned as a whole value")]
+    StrViewReassignment,
     /// A borrowed `str` view (a `borrow`/`inout str` parameter) escaped into a
     /// first-class `str` slot (ADR-0043 two-types model, RUE-386). `site`
     /// names the position, as in [`Self::BufferNotFirstClassStr`].
@@ -1593,6 +1604,7 @@ impl ErrorKind {
             ErrorKind::TypeMismatch { .. } => ErrorCode::TYPE_MISMATCH,
             ErrorKind::WrongArgumentCount { .. } => ErrorCode::WRONG_ARGUMENT_COUNT,
             ErrorKind::DuplicatePatternBinding { .. } => ErrorCode::DUPLICATE_PATTERN_BINDING,
+            ErrorKind::StrViewReassignment => ErrorCode::STR_VIEW_REASSIGNMENT,
 
             // Struct/enum errors (E0400-E0499)
             ErrorKind::MissingFields(_) => ErrorCode::MISSING_FIELDS,
@@ -2591,6 +2603,10 @@ mod tests {
             ErrorCode::INOUT_STR_REQUIRES_LOCAL_BUFFER
         );
         assert_eq!(
+            ErrorKind::StrViewReassignment.code(),
+            ErrorCode::STR_VIEW_REASSIGNMENT
+        );
+        assert_eq!(
             ErrorKind::StrViewNotFirstClass {
                 site: "as a return value".to_string(),
             }
@@ -2600,6 +2616,7 @@ mod tests {
         assert_eq!(ErrorCode::BUFFER_NOT_FIRST_CLASS_STR.0, 495);
         assert_eq!(ErrorCode::INOUT_STR_REQUIRES_LOCAL_BUFFER.0, 496);
         assert_eq!(ErrorCode::STR_VIEW_NOT_FIRST_CLASS.0, 497);
+        assert_eq!(ErrorCode::STR_VIEW_REASSIGNMENT.0, 210);
     }
 
     #[test]
