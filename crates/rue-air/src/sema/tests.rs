@@ -514,6 +514,129 @@ mod tests {
     }
 
     #[test]
+    fn fixed_string_call_context_stops_at_nested_call_operands() {
+        let mut preview = PreviewFeatures::new();
+        preview.insert(PreviewFeature::StringTrio);
+        let cases = [
+            (
+                "conditional result",
+                r#"fn main() -> i32 { @intCast(take(if true { "hi" } else { "bye" })) }"#,
+            ),
+            (
+                "block result",
+                r#"fn main() -> i32 { @intCast(take({ let _marker = 0; "block" })) }"#,
+            ),
+            (
+                "declared fixed-string return",
+                r#"fn main() -> i32 { @intCast(take(make())) }"#,
+            ),
+            (
+                "intrinsic statement before a fixed-string block result",
+                r#"fn main() -> i32 { @intCast(take(with_assert())) }"#,
+            ),
+            (
+                "never-returning user call",
+                r#"fn main() -> i32 { @intCast(take(die("boom"))) }"#,
+            ),
+            (
+                "never-returning generic user call",
+                r#"fn main() -> i32 { @intCast(take(generic_die(StrBuf, "boom"))) }"#,
+            ),
+            (
+                "never-returning intrinsic",
+                r#"fn main() -> i32 { @intCast(take(@panic("boom"))) }"#,
+            ),
+        ];
+
+        for (case, main) in cases {
+            let source = format!(
+                r#"
+                    fn take(value: Str(8)) -> u64 {{ value.len() }}
+                    fn make() -> Str(8) {{ "made" }}
+                    fn with_assert() -> Str(8) {{ @assert(true, "message"); "checked" }}
+                    fn die(message: StrBuf) -> ! {{ @panic(message) }}
+                    fn generic_die(comptime T: type, message: T) -> ! {{ @panic("stop") }}
+                    {main}
+                "#
+            );
+            let output = compile_to_air_with_preview_features(&source, preview.clone())
+                .unwrap_or_else(|errors| panic!("{case} must compile independently: {errors}"));
+
+            if matches!(
+                case,
+                "never-returning user call" | "never-returning generic user call"
+            ) {
+                let main = output
+                    .functions
+                    .iter()
+                    .find(|function| function.name == "main")
+                    .unwrap();
+                let mut literal_call_args = Vec::new();
+                for (_, inst) in main.air.iter() {
+                    let (args_start, args_len) = match &inst.data {
+                        AirInstData::Call {
+                            args_start,
+                            args_len,
+                            ..
+                        }
+                        | AirInstData::CallGeneric {
+                            args_start,
+                            args_len,
+                            ..
+                        } => (*args_start, *args_len),
+                        _ => continue,
+                    };
+                    for arg in main.air.get_call_args(args_start, args_len) {
+                        if matches!(main.air.get(arg.value).data, AirInstData::StringConst(_)) {
+                            literal_call_args.push(arg);
+                        }
+                    }
+                }
+
+                assert_eq!(
+                    literal_call_args.len(),
+                    1,
+                    "{case} must have one literal runtime call argument"
+                );
+                let arg = &literal_call_args[0];
+                assert_eq!(arg.mode, AirArgMode::Normal);
+                let arg_ty = main.air.get(arg.value).ty;
+                assert_eq!(
+                    arg_ty.safe_name_with_pool(Some(&output.type_pool)),
+                    "StrBuf",
+                    "{case} must materialize its nested message from the callee contract"
+                );
+                assert_eq!(
+                    output.type_pool.abi_slot_count(arg_ty),
+                    3,
+                    "{case} must pass the three-slot StrBuf representation"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn fallible_intrinsic_keeps_structural_result_context() {
+        let source = r#"
+            fn Option(comptime T: type) -> type { enum { Some(T), None } }
+
+            fn main() -> i32 {
+                let Opt = Option(i64);
+                let parsed: Opt = if true {
+                    @parse_i64("42")
+                } else {
+                    @parse_i64("7")
+                };
+                match parsed {
+                    Opt.Some(value) => @intCast(value),
+                    Opt.None => 0,
+                }
+            }
+        "#;
+        compile_to_air(source).unwrap();
+    }
+
+    #[test]
     fn inout_param_assignment_is_constrained_and_store_typed_exactly() {
         // Parameter assignments participate in inference, so a literal takes
         // the declared integer width instead of defaulting to i32. Sema then
