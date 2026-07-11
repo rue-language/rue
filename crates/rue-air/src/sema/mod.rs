@@ -122,6 +122,8 @@ pub struct Sema<'a> {
     pub(crate) file_paths: HashMap<FileId, String>,
     /// Maps FileId to relocation-stable paths used in generated symbols.
     pub(crate) symbol_paths: HashMap<FileId, String>,
+    /// Explicit semantic root module for root-relative import fallback.
+    pub(crate) root_file_id: Option<FileId>,
     /// Arena storage for function/method parameter data.
     pub(crate) param_arena: ParamArena,
     /// Method signatures for anonymous structs, used for structural equality comparison.
@@ -222,6 +224,7 @@ impl<'a> Sema<'a> {
             module_registry: crate::module_registry::ModuleRegistry::new(),
             file_paths: HashMap::new(),
             symbol_paths: HashMap::new(),
+            root_file_id: None,
             param_arena: ParamArena::new(),
             anon_struct_method_sigs: HashMap::new(),
             anon_struct_captured_values: HashMap::new(),

@@ -26,7 +26,7 @@ use std::path::{Component, Path, PathBuf};
 /// - `sub/./foo.rue` -> `sub/foo.rue`
 /// - `a/../std/opt.rue` -> `std/opt.rue`
 /// - `../std/opt.rue` -> `../std/opt.rue` (leading `..` has nothing to cancel)
-pub(crate) fn normalize_module_path(path: &str) -> String {
+pub fn normalize_module_path(path: &str) -> String {
     let mut out: Vec<Component> = Vec::new();
     for comp in Path::new(path).components() {
         match comp {

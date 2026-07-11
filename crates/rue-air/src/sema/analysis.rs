@@ -116,21 +116,31 @@ fn finalize_function_body_analysis(
     unused_function_roots: &HashSet<Spur>,
     errors: CompileErrors,
 ) -> MultiErrorResult<SemaOutput> {
-    // Merge strings from all functions into a global table with deduplication.
-    let mut global_string_table: HashMap<String, u32> = HashMap::new();
-    let mut global_strings: Vec<String> = Vec::new();
+    // String IDs flow into AIR, assembly, rodata, and relocations. Assign them
+    // by content rather than function-discovery order so worklist scheduling
+    // cannot change any downstream representation (RUE-624).
+    let mut global_strings: Vec<String> = functions_with_strings
+        .iter()
+        .flat_map(|(_, local_strings)| local_strings.iter().cloned())
+        .collect();
+    global_strings.sort();
+    global_strings.dedup();
+    let global_string_table: HashMap<String, u32> = global_strings
+        .iter()
+        .cloned()
+        .enumerate()
+        .map(|(id, string)| (string, id as u32))
+        .collect();
 
     let mut functions: Vec<AnalyzedFunction> = Vec::new();
     for (mut analyzed, local_strings) in functions_with_strings {
         if !local_strings.is_empty() {
             let local_to_global: Vec<u32> = local_strings
                 .into_iter()
-                .map(|s| {
-                    *global_string_table.entry(s.clone()).or_insert_with(|| {
-                        let id = global_strings.len() as u32;
-                        global_strings.push(s);
-                        id
-                    })
+                .map(|string| {
+                    *global_string_table
+                        .get(&string)
+                        .expect("every local string was collected globally")
                 })
                 .collect();
 
