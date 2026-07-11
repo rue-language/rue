@@ -62,6 +62,31 @@ fn main() -> i32 {
 ]
 exit_code = 42
 
+[[case]]
+name = "cross_module_const_deferred_value_parameter_kind"
+description = "A module-qualified type constructor keeps `comptime value: T` in the value stream when reduced as a file constant."
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "lib.rue", source = """
+pub fn Witness(comptime T: type, comptime value: T) -> type {
+    struct { payload: T }
+}
+""" },
+  { path = "main.rue", source = """
+const lib = @import("lib.rue");
+const W = lib.Witness(i32, 7);
+
+fn read(w: lib.Witness(i32, 7)) -> i32 {
+    w.payload
+}
+
+fn main() -> i32 {
+    read(W { payload: 42 })
+}
+""" },
+]
+exit_code = 42
+
 # --- RUE-511: method return-type + value (let) position ---
 [[case]]
 name = "cross_module_ctor_return_and_let"

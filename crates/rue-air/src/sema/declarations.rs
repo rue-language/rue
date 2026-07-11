@@ -154,6 +154,7 @@ impl<'a> Sema<'a> {
                         is_generic: info.is_generic,
                         param_modes: self.param_arena.modes(info.params).to_vec(),
                         param_comptime: self.param_arena.comptime(info.params).to_vec(),
+                        param_comptime_type: self.comptime_type_param_flags(info),
                         param_names: self.param_arena.names(info.params).to_vec(),
                         param_type_syms: self
                             .rir
@@ -2554,7 +2555,7 @@ impl<'a> Sema<'a> {
         let function_key = self
             .resolve_function_name_in_file(member, mfile)
             .unwrap_or_else(|| self.internal_function_name(member, mfile));
-        let Some(fn_info) = self.functions.get(&function_key) else {
+        let Some(fn_info) = self.functions.get(&function_key).copied() else {
             return Err(CompileError::new(
                 ErrorKind::UnknownModuleMember {
                     module_name: import_path,
@@ -2576,6 +2577,7 @@ impl<'a> Sema<'a> {
         let param_names = self.param_arena.names(params).to_vec();
         let param_modes = self.param_arena.modes(params).to_vec();
         let param_comptime = self.param_arena.comptime(params).to_vec();
+        let param_comptime_type = self.comptime_type_param_flags(&fn_info);
         let args = self.rir.get_call_args(args_start, args_len).to_vec();
         if args.len() != param_names.len() {
             return Err(CompileError::new(
@@ -2626,11 +2628,25 @@ impl<'a> Sema<'a> {
                     self.rir.get(arg.value).span,
                 ));
             };
-            match value {
-                ConstValue::Type(ty) => {
+            match (param_comptime_type[i], value) {
+                (true, ConstValue::Type(ty)) => {
                     callee_types.insert(param_names[i], ty);
                 }
-                value => {
+                (true, ConstValue::Unit) => {
+                    callee_types.insert(param_names[i], Type::UNIT);
+                }
+                (true, _) => {
+                    return Err(CompileError::new(
+                        ErrorKind::ComptimeEvaluationFailed {
+                            reason: format!(
+                                "argument for '{}' must be a type",
+                                self.interner.resolve(&param_names[i])
+                            ),
+                        },
+                        self.rir.get(arg.value).span,
+                    ));
+                }
+                (false, value) => {
                     callee_values.insert(param_names[i], value);
                 }
             }

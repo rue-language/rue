@@ -287,3 +287,28 @@ fn main() -> i32 { 0 }
 """ }]
 compile_fail = true
 error_contains = ["E1200", "must be a type"]
+
+[[case]]
+name = "deferred_value_parameter_kind_in_type_constructor_positions"
+description = "A `comptime value: T` parameter stays a value argument when its type constructor is reduced in both value and signature positions."
+files = [{ path = "main.rue", source = """
+fn Witness(comptime T: type, comptime value: T) -> type {
+    struct { payload: T }
+}
+
+fn Wrap(comptime T: type) -> type {
+    struct { inner: T }
+}
+
+fn read(w: Witness(i32, 7)) -> i32 {
+    w.payload
+}
+
+fn main() -> i32 {
+    let W = Witness(i32, 7);
+    let Wrapped = Wrap(Witness(i32, 7));
+    let wrapped = Wrapped { inner: W { payload: 42 } };
+    read(wrapped.inner)
+}
+""" }]
+exit_code = 42

@@ -503,11 +503,14 @@ fn create_specialized_function(
     let mut value_subst: HashMap<Spur, ConstValue> = HashMap::new();
     let mut type_arg_idx = 0;
     let mut value_arg_idx = 0;
-    for (name, ty, _, is_comptime) in sema.param_arena.iter(base_info.params) {
+    let param_comptime_type = sema.comptime_type_param_flags(base_info);
+    for (param_index, (name, _, _, is_comptime)) in
+        sema.param_arena.iter(base_info.params).enumerate()
+    {
         if !*is_comptime {
             continue;
         }
-        if *ty == Type::COMPTIME_TYPE {
+        if param_comptime_type[param_index] {
             if type_arg_idx < key.type_args.len() {
                 type_subst.insert(*name, key.type_args[type_arg_idx]);
                 type_arg_idx += 1;
@@ -543,18 +546,10 @@ fn create_specialized_function(
         .collect();
     let mut specialized_params: Vec<(Spur, Type, RirParamMode, bool)> =
         Vec::with_capacity(base_params.len());
-    for (name, ty, mode, is_comptime) in base_params {
-        if is_comptime {
-            if ty == Type::COMPTIME_TYPE {
-                // Comptime TYPE parameters are erased from the specialized
-                // signature (types don't exist at runtime).
-                continue;
-            }
-            // Comptime VALUE parameters stay in the runtime signature — the
-            // call site still passes them (see `analyze_call`); their constant
-            // value is additionally substituted into the body via value_subst
-            // so comptime contexts see it (RUE-166).
-            specialized_params.push((name, ty, mode, true));
+    for (param_index, (name, ty, mode, is_comptime)) in base_params.into_iter().enumerate() {
+        if param_comptime_type[param_index] {
+            // Comptime TYPE parameters are erased from the specialized
+            // signature (types don't exist at runtime).
             continue;
         }
         let concrete_ty = if ty == Type::COMPTIME_TYPE {
@@ -567,7 +562,10 @@ fn create_specialized_function(
         } else {
             ty
         };
-        specialized_params.push((name, concrete_ty, mode, false));
+        // Comptime VALUE parameters stay in the runtime signature — the call
+        // site still passes them. Their constant value is additionally
+        // substituted into the body via value_subst (RUE-166).
+        specialized_params.push((name, concrete_ty, mode, is_comptime));
     }
 
     let (

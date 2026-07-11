@@ -342,3 +342,19 @@ fn main() -> i32 {
 }
 """ }]
 stdout = "2\n1\n3\n"
+
+# A deferred semantic type (`T`) does not make this a comptime TYPE parameter.
+# Source-declared kind controls stream routing and erasure: `value` remains one
+# concrete runtime slot in the specialized function.
+[[case]]
+name = "comptime_value_parameter_typed_by_type_parameter"
+files = [{ path = "main.rue", source = """
+fn choose(comptime T: type, comptime value: T, trailing: i32) -> i32 {
+    trailing
+}
+
+fn main() -> i32 {
+    choose(i64, 7, 42)
+}
+""" }]
+exit_code = 42

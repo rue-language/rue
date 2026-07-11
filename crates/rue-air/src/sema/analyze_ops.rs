@@ -6044,6 +6044,7 @@ impl<'a> Sema<'a> {
         let is_generic = fn_info.is_generic;
         let param_types = param_types.to_vec();
         let param_comptime = param_comptime.to_vec();
+        let param_comptime_type = self.comptime_type_param_flags(&fn_info);
         let param_names = param_names.to_vec();
         let param_modes = param_modes.to_vec();
         let return_type_sym = fn_info.return_type_sym;
@@ -6066,7 +6067,7 @@ impl<'a> Sema<'a> {
                     continue;
                 }
                 let value = self.evaluate_const_in_fn(args[i].value, ctx)?;
-                if param_types[i] == Type::COMPTIME_TYPE {
+                if param_comptime_type[i] {
                     match value {
                         Some(ConstValue::Type(ty)) => {
                             type_subst.insert(param_names[i], ty);
@@ -6179,9 +6180,9 @@ impl<'a> Sema<'a> {
                 air_args.iter().zip(param_comptime.iter()).enumerate()
             {
                 if *is_comptime {
-                    // Check if this is a type parameter (param type is ComptimeType)
-                    // vs a value parameter (param type is i32, bool, etc.)
-                    if param_types[i] == Type::COMPTIME_TYPE {
+                    // The source declaration distinguishes a type parameter
+                    // from a value parameter whose semantic type is deferred.
+                    if param_comptime_type[i] {
                         // This is a TYPE parameter - expect a TypeConst instruction
                         let inst = air.get(air_arg.value);
                         if let AirInstData::TypeConst(ty) = &inst.data {
@@ -6255,7 +6256,7 @@ impl<'a> Sema<'a> {
                 air_args.iter().zip(param_comptime.iter()).enumerate()
             {
                 let declared = param_types[i];
-                if is_comptime && declared == Type::COMPTIME_TYPE {
+                if is_comptime && param_comptime_type[i] {
                     // The comptime type argument itself - already validated above.
                     continue;
                 }
@@ -6323,7 +6324,7 @@ impl<'a> Sema<'a> {
                 let mut value_subst: std::collections::HashMap<Spur, ConstValue> =
                     std::collections::HashMap::new();
                 for (i, is_comptime) in param_comptime.iter().enumerate() {
-                    if *is_comptime && param_types[i] != Type::COMPTIME_TYPE {
+                    if *is_comptime && !param_comptime_type[i] {
                         // This is a comptime VALUE parameter - extract its const value
                         // (evaluated in the calling function's context)
                         if let Some(const_val) = self.try_evaluate_const_in_fn(args[i].value, ctx) {

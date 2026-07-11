@@ -22,7 +22,7 @@ use super::context::AnalysisContext;
 pub(crate) const MAX_TYPE_SIZE_BYTES: u64 = i32::MAX as u64;
 /// [`MAX_TYPE_SIZE_BYTES`] expressed in 8-byte ABI slots.
 pub(crate) const MAX_TYPE_SLOTS: u64 = MAX_TYPE_SIZE_BYTES / 8;
-use super::info::ConstInfo;
+use super::info::{ConstInfo, FunctionInfo};
 use crate::inference::InferType;
 use crate::sema::ConstValue;
 use crate::types::{
@@ -964,7 +964,7 @@ impl<'a> Sema<'a> {
         // Kind-aware binding: type args resolve as types, value args as
         // comptime constants (RUE-552).
         let (callee_types, callee_values) =
-            self.bind_type_ctor_args(call_path, params, arg_strs, span, ctx)?;
+            self.bind_type_ctor_args(call_path, fn_info, arg_strs, span, ctx)?;
         match self
             .reduce_type_ctor_body(function_key, &callee_types, &callee_values)
             .map_err(|e| Self::label_ctor_instantiation_site(e, span))?
@@ -1093,11 +1093,11 @@ impl<'a> Sema<'a> {
         // Kind-aware binding (RUE-552): type parameters take type arguments;
         // comptime VALUE parameters take value arguments resolved under the
         // enclosing value substitution.
-        let param_types = self.param_arena.types(params).to_vec();
+        let param_comptime_type = self.comptime_type_param_flags(&fn_info);
         let mut callee_types: HashMap<Spur, Type> = HashMap::new();
         let mut callee_values: HashMap<Spur, ConstValue> = HashMap::new();
         for (i, arg) in arg_strs.iter().enumerate() {
-            if param_types[i] == Type::COMPTIME_TYPE {
+            if param_comptime_type[i] {
                 let arg_sym = self.interner.get_or_intern(arg);
                 let arg_ty = self.resolve_type_for_comptime_with_subst_and_values_at_span(
                     arg_sym,
@@ -1309,17 +1309,18 @@ impl<'a> Sema<'a> {
     fn bind_type_ctor_args(
         &mut self,
         call_display: &str,
-        params: crate::param_arena::ParamRange,
+        function: FunctionInfo,
         arg_strs: &[String],
         span: Span,
         ctx: Option<&AnalysisContext>,
     ) -> CompileResult<(HashMap<Spur, Type>, HashMap<Spur, ConstValue>)> {
+        let params = function.params;
         let param_names = self.param_arena.names(params).to_vec();
-        let param_types = self.param_arena.types(params).to_vec();
+        let param_comptime_type = self.comptime_type_param_flags(&function);
         let mut callee_types: HashMap<Spur, Type> = HashMap::new();
         let mut callee_values: HashMap<Spur, ConstValue> = HashMap::new();
         for (i, arg) in arg_strs.iter().enumerate() {
-            if param_types[i] == Type::COMPTIME_TYPE {
+            if param_comptime_type[i] {
                 // A value where a type is expected gets a targeted message
                 // instead of decaying to "unknown type '2'".
                 if arg.trim().parse::<i128>().is_ok() {
@@ -1422,7 +1423,7 @@ impl<'a> Sema<'a> {
         };
 
         // The callee must be a known `-> type` constructor.
-        let Some(fn_info) = self.functions.get(&name_key) else {
+        let Some(fn_info) = self.functions.get(&name_key).copied() else {
             return Err(CompileError::new(
                 ErrorKind::UnknownType(format!("{}(...)", call_name)),
                 span,
@@ -1477,7 +1478,7 @@ impl<'a> Sema<'a> {
         // kind: type arguments resolve as types, value arguments as comptime
         // constants (RUE-552).
         let (callee_types, callee_values) =
-            self.bind_type_ctor_args(call_name, params, arg_strs, span, ctx)?;
+            self.bind_type_ctor_args(call_name, fn_info, arg_strs, span, ctx)?;
 
         // Reduce the constructor body under the substitution. Shares the exact
         // reduction path (and E1200 recursion guard) with value-position calls.
@@ -1497,6 +1498,26 @@ impl<'a> Sema<'a> {
                 span,
             )),
         }
+    }
+
+    /// Return one flag per source parameter identifying declarations of the
+    /// form `comptime T: type`.
+    ///
+    /// This kind cannot be reconstructed from the semantic parameter type:
+    /// both a type parameter and a deferred comptime value parameter such as
+    /// `comptime value: T` carry [`Type::COMPTIME_TYPE`] until substitution.
+    /// The original RIR declaration is therefore the source of truth for
+    /// specialization-stream routing and runtime erasure.
+    pub(crate) fn comptime_type_param_flags(&self, function: &FunctionInfo) -> Vec<bool> {
+        let type_sym = self.interner.get("type");
+        let flags: Vec<bool> = self
+            .rir
+            .get_params(function.rir_params_start, function.rir_params_len)
+            .iter()
+            .map(|param| param.is_comptime && Some(param.ty) == type_sym)
+            .collect();
+        debug_assert_eq!(flags.len(), function.params.len());
+        flags
     }
 
     /// Resolve a type symbol to a Type, returning None if the type is unknown.
@@ -1652,7 +1673,7 @@ impl<'a> Sema<'a> {
             } else {
                 self.resolve_function_name_local(name_sym, span.file_id)?
             };
-            let fn_info = self.functions.get(&function_key)?;
+            let fn_info = self.functions.get(&function_key).copied()?;
             if fn_info.return_type != Type::COMPTIME_TYPE {
                 return None;
             }
@@ -1665,11 +1686,11 @@ impl<'a> Sema<'a> {
                 return None;
             }
             // Kind-aware binding (RUE-552): see the qualified resolver above.
-            let param_types = self.param_arena.types(params).to_vec();
+            let param_comptime_type = self.comptime_type_param_flags(&fn_info);
             let mut callee_types: HashMap<Spur, Type> = HashMap::new();
             let mut callee_values: HashMap<Spur, ConstValue> = HashMap::new();
             for (i, arg) in arg_strs.iter().enumerate() {
-                if param_types[i] == Type::COMPTIME_TYPE {
+                if param_comptime_type[i] {
                     let arg_sym = self.interner.get_or_intern(arg);
                     let arg_ty = self.resolve_type_for_comptime_with_subst_and_values_at_span(
                         arg_sym,
