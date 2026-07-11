@@ -32,9 +32,33 @@ impl<'a> Sema<'a> {
         // and methods on `P`-typed receivers all fell through to `<error>`
         // or unconstrained variables (RUE-170, RUE-164). This may create the
         // anonymous structs (idempotently — analysis re-evaluates the same
-        // initializers later and structural equality dedups them).
-        let comptime_local_types =
+        // initializers later and structural equality dedups them). Keyed by
+        // binding site (the `let`'s Alloc); the generator brings each alias
+        // into scope when its statement is reached and unwinds it with the
+        // enclosing block (RUE-530).
+        let comptime_local_bindings =
             self.precompute_comptime_type_locals(body, type_subst, value_subst);
+
+        // The inline-head pre-reduction below evaluates head expressions
+        // without walking the body, so it can't replay lexical scope; give it
+        // the flattened name view. Same-named ties resolve to the later
+        // binding site deterministically (instruction order, which follows
+        // program order) — matching the old flat map for this opportunistic
+        // path.
+        let mut flat_bindings: Vec<(InstRef, Type)> = comptime_local_bindings
+            .iter()
+            .map(|(inst_ref, ty)| (*inst_ref, *ty))
+            .collect();
+        flat_bindings.sort_by_key(|(inst_ref, _)| inst_ref.as_u32());
+        let comptime_local_types: HashMap<Spur, Type> = flat_bindings
+            .into_iter()
+            .filter_map(|(inst_ref, ty)| match self.rir.get(inst_ref).data {
+                rue_rir::InstData::Alloc {
+                    name: Some(name), ..
+                } => Some((name, ty)),
+                _ => None,
+            })
+            .collect();
 
         // Pre-reduce inline type-constructor heads (`F(args).Variant(..)`,
         // `F(args) { ... }`; RUE-596) to their concrete types, keyed by the
@@ -94,7 +118,7 @@ impl<'a> Sema<'a> {
         .with_module_binding_types(&infer_ctx.module_binding_types)
         .with_module_file_ids(&infer_ctx.module_file_ids)
         .with_functions_by_file_name(&infer_ctx.functions_by_file_name)
-        .with_comptime_local_types(&comptime_local_types)
+        .with_comptime_local_bindings(&comptime_local_bindings)
         .with_inline_ctor_head_types(&inline_ctor_head_types)
         .with_comptime_values(value_subst)
         .with_extra_method_sigs(&extra_method_sigs);

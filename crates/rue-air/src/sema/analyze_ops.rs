@@ -2672,12 +2672,13 @@ impl<'a> Sema<'a> {
         // Special case: comptime type variables
         // When a variable is assigned a comptime type value (e.g., `let P = make_type()`),
         // we store the type in comptime_type_vars instead of creating a runtime variable.
-        // This allows the variable to be used as a type annotation later (e.g., `let p: P = ...`).
+        // This allows the variable to be used as a type annotation later (e.g., `let p: P = ...`),
+        // scoped to the binding's block like any other `let` (RUE-530).
         if var_type == Type::COMPTIME_TYPE {
             // Extract the type value from the TypeConst instruction
             let inst = air.get(init_result.air_ref);
             if let AirInstData::TypeConst(ty) = &inst.data {
-                ctx.comptime_type_vars.insert(name, *ty);
+                ctx.bind_comptime_type_var(name, *ty);
                 // Return Unit - no runtime code is generated for comptime type bindings
                 let nop_ref = air.add_inst(AirInst {
                     data: AirInstData::UnitConst,
