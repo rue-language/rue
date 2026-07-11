@@ -1345,7 +1345,20 @@ impl<'a> Sema<'a> {
         ctx: Option<&AnalysisContext>,
     ) -> CompileResult<Type> {
         let name_sym = self.interner.get_or_intern(call_name);
-        let Some(name_key) = self.resolve_function_name_local(name_sym, span.file_id) else {
+        // The constructor may not be collected yet: struct-field and
+        // enum-payload types, const initializers, and earlier function
+        // signatures all resolve before the main declaration sweep reaches
+        // the callee's `FnDecl`, so `struct S { v: Vec(i32) }` — or a
+        // signature naming `Vec(i32)` declared above `fn Vec` — used to
+        // E0204 while the same application resolved fine later (RUE-603).
+        // Collect the same-file declaration on demand, mirroring the
+        // const-alias path (`try_collect_const_on_demand`).
+        let mut name_key = self.resolve_function_name_local(name_sym, span.file_id);
+        if name_key.is_none() {
+            self.ensure_free_function_signature(name_sym, Some(span.file_id))?;
+            name_key = self.resolve_function_name_local(name_sym, span.file_id);
+        }
+        let Some(name_key) = name_key else {
             return Err(CompileError::new(
                 ErrorKind::UnknownType(format!("{}(...)", call_name)),
                 span,

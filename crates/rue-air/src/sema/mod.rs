@@ -52,7 +52,7 @@ pub use known_symbols::KnownSymbols;
 pub use module_path::{DirResolution, ModulePath, import_candidate_groups};
 pub use output::{AnalyzedFunction, ParamSlotModes, SemaOutput};
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use lasso::{Spur, ThreadedRodeo};
 use rue_error::{CompileErrors, MultiErrorResult, PreviewFeatures};
@@ -156,6 +156,13 @@ pub struct Sema<'a> {
     /// overflow that stack (SIGABRT) without this guard. Bounded at
     /// `MAX_SPECIALIZATION_ROUNDS`, emitting the same E1200 (RUE-261).
     pub(crate) comptime_type_call_depth: usize,
+    /// Internal names of free functions whose signatures are mid-collection in
+    /// [`Self::ensure_free_function_signature`]. Collecting a signature
+    /// resolves its parameter/return types, which may name other type
+    /// constructors and collect *them* on demand (RUE-603); a signature cycle
+    /// (`fn A(x: B(i32))` / `fn B(x: A(i32))`) must not re-enter a
+    /// mid-collection signature, or the reduction would recurse forever.
+    pub(crate) fn_signatures_in_flight: HashSet<Spur>,
 }
 
 impl<'a> Sema<'a> {
@@ -211,6 +218,7 @@ impl<'a> Sema<'a> {
             destructor_spans: HashMap::new(),
             infectious_linear: HashMap::new(),
             comptime_type_call_depth: 0,
+            fn_signatures_in_flight: HashSet::new(),
         }
     }
 

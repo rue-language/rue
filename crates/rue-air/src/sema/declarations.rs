@@ -1989,6 +1989,7 @@ impl<'a> Sema<'a> {
         let mut env = super::comptime_eval::ComptimeEnv::for_const_init(
             &resolved_types,
             &const_module_members,
+            file_id,
         );
         match self.eval_const_expr(init, &mut env)? {
             Some(value) => Ok(ConstInit::Value(value)),
@@ -2566,6 +2567,7 @@ impl<'a> Sema<'a> {
             let mut env = super::comptime_eval::ComptimeEnv::for_const_init(
                 &resolved_types,
                 &const_module_members,
+                accessing_file,
             );
             let Some(value) = self.eval_const_expr(arg.value, &mut env)? else {
                 return Err(CompileError::new(
@@ -2600,6 +2602,36 @@ impl<'a> Sema<'a> {
         }
     }
 
+    /// Every `FnDecl` inst that is type-scoped — a method or associated
+    /// function declared inside a named struct or an anonymous struct type —
+    /// as opposed to a free function. These are namespaced under their
+    /// enclosing type (spec 10.5) and must not be found by free-function
+    /// lookups or collected as free functions (a `Self` signature type would
+    /// be rejected outside its struct context, RUE-123).
+    pub(crate) fn type_scoped_method_refs(&self) -> HashSet<InstRef> {
+        let mut refs = HashSet::new();
+        for (_, inst) in self.rir.iter() {
+            match &inst.data {
+                InstData::AnonStructType {
+                    methods_start,
+                    methods_len,
+                    ..
+                }
+                | InstData::StructDecl {
+                    methods_start,
+                    methods_len,
+                    ..
+                } => {
+                    for r in self.rir.get_inst_refs(*methods_start, *methods_len) {
+                        refs.insert(r);
+                    }
+                }
+                _ => {}
+            }
+        }
+        refs
+    }
+
     /// Find a free function declaration in RIR, optionally restricted to one
     /// source file. This is used during const collection, which is
     /// dependency-ordered and can run before the main function-signature pass
@@ -2609,7 +2641,8 @@ impl<'a> Sema<'a> {
         target: Spur,
         file_id: Option<FileId>,
     ) -> Option<(FileId, bool)> {
-        self.rir.iter().find_map(|(_, inst)| {
+        let method_refs = self.type_scoped_method_refs();
+        self.rir.iter().find_map(|(inst_ref, inst)| {
             let InstData::FnDecl {
                 is_pub,
                 name,
@@ -2619,7 +2652,7 @@ impl<'a> Sema<'a> {
             else {
                 return None;
             };
-            if *has_self || *name != target {
+            if *has_self || *name != target || method_refs.contains(&inst_ref) {
                 return None;
             }
             if file_id.is_some_and(|wanted| inst.span.file_id != wanted) {
@@ -2630,13 +2663,15 @@ impl<'a> Sema<'a> {
     }
 
     /// Ensure a free function's signature is available during const
-    /// collection, which can run before the main declaration walk reaches the
-    /// callee's `FnDecl`.
+    /// collection, struct-field/enum-payload type resolution, and
+    /// signature-type resolution — all of which can run before the main
+    /// declaration walk reaches the callee's `FnDecl` (RUE-603).
     pub(crate) fn ensure_free_function_signature(
         &mut self,
         target: Spur,
         file_id: Option<FileId>,
     ) -> CompileResult<Option<(FileId, bool)>> {
+        let method_refs = self.type_scoped_method_refs();
         let Some((
             span,
             is_pub,
@@ -2647,7 +2682,7 @@ impl<'a> Sema<'a> {
             is_unchecked,
             directives_start,
             directives_len,
-        )) = self.rir.iter().find_map(|(_, inst)| {
+        )) = self.rir.iter().find_map(|(inst_ref, inst)| {
             let InstData::FnDecl {
                 is_pub,
                 name,
@@ -2664,7 +2699,7 @@ impl<'a> Sema<'a> {
             else {
                 return None;
             };
-            if *has_self || *name != target {
+            if *has_self || *name != target || method_refs.contains(&inst_ref) {
                 return None;
             }
             if file_id.is_some_and(|wanted| inst.span.file_id != wanted) {
@@ -2688,7 +2723,15 @@ impl<'a> Sema<'a> {
 
         let internal_target = self.internal_function_name(target, span.file_id);
         if !self.functions.contains_key(&internal_target) {
-            self.collect_function_signature(
+            // Cycle guard (see `fn_signatures_in_flight`): collecting this
+            // signature resolves its parameter/return types, which may collect
+            // other signatures on demand; a signature cycle must terminate as
+            // "not found" (the referencing site reports E0204) instead of
+            // recursing forever.
+            if !self.fn_signatures_in_flight.insert(internal_target) {
+                return Ok(None);
+            }
+            let collected = self.collect_function_signature(
                 target,
                 params_start,
                 params_len,
@@ -2699,7 +2742,9 @@ impl<'a> Sema<'a> {
                 is_unchecked,
                 directives_start,
                 directives_len,
-            )?;
+            );
+            self.fn_signatures_in_flight.remove(&internal_target);
+            collected?;
         }
         Ok(Some((span.file_id, is_pub)))
     }

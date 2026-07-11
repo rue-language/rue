@@ -179,9 +179,17 @@ impl<'a> ComptimeEnv<'a> {
     /// results) the `comptime { }` block path gets from HM inference, instead
     /// of the raw-`i64` fallback that only range-checked the final value
     /// against the declared type (RUE-230).
+    ///
+    /// `defining_file` is the const's declaring file, so a type-constructor
+    /// call in the initializer can collect the same-file callee's signature on
+    /// demand (`const V = Vec(i32);` evaluated during struct-field resolution,
+    /// before the main declaration sweep collected `Vec`; RUE-603), and a
+    /// module-qualified comptime call nested in the initializer resolves its
+    /// receiver against that file's imports (RUE-511).
     pub(crate) fn for_const_init(
         resolved_types: &'a HashMap<InstRef, Type>,
         const_module_members: &'a HashMap<InstRef, ConstValue>,
+        defining_file: FileId,
     ) -> Self {
         Self {
             type_subst: &EMPTY_TYPE_SUBST,
@@ -190,7 +198,7 @@ impl<'a> ComptimeEnv<'a> {
             runtime_locals: None,
             locals: HashMap::new(),
             const_module_members,
-            defining_file: None,
+            defining_file: Some(defining_file),
         }
     }
 }
@@ -1435,8 +1443,26 @@ impl Sema<'_> {
         args_len: u32,
         env: &mut ComptimeEnv,
     ) -> CompileResult<Option<ConstValue>> {
-        let Some(fn_info) = self.functions.get(&name) else {
-            return Ok(None);
+        let (name_key, fn_info) = if let Some(info) = self.functions.get(&name).copied() {
+            (name, info)
+        } else {
+            // The callee may simply not be collected yet: const initializers
+            // (`const V = Vec(i32);`) and struct-field / enum-payload types
+            // evaluate before the main declaration sweep reaches the callee's
+            // `FnDecl` (RUE-603). Collect the evaluating expression's own
+            // file's declaration on demand; a genuinely unknown name stays
+            // non-evaluable.
+            let Some(file_id) = env.defining_file else {
+                return Ok(None);
+            };
+            self.ensure_free_function_signature(name, Some(file_id))?;
+            let Some((key, info)) = self
+                .resolve_function_name_local(name, file_id)
+                .and_then(|key| self.functions.get(&key).copied().map(|info| (key, info)))
+            else {
+                return Ok(None);
+            };
+            (key, info)
         };
         let is_type_fn = fn_info.return_type == Type::COMPTIME_TYPE;
         let params = fn_info.params;
@@ -1486,7 +1512,7 @@ impl Sema<'_> {
         }
         // The callee body sees only its own parameters. Reduce it with the
         // freshly-built substitution maps.
-        self.reduce_type_ctor_body(name, &callee_types, &callee_values)
+        self.reduce_type_ctor_body(name_key, &callee_types, &callee_values)
     }
 
     /// Reduce a comptime-evaluable function's body to a [`ConstValue`] under
