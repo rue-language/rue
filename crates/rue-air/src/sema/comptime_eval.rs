@@ -1231,7 +1231,15 @@ impl Sema<'_> {
             // are not comptime-foldable here and stay non-evaluable.
             InstData::TypeIntrinsic { name, type_arg } => {
                 let (name, type_arg) = (*name, *type_arg);
-                if self.interner.resolve(&name) != "require_droppable" {
+                let gate = self.interner.resolve(&name);
+                // Both well-formedness gates reduce to unit at comptime:
+                // `@require_droppable` (instantiation-time, rejects `linear`) and
+                // `@require_trivially_droppable` (read-time, rejects drop glue —
+                // RUE-651). Any other type intrinsic (`@size_of`/`@align_of`) is
+                // not comptime-foldable here.
+                let is_droppable_gate = gate == "require_droppable";
+                let is_trivial_gate = gate == "require_trivially_droppable";
+                if !is_droppable_gate && !is_trivial_gate {
                     return Ok(None);
                 }
                 // Resolve the element type through the enclosing comptime
@@ -1246,7 +1254,11 @@ impl Sema<'_> {
                 ) else {
                     return Ok(None);
                 };
-                self.check_require_droppable(elem_ty, span)?;
+                if is_trivial_gate {
+                    self.check_trivially_droppable(elem_ty, span)?;
+                } else {
+                    self.check_require_droppable(elem_ty, span)?;
+                }
                 Ok(Some(ConstValue::Unit))
             }
 
@@ -1427,6 +1439,33 @@ impl Sema<'_> {
         // drop glue before freeing its buffer, exactly as Rust's `Vec<T>`
         // does. The old E0498 rejection is gone; `ArrayBuf(ArrayBuf(i64))`,
         // `ArrayBuf(StrBuf)`, and lists of `drop fn` structs are legal.
+        Ok(())
+    }
+
+    /// The `@require_trivially_droppable(T)` gate for by-copy element *reads*
+    /// (RUE-651). `ArrayBuf(T)`'s `get`/`get_or` return the element by copying it
+    /// out with `@ptr_read` while leaving the slot live. For a `T` with drop glue
+    /// (a destructor, or a field/payload/element that has one) that copy aliases
+    /// the element's owned resources: both the copy and the still-live slot run
+    /// drop glue at scope exit — a double-free. This gate rejects those reads at
+    /// their call site (E0711); the element must be *moved* out with `pop`/`pop_or`
+    /// instead. It is deliberately placed in the `get`/`get_or` method bodies (not
+    /// the constructor), so demand-driven analysis (ADR-0045) fires it only when a
+    /// program actually calls a by-copy read — storing, pushing, popping, and
+    /// dropping a drop-glue element stay legal (RUE-646). Mirrors Swift's rule
+    /// that a non-copyable element cannot use a by-value `get` subscript.
+    ///
+    /// A `linear` `T` never reaches here: `@require_droppable` already rejects it
+    /// at instantiation, so `ArrayBuf(linear)` cannot be constructed to be read.
+    pub(crate) fn check_trivially_droppable(&self, ty: Type, span: Span) -> CompileResult<()> {
+        if self.type_has_drop_glue(ty) {
+            return Err(CompileError::new(
+                ErrorKind::ContainerElementNotTriviallyDroppable {
+                    ty: self.format_type_name(ty),
+                },
+                span,
+            ));
+        }
         Ok(())
     }
 

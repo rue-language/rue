@@ -768,3 +768,33 @@ fn main() -> i32 {
 }
 """ }]
 exit_code = 243
+
+# A by-copy read (`get`) of a drop-glue element is REJECTED (E0711, RUE-651).
+# Before this gate, `ArrayBuf(String)::get(0)` returned a bitwise copy of the
+# String that aliased its owned heap buffer; both the copy and the still-live
+# slot ran drop glue at scope exit — a double-free that segfaulted in safe code
+# (verified: this program exited 139 before the fix). The reader now gates on its
+# element type and directs the caller to `pop` (which moves the element out,
+# leaving one owner). Storing/pushing/popping a String element stays legal — the
+# `arraybuf_strbuf_elements` case above (which uses `pop`) still runs.
+[[case]]
+name = "arraybuf_get_on_drop_glue_element_rejected"
+description = "A by-copy `get` of a drop-glue element (String) is rejected with E0711 and pointed at `pop`, instead of a double-free segfault (RUE-651)."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0711", "by copy", "move it out with `pop`"]
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let Buf = std.arraybuf.ArrayBuf(String);
+    let OStr = std.option.Option(String);
+    let mut b = Buf.new();
+    let mut s0 = String.new();
+    s0.push_str("hello");
+    b.push(s0);
+    let n = match b.get(0) { OStr.Some(s) => 1, OStr.None => 0 };
+    @intCast(n)
+}
+""" }]

@@ -231,4 +231,40 @@ impl<'a> Sema<'a> {
             _ => false,
         }
     }
+
+    /// Whether a type has drop glue — a destructor that runs at scope exit,
+    /// either directly or through a by-value field/payload/element. Mirrors the
+    /// traversal `rue_cfg`'s `type_needs_drop` performs (the codegen authority):
+    /// a struct has glue if it has a destructor or any field does; an enum if any
+    /// variant payload does; an array if its element type does; pointers and
+    /// scalars have none (a pointer does not own its pointee).
+    ///
+    /// Used to gate by-copy element reads (`ArrayBuf(T)::get`/`get_or`, RUE-651):
+    /// copying a drop-glue element by `@ptr_read` would alias its owned resources
+    /// and double-free at scope exit, so those reads are rejected for such `T`.
+    pub(crate) fn type_has_drop_glue(&self, ty: Type) -> bool {
+        match ty.kind() {
+            TypeKind::Struct(struct_id) => {
+                let struct_def = self.type_pool.struct_def(struct_id);
+                struct_def.destructor.is_some()
+                    || struct_def
+                        .fields
+                        .iter()
+                        .any(|f| self.type_has_drop_glue(f.ty))
+            }
+            TypeKind::Enum(enum_id) => {
+                let enum_def = self.type_pool.enum_def(enum_id);
+                enum_def
+                    .variant_payloads
+                    .iter()
+                    .flatten()
+                    .any(|&payload_ty| self.type_has_drop_glue(payload_ty))
+            }
+            TypeKind::Array(array_id) => {
+                let (element_type, _length) = self.type_pool.array_def(array_id);
+                self.type_has_drop_glue(element_type)
+            }
+            _ => false,
+        }
+    }
 }
