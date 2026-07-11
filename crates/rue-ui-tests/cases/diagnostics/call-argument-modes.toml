@@ -1,0 +1,22 @@
+[section]
+id = "diagnostics.call-argument-modes"
+name = "Call argument mode diagnostics"
+description = "Pins the targeted diagnostic for an explicit borrow/inout mode on an unmarked call parameter (RUE-634)."
+
+[[case]]
+name = "unexpected_borrow_argument_has_removal_help"
+description = "E0209 names the unexpected source mode and explains that an unmarked parameter is passed without an explicit keyword."
+source = """
+fn take(x: i32) {}
+
+fn main() {
+    let x = 42;
+    take(borrow x);
+}
+"""
+compile_fail = true
+error_contains = [
+    "[E0209]",
+    "unexpected `borrow` argument: the corresponding parameter is unmarked",
+    "remove the `borrow` keyword; this argument is passed without an explicit mode",
+]

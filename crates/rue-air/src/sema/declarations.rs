@@ -2550,11 +2550,25 @@ impl<'a> Sema<'a> {
 
         let params = fn_info.params;
         let param_names = self.param_arena.names(params).to_vec();
+        let param_modes = self.param_arena.modes(params).to_vec();
         let param_comptime = self.param_arena.comptime(params).to_vec();
         let args = self.rir.get_call_args(args_start, args_len).to_vec();
+        if args.len() != param_names.len() {
+            return Err(CompileError::new(
+                ErrorKind::ConstExprNotSupported {
+                    expr_kind: format!("call to `{member_str}`"),
+                },
+                span,
+            ));
+        }
+        // Module-scope const collection reduces this call before ordinary
+        // function-body analysis can see it. Preserve the same exact source
+        // mode contract as every runtime call (RUE-634).
+        self.validate_explicit_call_modes(&args, param_modes.iter().copied())?;
+
         let all_params_comptime = !param_names.is_empty() && param_comptime.iter().all(|&c| c);
         let eligible = param_names.is_empty() || all_params_comptime;
-        if args.len() != param_names.len() || !eligible {
+        if !eligible {
             return Err(CompileError::new(
                 ErrorKind::ConstExprNotSupported {
                     expr_kind: format!("call to `{member_str}`"),

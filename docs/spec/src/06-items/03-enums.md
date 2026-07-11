@@ -132,8 +132,10 @@ specification.
 A tuple variant is constructed by applying the variant path to payload
 arguments: `EnumName.Variant(arg, ...)`. The number of arguments **MUST**
 equal the variant's payload arity, and each argument's type **MUST** match the
-corresponding declared payload type. Using a payload-carrying variant as a
-bare path (`EnumName.Variant`, with no arguments) is an error.
+corresponding declared payload type. Payload arguments are unmarked; tuple
+variants do not declare `borrow` or `inout` parameters. Using a
+payload-carrying variant as a bare path (`EnumName.Variant`, with no
+arguments) is an error.
 
 {{ rule(id="6.3:17", cat="normative") }}
 

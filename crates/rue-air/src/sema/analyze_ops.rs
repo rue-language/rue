@@ -27,7 +27,7 @@ use rue_error::{
     CompileError, CompileResult, CompileWarning, ErrorKind, MissingFieldsError, OptionExt,
     PreviewFeature, WarningKind,
 };
-use rue_rir::{InstData, InstRef, RirArgMode, RirParamMode, RirPattern};
+use rue_rir::{InstData, InstRef, RirParamMode, RirPattern};
 
 use crate::sema::context::ConstValue;
 use rue_span::Span;
@@ -6028,36 +6028,12 @@ impl<'a> Sema<'a> {
             ));
         }
 
+        // Source argument modes must match the declaration exactly before an
+        // explicit by-ref marker is interpreted as a place/loan operation.
+        self.validate_explicit_call_modes(&args, param_modes.iter().copied())?;
+
         // Check for exclusive access violation
         self.check_exclusive_access(&args, span)?;
-
-        // Check that call-site argument modes match function parameter modes
-        // Do this before the mutable borrow in analyze_call_args, accessing fn_info directly
-        for (i, (arg, expected_mode)) in args.iter().zip(param_modes.iter()).enumerate() {
-            match expected_mode {
-                RirParamMode::Inout => {
-                    if arg.mode != RirArgMode::Inout {
-                        return Err(CompileError::new(
-                            ErrorKind::InoutKeywordMissing,
-                            self.rir.get(args[i].value).span,
-                        ));
-                    }
-                }
-                RirParamMode::Borrow => {
-                    if arg.mode != RirArgMode::Borrow {
-                        return Err(CompileError::new(
-                            ErrorKind::BorrowKeywordMissing,
-                            self.rir.get(args[i].value).span,
-                        ));
-                    }
-                }
-                // Normal and comptime params accept any mode
-                // (comptime params are substituted at compile time, not passed at runtime)
-                RirParamMode::Normal | RirParamMode::Comptime => {
-                    // Normal params accept any mode
-                }
-            }
-        }
 
         // Extract info before any mutable borrow
         let is_generic = fn_info.is_generic;
@@ -6540,7 +6516,12 @@ impl<'a> Sema<'a> {
                 "an inline type-constructor call as a pattern head",
                 span,
             )?;
-            return Ok(match self.try_evaluate_const(head_ref) {
+            // Unlike the inference prepass, this is the authoritative pattern
+            // resolver. Preserve hard source diagnostics from comptime call
+            // reduction (including exact argument-mode errors) instead of
+            // degrading them into an unrelated unknown-enum failure.
+            let mut env = super::comptime_eval::ComptimeEnv::for_analysis(ctx);
+            return Ok(match self.eval_const_expr(head_ref, &mut env)? {
                 Some(ConstValue::Type(ty)) => ty.as_enum().map(|id| (id, true)),
                 _ => None,
             });
@@ -6642,6 +6623,13 @@ impl<'a> Sema<'a> {
                 span,
             ));
         }
+
+        // Enum payload fields are ordinary unmarked values. Reject explicit
+        // `borrow`/`inout` before analyzing them or erasing their source modes.
+        self.validate_explicit_call_modes(
+            &args,
+            std::iter::repeat_n(RirParamMode::Normal, args.len()),
+        )?;
 
         // Analyze each payload argument and type-check against the declared
         // payload type (inference already constrained them; this is the final

@@ -2295,6 +2295,25 @@ fn main() -> i32 {
 exit_code = 42
 
 [[case]]
+name = "inline_type_ctor_pattern_head_propagates_argument_mode_error"
+spec = ["4.10:3", "4.14:23"]
+preview = "inline_type_ctor_paths"
+preview_should_pass = true
+description = "The authoritative inline pattern-head reducer propagates an exact argument-mode error instead of degrading it to an unresolved-pattern diagnostic (RUE-634)"
+source = """
+fn Result(comptime T: type, comptime E: type) -> type { enum { Ok(T), Err(E) } }
+fn main() -> i32 {
+    let r = Result(i32, i32).Ok(42);
+    match r {
+        Result(inout i32, i32).Ok(v) => v,
+        Result(i32, i32).Err(e) => e,
+    }
+}
+"""
+compile_fail = true
+error_contains = "[E0209]"
+
+[[case]]
 name = "inline_type_ctor_enum_head_wide_payload_literal"
 spec = ["4.14:23"]
 preview = "inline_type_ctor_paths"
@@ -2611,3 +2630,35 @@ fn main() -> i32 { S }
 """
 compile_fail = true
 error_contains = "not supported in const context"
+
+# =============================================================================
+# Exact argument modes in eager comptime evaluation (RUE-634)
+# =============================================================================
+
+[[case]]
+name = "eager_comptime_value_call_rejects_inout_for_unmarked_param"
+spec = ["4.10:3", "4.14:5", "4.14:28"]
+description = "An eagerly reduced value call still validates its explicit source argument modes before evaluating the comptime argument."
+source = """
+fn identity(comptime x: i32) -> i32 { x }
+
+const X: i32 = identity(inout 7);
+
+fn main() -> i32 { X }
+"""
+compile_fail = true
+error_contains = "[E0209]"
+
+[[case]]
+name = "module_eager_type_call_rejects_borrow_for_unmarked_param"
+spec = ["4.10:3", "4.14:22", "4.14:28"]
+description = "A module-qualified type constructor reduced in a module-scope const enforces the same unmarked comptime-parameter spelling."
+source = """
+const helper = @import("mode_type_helper");
+const Boxed = helper.Box(borrow i64);
+
+fn main() -> i32 { 0 }
+"""
+aux_files = { "mode_type_helper.rue" = "pub fn Box(comptime T: type) -> type { struct { value: T } }" }
+compile_fail = true
+error_contains = "[E0209]"
