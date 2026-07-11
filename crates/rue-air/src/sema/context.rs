@@ -418,7 +418,7 @@ pub(crate) struct AnalysisContext<'a> {
     pub referenced_methods: HashSet<(StructId, Spur)>,
     /// While analyzing the value of an `inout`/`borrow` call argument, the ROOT
     /// variable of the place being passed by reference (set by
-    /// `analyze_call_args`; for `f(borrow o.f)` this is `o`). A by-ref argument
+    /// `analyze_call_args_coerced`; for `f(borrow o.f)` this is `o`). A by-ref argument
     /// is a borrow, not a move, so the variable-reference and place analyses
     /// must not mark the root (or the projected path) as moved — and must not
     /// reject forwarding a by-ref parameter to another function's by-ref
@@ -632,7 +632,7 @@ impl<'a> AnalysisContext<'a> {
             referenced_functions: HashSet::new(),
             referenced_methods: HashSet::new(),
             // A by-ref argument's value is a place — a variable or a
-            // field/index projection chain (enforced in analyze_call_args) —
+            // field/index projection chain (enforced in the call-argument analyzer) —
             // and index subexpressions are analyzed with the root cleared
             // (see try_trace_place_inner), so a loop can never be analyzed
             // while this is set; the fork starts between whole-expression

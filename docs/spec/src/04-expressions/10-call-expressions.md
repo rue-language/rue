@@ -44,7 +44,17 @@ receiver-autoref rule (6.4:25).
 
 {{ rule(id="4.10:4", cat="legality-rule") }}
 
-Each argument's type **MUST** be the corresponding parameter's type. As everywhere, the one admitted coercion is from the never type (3.4:3); no other type difference is accepted (core calculus `docs/formal/01-core-calculus.md` §5.8, rule `(Call)`).
+Each argument's type **MUST** be the corresponding parameter's type after any
+argument-position coercion explicitly defined by that type's rules. Those
+coercions include the never type (3.4:3), a first-class `str` or string buffer
+viewed through a `borrow str` parameter, a caller-owned string buffer viewed
+through an `inout str` parameter (3.7:55, 3.7:58, 3.7:60), and the analogous
+fixed-array-to-slice coercion while the `slices` preview is enabled. View
+materialization may change the physical calling convention — for example, a
+borrowed two-word view is passed by value — but it does not admit an unrelated
+source type or change the exact source-level argument-mode rule (4.10:3). No
+other type difference is accepted (core calculus
+`docs/formal/01-core-calculus.md` §5.8, rule `(Call)`).
 
 {{ rule(id="4.10:5", cat="normative") }}
 

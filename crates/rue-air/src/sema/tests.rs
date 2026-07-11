@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use crate::inst::{AirInstData, AirRef};
+    use crate::inst::{AirArgMode, AirInstData, AirRef};
     use crate::sema::{Sema, SemaOutput};
     use crate::types::Type;
     use rue_error::{CompileErrors, ErrorKind, MultiErrorResult, PreviewFeature, PreviewFeatures};
@@ -397,6 +397,120 @@ mod tests {
             errors.iter().next().unwrap().kind,
             ErrorKind::StrViewReassignment
         ));
+    }
+
+    #[test]
+    fn method_and_assoc_view_calls_encode_physical_modes() {
+        let source = r#"
+            struct Item { value: i32 }
+
+            struct Probe {
+                bias: i32,
+
+                fn method(
+                    borrow self,
+                    borrow read: str,
+                    inout edit: str,
+                    borrow item: Item,
+                ) -> i32 {
+                    self.bias + @intCast(read.len()) + @intCast(edit.len()) + item.value
+                }
+
+                fn assoc(borrow read: str, inout edit: str, borrow item: Item) -> i32 {
+                    11 + @intCast(read.len()) + @intCast(edit.len()) + item.value
+                }
+            }
+
+            fn main() -> i32 {
+                let probe = Probe { bias: 11 };
+                let read: Str(8) = "read";
+                let mut edit: Str(8) = "editor";
+                let item = Item { value: 0 };
+                probe.method(borrow read, inout edit, borrow item)
+                    + Probe.assoc(borrow read, inout edit, borrow item)
+            }
+        "#;
+        let mut preview = PreviewFeatures::new();
+        preview.insert(PreviewFeature::StringTrio);
+        let output = compile_to_air_with_preview_features(source, preview).unwrap();
+
+        let main = output
+            .functions
+            .iter()
+            .find(|function| function.name == "main")
+            .unwrap();
+        let call_modes: Vec<Vec<AirArgMode>> = main
+            .air
+            .iter()
+            .filter_map(|(_, inst)| match inst.data {
+                AirInstData::Call {
+                    args_start,
+                    args_len,
+                    ..
+                } => Some(
+                    main.air
+                        .get_call_args(args_start, args_len)
+                        .map(|arg| arg.mode)
+                        .collect(),
+                ),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            call_modes,
+            vec![
+                vec![
+                    AirArgMode::Borrow,
+                    AirArgMode::Normal,
+                    AirArgMode::Inout,
+                    AirArgMode::Borrow,
+                ],
+                vec![AirArgMode::Normal, AirArgMode::Inout, AirArgMode::Borrow,],
+            ]
+        );
+
+        let method = output
+            .functions
+            .iter()
+            .find(|function| function.name == "Probe.method")
+            .unwrap();
+        assert_eq!(
+            method.param_modes.by_ref(),
+            &[true, false, false, true, true]
+        );
+        assert_eq!(
+            method.param_modes.writable(),
+            &[false, false, false, true, false]
+        );
+
+        let assoc = output
+            .functions
+            .iter()
+            .find(|function| function.name == "Probe::assoc")
+            .unwrap();
+        assert_eq!(assoc.param_modes.by_ref(), &[false, false, true, true]);
+        assert_eq!(assoc.param_modes.writable(), &[false, false, true, false]);
+    }
+
+    #[test]
+    fn method_and_assoc_fixed_string_literals_are_contextual() {
+        let source = r#"
+            struct Probe {
+                fn method(self, value: Str(8)) -> u64 { value.len() }
+                fn assoc(value: Str(8)) -> u64 { value.len() }
+            }
+
+            fn main() -> i32 {
+                let probe = Probe {};
+                @intCast(
+                    probe.method(if true { "hi" } else { "bye" })
+                        + Probe.assoc(if false { "long" } else { "four" })
+                )
+            }
+        "#;
+        let mut preview = PreviewFeatures::new();
+        preview.insert(PreviewFeature::StringTrio);
+        compile_to_air_with_preview_features(source, preview).unwrap();
     }
 
     #[test]

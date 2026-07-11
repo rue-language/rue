@@ -2390,12 +2390,22 @@ impl<'a> ConstraintGenerator<'a> {
                                 for (arg, param_type) in
                                     args.iter().zip(method_sig.param_types.iter())
                                 {
+                                    // View/string compatibility is
+                                    // representation-aware and authoritative
+                                    // in sema. This includes contextual
+                                    // `Str(N)` expressions; sema still
+                                    // requires exact capacity for non-literals
+                                    // (RUE-634/RUE-636).
+                                    let defer_equality =
+                                        self.is_slice_struct_type(param_type.clone());
                                     let arg_info = self.generate(arg.value, ctx);
-                                    self.add_constraint(Constraint::equal(
-                                        arg_info.ty,
-                                        param_type.clone(),
-                                        arg_info.span,
-                                    ));
+                                    if !defer_equality {
+                                        self.add_constraint(Constraint::equal(
+                                            arg_info.ty,
+                                            param_type.clone(),
+                                            arg_info.span,
+                                        ));
+                                    }
                                 }
                                 method_sig.return_type.clone()
                             } else {
@@ -2719,12 +2729,15 @@ impl<'a> ConstraintGenerator<'a> {
         let method_sig = self.method_sig(&(struct_id, function))?;
         let args = self.rir.get_call_args(args_start, args_len);
         for (arg, param_type) in args.iter().zip(method_sig.param_types.iter()) {
+            let defer_equality = self.is_slice_struct_type(param_type.clone());
             let arg_info = self.generate(arg.value, ctx);
-            self.add_constraint(Constraint::equal(
-                arg_info.ty,
-                param_type.clone(),
-                arg_info.span,
-            ));
+            if !defer_equality {
+                self.add_constraint(Constraint::equal(
+                    arg_info.ty,
+                    param_type.clone(),
+                    arg_info.span,
+                ));
+            }
         }
         Some(method_sig.return_type.clone())
     }
