@@ -1153,7 +1153,7 @@ impl<'a> Interp<'a> {
         let is_owned_string = |index: usize| self.is_owned_string_type(ty(index));
         let mut validated_kind = kind;
         let signature_matches = match name {
-            "panic" => result_ty == Type::NEVER && (args.is_empty() || is_owned_string(0)),
+            "panic" => result_ty == Type::UNIT && (args.is_empty() || is_owned_string(0)),
             "assert" => {
                 result_ty == Type::UNIT
                     && ty(0) == Type::BOOL

@@ -903,7 +903,7 @@ impl<'a> CfgBuilder<'a> {
                 }
                 // Store args in extra array
                 let (args_start, args_len) = self.cfg.push_extra(arg_vals);
-                let value = self.emit(
+                let intrinsic_value = self.emit(
                     CfgInstData::Intrinsic {
                         name: *name,
                         args_start,
@@ -912,6 +912,17 @@ impl<'a> CfgBuilder<'a> {
                     ty,
                     span,
                 );
+                // Unit has no runtime representation, and side-effect-only
+                // intrinsics such as @panic, @assert, and @dbg deliberately do
+                // not define a backend vreg. Preserve the intrinsic itself in
+                // the block for its side effect, but use the same dummy unit
+                // value as UnitConst whenever the expression needs a value
+                // (notably as the tail of a unit-returning function).
+                let value = if ty == Type::UNIT {
+                    self.emit(CfgInstData::Const(0), Type::UNIT, span)
+                } else {
+                    intrinsic_value
+                };
                 self.cache(air_ref, value);
                 ExprResult {
                     value: Some(value),
