@@ -83,4 +83,27 @@ pub struct SemaOutput {
     pub warnings: Vec<CompileWarning>,
     /// Type intern pool (contains all types including arrays).
     pub type_pool: TypeInternPool,
+    /// Exact structural work performed while dispatching reachable bodies.
+    pub body_analysis_work: BodyAnalysisWork,
+}
+
+/// Value-only workload counters for demand-driven body dispatch.
+///
+/// These counters deliberately expose no request-local RIR instruction handles.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BodyAnalysisWork {
+    /// Indexed declaration-record lookups for reachable, non-generic free functions.
+    pub free_function_record_lookups: usize,
+    /// Private declaration-record lookups for reachable named-struct methods.
+    pub named_method_record_lookups: usize,
+    /// MethodInfo-driven lookups for reachable anonymous-struct methods.
+    pub anonymous_method_record_lookups: usize,
+    /// Named destructor declarations selected during the one-time implicit-root scan.
+    pub named_destructor_declarations_visited: usize,
+    /// Raw RIR entries visited specifically to select ordinary reachable free
+    /// functions or named methods.
+    ///
+    /// This excludes one-time implicit-root scans, unused-reference scans, and
+    /// comptime evaluation. Indexed dispatch keeps this value at zero.
+    pub reachable_declaration_rir_visits: usize,
 }

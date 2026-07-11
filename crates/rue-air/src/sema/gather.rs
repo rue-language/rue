@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use lasso::{Spur, ThreadedRodeo};
 use rue_error::PreviewFeatures;
-use rue_rir::Rir;
+use rue_rir::{InstData, Rir};
 use rue_span::FileId;
 use rue_target::Target;
 
@@ -18,11 +18,50 @@ use crate::types::{EnumId, StructId};
 use super::info::{ConstInfo, FunctionInfo, MethodInfo};
 use super::{KnownSymbols, Sema};
 
+/// Rebuild private named-method declaration identities for the legacy split
+/// gather/analysis adapter. The adapter has no public constructor today, but
+/// keeping this deterministic RIR-order rebuild prevents its public
+/// `into_sema` compatibility path from falling back to body-time scans.
+pub(super) fn rebuild_named_method_declarations(
+    rir: &Rir,
+    structs: &HashMap<Spur, StructId>,
+    structs_by_file_name: &HashMap<(FileId, Spur), StructId>,
+) -> HashMap<(StructId, Spur), rue_rir::InstRef> {
+    let mut declarations = HashMap::new();
+    for (_, inst) in rir.iter() {
+        let InstData::StructDecl {
+            name,
+            methods_start,
+            methods_len,
+            ..
+        } = &inst.data
+        else {
+            continue;
+        };
+        let Some(&struct_id) = structs_by_file_name
+            .get(&(inst.span.file_id, *name))
+            .or_else(|| structs.get(name))
+        else {
+            continue;
+        };
+        for method_ref in rir.get_inst_refs(*methods_start, *methods_len) {
+            if let InstData::FnDecl { name, .. } = rir.get(method_ref).data {
+                declarations.insert((struct_id, name), method_ref);
+            }
+        }
+    }
+    declarations
+}
+
 /// Output from the declaration gathering phase.
 ///
-/// This contains the state built during declaration gathering that is needed
-/// for function body analysis. After gathering, this can be converted back
-/// into a `Sema` for demand-driven function-body analysis.
+/// Compatibility carrier for state produced by a declaration-gathering phase.
+///
+/// Rue's live compiler currently uses [`Sema::analyze_all`] and does not expose
+/// a public producer for this type or a public body-only analysis entry point.
+/// `GatherOutput` remains public for API compatibility and as the intended
+/// boundary for a future split pipeline; [`Self::into_sema`] preserves its
+/// stored declaration state without exposing snapshot-local instruction IDs.
 ///
 /// # Architecture
 ///
@@ -32,18 +71,7 @@ use super::{KnownSymbols, Sema};
 /// 3. **Foundation for incremental** - Gathered declarations can become cacheable inputs
 /// 4. **Better error recovery** - One function's error doesn't block others
 ///
-/// # Usage
-///
-/// ```ignore
-/// // Option A: Simple path - all-in-one analysis
-/// let sema = Sema::new(rir, interner, preview);
-/// let output = sema.analyze_all()?;
-///
-/// // Option B: Split path - gather declarations, then analyze bodies
-/// let gather = sema.gather_declarations()?;
-/// let sema = gather.into_sema();
-/// let output = sema.analyze_all()?;
-/// ```
+/// Callers should use [`Sema::analyze_all`] for the supported end-to-end path.
 #[derive(Debug)]
 pub struct GatherOutput<'a> {
     /// Reference to the RIR being analyzed.
@@ -90,11 +118,14 @@ pub struct GatherOutput<'a> {
 }
 
 impl<'a> GatherOutput<'a> {
-    /// Convert this gather output back into a Sema for function body analysis.
+    /// Convert this compatibility state back into a semantic analyzer.
     ///
-    /// This is used for sequential analysis. The returned Sema has all
-    /// declarations already collected and is ready to analyze function bodies.
+    /// The returned analyzer retains already-collected declarations. Rue does
+    /// not currently expose a public body-only driver, so this conversion is
+    /// not itself a supported replacement for [`Sema::analyze_all`].
     pub fn into_sema(self) -> Sema<'a> {
+        let named_method_declarations =
+            rebuild_named_method_declarations(self.rir, &self.structs, &self.structs_by_file_name);
         Sema {
             rir: self.rir,
             interner: self.interner,
@@ -107,6 +138,8 @@ impl<'a> GatherOutput<'a> {
             enums: self.enums,
             enums_by_file_name: self.enums_by_file_name,
             methods: self.methods,
+            named_method_declarations,
+            body_analysis_work: super::BodyAnalysisWork::default(),
             constants: self.constants,
             constants_by_file_name: self.constants_by_file_name,
             module_bindings: self.module_bindings,
