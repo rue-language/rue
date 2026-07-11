@@ -376,6 +376,69 @@ exit_code = 42
 no_warnings = true
 
 [[case]]
+name = "type_position_use_no_warning_signature"
+source = """
+fn Pair(comptime T: type) -> type { struct { a: T } }
+fn take(p: Pair(i32)) -> i32 { p.a }
+
+fn main() -> i32 {
+    let P = Pair(i32);
+    take(P { a: 42 })
+}
+"""
+exit_code = 42
+no_warnings = true
+
+[[case]]
+name = "type_position_use_no_warning_member_types"
+source = """
+fn Vec(comptime T: type) -> type { struct { x: T } }
+enum Holder {
+    Full(Vec(i32)),
+    Empty,
+}
+
+fn main() -> i32 {
+    let V = Vec(i32);
+    match Holder.Full(V { x: 42 }) {
+        Holder.Full(v) => v.x,
+        Holder.Empty => 0,
+    }
+}
+"""
+exit_code = 42
+no_warnings = true
+
+[[case]]
+name = "type_position_use_composite_annotation_no_warning"
+source = """
+fn Wrap(comptime T: type) -> type { struct { a: T } }
+fn use_it(arr: [Wrap(i32); 2]) -> i32 { arr[0].a }
+
+fn main() -> i32 {
+    0
+}
+"""
+# Wrap is referenced only inside use_it's composite parameter annotation, so
+# only the (genuinely unused) use_it may be flagged — Wrap must not be.
+exit_code = 0
+warning_contains = ["unused function", "'use_it'"]
+expected_warning_count = 1
+
+[[case]]
+name = "unused_type_constructor_still_warns"
+source = """
+fn Unused(comptime T: type) -> type { struct { a: T } }
+
+fn main() -> i32 {
+    0
+}
+"""
+exit_code = 0
+warning_contains = ["unused function", "'Unused'"]
+expected_warning_count = 1
+
+[[case]]
 name = "multiple_unused_functions"
 source = """
 fn helper1() -> i32 { 1 }
