@@ -1190,8 +1190,8 @@ fn check_exclusive_access_in(
     Ok(())
 }
 
-/// Shared checks for a module-member function call. Validates module membership, visibility, arity, and argument modes
-/// against the callee.
+/// Shared checks for a module-member function call. Validates module
+/// membership, visibility, and arity against the callee.
 ///
 /// Membership (spec 4.13:90, RUE-140): a module's type contains only the
 /// declarations from the imported file, but the function table is a flat
@@ -1208,13 +1208,11 @@ fn check_exclusive_access_in(
 /// check (whose shared core is `check_exclusive_access_in`, RUE-141).
 #[allow(clippy::too_many_arguments)]
 fn check_module_member_call(
-    rir: &Rir,
     module_name: &str,
     module_file_id: Option<FileId>,
     member_file_id: FileId,
     fn_name_str: &str,
     param_types: &[Type],
-    param_modes: &[RirParamMode],
     args: &[RirCallArg],
     accessible: bool,
     via_reexport: bool,
@@ -1256,33 +1254,6 @@ fn check_module_member_call(
         ));
     }
 
-    // Check that call-site argument modes match function parameter modes
-    for (arg, expected_mode) in args.iter().zip(param_modes.iter()) {
-        match expected_mode {
-            RirParamMode::Inout => {
-                if arg.mode != RirArgMode::Inout {
-                    return Err(CompileError::new(
-                        ErrorKind::InoutKeywordMissing,
-                        rir.get(arg.value).span,
-                    ));
-                }
-            }
-            RirParamMode::Borrow => {
-                if arg.mode != RirArgMode::Borrow {
-                    return Err(CompileError::new(
-                        ErrorKind::BorrowKeywordMissing,
-                        rir.get(arg.value).span,
-                    ));
-                }
-            }
-            RirParamMode::Normal => {
-                // Normal params accept any mode
-            }
-            RirParamMode::Comptime => {
-                // Comptime params - handled elsewhere
-            }
-        }
-    }
     Ok(())
 }
 

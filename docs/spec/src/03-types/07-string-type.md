@@ -276,14 +276,18 @@ fn main() -> i32 {
 The free function `print(s)` takes a `String` and writes its raw bytes to
 standard output, adding nothing. Unlike `@dbg`, it does not append a newline and
 does not apply any debug formatting. The argument `s` is borrowed, not consumed,
-and remains usable afterwards.
+and remains usable afterwards. This internal non-consuming access does not
+change the call syntax: the source argument is unmarked (`print(s)`, not
+`print(borrow s)`).
 
 {{ rule(id="3.7:36", cat="normative") }}
 
 The free function `println(s)` takes a `String` and writes its raw bytes to
 standard output followed by a single newline (`U+000A`). The argument `s` is
 borrowed, not consumed. Together with `@to_string` and `+`, `println` composes
-line-oriented output; there is no formatting or interpolation syntax.
+line-oriented output; there is no formatting or interpolation syntax. As with
+`print`, the internal borrow does not add a source-level argument mode: the
+argument is unmarked.
 
 {{ rule(id="3.7:37", cat="dynamic-semantics") }}
 

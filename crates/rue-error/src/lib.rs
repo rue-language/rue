@@ -111,7 +111,7 @@ impl ErrorCode {
     pub const TYPE_MISMATCH: Self = Self(206);
     pub const WRONG_ARGUMENT_COUNT: Self = Self(207);
     pub const MOVE_WHILE_CALL_LOANED: Self = Self(208);
-    // E0209 is reserved for RUE-634's unexpected call-argument mode error.
+    pub const UNEXPECTED_CALL_ARGUMENT_MODE: Self = Self(209);
     /// Whole-value assignment to a second-class `inout str` view. The view
     /// grants exclusive access to the caller's bytes; it is not a first-class
     /// string header that may be rebound (RUE-641).
@@ -1349,6 +1349,10 @@ pub enum ErrorKind {
     /// Argument to borrow parameter is missing `borrow` keyword at call site
     #[error("argument to borrow parameter must use 'borrow' keyword")]
     BorrowKeywordMissing,
+    /// An explicitly-mode-marked argument targets an ordinary unmarked
+    /// parameter. Source argument modes must match parameter modes exactly.
+    #[error("unexpected `{mode}` argument: the corresponding parameter is unmarked")]
+    UnexpectedCallArgumentMode { mode: &'static str },
     /// Cannot move a value out of an inout parameter (would leave the caller's
     /// variable moved-from)
     #[error("cannot move out of inout parameter '{variable}'")]
@@ -1671,6 +1675,9 @@ impl ErrorKind {
             ErrorKind::MoveWhileCallLoaned { .. } => ErrorCode::MOVE_WHILE_CALL_LOANED,
             ErrorKind::InoutKeywordMissing => ErrorCode::INOUT_KEYWORD_MISSING,
             ErrorKind::BorrowKeywordMissing => ErrorCode::BORROW_KEYWORD_MISSING,
+            ErrorKind::UnexpectedCallArgumentMode { .. } => {
+                ErrorCode::UNEXPECTED_CALL_ARGUMENT_MODE
+            }
             ErrorKind::MoveOutOfInout { .. } => ErrorCode::MOVE_OUT_OF_INOUT,
             ErrorKind::MoveSelfOutOfDestructor { .. } => ErrorCode::MOVE_SELF_OUT_OF_DESTRUCTOR,
             ErrorKind::MoveFieldOutOfDestructorType { .. } => {

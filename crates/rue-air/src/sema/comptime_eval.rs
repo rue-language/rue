@@ -1463,10 +1463,12 @@ impl Sema<'_> {
     ///   are not folded here.
     ///
     /// Returns `Ok(None)` — not an error — for an unknown callee, a
-    /// non-const argument, or an arity/mode that does not match the
+    /// non-const argument, an arity mismatch, or a call that does not meet the
     /// implicit-comptime gate: the call is then just a runtime call and simply
-    /// non-evaluable here. Reducing the body may still raise `Err` (arithmetic
-    /// overflow, recursion-depth overrun); opportunistic callers swallow it.
+    /// non-evaluable here. An explicit argument mode that disagrees with the
+    /// callee is a source error and returns `Err`, as does a failure while
+    /// reducing the body (arithmetic overflow, recursion-depth overrun);
+    /// opportunistic callers swallow those errors.
     ///
     /// [`eval_const_expr`]: Sema::eval_const_expr
     fn eval_comptime_type_call(
@@ -1500,11 +1502,17 @@ impl Sema<'_> {
         let is_type_fn = fn_info.return_type == Type::COMPTIME_TYPE;
         let params = fn_info.params;
         let param_names = self.param_arena.names(params).to_vec();
+        let param_modes = self.param_arena.modes(params).to_vec();
         let param_comptime = self.param_arena.comptime(params).to_vec();
         let args = self.rir.get_call_args(args_start, args_len).to_vec();
         if args.len() != param_names.len() {
             return Ok(None);
         }
+        // A comptime reduction is still a source-level call. Validate its
+        // explicit passing modes before the evaluator erases them while
+        // binding constant arguments (RUE-634).
+        self.validate_explicit_call_modes(&args, param_modes.iter().copied())?;
+
         // Same gate as `analyze_call`'s implicit-comptime path. A `-> type`
         // constructor reduces with no args (a nullary type alias) or when every
         // parameter is comptime. A *value*-returning function reduces only when

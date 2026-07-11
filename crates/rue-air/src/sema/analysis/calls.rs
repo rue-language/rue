@@ -316,6 +316,7 @@ impl<'a> Sema<'a> {
 
         // Check argument count (method_info.params excludes self)
         let method_param_types = self.param_arena.types(method_info.params);
+        let method_param_modes = self.param_arena.modes(method_info.params);
         if args.len() != method_param_types.len() {
             return Err(CompileError::new(
                 ErrorKind::WrongArgumentCount {
@@ -325,6 +326,10 @@ impl<'a> Sema<'a> {
                 span,
             ));
         }
+
+        // The receiver's autoref is implicit and deliberately excluded; only
+        // explicit arguments must spell the method declaration's exact modes.
+        self.validate_explicit_call_modes(&args, method_param_modes.iter().copied())?;
 
         // Clone data needed before mutable borrow
         let return_type = method_info.return_type;
@@ -551,13 +556,11 @@ impl<'a> Sema<'a> {
         let accessible =
             via_reexport || self.is_accessible(span.file_id, fn_info.file_id, fn_info.is_pub);
         check_module_member_call(
-            self.rir,
             &module_def.import_path,
             module_file_id,
             fn_info.file_id,
             &fn_name_str,
             &param_types,
-            &param_modes,
             &args,
             accessible,
             via_reexport,
@@ -582,6 +585,11 @@ impl<'a> Sema<'a> {
                 false,
             );
         }
+
+        // Generic members delegate to the resolved-call path above, which
+        // performs the same exact source-mode validation. Non-generic members
+        // validate here before treating any explicit marker as a loan/place.
+        self.validate_explicit_call_modes(&args, param_modes.iter().copied())?;
 
         // Check for exclusive access violation. (The old, pre-deduplication
         // copy of this function skipped this check entirely.)
@@ -745,6 +753,7 @@ impl<'a> Sema<'a> {
 
         // Check argument count
         let method_param_types = self.param_arena.types(method_info.params);
+        let method_param_modes = self.param_arena.modes(method_info.params);
         if args.len() != method_param_types.len() {
             return Err(CompileError::new(
                 ErrorKind::WrongArgumentCount {
@@ -754,6 +763,8 @@ impl<'a> Sema<'a> {
                 span,
             ));
         }
+
+        self.validate_explicit_call_modes(&args, method_param_modes.iter().copied())?;
 
         // Check for exclusive access violation
         self.check_exclusive_access(&args, span)?;

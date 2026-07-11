@@ -74,6 +74,60 @@ fn main() -> i32 { foo(true) }
 compile_fail = true
 
 # =============================================================================
+# Exact source-level argument modes (RUE-634)
+# =============================================================================
+
+[[case]]
+name = "call_argument_mode_mismatch_{mismatch}"
+spec = ["4.10:3"]
+description = "Every explicit call argument must exactly match its parameter's source mode; the non-place and duplicate-root instances also pin mode checking before place/exclusivity diagnostics."
+source = "{source}"
+compile_fail = true
+error_contains = "[{error}]"
+params = [
+  { mismatch = "normal_from_inout_before_exclusivity", error = "E0209", source = "fn take(a: i32, b: i32) {}\nfn main() {\n    let mut x = 1;\n    take(inout x, inout x);\n}" },
+  { mismatch = "normal_from_borrow_before_place", error = "E0209", source = "fn take(x: i32) {}\nfn main() { take(borrow 7); }" },
+  { mismatch = "inout_from_normal", error = "E0431", source = "fn take(inout x: i32) {}\nfn main() { take(7); }" },
+  { mismatch = "inout_from_borrow_before_place", error = "E0431", source = "fn take(inout x: i32) {}\nfn main() { take(borrow 7); }" },
+  { mismatch = "borrow_from_normal", error = "E0432", source = "fn take(borrow x: i32) {}\nfn main() { take(7); }" },
+  { mismatch = "borrow_from_inout_before_place", error = "E0432", source = "fn take(borrow x: i32) {}\nfn main() { take(inout 7); }" },
+]
+
+[[case]]
+name = "unmarked_call_surface_rejects_borrow_{surface}"
+spec = ["4.10:3"]
+description = "Every call-like surface rejects an explicit borrow on an unmarked parameter or payload slot."
+source = "{source}"
+compile_fail = true
+error_contains = "[E0209]"
+params = [
+  { surface = "function_alias", source = "fn take(x: i32) {}\nconst alias = take;\nfn main() { let x = 1; alias(borrow x); }" },
+  { surface = "generic_runtime_param", source = "fn take(comptime T: type, x: T) -> T { x }\nfn main() -> i32 { let x = 1; take(i32, borrow x) }" },
+  { surface = "user_method", source = "struct S {\n    value: i32,\n    fn take(self, x: i32) -> i32 { self.value + x }\n}\nfn main() -> i32 { let s = S { value: 40 }; let x = 2; s.take(borrow x) }" },
+  { surface = "user_associated_function", source = "struct S {\n    value: i32,\n    fn take(x: i32) -> i32 { x }\n}\nfn main() -> i32 { let x = 42; S.take(borrow x) }" },
+  { surface = "print_builtin", source = "fn main() { let s: StrBuf = \"x\"; print(borrow s); }" },
+  { surface = "builtin_method", source = "fn main() { let mut s = StrBuf.new(); let byte: u8 = 65; s.push(borrow byte); }" },
+  { surface = "builtin_associated_function", source = "fn main() { let cap: u64 = 8; let _s = StrBuf.with_capacity(borrow cap); }" },
+  { surface = "enum_tuple_payload", source = "enum E { V(i32) }\nfn main() -> i32 { let x = 42; let _e = E.V(borrow x); 0 }" },
+]
+
+[[case]]
+name = "module_member_unmarked_param_rejects_borrow"
+spec = ["4.10:3"]
+description = "A module-qualified function call enforces the same exact source-mode contract as an unqualified call."
+source = """
+const m = @import("mode_helper");
+
+fn main() -> i32 {
+    let x = 42;
+    m.take(borrow x)
+}
+"""
+aux_files = { "mode_helper.rue" = "pub fn take(x: i32) -> i32 { x }" }
+compile_fail = true
+error_contains = "[E0209]"
+
+# =============================================================================
 # Return Type
 # =============================================================================
 

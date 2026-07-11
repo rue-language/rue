@@ -29,7 +29,18 @@ An `inout` or `borrow` argument must denote a place; that requirement is a post-
 
 {{ rule(id="4.10:3", cat="legality-rule") }}
 
-The number of arguments **MUST** match the number of parameters in the function signature.
+The number of arguments **MUST** match the number of parameters in the
+function signature. Each explicit argument's source-level passing mode
+**MUST** exactly match the corresponding parameter: an `inout` parameter
+requires an `inout` argument, a `borrow` parameter requires a `borrow`
+argument, and every other parameter, including a `comptime` parameter,
+requires an unmarked argument. Arguments to built-in call forms and enum
+tuple-variant payloads are likewise unmarked unless a source-level parameter
+explicitly declares a mode.
+
+A method receiver is not an explicit argument for this rule. Its passing mode
+is selected automatically from the receiver declaration as specified by the
+receiver-autoref rule (6.4:25).
 
 {{ rule(id="4.10:4", cat="legality-rule") }}
 

@@ -152,6 +152,7 @@ impl<'a> Sema<'a> {
             )
             .with_help(format!("`{fn_name}` takes exactly one StrBuf argument")));
         }
+        self.validate_explicit_call_modes(&args, std::iter::once(RirParamMode::Normal))?;
         let arg_value = args[0].value;
 
         // Borrow the argument (like a `+` operand): analyze in projection mode
@@ -368,6 +369,13 @@ impl<'a> Sema<'a> {
             ));
         }
 
+        // Builtin registry parameters have types but no source mode marker, so
+        // every explicit argument is an ordinary unmarked value.
+        self.validate_explicit_call_modes(
+            args,
+            std::iter::repeat_n(RirParamMode::Normal, args.len()),
+        )?;
+
         // Analyze arguments and check types
         let mut air_args: Vec<(AirRef, AirArgMode)> = Vec::with_capacity(args.len());
         for (i, arg) in args.iter().enumerate() {
@@ -497,6 +505,13 @@ impl<'a> Sema<'a> {
                 method_ctx.span,
             ));
         }
+
+        // ReceiverMode governs only the implicit receiver. Every explicit
+        // builtin-method parameter is unmarked at the source level.
+        self.validate_explicit_call_modes(
+            args,
+            std::iter::repeat_n(RirParamMode::Normal, args.len()),
+        )?;
 
         // Analyze arguments and check types
         let mut air_args: Vec<(AirRef, AirArgMode)> = Vec::with_capacity(args.len() + 1);
