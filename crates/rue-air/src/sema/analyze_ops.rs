@@ -6052,48 +6052,55 @@ impl<'a> Sema<'a> {
         let rir_params_start = fn_info.rir_params_start;
         let rir_params_len = fn_info.rir_params_len;
 
-        // Special case: functions that return `type` with no parameters or only comptime parameters
-        // are implicitly comptime and should be evaluated at compile time.
-        // This handles both:
-        //   - `fn SimpleType() -> type { struct { x: i32 } }`  (no params)
-        //   - `fn FixedBuffer(comptime N: i32) -> type { struct { fn capacity(self) -> i32 { N } } }`
-        let all_params_comptime = param_comptime.iter().all(|&c| c);
+        // `-> type` functions with no runtime parameters reduce immediately,
+        // but their arguments still obey the ordinary comptime contract. Build
+        // the maps through the propagating evaluator before reducing the body;
+        // otherwise a constructor that ignores a wrong-kind/private argument
+        // can accidentally accept it.
+        let all_params_comptime = param_comptime.iter().all(|&flag| flag);
         if base_return_type == Type::COMPTIME_TYPE && (args.is_empty() || all_params_comptime) {
-            // Build the substitutions for the callee body from its comptime
-            // arguments: TYPE parameters (`comptime T: type`) into `type_subst`
-            // and VALUE parameters (`comptime N: i32`) into `value_subst`. Both
-            // are needed so a type constructor whose body mentions a type
-            // parameter (`struct { value: T }`) reduces here — including when
-            // this call is itself a nested argument (`WrapA(WrapA(i32))`), so
-            // the inner call analyzes to a `TypeConst` (RUE-251).
-            let mut type_subst: std::collections::HashMap<Spur, Type> =
-                std::collections::HashMap::new();
-            let mut value_subst: std::collections::HashMap<Spur, ConstValue> =
-                std::collections::HashMap::new();
+            let mut type_subst = std::collections::HashMap::new();
+            let mut value_subst = std::collections::HashMap::new();
             for (i, is_comptime) in param_comptime.iter().enumerate() {
                 if !*is_comptime {
                     continue;
                 }
-                // Evaluated in the calling function's context so comptime
-                // parameters in scope and resolved types are visible.
-                match self.try_evaluate_const_in_fn(args[i].value, ctx) {
-                    Some(ConstValue::Type(t)) if param_types[i] == Type::COMPTIME_TYPE => {
-                        type_subst.insert(param_names[i], t);
+                let value = self.evaluate_const_in_fn(args[i].value, ctx)?;
+                if param_types[i] == Type::COMPTIME_TYPE {
+                    match value {
+                        Some(ConstValue::Type(ty)) => {
+                            type_subst.insert(param_names[i], ty);
+                        }
+                        Some(ConstValue::Unit) => {
+                            type_subst.insert(param_names[i], Type::UNIT);
+                        }
+                        Some(_) => {
+                            return Err(CompileError::new(
+                                ErrorKind::ComptimeEvaluationFailed {
+                                    reason: "comptime type parameter must be a type literal"
+                                        .to_string(),
+                                },
+                                self.rir.get(args[i].value).span,
+                            ));
+                        }
+                        None => {
+                            return Err(CompileError::new(
+                                ErrorKind::ComptimeArgNotConst {
+                                    param_name: self.interner.resolve(&param_names[i]).to_string(),
+                                },
+                                self.rir.get(args[i].value).span,
+                            ));
+                        }
                     }
-                    // A unit argument to a `comptime T: type` parameter is the
-                    // unit TYPE (RUE-565): `()` is ambiguous between the unit
-                    // value and the unit type, and the parameter's declared
-                    // `type` kind is exactly the context that disambiguates
-                    // (spec Appendix A treats `()` as an unambiguous type
-                    // argument). Only this position converts; a unit value
-                    // elsewhere stays a value.
-                    Some(ConstValue::Unit) if param_types[i] == Type::COMPTIME_TYPE => {
-                        type_subst.insert(param_names[i], Type::UNIT);
-                    }
-                    Some(const_val) if param_types[i] != Type::COMPTIME_TYPE => {
-                        value_subst.insert(param_names[i], const_val);
-                    }
-                    _ => {}
+                } else if let Some(value) = value {
+                    value_subst.insert(param_names[i], value);
+                } else {
+                    return Err(CompileError::new(
+                        ErrorKind::ComptimeArgNotConst {
+                            param_name: self.interner.resolve(&param_names[i]).to_string(),
+                        },
+                        self.rir.get(args[i].value).span,
+                    ));
                 }
             }
             // Try to evaluate the function body at compile time. A hard error
@@ -6128,7 +6135,7 @@ impl<'a> Sema<'a> {
                     // reference to a comptime parameter of the *current*
                     // function also counts: its value is compile-time known
                     // at every call site, so it may be forwarded (spec 4.14:5).
-                    let is_comptime_known = self.try_evaluate_const_in_fn(arg.value, ctx).is_some()
+                    let is_comptime_known = self.evaluate_const_in_fn(arg.value, ctx)?.is_some()
                         || self.is_comptime_type_var(arg.value, ctx)
                         || self.is_comptime_param_forward(arg.value, ctx);
                     if !is_comptime_known {

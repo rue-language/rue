@@ -144,6 +144,23 @@ compile_fail = true
 error_contains = ["comptime parameter requires a compile-time known value"]
 
 [[case]]
+name = "runtime_parameter_shadows_file_const_during_comptime_evaluation"
+description = "A runtime parameter must not resolve to a same-named file constant when passed to a comptime parameter."
+files = [{ path = "main.rue", source = """
+const N: i32 = 7;
+
+fn need(comptime value: i32) -> i32 { value }
+
+fn outer(N: i32) -> i32 {
+    need(N)
+}
+
+fn main() -> i32 { outer(42) }
+""" }]
+compile_fail = true
+error_contains = ["E1201", "comptime parameter requires a compile-time known value"]
+
+[[case]]
 name = "comptime_recursion_factorial_via_match"
 description = "RUE-191: comptime recursion written with `match` instead of `if` — arm selection on the comptime-known scrutinee lets the recursion terminate instead of spuriously hitting the depth cap."
 files = [{ path = "main.rue", source = """
