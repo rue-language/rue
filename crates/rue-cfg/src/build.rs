@@ -1007,6 +1007,7 @@ impl<'a> CfgBuilder<'a> {
                 // Create a PlaceRead from the temp slot with Field projection
                 let place = self.cfg.make_place(
                     PlaceBase::Local(temp_slot),
+                    self.air.get(*base).ty,
                     std::iter::once(Projection::Field {
                         struct_id: *struct_id,
                         field_index: *field_index,
@@ -1745,6 +1746,7 @@ impl<'a> CfgBuilder<'a> {
                 // Create a PlaceRead from the temp slot with Index projection
                 let place = self.cfg.make_place(
                     PlaceBase::Local(temp_slot),
+                    *array_type,
                     std::iter::once(Projection::Index {
                         array_type: *array_type,
                         index: index_val,
@@ -1784,6 +1786,7 @@ impl<'a> CfgBuilder<'a> {
                 let elem_ty = self.air.get(*value).ty;
                 let elem_place = self.cfg.make_place(
                     PlaceBase::Local(*slot),
+                    *array_type,
                     std::iter::once(Projection::Index {
                         array_type: *array_type,
                         index: index_val,
@@ -1830,6 +1833,7 @@ impl<'a> CfgBuilder<'a> {
                 let elem_ty = self.air.get(*value).ty;
                 let elem_place = self.cfg.make_place(
                     PlaceBase::Param(*param_slot),
+                    *array_type,
                     std::iter::once(Projection::Index {
                         array_type: *array_type,
                         index: index_val,
@@ -2834,6 +2838,7 @@ impl<'a> CfgBuilder<'a> {
             TypeKind::Struct(struct_id) => {
                 self.emit_partial_struct_drop_level(
                     key,
+                    ty,
                     struct_id,
                     ty,
                     &mut Vec::new(),
@@ -2847,6 +2852,7 @@ impl<'a> CfgBuilder<'a> {
             TypeKind::Array(_) => {
                 self.emit_partial_array_drop_level(
                     key,
+                    ty,
                     ty,
                     &mut Vec::new(),
                     &mut Vec::new(),
@@ -2872,6 +2878,7 @@ impl<'a> CfgBuilder<'a> {
     fn emit_partial_struct_drop_level(
         &mut self,
         key: MovedSlot,
+        root_type: Type,
         struct_id: StructId,
         ty: Type,
         path: &mut FieldPath,
@@ -2894,7 +2901,7 @@ impl<'a> CfgBuilder<'a> {
                     MovedSlot::Param(index) => self.emit(CfgInstData::Param { index }, ty, span),
                 }
             } else {
-                let place = self.cfg.make_place(base, projs.iter().copied());
+                let place = self.cfg.make_place(base, root_type, projs.iter().copied());
                 self.emit(CfgInstData::PlaceRead { place }, ty, span)
             };
             let name = self.interner.get_or_intern(destructor_name);
@@ -2953,6 +2960,7 @@ impl<'a> CfgBuilder<'a> {
                     TypeKind::Struct(field_struct_id) => {
                         self.emit_partial_struct_drop_level(
                             key,
+                            root_type,
                             field_struct_id,
                             field.ty,
                             path,
@@ -2965,7 +2973,7 @@ impl<'a> CfgBuilder<'a> {
                     }
                     TypeKind::Array(_) => {
                         self.emit_partial_array_drop_level(
-                            key, field.ty, path, projs, definite, maybe, span,
+                            key, root_type, field.ty, path, projs, definite, maybe, span,
                         );
                         true
                     }
@@ -2980,7 +2988,7 @@ impl<'a> CfgBuilder<'a> {
                 false
             };
             if !recursed {
-                let place = self.cfg.make_place(base, projs.iter().copied());
+                let place = self.cfg.make_place(base, root_type, projs.iter().copied());
                 let field_val = self.emit(CfgInstData::PlaceRead { place }, field.ty, span);
                 self.emit(CfgInstData::Drop { value: field_val }, Type::UNIT, span);
             }
@@ -3000,9 +3008,11 @@ impl<'a> CfgBuilder<'a> {
     /// skipped, possibly moved → guarded by the element path's runtime drop
     /// flag, deeper moved path → recursive path-granular drop, untouched →
     /// plain `Drop`. Arrays have no destructor of their own.
+    #[allow(clippy::too_many_arguments)]
     fn emit_partial_array_drop_level(
         &mut self,
         key: MovedSlot,
+        root_type: Type,
         array_ty: Type,
         path: &mut FieldPath,
         projs: &mut Vec<Projection>,
@@ -3050,6 +3060,7 @@ impl<'a> CfgBuilder<'a> {
                     TypeKind::Struct(elem_struct_id) => {
                         self.emit_partial_struct_drop_level(
                             key,
+                            root_type,
                             elem_struct_id,
                             elem_ty,
                             path,
@@ -3062,7 +3073,7 @@ impl<'a> CfgBuilder<'a> {
                     }
                     TypeKind::Array(_) => {
                         self.emit_partial_array_drop_level(
-                            key, elem_ty, path, projs, definite, maybe, span,
+                            key, root_type, elem_ty, path, projs, definite, maybe, span,
                         );
                         true
                     }
@@ -3072,7 +3083,7 @@ impl<'a> CfgBuilder<'a> {
                 false
             };
             if !recursed {
-                let place = self.cfg.make_place(base, projs.iter().copied());
+                let place = self.cfg.make_place(base, root_type, projs.iter().copied());
                 let elem_val = self.emit(CfgInstData::PlaceRead { place }, elem_ty, span);
                 self.emit(CfgInstData::Drop { value: elem_val }, Type::UNIT, span);
             }
@@ -3091,9 +3102,10 @@ impl<'a> CfgBuilder<'a> {
 
     /// Try to trace an AIR expression back to a Place.
     ///
-    /// Returns `Some((base, projections))` if the expression represents a place
-    /// (lvalue) that can be read from or written to. Returns `None` if the
-    /// expression is not a simple place (e.g., a function call result).
+    /// Returns `Some((base, base_type, projections))` if the expression
+    /// represents a place (lvalue) that can be read from or written to.
+    /// Returns `None` if the expression is not a simple place (e.g., a function
+    /// call result).
     ///
     /// This function traces chains like `arr[i][j].field` into a `PlaceBase` and
     /// a list of `Projection`s. The projections are returned in order from the
@@ -3104,15 +3116,15 @@ impl<'a> CfgBuilder<'a> {
     fn try_trace_place(
         &mut self,
         air_ref: AirRef,
-    ) -> Option<(PlaceBase, Vec<(Projection, Option<CfgValue>)>)> {
+    ) -> Option<(PlaceBase, Type, Vec<(Projection, Option<CfgValue>)>)> {
         let inst = self.air.get(air_ref);
 
         match &inst.data {
             // Base case: Load from a local variable
-            AirInstData::Load { slot } => Some((PlaceBase::Local(*slot), Vec::new())),
+            AirInstData::Load { slot } => Some((PlaceBase::Local(*slot), inst.ty, Vec::new())),
 
             // Base case: Parameter reference
-            AirInstData::Param { index } => Some((PlaceBase::Param(*index), Vec::new())),
+            AirInstData::Param { index } => Some((PlaceBase::Param(*index), inst.ty, Vec::new())),
 
             // Recursive case: Array index
             AirInstData::IndexGet {
@@ -3121,7 +3133,7 @@ impl<'a> CfgBuilder<'a> {
                 index,
             } => {
                 // Recursively trace the base
-                let (base_place, mut projections) = self.try_trace_place(*base)?;
+                let (base_place, base_type, mut projections) = self.try_trace_place(*base)?;
 
                 // Lower the index expression to get the CfgValue
                 let index_val = self.lower_value(*index)?;
@@ -3135,7 +3147,7 @@ impl<'a> CfgBuilder<'a> {
                     Some(index_val),
                 ));
 
-                Some((base_place, projections))
+                Some((base_place, base_type, projections))
             }
 
             // Recursive case: Field access
@@ -3145,7 +3157,7 @@ impl<'a> CfgBuilder<'a> {
                 field_index,
             } => {
                 // Recursively trace the base
-                let (base_place, mut projections) = self.try_trace_place(*base)?;
+                let (base_place, base_type, mut projections) = self.try_trace_place(*base)?;
 
                 // Add the Field projection
                 projections.push((
@@ -3156,7 +3168,7 @@ impl<'a> CfgBuilder<'a> {
                     None,
                 ));
 
-                Some((base_place, projections))
+                Some((base_place, base_type, projections))
             }
 
             // Not a simple place expression
@@ -3175,11 +3187,11 @@ impl<'a> CfgBuilder<'a> {
         span: rue_span::Span,
     ) -> Option<CfgValue> {
         // Try to trace the expression to a place
-        let (base, projections) = self.try_trace_place(air_ref)?;
+        let (base, base_type, projections) = self.try_trace_place(air_ref)?;
 
         // Build the Place with all projections
         let proj_iter = projections.into_iter().map(|(proj, _)| proj);
-        let place = self.cfg.make_place(base, proj_iter);
+        let place = self.cfg.make_place(base, base_type, proj_iter);
 
         // Emit the PlaceRead instruction
         let value = self.emit(CfgInstData::PlaceRead { place }, ty, span);
@@ -3217,7 +3229,9 @@ impl<'a> CfgBuilder<'a> {
     /// ADR-0030 Phase 8: This is the bridge between AIR's PlaceRead/PlaceWrite
     /// and CFG's PlaceRead/PlaceWrite.
     fn lower_air_place(&mut self, place_ref: AirPlaceRef) -> Option<Place> {
-        let air_place = self.air.get_place(place_ref);
+        // Copy the compact descriptor before lowering index operands mutably.
+        // In particular, `base_type` is still needed after that lowering.
+        let air_place = *self.air.get_place(place_ref);
 
         // Convert the base
         let base = match air_place.base {
@@ -3226,7 +3240,7 @@ impl<'a> CfgBuilder<'a> {
         };
 
         // Convert projections, lowering any index expressions
-        let air_projections = self.air.get_place_projections(air_place);
+        let air_projections = self.air.get_place_projections(&air_place);
         let mut cfg_projections = Vec::with_capacity(air_projections.len());
 
         for proj in air_projections {
@@ -3251,7 +3265,9 @@ impl<'a> CfgBuilder<'a> {
         }
 
         // Create the CFG place
-        let place = self.cfg.make_place(base, cfg_projections);
+        let place = self
+            .cfg
+            .make_place(base, air_place.base_type, cfg_projections);
 
         Some(place)
     }
@@ -3324,6 +3340,41 @@ mod tests {
             .flat_map(|b| b.insts.iter())
             .filter(|v| matches!(cfg.get_inst(**v).data, CfgInstData::Drop { .. }))
             .count()
+    }
+
+    #[test]
+    fn projected_only_parameter_preserves_logical_base_type() {
+        let cfg = build_cfg_named(
+            "struct Pair { a: i32, b: i32 }\n\
+             fn read(borrow p: Pair) -> i32 { p.a }\n\
+             fn main() -> i32 { let p = Pair { a: 1, b: 2 }; read(borrow p) }",
+            "read",
+        );
+        let (place, struct_id) = cfg
+            .blocks()
+            .iter()
+            .flat_map(|block| block.insts.iter().copied())
+            .find_map(|value| match &cfg.get_inst(value).data {
+                CfgInstData::PlaceRead { place } => {
+                    let Projection::Field { struct_id, .. } = cfg.get_place_projections(place)[0]
+                    else {
+                        return None;
+                    };
+                    Some((*place, struct_id))
+                }
+                _ => None,
+            })
+            .expect("projected parameter read");
+
+        assert_eq!(place.base, PlaceBase::Param(0));
+        assert_eq!(place.base_type, Type::new_struct(struct_id));
+        assert!(
+            cfg.blocks()
+                .iter()
+                .flat_map(|block| block.insts.iter())
+                .all(|value| !matches!(cfg.get_inst(*value).data, CfgInstData::Param { .. })),
+            "the base type must not depend on a separate Param instruction"
+        );
     }
 
     #[test]

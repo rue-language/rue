@@ -471,6 +471,7 @@ impl<'a> Sema<'a> {
         });
         let marker_place = air.make_place(
             trace.base,
+            trace.base_type,
             std::iter::once(AirProjection::Index {
                 array_type,
                 index: idx_const,
@@ -1098,7 +1099,7 @@ impl<'a> Sema<'a> {
         // and pass it through — no re-materialization.
         if arr_ty == slice_ty {
             let projs: Vec<AirProjection> = trace.projections.iter().map(|p| p.proj).collect();
-            let place_ref = air.make_place(trace.base, projs);
+            let place_ref = air.make_place(trace.base, trace.base_type, projs);
             let val = air.add_inst(AirInst {
                 data: AirInstData::PlaceRead { place: place_ref },
                 ty: slice_ty,
@@ -1147,7 +1148,7 @@ impl<'a> Sema<'a> {
                 array_type: arr_ty,
                 index: zero_ref,
             });
-            let place_ref = air.make_place(trace.base, projs);
+            let place_ref = air.make_place(trace.base, trace.base_type, projs);
             let elem0_read = air.add_inst(AirInst {
                 data: AirInstData::PlaceRead { place: place_ref },
                 ty: arr_elem,
@@ -1226,7 +1227,7 @@ impl<'a> Sema<'a> {
         // the fat pointer by value (it is `@copy`) and pass it through.
         if self.is_str_like(src_ty) {
             let projs: Vec<AirProjection> = trace.projections.iter().map(|p| p.proj).collect();
-            let place_ref = air.make_place(trace.base, projs);
+            let place_ref = air.make_place(trace.base, trace.base_type, projs);
             return Ok(air.add_inst(AirInst {
                 data: AirInstData::PlaceRead { place: place_ref },
                 ty: str_ty,
@@ -1247,7 +1248,7 @@ impl<'a> Sema<'a> {
                     struct_id: buf_struct_id,
                     field_index,
                 });
-                let place_ref = air.make_place(trace.base, projs);
+                let place_ref = air.make_place(trace.base, trace.base_type, projs);
                 let field_ty =
                     self.type_pool.struct_def(buf_struct_id).fields[field_index as usize].ty;
                 let word = air.add_inst(AirInst {

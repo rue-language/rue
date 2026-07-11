@@ -156,7 +156,7 @@ pub fn get_or_compute_field_vregs<B: SlotBackend>(b: &mut B, value: CfgValue) ->
                 // to the caller's storage, not the value — load the slots
                 // through it (emit_place_addr fetches the received pointer).
                 let addr_vreg = b.alloc_vreg();
-                b.emit_place_addr(addr_vreg, &Place::param(index));
+                b.emit_place_addr(addr_vreg, &Place::param(index, ty));
                 Some(load_through_ptr(b, addr_vreg, slot_count))
             } else {
                 let base_slot = b.ctx().num_locals + index;
@@ -203,7 +203,7 @@ pub fn get_or_compute_field_vregs<B: SlotBackend>(b: &mut B, value: CfgValue) ->
                     PlaceBase::Local(slot) => slot,
                     PlaceBase::Param(param_slot) => b.ctx().num_locals + param_slot,
                 };
-                let root_count = root_slot_count(b, &projections, slot_count);
+                let root_count = root_slot_count(b, &place);
                 let field_low_slot = root_base + (root_count - 1) - static_slot_offset;
                 return Some(load_slots_at_low(b, field_low_slot, slot_count));
             }
@@ -232,20 +232,17 @@ pub fn get_or_compute_field_vregs<B: SlotBackend>(b: &mut B, value: CfgValue) ->
     }
 }
 
-/// Total slot count of the ROOT object a projected place is rooted at — the
-/// container the first projection indexes into. Ascending place addressing
+/// Total slot count of the ROOT object a place is rooted at. Ascending place addressing
 /// (ADR-0040 / RUE-311) anchors every field/element at the root object's low
 /// end (`root_base + root_count - 1` in frame slots), so the root's own slot
 /// count is the one origin shift a projection chain needs; nested containers
-/// contribute only their byte offsets from that anchor. With no projections the
-/// place *is* the root, so `fallback` (the accessed value's own slot count) is
-/// used.
-pub fn root_slot_count<B: SlotBackend>(b: &B, projections: &[Projection], fallback: u32) -> u32 {
-    match projections.first() {
-        Some(Projection::Field { struct_id, .. }) => b.ctx().struct_total_slot_count(*struct_id),
-        Some(Projection::Index { array_type, .. }) => b.ctx().type_slot_count(*array_type),
-        None => fallback,
-    }
+/// contribute only their byte offsets from that anchor. The place carries this
+/// type explicitly so lowering does not have to trust the first projection's
+/// self-described container type. A zero-sized root still uses one conceptual
+/// address slot: by-ref/raw operations need a concrete frame address, and every
+/// consumer computes that address with `root_count - 1`.
+pub fn root_slot_count<B: SlotBackend>(b: &B, place: &Place) -> u32 {
+    b.ctx().type_slot_count(place.base_type).max(1)
 }
 
 /// Pre-allocate the per-slot vregs for an aggregate block parameter.

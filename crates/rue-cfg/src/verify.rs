@@ -29,6 +29,10 @@
 //!    type invariant SSA passes and codegen rely on; a divergence-handling bug
 //!    in lowering (e.g. wiring a unit "result" of a `!`-typed arm into a join)
 //!    trips it here instead of miscompiling later.
+//! 5. **Place-root types** (RUE-589) — the first field/index projection consumes
+//!    the logical base type recorded on the place. Physical slot indices alone
+//!    cannot recover that type for flattened or zero-sized parameters, so a
+//!    projection that names a different root is malformed CFG.
 //!
 //! Unreachable blocks skip the termination check only: an orphan block created
 //! but never wired in (or one left behind before DCE) may legitimately carry a
@@ -40,6 +44,7 @@
 //! one into a real miscompile.
 
 use crate::inst::{Cfg, CfgInstData, CfgValue, Projection, Terminator};
+use rue_air::{Type, TypeKind};
 
 impl Cfg {
     /// Verify the CFG's structural invariants, panicking with a precise,
@@ -83,10 +88,17 @@ impl Cfg {
             }
             for &inst_val in &block.insts {
                 self.check_value_defined(inst_val, value_count, block.id, "instruction result");
+                let inst = self.get_inst(inst_val);
                 let mut operands = Vec::new();
-                self.collect_inst_operands(&self.get_inst(inst_val).data, &mut operands);
+                self.collect_inst_operands(&inst.data, &mut operands);
                 for op in operands {
                     self.check_value_defined(op, value_count, block.id, "instruction operand");
+                }
+                if matches!(
+                    &inst.data,
+                    CfgInstData::PlaceRead { .. } | CfgInstData::PlaceWrite { .. }
+                ) {
+                    self.verify_place_root_type(block.id, inst_val, inst);
                 }
             }
 
@@ -114,6 +126,52 @@ impl Cfg {
             value,
             block,
             value_count,
+        );
+    }
+
+    /// Verify that the first projection consumes the logical type carried by
+    /// the place base. Later projection links need the type pool to validate,
+    /// but this first link is fully described by the CFG itself and must not
+    /// be inferred from the projection under test.
+    fn verify_place_root_type(
+        &self,
+        block: crate::inst::BlockId,
+        value: CfgValue,
+        inst: &crate::inst::CfgInst,
+    ) {
+        let place = match &inst.data {
+            CfgInstData::PlaceRead { place } | CfgInstData::PlaceWrite { place, .. } => place,
+            _ => unreachable!("verify_place_root_type called on a non-place instruction"),
+        };
+        let Some(first) = self.get_place_projections(place).first() else {
+            return;
+        };
+        let required_base_type = match first {
+            Projection::Field { struct_id, .. } => Type::new_struct(*struct_id),
+            Projection::Index { array_type, .. } => {
+                assert!(
+                    matches!(array_type.kind(), TypeKind::Array(_)),
+                    "internal compiler error: CFG verification failed in function `{}`: place in \
+                     instruction {} in block {} has an Index projection whose declared \
+                     container type {:?} is not an array. This is a compiler bug (RUE-589).",
+                    self.fn_name(),
+                    value,
+                    block,
+                    array_type,
+                );
+                *array_type
+            }
+        };
+        assert!(
+            place.base_type == required_base_type,
+            "internal compiler error: CFG verification failed in function `{}`: place in \
+             instruction {} in block {} has logical base type {:?}, but its first \
+             projection requires base type {:?}. This is a compiler bug (RUE-589).",
+            self.fn_name(),
+            value,
+            block,
+            place.base_type,
+            required_base_type,
         );
     }
 
@@ -369,8 +427,8 @@ impl Cfg {
 
 #[cfg(test)]
 mod tests {
-    use crate::inst::{Cfg, CfgInst, CfgInstData, Terminator};
-    use rue_air::Type;
+    use crate::inst::{Cfg, CfgInst, CfgInstData, PlaceBase, Projection, Terminator};
+    use rue_air::{ArrayTypeId, StructId, Type};
     use rue_span::Span;
 
     fn unit_cfg() -> Cfg {
@@ -392,6 +450,119 @@ mod tests {
         );
         cfg.set_terminator(entry, Terminator::Return { value: Some(v) });
         cfg.verify(); // must not panic
+    }
+
+    fn cfg_with_field_place(base_type: Type) -> Cfg {
+        let mut cfg = Cfg::new(Type::I32, 1, 0, "field_place".to_string(), vec![]);
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let struct_id = StructId::from_pool_index(9);
+        let place = cfg.make_place(
+            PlaceBase::Local(0),
+            base_type,
+            [Projection::Field {
+                struct_id,
+                field_index: 0,
+            }],
+        );
+        let read = cfg.add_inst_to_block(
+            entry,
+            CfgInst {
+                data: CfgInstData::PlaceRead { place },
+                ty: Type::I32,
+                span: Span::new(0, 1),
+            },
+        );
+        cfg.set_terminator(entry, Terminator::Return { value: Some(read) });
+        cfg
+    }
+
+    #[test]
+    fn verify_accepts_matching_place_base_type() {
+        let struct_type = Type::new_struct(StructId::from_pool_index(9));
+        cfg_with_field_place(struct_type).verify();
+    }
+
+    #[test]
+    #[should_panic(expected = "first projection requires base type")]
+    fn verify_rejects_field_projection_with_wrong_base_type() {
+        cfg_with_field_place(Type::I32).verify();
+    }
+
+    #[test]
+    #[should_panic(expected = "first projection requires base type")]
+    fn verify_rejects_index_projection_with_wrong_base_type_on_write() {
+        let mut cfg = Cfg::new(Type::UNIT, 1, 0, "index_place".to_string(), vec![]);
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let index = cfg.add_inst_to_block(
+            entry,
+            CfgInst {
+                data: CfgInstData::Const(0),
+                ty: Type::U64,
+                span: Span::new(0, 1),
+            },
+        );
+        let value = cfg.add_inst_to_block(
+            entry,
+            CfgInst {
+                data: CfgInstData::Const(1),
+                ty: Type::I32,
+                span: Span::new(0, 1),
+            },
+        );
+        let array_type = Type::new_array(ArrayTypeId::from_pool_index(10));
+        let place = cfg.make_place(
+            PlaceBase::Local(0),
+            Type::I32,
+            [Projection::Index { array_type, index }],
+        );
+        cfg.add_inst_to_block(
+            entry,
+            CfgInst {
+                data: CfgInstData::PlaceWrite { place, value },
+                ty: Type::UNIT,
+                span: Span::new(0, 1),
+            },
+        );
+        cfg.set_terminator(entry, Terminator::Return { value: None });
+
+        cfg.verify();
+    }
+
+    #[test]
+    #[should_panic(expected = "declared container type Type::I32 is not an array")]
+    fn verify_rejects_non_array_index_projection_type() {
+        let mut cfg = Cfg::new(Type::I32, 1, 0, "index_type".to_string(), vec![]);
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let index = cfg.add_inst_to_block(
+            entry,
+            CfgInst {
+                data: CfgInstData::Const(0),
+                ty: Type::U64,
+                span: Span::new(0, 1),
+            },
+        );
+        let place = cfg.make_place(
+            PlaceBase::Local(0),
+            Type::I32,
+            [Projection::Index {
+                array_type: Type::I32,
+                index,
+            }],
+        );
+        let read = cfg.add_inst_to_block(
+            entry,
+            CfgInst {
+                data: CfgInstData::PlaceRead { place },
+                ty: Type::I32,
+                span: Span::new(0, 1),
+            },
+        );
+        cfg.set_terminator(entry, Terminator::Return { value: Some(read) });
+
+        cfg.verify();
     }
 
     #[test]

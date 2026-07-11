@@ -65,14 +65,20 @@ impl fmt::Display for AirPlaceRef {
 ///
 /// # Examples
 ///
-/// - `x` → `AirPlace { base: Local(0), projections_start: 0, projections_len: 0 }`
-/// - `arr[i]` → `AirPlace { base: Local(0), ... }` with `Index` projection
-/// - `point.x` → `AirPlace { base: Local(0), ... }` with `Field` projection
-/// - `arr[i].x` → `AirPlace { base: Local(0), ... }` with `Index` then `Field`
+/// - `x` → `AirPlace { base: Local(0), base_type: T, ... }`
+/// - `arr[i]` → `AirPlace { base: Local(0), base_type: Array, ... }` with `Index` projection
+/// - `point.x` → `AirPlace { base: Local(0), base_type: Point, ... }` with `Field` projection
+/// - `arr[i].x` → the same `Array` base type with `Index` then `Field`
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AirPlace {
     /// The base of the place - either a local slot or parameter slot
     pub base: AirPlaceBase,
+    /// The logical type stored at the base before applying projections.
+    ///
+    /// A physical slot index does not uniquely identify this type: aggregate
+    /// parameters are flattened and zero-sized parameters can share an ABI
+    /// index. Carrying it on the place keeps the first projection typed.
+    pub base_type: Type,
     /// Start index into Air's projections array
     pub projections_start: u32,
     /// Number of projections
@@ -82,9 +88,10 @@ pub struct AirPlace {
 impl AirPlace {
     /// Create a place for a local variable with no projections.
     #[inline]
-    pub const fn local(slot: u32) -> Self {
+    pub const fn local(slot: u32, base_type: Type) -> Self {
         Self {
             base: AirPlaceBase::Local(slot),
+            base_type,
             projections_start: 0,
             projections_len: 0,
         }
@@ -92,9 +99,10 @@ impl AirPlace {
 
     /// Create a place for a parameter with no projections.
     #[inline]
-    pub const fn param(slot: u32) -> Self {
+    pub const fn param(slot: u32, base_type: Type) -> Self {
         Self {
             base: AirPlaceBase::Param(slot),
+            base_type,
             projections_start: 0,
             projections_len: 0,
         }
@@ -652,11 +660,13 @@ impl Air {
     pub fn make_place(
         &mut self,
         base: AirPlaceBase,
+        base_type: Type,
         projs: impl IntoIterator<Item = AirProjection>,
     ) -> AirPlaceRef {
         let (projections_start, projections_len) = self.push_projections(projs);
         let place = AirPlace {
             base,
+            base_type,
             projections_start,
             projections_len,
         };
@@ -1559,5 +1569,24 @@ mod tests {
         let retrieved = air.get(inst_ref);
         assert!(matches!(retrieved.data, AirInstData::Const(42)));
         assert_eq!(retrieved.ty, Type::I32);
+    }
+
+    #[test]
+    fn place_preserves_logical_base_type() {
+        let mut air = Air::new(Type::I32);
+        let struct_id = StructId::from_pool_index(7);
+        let base_type = Type::new_struct(struct_id);
+        let place_ref = air.make_place(
+            AirPlaceBase::Param(3),
+            base_type,
+            [AirProjection::Field {
+                struct_id,
+                field_index: 0,
+            }],
+        );
+
+        let place = air.get_place(place_ref);
+        assert_eq!(place.base, AirPlaceBase::Param(3));
+        assert_eq!(place.base_type, base_type);
     }
 }
