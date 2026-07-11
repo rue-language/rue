@@ -439,6 +439,40 @@ warning_contains = ["unused function", "'Unused'"]
 expected_warning_count = 1
 
 [[case]]
+name = "unused_variable_in_generic_body_warns"
+description = "A specialized generic body surfaces its warnings like any other body (RUE-574)"
+source = """
+fn gen(comptime n: i32) -> i32 {
+    let unused = 99;
+    n
+}
+
+fn main() -> i32 {
+    gen(42)
+}
+"""
+exit_code = 42
+warning_contains = ["unused variable", "'unused'"]
+expected_warning_count = 1
+
+[[case]]
+name = "generic_body_warning_deduped_across_specializations"
+description = "N specializations of one generic body emit each warning once (RUE-555 dedup, extended by RUE-574)"
+source = """
+fn gen(comptime n: i32) -> i32 {
+    let unused = 99;
+    n
+}
+
+fn main() -> i32 {
+    gen(20) + gen(22)
+}
+"""
+exit_code = 42
+warning_contains = ["unused variable", "'unused'"]
+expected_warning_count = 1
+
+[[case]]
 name = "multiple_unused_functions"
 source = """
 fn helper1() -> i32 { 1 }

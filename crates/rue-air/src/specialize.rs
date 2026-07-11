@@ -166,7 +166,10 @@ pub(crate) struct DiscoveredReferences {
 pub(crate) struct Specializer {
     specializations: HashMap<SpecializationKey, SpecializationInfo>,
     next_unscanned: usize,
-    seen_unreachable_spans: HashSet<Span>,
+    /// Warnings already surfaced from specialized bodies, keyed by kind
+    /// discriminant + source span, so N specializations of one generic body
+    /// emit each warning once (RUE-555, RUE-574).
+    seen_warnings: HashSet<(std::mem::Discriminant<WarningKind>, Span)>,
     /// Expansion waves consumed across the entire joint sema fixed point.
     rounds: usize,
 }
@@ -284,13 +287,18 @@ impl Specializer {
                     .extend(specialized.referenced_functions);
                 discovered.methods.extend(specialized.referenced_methods);
 
-                // Surface unreachable-pattern warnings from the specialized
-                // body (spec 4.7:20, RUE-555), once per source span. Other
-                // specialized-body warnings stay suppressed as before.
+                // Surface warnings from the specialized body, once per (kind,
+                // source span) across all specializations (RUE-555 for
+                // unreachable patterns, RUE-574 for every other kind — a
+                // generic body's unused variable used to warn only when the
+                // function was non-generic). A warning that fires in ANY
+                // specialization is surfaced: with comptime-pruned branches
+                // the body that triggers it is really compiled.
                 for warning in specialized.warnings {
-                    if matches!(warning.kind, WarningKind::UnreachablePattern(_))
-                        && let Some(span) = warning.span()
-                        && self.seen_unreachable_spans.insert(span)
+                    if let Some(span) = warning.span()
+                        && self
+                            .seen_warnings
+                            .insert((std::mem::discriminant(&warning.kind), span))
                     {
                         all_warnings.push(warning);
                     }
