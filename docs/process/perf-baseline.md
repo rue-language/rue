@@ -8,18 +8,31 @@ set of guarantees.
 **How to reproduce.** Run the harness from the repo root:
 
 ```bash
-scripts/perf-baseline.py                 # text report (default corpus, 5 warm iters)
+scripts/perf-baseline.py                 # 5 fresh samples after 1 cache warmup
 scripts/perf-baseline.py --iterations 7  # more iterations = steadier medians
-scripts/perf-baseline.py --format markdown   # regenerates the tables below
+scripts/perf-baseline.py --format markdown   # prints compact current tables
 scripts/perf-baseline.py --format json       # machine-readable aggregate
 ```
 
 The harness compiles a representative corpus with the real `rue` binary using
 `--benchmark-json` (the machine-readable form of `--time-passes`, see
-[logging.md](logging.md)), runs several *warm* iterations, and reports the
-**median** per-pass timing plus the end-to-end wall clock. It is separate from
-`bench.sh` (which feeds the historical website dashboard); this one is a quick,
-self-contained snapshot with no history/network side effects.
+[logging.md](logging.md)). Every sample is a **fresh compiler process**; the
+optional warmups warm host/filesystem caches, not compiler state. The harness
+reports median absolute deviation alongside both the compiler pipeline span
+and fresh-process wall time, plus peak resident memory where the host exposes
+it. It is separate from `bench.sh` (which feeds the
+historical website dashboard); this one is a quick, self-contained snapshot
+with no history/network side effects.
+
+Every workload invocation explicitly uses Rue program optimization level
+`-O0`, so changes in the compiler's optimization policy do not silently change
+the amount of generated-program optimization being measured. `--release`
+selects an optimized *compiler binary*; it does not change that workload
+`-O0`. The text and JSON formats include root/process/accounting MAD, the paired
+accounting metrics, and peak RSS. Markdown deliberately stays compact: it
+prints median phase, compile, and process times plus the hot-pass table, but
+omits MAD and RSS. It prints new tables to stdout and does not rewrite the
+historical tables in this document.
 
 ## Reading the numbers
 
@@ -27,37 +40,75 @@ The compiler wraps each pass in a tracing span, and some spans are **nested**,
 so the raw timing JSON contains both leaf passes and their aggregate parents:
 
 ```
-compile                 <- top-level span, ~= end-to-end wall clock
-├─ parse                <- aggregate of the two parse leaves (excluded below)
-│  ├─ parse_file        <- leaf: lex + parse, summed over all input files
+compile                 <- compiler pipeline; excludes discovery/driver startup
+├─ parse                <- aggregate (excluded from the leaf table)
+│  ├─ parse_file        <- aggregate, repeated for each input file
+│  │  ├─ lexer          <- leaf
+│  │  └─ parser         <- leaf
 │  └─ merge_symbols     <- leaf: cross-file symbol merge
 ├─ astgen               <- leaf: AST -> RIR
+├─ semantic_astgen      <- leaf: canonical semantic AST -> RIR
 ├─ sema                 <- leaf: type checking / AIR
 ├─ cfg_construction     <- leaf
 ├─ codegen              <- leaf: MIR lower + regalloc + emit
-└─ linker               <- leaf: ELF link
+└─ linker               <- leaf: built-in ELF link in these baseline runs
 ```
 
-> **Caveat about `--time-passes`.** Its printed **"Total"** line *sums every
-> span*, so it double-counts the aggregate parents (`parse` + `compile`) and
-> comes out ~2× the real wall clock. This document (and the harness) instead
-> use the `compile` span as the wall-clock total and report each **leaf** pass
-> as a percentage of it. When you read `--time-passes` output by hand, ignore
-> the `parse` and `compile` rows and the inflated `Total`.
+Since RUE-642, timing JSON schema v2 labels the model as `inclusive_spans`.
+`total_ms` is the inclusive duration of root compiler spans, and pass
+percentages use that honest total. Pass rows are themselves inclusive, so an
+aggregate still overlaps its children. The harness uses `leaf_invocations` to
+select phase rows. Each displayed phase duration is that phase's own median;
+those independent medians are useful for profiling, but they are **not an
+additive breakdown of one median run** and should not be summed to reconstruct
+the compile median. In JSON, a phase's `median_percent` is separately computed
+as the median of its per-sample phase/root ratios; it is not
+`median_ms / compile median`.
+The harness also rejects malformed v2 trees: `compile` must be the sole root
+and must have children, every reported leaf must be nested beneath it, and the
+source workload counters must be non-negative integers with at least one file.
+
+For accounting, the harness instead computes four values within every sample
+and only then reports their median and MAD: leaf/root ratio, unattributed time
+(`max(root - leaf work, 0)`), overlapping leaf work
+(`max(leaf work - root, 0)`), and driver overhead (`process - root`). Pairing
+before aggregation prevents phase medians from different runs from inventing
+overlap or residual time that occurred in no real run. Rue's current
+coordinator-level leaves are sequential, so overlapping leaf work should be
+zero today; if future parallel leaf spans overlap, their sum is work time and
+may legitimately exceed root wall time.
+`process_ms` additionally covers process startup, source loading/import
+discovery, output handling, and other driver work outside `compile`.
+The corpus-wide hot-pass table is likewise a descriptive ratio of summed
+per-workload medians, not the accounting for a single run.
+
+> **Historical discontinuity.** Before RUE-642, `total_ms` summed every nested
+> span and was commonly about twice the real compiler time. Old dashboard data
+> retains that inflated raw `mean_ms`; the dashboard now prefers the stored
+> `passes.compile.mean_ms` for those runs. The baseline harness had a name-based
+> workaround and can still read schema-v1 samples. Any other comparison across
+> the schema boundary must likewise use the old `compile` row rather than old
+> `total_ms`.
 
 ## Baseline (measured 2026-07-03)
 
 **These are absolute milliseconds and are MACHINE-SPECIFIC — treat them as a
 relative profile (which passes dominate), not a hard threshold.**
 
+This historical table predates schema v2, so it shows the then-combined
+`parse_file` leaf rather than separate `lexer` and `parser` rows. Its totals
+were already taken from the old `compile` row, not the inflated old
+`total_ms`, and remain valid as compiler-pipeline measurements.
+
 - Host: Intel Core i9-14900K, Linux x86-64 (WSL2), 32 logical CPUs.
 - Build: the buck2 **DEFAULT** profile as produced by `scripts/rue-bin`
   (unoptimized — see "Build caveat" below). Numbers on an optimized build
   would be smaller, but the *pass profile* (parse-dominated) holds.
 - Corpus: `examples/` (small/medium) + `benchmarks/stress/` (large) + a
-  synthesized 3-file program (multi-file merge path). `deep_nesting.rue` is
+  synthesized 3-file import graph (discovery + multi-file merge paths).
+  `deep_nesting.rue` is
   excluded — see "Known pathology".
-- 7 warm iterations, median.
+- 7 fresh compiler processes after one host-cache warmup, median.
 
 ### Small / medium programs (ms)
 
@@ -111,8 +162,9 @@ relative profile (which passes dominate), not a hard threshold.**
 3. **`sema` is third (~11%)** and scales with type/expression volume
    (`arithmetic_heavy`, `large_structs`, `register_pressure`).
 
-4. **`linker` is a fixed ~8 ms floor.** On the small programs it is 60–80% of a
-   sub-15 ms compile purely because of that fixed ELF-emit cost; it is
+4. **Rue's built-in `linker` was a fixed ~8 ms floor on this host.** These
+   measurements used Rue's internal ELF linker, not an external host/system
+   linker. On the small programs it was 60–80% of a sub-15 ms compile; it was
    negligible on large programs. It matters for edit-compile-run latency on
    small inputs but is not a throughput bottleneck.
 
@@ -121,10 +173,11 @@ relative profile (which passes dominate), not a hard threshold.**
 
 ### What would speed the hot passes up
 
-- **parse_file:** profile the parser proper (lexing is already cheap). Reduce
-  per-token allocation, avoid re-scanning, and fix the exponential blowup
-  below (which is the extreme tail of "parsing is expensive"). Finer spans
-  (lex vs. parse vs. RIR-build) would sharpen the target.
+- **parser:** the now-separated lexer/parser rows confirm lexing is cheap.
+  Profile parser internals, reduce per-token allocation and re-scanning, and
+  fix the exponential blowup below (the extreme tail of "parsing is
+  expensive"). Split parser sub-phases only where that profile shows another
+  broad boundary hiding the cost.
 - **codegen:** add per-sub-phase spans (lower / regalloc / emit) to see which
   dominates before touching it; regalloc is the usual suspect under pressure.
 - **sema:** watch for quadratic scans over symbols/types as programs grow.

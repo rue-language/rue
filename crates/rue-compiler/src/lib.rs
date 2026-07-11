@@ -30,7 +30,7 @@ mod drop_glue;
 mod semantic_order;
 mod unit;
 
-pub use unit::CompilationUnit;
+pub use unit::{CompilationUnit, SourceStats};
 
 use rayon::prelude::*;
 use tracing::{info, info_span};
@@ -1209,6 +1209,40 @@ pub fn compile_multi_file_with_symbol_paths_and_options(
     symbol_paths: std::collections::HashMap<FileId, String>,
     options: &CompileOptions,
 ) -> MultiErrorResult<CompileOutput> {
+    compile_multi_file_with_symbol_paths_and_options_impl(sources, symbol_paths, options, false)
+        .map(|(output, _stats)| output)
+}
+
+/// Compile multiple source files and return metrics collected by the live frontend.
+///
+/// This is the benchmark-facing form of
+/// [`compile_multi_file_with_symbol_paths_and_options`]. It does not perform a
+/// second tokenize pass to measure the input.
+pub fn compile_multi_file_with_symbol_paths_and_options_and_stats(
+    sources: &[SourceFile<'_>],
+    symbol_paths: std::collections::HashMap<FileId, String>,
+    options: &CompileOptions,
+) -> MultiErrorResult<(CompileOutput, SourceStats)> {
+    let (output, stats) = compile_multi_file_with_symbol_paths_and_options_impl(
+        sources,
+        symbol_paths,
+        options,
+        true,
+    )?;
+    let mut stats = stats.expect("source stats requested");
+    stats.lines = sources
+        .iter()
+        .map(|source| source.source.lines().count())
+        .sum();
+    Ok((output, stats))
+}
+
+fn compile_multi_file_with_symbol_paths_and_options_impl(
+    sources: &[SourceFile<'_>],
+    symbol_paths: std::collections::HashMap<FileId, String>,
+    options: &CompileOptions,
+    collect_stats: bool,
+) -> MultiErrorResult<(CompileOutput, Option<SourceStats>)> {
     // NOTE: the Rayon global thread pool is deliberately NOT configured here.
     // `build_global()` panics if called twice, and the `--emit` driver path
     // never reaches this function, so it was silently ignoring `-j`/`--jobs`
@@ -1227,7 +1261,9 @@ pub fn compile_multi_file_with_symbol_paths_and_options(
     // Use CompilationUnit for the entire pipeline
     let mut unit = CompilationUnit::new(sources.to_vec(), options.clone());
     unit.set_symbol_paths(symbol_paths);
-    unit.run_all()
+    let output = unit.run_all()?;
+    let stats = collect_stats.then(|| unit.collected_source_stats());
+    Ok((output, stats))
 }
 
 /// Link using the internal linker.

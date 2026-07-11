@@ -8,7 +8,7 @@ use std::process::Command;
 
 use tracing::Level;
 use tracing_subscriber::fmt::format::FmtSpan;
-use tracing_subscriber::{EnvFilter, fmt};
+use tracing_subscriber::{EnvFilter, Layer as _, fmt};
 
 mod timing;
 
@@ -16,9 +16,11 @@ use rue_compiler::{
     CompileError, CompileErrors, CompileOptions, CompileWarning, ErrorKind, FileId, Lexer,
     LinkerMode, MultiFileFormatter, MultiFileJsonFormatter, OptLevel, ParsedProgram,
     PreviewFeature, PreviewFeatures, SourceFile, SourceInfo, Span, TokenKind,
-    compile_multi_file_with_symbol_paths_and_options, configure_thread_pool, generate_emitted_asm,
-    generate_liveness_info, generate_lowering_info, generate_mir, generate_regalloc_info,
-    generate_stack_frame_info, import_candidate_groups, merge_symbols, parse_all_files,
+    compile_multi_file_with_symbol_paths_and_options,
+    compile_multi_file_with_symbol_paths_and_options_and_stats, configure_thread_pool,
+    generate_emitted_asm, generate_liveness_info, generate_lowering_info, generate_mir,
+    generate_regalloc_info, generate_stack_frame_info, import_candidate_groups, merge_symbols,
+    parse_all_files,
 };
 use rue_rir::RirPrinter;
 use rue_target::Target;
@@ -881,15 +883,13 @@ fn init_tracing(
         // Timing + text logging
         (true, true, LogFormat::Text) => {
             let timing_layer = timing::TimingLayer::new(timing_data.clone().unwrap());
-            let subscriber = tracing_subscriber::registry()
-                .with(filter.unwrap())
-                .with(timing_layer)
-                .with(
-                    fmt::layer()
-                        .with_target(true)
-                        .with_span_events(FmtSpan::CLOSE)
-                        .with_writer(std::io::stderr),
-                );
+            let subscriber = tracing_subscriber::registry().with(timing_layer).with(
+                fmt::layer()
+                    .with_target(true)
+                    .with_span_events(FmtSpan::CLOSE)
+                    .with_writer(std::io::stderr)
+                    .with_filter(filter.unwrap()),
+            );
             tracing::subscriber::set_global_default(subscriber)
                 .expect("failed to set tracing subscriber");
         }
@@ -897,27 +897,26 @@ fn init_tracing(
         // Timing + JSON logging
         (true, true, LogFormat::Json) => {
             let timing_layer = timing::TimingLayer::new(timing_data.clone().unwrap());
-            let subscriber = tracing_subscriber::registry()
-                .with(filter.unwrap())
-                .with(timing_layer)
-                .with(
-                    fmt::layer()
-                        .json()
-                        .with_target(true)
-                        .with_span_events(FmtSpan::CLOSE)
-                        .with_writer(std::io::stderr),
-                );
+            let subscriber = tracing_subscriber::registry().with(timing_layer).with(
+                fmt::layer()
+                    .json()
+                    .with_target(true)
+                    .with_span_events(FmtSpan::CLOSE)
+                    .with_writer(std::io::stderr)
+                    .with_filter(filter.unwrap()),
+            );
             tracing::subscriber::set_global_default(subscriber)
                 .expect("failed to set tracing subscriber");
         }
 
         // Text logging only (no timing)
         (false, true, LogFormat::Text) => {
-            let subscriber = tracing_subscriber::registry().with(filter.unwrap()).with(
+            let subscriber = tracing_subscriber::registry().with(
                 fmt::layer()
                     .with_target(true)
                     .with_span_events(FmtSpan::CLOSE)
-                    .with_writer(std::io::stderr),
+                    .with_writer(std::io::stderr)
+                    .with_filter(filter.unwrap()),
             );
             tracing::subscriber::set_global_default(subscriber)
                 .expect("failed to set tracing subscriber");
@@ -925,12 +924,13 @@ fn init_tracing(
 
         // JSON logging only (no timing)
         (false, true, LogFormat::Json) => {
-            let subscriber = tracing_subscriber::registry().with(filter.unwrap()).with(
+            let subscriber = tracing_subscriber::registry().with(
                 fmt::layer()
                     .json()
                     .with_target(true)
                     .with_span_events(FmtSpan::CLOSE)
-                    .with_writer(std::io::stderr),
+                    .with_writer(std::io::stderr)
+                    .with_filter(filter.unwrap()),
             );
             tracing::subscriber::set_global_default(subscriber)
                 .expect("failed to set tracing subscriber");
@@ -1774,31 +1774,6 @@ fn main() {
         return;
     }
 
-    // Compute source metrics if benchmark JSON is requested
-    let source_metrics = if options.benchmark_json {
-        // Sum metrics across ALL files — measuring only the first file made
-        // multi-file benchmark numbers meaningless (RUE-130).
-        let mut bytes = 0usize;
-        let mut lines = 0usize;
-        let mut tokens = 0usize;
-        for (_, content) in &sources {
-            bytes += content.len();
-            lines += content.lines().count();
-            let lexer = Lexer::new(content);
-            if let Ok((toks, _interner)) = lexer.tokenize() {
-                tokens += toks.len();
-            }
-            // If lexing fails, we'll get the error during compilation anyway
-        }
-        Some(timing::SourceMetrics {
-            bytes,
-            lines,
-            tokens,
-        })
-    } else {
-        None
-    };
-
     // --emit and --benchmark-json both own stdout, so combining them would
     // interleave IR text with the benchmark JSON and corrupt it — reject early.
     if options.benchmark_json && !options.emit_stages.is_empty() {
@@ -1818,7 +1793,7 @@ fn main() {
             options.time_passes,
             options.benchmark_json,
             &options.target,
-            source_metrics,
+            None,
         );
         return;
     }
@@ -1830,12 +1805,23 @@ fn main() {
         opt_level: options.opt_level,
         preview_features: options.preview_features.clone(),
     };
-    match compile_multi_file_with_symbol_paths_and_options(
-        &source_files,
-        symbol_path_map,
-        &compile_options,
-    ) {
-        Ok(output) => {
+    let compile_result = if options.benchmark_json {
+        compile_multi_file_with_symbol_paths_and_options_and_stats(
+            &source_files,
+            symbol_path_map,
+            &compile_options,
+        )
+        .map(|(output, stats)| (output, Some(stats)))
+    } else {
+        compile_multi_file_with_symbol_paths_and_options(
+            &source_files,
+            symbol_path_map,
+            &compile_options,
+        )
+        .map(|output| (output, None))
+    };
+    match compile_result {
+        Ok((output, source_stats)) => {
             // Print warnings using the diagnostic formatter
             diagnostics.print_warnings(&output.warnings);
 
@@ -1929,7 +1915,15 @@ fn main() {
                 options.time_passes,
                 options.benchmark_json,
                 &options.target,
-                source_metrics,
+                options.benchmark_json.then(|| {
+                    let source_stats = source_stats.expect("benchmark source stats requested");
+                    timing::SourceMetrics {
+                        files: source_stats.files,
+                        bytes: source_stats.bytes,
+                        lines: source_stats.lines,
+                        tokens: source_stats.tokens,
+                    }
+                }),
             );
         }
         Err(errors) => {

@@ -62,12 +62,39 @@ pub struct TimingData {
 
 /// The actual timing data storage.
 struct TimingDataInner {
-    /// Accumulated duration per pass name.
+    /// Accumulated measurements per pass name.
     /// Key is the span name (e.g., "lexer", "parser").
-    passes: HashMap<String, Duration>,
+    passes: HashMap<String, PassAggregate>,
 
     /// Order in which passes were first seen, for deterministic output.
     pass_order: Vec<String>,
+
+    /// Union of intervals in which at least one root span was active.
+    ///
+    /// Child spans overlap their parents, so summing every pass duration
+    /// double-counts work. The active-time union is the timing boundary used
+    /// for the benchmark total, even if independent roots overlap.
+    root_duration: Duration,
+    /// Number of root spans currently entered, including re-entrant entries.
+    active_roots: u64,
+    /// Start of the current interval in which at least one root is active.
+    root_active_since: Option<Instant>,
+    /// Most recent timestamp applied to a root-span transition.
+    ///
+    /// Runtime timestamps are sampled while holding `inner`, so they are
+    /// already ordered. Retaining the last timestamp also makes the collector
+    /// robust to a stale timestamp and gives the ordering invariant a
+    /// deterministic regression test.
+    last_root_transition: Option<Instant>,
+}
+
+/// Measurements aggregated across every span with the same name.
+#[derive(Debug, Clone, Copy, Default)]
+struct PassAggregate {
+    duration: Duration,
+    invocations: u64,
+    root_invocations: u64,
+    leaf_invocations: u64,
 }
 
 /// JSON output structure for benchmark timing data.
@@ -77,6 +104,10 @@ struct TimingDataInner {
 /// metadata for historical analysis and comparison across runs.
 #[derive(Debug, Clone, Serialize)]
 pub struct BenchmarkTiming {
+    /// Version of this machine-readable timing contract.
+    pub schema_version: u32,
+    /// Pass durations are inclusive and may overlap their parents.
+    pub timing_model: &'static str,
     /// Metadata about this benchmark run.
     pub metadata: BenchmarkMetadata,
     /// Individual pass timings in milliseconds.
@@ -94,11 +125,13 @@ pub struct BenchmarkTiming {
 /// Source code metrics for throughput calculations.
 #[derive(Debug, Clone, Serialize)]
 pub struct SourceMetrics {
-    /// Number of bytes in the source file.
+    /// Number of source files compiled.
+    pub files: usize,
+    /// Total bytes across source files.
     pub bytes: usize,
-    /// Number of lines in the source file.
+    /// Total lines across source files.
     pub lines: usize,
-    /// Number of tokens produced by the lexer.
+    /// Total tokens produced by the lexer invocations consumed by parsing.
     pub tokens: usize,
 }
 
@@ -122,6 +155,12 @@ pub struct PassTiming {
     pub duration_ms: f64,
     /// Percentage of total compilation time.
     pub percent: f64,
+    /// Number of spans aggregated into this row.
+    pub invocations: u64,
+    /// Number of invocations without a parent span.
+    pub root_invocations: u64,
+    /// Number of invocations without a child span.
+    pub leaf_invocations: u64,
 }
 
 impl TimingData {
@@ -131,23 +170,111 @@ impl TimingData {
             inner: Arc::new(Mutex::new(TimingDataInner {
                 passes: HashMap::new(),
                 pass_order: Vec::new(),
+                root_duration: Duration::ZERO,
+                active_roots: 0,
+                root_active_since: None,
+                last_root_transition: None,
             })),
         }
     }
 
-    /// Record a duration for the given pass.
+    /// Record a standalone leaf pass.
+    ///
+    /// This helper is used by deterministic unit tests. Runtime spans use
+    /// [`Self::record_span`] so their nesting is retained.
+    #[cfg(test)]
     fn record(&self, pass: &str, duration: Duration) {
+        self.record_test_span(pass, duration, true, true);
+    }
+
+    /// Record a duration and its position in the span tree.
+    fn record_span(&self, pass: &str, duration: Duration, is_root: bool, is_leaf: bool) {
         let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
-        let entry = inner
-            .passes
-            .entry(pass.to_string())
-            .or_insert(Duration::ZERO);
-        *entry += duration;
+        let entry = inner.passes.entry(pass.to_string()).or_default();
+        entry.duration += duration;
+        entry.invocations += 1;
+        entry.root_invocations += u64::from(is_root);
+        entry.leaf_invocations += u64::from(is_leaf);
 
         // Track order of first occurrence
         if !inner.pass_order.contains(&pass.to_string()) {
             inner.pass_order.push(pass.to_string());
         }
+    }
+
+    /// Record a synthetic span and its non-overlapping root contribution.
+    #[cfg(test)]
+    fn record_test_span(&self, pass: &str, duration: Duration, is_root: bool, is_leaf: bool) {
+        self.record_span(pass, duration, is_root, is_leaf);
+        if is_root {
+            let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+            inner.root_duration += duration;
+        }
+    }
+
+    /// Enter a root span and update both timing views as one serialized event.
+    ///
+    /// The span's extension lock is held by the caller. Acquiring the global
+    /// timing lock before sampling the clock prevents callbacks for different
+    /// root spans from applying timestamps out of order.
+    fn enter_root_span(&self, timing: &mut SpanTiming) {
+        let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        let now = Instant::now();
+        Self::enter_root_span_inner(&mut inner, timing, now);
+    }
+
+    /// Exit a root span and update both timing views as one serialized event.
+    fn exit_root_span(&self, timing: &mut SpanTiming) {
+        let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        let now = Instant::now();
+        Self::exit_root_span_inner(&mut inner, timing, now);
+    }
+
+    fn enter_root_span_inner(inner: &mut TimingDataInner, timing: &mut SpanTiming, now: Instant) {
+        let now = ordered_root_timestamp(inner, now);
+        timing.enter_at(now);
+        Self::root_enter_inner(inner, now);
+    }
+
+    fn exit_root_span_inner(inner: &mut TimingDataInner, timing: &mut SpanTiming, now: Instant) {
+        let now = ordered_root_timestamp(inner, now);
+        timing.exit_at(now);
+        Self::root_exit_inner(inner, now);
+    }
+
+    fn root_enter_inner(inner: &mut TimingDataInner, now: Instant) {
+        if inner.active_roots == 0 {
+            inner.root_active_since = Some(now);
+        }
+        inner.active_roots += 1;
+    }
+
+    fn root_exit_inner(inner: &mut TimingDataInner, now: Instant) {
+        if inner.active_roots == 0 {
+            return;
+        }
+        inner.active_roots -= 1;
+        if inner.active_roots == 0 {
+            if let Some(started) = inner.root_active_since.take() {
+                inner.root_duration += now.saturating_duration_since(started);
+            }
+        }
+    }
+
+    /// Begin one synthetic root-span active interval.
+    #[cfg(test)]
+    fn root_enter_at(&self, now: Instant) {
+        let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        let now = ordered_root_timestamp(&mut inner, now);
+        Self::root_enter_inner(&mut inner, now);
+    }
+
+    /// End one synthetic root-span active interval.
+    #[cfg(test)]
+    fn root_exit_at(&self, now: Instant) {
+        let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        let now = ordered_root_timestamp(&mut inner, now);
+        Self::root_exit_inner(&mut inner, now);
     }
 
     /// Generate the timing report.
@@ -161,18 +288,17 @@ impl TimingData {
             return String::from("No timing data collected (no instrumented passes ran).\n");
         }
 
-        let total: Duration = inner.passes.values().sum();
-        let total_ms = total.as_secs_f64() * 1000.0;
+        let total_ms = current_root_duration(&inner).as_secs_f64() * 1000.0;
 
         let mut output = String::new();
-        output.push_str("=== Compilation Timing ===\n\n");
+        output.push_str("=== Compilation Timing (inclusive spans) ===\n\n");
 
         // Find the longest pass name for alignment
         let max_name_len = inner.pass_order.iter().map(|s| s.len()).max().unwrap_or(0);
 
         for pass in &inner.pass_order {
-            if let Some(&duration) = inner.passes.get(pass) {
-                let ms = duration.as_secs_f64() * 1000.0;
+            if let Some(measurement) = inner.passes.get(pass) {
+                let ms = measurement.duration.as_secs_f64() * 1000.0;
                 let pct = if total_ms > 0.0 {
                     (ms / total_ms) * 100.0
                 } else {
@@ -195,10 +321,11 @@ impl TimingData {
         output.push_str(&format!("  {:-<width$}\n", "", width = max_name_len + 20));
         output.push_str(&format!(
             "  {:<width$} {:>8.1}ms (100%)\n",
-            "Total:",
+            "Total (root spans):",
             total_ms,
             width = max_name_len + 1
         ));
+        output.push_str("\n  Pass rows are inclusive; nested rows overlap their parents.\n");
 
         output
     }
@@ -219,15 +346,14 @@ impl TimingData {
     ) -> BenchmarkTiming {
         let inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
 
-        let total: Duration = inner.passes.values().sum();
-        let total_ms = total.as_secs_f64() * 1000.0;
+        let total_ms = current_root_duration(&inner).as_secs_f64() * 1000.0;
 
         let passes = inner
             .pass_order
             .iter()
             .filter_map(|pass| {
-                inner.passes.get(pass).map(|&duration| {
-                    let duration_ms = duration.as_secs_f64() * 1000.0;
+                inner.passes.get(pass).map(|measurement| {
+                    let duration_ms = measurement.duration.as_secs_f64() * 1000.0;
                     let percent = if total_ms > 0.0 {
                         (duration_ms / total_ms) * 100.0
                     } else {
@@ -237,6 +363,9 @@ impl TimingData {
                         name: pass.clone(),
                         duration_ms,
                         percent,
+                        invocations: measurement.invocations,
+                        root_invocations: measurement.root_invocations,
+                        leaf_invocations: measurement.leaf_invocations,
                     }
                 })
             })
@@ -249,6 +378,8 @@ impl TimingData {
         };
 
         BenchmarkTiming {
+            schema_version: 2,
+            timing_model: "inclusive_spans",
             metadata,
             passes,
             total_ms,
@@ -285,6 +416,23 @@ impl Default for TimingData {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Clamp a root transition to the serialized root timeline.
+fn ordered_root_timestamp(inner: &mut TimingDataInner, now: Instant) -> Instant {
+    let now = inner
+        .last_root_transition
+        .map_or(now, |previous| previous.max(now));
+    inner.last_root_transition = Some(now);
+    now
+}
+
+/// Snapshot the union of intervals in which at least one root span was active.
+fn current_root_duration(inner: &TimingDataInner) -> Duration {
+    let active = inner
+        .root_active_since
+        .map_or(Duration::ZERO, |started| started.elapsed());
+    inner.root_duration + active
 }
 
 /// Capitalize the first letter of a string.
@@ -389,11 +537,48 @@ impl TimingLayer {
 ///
 /// This is stored in the span's extensions and tracks when the span was entered.
 struct SpanTiming {
-    /// When the span was most recently entered.
-    /// None if the span is not currently entered.
-    entered_at: Option<Instant>,
-    /// Total time accumulated across all enter/exit cycles.
+    /// Number of active entries. A span may be re-entered or entered from
+    /// multiple threads, so one optional timestamp is insufficient.
+    active_enters: u64,
+    /// Start of the current interval in which this span has at least one entry.
+    active_since: Option<Instant>,
+    /// Union of intervals in which this span was active.
     accumulated: Duration,
+    /// Whether this span has at least one direct child.
+    has_children: bool,
+    /// Whether the span was created without a parent.
+    ///
+    /// Store this at creation because a child may outlive its parent; looking
+    /// the parent up again during a later enter/close can then be ambiguous.
+    is_root: bool,
+}
+
+impl SpanTiming {
+    fn enter_at(&mut self, now: Instant) {
+        if self.active_enters == 0 {
+            self.active_since = Some(now);
+        }
+        self.active_enters += 1;
+    }
+
+    fn exit_at(&mut self, now: Instant) {
+        if self.active_enters == 0 {
+            return;
+        }
+        self.active_enters -= 1;
+        if self.active_enters == 0 {
+            if let Some(started) = self.active_since.take() {
+                self.accumulated += now.saturating_duration_since(started);
+            }
+        }
+    }
+
+    fn duration(&self) -> Duration {
+        self.accumulated
+            + self
+                .active_since
+                .map_or(Duration::ZERO, |started| started.elapsed())
+    }
 }
 
 impl<S> Layer<S> for TimingLayer
@@ -403,31 +588,54 @@ where
     fn on_new_span(&self, _attrs: &Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
         // Initialize timing state for this span
         if let Some(span) = ctx.span(id) {
+            let parent_id = span.parent().map(|parent| parent.id().clone());
+            let is_root = parent_id.is_none();
             let mut extensions = span.extensions_mut();
             extensions.insert(SpanTiming {
-                entered_at: None,
+                active_enters: 0,
+                active_since: None,
                 accumulated: Duration::ZERO,
+                has_children: false,
+                is_root,
             });
+            drop(extensions);
+
+            if let Some(parent_id) = parent_id {
+                if let Some(parent) = ctx.span(&parent_id) {
+                    let mut parent_extensions = parent.extensions_mut();
+                    if let Some(parent_timing) = parent_extensions.get_mut::<SpanTiming>() {
+                        parent_timing.has_children = true;
+                    }
+                }
+            }
         }
     }
 
     fn on_enter(&self, id: &Id, ctx: Context<'_, S>) {
-        // Record when the span was entered
         if let Some(span) = ctx.span(id) {
             let mut extensions = span.extensions_mut();
             if let Some(timing) = extensions.get_mut::<SpanTiming>() {
-                timing.entered_at = Some(Instant::now());
+                if timing.is_root {
+                    self.data.enter_root_span(timing);
+                } else {
+                    // Sample after acquiring the per-span extension lock so
+                    // concurrent callbacks cannot apply stale timestamps.
+                    timing.enter_at(Instant::now());
+                }
             }
         }
     }
 
     fn on_exit(&self, id: &Id, ctx: Context<'_, S>) {
-        // Calculate duration and accumulate
         if let Some(span) = ctx.span(id) {
             let mut extensions = span.extensions_mut();
             if let Some(timing) = extensions.get_mut::<SpanTiming>() {
-                if let Some(entered_at) = timing.entered_at.take() {
-                    timing.accumulated += entered_at.elapsed();
+                if timing.is_root {
+                    self.data.exit_root_span(timing);
+                } else {
+                    // Sample after acquiring the per-span extension lock so
+                    // concurrent callbacks cannot apply stale timestamps.
+                    timing.exit_at(Instant::now());
                 }
             }
         }
@@ -436,10 +644,23 @@ where
     fn on_close(&self, id: Id, ctx: Context<'_, S>) {
         // When the span is fully closed, record its total time
         if let Some(span) = ctx.span(&id) {
-            let extensions = span.extensions();
-            if let Some(timing) = extensions.get::<SpanTiming>() {
-                let name = span.name();
-                self.data.record(name, timing.accumulated);
+            let measurement = {
+                let extensions = span.extensions();
+                extensions.get::<SpanTiming>().map(|timing| {
+                    (
+                        span.name().to_string(),
+                        timing.duration(),
+                        timing.is_root,
+                        !timing.has_children,
+                    )
+                })
+            };
+
+            // Do not hold the span's extension lock while acquiring the
+            // aggregate-data lock. Root enter/exit callbacks deliberately use
+            // the opposite pair together (extension, then aggregate data).
+            if let Some((name, duration, is_root, is_leaf)) = measurement {
+                self.data.record_span(&name, duration, is_root, is_leaf);
             }
         }
     }
@@ -540,6 +761,113 @@ mod tests {
     }
 
     #[test]
+    fn nested_spans_do_not_inflate_total() {
+        let data = TimingData::new();
+        data.record_test_span("compile", Duration::from_millis(10), true, false);
+        data.record_test_span("parse", Duration::from_millis(6), false, false);
+        data.record_test_span("lexer", Duration::from_millis(4), false, true);
+        data.record_test_span("parser", Duration::from_millis(2), false, true);
+        data.record_test_span("codegen", Duration::from_millis(4), false, true);
+
+        let timing = data.to_benchmark_timing_with_metrics("x86_64-linux", "0.1.0", None, None);
+        assert!((timing.total_ms - 10.0).abs() < f64::EPSILON);
+
+        let compile = timing
+            .passes
+            .iter()
+            .find(|pass| pass.name == "compile")
+            .unwrap();
+        assert!((compile.percent - 100.0).abs() < f64::EPSILON);
+        assert_eq!(compile.invocations, 1);
+        assert_eq!(compile.root_invocations, 1);
+        assert_eq!(compile.leaf_invocations, 0);
+
+        let leaf_ms: f64 = timing
+            .passes
+            .iter()
+            .filter(|pass| pass.leaf_invocations == pass.invocations)
+            .map(|pass| pass.duration_ms)
+            .sum();
+        assert!((leaf_ms - timing.total_ms).abs() < f64::EPSILON);
+
+        let inclusive_sum: f64 = timing.passes.iter().map(|pass| pass.duration_ms).sum();
+        assert!(inclusive_sum > timing.total_ms);
+    }
+
+    #[test]
+    fn overlapping_roots_contribute_their_wall_time_union() {
+        let data = TimingData::new();
+        let start = Instant::now();
+        data.root_enter_at(start);
+        data.root_enter_at(start + Duration::from_millis(10));
+        data.root_exit_at(start + Duration::from_millis(20));
+        data.root_exit_at(start + Duration::from_millis(30));
+
+        let inner = data.inner.lock().unwrap();
+        assert_eq!(current_root_duration(&inner), Duration::from_millis(30));
+    }
+
+    #[test]
+    fn stale_root_callback_timestamp_cannot_inflate_either_timing_view() {
+        let data = TimingData::new();
+        let start = Instant::now();
+        let mut first = SpanTiming {
+            active_enters: 0,
+            active_since: None,
+            accumulated: Duration::ZERO,
+            has_children: false,
+            is_root: true,
+        };
+        let mut delayed = SpanTiming {
+            active_enters: 0,
+            active_since: None,
+            accumulated: Duration::ZERO,
+            has_children: false,
+            is_root: true,
+        };
+
+        // Model a callback that captured t=10ms, stalled, and was applied
+        // after another root exited at t=20ms. Runtime callbacks sample their
+        // timestamp only after acquiring this lock; clamping here makes the
+        // invariant explicit and protects both the span and root-union views.
+        let mut inner = data.inner.lock().unwrap();
+        TimingData::enter_root_span_inner(&mut inner, &mut first, start);
+        TimingData::exit_root_span_inner(&mut inner, &mut first, start + Duration::from_millis(20));
+        TimingData::enter_root_span_inner(
+            &mut inner,
+            &mut delayed,
+            start + Duration::from_millis(10),
+        );
+        TimingData::exit_root_span_inner(
+            &mut inner,
+            &mut delayed,
+            start + Duration::from_millis(30),
+        );
+
+        assert_eq!(first.duration(), Duration::from_millis(20));
+        assert_eq!(delayed.duration(), Duration::from_millis(10));
+        assert_eq!(current_root_duration(&inner), Duration::from_millis(30));
+    }
+
+    #[test]
+    fn reentrant_span_contributes_its_wall_time_union() {
+        let start = Instant::now();
+        let mut timing = SpanTiming {
+            active_enters: 0,
+            active_since: None,
+            accumulated: Duration::ZERO,
+            has_children: false,
+            is_root: false,
+        };
+        timing.enter_at(start);
+        timing.enter_at(start + Duration::from_millis(10));
+        timing.exit_at(start + Duration::from_millis(20));
+        timing.exit_at(start + Duration::from_millis(30));
+
+        assert_eq!(timing.duration(), Duration::from_millis(30));
+    }
+
+    #[test]
     fn test_to_benchmark_timing_metadata() {
         let data = TimingData::new();
         data.record("lexer", Duration::from_millis(100));
@@ -558,11 +886,16 @@ mod tests {
         data.record("lexer", Duration::from_millis(100));
 
         let json = data.to_json_with_metrics("x86_64-linux", "0.1.0", None, None);
+        assert!(json.contains("\"schema_version\":2"));
+        assert!(json.contains("\"timing_model\":\"inclusive_spans\""));
         assert!(json.contains("\"passes\""));
         assert!(json.contains("\"name\""));
         assert!(json.contains("\"lexer\""));
         assert!(json.contains("\"duration_ms\""));
         assert!(json.contains("\"percent\""));
+        assert!(json.contains("\"invocations\""));
+        assert!(json.contains("\"root_invocations\""));
+        assert!(json.contains("\"leaf_invocations\""));
         assert!(json.contains("\"total_ms\""));
         // Should also contain metadata
         assert!(json.contains("\"metadata\""));

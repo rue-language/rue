@@ -211,7 +211,9 @@ for i in "${!benchmark_names[@]}"; do
         fi
         rm -f "$time_output"
 
-        # Extract total_ms from the JSON. `|| true`: grep may not match and
+        # Extract the schema-v2 root-span total. Before RUE-642 this field
+        # summed nested spans and was inflated; historical dashboard entries
+        # retain that older meaning. `|| true`: grep may not match and
         # `head -1` closing the pipe early can SIGPIPE grep — neither is fatal
         # (the `-n "$total_ms"` check below handles a missing value).
         total_ms=$(echo "$timing_json" | grep -o '"total_ms":[0-9.]*' | head -1 | cut -d: -f2 || true)
@@ -306,12 +308,21 @@ import sys
 pass_data = {}
 source_metrics = None
 peak_memory_samples = []
+timing_schema_version = None
 
 for json_str in sys.argv[1:]:
     try:
         data = json.loads(json_str)
+        schema_version = data.get('schema_version', 1)
+        if timing_schema_version is None:
+            timing_schema_version = schema_version
         for p in data.get('passes', []):
             pname = p['name']
+            # Schema v2 durations are inclusive. Persist only structural
+            # leaves so parse_file is not stacked with lexer + parser in the
+            # dashboard. V1 had no nesting metadata and parse_file was a leaf.
+            if schema_version >= 2 and p.get('leaf_invocations') != p.get('invocations'):
+                continue
             duration = p['duration_ms']
             if pname not in pass_data:
                 pass_data[pname] = []
@@ -332,6 +343,8 @@ for pname, durations in pass_data.items():
     passes[pname] = {'mean_ms': round(mean, 3)}
 
 result = {'passes': passes}
+if timing_schema_version is not None:
+    result['timing_schema_version'] = timing_schema_version
 if source_metrics:
     result['source_metrics'] = source_metrics
 if peak_memory_samples:
@@ -343,9 +356,10 @@ print(json.dumps(result))
     # Extract components from the JSON
     passes_json=$(echo "$extra_json" | python3 -c "import sys, json; d=json.load(sys.stdin); print(json.dumps(d.get('passes', {})))")
     source_metrics_json=$(echo "$extra_json" | python3 -c "import sys, json; d=json.load(sys.stdin); sm=d.get('source_metrics'); print(json.dumps(sm) if sm else 'null')")
+    timing_schema_version=$(echo "$extra_json" | python3 -c "import sys, json; d=json.load(sys.stdin); print(d.get('timing_schema_version', 1))")
 
     # Store result with all data (including memory and binary size from iteration tracking)
-    result_parts=("\"name\":\"$name\"" "\"iterations\":$count" "\"mean_ms\":$mean" "\"std_ms\":$stddev" "\"passes\":$passes_json")
+    result_parts=("\"name\":\"$name\"" "\"iterations\":$count" "\"mean_ms\":$mean" "\"std_ms\":$stddev" "\"timing_schema_version\":$timing_schema_version" "\"passes\":$passes_json")
     [[ "$source_metrics_json" != "null" ]] && result_parts+=("\"source_metrics\":$source_metrics_json")
     [[ "$mem_mean" -gt 0 ]] && result_parts+=("\"peak_memory_bytes\":$mem_mean")
     [[ "$binary_size" -gt 0 ]] && result_parts+=("\"binary_size_bytes\":$binary_size")

@@ -28,6 +28,14 @@ rue --log-format=json --log-level=debug source.rue output
 RUST_LOG=rue_compiler::sema=trace rue source.rue output
 ```
 
+`--time-passes` and `--benchmark-json` use inclusive spans: a parent's time
+contains its children. Their total is therefore the duration of root compiler
+spans, not the sum of every row. Machine-readable schema v2 includes invocation,
+root, and leaf counts so consumers can distinguish aggregate spans from phase
+rows. Distinct parallel leaf spans may overlap and should be interpreted as
+summed work rather than wall time. Logging filters such as `RUST_LOG=error`
+affect log output only; they do not disable timing collection.
+
 ### Adding Instrumentation
 
 Each compilation pass should have a tracing span wrapping the work:
@@ -111,4 +119,3 @@ println!("Lexed {} tokens from {} bytes", tokens.len(), source.len());
 3. **Context in spans**: Include high-level context (file, function count) in span fields
 4. **Metrics in events**: Include computed metrics (instruction counts, sizes) in events
 5. **Zero-cost when off**: Tracing has no overhead when no subscriber is active
-

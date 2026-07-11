@@ -42,6 +42,22 @@ use crate::{
 };
 use rue_span::FileId;
 
+/// Source work performed by one compilation unit.
+///
+/// These values are collected by the real frontend rather than by a separate
+/// benchmarking pre-pass, so observing them cannot warm a second lexer run.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SourceStats {
+    /// Number of source files in the unit.
+    pub files: usize,
+    /// Total source bytes.
+    pub bytes: usize,
+    /// Total source lines, using [`str::lines`] semantics.
+    pub lines: usize,
+    /// Tokens produced by the lexer invocations consumed by the parser.
+    pub tokens: usize,
+}
+
 /// A unified compilation unit that owns all artifacts from source to machine code.
 ///
 /// The compilation unit progresses through phases:
@@ -67,6 +83,8 @@ pub struct CompilationUnit<'src> {
     // === Source ===
     /// Source files being compiled.
     sources: Vec<SourceFile<'src>>,
+    /// Work metrics collected from those sources and the live parse.
+    source_stats: SourceStats,
     /// Designated semantic root (the first source), independent of FileId rank.
     root_file_id: FileId,
 
@@ -117,10 +135,19 @@ impl<'src> CompilationUnit<'src> {
             .map(|s| (s.file_id, s.path.to_string()))
             .collect();
         let symbol_paths = file_paths.clone();
+        let source_stats = SourceStats {
+            files: sources.len(),
+            bytes: sources.iter().map(|source| source.source.len()).sum(),
+            // Count lines lazily in source_stats(); ordinary compilation does
+            // not need to scan every source solely for benchmark metadata.
+            lines: 0,
+            tokens: 0,
+        };
 
         Self {
             options,
             sources,
+            source_stats,
             root_file_id,
             merged_ast: None,
             interner: None,
@@ -156,6 +183,7 @@ impl<'src> CompilationUnit<'src> {
         let mut parsed_files = Vec::with_capacity(self.sources.len());
         let mut interner = ThreadedRodeo::new();
         let mut errors = CompileErrors::new();
+        self.source_stats.tokens = 0;
 
         for source in &self.sources {
             let _file_span = info_span!("parse_file", path = %source.path).entered();
@@ -164,31 +192,38 @@ impl<'src> CompilationUnit<'src> {
             let lexer = Lexer::with_interner_and_file_id(source.source, interner, source.file_id);
 
             // Tokenize
-            let tokens = match lexer.tokenize_preserving_interner() {
-                Ok((tokens, returned_interner)) => {
-                    interner = returned_interner;
-                    tokens
-                }
-                Err((lex_errors, returned_interner)) => {
-                    interner = returned_interner;
-                    errors.extend(lex_errors);
-                    continue;
+            let tokens = {
+                let _span = info_span!("lexer").entered();
+                match lexer.tokenize_preserving_interner() {
+                    Ok((tokens, returned_interner)) => {
+                        interner = returned_interner;
+                        tokens
+                    }
+                    Err((lex_errors, returned_interner)) => {
+                        interner = returned_interner;
+                        errors.extend(lex_errors);
+                        continue;
+                    }
                 }
             };
 
+            self.source_stats.tokens += tokens.len();
             info!(token_count = tokens.len(), "lexing complete");
 
             // Parse
-            let parser = Parser::new(tokens, interner);
-            let ast = match parser.parse_preserving_interner() {
-                Ok((ast, returned_interner)) => {
-                    interner = returned_interner;
-                    ast
-                }
-                Err((parse_errors, returned_interner)) => {
-                    interner = returned_interner;
-                    errors.extend(parse_errors);
-                    continue;
+            let ast = {
+                let _span = info_span!("parser").entered();
+                let parser = Parser::new(tokens, interner);
+                match parser.parse_preserving_interner() {
+                    Ok((ast, returned_interner)) => {
+                        interner = returned_interner;
+                        ast
+                    }
+                    Err((parse_errors, returned_interner)) => {
+                        interner = returned_interner;
+                        errors.extend(parse_errors);
+                        continue;
+                    }
                 }
             };
 
@@ -303,7 +338,10 @@ impl<'src> CompilationUnit<'src> {
             &self.symbol_paths,
             self.root_file_id,
         );
-        let semantic_rir = AstGen::new(&semantic_ast, interner).generate();
+        let semantic_rir = {
+            let _span = info_span!("semantic_astgen").entered();
+            AstGen::new(&semantic_ast, interner).generate()
+        };
 
         // Semantic analysis
         let sema_output = {
@@ -489,6 +527,23 @@ impl<'src> CompilationUnit<'src> {
         &self.file_paths
     }
 
+    /// Get source metrics collected by the live frontend.
+    pub fn source_stats(&self) -> SourceStats {
+        SourceStats {
+            lines: self
+                .sources
+                .iter()
+                .map(|source| source.source.lines().count())
+                .sum(),
+            ..self.source_stats
+        }
+    }
+
+    /// Get counters collected during compilation without scanning source text.
+    pub(crate) fn collected_source_stats(&self) -> SourceStats {
+        self.source_stats
+    }
+
     /// Replace the paths used to qualify otherwise-colliding generated names.
     ///
     /// These identities do not affect diagnostics or module resolution. Any
@@ -600,6 +655,37 @@ mod tests {
         // Then analyze
         unit.analyze().unwrap();
         assert!(unit.is_analyzed());
+    }
+
+    #[test]
+    fn source_stats_use_the_tokens_consumed_by_the_live_parse() {
+        let first = "fn main() -> i32 { helper() }\n";
+        let second = "fn helper() -> i32 { 42 }\n";
+        let expected_tokens = Lexer::new(first).tokenize().unwrap().0.len()
+            + Lexer::new(second).tokenize().unwrap().0.len();
+        let sources = vec![
+            SourceFile::new("main.rue", first, FileId::new(1)),
+            SourceFile::new("helper.rue", second, FileId::new(2)),
+        ];
+        let mut unit = CompilationUnit::new(sources, CompileOptions::default());
+
+        assert_eq!(
+            unit.source_stats(),
+            SourceStats {
+                files: 2,
+                bytes: first.len() + second.len(),
+                lines: 2,
+                tokens: 0,
+            }
+        );
+
+        unit.parse().unwrap();
+        assert_eq!(unit.source_stats().tokens, expected_tokens);
+
+        // Re-running a phase may be unusual, but metrics must describe one
+        // parse rather than accumulating observer-induced work.
+        unit.parse().unwrap();
+        assert_eq!(unit.source_stats().tokens, expected_tokens);
     }
 
     #[test]

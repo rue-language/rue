@@ -84,6 +84,7 @@ filegroup(
         "scripts/append-benchmark.py",
         "scripts/benchmark_validation.py",
         "scripts/generate-charts.py",
+        "scripts/perf-baseline.py",
         "scripts/validate-benchmark.py",
     ],
 )

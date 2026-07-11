@@ -46,19 +46,20 @@ COMPARISON_HEIGHT = 400
 
 # Colors for passes (consistent with website theme)
 PASS_COLORS = {
-    "parse_file": "#5c6b34",            # olive
-    "merge_symbols": "#71813f",         # moss
-    "parallel_astgen": "#5c6b34",       # historical olive
-    "merge_rirs": "#71813f",            # historical moss
+    "lexer": "#5c6b34",  # olive
+    "parser": "#7d8f4a",  # moss
+    "parse_file": "#5c6b34",  # historical combined lexer/parser
+    "merge_symbols": "#71813f",  # moss
+    "parallel_astgen": "#5c6b34",  # historical olive
+    "merge_rirs": "#71813f",  # historical moss
     "validate_and_generate_rir": "#8f984d",  # dry grass
-    "lexer": "#5c6b34",     # olive
-    "parser": "#7d8f4a",    # moss
-    "astgen": "#a3a25b",    # dry grass
-    "sema": "#c9970e",      # rue yellow
-    "cfg": "#8a6d2f",       # ochre
+    "astgen": "#a3a25b",  # dry grass
+    "semantic_astgen": "#b7ad63",  # straw
+    "sema": "#c9970e",  # rue yellow
+    "cfg": "#8a6d2f",  # ochre
     "cfg_construction": "#8a6d2f",  # ochre
-    "codegen": "#a14e24",   # sienna
-    "linker": "#6b4788",    # plum
+    "codegen": "#a14e24",  # sienna
+    "linker": "#6b4788",  # plum
 }
 
 # Nested aggregate spans would double-count their leaf timings in a breakdown.
@@ -68,18 +69,19 @@ AGGREGATE_PASSES = {"parse", "compile"}
 # A chart only renders names present in the selected run, then appends unknown
 # future leaves alphabetically so new instrumentation cannot disappear.
 PASS_ORDER = [
+    "lexer",
+    "parser",
     "parse_file",
     "merge_symbols",
     "parallel_astgen",
     "merge_rirs",
     "validate_and_generate_rir",
     "astgen",
+    "semantic_astgen",
     "sema",
     "cfg_construction",
     "codegen",
     "linker",
-    "lexer",
-    "parser",
     "cfg",
 ]
 
@@ -127,6 +129,13 @@ def order_pass_times(passes: dict[str, float]) -> dict[str, float]:
 
 def benchmark_time(bench: dict) -> float:
     """Read one benchmark's mean time across current and legacy schemas."""
+    # Before timing schema v2, mean_ms summed nested spans and was inflated.
+    # Historical runs retained the honest root wall time as passes.compile.
+    compile_timing = bench.get("passes", {}).get("compile")
+    if isinstance(compile_timing, dict):
+        compile_mean = compile_timing.get("mean_ms")
+        if isinstance(compile_mean, (int, float)):
+            return compile_mean
     if "mean_ms" in bench:
         return bench["mean_ms"]
     total = bench.get("total_ms", 0)
@@ -1121,7 +1130,7 @@ def generate_platform_charts(history_path: Path, output_dir: Path, platform: Opt
         for bench in latest_run.get("benchmarks", []):
             bench_info = {
                 "name": bench.get("name", ""),
-                "mean_ms": bench.get("mean_ms", 0),
+                "mean_ms": benchmark_time(bench),
             }
             if "source_metrics" in bench:
                 sm = bench["source_metrics"]
