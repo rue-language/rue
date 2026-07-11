@@ -3,8 +3,8 @@
 //! Caller source order remains observable in tokens, AST, RIR, and dependency
 //! output. Semantic allocation has a stricter requirement:
 //! moving sibling modules must not renumber types, strings, functions, or
-//! objects. The compiler therefore lowers a second, top-level-item-reordered
-//! AST to the private RIR consumed by sema.
+//! objects. The compiler therefore lowers an immutable, borrowed item-order
+//! view to the private RIR consumed by sema.
 
 use std::collections::HashMap;
 
@@ -24,38 +24,66 @@ pub(crate) fn item_span(item: &Item) -> Span {
     }
 }
 
-/// Clone an observable AST into the canonical order used only by sema.
-///
-/// The explicitly designated root remains first. Siblings are ordered by their
-/// validated, canonical logical paths, while byte positions retain
-/// declaration order within each file. Compiler entry points validate that
-/// every AST item is described by `source_metadata` before calling this.
-pub(crate) fn for_sema(ast: &Ast, source_metadata: &SourceMetadata) -> Ast {
-    let mut keyed_items: Vec<_> = ast
-        .items
-        .iter()
-        .cloned()
-        .enumerate()
-        .map(|(original_index, item)| {
-            let span = item_span(&item);
-            let logical_path = source_metadata
-                .logical_path(span.file_id)
-                .expect("AST file ID validated against source metadata");
-            let key = (
-                span.file_id != source_metadata.root_file_id(),
-                logical_path,
-                span.start,
-                span.end,
-                span.file_id.index(),
-                original_index,
-            );
-            (key, item)
-        })
-        .collect();
-    keyed_items.sort_by(|(left, _), (right, _)| left.cmp(right));
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SemanticItemOrderWork {
+    pub(crate) items_indexed: usize,
+    pub(crate) item_payloads_cloned: usize,
+}
 
-    Ast {
-        items: keyed_items.into_iter().map(|(_, item)| item).collect(),
+/// Borrowed canonical item order used only by semantic lowering.
+pub(crate) struct SemanticItemOrder<'a> {
+    items: Vec<&'a Item>,
+    work: SemanticItemOrderWork,
+}
+
+impl<'a> SemanticItemOrder<'a> {
+    /// Index an observable AST without cloning any item payloads.
+    ///
+    /// The explicitly designated root remains first. Siblings are ordered by their
+    /// validated, canonical logical paths, while byte positions retain
+    /// declaration order within each file. Compiler entry points validate that
+    /// every AST item is described by `source_metadata` before calling this.
+    pub(crate) fn from_items(
+        items: impl IntoIterator<Item = &'a Item>,
+        source_metadata: &SourceMetadata,
+    ) -> Self {
+        let mut keyed_items: Vec<_> = items
+            .into_iter()
+            .enumerate()
+            .map(|(original_index, item)| {
+                let span = item_span(item);
+                let logical_path = source_metadata
+                    .logical_path(span.file_id)
+                    .expect("AST file ID validated against source metadata");
+                let key = (
+                    span.file_id != source_metadata.root_file_id(),
+                    logical_path,
+                    span.start,
+                    span.end,
+                    span.file_id.index(),
+                    original_index,
+                );
+                (key, item)
+            })
+            .collect();
+        let keyed_items_len = keyed_items.len();
+        keyed_items.sort_by(|(left, _), (right, _)| left.cmp(right));
+
+        Self {
+            items: keyed_items.into_iter().map(|(_, item)| item).collect(),
+            work: SemanticItemOrderWork {
+                items_indexed: keyed_items_len,
+                item_payloads_cloned: 0,
+            },
+        }
+    }
+
+    pub(crate) fn iter(&self) -> impl ExactSizeIterator<Item = &'a Item> + '_ {
+        self.items.iter().copied()
+    }
+
+    pub(crate) fn work(&self) -> SemanticItemOrderWork {
+        self.work
     }
 }
 
@@ -108,14 +136,19 @@ mod tests {
         )
         .unwrap();
 
-        let ordered = for_sema(&ast, &source_metadata);
-        let ordered_files: Vec<_> = ordered
-            .items
-            .iter()
-            .map(item_span)
-            .map(|s| s.file_id)
-            .collect();
+        let ordered = SemanticItemOrder::from_items(ast.items.iter(), &source_metadata);
+        let ordered_files: Vec<_> = ordered.iter().map(item_span).map(|s| s.file_id).collect();
 
         assert_eq!(ordered_files, [root, logical_first, logical_second]);
+        assert_eq!(
+            ordered.work(),
+            SemanticItemOrderWork {
+                items_indexed: 3,
+                item_payloads_cloned: 0,
+            }
+        );
+        for item in ordered.iter() {
+            assert!(ast.items.iter().any(|source| std::ptr::eq(source, item)));
+        }
     }
 }

@@ -37,10 +37,10 @@ use lasso::ThreadedRodeo;
 use tracing::{info, info_span};
 
 use crate::{
-    Ast, AstGen, CompileErrors, CompileOptions, CompileOutput, CompileResult, CompileWarning,
-    DefinitionSnapshot, FunctionWithCfg, MultiErrorResult, Rir, SourceFile, SourceMetadata,
-    SourceSnapshot, SyntaxWork, TypeInternPool, build_functions_and_cfgs, build_sema_for_target,
-    compile_backend,
+    AstGen, CompileErrors, CompileOptions, CompileOutput, CompileResult, CompileWarning,
+    DefinitionSnapshot, FunctionWithCfg, MergedAst, MultiErrorResult, Rir, SourceFile,
+    SourceMetadata, SourceSnapshot, SyntaxWork, TypeInternPool, build_functions_and_cfgs,
+    build_sema_for_target, compile_backend,
 };
 use rue_span::FileId;
 
@@ -95,7 +95,7 @@ pub struct CompilationUnit<'src> {
 
     // === Phase 1: Parsing ===
     /// Merged AST containing all items (populated by `parse()`).
-    merged_ast: Option<Ast>,
+    merged_ast: Option<MergedAst>,
     /// String interner shared across all files.
     interner: Option<ThreadedRodeo>,
     /// Durable module/name keys and snapshot-local definition occurrences from
@@ -264,8 +264,7 @@ impl<'src> CompilationUnit<'src> {
 
         let _span = info_span!("astgen").entered();
 
-        let astgen = AstGen::new(ast, interner);
-        let rir = astgen.generate();
+        let rir = AstGen::generate_items(interner, ast.items());
 
         info!(instruction_count = rir.len(), "RIR generation complete");
 
@@ -298,10 +297,20 @@ impl<'src> CompilationUnit<'src> {
         // while sema consumes a private logical-path-ordered lowering. This
         // makes allocation and artifact layout canonical without changing the
         // caller-visible AST/RIR contract (RUE-624).
-        let semantic_ast = crate::semantic_order::for_sema(ast, self.source_snapshot.metadata());
         let semantic_rir = {
             let _span = info_span!("semantic_astgen").entered();
-            AstGen::new(&semantic_ast, interner).generate()
+            let order = crate::semantic_order::SemanticItemOrder::from_items(
+                ast.items(),
+                self.source_snapshot.metadata(),
+            );
+            let work = order.work();
+            let rir = AstGen::generate_items(interner, order.iter());
+            info!(
+                items_indexed = work.items_indexed,
+                item_payloads_cloned = work.item_payloads_cloned,
+                "semantic item order lowered"
+            );
+            rir
         };
 
         let mut sema = build_sema_for_target(
@@ -430,7 +439,7 @@ impl<'src> CompilationUnit<'src> {
     /// # Panics
     ///
     /// Panics if called before [`parse()`](Self::parse).
-    pub fn ast(&self) -> &Ast {
+    pub fn ast(&self) -> &MergedAst {
         self.merged_ast
             .as_ref()
             .expect("ast() called before parse()")

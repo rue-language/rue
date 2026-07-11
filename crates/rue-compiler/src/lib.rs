@@ -54,6 +54,7 @@ pub use diagnostic::{
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 // ============================================================================
@@ -320,7 +321,7 @@ pub struct ParsedFile {
     /// File identifier for error reporting.
     pub file_id: FileId,
     /// The parsed abstract syntax tree.
-    pub ast: Ast,
+    pub ast: Arc<Ast>,
 }
 
 /// Result of parsing all source files.
@@ -403,10 +404,42 @@ pub fn parse_all_files_with_source_snapshot(
 /// Used as input to RIR generation for multi-file compilation.
 #[derive(Debug)]
 pub struct MergedProgram {
-    /// The merged AST containing items from all files.
-    pub ast: Ast,
+    /// Immutable view of the per-file ASTs in caller source order.
+    pub ast: MergedAst,
     /// Shared interner containing all symbols from all files.
     pub interner: ThreadedRodeo,
+}
+
+/// A clone-cheap, immutable view over all ASTs in a parsed program.
+///
+/// Keeping file ASTs behind `Arc` lets a future parse cache retain and reuse
+/// them while lowering traverses the program without cloning item payloads.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MergedAst {
+    files: Vec<Arc<Ast>>,
+}
+
+impl MergedAst {
+    /// Iterate top-level items in file order and declaration order.
+    pub fn items(&self) -> impl Iterator<Item = &Item> {
+        self.files.iter().flat_map(|ast| ast.items.iter())
+    }
+
+    /// Return the number of top-level items across all files.
+    pub fn item_count(&self) -> usize {
+        self.files.iter().map(|ast| ast.items.len()).sum()
+    }
+
+    /// Access the immutable per-file ASTs in source order.
+    pub fn files(&self) -> &[Arc<Ast>] {
+        &self.files
+    }
+
+    fn from_ast(ast: Ast) -> Self {
+        Self {
+            files: vec![Arc::new(ast)],
+        }
+    }
 }
 
 /// Information about a symbol definition for duplicate detection.
@@ -663,7 +696,10 @@ pub fn merge_symbols(program: ParsedProgram) -> MultiErrorResult<MergedProgram> 
     let _span = info_span!("merge_symbols", file_count = program.files.len()).entered();
 
     let check = detect_duplicate_symbols(
-        program.files.iter().map(|f| (f.path.as_str(), &f.ast)),
+        program
+            .files
+            .iter()
+            .map(|f| (f.path.as_str(), f.ast.as_ref())),
         &program.interner,
     );
 
@@ -672,11 +708,9 @@ pub fn merge_symbols(program: ParsedProgram) -> MultiErrorResult<MergedProgram> 
         return Err(CompileErrors::from(check.errors));
     }
 
-    let all_items: Vec<Item> = program
-        .files
-        .iter()
-        .flat_map(|file| file.ast.items.iter().cloned())
-        .collect();
+    let ast = MergedAst {
+        files: program.files.into_iter().map(|file| file.ast).collect(),
+    };
 
     info!(
         function_count = check.function_count,
@@ -686,7 +720,7 @@ pub fn merge_symbols(program: ParsedProgram) -> MultiErrorResult<MergedProgram> 
     );
 
     Ok(MergedProgram {
-        ast: Ast { items: all_items },
+        ast,
         interner: program.interner,
     })
 }
@@ -764,8 +798,8 @@ pub struct FunctionWithCfg {
 /// This allows inspection of the IR at each stage, useful for
 /// debugging and the `--emit` CLI flags.
 pub struct CompileState {
-    /// The abstract syntax tree.
-    pub ast: Ast,
+    /// Immutable program AST view.
+    pub ast: MergedAst,
     /// String interner used during compilation.
     pub interner: ThreadedRodeo,
     /// The untyped IR (RIR).
@@ -1134,15 +1168,35 @@ pub fn compile_frontend_from_ast_with_source_metadata_and_target(
     target: Target,
     source_metadata: &SourceMetadata,
 ) -> MultiErrorResult<CompileState> {
-    source_metadata
-        .validate_ast(&ast)
-        .map_err(CompileErrors::from)?;
+    compile_frontend_from_merged_ast_with_source_metadata_and_target(
+        MergedAst::from_ast(ast),
+        interner,
+        opt_level,
+        preview_features,
+        target,
+        source_metadata,
+    )
+}
+
+/// Compile a shareable multi-file AST view through all frontend phases.
+pub fn compile_frontend_from_merged_ast_with_source_metadata_and_target(
+    ast: MergedAst,
+    interner: ThreadedRodeo,
+    opt_level: OptLevel,
+    preview_features: &PreviewFeatures,
+    target: Target,
+    source_metadata: &SourceMetadata,
+) -> MultiErrorResult<CompileState> {
+    for file_ast in ast.files() {
+        source_metadata
+            .validate_ast(file_ast)
+            .map_err(CompileErrors::from)?;
+    }
 
     // Preserve the caller-visible AST/RIR order for inspection and --emit rir.
     let (rir, interner) = {
         let _span = info_span!("astgen").entered();
-        let astgen = AstGen::new(&ast, &interner);
-        let rir = astgen.generate();
+        let rir = AstGen::generate_items(&interner, ast.items());
         info!(instruction_count = rir.len(), "AST generation complete");
         (rir, interner)
     };
@@ -1151,10 +1205,17 @@ pub fn compile_frontend_from_ast_with_source_metadata_and_target(
     // composite type IDs, destructor/drop-glue traversal, string IDs, and
     // object layout. Lower a private logical-path-ordered RIR without changing
     // the observable AST/RIR above (RUE-624).
-    let semantic_ast = semantic_order::for_sema(&ast, source_metadata);
     let semantic_rir = {
         let _span = info_span!("semantic_astgen").entered();
-        AstGen::new(&semantic_ast, &interner).generate()
+        let order = semantic_order::SemanticItemOrder::from_items(ast.items(), source_metadata);
+        let work = order.work();
+        let rir = AstGen::generate_items(&interner, order.iter());
+        info!(
+            items_indexed = work.items_indexed,
+            item_payloads_cloned = work.item_payloads_cloned,
+            "semantic item order lowered"
+        );
+        rir
     };
 
     let mut sema =
@@ -2518,11 +2579,21 @@ mod tests {
             SourceFile::new("utils.rue", "fn helper() -> i32 { 42 }", FileId::new(2)),
         ];
         let parsed = parse_all_files(&sources).unwrap();
+        let parsed_asts: Vec<_> = parsed.files.iter().map(|file| file.ast.clone()).collect();
         let merged = merge_symbols(parsed);
         assert!(merged.is_ok(), "merge should succeed with no duplicates");
 
         let program = merged.unwrap();
-        assert_eq!(program.ast.items.len(), 2, "should have 2 items");
+        assert_eq!(program.ast.item_count(), 2, "should have 2 items");
+        assert!(
+            program
+                .ast
+                .files()
+                .iter()
+                .zip(&parsed_asts)
+                .all(|(merged, parsed)| Arc::ptr_eq(merged, parsed)),
+            "merging must retain the parsed AST allocations"
+        );
     }
 
     #[test]
