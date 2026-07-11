@@ -5,39 +5,72 @@ change quickly. Discuss substantial language or architecture changes before
 implementing them, and keep normative behavior synchronized with the
 specification and its tests.
 
+This guide is for **external contributors** working through GitHub. You do not
+need any special tooling, accounts, or access beyond a GitHub account and a
+local clone. (The maintainers run an additional internal workflow — see
+[How the maintainers work](#how-the-maintainers-work) — but none of it is
+required to contribute.)
+
 ## Setup
 
-Install [Dotslash](https://dotslash-cli.com/), clone the repository, then use
+Clone the repository and install [Dotslash](https://dotslash-cli.com/), then use
 the repository wrappers:
 
 ```bash
-scripts/rue build
-scripts/rue exec examples/welcome.rue   # prints 1, 2, 3, 42 and exits 0
-scripts/rue quick
-scripts/rue test
+git clone https://github.com/rue-language/rue
+cd rue
+scripts/rue build                        # build the compiler, print its path
+scripts/rue exec examples/welcome.rue    # prints 1, 2, 3, 42 and exits 0
+scripts/rue quick                        # fast unit tests (~2-5s)
+scripts/rue test                         # full suite (unit + spec + UI + CLI)
 ```
 
-The wrappers bootstrap Buck2 and a hermetic Rust toolchain. macOS also requires
-Xcode Command Line Tools for linking Rue executables.
+The wrappers bootstrap Buck2 and a hermetic Rust toolchain; `scripts/rue build`
+just forwards to `./buck2 build //crates/rue:rue`, so you can drive Buck2
+directly if you prefer. macOS also requires Xcode Command Line Tools for linking
+Rue executables.
 
 For IDE support, rust-analyzer reads the checked-in `rust-project.json` (Rue has
 no Cargo workspace). Regenerate it with `./gen-rust-project.sh` when crates or
 dependencies change — see [docs/development.md](docs/development.md#editor--ide-support).
 
-## Before submitting a change
+## Reporting bugs and proposing changes
 
-```bash
-scripts/rue fmt
-scripts/rue test
-```
+Open a **GitHub issue** for public bug reports, questions, and discussion.
+Include a minimal `.rue` program that reproduces the problem and the command you
+ran. For substantial language or architecture changes, open an issue to discuss
+the design before writing code.
+
+## Submitting a change
+
+1. Fork the repository on GitHub and create a branch for your change.
+2. Make your change with tests (see below), and format the tree:
+   ```bash
+   scripts/rue fmt
+   scripts/rue test
+   ```
+3. Open a **GitHub pull request against the `trunk` branch** of
+   `rue-language/rue`.
+
+CI runs the same checks as `scripts/rue test` (which wraps `./test.sh`) and must
+pass before a PR can merge, so running the full suite locally mirrors CI and is
+the quickest way to avoid a bounce. New language features must be preview-gated
+until complete.
 
 Use a targeted spec, UI, or CLI test while iterating. Language behavior belongs
 in specification tests; diagnostic presentation belongs in UI tests; driver,
-ABI, multi-file, and runtime-I/O behavior belongs in CLI tests. New language
-features must be preview-gated until complete.
+ABI, multi-file, and runtime-I/O behavior belongs in CLI tests.
 
-Rue uses Jujutsu (`jj`) for local version control and Linear (`RUE-NN`) for
-issue tracking. Do not commit directly on `trunk`.
+## How the maintainers work
+
+Day-to-day, the maintainers use [Jujutsu (`jj`)](https://jj-vcs.github.io) for
+local version control and [Linear](https://linear.app) (`RUE-NN`) for issue
+tracking, and they mirror external GitHub issues into Linear. **None of this is
+required to contribute** — ordinary Git and GitHub issues/PRs are fully
+supported and are the intended path for external contributions. The internal
+process (Linear access, agent/AI workflows, merge-queue management, the fork
+setup) is documented for maintainers under
+[docs/process/](docs/process/), which external contributors can safely ignore.
 
 ## Documentation
 
@@ -46,6 +79,4 @@ issue tracking. Do not commit directly on `trunk`.
 - [Language overview](docs/language.md)
 - [Language specification](docs/spec/)
 - [Architecture decision records](docs/designs/)
-- [Project processes](docs/process/)
-
-Open a GitHub issue for public bug reports and discussion.
+- [Project processes (internal/maintainer-oriented)](docs/process/)

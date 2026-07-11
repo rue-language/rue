@@ -1,6 +1,14 @@
 # Rue Development Process
 
-This directory documents how we develop the Rue compiler. Whether you're a human contributor or an AI assistant, these documents describe the workflow we follow.
+> **Audience: internal maintainers and AI agents.** These documents describe the
+> maintainers' internal operations — Linear-based issue tracking, Jujutsu (`jj`)
+> version control, Claude Code workflows, and merge-queue management. They are
+> **not required for external contributions**. If you are contributing through
+> GitHub, read [CONTRIBUTING.md](../../CONTRIBUTING.md) instead — ordinary Git
+> and GitHub issues/PRs are the supported path, and nothing here is needed to
+> submit a change.
+
+This directory documents how the maintainers develop the Rue compiler.
 
 ## Overview
 
