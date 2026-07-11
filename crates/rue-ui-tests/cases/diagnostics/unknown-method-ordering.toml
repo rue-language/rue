@@ -1,0 +1,57 @@
+[section]
+id = "diagnostics.unknown-method-ordering"
+name = "Unknown-method diagnosis precedes receiver move checking"
+description = "A nonexistent method must be reported as unknown, not as a borrow/move violation of its receiver (RUE-640)."
+
+# A typo'd method on a field of `inout self` used to report E0437 "cannot
+# move out of inout parameter 'self'" — the unknown method defaulted to a
+# by-value receiver and the move check fired before method resolution. The
+# user's actual mistake (the name) was never mentioned.
+[[case]]
+name = "unknown_method_on_inout_self_field_names_the_method"
+source = """
+struct Inner { v: i64 }
+
+struct Box {
+    inner: Inner,
+
+    fn grow(inout self) {
+        let old = self.inner.clone_me();
+    }
+}
+
+fn main() -> i32 {
+    let mut b = Box { inner: Inner { v: 1 } };
+    b.grow();
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0411", "no method named 'clone_me'", "Inner"]
+
+# Control: a method that DOES exist and takes self by value still gets the
+# genuine move diagnostic, not an unknown-method error.
+[[case]]
+name = "real_by_value_method_still_reports_move"
+source = """
+struct Inner {
+    v: i64,
+
+    fn consume(self) -> i64 { self.v }
+}
+
+struct Wrap {
+    inner: Inner,
+
+    fn peek(inout self) -> i64 {
+        self.inner.consume()
+    }
+}
+
+fn main() -> i32 {
+    let mut w = Wrap { inner: Inner { v: 42 } };
+    @intCast(w.peek())
+}
+"""
+compile_fail = true
+error_contains = ["E0437"]
