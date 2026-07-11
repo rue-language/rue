@@ -37,12 +37,14 @@
 //! Every mode exits non-zero if an eligible program is rejected by the front
 //! end, interpretation hits a resource limit or compiler/oracle contract
 //! violation, or the oracle disagrees with expected behavior. Only typed
-//! [`rue_oracle::ModelGapKind`] values can count as unmodeled corpus coverage.
+//! [`rue_oracle::ModelGapKind`] values can count as unmodeled corpus coverage;
+//! CLI corpus mode also requires an exact registry entry.
 //! Generated fuzz mode has the stronger contract that every `Unsupported` is a
 //! failure because its generator promises to stay within the modeled subset.
 
 mod fuzz;
 mod generator;
+mod model_gaps;
 mod trap;
 
 use rue_error::{PreviewFeature, PreviewFeatures};
@@ -56,8 +58,16 @@ use std::str::FromStr;
 
 #[derive(Deserialize)]
 struct TestFile {
+    section: Section,
     #[serde(default, rename = "case")]
     cases: Vec<Case>,
+}
+
+/// The stable identity-bearing subset of a rue-cli-tests section. The
+/// differential schema remains permissive about every field it does not use.
+#[derive(Deserialize)]
+struct Section {
+    id: String,
 }
 
 /// A permissive subset of the rue-cli-tests case schema — only the fields the
@@ -356,6 +366,11 @@ fn run() -> ExitCode {
 /// oracle and check it agrees with the case's expected exit code / stdout /
 /// stderr.
 fn corpus_mode(raw_args: Vec<String>) -> ExitCode {
+    let inventory_scope = if raw_args.is_empty() {
+        model_gaps::InventoryScope::Authoritative
+    } else {
+        model_gaps::InventoryScope::Partial
+    };
     let dirs: Vec<PathBuf> = {
         let args: Vec<String> = raw_args;
         if !args.is_empty() {
@@ -370,9 +385,12 @@ fn corpus_mode(raw_args: Vec<String>) -> ExitCode {
     };
 
     let mut report = Report::default();
+    let mut gap_audit = model_gaps::cli::audit(inventory_scope);
     let (toml_files, discovery_failures) = discover_toml(&dirs);
+    let mut inventory_complete = discovery_failures.is_empty();
     report.harness_failures.extend(discovery_failures);
     if toml_files.is_empty() && report.harness_failures.is_empty() {
+        inventory_complete = false;
         report.harness_failures.push(format!(
             "no .toml case files found under {dirs:?} (run from the repo root)"
         ));
@@ -382,17 +400,61 @@ fn corpus_mode(raw_args: Vec<String>) -> ExitCode {
         let file = match load_cli_test_file(path) {
             Ok(file) => file,
             Err(failure) => {
+                inventory_complete = false;
                 report.harness_failures.push(failure);
                 continue;
             }
         };
         for case in &file.cases {
-            report.record(check_case(path, case));
+            let outcome = check_case(path, case);
+            gap_audit.observe(
+                model_gaps::cli::CaseId::new(&file.section.id, &case.name),
+                &case.only_on,
+                model_gap_observation(case, &outcome),
+            );
+            report.record(outcome);
         }
     }
+    report
+        .harness_failures
+        .extend(gap_audit.finish(inventory_complete));
     report.harness_failures.sort();
 
     finish_report(&report, "rue-cli-tests")
+}
+
+/// Translate the closed corpus classification into equally closed registry
+/// policy. In particular, trap observation gaps are not
+/// [`ModelGapKind`] values and cannot be accepted by the typed registry.
+fn model_gap_observation(case: &Case, outcome: &CaseOutcome) -> model_gaps::Observation {
+    // Eligibility wrappers deliberately prevent inactive cases from making
+    // claims on this host. For every active executable case, however, audit
+    // its declared trap contract independently of whether interpretation
+    // produced an Outcome or stopped first at a typed model gap. Otherwise an
+    // Unsupported result could hide unrelated harness observation debt.
+    if !matches!(outcome, CaseOutcome::Ineligible(_))
+        && trap::cli_trap_expectation(case.runtime_error_contains.iter().map(String::as_str))
+            == trap::TrapExpectation::Unmodeled
+    {
+        return model_gaps::Observation::Unregistrable("runtime trap expectation");
+    }
+
+    match outcome {
+        CaseOutcome::Agree => model_gaps::Observation::Agreement,
+        CaseOutcome::Unmodeled(UnmodeledReason::ModelGap(kind)) => {
+            model_gaps::Observation::ModelGap(*kind)
+        }
+        CaseOutcome::Unmodeled(UnmodeledReason::TrapExpectation) => {
+            model_gaps::Observation::Unregistrable("runtime trap expectation")
+        }
+        CaseOutcome::Ineligible(IneligibleReason::HostFiltered) => {
+            model_gaps::Observation::InactiveHost
+        }
+        CaseOutcome::Ineligible(_) => model_gaps::Observation::OtherIneligible,
+        CaseOutcome::FrontendFailure(_)
+        | CaseOutcome::OracleFailure(_)
+        | CaseOutcome::Disagreement(_) => model_gaps::Observation::HardFailure,
+    }
 }
 
 /// Print the tallied report and turn it into a process exit code: success when
@@ -1162,6 +1224,9 @@ mod tests {
             path,
             format!(
                 r#"
+[section]
+id = "cli.fixture"
+
 [[case]]
 name = "{name}"
 compile_fail = true
@@ -1239,6 +1304,9 @@ files = [{{ path = "probe.rue", source = "not Rue" }}]
         std::fs::write(
             &invalid,
             r#"
+[section]
+id = "cli.invalid_platform"
+
 [[case]]
 name = "misspelled platform"
 only_on = ["x86_64-linux"]
@@ -1261,6 +1329,28 @@ files = [{ path = "probe.rue", source = "fn main() -> i32 { 0 }" }]
             corpus_mode(vec![temp.path().to_string_lossy().into_owned()]),
             ExitCode::FAILURE
         );
+    }
+
+    #[test]
+    fn cli_section_id_is_required_for_stable_registry_identity() {
+        let temp = tempfile::tempdir().expect("create temporary cases root");
+        let missing_section = temp.path().join("missing-section.toml");
+        std::fs::write(
+            &missing_section,
+            r#"
+[[case]]
+name = "identity-less"
+compile_fail = true
+files = [{ path = "probe.rue", source = "not Rue" }]
+"#,
+        )
+        .expect("write missing-section fixture");
+
+        let failure = load_cli_test_file(&missing_section)
+            .err()
+            .expect("a CLI corpus file without section.id must not load");
+        assert!(failure.contains("could not parse"));
+        assert!(failure.contains("missing field `section`"));
     }
 
     #[test]
@@ -2039,6 +2129,45 @@ files = [{ path = "probe.rue", source = "fn main() -> i32 { 0 }" }]
         report.record(stderr_outcome);
         assert_eq!(report.unmodeled_count(), 0);
         assert_eq!(report.disagreements.len(), 2);
+    }
+
+    #[test]
+    fn non_oracle_unmodeled_reasons_are_unregistrable() {
+        let case = corpus_case("fn main() -> i32 { 0 }", false);
+        assert_eq!(
+            model_gap_observation(
+                &case,
+                &CaseOutcome::Unmodeled(UnmodeledReason::TrapExpectation)
+            ),
+            model_gaps::Observation::Unregistrable("runtime trap expectation")
+        );
+    }
+
+    #[test]
+    fn active_unknown_trap_contract_cannot_hide_behind_a_typed_model_gap() {
+        let mut case = corpus_case(
+            "fn main() -> u32 { let value: u32 = @random_u32(); value }",
+            false,
+        );
+        case.runtime_error_contains = vec!["custom trap wording".to_string()];
+        let outcome = check_case(Path::new("trap-plus-gap.toml"), &case);
+        assert!(matches!(
+            outcome,
+            CaseOutcome::Unmodeled(UnmodeledReason::ModelGap(_))
+        ));
+        assert_eq!(
+            model_gap_observation(&case, &outcome),
+            model_gaps::Observation::Unregistrable("runtime trap expectation")
+        );
+
+        // The same declaration on a case that is inactive on this host makes
+        // no runtime claim here and must remain a scope-checked inactive case.
+        case.only_on = vec![other_known_target()];
+        let outcome = check_case(Path::new("inactive-trap-plus-gap.toml"), &case);
+        assert_eq!(
+            model_gap_observation(&case, &outcome),
+            model_gaps::Observation::InactiveHost
+        );
     }
 
     #[test]
