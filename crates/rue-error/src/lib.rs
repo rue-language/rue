@@ -335,6 +335,7 @@ impl ErrorCode {
     pub const UNKNOWN_MODULE_MEMBER: Self = Self(707);
     pub const AMBIGUOUS_MODULE: Self = Self(708);
     pub const CANNOT_INFER_CAST_TARGET: Self = Self(709);
+    pub const CANNOT_INFER_POINTEE_TYPE: Self = Self(710);
 
     // ========================================================================
     // Literal/operator errors (E0800-E0899)
@@ -1437,6 +1438,12 @@ pub enum ErrorKind {
          type is expected"
     )]
     CannotInferCastTarget(String),
+    #[error(
+        "cannot infer the pointee type of '@{0}'; add a type annotation \
+         (e.g. `let p: ptr mut T = @{0}(...)`) or use it where a specific \
+         `ptr mut T` is expected"
+    )]
+    CannotInferPointeeType(String),
 
     // Module errors
     #[error("@import requires a string literal argument")]
@@ -1702,6 +1709,7 @@ impl ErrorKind {
             ErrorKind::IntrinsicWrongArgCount { .. } => ErrorCode::INTRINSIC_WRONG_ARG_COUNT,
             ErrorKind::IntrinsicTypeMismatch(_) => ErrorCode::INTRINSIC_TYPE_MISMATCH,
             ErrorKind::CannotInferCastTarget(_) => ErrorCode::CANNOT_INFER_CAST_TARGET,
+            ErrorKind::CannotInferPointeeType(_) => ErrorCode::CANNOT_INFER_POINTEE_TYPE,
             ErrorKind::ImportRequiresStringLiteral => ErrorCode::IMPORT_REQUIRES_STRING_LITERAL,
             ErrorKind::ModuleNotFound { .. } => ErrorCode::MODULE_NOT_FOUND,
             ErrorKind::AmbiguousModule { .. } => ErrorCode::AMBIGUOUS_MODULE,
