@@ -55,7 +55,7 @@ use rue_rir::{InstData, InstRef, RepeatCount, RirPattern};
 use rue_span::{FileId, Span};
 
 use super::Sema;
-use super::context::{AnalysisContext, ConstValue, LocalVar};
+use super::context::{AnalysisContext, ConstValue, LocalVar, ParamInfo};
 use crate::specialize::MAX_SPECIALIZATION_ROUNDS;
 use crate::types::{ArrayLen, StructField, Type, TypeKind};
 
@@ -82,6 +82,10 @@ pub(crate) struct ComptimeEnv<'a> {
     /// `let n = x; g(n)` inside a body with `comptime n` in scope would
     /// wrongly evaluate `n` to the parameter's value (spec 4.14:6).
     runtime_locals: Option<&'a HashMap<Spur, LocalVar>>,
+    /// Runtime parameters in scope. They shadow same-named type values and
+    /// constants just like locals; comptime parameters resolve through the
+    /// substitution maps before this guard is consulted.
+    runtime_params: Option<&'a [ParamInfo]>,
     /// `let` bindings introduced by blocks inside the comptime expression.
     locals: HashMap<Spur, ConstValue>,
     /// Values of module-member accesses (`m.CONST`) appearing in this
@@ -134,6 +138,7 @@ impl<'a> ComptimeEnv<'a> {
             value_subst: &EMPTY_VALUE_SUBST,
             resolved_types: None,
             runtime_locals: None,
+            runtime_params: None,
             locals: HashMap::new(),
             const_module_members: &EMPTY_MODULE_MEMBERS,
             defining_file: None,
@@ -151,6 +156,7 @@ impl<'a> ComptimeEnv<'a> {
             value_subst,
             resolved_types: None,
             runtime_locals: None,
+            runtime_params: None,
             locals: HashMap::new(),
             const_module_members: &EMPTY_MODULE_MEMBERS,
             defining_file: None,
@@ -165,6 +171,7 @@ impl<'a> ComptimeEnv<'a> {
             value_subst: &ctx.comptime_value_vars,
             resolved_types: Some(ctx.resolved_types),
             runtime_locals: Some(&ctx.locals),
+            runtime_params: Some(ctx.params),
             locals: HashMap::new(),
             const_module_members: &EMPTY_MODULE_MEMBERS,
             defining_file: Some(ctx.current_file_id),
@@ -196,6 +203,7 @@ impl<'a> ComptimeEnv<'a> {
             value_subst: &EMPTY_VALUE_SUBST,
             resolved_types: Some(resolved_types),
             runtime_locals: None,
+            runtime_params: None,
             locals: HashMap::new(),
             const_module_members,
             defining_file: Some(defining_file),
@@ -285,6 +293,19 @@ impl Sema<'_> {
     ) -> Option<ConstValue> {
         let mut env = ComptimeEnv::for_analysis(ctx);
         self.eval_const_expr(inst_ref, &mut env).ok().flatten()
+    }
+
+    /// Evaluate an expression in the current function while preserving hard
+    /// diagnostics. Required comptime arguments use this entry point: preview
+    /// gates, privacy failures, and constant operations that would panic are
+    /// source errors, not evidence that the argument is merely runtime.
+    pub(crate) fn evaluate_const_in_fn(
+        &mut self,
+        inst_ref: InstRef,
+        ctx: &AnalysisContext,
+    ) -> CompileResult<Option<ConstValue>> {
+        let mut env = ComptimeEnv::for_analysis(ctx);
+        self.eval_const_expr(inst_ref, &mut env)
     }
 
     /// Try to evaluate an RIR instruction to a compile-time constant value
@@ -453,24 +474,16 @@ impl Sema<'_> {
         }
     }
 
-    /// Resolve a name to a type value (primitive type names, structs, enums).
-    fn resolve_named_type_value(&self, name: &Spur) -> Option<Type> {
-        let name_str = self.interner.resolve(name);
-        // Primitive names come from the single shared table (RUE-155) so the
-        // evaluator can never drift from the resolver.
-        let ty = match Type::from_primitive_name(name_str) {
-            Some(t) => t,
-            None => {
-                if let Some(&struct_id) = self.structs.get(name) {
-                    Type::new_struct(struct_id)
-                } else if let Some(&enum_id) = self.enums.get(name) {
-                    Type::new_enum(enum_id)
-                } else {
-                    return None;
-                }
-            }
-        };
-        Some(ty)
+    /// Resolve a bare name used as a type value through the canonical type
+    /// resolver. Preview types such as `str` are registered lazily, so looking
+    /// only in the already-populated struct and enum maps made their first use
+    /// as a generic type argument spuriously non-constant.
+    fn resolve_named_type_value(&mut self, name: Spur, span: Span) -> CompileResult<Option<Type>> {
+        match self.resolve_type(name, span) {
+            Ok(ty) => Ok(Some(ty)),
+            Err(error) if matches!(error.kind, ErrorKind::UnknownType(_)) => Ok(None),
+            Err(error) => Err(error),
+        }
     }
 
     /// Evaluate both operands of a binary operation as integers.
@@ -1068,7 +1081,7 @@ impl Sema<'_> {
                     return Ok(Some(ConstValue::Type(ty)));
                 }
                 // A named type (primitive / struct / enum) resolves directly.
-                if let Some(ty) = self.resolve_named_type_value(&type_name) {
+                if let Some(ty) = self.resolve_named_type_value(type_name, span)? {
                     return Ok(Some(ConstValue::Type(ty)));
                 }
                 // A *composite* or *unit* type value — `[i32; 2]`, `()`,
@@ -1142,7 +1155,15 @@ impl Sema<'_> {
                 if let Some(&v) = env.value_subst.get(name) {
                     return Ok(Some(v));
                 }
-                // 5. File-level constants: the value was evaluated once
+                // 5. Runtime parameters shadow file-level constants and type
+                //    names. A comptime parameter with a concrete value was
+                //    already handled by the substitution maps above.
+                if let Some(params) = env.runtime_params {
+                    if params.iter().any(|param| param.name == *name) {
+                        return Ok(None);
+                    }
+                }
+                // 6. File-level constants: the value was evaluated once
                 //    (and range-checked against the declared type) during
                 //    declaration gathering — use it directly. Re-evaluating
                 //    the initializer here would fail for forms only the
@@ -1166,9 +1187,11 @@ impl Sema<'_> {
                     )?;
                     return Ok(Some(info.value));
                 }
-                // 6. Type names used as values (e.g. `Point` in
+                // 7. Type names used as values (e.g. `Point` in
                 //    `fn make_type() -> type { Point }`)
-                Ok(self.resolve_named_type_value(name).map(ConstValue::Type))
+                Ok(self
+                    .resolve_named_type_value(*name, span)?
+                    .map(ConstValue::Type))
             }
 
             // Call to a `-> type` function: reduce it to the resulting type
