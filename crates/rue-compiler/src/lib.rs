@@ -30,10 +30,12 @@ mod drop_glue;
 mod semantic_order;
 mod source_metadata;
 mod source_snapshot;
+mod syntax;
 mod unit;
 
 pub use source_metadata::SourceMetadata;
 pub use source_snapshot::{MAX_SOURCE_BYTES, SourceSnapshot};
+pub use syntax::SyntaxWork;
 pub use unit::{CompilationUnit, SourceStats};
 
 use rayon::prelude::*;
@@ -361,56 +363,7 @@ pub fn parse_all_files_with_source_metadata(
 pub fn parse_all_files_with_source_snapshot(
     snapshot: &SourceSnapshot,
 ) -> MultiErrorResult<ParsedProgram> {
-    // Parse all files sequentially with a shared interner
-    // This ensures Spur values are consistent across files for cross-file symbol resolution
-    let mut parsed_files = Vec::with_capacity(snapshot.len());
-    let mut interner = ThreadedRodeo::new();
-    let mut errors = CompileErrors::new();
-
-    for source in snapshot.files() {
-        // Create lexer with shared interner and file ID for proper error reporting
-        let lexer = Lexer::with_interner_and_file_id(source.source, interner, source.file_id);
-
-        let tokens = match lexer.tokenize_preserving_interner() {
-            Ok((tokens, returned_interner)) => {
-                interner = returned_interner;
-                tokens
-            }
-            Err((lex_errors, returned_interner)) => {
-                interner = returned_interner;
-                errors.extend(lex_errors);
-                continue;
-            }
-        };
-
-        let parser = Parser::new(tokens, interner);
-        let ast = match parser.parse_preserving_interner() {
-            Ok((ast, returned_interner)) => {
-                interner = returned_interner;
-                ast
-            }
-            Err((parse_errors, returned_interner)) => {
-                interner = returned_interner;
-                errors.extend(parse_errors);
-                continue;
-            }
-        };
-
-        parsed_files.push(ParsedFile {
-            path: source.path.to_string(),
-            file_id: source.file_id,
-            ast,
-        });
-    }
-
-    if !errors.is_empty() {
-        return Err(errors);
-    }
-
-    Ok(ParsedProgram {
-        files: parsed_files,
-        interner,
-    })
+    syntax::parse_snapshot(snapshot).result
 }
 
 /// Result of merging symbols from multiple parsed files.
